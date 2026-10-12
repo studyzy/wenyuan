@@ -185,6 +185,8 @@ migrations        PostgreSQL schema migrations
 | `SECURITY.md` | How to report a vulnerability privately |
 | `.github/workflows/ci.yml` | Build, test, vet, gofmt on every push and PR |
 | `.github/ISSUE_TEMPLATE/` | Bug report and feature request forms |
+| `docs/ROADMAP.md` | Outstanding work and known limitations (handover) |
+| `docs/MIGRATION.md` | Migrating an existing Hindsight bank into Wenyuan |
 
 ## Contributing
 

@@ -177,6 +177,8 @@ migrations         PostgreSQL schema 迁移
 | `SECURITY.md` | 如何私密报告安全问题 |
 | `.github/workflows/ci.yml` | 每次 push / PR 的构建、测试、vet、gofmt |
 | `.github/ISSUE_TEMPLATE/` | Bug 与功能需求表单 |
+| `docs/ROADMAP.md` | 未完成工作与已知局限（交接文档） |
+| `docs/MIGRATION.md` | 从 Hindsight 迁移已有记忆到 Wenyuan |
 
 ## 参与贡献
 
