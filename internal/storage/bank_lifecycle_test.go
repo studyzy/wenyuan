@@ -1,0 +1,244 @@
+package storage
+
+import (
+	"testing"
+)
+
+// ts-0001 / tmg-0001: the list page reports the pre-paging total and orders by
+// recency; an offset past the end is empty with the real total.
+func TestMemoryListBanksPaging(t *testing.T) {
+	store := NewMemoryStore("public")
+	for _, id := range []string{"a", "b", "c"} {
+		if _, err := store.CreateBank(nil, Bank{ID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.ListBanks(nil, BankQuery{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 3 || len(page.Banks) != 2 {
+		t.Fatalf("page = %+v", page)
+	}
+	past, err := store.ListBanks(nil, BankQuery{Limit: 2, Offset: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if past.Total != 3 || len(past.Banks) != 0 {
+		t.Fatalf("past-the-end page = %+v", past)
+	}
+}
+
+// ts-0004: the alias-attributed match is reported; a direct match reports none.
+func TestMemoryListMatchedAliases(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "owner", Name: "Owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "owner", "nickname", false); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListBanks(nil, BankQuery{Search: "nickname"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.MatchedAliases["owner"]) != 1 {
+		t.Fatalf("alias match not attributed: %+v", page)
+	}
+	page, _ = store.ListBanks(nil, BankQuery{Search: "owner"})
+	if len(page.MatchedAliases["owner"]) != 0 {
+		t.Fatalf("direct match must report no matched aliases: %+v", page.MatchedAliases)
+	}
+}
+
+// ts-0011 / inv-0002: promoting one alias demotes the other; the displayed
+// alias sorts first.
+func TestMemoryAliasPromotion(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "b", "one", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "b", "two", false); err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := store.PromoteAlias(nil, "b", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliases[0].Alias != "two" || !aliases[0].Primary {
+		t.Fatalf("promotion must display the alias first: %+v", aliases)
+	}
+	primaries := 0
+	for _, alias := range aliases {
+		if alias.Primary {
+			primaries++
+		}
+	}
+	if primaries != 1 {
+		t.Fatalf("at most one alias may be displayed: %+v", aliases)
+	}
+}
+
+// ts-0013: targeting an alias the bank does not own is a not-found.
+func TestMemoryAliasNotFound(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PromoteAlias(nil, "b", "ghost"); err != ErrAliasNotFound {
+		t.Fatalf("promote unknown alias err = %v", err)
+	}
+	if _, err := store.RemoveAlias(nil, "b", "ghost"); err != ErrAliasNotFound {
+		t.Fatalf("remove unknown alias err = %v", err)
+	}
+}
+
+// ts-0012 / ec-0005: a self-alias is invalid and a colliding alias conflicts.
+func TestMemoryAliasConflictAndSelfAlias(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBank(nil, Bank{ID: "other", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "b", "b", false); err != ErrInvalidBankID {
+		t.Fatalf("self-alias err = %v", err)
+	}
+	if _, err := store.AddAlias(nil, "b", "other", false); err != ErrAliasConflict {
+		t.Fatalf("alias colliding with a bank err = %v", err)
+	}
+	if _, err := store.AddAlias(nil, "b", "dup", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "other", "dup", false); err != ErrAliasConflict {
+		t.Fatalf("duplicate alias err = %v", err)
+	}
+}
+
+// beh-0009 / ts-0020: a write into a missing bank creates it lazily in the same
+// operation, with an identifier-derived name, neutral disposition and empty
+// mission.
+func TestMemoryLazyBankCreationOnWrite(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.RecordWrite(nil, WriteRequest{BankID: "fresh", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	bank, err := store.GetBank(nil, "fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bank.Name != "fresh" || bank.ReflectMission != "" {
+		t.Fatalf("lazily created bank = %+v", bank)
+	}
+	if bank.DispositionSkepticism != DispositionTraitNeutral {
+		t.Fatalf("lazily created bank must have a neutral disposition: %+v", bank)
+	}
+	if bank.LastWriteAt == nil {
+		t.Fatal("a written bank must carry a write watermark")
+	}
+}
+
+// ts-0010 / beh-0015: deleting a bank that never existed is a zero-item no-op.
+func TestMemoryDeleteNeverCreatedIsNoOp(t *testing.T) {
+	store := NewMemoryStore("public")
+	deleted, err := store.DeleteBank(nil, "never")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+}
+
+// st-0003 / inv-0006: deleting a bank removes its alias rows.
+func TestMemoryDeleteRemovesAliases(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "b", "nick", true); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := store.DeleteBank(nil, "b"); err != nil || deleted != 1 {
+		t.Fatalf("delete = %d, err = %v", deleted, err)
+	}
+	if resolved, _ := store.ResolveBankID(nil, "nick"); resolved != "nick" {
+		t.Fatalf("an alias must not outlive its bank: %q", resolved)
+	}
+}
+
+// neg-0004 / inv-0003: a name that is both a bank and an alias resolves to the
+// bank.
+func TestMemoryBankWinsOverAlias(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBank(nil, Bank{ID: "real", Name: "Real"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(nil, "b", "shared", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBank(nil, Bank{ID: "shared", Name: "Shared"}); err != ErrAliasConflict {
+		t.Fatalf("creating a bank under an existing alias err = %v", err)
+	}
+}
+
+// tmg-0004 / beh-0014: a bank write invalidates the process cache entry.
+func TestMemoryCacheInvalidatedOnWrite(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(nil, Bank{ID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	bank, _ := store.GetBank(nil, "b")
+	store.Cache().put(store.Schema(), "b", bank)
+	if _, ok := store.Cache().get(store.Schema(), "b"); !ok {
+		t.Fatal("the cache must serve a stored entry")
+	}
+	if _, err := store.UpdateBank(nil, "b", BankPatch{Name: strPtr("Renamed")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Cache().get(store.Schema(), "b"); ok {
+		t.Fatal("a bank write must invalidate the cache entry")
+	}
+}
+
+// sec-0001: two schemas that choose the same identifier never share an entry.
+func TestMemoryCacheScopesBySchema(t *testing.T) {
+	store := NewMemoryStore("public")
+	store.Cache().put("tenant_a", "shared", Bank{ID: "shared", Name: "A"})
+	if _, ok := store.Cache().get("tenant_b", "shared"); ok {
+		t.Fatal("a cache lookup must not leak across tenants")
+	}
+	if _, ok := store.Cache().get("tenant_a", "shared"); !ok {
+		t.Fatal("the owning tenant must still find its entry")
+	}
+}
+
+// ts-0022 / ts-0023: the migration series defines the alias table and both
+// named indexes.
+func TestMigrationDefinesAliasContract(t *testing.T) {
+	series, err := MigrationSeries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range series {
+		sql += migration.SQL + "\n"
+	}
+	for _, needle := range []string{
+		"bank_aliases", "idx_bank_aliases_bank", "idx_bank_aliases_one_primary",
+		"last_write_at", "last_document_at",
+	} {
+		if !containsFold(sql, needle) {
+			t.Fatalf("the migration series must define %q", needle)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }

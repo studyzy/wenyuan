@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a capability or a change to the public contract.
+title: "[feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is an API-compatible implementation, so describe the
+        *public contract* you need. Changes that alter existing routes, JSON
+        field names, status codes, or the storage schema are breaking changes —
+        please say so explicitly.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that the current API does not support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contract
+      description: The route, request shape, response shape, and status codes you need.
+    validations:
+      required: true
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Is this a breaking change?
+      options:
+        - "No — additive only"
+        - "Yes — changes an existing route, field, status, or table"
+        - "Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a defect in the API or storage behavior.
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you
+        can — a request/response pair plus the expected result is the fastest
+        path to a fix.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: The behavior you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: A minimal request (method, path, body) and the response.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release or commit you are running.
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage backend
+      options:
+        - in-memory (offline)
+        - PostgreSQL
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Go version, OS, and any relevant configuration.
+    validations:
+      required: false

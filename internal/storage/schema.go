@@ -1,0 +1,151 @@
+package storage
+
+import "sort"
+
+// MemoryDomainTables are the tables owned exclusively by this storage area.
+// No other package may address them directly; the boundary check enforces it.
+var MemoryDomainTables = []string{
+	"banks",
+	"bank_aliases",
+	"documents",
+	"chunks",
+	"entities",
+	"memory_units",
+	"unit_entities",
+	"memory_links",
+	"entity_cooccurrences",
+	"async_operations",
+}
+
+// TableName returns the table name owned by the storage area.
+type TableName string
+
+// Memory-domain table names as declared by the compatibility contract.
+const (
+	TableBanks               TableName = "banks"
+	TableBankAliases         TableName = "bank_aliases"
+	TableDocuments           TableName = "documents"
+	TableChunks              TableName = "chunks"
+	TableEntities            TableName = "entities"
+	TableMemoryUnits         TableName = "memory_units"
+	TableUnitEntities        TableName = "unit_entities"
+	TableMemoryLinks         TableName = "memory_links"
+	TableEntityCooccurrences TableName = "entity_cooccurrences"
+	TableAsyncOperations     TableName = "async_operations"
+)
+
+// BanksColumns are the bank identity, disposition, mission and watermark
+// columns.
+var BanksColumns = []string{
+	"id",
+	"name",
+	"disposition_skepticism",
+	"disposition_literalism",
+	"disposition_empathy",
+	"reflect_mission",
+	"created_at",
+	"updated_at",
+	"last_write_at",
+	"last_document_at",
+}
+
+// BankAliasesColumns are the persisted alias contract columns.
+var BankAliasesColumns = []string{
+	"alias",
+	"bank_id",
+	"is_primary",
+	"created_at",
+}
+
+// BankAliasIndexes are the named indexes over the alias table.
+var BankAliasIndexes = []string{
+	"idx_bank_aliases_bank",
+	"idx_bank_aliases_one_primary",
+}
+
+// MemoryUnitsColumns are the unit text/type,timestamp/metadata columns.
+var MemoryUnitsColumns = []string{
+	"id",
+	"bank_id",
+	"text",
+	"type",
+	"occurred_start",
+	"occurred_end",
+	"mentioned_at",
+	"metadata",
+	"document_id",
+	"chunk_id",
+	"tags",
+	"source_fact_ids",
+	"context",
+	"event_date",
+	"confidence_score",
+	"access_count",
+}
+
+// DocumentsColumns are the document text/hash/metadata/parameter columns.
+var DocumentsColumns = []string{
+	"id",
+	"bank_id",
+	"original_text",
+	"content_hash",
+	"metadata",
+	"retain_params",
+	"tags",
+	"created_at",
+}
+
+// ChunksColumns are the chunk identity/index/text columns.
+var ChunksColumns = []string{
+	"id",
+	"bank_id",
+	"document_id",
+	"index",
+	"text",
+	"content_hash",
+}
+
+// EntitiesColumns are the entity identity/kind/count columns.
+var EntitiesColumns = []string{
+	"id",
+	"bank_id",
+	"name",
+	"kind",
+	"metadata",
+	"first_seen",
+	"last_seen",
+	"mention_count",
+}
+
+// AsyncOperationsColumns are the operation identity/status/timestamp columns.
+var AsyncOperationsColumns = []string{
+	"id",
+	"bank_id",
+	"operation_type",
+	"status",
+	"created_at",
+	"updated_at",
+	"completed_at",
+	"error_message",
+	"result_metadata",
+	"retry_count",
+	"next_retry_at",
+	"progress",
+}
+
+// SortedMemoryDomainTables returns the owned table names in stable order.
+func SortedMemoryDomainTables() []string {
+	out := append([]string(nil), MemoryDomainTables...)
+	sort.Strings(out)
+	return out
+}
+
+// OwnsTable reports whether a table name belongs to the memory domain.
+func OwnsTable(name string) bool {
+	for _, table := range MemoryDomainTables {
+		if table == name {
+			return true
+		}
+	}
+	return false
+}

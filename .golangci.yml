@@ -1,0 +1,29 @@
+# golangci-lint configuration.
+# Run with: golangci-lint run
+# The selected linters match the project's standard-library-first style.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - bodyclose
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/studyzy/wenyuan
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

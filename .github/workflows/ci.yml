@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build, test, vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Verify module tidiness
+        run: |
+          # Fails if go.mod/go.sum are incomplete or need updating, without
+          # requiring network access to resolve test-only dependencies.
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build with the pgx driver
+        run: go build -tags pgx ./...
+
+  lint:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
