@@ -33,9 +33,8 @@ type Authenticator interface {
 
 // Router owns the root mux and the middleware chain.
 type Router struct {
-	mux        *http.ServeMux
-	options    RouterOptions
-	registrars []func(RouteRegistrar)
+	mux     *http.ServeMux
+	options RouterOptions
 }
 
 // Mux exposes the underlying mux for tests and the application entrypoint.

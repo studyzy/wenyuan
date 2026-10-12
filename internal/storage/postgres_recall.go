@@ -29,7 +29,7 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	if err != nil {
 		return RecallResult{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	matches := make([]RecallMatch, 0)
 	for rows.Next() {
 		var m RecallMatch

@@ -40,7 +40,7 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 	if err != nil {
 		return BankPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	banks := make([]Bank, 0)
 	for rows.Next() {
 		bank, err := scanBank(rows)

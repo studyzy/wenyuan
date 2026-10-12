@@ -72,10 +72,3 @@ func (c *bankCache) invalidate(bankID string) {
 		}
 	}
 }
-
-// invalidateAll clears the cache.
-func (c *bankCache) invalidateAll() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = map[string]bankCacheEntry{}
-}

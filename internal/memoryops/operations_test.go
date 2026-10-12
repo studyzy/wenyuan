@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,13 +42,13 @@ func TestAsyncWriteLifecycle(t *testing.T) {
 	if poll()["status"] != "pending" {
 		t.Fatalf("initial status = %v, want pending", poll()["status"])
 	}
-	if _, err := store.AdvanceOperation(nil, opID, storage.StatusProcessing, ""); err != nil {
+	if _, err := store.AdvanceOperation(context.TODO(), opID, storage.StatusProcessing, ""); err != nil {
 		t.Fatal(err)
 	}
 	if poll()["status"] != "processing" {
 		t.Fatalf("status = %v, want processing", poll()["status"])
 	}
-	if _, err := store.AdvanceOperation(nil, opID, storage.StatusFailed, "boom"); err != nil {
+	if _, err := store.AdvanceOperation(context.TODO(), opID, storage.StatusFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	if got := poll(); got["status"] != "failed" || got["error_message"] != "boom" {
@@ -151,7 +152,7 @@ func TestUnknownAndMalformedOperationID(t *testing.T) {
 // the raw payload when the include switch is set.
 func TestFetchOperationIncludesPayload(t *testing.T) {
 	mux, store := newServer(t)
-	op, err := store.PutOperation(nil, storage.Operation{
+	op, err := store.PutOperation(context.TODO(), storage.Operation{
 		ID: validOpID, BankID: "b1", OperationType: storage.OperationTypeRetain,
 		Status: storage.StatusCompleted, Payload: map[string]any{"items": 1},
 	})
@@ -200,7 +201,7 @@ func containsStatus(value string) bool {
 
 func seedOp(t *testing.T, store *storage.MemoryStore, id string, status storage.OperationStatus) {
 	t.Helper()
-	if _, err := store.PutOperation(nil, storage.Operation{
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
 		ID: id, BankID: "b1", OperationType: storage.OperationTypeRetain, Status: storage.StatusPending,
 	}); err != nil {
 		t.Fatal(err)
@@ -209,12 +210,12 @@ func seedOp(t *testing.T, store *storage.MemoryStore, id string, status storage.
 		return
 	}
 	if status == storage.StatusProcessing || status == storage.StatusCompleted {
-		if _, err := store.AdvanceOperation(nil, id, storage.StatusProcessing, ""); err != nil {
+		if _, err := store.AdvanceOperation(context.TODO(), id, storage.StatusProcessing, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if status != storage.StatusProcessing {
-		if _, err := store.AdvanceOperation(nil, id, status, ""); err != nil {
+		if _, err := store.AdvanceOperation(context.TODO(), id, status, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

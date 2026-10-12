@@ -9,28 +9,15 @@ import (
 	"testing"
 )
 
-func multipartFile(t *testing.T, field, name, body string) (*bytes.Buffer, string) {
-	t.Helper()
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	part, err := w.CreateFormFile(field, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	part.Write([]byte(body))
-	w.Close()
-	return &buf, w.FormDataContentType()
-}
-
 // cmp-0003: the file route rejects a per-file field placed at the request level.
 func TestFileRouteRejectsRequestLevelFields(t *testing.T) {
 	mux, _ := newServer(t)
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	part, _ := w.CreateFormFile("files", "a.txt")
-	part.Write([]byte("body"))
-	w.WriteField("document_id", "should-be-nested")
-	w.Close()
+	_, _ = part.Write([]byte("body"))
+	_ = w.WriteField("document_id", "should-be-nested")
+	_ = w.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	rec := httptest.NewRecorder()
@@ -45,8 +32,8 @@ func TestFileRouteRequiresFiles(t *testing.T) {
 	mux, _ := newServer(t)
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	w.WriteField("unrelated", "x")
-	w.Close()
+	_ = w.WriteField("unrelated", "x")
+	_ = w.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	rec := httptest.NewRecorder()

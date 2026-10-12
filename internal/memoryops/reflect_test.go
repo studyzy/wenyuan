@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -233,7 +234,7 @@ func TestReflectNoMatchesStillAnswers(t *testing.T) {
 // message, never a placeholder success.
 func TestReflectNoAnswerIsInternalError(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(noAnswerStore{Store: store}, 5, 30000)
@@ -250,7 +251,7 @@ func TestReflectNoAnswerIsInternalError(t *testing.T) {
 // is a 503 with the retry header.
 func TestReflectToolDrivingAndShed(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(failingStore{Store: store, err: storage.ErrReflectToolDriving}, 5, 30000)
@@ -270,7 +271,7 @@ func TestReflectToolDrivingAndShed(t *testing.T) {
 // ts-0010 / beh-0012 / err-0003: a wall-clock timeout is a 504 with a message.
 func TestReflectTimeoutFallback(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(failingStore{Store: store, err: storage.ErrReflectTimeout}, 5, 30000)
@@ -291,7 +292,7 @@ func TestReflectTimeoutFallback(t *testing.T) {
 // failure is a 500 with a generic detail.
 func TestReflectModelUnavailableAndUnexpected(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	unavail := NewHandlers(failingStore{Store: store, err: storage.ErrReflectModelUnavailable}, 5, 30000)
@@ -382,7 +383,7 @@ func TestReflectBudgetLevelsAccepted(t *testing.T) {
 // overrides them.
 func TestReflectPerBankDefaults(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	bankBudget := "high"
@@ -420,7 +421,7 @@ func TestReflectPerBankDefaults(t *testing.T) {
 func TestReflectDirectiveSelection(t *testing.T) {
 	seed := func(t *testing.T) *http.ServeMux {
 		store := storage.NewMemoryStore("public")
-		if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+		if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 			t.Fatal(err)
 		}
 		store.SeedDirective("b1", storage.ReflectDirective{ID: "untagged", Name: "u", Content: "c", Active: true})

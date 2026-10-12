@@ -3,7 +3,6 @@ package httpx
 import (
 	"compress/gzip"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -248,15 +247,4 @@ func WriteErrorFor(w http.ResponseWriter, r *http.Request, err error) {
 // shaping options.
 func WriteValidationFor(w http.ResponseWriter, r *http.Request, failure *ValidationFailure) {
 	WriteValidationFailure(w, failure, EncodeOptionsFor(r))
-}
-
-func parseIntHeader(value string, fallback int) int {
-	if value == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return n
 }

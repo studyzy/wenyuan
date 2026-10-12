@@ -12,8 +12,9 @@ BINARY    ?= bin/wenyuan
 BANKCTL   ?= bin/bankctl
 CMD       ?= ./cmd/server
 CMDCTL    ?= ./cmd/bankctl
+GOLANGCI_LINT ?= golangci-lint
 
-.PHONY: all build test vet pgx check fmt tidy clean run install help
+.PHONY: all build test vet pgx lint check fmt tidy clean run install help
 
 all: check
 
@@ -33,8 +34,12 @@ vet:
 pgx:
 	CGO_ENABLED=0 $(GO) build -tags pgx $(GOFLAGS) $(PKGS)
 
-## check: the full verification gate (build, test, vet, pgx)
-check: build test vet pgx
+## lint: run golangci-lint (config in .golangci.yml)
+lint:
+	$(GOLANGCI_LINT) run $(PKGS)
+
+## check: the full verification gate (build, test, vet, pgx, lint)
+check: build test vet pgx lint
 
 ## fmt: format all Go source
 fmt:

@@ -71,14 +71,14 @@ func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, ou
 	if flags.DryRun {
 		verb = "would migrate"
 	}
-	fmt.Fprintf(out, "%s %s from %s (%s mode)\n",
+	_, _ = fmt.Fprintf(out, "%s %s from %s (%s mode)\n",
 		verb, report.BankID, filepath.Base(flags.Archive), mode)
-	fmt.Fprintf(out, "  documents: %d\n  chunks: %d\n  facts: %d\n  entities: %d\n  links: %d\n",
+	_, _ = fmt.Fprintf(out, "  documents: %d\n  chunks: %d\n  facts: %d\n  entities: %d\n  links: %d\n",
 		report.Documents, report.Chunks, report.Facts, report.Entities, report.Links)
 	if len(report.Unmapped) > 0 {
-		fmt.Fprintf(out, "  archive fields with no target column (preserved in metadata where possible):\n")
+		_, _ = fmt.Fprintf(out, "  archive fields with no target column (preserved in metadata where possible):\n")
 		for _, note := range report.Unmapped {
-			fmt.Fprintf(out, "    - %s\n", note)
+			_, _ = fmt.Fprintf(out, "    - %s\n", note)
 		}
 	}
 	return report, nil

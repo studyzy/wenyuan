@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -118,7 +119,7 @@ func TestLatestVersionMatchesSeries(t *testing.T) {
 func TestMemoryStoreMigrateIsRepeatable(t *testing.T) {
 	store := NewMemoryStore("public")
 	for i := 0; i < 3; i++ {
-		if err := store.Migrate(nil); err != nil {
+		if err := store.Migrate(context.TODO()); err != nil {
 			t.Fatal(err)
 		}
 	}

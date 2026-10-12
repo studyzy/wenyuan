@@ -80,7 +80,7 @@ func RunRename(ctx context.Context, store storage.Store, flags RenameFlags, out 
 	if plan.DryRun {
 		verb = "would move"
 	}
-	fmt.Fprintf(out, "%s %d bank row(s) and %d alias row(s) from %q to %q\n",
+	_, _ = fmt.Fprintf(out, "%s %d bank row(s) and %d alias row(s) from %q to %q\n",
 		verb, plan.Rows, plan.Aliases, plan.Source, plan.Target)
 	return plan, nil
 }
@@ -97,7 +97,7 @@ func RunArchive(ctx context.Context, store storage.Store, flags ArchiveFlags, ou
 		if err := os.WriteFile(flags.Archive, data, 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "exported %d bytes to %s\n", len(data), flags.Archive)
+		_, _ = fmt.Fprintf(out, "exported %d bytes to %s\n", len(data), flags.Archive)
 		return nil
 	case "import":
 		data, err := os.ReadFile(flags.Archive)
@@ -107,7 +107,7 @@ func RunArchive(ctx context.Context, store storage.Store, flags ArchiveFlags, ou
 		if err := exporter.Import(ctx, data, flags.TargetID); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "imported %s as %q\n", flags.Archive, flags.TargetID)
+		_, _ = fmt.Fprintf(out, "imported %s as %q\n", flags.Archive, flags.TargetID)
 		return nil
 	default:
 		return fmt.Errorf("unknown archive action %q", flags.Action)

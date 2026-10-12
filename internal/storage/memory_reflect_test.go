@@ -10,7 +10,7 @@ import (
 func reflectTestStore(t *testing.T) *MemoryStore {
 	t.Helper()
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	return store

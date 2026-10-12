@@ -15,7 +15,7 @@ func OpenZip(path string) (*Archive, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open archive %s: %w", path, err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	return Read(&zipFS{files: reader.File})
 }
 
@@ -73,7 +73,7 @@ func (z *zipFS) ReadFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return io.ReadAll(file)
 }
 
@@ -97,7 +97,7 @@ func (d dirEntry) Name() string      { return d.name }
 func (d dirEntry) IsDir() bool       { return d.dir }
 func (d dirEntry) Type() fs.FileMode { return 0 }
 func (d dirEntry) Info() (fs.FileInfo, error) {
-	return fileInfo{name: d.name, dir: d.dir, size: d.size}, nil
+	return fileInfo(d), nil
 }
 
 type fileInfo struct {

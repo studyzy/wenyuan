@@ -84,7 +84,7 @@ func (s *PostgresStore) Search(ctx context.Context, req RecallRequest) (RecallRe
 	if err != nil {
 		return RecallResult{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	matches := make([]RecallMatch, 0)
 	for rows.Next() {
 		var m RecallMatch
@@ -167,7 +167,7 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	if err != nil {
 		return OperationPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ops := make([]Operation, 0)
 	for rows.Next() {
 		op, err := scanOperation(rows)

@@ -1,6 +1,7 @@
 package bankapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -195,7 +196,7 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("config write must succeed when enabled: %d, body = %s", rec.Code, rec.Body.String())
 	}
-	bank, err := store.GetBank(nil, "b1")
+	bank, err := store.GetBank(context.TODO(), "b1")
 	if err != nil {
 		t.Fatal(err)
 	}

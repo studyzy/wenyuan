@@ -1,6 +1,7 @@
 package bankapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -86,7 +87,7 @@ func TestBankListOrdersByRecency(t *testing.T) {
 	mux, store := newTestServer(t)
 	mustCreate(t, store, storage.Bank{ID: "older", Name: "Older"})
 	mustCreate(t, store, storage.Bank{ID: "newer", Name: "Newer"})
-	if _, err := store.RecordWrite(nil, storage.WriteRequest{BankID: "older", Content: "hello"}); err != nil {
+	if _, err := store.RecordWrite(context.TODO(), storage.WriteRequest{BankID: "older", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -300,7 +301,7 @@ func TestDeleteEnvelope(t *testing.T) {
 
 func mustCreate(t *testing.T, store *storage.MemoryStore, bank storage.Bank) {
 	t.Helper()
-	if _, err := store.CreateBank(nil, bank); err != nil {
+	if _, err := store.CreateBank(context.TODO(), bank); err != nil {
 		t.Fatal(err)
 	}
 }

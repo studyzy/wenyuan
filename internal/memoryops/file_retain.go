@@ -83,7 +83,7 @@ func itemFromUpload(header *multipart.FileHeader) (RetainItem, error) {
 	if err != nil {
 		return RetainItem{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return RetainItem{}, err

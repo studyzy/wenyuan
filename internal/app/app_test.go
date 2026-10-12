@@ -59,7 +59,7 @@ func TestAlreadyBoundAddressFailsBeforeInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	address := listener.Addr().String()
 
 	host, port := splitHostPort(t, address)

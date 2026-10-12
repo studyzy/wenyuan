@@ -16,7 +16,7 @@ func writeFixture(t *testing.T, manifest string, documents map[string]string) st
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	zw := zip.NewWriter(file)
 	write := func(name, body string) {
 		w, err := zw.Create(name)

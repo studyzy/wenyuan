@@ -55,7 +55,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		return nil, err
 	}
 	if probe != nil {
-		probe.Close()
+		_ = probe.Close()
 	}
 
 	store, err := resolveStore(ctx, cfg, deps)

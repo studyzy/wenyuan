@@ -2,6 +2,7 @@ package memoryops
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 func newServer(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(store, 5, 30000)
@@ -109,7 +110,7 @@ func TestReusedOperationIDConflicts(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second write status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
-	page, err := store.ListOperations(nil, storage.OperationQuery{BankID: "b1"})
+	page, err := store.ListOperations(context.TODO(), storage.OperationQuery{BankID: "b1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +185,7 @@ func TestImageContentRejected(t *testing.T) {
 // ts-0015 / err-0007 / cmp-0008: batch mode rejects a synchronous write.
 func TestBatchModeRejectsSynchronousWrite(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(store, 5, 30000)
@@ -234,7 +235,7 @@ func TestNullMetadataDropped(t *testing.T) {
 // ts-0011 / beh-0007: entity resolution honors the switch.
 func TestEntityResolutionSwitch(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	existing, err := store.ResolveEntity(nil, "b1", "Acme", storage.EntityKindRegular, true)
+	existing, err := store.ResolveEntity(context.TODO(), "b1", "Acme", storage.EntityKindRegular, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,8 +254,8 @@ func TestFileRetainIsAsync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	part.Write([]byte("file body"))
-	w.Close()
+	_, _ = part.Write([]byte("file body"))
+	_ = w.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	rec := httptest.NewRecorder()

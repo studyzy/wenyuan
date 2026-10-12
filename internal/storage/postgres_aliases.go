@@ -114,7 +114,7 @@ func (s *PostgresStore) listAliases(ctx context.Context, bankID string) ([]BankA
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	aliases := make([]BankAlias, 0)
 	for rows.Next() {
 		var entry BankAlias

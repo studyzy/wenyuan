@@ -56,13 +56,6 @@ func chunkID(bankID, documentID string, index int) string {
 	return stableID("chunk", bankID, documentID, fmt.Sprintf("%d", index))
 }
 
-// entityID derives a deterministic entity id from its canonical name. The
-// archive lists entities by name and re-resolves them by name, so the id must
-// be a pure function of the name.
-func entityID(bankID, name string) string {
-	return stableID("entity", bankID, name)
-}
-
 func linkID(bankID, fromID, toID, linkType string) string {
 	return stableID("link", bankID, fromID, toID, linkType)
 }

@@ -123,11 +123,3 @@ func matchesJSONType(value any, typeName string) bool {
 		return true
 	}
 }
-
-// defaultReflectSchemaValidator accepts any non-null object schema.
-func defaultReflectSchemaValidator(schema map[string]any) error {
-	if schema == nil {
-		return errors.New("schema must be a JSON object")
-	}
-	return nil
-}

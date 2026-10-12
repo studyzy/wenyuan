@@ -12,10 +12,10 @@ import (
 func seedStore(t *testing.T) *storage.MemoryStore {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "old", Name: "Old"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "old", Name: "Old"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddAlias(nil, "old", "nick", true); err != nil {
+	if _, err := store.AddAlias(context.TODO(), "old", "nick", true); err != nil {
 		t.Fatal(err)
 	}
 	return store
@@ -34,7 +34,7 @@ func TestRenameDryRunAndApply(t *testing.T) {
 	if !plan.DryRun || plan.Applied || plan.Rows != 1 {
 		t.Fatalf("dry-run plan = %+v", plan)
 	}
-	if _, err := store.GetBank(nil, "old"); err != nil {
+	if _, err := store.GetBank(context.TODO(), "old"); err != nil {
 		t.Fatal("dry-run must not change anything")
 	}
 
@@ -45,13 +45,13 @@ func TestRenameDryRunAndApply(t *testing.T) {
 	if !plan.Applied {
 		t.Fatalf("real rename must report it was applied: %+v", plan)
 	}
-	if _, err := store.GetBank(nil, "new"); err != nil {
+	if _, err := store.GetBank(context.TODO(), "new"); err != nil {
 		t.Fatalf("the target bank must exist: %v", err)
 	}
-	if _, err := store.GetBank(nil, "old"); err != storage.ErrBankNotFound {
+	if _, err := store.GetBank(context.TODO(), "old"); err != storage.ErrBankNotFound {
 		t.Fatalf("the source bank must be gone: %v", err)
 	}
-	aliases, err := store.ListAliases(nil, "new")
+	aliases, err := store.ListAliases(context.TODO(), "new")
 	if err != nil || len(aliases) != 1 || aliases[0].Alias != "nick" {
 		t.Fatalf("the bank must keep its aliases: %+v, err = %v", aliases, err)
 	}
@@ -70,14 +70,14 @@ func TestArchiveRoundTrip(t *testing.T) {
 	if err := RunArchive(context.Background(), target, ArchiveFlags{Action: "import", Archive: path, TargetID: "imported"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	bank, err := target.GetBank(nil, "imported")
+	bank, err := target.GetBank(context.TODO(), "imported")
 	if err != nil {
 		t.Fatalf("the imported bank must exist: %v", err)
 	}
 	if bank.Name != "Old" {
 		t.Fatalf("import must reproduce the bank profile: %+v", bank)
 	}
-	aliases, err := target.ListAliases(nil, "imported")
+	aliases, err := target.ListAliases(context.TODO(), "imported")
 	if err != nil || len(aliases) != 1 || aliases[0].Alias != "nick" {
 		t.Fatalf("import must reproduce the aliases: %+v, err = %v", aliases, err)
 	}

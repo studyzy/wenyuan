@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"testing"
 )
 
@@ -9,7 +10,7 @@ import (
 func TestRetainSegmentsIntoChunks(t *testing.T) {
 	store := NewMemoryStore("public")
 	content := "first paragraph\n\nsecond paragraph\n\nthird paragraph"
-	outcome, err := store.RetainWrite(nil, RetainRequest{
+	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1",
 		Items:  []RetainItem{{Content: content, DocumentID: "doc-1"}},
 	})
@@ -35,12 +36,12 @@ func TestRetainSegmentsIntoChunks(t *testing.T) {
 // ts-0008: disabling document-text storage still computes the content hash.
 func TestDocumentCarriesHashAndText(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.RetainWrite(nil, RetainRequest{
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1", Items: []RetainItem{{Content: "text body", DocumentID: "d1"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := store.GetDocument(nil, "b1", "d1")
+	doc, err := store.GetDocument(context.TODO(), "b1", "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,17 +54,17 @@ func TestDocumentCarriesHashAndText(t *testing.T) {
 // prior document's data.
 func TestReusedDocumentIDReplacesText(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.RetainWrite(nil, RetainRequest{
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1", Items: []RetainItem{{Content: "version one", DocumentID: "d1"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RetainWrite(nil, RetainRequest{
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1", Items: []RetainItem{{Content: "version two", DocumentID: "d1"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	doc, _ := store.GetDocument(nil, "b1", "d1")
+	doc, _ := store.GetDocument(context.TODO(), "b1", "d1")
 	if doc.OriginalText != "version two" {
 		t.Fatalf("replacing a document must overwrite its text, got %q", doc.OriginalText)
 	}
@@ -73,22 +74,22 @@ func TestReusedDocumentIDReplacesText(t *testing.T) {
 // a concurrent move in between makes the request retryable.
 func TestAppendDocumentConflictIsRetryable(t *testing.T) {
 	store := NewMemoryStore("public")
-	doc, err := store.PutDocument(nil, "b1", "d1", Document{OriginalText: "seed"})
+	doc, err := store.PutDocument(context.TODO(), "b1", "d1", Document{OriginalText: "seed"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A second writer moves the document before this append.
-	if _, err := store.PutDocument(nil, "b1", "d1", Document{OriginalText: "seed-moved"}); err != nil {
+	if _, err := store.PutDocument(context.TODO(), "b1", "d1", Document{OriginalText: "seed-moved"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendDocument(nil, "b1", "d1", "-more", doc.ContentHash); err != ErrDocumentConflict {
+	if _, err := store.AppendDocument(context.TODO(), "b1", "d1", "-more", doc.ContentHash); err != ErrDocumentConflict {
 		t.Fatalf("stale append err = %v, want ErrDocumentConflict", err)
 	}
-	current, _ := store.GetDocument(nil, "b1", "d1")
-	if _, err := store.AppendDocument(nil, "b1", "d1", "-more", current.ContentHash); err != nil {
+	current, _ := store.GetDocument(context.TODO(), "b1", "d1")
+	if _, err := store.AppendDocument(context.TODO(), "b1", "d1", "-more", current.ContentHash); err != nil {
 		t.Fatalf("fresh append = %v", err)
 	}
-	updated, _ := store.GetDocument(nil, "b1", "d1")
+	updated, _ := store.GetDocument(context.TODO(), "b1", "d1")
 	if updated.OriginalText != "seed-moved-more" {
 		t.Fatalf("append must concatenate onto the stored text, got %q", updated.OriginalText)
 	}
@@ -98,18 +99,18 @@ func TestAppendDocumentConflictIsRetryable(t *testing.T) {
 // case-insensitive exact match; with resolution on a close name resolves.
 func TestEntityResolutionModes(t *testing.T) {
 	store := NewMemoryStore("public")
-	first, err := store.ResolveEntity(nil, "b1", "Acme Corp", EntityKindRegular, true)
+	first, err := store.ResolveEntity(context.TODO(), "b1", "Acme Corp", EntityKindRegular, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exact, err := store.ResolveEntity(nil, "b1", "acme corp", EntityKindRegular, false)
+	exact, err := store.ResolveEntity(context.TODO(), "b1", "acme corp", EntityKindRegular, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if exact.ID != first.ID {
 		t.Fatalf("a case-insensitive exact match must reuse the entity")
 	}
-	label, err := store.ResolveEntity(nil, "b1", "Topic", EntityKindLabel, false)
+	label, err := store.ResolveEntity(context.TODO(), "b1", "Topic", EntityKindLabel, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestEntityResolutionModes(t *testing.T) {
 // the backward-looking causal form.
 func TestUnitAndLinkPersistence(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.RetainWrite(nil, RetainRequest{
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1", Items: []RetainItem{{Content: "a fact", DocumentID: "d1"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -135,7 +136,7 @@ func TestUnitAndLinkPersistence(t *testing.T) {
 		t.Fatalf("stored unit type %q is not an accepted value", units[0].Type)
 	}
 	link := MemoryLink{BankID: "b1", FromID: units[0].ID, ToID: units[0].ID, LinkType: LinkCausedBy}
-	if err := store.UpsertLink(nil, link); err != nil {
+	if err := store.UpsertLink(context.TODO(), link); err != nil {
 		t.Fatal(err)
 	}
 	if !IsValidMemoryLinkType(store.links[0].LinkType) {
@@ -178,11 +179,11 @@ func TestStorageEnumValues(t *testing.T) {
 func TestReingestProducesStableHashes(t *testing.T) {
 	store := NewMemoryStore("public")
 	item := RetainItem{Content: "stable content", DocumentID: "d1"}
-	if _, err := store.RetainWrite(nil, RetainRequest{BankID: "b1", Items: []RetainItem{item}}); err != nil {
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{BankID: "b1", Items: []RetainItem{item}}); err != nil {
 		t.Fatal(err)
 	}
 	firstHash := store.chunks[0].ContentHash
-	if _, err := store.RetainWrite(nil, RetainRequest{BankID: "b1", Items: []RetainItem{item}}); err != nil {
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{BankID: "b1", Items: []RetainItem{item}}); err != nil {
 		t.Fatal(err)
 	}
 	if store.chunks[len(store.chunks)-1].ContentHash != firstHash {
@@ -196,14 +197,14 @@ func TestRetainOperationIdempotency(t *testing.T) {
 	store := NewMemoryStore("public")
 	opID := "11111111-1111-1111-1111-111111111111"
 	req := RetainRequest{BankID: "b1", Async: true, OperationID: opID, Items: []RetainItem{{Content: "x"}}}
-	if _, err := store.RetainWrite(nil, req); err != nil {
+	if _, err := store.RetainWrite(context.TODO(), req); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RetainWrite(nil, req); err != ErrOperationConflict {
+	if _, err := store.RetainWrite(context.TODO(), req); err != ErrOperationConflict {
 		t.Fatalf("reused operation id err = %v, want conflict", err)
 	}
-	first, _ := store.RetainWrite(nil, RetainRequest{BankID: "b1", Async: true, Items: []RetainItem{{Content: "a"}}})
-	second, _ := store.RetainWrite(nil, RetainRequest{BankID: "b1", Async: true, Items: []RetainItem{{Content: "b"}}})
+	first, _ := store.RetainWrite(context.TODO(), RetainRequest{BankID: "b1", Async: true, Items: []RetainItem{{Content: "a"}}})
+	second, _ := store.RetainWrite(context.TODO(), RetainRequest{BankID: "b1", Async: true, Items: []RetainItem{{Content: "b"}}})
 	if first.OperationID == second.OperationID {
 		t.Fatalf("identifier-less writes must be distinct")
 	}
@@ -213,18 +214,18 @@ func TestRetainOperationIdempotency(t *testing.T) {
 // one conflicts.
 func TestCancelOperationLifecycle(t *testing.T) {
 	store := NewMemoryStore("public")
-	op, err := store.PutOperation(nil, Operation{ID: "op-a", BankID: "b1", Status: StatusPending})
+	op, err := store.PutOperation(context.TODO(), Operation{ID: "op-a", BankID: "b1", Status: StatusPending})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := store.CancelOperation(nil, op.ID)
+	cancelled, err := store.CancelOperation(context.TODO(), op.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cancelled.Status != StatusCancelled {
 		t.Fatalf("cancelled status = %q", cancelled.Status)
 	}
-	if _, err := store.CancelOperation(nil, op.ID); err != ErrOperationConflict {
+	if _, err := store.CancelOperation(context.TODO(), op.ID); err != ErrOperationConflict {
 		t.Fatalf("cancel of a terminal operation err = %v, want conflict", err)
 	}
 }

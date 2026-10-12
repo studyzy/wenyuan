@@ -15,7 +15,7 @@ func ValidateBankID(id string) (int, string, bool) {
 	if storage.ValidBankID(id) {
 		return 0, "", true
 	}
-	msg := "bank identifier is invalid"
+	var msg string
 	switch {
 	case id == "":
 		msg = "bank identifier must not be empty"

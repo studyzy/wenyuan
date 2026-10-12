@@ -14,10 +14,11 @@ Report unacceptable behavior to the maintainers listed in that document.
 ```sh
 git clone https://github.com/studyzy/wenyuan
 cd api
-make check     # build + test + vet + pgx build
+make check     # build + test + vet + pgx build + lint
 ```
 
-Requirements: Go 1.24 or newer. The default build is standard-library-only and
+Requirements: Go 1.24 or newer, and `golangci-lint` (v2 config schema) on
+`PATH` for `make lint`. The default build is standard-library-only and
 offline; the PostgreSQL driver path is compiled with the `pgx` build tag.
 
 ## Ways to contribute
@@ -50,7 +51,8 @@ called out as such in the pull request.
    make check
    ```
 
-   All four of `build`, `test`, `vet`, and the `pgx` build must pass.
+   All five of `build`, `test`, `vet`, the `pgx` build, and `lint`
+   (`golangci-lint`, config in `.golangci.yml`) must pass.
 5. **Keep files within the size limits.** Code files stay under 500 lines and
    test files under 800; split along module boundaries rather than growing a
    file.

@@ -50,7 +50,7 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 
 	composed, err := New(ctx, cfg, deps)
 	if err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return err
 	}
 

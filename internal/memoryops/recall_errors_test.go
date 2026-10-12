@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -11,7 +12,7 @@ import (
 // err-0006: a reranker floor combined with a rank-position reranker is a 400.
 func TestRecallRerankerFloorVsRankPositionReranker(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(nil, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(store, 5, 30000)
