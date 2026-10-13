@@ -18,8 +18,14 @@ const (
 	EnvRunMigrationsOnStartup = "HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP"
 	EnvMCPEnabled             = "HINDSIGHT_API_MCP_ENABLED"
 	EnvEnableBankConfigAPI    = "HINDSIGHT_API_ENABLE_BANK_CONFIG_API"
-	EnvGzipMinSize            = "HINDSIGHT_API_GZIP_MIN_SIZE"
-	EnvRetainBatchEnabled     = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
+	// EnvEnableDocumentExportAPI gates the document export routes of the
+	// archive transfer family.
+	EnvEnableDocumentExportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API"
+	// EnvEnableDocumentImportAPI gates the document import routes of the
+	// archive transfer family.
+	EnvEnableDocumentImportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API"
+	EnvGzipMinSize             = "HINDSIGHT_API_GZIP_MIN_SIZE"
+	EnvRetainBatchEnabled      = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
 	// EnvRecallStrategyBoosts prioritises one or more recall retrieval arms
 	// over the others. The value is a comma-separated list of arm:level pairs
 	// where level is low, medium or high.
@@ -67,9 +73,13 @@ type Config struct {
 	RunMigrationsOnStartup bool
 	MCPEnabled             bool
 	EnableBankConfigAPI    bool
-	GzipMinSize            int
-	NullDropFields         bool
-	RetainBatchEnabled     bool
+	// EnableDocumentExportAPI gates the document export routes.
+	EnableDocumentExportAPI bool
+	// EnableDocumentImportAPI gates the document import routes.
+	EnableDocumentImportAPI bool
+	GzipMinSize             int
+	NullDropFields          bool
+	RetainBatchEnabled      bool
 	// RecallStrategyBoosts maps a retrieval arm identifier to a boost level
 	// (low, medium, high). Empty leaves every arm unboosted.
 	RecallStrategyBoosts map[string]string
@@ -108,8 +118,10 @@ type Config struct {
 // behavior and reflect effective process configuration.
 func (c Config) FeatureMap() map[string]bool {
 	return map[string]bool{
-		"bank_config_api": c.EnableBankConfigAPI,
-		"mcp":             c.MCPEnabled,
+		"bank_config_api":     c.EnableBankConfigAPI,
+		"document_export_api": c.EnableDocumentExportAPI,
+		"document_import_api": c.EnableDocumentImportAPI,
+		"mcp":                 c.MCPEnabled,
 	}
 }
 
@@ -158,6 +170,8 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.RunMigrationsOnStartup = boolFromEnv(lookup, EnvRunMigrationsOnStartup, false)
 	cfg.MCPEnabled = boolFromEnv(lookup, EnvMCPEnabled, false)
 	cfg.EnableBankConfigAPI = boolFromEnv(lookup, EnvEnableBankConfigAPI, false)
+	cfg.EnableDocumentExportAPI = boolFromEnv(lookup, EnvEnableDocumentExportAPI, false)
+	cfg.EnableDocumentImportAPI = boolFromEnv(lookup, EnvEnableDocumentImportAPI, false)
 	cfg.NullDropFields = boolFromEnv(lookup, EnvNullDropFields, false)
 	cfg.RetainBatchEnabled = boolFromEnv(lookup, EnvRetainBatchEnabled, false)
 	if v, ok := lookup(EnvRecallStrategyBoosts); ok {

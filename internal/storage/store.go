@@ -51,6 +51,11 @@ var ErrDocumentNotFound = errors.New("document not found")
 // identifier shape.
 var ErrInvalidOperationID = errors.New("invalid operation identifier")
 
+// ErrStoredFileNotFound is returned when a stored-file key is unknown. A
+// caller must not be able to distinguish an absent key from a key it is not
+// allowed to see, so this single sentinel covers both cases.
+var ErrStoredFileNotFound = errors.New("stored file not found")
+
 // Identifier limits for bank identifiers and aliases. BankIDMaxBytes is a
 // fixed UTF-8 byte budget chosen so storage keys remain within their limits.
 const (
@@ -149,6 +154,15 @@ type Store interface {
 	CancelOperation(ctx context.Context, opID string) (Operation, error)
 	// RetryOperation starts a new run of a failed operation.
 	RetryOperation(ctx context.Context, opID string) (Operation, error)
+
+	// PutStoredFile persists an opaque byte payload under a caller-supplied
+	// key. The transfer family stashes an uploaded archive under a
+	// bank-scoped key and carries only that key in the queued operation, so
+	// the payload and the operation queue are decoupled.
+	PutStoredFile(ctx context.Context, file StoredFile) error
+	// GetStoredFile returns one stored payload by key. It returns
+	// ErrStoredFileNotFound when the key is unknown.
+	GetStoredFile(ctx context.Context, key string) (StoredFile, error)
 }
 
 // Backend selects a PostgreSQL driver implementation. The only backend in
@@ -166,4 +180,11 @@ type BackendConfig struct {
 	VectorExtension     string
 	TextSearchExtension string
 	RunMigrations       bool
+	// StoredFileRoot is the directory payload bytes are written under. An
+	// empty root disables the stored-file facility, because the existing
+	// schema has no blob column and this unit must not change the schema.
+	StoredFileRoot string
+	// StoredFileMaxBytes bounds a single stored payload. Zero leaves the
+	// caller's own bound in force.
+	StoredFileMaxBytes int64
 }

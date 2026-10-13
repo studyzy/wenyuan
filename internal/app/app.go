@@ -189,6 +189,8 @@ func (a *App) mount(router *httpx.Router) {
 
 	retired := &bankapi.RetiredHandler{Auth: authenticatorFrom(a.Config)}
 	retired.BindRetiredRoutes(handle)
+
+	a.mountTransfer(handle)
 }
 
 // storePinger adapts the store readiness probe to the monitoring dependency.

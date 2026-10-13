@@ -126,17 +126,33 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 	if op.Status == "" {
 		op.Status = StatusPending
 	}
+	// The operation payload rides in the existing result_metadata column so the
+	// queued work can be described without a schema change. A non-nil payload
+	// is stored under a single wrapper key, leaving room for result metadata
+	// written by a future consumer.
+	metadata := op.ResultMetadata
+	if len(op.Payload) > 0 {
+		metadata = map[string]any{}
+		for k, v := range op.ResultMetadata {
+			metadata[k] = v
+		}
+		metadata[payloadMetadataKey] = op.Payload
+	}
+	encoded, err := marshalMetadata(metadata)
+	if err != nil {
+		return Operation{}, err
+	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
-	          (id, bank_id, operation_type, status, error_message, run, retry_count)
-	          VALUES ($1,$2,$3,$4,$5,$6,$7)
-	          ON CONFLICT (id) DO UPDATE SET status=$4, error_message=$5, updated_at=now()
-	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at`
-	row := s.db.QueryRowContext(ctx, query, op.ID, op.BankID, op.OperationType, string(op.Status), op.Error, maxInt(op.Run, 1), op.RetryCount)
+	          (id, bank_id, operation_type, status, error_message, run, retry_count, result_metadata)
+	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	          ON CONFLICT (id) DO UPDATE SET status=$4, error_message=$5, updated_at=now(), result_metadata=$8
+	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata`
+	row := s.db.QueryRowContext(ctx, query, op.ID, op.BankID, op.OperationType, string(op.Status), op.Error, maxInt(op.Run, 1), op.RetryCount, encoded)
 	return scanOperation(row)
 }
 
 func (s *PostgresStore) GetOperation(ctx context.Context, opID string) (Operation, error) {
-	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at
+	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata
 	          FROM ` + quoteIdent(s.schema) + `.async_operations WHERE id = $1`
 	row := s.db.QueryRowContext(ctx, query, opID)
 	op, err := scanOperation(row)
@@ -234,12 +250,19 @@ func scanOperation(row rowScanner) (Operation, error) {
 	var op Operation
 	var status string
 	var completedAt, nextRetryAt sql.NullTime
-	if err := row.Scan(&op.ID, &op.BankID, &op.OperationType, &status, &op.Error, &op.Run, &op.CreatedAt, &op.UpdatedAt, &completedAt, &op.RetryCount, &nextRetryAt); err != nil {
+	var metadata []byte
+	if err := row.Scan(&op.ID, &op.BankID, &op.OperationType, &status, &op.Error, &op.Run, &op.CreatedAt, &op.UpdatedAt, &completedAt, &op.RetryCount, &nextRetryAt, &metadata); err != nil {
 		return Operation{}, err
 	}
 	op.Status = OperationStatus(status)
 	op.CompletedAt = nullTimePtr(completedAt)
 	op.NextRetryAt = nullTimePtr(nextRetryAt)
+	payload, rest, err := unmarshalMetadata(metadata)
+	if err != nil {
+		return Operation{}, err
+	}
+	op.Payload = payload
+	op.ResultMetadata = rest
 	return op, nil
 }
 

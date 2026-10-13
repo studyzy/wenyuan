@@ -62,6 +62,7 @@ type MemoryStore struct {
 	unitEntities  map[string][]string
 	links         []MemoryLink
 	cooccurrences map[string]int
+	storedFiles   map[string]StoredFile
 	writeErr      error
 	readErr       error
 	readyErr      error
@@ -85,6 +86,7 @@ func NewMemoryStore(schema string) *MemoryStore {
 		entities:      map[string]Entity{},
 		unitEntities:  map[string][]string{},
 		cooccurrences: map[string]int{},
+		storedFiles:   map[string]StoredFile{},
 	}
 }
 

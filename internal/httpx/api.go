@@ -29,7 +29,49 @@ const (
 	SuffixProfile     = "/profile"
 	SuffixBackground  = "/background"
 	SuffixOperations  = "/operations"
+
+	// Archive transfer family.
+	SuffixImport           = "/import"
+	SuffixExport           = "/export"
+	SuffixDocumentTransfer = "/document-transfer"
+	SuffixTransferExport   = "/transfer/export"
+	SuffixTransferImport   = "/transfer/import"
+	SuffixClone            = "/clone"
+	SuffixAttachmentMember = "/attachments/{attachment_id}"
+
+	// PrefixDefaultV1 is the tenant namespace for routes that are not
+	// bank-scoped. The file download route is the only member of the transfer
+	// family without a bank path segment.
+	PrefixDefaultV1 = "/v1/default"
+
+	// PrefixFilesDownload builds the non-bank-scoped download route. The key
+	// is a multi-segment wildcard, so it is matched with the trailing-slash
+	// pattern form rather than a single path parameter.
+	PrefixFilesDownload = PrefixDefaultV1 + "/files/download/"
 )
+
+// TransferAcceptedQueryParams lists the query parameters the archive transfer
+// routes accept. They are registered with the query filter so a caller sees
+// only genuinely unknown parameters in the ignored-parameter header.
+var transferAcceptedQueryParams = []string{
+	"mode",
+	"target_bank_id",
+	"on_conflict",
+	"document_conflict",
+	"include_data",
+	"include_bank_config",
+	"include_history",
+	"include_observations",
+	"include_knowledge_base",
+	"document_id",
+	"dry_run",
+}
+
+// TransferQueryFilter returns the accepted-parameter filter for the transfer
+// route family, combined with the standard set.
+func TransferQueryFilter() QueryFilter {
+	return NewQueryFilter(append(append([]string{}, defaultAcceptedQueryParams...), transferAcceptedQueryParams...)...)
+}
 
 // IgnoredQueryParamsAccepted lists the query parameters the bank-scoped routes
 // accept. Every other parameter is ignored and reported.
