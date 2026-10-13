@@ -47,6 +47,18 @@ func StoredFileKeyForBank(bankID, name string) string {
 	return "banks/" + encodeSegment(bankID) + "/" + encodeSegment(name)
 }
 
+// AttachmentStorageKey is where one document's copy of an attachment lives.
+// The document is part of the key because an attachment belongs to its
+// document: two documents carrying the same image hold two copies, so deleting
+// either one deletes exactly its own bytes without having to ask whether some
+// other document still needs them. The document id is encoded as one segment,
+// so an id containing a separator cannot nest under another document's prefix.
+func AttachmentStorageKey(bankID, documentID, attachmentHash string) string {
+	return "banks/" + encodeSegment(bankID) +
+		"/documents/" + encodeSegment(documentID) +
+		"/attachments/sha256-" + encodeSegment(attachmentHash)
+}
+
 // BankIDFromStoredFileKey recovers the owning bank identifier from a storage
 // key. It reports false when the key is not in the bank-scoped layout, so a
 // caller can answer not-found rather than guessing.

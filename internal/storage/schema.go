@@ -24,6 +24,7 @@ var MemoryDomainTables = []string{
 	"knowledge_nodes",
 	"webhooks",
 	"webhook_deliveries",
+	"attachments",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -95,6 +96,7 @@ var MemoryUnitsColumns = []string{
 	"observation_scopes",
 	"consolidated_at",
 	"consolidation_failed_at",
+	"attachment_ids",
 }
 
 // DocumentsColumns are the document text/hash/metadata/parameter columns.
@@ -155,6 +157,22 @@ var AsyncOperationsColumns = []string{
 var FileStorageColumns = []string{
 	"storage_key",
 	"data",
+}
+
+// AttachmentsColumns are the columns of the inline retain attachments. An
+// attachment belongs to the document that carries it, so the identity is the
+// document plus the content hash; the bytes live behind the storage key.
+var AttachmentsColumns = []string{
+	"bank_id",
+	"document_id",
+	"attachment_hash",
+	"short_id",
+	"media_type",
+	"byte_size",
+	"storage_key",
+	"kind",
+	"filename",
+	"created_at",
 }
 
 // MentalModelsColumns are the columns of the mental-model table. A mental model

@@ -89,14 +89,15 @@ func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, now ti
 		hash := ContentHash(chunk)
 		s.chunks = append(s.chunks, Chunk{ID: chunkID, BankID: req.BankID, DocumentID: docID, Index: i, Text: chunk, ContentHash: hash})
 		unit := MemoryUnit{
-			ID:         unitID,
-			BankID:     req.BankID,
-			Text:       chunk,
-			Type:       TypeWorld,
-			Metadata:   item.Metadata,
-			DocumentID: docID,
-			ChunkID:    chunkID,
-			Tags:       tags,
+			ID:            unitID,
+			BankID:        req.BankID,
+			Text:          chunk,
+			Type:          TypeWorld,
+			Metadata:      item.Metadata,
+			DocumentID:    docID,
+			ChunkID:       chunkID,
+			Tags:          tags,
+			AttachmentIDs: item.AttachmentIDs,
 		}
 		if item.Timestamp != nil {
 			unit.EventDate = item.Timestamp

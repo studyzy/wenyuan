@@ -294,6 +294,14 @@ type Store interface {
 	// GetStoredFile returns one stored payload by key. It returns
 	// ErrStoredFileNotFound when the key is unknown.
 	GetStoredFile(ctx context.Context, key string) (StoredFile, error)
+
+	// PutAttachment records one document's copy of an attachment. The write is
+	// idempotent on (bank, document, content hash) so re-retaining an
+	// unchanged document rewrites the same row instead of duplicating it.
+	PutAttachment(ctx context.Context, attachment Attachment) error
+	// ListAttachments returns the attachments a document carries, ordered by
+	// creation, so provenance resolves deterministically.
+	ListAttachments(ctx context.Context, bankID, documentID string) ([]Attachment, error)
 }
 
 // Backend selects a PostgreSQL driver implementation. The only backend in

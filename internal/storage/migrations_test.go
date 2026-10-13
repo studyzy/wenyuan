@@ -98,6 +98,7 @@ func TestDeclaredColumnsExistInTheSchemaInventory(t *testing.T) {
 		"llm_requests":       LLMRequestsColumns,
 		"webhooks":           WebhooksColumns,
 		"webhook_deliveries": WebhookDeliveriesColumns,
+		"attachments":        AttachmentsColumns,
 	}
 	for table, columns := range declarations {
 		for _, column := range columns {

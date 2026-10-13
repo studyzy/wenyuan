@@ -275,6 +275,64 @@ func TestFileRetainIsAsync(t *testing.T) {
 	}
 }
 
+// A6: the file route records the uploaded bytes content-addressed and gives
+// the units it writes the attachment's short id, so provenance survives.
+func TestFileRetainPersistsAttachment(t *testing.T) {
+	mux, store := newServer(t)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("files", "diagram.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("png bytes"))
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	attachments, err := store.ListAttachments(context.TODO(), "b1", "diagram.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(attachments))
+	}
+	attachment := attachments[0]
+	if len(attachment.ShortID) != attachmentShortIDLength {
+		t.Fatalf("short id = %q, want %d chars", attachment.ShortID, attachmentShortIDLength)
+	}
+	// The bytes are served back by the download route under the storage key.
+	file, err := store.GetStoredFile(context.TODO(), attachment.StorageKey)
+	if err != nil {
+		t.Fatalf("stored bytes: %v", err)
+	}
+	if string(file.Data) != "png bytes" {
+		t.Fatalf("stored bytes = %q, want %q", file.Data, "png bytes")
+	}
+
+	// The memory unit written from the upload names the attachment.
+	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, unit := range page.Memories {
+		for _, id := range unit.AttachmentIDs {
+			if id == attachment.ShortID {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no memory unit carried attachment id %q", attachment.ShortID)
+	}
+}
+
 func decodeOpID(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	var got struct {

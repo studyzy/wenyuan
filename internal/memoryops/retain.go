@@ -162,6 +162,7 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		ObservationScopes: item.ObservationScopes,
 		Strategy:          item.Strategy,
 		UpdateMode:        item.UpdateMode,
+		AttachmentIDs:     item.AttachmentIDs,
 	}
 	if item.Timestamp.Set {
 		stored.HasTimestamp = true

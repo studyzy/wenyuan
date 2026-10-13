@@ -63,6 +63,9 @@ type MemoryStore struct {
 	links         []MemoryLink
 	cooccurrences map[string]int
 	storedFiles   map[string]StoredFile
+	// attachments holds one document's copy of an inline retain attachment,
+	// keyed by bank, document and content hash.
+	attachments map[string]Attachment
 	// mentalModelRecords holds mental models keyed by bank and identifier,
 	// because an identifier is unique within its bank rather than globally.
 	mentalModelRecords map[string]MentalModel
@@ -99,6 +102,7 @@ func NewMemoryStore(schema string) *MemoryStore {
 		unitEntities:       map[string][]string{},
 		cooccurrences:      map[string]int{},
 		storedFiles:        map[string]StoredFile{},
+		attachments:        map[string]Attachment{},
 		mentalModelRecords: map[string]MentalModel{},
 		mentalModelHistory: map[string][]MentalModelHistoryEntry{},
 		directiveRecords:   map[string]Directive{},

@@ -84,6 +84,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 		unit := MemoryUnit{
 			ID: newID(), BankID: req.BankID, Text: chunk, Type: TypeWorld,
 			Metadata: item.Metadata, DocumentID: docID, ChunkID: chunkID, Tags: tags,
+			AttachmentIDs: item.AttachmentIDs,
 		}
 		if item.Timestamp != nil {
 			unit.EventDate = item.Timestamp
@@ -210,8 +211,8 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
 	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags, embedding,
-	            source_id, observation_scopes, consolidated_at, consolidation_failed_at)
-	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12::jsonb,$13,$14)
+	            source_id, observation_scopes, consolidated_at, consolidation_failed_at, attachment_ids)
+	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12::jsonb,$13,$14,$15)
 	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
 	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
 	// A nil tag slice would violate the column's not-null constraint, so an
@@ -219,6 +220,10 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	tags := unit.Tags
 	if tags == nil {
 		tags = []string{}
+	}
+	attachmentIDs := unit.AttachmentIDs
+	if attachmentIDs == nil {
+		attachmentIDs = []string{}
 	}
 	scopes := any(nil)
 	if len(unit.ObservationScopes) > 0 {
@@ -230,7 +235,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	}
 	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.Type),
 		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding,
-		nullString(unit.SourceID), scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt); err != nil {
+		nullString(unit.SourceID), scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt, attachmentIDs); err != nil {
 		return MemoryUnit{}, err
 	}
 	return unit, nil

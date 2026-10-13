@@ -29,6 +29,10 @@ type RetainItem struct {
 	ObservationScopes []string       `json:"observation_scopes,omitempty"`
 	Strategy          string         `json:"strategy,omitempty"`
 	UpdateMode        string         `json:"update_mode,omitempty"`
+	// AttachmentIDs are the short attachment ids the upload was recorded
+	// under. They are set by the file route after the bytes are stored, and
+	// are internal rather than wire fields.
+	AttachmentIDs []string `json:"-"`
 }
 
 // Content is a retained content value: either a plain text string or an

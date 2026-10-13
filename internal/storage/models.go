@@ -187,6 +187,10 @@ type RetainItem struct {
 	ObservationScopes []string
 	Strategy          string
 	UpdateMode        string
+	// AttachmentIDs are the short attachment ids this item's content carries.
+	// The file route stores the uploaded bytes and records them here so the
+	// units built from the item can name their provenance.
+	AttachmentIDs []string
 }
 
 // RetainRequest is a normalized memory write submitted through the retain
@@ -285,6 +289,24 @@ type MemoryUnit struct {
 	// outcome for the unit.
 	ConsolidatedAt        *time.Time
 	ConsolidationFailedAt *time.Time
+	// AttachmentIDs are the short attachment ids the unit was drawn from.
+	AttachmentIDs []string
+}
+
+// Attachment is one document's copy of an inline retain attachment. The bytes
+// live behind StorageKey, content-addressed by AttachmentHash, so an identical
+// attachment dedupes across documents while still being owned by exactly one
+// document.
+type Attachment struct {
+	BankID         string
+	DocumentID     string
+	AttachmentHash string
+	ShortID        string
+	MediaType      string
+	ByteSize       int64
+	StorageKey     string
+	Kind           string
+	Filename       string
 }
 
 // MemoryLink is one directed link between two memory units.
