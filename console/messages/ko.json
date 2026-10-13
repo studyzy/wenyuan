@@ -388,7 +388,8 @@
       "columns": {
         "entity": "엔터티",
         "mentions": "언급 수"
-      }
+      },
+      "graphTitle": "엔터티 그래프"
     },
     "knowledge": {
       "pagesTitle": "페이지",
@@ -429,5 +430,18 @@
         "tags": "태그"
       }
     }
+  },
+  "constellation": {
+    "reset": "보기 초기화",
+    "pauseMotion": "동작 일시정지",
+    "resumeMotion": "동작 재개",
+    "fullscreen": "전체 화면",
+    "exitFullscreen": "전체 화면 종료",
+    "links": "연결",
+    "few": "적음",
+    "many": "많음",
+    "small": "작음",
+    "large": "큼",
+    "clustered": "클러스터로 그룹화"
   }
 }

@@ -388,7 +388,8 @@
       "columns": {
         "entity": "實體",
         "mentions": "提及次數"
-      }
+      },
+      "graphTitle": "實體圖譜"
     },
     "knowledge": {
       "pagesTitle": "頁面",
@@ -429,5 +430,18 @@
         "tags": "標籤"
       }
     }
+  },
+  "constellation": {
+    "reset": "重設檢視",
+    "pauseMotion": "暫停動效",
+    "resumeMotion": "恢復動效",
+    "fullscreen": "全螢幕",
+    "exitFullscreen": "離開全螢幕",
+    "links": "連邊",
+    "few": "少",
+    "many": "多",
+    "small": "小",
+    "large": "大",
+    "clustered": "依聚類分組"
   }
 }

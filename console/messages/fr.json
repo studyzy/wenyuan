@@ -388,7 +388,8 @@
       "columns": {
         "entity": "Entité",
         "mentions": "Mentions"
-      }
+      },
+      "graphTitle": "Graphe des entités"
     },
     "knowledge": {
       "pagesTitle": "Pages",
@@ -429,5 +430,18 @@
         "tags": "Étiquettes"
       }
     }
+  },
+  "constellation": {
+    "reset": "Réinitialiser la vue",
+    "pauseMotion": "Suspendre le mouvement",
+    "resumeMotion": "Reprendre le mouvement",
+    "fullscreen": "Plein écran",
+    "exitFullscreen": "Quitter le plein écran",
+    "links": "Liens",
+    "few": "peu",
+    "many": "beaucoup",
+    "small": "petit",
+    "large": "grand",
+    "clustered": "Groupé par cluster"
   }
 }

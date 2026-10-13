@@ -388,7 +388,8 @@
       "columns": {
         "entity": "实体",
         "mentions": "提及次数"
-      }
+      },
+      "graphTitle": "实体图谱"
     },
     "knowledge": {
       "pagesTitle": "页面",
@@ -429,5 +430,18 @@
         "tags": "标签"
       }
     }
+  },
+  "constellation": {
+    "reset": "重置视图",
+    "pauseMotion": "暂停动效",
+    "resumeMotion": "恢复动效",
+    "fullscreen": "全屏",
+    "exitFullscreen": "退出全屏",
+    "links": "连边",
+    "few": "少",
+    "many": "多",
+    "small": "小",
+    "large": "大",
+    "clustered": "按聚类分组"
   }
 }

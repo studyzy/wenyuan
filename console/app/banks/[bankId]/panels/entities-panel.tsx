@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { entitiesApi } from "../../../../lib/client/endpoints";
+import { Constellation } from "../../../../components/graph/constellation";
+import { convertHindsightGraphData } from "../../../../components/graph/graph-data";
+import type { GraphData, UpstreamGraphPayload } from "../../../../components/graph/graph-data";
 import { readItems, readNumber, useAsyncData } from "../../../../lib/use-async-data";
 import { useTranslations } from "../../../../i18n";
 import { Input } from "../../../../components/ui/input";
@@ -44,7 +47,17 @@ export function EntitiesPanel({ bankId }: { bankId: string }) {
   });
   const current = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const graphPayload = graph.data as { total_entities?: number; total_edges?: number } | null;
+  const graphPayload = graph.data as
+    | ({ total_entities?: number; total_edges?: number } & Record<string, unknown>)
+    | null;
+
+  // The graph endpoint returns its own shape; convert once per payload rather
+  // than on every render.
+  const graphData: GraphData | null = useMemo(() => {
+    if (!graphPayload) return null;
+    const converted = convertHindsightGraphData(graphPayload as UpstreamGraphPayload);
+    return converted.nodes.length > 0 ? converted : null;
+  }, [graphPayload]);
 
   return (
     <div>
@@ -90,6 +103,13 @@ export function EntitiesPanel({ bankId }: { bankId: string }) {
           </CardContent>
         </Card>
       </div>
+
+      {graphData && (
+        <div className="mb-6">
+          <h3 className="mb-2 text-[13px] font-semibold">{t("graphTitle")}</h3>
+          <Constellation data={graphData} height={420} compactLabels />
+        </div>
+      )}
 
       <PanelState
         loading={list.loading}

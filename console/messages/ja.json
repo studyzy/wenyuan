@@ -388,7 +388,8 @@
       "columns": {
         "entity": "エンティティ",
         "mentions": "言及数"
-      }
+      },
+      "graphTitle": "エンティティグラフ"
     },
     "knowledge": {
       "pagesTitle": "ページ",
@@ -429,5 +430,18 @@
         "tags": "タグ"
       }
     }
+  },
+  "constellation": {
+    "reset": "表示をリセット",
+    "pauseMotion": "動きを一時停止",
+    "resumeMotion": "動きを再開",
+    "fullscreen": "全画面",
+    "exitFullscreen": "全画面を終了",
+    "links": "リンク",
+    "few": "少",
+    "many": "多",
+    "small": "小",
+    "large": "大",
+    "clustered": "クラスタでグループ化"
   }
 }
