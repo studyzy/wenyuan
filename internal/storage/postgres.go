@@ -76,12 +76,84 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	if err := s.ensureVectorExtension(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		return err
+	}
+	applied, err := s.appliedMigrations(ctx)
+	if err != nil {
+		return err
+	}
 	for _, migration := range series {
-		for _, statement := range migration.Statements() {
-			if _, err := s.db.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("migration %04d failed: %w", migration.Version, err)
-			}
+		if applied[migration.Version] {
+			// A migration already recorded is not run again, so a start is
+			// not a full replay and a destructive statement cannot repeat.
+			continue
 		}
+		if err := s.applyMigration(ctx, migration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureMigrationTable creates the record of applied migrations.
+//
+// Without it every start replays the whole series, which is both wasted work
+// and a hazard: a migration is only idempotent while someone remembers to write
+// it that way.
+func (s *PostgresStore) ensureMigrationTable(ctx context.Context) error {
+	query := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(s.schema) + `.schema_migrations (
+	              version     INTEGER PRIMARY KEY,
+	              name        TEXT NOT NULL,
+	              applied_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+	          )`
+	_, err := s.db.ExecContext(ctx, query)
+	return err
+}
+
+// appliedMigrations returns the versions already recorded.
+func (s *PostgresStore) appliedMigrations(ctx context.Context) (map[int]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT version FROM `+quoteIdent(s.schema)+`.schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	applied := map[int]bool{}
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied[version] = true
+	}
+	return applied, rows.Err()
+}
+
+// applyMigration runs one migration's statements and records it.
+//
+// The statements share a transaction, so a migration that fails halfway leaves
+// no partial schema behind and is not recorded as applied.
+func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, statement := range migration.Statements() {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration %04d failed: %w", migration.Version, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO `+quoteIdent(s.schema)+`.schema_migrations (version, name) VALUES ($1, $2)
+		 ON CONFLICT (version) DO NOTHING`,
+		migration.Version, migration.Name); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("recording migration %04d failed: %w", migration.Version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing migration %04d failed: %w", migration.Version, err)
 	}
 	return nil
 }
