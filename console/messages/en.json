@@ -443,5 +443,51 @@
     "small": "small",
     "large": "large",
     "clustered": "Grouped by cluster"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "Memory",
+      "loadFailed": "This memory could not be loaded.",
+      "retry": "Retry",
+      "tabMemory": "Memory",
+      "tabHistory": "History",
+      "edit": "Edit",
+      "editTitle": "Edit memory",
+      "restore": "Restore",
+      "invalidate": "Invalidate",
+      "invalidatedNotice": "This memory has been invalidated and is no longer recalled.",
+      "reasonLabel": "Reason",
+      "fieldType": "Type",
+      "fieldMentioned": "Mentioned",
+      "fieldOccurredStart": "Occurred from",
+      "fieldOccurredEnd": "Occurred to",
+      "fieldEdited": "Edited",
+      "fieldContext": "Context",
+      "fieldEntities": "Entities",
+      "fieldMetadata": "Metadata",
+      "fieldDocument": "Document",
+      "fieldChunk": "Chunk",
+      "fieldAgent": "Coding agent"
+    },
+    "curation": {
+      "invalidateTitle": "Retire this memory",
+      "invalidateExplain": "The memory stops being recalled but is not deleted, and can be restored later.",
+      "reasonLabel": "Reason (optional)",
+      "reasonPlaceholder": "Why is it being retired?",
+      "cancel": "Cancel",
+      "invalidate": "Retire"
+    },
+    "edit": {
+      "fullText": "Full text",
+      "fieldType": "Type",
+      "fieldOccurredStart": "Occurred from",
+      "fieldOccurredEnd": "Occurred to",
+      "fieldContext": "Context",
+      "fieldEntities": "Entities",
+      "removeEntity": "Remove {entity}",
+      "entityPlaceholder": "Add an entity",
+      "cancel": "Cancel",
+      "save": "Save"
+    }
   }
 }

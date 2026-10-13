@@ -443,5 +443,51 @@
     "small": "pequeño",
     "large": "grande",
     "clustered": "Agrupado por clúster"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "Recuerdo",
+      "loadFailed": "No se pudo cargar este recuerdo.",
+      "retry": "Reintentar",
+      "tabMemory": "Recuerdo",
+      "tabHistory": "Historial",
+      "edit": "Editar",
+      "editTitle": "Editar recuerdo",
+      "restore": "Restaurar",
+      "invalidate": "Invalidar",
+      "invalidatedNotice": "Este recuerdo está invalidado y ya no se recupera.",
+      "reasonLabel": "Motivo",
+      "fieldType": "Tipo",
+      "fieldMentioned": "Mencionado",
+      "fieldOccurredStart": "Inicio",
+      "fieldOccurredEnd": "Fin",
+      "fieldEdited": "Editado",
+      "fieldContext": "Contexto",
+      "fieldEntities": "Entidades",
+      "fieldMetadata": "Metadatos",
+      "fieldDocument": "Documento",
+      "fieldChunk": "Fragmento",
+      "fieldAgent": "Agente de código"
+    },
+    "curation": {
+      "invalidateTitle": "Invalidar este recuerdo",
+      "invalidateExplain": "Deja de recuperarse pero no se elimina, y puede restaurarse después.",
+      "reasonLabel": "Motivo (opcional)",
+      "reasonPlaceholder": "¿Por qué invalidarlo?",
+      "cancel": "Cancelar",
+      "invalidate": "Invalidar"
+    },
+    "edit": {
+      "fullText": "Texto completo",
+      "fieldType": "Tipo",
+      "fieldOccurredStart": "Inicio",
+      "fieldOccurredEnd": "Fin",
+      "fieldContext": "Contexto",
+      "fieldEntities": "Entidades",
+      "removeEntity": "Quitar {entity}",
+      "entityPlaceholder": "Añadir una entidad",
+      "cancel": "Cancelar",
+      "save": "Guardar"
+    }
   }
 }

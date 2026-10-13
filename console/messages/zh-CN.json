@@ -443,5 +443,51 @@
     "small": "小",
     "large": "大",
     "clustered": "按聚类分组"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "记忆",
+      "loadFailed": "无法加载该记忆。",
+      "retry": "重试",
+      "tabMemory": "记忆",
+      "tabHistory": "历史",
+      "edit": "编辑",
+      "editTitle": "编辑记忆",
+      "restore": "恢复",
+      "invalidate": "置为失效",
+      "invalidatedNotice": "该记忆已失效，不再被召回。",
+      "reasonLabel": "原因",
+      "fieldType": "类型",
+      "fieldMentioned": "提及时间",
+      "fieldOccurredStart": "起始",
+      "fieldOccurredEnd": "结束",
+      "fieldEdited": "已编辑",
+      "fieldContext": "上下文",
+      "fieldEntities": "实体",
+      "fieldMetadata": "元数据",
+      "fieldDocument": "文档",
+      "fieldChunk": "分块",
+      "fieldAgent": "编码代理"
+    },
+    "curation": {
+      "invalidateTitle": "将记忆置为失效",
+      "invalidateExplain": "该记忆不再被召回，但不会被删除，之后可以恢复。",
+      "reasonLabel": "原因（可选）",
+      "reasonPlaceholder": "为什么置为失效？",
+      "cancel": "取消",
+      "invalidate": "置为失效"
+    },
+    "edit": {
+      "fullText": "完整文本",
+      "fieldType": "类型",
+      "fieldOccurredStart": "起始",
+      "fieldOccurredEnd": "结束",
+      "fieldContext": "上下文",
+      "fieldEntities": "实体",
+      "removeEntity": "移除 {entity}",
+      "entityPlaceholder": "添加实体",
+      "cancel": "取消",
+      "save": "保存"
+    }
   }
 }

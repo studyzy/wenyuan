@@ -443,5 +443,51 @@
     "small": "小",
     "large": "大",
     "clustered": "クラスタでグループ化"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "メモリ",
+      "loadFailed": "このメモリを読み込めませんでした。",
+      "retry": "再試行",
+      "tabMemory": "メモリ",
+      "tabHistory": "履歴",
+      "edit": "編集",
+      "editTitle": "メモリを編集",
+      "restore": "復元",
+      "invalidate": "無効化",
+      "invalidatedNotice": "このメモリは無効化されており、検索されません。",
+      "reasonLabel": "理由",
+      "fieldType": "種別",
+      "fieldMentioned": "言及日時",
+      "fieldOccurredStart": "開始",
+      "fieldOccurredEnd": "終了",
+      "fieldEdited": "編集済み",
+      "fieldContext": "コンテキスト",
+      "fieldEntities": "エンティティ",
+      "fieldMetadata": "メタデータ",
+      "fieldDocument": "ドキュメント",
+      "fieldChunk": "チャンク",
+      "fieldAgent": "コーディングエージェント"
+    },
+    "curation": {
+      "invalidateTitle": "このメモリを無効化",
+      "invalidateExplain": "検索されなくなりますが削除はされず、後で復元できます。",
+      "reasonLabel": "理由（任意）",
+      "reasonPlaceholder": "なぜ無効化しますか？",
+      "cancel": "キャンセル",
+      "invalidate": "無効化"
+    },
+    "edit": {
+      "fullText": "全文",
+      "fieldType": "種別",
+      "fieldOccurredStart": "開始",
+      "fieldOccurredEnd": "終了",
+      "fieldContext": "コンテキスト",
+      "fieldEntities": "エンティティ",
+      "removeEntity": "{entity} を削除",
+      "entityPlaceholder": "エンティティを追加",
+      "cancel": "キャンセル",
+      "save": "保存"
+    }
   }
 }

@@ -443,5 +443,51 @@
     "small": "klein",
     "large": "groß",
     "clustered": "Nach Cluster gruppiert"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "Erinnerung",
+      "loadFailed": "Diese Erinnerung konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "tabMemory": "Erinnerung",
+      "tabHistory": "Verlauf",
+      "edit": "Bearbeiten",
+      "editTitle": "Erinnerung bearbeiten",
+      "restore": "Wiederherstellen",
+      "invalidate": "Ungültig machen",
+      "invalidatedNotice": "Diese Erinnerung ist ungültig und wird nicht mehr abgerufen.",
+      "reasonLabel": "Grund",
+      "fieldType": "Typ",
+      "fieldMentioned": "Erwähnt",
+      "fieldOccurredStart": "Beginn",
+      "fieldOccurredEnd": "Ende",
+      "fieldEdited": "Bearbeitet",
+      "fieldContext": "Kontext",
+      "fieldEntities": "Entitäten",
+      "fieldMetadata": "Metadaten",
+      "fieldDocument": "Dokument",
+      "fieldChunk": "Abschnitt",
+      "fieldAgent": "Coding-Agent"
+    },
+    "curation": {
+      "invalidateTitle": "Diese Erinnerung ungültig machen",
+      "invalidateExplain": "Sie wird nicht mehr abgerufen, aber nicht gelöscht und kann später wiederhergestellt werden.",
+      "reasonLabel": "Grund (optional)",
+      "reasonPlaceholder": "Warum ungültig machen?",
+      "cancel": "Abbrechen",
+      "invalidate": "Ungültig machen"
+    },
+    "edit": {
+      "fullText": "Volltext",
+      "fieldType": "Typ",
+      "fieldOccurredStart": "Beginn",
+      "fieldOccurredEnd": "Ende",
+      "fieldContext": "Kontext",
+      "fieldEntities": "Entitäten",
+      "removeEntity": "{entity} entfernen",
+      "entityPlaceholder": "Entität hinzufügen",
+      "cancel": "Abbrechen",
+      "save": "Speichern"
+    }
   }
 }

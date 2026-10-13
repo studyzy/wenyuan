@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "../../../../components/ui/table";
 import { PanelHeader, PanelState } from "./panel-state";
+import { MemoryDetailModal } from "../../../../components/memory/memory-detail-modal";
 import type { DataSubTab } from "../../../../lib/bank-detail";
 
 const PAGE_SIZE = 25;
@@ -42,6 +43,7 @@ export function DataPanel({ bankId, subTab }: { bankId: string; subTab: DataSubT
   const t = useTranslations("panels.data");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [openMemoryId, setOpenMemoryId] = useState<string | null>(null);
 
   const state = useAsyncData(
     () => memoriesApi.list(bankId),
@@ -91,7 +93,13 @@ export function DataPanel({ bankId, subTab }: { bankId: string; subTab: DataSubT
           </TableHeader>
           <TableBody>
             {current.map((row, index) => (
-              <TableRow key={row.id ?? index}>
+              <TableRow
+                key={row.id ?? index}
+                className={row.id ? "cursor-pointer" : undefined}
+                onClick={() => {
+                  if (row.id) setOpenMemoryId(row.id);
+                }}
+              >
                 <TableCell className="max-w-[420px]">
                   <p className="truncate text-[13px] text-foreground">{row.text ?? "—"}</p>
                 </TableCell>
@@ -119,6 +127,13 @@ export function DataPanel({ bankId, subTab }: { bankId: string; subTab: DataSubT
           onPageChange={setPage}
         />
       </PanelState>
+
+      <MemoryDetailModal
+        memoryId={openMemoryId}
+        bankId={bankId}
+        onClose={() => setOpenMemoryId(null)}
+        onChanged={state.reload}
+      />
     </div>
   );
 }

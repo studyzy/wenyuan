@@ -443,5 +443,51 @@
     "small": "細",
     "large": "大",
     "clustered": "按聚類分組"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "記憶",
+      "loadFailed": "載入唔到呢條記憶。",
+      "retry": "再試",
+      "tabMemory": "記憶",
+      "tabHistory": "歷史",
+      "edit": "編輯",
+      "editTitle": "編輯記憶",
+      "restore": "恢復",
+      "invalidate": "設為失效",
+      "invalidatedNotice": "呢條記憶已經失效，唔會再召回。",
+      "reasonLabel": "原因",
+      "fieldType": "類型",
+      "fieldMentioned": "提及時間",
+      "fieldOccurredStart": "起始",
+      "fieldOccurredEnd": "結束",
+      "fieldEdited": "已編輯",
+      "fieldContext": "上下文",
+      "fieldEntities": "實體",
+      "fieldMetadata": "中繼資料",
+      "fieldDocument": "文件",
+      "fieldChunk": "分塊",
+      "fieldAgent": "編碼代理"
+    },
+    "curation": {
+      "invalidateTitle": "將記憶設為失效",
+      "invalidateExplain": "條記憶唔會再召回，但唔會刪除，之後可以恢復。",
+      "reasonLabel": "原因（可選）",
+      "reasonPlaceholder": "點解要設為失效？",
+      "cancel": "取消",
+      "invalidate": "設為失效"
+    },
+    "edit": {
+      "fullText": "完整文本",
+      "fieldType": "類型",
+      "fieldOccurredStart": "起始",
+      "fieldOccurredEnd": "結束",
+      "fieldContext": "上下文",
+      "fieldEntities": "實體",
+      "removeEntity": "移除 {entity}",
+      "entityPlaceholder": "加實體",
+      "cancel": "取消",
+      "save": "儲存"
+    }
   }
 }

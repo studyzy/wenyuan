@@ -443,5 +443,51 @@
     "small": "작음",
     "large": "큼",
     "clustered": "클러스터로 그룹화"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "메모리",
+      "loadFailed": "이 메모리를 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "tabMemory": "메모리",
+      "tabHistory": "이력",
+      "edit": "편집",
+      "editTitle": "메모리 편집",
+      "restore": "복원",
+      "invalidate": "무효화",
+      "invalidatedNotice": "이 메모리는 무효화되어 더 이상 검색되지 않습니다.",
+      "reasonLabel": "사유",
+      "fieldType": "유형",
+      "fieldMentioned": "언급 시각",
+      "fieldOccurredStart": "시작",
+      "fieldOccurredEnd": "종료",
+      "fieldEdited": "편집됨",
+      "fieldContext": "컨텍스트",
+      "fieldEntities": "엔터티",
+      "fieldMetadata": "메타데이터",
+      "fieldDocument": "문서",
+      "fieldChunk": "청크",
+      "fieldAgent": "코딩 에이전트"
+    },
+    "curation": {
+      "invalidateTitle": "이 메모리 무효화",
+      "invalidateExplain": "검색되지 않지만 삭제되지 않으며 나중에 복원할 수 있습니다.",
+      "reasonLabel": "사유(선택)",
+      "reasonPlaceholder": "왜 무효화하나요?",
+      "cancel": "취소",
+      "invalidate": "무효화"
+    },
+    "edit": {
+      "fullText": "전체 텍스트",
+      "fieldType": "유형",
+      "fieldOccurredStart": "시작",
+      "fieldOccurredEnd": "종료",
+      "fieldContext": "컨텍스트",
+      "fieldEntities": "엔터티",
+      "removeEntity": "{entity} 제거",
+      "entityPlaceholder": "엔터티 추가",
+      "cancel": "취소",
+      "save": "저장"
+    }
   }
 }

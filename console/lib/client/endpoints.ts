@@ -24,7 +24,17 @@ export const memoriesApi = {
   list: (bankId: string) => apiGet<unknown>("/api/list", { bank_id: bankId }),
   retain: (payload: unknown) => apiPost<unknown>("/api/memories/retain", payload),
   retainAsync: (payload: unknown) => apiPost<unknown>("/api/memories/retain_async", payload),
-  get: (memoryId: string) => apiGet<unknown>(`/api/memories/${encodeURIComponent(memoryId)}`),
+  /** The memory detail read is bank-scoped, so the bank id travels with the id. */
+  get: (bankId: string, memoryId: string) =>
+    apiGet<unknown>(`/api/memories/${encodeURIComponent(memoryId)}`, { bank_id: bankId }),
+  /** Curation and edits go through the same update; the bank id routes it. */
+  update: (bankId: string, memoryId: string, payload: unknown) =>
+    apiPatch<unknown>(`/api/memories/${encodeURIComponent(memoryId)}`, {
+      bank_id: bankId,
+      ...(payload as Record<string, unknown>),
+    }),
+  history: (bankId: string, memoryId: string) =>
+    apiGet<unknown>(`/api/memories/${encodeURIComponent(memoryId)}/history`, { bank_id: bankId }),
 };
 
 export const documentsApi = {
@@ -80,7 +90,10 @@ export const graphApi = {
 };
 
 export const chunksApi = {
-  get: (chunkId: string) => apiGet<unknown>("/api/chunks", { chunk_id: chunkId }),
+  get: (chunkId: string, _bankId?: string) => apiGet<unknown>("/api/chunks", { chunk_id: chunkId }),
+  /** A memory's version history is served by the memory-history route. */
+  history: (bankId: string, memoryId: string) =>
+    apiGet<unknown>(`/api/memories/${encodeURIComponent(memoryId)}/history`, { bank_id: bankId }),
 };
 
 export const statsApiExtra = {

@@ -443,5 +443,51 @@
     "small": "petit",
     "large": "grand",
     "clustered": "Groupé par cluster"
+  },
+  "memoryPanel": {
+    "detail": {
+      "title": "Souvenir",
+      "loadFailed": "Ce souvenir n’a pas pu être chargé.",
+      "retry": "Réessayer",
+      "tabMemory": "Souvenir",
+      "tabHistory": "Historique",
+      "edit": "Modifier",
+      "editTitle": "Modifier le souvenir",
+      "restore": "Restaurer",
+      "invalidate": "Invalider",
+      "invalidatedNotice": "Ce souvenir est invalidé et n’est plus recherché.",
+      "reasonLabel": "Raison",
+      "fieldType": "Type",
+      "fieldMentioned": "Mentionné",
+      "fieldOccurredStart": "Début",
+      "fieldOccurredEnd": "Fin",
+      "fieldEdited": "Modifié",
+      "fieldContext": "Contexte",
+      "fieldEntities": "Entités",
+      "fieldMetadata": "Métadonnées",
+      "fieldDocument": "Document",
+      "fieldChunk": "Segment",
+      "fieldAgent": "Agent de code"
+    },
+    "curation": {
+      "invalidateTitle": "Invalider ce souvenir",
+      "invalidateExplain": "Il n’est plus recherché mais n’est pas supprimé, et peut être restauré plus tard.",
+      "reasonLabel": "Raison (facultatif)",
+      "reasonPlaceholder": "Pourquoi l’invalider ?",
+      "cancel": "Annuler",
+      "invalidate": "Invalider"
+    },
+    "edit": {
+      "fullText": "Texte complet",
+      "fieldType": "Type",
+      "fieldOccurredStart": "Début",
+      "fieldOccurredEnd": "Fin",
+      "fieldContext": "Contexte",
+      "fieldEntities": "Entités",
+      "removeEntity": "Supprimer {entity}",
+      "entityPlaceholder": "Ajouter une entité",
+      "cancel": "Annuler",
+      "save": "Enregistrer"
+    }
   }
 }
