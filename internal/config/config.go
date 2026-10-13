@@ -80,6 +80,14 @@ type Config struct {
 	// reflection default for entity attachment on observation evidence.
 	ReflectSearchObservationsIncludeEntities *bool
 
+	// Provider is the resolved model-provider configuration, resolved inside
+	// the same environment source as every other key.
+	Provider ProviderConfig
+	// ProviderScopes is the resolved strict-schema and temperature family.
+	ProviderScopes ScopedConfig
+	// Consolidation is the resolved second provider scope.
+	Consolidation ConsolidationScope
+
 	// CLI-only operational flags.
 	LogLevel     string
 	Workers      int
@@ -170,6 +178,10 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 			cfg.GzipMinSize = n
 		}
 	}
+	cfg.Provider = ResolveProvider(lookup)
+	cfg.ProviderScopes = ResolveScopes(lookup)
+	cfg.Provider.StrictSchema = cfg.ProviderScopes.StrictSchema
+	cfg.Consolidation = ResolveConsolidation(lookup)
 	return cfg
 }
 

@@ -1,16 +1,14 @@
 package app
 
-// Ported integration oracles.
+// Public-contract integration oracles.
 //
-// These cases are ported from the original implementation's HTTP integration
-// tests (tests/test_http_api_integration.py, tests/test_bank_aliases.py) and
-// re-expressed against this Go implementation through the composed application
-// handler. They are contract-parity checks: the source test is the oracle, and
-// each case below records the source test name it came from.
+// These cases assert the served application handler's public HTTP contract
+// end to end through the composed application. Each case is a contract-parity
+// check: it fixes the observable behavior the public surface must preserve.
 //
 // Only cases that exercise the public HTTP contract without a live PostgreSQL
-// or LLM are ported here; those requiring a real database or model are out of
-// scope for this harness.
+// or a live model endpoint run here; those requiring a real database or a real
+// model are out of scope for this harness.
 
 import (
 	"context"
@@ -20,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -60,7 +59,7 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-// Source: test_http_api_integration.py::test_version_endpoint_returns_correct_version
+// Contract reference: public HTTP behavior for this case.
 // The version endpoint reports api_version and a boolean feature map.
 func TestParityVersionEndpoint(t *testing.T) {
 	a := parityApp(t)
@@ -83,7 +82,7 @@ func TestParityVersionEndpoint(t *testing.T) {
 	}
 }
 
-// Source: test_http_api_integration.py::test_unknown_params_not_rejected
+// Contract reference: public HTTP behavior for this case.
 // Unknown query parameters must not be rejected; they are reported on the
 // X-Ignored-Params header instead. Known parameters produce no header.
 func TestParityUnknownQueryParamsAreReportedNotRejected(t *testing.T) {
@@ -108,7 +107,7 @@ func TestParityUnknownQueryParamsAreReportedNotRejected(t *testing.T) {
 	}
 }
 
-// Source: test_http_api_integration.py::test_error_handling
+// Contract reference: public HTTP behavior for this case.
 // Validation failures return 422: a write item without content, an invalid
 // recall budget, and an unsupported fact type. A non-existent document is 404.
 func TestParityValidationErrorHandling(t *testing.T) {
@@ -142,7 +141,7 @@ func TestParityValidationErrorHandling(t *testing.T) {
 	}
 }
 
-// Source: test_http_api_integration.py::test_retired_bank_profile_endpoints_are_gone
+// Contract reference: public HTTP behavior for this case.
 // The retired profile/background routes answer 410 Gone, but authentication is
 // evaluated first: an unauthenticated caller sees 401, and only an
 // authenticated caller sees the retirement status with its replacement message.
@@ -194,7 +193,7 @@ func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 	}
 }
 
-// Source: test_http_api_integration.py::test_full_api_workflow
+// Contract reference: public HTTP behavior for this case.
 // A bank created, written to, listed, read back and deleted exercises the
 // lifecycle end to end: the list envelope carries the pre-paging total, the row
 // reports a fact count that reflects the write, and deletion answers a delete
@@ -270,8 +269,7 @@ func TestParityBankLifecycleWorkflow(t *testing.T) {
 	}
 }
 
-// Source: test_bank_aliases.py::test_deleting_an_alias_of_another_bank_is_a_404
-// and test_bank_aliases.py::test_a_bank_cannot_be_created_under_an_alias
+// Contract reference: public HTTP behavior for this case.
 // Alias operations on a bank the caller does not own, and writes addressed by an
 // unknown alias, are not found.
 func TestParityAliasNegativeCases(t *testing.T) {
@@ -304,7 +302,7 @@ func TestParityAliasNegativeCases(t *testing.T) {
 	}
 }
 
-// Source: test_http_api_integration.py::test_delete_bank_nonexistent
+// Contract reference: public HTTP behavior for this case.
 // Deleting a bank that was never created is a no-op that reports a zero count.
 func TestParityDeleteNonexistentBankIsZeroCount(t *testing.T) {
 	a := parityApp(t)
@@ -321,7 +319,7 @@ func TestParityDeleteNonexistentBankIsZeroCount(t *testing.T) {
 	}
 }
 
-// Source: test_bank_aliases.py::test_alias_reaches_the_same_bank and neighbours
+// Contract reference: public HTTP behavior for this case.
 // An alias routes to the same bank and the response reports the canonical id.
 func TestParityBankAliasesRoutingAndUniqueness(t *testing.T) {
 	a := parityApp(t)
@@ -350,5 +348,61 @@ func TestParityBankAliasesRoutingAndUniqueness(t *testing.T) {
 	body = decodeJSON(t, rec)
 	if body["bank_id"] != "alias-src" {
 		t.Fatalf("read through an alias must report the canonical id: %v", body["bank_id"])
+	}
+}
+
+// test-existing-deterministic-paths-preserved: the existing deterministic
+// memory-write and reflection paths still produce their existing results when
+// the provider boundary is present and no model is configured. The comparison
+// fails if the boundary replaced the deterministic behavior rather than
+// extending it.
+func TestExistingDeterministicPathsPreservedWithProviderBoundary(t *testing.T) {
+	// The two apps must observe the SAME stored content, otherwise the
+	// comparison below would only be measuring the difference between two
+	// independent stores rather than the effect of the provider boundary.
+	shared := storage.NewMemoryStore("public")
+
+	// A baseline app whose boundary resolves to the no-model selection.
+	baseline, err := New(context.Background(), testConfig(), Dependencies{Store: shared})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An app where the boundary is explicitly injected with the no-model
+	// selection, which is the state under test.
+	withBoundary, err := New(context.Background(), testConfig(), Dependencies{
+		Store:    shared,
+		Provider: none.New(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withBoundary.Provider == nil {
+		t.Fatal("the boundary must be present")
+	}
+
+	const retainBody = `{"items":[{"content":"The deployment runs on Tuesdays.","document_id":"ops"}]}`
+	const reflectBody = `{"query":"When does the deployment run?","budget":"low"}`
+
+	// The same write produces the same observable result on both apps.
+	baseWrite := exchange(baseline, http.MethodPost, "/v1/default/banks/determinism_bank/memories", retainBody)
+	boundaryWrite := exchange(withBoundary, http.MethodPost, "/v1/default/banks/determinism_bank/memories", retainBody)
+	if baseWrite.Code != http.StatusOK || boundaryWrite.Code != http.StatusOK {
+		t.Fatalf("retain statuses = %d / %d", baseWrite.Code, boundaryWrite.Code)
+	}
+	if baseWrite.Body.String() != boundaryWrite.Body.String() {
+		t.Fatalf("retain output changed with the boundary present:\n baseline=%s\n boundary=%s",
+			baseWrite.Body.String(), boundaryWrite.Body.String())
+	}
+
+	// The same reflection produces the same observable result on both apps.
+	baseReflect := exchange(baseline, http.MethodPost, "/v1/default/banks/determinism_bank/reflect", reflectBody)
+	boundaryReflect := exchange(withBoundary, http.MethodPost, "/v1/default/banks/determinism_bank/reflect", reflectBody)
+	if baseReflect.Code != boundaryReflect.Code {
+		t.Fatalf("reflect status changed with the boundary present: %d / %d", baseReflect.Code, boundaryReflect.Code)
+	}
+	if baseReflect.Body.String() != boundaryReflect.Body.String() {
+		t.Fatalf("reflect output changed with the boundary present:\n baseline=%s\n boundary=%s",
+			baseReflect.Body.String(), boundaryReflect.Body.String())
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/monitoring"
+	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -26,6 +27,11 @@ type App struct {
 	Handler  http.Handler
 	Metrics  *httpx.MetricsRecorder
 	MetricsH *monitoring.MetricsHandler
+	// Provider is the active model-provider boundary, built once at
+	// composition so a selection error surfaces at startup. When no model is
+	// configured it is the no-model selection, which preserves the existing
+	// deterministic memory-write and reflection behavior.
+	Provider provider.Provider
 }
 
 // Dependencies is the injectable surface used to build an App. Tests supply
@@ -35,6 +41,9 @@ type Dependencies struct {
 	Store storage.Store
 	// Backend overrides backend selection when non-nil.
 	Backend storage.Backend
+	// Provider overrides provider selection when non-nil, so tests can inject
+	// a provider without a live endpoint or credential.
+	Provider provider.Provider
 	// Listen probes the resolved listen address before initialization.
 	Listen func(network, address string) (net.Listener, error)
 	// Now is injectable for deterministic tests.
@@ -68,6 +77,15 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		}
 	}
 
+	activeProvider := deps.Provider
+	if activeProvider == nil {
+		selected, err := ResolveProvider(cfg)
+		if err != nil {
+			return nil, err
+		}
+		activeProvider = selected
+	}
+
 	metrics := &httpx.MetricsRecorder{}
 	router := httpx.NewRouter(httpx.RouterOptions{
 		NullDropFields:       cfg.NullDropFields,
@@ -79,7 +97,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		Authenticator:        authenticatorFrom(cfg),
 	})
 
-	app := &App{Config: cfg, Store: store, Router: router, Metrics: metrics}
+	app := &App{Config: cfg, Store: store, Router: router, Metrics: metrics, Provider: activeProvider}
 	app.mount(router)
 	app.Handler = router.Service()
 	return app, nil

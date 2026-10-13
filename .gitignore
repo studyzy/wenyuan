@@ -22,4 +22,5 @@ vendor/
 *.swp
 .DS_Store
 .clean-room/
+.codebuddy/
 graphify-out/
