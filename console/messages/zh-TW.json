@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "取得圖譜失敗"
+      },
+      "knowledgeBase": {
+        "tree": "取得知識庫樹失敗",
+        "createFolder": "建立資料夾失敗",
+        "updateNode": "更新節點失敗",
+        "deleteNode": "刪除節點失敗",
+        "createPage": "儲存頁面失敗",
+        "fetchPage": "取得頁面失敗",
+        "search": "搜尋知識庫失敗",
+        "export": "匯出知識庫失敗"
       }
     }
   },

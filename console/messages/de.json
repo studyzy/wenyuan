@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "Graph konnte nicht geladen werden"
+      },
+      "knowledgeBase": {
+        "tree": "Wissensdatenbank-Baum konnte nicht geladen werden",
+        "createFolder": "Ordner konnte nicht erstellt werden",
+        "updateNode": "Knoten konnte nicht aktualisiert werden",
+        "deleteNode": "Knoten konnte nicht gelöscht werden",
+        "createPage": "Seite konnte nicht gespeichert werden",
+        "fetchPage": "Seite konnte nicht geladen werden",
+        "search": "Suche in der Wissensdatenbank fehlgeschlagen",
+        "export": "Wissensdatenbank konnte nicht exportiert werden"
       }
     }
   },

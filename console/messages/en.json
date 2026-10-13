@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "Failed to fetch graph"
+      },
+      "knowledgeBase": {
+        "tree": "Failed to load the knowledge base tree",
+        "createFolder": "Failed to create folder",
+        "updateNode": "Failed to update node",
+        "deleteNode": "Failed to delete node",
+        "createPage": "Failed to save page",
+        "fetchPage": "Failed to load page",
+        "search": "Failed to search the knowledge base",
+        "export": "Failed to export the knowledge base"
       }
     }
   },

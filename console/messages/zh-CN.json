@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "获取图谱失败"
+      },
+      "knowledgeBase": {
+        "tree": "获取知识库树失败",
+        "createFolder": "创建文件夹失败",
+        "updateNode": "更新节点失败",
+        "deleteNode": "删除节点失败",
+        "createPage": "保存页面失败",
+        "fetchPage": "获取页面失败",
+        "search": "搜索知识库失败",
+        "export": "导出知识库失败"
       }
     }
   },

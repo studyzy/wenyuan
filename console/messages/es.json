@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "No se pudo obtener el grafo"
+      },
+      "knowledgeBase": {
+        "tree": "No se pudo cargar el árbol de la base de conocimiento",
+        "createFolder": "No se pudo crear la carpeta",
+        "updateNode": "No se pudo actualizar el nodo",
+        "deleteNode": "No se pudo eliminar el nodo",
+        "createPage": "No se pudo guardar la página",
+        "fetchPage": "No se pudo cargar la página",
+        "search": "Falló la búsqueda en la base de conocimiento",
+        "export": "No se pudo exportar la base de conocimiento"
       }
     }
   },

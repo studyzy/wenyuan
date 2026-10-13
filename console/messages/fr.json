@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "Échec du chargement du graphe"
+      },
+      "knowledgeBase": {
+        "tree": "Échec du chargement de l’arborescence de la base de connaissances",
+        "createFolder": "Échec de la création du dossier",
+        "updateNode": "Échec de la mise à jour du nœud",
+        "deleteNode": "Échec de la suppression du nœud",
+        "createPage": "Échec de l’enregistrement de la page",
+        "fetchPage": "Échec du chargement de la page",
+        "search": "Échec de la recherche dans la base de connaissances",
+        "export": "Échec de l’export de la base de connaissances"
       }
     }
   },

@@ -166,6 +166,16 @@
       },
       "graph": {
         "fetch": "Falha ao obter o grafo"
+      },
+      "knowledgeBase": {
+        "tree": "Falha ao carregar a árvore da base de conhecimento",
+        "createFolder": "Falha ao criar a pasta",
+        "updateNode": "Falha ao atualizar o nó",
+        "deleteNode": "Falha ao excluir o nó",
+        "createPage": "Falha ao salvar a página",
+        "fetchPage": "Falha ao carregar a página",
+        "search": "Falha na busca na base de conhecimento",
+        "export": "Falha ao exportar a base de conhecimento"
       }
     }
   },
