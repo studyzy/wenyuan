@@ -17,8 +17,21 @@ type DB interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	// QueryRowContext runs a statement returning at most one row.
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	// BeginTx starts a transaction, so a multi-statement change is atomic
+	// rather than partially applied when one statement fails.
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error)
 	// Close releases the underlying connection pool.
 	Close() error
+}
+
+// Tx is the subset of transaction behaviour this area needs. It mirrors the
+// statement methods of DB so a caller can write the same query either way.
+type Tx interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	Commit() error
+	Rollback() error
 }
 
 // OpenDBFunc constructs a DB from a data source URL. The pgx-backed

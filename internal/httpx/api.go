@@ -30,6 +30,22 @@ const (
 	SuffixBackground  = "/background"
 	SuffixOperations  = "/operations"
 
+	// Read surface: documents, chunks, tags, entities, graph.
+	SuffixDocuments         = "/documents"
+	SuffixDocumentMember    = "/documents/{document_id}"
+	SuffixDocumentChunks    = "/documents/{document_id}/chunks"
+	SuffixDocumentReprocess = "/documents/{document_id}/reprocess"
+	SuffixTags              = "/tags"
+	SuffixGraph             = "/graph"
+	SuffixEntities          = "/entities"
+	SuffixEntitiesGraph     = "/entities/graph"
+	SuffixEntityMember      = "/entities/{entity_id}"
+	SuffixEntityRegenerate  = "/entities/{entity_id}/regenerate"
+
+	// PrefixChunksV1 is the non-bank-scoped chunk namespace, because a chunk
+	// identifier is already globally unique.
+	PrefixChunksV1 = "/v1/default/chunks/"
+
 	// Mental models and directives.
 	SuffixMentalModels       = "/mental-models"
 	SuffixMentalModelMember  = "/mental-models/{mental_model_id}"
@@ -66,6 +82,8 @@ const (
 var transferAcceptedQueryParams = []string{
 	"subtype",
 	"tag",
+	"kind",
+	"fact_type",
 	"mode",
 	"target_bank_id",
 	"on_conflict",

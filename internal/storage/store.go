@@ -170,6 +170,25 @@ type Store interface {
 	// is the retry half of the consumer lifecycle.
 	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
 
+	// --- Read surface ---------------------------------------------------
+	// ListDocuments returns one page of a bank's documents plus the total.
+	ListDocuments(ctx context.Context, query DocumentQuery) (DocumentPage, error)
+	// DeleteDocument removes a document and the units extracted from it, so a
+	// retrieval never returns evidence whose source no longer exists.
+	DeleteDocument(ctx context.Context, bankID, docID string) error
+	// ListChunks returns one page of a bank's chunks plus the total.
+	ListChunks(ctx context.Context, query ChunkQuery) (ChunkPage, error)
+	// GetChunk returns one stored chunk by identifier.
+	GetChunk(ctx context.Context, bankID, chunkID string) (Chunk, error)
+	// ListTags returns the bank's tags with their usage counts.
+	ListTags(ctx context.Context, bankID string) ([]TagCount, error)
+	// ListEntities returns one page of a bank's entities plus the total.
+	ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error)
+	// Graph returns the bank's memory graph.
+	Graph(ctx context.Context, bankID string, limit int) (GraphData, error)
+	// EntityGraph returns the bank's entity graph.
+	EntityGraph(ctx context.Context, bankID string, limit int) (EntityGraph, error)
+
 	// --- Mental models -------------------------------------------------
 	// ListMentalModels returns the mental models of one bank, optionally
 	// narrowed to a subtype.

@@ -123,16 +123,38 @@ func (s *PostgresStore) PutDocument(ctx context.Context, bankID, docID string, d
 	if doc.ContentHash == "" {
 		doc.ContentHash = ContentHash(doc.OriginalText)
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.documents (id, bank_id, original_text, content_hash, created_at)
-	          VALUES ($1,$2,$3,$4,now())
-	          ON CONFLICT (id) DO UPDATE SET original_text=$3, content_hash=$4
-	          RETURNING id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''), created_at`
+	// The metadata, retain-parameter and tag columns exist on the table, so
+	// they are written here rather than silently dropped.
+	metadata, err := jsonColumn(doc.Metadata)
+	if err != nil {
+		return Document{}, err
+	}
+	retainParams, err := jsonColumn(doc.RetainParams)
+	if err != nil {
+		return Document{}, err
+	}
+	tags := normalizeTags(doc.Tags)
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.documents
+	          (id, bank_id, original_text, content_hash, metadata, retain_params, tags, created_at)
+	          VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7, now())
+	          ON CONFLICT (id) DO UPDATE SET
+	              original_text = $3, content_hash = $4, metadata = $5::jsonb,
+	              retain_params = $6::jsonb, tags = $7
+	          RETURNING id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
+	                    COALESCE(metadata, '{}'::jsonb), COALESCE(retain_params, '{}'::jsonb),
+	                    COALESCE(tags, '{}'), created_at, created_at`
 	var out Document
-	err := s.db.QueryRowContext(ctx, query, docID, bankID, doc.OriginalText, doc.ContentHash).
-		Scan(&out.ID, &out.BankID, &out.OriginalText, &out.ContentHash, &out.CreatedAt)
-	out.Metadata = doc.Metadata
-	out.RetainParams = doc.RetainParams
-	return out, err
+	var metadataRaw, retainRaw, tagsRaw []byte
+	err = s.db.QueryRowContext(ctx, query, docID, bankID, doc.OriginalText, doc.ContentHash,
+		metadata, retainParams, tags).
+		Scan(&out.ID, &out.BankID, &out.OriginalText, &out.ContentHash, &metadataRaw, &retainRaw, &tagsRaw, &out.CreatedAt, &out.UpdatedAt)
+	if err != nil {
+		return Document{}, err
+	}
+	out.Metadata = decodeJSONMap(metadataRaw)
+	out.RetainParams = decodeJSONMap(retainRaw)
+	out.Tags = decodePostgresTextArray(tagsRaw)
+	return out, nil
 }
 
 // AppendDocument concatenates text onto the stored document, failing with

@@ -228,7 +228,12 @@ type Document struct {
 	ContentHash  string
 	Metadata     map[string]any
 	RetainParams map[string]any
+	Tags         []string
 	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	// MemoryUnitCount is how many units the document currently owns. It is
+	// derived on read rather than stored, so it cannot drift from the units.
+	MemoryUnitCount int
 }
 
 // Chunk is one ordered segment of a document.
@@ -239,6 +244,7 @@ type Chunk struct {
 	Index       int
 	Text        string
 	ContentHash string
+	CreatedAt   time.Time
 }
 
 // Entity is a resolved entity identity within a bank.

@@ -27,6 +27,11 @@ type sqlDB struct{ db *sql.DB }
 
 func (d *sqlDB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
 
+// BeginTx starts a transaction over the pool.
+func (d *sqlDB) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
+	return d.db.BeginTx(ctx, opts)
+}
+
 func (d *sqlDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return d.db.ExecContext(ctx, query, args...)
 }
