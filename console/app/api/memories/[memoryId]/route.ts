@@ -33,13 +33,3 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
     body,
   });
 }
-
-export async function DELETE(request: Request, context: Context): Promise<Response> {
-  const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: `/v1/default/memories/${encodeURIComponent((await context.params).memoryId)}`,
-    method: "DELETE",
-  });
-}

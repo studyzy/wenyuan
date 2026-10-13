@@ -63,10 +63,10 @@ describe("memory route method sets", () => {
     expect(typeof memory.PATCH).toBe("function");
   });
 
-  it("binds operations get/post/delete", () => {
+  it("binds operations get/delete", () => {
     expect(typeof operations.GET).toBe("function");
-    expect(typeof operations.POST).toBe("function");
     expect(typeof operations.DELETE).toBe("function");
+    expect(Object.keys(operations).sort()).toEqual(["DELETE", "GET"]);
   });
 
   it("binds recall, reflect, documents, entities and graph", () => {

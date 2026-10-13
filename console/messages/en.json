@@ -21,6 +21,8 @@
     "requiredBankId": "The bank id query parameter is required.",
     "requiredDocumentId": "The document id query parameter is required.",
     "requiredChunkId": "The chunk id query parameter is required.",
+    "requiredTargetBankId": "A target bank id is required to clone a bank.",
+    "invalidAttachmentId": "The requested attachment id is not valid.",
     "unsupportedMemoriesDelete": "Deleting individual memories is not supported.",
     "loginKeyNotConfigured": "The access key is not configured on this server.",
     "loginMalformedBody": "The login request body could not be read.",

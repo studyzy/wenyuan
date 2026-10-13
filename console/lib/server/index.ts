@@ -48,3 +48,9 @@ export {
   routeParam,
   type RouteContext,
 } from "./http";
+export {
+  ATTACHMENT_ID_LENGTH,
+  ATTACHMENT_ID_PATTERN,
+  FALLBACK_BINARY_CONTENT_TYPE,
+  isAttachmentId,
+} from "./attachment";

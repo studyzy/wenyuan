@@ -21,6 +21,8 @@
     "requiredBankId": "El parámetro de consulta del id de banco es obligatorio.",
     "requiredDocumentId": "El parámetro de consulta del id de documento es obligatorio.",
     "requiredChunkId": "El parámetro de consulta del id de fragmento es obligatorio.",
+    "requiredTargetBankId": "Se requiere un id de banco de destino para clonar un banco.",
+    "invalidAttachmentId": "El id de adjunto solicitado no es válido.",
     "unsupportedMemoriesDelete": "No se admite eliminar memorias individuales.",
     "loginKeyNotConfigured": "La clave de acceso no está configurada en este servidor.",
     "loginMalformedBody": "No se pudo leer el cuerpo de la solicitud de inicio de sesión.",

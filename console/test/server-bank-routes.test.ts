@@ -22,8 +22,8 @@ describe("bank proxy encoding", () => {
     const stub = stubFetch([{ status: 200, body: { bank_id: "team:alpha" } }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
-      const response = await bankDetail.GET(
-        makeRequest("http://localhost/api/banks/team%3Aalpha"),
+      const response = await bankDetail.PATCH(
+        makeRequest("http://localhost/api/banks/team%3Aalpha", { method: "PATCH", body: "{}" }),
         { params: Promise.resolve({ bankId: "team:alpha" }) },
       );
       expect(response.status).toBe(200);
@@ -48,9 +48,10 @@ describe("upstream status passthrough", () => {
     const stub = stubFetch([{ status: 404, body: { error: "not found" } }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
-      const response = await bankDetail.GET(makeRequest("http://localhost/api/banks/acme"), {
-        params: Promise.resolve({ bankId: "acme" }),
-      });
+      const response = await bankDetail.PATCH(
+        makeRequest("http://localhost/api/banks/acme", { method: "PATCH", body: "{}" }),
+        { params: Promise.resolve({ bankId: "acme" }) },
+      );
       expect(response.status).toBe(404);
       expect(await readJson(response)).toEqual({ error: "not found" });
     });
@@ -74,9 +75,7 @@ describe("route method sets", () => {
   });
 
   it("binds bank lifecycle update/patch/delete", () => {
-    expect(typeof bankDetail.GET).toBe("function");
-    expect(typeof bankDetail.PATCH).toBe("function");
-    expect(typeof bankDetail.DELETE).toBe("function");
+    expect(Object.keys(bankDetail).sort()).toEqual(["DELETE", "PATCH", "PUT"]);
   });
 
   it("binds config get/patch/delete", () => {
@@ -86,13 +85,9 @@ describe("route method sets", () => {
   });
 
   it("binds aliases, webhooks, mental-models and observations", () => {
-    expect(typeof aliases.GET).toBe("function");
-    expect(typeof aliases.POST).toBe("function");
-    expect(typeof webhooks.GET).toBe("function");
-    expect(typeof webhooks.POST).toBe("function");
-    expect(typeof mentalModels.GET).toBe("function");
-    expect(typeof mentalModels.POST).toBe("function");
-    expect(typeof observations.GET).toBe("function");
-    expect(typeof observations.POST).toBe("function");
+    expect(Object.keys(aliases).sort()).toEqual(["GET", "POST"]);
+    expect(Object.keys(webhooks).sort()).toEqual(["GET", "POST"]);
+    expect(Object.keys(mentalModels).sort()).toEqual(["GET", "POST"]);
+    expect(Object.keys(observations).sort()).toEqual(["DELETE", "GET"]);
   });
 });

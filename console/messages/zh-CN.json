@@ -21,6 +21,8 @@
     "requiredBankId": "必须提供 bank id 查询参数。",
     "requiredDocumentId": "必须提供 document id 查询参数。",
     "requiredChunkId": "必须提供 chunk id 查询参数。",
+    "requiredTargetBankId": "克隆银行必须提供目标 bank id。",
+    "invalidAttachmentId": "请求的附件 id 无效。",
     "unsupportedMemoriesDelete": "不支持删除单条记忆。",
     "loginKeyNotConfigured": "此服务器未配置访问密钥。",
     "loginMalformedBody": "无法读取登录请求正文。",

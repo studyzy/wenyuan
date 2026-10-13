@@ -21,6 +21,8 @@
     "requiredBankId": "バンク ID クエリパラメータは必須です。",
     "requiredDocumentId": "ドキュメント ID クエリパラメータは必須です。",
     "requiredChunkId": "チャンク ID クエリパラメータは必須です。",
+    "requiredTargetBankId": "バンクを複製するには対象バンク ID が必要です。",
+    "invalidAttachmentId": "要求された添付ファイル ID は無効です。",
     "unsupportedMemoriesDelete": "個々のメモリの削除はサポートされていません。",
     "loginKeyNotConfigured": "このサーバーにアクセスキーが設定されていません。",
     "loginMalformedBody": "ログインリクエストの本文を読み取れませんでした。",

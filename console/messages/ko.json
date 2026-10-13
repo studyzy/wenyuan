@@ -21,6 +21,8 @@
     "requiredBankId": "뱅크 ID 쿼리 매개변수가 필요합니다.",
     "requiredDocumentId": "문서 ID 쿼리 매개변수가 필요합니다.",
     "requiredChunkId": "청크 ID 쿼리 매개변수가 필요합니다.",
+    "requiredTargetBankId": "뱅크를 복제하려면 대상 뱅크 ID가 필요합니다.",
+    "invalidAttachmentId": "요청한 첨부 파일 ID가 유효하지 않습니다.",
     "unsupportedMemoriesDelete": "개별 메모리 삭제는 지원되지 않습니다.",
     "loginKeyNotConfigured": "이 서버에 액세스 키가 구성되어 있지 않습니다.",
     "loginMalformedBody": "로그인 요청 본문을 읽을 수 없습니다.",

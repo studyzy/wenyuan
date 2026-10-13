@@ -1,20 +1,9 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
-import { bankScopedPath, proxyUpstream, searchParamsObject } from "../../../../lib/server/proxy";
+import { bankScopedPath, proxyUpstream } from "../../../../lib/server/proxy";
 
 type Context = { params: Promise<{ bankId: string }> };
 
-/** Bank-scoped lifecycle: GET reads, PATCH updates, DELETE removes. */
-export async function GET(request: Request, context: Context): Promise<Response> {
-  const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: bankScopedPath("/v1/default/banks", (await context.params).bankId),
-    query: searchParamsObject(request),
-    method: "GET",
-  });
-}
-
+/** Bank-scoped lifecycle: PUT/PATCH update, DELETE removes. */
 export async function PATCH(request: Request, context: Context): Promise<Response> {
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
   const body = await request.text();

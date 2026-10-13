@@ -26,6 +26,25 @@ export async function GET(request: Request): Promise<Response> {
   });
 }
 
+export async function PATCH(request: Request): Promise<Response> {
+  const locale = requestLocale(request);
+  const searchParams = new URL(request.url).searchParams;
+  const documentId = requiredQueryParam(searchParams, "document_id");
+  if (!documentId) {
+    return errorResponse("errors.requiredDocumentId", 400, locale);
+  }
+  const config = resolveServerConfig(process.env as Record<string, string | undefined>);
+  const body = await request.text();
+  return proxyUpstream({
+    config,
+    request,
+    upstreamPath: "/v1/default/documents",
+    query: searchParamsObject(request),
+    method: "PATCH",
+    body,
+  });
+}
+
 export async function DELETE(request: Request): Promise<Response> {
   const locale = requestLocale(request);
   const searchParams = new URL(request.url).searchParams;

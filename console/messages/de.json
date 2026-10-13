@@ -21,6 +21,8 @@
     "requiredBankId": "Der Abfrageparameter für die Bank-ID ist erforderlich.",
     "requiredDocumentId": "Der Abfrageparameter für die Dokument-ID ist erforderlich.",
     "requiredChunkId": "Der Abfrageparameter für die Fragment-ID ist erforderlich.",
+    "requiredTargetBankId": "Zum Klonen einer Bank ist eine Zielbank-ID erforderlich.",
+    "invalidAttachmentId": "Die angeforderte Anhangs-ID ist ungültig.",
     "unsupportedMemoriesDelete": "Das Löschen einzelner Erinnerungen wird nicht unterstützt.",
     "loginKeyNotConfigured": "Der Zugriffsschlüssel ist auf diesem Server nicht konfiguriert.",
     "loginMalformedBody": "Der Anfragetext der Anmeldung konnte nicht gelesen werden.",

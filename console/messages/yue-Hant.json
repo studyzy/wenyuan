@@ -21,6 +21,8 @@
     "requiredBankId": "必須提供 bank id 查詢參數。",
     "requiredDocumentId": "必須提供 document id 查詢參數。",
     "requiredChunkId": "必須提供 chunk id 查詢參數。",
+    "requiredTargetBankId": "複製銀行必須提供目標 bank id。",
+    "invalidAttachmentId": "請求嘅附件 id 唔啱。",
     "unsupportedMemoriesDelete": "唔支援刪除單條記憶。",
     "loginKeyNotConfigured": "呢個伺服器未設定存取金鑰。",
     "loginMalformedBody": "讀唔到登入請求內容。",
