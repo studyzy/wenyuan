@@ -68,6 +68,11 @@ type MemoryStore struct {
 	mentalModelRecords map[string]MentalModel
 	mentalModelHistory map[string][]MentalModelHistoryEntry
 	directiveRecords   map[string]Directive
+	auditEntries       []AuditEntry
+	llmRequests        []LLMRequest
+	knowledgeNodes     map[string]KnowledgeNode
+	memoryHistory      map[string][]MemoryHistoryEntry
+	observationSources map[string][]string
 	writeErr           error
 	readErr            error
 	readyErr           error
@@ -95,6 +100,9 @@ func NewMemoryStore(schema string) *MemoryStore {
 		mentalModelRecords: map[string]MentalModel{},
 		mentalModelHistory: map[string][]MentalModelHistoryEntry{},
 		directiveRecords:   map[string]Directive{},
+		knowledgeNodes:     map[string]KnowledgeNode{},
+		memoryHistory:      map[string][]MemoryHistoryEntry{},
+		observationSources: map[string][]string{},
 	}
 }
 

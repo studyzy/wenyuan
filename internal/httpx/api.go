@@ -46,6 +46,34 @@ const (
 	// identifier is already globally unique.
 	PrefixChunksV1 = "/v1/default/chunks/"
 
+	// Memory sub-routes, knowledge base, observability and consolidation.
+	SuffixMemoriesList        = "/memories/list"
+	SuffixMemoryMember        = "/memories/{memory_id}"
+	SuffixMemoryHistory       = "/memories/{memory_id}/history"
+	SuffixMemoryObservations  = "/memories/{memory_id}/observations"
+	SuffixPromptsPreview      = "/prompts/preview"
+	SuffixKnowledgeTree       = "/knowledge-base/tree"
+	SuffixKnowledgeFolders    = "/knowledge-base/folders"
+	SuffixKnowledgePages      = "/knowledge-base/pages"
+	SuffixKnowledgePageMember = "/knowledge-base/pages/{page_id}"
+	SuffixKnowledgeExport     = "/knowledge-base/export"
+	SuffixKnowledgeSearch     = "/knowledge-base/search"
+	SuffixKnowledgeNodeMember = "/knowledge-base/nodes/{node_id}"
+	SuffixStats               = "/stats"
+	SuffixStatsTimeseries     = "/stats/memories-timeseries"
+	SuffixHealthLLM           = "/health/llm"
+	SuffixAuditLogs           = "/audit-logs"
+	SuffixAuditLogsStats      = "/audit-logs/stats"
+	SuffixLLMRequests         = "/llm-requests"
+	SuffixLLMRequestsStats    = "/llm-requests/stats"
+	SuffixObservations        = "/observations"
+	SuffixObservationScopes   = "/observations/scopes"
+	SuffixConsolidatePreview  = "/consolidation-strategies/preview"
+	SuffixConsolidateRecover  = "/consolidation/recover"
+	SuffixConsolidate         = "/consolidate"
+	SuffixBankTemplateSchema  = "/v1/bank-template-schema"
+	SuffixVersionV1           = "/v1/version"
+
 	// Mental models and directives.
 	SuffixMentalModels       = "/mental-models"
 	SuffixMentalModelMember  = "/mental-models/{mental_model_id}"
@@ -84,6 +112,12 @@ var transferAcceptedQueryParams = []string{
 	"tag",
 	"kind",
 	"fact_type",
+	"memory_type",
+	"node_id",
+	"page_id",
+	"days",
+	"action",
+	"transport",
 	"mode",
 	"target_bank_id",
 	"on_conflict",

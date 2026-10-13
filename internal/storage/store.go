@@ -170,6 +170,56 @@ type Store interface {
 	// is the retry half of the consumer lifecycle.
 	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
 
+	// --- Knowledge base -------------------------------------------------
+	// ListKnowledgeNodes returns every knowledge node of one bank.
+	ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error)
+	// GetKnowledgeNode returns one knowledge node by identifier.
+	GetKnowledgeNode(ctx context.Context, bankID, nodeID string) (KnowledgeNode, error)
+	// PutKnowledgeNode inserts or replaces a knowledge node.
+	PutKnowledgeNode(ctx context.Context, node KnowledgeNode) (KnowledgeNode, error)
+	// UpdateKnowledgeNode applies a partial update.
+	UpdateKnowledgeNode(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch) (KnowledgeNode, error)
+	// DeleteKnowledgeNode removes a node and its descendants.
+	DeleteKnowledgeNode(ctx context.Context, bankID, nodeID string) error
+	// SearchKnowledgeNodes searches a bank's pages by text.
+	SearchKnowledgeNodes(ctx context.Context, bankID, query string, limit int) ([]KnowledgeHit, error)
+
+	// --- Memory sub-routes ----------------------------------------------
+	// ListMemories returns one page of a bank's memory units.
+	ListMemories(ctx context.Context, query MemoryQuery) (MemoryPage, error)
+	// GetMemory returns one memory unit by identifier.
+	GetMemory(ctx context.Context, bankID, memoryID string) (MemoryUnit, error)
+	// UpdateMemory applies a partial update to one memory unit.
+	UpdateMemory(ctx context.Context, bankID, memoryID string, patch MemoryPatch) (MemoryUnit, error)
+	// MemoryHistory returns the recorded changes of one memory unit.
+	MemoryHistory(ctx context.Context, bankID, memoryID string) ([]MemoryHistoryEntry, error)
+
+	// --- Observations and consolidation ---------------------------------
+	// DeleteObservations removes the observations of a bank. When memoryID is
+	// non-empty only the observations derived from that memory go.
+	DeleteObservations(ctx context.Context, bankID, memoryID string) (int, error)
+	// EnqueueConsolidation records a consolidation pass for a bank, reporting
+	// whether an equivalent pending operation already existed.
+	EnqueueConsolidation(ctx context.Context, bankID string) (Operation, bool, error)
+	// RecoverConsolidations retries a bank's failed consolidations.
+	RecoverConsolidations(ctx context.Context, bankID string) (int, error)
+
+	// --- Observability --------------------------------------------------
+	// BankStats summarises one bank's operational state.
+	BankStats(ctx context.Context, bankID string) (BankStats, error)
+	// MemoriesTimeseries buckets a bank's memory counts over a period.
+	MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error)
+	// ListAuditLog returns one page of the audit trail.
+	ListAuditLog(ctx context.Context, query AuditQuery) (AuditPage, error)
+	// AuditLogStats buckets the audit trail over a period.
+	AuditLogStats(ctx context.Context, bankID, period string) (AuditStats, error)
+	// ListLLMRequests returns one page of the model-request trace.
+	ListLLMRequests(ctx context.Context, query LLMRequestQuery) (LLMRequestPage, error)
+	// LLMRequestStats buckets the model-request trace over a period.
+	LLMRequestStats(ctx context.Context, bankID, period string) (LLMRequestStats, error)
+	// ListObservationScopes returns the distinct observation scopes of a bank.
+	ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error)
+
 	// --- Read surface ---------------------------------------------------
 	// ListDocuments returns one page of a bank's documents plus the total.
 	ListDocuments(ctx context.Context, query DocumentQuery) (DocumentPage, error)

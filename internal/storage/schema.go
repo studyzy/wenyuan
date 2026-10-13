@@ -18,6 +18,10 @@ var MemoryDomainTables = []string{
 	"file_storage",
 	"mental_models",
 	"directives",
+	"audit_log",
+	"llm_requests",
+	"observation_sources",
+	"knowledge_nodes",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -171,6 +175,66 @@ var MentalModelsColumns = []string{
 	"last_refreshed_at",
 	"last_updated",
 	"created_at",
+}
+
+// KnowledgeNodesColumns are the columns of the knowledge tree.
+var KnowledgeNodesColumns = []string{
+	"id",
+	"bank_id",
+	"parent_id",
+	"kind",
+	"title",
+	"text",
+	"tags",
+	"created_at",
+	"updated_at",
+}
+
+// AuditLogColumns are the columns of the audit trail.
+var AuditLogColumns = []string{
+	"id",
+	"action",
+	"transport",
+	"bank_id",
+	"started_at",
+	"ended_at",
+	"request",
+	"response",
+	"metadata",
+}
+
+// LLMRequestsColumns are the columns of the model-request trace.
+var LLMRequestsColumns = []string{
+	"id",
+	"bank_id",
+	"operation",
+	"scope",
+	"trace_id",
+	"span_id",
+	"parent_span_id",
+	"provider",
+	"model",
+	"status",
+	"started_at",
+	"ended_at",
+	"duration_ms",
+	"input_tokens",
+	"output_tokens",
+	"cached_tokens",
+	"thoughts_tokens",
+	"total_tokens",
+	"input",
+	"output",
+	"error",
+	"llm_info",
+	"metadata",
+}
+
+// ObservationSourcesColumns are the columns tying an observation to its
+// evidence.
+var ObservationSourcesColumns = []string{
+	"observation_id",
+	"source_id",
 }
 
 // DirectivesColumns are the columns of the directive table. A directive is a

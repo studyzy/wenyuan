@@ -15,6 +15,9 @@ const (
 	OperationTypeTransferExport = "transfer_export"
 	OperationTypeTransferImport = "transfer_import"
 	OperationTypeClone          = "clone"
+	// OperationTypeConsolidate is the consolidation pass, which folds related
+	// memories into observations.
+	OperationTypeConsolidate = "consolidate"
 )
 
 // OperationPayloadKeyStoredFile is the operation payload field carrying the
