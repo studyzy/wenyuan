@@ -25,6 +25,7 @@ var MemoryDomainTables = []string{
 	"webhooks",
 	"webhook_deliveries",
 	"attachments",
+	"bank_stats_cache",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -173,6 +174,14 @@ var AttachmentsColumns = []string{
 	"kind",
 	"filename",
 	"created_at",
+}
+
+// BankStatsCacheColumns are the columns of the cross-process bank-statistics
+// cache. A row holds one bank's rendered summary and when it was computed.
+var BankStatsCacheColumns = []string{
+	"bank_id",
+	"payload",
+	"computed_at",
 }
 
 // MentalModelsColumns are the columns of the mental-model table. A mental model

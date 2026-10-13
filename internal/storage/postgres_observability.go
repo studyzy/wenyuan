@@ -9,7 +9,55 @@ import (
 )
 
 // BankStats summarises one bank's operational state.
+//
+// The summary is expensive to compute and intentionally approximate, so it is
+// served from the cross-process cache table when a fresh row exists. A cache
+// that is unreachable or absent degrades to computing without caching rather
+// than failing the endpoint, because a stale-free answer is never worth an
+// error here.
 func (s *PostgresStore) BankStats(ctx context.Context, bankID string) (BankStats, error) {
+	if cached, ok := s.cachedBankStats(ctx, bankID); ok {
+		return cached, nil
+	}
+	stats, err := s.computeBankStats(ctx, bankID)
+	if err != nil {
+		return BankStats{}, err
+	}
+	s.storeBankStats(ctx, bankID, stats)
+	return stats, nil
+}
+
+// cachedBankStats reads a fresh cached summary. A miss, an unreadable row or an
+// absent table all report false so the caller computes.
+func (s *PostgresStore) cachedBankStats(ctx context.Context, bankID string) (BankStats, bool) {
+	query := `SELECT payload FROM ` + quoteIdent(s.schema) + `.bank_stats_cache
+	          WHERE bank_id = $1 AND computed_at > now() - make_interval(secs => $2::double precision)`
+	var payload []byte
+	if err := s.db.QueryRowContext(ctx, query, bankID, BankStatsCacheTTL.Seconds()).Scan(&payload); err != nil {
+		return BankStats{}, false
+	}
+	var stats BankStats
+	if err := json.Unmarshal(payload, &stats); err != nil {
+		return BankStats{}, false
+	}
+	return stats, true
+}
+
+// storeBankStats writes a computed summary back. The write is best-effort: a
+// cache that cannot be written leaves the answer intact.
+func (s *PostgresStore) storeBankStats(ctx context.Context, bankID string, stats BankStats) {
+	payload, err := json.Marshal(stats)
+	if err != nil {
+		return
+	}
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.bank_stats_cache (bank_id, payload, computed_at)
+	          VALUES ($1, $2::jsonb, now())
+	          ON CONFLICT (bank_id) DO UPDATE SET payload = EXCLUDED.payload, computed_at = now()`
+	_, _ = s.db.ExecContext(ctx, query, bankID, string(payload))
+}
+
+// computeBankStats runs the aggregates the summary is derived from.
+func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (BankStats, error) {
 	stats := BankStats{
 		BankID:             bankID,
 		NodesByFactType:    map[string]int{},

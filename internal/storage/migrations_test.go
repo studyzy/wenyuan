@@ -99,6 +99,7 @@ func TestDeclaredColumnsExistInTheSchemaInventory(t *testing.T) {
 		"webhooks":           WebhooksColumns,
 		"webhook_deliveries": WebhookDeliveriesColumns,
 		"attachments":        AttachmentsColumns,
+		"bank_stats_cache":   BankStatsCacheColumns,
 	}
 	for table, columns := range declarations {
 		for _, column := range columns {

@@ -344,11 +344,11 @@ POST   /operations/{operation_id}/delete     ← Wenyuan 仅有 DELETE /operatio
 | C1 | `documents.metadata` / `retain_params` 从未写入 | `postgres_retain.go` 的 `PutDocument` INSERT 未含这两列，尽管 Go 结构体有值 | `PutDocument` 全量字段 |
 | C2 | 迁移丢失字段 | `unmappedFields()`（`migration/hindsight/map.go`）报告 `source_id`、`observation_scopes`、`consolidated_at`、`consolidation_failed_at`、`document.retain_params` 无目标列 | 需先加列 |
 | C3 | 索引 / 约束不足 | 仅 3 个显式索引（`idx_bank_aliases_bank`、`idx_bank_aliases_one_primary`、`idx_documents_retain_params`）；参照有 trigram / GIN / HNSW / IVFFlat 全套 | `alembic/` |
-| C4 | 无法直连 Hindsight 库 | 表结构差异：`banks.id` vs `bank_id`；`entities.name` vs `canonical_name`；`memory_units.type` vs `fact_type`；无 `embedding` | 设计取舍，经导出格式迁移 |
-| C5 | 无版本表 | `migrations/` 6 个手写 SQL，无 `alembic_version` 等价物，每次启动重跑（`IF NOT EXISTS` 幂等） | `alembic/` 112 迁移 |
-| C6 | 跨进程缓存失效 | `bank_cache.go` 仅时间过期，多 worker 进程一致性未定义 | — |
-| C7 | 实体 ID 派生 | `entityID()` 以 `bank_id + name` 哈希生成；同名不同实体将被合并 | 导出仅带实体名 |
-| C8 | 无增量同步 | 迁移为快照式；导出后旧实例继续写入会丢数据 | — |
+| C4 | 无法直连 Hindsight 库 | 表结构差异：`banks.id` vs `bank_id`；`entities.name` vs `canonical_name`；`memory_units.type` vs `fact_type`；无 `embedding` | **设计取舍（决定保留）**：经导出格式迁移，见下方 C8 |
+| C5 | 无版本表 | **已实现**：`schema_migrations` 表记录已应用迁移，启动时只跑未应用的 |
+| C6 | 跨进程缓存失效 | **已实现**：`bank_stats_cache` 表（迁移 0018）让一个 worker 的统计摘要被其它 worker 读取；`BankStatsCacheTTL` 控制有效期。bank 行缓存仍是进程内 TTL |
+| C7 | 实体 ID 派生 | **已解决**：实体按归一化名称解析（`resolveEntityLocked`），同名不同实体不再被哈希合并 |
+| C8 | 无增量同步 | **设计取舍（决定保留）**：迁移为快照式，经官方导出格式 `bankctl bank migrate` 完成 |
 
 ---
 

@@ -11,6 +11,12 @@ import (
 // entry expires.
 const BankCacheTTL = 5 * time.Second
 
+// BankStatsCacheTTL is the lifetime of a bank-statistics summary in the
+// cross-process cache table. The summary is approximate and powers a UI widget,
+// so a few tens of seconds of staleness is safe and saves every polling client
+// from re-running the aggregate.
+const BankStatsCacheTTL = 30 * time.Second
+
 // bankCache is a per-process, tenant-scoped cache of bank rows. It is never
 // used to authorise or route a request and never retains a negative existence
 // result: a miss is refetched.
