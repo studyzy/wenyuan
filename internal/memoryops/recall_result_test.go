@@ -29,12 +29,31 @@ func TestBuildRecallResponseSideChannelsOnlyWhenIncluded(t *testing.T) {
 }
 
 func TestBuildRecallResponseTracePresentWhenRequested(t *testing.T) {
-	response := BuildRecallResponse(storage.RecallResult{}, RecallRequest{Query: "q", Trace: true})
+	source := storage.RecallResult{
+		Matches: []storage.RecallMatch{{ID: "m1", Text: "t", Scores: map[string]float64{"semantic": 0.5}}},
+		Trace: storage.RecallTrace{
+			Budget: 4, BudgetUsed: 1, CandidatesFound: 4,
+			StageCounts: map[string]int{"semantic": 1, "keyword": 0, "reranker": 0},
+		},
+	}
+	response := BuildRecallResponse(source, RecallRequest{Query: "q", Trace: true})
 	if response.Trace == nil {
 		t.Fatal("trace must be present when requested")
 	}
-	if response.Trace["query"] != "q" {
+	query, ok := response.Trace["query"].(map[string]any)
+	if !ok || query["query_text"] != "q" {
 		t.Fatalf("trace must echo the query: %+v", response.Trace)
+	}
+	summary, ok := response.Trace["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace must carry a summary: %+v", response.Trace)
+	}
+	if summary["candidates_found"] != 4 || summary["results_returned"] != 1 {
+		t.Fatalf("summary counts = %+v", summary)
+	}
+	stages, _ := summary["stage_counts"].(map[string]any)
+	if stages["semantic"] != 1 {
+		t.Fatalf("stage counts = %+v, want the semantic stage to report one match", stages)
 	}
 }
 

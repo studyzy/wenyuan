@@ -344,11 +344,11 @@ POST   /operations/{operation_id}/delete     ← Wenyuan 仅有 DELETE /operatio
 | C1 | `documents.metadata` / `retain_params` 从未写入 | `postgres_retain.go` 的 `PutDocument` INSERT 未含这两列，尽管 Go 结构体有值 | `PutDocument` 全量字段 |
 | C2 | 迁移丢失字段 | `unmappedFields()`（`migration/hindsight/map.go`）报告 `source_id`、`observation_scopes`、`consolidated_at`、`consolidation_failed_at`、`document.retain_params` 无目标列 | 需先加列 |
 | C3 | 索引 / 约束不足 | 仅 3 个显式索引（`idx_bank_aliases_bank`、`idx_bank_aliases_one_primary`、`idx_documents_retain_params`）；参照有 trigram / GIN / HNSW / IVFFlat 全套 | `alembic/` |
-| C4 | 无法直连 Hindsight 库 | 表结构差异：`banks.id` vs `bank_id`；`entities.name` vs `canonical_name`；`memory_units.type` vs `fact_type`；无 `embedding` | **设计取舍（决定保留）**：经导出格式迁移，见下方 C8 |
+| C4 | 无法直连 Hindsight 库 | **已实现**：`storage.NewDirectSource` 直连参照形态库（`fact_type` / `canonical_name` / `bank_id` 命名差异在读取器内翻译），渲染成归档再走标准导入；CLI：`bankctl bank migrate --source-url URL --source-bank ID` |
 | C5 | 无版本表 | **已实现**：`schema_migrations` 表记录已应用迁移，启动时只跑未应用的 |
 | C6 | 跨进程缓存失效 | **已实现**：`bank_stats_cache` 表（迁移 0018）让一个 worker 的统计摘要被其它 worker 读取；`BankStatsCacheTTL` 控制有效期。bank 行缓存仍是进程内 TTL |
 | C7 | 实体 ID 派生 | **已解决**：实体按归一化名称解析（`resolveEntityLocked`），同名不同实体不再被哈希合并 |
-| C8 | 无增量同步 | **设计取舍（决定保留）**：迁移为快照式，经官方导出格式 `bankctl bank migrate` 完成 |
+| C8 | 无增量同步 | **已实现**：`hindsight.Incremental` 模式只写目标库未持有的文档，可重复运行而不重复也不破坏；CLI：`--incremental`。报告含 `written` / `skipped` |
 
 ---
 
@@ -367,26 +367,26 @@ POST   /operations/{operation_id}/delete     ← Wenyuan 仅有 DELETE /operatio
 
 ---
 
-## 6. 契约待确认项（14 条，来自早期规范）
+## 6. 契约项（14 条）— 已逐条确认
 
-以下为**规范未钉死的公开契约边界**。当前实现取了合理默认值，但**未逐条与上游核对**。若要求逐字节兼容，需逐项确认。
+以下 14 条现已逐条对齐参照实现或钉死为明确的公开契约。字段名均为公开面。
 
-| # | 待确认项 | 当前实现 |
+| # | 契约项 | 结论 |
 |---|---|---|
-| 1 | 公开路由 → operation 身份的权威映射 | 仅按路由 path+method，operation 身份不外露 |
-| 2 | 哪些废弃请求字段别名须永久接受 | 已知别名接受（如 `background` / `reflect_mission`） |
-| 3 | 非校验类错误体形状（not-found/conflict/gone/unavailable/timeout） | 统一 `{"detail": ...}` 信封 |
-| 4 | disposition 特质默认值 | 中性值 3 |
-| 5 | recall trace 对象是否为公开面及其字段集 | **未实现完整 trace 字段** |
-| 6 | 每 bank 配置覆盖键的权威全集 | 仅 disposition 特质 + reflect mission |
-| 7 | 跨进程缓存失效保证 | 仅时间驱动 |
-| 8 | 非校验类写错误体形状（是否都带 item 列表） | 仅 blocked-write 带 violations |
-| 9 | 部署依赖的精确索引 / 约束集 | **未实现** entity-kind → 索引选择逻辑 |
-| 10 | 写路径上哪些配置名属公开面 | 仅单一 batch gate |
-| 11 | 文档 ID 自动生成是否须精确形式 | 仅保证分组行为 |
-| 12 | 已处理内容 token 数是否为公开响应字段 | 未作为公开字段暴露 |
-| 13 | reflect 循环需要每 bank perspectives/directives 的公开读契约 | **该读路径未实现** |
-| 14 | 未知 **body** 字段是否上报 `X-Ignored-Params` | 仅查询参数上报（`internal/httpx/middleware.go` 的 `IgnoredParamsMiddleware` 只处理 query） |
+| 1 | 公开路由 → operation 身份映射 | 按路由 path+method 映射到 `operation_type`；operation 身份不外露（与参照一致） |
+| 2 | 废弃请求字段别名 | 永久接受：`background`、`reflect_mission`（retain 顶层）、reflect 的 `context`、recall 的顶层 `trace`；已在各请求模型的 `UnmarshalJSON` / 字段集中体现 |
+| 3 | 非校验类错误体形状 | 统一 `{"detail": ...}` 信封，覆盖 not-found / conflict / gone / unavailable / timeout（`internal/httpx/errors.go`） |
+| 4 | disposition 特质默认值 | 中性值 3（`storage.DispositionTraitNeutral`） |
+| 5 | recall trace 对象 | **已实现**：`trace=true` 返回 `{query: {query_text, budget, max_tokens, tags}, summary: {candidates_found, budget_used, budget_remaining, total_duration_ms, results_returned, phase_metrics, stage_counts}}`，由 `RecallTrace` 在检索管线中记录 |
+| 6 | 每 bank 配置覆盖键全集 | disposition 三特质 + `reflect_mission`（`bankOverrides`）；读/PATCH/DELETE 三条路由一致 |
+| 7 | 跨进程缓存失效保证 | bank 行为进程内 TTL（5s）+ 同进程写立即失效；统计摘要走 `bank_stats_cache` 表（跨进程，30s TTL） |
+| 8 | 非校验类写错误体形状 | blocked-write 带 `violations` 列表，其余为 `{"detail": ...}` |
+| 9 | 部署依赖的索引 / 约束集 | **已实现**：迁移 0013 核心索引 + 0019 按类型的部分索引（opinion 按 confidence / 日期，observation 按日期，未巩固事实） |
+| 10 | 写路径公开配置名 | `enable_bank_config_api` 门控写路径；读路径永远可用 |
+| 11 | 文档 ID 自动生成形式 | 未提供 `document_id` 时生成不透明 ID；同一次写入内按 item 分组（`itemFromUpload` 用文件名） |
+| 12 | 已处理内容 token 数 | **已实现**：`processed_content_tokens` 作为公开响应字段；路径未统计时省略而非填 0 |
+| 13 | reflect 每 bank perspectives/directives 读契约 | **已实现**：`based_on` 引用对象暴露 `mental_models` 与 `directives`（`internal/memoryops/reflect_response.go`） |
+| 14 | 未知 body 字段上报 `X-Ignored-Params` | **已实现**：`httpx.RecordIgnoredBodyFields` + `UnknownBodyFields`，与查询参数合并上报；retain 路由已接入 |
 
 ---
 

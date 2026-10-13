@@ -225,3 +225,43 @@ func TestRunHonorsExplicitTargetBank(t *testing.T) {
 		t.Fatalf("explicit target bank must exist: %v", err)
 	}
 }
+
+// Incremental mode writes only the documents the target does not already hold,
+// so a re-run after further source writes is neither duplicating nor
+// destructive.
+func TestRunIncrementalWritesOnlyNewDocuments(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	archive := fixtureArchive(t)
+
+	first, err := Run(ctx, store, Mapping{Archive: archive}, Options{Mode: Incremental})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Written != len(archive.Documents) || first.Skipped != 0 {
+		t.Fatalf("first run = written %d skipped %d, want all written", first.Written, first.Skipped)
+	}
+
+	// Re-running the same archive must skip every document it already wrote.
+	second, err := Run(ctx, store, Mapping{Archive: archive}, Options{Mode: Incremental})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Written != 0 || second.Skipped != len(archive.Documents) {
+		t.Fatalf("re-run = written %d skipped %d, want none written", second.Written, second.Skipped)
+	}
+
+	// A document the target does not hold yet is written by the next run.
+	archive.Documents = append(archive.Documents, hindsightarchive.Document{
+		ID:           "doc-new",
+		OriginalText: "A later write about Carol.",
+		Facts:        []hindsightarchive.Fact{{Text: "Carol joined the team.", FactType: "world"}},
+	})
+	third, err := Run(ctx, store, Mapping{Archive: archive}, Options{Mode: Incremental})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Written != 1 || third.Skipped != len(archive.Documents)-1 {
+		t.Fatalf("incremental run = written %d skipped %d, want only the new document", third.Written, third.Skipped)
+	}
+}

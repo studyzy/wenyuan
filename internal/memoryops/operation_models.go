@@ -14,6 +14,10 @@ type RetainResponse struct {
 	Usage        Usage    `json:"usage"`
 	OperationID  string   `json:"operation_id,omitempty"`
 	OperationIDs []string `json:"operation_ids,omitempty"`
+	// ProcessedContentTokens is the number of content tokens the engine
+	// accounted for. It is omitted when the path does not report one, so a
+	// client never reads a fabricated zero as a real measurement.
+	ProcessedContentTokens *int `json:"processed_content_tokens,omitempty"`
 }
 
 // Operation is the operation object exposed by the list, fetch, cancel, and

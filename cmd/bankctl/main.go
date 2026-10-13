@@ -23,7 +23,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: bankctl bank rename --source ID --to ID [--dry-run] | bankctl bank archive export|import --archive FILE [--target ID] | bankctl bank migrate --archive FILE [--bank-id ID] [--replace|--append] [--dry-run]")
+		return fmt.Errorf("usage: bankctl bank rename --source ID --to ID [--dry-run] | bankctl bank archive export|import --archive FILE [--target ID] | bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]")
 	}
 	if len(args) < 3 || args[0] != "bank" {
 		return fmt.Errorf("expected a 'bank rename' or 'bank archive' command")

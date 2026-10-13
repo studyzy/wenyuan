@@ -60,7 +60,28 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 		result.Matches = append(result.Matches, cand.toMatch())
 	}
 	s.attachSideChannels(&result, q, types)
+	result.Trace = buildRecallTrace(candidates, ranked)
 	return result, nil
+}
+
+// buildRecallTrace records what the pipeline looked at, so the trace route can
+// report it without re-deriving the counts from the ranked list.
+func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCandidate) RecallTrace {
+	stageCounts := map[string]int{"semantic": 0, "keyword": 0, "reranker": 0}
+	for _, cand := range ranked {
+		for stage := range cand.armRanks {
+			if _, ok := stageCounts[stage]; ok {
+				stageCounts[stage]++
+			}
+		}
+	}
+	budget := len(candidates)
+	return RecallTrace{
+		Budget:          budget,
+		BudgetUsed:      len(ranked),
+		CandidatesFound: len(candidates),
+		StageCounts:     stageCounts,
+	}
 }
 
 // resolvedTypes returns the fact-type selection, defaulting to every supported

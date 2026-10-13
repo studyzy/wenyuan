@@ -57,5 +57,17 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	if err := rows.Err(); err != nil {
 		return RecallResult{}, err
 	}
-	return RecallResult{Matches: matches}, nil
+	return RecallResult{Matches: matches, Trace: traceForLexical(matches)}, nil
+}
+
+// traceForLexical records the count accounting for the lexical recall path,
+// which has a single stage so its per-stage counts are trivial but its totals
+// still belong in the trace.
+func traceForLexical(matches []RecallMatch) RecallTrace {
+	return RecallTrace{
+		Budget:          len(matches),
+		BudgetUsed:      len(matches),
+		CandidatesFound: len(matches),
+		StageCounts:     map[string]int{"semantic": 0, "keyword": len(matches), "reranker": 0},
+	}
 }

@@ -22,13 +22,44 @@ func BuildRecallResponse(result storage.RecallResult, req RecallRequest) RecallR
 	response.SourceFacts = buildSourceFactChannel(result)
 	response.SourceFactsTruncated = result.SourceFactsTruncated
 	if req.Trace {
-		response.Trace = map[string]any{
-			"query":      req.Query,
-			"returned":   len(items),
-			"elapsed_ms": 0,
-		}
+		response.Trace = buildRecallTraceResponse(result, req, len(items))
 	}
 	return response
+}
+
+// buildRecallTraceResponse renders the debug trace for a recall that asked for one. The shape
+// follows the reference: a query block describing what was searched, and a
+// summary block carrying the counts and per-stage timings a reader needs to
+// account for the call's duration.
+func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, returned int) map[string]any {
+	stageCounts := map[string]any{
+		"semantic": result.Trace.StageCounts["semantic"],
+		"keyword":  result.Trace.StageCounts["keyword"],
+		"reranker": result.Trace.StageCounts["reranker"],
+	}
+	phaseMetrics := map[string]any{
+		"retrieval_ms": result.Trace.PhaseMetrics.RetrievalMillis,
+		"fusion_ms":    result.Trace.PhaseMetrics.FusionMillis,
+		"assembly_ms":  result.Trace.PhaseMetrics.AssemblyMillis,
+		"total_ms":     result.Trace.PhaseMetrics.TotalMillis,
+	}
+	return map[string]any{
+		"query": map[string]any{
+			"query_text": req.Query,
+			"budget":     result.Trace.Budget,
+			"max_tokens": req.MaxTokens,
+			"tags":       nonNilStrings(req.Tags),
+		},
+		"summary": map[string]any{
+			"candidates_found":  result.Trace.CandidatesFound,
+			"budget_used":       result.Trace.BudgetUsed,
+			"budget_remaining":  result.Trace.Budget - result.Trace.BudgetUsed,
+			"total_duration_ms": result.Trace.PhaseMetrics.TotalMillis,
+			"results_returned":  returned,
+			"phase_metrics":     phaseMetrics,
+			"stage_counts":      stageCounts,
+		},
+	}
 }
 
 // toResultItem maps a storage match into a public result item.

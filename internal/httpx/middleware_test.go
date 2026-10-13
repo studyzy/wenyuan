@@ -141,3 +141,22 @@ func TestMetricsMiddlewareCountsRequests(t *testing.T) {
 		t.Fatalf("in-flight should return to zero, got %d", recorder.InFlight.Load())
 	}
 }
+
+// An unknown body field is reported on the response the same way an unknown
+// query parameter is, and the request is still answered.
+func TestUnknownBodyFieldsAreReported(t *testing.T) {
+	allowed := map[string]struct{}{"items": {}, "async": {}}
+	body := []byte(`{"items":[],"unknown_field":1,"another":2}`)
+	got := UnknownBodyFields(body, allowed)
+	if len(got) != 2 || got[0] != "another" || got[1] != "unknown_field" {
+		t.Fatalf("unknown body fields = %v, want [another unknown_field]", got)
+	}
+	// A known body has nothing to report.
+	if got := UnknownBodyFields([]byte(`{"items":[]}`), allowed); len(got) != 0 {
+		t.Fatalf("known body reported fields: %v", got)
+	}
+	// A non-object body is left to the route's own decoder.
+	if got := UnknownBodyFields([]byte(`[1,2]`), allowed); len(got) != 0 {
+		t.Fatalf("array body reported fields: %v", got)
+	}
+}

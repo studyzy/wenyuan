@@ -62,11 +62,23 @@ func NewHandlers(store storage.Store, retryAfterSeconds, readTimeoutMillis int) 
 	return &Handlers{Store: store, DefaultRetryAfterSeconds: retryAfterSeconds, ReadTimeoutMillis: readTimeoutMillis}
 }
 
+// retainBodyFields is the set of top-level body names the retain route accepts.
+// Deprecated aliases the contract keeps accepting are listed alongside the
+// current names so a client that sends one is not told it is unknown.
+var retainBodyFields = map[string]struct{}{
+	"items": {}, "async": {}, "operation_id": {}, "document_tags": {},
+	// Deprecated aliases kept for compatibility.
+	"background": {}, "reflect_mission": {},
+}
+
 // Retain serves the memory write route.
 func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
+	// Unknown body fields are reported on the response, never rejected, so a
+	// client that sends a field the route does not know learns about it.
+	body, r := httpx.RecordIgnoredBodyFields(r, retainBodyFields)
 	var req RetainRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "request body is not valid JSON"))
 		return
 	}
@@ -102,6 +114,12 @@ func BuildRetainResponse(bankID string, req RetainRequest, result storage.Retain
 	if req.Async {
 		response.OperationID = result.OperationID
 		response.OperationIDs = result.OperationIDs
+	}
+	// A negative count means the path did not account for the content, which is
+	// reported as absent rather than as zero.
+	if result.ProcessedContentTokens >= 0 {
+		tokens := result.ProcessedContentTokens
+		response.ProcessedContentTokens = &tokens
 	}
 	return response
 }

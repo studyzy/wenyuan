@@ -55,6 +55,13 @@ func RegisterDriver(fn OpenDBFunc) {
 // DriverAvailable reports whether a database constructor has been registered.
 func DriverAvailable() bool { return openDB != nil }
 
+// OpenDatabase constructs a database handle from a URL using the registered
+// driver. It is the public entry for callers that need to read a foreign,
+// reference-shaped database rather than open this project's own store.
+func OpenDatabase(url string) (DB, error) {
+	return openDB(url)
+}
+
 // NewPostgresStore wraps an already-constructed DB in the PostgreSQL store.
 func NewPostgresStore(db DB, schema string) *PostgresStore {
 	return &PostgresStore{db: db, schema: schema}

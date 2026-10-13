@@ -157,6 +157,33 @@ type RecallResult struct {
 	ChunkEntries         []ChunkEntry
 	SourceFactMap        map[string]string
 	SourceFactsTruncated bool
+
+	// Trace carries the recall debug counts. It is populated by the retrieval
+	// pipeline so the trace route can report what was searched without
+	// re-deriving it from the result list.
+	Trace RecallTrace
+}
+
+// RecallTrace is the debug accounting for one recall: how many candidates the
+// retrieval arms produced and how the time was spent.
+type RecallTrace struct {
+	// Budget and BudgetUsed count the candidate budget the pipeline consumed.
+	Budget     int
+	BudgetUsed int
+	// CandidatesFound is the number of raw candidates before ranking.
+	CandidatesFound int
+	// StageCounts is the per-stage number of matches that carried a score.
+	StageCounts map[string]int
+	// PhaseMetrics carries per-phase timings in milliseconds.
+	PhaseMetrics RecallPhaseMetrics
+}
+
+// RecallPhaseMetrics is the per-phase timing of a recall, in milliseconds.
+type RecallPhaseMetrics struct {
+	RetrievalMillis int
+	FusionMillis    int
+	AssemblyMillis  int
+	TotalMillis     int
 }
 
 // ReflectRequest asks the store for retrieval context used by synthesis.

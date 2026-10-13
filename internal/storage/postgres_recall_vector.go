@@ -96,5 +96,10 @@ func (s *PostgresStore) vectorRecall(ctx context.Context, q RecallQuery, types [
 		match.Final = hit.score
 		matches = append(matches, match)
 	}
-	return RecallResult{Matches: matches}, nil
+	return RecallResult{Matches: matches, Trace: RecallTrace{
+		Budget:          len(matches),
+		BudgetUsed:      len(matches),
+		CandidatesFound: len(matches),
+		StageCounts:     map[string]int{"semantic": len(matches), "keyword": 0, "reranker": 0},
+	}}, nil
 }

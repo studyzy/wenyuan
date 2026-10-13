@@ -18,6 +18,11 @@ const (
 	Replace Mode = "replace"
 	// Append keeps existing rows and adds the archive's rows alongside them.
 	Append Mode = "append"
+	// Incremental keeps existing rows and writes only the documents whose
+	// identity the target does not already hold, so a migration can be re-run
+	// after the source instance took more writes without duplicating what was
+	// already moved and without losing what is new.
+	Incremental Mode = "incremental"
 )
 
 // Options controls a migration run.
@@ -64,11 +69,30 @@ func Run(ctx context.Context, store storage.Store, mapping Mapping, opts Options
 		return Report{}, err
 	}
 	for _, doc := range mapping.Archive.Documents {
+		if mode == Incremental && documentPresent(ctx, store, bankID, doc.ID) {
+			// The target already holds this document, so this run leaves it
+			// alone. That is what makes a re-run after further source writes
+			// both non-duplicating and non-destructive.
+			report.Skipped++
+			continue
+		}
 		if err := writeDocument(ctx, store, bankID, doc); err != nil {
 			return Report{}, err
 		}
+		report.Written++
 	}
 	return report, nil
+}
+
+// documentPresent reports whether the target bank already holds a document. An
+// error is treated as absent so the document is written rather than skipped,
+// because losing data is worse than writing it twice.
+func documentPresent(ctx context.Context, store storage.Store, bankID, documentID string) bool {
+	if documentID == "" {
+		return false
+	}
+	_, err := store.GetDocument(ctx, bankID, documentID)
+	return err == nil
 }
 
 func ensureBank(ctx context.Context, store storage.Store, bankID string, opts Options) error {

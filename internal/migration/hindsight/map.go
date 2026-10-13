@@ -35,6 +35,10 @@ type Report struct {
 	// Unmapped lists archive fields that have no Wenyuan column, so the caller
 	// can see exactly what did and did not survive the transfer.
 	Unmapped []string
+	// Written and Skipped count the documents an incremental run wrote and
+	// left alone because the target already held them.
+	Written int
+	Skipped int
 }
 
 // targetBankID resolves the bank identifier to write under.
