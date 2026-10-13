@@ -100,3 +100,10 @@ jobs:
         env:
           PG_TEST_URL: postgresql://wenyuan:wenyuan@127.0.0.1:5432/wenyuan_test
         run: make test-pg
+
+      # The PostgreSQL-backed suite reaches code the offline gate cannot, so its
+      # coverage is enforced against its own, higher floor.
+      - name: PostgreSQL coverage threshold
+        env:
+          PG_TEST_URL: postgresql://wenyuan:wenyuan@127.0.0.1:5432/wenyuan_test
+        run: make cover-check-pg

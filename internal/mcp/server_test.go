@@ -133,3 +133,110 @@ func TestNotificationIsNotAnswered(t *testing.T) {
 		t.Fatalf("body = %s, want empty", rec.Body.String())
 	}
 }
+
+// callTool posts a tools/call and returns the decoded result content.
+func callTool(t *testing.T, server *Server, id, name, args string) map[string]any {
+	t.Helper()
+	got := rpc(t, server, `{"jsonrpc":"2.0","id":`+id+`,"method":"tools/call",
+		"params":{"name":"`+name+`","arguments":`+args+`}}`)
+	result, _ := got["result"].(map[string]any)
+	return result
+}
+
+// Every advertised tool is invocable and returns a payload rather than a
+// transport error.
+func TestEveryToolIsInvocable(t *testing.T) {
+	server := newServer(t)
+	// Seed one memory so the read tools have something to return.
+	if result := callTool(t, server, "1", "retain", `{"bank_id":"b1","content":"Alice works at Google."}`); result["isError"] == true {
+		t.Fatalf("retain failed: %v", result)
+	}
+
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"recall", `{"bank_id":"b1","query":"Alice"}`},
+		{"reflect", `{"bank_id":"b1","question":"where does Alice work?"}`},
+		{"list_banks", `{}`},
+		{"get_bank", `{"bank_id":"b1"}`},
+		{"list_memories", `{"bank_id":"b1"}`},
+		{"list_mental_models", `{"bank_id":"b1"}`},
+		{"list_directives", `{"bank_id":"b1"}`},
+	}
+	for _, tc := range cases {
+		result := callTool(t, server, "2", tc.name, tc.args)
+		if result["isError"] == true {
+			t.Fatalf("tool %q reported an error: %v", tc.name, result)
+		}
+		if _, ok := result["content"].([]any); !ok {
+			t.Fatalf("tool %q returned no content: %v", tc.name, result)
+		}
+	}
+}
+
+// get_memory reads one unit by identifier once the bank holds one.
+func TestGetMemoryTool(t *testing.T) {
+	server := newServer(t)
+	callTool(t, server, "1", "retain", `{"bank_id":"b1","content":"Alice works at Google."}`)
+
+	listed := callTool(t, server, "2", "list_memories", `{"bank_id":"b1"}`)
+	content, _ := listed["content"].([]any)
+	text, _ := content[0].(map[string]any)["text"].(string)
+	var page struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(text), &page); err != nil || len(page.Memories) == 0 {
+		t.Fatalf("list_memories payload = %s (err %v)", text, err)
+	}
+	got := callTool(t, server, "3", "get_memory", `{"bank_id":"b1","memory_id":"`+page.Memories[0].ID+`"}`)
+	if got["isError"] == true {
+		t.Fatalf("get_memory failed: %v", got)
+	}
+}
+
+// An unknown tool reports an error result rather than a transport failure.
+func TestUnknownToolIsAResult(t *testing.T) {
+	result := callTool(t, newServer(t), "1", "not_a_tool", `{}`)
+	if result["isError"] != true {
+		t.Fatalf("unknown tool = %v, want an error result", result)
+	}
+}
+
+// A malformed tools/call body is a JSON-RPC invalid-params error.
+func TestToolsCallMalformedParams(t *testing.T) {
+	got := rpc(t, newServer(t), `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":"not an object"}`)
+	if _, ok := got["error"].(map[string]any); !ok {
+		t.Fatalf("error = %v, want a JSON-RPC error", got["error"])
+	}
+}
+
+// A wrong JSON-RPC version and a non-JSON body are both rejected.
+func TestMalformedRequests(t *testing.T) {
+	server := newServer(t)
+	if got := rpc(t, server, `{"jsonrpc":"1.0","id":1,"method":"initialize"}`); got["error"] == nil {
+		t.Fatal("a wrong jsonrpc version must be rejected")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("not json"))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil || decoded["error"] == nil {
+		t.Fatalf("non-JSON body response = %s", rec.Body.String())
+	}
+}
+
+// A GET is refused, because the transport is POST-only.
+func TestGetIsRefused(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	rec := httptest.NewRecorder()
+	newServer(t).ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("GET must be refused, got %d", rec.Code)
+	}
+}

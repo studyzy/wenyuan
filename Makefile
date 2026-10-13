@@ -18,12 +18,16 @@ GOLANGCI_LINT ?= golangci-lint
 # the default gate stays offline. Point WENYUAN_TEST_DATABASE_URL at a database
 # this project owns; the suite creates its own schema and cleans up.
 PG_TEST_URL ?= $(WENYUAN_TEST_DATABASE_URL)
-# The coverage floor sits at the measured baseline so a regression fails the
-# gate; raise it as coverage improves rather than leaving it aspirational.
-COVERAGE_MIN ?= 40
+# The coverage floor sits just below the measured baseline so a regression fails
+# the gate; raise it as coverage improves rather than leaving it aspirational.
+# The default suite reaches ~58% of statements; the PostgreSQL-backed suite
+# reaches ~68% because it also exercises the postgres backend.
+COVERAGE_MIN ?= 56
+# COVERAGE_MIN_PG is the floor for the PostgreSQL-backed suite.
+COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run install help \
-        bench test-pg cover cover-check
+        bench test-pg cover cover-check cover-check-pg
 
 all: check
 
@@ -73,6 +77,17 @@ cover-check:
 	@total=$$($(GO) tool cover -func=coverage.out | tail -1 | sed 's/.*[[:space:]]\([0-9.]*\)%$$/\1/'); \
 	echo "coverage: $$total% (minimum $(COVERAGE_MIN)%)"; \
 	awk -v got="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { if (got+0 < min+0) { print "coverage below the minimum"; exit 1 } }'
+
+## cover-check-pg: fail when the PostgreSQL-backed suite's coverage is below COVERAGE_MIN_PG
+cover-check-pg:
+	@if [ -z "$(PG_TEST_URL)" ]; then \
+		echo "cover-check-pg needs WENYUAN_TEST_DATABASE_URL (or PG_TEST_URL) pointed at a database this project owns"; \
+		exit 1; \
+	fi
+	WENYUAN_TEST_DATABASE_URL="$(PG_TEST_URL)" $(GO) test -tags pgx -count=1 -coverprofile=coverage-pg.out $(GOFLAGS) $(PKGS)
+	@total=$$($(GO) tool cover -func=coverage-pg.out | tail -1 | sed 's/.*[[:space:]]\([0-9.]*\)%$$/\1/'); \
+	echo "coverage (pgx): $$total% (minimum $(COVERAGE_MIN_PG)%)"; \
+	awk -v got="$$total" -v min="$(COVERAGE_MIN_PG)" 'BEGIN { if (got+0 < min+0) { print "coverage below the minimum"; exit 1 } }'
 
 ## fmt: format all Go source
 fmt:
