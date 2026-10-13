@@ -14,7 +14,14 @@ CMD       ?= ./cmd/server
 CMDCTL    ?= ./cmd/bankctl
 GOLANGCI_LINT ?= golangci-lint
 
-.PHONY: all build test vet pgx lint check fmt tidy clean run install help
+# The PostgreSQL-backed suite needs a live instance and is therefore opt-in:
+# the default gate stays offline. Point WENYUAN_TEST_DATABASE_URL at a database
+# this project owns; the suite creates its own schema and cleans up.
+PG_TEST_URL ?= $(WENYUAN_TEST_DATABASE_URL)
+COVERAGE_MIN ?= 60
+
+.PHONY: all build test vet pgx lint check fmt tidy clean run install help \
+        bench test-pg cover cover-check
 
 all: check
 
@@ -40,6 +47,30 @@ lint:
 
 ## check: the full verification gate (build, test, vet, pgx, lint)
 check: build test vet pgx lint
+
+## bench: run the benchmarks
+bench:
+	$(GO) test -run '^$$' -bench . -benchmem $(GOFLAGS) $(PKGS)
+
+## test-pg: run the PostgreSQL-backed suite against a live instance
+test-pg:
+	@if [ -z "$(PG_TEST_URL)" ]; then \
+		echo "test-pg needs WENYUAN_TEST_DATABASE_URL (or PG_TEST_URL) pointed at a database this project owns"; \
+		exit 1; \
+	fi
+	WENYUAN_TEST_DATABASE_URL="$(PG_TEST_URL)" $(GO) test -tags pgx -count=1 $(GOFLAGS) $(PKGS)
+
+## cover: report statement coverage
+cover:
+	$(GO) test -count=1 -coverprofile=coverage.out $(GOFLAGS) $(PKGS)
+	$(GO) tool cover -func=coverage.out | tail -1
+
+## cover-check: fail when statement coverage is below COVERAGE_MIN
+cover-check:
+	$(GO) test -count=1 -coverprofile=coverage.out $(GOFLAGS) $(PKGS)
+	@total=$$($(GO) tool cover -func=coverage.out | tail -1 | sed 's/.*[[:space:]]\([0-9.]*\)%$$/\1/'); \
+	echo "coverage: $$total% (minimum $(COVERAGE_MIN)%)"; \
+	awk -v got="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { if (got+0 < min+0) { print "coverage below the minimum"; exit 1 } }'
 
 ## fmt: format all Go source
 fmt:
