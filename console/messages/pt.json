@@ -49,7 +49,8 @@
         "invalidRequestBody": "Não foi possível ler o corpo da solicitação."
       },
       "banks": {
-        "clone": "Não foi possível clonar o banco."
+        "clone": "Não foi possível clonar o banco.",
+        "healthLlm": "A verificação de conectividade LLM do banco falhou."
       },
       "memories": {
         "notFound": "Esta memória não foi encontrada."
@@ -62,6 +63,14 @@
         "unauthorized": "É necessário autenticar-se para continuar.",
         "notFound": "O recurso solicitado não foi encontrado.",
         "internal": "Ocorreu um erro inesperado."
+      },
+      "auditLogs": {
+        "list": "Falha ao carregar os registros de auditoria",
+        "stats": "Falha ao carregar as estatísticas de auditoria"
+      },
+      "llmRequests": {
+        "list": "Falha ao carregar as solicitações LLM",
+        "stats": "Falha ao carregar as estatísticas de solicitações LLM"
       }
     }
   },

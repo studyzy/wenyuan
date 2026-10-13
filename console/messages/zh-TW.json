@@ -49,7 +49,8 @@
         "invalidRequestBody": "無法讀取請求內容。"
       },
       "banks": {
-        "clone": "無法複製該銀行。"
+        "clone": "無法複製該銀行。",
+        "healthLlm": "銀行 LLM 連線探測失敗。"
       },
       "memories": {
         "notFound": "找不到此記憶。"
@@ -62,6 +63,14 @@
         "unauthorized": "需要驗證才能繼續。",
         "notFound": "找不到要求的資源。",
         "internal": "發生非預期的錯誤。"
+      },
+      "auditLogs": {
+        "list": "取得稽核日誌失敗",
+        "stats": "取得稽核日誌統計失敗"
+      },
+      "llmRequests": {
+        "list": "取得 LLM 請求記錄失敗",
+        "stats": "取得 LLM 請求統計失敗"
       }
     }
   },

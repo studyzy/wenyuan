@@ -49,7 +49,8 @@
         "invalidRequestBody": "The request body could not be read."
       },
       "banks": {
-        "clone": "The bank could not be cloned."
+        "clone": "The bank could not be cloned.",
+        "healthLlm": "The bank LLM connectivity probe failed."
       },
       "memories": {
         "notFound": "This memory could not be found."
@@ -62,6 +63,14 @@
         "unauthorized": "Authentication is required to continue.",
         "notFound": "The requested resource was not found.",
         "internal": "An unexpected error occurred."
+      },
+      "auditLogs": {
+        "list": "Failed to list audit logs",
+        "stats": "Failed to load audit-log statistics"
+      },
+      "llmRequests": {
+        "list": "Failed to list LLM requests",
+        "stats": "Failed to load LLM-request statistics"
       }
     }
   },

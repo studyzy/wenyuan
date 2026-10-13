@@ -49,7 +49,8 @@
         "invalidRequestBody": "无法读取请求正文。"
       },
       "banks": {
-        "clone": "无法克隆该记忆库。"
+        "clone": "无法克隆该记忆库。",
+        "healthLlm": "银行 LLM 连通性探测失败。"
       },
       "memories": {
         "notFound": "找不到此记忆。"
@@ -62,6 +63,14 @@
         "unauthorized": "需要身份验证才能继续。",
         "notFound": "未找到请求的资源。",
         "internal": "发生意外错误。"
+      },
+      "auditLogs": {
+        "list": "获取审计日志失败",
+        "stats": "获取审计日志统计失败"
+      },
+      "llmRequests": {
+        "list": "获取 LLM 请求记录失败",
+        "stats": "获取 LLM 请求统计失败"
       }
     }
   },

@@ -1,5 +1,5 @@
 import { resolveServerConfig } from "../../../../../lib/server/config";
-import { bankScopedPath, requestLocale, serializeUpstream } from "../../../../../lib/server/proxy";
+import { bankScopedPath, requestLocale, serializeUpstream, upstreamUnavailableBody } from "../../../../../lib/server/proxy";
 import { booleanQueryFlags, errorResponse } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ bankId: string }> };
@@ -17,6 +17,8 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const locale = requestLocale(request);
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
 
+  const failure = { failureLabel: "export_failed", errorKey: "api.errors.generic.internal", locale };
+
   try {
     return await serializeUpstream({
       config,
@@ -24,11 +26,9 @@ export async function GET(request: Request, context: Context): Promise<Response>
       upstreamPath: bankScopedPath("/v1/default/banks", (await context.params).bankId, "/export"),
       query: booleanQueryFlags(request, SECTION_FLAGS),
       method: "GET",
-      failureLabel: "export_failed",
-      errorKey: "api.errors.generic.internal",
-      locale,
+      ...failure,
     });
   } catch {
-    return errorResponse("api.errors.generic.internal", 500, locale);
+    return upstreamUnavailableBody(failure);
   }
 }

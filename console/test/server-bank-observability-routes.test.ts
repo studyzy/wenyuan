@@ -57,6 +57,100 @@ describe("observability query passthrough", () => {
   });
 });
 
+describe("observability success statuses follow the contract", () => {
+  it("returns 200 for audit logs, audit stats, llm requests and llm stats", async () => {
+    for (const [label, call] of [
+      [
+        "audit logs",
+        () =>
+          auditLogs.GET(makeRequest("http://localhost/api/banks/acme/audit-logs"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "audit stats",
+        () =>
+          auditStats.GET(makeRequest("http://localhost/api/banks/acme/audit-logs/stats"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "llm requests",
+        () =>
+          llmRequests.GET(makeRequest("http://localhost/api/banks/acme/llm-requests"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "llm stats",
+        () =>
+          llmStats.GET(makeRequest("http://localhost/api/banks/acme/llm-requests/stats"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+    ] as const) {
+      const stub = stubFetch([{ status: 201, body: { ok: true } }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status, `${label} should report 200`).toBe(200);
+      });
+    }
+  });
+});
+
+describe("observability failures use the localized envelope", () => {
+  it("maps an upstream failure to its status without leaking the internal key", async () => {
+    for (const [label, call] of [
+      [
+        "audit logs",
+        () =>
+          auditLogs.GET(
+            makeRequest("http://localhost/api/banks/acme/audit-logs", { acceptLanguage: "en" }),
+            { params: Promise.resolve({ bankId: "acme" }) },
+          ),
+      ],
+      [
+        "llm stats",
+        () =>
+          llmStats.GET(
+            makeRequest("http://localhost/api/banks/acme/llm-requests/stats", {
+              acceptLanguage: "en",
+            }),
+            { params: Promise.resolve({ bankId: "acme" }) },
+          ),
+      ],
+    ] as const) {
+      const stub = stubFetch([{ status: 429, body: { detail: "rate limited" } }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status, `${label} passes the upstream status`).toBe(429);
+        const payload = await readJson(response);
+        expect(typeof payload.error).toBe("string");
+        expect((payload.error as string).length).toBeGreaterThan(0);
+        expectNoErrorKey(payload);
+        expect(payload.upstream).toMatchObject({ status: 429 });
+      });
+    }
+  });
+
+  it("reports 502 when the upstream is unreachable", async () => {
+    const stub = stubFetch([{ reject: true }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await llmRequests.GET(
+        makeRequest("http://localhost/api/banks/acme/llm-requests", { acceptLanguage: "en" }),
+        { params: Promise.resolve({ bankId: "acme" }) },
+      );
+      expect(response.status).toBe(502);
+      const payload = await readJson(response);
+      expect(typeof payload.error).toBe("string");
+      expectNoErrorKey(payload);
+    });
+  });
+});
+
 describe("attachment proxy guard", () => {
   it("streams upstream bytes with the upstream content type and a no-sniff header", async () => {
     const stub = stubFetch([{ status: 200, body: "binary", contentType: "image/png" }]);

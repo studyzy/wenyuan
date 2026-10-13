@@ -1,16 +1,40 @@
 import { resolveServerConfig } from "../../../../../lib/server/config";
-import { bankScopedPath, proxyUpstream, searchParamsObject } from "../../../../../lib/server/proxy";
+import {
+  bankScopedPath,
+  requestLocale,
+  searchParamsObject,
+  serializeUpstream,
+  upstreamUnavailableBody,
+} from "../../../../../lib/server/proxy";
+import { errorResponse } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ bankId: string }> };
 
-/** Bank audit-log listing with query passthrough. */
+/**
+ * Bank audit-log listing.
+ *
+ * Returns 200 with a bank id, total, limit, offset and an items list. Any
+ * query parameters are forwarded to the upstream verbatim.
+ */
 export async function GET(request: Request, context: Context): Promise<Response> {
+  const locale = requestLocale(request);
+  const bankId = (await context.params).bankId;
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: bankScopedPath("/v1/default/banks", (await context.params).bankId, "/audit-logs"),
-    query: searchParamsObject(request),
-    method: "GET",
-  });
+
+  const failure = { failureLabel: "audit_logs_list_failed", errorKey: "api.errors.auditLogs.list", locale };
+
+  try {
+    return await serializeUpstream({
+      config,
+      request,
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/audit-logs"),
+      query: searchParamsObject(request),
+      method: "GET",
+      ...failure,
+    });
+  } catch {
+    return upstreamUnavailableBody(failure);
+  }
 }

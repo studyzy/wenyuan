@@ -97,9 +97,18 @@ function upstreamErrorField(result: UpstreamResult): string | null {
  * `details` field that is the upstream error only for 4xx and null otherwise,
  * and a nested `upstream` object with `status` and a detail that follows the
  * same 4xx-only rule.
+ *
+ * A transport failure (the call itself throws) has no upstream status at all,
+ * so it reports 502 rather than being classified as an internal error. Callers
+ * therefore do not need a catch that guesses a status.
  */
 export async function serializeUpstream(options: SerializeOptions): Promise<Response> {
-  const result = await callUpstream(options.config, forwardBody(options));
+  let result: UpstreamResult;
+  try {
+    result = await callUpstream(options.config, forwardBody(options));
+  } catch {
+    return upstreamUnavailableBody(options);
+  }
   return serializeResult(result, options);
 }
 

@@ -49,7 +49,8 @@
         "invalidRequestBody": "讀唔到請求內容。"
       },
       "banks": {
-        "clone": "複製唔到呢個銀行。"
+        "clone": "複製唔到呢個銀行。",
+        "healthLlm": "銀行 LLM 連線探測失敗。"
       },
       "memories": {
         "notFound": "搵唔到呢條記憶。"
@@ -62,6 +63,14 @@
         "unauthorized": "要繼續就要先驗證身分。",
         "notFound": "搵唔到要求嘅資源。",
         "internal": "發生咗預期之外嘅錯誤。"
+      },
+      "auditLogs": {
+        "list": "攞稽核日誌失敗",
+        "stats": "攞稽核日誌統計失敗"
+      },
+      "llmRequests": {
+        "list": "攞 LLM 請求記錄失敗",
+        "stats": "攞 LLM 請求統計失敗"
       }
     }
   },

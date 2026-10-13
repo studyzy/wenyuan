@@ -37,7 +37,7 @@ export async function withEnv<T>(
 
 /** Stub global fetch with a queue of responses, capturing requested URLs. */
 export function stubFetch(
-  responses: Array<{ status?: number; body?: unknown; contentType?: string }>,
+  responses: Array<{ status?: number; body?: unknown; contentType?: string; reject?: boolean }>,
 ): { calls: string[]; restore: () => void } {
   const original = globalThis.fetch;
   const calls: string[] = [];
@@ -47,6 +47,7 @@ export function stubFetch(
     calls.push(typeof input === "string" ? input : input.toString());
     const current = responses[Math.min(index, responses.length - 1)];
     index += 1;
+    if (current?.reject) throw new TypeError("fetch failed");
     const status = current?.status ?? 200;
     const contentType = current?.contentType ?? "application/json";
     const payload =

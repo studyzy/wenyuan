@@ -49,7 +49,8 @@
         "invalidRequestBody": "Le corps de la requête n'a pas pu être lu."
       },
       "banks": {
-        "clone": "La banque n'a pas pu être clonée."
+        "clone": "La banque n'a pas pu être clonée.",
+        "healthLlm": "Le test de connectivité LLM de la banque a échoué."
       },
       "memories": {
         "notFound": "Ce souvenir est introuvable."
@@ -62,6 +63,14 @@
         "unauthorized": "Une authentification est requise pour continuer.",
         "notFound": "La ressource demandée est introuvable.",
         "internal": "Une erreur inattendue s'est produite."
+      },
+      "auditLogs": {
+        "list": "Échec du chargement des journaux d’audit",
+        "stats": "Échec du chargement des statistiques d’audit"
+      },
+      "llmRequests": {
+        "list": "Échec du chargement des requêtes LLM",
+        "stats": "Échec du chargement des statistiques de requêtes LLM"
       }
     }
   },
