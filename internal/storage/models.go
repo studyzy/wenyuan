@@ -309,6 +309,26 @@ type Attachment struct {
 	Filename       string
 }
 
+// ConsolidationFact is one raw memory unit offered to a consolidation pass as
+// new evidence.
+type ConsolidationFact struct {
+	ID            string
+	Text          string
+	OccurredStart *time.Time
+	OccurredEnd   *time.Time
+	MentionedAt   *time.Time
+}
+
+// ConsolidationObservation is one existing consolidated conclusion offered to a
+// consolidation pass as a merge candidate.
+type ConsolidationObservation struct {
+	ID          string
+	Text        string
+	ProofCount  int
+	SourceIDs   []string
+	MentionedAt *time.Time
+}
+
 // MemoryLink is one directed link between two memory units.
 type MemoryLink struct {
 	ID       string

@@ -302,6 +302,22 @@ type Store interface {
 	// ListAttachments returns the attachments a document carries, ordered by
 	// creation, so provenance resolves deterministically.
 	ListAttachments(ctx context.Context, bankID, documentID string) ([]Attachment, error)
+
+	// ConsolidationFacts returns the newest raw facts of a bank that have not
+	// yet been folded into an observation.
+	ConsolidationFacts(ctx context.Context, bankID string, limit int) ([]ConsolidationFact, error)
+	// ConsolidationObservations returns a bank's existing observations, newest
+	// first, as merge candidates for a consolidation pass.
+	ConsolidationObservations(ctx context.Context, bankID string, limit int) ([]ConsolidationObservation, error)
+	// CreateObservation records a new observation resting on the given facts.
+	CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error)
+	// UpdateObservation rewrites an observation and attaches more evidence.
+	UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error
+	// DeleteObservation removes one observation and its evidence links.
+	DeleteObservation(ctx context.Context, bankID, observationID string) error
+	// MarkConsolidated records that the given facts have been folded, so the
+	// next pass does not reconsider them.
+	MarkConsolidated(ctx context.Context, bankID string, factIDs []string) error
 }
 
 // Backend selects a PostgreSQL driver implementation. The only backend in

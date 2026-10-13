@@ -64,7 +64,14 @@ func run(args []string) error {
 		"max_retries", cfg.Worker.MaxRetries,
 		"lease_seconds", int(cfg.Worker.Lease.Seconds()))
 
-	consumer := app.NewQueueConsumer(store, cfg.Worker)
+	// The worker shares the server's provider resolution, so a queued
+	// consolidation pass calls the same model the server would.
+	model, err := app.ResolveProvider(cfg)
+	if err != nil {
+		return err
+	}
+
+	consumer := app.NewQueueConsumer(store, model, cfg.Worker)
 	return app.RunQueueConsumer(ctx, consumer)
 }
 

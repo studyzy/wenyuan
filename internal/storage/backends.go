@@ -66,6 +66,9 @@ type MemoryStore struct {
 	// attachments holds one document's copy of an inline retain attachment,
 	// keyed by bank, document and content hash.
 	attachments map[string]Attachment
+	// consolidated records the facts a consolidation pass has already folded,
+	// so the next pass does not reconsider them.
+	consolidated map[string]struct{}
 	// mentalModelRecords holds mental models keyed by bank and identifier,
 	// because an identifier is unique within its bank rather than globally.
 	mentalModelRecords map[string]MentalModel
@@ -103,6 +106,7 @@ func NewMemoryStore(schema string) *MemoryStore {
 		cooccurrences:      map[string]int{},
 		storedFiles:        map[string]StoredFile{},
 		attachments:        map[string]Attachment{},
+		consolidated:       map[string]struct{}{},
 		mentalModelRecords: map[string]MentalModel{},
 		mentalModelHistory: map[string][]MentalModelHistoryEntry{},
 		directiveRecords:   map[string]Directive{},
