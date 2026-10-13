@@ -108,3 +108,131 @@ describe("lifecycle routes proxy at their catalogued paths", () => {
     });
   });
 });
+
+describe("lifecycle success statuses follow the contract", () => {
+  it("returns 200 for export, import, consolidate, recover and strategy preview", async () => {
+    for (const [label, call] of [
+      ["export", () => bankExport.GET(makeRequest("http://localhost/api/banks/acme/export"), ctx("acme"))],
+      [
+        "import",
+        () =>
+          bankImport.POST(
+            makeRequest("http://localhost/api/banks/acme/import", { method: "POST", body: "{}" }),
+            ctx("acme"),
+          ),
+      ],
+      [
+        "consolidate",
+        () =>
+          consolidate.POST(
+            makeRequest("http://localhost/api/banks/acme/consolidate", { method: "POST", body: "{}" }),
+            ctx("acme"),
+          ),
+      ],
+      [
+        "recover",
+        () =>
+          recover.POST(
+            makeRequest("http://localhost/api/banks/acme/consolidation-recover", {
+              method: "POST",
+              body: "{}",
+            }),
+            ctx("acme"),
+          ),
+      ],
+      [
+        "strategy preview",
+        () =>
+          strategyPreview.POST(
+            makeRequest("http://localhost/api/banks/acme/consolidation-strategies/preview", {
+              method: "POST",
+              body: "{}",
+            }),
+            ctx("acme"),
+          ),
+      ],
+    ] as const) {
+      const stub = stubFetch([{ status: 201, body: { ok: true } }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status, `${label} should report its own success status`).toBe(200);
+      });
+    }
+  });
+});
+
+describe("boolean query flags are strict", () => {
+  it("sets dry_run only when the raw value is exactly the string true", async () => {
+    for (const [query, expected] of [
+      ["dry_run=true", true],
+      ["dry_run=TRUE", false],
+      ["dry_run=1", false],
+      ["dry_run=false", false],
+      ["", false],
+    ] as const) {
+      const stub = stubFetch([{ status: 200, body: {} }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const url = `http://localhost/api/banks/acme/import${query ? `?${query}` : ""}`;
+        await bankImport.POST(makeRequest(url, { method: "POST", body: "{}" }), ctx("acme"));
+        const called = stub.calls[0] ?? "";
+        expect(called.includes("dry_run=true"), `${query || "(none)"} -> dry_run set?`).toBe(expected);
+      });
+    }
+  });
+
+  it("sets export section flags only when each raw value is exactly true", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await bankExport.GET(
+        makeRequest(
+          "http://localhost/api/banks/acme/export?include_observations=true&exclude_parents=yes&include_knowledge_base=true",
+        ),
+        ctx("acme"),
+      );
+      const called = stub.calls[0] ?? "";
+      expect(called).toContain("include_observations=true");
+      expect(called).toContain("include_knowledge_base=true");
+      expect(called).not.toContain("exclude_parents");
+    });
+  });
+});
+
+describe("lifecycle failures use the localized envelope", () => {
+  it("maps an upstream failure to its status with the localized error and no internal key", async () => {
+    const stub = stubFetch([{ status: 503, body: { detail: "upstream down" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await bankExport.GET(
+        makeRequest("http://localhost/api/banks/acme/export", { acceptLanguage: "en" }),
+        ctx("acme"),
+      );
+      expect(response.status).toBe(503);
+      const payload = await readJson(response);
+      expect(typeof payload.error).toBe("string");
+      expect((payload.error as string).length).toBeGreaterThan(0);
+      expectNoErrorKey(payload);
+      expect(payload.upstream).toMatchObject({ status: 503 });
+    });
+  });
+
+  it("localizes a consolidate failure into the requested locale", async () => {
+    const stub = stubFetch([{ status: 500, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await consolidate.POST(
+        makeRequest("http://localhost/api/banks/acme/consolidate", {
+          method: "POST",
+          acceptLanguage: "zh-CN",
+          body: "{}",
+        }),
+        ctx("acme"),
+      );
+      const payload = await readJson(response);
+      expect(typeof payload.error).toBe("string");
+      expectNoErrorKey(payload);
+    });
+  });
+});

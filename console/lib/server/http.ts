@@ -31,6 +31,25 @@ export function requiredQueryParam(
 }
 
 /**
+ * Collect the named boolean query flags.
+ *
+ * A flag is set only when its raw value is exactly the string "true"; every
+ * other value leaves the flag unset so the upstream default applies. Unset
+ * flags are omitted rather than sent as false.
+ */
+export function booleanQueryFlags(
+  request: Request,
+  names: readonly string[],
+): Record<string, string> {
+  const searchParams = new URL(request.url).searchParams;
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    if (searchParams.get(name) === "true") result[name] = "true";
+  }
+  return result;
+}
+
+/**
  * Resolve the bank scoping value, accepting a legacy agent-style alias as an
  * alternative to the primary bank id parameter.
  */
