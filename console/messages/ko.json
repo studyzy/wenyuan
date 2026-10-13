@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Hindsight 제어 플레인",
+    "loading": "불러오는 중...",
+    "cancel": "취소",
+    "confirm": "확인",
+    "save": "저장",
+    "delete": "삭제",
+    "close": "닫기",
+    "search": "검색",
+    "refresh": "새로 고침",
+    "retry": "다시 시도",
+    "noResults": "결과 없음",
+    "unknown": "알 수 없음"
+  },
+  "errors": {
+    "unauthorized": "계속하려면 인증이 필요합니다.",
+    "forbidden": "이 작업을 수행할 권한이 없습니다.",
+    "notFound": "요청한 리소스를 찾을 수 없습니다.",
+    "badRequest": "요청이 유효하지 않았습니다.",
+    "requiredBankId": "뱅크 ID 쿼리 매개변수가 필요합니다.",
+    "requiredDocumentId": "문서 ID 쿼리 매개변수가 필요합니다.",
+    "requiredChunkId": "청크 ID 쿼리 매개변수가 필요합니다.",
+    "unsupportedMemoriesDelete": "개별 메모리 삭제는 지원되지 않습니다.",
+    "loginKeyNotConfigured": "이 서버에 액세스 키가 구성되어 있지 않습니다.",
+    "loginMalformedBody": "로그인 요청 본문을 읽을 수 없습니다.",
+    "loginWrongKey": "액세스 키가 올바르지 않습니다.",
+    "versionUnavailable": "업스트림 버전 엔드포인트를 사용할 수 없습니다.",
+    "upstreamUnavailable": "업스트림 서비스를 사용할 수 없습니다.",
+    "invalidDownloadPath": "요청한 다운로드 경로는 허용되지 않습니다.",
+    "invalidLocale": "요청한 로케일은 지원되지 않습니다.",
+    "internal": "예기치 않은 오류가 발생했습니다."
+  },
+  "auth": {
+    "signInTitle": "로그인",
+    "signInSubtitle": "계속하려면 액세스 키를 입력하세요",
+    "accessKeyLabel": "액세스 키",
+    "accessKeyPlaceholder": "액세스 키",
+    "signIn": "로그인",
+    "signOut": "로그아웃",
+    "signedIn": "로그인되었습니다.",
+    "signedOut": "로그아웃되었습니다."
+  },
+  "nav": {
+    "dashboard": "대시보드",
+    "banks": "뱅크",
+    "knowledgeBase": "지식 베이스",
+    "statistics": "통계",
+    "memory": "메모리",
+    "entities": "엔티티",
+    "graph": "그래프",
+    "operations": "작업",
+    "recall": "검색",
+    "reflect": "성찰",
+    "documents": "문서",
+    "settings": "설정",
+    "language": "언어"
+  },
+  "dashboard": {
+    "title": "모든 뱅크",
+    "subtitle": "이 제어 플레인이 알고 있는 모든 뱅크",
+    "empty": "아직 생성된 뱅크가 없습니다.",
+    "columnId": "뱅크 ID",
+    "columnName": "이름",
+    "columnCreated": "생성됨",
+    "columnActions": "작업"
+  },
+  "bank": {
+    "detailTitle": "뱅크 상세",
+    "notFound": "이 뱅크를 찾을 수 없습니다.",
+    "configTitle": "구성",
+    "aliasesTitle": "별칭",
+    "webhooksTitle": "웹훅",
+    "mentalModelsTitle": "멘탈 모델",
+    "observationsTitle": "관찰"
+  },
+  "views": {
+    "overview": "개요",
+    "data": "데이터",
+    "knowledge": "지식",
+    "configuration": "구성",
+    "memories": "메모리",
+    "documents": "문서",
+    "operations": "작업",
+    "stats": "통계"
+  },
+  "knowledgeBase": {
+    "treeTitle": "트리",
+    "searchTitle": "검색",
+    "searchPlaceholder": "지식 베이스 검색",
+    "exportTitle": "내보내기",
+    "nodesTitle": "노드",
+    "pagesTitle": "페이지",
+    "foldersTitle": "폴더"
+  },
+  "stats": {
+    "title": "통계",
+    "memoriesOverTime": "시간 경과에 따른 메모리",
+    "totalMemories": "총 메모리",
+    "totalDocuments": "총 문서",
+    "totalEntities": "총 엔티티"
+  },
+  "operations": {
+    "title": "작업",
+    "empty": "이 뱅크에 대한 작업이 없습니다.",
+    "statusPending": "대기 중",
+    "statusRunning": "실행 중",
+    "statusComplete": "완료됨",
+    "statusFailed": "실패함"
+  },
+  "files": {
+    "uploadTitle": "파일 업로드",
+    "retainTitle": "파일 보존",
+    "downloadTitle": "파일 다운로드",
+    "tooLarge": "파일이 최대 업로드 크기를 초과합니다."
+  }
+}

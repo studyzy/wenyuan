@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Hindsight 控制台",
+    "loading": "載入中...",
+    "cancel": "取消",
+    "confirm": "確認",
+    "save": "儲存",
+    "delete": "刪除",
+    "close": "關閉",
+    "search": "搜尋",
+    "refresh": "重新整理",
+    "retry": "重試",
+    "noResults": "沒有結果",
+    "unknown": "未知"
+  },
+  "errors": {
+    "unauthorized": "需要驗證才能繼續。",
+    "forbidden": "您沒有權限執行此操作。",
+    "notFound": "找不到要求的資源。",
+    "badRequest": "請求無效。",
+    "requiredBankId": "必須提供 bank id 查詢參數。",
+    "requiredDocumentId": "必須提供 document id 查詢參數。",
+    "requiredChunkId": "必須提供 chunk id 查詢參數。",
+    "unsupportedMemoriesDelete": "不支援刪除單一記憶。",
+    "loginKeyNotConfigured": "此伺服器未設定存取金鑰。",
+    "loginMalformedBody": "無法讀取登入請求內容。",
+    "loginWrongKey": "存取金鑰不正確。",
+    "versionUnavailable": "上游版本端點無法使用。",
+    "upstreamUnavailable": "上游服務無法使用。",
+    "invalidDownloadPath": "不允許要求的下載路徑。",
+    "invalidLocale": "不支援要求的語言地區。",
+    "internal": "發生非預期的錯誤。"
+  },
+  "auth": {
+    "signInTitle": "登入",
+    "signInSubtitle": "輸入存取金鑰以繼續",
+    "accessKeyLabel": "存取金鑰",
+    "accessKeyPlaceholder": "存取金鑰",
+    "signIn": "登入",
+    "signOut": "登出",
+    "signedIn": "登入成功。",
+    "signedOut": "已登出。"
+  },
+  "nav": {
+    "dashboard": "儀表板",
+    "banks": "記憶庫",
+    "knowledgeBase": "知識庫",
+    "statistics": "統計",
+    "memory": "記憶",
+    "entities": "實體",
+    "graph": "圖譜",
+    "operations": "操作",
+    "recall": "召回",
+    "reflect": "反思",
+    "documents": "文件",
+    "settings": "設定",
+    "language": "語言"
+  },
+  "dashboard": {
+    "title": "全部記憶庫",
+    "subtitle": "此控制台已知的全部記憶庫",
+    "empty": "尚未建立任何記憶庫。",
+    "columnId": "記憶庫 ID",
+    "columnName": "名稱",
+    "columnCreated": "建立時間",
+    "columnActions": "操作"
+  },
+  "bank": {
+    "detailTitle": "記憶庫詳情",
+    "notFound": "找不到此記憶庫。",
+    "configTitle": "設定",
+    "aliasesTitle": "別名",
+    "webhooksTitle": "Webhook",
+    "mentalModelsTitle": "心智模型",
+    "observationsTitle": "觀察"
+  },
+  "views": {
+    "overview": "概覽",
+    "data": "資料",
+    "knowledge": "知識",
+    "configuration": "設定",
+    "memories": "記憶",
+    "documents": "文件",
+    "operations": "操作",
+    "stats": "統計"
+  },
+  "knowledgeBase": {
+    "treeTitle": "目錄樹",
+    "searchTitle": "搜尋",
+    "searchPlaceholder": "搜尋知識庫",
+    "exportTitle": "匯出",
+    "nodesTitle": "節點",
+    "pagesTitle": "頁面",
+    "foldersTitle": "資料夾"
+  },
+  "stats": {
+    "title": "統計",
+    "memoriesOverTime": "記憶數量隨時間變化",
+    "totalMemories": "記憶總數",
+    "totalDocuments": "文件總數",
+    "totalEntities": "實體總數"
+  },
+  "operations": {
+    "title": "操作",
+    "empty": "此記憶庫沒有操作。",
+    "statusPending": "等待中",
+    "statusRunning": "進行中",
+    "statusComplete": "已完成",
+    "statusFailed": "失敗"
+  },
+  "files": {
+    "uploadTitle": "上傳檔案",
+    "retainTitle": "保留檔案",
+    "downloadTitle": "下載檔案",
+    "tooLarge": "檔案超過最大上傳大小。"
+  }
+}

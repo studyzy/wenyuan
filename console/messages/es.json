@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Plano de control de Hindsight",
+    "loading": "Cargando...",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "save": "Guardar",
+    "delete": "Eliminar",
+    "close": "Cerrar",
+    "search": "Buscar",
+    "refresh": "Actualizar",
+    "retry": "Reintentar",
+    "noResults": "Sin resultados",
+    "unknown": "Desconocido"
+  },
+  "errors": {
+    "unauthorized": "Se requiere autenticación para continuar.",
+    "forbidden": "No tienes permiso para realizar esta acción.",
+    "notFound": "No se encontró el recurso solicitado.",
+    "badRequest": "La solicitud no era válida.",
+    "requiredBankId": "El parámetro de consulta del id de banco es obligatorio.",
+    "requiredDocumentId": "El parámetro de consulta del id de documento es obligatorio.",
+    "requiredChunkId": "El parámetro de consulta del id de fragmento es obligatorio.",
+    "unsupportedMemoriesDelete": "No se admite eliminar memorias individuales.",
+    "loginKeyNotConfigured": "La clave de acceso no está configurada en este servidor.",
+    "loginMalformedBody": "No se pudo leer el cuerpo de la solicitud de inicio de sesión.",
+    "loginWrongKey": "La clave de acceso es incorrecta.",
+    "versionUnavailable": "El punto de acceso de versión del servicio upstream no está disponible.",
+    "upstreamUnavailable": "El servicio upstream no está disponible.",
+    "invalidDownloadPath": "La ruta de descarga solicitada no está permitida.",
+    "invalidLocale": "El idioma solicitado no es compatible.",
+    "internal": "Se produjo un error inesperado."
+  },
+  "auth": {
+    "signInTitle": "Iniciar sesión",
+    "signInSubtitle": "Introduce la clave de acceso para continuar",
+    "accessKeyLabel": "Clave de acceso",
+    "accessKeyPlaceholder": "Clave de acceso",
+    "signIn": "Iniciar sesión",
+    "signOut": "Cerrar sesión",
+    "signedIn": "Sesión iniciada correctamente.",
+    "signedOut": "Sesión cerrada correctamente."
+  },
+  "nav": {
+    "dashboard": "Panel",
+    "banks": "Bancos",
+    "knowledgeBase": "Base de conocimiento",
+    "statistics": "Estadísticas",
+    "memory": "Memoria",
+    "entities": "Entidades",
+    "graph": "Grafo",
+    "operations": "Operaciones",
+    "recall": "Recuperación",
+    "reflect": "Reflexión",
+    "documents": "Documentos",
+    "settings": "Ajustes",
+    "language": "Idioma"
+  },
+  "dashboard": {
+    "title": "Todos los bancos",
+    "subtitle": "Todos los bancos conocidos por este plano de control",
+    "empty": "Todavía no se ha creado ningún banco.",
+    "columnId": "Id de banco",
+    "columnName": "Nombre",
+    "columnCreated": "Creado",
+    "columnActions": "Acciones"
+  },
+  "bank": {
+    "detailTitle": "Detalle del banco",
+    "notFound": "No se pudo encontrar este banco.",
+    "configTitle": "Configuración",
+    "aliasesTitle": "Alias",
+    "webhooksTitle": "Webhooks",
+    "mentalModelsTitle": "Modelos mentales",
+    "observationsTitle": "Observaciones"
+  },
+  "views": {
+    "overview": "Resumen",
+    "data": "Datos",
+    "knowledge": "Conocimiento",
+    "configuration": "Configuración",
+    "memories": "Memorias",
+    "documents": "Documentos",
+    "operations": "Operaciones",
+    "stats": "Estadísticas"
+  },
+  "knowledgeBase": {
+    "treeTitle": "Árbol",
+    "searchTitle": "Buscar",
+    "searchPlaceholder": "Buscar en la base de conocimiento",
+    "exportTitle": "Exportar",
+    "nodesTitle": "Nodos",
+    "pagesTitle": "Páginas",
+    "foldersTitle": "Carpetas"
+  },
+  "stats": {
+    "title": "Estadísticas",
+    "memoriesOverTime": "Memorias a lo largo del tiempo",
+    "totalMemories": "Memorias totales",
+    "totalDocuments": "Documentos totales",
+    "totalEntities": "Entidades totales"
+  },
+  "operations": {
+    "title": "Operaciones",
+    "empty": "No hay operaciones para este banco.",
+    "statusPending": "Pendiente",
+    "statusRunning": "En curso",
+    "statusComplete": "Completada",
+    "statusFailed": "Fallida"
+  },
+  "files": {
+    "uploadTitle": "Subir archivo",
+    "retainTitle": "Retener archivo",
+    "downloadTitle": "Descargar archivo",
+    "tooLarge": "El archivo supera el tamaño máximo de subida."
+  }
+}

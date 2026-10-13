@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Hindsight 控制台",
+    "loading": "加载中...",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "close": "关闭",
+    "search": "搜索",
+    "refresh": "刷新",
+    "retry": "重试",
+    "noResults": "无结果",
+    "unknown": "未知"
+  },
+  "errors": {
+    "unauthorized": "需要身份验证才能继续。",
+    "forbidden": "您没有权限执行此操作。",
+    "notFound": "未找到请求的资源。",
+    "badRequest": "请求无效。",
+    "requiredBankId": "必须提供 bank id 查询参数。",
+    "requiredDocumentId": "必须提供 document id 查询参数。",
+    "requiredChunkId": "必须提供 chunk id 查询参数。",
+    "unsupportedMemoriesDelete": "不支持删除单条记忆。",
+    "loginKeyNotConfigured": "此服务器未配置访问密钥。",
+    "loginMalformedBody": "无法读取登录请求正文。",
+    "loginWrongKey": "访问密钥不正确。",
+    "versionUnavailable": "上游版本端点不可用。",
+    "upstreamUnavailable": "上游服务不可用。",
+    "invalidDownloadPath": "不允许请求的下载路径。",
+    "invalidLocale": "不支持请求的语言区域。",
+    "internal": "发生意外错误。"
+  },
+  "auth": {
+    "signInTitle": "登录",
+    "signInSubtitle": "输入访问密钥以继续",
+    "accessKeyLabel": "访问密钥",
+    "accessKeyPlaceholder": "访问密钥",
+    "signIn": "登录",
+    "signOut": "退出登录",
+    "signedIn": "登录成功。",
+    "signedOut": "已退出登录。"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "banks": "记忆库",
+    "knowledgeBase": "知识库",
+    "statistics": "统计",
+    "memory": "记忆",
+    "entities": "实体",
+    "graph": "图谱",
+    "operations": "操作",
+    "recall": "召回",
+    "reflect": "反思",
+    "documents": "文档",
+    "settings": "设置",
+    "language": "语言"
+  },
+  "dashboard": {
+    "title": "全部记忆库",
+    "subtitle": "此控制台已知的全部记忆库",
+    "empty": "尚未创建任何记忆库。",
+    "columnId": "记忆库 ID",
+    "columnName": "名称",
+    "columnCreated": "创建时间",
+    "columnActions": "操作"
+  },
+  "bank": {
+    "detailTitle": "记忆库详情",
+    "notFound": "找不到此记忆库。",
+    "configTitle": "配置",
+    "aliasesTitle": "别名",
+    "webhooksTitle": "Webhook",
+    "mentalModelsTitle": "心智模型",
+    "observationsTitle": "观察"
+  },
+  "views": {
+    "overview": "概览",
+    "data": "数据",
+    "knowledge": "知识",
+    "configuration": "配置",
+    "memories": "记忆",
+    "documents": "文档",
+    "operations": "操作",
+    "stats": "统计"
+  },
+  "knowledgeBase": {
+    "treeTitle": "目录树",
+    "searchTitle": "搜索",
+    "searchPlaceholder": "搜索知识库",
+    "exportTitle": "导出",
+    "nodesTitle": "节点",
+    "pagesTitle": "页面",
+    "foldersTitle": "文件夹"
+  },
+  "stats": {
+    "title": "统计",
+    "memoriesOverTime": "记忆数量随时间变化",
+    "totalMemories": "记忆总数",
+    "totalDocuments": "文档总数",
+    "totalEntities": "实体总数"
+  },
+  "operations": {
+    "title": "操作",
+    "empty": "此记忆库没有操作。",
+    "statusPending": "等待中",
+    "statusRunning": "进行中",
+    "statusComplete": "已完成",
+    "statusFailed": "失败"
+  },
+  "files": {
+    "uploadTitle": "上传文件",
+    "retainTitle": "保留文件",
+    "downloadTitle": "下载文件",
+    "tooLarge": "文件超过最大上传大小。"
+  }
+}

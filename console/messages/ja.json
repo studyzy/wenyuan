@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Hindsight コントロールプレーン",
+    "loading": "読み込み中...",
+    "cancel": "キャンセル",
+    "confirm": "確認",
+    "save": "保存",
+    "delete": "削除",
+    "close": "閉じる",
+    "search": "検索",
+    "refresh": "更新",
+    "retry": "再試行",
+    "noResults": "結果がありません",
+    "unknown": "不明"
+  },
+  "errors": {
+    "unauthorized": "続行するには認証が必要です。",
+    "forbidden": "この操作を実行する権限がありません。",
+    "notFound": "要求されたリソースが見つかりませんでした。",
+    "badRequest": "リクエストが無効でした。",
+    "requiredBankId": "バンク ID クエリパラメータは必須です。",
+    "requiredDocumentId": "ドキュメント ID クエリパラメータは必須です。",
+    "requiredChunkId": "チャンク ID クエリパラメータは必須です。",
+    "unsupportedMemoriesDelete": "個々のメモリの削除はサポートされていません。",
+    "loginKeyNotConfigured": "このサーバーにアクセスキーが設定されていません。",
+    "loginMalformedBody": "ログインリクエストの本文を読み取れませんでした。",
+    "loginWrongKey": "アクセスキーが正しくありません。",
+    "versionUnavailable": "上流のバージョンエンドポイントを利用できません。",
+    "upstreamUnavailable": "上流サービスを利用できません。",
+    "invalidDownloadPath": "要求されたダウンロードパスは許可されていません。",
+    "invalidLocale": "要求されたロケールはサポートされていません。",
+    "internal": "予期しないエラーが発生しました。"
+  },
+  "auth": {
+    "signInTitle": "サインイン",
+    "signInSubtitle": "続行するにはアクセスキーを入力してください",
+    "accessKeyLabel": "アクセスキー",
+    "accessKeyPlaceholder": "アクセスキー",
+    "signIn": "サインイン",
+    "signOut": "サインアウト",
+    "signedIn": "サインインに成功しました。",
+    "signedOut": "サインアウトに成功しました。"
+  },
+  "nav": {
+    "dashboard": "ダッシュボード",
+    "banks": "バンク",
+    "knowledgeBase": "ナレッジベース",
+    "statistics": "統計",
+    "memory": "メモリ",
+    "entities": "エンティティ",
+    "graph": "グラフ",
+    "operations": "操作",
+    "recall": "検索",
+    "reflect": "内省",
+    "documents": "ドキュメント",
+    "settings": "設定",
+    "language": "言語"
+  },
+  "dashboard": {
+    "title": "すべてのバンク",
+    "subtitle": "このコントロールプレーンが認識するすべてのバンク",
+    "empty": "まだバンクが作成されていません。",
+    "columnId": "バンク ID",
+    "columnName": "名前",
+    "columnCreated": "作成日時",
+    "columnActions": "操作"
+  },
+  "bank": {
+    "detailTitle": "バンクの詳細",
+    "notFound": "このバンクは見つかりませんでした。",
+    "configTitle": "設定",
+    "aliasesTitle": "エイリアス",
+    "webhooksTitle": "Webhook",
+    "mentalModelsTitle": "メンタルモデル",
+    "observationsTitle": "観察"
+  },
+  "views": {
+    "overview": "概要",
+    "data": "データ",
+    "knowledge": "ナレッジ",
+    "configuration": "設定",
+    "memories": "メモリ",
+    "documents": "ドキュメント",
+    "operations": "操作",
+    "stats": "統計"
+  },
+  "knowledgeBase": {
+    "treeTitle": "ツリー",
+    "searchTitle": "検索",
+    "searchPlaceholder": "ナレッジベースを検索",
+    "exportTitle": "エクスポート",
+    "nodesTitle": "ノード",
+    "pagesTitle": "ページ",
+    "foldersTitle": "フォルダ"
+  },
+  "stats": {
+    "title": "統計",
+    "memoriesOverTime": "時間経過ごとのメモリ",
+    "totalMemories": "メモリ合計",
+    "totalDocuments": "ドキュメント合計",
+    "totalEntities": "エンティティ合計"
+  },
+  "operations": {
+    "title": "操作",
+    "empty": "このバンクには操作がありません。",
+    "statusPending": "保留中",
+    "statusRunning": "実行中",
+    "statusComplete": "完了",
+    "statusFailed": "失敗"
+  },
+  "files": {
+    "uploadTitle": "ファイルをアップロード",
+    "retainTitle": "ファイルを保持",
+    "downloadTitle": "ファイルをダウンロード",
+    "tooLarge": "ファイルが最大アップロードサイズを超えています。"
+  }
+}

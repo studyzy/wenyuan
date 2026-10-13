@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Plan de contrôle Hindsight",
+    "loading": "Chargement...",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "save": "Enregistrer",
+    "delete": "Supprimer",
+    "close": "Fermer",
+    "search": "Rechercher",
+    "refresh": "Actualiser",
+    "retry": "Réessayer",
+    "noResults": "Aucun résultat",
+    "unknown": "Inconnu"
+  },
+  "errors": {
+    "unauthorized": "Une authentification est requise pour continuer.",
+    "forbidden": "Vous n'êtes pas autorisé à effectuer cette action.",
+    "notFound": "La ressource demandée est introuvable.",
+    "badRequest": "La requête était invalide.",
+    "requiredBankId": "Le paramètre de requête de l'identifiant de banque est obligatoire.",
+    "requiredDocumentId": "Le paramètre de requête de l'identifiant de document est obligatoire.",
+    "requiredChunkId": "Le paramètre de requête de l'identifiant de fragment est obligatoire.",
+    "unsupportedMemoriesDelete": "La suppression de souvenirs individuels n'est pas prise en charge.",
+    "loginKeyNotConfigured": "La clé d'accès n'est pas configurée sur ce serveur.",
+    "loginMalformedBody": "Le corps de la requête de connexion n'a pas pu être lu.",
+    "loginWrongKey": "La clé d'accès est incorrecte.",
+    "versionUnavailable": "Le point de terminaison de version en amont est indisponible.",
+    "upstreamUnavailable": "Le service en amont est indisponible.",
+    "invalidDownloadPath": "Le chemin de téléchargement demandé n'est pas autorisé.",
+    "invalidLocale": "La langue demandée n'est pas prise en charge.",
+    "internal": "Une erreur inattendue s'est produite."
+  },
+  "auth": {
+    "signInTitle": "Se connecter",
+    "signInSubtitle": "Saisissez la clé d'accès pour continuer",
+    "accessKeyLabel": "Clé d'accès",
+    "accessKeyPlaceholder": "Clé d'accès",
+    "signIn": "Se connecter",
+    "signOut": "Se déconnecter",
+    "signedIn": "Connexion réussie.",
+    "signedOut": "Déconnexion réussie."
+  },
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "banks": "Banques",
+    "knowledgeBase": "Base de connaissances",
+    "statistics": "Statistiques",
+    "memory": "Mémoire",
+    "entities": "Entités",
+    "graph": "Graphe",
+    "operations": "Opérations",
+    "recall": "Rappel",
+    "reflect": "Réflexion",
+    "documents": "Documents",
+    "settings": "Paramètres",
+    "language": "Langue"
+  },
+  "dashboard": {
+    "title": "Toutes les banques",
+    "subtitle": "Toutes les banques connues de ce plan de contrôle",
+    "empty": "Aucune banque n'a encore été créée.",
+    "columnId": "Identifiant de banque",
+    "columnName": "Nom",
+    "columnCreated": "Créé",
+    "columnActions": "Actions"
+  },
+  "bank": {
+    "detailTitle": "Détail de la banque",
+    "notFound": "Cette banque est introuvable.",
+    "configTitle": "Configuration",
+    "aliasesTitle": "Alias",
+    "webhooksTitle": "Webhooks",
+    "mentalModelsTitle": "Modèles mentaux",
+    "observationsTitle": "Observations"
+  },
+  "views": {
+    "overview": "Aperçu",
+    "data": "Données",
+    "knowledge": "Connaissances",
+    "configuration": "Configuration",
+    "memories": "Souvenirs",
+    "documents": "Documents",
+    "operations": "Opérations",
+    "stats": "Statistiques"
+  },
+  "knowledgeBase": {
+    "treeTitle": "Arborescence",
+    "searchTitle": "Rechercher",
+    "searchPlaceholder": "Rechercher dans la base de connaissances",
+    "exportTitle": "Exporter",
+    "nodesTitle": "Nœuds",
+    "pagesTitle": "Pages",
+    "foldersTitle": "Dossiers"
+  },
+  "stats": {
+    "title": "Statistiques",
+    "memoriesOverTime": "Souvenirs au fil du temps",
+    "totalMemories": "Total des souvenirs",
+    "totalDocuments": "Total des documents",
+    "totalEntities": "Total des entités"
+  },
+  "operations": {
+    "title": "Opérations",
+    "empty": "Aucune opération pour cette banque.",
+    "statusPending": "En attente",
+    "statusRunning": "En cours",
+    "statusComplete": "Terminée",
+    "statusFailed": "Échouée"
+  },
+  "files": {
+    "uploadTitle": "Téléverser un fichier",
+    "retainTitle": "Conserver le fichier",
+    "downloadTitle": "Télécharger le fichier",
+    "tooLarge": "Le fichier dépasse la taille de téléversement maximale."
+  }
+}

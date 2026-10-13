@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Painel de controle Hindsight",
+    "loading": "Carregando...",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "save": "Salvar",
+    "delete": "Excluir",
+    "close": "Fechar",
+    "search": "Pesquisar",
+    "refresh": "Atualizar",
+    "retry": "Tentar novamente",
+    "noResults": "Nenhum resultado",
+    "unknown": "Desconhecido"
+  },
+  "errors": {
+    "unauthorized": "É necessário autenticar-se para continuar.",
+    "forbidden": "Você não tem permissão para realizar esta ação.",
+    "notFound": "O recurso solicitado não foi encontrado.",
+    "badRequest": "A solicitação era inválida.",
+    "requiredBankId": "O parâmetro de consulta do id do banco é obrigatório.",
+    "requiredDocumentId": "O parâmetro de consulta do id do documento é obrigatório.",
+    "requiredChunkId": "O parâmetro de consulta do id do fragmento é obrigatório.",
+    "unsupportedMemoriesDelete": "Não há suporte para excluir memórias individuais.",
+    "loginKeyNotConfigured": "A chave de acesso não está configurada neste servidor.",
+    "loginMalformedBody": "Não foi possível ler o corpo da solicitação de login.",
+    "loginWrongKey": "A chave de acesso está incorreta.",
+    "versionUnavailable": "O endpoint de versão upstream não está disponível.",
+    "upstreamUnavailable": "O serviço upstream não está disponível.",
+    "invalidDownloadPath": "O caminho de download solicitado não é permitido.",
+    "invalidLocale": "O idioma solicitado não é compatível.",
+    "internal": "Ocorreu um erro inesperado."
+  },
+  "auth": {
+    "signInTitle": "Entrar",
+    "signInSubtitle": "Digite a chave de acesso para continuar",
+    "accessKeyLabel": "Chave de acesso",
+    "accessKeyPlaceholder": "Chave de acesso",
+    "signIn": "Entrar",
+    "signOut": "Sair",
+    "signedIn": "Login realizado com sucesso.",
+    "signedOut": "Logout realizado com sucesso."
+  },
+  "nav": {
+    "dashboard": "Painel",
+    "banks": "Bancos",
+    "knowledgeBase": "Base de conhecimento",
+    "statistics": "Estatísticas",
+    "memory": "Memória",
+    "entities": "Entidades",
+    "graph": "Grafo",
+    "operations": "Operações",
+    "recall": "Recuperação",
+    "reflect": "Reflexão",
+    "documents": "Documentos",
+    "settings": "Configurações",
+    "language": "Idioma"
+  },
+  "dashboard": {
+    "title": "Todos os bancos",
+    "subtitle": "Todos os bancos conhecidos por este painel de controle",
+    "empty": "Nenhum banco foi criado ainda.",
+    "columnId": "Id do banco",
+    "columnName": "Nome",
+    "columnCreated": "Criado",
+    "columnActions": "Ações"
+  },
+  "bank": {
+    "detailTitle": "Detalhes do banco",
+    "notFound": "Não foi possível encontrar este banco.",
+    "configTitle": "Configuração",
+    "aliasesTitle": "Aliases",
+    "webhooksTitle": "Webhooks",
+    "mentalModelsTitle": "Modelos mentais",
+    "observationsTitle": "Observações"
+  },
+  "views": {
+    "overview": "Visão geral",
+    "data": "Dados",
+    "knowledge": "Conhecimento",
+    "configuration": "Configuração",
+    "memories": "Memórias",
+    "documents": "Documentos",
+    "operations": "Operações",
+    "stats": "Estatísticas"
+  },
+  "knowledgeBase": {
+    "treeTitle": "Árvore",
+    "searchTitle": "Pesquisar",
+    "searchPlaceholder": "Pesquisar na base de conhecimento",
+    "exportTitle": "Exportar",
+    "nodesTitle": "Nós",
+    "pagesTitle": "Páginas",
+    "foldersTitle": "Pastas"
+  },
+  "stats": {
+    "title": "Estatísticas",
+    "memoriesOverTime": "Memórias ao longo do tempo",
+    "totalMemories": "Total de memórias",
+    "totalDocuments": "Total de documentos",
+    "totalEntities": "Total de entidades"
+  },
+  "operations": {
+    "title": "Operações",
+    "empty": "Não há operações para este banco.",
+    "statusPending": "Pendente",
+    "statusRunning": "Em execução",
+    "statusComplete": "Concluída",
+    "statusFailed": "Falhou"
+  },
+  "files": {
+    "uploadTitle": "Enviar arquivo",
+    "retainTitle": "Reter arquivo",
+    "downloadTitle": "Baixar arquivo",
+    "tooLarge": "O arquivo excede o tamanho máximo de upload."
+  }
+}

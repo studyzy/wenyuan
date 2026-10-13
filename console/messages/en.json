@@ -1,0 +1,117 @@
+{
+  "common": {
+    "appName": "Hindsight Control Plane",
+    "loading": "Loading...",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "close": "Close",
+    "search": "Search",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noResults": "No results",
+    "unknown": "Unknown"
+  },
+  "errors": {
+    "unauthorized": "Authentication is required to continue.",
+    "forbidden": "You are not allowed to perform this action.",
+    "notFound": "The requested resource was not found.",
+    "badRequest": "The request was invalid.",
+    "requiredBankId": "The bank id query parameter is required.",
+    "requiredDocumentId": "The document id query parameter is required.",
+    "requiredChunkId": "The chunk id query parameter is required.",
+    "unsupportedMemoriesDelete": "Deleting individual memories is not supported.",
+    "loginKeyNotConfigured": "The access key is not configured on this server.",
+    "loginMalformedBody": "The login request body could not be read.",
+    "loginWrongKey": "The access key is incorrect.",
+    "versionUnavailable": "The upstream version endpoint is unavailable.",
+    "upstreamUnavailable": "The upstream service is unavailable.",
+    "invalidDownloadPath": "The requested download path is not allowed.",
+    "invalidLocale": "The requested locale is not supported.",
+    "internal": "An unexpected error occurred."
+  },
+  "auth": {
+    "signInTitle": "Sign in",
+    "signInSubtitle": "Enter the access key to continue",
+    "accessKeyLabel": "Access key",
+    "accessKeyPlaceholder": "Access key",
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "signedIn": "Signed in successfully.",
+    "signedOut": "Signed out successfully."
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "banks": "Banks",
+    "knowledgeBase": "Knowledge base",
+    "statistics": "Statistics",
+    "memory": "Memory",
+    "entities": "Entities",
+    "graph": "Graph",
+    "operations": "Operations",
+    "recall": "Recall",
+    "reflect": "Reflect",
+    "documents": "Documents",
+    "settings": "Settings",
+    "language": "Language"
+  },
+  "dashboard": {
+    "title": "All banks",
+    "subtitle": "Every bank known to this control plane",
+    "empty": "No banks have been created yet.",
+    "columnId": "Bank id",
+    "columnName": "Name",
+    "columnCreated": "Created",
+    "columnActions": "Actions"
+  },
+  "bank": {
+    "detailTitle": "Bank detail",
+    "notFound": "This bank could not be found.",
+    "configTitle": "Configuration",
+    "aliasesTitle": "Aliases",
+    "webhooksTitle": "Webhooks",
+    "mentalModelsTitle": "Mental models",
+    "observationsTitle": "Observations"
+  },
+  "views": {
+    "overview": "Overview",
+    "data": "Data",
+    "knowledge": "Knowledge",
+    "configuration": "Configuration",
+    "memories": "Memories",
+    "documents": "Documents",
+    "operations": "Operations",
+    "stats": "Statistics"
+  },
+  "knowledgeBase": {
+    "treeTitle": "Tree",
+    "searchTitle": "Search",
+    "searchPlaceholder": "Search the knowledge base",
+    "exportTitle": "Export",
+    "nodesTitle": "Nodes",
+    "pagesTitle": "Pages",
+    "foldersTitle": "Folders"
+  },
+  "stats": {
+    "title": "Statistics",
+    "memoriesOverTime": "Memories over time",
+    "totalMemories": "Total memories",
+    "totalDocuments": "Total documents",
+    "totalEntities": "Total entities"
+  },
+  "operations": {
+    "title": "Operations",
+    "empty": "There are no operations for this bank.",
+    "statusPending": "Pending",
+    "statusRunning": "Running",
+    "statusComplete": "Complete",
+    "statusFailed": "Failed"
+  },
+  "files": {
+    "uploadTitle": "Upload file",
+    "retainTitle": "Retain file",
+    "downloadTitle": "Download file",
+    "tooLarge": "The file exceeds the maximum upload size."
+  }
+}
