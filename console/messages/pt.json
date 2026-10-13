@@ -53,7 +53,12 @@
         "healthLlm": "A verificação de conectividade LLM do banco falhou."
       },
       "memories": {
-        "notFound": "Esta memória não foi encontrada."
+        "notFound": "Esta memória não foi encontrada.",
+        "fetch": "Falha ao obter a memória",
+        "history": "Falha ao carregar o histórico da memória",
+        "list": "Falha ao listar as memórias",
+        "retain": "Falha ao salvar as memórias",
+        "update": "Falha ao atualizar a memória"
       },
       "mentalModels": {
         "notFound": "Este modelo mental não foi encontrado.",
@@ -102,6 +107,41 @@
         "deliveries": "Falha ao carregar as entregas do webhook",
         "list": "Falha ao listar os webhooks",
         "update": "Falha ao atualizar o webhook"
+      },
+      "documents": {
+        "chunks": "Falha ao obter os trechos do documento",
+        "export": "Falha ao exportar os documentos",
+        "import": "Falha ao importar os documentos",
+        "reprocess": "Falha ao reprocessar o documento",
+        "updateTags": "Falha ao atualizar as etiquetas do documento",
+        "fetchList": "Falha ao listar os documentos",
+        "fetch": "Falha ao obter o documento",
+        "delete": "Falha ao excluir o documento"
+      },
+      "entities": {
+        "fetch": "Falha ao obter a entidade",
+        "list": "Falha ao listar as entidades",
+        "graph": "Falha ao obter o grafo de entidades",
+        "regenerateObservations": "Falha ao regenerar as observações da entidade"
+      },
+      "recall": {
+        "failed": "Falha na busca"
+      },
+      "reflect": {
+        "failed": "Falha na reflexão"
+      },
+      "operations": {
+        "delete": "Falha ao excluir a operação",
+        "retry": "Falha ao repetir a operação",
+        "status": "Falha ao obter o status da operação",
+        "fetch": "Falha ao listar as operações",
+        "cancel": "Falha ao cancelar a operação"
+      },
+      "chunks": {
+        "fetch": "Falha ao obter o trecho"
+      },
+      "stats": {
+        "fetch": "Falha ao obter as estatísticas"
       }
     }
   },

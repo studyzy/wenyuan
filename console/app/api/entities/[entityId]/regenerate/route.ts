@@ -1,25 +1,52 @@
 import { resolveServerConfig } from "../../../../../lib/server/config";
-import { proxyUpstream, searchParamsObject } from "../../../../../lib/server/proxy";
+import {
+  requestLocale,
+  serializeUpstream,
+  upstreamUnavailableBody,
+} from "../../../../../lib/server/proxy";
+import { errorResponse } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ entityId: string }> };
 
-/** Per-entity observation regeneration. */
-export async function POST(request: Request, context: Context): Promise<Response> {
-  const encoded = (await context.params).entityId;
-  let entityId = encoded;
+function decodeEntityId(encoded: string): string {
   try {
-    entityId = decodeURIComponent(encoded);
+    return decodeURIComponent(encoded);
   } catch {
-    entityId = encoded;
+    return encoded;
   }
+}
+
+/**
+ * Per-entity observation regeneration.
+ *
+ * The bank id is required. The entity id segment is decoded before forwarding.
+ * Returns 200 with the regeneration payload.
+ */
+export async function POST(request: Request, context: Context): Promise<Response> {
+  const locale = requestLocale(request);
+  const searchParams = new URL(request.url).searchParams;
+  const bankId = searchParams.get("bank_id");
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
+  const entityId = decodeEntityId((await context.params).entityId);
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
   const body = await request.text();
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: `/v1/default/entities/${encodeURIComponent(entityId)}/regenerate`,
-    query: searchParamsObject(request),
-    method: "POST",
-    body: body.length > 0 ? body : undefined,
-  });
+  const failure = {
+    failureLabel: "entity_regenerate_failed",
+    errorKey: "api.errors.entities.regenerateObservations",
+    locale,
+  };
+
+  try {
+    return await serializeUpstream({
+      config,
+      request,
+      upstreamPath: `/v1/default/banks/${encodeURIComponent(bankId)}/entities/${encodeURIComponent(entityId)}/regenerate`,
+      method: "POST",
+      body: body.length > 0 ? body : undefined,
+      ...failure,
+    });
+  } catch {
+    return upstreamUnavailableBody(failure);
+  }
 }

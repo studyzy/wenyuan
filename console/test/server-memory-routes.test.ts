@@ -42,12 +42,20 @@ describe("required query parameters", () => {
     expectNoErrorKey(await readJson(response));
   });
 
-  it("accepts the legacy agent-style alias for bank scoping", async () => {
+  it("requires bank_id on the entity collection and does not accept the agent-style alias there", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
-      const response = await entities.GET(makeRequest("http://localhost/api/entities?agent_id=acme"));
-      expect(response.status).toBe(200);
+      const accepted = await entities.GET(
+        makeRequest("http://localhost/api/entities?bank_id=acme"),
+      );
+      expect(accepted.status).toBe(200);
+
+      const rejected = await entities.GET(
+        makeRequest("http://localhost/api/entities?agent_id=acme"),
+      );
+      expect(rejected.status).toBe(400);
+      expectNoErrorKey(await readJson(rejected));
     });
   });
 });

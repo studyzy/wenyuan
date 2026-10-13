@@ -6,6 +6,9 @@ import * as entity from "../app/api/entities/[entityId]/route";
 import * as entityRegenerate from "../app/api/entities/[entityId]/regenerate/route";
 import * as entityGraph from "../app/api/entities/graph/route";
 import * as memoryHistory from "../app/api/memories/[memoryId]/history/route";
+import * as memory from "../app/api/memories/[memoryId]/route";
+import * as listRoute from "../app/api/list/route";
+import * as reflect from "../app/api/reflect/route";
 import * as kbPage from "../app/api/knowledge-base/pages/[pageId]/route";
 import * as timeseries from "../app/api/stats/[agentId]/memories-timeseries/route";
 import { stubFetch, withEnv } from "./support/fixtures";
@@ -84,7 +87,7 @@ describe("entity id decoding", () => {
       await entity.GET(makeRequest("http://localhost/api/entities/a%2Fb?bank_id=acme"), {
         params: Promise.resolve({ entityId: "a%2Fb" }),
       });
-      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/entities/a%2Fb?bank_id=acme");
+      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/entities/a%2Fb");
     });
   });
 });
@@ -147,6 +150,84 @@ describe("stats timeseries accepts period and time-field parameters", () => {
       expect(stub.calls[0]).toContain("/v1/default/stats/acme/memories-timeseries");
       expect(stub.calls[0]).toContain("period=30d");
       expect(stub.calls[0]).toContain("time_field=created_at");
+    });
+  });
+});
+describe("memory PATCH routing follows the contract", () => {
+  it("takes the bank id from the body and excludes it from the forwarded body", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await memory.PATCH(
+        makeRequest("http://localhost/api/memories/m1", {
+          method: "PATCH",
+          body: JSON.stringify({ bank_id: "acme", text: "updated", state: "active" }),
+        }),
+        { params: Promise.resolve({ memoryId: "m1" }) },
+      );
+      expect(response.status).toBe(200);
+      const forwarded = JSON.parse(stub.bodies[0] ?? "{}");
+      expect(forwarded).not.toHaveProperty("bank_id");
+      expect(forwarded).toMatchObject({ text: "updated", state: "active" });
+    });
+  });
+
+  it("returns 400 on an unparseable body", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await memory.PATCH(
+        makeRequest("http://localhost/api/memories/m1", { method: "PATCH", body: "{not json" }),
+        { params: Promise.resolve({ memoryId: "m1" }) },
+      );
+      expect(response.status).toBe(400);
+      expectNoErrorKey(await readJson(response));
+    });
+  });
+});
+
+describe("list DELETE is always unsupported", () => {
+  it("returns 501 without contacting the upstream", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    const response = await listRoute.DELETE(makeRequest("http://localhost/api/list?bank_id=acme"));
+    expect(response.status).toBe(501);
+    expect(stub.calls.length).toBe(0);
+  });
+});
+
+describe("reflect translates the legacy include booleans", () => {
+  it("builds an include object and defaults the budget", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await reflect.POST(
+        makeRequest("http://localhost/api/reflect?bank_id=acme", {
+          method: "POST",
+          body: JSON.stringify({ query: "q", thinking_budget: 10, include_facts: true, include_tool_calls: true }),
+        }),
+      );
+      const forwarded = JSON.parse(stub.bodies[0] ?? "{}");
+      expect(forwarded.budget).toBe("mid");
+      expect(forwarded.include).toMatchObject({ facts: {}, tool_calls: {} });
+      expect(forwarded).not.toHaveProperty("include_facts");
+      expect(forwarded).not.toHaveProperty("thinking_budget");
+    });
+  });
+
+  it("defaults the budget to low with no thinking budget and omits include", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await reflect.POST(
+        makeRequest("http://localhost/api/reflect?bank_id=acme", {
+          method: "POST",
+          body: JSON.stringify({ query: "q" }),
+        }),
+      );
+      const forwarded = JSON.parse(stub.bodies[0] ?? "{}");
+      expect(forwarded.budget).toBe("low");
+      expect(forwarded).not.toHaveProperty("include");
     });
   });
 });

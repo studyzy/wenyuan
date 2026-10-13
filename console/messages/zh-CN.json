@@ -53,7 +53,12 @@
         "healthLlm": "银行 LLM 连通性探测失败。"
       },
       "memories": {
-        "notFound": "找不到此记忆。"
+        "notFound": "找不到此记忆。",
+        "fetch": "获取记忆失败",
+        "history": "加载记忆历史失败",
+        "list": "获取记忆列表失败",
+        "retain": "保存记忆失败",
+        "update": "更新记忆失败"
       },
       "mentalModels": {
         "notFound": "找不到此心智模型。",
@@ -102,6 +107,41 @@
         "deliveries": "加载 Webhook 投递记录失败",
         "list": "获取 Webhook 列表失败",
         "update": "更新 Webhook 失败"
+      },
+      "documents": {
+        "chunks": "获取文档分块失败",
+        "export": "导出文档失败",
+        "import": "导入文档失败",
+        "reprocess": "重新处理文档失败",
+        "updateTags": "更新文档标签失败",
+        "fetchList": "获取文档列表失败",
+        "fetch": "获取文档失败",
+        "delete": "删除文档失败"
+      },
+      "entities": {
+        "fetch": "获取实体失败",
+        "list": "获取实体列表失败",
+        "graph": "获取实体图谱失败",
+        "regenerateObservations": "重新生成实体观察记录失败"
+      },
+      "recall": {
+        "failed": "召回失败"
+      },
+      "reflect": {
+        "failed": "反思失败"
+      },
+      "operations": {
+        "delete": "删除操作失败",
+        "retry": "重试操作失败",
+        "status": "获取操作状态失败",
+        "fetch": "获取操作列表失败",
+        "cancel": "取消操作失败"
+      },
+      "chunks": {
+        "fetch": "获取分块失败"
+      },
+      "stats": {
+        "fetch": "获取统计失败"
       }
     }
   },

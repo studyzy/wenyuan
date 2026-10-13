@@ -53,7 +53,12 @@
         "healthLlm": "銀行 LLM 連線探測失敗。"
       },
       "memories": {
-        "notFound": "找不到此記憶。"
+        "notFound": "找不到此記憶。",
+        "fetch": "取得記憶失敗",
+        "history": "載入記憶歷史失敗",
+        "list": "取得記憶列表失敗",
+        "retain": "保存記憶失敗",
+        "update": "更新記憶失敗"
       },
       "mentalModels": {
         "notFound": "找不到此心智模型。",
@@ -102,6 +107,41 @@
         "deliveries": "載入 Webhook 投遞記錄失敗",
         "list": "取得 Webhook 列表失敗",
         "update": "更新 Webhook 失敗"
+      },
+      "documents": {
+        "chunks": "取得文件分塊失敗",
+        "export": "匯出文件失敗",
+        "import": "匯入文件失敗",
+        "reprocess": "重新處理文件失敗",
+        "updateTags": "更新文件標籤失敗",
+        "fetchList": "取得文件列表失敗",
+        "fetch": "取得文件失敗",
+        "delete": "刪除文件失敗"
+      },
+      "entities": {
+        "fetch": "取得實體失敗",
+        "list": "取得實體列表失敗",
+        "graph": "取得實體圖譜失敗",
+        "regenerateObservations": "重新產生實體觀察記錄失敗"
+      },
+      "recall": {
+        "failed": "召回失敗"
+      },
+      "reflect": {
+        "failed": "反思失敗"
+      },
+      "operations": {
+        "delete": "刪除操作失敗",
+        "retry": "重試操作失敗",
+        "status": "取得操作狀態失敗",
+        "fetch": "取得操作列表失敗",
+        "cancel": "取消操作失敗"
+      },
+      "chunks": {
+        "fetch": "取得分塊失敗"
+      },
+      "stats": {
+        "fetch": "取得統計失敗"
       }
     }
   },

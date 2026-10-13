@@ -53,7 +53,12 @@
         "healthLlm": "Le test de connectivité LLM de la banque a échoué."
       },
       "memories": {
-        "notFound": "Ce souvenir est introuvable."
+        "notFound": "Ce souvenir est introuvable.",
+        "fetch": "Échec du chargement du souvenir",
+        "history": "Échec du chargement de l’historique du souvenir",
+        "list": "Échec du chargement des souvenirs",
+        "retain": "Échec de l’enregistrement des souvenirs",
+        "update": "Échec de la mise à jour du souvenir"
       },
       "mentalModels": {
         "notFound": "Ce modèle mental est introuvable.",
@@ -102,6 +107,41 @@
         "deliveries": "Échec du chargement des livraisons du webhook",
         "list": "Échec du chargement des webhooks",
         "update": "Échec de la mise à jour du webhook"
+      },
+      "documents": {
+        "chunks": "Échec du chargement des segments de document",
+        "export": "Échec de l’export des documents",
+        "import": "Échec de l’import des documents",
+        "reprocess": "Échec du retraitement du document",
+        "updateTags": "Échec de la mise à jour des étiquettes du document",
+        "fetchList": "Échec du chargement des documents",
+        "fetch": "Échec du chargement du document",
+        "delete": "Échec de la suppression du document"
+      },
+      "entities": {
+        "fetch": "Échec du chargement de l’entité",
+        "list": "Échec du chargement des entités",
+        "graph": "Échec du chargement du graphe d’entités",
+        "regenerateObservations": "Échec de la régénération des observations de l’entité"
+      },
+      "recall": {
+        "failed": "Échec de la recherche"
+      },
+      "reflect": {
+        "failed": "Échec de la réflexion"
+      },
+      "operations": {
+        "delete": "Échec de la suppression de l’opération",
+        "retry": "Échec de la relance de l’opération",
+        "status": "Échec du chargement de l’état de l’opération",
+        "fetch": "Échec du chargement des opérations",
+        "cancel": "Échec de l’annulation de l’opération"
+      },
+      "chunks": {
+        "fetch": "Échec du chargement du segment"
+      },
+      "stats": {
+        "fetch": "Échec du chargement des statistiques"
       }
     }
   },

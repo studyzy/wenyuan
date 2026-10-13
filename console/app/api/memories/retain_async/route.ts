@@ -1,25 +1,50 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
-import { proxyUpstream, requestLocale, searchParamsObject } from "../../../../lib/server/proxy";
-import { errorResponse, resolveBankScoping } from "../../../../lib/server/http";
+import {
+  requestLocale,
+  serializeUpstream,
+  upstreamUnavailableBody,
+} from "../../../../lib/server/proxy";
+import { errorResponse } from "../../../../lib/server/http";
 
 /**
- * Asynchronous retain. The route name spelling `retain_async` is fixed
- * compatibility surface.
+ * Asynchronous retain.
+ *
+ * The route name spelling retains the underscore, which is fixed compatibility
+ * surface. The bank id comes from the JSON body or the bank_id query parameter.
+ * An unparseable body is a 400.
  */
 export async function POST(request: Request): Promise<Response> {
   const locale = requestLocale(request);
-  const scoping = resolveBankScoping(new URL(request.url).searchParams);
-  if (!scoping) {
-    return errorResponse("errors.requiredBankId", 400, locale);
+  const raw = await request.text();
+
+  let bankId: string | undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const fromBody = parsed?.bank_id;
+    if (typeof fromBody === "string" && fromBody.length > 0) bankId = fromBody;
+  } catch {
+    return errorResponse("api.errors.auth.invalidRequestBody", 400, locale);
   }
+  if (!bankId) bankId = new URL(request.url).searchParams.get("bank_id") ?? undefined;
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  const body = await request.arrayBuffer();
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: "/v1/default/memories/retain_async",
-    query: searchParamsObject(request),
-    method: "POST",
-    body,
-  });
+  const failure = {
+    failureLabel: "memories_retain_async_failed",
+    errorKey: "api.errors.memories.retain",
+    locale,
+  };
+
+  try {
+    return await serializeUpstream({
+      config,
+      request,
+      upstreamPath: "/v1/default/memories/retain_async",
+      method: "POST",
+      body: raw,
+      ...failure,
+    });
+  } catch {
+    return upstreamUnavailableBody(failure);
+  }
 }

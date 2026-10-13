@@ -53,7 +53,12 @@
         "healthLlm": "The bank LLM connectivity probe failed."
       },
       "memories": {
-        "notFound": "This memory could not be found."
+        "notFound": "This memory could not be found.",
+        "fetch": "Failed to fetch memory",
+        "history": "Failed to load memory history",
+        "list": "Failed to list memories",
+        "retain": "Failed to retain memories",
+        "update": "Failed to update memory"
       },
       "mentalModels": {
         "notFound": "This mental model could not be found.",
@@ -102,6 +107,41 @@
         "deliveries": "Failed to load webhook deliveries",
         "list": "Failed to list webhooks",
         "update": "Failed to update webhook"
+      },
+      "documents": {
+        "chunks": "Failed to list document chunks",
+        "export": "Failed to export documents",
+        "import": "Failed to import documents",
+        "reprocess": "Failed to reprocess document",
+        "updateTags": "Failed to update document tags",
+        "fetchList": "Failed to fetch documents",
+        "fetch": "Failed to fetch document",
+        "delete": "Failed to delete document"
+      },
+      "entities": {
+        "fetch": "Failed to get entity",
+        "list": "Failed to list entities",
+        "graph": "Failed to fetch entity graph",
+        "regenerateObservations": "Failed to regenerate entity observations"
+      },
+      "recall": {
+        "failed": "Recall failed"
+      },
+      "reflect": {
+        "failed": "Reflect failed"
+      },
+      "operations": {
+        "delete": "Failed to delete operation",
+        "retry": "Failed to retry operation",
+        "status": "Failed to get operation status",
+        "fetch": "Failed to fetch operations",
+        "cancel": "Failed to cancel operation"
+      },
+      "chunks": {
+        "fetch": "Failed to fetch chunk"
+      },
+      "stats": {
+        "fetch": "Failed to fetch statistics"
       }
     }
   },

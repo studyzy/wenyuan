@@ -53,7 +53,12 @@
         "healthLlm": "La prueba de conectividad LLM del banco falló."
       },
       "memories": {
-        "notFound": "No se encontró esta memoria."
+        "notFound": "No se encontró esta memoria.",
+        "fetch": "No se pudo obtener el recuerdo",
+        "history": "No se pudo cargar el historial del recuerdo",
+        "list": "No se pudieron obtener los recuerdos",
+        "retain": "No se pudieron guardar los recuerdos",
+        "update": "No se pudo actualizar el recuerdo"
       },
       "mentalModels": {
         "notFound": "No se encontró este modelo mental.",
@@ -102,6 +107,41 @@
         "deliveries": "No se pudieron cargar las entregas del webhook",
         "list": "No se pudieron obtener los webhooks",
         "update": "No se pudo actualizar el webhook"
+      },
+      "documents": {
+        "chunks": "No se pudieron obtener los fragmentos del documento",
+        "export": "No se pudieron exportar los documentos",
+        "import": "No se pudieron importar los documentos",
+        "reprocess": "No se pudo reprocesar el documento",
+        "updateTags": "No se pudieron actualizar las etiquetas del documento",
+        "fetchList": "No se pudieron obtener los documentos",
+        "fetch": "No se pudo obtener el documento",
+        "delete": "No se pudo eliminar el documento"
+      },
+      "entities": {
+        "fetch": "No se pudo obtener la entidad",
+        "list": "No se pudieron obtener las entidades",
+        "graph": "No se pudo obtener el grafo de entidades",
+        "regenerateObservations": "No se pudieron regenerar las observaciones de la entidad"
+      },
+      "recall": {
+        "failed": "Falló la búsqueda"
+      },
+      "reflect": {
+        "failed": "Falló la reflexión"
+      },
+      "operations": {
+        "delete": "No se pudo eliminar la operación",
+        "retry": "No se pudo reintentar la operación",
+        "status": "No se pudo obtener el estado de la operación",
+        "fetch": "No se pudieron obtener las operaciones",
+        "cancel": "No se pudo cancelar la operación"
+      },
+      "chunks": {
+        "fetch": "No se pudo obtener el fragmento"
+      },
+      "stats": {
+        "fetch": "No se pudieron obtener las estadísticas"
       }
     }
   },

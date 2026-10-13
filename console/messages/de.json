@@ -53,7 +53,12 @@
         "healthLlm": "Die LLM-Konnektivitätsprüfung der Bank ist fehlgeschlagen."
       },
       "memories": {
-        "notFound": "Diese Erinnerung wurde nicht gefunden."
+        "notFound": "Diese Erinnerung wurde nicht gefunden.",
+        "fetch": "Erinnerung konnte nicht geladen werden",
+        "history": "Erinnerungsverlauf konnte nicht geladen werden",
+        "list": "Erinnerungen konnten nicht geladen werden",
+        "retain": "Erinnerungen konnten nicht gespeichert werden",
+        "update": "Erinnerung konnte nicht aktualisiert werden"
       },
       "mentalModels": {
         "notFound": "Dieses Mentalmodell wurde nicht gefunden.",
@@ -102,6 +107,41 @@
         "deliveries": "Webhook-Zustellungen konnten nicht geladen werden",
         "list": "Webhooks konnten nicht geladen werden",
         "update": "Webhook konnte nicht aktualisiert werden"
+      },
+      "documents": {
+        "chunks": "Dokumentabschnitte konnten nicht geladen werden",
+        "export": "Dokumente konnten nicht exportiert werden",
+        "import": "Dokumente konnten nicht importiert werden",
+        "reprocess": "Dokument konnte nicht neu verarbeitet werden",
+        "updateTags": "Dokument-Tags konnten nicht aktualisiert werden",
+        "fetchList": "Dokumente konnten nicht geladen werden",
+        "fetch": "Dokument konnte nicht geladen werden",
+        "delete": "Dokument konnte nicht gelöscht werden"
+      },
+      "entities": {
+        "fetch": "Entität konnte nicht geladen werden",
+        "list": "Entitäten konnten nicht geladen werden",
+        "graph": "Entitätsgraph konnte nicht geladen werden",
+        "regenerateObservations": "Entitätsbeobachtungen konnten nicht neu erzeugt werden"
+      },
+      "recall": {
+        "failed": "Abruf fehlgeschlagen"
+      },
+      "reflect": {
+        "failed": "Reflexion fehlgeschlagen"
+      },
+      "operations": {
+        "delete": "Vorgang konnte nicht gelöscht werden",
+        "retry": "Vorgang konnte nicht wiederholt werden",
+        "status": "Vorgangsstatus konnte nicht geladen werden",
+        "fetch": "Vorgänge konnten nicht geladen werden",
+        "cancel": "Vorgang konnte nicht abgebrochen werden"
+      },
+      "chunks": {
+        "fetch": "Abschnitt konnte nicht geladen werden"
+      },
+      "stats": {
+        "fetch": "Statistiken konnten nicht geladen werden"
       }
     }
   },

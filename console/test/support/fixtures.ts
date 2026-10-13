@@ -35,16 +35,19 @@ export async function withEnv<T>(
   }
 }
 
-/** Stub global fetch with a queue of responses, capturing requested URLs. */
+/** Stub global fetch with a queue of responses, capturing requested URLs and bodies. */
 export function stubFetch(
   responses: Array<{ status?: number; body?: unknown; contentType?: string; reject?: boolean }>,
-): { calls: string[]; restore: () => void } {
+): { calls: string[]; bodies: Array<string | undefined>; restore: () => void } {
   const original = globalThis.fetch;
   const calls: string[] = [];
+  const bodies: Array<string | undefined> = [];
   let index = 0;
 
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push(typeof input === "string" ? input : input.toString());
+    const rawBody = init?.body;
+    bodies.push(typeof rawBody === "string" ? rawBody : undefined);
     const current = responses[Math.min(index, responses.length - 1)];
     index += 1;
     if (current?.reject) throw new TypeError("fetch failed");
@@ -55,5 +58,5 @@ export function stubFetch(
     return new Response(payload, { status, headers: { "content-type": contentType } });
   }) as typeof fetch;
 
-  return { calls, restore: () => { globalThis.fetch = original; } };
+  return { calls, bodies, restore: () => { globalThis.fetch = original; } };
 }
