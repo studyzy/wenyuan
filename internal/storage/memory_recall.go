@@ -21,6 +21,12 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	types := resolvedTypes(q.Types)
 	arms := activeArms(q)
 	term := strings.TrimSpace(q.Query)
+	// The budget level bounds the retrieval work, so it caps how many
+	// candidates survive ranking unless the caller named an explicit limit.
+	limit := q.Limit
+	if limit <= 0 {
+		limit = BudgetLimit(q.Budget)
+	}
 
 	// Per-arm best-first candidate lists.
 	armHits := map[string][]recallHit{}
@@ -54,6 +60,7 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
 	ranked = preferObservations(ranked, q)
+	ranked = capCandidates(ranked, limit)
 
 	result := RecallResult{Matches: make([]RecallMatch, 0, len(ranked))}
 	for _, cand := range ranked {
@@ -64,15 +71,25 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	return result, nil
 }
 
+// capCandidates truncates the ranked list to the budget's candidate bound,
+// keeping the best-scoring entries. The list is already in descending order, so
+// the tail is what a tighter budget drops.
+func capCandidates(ranked []*recallCandidate, limit int) []*recallCandidate {
+	if limit <= 0 || len(ranked) <= limit {
+		return ranked
+	}
+	return ranked[:limit]
+}
+
 // buildRecallTrace records what the pipeline looked at, so the trace route can
 // report it without re-deriving the counts from the ranked list.
 func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCandidate) RecallTrace {
-	stageCounts := map[string]int{"semantic": 0, "keyword": 0, "reranker": 0}
+	// Every arm a candidate was surfaced by is counted, so the trace reports
+	// which retrieval paths actually contributed rather than a fixed subset.
+	stageCounts := map[string]int{}
 	for _, cand := range ranked {
 		for stage := range cand.armRanks {
-			if _, ok := stageCounts[stage]; ok {
-				stageCounts[stage]++
-			}
+			stageCounts[stage]++
 		}
 	}
 	budget := len(candidates)

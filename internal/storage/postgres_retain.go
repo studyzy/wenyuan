@@ -18,27 +18,32 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 			return RetainOutcome{}, err
 		}
 	}
+	// Extraction calls a model, so it runs before any write begins: a slow
+	// model call must not hold a database transaction open.
+	extracted, err := extractForItems(ctx, req)
+	if err != nil {
+		return RetainOutcome{}, err
+	}
 	opID := req.OperationID
 	if opID == "" {
 		opID = newUUID()
 	}
 	now := time.Now().UTC()
 	grouped := make([][]string, 0, len(req.Items))
-	total := 0
-	for _, item := range req.Items {
-		units, err := s.writeItem(ctx, req, item, now)
+	for index, item := range req.Items {
+		units, err := s.writeItem(ctx, req, item, extracted[index], now)
 		if err != nil {
 			return RetainOutcome{}, err
 		}
 		grouped = append(grouped, units)
-		total += len(units)
 	}
+	usage, processedTokens := RetainAccounting(req.Items)
 	outcome := RetainOutcome{
 		ItemUnitIDs:            grouped,
-		Usage:                  RetainUsageFor(total),
+		Usage:                  usage,
 		OperationID:            opID,
 		OperationIDs:           []string{opID},
-		ProcessedContentTokens: total,
+		ProcessedContentTokens: processedTokens,
 	}
 	status := StatusCompleted
 	var completedAt *time.Time
@@ -56,8 +61,9 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 	return outcome, nil
 }
 
-// writeItem persists one item's document, chunks, units, and entity links.
-func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item RetainItem, now time.Time) ([]string, error) {
+// writeItem persists one item's document, chunks, units, entity links, and the
+// links between the units the item produced.
+func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item RetainItem, facts []ExtractedFact, now time.Time) ([]string, error) {
 	docID := item.DocumentID
 	if docID == "" {
 		docID = newID()
@@ -72,41 +78,60 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	}); err != nil {
 		return nil, err
 	}
-	chunks := Segment(item.Content)
-	units := make([]string, 0, len(chunks))
-	for i, chunk := range chunks {
-		chunkID := newID()
-		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO `+quoteIdent(s.schema)+`.chunks (id, bank_id, document_id, index, text, content_hash)
-			 VALUES ($1,$2,$3,$4,$5,$6)`,
-			chunkID, req.BankID, docID, i, chunk, ContentHash(chunk)); err != nil {
-			return nil, err
-		}
-		unit := MemoryUnit{
-			ID: newID(), BankID: req.BankID, Text: chunk, Type: TypeWorld,
-			Metadata: item.Metadata, DocumentID: docID, ChunkID: chunkID, Tags: tags,
-			AttachmentIDs: item.AttachmentIDs,
-		}
-		if item.Timestamp != nil {
-			unit.EventDate = item.Timestamp
-			unit.OccurredStart = item.Timestamp
-		}
-		stored, err := s.UpsertUnit(ctx, unit)
+	chunkIDs, err := s.putItemChunks(ctx, req.BankID, docID, item.Content)
+	if err != nil {
+		return nil, err
+	}
+	contents := itemContents(req.BankID, docID, chunkIDs, item, facts, tags)
+	units := make([]string, 0, len(contents))
+	for _, content := range contents {
+		stored, err := s.UpsertUnit(ctx, content.unit)
 		if err != nil {
 			return nil, err
 		}
-		for _, name := range item.Entities {
-			entity, err := s.ResolveEntity(ctx, req.BankID, name, EntityKindRegular, item.ResolveEntities)
+		for _, entity := range content.entities {
+			resolved, err := s.ResolveRetainEntity(ctx, req.BankID, entity, item.ResolveEntities)
 			if err != nil {
 				return nil, err
 			}
-			if err := s.UpsertUnitEntity(ctx, stored.ID, entity.ID); err != nil {
+			if err := s.UpsertUnitEntity(ctx, stored.ID, resolved.ID); err != nil {
 				return nil, err
 			}
 		}
 		units = append(units, stored.ID)
 	}
+	if err := s.linkItemUnits(ctx, req.BankID, units); err != nil {
+		return nil, err
+	}
 	return units, nil
+}
+
+// putItemChunks persists one item's segments and returns their identifiers in
+// order.
+func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, content string) ([]string, error) {
+	chunks := Segment(content)
+	chunkIDs := make([]string, 0, len(chunks))
+	for i, chunk := range chunks {
+		chunkID := newID()
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO `+quoteIdent(s.schema)+`.chunks (id, bank_id, document_id, index, text, content_hash)
+			 VALUES ($1,$2,$3,$4,$5,$6)`,
+			chunkID, bankID, docID, i, chunk, ContentHash(chunk)); err != nil {
+			return nil, err
+		}
+		chunkIDs = append(chunkIDs, chunkID)
+	}
+	return chunkIDs, nil
+}
+
+// linkItemUnits records the links between consecutive units one item produced.
+func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitIDs []string) error {
+	for _, link := range linkTuplesFor(bankID, unitIDs) {
+		if err := s.UpsertLink(ctx, link); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetDocument returns one stored document by identifier.
@@ -171,22 +196,43 @@ func (s *PostgresStore) AppendDocument(ctx context.Context, bankID, docID, text,
 	return s.PutDocument(ctx, bankID, docID, Document{OriginalText: combined})
 }
 
-// ResolveEntity resolves an entity name against the bank.
+// entityColumns is the column list every entity read selects, so a scan can
+// never drift from the query that produced it.
+const entityColumns = `id, bank_id, name, COALESCE(kind,'regular'), COALESCE(mention_count,0)`
+
+// ResolveEntity resolves an entity name against the bank, creating it with the
+// given kind when nothing matches.
 func (s *PostgresStore) ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
+	return s.resolveEntityWithKind(ctx, bankID, entityMatchKey(name), kind, resolve)
+}
+
+// ResolveRetainEntity resolves an entity supplied on a retain item, honoring
+// the item's resolution switch. The entity's label groups the mention during
+// resolution and is not stored on the row.
+func (s *PostgresStore) ResolveRetainEntity(ctx context.Context, bankID string, entity RetainEntity, resolve bool) (Entity, error) {
+	return s.resolveEntityWithKind(ctx, bankID, entityMatchKey(entity.Text), EntityKindRegular, resolve)
+}
+
+// resolveEntityWithKind finds or creates the entity named by a normalized name.
+//
+// Resolution on treats the name as a guess: an existing entity whose name
+// scores at or above the similarity threshold is reused, with the trigram
+// similarity ordered by score so the closest match wins. Resolution off takes
+// the name literally and reuses an entity only on a case-insensitive exact
+// match.
+func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
+	if name == "" {
+		return Entity{}, nil
+	}
 	if kind == "" {
 		kind = EntityKindRegular
 	}
-	query := `SELECT id, bank_id, name, COALESCE(kind,'regular'), COALESCE(mention_count,0)
-	          FROM ` + quoteIdent(s.schema) + `.entities WHERE bank_id=$1 AND lower(name)=lower($2) LIMIT 1`
-	var entity Entity
-	err := s.db.QueryRowContext(ctx, query, bankID, name).Scan(&entity.ID, &entity.BankID, &entity.Name, &entity.Kind, &entity.MentionCount)
-	if err == nil {
-		return entity, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if existing, found, err := s.findEntity(ctx, bankID, name, resolve); err != nil {
 		return Entity{}, err
+	} else if found {
+		return existing, nil
 	}
-	entity = Entity{ID: newID(), BankID: bankID, Name: name, Kind: kind, MentionCount: 1}
+	entity := Entity{ID: newID(), BankID: bankID, Name: name, Kind: kind, MentionCount: 1}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.entities (id, bank_id, name, kind, mention_count, first_seen, last_seen)
 	           VALUES ($1,$2,$3,$4,1,now(),now())
 	           ON CONFLICT (id) DO NOTHING`
@@ -194,6 +240,89 @@ func (s *PostgresStore) ResolveEntity(ctx context.Context, bankID, name string, 
 		return Entity{}, err
 	}
 	return entity, nil
+}
+
+// findEntity locates an existing entity for a name, either exactly or by
+// similarity depending on the resolution switch.
+func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, resolve bool) (Entity, bool, error) {
+	table := quoteIdent(s.schema) + `.entities`
+	if !resolve {
+		query := `SELECT ` + entityColumns + ` FROM ` + table +
+			` WHERE bank_id=$1 AND lower(name)=lower($2) LIMIT 1`
+		return s.scanEntity(ctx, query, bankID, name)
+	}
+	// The trigram probe narrows the pool; the similarity score then decides the
+	// merge. The two are separate stages on purpose, because trigram ranks
+	// names differently from the score the threshold is expressed in, so a
+	// candidate that passes the pool filter may still be rejected.
+	candidates, err := s.entityCandidates(ctx, bankID, name)
+	if err != nil {
+		// The trigram extension may be unavailable. Falling back to an exact
+		// match keeps the write working rather than failing it, because
+		// failing to fuzzy-resolve is far less costly than refusing a memory.
+		fallback := `SELECT ` + entityColumns + ` FROM ` + table +
+			` WHERE bank_id=$1 AND lower(name)=lower($2) LIMIT 1`
+		return s.scanEntity(ctx, fallback, bankID, name)
+	}
+	return bestEntityCandidate(candidates, name)
+}
+
+// entityCandidates returns the stored entities whose names are close enough to
+// the supplied name to be worth scoring.
+func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string) ([]Entity, error) {
+	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
+	          WHERE bank_id=$1 AND similarity(lower(name), lower($2)) >= $3
+	          ORDER BY similarity(lower(name), lower($2)) DESC, id ASC
+	          LIMIT 100`
+	rows, err := s.db.QueryContext(ctx, query, bankID, name, EntityCandidateSimilarity)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	candidates := make([]Entity, 0)
+	for rows.Next() {
+		var entity Entity
+		if err := rows.Scan(&entity.ID, &entity.BankID, &entity.Name, &entity.Kind, &entity.MentionCount); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, entity)
+	}
+	return candidates, rows.Err()
+}
+
+// bestEntityCandidate picks the candidate the similarity score accepts,
+// preferring the highest score and breaking ties on the identifier so the
+// resolution is deterministic.
+func bestEntityCandidate(candidates []Entity, name string) (Entity, bool, error) {
+	best := Entity{}
+	bestScore := 0.0
+	for _, candidate := range candidates {
+		score := entitySimilarity(candidate.Name, name)
+		if score < EntitySimilarityThreshold {
+			continue
+		}
+		if score > bestScore || (score == bestScore && best.ID != "" && candidate.ID < best.ID) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best, best.ID != "", nil
+}
+
+// scanEntity runs an entity query and reads at most one row. A missing row is
+// reported as not-found rather than as an error, because creating the entity
+// is the next step.
+func (s *PostgresStore) scanEntity(ctx context.Context, query string, args ...any) (Entity, bool, error) {
+	var entity Entity
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&entity.ID, &entity.BankID, &entity.Name, &entity.Kind, &entity.MentionCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entity{}, false, nil
+	}
+	if err != nil {
+		return Entity{}, false, err
+	}
+	return entity, true, nil
 }
 
 // UpsertUnit persists one memory unit.

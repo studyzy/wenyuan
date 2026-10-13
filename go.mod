@@ -2,9 +2,13 @@ module github.com/studyzy/wenyuan
 
 go 1.24
 
-require github.com/jackc/pgx/v5 v5.5.4
+require (
+	github.com/jackc/pgx/v5 v5.5.4
+	github.com/tiktoken-go/tokenizer v0.7.0
+)
 
 require (
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect

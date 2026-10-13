@@ -55,7 +55,9 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		}}})
 		return
 	}
-	result, err := h.Store.RetainWrite(r.Context(), toStorageRetain(bankID, req))
+	write := toStorageRetain(bankID, req)
+	write.Extraction = h.Extraction
+	result, err := h.Store.RetainWrite(r.Context(), write)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return

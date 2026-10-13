@@ -2,14 +2,19 @@ package storage
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
 // ts-0008 / beh-0005 / obs-0004: long content is segmented into ordered chunks
 // with a non-negative index and a per-chunk content hash.
+//
+// Chunking is bounded by size, not by blank lines: content that fits the chunk
+// budget is one chunk however many paragraphs it holds. The content here is
+// deliberately over budget so the split is exercised.
 func TestRetainSegmentsIntoChunks(t *testing.T) {
 	store := NewMemoryStore("public")
-	content := "first paragraph\n\nsecond paragraph\n\nthird paragraph"
+	content := "first paragraph\n\n" + strings.Repeat("x", ChunkSize) + "\n\nthird paragraph"
 	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
 		BankID: "b1",
 		Items:  []RetainItem{{Content: content, DocumentID: "doc-1"}},
@@ -30,6 +35,25 @@ func TestRetainSegmentsIntoChunks(t *testing.T) {
 		if chunk.Text == "" || chunk.ContentHash == "" {
 			t.Fatalf("chunk %d must carry text and a content hash: %+v", i, chunk)
 		}
+		if len(chunk.Text) > ChunkSize {
+			t.Fatalf("chunk %d is over the size budget: %d chars", i, len(chunk.Text))
+		}
+	}
+}
+
+// Content that fits the chunk budget stays a single chunk, so short writes are
+// not fragmented by paragraph.
+func TestRetainKeepsShortContentAsOneChunk(t *testing.T) {
+	store := NewMemoryStore("public")
+	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID: "b1",
+		Items:  []RetainItem{{Content: "first paragraph\n\nsecond paragraph", DocumentID: "doc-1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.ItemUnitIDs[0]) != 1 || len(store.chunks) != 1 {
+		t.Fatalf("expected a single chunk, got %+v", outcome.ItemUnitIDs)
 	}
 }
 

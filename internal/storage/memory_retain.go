@@ -14,6 +14,13 @@ import (
 // into chunks, persists units, resolves entities, and returns created unit
 // identifiers grouped per item in item order.
 func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (RetainOutcome, error) {
+	// Extraction calls a model, so it runs before the write lock is taken: a
+	// slow model call must not block every other write to the store.
+	extracted, err := extractForItems(ctx, req)
+	if err != nil {
+		return RetainOutcome{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
@@ -31,19 +38,18 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 	now := time.Now().UTC()
 
 	grouped := make([][]string, 0, len(req.Items))
-	total := 0
-	for _, item := range req.Items {
-		units := s.writeItemLocked(req, item, now)
+	for index, item := range req.Items {
+		units := s.writeItemLocked(req, item, extracted[index], now)
 		grouped = append(grouped, units)
-		total += len(units)
 	}
 
+	usage, processedTokens := RetainAccounting(req.Items)
 	outcome := RetainOutcome{
 		ItemUnitIDs:            grouped,
-		Usage:                  RetainUsageFor(total),
+		Usage:                  usage,
 		OperationID:            opID,
 		OperationIDs:           []string{opID},
-		ProcessedContentTokens: total,
+		ProcessedContentTokens: processedTokens,
 	}
 	s.recordWriteWatermarkLocked(req.BankID, now)
 	if req.Async {
@@ -73,48 +79,50 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 
 // writeItemLocked persists one item and returns the created unit identifiers in
 // segmentation order.
-func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, now time.Time) []string {
+// writeItemLocked persists one item and returns the created unit identifiers in
+// extraction order when the item was extracted, and in segmentation order
+// otherwise.
+func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, facts []ExtractedFact, now time.Time) []string {
 	docID := item.DocumentID
 	if docID == "" {
 		docID = newID()
 	}
-	text := item.Content
-	chunks := Segment(text)
-	s.putDocumentLocked(req.BankID, docID, text, item, now)
+	s.putDocumentLocked(req.BankID, docID, item.Content, item, now)
 	tags := mergeTags(item.Tags, req.DocumentTags)
-	units := make([]string, 0, len(chunks))
+
+	chunkIDs := s.putItemChunksLocked(req.BankID, docID, item.Content)
+	contents := itemContents(req.BankID, docID, chunkIDs, item, facts, tags)
+	units := make([]string, 0, len(contents))
+	for _, content := range contents {
+		unit := content.unit
+		unit.ID = newID()
+		s.upsertUnitLocked(unit)
+		for _, entity := range content.entities {
+			resolved := s.resolveEntityLocked(req.BankID, entity, item.ResolveEntities)
+			if resolved.ID == "" {
+				continue
+			}
+			s.unitEntities[unit.ID] = append(s.unitEntities[unit.ID], resolved.ID)
+		}
+		units = append(units, unit.ID)
+	}
+	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
+	return units
+}
+
+// putItemChunksLocked stores one item's segments and returns their identifiers
+// in order.
+func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string) []string {
+	chunks := Segment(content)
+	chunkIDs := make([]string, 0, len(chunks))
 	for i, chunk := range chunks {
 		chunkID := newID()
-		unitID := newID()
-		hash := ContentHash(chunk)
-		s.chunks = append(s.chunks, Chunk{ID: chunkID, BankID: req.BankID, DocumentID: docID, Index: i, Text: chunk, ContentHash: hash})
-		unit := MemoryUnit{
-			ID:            unitID,
-			BankID:        req.BankID,
-			Text:          chunk,
-			Type:          TypeWorld,
-			Metadata:      item.Metadata,
-			DocumentID:    docID,
-			ChunkID:       chunkID,
-			Tags:          tags,
-			AttachmentIDs: item.AttachmentIDs,
-		}
-		if item.Timestamp != nil {
-			unit.EventDate = item.Timestamp
-			unit.OccurredStart = item.Timestamp
-		}
-		s.upsertUnitLocked(unit)
-		for _, name := range item.Entities {
-			entity := s.resolveEntityLocked(req.BankID, name, EntityKindRegular, item.ResolveEntities)
-			s.unitEntities[unitID] = append(s.unitEntities[unitID], entity.ID)
-		}
-		units = append(units, unitID)
-		s.memories[req.BankID] = append(s.memories[req.BankID], RecallMatch{
-			ID: unitID, Text: chunk, Type: string(TypeWorld), DocumentID: docID, ChunkID: chunkID,
-			Tags: tags, Scores: map[string]float64{}, SourceFactIDs: []string{},
+		s.chunks = append(s.chunks, Chunk{
+			ID: chunkID, BankID: bankID, DocumentID: docID, Index: i, Text: chunk, ContentHash: ContentHash(chunk),
 		})
+		chunkIDs = append(chunkIDs, chunkID)
 	}
-	return units
+	return chunkIDs
 }
 
 // putDocumentLocked stores a document's text, hash, metadata and parameters.
@@ -184,63 +192,68 @@ func recallMatchFromUnit(unit MemoryUnit) RecallMatch {
 	}
 }
 
-// resolveEntityLocked resolves an entity name against the bank. With resolve on
-// a name close to an existing entity resolves to it; with resolve off a name is
-// reused only on a case-insensitive exact match and otherwise creates a new
-// entity.
-func (s *MemoryStore) resolveEntityLocked(bankID, name string, kind EntityKind, resolve bool) Entity {
-	key := strings.ToLower(strings.TrimSpace(name))
-	for id, entity := range s.entities {
-		if entity.BankID != bankID {
-			continue
-		}
-		if strings.EqualFold(entity.Name, name) {
-			return s.entities[id]
-		}
-		if resolve && entityKey(entity.Name) == key {
-			return s.entities[id]
-		}
+// resolveEntityLocked resolves one supplied entity against the bank.
+//
+// With resolution on, a name is a guess at which entity is meant: an existing
+// entity is reused when it matches exactly or scores at or above the
+// similarity threshold. With resolution off, a name is taken literally — an
+// existing entity is reused only on a case-insensitive exact match, and any
+// other name creates its own entity. The entity's label is not stored on the
+// row; it only groups the mention during resolution.
+func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, resolve bool) Entity {
+	name := entityMatchKey(entity.Text)
+	if name == "" {
+		return Entity{}
 	}
-	entity := Entity{ID: newID(), BankID: bankID, Name: name, Kind: kind, MentionCount: 1}
-	if kind == "" {
-		entity.Kind = EntityKindRegular
+	if resolve {
+		if match, found := s.bestEntityMatchLocked(bankID, name); found {
+			return match
+		}
+	} else if match, found := s.exactEntityMatchLocked(bankID, name); found {
+		return match
 	}
-	s.entities[entity.ID] = entity
-	return entity
+	created := Entity{ID: newID(), BankID: bankID, Name: name, Kind: EntityKindRegular, MentionCount: 1}
+	s.entities[created.ID] = created
+	return created
 }
 
-// RetainUsageFor derives the token usage for a write that produced unitCount
-// memory units.
-func RetainUsageFor(unitCount int) Usage {
-	input := unitCount
-	return Usage{InputTokens: input, OutputTokens: unitCount, TotalTokens: input + unitCount}
+// exactEntityMatchLocked finds a stored entity whose name matches
+// case-insensitively.
+func (s *MemoryStore) exactEntityMatchLocked(bankID, name string) (Entity, bool) {
+	for id, stored := range s.entities {
+		if stored.BankID == bankID && strings.EqualFold(entityMatchKey(stored.Name), name) {
+			return s.entities[id], true
+		}
+	}
+	return Entity{}, false
+}
+
+// bestEntityMatchLocked finds the stored entity most similar to name, provided
+// it scores at or above the threshold. Ties break on the identifier so the
+// resolution is deterministic across runs.
+func (s *MemoryStore) bestEntityMatchLocked(bankID, name string) (Entity, bool) {
+	best := Entity{}
+	bestScore := 0.0
+	for id, stored := range s.entities {
+		if stored.BankID != bankID {
+			continue
+		}
+		score := entitySimilarity(stored.Name, name)
+		if score < EntitySimilarityThreshold {
+			continue
+		}
+		if score > bestScore || (score == bestScore && best.ID != "" && id < best.ID) {
+			best = s.entities[id]
+			bestScore = score
+		}
+	}
+	return best, best.ID != ""
 }
 
 // ContentHash returns the lowercase hex SHA-256 of the given content.
 func ContentHash(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
-}
-
-// Segment splits content into ordered chunks by blank-line boundaries so later
-// reads can return each chunk with its index. Empty content yields one chunk.
-func Segment(content string) []string {
-	trimmed := strings.TrimRight(content, "\n")
-	if strings.TrimSpace(trimmed) == "" {
-		return []string{content}
-	}
-	parts := strings.Split(trimmed, "\n\n")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		out = append(out, part)
-	}
-	if len(out) == 0 {
-		return []string{content}
-	}
-	return out
 }
 
 func mergeTags(itemTags, documentTags []string) []string {
@@ -259,10 +272,6 @@ func mergeTags(itemTags, documentTags []string) []string {
 		}
 	}
 	return out
-}
-
-func entityKey(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
 }
 
 // GetDocument returns one stored document by identifier.
@@ -309,11 +318,27 @@ func (s *MemoryStore) AppendDocument(ctx context.Context, bankID, docID, text, e
 	return doc, nil
 }
 
-// ResolveEntity resolves an entity name against the bank.
+// ResolveEntity resolves an entity name against the bank, creating it with the
+// given kind when nothing matches.
 func (s *MemoryStore) ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.resolveEntityLocked(bankID, name, kind, resolve), nil
+	return s.resolveEntityOfKindLocked(bankID, name, kind, resolve), nil
+}
+
+// resolveEntityOfKindLocked is the resolution a caller naming an explicit kind
+// uses. Kind is the internal classification stored on the row; it is unrelated
+// to the caller's label for an entity on the retain route.
+func (s *MemoryStore) resolveEntityOfKindLocked(bankID, name string, kind EntityKind, resolve bool) Entity {
+	entity := RetainEntity{Text: name}
+	resolved := s.resolveEntityLocked(bankID, entity, resolve)
+	if resolved.ID != "" && kind != "" && kind != EntityKindRegular {
+		stored := s.entities[resolved.ID]
+		stored.Kind = kind
+		s.entities[resolved.ID] = stored
+		resolved = stored
+	}
+	return resolved
 }
 
 // UpsertUnit persists one memory unit.

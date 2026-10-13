@@ -3,6 +3,7 @@ package memoryops
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -18,17 +19,17 @@ type RetainRequest struct {
 // RetainItem is one ordered content item inside a write. Every field name is
 // public surface.
 type RetainItem struct {
-	Content           Content        `json:"content"`
-	Timestamp         TimestampField `json:"timestamp"`
-	Context           string         `json:"context,omitempty"`
-	Metadata          map[string]any `json:"metadata,omitempty"`
-	DocumentID        string         `json:"document_id,omitempty"`
-	Entities          []string       `json:"entities,omitempty"`
-	ResolveEntities   bool           `json:"resolve_entities,omitempty"`
-	Tags              TagList        `json:"tags,omitempty"`
-	ObservationScopes []string       `json:"observation_scopes,omitempty"`
-	Strategy          string         `json:"strategy,omitempty"`
-	UpdateMode        string         `json:"update_mode,omitempty"`
+	Content           Content         `json:"content"`
+	Timestamp         TimestampField  `json:"timestamp"`
+	Context           string          `json:"context,omitempty"`
+	Metadata          map[string]any  `json:"metadata,omitempty"`
+	DocumentID        string          `json:"document_id,omitempty"`
+	Entities          EntityInputList `json:"entities,omitempty"`
+	ResolveEntities   bool            `json:"resolve_entities,omitempty"`
+	Tags              TagList         `json:"tags,omitempty"`
+	ObservationScopes []string        `json:"observation_scopes,omitempty"`
+	Strategy          string          `json:"strategy,omitempty"`
+	UpdateMode        string          `json:"update_mode,omitempty"`
 	// AttachmentIDs are the short attachment ids the upload was recorded
 	// under. They are set by the file route after the bytes are stored, and
 	// are internal rather than wire fields.
@@ -137,6 +138,49 @@ func (t *TimestampField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// EntityInput is one entity a caller associates with retained content. The
+// type is optional and is the caller's label for the entity rather than
+// something derived from the text.
+type EntityInput struct {
+	Text string `json:"text"`
+	Type string `json:"type,omitempty"`
+}
+
+// UnmarshalJSON accepts the canonical object form and the bare-string form.
+// The string form carries no type, so an entity sent that way is untyped.
+func (e *EntityInput) UnmarshalJSON(data []byte) error {
+	trimmed := trimSpaceBytes(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		return json.Unmarshal(data, &e.Text)
+	}
+	type entityAlias EntityInput
+	var alias entityAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return errors.New("entity must be a string or an object with a text field")
+	}
+	*e = EntityInput(alias)
+	return nil
+}
+
+// EntityInputList is the list of entities a caller supplied. Decoding is
+// per-element so a list mixing the object and string forms is accepted.
+type EntityInputList []EntityInput
+
+// Texts returns the entity names in supplied order, dropping blanks so an
+// empty entry cannot become an entity with no name.
+func (l EntityInputList) Texts() []string {
+	out := make([]string, 0, len(l))
+	for _, entity := range l {
+		if name := trimSpaceString(entity.Text); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // TagList accepts tags as a JSON list or as a JSON-encoded string that decodes
 // to a list, coercing the latter back into a list so the write still succeeds.
 // A bare non-JSON string is treated as a single tag.
@@ -167,6 +211,11 @@ func (t *TagList) UnmarshalJSON(data []byte) error {
 	}
 	*t = []string{text}
 	return nil
+}
+
+// trimSpaceString trims the surrounding whitespace from a string.
+func trimSpaceString(value string) string {
+	return strings.TrimSpace(value)
 }
 
 func trimSpaceBytes(data []byte) []byte {

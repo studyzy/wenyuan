@@ -15,9 +15,11 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 		return RecallResult{}, err
 	}
 	types := resolvedTypes(q.Types)
+	// The budget level bounds the retrieval work, so it decides the candidate
+	// limit unless the caller named an explicit one.
 	limit := q.Limit
 	if limit <= 0 {
-		limit = 100
+		limit = BudgetLimit(q.Budget)
 	}
 
 	// When the caller supplied an embedded query, the semantic arm ranks by

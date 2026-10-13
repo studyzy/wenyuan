@@ -73,7 +73,13 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s", quoteIdent(s.schema))); err != nil {
 		return err
 	}
-	if err := s.ensureVectorExtension(ctx); err != nil {
+	if err := s.ensureExtension(ctx, "vector"); err != nil {
+		return err
+	}
+	// The trigram extension backs fuzzy entity-name resolution. A deployment
+	// that cannot install it still serves: the resolver falls back to exact
+	// matching when the probe fails.
+	if err := s.ensureExtension(ctx, "pg_trgm"); err != nil {
 		return err
 	}
 	if err := s.ensureMigrationTable(ctx); err != nil {
@@ -158,20 +164,20 @@ func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration)
 	return nil
 }
 
-// ensureVectorExtension installs the vector extension if it is missing and then
-// puts it on the search path, so the migration that adds a vector column can
-// resolve the type regardless of which schema actually holds the extension.
+// ensureExtension installs a named extension if it is missing and puts its
+// schema on the search path, so an object using the extension resolves
+// regardless of which schema actually holds it.
 //
 // The extension is installed in the schema that already has it when present,
 // and otherwise in the first schema on the search path. Installing it into this
-// store's own schema would hide the type from a deployment whose extension
-// lives elsewhere.
-func (s *PostgresStore) ensureVectorExtension(ctx context.Context) error {
+// store's own schema would hide it from a deployment whose extension lives
+// elsewhere.
+func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error {
 	var installed string
 	probe := `SELECT n.nspname FROM pg_extension e
 	          JOIN pg_namespace n ON n.oid = e.extnamespace
-	          WHERE e.extname = 'vector'`
-	err := s.db.QueryRowContext(ctx, probe).Scan(&installed)
+	          WHERE e.extname = $1`
+	err := s.db.QueryRowContext(ctx, probe, name).Scan(&installed)
 	switch {
 	case err == nil && installed != "":
 		// Already present somewhere; make it visible.
@@ -183,11 +189,11 @@ func (s *PostgresStore) ensureVectorExtension(ctx context.Context) error {
 
 	// Not installed: place it in the first schema already on the path, which is
 	// this store's schema, and then make that schema visible to the table.
-	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-		return fmt.Errorf("install vector extension: %w", err)
+	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS `+quoteIdent(name)); err != nil {
+		return fmt.Errorf("install %s extension: %w", name, err)
 	}
 	var target string
-	if err := s.db.QueryRowContext(ctx, probe).Scan(&target); err != nil {
+	if err := s.db.QueryRowContext(ctx, probe, name).Scan(&target); err != nil {
 		return err
 	}
 	if target != "" && target != s.schema {

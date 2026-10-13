@@ -55,8 +55,11 @@ func TestPostgresContractReadSurface(t *testing.T) {
 		Items: []RetainItem{{
 			Content:    "Alice works at Google on the AI team.",
 			DocumentID: "doc-1",
-			Entities:   []string{"Alice", "Google"},
-			Tags:       []string{"work"},
+			Entities: []RetainEntity{
+				{Text: "Alice", Kind: "PERSON"},
+				{Text: "Google", Kind: "ORG"},
+			},
+			Tags: []string{"work"},
 		}},
 	}); err != nil {
 		t.Fatalf("retain: %v", err)

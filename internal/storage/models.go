@@ -199,6 +199,15 @@ type ReflectContext struct {
 	Trace   map[string]any
 }
 
+// RetainEntity is one entity a caller associated with an item. The kind is the
+// caller's label for the entity and is used to group entities during
+// resolution; it is not stored on the entity row, which carries the
+// resolution's own entity-kind classification.
+type RetainEntity struct {
+	Text string
+	Kind string
+}
+
 // RetainItem is one ordered content item inside a memory write after
 // normalization. Content is the flattened canonical text.
 type RetainItem struct {
@@ -208,7 +217,7 @@ type RetainItem struct {
 	Context           string
 	Metadata          map[string]any
 	DocumentID        string
-	Entities          []string
+	Entities          []RetainEntity
 	ResolveEntities   bool
 	Tags              []string
 	ObservationScopes []string
@@ -229,6 +238,9 @@ type RetainRequest struct {
 	OperationID string
 	// DocumentTags is the deprecated request-level tag alias.
 	DocumentTags []string
+	// Extraction turns items into facts. A nil value stores each item's text
+	// verbatim, which is what a deployment with no model configured gets.
+	Extraction FactExtraction
 }
 
 // RetainOutcome is the persisted outcome of a retain write.

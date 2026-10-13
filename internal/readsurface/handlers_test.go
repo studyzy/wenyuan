@@ -32,8 +32,11 @@ func newServer(t *testing.T) *http.ServeMux {
 		Items: []storage.RetainItem{{
 			Content:    "Alice works at Google on the AI team.",
 			DocumentID: "doc-1",
-			Entities:   []string{"Alice", "Google"},
-			Tags:       []string{"work"},
+			Entities: []storage.RetainEntity{
+				{Text: "Alice", Kind: "PERSON"},
+				{Text: "Google", Kind: "ORG"},
+			},
+			Tags: []string{"work"},
 		}},
 	}); err != nil {
 		t.Fatal(err)

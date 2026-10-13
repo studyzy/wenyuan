@@ -182,6 +182,13 @@ func (a *App) mount(router *httpx.Router) {
 	memops := memoryops.NewHandlers(a.Store, int(a.Config.RetryAfter.Seconds()), int(a.Config.ReadTimeout.Milliseconds()))
 	memops.RetainBatchEnabled = a.Config.RetainBatchEnabled
 	memops.RecallStrategyBoosts = a.Config.RecallStrategyBoosts
+	// The extractor is wired from the provider boundary: with a model
+	// configured a write stores extracted facts, without one it stores the
+	// text verbatim.
+	memops.Extraction = newFactExtractor(a.Provider)
+	// The model-driven reflection loop replaces the deterministic one when a
+	// model is configured.
+	memops.Reflection = newReflectRunner(a.Provider)
 	memops.BankReflectDefaults = &memoryops.BankReflectDefaults{
 		SearchObservationsMaxTokens:       a.Config.ReflectSearchObservationsMaxTokens,
 		SearchObservationsIncludeEntities: a.Config.ReflectSearchObservationsIncludeEntities,

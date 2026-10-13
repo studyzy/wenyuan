@@ -99,6 +99,7 @@ func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.
 		SearchObservationsMaxTokens:       resolveObservationsMaxTokens(req, h.BankReflectDefaults),
 		SearchObservationsIncludeEntities: resolveObservationsIncludeEntities(req, h.BankReflectDefaults),
 		Timeout:                           h.ReflectTimeout,
+		Reflection:                        h.Reflection,
 	}
 	if h.ReflectCatalog != nil {
 		query.MentalModels = h.ReflectCatalog.MentalModels(bankID)

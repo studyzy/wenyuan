@@ -41,6 +41,13 @@ type Handlers struct {
 	// catalogues the reflection loop considers. It is optional; nil means the
 	// loop sees no perspectives or directives.
 	ReflectCatalog ReflectCatalog
+	// Extraction turns retained text into facts. A nil value stores each
+	// item's text verbatim, which is what a deployment with no model
+	// configured gets.
+	Extraction storage.FactExtraction
+	// Reflection, when non-nil, replaces the deterministic in-process
+	// reflection with the model-driven retrieval loop.
+	Reflection storage.ReflectRunner
 }
 
 // ReflectCatalog resolves the perspective and directive candidates for a bank.
@@ -90,7 +97,9 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFor(w, r, blocked)
 		return
 	}
-	result, err := h.Store.RetainWrite(r.Context(), toStorageRetain(bankID, req))
+	write := toStorageRetain(bankID, req)
+	write.Extraction = h.Extraction
+	result, err := h.Store.RetainWrite(r.Context(), write)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
@@ -174,7 +183,7 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		Context:           item.Context,
 		Metadata:          DropNullValues(item.Metadata),
 		DocumentID:        item.DocumentID,
-		Entities:          item.Entities,
+		Entities:          toStorageEntities(item.Entities),
 		ResolveEntities:   item.ResolveEntities,
 		Tags:              item.Tags,
 		ObservationScopes: item.ObservationScopes,
@@ -187,6 +196,29 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		stored.Timestamp = item.Timestamp.Value
 	}
 	return stored
+}
+
+// EntityDefaultType is the type an entity carries when the caller supplied a
+// bare name rather than an object. A name with no label is a concept, which is
+// what an untyped mention means.
+const EntityDefaultType = "CONCEPT"
+
+// toStorageEntities maps the wire entity list onto the storage shape. Entries
+// with a blank name are dropped, because a nameless entity cannot be stored.
+func toStorageEntities(entities EntityInputList) []storage.RetainEntity {
+	out := make([]storage.RetainEntity, 0, len(entities))
+	for _, entity := range entities {
+		name := trimSpaceString(entity.Text)
+		if name == "" {
+			continue
+		}
+		kind := trimSpaceString(entity.Type)
+		if kind == "" {
+			kind = EntityDefaultType
+		}
+		out = append(out, storage.RetainEntity{Text: name, Kind: kind})
+	}
+	return out
 }
 
 func itoa(value int) string {

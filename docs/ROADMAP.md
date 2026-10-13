@@ -1,10 +1,14 @@
 # Wenyuan — Outstanding Work and Known Limitations (Handover Document)
 
-> This document is written for whoever picks this project up next. It lists
-> **what is already done**, **what is explicitly not done**, **the known
-> trade-offs and limitations**, and **the recommended way to handle each item**.
-> Every entry cites its evidence location (file:line, test name) so it can be
-> located directly.
+> **⚠️ Partially superseded (2026-10-13).** This document was written at an
+> earlier baseline. Its §1 ("Unfinished API capabilities") and the §2 schema
+> comparison predate a large body of work: the route surface is now **99/99
+> complete**, vector search, the provider layer, the background worker, the
+> export/import endpoints, MCP, and the extraction/reflect wiring all exist.
+> **`docs/GAPS.md` is the authoritative current-state document** — its §7 lists
+> what actually remains. The §3 contract-item list and §4 engineering notes
+> below are still broadly useful, but check any "missing" claim against the
+> code before acting on it.
 >
 > Baseline at time of writing: 277 tests green, and `go build` / `go vet` /
 > `gofmt` / `go build -tags pgx` all pass; CI (`.github/workflows/ci.yml`) runs

@@ -10,6 +10,30 @@ const (
 	BudgetHigh = "high"
 )
 
+// How many candidates each budget level lets the pipeline consider. The level
+// is a bound on retrieval work, so it decides how many results a query may
+// surface: a low-budget query that returned as much as a high-budget one would
+// make the level meaningless.
+const (
+	BudgetLowLimit  = 100
+	BudgetMidLimit  = 300
+	BudgetHighLimit = 1000
+)
+
+// BudgetLimit maps a budget level to the candidate bound it allows. An absent
+// or unrecognised level falls back to the middle level, which is what an
+// omitted budget means.
+func BudgetLimit(budget string) int {
+	switch budget {
+	case BudgetLow:
+		return BudgetLowLimit
+	case BudgetHigh:
+		return BudgetHighLimit
+	default:
+		return BudgetMidLimit
+	}
+}
+
 // RecallBudgetLevels returns the accepted budget levels in stable order.
 func RecallBudgetLevels() []string { return []string{BudgetLow, BudgetMid, BudgetHigh} }
 
@@ -40,12 +64,15 @@ const (
 const (
 	ArmSemantic = "semantic"
 	ArmKeyword  = "keyword"
+	ArmGraph    = "graph"
 	ArmTemporal = "temporal"
 	ArmEntity   = "entity"
 )
 
 // RecallArms returns every retrieval arm identifier in stable order.
-func RecallArms() []string { return []string{ArmSemantic, ArmKeyword, ArmTemporal, ArmEntity} }
+func RecallArms() []string {
+	return []string{ArmSemantic, ArmKeyword, ArmGraph, ArmTemporal, ArmEntity}
+}
 
 // TemporalWindow is a caller-supplied inclusive window used for temporal
 // proximity ranking. Bounds are inclusive; a zero bound is treated as absent.
