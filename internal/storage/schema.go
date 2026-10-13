@@ -82,6 +82,7 @@ var MemoryUnitsColumns = []string{
 	"event_date",
 	"confidence_score",
 	"access_count",
+	"embedding",
 }
 
 // DocumentsColumns are the document text/hash/metadata/parameter columns.

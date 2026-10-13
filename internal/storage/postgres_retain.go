@@ -176,12 +176,28 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	if unit.ID == "" {
 		unit.ID = newID()
 	}
+	// An embedding is validated before it is stored: a vector of the wrong
+	// width would rank against every row incorrectly rather than fail loudly.
+	embedding := any(nil)
+	if len(unit.Embedding) > 0 {
+		if err := ValidateEmbedding(unit.Embedding); err != nil {
+			return MemoryUnit{}, err
+		}
+		embedding = NullableEmbedding(unit.Embedding)
+	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
-	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags)
-	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-	           ON CONFLICT (id) DO NOTHING`
+	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags, embedding)
+	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector)
+	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
+	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
+	// A nil tag slice would violate the column's not-null constraint, so an
+	// absent tag set is stored as an empty array.
+	tags := unit.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.Type),
-		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, unit.Tags); err != nil {
+		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding); err != nil {
 		return MemoryUnit{}, err
 	}
 	return unit, nil

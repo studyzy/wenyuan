@@ -115,6 +115,12 @@ type RecallQuery struct {
 	// QueryTimestamp is the query-time anchor used for recency scoring, when
 	// supplied.
 	QueryTimestamp *time.Time
+	// QueryEmbedding is the embedded query vector. When present, the semantic
+	// arm ranks by cosine similarity against the stored embedding instead of
+	// the deterministic lexical stand-in. When absent, the semantic arm falls
+	// back to that stand-in so a deployment with no embedding provider still
+	// retrieves.
+	QueryEmbedding []float32
 	// StrategyBoosts maps an arm identifier to a bounded boost level
 	// (low, medium, high). Empty leaves every arm unboosted.
 	StrategyBoosts map[string]string

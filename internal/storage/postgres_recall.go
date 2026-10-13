@@ -15,16 +15,24 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 		return RecallResult{}, err
 	}
 	types := resolvedTypes(q.Types)
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// When the caller supplied an embedded query, the semantic arm ranks by
+	// real vector similarity and the lexical filter is not applied, because a
+	// vector neighbour need not contain the query's words.
+	if embeddingProviderAvailable(q) {
+		return s.vectorRecall(ctx, q, types, limit)
+	}
+
 	query := `SELECT id, text, type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1
 	            AND ($2 = '' OR text ILIKE '%' || $2 || '%')
 	            AND type = ANY($3)
 	          LIMIT $4`
-	limit := q.Limit
-	if limit <= 0 {
-		limit = 100
-	}
 	rows, err := s.db.QueryContext(ctx, query, q.BankID, strings.TrimSpace(q.Query), types, limit)
 	if err != nil {
 		return RecallResult{}, err
