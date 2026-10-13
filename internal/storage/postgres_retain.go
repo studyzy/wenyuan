@@ -62,15 +62,16 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	if docID == "" {
 		docID = newID()
 	}
+	tags := mergeTags(item.Tags, req.DocumentTags)
 	if _, err := s.PutDocument(ctx, req.BankID, docID, Document{
 		OriginalText: item.Content,
 		ContentHash:  ContentHash(item.Content),
 		Metadata:     item.Metadata,
 		RetainParams: map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode},
+		Tags:         tags,
 	}); err != nil {
 		return nil, err
 	}
-	tags := mergeTags(item.Tags, req.DocumentTags)
 	chunks := Segment(item.Content)
 	units := make([]string, 0, len(chunks))
 	for i, chunk := range chunks {

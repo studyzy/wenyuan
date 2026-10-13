@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"strings"
 )
 
 // ConsolidationFacts returns the newest raw facts of a bank that have not yet
@@ -142,35 +141,9 @@ func (s *PostgresStore) linkObservationSources(ctx context.Context, observationI
 // ErrMemoryNotFound reports a memory unit the store does not hold.
 
 // decodeTextArray parses the text form PostgreSQL renders for a text array,
-// which is what a grouped aggregate is scanned as without a driver-specific
-// array decoder.
+// which is what a column is scanned as when it is cast to text rather than
+// scanned through a driver-specific array codec. It delegates to the shared
+// decoder so every array column is read the same way.
 func decodeTextArray(encoded string) []string {
-	trimmed := strings.TrimSpace(encoded)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
-		return []string{}
-	}
-	body := trimmed[1 : len(trimmed)-1]
-	if strings.TrimSpace(body) == "" {
-		return []string{}
-	}
-	var values []string
-	var current strings.Builder
-	inQuotes := false
-	for i := 0; i < len(body); i++ {
-		c := body[i]
-		switch {
-		case c == '"':
-			inQuotes = !inQuotes
-		case c == '\\' && i+1 < len(body):
-			i++
-			current.WriteByte(body[i])
-		case c == ',' && !inQuotes:
-			values = append(values, current.String())
-			current.Reset()
-		default:
-			current.WriteByte(c)
-		}
-	}
-	values = append(values, current.String())
-	return values
+	return decodePostgresTextArray([]byte(encoded))
 }

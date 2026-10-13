@@ -7,8 +7,10 @@ import (
 	"errors"
 )
 
-// webhookSelect is the shared projection for webhook registrations.
-const webhookSelect = `id, bank_id, url, COALESCE(secret,''), COALESCE(event_types, '{}'),
+// webhookSelect is the shared projection for webhook registrations. The event
+// type array is rendered to text so it can be scanned without a driver-specific
+// array codec, and decoded by scanWebhook.
+const webhookSelect = `id, bank_id, url, COALESCE(secret,''), COALESCE(event_types, '{}')::text,
        COALESCE(enabled, true), COALESCE(http_config, '{}'::jsonb), created_at, updated_at`
 
 // ListWebhooks returns a bank's webhook registrations, newest first.
@@ -151,13 +153,13 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 // scanWebhook reads the shared projection.
 func scanWebhook(row rowScanner) (Webhook, error) {
 	var webhook Webhook
-	var eventTypes []string
+	var eventTypes string
 	var config []byte
 	if err := row.Scan(&webhook.ID, &webhook.BankID, &webhook.URL, &webhook.Secret,
 		&eventTypes, &webhook.Enabled, &config, &webhook.CreatedAt, &webhook.UpdatedAt); err != nil {
 		return Webhook{}, err
 	}
-	webhook.EventTypes = eventTypes
+	webhook.EventTypes = decodeTextArray(eventTypes)
 	webhook.HTTPConfig = decodeJSONMap(config)
 	return webhook, nil
 }

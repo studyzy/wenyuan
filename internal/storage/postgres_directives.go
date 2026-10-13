@@ -9,7 +9,7 @@ import (
 // directiveSelect is the shared projection so every read returns the same
 // column order the scanner expects.
 const directiveSelect = `id, bank_id, name, content, COALESCE(priority,0), COALESCE(is_active,true),
-       COALESCE(tags, '{}'), created_at, updated_at`
+       COALESCE(tags, '{}')::text, created_at, updated_at`
 
 // ListDirectives returns the directives of one bank, highest priority first so
 // the order a reflection would follow them is the order they are returned in.
@@ -109,11 +109,11 @@ func (s *PostgresStore) DeleteDirective(ctx context.Context, bankID, id string) 
 // scanDirective reads the shared projection.
 func scanDirective(row rowScanner) (Directive, error) {
 	var directive Directive
-	var tags []string
+	var tags string
 	if err := row.Scan(&directive.ID, &directive.BankID, &directive.Name, &directive.Content,
 		&directive.Priority, &directive.IsActive, &tags, &directive.CreatedAt, &directive.UpdatedAt); err != nil {
 		return Directive{}, err
 	}
-	directive.Tags = tags
+	directive.Tags = decodeTextArray(tags)
 	return directive, nil
 }

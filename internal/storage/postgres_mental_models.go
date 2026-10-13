@@ -13,7 +13,7 @@ import (
 // column order the scanner expects.
 const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''), COALESCE(source_query,''),
        COALESCE(content,''), COALESCE(entity_id::text,''), COALESCE(observations, '{}'::jsonb),
-       COALESCE(links, '{}'), COALESCE(tags, '{}'), COALESCE(max_tokens, 2048),
+       COALESCE(links, '{}')::text, COALESCE(tags, '{}')::text, COALESCE(max_tokens, 2048),
        COALESCE(trigger, '{}'::jsonb), structured_content, reflect_response,
        COALESCE(history, '[]'::jsonb), COALESCE(last_refreshed_source_query, ''),
        last_refreshed_at, last_updated, created_at`
@@ -197,7 +197,7 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 	var model MentalModel
 	var subtype string
 	var observations, trigger, structured, reflectResult, history []byte
-	var links, tags []string
+	var links, tags string
 	var lastRefreshedAt, lastUpdated sql.NullTime
 	if err := row.Scan(&model.ID, &model.BankID, &subtype, &model.Name, &model.Description,
 		&model.SourceQuery, &model.Content, &model.EntityID, &observations,
@@ -206,8 +206,8 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 		return MentalModel{}, err
 	}
 	model.Subtype = MentalModelSubtype(subtype)
-	model.Links = links
-	model.Tags = tags
+	model.Links = decodeTextArray(links)
+	model.Tags = decodeTextArray(tags)
 	model.LastRefreshedAt = derefTime(lastRefreshedAt)
 	model.LastUpdated = derefTime(lastUpdated)
 	model.Observations = decodeJSONMap(observations)

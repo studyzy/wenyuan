@@ -119,6 +119,10 @@ func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, now ti
 
 // putDocumentLocked stores a document's text, hash, metadata and parameters.
 func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, item RetainItem, now time.Time) {
+	tags := item.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	s.documents[docID] = Document{
 		ID:           docID,
 		BankID:       bankID,
@@ -126,6 +130,7 @@ func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, item RetainI
 		ContentHash:  ContentHash(text),
 		Metadata:     item.Metadata,
 		RetainParams: map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode},
+		Tags:         tags,
 		CreatedAt:    now,
 	}
 }

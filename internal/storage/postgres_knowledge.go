@@ -8,8 +8,11 @@ import (
 )
 
 // knowledgeSelect is the shared projection for the knowledge tree.
+// knowledgeSelect is the shared projection for knowledge nodes. The tag array
+// is rendered to text so it can be scanned without a driver-specific array
+// codec, and decoded by the scanners below.
 const knowledgeSelect = `id, bank_id, COALESCE(parent_id,''), kind, title, COALESCE(text,''),
-       COALESCE(tags, '{}'), created_at, updated_at`
+       COALESCE(tags, '{}')::text, created_at, updated_at`
 
 // ListKnowledgeNodes returns every knowledge node of one bank, oldest first.
 func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
@@ -151,25 +154,25 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, bankID, query 
 func scanKnowledgeNode(row rowScanner) (KnowledgeNode, error) {
 	var node KnowledgeNode
 	var kind string
-	var tags []string
+	var tags string
 	if err := row.Scan(&node.ID, &node.BankID, &node.ParentID, &kind, &node.Title,
 		&node.Text, &tags, &node.CreatedAt, &node.UpdatedAt); err != nil {
 		return KnowledgeNode{}, err
 	}
 	node.Kind = KnowledgeKind(kind)
-	node.Tags = tags
+	node.Tags = decodeTextArray(tags)
 	return node, nil
 }
 
 // scanKnowledgeWithScore reads the projection plus a ranking score.
 func scanKnowledgeWithScore(row rowScanner, node *KnowledgeNode, score *float64) error {
 	var kind string
-	var tags []string
+	var tags string
 	if err := row.Scan(&node.ID, &node.BankID, &node.ParentID, &kind, &node.Title,
 		&node.Text, &tags, &node.CreatedAt, &node.UpdatedAt, score); err != nil {
 		return err
 	}
 	node.Kind = KnowledgeKind(kind)
-	node.Tags = tags
+	node.Tags = decodeTextArray(tags)
 	return nil
 }
