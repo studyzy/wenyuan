@@ -276,6 +276,15 @@ type MemoryUnit struct {
 	DocumentID    string
 	ChunkID       string
 	Tags          []string
+	// SourceID is the archive-internal fact identity, carried so an
+	// export/import round trip is lossless.
+	SourceID string
+	// ObservationScopes are the observation scopes the unit contributes to.
+	ObservationScopes []string
+	// ConsolidatedAt and ConsolidationFailedAt record the consolidation pass
+	// outcome for the unit.
+	ConsolidatedAt        *time.Time
+	ConsolidationFailedAt *time.Time
 }
 
 // MemoryLink is one directed link between two memory units.

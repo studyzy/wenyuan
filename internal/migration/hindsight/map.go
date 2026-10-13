@@ -75,19 +75,23 @@ func stableID(kind string, parts ...string) string {
 // unitFromFact converts one archive fact into a memory unit for the target bank.
 func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fact) storage.MemoryUnit {
 	unit := storage.MemoryUnit{
-		ID:            factUnitID(bankID, documentID, index),
-		BankID:        bankID,
-		Text:          fact.Text,
-		Type:          storage.MemoryUnitType(fact.FactType),
-		Context:       fact.Context,
-		EventDate:     fact.EventDate,
-		OccurredStart: fact.OccurredStart,
-		OccurredEnd:   fact.OccurredEnd,
-		MentionedAt:   fact.MentionedAt,
-		Confidence:    confidenceFromMetadata(fact.Metadata),
-		Metadata:      fact.Metadata,
-		DocumentID:    documentID,
-		Tags:          fact.Tags,
+		ID:                    factUnitID(bankID, documentID, index),
+		BankID:                bankID,
+		Text:                  fact.Text,
+		Type:                  storage.MemoryUnitType(fact.FactType),
+		Context:               fact.Context,
+		EventDate:             fact.EventDate,
+		OccurredStart:         fact.OccurredStart,
+		OccurredEnd:           fact.OccurredEnd,
+		MentionedAt:           fact.MentionedAt,
+		Confidence:            confidenceFromMetadata(fact.Metadata),
+		Metadata:              fact.Metadata,
+		DocumentID:            documentID,
+		Tags:                  fact.Tags,
+		SourceID:              fact.SourceID,
+		ObservationScopes:     fact.ObservationScopes,
+		ConsolidatedAt:        fact.ConsolidatedAt,
+		ConsolidationFailedAt: fact.ConsolidationFailedAt,
 	}
 	if fact.ChunkIndex != nil {
 		unit.ChunkID = chunkID(bankID, documentID, *fact.ChunkIndex)
@@ -118,14 +122,9 @@ func confidenceFromMetadata(metadata map[string]any) float64 {
 	}
 }
 
-// unmappedFields reports the archive fields that have no Wenyuan column. They
-// are preserved in metadata by the writer where a bag exists, and reported here
-// so nothing is dropped silently.
+// unmappedFields reports the archive fields that have no Wenyuan column. The
+// list is empty when every archive field has a destination; it is kept so a
+// future field addition fails loudly rather than dropping silently.
 func unmappedFields() []string {
-	return []string{
-		"fact.source_id (archive-internal fact identity; not persisted)",
-		"fact.observation_scopes (no column; regrouped on the target)",
-		"fact.consolidated_at / consolidation_failed_at (no column)",
-		"document.retain_params (no column on the target document)",
-	}
+	return nil
 }

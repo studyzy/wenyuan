@@ -75,6 +75,7 @@ type Fact struct {
 	MentionedAt           *time.Time       `json:"mentioned_at"`
 	Metadata              map[string]any   `json:"metadata"`
 	Tags                  []string         `json:"tags"`
+	ObservationScopes     []string         `json:"observation_scopes"`
 	ChunkIndex            *int             `json:"chunk_index"`
 	Entities              []string         `json:"entities"`
 	CausalRelations       []CausalRelation `json:"causal_relations"`

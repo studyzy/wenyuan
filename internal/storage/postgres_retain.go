@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -208,8 +209,9 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 		embedding = NullableEmbedding(unit.Embedding)
 	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
-	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags, embedding)
-	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector)
+	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags, embedding,
+	            source_id, observation_scopes, consolidated_at, consolidation_failed_at)
+	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12::jsonb,$13,$14)
 	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
 	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
 	// A nil tag slice would violate the column's not-null constraint, so an
@@ -218,8 +220,17 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	if tags == nil {
 		tags = []string{}
 	}
+	scopes := any(nil)
+	if len(unit.ObservationScopes) > 0 {
+		encoded, err := json.Marshal(unit.ObservationScopes)
+		if err != nil {
+			return MemoryUnit{}, err
+		}
+		scopes = string(encoded)
+	}
 	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.Type),
-		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding); err != nil {
+		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding,
+		nullString(unit.SourceID), scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt); err != nil {
 		return MemoryUnit{}, err
 	}
 	return unit, nil
