@@ -44,7 +44,7 @@ export async function evaluateGate(input: GateInput): Promise<GateDecision> {
   if (isApiPath(appPath)) {
     return {
       kind: "api-unauthorized",
-      body: buildErrorBody("errors.unauthorized", input.locale),
+      body: buildErrorBody("api.errors.generic.unauthorized", input.locale),
     };
   }
 

@@ -75,7 +75,7 @@ export async function GET(request: Request): Promise<Response> {
   if (!submitted.ok) return passthroughResult(submitted);
 
   const operationId = operationIdFrom(submitted.body);
-  if (!operationId) return errorResponse("errors.internal", 500, locale);
+  if (!operationId) return errorResponse("api.errors.generic.internal", 500, locale);
 
   const deadline = Date.now() + EXPORT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -84,15 +84,15 @@ export async function GET(request: Request): Promise<Response> {
       path: `/v1/default/documents/transfer/${encodeURIComponent(operationId)}`,
       method: "GET",
     });
-    if (isFailed(operation.body)) return errorResponse("errors.internal", 500, locale);
+    if (isFailed(operation.body)) return errorResponse("api.errors.generic.internal", 500, locale);
     if (isTerminal(operation.body)) {
       const archivePath = archivePathFrom(operation.body);
-      if (!archivePath) return errorResponse("errors.internal", 500, locale);
+      if (!archivePath) return errorResponse("api.errors.generic.internal", 500, locale);
       const archive = await fetchBinary(config, archivePath);
       return archive;
     }
   }
-  return errorResponse("errors.upstreamUnavailable", 500, locale);
+  return errorResponse("api.errors.generic.internal", 500, locale);
 }
 
 /** Document transfer import. */

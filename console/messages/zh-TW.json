@@ -46,7 +46,9 @@
         "fileRequired": "必須提供檔案。"
       },
       "auth": {
-        "invalidRequestBody": "無法讀取請求內容。"
+        "invalidRequestBody": "無法讀取請求內容。",
+        "keyNotConfigured": "此伺服器未設定存取金鑰。",
+        "wrongKey": "存取金鑰不正確。"
       },
       "banks": {
         "clone": "無法複製該銀行。",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "不支援刪除單一記憶。",
         "unauthorized": "需要驗證才能繼續。",
         "notFound": "找不到要求的資源。",
-        "internal": "發生非預期的錯誤。"
+        "internal": "發生非預期的錯誤。",
+        "forbidden": "無權執行此操作。"
       },
       "auditLogs": {
         "list": "取得稽核日誌失敗",
@@ -176,6 +179,9 @@
         "fetchPage": "取得頁面失敗",
         "search": "搜尋知識庫失敗",
         "export": "匯出知識庫失敗"
+      },
+      "version": {
+        "unavailable": "版本資訊無法取得。"
       }
     }
   },

@@ -46,7 +46,9 @@
         "fileRequired": "必须提供文件。"
       },
       "auth": {
-        "invalidRequestBody": "无法读取请求正文。"
+        "invalidRequestBody": "无法读取请求正文。",
+        "keyNotConfigured": "此服务器未配置访问密钥。",
+        "wrongKey": "访问密钥不正确。"
       },
       "banks": {
         "clone": "无法克隆该记忆库。",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "不支持删除单条记忆。",
         "unauthorized": "需要身份验证才能继续。",
         "notFound": "未找到请求的资源。",
-        "internal": "发生意外错误。"
+        "internal": "发生意外错误。",
+        "forbidden": "无权执行此操作。"
       },
       "auditLogs": {
         "list": "获取审计日志失败",
@@ -176,6 +179,9 @@
         "fetchPage": "获取页面失败",
         "search": "搜索知识库失败",
         "export": "导出知识库失败"
+      },
+      "version": {
+        "unavailable": "版本信息不可用。"
       }
     }
   },

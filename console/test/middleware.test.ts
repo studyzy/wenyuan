@@ -204,3 +204,48 @@ describe("middleware matcher", () => {
     expect(shouldProcess("/api/banks/team%3Aalpha")).toBe(true);
   });
 });
+describe("auth and locale contract", () => {
+  it("uses the contract error namespace for the access-gate rejection", async () => {
+    const { evaluateGate } = await import("../lib/middleware/gate");
+    const decision = await evaluateGate({
+      pathname: "/api/banks",
+      search: "",
+      cookieHeader: undefined,
+      accessKey: "secret",
+      basePath: "",
+      locale: "en",
+    });
+    expect(decision.kind).toBe("api-unauthorized");
+    if (decision.kind === "api-unauthorized") {
+      const serialized = JSON.stringify(decision.body);
+      expect(serialized).not.toContain("errorKey");
+      expect(typeof decision.body.error).toBe("string");
+    }
+  });
+
+  it("opens the gate entirely when no access key is configured", async () => {
+    const { evaluateGate } = await import("../lib/middleware/gate");
+    const decision = await evaluateGate({
+      pathname: "/api/banks",
+      search: "",
+      cookieHeader: undefined,
+      accessKey: "",
+      basePath: "",
+      locale: "en",
+    });
+    expect(decision.kind).toBe("allow");
+  });
+
+  it("whitelists the sign-in path so the gate cannot loop", async () => {
+    const { evaluateGate } = await import("../lib/middleware/gate");
+    const decision = await evaluateGate({
+      pathname: "/login",
+      search: "",
+      cookieHeader: undefined,
+      accessKey: "secret",
+      basePath: "",
+      locale: "en",
+    });
+    expect(decision.kind).toBe("allow");
+  });
+});

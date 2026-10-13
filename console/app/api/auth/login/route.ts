@@ -21,19 +21,19 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   if (!config.accessKey) {
-    return errorResponse("errors.loginKeyNotConfigured", 503, locale);
+    return errorResponse("api.errors.auth.keyNotConfigured", 503, locale);
   }
 
   let payload: { accessKey?: string } | undefined;
   try {
     payload = (await request.json()) as { accessKey?: string };
   } catch {
-    return errorResponse("errors.loginMalformedBody", 400, locale);
+    return errorResponse("api.errors.auth.invalidRequestBody", 400, locale);
   }
 
   const submitted = typeof payload?.accessKey === "string" ? payload.accessKey : "";
   if (!verifyAccessKey(config.accessKey, submitted)) {
-    return errorResponse("errors.loginWrongKey", 401, locale);
+    return errorResponse("api.errors.auth.wrongKey", 401, locale);
   }
 
   const token = createSessionToken(config.accessKey, "console", Date.now());

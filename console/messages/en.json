@@ -46,7 +46,9 @@
         "fileRequired": "A file is required."
       },
       "auth": {
-        "invalidRequestBody": "The request body could not be read."
+        "invalidRequestBody": "The request body could not be read.",
+        "keyNotConfigured": "The access key is not configured on this server.",
+        "wrongKey": "The access key is incorrect."
       },
       "banks": {
         "clone": "The bank could not be cloned.",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "Deleting individual memories is not supported.",
         "unauthorized": "Authentication is required to continue.",
         "notFound": "The requested resource was not found.",
-        "internal": "An unexpected error occurred."
+        "internal": "An unexpected error occurred.",
+        "forbidden": "You are not allowed to perform this action."
       },
       "auditLogs": {
         "list": "Failed to list audit logs",
@@ -176,6 +179,9 @@
         "fetchPage": "Failed to load page",
         "search": "Failed to search the knowledge base",
         "export": "Failed to export the knowledge base"
+      },
+      "version": {
+        "unavailable": "The version information is unavailable."
       }
     }
   },

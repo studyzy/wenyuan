@@ -24,7 +24,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const { bankId, attachmentId } = await context.params;
 
   if (!isAttachmentId(attachmentId)) {
-    return errorResponse("errors.invalidAttachmentId", 400, locale);
+    return errorResponse("api.errors.validation.missingRequestData", 400, locale);
   }
 
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);

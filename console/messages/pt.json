@@ -46,7 +46,9 @@
         "fileRequired": "Um arquivo é obrigatório."
       },
       "auth": {
-        "invalidRequestBody": "Não foi possível ler o corpo da solicitação."
+        "invalidRequestBody": "Não foi possível ler o corpo da solicitação.",
+        "keyNotConfigured": "A chave de acesso não está configurada neste servidor.",
+        "wrongKey": "A chave de acesso está incorreta."
       },
       "banks": {
         "clone": "Não foi possível clonar o banco.",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "Não há suporte para excluir memórias individuais.",
         "unauthorized": "É necessário autenticar-se para continuar.",
         "notFound": "O recurso solicitado não foi encontrado.",
-        "internal": "Ocorreu um erro inesperado."
+        "internal": "Ocorreu um erro inesperado.",
+        "forbidden": "Você não tem permissão para executar esta ação."
       },
       "auditLogs": {
         "list": "Falha ao carregar os registros de auditoria",
@@ -176,6 +179,9 @@
         "fetchPage": "Falha ao carregar a página",
         "search": "Falha na busca na base de conhecimento",
         "export": "Falha ao exportar a base de conhecimento"
+      },
+      "version": {
+        "unavailable": "As informações de versão não estão disponíveis."
       }
     }
   },

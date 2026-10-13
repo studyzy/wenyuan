@@ -46,7 +46,9 @@
         "fileRequired": "ファイルが必要です。"
       },
       "auth": {
-        "invalidRequestBody": "リクエスト本文を読み取れませんでした。"
+        "invalidRequestBody": "リクエスト本文を読み取れませんでした。",
+        "keyNotConfigured": "このサーバーにアクセスキーが設定されていません。",
+        "wrongKey": "アクセスキーが正しくありません。"
       },
       "banks": {
         "clone": "バンクを複製できませんでした。",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "個々のメモリの削除はサポートされていません。",
         "unauthorized": "続行するには認証が必要です。",
         "notFound": "要求されたリソースが見つかりませんでした。",
-        "internal": "予期しないエラーが発生しました。"
+        "internal": "予期しないエラーが発生しました。",
+        "forbidden": "この操作を実行する権限がありません。"
       },
       "auditLogs": {
         "list": "監査ログの取得に失敗しました",
@@ -176,6 +179,9 @@
         "fetchPage": "ページの取得に失敗しました",
         "search": "ナレッジベースの検索に失敗しました",
         "export": "ナレッジベースのエクスポートに失敗しました"
+      },
+      "version": {
+        "unavailable": "バージョン情報を取得できません。"
       }
     }
   },

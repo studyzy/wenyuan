@@ -46,7 +46,9 @@
         "fileRequired": "Se requiere un archivo."
       },
       "auth": {
-        "invalidRequestBody": "No se pudo leer el cuerpo de la solicitud."
+        "invalidRequestBody": "No se pudo leer el cuerpo de la solicitud.",
+        "keyNotConfigured": "La clave de acceso no está configurada en este servidor.",
+        "wrongKey": "La clave de acceso es incorrecta."
       },
       "banks": {
         "clone": "No se pudo clonar el banco.",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "No se admite eliminar memorias individuales.",
         "unauthorized": "Se requiere autenticación para continuar.",
         "notFound": "No se encontró el recurso solicitado.",
-        "internal": "Se produjo un error inesperado."
+        "internal": "Se produjo un error inesperado.",
+        "forbidden": "No tiene permiso para realizar esta acción."
       },
       "auditLogs": {
         "list": "No se pudieron cargar los registros de auditoría",
@@ -176,6 +179,9 @@
         "fetchPage": "No se pudo cargar la página",
         "search": "Falló la búsqueda en la base de conocimiento",
         "export": "No se pudo exportar la base de conocimiento"
+      },
+      "version": {
+        "unavailable": "La información de versión no está disponible."
       }
     }
   },

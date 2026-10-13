@@ -46,7 +46,9 @@
         "fileRequired": "Eine Datei ist erforderlich."
       },
       "auth": {
-        "invalidRequestBody": "Der Anfragetext konnte nicht gelesen werden."
+        "invalidRequestBody": "Der Anfragetext konnte nicht gelesen werden.",
+        "keyNotConfigured": "Der Zugriffsschlüssel ist auf diesem Server nicht konfiguriert.",
+        "wrongKey": "Der Zugriffsschlüssel ist falsch."
       },
       "banks": {
         "clone": "Die Bank konnte nicht geklont werden.",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "Das Löschen einzelner Erinnerungen wird nicht unterstützt.",
         "unauthorized": "Zum Fortfahren ist eine Anmeldung erforderlich.",
         "notFound": "Die angeforderte Ressource wurde nicht gefunden.",
-        "internal": "Ein unerwarteter Fehler ist aufgetreten."
+        "internal": "Ein unerwarteter Fehler ist aufgetreten.",
+        "forbidden": "Sie sind nicht berechtigt, diese Aktion auszuführen."
       },
       "auditLogs": {
         "list": "Audit-Protokolle konnten nicht geladen werden",
@@ -176,6 +179,9 @@
         "fetchPage": "Seite konnte nicht geladen werden",
         "search": "Suche in der Wissensdatenbank fehlgeschlagen",
         "export": "Wissensdatenbank konnte nicht exportiert werden"
+      },
+      "version": {
+        "unavailable": "Die Versionsinformationen sind nicht verfügbar."
       }
     }
   },

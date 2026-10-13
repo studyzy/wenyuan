@@ -18,7 +18,7 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const result = await callUpstream(config, { path: "/v1/version" });
     if (!result.ok) {
-      return errorResponse("errors.versionUnavailable", 500, locale);
+      return errorResponse("api.errors.version.unavailable", 500, locale);
     }
     const text = new TextDecoder().decode(result.body);
     const payload = text.length > 0 ? (JSON.parse(text) as Record<string, unknown>) : {};
@@ -28,6 +28,6 @@ export async function GET(request: Request): Promise<Response> {
       200,
     );
   } catch {
-    return errorResponse("errors.versionUnavailable", 500, locale);
+    return errorResponse("api.errors.version.unavailable", 500, locale);
   }
 }

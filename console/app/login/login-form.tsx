@@ -23,7 +23,7 @@ export function LoginForm({ returnTo, locale, languages, labels }: Props) {
       await signIn(accessKey, returnTo);
       window.location.assign(apiUrl(returnTo));
     } catch {
-      setError("errors.loginWrongKey");
+      setError("api.errors.auth.wrongKey");
     }
   }
 

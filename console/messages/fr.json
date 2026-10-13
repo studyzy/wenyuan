@@ -46,7 +46,9 @@
         "fileRequired": "Un fichier est requis."
       },
       "auth": {
-        "invalidRequestBody": "Le corps de la requête n'a pas pu être lu."
+        "invalidRequestBody": "Le corps de la requête n'a pas pu être lu.",
+        "keyNotConfigured": "La clé d’accès n’est pas configurée sur ce serveur.",
+        "wrongKey": "La clé d’accès est incorrecte."
       },
       "banks": {
         "clone": "La banque n'a pas pu être clonée.",
@@ -81,7 +83,8 @@
         "unsupportedIndividualMemoryDelete": "La suppression de souvenirs individuels n'est pas prise en charge.",
         "unauthorized": "Une authentification est requise pour continuer.",
         "notFound": "La ressource demandée est introuvable.",
-        "internal": "Une erreur inattendue s'est produite."
+        "internal": "Une erreur inattendue s'est produite.",
+        "forbidden": "Vous n’êtes pas autorisé à effectuer cette action."
       },
       "auditLogs": {
         "list": "Échec du chargement des journaux d’audit",
@@ -176,6 +179,9 @@
         "fetchPage": "Échec du chargement de la page",
         "search": "Échec de la recherche dans la base de connaissances",
         "export": "Échec de l’export de la base de connaissances"
+      },
+      "version": {
+        "unavailable": "Les informations de version ne sont pas disponibles."
       }
     }
   },
