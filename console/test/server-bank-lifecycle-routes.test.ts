@@ -58,19 +58,21 @@ describe("clone requires a string target-bank-id", () => {
     expectNoErrorKey(await readJson(response));
   });
 
-  it("forwards the target and only the caller-set scope flags, returning 202 on acceptance", async () => {
+  it("forwards the target and only the caller-set scope flags on the query string, returning 202 on acceptance", async () => {
     const stub = stubFetch([{ status: 202, body: { status: "accepted" } }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await clone.POST(
         makeRequest("http://localhost/api/banks/acme/clone", {
           method: "POST",
-          body: JSON.stringify({ "target-bank-id": "copy", "copy-history": true }),
+          body: JSON.stringify({ target_bank_id: "copy", include_history: true }),
         }),
         ctx("acme"),
       );
       expect(response.status).toBe(202);
-      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/clone");
+      expect(stub.calls[0]).toBe(
+        "http://upstream.local/v1/default/banks/acme/clone?target_bank_id=copy&include_history=true",
+      );
     });
   });
 });

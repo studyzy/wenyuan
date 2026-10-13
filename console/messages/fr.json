@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Plan de contrôle Hindsight",
+    "appName": "Plan de contrôle WenYuan",
     "loading": "Chargement...",
     "cancel": "Annuler",
     "confirm": "Confirmer",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "Le chemin de téléchargement demandé n'est pas autorisé.",
     "invalidLocale": "La langue demandée n'est pas prise en charge.",
     "internal": "Une erreur inattendue s'est produite."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "Le paramètre de requête de l'identifiant de banque est obligatoire.",
+        "targetBankIdRequired": "Un identifiant de banque cible est requis pour cloner une banque.",
+        "operationIdRequired": "Le paramètre de requête de l'identifiant d'opération est obligatoire.",
+        "bankAndDirectiveIdRequired": "Un identifiant de banque et un identifiant de directive sont requis.",
+        "bankAndMentalModelIdRequired": "Un identifiant de banque et un identifiant de modèle mental sont requis.",
+        "bankAndModelIdRequired": "Un identifiant de banque et un identifiant de modèle sont requis.",
+        "missingRequestData": "La requête ne contient pas les données obligatoires.",
+        "fileRequired": "Un fichier est requis."
+      },
+      "auth": {
+        "invalidRequestBody": "Le corps de la requête n'a pas pu être lu."
+      },
+      "banks": {
+        "clone": "La banque n'a pas pu être clonée."
+      },
+      "memories": {
+        "notFound": "Ce souvenir est introuvable."
+      },
+      "mentalModels": {
+        "notFound": "Ce modèle mental est introuvable."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "La suppression de souvenirs individuels n'est pas prise en charge.",
+        "unauthorized": "Une authentification est requise pour continuer.",
+        "notFound": "La ressource demandée est introuvable.",
+        "internal": "Une erreur inattendue s'est produite."
+      }
+    }
   },
   "auth": {
     "signInTitle": "Se connecter",

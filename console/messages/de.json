@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight-Kontrollzentrum",
+    "appName": "WenYuan-Kontrollzentrum",
     "loading": "Wird geladen...",
     "cancel": "Abbrechen",
     "confirm": "Bestätigen",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "Der angeforderte Downloadpfad ist nicht zulässig.",
     "invalidLocale": "Die angeforderte Sprache wird nicht unterstützt.",
     "internal": "Ein unerwarteter Fehler ist aufgetreten."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "Der Abfrageparameter für die Bank-ID ist erforderlich.",
+        "targetBankIdRequired": "Zum Klonen einer Bank ist eine Zielbank-ID erforderlich.",
+        "operationIdRequired": "Der Abfrageparameter für die Vorgangs-ID ist erforderlich.",
+        "bankAndDirectiveIdRequired": "Sowohl eine Bank-ID als auch eine Direktiven-ID sind erforderlich.",
+        "bankAndMentalModelIdRequired": "Sowohl eine Bank-ID als auch eine Mentalmodell-ID sind erforderlich.",
+        "bankAndModelIdRequired": "Sowohl eine Bank-ID als auch eine Modell-ID sind erforderlich.",
+        "missingRequestData": "In der Anfrage fehlen erforderliche Daten.",
+        "fileRequired": "Eine Datei ist erforderlich."
+      },
+      "auth": {
+        "invalidRequestBody": "Der Anfragetext konnte nicht gelesen werden."
+      },
+      "banks": {
+        "clone": "Die Bank konnte nicht geklont werden."
+      },
+      "memories": {
+        "notFound": "Diese Erinnerung wurde nicht gefunden."
+      },
+      "mentalModels": {
+        "notFound": "Dieses Mentalmodell wurde nicht gefunden."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "Das Löschen einzelner Erinnerungen wird nicht unterstützt.",
+        "unauthorized": "Zum Fortfahren ist eine Anmeldung erforderlich.",
+        "notFound": "Die angeforderte Ressource wurde nicht gefunden.",
+        "internal": "Ein unerwarteter Fehler ist aufgetreten."
+      }
+    }
   },
   "auth": {
     "signInTitle": "Anmelden",

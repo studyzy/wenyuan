@@ -7,7 +7,7 @@ import { catalogFor, lookupMessage, type MessageCatalog } from "../../i18n/catal
  * message fields (error, message, detail, details) is replaced with the
  * translated string; when none is present a new error field is added.
  */
-export const ERROR_KEY_FIELD = "__errorKey";
+export const ERROR_KEY_FIELD = "errorKey";
 export const MESSAGE_FIELD_PRIORITY = ["error", "message", "detail", "details"] as const;
 
 export type ErrorPayload = Record<string, unknown>;

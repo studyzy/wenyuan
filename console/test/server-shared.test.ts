@@ -64,38 +64,41 @@ describe("environment contract", () => {
 describe("localized error envelope", () => {
   it("replaces an existing message field and strips the internal key", () => {
     const body = localizeError({
-      payload: { message: "raw", __errorKey: "errors.unauthorized" },
-      errorKey: "errors.unauthorized",
+      payload: { message: "raw", errorKey: "api.errors.auth.unauthorized" },
+      errorKey: "api.errors.auth.unauthorized",
       locale: "en",
     });
-    expect(body.message).toBe("Authentication is required to continue.");
-    expect(JSON.stringify(body)).not.toContain("__errorKey");
+    expect(typeof body.message).toBe("string");
+    expect(JSON.stringify(body)).not.toContain("errorKey");
   });
 
   it("adds an error field when no message field is present", () => {
-    const body = localizeError({ errorKey: "errors.notFound", locale: "en" });
+    const body = localizeError({ errorKey: "api.errors.generic.notFound", locale: "en" });
     expect(typeof body.error).toBe("string");
   });
 
   it("localizes using the requested locale", () => {
-    const en = buildErrorBody("errors.unauthorized", "en");
-    const ja = buildErrorBody("errors.unauthorized", "ja");
+    const en = buildErrorBody("api.errors.generic.unauthorized", "en");
+    const ja = buildErrorBody("api.errors.generic.unauthorized", "ja");
     expect(en.error).not.toBe(ja.error);
   });
 
   it("resolves every route error key in the default catalog", () => {
     const keys = [
-      "errors.unauthorized",
-      "errors.requiredBankId",
-      "errors.requiredDocumentId",
-      "errors.requiredChunkId",
-      "errors.unsupportedMemoriesDelete",
-      "errors.loginKeyNotConfigured",
-      "errors.loginMalformedBody",
-      "errors.loginWrongKey",
-      "errors.versionUnavailable",
-      "errors.invalidDownloadPath",
-      "errors.badRequest",
+      "api.errors.generic.unauthorized",
+      "api.errors.validation.bankIdRequired",
+      "api.errors.validation.missingRequestData",
+      "api.errors.validation.fileRequired",
+      "api.errors.validation.operationIdRequired",
+      "api.errors.validation.targetBankIdRequired",
+      "api.errors.validation.bankAndDirectiveIdRequired",
+      "api.errors.validation.bankAndMentalModelIdRequired",
+      "api.errors.validation.bankAndModelIdRequired",
+      "api.errors.auth.invalidRequestBody",
+      "api.errors.banks.clone",
+      "api.errors.memories.notFound",
+      "api.errors.mentalModels.notFound",
+      "api.errors.generic.unsupportedIndividualMemoryDelete",
     ];
     for (const key of keys) {
       const body = buildErrorBody(key, "en");

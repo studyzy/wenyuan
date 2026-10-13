@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight コントロールプレーン",
+    "appName": "WenYuan コントロールプレーン",
     "loading": "読み込み中...",
     "cancel": "キャンセル",
     "confirm": "確認",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "要求されたダウンロードパスは許可されていません。",
     "invalidLocale": "要求されたロケールはサポートされていません。",
     "internal": "予期しないエラーが発生しました。"
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "バンク ID クエリパラメータは必須です。",
+        "targetBankIdRequired": "バンクを複製するには対象バンク ID が必要です。",
+        "operationIdRequired": "オペレーション ID クエリパラメータは必須です。",
+        "bankAndDirectiveIdRequired": "バンク ID とディレクティブ ID の両方が必要です。",
+        "bankAndMentalModelIdRequired": "バンク ID とメンタルモデル ID の両方が必要です。",
+        "bankAndModelIdRequired": "バンク ID とモデル ID の両方が必要です。",
+        "missingRequestData": "リクエストに必須データがありません。",
+        "fileRequired": "ファイルが必要です。"
+      },
+      "auth": {
+        "invalidRequestBody": "リクエスト本文を読み取れませんでした。"
+      },
+      "banks": {
+        "clone": "バンクを複製できませんでした。"
+      },
+      "memories": {
+        "notFound": "このメモリが見つかりませんでした。"
+      },
+      "mentalModels": {
+        "notFound": "このメンタルモデルが見つかりませんでした。"
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "個々のメモリの削除はサポートされていません。",
+        "unauthorized": "続行するには認証が必要です。",
+        "notFound": "要求されたリソースが見つかりませんでした。",
+        "internal": "予期しないエラーが発生しました。"
+      }
+    }
   },
   "auth": {
     "signInTitle": "サインイン",

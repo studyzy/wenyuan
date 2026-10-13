@@ -28,7 +28,7 @@ export function expectJsonContentType(response: Response): void {
   expect(response.headers.get("content-type")).toContain("application/json");
 }
 
-export const ERROR_KEY_FIELD = "__errorKey";
+export const ERROR_KEY_FIELD = "errorKey";
 
 /** Assert the internal error key never appears in a serialized payload. */
 export function expectNoErrorKey(payload: Record<string, unknown>): void {

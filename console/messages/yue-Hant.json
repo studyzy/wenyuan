@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight 控制台",
+    "appName": "WenYuan 控制台",
     "loading": "載入中...",
     "cancel": "取消",
     "confirm": "確認",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "唔准要求嘅下載路徑。",
     "invalidLocale": "唔支援要求嘅語言地區。",
     "internal": "發生咗預期之外嘅錯誤。"
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "必須提供 bank id 查詢參數。",
+        "targetBankIdRequired": "複製銀行必須提供目標 bank id。",
+        "operationIdRequired": "必須提供 operation id 查詢參數。",
+        "bankAndDirectiveIdRequired": "必須同時提供 bank id 同 directive id。",
+        "bankAndMentalModelIdRequired": "必須同時提供 bank id 同心智模型 id。",
+        "bankAndModelIdRequired": "必須同時提供 bank id 同模型 id。",
+        "missingRequestData": "請求缺少必要嘅資料。",
+        "fileRequired": "必須提供檔案。"
+      },
+      "auth": {
+        "invalidRequestBody": "讀唔到請求內容。"
+      },
+      "banks": {
+        "clone": "複製唔到呢個銀行。"
+      },
+      "memories": {
+        "notFound": "搵唔到呢條記憶。"
+      },
+      "mentalModels": {
+        "notFound": "搵唔到呢個心智模型。"
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "唔支援刪除單條記憶。",
+        "unauthorized": "要繼續就要先驗證身分。",
+        "notFound": "搵唔到要求嘅資源。",
+        "internal": "發生咗預期之外嘅錯誤。"
+      }
+    }
   },
   "auth": {
     "signInTitle": "登入",

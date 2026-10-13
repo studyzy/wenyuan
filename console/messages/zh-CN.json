@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight 控制台",
+    "appName": "WenYuan 控制台",
     "loading": "加载中...",
     "cancel": "取消",
     "confirm": "确认",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "不允许请求的下载路径。",
     "invalidLocale": "不支持请求的语言区域。",
     "internal": "发生意外错误。"
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "必须提供 bank id 查询参数。",
+        "targetBankIdRequired": "克隆记忆库必须提供目标 bank id。",
+        "operationIdRequired": "必须提供 operation id 查询参数。",
+        "bankAndDirectiveIdRequired": "必须同时提供 bank id 与 directive id。",
+        "bankAndMentalModelIdRequired": "必须同时提供 bank id 与心智模型 id。",
+        "bankAndModelIdRequired": "必须同时提供 bank id 与模型 id。",
+        "missingRequestData": "请求缺少必需的数据。",
+        "fileRequired": "必须提供文件。"
+      },
+      "auth": {
+        "invalidRequestBody": "无法读取请求正文。"
+      },
+      "banks": {
+        "clone": "无法克隆该记忆库。"
+      },
+      "memories": {
+        "notFound": "找不到此记忆。"
+      },
+      "mentalModels": {
+        "notFound": "找不到此心智模型。"
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "不支持删除单条记忆。",
+        "unauthorized": "需要身份验证才能继续。",
+        "notFound": "未找到请求的资源。",
+        "internal": "发生意外错误。"
+      }
+    }
   },
   "auth": {
     "signInTitle": "登录",

@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight 제어 플레인",
+    "appName": "WenYuan 제어 플레인",
     "loading": "불러오는 중...",
     "cancel": "취소",
     "confirm": "확인",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "요청한 다운로드 경로는 허용되지 않습니다.",
     "invalidLocale": "요청한 로케일은 지원되지 않습니다.",
     "internal": "예기치 않은 오류가 발생했습니다."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "뱅크 ID 쿼리 매개변수가 필요합니다.",
+        "targetBankIdRequired": "뱅크를 복제하려면 대상 뱅크 ID가 필요합니다.",
+        "operationIdRequired": "작업 ID 쿼리 매개변수가 필요합니다.",
+        "bankAndDirectiveIdRequired": "뱅크 ID와 지시문 ID가 모두 필요합니다.",
+        "bankAndMentalModelIdRequired": "뱅크 ID와 멘탈 모델 ID가 모두 필요합니다.",
+        "bankAndModelIdRequired": "뱅크 ID와 모델 ID가 모두 필요합니다.",
+        "missingRequestData": "요청에 필수 데이터가 없습니다.",
+        "fileRequired": "파일이 필요합니다."
+      },
+      "auth": {
+        "invalidRequestBody": "요청 본문을 읽을 수 없습니다."
+      },
+      "banks": {
+        "clone": "뱅크를 복제할 수 없습니다."
+      },
+      "memories": {
+        "notFound": "이 메모리를 찾을 수 없습니다."
+      },
+      "mentalModels": {
+        "notFound": "이 멘탈 모델을 찾을 수 없습니다."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "개별 메모리 삭제는 지원되지 않습니다.",
+        "unauthorized": "계속하려면 인증이 필요합니다.",
+        "notFound": "요청한 리소스를 찾을 수 없습니다.",
+        "internal": "예기치 않은 오류가 발생했습니다."
+      }
+    }
   },
   "auth": {
     "signInTitle": "로그인",

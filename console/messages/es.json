@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Plano de control de Hindsight",
+    "appName": "Plano de control de WenYuan",
     "loading": "Cargando...",
     "cancel": "Cancelar",
     "confirm": "Confirmar",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "La ruta de descarga solicitada no está permitida.",
     "invalidLocale": "El idioma solicitado no es compatible.",
     "internal": "Se produjo un error inesperado."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "El parámetro de consulta del id de banco es obligatorio.",
+        "targetBankIdRequired": "Se requiere un id de banco de destino para clonar un banco.",
+        "operationIdRequired": "El parámetro de consulta del id de operación es obligatorio.",
+        "bankAndDirectiveIdRequired": "Se requieren tanto un id de banco como un id de directiva.",
+        "bankAndMentalModelIdRequired": "Se requieren tanto un id de banco como un id de modelo mental.",
+        "bankAndModelIdRequired": "Se requieren tanto un id de banco como un id de modelo.",
+        "missingRequestData": "A la solicitud le faltan datos obligatorios.",
+        "fileRequired": "Se requiere un archivo."
+      },
+      "auth": {
+        "invalidRequestBody": "No se pudo leer el cuerpo de la solicitud."
+      },
+      "banks": {
+        "clone": "No se pudo clonar el banco."
+      },
+      "memories": {
+        "notFound": "No se encontró esta memoria."
+      },
+      "mentalModels": {
+        "notFound": "No se encontró este modelo mental."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "No se admite eliminar memorias individuales.",
+        "unauthorized": "Se requiere autenticación para continuar.",
+        "notFound": "No se encontró el recurso solicitado.",
+        "internal": "Se produjo un error inesperado."
+      }
+    }
   },
   "auth": {
     "signInTitle": "Iniciar sesión",

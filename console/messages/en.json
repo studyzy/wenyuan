@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Hindsight Control Plane",
+    "appName": "WenYuan Control Plane",
     "loading": "Loading...",
     "cancel": "Cancel",
     "confirm": "Confirm",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "The requested download path is not allowed.",
     "invalidLocale": "The requested locale is not supported.",
     "internal": "An unexpected error occurred."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "The bank id query parameter is required.",
+        "targetBankIdRequired": "A target bank id is required to clone a bank.",
+        "operationIdRequired": "The operation id query parameter is required.",
+        "bankAndDirectiveIdRequired": "Both a bank id and a directive id are required.",
+        "bankAndMentalModelIdRequired": "Both a bank id and a mental-model id are required.",
+        "bankAndModelIdRequired": "Both a bank id and a model id are required.",
+        "missingRequestData": "The request is missing required data.",
+        "fileRequired": "A file is required."
+      },
+      "auth": {
+        "invalidRequestBody": "The request body could not be read."
+      },
+      "banks": {
+        "clone": "The bank could not be cloned."
+      },
+      "memories": {
+        "notFound": "This memory could not be found."
+      },
+      "mentalModels": {
+        "notFound": "This mental model could not be found."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "Deleting individual memories is not supported.",
+        "unauthorized": "Authentication is required to continue.",
+        "notFound": "The requested resource was not found.",
+        "internal": "An unexpected error occurred."
+      }
+    }
   },
   "auth": {
     "signInTitle": "Sign in",

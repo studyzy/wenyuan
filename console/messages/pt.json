@@ -1,6 +1,6 @@
 {
   "common": {
-    "appName": "Painel de controle Hindsight",
+    "appName": "Painel de controle WenYuan",
     "loading": "Carregando...",
     "cancel": "Cancelar",
     "confirm": "Confirmar",
@@ -32,6 +32,38 @@
     "invalidDownloadPath": "O caminho de download solicitado não é permitido.",
     "invalidLocale": "O idioma solicitado não é compatível.",
     "internal": "Ocorreu um erro inesperado."
+  },
+  "api": {
+    "errors": {
+      "validation": {
+        "bankIdRequired": "O parâmetro de consulta do id do banco é obrigatório.",
+        "targetBankIdRequired": "Um id de banco de destino é necessário para clonar um banco.",
+        "operationIdRequired": "O parâmetro de consulta do id da operação é obrigatório.",
+        "bankAndDirectiveIdRequired": "Tanto um id de banco quanto um id de diretiva são obrigatórios.",
+        "bankAndMentalModelIdRequired": "Tanto um id de banco quanto um id de modelo mental são obrigatórios.",
+        "bankAndModelIdRequired": "Tanto um id de banco quanto um id de modelo são obrigatórios.",
+        "missingRequestData": "A solicitação não contém dados obrigatórios.",
+        "fileRequired": "Um arquivo é obrigatório."
+      },
+      "auth": {
+        "invalidRequestBody": "Não foi possível ler o corpo da solicitação."
+      },
+      "banks": {
+        "clone": "Não foi possível clonar o banco."
+      },
+      "memories": {
+        "notFound": "Esta memória não foi encontrada."
+      },
+      "mentalModels": {
+        "notFound": "Este modelo mental não foi encontrado."
+      },
+      "generic": {
+        "unsupportedIndividualMemoryDelete": "Não há suporte para excluir memórias individuais.",
+        "unauthorized": "É necessário autenticar-se para continuar.",
+        "notFound": "O recurso solicitado não foi encontrado.",
+        "internal": "Ocorreu um erro inesperado."
+      }
+    }
   },
   "auth": {
     "signInTitle": "Entrar",
