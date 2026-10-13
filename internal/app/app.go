@@ -191,6 +191,8 @@ func (a *App) mount(router *httpx.Router) {
 	retired.BindRetiredRoutes(handle)
 
 	a.mountTransfer(handle)
+	a.mountMentalModels(handle)
+	a.mountDirectives(handle)
 }
 
 // storePinger adapts the store readiness probe to the monitoring dependency.

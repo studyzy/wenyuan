@@ -16,6 +16,8 @@ var MemoryDomainTables = []string{
 	"entity_cooccurrences",
 	"async_operations",
 	"file_storage",
+	"mental_models",
+	"directives",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -143,6 +145,46 @@ var AsyncOperationsColumns = []string{
 var FileStorageColumns = []string{
 	"storage_key",
 	"data",
+}
+
+// MentalModelsColumns are the columns of the mental-model table. A mental model
+// is a named reusable note; its subtype selects which kind it is.
+var MentalModelsColumns = []string{
+	"id",
+	"bank_id",
+	"subtype",
+	"name",
+	"description",
+	"source_query",
+	"content",
+	"embedding",
+	"entity_id",
+	"observations",
+	"links",
+	"tags",
+	"max_tokens",
+	"trigger",
+	"structured_content",
+	"reflect_response",
+	"history",
+	"last_refreshed_source_query",
+	"last_refreshed_at",
+	"last_updated",
+	"created_at",
+}
+
+// DirectivesColumns are the columns of the directive table. A directive is a
+// standing instruction the reflection loop follows.
+var DirectivesColumns = []string{
+	"id",
+	"bank_id",
+	"name",
+	"content",
+	"priority",
+	"is_active",
+	"tags",
+	"created_at",
+	"updated_at",
 }
 
 // SortedMemoryDomainTables returns the owned table names in stable order.

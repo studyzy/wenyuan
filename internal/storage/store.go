@@ -170,6 +170,39 @@ type Store interface {
 	// is the retry half of the consumer lifecycle.
 	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
 
+	// --- Mental models -------------------------------------------------
+	// ListMentalModels returns the mental models of one bank, optionally
+	// narrowed to a subtype.
+	ListMentalModels(ctx context.Context, bankID string, subtype MentalModelSubtype) ([]MentalModel, error)
+	// GetMentalModel returns one mental model by identifier within a bank.
+	GetMentalModel(ctx context.Context, bankID, id string) (MentalModel, error)
+	// PutMentalModel inserts or replaces a mental model.
+	PutMentalModel(ctx context.Context, model MentalModel) (MentalModel, error)
+	// UpdateMentalModel applies a partial update and returns the stored value.
+	UpdateMentalModel(ctx context.Context, bankID, id string, patch MentalModelPatch) (MentalModel, error)
+	// DeleteMentalModel removes a mental model. It reports not-found when the
+	// identifier is unknown to the bank.
+	DeleteMentalModel(ctx context.Context, bankID, id string) error
+	// ClearMentalModel empties a mental model's content and history while
+	// keeping the record, which is what a clear request means.
+	ClearMentalModel(ctx context.Context, bankID, id string) (MentalModel, error)
+	// MentalModelHistory returns the recorded refreshes of one mental model.
+	MentalModelHistory(ctx context.Context, bankID, id string) ([]MentalModelHistoryEntry, error)
+	// RecordMentalModelHistory appends one refresh to a mental model's history.
+	RecordMentalModelHistory(ctx context.Context, bankID, id string, entry MentalModelHistoryEntry) error
+
+	// --- Directives ----------------------------------------------------
+	// ListDirectives returns the directives of one bank, newest first.
+	ListDirectives(ctx context.Context, bankID string) ([]Directive, error)
+	// GetDirective returns one directive by identifier within a bank.
+	GetDirective(ctx context.Context, bankID, id string) (Directive, error)
+	// PutDirective inserts or replaces a directive.
+	PutDirective(ctx context.Context, directive Directive) (Directive, error)
+	// UpdateDirective applies a partial update and returns the stored value.
+	UpdateDirective(ctx context.Context, bankID, id string, patch DirectivePatch) (Directive, error)
+	// DeleteDirective removes a directive.
+	DeleteDirective(ctx context.Context, bankID, id string) error
+
 	// PutStoredFile persists an opaque byte payload under a caller-supplied
 	// key. The transfer family stashes an uploaded archive under a
 	// bank-scoped key and carries only that key in the queued operation, so

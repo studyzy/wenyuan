@@ -63,30 +63,38 @@ type MemoryStore struct {
 	links         []MemoryLink
 	cooccurrences map[string]int
 	storedFiles   map[string]StoredFile
-	writeErr      error
-	readErr       error
-	readyErr      error
+	// mentalModelRecords holds mental models keyed by bank and identifier,
+	// because an identifier is unique within its bank rather than globally.
+	mentalModelRecords map[string]MentalModel
+	mentalModelHistory map[string][]MentalModelHistoryEntry
+	directiveRecords   map[string]Directive
+	writeErr           error
+	readErr            error
+	readyErr           error
 }
 
 // NewMemoryStore builds an empty in-process store bound to a schema name.
 func NewMemoryStore(schema string) *MemoryStore {
 	return &MemoryStore{
-		schema:        schema,
-		banks:         map[string]Bank{},
-		aliasesByBank: map[string][]BankAlias{},
-		aliasOwners:   map[string]string{},
-		cache:         newBankCache(BankCacheTTL),
-		operations:    map[string]Operation{},
-		writes:        map[string]WriteResult{},
-		memories:      map[string][]RecallMatch{},
-		mentalModels:  map[string][]ReflectMentalModel{},
-		directives:    map[string][]ReflectDirective{},
-		documents:     map[string]Document{},
-		units:         map[string]MemoryUnit{},
-		entities:      map[string]Entity{},
-		unitEntities:  map[string][]string{},
-		cooccurrences: map[string]int{},
-		storedFiles:   map[string]StoredFile{},
+		schema:             schema,
+		banks:              map[string]Bank{},
+		aliasesByBank:      map[string][]BankAlias{},
+		aliasOwners:        map[string]string{},
+		cache:              newBankCache(BankCacheTTL),
+		operations:         map[string]Operation{},
+		writes:             map[string]WriteResult{},
+		memories:           map[string][]RecallMatch{},
+		mentalModels:       map[string][]ReflectMentalModel{},
+		directives:         map[string][]ReflectDirective{},
+		documents:          map[string]Document{},
+		units:              map[string]MemoryUnit{},
+		entities:           map[string]Entity{},
+		unitEntities:       map[string][]string{},
+		cooccurrences:      map[string]int{},
+		storedFiles:        map[string]StoredFile{},
+		mentalModelRecords: map[string]MentalModel{},
+		mentalModelHistory: map[string][]MentalModelHistoryEntry{},
+		directiveRecords:   map[string]Directive{},
 	}
 }
 

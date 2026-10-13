@@ -30,6 +30,16 @@ const (
 	SuffixBackground  = "/background"
 	SuffixOperations  = "/operations"
 
+	// Mental models and directives.
+	SuffixMentalModels       = "/mental-models"
+	SuffixMentalModelMember  = "/mental-models/{mental_model_id}"
+	SuffixMentalModelHistory = "/mental-models/{mental_model_id}/history"
+	SuffixMentalModelRefresh = "/mental-models/{mental_model_id}/refresh"
+	SuffixMentalModelDryRun  = "/mental-models/{mental_model_id}/dry-run-refresh"
+	SuffixMentalModelClear   = "/mental-models/{mental_model_id}/clear"
+	SuffixDirectives         = "/directives"
+	SuffixDirectiveMember    = "/directives/{directive_id}"
+
 	// Archive transfer family.
 	SuffixImport           = "/import"
 	SuffixExport           = "/export"
@@ -54,6 +64,8 @@ const (
 // routes accept. They are registered with the query filter so a caller sees
 // only genuinely unknown parameters in the ignored-parameter header.
 var transferAcceptedQueryParams = []string{
+	"subtype",
+	"tag",
 	"mode",
 	"target_bank_id",
 	"on_conflict",
