@@ -129,3 +129,11 @@ func isSegmentSafe(c byte) bool {
 		return false
 	}
 }
+
+// contentTypeForKey infers the media type a stored payload is served with.
+func contentTypeForKey(key string) string {
+	if strings.HasSuffix(key, ".zip") {
+		return "application/zip"
+	}
+	return "application/octet-stream"
+}

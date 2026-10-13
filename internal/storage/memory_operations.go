@@ -49,9 +49,17 @@ func (s *MemoryStore) AdvanceOperation(ctx context.Context, opID string, next Op
 	if !validTransition(op.Status, next) {
 		return op, ErrOperationConflict
 	}
+	now := time.Now().UTC()
 	op.Status = next
 	op.Error = errMsg
-	op.UpdatedAt = time.Now().UTC()
+	op.UpdatedAt = now
+	if next.Terminal() {
+		// A terminal operation is finished with, so its claim is cleared and
+		// its completion time recorded in the same move.
+		op.CompletedAt = &now
+		op.WorkerID = ""
+		op.ClaimedAt = nil
+	}
 	s.operations[opID] = op
 	return op, nil
 }
@@ -90,6 +98,9 @@ func (s *MemoryStore) ListOperations(ctx context.Context, query OperationQuery) 
 			continue
 		}
 		if query.Type != "" && op.OperationType != query.Type {
+			continue
+		}
+		if query.WorkerID != "" && op.WorkerID != query.WorkerID {
 			continue
 		}
 		matched = append(matched, op)

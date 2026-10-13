@@ -36,8 +36,7 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 	if strings.TrimSpace(schema) == "" {
 		schema = "public"
 	}
-	files := NewFileStoredFiles(FileStoreConfig{Root: cfg.StoredFileRoot, MaxBytes: cfg.StoredFileMaxBytes})
-	return &PostgresStore{db: db, schema: schema, files: files}, nil
+	return &PostgresStore{db: db, schema: schema}, nil
 }
 
 // PostgresStore is the database-backed Store. It is the sole owner of the
@@ -45,10 +44,6 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 type PostgresStore struct {
 	db     DB
 	schema string
-	// files holds payload bytes outside the database. The existing schema has
-	// no blob column and this unit must not change the schema, so stored
-	// payloads live on disk while the queue keeps only their key.
-	files *FileStoredFiles
 }
 
 // Schema returns the configured schema target.

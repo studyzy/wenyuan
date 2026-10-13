@@ -38,15 +38,12 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	dir := t.TempDir()
 	schema := fmt.Sprintf("transfer_e2e_%d", time.Now().UnixNano())
 
 	backend := &storage.PostgresBackend{}
 	opened, err := backend.Open(ctx, storage.BackendConfig{
-		DatabaseURL:        url,
-		Schema:             schema,
-		StoredFileRoot:     dir,
-		StoredFileMaxBytes: maxArchiveUploadBytes,
+		DatabaseURL: url,
+		Schema:      schema,
 	})
 	if err != nil {
 		t.Fatalf("open postgres backend: %v", err)

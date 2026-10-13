@@ -24,6 +24,23 @@ const (
 	// EnvEnableDocumentImportAPI gates the document import routes of the
 	// archive transfer family.
 	EnvEnableDocumentImportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API"
+
+	// EnvWorkerID identifies this queue consumer among consumers sharing one
+	// queue, so a claim can be traced back to its holder.
+	EnvWorkerID = "HINDSIGHT_API_WORKER_ID"
+	// EnvWorkerMaxRetries is the attempt budget beyond the first try.
+	EnvWorkerMaxRetries = "HINDSIGHT_API_WORKER_MAX_RETRIES"
+	// EnvWorkerConcurrency is how many operations one consumer processes at once.
+	EnvWorkerConcurrency = "HINDSIGHT_API_WORKER_CONCURRENCY"
+	// EnvWorkerLeaseSeconds bounds how long a claim stays valid before another
+	// consumer may reclaim the work.
+	EnvWorkerLeaseSeconds = "HINDSIGHT_API_WORKER_LEASE_SECONDS"
+	// EnvWorkerPollSeconds is how long to wait between empty claims.
+	EnvWorkerPollSeconds = "HINDSIGHT_API_WORKER_POLL_SECONDS"
+	// EnvWorkerInitialBackoffSeconds is the first retry delay.
+	EnvWorkerInitialBackoffSeconds = "HINDSIGHT_API_WORKER_INITIAL_BACKOFF_SECONDS"
+	// EnvWorkerMaxBackoffSeconds is the retry backoff ceiling.
+	EnvWorkerMaxBackoffSeconds = "HINDSIGHT_API_WORKER_MAX_BACKOFF_SECONDS"
 	EnvGzipMinSize             = "HINDSIGHT_API_GZIP_MIN_SIZE"
 	EnvRetainBatchEnabled      = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
 	// EnvRecallStrategyBoosts prioritises one or more recall retrieval arms
@@ -77,9 +94,11 @@ type Config struct {
 	EnableDocumentExportAPI bool
 	// EnableDocumentImportAPI gates the document import routes.
 	EnableDocumentImportAPI bool
-	GzipMinSize             int
-	NullDropFields          bool
-	RetainBatchEnabled      bool
+	// Worker tunes the background queue consumer.
+	Worker             WorkerConfig
+	GzipMinSize        int
+	NullDropFields     bool
+	RetainBatchEnabled bool
 	// RecallStrategyBoosts maps a retrieval arm identifier to a boost level
 	// (low, medium, high). Empty leaves every arm unboosted.
 	RecallStrategyBoosts map[string]string
@@ -172,6 +191,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.EnableBankConfigAPI = boolFromEnv(lookup, EnvEnableBankConfigAPI, false)
 	cfg.EnableDocumentExportAPI = boolFromEnv(lookup, EnvEnableDocumentExportAPI, false)
 	cfg.EnableDocumentImportAPI = boolFromEnv(lookup, EnvEnableDocumentImportAPI, false)
+	cfg.Worker = resolveWorker(lookup)
 	cfg.NullDropFields = boolFromEnv(lookup, EnvNullDropFields, false)
 	cfg.RetainBatchEnabled = boolFromEnv(lookup, EnvRetainBatchEnabled, false)
 	if v, ok := lookup(EnvRecallStrategyBoosts); ok {

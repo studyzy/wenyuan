@@ -286,8 +286,11 @@ type OperationQuery struct {
 	BankID string
 	Status string
 	Type   string
-	Limit  int
-	Offset int
+	// WorkerID narrows the listing to the operations one consumer currently
+	// holds, which is what a graceful shutdown scans.
+	WorkerID string
+	Limit    int
+	Offset   int
 }
 
 // OperationPage is one page of operations with the pre-paging total.

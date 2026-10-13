@@ -55,6 +55,12 @@ type Operation struct {
 	Progress       map[string]any
 	Payload        map[string]any
 	ResultMetadata map[string]any
+	// WorkerID is the consumer that currently holds the claim, empty when the
+	// operation is unclaimed.
+	WorkerID string
+	// ClaimedAt is when the current claim was taken. A claim older than the
+	// lease is treated as abandoned and becomes reclaimable.
+	ClaimedAt *time.Time
 }
 
 // Terminal reports whether the operation has reached a terminal status.

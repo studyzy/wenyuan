@@ -19,6 +19,13 @@ const maxArchiveUploadBytes = 64 << 20
 // Archive preview and apply. The archive format itself is owned by the
 // archive area; this binder only drives it.
 
+// ParseArchive parses an archive payload. It is exported so the worker reuses
+// exactly the same zip handling the HTTP routes validate with, instead of
+// duplicating it.
+func ParseArchive(data []byte) (*hindsightarchive.Archive, error) {
+	return validateArchive(data)
+}
+
 // validateArchive parses an uploaded archive synchronously so a malformed
 // payload or an unsupported schema version fails as a caller error before any
 // background work is queued.

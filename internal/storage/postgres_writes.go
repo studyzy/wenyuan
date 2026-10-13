@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -126,33 +127,26 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 	if op.Status == "" {
 		op.Status = StatusPending
 	}
-	// The operation payload rides in the existing result_metadata column so the
-	// queued work can be described without a schema change. A non-nil payload
-	// is stored under a single wrapper key, leaving room for result metadata
-	// written by a future consumer.
-	metadata := op.ResultMetadata
-	if len(op.Payload) > 0 {
-		metadata = map[string]any{}
-		for k, v := range op.ResultMetadata {
-			metadata[k] = v
-		}
-		metadata[payloadMetadataKey] = op.Payload
+	metadata, err := marshalMetadata(op.ResultMetadata)
+	if err != nil {
+		return Operation{}, err
 	}
-	encoded, err := marshalMetadata(metadata)
+	payload, err := marshalMetadata(op.Payload)
 	if err != nil {
 		return Operation{}, err
 	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
-	          (id, bank_id, operation_type, status, error_message, run, retry_count, result_metadata)
-	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-	          ON CONFLICT (id) DO UPDATE SET status=$4, error_message=$5, updated_at=now(), result_metadata=$8
-	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata`
-	row := s.db.QueryRowContext(ctx, query, op.ID, op.BankID, op.OperationType, string(op.Status), op.Error, maxInt(op.Run, 1), op.RetryCount, encoded)
+	          (id, bank_id, operation_type, status, error_message, run, retry_count, result_metadata, task_payload)
+	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	          ON CONFLICT (id) DO UPDATE SET status=$4, error_message=$5, updated_at=now(),
+	              result_metadata=$8, task_payload=$9
+	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb)`
+	row := s.db.QueryRowContext(ctx, query, op.ID, op.BankID, op.OperationType, string(op.Status), op.Error, maxInt(op.Run, 1), op.RetryCount, metadata, payload)
 	return scanOperation(row)
 }
 
 func (s *PostgresStore) GetOperation(ctx context.Context, opID string) (Operation, error) {
-	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata
+	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb)
 	          FROM ` + quoteIdent(s.schema) + `.async_operations WHERE id = $1`
 	row := s.db.QueryRowContext(ctx, query, opID)
 	op, err := scanOperation(row)
@@ -169,17 +163,18 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	if limit <= 0 {
 		limit = 100
 	}
-	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations
-	               WHERE bank_id=$1 AND ($2='' OR status=$2) AND ($3='' OR operation_type=$3)`
+	filter := `($1='' OR bank_id=$1) AND ($2='' OR status=$2) AND ($3='' OR operation_type=$3)
+	           AND ($4='' OR worker_id=$4)`
+	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations WHERE ` + filter
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID).Scan(&total); err != nil {
 		return OperationPage{}, err
 	}
-	listQuery := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at
+	listQuery := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb)
 	              FROM ` + quoteIdent(s.schema) + `.async_operations
-	              WHERE bank_id=$1 AND ($2='' OR status=$2) AND ($3='' OR operation_type=$3)
-	              ORDER BY created_at DESC, id ASC LIMIT $4 OFFSET $5`
-	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, limit, query.Offset)
+	              WHERE ` + filter + `
+	              ORDER BY created_at DESC, id ASC LIMIT $5 OFFSET $6`
+	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset)
 	if err != nil {
 		return OperationPage{}, err
 	}
@@ -224,11 +219,14 @@ func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next 
 	}
 	assign := ""
 	if next.Terminal() {
-		assign = ", completed_at=now()"
+		// A terminal operation is finished with, so its claim is cleared at
+		// the same moment: a completed row that still looks held would mislead
+		// a shutdown scan into trying to hand it back.
+		assign = ", completed_at=now(), worker_id=NULL, claimed_at=NULL"
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status=$2, error_message=$3, updated_at=now()` + assign + ` WHERE id=$1
-	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at`
+	          RETURNING id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run, created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb)`
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(next), errMsg))
 }
 
@@ -249,21 +247,40 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, opID string) (Operat
 func scanOperation(row rowScanner) (Operation, error) {
 	var op Operation
 	var status string
-	var completedAt, nextRetryAt sql.NullTime
-	var metadata []byte
-	if err := row.Scan(&op.ID, &op.BankID, &op.OperationType, &status, &op.Error, &op.Run, &op.CreatedAt, &op.UpdatedAt, &completedAt, &op.RetryCount, &nextRetryAt, &metadata); err != nil {
+	var completedAt, nextRetryAt, claimedAt sql.NullTime
+	var metadata, payload []byte
+	if err := row.Scan(&op.ID, &op.BankID, &op.OperationType, &status, &op.Error, &op.Run, &op.CreatedAt, &op.UpdatedAt, &completedAt, &op.RetryCount, &nextRetryAt, &metadata, &op.WorkerID, &claimedAt, &payload); err != nil {
 		return Operation{}, err
 	}
 	op.Status = OperationStatus(status)
 	op.CompletedAt = nullTimePtr(completedAt)
 	op.NextRetryAt = nullTimePtr(nextRetryAt)
-	payload, rest, err := unmarshalMetadata(metadata)
+	op.ClaimedAt = nullTimePtr(claimedAt)
+	rest, err := unmarshalResultMetadata(metadata)
 	if err != nil {
 		return Operation{}, err
 	}
-	op.Payload = payload
 	op.ResultMetadata = rest
+	op.Payload = decodeJSONObject(payload)
 	return op, nil
+}
+
+// scanOperationWithClaim reads the row shape returned by the claim update,
+// which appends the claim columns and the payload.
+func scanOperationWithClaim(row rowScanner) (Operation, error) {
+	return scanOperation(row)
+}
+
+// decodeJSONObject turns a jsonb column into a map, tolerating null.
+func decodeJSONObject(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func maxInt(a, b int) int {

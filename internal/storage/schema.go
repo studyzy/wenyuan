@@ -15,6 +15,7 @@ var MemoryDomainTables = []string{
 	"memory_links",
 	"entity_cooccurrences",
 	"async_operations",
+	"file_storage",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -131,6 +132,16 @@ var AsyncOperationsColumns = []string{
 	"retry_count",
 	"next_retry_at",
 	"progress",
+	"worker_id",
+	"claimed_at",
+	"task_payload",
+}
+
+// FileStorageColumns are the columns of the stored-file table. Payload bytes
+// are addressed by an opaque storage key.
+var FileStorageColumns = []string{
+	"storage_key",
+	"data",
 }
 
 // SortedMemoryDomainTables returns the owned table names in stable order.

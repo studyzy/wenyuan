@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrBankNotFound is returned when a bank identifier is unknown.
@@ -155,6 +156,20 @@ type Store interface {
 	// RetryOperation starts a new run of a failed operation.
 	RetryOperation(ctx context.Context, opID string) (Operation, error)
 
+	// ClaimNextOperation atomically claims the oldest claimable operation for
+	// the given worker and returns it. It reports ErrOperationNotFound when
+	// nothing is claimable. A claim older than lease is reclaimable, so a
+	// consumer that died mid-operation does not strand its work.
+	ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error)
+	// ReleaseOperationClaim returns a claimed operation to the claimable pool
+	// without recording a failure. It is what a graceful shutdown uses to hand
+	// its in-flight work back.
+	ReleaseOperationClaim(ctx context.Context, opID, workerID string) error
+	// ScheduleOperationRetry records a failed attempt and the moment the next
+	// one becomes claimable, returning the operation to the claimable pool. It
+	// is the retry half of the consumer lifecycle.
+	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
+
 	// PutStoredFile persists an opaque byte payload under a caller-supplied
 	// key. The transfer family stashes an uploaded archive under a
 	// bank-scoped key and carries only that key in the queued operation, so
@@ -180,11 +195,4 @@ type BackendConfig struct {
 	VectorExtension     string
 	TextSearchExtension string
 	RunMigrations       bool
-	// StoredFileRoot is the directory payload bytes are written under. An
-	// empty root disables the stored-file facility, because the existing
-	// schema has no blob column and this unit must not change the schema.
-	StoredFileRoot string
-	// StoredFileMaxBytes bounds a single stored payload. Zero leaves the
-	// caller's own bound in force.
-	StoredFileMaxBytes int64
 }
