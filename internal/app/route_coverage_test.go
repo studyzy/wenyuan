@@ -17,7 +17,15 @@ import (
 // client. A route that answers anything other than 404 is mounted; a 404 for a
 // route the manifest lists is a regression.
 func TestEveryGAPSRouteIsMounted(t *testing.T) {
-	app, err := New(context.Background(), config.FromEnv(func(string) (string, bool) { return "", false }),
+	// The MCP namespace is a feature-gated surface, so the probe enables it the
+	// way a deployment would rather than assuming the default.
+	environ := func(key string) (string, bool) {
+		if key == "HINDSIGHT_API_MCP_ENABLED" {
+			return "true", true
+		}
+		return "", false
+	}
+	app, err := New(context.Background(), config.FromEnv(environ),
 		Dependencies{Store: storage.NewMemoryStore("public")})
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +50,9 @@ func TestEveryGAPSRouteIsMounted(t *testing.T) {
 		{http.MethodDelete, base + "/aliases/x"},
 		{http.MethodGet, base + "/config"},
 		{http.MethodPatch, base + "/config"},
+		{http.MethodDelete, base + "/config"},
+		// The MCP namespace answers JSON-RPC over POST.
+		{http.MethodPost, "/mcp"},
 		{http.MethodPost, base + "/memories"},
 		{http.MethodPost, base + "/files/retain"},
 		{http.MethodPost, base + "/memories/recall"},

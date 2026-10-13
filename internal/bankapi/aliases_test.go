@@ -205,6 +205,49 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	}
 }
 
+// The configuration reset removes every bank-specific override, leaving the
+// bank on the global configuration, and is gated like the write.
+func TestBankConfigResetClearsOverrides(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mustCreate(t, store, storage.Bank{ID: "b1", Name: "One"})
+
+	gated := NewHandlers(store)
+	gated.WithConfigAPI(false)
+	if rec := doJSON(t, newMux(gated), http.MethodDelete, "/v1/default/banks/b1/config", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("config reset must be gated off: %d", rec.Code)
+	}
+
+	ungated := NewHandlers(store)
+	ungated.WithConfigAPI(true)
+	mux := newMux(ungated)
+	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config",
+		`{"updates":{"disposition_empathy":5,"reflect_mission":"live"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed config write: %d", rec.Code)
+	}
+
+	rec := doJSON(t, mux, http.MethodDelete, "/v1/default/banks/b1/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config reset must succeed: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var reset ConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &reset); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := reset.Overrides["disposition_empathy"].(float64); value != float64(storage.DispositionTraitNeutral) {
+		t.Fatalf("reset must clear the overrides: %+v", reset.Overrides)
+	}
+	if reset.Overrides["reflect_mission"] != "" {
+		t.Fatalf("reset must clear the mission: %+v", reset.Overrides)
+	}
+	bank, err := store.GetBank(context.TODO(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bank.DispositionEmpathy != storage.DispositionTraitNeutral || bank.ReflectMission != "" {
+		t.Fatalf("reset must persist the defaults: %+v", bank)
+	}
+}
+
 func newMux(h *Handlers) *http.ServeMux {
 	mux := http.NewServeMux()
 	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {

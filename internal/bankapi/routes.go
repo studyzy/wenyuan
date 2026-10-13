@@ -24,6 +24,7 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixConfig), h.GetBankConfig)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixConfig), h.UpdateBankConfig)
+	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixConfig), h.ResetBankConfig)
 }
 
 // BindConfigRoutes registers only the bank configuration sub-routes. They are
@@ -32,4 +33,5 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 func (h *Handlers) BindConfigRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixConfig), h.GetBankConfig)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixConfig), h.UpdateBankConfig)
+	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixConfig), h.ResetBankConfig)
 }

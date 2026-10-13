@@ -12,6 +12,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/mcp"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -93,6 +94,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		Metrics:              metrics,
 		EnabledBankConfigAPI: cfg.EnableBankConfigAPI,
 		EnabledMCP:           cfg.MCPEnabled,
+		MCPHandler:           mcp.New(store),
 		Extensions:           httpx.NewExtensionHost(),
 		Authenticator:        authenticatorFrom(cfg),
 	})

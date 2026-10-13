@@ -60,6 +60,38 @@ func (h *Handlers) UpdateBankConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ResetBankConfig serves the configuration reset route. It removes every
+// bank-specific override, leaving the bank on the global configuration, and
+// reports the resulting state. It is gated by the same feature flag as the
+// write route, because it is a write.
+func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
+	if !h.ConfigEnabled {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailUnknownBank))
+		return
+	}
+	bankID, ok := h.resolveCanonical(w, r)
+	if !ok {
+		return
+	}
+	neutral := storage.DispositionTraitNeutral
+	empty := ""
+	bank, err := h.Store.UpdateBank(r.Context(), bankID, storage.BankPatch{
+		DispositionSkepticism: &neutral,
+		DispositionLiteralism: &neutral,
+		DispositionEmpathy:    &neutral,
+		ReflectMission:        &empty,
+	})
+	if err != nil {
+		httpx.WriteErrorFor(w, r, validateBankExists(err))
+		return
+	}
+	overrides := bankOverrides(bank)
+	httpx.WriteJSONFor(w, r, http.StatusOK, ConfigResponse{
+		Config:    resolvedConfig(overrides),
+		Overrides: overrides,
+	})
+}
+
 // bankOverrides extracts only the bank-specific trait and mission overrides.
 func bankOverrides(bank storage.Bank) map[string]any {
 	return map[string]any{

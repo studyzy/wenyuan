@@ -16,6 +16,10 @@ type RouterOptions struct {
 	EnabledBankConfigAPI bool
 	// EnabledMCP gates the optional MCP sub-path.
 	EnabledMCP bool
+	// MCPHandler answers the MCP namespace when EnabledMCP is set. A nil
+	// handler is reported as unsupported rather than mounted, so a build with
+	// the gate on but no server wired fails loudly instead of silently.
+	MCPHandler http.Handler
 	// Extensions supplies deployment-provided routers.
 	Extensions *ExtensionHost
 	// Authenticator enforces authentication on retired routes. A nil
@@ -109,6 +113,11 @@ func (r *Router) extensionChain() Middleware {
 
 func (r *Router) mountMCPNamespace() {
 	if !r.options.EnabledMCP {
+		return
+	}
+	if r.options.MCPHandler != nil {
+		r.mux.Handle(NamespaceMCP, r.extensionChain()(r.options.MCPHandler))
+		r.mux.Handle(NamespaceMCP+"/", r.extensionChain()(r.options.MCPHandler))
 		return
 	}
 	mcpMux := http.NewServeMux()
