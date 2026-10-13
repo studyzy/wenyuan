@@ -25,4 +25,11 @@ export {
   lookupMessage,
   flatKeys,
   type MessageCatalog,
-} from "./catalog";
+} from "./catalog";export {
+  LocaleProvider,
+  useLocale,
+  useCatalog,
+  useTranslations,
+  useMessage,
+  useNamespacedMessages,
+} from "./client";

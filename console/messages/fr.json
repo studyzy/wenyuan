@@ -208,7 +208,15 @@
     "reflect": "Réflexion",
     "documents": "Documents",
     "settings": "Paramètres",
-    "language": "Langue"
+    "language": "Langue",
+    "bank": {
+      "select": "Choisir une banque",
+      "searchPlaceholder": "Rechercher des banques",
+      "none": "Aucune banque trouvée",
+      "facts": "faits",
+      "newBankId": "Nouvel identifiant de banque",
+      "create": "Créer la banque"
+    }
   },
   "dashboard": {
     "title": "Toutes les banques",
@@ -217,7 +225,26 @@
     "columnId": "Identifiant de banque",
     "columnName": "Nom",
     "columnCreated": "Créé",
-    "columnActions": "Actions"
+    "columnActions": "Actions",
+    "searchPlaceholder": "Rechercher des banques",
+    "clear": "Effacer",
+    "noBanks": "Aucune banque pour le moment.",
+    "selectAll": "Sélectionner toutes les banques de cette page",
+    "selectRow": "Sélectionner {name}",
+    "deleteSelected": "Supprimer {count}",
+    "totalBanks": "{count} banques",
+    "columns": {
+      "bank": "Banque",
+      "aliases": "Alias",
+      "facts": "Faits",
+      "lastActivity": "Dernière activité"
+    },
+    "confirmDelete": {
+      "title": "Supprimer les banques",
+      "body": "Cela supprime définitivement {count} banque(s) et leurs souvenirs. Action irréversible.",
+      "cancel": "Annuler",
+      "confirm": "Supprimer"
+    }
   },
   "bank": {
     "detailTitle": "Détail de la banque",
@@ -226,7 +253,12 @@
     "aliasesTitle": "Alias",
     "webhooksTitle": "Webhooks",
     "mentalModelsTitle": "Modèles mentaux",
-    "observationsTitle": "Observations"
+    "observationsTitle": "Observations",
+    "sidebar": {
+      "expand": "Déplier la barre latérale",
+      "collapse": "Replier la barre latérale",
+      "collapseAction": "Replier"
+    }
   },
   "views": {
     "overview": "Aperçu",

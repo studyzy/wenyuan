@@ -208,7 +208,15 @@
     "reflect": "反思",
     "documents": "文档",
     "settings": "设置",
-    "language": "语言"
+    "language": "语言",
+    "bank": {
+      "select": "选择银行",
+      "searchPlaceholder": "搜索银行",
+      "none": "未找到银行",
+      "facts": "条事实",
+      "newBankId": "新银行 ID",
+      "create": "创建银行"
+    }
   },
   "dashboard": {
     "title": "全部记忆库",
@@ -217,7 +225,26 @@
     "columnId": "记忆库 ID",
     "columnName": "名称",
     "columnCreated": "创建时间",
-    "columnActions": "操作"
+    "columnActions": "操作",
+    "searchPlaceholder": "搜索银行",
+    "clear": "清除",
+    "noBanks": "暂无银行。",
+    "selectAll": "选中本页全部银行",
+    "selectRow": "选中 {name}",
+    "deleteSelected": "删除 {count}",
+    "totalBanks": "共 {count} 个银行",
+    "columns": {
+      "bank": "银行",
+      "aliases": "别名",
+      "facts": "事实数",
+      "lastActivity": "最近活动"
+    },
+    "confirmDelete": {
+      "title": "删除银行",
+      "body": "将永久删除 {count} 个银行及其记忆，且无法撤销。",
+      "cancel": "取消",
+      "confirm": "删除"
+    }
   },
   "bank": {
     "detailTitle": "记忆库详情",
@@ -226,7 +253,12 @@
     "aliasesTitle": "别名",
     "webhooksTitle": "Webhook",
     "mentalModelsTitle": "心智模型",
-    "observationsTitle": "观察"
+    "observationsTitle": "观察",
+    "sidebar": {
+      "expand": "展开侧边栏",
+      "collapse": "收起侧边栏",
+      "collapseAction": "收起"
+    }
   },
   "views": {
     "overview": "概览",

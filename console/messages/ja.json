@@ -208,7 +208,15 @@
     "reflect": "内省",
     "documents": "ドキュメント",
     "settings": "設定",
-    "language": "言語"
+    "language": "言語",
+    "bank": {
+      "select": "バンクを選択",
+      "searchPlaceholder": "バンクを検索",
+      "none": "バンクが見つかりません",
+      "facts": "件のファクト",
+      "newBankId": "新しいバンク ID",
+      "create": "バンクを作成"
+    }
   },
   "dashboard": {
     "title": "すべてのバンク",
@@ -217,7 +225,26 @@
     "columnId": "バンク ID",
     "columnName": "名前",
     "columnCreated": "作成日時",
-    "columnActions": "操作"
+    "columnActions": "操作",
+    "searchPlaceholder": "バンクを検索",
+    "clear": "クリア",
+    "noBanks": "バンクがまだありません。",
+    "selectAll": "このページのバンクをすべて選択",
+    "selectRow": "{name} を選択",
+    "deleteSelected": "{count} 件を削除",
+    "totalBanks": "{count} 件のバンク",
+    "columns": {
+      "bank": "バンク",
+      "aliases": "別名",
+      "facts": "ファクト",
+      "lastActivity": "最終アクティビティ"
+    },
+    "confirmDelete": {
+      "title": "バンクを削除",
+      "body": "{count} 件のバンクとそのメモリを完全に削除します。元に戻せません。",
+      "cancel": "キャンセル",
+      "confirm": "削除"
+    }
   },
   "bank": {
     "detailTitle": "バンクの詳細",
@@ -226,7 +253,12 @@
     "aliasesTitle": "エイリアス",
     "webhooksTitle": "Webhook",
     "mentalModelsTitle": "メンタルモデル",
-    "observationsTitle": "観察"
+    "observationsTitle": "観察",
+    "sidebar": {
+      "expand": "サイドバーを展開",
+      "collapse": "サイドバーを折りたたむ",
+      "collapseAction": "折りたたむ"
+    }
   },
   "views": {
     "overview": "概要",

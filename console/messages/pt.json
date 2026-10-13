@@ -208,7 +208,15 @@
     "reflect": "Reflexão",
     "documents": "Documentos",
     "settings": "Configurações",
-    "language": "Idioma"
+    "language": "Idioma",
+    "bank": {
+      "select": "Selecionar banco",
+      "searchPlaceholder": "Pesquisar bancos",
+      "none": "Nenhum banco encontrado",
+      "facts": "fatos",
+      "newBankId": "Novo id de banco",
+      "create": "Criar banco"
+    }
   },
   "dashboard": {
     "title": "Todos os bancos",
@@ -217,7 +225,26 @@
     "columnId": "Id do banco",
     "columnName": "Nome",
     "columnCreated": "Criado",
-    "columnActions": "Ações"
+    "columnActions": "Ações",
+    "searchPlaceholder": "Pesquisar bancos",
+    "clear": "Limpar",
+    "noBanks": "Ainda não há bancos.",
+    "selectAll": "Selecionar todos os bancos desta página",
+    "selectRow": "Selecionar {name}",
+    "deleteSelected": "Excluir {count}",
+    "totalBanks": "{count} bancos",
+    "columns": {
+      "bank": "Banco",
+      "aliases": "Aliases",
+      "facts": "Fatos",
+      "lastActivity": "Última atividade"
+    },
+    "confirmDelete": {
+      "title": "Excluir bancos",
+      "body": "Isso remove permanentemente {count} banco(s) e suas memórias. Não pode ser desfeito.",
+      "cancel": "Cancelar",
+      "confirm": "Excluir"
+    }
   },
   "bank": {
     "detailTitle": "Detalhes do banco",
@@ -226,7 +253,12 @@
     "aliasesTitle": "Aliases",
     "webhooksTitle": "Webhooks",
     "mentalModelsTitle": "Modelos mentais",
-    "observationsTitle": "Observações"
+    "observationsTitle": "Observações",
+    "sidebar": {
+      "expand": "Expandir barra lateral",
+      "collapse": "Recolher barra lateral",
+      "collapseAction": "Recolher"
+    }
   },
   "views": {
     "overview": "Visão geral",

@@ -59,3 +59,21 @@ export const knowledgeBaseApi = {
   folders: (bankId: string) => apiGet<unknown>("/api/knowledge-base/folders", { bank_id: bankId }),
   export: (bankId: string) => apiGet<unknown>("/api/knowledge-base/export", { bank_id: bankId }),
 };
+export const versionApi = {
+  get: () => apiGet<{ version?: string; service?: string; features?: Record<string, boolean> }>("/api/version"),
+};
+
+export const entitiesApi = {
+  list: (bankId: string) => apiGet<unknown>("/api/entities", { bank_id: bankId }),
+  get: (entityId: string, bankId: string) =>
+    apiGet<unknown>(`/api/entities/${encodeURIComponent(entityId)}`, { bank_id: bankId }),
+  graph: (bankId: string) => apiGet<unknown>("/api/entities/graph", { bank_id: bankId }),
+};
+
+export const graphApi = {
+  get: (bankId: string) => apiGet<unknown>("/api/graph", { bank_id: bankId }),
+};
+
+export const chunksApi = {
+  get: (chunkId: string) => apiGet<unknown>("/api/chunks", { chunk_id: chunkId }),
+};

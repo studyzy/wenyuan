@@ -208,7 +208,15 @@
     "reflect": "反思",
     "documents": "文件",
     "settings": "設定",
-    "language": "語言"
+    "language": "語言",
+    "bank": {
+      "select": "選擇銀行",
+      "searchPlaceholder": "搜尋銀行",
+      "none": "找不到銀行",
+      "facts": "條事實",
+      "newBankId": "新銀行 ID",
+      "create": "建立銀行"
+    }
   },
   "dashboard": {
     "title": "全部記憶庫",
@@ -217,7 +225,26 @@
     "columnId": "記憶庫 ID",
     "columnName": "名稱",
     "columnCreated": "建立時間",
-    "columnActions": "操作"
+    "columnActions": "操作",
+    "searchPlaceholder": "搜尋銀行",
+    "clear": "清除",
+    "noBanks": "尚無銀行。",
+    "selectAll": "選取本頁全部銀行",
+    "selectRow": "選取 {name}",
+    "deleteSelected": "刪除 {count}",
+    "totalBanks": "共 {count} 個銀行",
+    "columns": {
+      "bank": "銀行",
+      "aliases": "別名",
+      "facts": "事實數",
+      "lastActivity": "最近活動"
+    },
+    "confirmDelete": {
+      "title": "刪除銀行",
+      "body": "將永久刪除 {count} 個銀行及其記憶，且無法復原。",
+      "cancel": "取消",
+      "confirm": "刪除"
+    }
   },
   "bank": {
     "detailTitle": "記憶庫詳情",
@@ -226,7 +253,12 @@
     "aliasesTitle": "別名",
     "webhooksTitle": "Webhook",
     "mentalModelsTitle": "心智模型",
-    "observationsTitle": "觀察"
+    "observationsTitle": "觀察",
+    "sidebar": {
+      "expand": "展開側邊欄",
+      "collapse": "收合側邊欄",
+      "collapseAction": "收合"
+    }
   },
   "views": {
     "overview": "概覽",

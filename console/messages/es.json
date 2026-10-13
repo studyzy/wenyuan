@@ -208,7 +208,15 @@
     "reflect": "Reflexión",
     "documents": "Documentos",
     "settings": "Ajustes",
-    "language": "Idioma"
+    "language": "Idioma",
+    "bank": {
+      "select": "Seleccionar banco",
+      "searchPlaceholder": "Buscar bancos",
+      "none": "No se encontraron bancos",
+      "facts": "hechos",
+      "newBankId": "Nuevo id de banco",
+      "create": "Crear banco"
+    }
   },
   "dashboard": {
     "title": "Todos los bancos",
@@ -217,7 +225,26 @@
     "columnId": "Id de banco",
     "columnName": "Nombre",
     "columnCreated": "Creado",
-    "columnActions": "Acciones"
+    "columnActions": "Acciones",
+    "searchPlaceholder": "Buscar bancos",
+    "clear": "Limpiar",
+    "noBanks": "Aún no hay bancos.",
+    "selectAll": "Seleccionar todos los bancos de esta página",
+    "selectRow": "Seleccionar {name}",
+    "deleteSelected": "Eliminar {count}",
+    "totalBanks": "{count} bancos",
+    "columns": {
+      "bank": "Banco",
+      "aliases": "Alias",
+      "facts": "Hechos",
+      "lastActivity": "Última actividad"
+    },
+    "confirmDelete": {
+      "title": "Eliminar bancos",
+      "body": "Esto elimina permanentemente {count} banco(s) y sus recuerdos. No se puede deshacer.",
+      "cancel": "Cancelar",
+      "confirm": "Eliminar"
+    }
   },
   "bank": {
     "detailTitle": "Detalle del banco",
@@ -226,7 +253,12 @@
     "aliasesTitle": "Alias",
     "webhooksTitle": "Webhooks",
     "mentalModelsTitle": "Modelos mentales",
-    "observationsTitle": "Observaciones"
+    "observationsTitle": "Observaciones",
+    "sidebar": {
+      "expand": "Expandir barra lateral",
+      "collapse": "Contraer barra lateral",
+      "collapseAction": "Contraer"
+    }
   },
   "views": {
     "overview": "Resumen",

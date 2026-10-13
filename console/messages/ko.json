@@ -208,7 +208,15 @@
     "reflect": "성찰",
     "documents": "문서",
     "settings": "설정",
-    "language": "언어"
+    "language": "언어",
+    "bank": {
+      "select": "뱅크 선택",
+      "searchPlaceholder": "뱅크 검색",
+      "none": "뱅크를 찾을 수 없습니다",
+      "facts": "개 팩트",
+      "newBankId": "새 뱅크 ID",
+      "create": "뱅크 생성"
+    }
   },
   "dashboard": {
     "title": "모든 뱅크",
@@ -217,7 +225,26 @@
     "columnId": "뱅크 ID",
     "columnName": "이름",
     "columnCreated": "생성됨",
-    "columnActions": "작업"
+    "columnActions": "작업",
+    "searchPlaceholder": "뱅크 검색",
+    "clear": "지우기",
+    "noBanks": "아직 뱅크가 없습니다.",
+    "selectAll": "이 페이지의 모든 뱅크 선택",
+    "selectRow": "{name} 선택",
+    "deleteSelected": "{count}개 삭제",
+    "totalBanks": "뱅크 {count}개",
+    "columns": {
+      "bank": "뱅크",
+      "aliases": "별칭",
+      "facts": "팩트",
+      "lastActivity": "최근 활동"
+    },
+    "confirmDelete": {
+      "title": "뱅크 삭제",
+      "body": "{count}개의 뱅크와 그 메모리를 영구히 삭제합니다. 되돌릴 수 없습니다.",
+      "cancel": "취소",
+      "confirm": "삭제"
+    }
   },
   "bank": {
     "detailTitle": "뱅크 상세",
@@ -226,7 +253,12 @@
     "aliasesTitle": "별칭",
     "webhooksTitle": "웹훅",
     "mentalModelsTitle": "멘탈 모델",
-    "observationsTitle": "관찰"
+    "observationsTitle": "관찰",
+    "sidebar": {
+      "expand": "사이드바 펼치기",
+      "collapse": "사이드바 접기",
+      "collapseAction": "접기"
+    }
   },
   "views": {
     "overview": "개요",

@@ -1,26 +1,27 @@
 "use client";
 
 import type { ReactNode } from "react";
+
+import { BankProvider } from "../../lib/bank-context";
+import { FeaturesProvider } from "../../lib/features-context";
+import { ThemeProvider } from "../../lib/theme-context";
 import { NotificationProvider } from "./notification-provider";
-import { BankProvider } from "./bank-provider";
-import { FeatureProvider } from "./feature-provider";
 
 /**
- * Compose the client providers around the route tree: notifications, bank
- * selection, and feature flags. Theme is applied by the pre-paint bootstrap.
+ * Compose the client providers around the route tree.
+ *
+ * Order matters: theme and feature flags sit above the bank selection because
+ * the navigation shell reads both when deciding what to offer, and the
+ * notification surface is innermost so anything above it can raise a toast.
  */
-export function Providers({
-  children,
-  features = {},
-}: {
-  children: ReactNode;
-  features?: Record<string, boolean>;
-}) {
+export function Providers({ children }: { children: ReactNode }) {
   return (
-    <FeatureProvider initial={features}>
-      <BankProvider>
-        <NotificationProvider>{children}</NotificationProvider>
-      </BankProvider>
-    </FeatureProvider>
+    <ThemeProvider>
+      <FeaturesProvider>
+        <BankProvider>
+          <NotificationProvider>{children}</NotificationProvider>
+        </BankProvider>
+      </FeaturesProvider>
+    </ThemeProvider>
   );
 }

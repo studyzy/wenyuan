@@ -208,7 +208,15 @@
     "reflect": "Reflect",
     "documents": "Documents",
     "settings": "Settings",
-    "language": "Language"
+    "language": "Language",
+    "bank": {
+      "select": "Select bank",
+      "searchPlaceholder": "Search banks",
+      "none": "No banks found",
+      "facts": "facts",
+      "newBankId": "New bank id",
+      "create": "Create bank"
+    }
   },
   "dashboard": {
     "title": "All banks",
@@ -217,7 +225,26 @@
     "columnId": "Bank id",
     "columnName": "Name",
     "columnCreated": "Created",
-    "columnActions": "Actions"
+    "columnActions": "Actions",
+    "searchPlaceholder": "Search banks",
+    "clear": "Clear",
+    "noBanks": "No banks yet.",
+    "selectAll": "Select all banks on this page",
+    "selectRow": "Select {name}",
+    "deleteSelected": "Delete {count}",
+    "totalBanks": "{count} banks",
+    "columns": {
+      "bank": "Bank",
+      "aliases": "Aliases",
+      "facts": "Facts",
+      "lastActivity": "Last activity"
+    },
+    "confirmDelete": {
+      "title": "Delete banks",
+      "body": "This permanently removes {count} bank(s) and their memories. This cannot be undone.",
+      "cancel": "Cancel",
+      "confirm": "Delete"
+    }
   },
   "bank": {
     "detailTitle": "Bank detail",
@@ -226,7 +253,12 @@
     "aliasesTitle": "Aliases",
     "webhooksTitle": "Webhooks",
     "mentalModelsTitle": "Mental models",
-    "observationsTitle": "Observations"
+    "observationsTitle": "Observations",
+    "sidebar": {
+      "expand": "Expand sidebar",
+      "collapse": "Collapse sidebar",
+      "collapseAction": "Collapse"
+    }
   },
   "views": {
     "overview": "Overview",
