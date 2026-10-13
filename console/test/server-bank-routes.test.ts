@@ -7,7 +7,7 @@ import * as webhooks from "../app/api/banks/[bankId]/webhooks/route";
 import * as mentalModels from "../app/api/banks/[bankId]/mental-models/route";
 import * as observations from "../app/api/banks/[bankId]/observations/route";
 import { stubFetch, withEnv } from "./support/fixtures";
-import { makeRequest, readJson } from "./support/harness";
+import { expectNoErrorKey, makeRequest, readJson } from "./support/harness";
 
 let restore: (() => void) | undefined;
 afterEach(() => {
@@ -53,7 +53,10 @@ describe("upstream status passthrough", () => {
         { params: Promise.resolve({ bankId: "acme" }) },
       );
       expect(response.status).toBe(404);
-      expect(await readJson(response)).toEqual({ error: "not found" });
+      const payload = await readJson(response);
+      expect(typeof payload.error).toBe("string");
+      expectNoErrorKey(payload);
+      expect(payload.upstream).toMatchObject({ status: 404 });
     });
   });
 
@@ -89,5 +92,61 @@ describe("route method sets", () => {
     expect(Object.keys(webhooks).sort()).toEqual(["GET", "POST"]);
     expect(Object.keys(mentalModels).sort()).toEqual(["GET", "POST"]);
     expect(Object.keys(observations).sort()).toEqual(["DELETE", "GET"]);
+  });
+});
+describe("bank collection and detail follow the contract", () => {
+  it("returns 201 on create and requires a bank id in the body", async () => {
+    const stub = stubFetch([{ status: 200, body: { bank_id: "acme" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const created = await banksCollection.POST(
+        makeRequest("http://localhost/api/banks", {
+          method: "POST",
+          body: JSON.stringify({ bank_id: "acme" }),
+        }),
+      );
+      expect(created.status).toBe(201);
+    });
+
+    const missing = await banksCollection.POST(
+      makeRequest("http://localhost/api/banks", {
+        method: "POST",
+        body: JSON.stringify({ name: "no id" }),
+      }),
+    );
+    expect(missing.status).toBe(400);
+    expectNoErrorKey(await readJson(missing));
+  });
+
+  it("rejects an unparseable create body with 400", async () => {
+    const missing = await banksCollection.POST(
+      makeRequest("http://localhost/api/banks", { method: "POST", body: "{oops" }),
+    );
+    expect(missing.status).toBe(400);
+    expectNoErrorKey(await readJson(missing));
+  });
+
+  it("returns 200 for bank detail update and delete", async () => {
+    for (const call of [
+      () =>
+        bankDetail.PUT(makeRequest("http://localhost/api/banks/acme", { method: "PUT", body: "{}" }), {
+          params: Promise.resolve({ bankId: "acme" }),
+        }),
+      () =>
+        bankDetail.PATCH(makeRequest("http://localhost/api/banks/acme", { method: "PATCH", body: "{}" }), {
+          params: Promise.resolve({ bankId: "acme" }),
+        }),
+      () =>
+        bankDetail.DELETE(makeRequest("http://localhost/api/banks/acme", { method: "DELETE" }), {
+          params: Promise.resolve({ bankId: "acme" }),
+        }),
+    ]) {
+      const stub = stubFetch([{ status: 201, body: {} }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status).toBe(200);
+      });
+    }
   });
 });

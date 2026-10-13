@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "無法複製該銀行。",
-        "healthLlm": "銀行 LLM 連線探測失敗。"
+        "healthLlm": "銀行 LLM 連線探測失敗。",
+        "fetch": "取得銀行列表失敗",
+        "create": "建立銀行失敗",
+        "update": "更新銀行失敗",
+        "delete": "刪除銀行失敗",
+        "dryRunExtract": "試執行擷取失敗"
       },
       "memories": {
         "notFound": "找不到此記憶。",
@@ -141,7 +146,26 @@
         "fetch": "取得分塊失敗"
       },
       "stats": {
-        "fetch": "取得統計失敗"
+        "fetch": "取得統計失敗",
+        "memoriesTimeseries": "取得記憶時間序列失敗"
+      },
+      "bankAliases": {
+        "list": "取得銀行別名失敗",
+        "create": "建立銀行別名失敗",
+        "update": "更新銀行別名失敗",
+        "delete": "刪除銀行別名失敗"
+      },
+      "bankConfig": {
+        "fetch": "取得銀行設定失敗",
+        "update": "更新銀行設定失敗",
+        "reset": "重設銀行設定失敗"
+      },
+      "files": {
+        "upload": "上傳文件失敗",
+        "download": "下載檔案失敗"
+      },
+      "graph": {
+        "fetch": "取得圖譜失敗"
       }
     }
   },

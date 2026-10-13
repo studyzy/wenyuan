@@ -1,36 +1,47 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
-import { proxyUpstream, requestLocale, searchParamsObject } from "../../../../lib/server/proxy";
-import { errorResponse, resolveBankScoping } from "../../../../lib/server/http";
+import {
+  bankScopedPath,
+  requestLocale,
+  serializeUpstream,
+  upstreamUnavailableBody,
+} from "../../../../lib/server/proxy";
+import { errorResponse } from "../../../../lib/server/http";
 
 /**
  * Multipart file retain for document upload.
  *
- * The configured maximum upload size bounds the proxied request body.
+ * The bank id is required. The configured maximum upload size bounds the
+ * proxied body. Returns 200 with the retain payload.
  */
 export async function POST(request: Request): Promise<Response> {
   const locale = requestLocale(request);
-  const scoping = resolveBankScoping(new URL(request.url).searchParams);
-  if (!scoping) {
-    return errorResponse("errors.requiredBankId", 400, locale);
-  }
+  const searchParams = new URL(request.url).searchParams;
+  const bankId = searchParams.get("bank_id") ?? searchParams.get("agent_id");
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
 
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
   const declared = Number.parseInt(request.headers.get("content-length") ?? "", 10);
   if (Number.isFinite(declared) && declared > config.maxUploadSize) {
-    return errorResponse("errors.badRequest", 400, locale);
+    return errorResponse("api.errors.files.upload", 400, locale);
   }
 
   const body = await request.arrayBuffer();
   if (body.byteLength > config.maxUploadSize) {
-    return errorResponse("errors.badRequest", 400, locale);
+    return errorResponse("api.errors.files.upload", 400, locale);
   }
 
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: "/v1/default/files/retain",
-    query: searchParamsObject(request),
-    method: "POST",
-    body,
-  });
+  const failure = { failureLabel: "files_upload_failed", errorKey: "api.errors.files.upload", locale };
+
+  try {
+    return await serializeUpstream({
+      config,
+      request,
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/files/retain"),
+      method: "POST",
+      body,
+      ...failure,
+    });
+  } catch {
+    return upstreamUnavailableBody(failure);
+  }
 }

@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "Die Bank konnte nicht geklont werden.",
-        "healthLlm": "Die LLM-Konnektivitätsprüfung der Bank ist fehlgeschlagen."
+        "healthLlm": "Die LLM-Konnektivitätsprüfung der Bank ist fehlgeschlagen.",
+        "fetch": "Banken konnten nicht geladen werden",
+        "create": "Bank konnte nicht erstellt werden",
+        "update": "Bank konnte nicht aktualisiert werden",
+        "delete": "Bank konnte nicht gelöscht werden",
+        "dryRunExtract": "Probelauf-Extraktion fehlgeschlagen"
       },
       "memories": {
         "notFound": "Diese Erinnerung wurde nicht gefunden.",
@@ -141,7 +146,26 @@
         "fetch": "Abschnitt konnte nicht geladen werden"
       },
       "stats": {
-        "fetch": "Statistiken konnten nicht geladen werden"
+        "fetch": "Statistiken konnten nicht geladen werden",
+        "memoriesTimeseries": "Erinnerungszeitreihe konnte nicht geladen werden"
+      },
+      "bankAliases": {
+        "list": "Bank-Aliase konnten nicht geladen werden",
+        "create": "Bank-Alias konnte nicht erstellt werden",
+        "update": "Bank-Alias konnte nicht aktualisiert werden",
+        "delete": "Bank-Alias konnte nicht gelöscht werden"
+      },
+      "bankConfig": {
+        "fetch": "Bankkonfiguration konnte nicht geladen werden",
+        "update": "Bankkonfiguration konnte nicht aktualisiert werden",
+        "reset": "Bankkonfiguration konnte nicht zurückgesetzt werden"
+      },
+      "files": {
+        "upload": "Dokument konnte nicht hochgeladen werden",
+        "download": "Datei konnte nicht heruntergeladen werden"
+      },
+      "graph": {
+        "fetch": "Graph konnte nicht geladen werden"
       }
     }
   },

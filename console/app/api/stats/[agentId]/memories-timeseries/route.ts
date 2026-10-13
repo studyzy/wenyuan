@@ -1,24 +1,43 @@
 import { resolveServerConfig } from "../../../../../lib/server/config";
-import { proxyUpstream, requestLocale, searchParamsObject } from "../../../../../lib/server/proxy";
-import { errorResponse, resolveBankScoping } from "../../../../../lib/server/http";
+import {
+  bankScopedPath,
+  requestLocale,
+  serializeUpstream,
+  upstreamUnavailableBody,
+} from "../../../../../lib/server/proxy";
+import { errorResponse, passthroughQueryParams } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ agentId: string }> };
 
+const SERIES_PARAMS = ["period", "start_date", "end_date"] as const;
+
 /**
- * Per-bank memory time-series with period and time-field query parameters.
+ * Memory time series for the dashboard charts.
+ *
+ * Returns 200 with the time-series payload.
  */
 export async function GET(request: Request, context: Context): Promise<Response> {
   const locale = requestLocale(request);
-  const scoping = resolveBankScoping(new URL(request.url).searchParams);
-  if (!scoping) {
-    return errorResponse("errors.requiredBankId", 400, locale);
-  }
+  const bankId = (await context.params).agentId;
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  return proxyUpstream({
-    config,
-    request,
-    upstreamPath: `/v1/default/stats/${encodeURIComponent((await context.params).agentId)}/memories-timeseries`,
-    query: searchParamsObject(request),
-    method: "GET",
-  });
+  const failure = {
+    failureLabel: "memories_timeseries_failed",
+    errorKey: "api.errors.stats.memoriesTimeseries",
+    locale,
+  };
+
+  try {
+    return await serializeUpstream({
+      config,
+      request,
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/stats/memories-timeseries"),
+      query: passthroughQueryParams(request, SERIES_PARAMS),
+      method: "GET",
+      ...failure,
+    });
+  } catch {
+    return upstreamUnavailableBody(failure);
+  }
 }

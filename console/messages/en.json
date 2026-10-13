@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "The bank could not be cloned.",
-        "healthLlm": "The bank LLM connectivity probe failed."
+        "healthLlm": "The bank LLM connectivity probe failed.",
+        "fetch": "Failed to fetch banks",
+        "create": "Failed to create bank",
+        "update": "Failed to update bank",
+        "delete": "Failed to delete bank",
+        "dryRunExtract": "Failed to dry-run extract"
       },
       "memories": {
         "notFound": "This memory could not be found.",
@@ -141,7 +146,26 @@
         "fetch": "Failed to fetch chunk"
       },
       "stats": {
-        "fetch": "Failed to fetch statistics"
+        "fetch": "Failed to fetch statistics",
+        "memoriesTimeseries": "Failed to fetch memory time series"
+      },
+      "bankAliases": {
+        "list": "Failed to list bank aliases",
+        "create": "Failed to create bank alias",
+        "update": "Failed to update bank alias",
+        "delete": "Failed to delete bank alias"
+      },
+      "bankConfig": {
+        "fetch": "Failed to fetch bank configuration",
+        "update": "Failed to update bank configuration",
+        "reset": "Failed to reset bank configuration"
+      },
+      "files": {
+        "upload": "Failed to upload document",
+        "download": "Failed to download file"
+      },
+      "graph": {
+        "fetch": "Failed to fetch graph"
       }
     }
   },

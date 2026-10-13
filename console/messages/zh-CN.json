@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "无法克隆该记忆库。",
-        "healthLlm": "银行 LLM 连通性探测失败。"
+        "healthLlm": "银行 LLM 连通性探测失败。",
+        "fetch": "获取银行列表失败",
+        "create": "创建银行失败",
+        "update": "更新银行失败",
+        "delete": "删除银行失败",
+        "dryRunExtract": "试运行提取失败"
       },
       "memories": {
         "notFound": "找不到此记忆。",
@@ -141,7 +146,26 @@
         "fetch": "获取分块失败"
       },
       "stats": {
-        "fetch": "获取统计失败"
+        "fetch": "获取统计失败",
+        "memoriesTimeseries": "获取记忆时间序列失败"
+      },
+      "bankAliases": {
+        "list": "获取银行别名失败",
+        "create": "创建银行别名失败",
+        "update": "更新银行别名失败",
+        "delete": "删除银行别名失败"
+      },
+      "bankConfig": {
+        "fetch": "获取银行配置失败",
+        "update": "更新银行配置失败",
+        "reset": "重置银行配置失败"
+      },
+      "files": {
+        "upload": "上传文档失败",
+        "download": "下载文件失败"
+      },
+      "graph": {
+        "fetch": "获取图谱失败"
       }
     }
   },

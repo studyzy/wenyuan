@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "La banque n'a pas pu être clonée.",
-        "healthLlm": "Le test de connectivité LLM de la banque a échoué."
+        "healthLlm": "Le test de connectivité LLM de la banque a échoué.",
+        "fetch": "Échec du chargement des banques",
+        "create": "Échec de la création de la banque",
+        "update": "Échec de la mise à jour de la banque",
+        "delete": "Échec de la suppression de la banque",
+        "dryRunExtract": "Échec de l’extraction à blanc"
       },
       "memories": {
         "notFound": "Ce souvenir est introuvable.",
@@ -141,7 +146,26 @@
         "fetch": "Échec du chargement du segment"
       },
       "stats": {
-        "fetch": "Échec du chargement des statistiques"
+        "fetch": "Échec du chargement des statistiques",
+        "memoriesTimeseries": "Échec du chargement de la série temporelle des souvenirs"
+      },
+      "bankAliases": {
+        "list": "Échec du chargement des alias de banque",
+        "create": "Échec de la création de l’alias de banque",
+        "update": "Échec de la mise à jour de l’alias de banque",
+        "delete": "Échec de la suppression de l’alias de banque"
+      },
+      "bankConfig": {
+        "fetch": "Échec du chargement de la configuration de la banque",
+        "update": "Échec de la mise à jour de la configuration de la banque",
+        "reset": "Échec de la réinitialisation de la configuration de la banque"
+      },
+      "files": {
+        "upload": "Échec du téléversement du document",
+        "download": "Échec du téléchargement du fichier"
+      },
+      "graph": {
+        "fetch": "Échec du chargement du graphe"
       }
     }
   },

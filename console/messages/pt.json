@@ -50,7 +50,12 @@
       },
       "banks": {
         "clone": "Não foi possível clonar o banco.",
-        "healthLlm": "A verificação de conectividade LLM do banco falhou."
+        "healthLlm": "A verificação de conectividade LLM do banco falhou.",
+        "fetch": "Falha ao listar os bancos",
+        "create": "Falha ao criar o banco",
+        "update": "Falha ao atualizar o banco",
+        "delete": "Falha ao excluir o banco",
+        "dryRunExtract": "Falha na extração simulada"
       },
       "memories": {
         "notFound": "Esta memória não foi encontrada.",
@@ -141,7 +146,26 @@
         "fetch": "Falha ao obter o trecho"
       },
       "stats": {
-        "fetch": "Falha ao obter as estatísticas"
+        "fetch": "Falha ao obter as estatísticas",
+        "memoriesTimeseries": "Falha ao obter a série temporal de memórias"
+      },
+      "bankAliases": {
+        "list": "Falha ao listar os aliases do banco",
+        "create": "Falha ao criar o alias do banco",
+        "update": "Falha ao atualizar o alias do banco",
+        "delete": "Falha ao excluir o alias do banco"
+      },
+      "bankConfig": {
+        "fetch": "Falha ao obter a configuração do banco",
+        "update": "Falha ao atualizar a configuração do banco",
+        "reset": "Falha ao redefinir a configuração do banco"
+      },
+      "files": {
+        "upload": "Falha ao enviar o documento",
+        "download": "Falha ao baixar o arquivo"
+      },
+      "graph": {
+        "fetch": "Falha ao obter o grafo"
       }
     }
   },

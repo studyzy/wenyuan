@@ -57,11 +57,14 @@ describe("required query parameters", () => {
     const missingEntity = await entityGraph.GET(makeRequest("http://localhost/api/entities/graph"));
     expect(missingEntity.status).toBe(400);
 
+    // The timeseries route takes its bank id from the path segment, so it is
+    // rejected only when that segment is empty, not by an absent query param.
     const missingTimeseries = await timeseries.GET(
       makeRequest("http://localhost/api/stats/acme/memories-timeseries"),
-      { params: Promise.resolve({ agentId: "acme" }) },
+      { params: Promise.resolve({ agentId: "" }) },
     );
     expect(missingTimeseries.status).toBe(400);
+    expectNoErrorKey(await readJson(missingTimeseries));
   });
 });
 
@@ -138,18 +141,20 @@ describe("document transfer export orchestration", () => {
   });
 });
 
-describe("stats timeseries accepts period and time-field parameters", () => {
+describe("stats timeseries forwards its documented parameters", () => {
   it("forwards period and time-field query parameters", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await timeseries.GET(
-        makeRequest("http://localhost/api/stats/acme/memories-timeseries?bank_id=acme&period=30d&time_field=created_at"),
+        makeRequest(
+          "http://localhost/api/stats/acme/memories-timeseries?period=30d&undocumented=1",
+        ),
         { params: Promise.resolve({ agentId: "acme" }) },
       );
-      expect(stub.calls[0]).toContain("/v1/default/stats/acme/memories-timeseries");
+      expect(stub.calls[0]).toContain("/v1/default/banks/acme/stats/memories-timeseries");
       expect(stub.calls[0]).toContain("period=30d");
-      expect(stub.calls[0]).toContain("time_field=created_at");
+      expect(stub.calls[0]).not.toContain("undocumented");
     });
   });
 });
