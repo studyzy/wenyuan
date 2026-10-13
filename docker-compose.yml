@@ -1,0 +1,47 @@
+# Single-service deployment form: the API server and its queue consumer over a
+# pgvector PostgreSQL holding the schema.
+#
+# The image is shared; the worker is the same image with a different command,
+# so both roles run identical code and configuration resolution. The database
+# is pinned to the pgvector image because the schema stores embeddings as a
+# native vector column.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: wenyuan
+      POSTGRES_PASSWORD: wenyuan
+      POSTGRES_DB: wenyuan
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wenyuan -d wenyuan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - wenyuan-data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HINDSIGHT_API_HOST: 0.0.0.0
+      HINDSIGHT_API_PORT: "8080"
+      HINDSIGHT_API_DATABASE_URL: postgresql://wenyuan:wenyuan@postgres:5432/wenyuan
+      HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP: "true"
+    ports:
+      - "8080:8080"
+
+  worker:
+    build: .
+    command: ["/usr/local/bin/worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://wenyuan:wenyuan@postgres:5432/wenyuan
+
+volumes:
+  wenyuan-data:

@@ -40,6 +40,9 @@ jobs:
       - name: Build with the pgx driver
         run: go build -tags pgx ./...
 
+      - name: Coverage threshold
+        run: make cover-check
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -64,3 +67,36 @@ jobs:
         with:
           version: v2.12.2
           args: ./...
+
+  postgres:
+    name: postgres end-to-end
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: wenyuan
+          POSTGRES_PASSWORD: wenyuan
+          POSTGRES_DB: wenyuan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wenyuan -d wenyuan_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      # The default gate never talks to a database, so the schema, vector and
+      # storage code paths are only exercised here. A change can pass
+      # build-and-test and still break every one of them.
+      - name: Run the PostgreSQL-backed suite
+        env:
+          PG_TEST_URL: postgresql://wenyuan:wenyuan@127.0.0.1:5432/wenyuan_test
+        run: make test-pg
