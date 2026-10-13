@@ -11,7 +11,12 @@
     "refresh": "更新",
     "retry": "再試行",
     "noResults": "結果がありません",
-    "unknown": "不明"
+    "unknown": "不明",
+    "panel": {
+      "loadFailed": "読み込めませんでした。",
+      "retry": "再試行",
+      "empty": "表示するものがありません。"
+    }
   },
   "errors": {
     "unauthorized": "続行するには認証が必要です。",
@@ -299,5 +304,130 @@
     "retainTitle": "ファイルを保持",
     "downloadTitle": "ファイルをダウンロード",
     "tooLarge": "ファイルが最大アップロードサイズを超えています。"
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "ビュー",
+      "dataSubLabel": "ファクト種別",
+      "knowledgeSubLabel": "ナレッジ区分",
+      "profileSubLabel": "設定区分",
+      "home": "ホーム",
+      "recall": "検索",
+      "reflect": "内省",
+      "data": "メモリ",
+      "documents": "ドキュメント",
+      "entities": "エンティティ",
+      "knowledge": "ナレッジ",
+      "profile": "設定",
+      "subDataWorld": "世界",
+      "subDataExperience": "経験",
+      "subDataObservations": "観察",
+      "subKnowledgePages": "ページ",
+      "subKnowledgeModels": "モデル",
+      "subProfileGeneral": "一般",
+      "subProfileMemoryDefense": "メモリ防御",
+      "subProfileConfiguration": "設定",
+      "subProfileWebhooks": "Webhook",
+      "subProfileAuditLogs": "監査ログ",
+      "subProfileLlmRequests": "LLM リクエスト"
+    },
+    "home": {
+      "title": "ホーム",
+      "description": "このバンクの概要。",
+      "statMemories": "メモリ",
+      "statEntities": "エンティティ",
+      "statDocuments": "ドキュメント",
+      "memoryHint": "{count} 件のメモリが保持されています。"
+    },
+    "recall": {
+      "title": "検索",
+      "description": "このバンクのメモリを検索します。",
+      "placeholder": "何をお探しですか？",
+      "run": "検索",
+      "idle": "クエリを入力してこのバンクのメモリを検索します。"
+    },
+    "reflect": {
+      "title": "内省",
+      "description": "バンクが保持する内容について推論させます。",
+      "placeholder": "何を考えますか？",
+      "run": "内省",
+      "idle": "質問を入力してこのバンクについて推論します。",
+      "includeFacts": "ファクトを含める",
+      "includeToolCalls": "ツール呼び出しを含める"
+    },
+    "data": {
+      "title": "メモリ",
+      "description": "このバンクには {total} 件のメモリがあります。",
+      "searchPlaceholder": "メモリを検索",
+      "columns": {
+        "text": "メモリ",
+        "entities": "エンティティ",
+        "tags": "タグ",
+        "date": "日時"
+      }
+    },
+    "documents": {
+      "title": "ドキュメント",
+      "description": "このバンクには {total} 件のドキュメントがあります。",
+      "searchPlaceholder": "ドキュメントを検索",
+      "columns": {
+        "document": "ドキュメント",
+        "tags": "タグ",
+        "created": "追加日時"
+      },
+      "viewChunks": "チャンク",
+      "chunksTitle": "チャンク",
+      "untitled": "無題"
+    },
+    "entities": {
+      "title": "エンティティ",
+      "description": "このバンクには {total} 件のエンティティがあります。",
+      "searchPlaceholder": "エンティティを検索",
+      "graphEntities": "グラフのエンティティ",
+      "graphEdges": "グラフのリンク",
+      "columns": {
+        "entity": "エンティティ",
+        "mentions": "言及数"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "ページ",
+      "pagesDescription": "ナレッジベースには {total} 件のページがあります。",
+      "searchPlaceholder": "ページを検索",
+      "modelsTitle": "モデル",
+      "modelsDescription": "このバンクのメモリから導出されたメンタルモデル。",
+      "untitled": "無題"
+    },
+    "profile": {
+      "generalTitle": "一般",
+      "generalDescription": "このバンクの識別情報と別名。",
+      "configurationTitle": "設定",
+      "configurationDescription": "このバンクに適用される設定。",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "このバンクの変更時に通知されるエンドポイント。",
+      "auditLogsTitle": "監査ログ",
+      "auditLogsDescription": "このバンクに対して行われた操作。",
+      "llmRequestsTitle": "LLM リクエスト",
+      "llmRequestsDescription": "このバンクのために行われたモデル呼び出し。",
+      "memoryDefenseTitle": "メモリ防御",
+      "memoryDefenseDescription": "保持内容を左右する指示と観察。",
+      "directivesTitle": "指示",
+      "observationsTitle": "観察",
+      "mentalModelsTitle": "メンタルモデル",
+      "aliasesTitle": "別名",
+      "fieldBankId": "バンク ID",
+      "fieldName": "名前",
+      "fieldMission": "ミッション",
+      "fieldCreated": "作成日時",
+      "unset": "未設定",
+      "noAliases": "別名はありません。",
+      "noWebhooks": "Webhook はありません。",
+      "noLogs": "記録はありません。",
+      "columns": {
+        "id": "ID",
+        "summary": "概要",
+        "tags": "タグ"
+      }
+    }
   }
 }

@@ -11,7 +11,12 @@
     "refresh": "Refresh",
     "retry": "Retry",
     "noResults": "No results",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "panel": {
+      "loadFailed": "This could not be loaded.",
+      "retry": "Retry",
+      "empty": "Nothing to show."
+    }
   },
   "errors": {
     "unauthorized": "Authentication is required to continue.",
@@ -299,5 +304,130 @@
     "retainTitle": "Retain file",
     "downloadTitle": "Download file",
     "tooLarge": "The file exceeds the maximum upload size."
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "View",
+      "dataSubLabel": "Fact type",
+      "knowledgeSubLabel": "Knowledge section",
+      "profileSubLabel": "Settings section",
+      "home": "Home",
+      "recall": "Recall",
+      "reflect": "Reflect",
+      "data": "Memories",
+      "documents": "Documents",
+      "entities": "Entities",
+      "knowledge": "Knowledge",
+      "profile": "Settings",
+      "subDataWorld": "World",
+      "subDataExperience": "Experience",
+      "subDataObservations": "Observations",
+      "subKnowledgePages": "Pages",
+      "subKnowledgeModels": "Models",
+      "subProfileGeneral": "General",
+      "subProfileMemoryDefense": "Memory defense",
+      "subProfileConfiguration": "Configuration",
+      "subProfileWebhooks": "Webhooks",
+      "subProfileAuditLogs": "Audit logs",
+      "subProfileLlmRequests": "LLM requests"
+    },
+    "home": {
+      "title": "Home",
+      "description": "A summary of this bank.",
+      "statMemories": "Memories",
+      "statEntities": "Entities",
+      "statDocuments": "Documents",
+      "memoryHint": "{count} memorable items retained."
+    },
+    "recall": {
+      "title": "Recall",
+      "description": "Search this bank's memories.",
+      "placeholder": "What are you looking for?",
+      "run": "Recall",
+      "idle": "Enter a query to search this bank's memories."
+    },
+    "reflect": {
+      "title": "Reflect",
+      "description": "Ask the bank to reason over what it holds.",
+      "placeholder": "What should it think about?",
+      "run": "Reflect",
+      "idle": "Enter a question to reason over this bank.",
+      "includeFacts": "Include facts",
+      "includeToolCalls": "Include tool calls"
+    },
+    "data": {
+      "title": "Memories",
+      "description": "{total} memories in this bank.",
+      "searchPlaceholder": "Search memories",
+      "columns": {
+        "text": "Memory",
+        "entities": "Entities",
+        "tags": "Tags",
+        "date": "Date"
+      }
+    },
+    "documents": {
+      "title": "Documents",
+      "description": "{total} documents retained in this bank.",
+      "searchPlaceholder": "Search documents",
+      "columns": {
+        "document": "Document",
+        "tags": "Tags",
+        "created": "Added"
+      },
+      "viewChunks": "Chunks",
+      "chunksTitle": "Chunks",
+      "untitled": "Untitled"
+    },
+    "entities": {
+      "title": "Entities",
+      "description": "{total} entities seen in this bank.",
+      "searchPlaceholder": "Search entities",
+      "graphEntities": "Graph entities",
+      "graphEdges": "Graph links",
+      "columns": {
+        "entity": "Entity",
+        "mentions": "Mentions"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "Pages",
+      "pagesDescription": "{total} pages in the knowledge base.",
+      "searchPlaceholder": "Search pages",
+      "modelsTitle": "Models",
+      "modelsDescription": "Mental models derived from this bank's memories.",
+      "untitled": "Untitled"
+    },
+    "profile": {
+      "generalTitle": "General",
+      "generalDescription": "Identity and aliases for this bank.",
+      "configurationTitle": "Configuration",
+      "configurationDescription": "Settings applied to this bank.",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Endpoints notified when this bank changes.",
+      "auditLogsTitle": "Audit logs",
+      "auditLogsDescription": "What has been done to this bank.",
+      "llmRequestsTitle": "LLM requests",
+      "llmRequestsDescription": "Model calls made on behalf of this bank.",
+      "memoryDefenseTitle": "Memory defense",
+      "memoryDefenseDescription": "Directives and observations that shape what is kept.",
+      "directivesTitle": "Directives",
+      "observationsTitle": "Observations",
+      "mentalModelsTitle": "Mental models",
+      "aliasesTitle": "Aliases",
+      "fieldBankId": "Bank id",
+      "fieldName": "Name",
+      "fieldMission": "Mission",
+      "fieldCreated": "Created",
+      "unset": "Not set",
+      "noAliases": "No aliases.",
+      "noWebhooks": "No webhooks.",
+      "noLogs": "No entries.",
+      "columns": {
+        "id": "Id",
+        "summary": "Summary",
+        "tags": "Tags"
+      }
+    }
   }
 }

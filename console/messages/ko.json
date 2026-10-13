@@ -11,7 +11,12 @@
     "refresh": "새로 고침",
     "retry": "다시 시도",
     "noResults": "결과 없음",
-    "unknown": "알 수 없음"
+    "unknown": "알 수 없음",
+    "panel": {
+      "loadFailed": "불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "empty": "표시할 내용이 없습니다."
+    }
   },
   "errors": {
     "unauthorized": "계속하려면 인증이 필요합니다.",
@@ -299,5 +304,130 @@
     "retainTitle": "파일 보존",
     "downloadTitle": "파일 다운로드",
     "tooLarge": "파일이 최대 업로드 크기를 초과합니다."
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "보기",
+      "dataSubLabel": "팩트 유형",
+      "knowledgeSubLabel": "지식 구역",
+      "profileSubLabel": "설정 구역",
+      "home": "홈",
+      "recall": "검색",
+      "reflect": "성찰",
+      "data": "메모리",
+      "documents": "문서",
+      "entities": "엔터티",
+      "knowledge": "지식 베이스",
+      "profile": "설정",
+      "subDataWorld": "세계",
+      "subDataExperience": "경험",
+      "subDataObservations": "관찰",
+      "subKnowledgePages": "페이지",
+      "subKnowledgeModels": "모델",
+      "subProfileGeneral": "일반",
+      "subProfileMemoryDefense": "메모리 방어",
+      "subProfileConfiguration": "설정",
+      "subProfileWebhooks": "웹훅",
+      "subProfileAuditLogs": "감사 로그",
+      "subProfileLlmRequests": "LLM 요청"
+    },
+    "home": {
+      "title": "홈",
+      "description": "이 뱅크의 요약.",
+      "statMemories": "메모리",
+      "statEntities": "엔터티",
+      "statDocuments": "문서",
+      "memoryHint": "메모리 {count}개가 보관되어 있습니다."
+    },
+    "recall": {
+      "title": "검색",
+      "description": "이 뱅크의 메모리를 검색합니다.",
+      "placeholder": "무엇을 찾으시나요?",
+      "run": "검색",
+      "idle": "쿼리를 입력해 이 뱅크의 메모리를 검색하세요."
+    },
+    "reflect": {
+      "title": "성찰",
+      "description": "뱅크가 보유한 내용을 추론하게 합니다.",
+      "placeholder": "무엇을 생각할까요?",
+      "run": "성찰",
+      "idle": "질문을 입력해 이 뱅크를 추론하세요.",
+      "includeFacts": "팩트 포함",
+      "includeToolCalls": "도구 호출 포함"
+    },
+    "data": {
+      "title": "메모리",
+      "description": "이 뱅크에 메모리 {total}개가 있습니다.",
+      "searchPlaceholder": "메모리 검색",
+      "columns": {
+        "text": "메모리",
+        "entities": "엔터티",
+        "tags": "태그",
+        "date": "날짜"
+      }
+    },
+    "documents": {
+      "title": "문서",
+      "description": "이 뱅크에 문서 {total}개가 보관되어 있습니다.",
+      "searchPlaceholder": "문서 검색",
+      "columns": {
+        "document": "문서",
+        "tags": "태그",
+        "created": "추가됨"
+      },
+      "viewChunks": "청크",
+      "chunksTitle": "청크",
+      "untitled": "제목 없음"
+    },
+    "entities": {
+      "title": "엔터티",
+      "description": "이 뱅크에 엔터티 {total}개가 있습니다.",
+      "searchPlaceholder": "엔터티 검색",
+      "graphEntities": "그래프 엔터티",
+      "graphEdges": "그래프 연결",
+      "columns": {
+        "entity": "엔터티",
+        "mentions": "언급 수"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "페이지",
+      "pagesDescription": "지식 베이스에 페이지 {total}개가 있습니다.",
+      "searchPlaceholder": "페이지 검색",
+      "modelsTitle": "모델",
+      "modelsDescription": "이 뱅크의 메모리에서 도출된 멘탈 모델.",
+      "untitled": "제목 없음"
+    },
+    "profile": {
+      "generalTitle": "일반",
+      "generalDescription": "이 뱅크의 식별 정보와 별칭.",
+      "configurationTitle": "설정",
+      "configurationDescription": "이 뱅크에 적용되는 설정.",
+      "webhooksTitle": "웹훅",
+      "webhooksDescription": "이 뱅크가 변경될 때 알림을 받는 엔드포인트.",
+      "auditLogsTitle": "감사 로그",
+      "auditLogsDescription": "이 뱅크에 수행된 작업.",
+      "llmRequestsTitle": "LLM 요청",
+      "llmRequestsDescription": "이 뱅크를 위해 수행된 모델 호출.",
+      "memoryDefenseTitle": "메모리 방어",
+      "memoryDefenseDescription": "보관 내용을 좌우하는 지시와 관찰.",
+      "directivesTitle": "지시",
+      "observationsTitle": "관찰",
+      "mentalModelsTitle": "멘탈 모델",
+      "aliasesTitle": "별칭",
+      "fieldBankId": "뱅크 ID",
+      "fieldName": "이름",
+      "fieldMission": "미션",
+      "fieldCreated": "생성됨",
+      "unset": "설정되지 않음",
+      "noAliases": "별칭이 없습니다.",
+      "noWebhooks": "웹훅이 없습니다.",
+      "noLogs": "기록이 없습니다.",
+      "columns": {
+        "id": "ID",
+        "summary": "요약",
+        "tags": "태그"
+      }
+    }
   }
 }

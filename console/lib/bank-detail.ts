@@ -1,45 +1,105 @@
 /**
  * Bank detail view router.
  *
- * Selects the visible view, data sub-tab, knowledge sub-tab, and configuration
- * sub-tab from query parameters and pushes new query parameters when the user
- * switches, preserving the bank path segment.
+ * Selects which view is showing, and which sub-tab within it, from query
+ * parameters. Switching pushes new query parameters and never leaves the bank
+ * path segment, so the bank stays addressed by its path and a link to a
+ * particular tab is a link to that bank.
+ *
+ * The parameter names and their value sets are URL contract: an existing link
+ * or bookmark that names a tab has to keep resolving to that tab.
  */
-export const VIEWS = ["overview", "data", "knowledge", "configuration"] as const;
-export const BANK_DETAIL_VIEWS = VIEWS;
-export const DATA_SUBTABS = ["memories", "documents", "operations", "stats"] as const;
-export const KNOWLEDGE_SUBTABS = ["tree", "search", "export"] as const;
-export const CONFIGURATION_SUBTABS = ["general", "aliases", "webhooks", "mental-models", "observations"] as const;
+export const VIEWS = [
+  "home",
+  "recall",
+  "reflect",
+  "data",
+  "documents",
+  "entities",
+  "knowledge",
+  "profile",
+] as const;
+
+/** The data view's sub-tabs, which split memories by fact type. */
+export const DATA_SUBTABS = ["world", "experience", "observations"] as const;
+
+/** The knowledge view's sub-tabs. */
+export const KNOWLEDGE_SUBTABS = ["pages", "models"] as const;
+
+/** The profile view's sub-tabs. */
+export const CONFIGURATION_SUBTABS = [
+  "general",
+  "memory-defense",
+  "configuration",
+  "webhooks",
+  "audit-logs",
+  "llm-requests",
+] as const;
+
+export const DEFAULT_VIEW = "home";
+export const DEFAULT_DATA_SUBTAB = "world";
+export const DEFAULT_KNOWLEDGE_SUBTAB = "pages";
+export const DEFAULT_CONFIGURATION_SUBTAB = "general";
+
+/** Query parameter names. These are contract, not an implementation detail. */
+export const VIEW_PARAM = "view";
+export const DATA_SUBTAB_PARAM = "subTab";
+export const KNOWLEDGE_SUBTAB_PARAM = "knowledgeTab";
+export const CONFIGURATION_SUBTAB_PARAM = "bankConfigTab";
 
 export type ViewName = (typeof VIEWS)[number];
+export type DataSubTab = (typeof DATA_SUBTABS)[number];
+export type KnowledgeSubTab = (typeof KNOWLEDGE_SUBTABS)[number];
+export type ConfigurationSubTab = (typeof CONFIGURATION_SUBTABS)[number];
 
 export type BankViewState = {
   view: ViewName;
-  dataSubTab: (typeof DATA_SUBTABS)[number];
-  knowledgeSubTab: (typeof KNOWLEDGE_SUBTABS)[number];
-  configurationSubTab: (typeof CONFIGURATION_SUBTABS)[number];
+  dataSubTab: DataSubTab;
+  knowledgeSubTab: KnowledgeSubTab;
+  configurationSubTab: ConfigurationSubTab;
 };
 
+function pick<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
+  return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+/** Read the full view state from a search string, falling back on any unknown value. */
 export function parseViewState(search: URLSearchParams): BankViewState {
-  const view = (search.get("view") ?? "overview") as ViewName;
   return {
-    view: VIEWS.includes(view) ? view : "overview",
-    dataSubTab: (search.get("data") ?? "memories") as BankViewState["dataSubTab"],
-    knowledgeSubTab: (search.get("knowledge") ?? "tree") as BankViewState["knowledgeSubTab"],
-    configurationSubTab: (search.get("config") ?? "general") as BankViewState["configurationSubTab"],
+    view: pick(search.get(VIEW_PARAM), VIEWS, DEFAULT_VIEW),
+    dataSubTab: pick(search.get(DATA_SUBTAB_PARAM), DATA_SUBTABS, DEFAULT_DATA_SUBTAB),
+    knowledgeSubTab: pick(
+      search.get(KNOWLEDGE_SUBTAB_PARAM),
+      KNOWLEDGE_SUBTABS,
+      DEFAULT_KNOWLEDGE_SUBTAB,
+    ),
+    configurationSubTab: pick(
+      search.get(CONFIGURATION_SUBTAB_PARAM),
+      CONFIGURATION_SUBTABS,
+      DEFAULT_CONFIGURATION_SUBTAB,
+    ),
   };
 }
 
 /**
- * Build the next query string for a sub-tab switch. The bank path segment is
- * preserved by the caller; only query parameters change here.
+ * Build the query string for a tab switch.
+ *
+ * Only the parameters the switch owns are replaced, so a control belonging to
+ * one view does not silently drop state belonging to another. The bank path
+ * segment is left to the caller.
  */
 export function nextViewSearch(
   current: URLSearchParams,
   patch: Partial<Record<"view" | "data" | "knowledge" | "config", string>>,
 ): string {
   const next = new URLSearchParams(current.toString());
-  for (const [key, value] of Object.entries(patch)) {
+  const apply: Record<string, string | undefined> = {
+    [VIEW_PARAM]: patch.view,
+    [DATA_SUBTAB_PARAM]: patch.data,
+    [KNOWLEDGE_SUBTAB_PARAM]: patch.knowledge,
+    [CONFIGURATION_SUBTAB_PARAM]: patch.config,
+  };
+  for (const [key, value] of Object.entries(apply)) {
     if (value === undefined) continue;
     next.set(key, value);
   }
@@ -51,3 +111,6 @@ export function nextViewSearch(
 export function bankDetailPath(bankId: string): string {
   return `/banks/${encodeURIComponent(bankId)}`;
 }
+
+/** Kept as an alias so callers that imported the old name keep compiling. */
+export { VIEWS as BANK_DETAIL_VIEWS };

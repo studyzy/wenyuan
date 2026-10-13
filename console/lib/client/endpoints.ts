@@ -28,9 +28,12 @@ export const memoriesApi = {
 };
 
 export const documentsApi = {
-  get: (documentId: string) => apiGet<unknown>("/api/documents", { document_id: documentId }),
-  chunks: (documentId: string) =>
-    apiGet<unknown>("/api/documents/chunks", { document_id: documentId }),
+  /** The collection is bank-scoped; document_id narrows it to one document. */
+  list: (bankId: string) => apiGet<unknown>("/api/documents", { bank_id: bankId }),
+  get: (documentId: string, bankId: string) =>
+    apiGet<unknown>("/api/documents", { bank_id: bankId, document_id: documentId }),
+  chunks: (documentId: string, bankId: string) =>
+    apiGet<unknown>("/api/documents/chunks", { bank_id: bankId, document_id: documentId }),
 };
 
 export const operationsApi = {
@@ -58,6 +61,8 @@ export const knowledgeBaseApi = {
   search: (query: string) => apiGet<unknown>("/api/knowledge-base/search", { q: query }),
   folders: (bankId: string) => apiGet<unknown>("/api/knowledge-base/folders", { bank_id: bankId }),
   export: (bankId: string) => apiGet<unknown>("/api/knowledge-base/export", { bank_id: bankId }),
+  /** The mental models derived from this bank, which the models tab lists. */
+  models: (bankId: string) => apiGet<unknown>("/api/knowledge-base/models", { bank_id: bankId }),
 };
 export const versionApi = {
   get: () => apiGet<{ version?: string; service?: string; features?: Record<string, boolean> }>("/api/version"),
@@ -76,4 +81,107 @@ export const graphApi = {
 
 export const chunksApi = {
   get: (chunkId: string) => apiGet<unknown>("/api/chunks", { chunk_id: chunkId }),
+};
+
+export const statsApiExtra = {
+  timeseries: (bankId: string) => apiGet<unknown>(`/api/stats/${encodeURIComponent(bankId)}/memories-timeseries`),
+};
+
+export const auditLogsApi = {
+  list: (bankId: string, query?: Record<string, string | undefined>) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/audit-logs`, query),
+  stats: (bankId: string) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/audit-logs/stats`),
+};
+
+export const llmRequestsApi = {
+  list: (bankId: string, query?: Record<string, string | undefined>) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/llm-requests`, query),
+  stats: (bankId: string) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/llm-requests/stats`),
+};
+
+export const directivesApi = {
+  list: (bankId: string) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/directives`),
+  create: (bankId: string, payload: unknown) =>
+    apiPost<unknown>(`/api/banks/${encodeURIComponent(bankId)}/directives`, payload),
+  update: (bankId: string, directiveId: string, payload: unknown) =>
+    apiPatch<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/directives/${encodeURIComponent(directiveId)}`,
+      payload,
+    ),
+  remove: (bankId: string, directiveId: string) =>
+    apiDelete<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/directives/${encodeURIComponent(directiveId)}`,
+    ),
+};
+
+export const tagsApi = {
+  list: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/tags`),
+};
+
+export const attachmentsApi = {
+  url: (bankId: string, attachmentId: string) =>
+    `/api/banks/${encodeURIComponent(bankId)}/attachments/${encodeURIComponent(attachmentId)}`,
+};
+
+export const webhooksApi = {
+  list: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/webhooks`),
+  create: (bankId: string, payload: unknown) =>
+    apiPost<unknown>(`/api/banks/${encodeURIComponent(bankId)}/webhooks`, payload),
+  update: (bankId: string, webhookId: string, payload: unknown) =>
+    apiPatch<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/webhooks/${encodeURIComponent(webhookId)}`,
+      payload,
+    ),
+  remove: (bankId: string, webhookId: string) =>
+    apiDelete<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/webhooks/${encodeURIComponent(webhookId)}`,
+    ),
+  deliveries: (bankId: string, webhookId: string, query?: Record<string, string | undefined>) =>
+    apiGet<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/webhooks/${encodeURIComponent(webhookId)}/deliveries`,
+      query,
+    ),
+};
+
+export const mentalModelsApi = {
+  list: (bankId: string) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/mental-models`),
+  create: (bankId: string, payload: unknown) =>
+    apiPost<unknown>(`/api/banks/${encodeURIComponent(bankId)}/mental-models`, payload),
+  get: (bankId: string, modelId: string) =>
+    apiGet<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}`,
+    ),
+  update: (bankId: string, modelId: string, payload: unknown) =>
+    apiPatch<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}`,
+      payload,
+    ),
+  remove: (bankId: string, modelId: string) =>
+    apiDelete<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}`,
+    ),
+  refresh: (bankId: string, modelId: string) =>
+    apiPost<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}/refresh`,
+    ),
+  clear: (bankId: string, modelId: string) =>
+    apiPost<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}/clear`,
+    ),
+  history: (bankId: string, modelId: string) =>
+    apiGet<unknown>(
+      `/api/banks/${encodeURIComponent(bankId)}/mental-models/${encodeURIComponent(modelId)}/history`,
+    ),
+};
+
+export const observationsApi = {
+  list: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/observations`),
+  clear: (bankId: string) =>
+    apiDelete<unknown>(`/api/banks/${encodeURIComponent(bankId)}/observations`),
+  scopes: (bankId: string) =>
+    apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/observations/scopes`),
 };

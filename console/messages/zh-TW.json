@@ -11,7 +11,12 @@
     "refresh": "重新整理",
     "retry": "重試",
     "noResults": "沒有結果",
-    "unknown": "未知"
+    "unknown": "未知",
+    "panel": {
+      "loadFailed": "載入失敗。",
+      "retry": "重試",
+      "empty": "尚無內容。"
+    }
   },
   "errors": {
     "unauthorized": "需要驗證才能繼續。",
@@ -299,5 +304,130 @@
     "retainTitle": "保留檔案",
     "downloadTitle": "下載檔案",
     "tooLarge": "檔案超過最大上傳大小。"
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "檢視",
+      "dataSubLabel": "事實類型",
+      "knowledgeSubLabel": "知識分區",
+      "profileSubLabel": "設定分區",
+      "home": "首頁",
+      "recall": "召回",
+      "reflect": "反思",
+      "data": "記憶",
+      "documents": "文件",
+      "entities": "實體",
+      "knowledge": "知識庫",
+      "profile": "設定",
+      "subDataWorld": "世界",
+      "subDataExperience": "經驗",
+      "subDataObservations": "觀察",
+      "subKnowledgePages": "頁面",
+      "subKnowledgeModels": "模型",
+      "subProfileGeneral": "一般",
+      "subProfileMemoryDefense": "記憶防護",
+      "subProfileConfiguration": "設定",
+      "subProfileWebhooks": "Webhook",
+      "subProfileAuditLogs": "稽核日誌",
+      "subProfileLlmRequests": "LLM 請求"
+    },
+    "home": {
+      "title": "首頁",
+      "description": "此銀行的概覽。",
+      "statMemories": "記憶",
+      "statEntities": "實體",
+      "statDocuments": "文件",
+      "memoryHint": "已保存 {count} 條記憶。"
+    },
+    "recall": {
+      "title": "召回",
+      "description": "搜尋此銀行的記憶。",
+      "placeholder": "你在找什麼？",
+      "run": "召回",
+      "idle": "輸入查詢以搜尋此銀行的記憶。"
+    },
+    "reflect": {
+      "title": "反思",
+      "description": "讓銀行對它掌握的內容進行推理。",
+      "placeholder": "要思考什麼？",
+      "run": "反思",
+      "idle": "輸入問題以對此銀行進行推理。",
+      "includeFacts": "包含事實",
+      "includeToolCalls": "包含工具呼叫"
+    },
+    "data": {
+      "title": "記憶",
+      "description": "此銀行共有 {total} 條記憶。",
+      "searchPlaceholder": "搜尋記憶",
+      "columns": {
+        "text": "記憶",
+        "entities": "實體",
+        "tags": "標籤",
+        "date": "時間"
+      }
+    },
+    "documents": {
+      "title": "文件",
+      "description": "此銀行保存了 {total} 份文件。",
+      "searchPlaceholder": "搜尋文件",
+      "columns": {
+        "document": "文件",
+        "tags": "標籤",
+        "created": "加入時間"
+      },
+      "viewChunks": "分塊",
+      "chunksTitle": "分塊",
+      "untitled": "未命名"
+    },
+    "entities": {
+      "title": "實體",
+      "description": "此銀行出現 {total} 個實體。",
+      "searchPlaceholder": "搜尋實體",
+      "graphEntities": "圖譜實體",
+      "graphEdges": "圖譜連邊",
+      "columns": {
+        "entity": "實體",
+        "mentions": "提及次數"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "頁面",
+      "pagesDescription": "知識庫共有 {total} 個頁面。",
+      "searchPlaceholder": "搜尋頁面",
+      "modelsTitle": "模型",
+      "modelsDescription": "由此銀行記憶推導出的心智模型。",
+      "untitled": "未命名"
+    },
+    "profile": {
+      "generalTitle": "一般",
+      "generalDescription": "此銀行的身分與別名。",
+      "configurationTitle": "設定",
+      "configurationDescription": "套用於此銀行的設定。",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "此銀行變更時通知的端點。",
+      "auditLogsTitle": "稽核日誌",
+      "auditLogsDescription": "對此銀行執行過的操作。",
+      "llmRequestsTitle": "LLM 請求",
+      "llmRequestsDescription": "代表此銀行發起的模型呼叫。",
+      "memoryDefenseTitle": "記憶防護",
+      "memoryDefenseDescription": "影響保留內容的指令與觀察記錄。",
+      "directivesTitle": "指令",
+      "observationsTitle": "觀察記錄",
+      "mentalModelsTitle": "心智模型",
+      "aliasesTitle": "別名",
+      "fieldBankId": "銀行 ID",
+      "fieldName": "名稱",
+      "fieldMission": "使命",
+      "fieldCreated": "建立時間",
+      "unset": "未設定",
+      "noAliases": "尚無別名。",
+      "noWebhooks": "尚無 Webhook。",
+      "noLogs": "尚無記錄。",
+      "columns": {
+        "id": "ID",
+        "summary": "摘要",
+        "tags": "標籤"
+      }
+    }
   }
 }

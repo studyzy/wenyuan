@@ -11,7 +11,12 @@
     "refresh": "刷新",
     "retry": "重试",
     "noResults": "无结果",
-    "unknown": "未知"
+    "unknown": "未知",
+    "panel": {
+      "loadFailed": "加载失败。",
+      "retry": "重试",
+      "empty": "暂无内容。"
+    }
   },
   "errors": {
     "unauthorized": "需要身份验证才能继续。",
@@ -299,5 +304,130 @@
     "retainTitle": "保留文件",
     "downloadTitle": "下载文件",
     "tooLarge": "文件超过最大上传大小。"
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "视图",
+      "dataSubLabel": "事实类型",
+      "knowledgeSubLabel": "知识分区",
+      "profileSubLabel": "设置分区",
+      "home": "首页",
+      "recall": "召回",
+      "reflect": "反思",
+      "data": "记忆",
+      "documents": "文档",
+      "entities": "实体",
+      "knowledge": "知识库",
+      "profile": "设置",
+      "subDataWorld": "世界",
+      "subDataExperience": "经验",
+      "subDataObservations": "观察",
+      "subKnowledgePages": "页面",
+      "subKnowledgeModels": "模型",
+      "subProfileGeneral": "常规",
+      "subProfileMemoryDefense": "记忆防护",
+      "subProfileConfiguration": "配置",
+      "subProfileWebhooks": "Webhook",
+      "subProfileAuditLogs": "审计日志",
+      "subProfileLlmRequests": "LLM 请求"
+    },
+    "home": {
+      "title": "首页",
+      "description": "该银行的概览。",
+      "statMemories": "记忆",
+      "statEntities": "实体",
+      "statDocuments": "文档",
+      "memoryHint": "已保存 {count} 条记忆。"
+    },
+    "recall": {
+      "title": "召回",
+      "description": "搜索该银行的记忆。",
+      "placeholder": "你要找什么？",
+      "run": "召回",
+      "idle": "输入查询以搜索该银行的记忆。"
+    },
+    "reflect": {
+      "title": "反思",
+      "description": "让银行对它掌握的内容进行推理。",
+      "placeholder": "要思考什么？",
+      "run": "反思",
+      "idle": "输入问题以对该银行进行推理。",
+      "includeFacts": "包含事实",
+      "includeToolCalls": "包含工具调用"
+    },
+    "data": {
+      "title": "记忆",
+      "description": "该银行共有 {total} 条记忆。",
+      "searchPlaceholder": "搜索记忆",
+      "columns": {
+        "text": "记忆",
+        "entities": "实体",
+        "tags": "标签",
+        "date": "时间"
+      }
+    },
+    "documents": {
+      "title": "文档",
+      "description": "该银行保存了 {total} 个文档。",
+      "searchPlaceholder": "搜索文档",
+      "columns": {
+        "document": "文档",
+        "tags": "标签",
+        "created": "添加时间"
+      },
+      "viewChunks": "分块",
+      "chunksTitle": "分块",
+      "untitled": "未命名"
+    },
+    "entities": {
+      "title": "实体",
+      "description": "该银行出现 {total} 个实体。",
+      "searchPlaceholder": "搜索实体",
+      "graphEntities": "图谱实体",
+      "graphEdges": "图谱连边",
+      "columns": {
+        "entity": "实体",
+        "mentions": "提及次数"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "页面",
+      "pagesDescription": "知识库共有 {total} 个页面。",
+      "searchPlaceholder": "搜索页面",
+      "modelsTitle": "模型",
+      "modelsDescription": "由该银行记忆推导出的心智模型。",
+      "untitled": "未命名"
+    },
+    "profile": {
+      "generalTitle": "常规",
+      "generalDescription": "该银行的身份与别名。",
+      "configurationTitle": "配置",
+      "configurationDescription": "应用于该银行的设置。",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "该银行变更时通知的端点。",
+      "auditLogsTitle": "审计日志",
+      "auditLogsDescription": "对该银行执行过的操作。",
+      "llmRequestsTitle": "LLM 请求",
+      "llmRequestsDescription": "代表该银行发起的模型调用。",
+      "memoryDefenseTitle": "记忆防护",
+      "memoryDefenseDescription": "影响保留内容的指令与观察记录。",
+      "directivesTitle": "指令",
+      "observationsTitle": "观察记录",
+      "mentalModelsTitle": "心智模型",
+      "aliasesTitle": "别名",
+      "fieldBankId": "银行 ID",
+      "fieldName": "名称",
+      "fieldMission": "使命",
+      "fieldCreated": "创建时间",
+      "unset": "未设置",
+      "noAliases": "暂无别名。",
+      "noWebhooks": "暂无 Webhook。",
+      "noLogs": "暂无记录。",
+      "columns": {
+        "id": "ID",
+        "summary": "摘要",
+        "tags": "标签"
+      }
+    }
   }
 }

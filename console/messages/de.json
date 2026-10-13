@@ -11,7 +11,12 @@
     "refresh": "Aktualisieren",
     "retry": "Wiederholen",
     "noResults": "Keine Ergebnisse",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "panel": {
+      "loadFailed": "Konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "empty": "Nichts anzuzeigen."
+    }
   },
   "errors": {
     "unauthorized": "Zum Fortfahren ist eine Anmeldung erforderlich.",
@@ -299,5 +304,130 @@
     "retainTitle": "Datei behalten",
     "downloadTitle": "Datei herunterladen",
     "tooLarge": "Die Datei überschreitet die maximale Uploadgröße."
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "Ansicht",
+      "dataSubLabel": "Faktentyp",
+      "knowledgeSubLabel": "Wissensbereich",
+      "profileSubLabel": "Einstellungsbereich",
+      "home": "Start",
+      "recall": "Abruf",
+      "reflect": "Reflexion",
+      "data": "Erinnerungen",
+      "documents": "Dokumente",
+      "entities": "Entitäten",
+      "knowledge": "Wissen",
+      "profile": "Einstellungen",
+      "subDataWorld": "Welt",
+      "subDataExperience": "Erfahrung",
+      "subDataObservations": "Beobachtungen",
+      "subKnowledgePages": "Seiten",
+      "subKnowledgeModels": "Modelle",
+      "subProfileGeneral": "Allgemein",
+      "subProfileMemoryDefense": "Erinnerungsschutz",
+      "subProfileConfiguration": "Konfiguration",
+      "subProfileWebhooks": "Webhooks",
+      "subProfileAuditLogs": "Audit-Protokolle",
+      "subProfileLlmRequests": "LLM-Anfragen"
+    },
+    "home": {
+      "title": "Start",
+      "description": "Eine Übersicht dieser Bank.",
+      "statMemories": "Erinnerungen",
+      "statEntities": "Entitäten",
+      "statDocuments": "Dokumente",
+      "memoryHint": "{count} Erinnerungen gespeichert."
+    },
+    "recall": {
+      "title": "Abruf",
+      "description": "Die Erinnerungen dieser Bank durchsuchen.",
+      "placeholder": "Wonach suchen Sie?",
+      "run": "Abrufen",
+      "idle": "Geben Sie eine Suchanfrage ein."
+    },
+    "reflect": {
+      "title": "Reflexion",
+      "description": "Die Bank über ihr Wissen nachdenken lassen.",
+      "placeholder": "Worüber nachdenken?",
+      "run": "Reflektieren",
+      "idle": "Geben Sie eine Frage ein.",
+      "includeFacts": "Fakten einbeziehen",
+      "includeToolCalls": "Werkzeugaufrufe einbeziehen"
+    },
+    "data": {
+      "title": "Erinnerungen",
+      "description": "{total} Erinnerungen in dieser Bank.",
+      "searchPlaceholder": "Erinnerungen suchen",
+      "columns": {
+        "text": "Erinnerung",
+        "entities": "Entitäten",
+        "tags": "Tags",
+        "date": "Datum"
+      }
+    },
+    "documents": {
+      "title": "Dokumente",
+      "description": "{total} Dokumente in dieser Bank.",
+      "searchPlaceholder": "Dokumente suchen",
+      "columns": {
+        "document": "Dokument",
+        "tags": "Tags",
+        "created": "Hinzugefügt"
+      },
+      "viewChunks": "Abschnitte",
+      "chunksTitle": "Abschnitte",
+      "untitled": "Ohne Titel"
+    },
+    "entities": {
+      "title": "Entitäten",
+      "description": "{total} Entitäten in dieser Bank.",
+      "searchPlaceholder": "Entitäten suchen",
+      "graphEntities": "Graph-Entitäten",
+      "graphEdges": "Graph-Kanten",
+      "columns": {
+        "entity": "Entität",
+        "mentions": "Erwähnungen"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "Seiten",
+      "pagesDescription": "{total} Seiten in der Wissensbasis.",
+      "searchPlaceholder": "Seiten suchen",
+      "modelsTitle": "Modelle",
+      "modelsDescription": "Aus den Erinnerungen dieser Bank abgeleitete Mentalmodelle.",
+      "untitled": "Ohne Titel"
+    },
+    "profile": {
+      "generalTitle": "Allgemein",
+      "generalDescription": "Identität und Aliase dieser Bank.",
+      "configurationTitle": "Konfiguration",
+      "configurationDescription": "Auf diese Bank angewendete Einstellungen.",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Endpunkte, die bei Änderungen benachrichtigt werden.",
+      "auditLogsTitle": "Audit-Protokolle",
+      "auditLogsDescription": "Was mit dieser Bank geschehen ist.",
+      "llmRequestsTitle": "LLM-Anfragen",
+      "llmRequestsDescription": "Modellaufrufe für diese Bank.",
+      "memoryDefenseTitle": "Erinnerungsschutz",
+      "memoryDefenseDescription": "Anweisungen und Beobachtungen, die den Bestand prägen.",
+      "directivesTitle": "Anweisungen",
+      "observationsTitle": "Beobachtungen",
+      "mentalModelsTitle": "Mentalmodelle",
+      "aliasesTitle": "Aliase",
+      "fieldBankId": "Bank-ID",
+      "fieldName": "Name",
+      "fieldMission": "Auftrag",
+      "fieldCreated": "Erstellt",
+      "unset": "Nicht gesetzt",
+      "noAliases": "Keine Aliase.",
+      "noWebhooks": "Keine Webhooks.",
+      "noLogs": "Keine Einträge.",
+      "columns": {
+        "id": "ID",
+        "summary": "Zusammenfassung",
+        "tags": "Tags"
+      }
+    }
   }
 }

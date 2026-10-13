@@ -11,7 +11,12 @@
     "refresh": "Actualizar",
     "retry": "Reintentar",
     "noResults": "Sin resultados",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "panel": {
+      "loadFailed": "No se pudo cargar.",
+      "retry": "Reintentar",
+      "empty": "Nada que mostrar."
+    }
   },
   "errors": {
     "unauthorized": "Se requiere autenticación para continuar.",
@@ -299,5 +304,130 @@
     "retainTitle": "Retener archivo",
     "downloadTitle": "Descargar archivo",
     "tooLarge": "El archivo supera el tamaño máximo de subida."
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "Vista",
+      "dataSubLabel": "Tipo de hecho",
+      "knowledgeSubLabel": "Sección de conocimiento",
+      "profileSubLabel": "Sección de ajustes",
+      "home": "Inicio",
+      "recall": "Búsqueda",
+      "reflect": "Reflexión",
+      "data": "Recuerdos",
+      "documents": "Documentos",
+      "entities": "Entidades",
+      "knowledge": "Conocimiento",
+      "profile": "Ajustes",
+      "subDataWorld": "Mundo",
+      "subDataExperience": "Experiencia",
+      "subDataObservations": "Observaciones",
+      "subKnowledgePages": "Páginas",
+      "subKnowledgeModels": "Modelos",
+      "subProfileGeneral": "General",
+      "subProfileMemoryDefense": "Defensa de memoria",
+      "subProfileConfiguration": "Configuración",
+      "subProfileWebhooks": "Webhooks",
+      "subProfileAuditLogs": "Registros de auditoría",
+      "subProfileLlmRequests": "Solicitudes LLM"
+    },
+    "home": {
+      "title": "Inicio",
+      "description": "Un resumen de este banco.",
+      "statMemories": "Recuerdos",
+      "statEntities": "Entidades",
+      "statDocuments": "Documentos",
+      "memoryHint": "{count} recuerdos conservados."
+    },
+    "recall": {
+      "title": "Búsqueda",
+      "description": "Buscar en los recuerdos de este banco.",
+      "placeholder": "¿Qué busca?",
+      "run": "Buscar",
+      "idle": "Introduzca una consulta para buscar."
+    },
+    "reflect": {
+      "title": "Reflexión",
+      "description": "Pedir al banco que razone sobre lo que contiene.",
+      "placeholder": "¿Sobre qué razonar?",
+      "run": "Reflexionar",
+      "idle": "Introduzca una pregunta para razonar.",
+      "includeFacts": "Incluir hechos",
+      "includeToolCalls": "Incluir llamadas a herramientas"
+    },
+    "data": {
+      "title": "Recuerdos",
+      "description": "{total} recuerdos en este banco.",
+      "searchPlaceholder": "Buscar recuerdos",
+      "columns": {
+        "text": "Recuerdo",
+        "entities": "Entidades",
+        "tags": "Etiquetas",
+        "date": "Fecha"
+      }
+    },
+    "documents": {
+      "title": "Documentos",
+      "description": "{total} documentos en este banco.",
+      "searchPlaceholder": "Buscar documentos",
+      "columns": {
+        "document": "Documento",
+        "tags": "Etiquetas",
+        "created": "Añadido"
+      },
+      "viewChunks": "Fragmentos",
+      "chunksTitle": "Fragmentos",
+      "untitled": "Sin título"
+    },
+    "entities": {
+      "title": "Entidades",
+      "description": "{total} entidades en este banco.",
+      "searchPlaceholder": "Buscar entidades",
+      "graphEntities": "Entidades del grafo",
+      "graphEdges": "Enlaces del grafo",
+      "columns": {
+        "entity": "Entidad",
+        "mentions": "Menciones"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "Páginas",
+      "pagesDescription": "{total} páginas en la base de conocimiento.",
+      "searchPlaceholder": "Buscar páginas",
+      "modelsTitle": "Modelos",
+      "modelsDescription": "Modelos mentales derivados de los recuerdos de este banco.",
+      "untitled": "Sin título"
+    },
+    "profile": {
+      "generalTitle": "General",
+      "generalDescription": "Identidad y alias de este banco.",
+      "configurationTitle": "Configuración",
+      "configurationDescription": "Ajustes aplicados a este banco.",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Puntos de conexión notificados ante cambios.",
+      "auditLogsTitle": "Registros de auditoría",
+      "auditLogsDescription": "Lo que se ha hecho a este banco.",
+      "llmRequestsTitle": "Solicitudes LLM",
+      "llmRequestsDescription": "Llamadas a modelos hechas para este banco.",
+      "memoryDefenseTitle": "Defensa de memoria",
+      "memoryDefenseDescription": "Directivas y observaciones que dan forma a lo conservado.",
+      "directivesTitle": "Directivas",
+      "observationsTitle": "Observaciones",
+      "mentalModelsTitle": "Modelos mentales",
+      "aliasesTitle": "Alias",
+      "fieldBankId": "Id de banco",
+      "fieldName": "Nombre",
+      "fieldMission": "Misión",
+      "fieldCreated": "Creado",
+      "unset": "Sin definir",
+      "noAliases": "Sin alias.",
+      "noWebhooks": "Sin webhooks.",
+      "noLogs": "Sin entradas.",
+      "columns": {
+        "id": "Id",
+        "summary": "Resumen",
+        "tags": "Etiquetas"
+      }
+    }
   }
 }

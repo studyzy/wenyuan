@@ -11,7 +11,12 @@
     "refresh": "Actualiser",
     "retry": "Réessayer",
     "noResults": "Aucun résultat",
-    "unknown": "Inconnu"
+    "unknown": "Inconnu",
+    "panel": {
+      "loadFailed": "Impossible à charger.",
+      "retry": "Réessayer",
+      "empty": "Rien à afficher."
+    }
   },
   "errors": {
     "unauthorized": "Une authentification est requise pour continuer.",
@@ -299,5 +304,130 @@
     "retainTitle": "Conserver le fichier",
     "downloadTitle": "Télécharger le fichier",
     "tooLarge": "Le fichier dépasse la taille de téléversement maximale."
+  },
+  "panels": {
+    "views": {
+      "sectionLabel": "Vue",
+      "dataSubLabel": "Type de fait",
+      "knowledgeSubLabel": "Section de connaissance",
+      "profileSubLabel": "Section de réglages",
+      "home": "Accueil",
+      "recall": "Recherche",
+      "reflect": "Réflexion",
+      "data": "Souvenirs",
+      "documents": "Documents",
+      "entities": "Entités",
+      "knowledge": "Connaissances",
+      "profile": "Réglages",
+      "subDataWorld": "Monde",
+      "subDataExperience": "Expérience",
+      "subDataObservations": "Observations",
+      "subKnowledgePages": "Pages",
+      "subKnowledgeModels": "Modèles",
+      "subProfileGeneral": "Général",
+      "subProfileMemoryDefense": "Défense mémoire",
+      "subProfileConfiguration": "Configuration",
+      "subProfileWebhooks": "Webhooks",
+      "subProfileAuditLogs": "Journaux d’audit",
+      "subProfileLlmRequests": "Requêtes LLM"
+    },
+    "home": {
+      "title": "Accueil",
+      "description": "Un aperçu de cette banque.",
+      "statMemories": "Souvenirs",
+      "statEntities": "Entités",
+      "statDocuments": "Documents",
+      "memoryHint": "{count} souvenirs conservés."
+    },
+    "recall": {
+      "title": "Recherche",
+      "description": "Rechercher dans les souvenirs de cette banque.",
+      "placeholder": "Que cherchez-vous ?",
+      "run": "Rechercher",
+      "idle": "Saisissez une requête pour rechercher."
+    },
+    "reflect": {
+      "title": "Réflexion",
+      "description": "Demander à la banque de raisonner sur son contenu.",
+      "placeholder": "Sur quoi réfléchir ?",
+      "run": "Réfléchir",
+      "idle": "Saisissez une question pour raisonner.",
+      "includeFacts": "Inclure les faits",
+      "includeToolCalls": "Inclure les appels d’outils"
+    },
+    "data": {
+      "title": "Souvenirs",
+      "description": "{total} souvenirs dans cette banque.",
+      "searchPlaceholder": "Rechercher des souvenirs",
+      "columns": {
+        "text": "Souvenir",
+        "entities": "Entités",
+        "tags": "Étiquettes",
+        "date": "Date"
+      }
+    },
+    "documents": {
+      "title": "Documents",
+      "description": "{total} documents dans cette banque.",
+      "searchPlaceholder": "Rechercher des documents",
+      "columns": {
+        "document": "Document",
+        "tags": "Étiquettes",
+        "created": "Ajouté"
+      },
+      "viewChunks": "Segments",
+      "chunksTitle": "Segments",
+      "untitled": "Sans titre"
+    },
+    "entities": {
+      "title": "Entités",
+      "description": "{total} entités dans cette banque.",
+      "searchPlaceholder": "Rechercher des entités",
+      "graphEntities": "Entités du graphe",
+      "graphEdges": "Liens du graphe",
+      "columns": {
+        "entity": "Entité",
+        "mentions": "Mentions"
+      }
+    },
+    "knowledge": {
+      "pagesTitle": "Pages",
+      "pagesDescription": "{total} pages dans la base de connaissances.",
+      "searchPlaceholder": "Rechercher des pages",
+      "modelsTitle": "Modèles",
+      "modelsDescription": "Modèles mentaux dérivés des souvenirs de cette banque.",
+      "untitled": "Sans titre"
+    },
+    "profile": {
+      "generalTitle": "Général",
+      "generalDescription": "Identité et alias de cette banque.",
+      "configurationTitle": "Configuration",
+      "configurationDescription": "Réglages appliqués à cette banque.",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Points de terminaison notifiés lors des changements.",
+      "auditLogsTitle": "Journaux d’audit",
+      "auditLogsDescription": "Ce qui a été fait à cette banque.",
+      "llmRequestsTitle": "Requêtes LLM",
+      "llmRequestsDescription": "Appels de modèle effectués pour cette banque.",
+      "memoryDefenseTitle": "Défense mémoire",
+      "memoryDefenseDescription": "Directives et observations qui façonnent le contenu conservé.",
+      "directivesTitle": "Directives",
+      "observationsTitle": "Observations",
+      "mentalModelsTitle": "Modèles mentaux",
+      "aliasesTitle": "Alias",
+      "fieldBankId": "Identifiant de banque",
+      "fieldName": "Nom",
+      "fieldMission": "Mission",
+      "fieldCreated": "Créée",
+      "unset": "Non défini",
+      "noAliases": "Aucun alias.",
+      "noWebhooks": "Aucun webhook.",
+      "noLogs": "Aucune entrée.",
+      "columns": {
+        "id": "Id",
+        "summary": "Résumé",
+        "tags": "Étiquettes"
+      }
+    }
   }
 }

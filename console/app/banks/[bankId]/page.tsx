@@ -6,6 +6,7 @@ import { resolveOrDefault } from "../../../i18n/normalize";
 import { isSupportedLocale } from "../../../i18n/locales";
 import { getCatalog, lookupMessage } from "../../../i18n/catalog";
 import { BankDetailView } from "./bank-detail-view";
+import { AppShell } from "../../../components/shell/app-shell";
 
 /**
  * Flatten a resolved query-parameter record into URLSearchParams, keeping the
@@ -58,10 +59,11 @@ export default async function BankDetailPage({
   const catalog = getCatalog(locale);
 
   return (
-    <main className="console-surface">
-      <h1>{lookupMessage(catalog, "bank.detailTitle")}</h1>
-      <BankDetailView bankId={bankId} initialState={state} />
-    </main>
+    <AppShell>
+      <main className="flex min-h-0 flex-1 flex-col">
+        <BankDetailView bankId={bankId} initialState={state} />
+      </main>
+    </AppShell>
   );
 }
 

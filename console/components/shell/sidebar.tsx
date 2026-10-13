@@ -18,18 +18,11 @@ import {
 import { versionApi } from "../../lib/client/endpoints";
 import { useBank } from "../../lib/bank-context";
 import { bankRoute } from "../../lib/bank-url";
+import { VIEW_PARAM, type ViewName } from "../../lib/bank-detail";
 import { useTranslations } from "../../i18n";
 import { cn } from "../../lib/utils";
 
-export type NavItem =
-  | "home"
-  | "recall"
-  | "reflect"
-  | "data"
-  | "documents"
-  | "entities"
-  | "knowledge"
-  | "profile";
+export type NavItem = ViewName;
 
 /**
  * The rail a bank's views hang off.
@@ -105,7 +98,7 @@ export function Sidebar({
             return (
               <li key={item.id}>
                 <Link
-                  href={bankRoute(currentBank, `?view=${item.id}`)}
+                  href={bankRoute(currentBank, `?${VIEW_PARAM}=${item.id}`)}
                   onClick={(event) => {
                     // A plain left click hands navigation to the parent so the
                     // view swaps without a document reload; modified clicks keep
