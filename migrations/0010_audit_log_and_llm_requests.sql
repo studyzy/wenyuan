@@ -28,8 +28,9 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     bank_id        TEXT,
     operation      TEXT,
     scope          TEXT,
-    -- One operation invocation shares a trace identifier; parent_span_id is
-    -- that operation's span and span_id is this call, so a run's calls group.
+    -- One operation invocation shares a trace identifier, and parent_span_id
+    -- is that operation's span while span_id is this call, so a run's calls
+    -- group together.
     trace_id       TEXT,
     span_id        TEXT,
     parent_span_id TEXT,

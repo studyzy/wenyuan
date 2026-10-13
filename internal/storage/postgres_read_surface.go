@@ -136,7 +136,7 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 		return EntityPage{}, err
 	}
 	listQuery := `SELECT id, bank_id, COALESCE(name,''), COALESCE(kind,''),
-	                     '{}'::jsonb, first_seen, last_seen, COALESCE(mention_count,0)
+	                     COALESCE(metadata, '{}'::jsonb), first_seen, last_seen, COALESCE(mention_count,0)
 	              FROM ` + quoteIdent(s.schema) + `.entities
 	              WHERE ` + filter + `
 	              ORDER BY mention_count DESC, id ASC LIMIT $4 OFFSET $5`
