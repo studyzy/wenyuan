@@ -169,6 +169,16 @@ type ReflectOutcome struct {
 // validation and default resolution. It carries every field the retrieval loop
 // consumes.
 type ReflectQuery struct {
+	// MaxIterations bounds the model-driven loop's retrieval turns; zero means
+	// the runner's default.
+	MaxIterations int
+
+	// Reflection, when non-nil, replaces the deterministic in-process
+	// reflection with the model-driven agentic loop. The caller supplies it
+	// because the loop needs a provider, and the storage area deliberately does
+	// not depend on one.
+	Reflection ReflectRunner
+
 	BankID string
 	// Query is the question after appending the deprecated context field.
 	Query string

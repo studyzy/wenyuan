@@ -43,6 +43,25 @@ func (s *MemoryStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectO
 	if query.Directives == nil {
 		query.Directives = append([]ReflectDirective(nil), s.directives[query.BankID]...)
 	}
+	// A supplied runner takes precedence: it is the model-driven loop, and the
+	// deterministic in-process loop is the fallback for a deployment with no
+	// model configured.
+	if query.Reflection != nil {
+		directives := make([]string, 0, len(query.Directives))
+		for _, directive := range query.Directives {
+			if directive.Content != "" {
+				directives = append(directives, directive.Content)
+			}
+		}
+		return query.Reflection.Run(ctx, AgenticReflectRequest{
+			BankID:        query.BankID,
+			Question:      query.Query,
+			MaxTokens:     query.MaxTokens,
+			MaxIterations: query.MaxIterations,
+			Retrieval:     s,
+			Directives:    directives,
+		})
+	}
 	loop := newReflectLoop(query, s.rawFacts(query.BankID))
 	return loop.run(ctx)
 }
