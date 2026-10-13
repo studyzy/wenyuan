@@ -243,3 +243,56 @@ type MemoryHistoryEntry struct {
 	Text      string
 	Tags      []string
 }
+
+// ErrWebhookNotFound is returned when a webhook identifier is unknown.
+var ErrWebhookNotFound = errors.New("webhook not found")
+
+// ErrWebhookURLNotAllowed reports a URL the SSRF guard refuses.
+var ErrWebhookURLNotAllowed = errors.New("webhook url is not allowed")
+
+// Webhook is one registered delivery target.
+type Webhook struct {
+	ID         string
+	BankID     string
+	URL        string
+	Secret     string
+	EventTypes []string
+	Enabled    bool
+	HTTPConfig map[string]any
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// WebhookPatch carries a partial webhook update.
+type WebhookPatch struct {
+	URL        *string
+	Secret     *string
+	EventTypes *[]string
+	Enabled    *bool
+}
+
+// WebhookDelivery is one recorded delivery attempt.
+type WebhookDelivery struct {
+	ID          string
+	WebhookID   string
+	BankID      string
+	EventType   string
+	Status      string
+	StatusCode  *int
+	Error       string
+	Attempt     int
+	DeliveredAt time.Time
+}
+
+// WebhookDeliveryPage is one page of delivery records.
+type WebhookDeliveryPage struct {
+	Deliveries []WebhookDelivery
+	Total      int
+	Limit      int
+	Offset     int
+}
+
+// WebhookEventTypes returns the event names a webhook may subscribe to.
+func WebhookEventTypes() []string {
+	return []string{"memory.created", "memory.updated", "memory.deleted", "bank.created", "consolidation.completed"}
+}

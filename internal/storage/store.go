@@ -170,6 +170,20 @@ type Store interface {
 	// is the retry half of the consumer lifecycle.
 	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
 
+	// --- Webhooks -------------------------------------------------------
+	// ListWebhooks returns a bank's webhook registrations, newest first.
+	ListWebhooks(ctx context.Context, bankID string) ([]Webhook, error)
+	// GetWebhook returns one webhook by identifier.
+	GetWebhook(ctx context.Context, bankID, webhookID string) (Webhook, error)
+	// PutWebhook inserts or replaces a webhook.
+	PutWebhook(ctx context.Context, webhook Webhook) (Webhook, error)
+	// UpdateWebhook applies a partial update.
+	UpdateWebhook(ctx context.Context, bankID, webhookID string, patch WebhookPatch) (Webhook, error)
+	// DeleteWebhook removes a webhook and its delivery records.
+	DeleteWebhook(ctx context.Context, bankID, webhookID string) error
+	// ListWebhookDeliveries returns one page of a webhook's delivery records.
+	ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit, offset int) (WebhookDeliveryPage, error)
+
 	// --- Knowledge base -------------------------------------------------
 	// ListKnowledgeNodes returns every knowledge node of one bank.
 	ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error)

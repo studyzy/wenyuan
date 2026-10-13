@@ -82,3 +82,23 @@ func secondsFromEnv(lookup func(string) (string, bool), key string, fallback tim
 	}
 	return time.Duration(seconds) * time.Second
 }
+
+// hostListFromEnv reads a comma-separated host allowlist. A blank value yields
+// an empty list, which the guard treats as "no allowlist configured".
+func hostListFromEnv(lookup func(string) (string, bool), key string) []string {
+	raw, ok := lookup(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}

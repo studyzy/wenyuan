@@ -22,6 +22,8 @@ var MemoryDomainTables = []string{
 	"llm_requests",
 	"observation_sources",
 	"knowledge_nodes",
+	"webhooks",
+	"webhook_deliveries",
 }
 
 // TableName returns the table name owned by the storage area.
@@ -175,6 +177,32 @@ var MentalModelsColumns = []string{
 	"last_refreshed_at",
 	"last_updated",
 	"created_at",
+}
+
+// WebhooksColumns are the columns of the webhook registrations.
+var WebhooksColumns = []string{
+	"id",
+	"bank_id",
+	"url",
+	"secret",
+	"event_types",
+	"enabled",
+	"http_config",
+	"created_at",
+	"updated_at",
+}
+
+// WebhookDeliveriesColumns are the columns of the delivery records.
+var WebhookDeliveriesColumns = []string{
+	"id",
+	"webhook_id",
+	"bank_id",
+	"event_type",
+	"status",
+	"status_code",
+	"error",
+	"attempt",
+	"delivered_at",
 }
 
 // KnowledgeNodesColumns are the columns of the knowledge tree.

@@ -32,6 +32,7 @@ func TestMemoryDomainTableInventory(t *testing.T) {
 		"unit_entities", "memory_links", "entity_cooccurrences", "async_operations",
 		"file_storage", "mental_models", "directives",
 		"audit_log", "llm_requests", "observation_sources", "knowledge_nodes",
+		"webhooks", "webhook_deliveries",
 	}
 	if len(MemoryDomainTables) != len(expected) {
 		t.Fatalf("table count = %d, want %d", len(MemoryDomainTables), len(expected))

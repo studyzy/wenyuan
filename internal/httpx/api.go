@@ -46,6 +46,15 @@ const (
 	// identifier is already globally unique.
 	PrefixChunksV1 = "/v1/default/chunks/"
 
+	// Webhooks.
+	SuffixWebhooks          = "/webhooks"
+	SuffixWebhookMember     = "/webhooks/{webhook_id}"
+	SuffixWebhookDeliveries = "/webhooks/{webhook_id}/deliveries"
+
+	// Memories that are not one of the CRUD sub-routes.
+	SuffixMemoriesDryRunExtract = "/memories/dry-run-extract"
+	SuffixOperationMemberDelete = "/operations/{operation_id}/delete"
+
 	// Memory sub-routes, knowledge base, observability and consolidation.
 	SuffixMemoriesList        = "/memories/list"
 	SuffixMemoryMember        = "/memories/{memory_id}"

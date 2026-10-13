@@ -73,6 +73,8 @@ type MemoryStore struct {
 	knowledgeNodes     map[string]KnowledgeNode
 	memoryHistory      map[string][]MemoryHistoryEntry
 	observationSources map[string][]string
+	webhooks           map[string]Webhook
+	webhookDeliveries  []WebhookDelivery
 	writeErr           error
 	readErr            error
 	readyErr           error
@@ -103,6 +105,7 @@ func NewMemoryStore(schema string) *MemoryStore {
 		knowledgeNodes:     map[string]KnowledgeNode{},
 		memoryHistory:      map[string][]MemoryHistoryEntry{},
 		observationSources: map[string][]string{},
+		webhooks:           map[string]Webhook{},
 	}
 }
 

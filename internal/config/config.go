@@ -25,6 +25,16 @@ const (
 	// archive transfer family.
 	EnvEnableDocumentImportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API"
 
+	// EnvWebhookAllowInsecure permits a plain-HTTP webhook target. Off by
+	// default so a delivery cannot be downgraded to cleartext.
+	EnvWebhookAllowInsecure = "HINDSIGHT_API_WEBHOOK_ALLOW_INSECURE"
+	// EnvWebhookAllowPrivateHosts permits a webhook target inside the private
+	// network. Off by default, because a registered URL is fetched by the
+	// server and an unchecked one is a server-side request forgery.
+	EnvWebhookAllowPrivateHosts = "HINDSIGHT_API_WEBHOOK_ALLOW_PRIVATE_HOSTS"
+	// EnvWebhookAllowedHosts narrows webhook targets to an explicit host set.
+	EnvWebhookAllowedHosts = "HINDSIGHT_API_WEBHOOK_ALLOWED_HOSTS"
+
 	// EnvWorkerID identifies this queue consumer among consumers sharing one
 	// queue, so a claim can be traced back to its holder.
 	EnvWorkerID = "HINDSIGHT_API_WORKER_ID"
@@ -95,10 +105,18 @@ type Config struct {
 	// EnableDocumentImportAPI gates the document import routes.
 	EnableDocumentImportAPI bool
 	// Worker tunes the background queue consumer.
-	Worker             WorkerConfig
-	GzipMinSize        int
-	NullDropFields     bool
-	RetainBatchEnabled bool
+	Worker WorkerConfig
+	// WebhookAllowInsecure permits a plain-HTTP webhook target.
+	WebhookAllowInsecure bool
+	// WebhookAllowPrivateHosts permits a webhook target inside the private
+	// network. Off by default, because a registered URL is fetched by the
+	// server and an unchecked one is a server-side request forgery.
+	WebhookAllowPrivateHosts bool
+	// WebhookAllowedHosts narrows webhook targets to an explicit host set.
+	WebhookAllowedHosts []string
+	GzipMinSize         int
+	NullDropFields      bool
+	RetainBatchEnabled  bool
 	// RecallStrategyBoosts maps a retrieval arm identifier to a boost level
 	// (low, medium, high). Empty leaves every arm unboosted.
 	RecallStrategyBoosts map[string]string
@@ -192,6 +210,9 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.EnableDocumentExportAPI = boolFromEnv(lookup, EnvEnableDocumentExportAPI, false)
 	cfg.EnableDocumentImportAPI = boolFromEnv(lookup, EnvEnableDocumentImportAPI, false)
 	cfg.Worker = resolveWorker(lookup)
+	cfg.WebhookAllowInsecure = boolFromEnv(lookup, EnvWebhookAllowInsecure, false)
+	cfg.WebhookAllowPrivateHosts = boolFromEnv(lookup, EnvWebhookAllowPrivateHosts, false)
+	cfg.WebhookAllowedHosts = hostListFromEnv(lookup, EnvWebhookAllowedHosts)
 	cfg.NullDropFields = boolFromEnv(lookup, EnvNullDropFields, false)
 	cfg.RetainBatchEnabled = boolFromEnv(lookup, EnvRetainBatchEnabled, false)
 	if v, ok := lookup(EnvRecallStrategyBoosts); ok {
