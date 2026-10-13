@@ -56,7 +56,16 @@
         "notFound": "This memory could not be found."
       },
       "mentalModels": {
-        "notFound": "This mental model could not be found."
+        "notFound": "This mental model could not be found.",
+        "clear": "Failed to clear mental model",
+        "create": "Failed to create mental model",
+        "delete": "Failed to delete mental model",
+        "dryRunRefresh": "Failed to dry-run refresh mental model",
+        "fetch": "Failed to get mental model",
+        "history": "Failed to load mental-model history",
+        "list": "Failed to list mental models",
+        "refresh": "Failed to refresh mental model",
+        "update": "Failed to update mental model"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "Deleting individual memories is not supported.",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "Failed to list LLM requests",
         "stats": "Failed to load LLM-request statistics"
+      },
+      "directives": {
+        "create": "Failed to create directive",
+        "delete": "Failed to delete directive",
+        "fetch": "Failed to get directive",
+        "list": "Failed to list directives",
+        "update": "Failed to update directive"
+      },
+      "observations": {
+        "clear": "Failed to clear observations",
+        "fetch": "Failed to get observation",
+        "list": "Failed to list observations"
+      },
+      "tags": {
+        "list": "Failed to list tags"
+      },
+      "webhooks": {
+        "create": "Failed to create webhook",
+        "delete": "Failed to delete webhook",
+        "deliveries": "Failed to load webhook deliveries",
+        "list": "Failed to list webhooks",
+        "update": "Failed to update webhook"
       }
     }
   },

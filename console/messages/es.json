@@ -56,7 +56,16 @@
         "notFound": "No se encontró esta memoria."
       },
       "mentalModels": {
-        "notFound": "No se encontró este modelo mental."
+        "notFound": "No se encontró este modelo mental.",
+        "clear": "No se pudo restablecer el modelo mental",
+        "create": "No se pudo crear el modelo mental",
+        "delete": "No se pudo eliminar el modelo mental",
+        "dryRunRefresh": "No se pudo actualizar en seco el modelo mental",
+        "fetch": "No se pudo obtener el modelo mental",
+        "history": "No se pudo cargar el historial del modelo mental",
+        "list": "No se pudieron obtener los modelos mentales",
+        "refresh": "No se pudo actualizar el modelo mental",
+        "update": "No se pudo modificar el modelo mental"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "No se admite eliminar memorias individuales.",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "No se pudieron cargar las solicitudes LLM",
         "stats": "No se pudieron cargar las estadísticas de solicitudes LLM"
+      },
+      "directives": {
+        "create": "No se pudo crear la directiva",
+        "delete": "No se pudo eliminar la directiva",
+        "fetch": "No se pudo obtener la directiva",
+        "list": "No se pudieron obtener las directivas",
+        "update": "No se pudo actualizar la directiva"
+      },
+      "observations": {
+        "clear": "No se pudieron restablecer las observaciones",
+        "fetch": "No se pudo obtener la observación",
+        "list": "No se pudieron obtener las observaciones"
+      },
+      "tags": {
+        "list": "No se pudieron obtener las etiquetas"
+      },
+      "webhooks": {
+        "create": "No se pudo crear el webhook",
+        "delete": "No se pudo eliminar el webhook",
+        "deliveries": "No se pudieron cargar las entregas del webhook",
+        "list": "No se pudieron obtener los webhooks",
+        "update": "No se pudo actualizar el webhook"
       }
     }
   },

@@ -56,7 +56,16 @@
         "notFound": "搵唔到呢條記憶。"
       },
       "mentalModels": {
-        "notFound": "搵唔到呢個心智模型。"
+        "notFound": "搵唔到呢個心智模型。",
+        "clear": "清除心智模型失敗",
+        "create": "建立心智模型失敗",
+        "delete": "刪除心智模型失敗",
+        "dryRunRefresh": "試行刷新心智模型失敗",
+        "fetch": "攞心智模型失敗",
+        "history": "載入心智模型歷史失敗",
+        "list": "攞心智模型列表失敗",
+        "refresh": "刷新心智模型失敗",
+        "update": "更新心智模型失敗"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "唔支援刪除單條記憶。",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "攞 LLM 請求記錄失敗",
         "stats": "攞 LLM 請求統計失敗"
+      },
+      "directives": {
+        "create": "建立指令失敗",
+        "delete": "刪除指令失敗",
+        "fetch": "攞指令失敗",
+        "list": "攞指令列表失敗",
+        "update": "更新指令失敗"
+      },
+      "observations": {
+        "clear": "清除觀察記錄失敗",
+        "fetch": "攞觀察記錄失敗",
+        "list": "攞觀察記錄列表失敗"
+      },
+      "tags": {
+        "list": "攞標籤列表失敗"
+      },
+      "webhooks": {
+        "create": "建立 Webhook 失敗",
+        "delete": "刪除 Webhook 失敗",
+        "deliveries": "載入 Webhook 投遞記錄失敗",
+        "list": "攞 Webhook 列表失敗",
+        "update": "更新 Webhook 失敗"
       }
     }
   },

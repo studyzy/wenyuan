@@ -56,7 +56,16 @@
         "notFound": "Diese Erinnerung wurde nicht gefunden."
       },
       "mentalModels": {
-        "notFound": "Dieses Mentalmodell wurde nicht gefunden."
+        "notFound": "Dieses Mentalmodell wurde nicht gefunden.",
+        "clear": "Mentalmodell konnte nicht geleert werden",
+        "create": "Mentalmodell konnte nicht erstellt werden",
+        "delete": "Mentalmodell konnte nicht gelöscht werden",
+        "dryRunRefresh": "Probelauf-Aktualisierung des Mentalmodells fehlgeschlagen",
+        "fetch": "Mentalmodell konnte nicht geladen werden",
+        "history": "Mentalmodell-Verlauf konnte nicht geladen werden",
+        "list": "Mentalmodelle konnten nicht geladen werden",
+        "refresh": "Mentalmodell konnte nicht aktualisiert werden",
+        "update": "Mentalmodell konnte nicht geändert werden"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "Das Löschen einzelner Erinnerungen wird nicht unterstützt.",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "LLM-Anfragen konnten nicht geladen werden",
         "stats": "LLM-Anfragestatistik konnte nicht geladen werden"
+      },
+      "directives": {
+        "create": "Anweisung konnte nicht erstellt werden",
+        "delete": "Anweisung konnte nicht gelöscht werden",
+        "fetch": "Anweisung konnte nicht geladen werden",
+        "list": "Anweisungen konnten nicht geladen werden",
+        "update": "Anweisung konnte nicht aktualisiert werden"
+      },
+      "observations": {
+        "clear": "Beobachtungen konnten nicht geleert werden",
+        "fetch": "Beobachtung konnte nicht geladen werden",
+        "list": "Beobachtungen konnten nicht geladen werden"
+      },
+      "tags": {
+        "list": "Tags konnten nicht geladen werden"
+      },
+      "webhooks": {
+        "create": "Webhook konnte nicht erstellt werden",
+        "delete": "Webhook konnte nicht gelöscht werden",
+        "deliveries": "Webhook-Zustellungen konnten nicht geladen werden",
+        "list": "Webhooks konnten nicht geladen werden",
+        "update": "Webhook konnte nicht aktualisiert werden"
       }
     }
   },

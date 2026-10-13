@@ -56,7 +56,16 @@
         "notFound": "Esta memória não foi encontrada."
       },
       "mentalModels": {
-        "notFound": "Este modelo mental não foi encontrado."
+        "notFound": "Este modelo mental não foi encontrado.",
+        "clear": "Falha ao limpar o modelo mental",
+        "create": "Falha ao criar o modelo mental",
+        "delete": "Falha ao excluir o modelo mental",
+        "dryRunRefresh": "Falha na atualização simulada do modelo mental",
+        "fetch": "Falha ao obter o modelo mental",
+        "history": "Falha ao carregar o histórico do modelo mental",
+        "list": "Falha ao listar os modelos mentais",
+        "refresh": "Falha ao atualizar o modelo mental",
+        "update": "Falha ao modificar o modelo mental"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "Não há suporte para excluir memórias individuais.",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "Falha ao carregar as solicitações LLM",
         "stats": "Falha ao carregar as estatísticas de solicitações LLM"
+      },
+      "directives": {
+        "create": "Falha ao criar a diretiva",
+        "delete": "Falha ao excluir a diretiva",
+        "fetch": "Falha ao obter a diretiva",
+        "list": "Falha ao listar as diretivas",
+        "update": "Falha ao atualizar a diretiva"
+      },
+      "observations": {
+        "clear": "Falha ao limpar as observações",
+        "fetch": "Falha ao obter a observação",
+        "list": "Falha ao listar as observações"
+      },
+      "tags": {
+        "list": "Falha ao listar as etiquetas"
+      },
+      "webhooks": {
+        "create": "Falha ao criar o webhook",
+        "delete": "Falha ao excluir o webhook",
+        "deliveries": "Falha ao carregar as entregas do webhook",
+        "list": "Falha ao listar os webhooks",
+        "update": "Falha ao atualizar o webhook"
       }
     }
   },

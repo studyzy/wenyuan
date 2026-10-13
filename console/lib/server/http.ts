@@ -49,6 +49,48 @@ export function booleanQueryFlags(
   return result;
 }
 
+/** The only tag-match modes the upstream accepts. */
+export const TAGS_MATCH_MODES = ["any", "all", "any_strict", "all_strict", "exact"] as const;
+
+/**
+ * Read the repeated `tags` filter and its optional match mode as upstream query
+ * parameters.
+ *
+ * `tags_match` is forwarded only alongside at least one tag, because on its own
+ * it would override the upstream default for an otherwise unfiltered read. An
+ * unrecognised mode is dropped rather than forwarded, so a typo degrades to a
+ * dropped filter instead of an upstream validation error.
+ */
+export function tagFilterParams(request: Request): Record<string, string | string[]> {
+  const searchParams = new URL(request.url).searchParams;
+  const tags = searchParams.getAll("tags").filter((tag) => tag.length > 0);
+  if (tags.length === 0) return {};
+  const result: Record<string, string | string[]> = { tags };
+  const mode = searchParams.get("tags_match");
+  if (mode && (TAGS_MATCH_MODES as readonly string[]).includes(mode)) {
+    result.tags_match = mode;
+  }
+  return result;
+}
+
+/**
+ * Forward the named query parameters verbatim, dropping any whose value is
+ * empty. Used by the read routes whose upstream accepts the caller's filters
+ * unchanged.
+ */
+export function passthroughQueryParams(
+  request: Request,
+  names: readonly string[],
+): Record<string, string> {
+  const searchParams = new URL(request.url).searchParams;
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    const value = searchParams.get(name);
+    if (value !== null && value.length > 0) result[name] = value;
+  }
+  return result;
+}
+
 /**
  * Resolve the bank scoping value, accepting a legacy agent-style alias as an
  * alternative to the primary bank id parameter.

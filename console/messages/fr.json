@@ -56,7 +56,16 @@
         "notFound": "Ce souvenir est introuvable."
       },
       "mentalModels": {
-        "notFound": "Ce modèle mental est introuvable."
+        "notFound": "Ce modèle mental est introuvable.",
+        "clear": "Échec de la réinitialisation du modèle mental",
+        "create": "Échec de la création du modèle mental",
+        "delete": "Échec de la suppression du modèle mental",
+        "dryRunRefresh": "Échec de l’actualisation à blanc du modèle mental",
+        "fetch": "Échec du chargement du modèle mental",
+        "history": "Échec du chargement de l’historique du modèle mental",
+        "list": "Échec du chargement des modèles mentaux",
+        "refresh": "Échec de l’actualisation du modèle mental",
+        "update": "Échec de la mise à jour du modèle mental"
       },
       "generic": {
         "unsupportedIndividualMemoryDelete": "La suppression de souvenirs individuels n'est pas prise en charge.",
@@ -71,6 +80,28 @@
       "llmRequests": {
         "list": "Échec du chargement des requêtes LLM",
         "stats": "Échec du chargement des statistiques de requêtes LLM"
+      },
+      "directives": {
+        "create": "Échec de la création de la directive",
+        "delete": "Échec de la suppression de la directive",
+        "fetch": "Échec du chargement de la directive",
+        "list": "Échec du chargement des directives",
+        "update": "Échec de la mise à jour de la directive"
+      },
+      "observations": {
+        "clear": "Échec de la réinitialisation des observations",
+        "fetch": "Échec du chargement de l’observation",
+        "list": "Échec du chargement des observations"
+      },
+      "tags": {
+        "list": "Échec du chargement des étiquettes"
+      },
+      "webhooks": {
+        "create": "Échec de la création du webhook",
+        "delete": "Échec de la suppression du webhook",
+        "deliveries": "Échec du chargement des livraisons du webhook",
+        "list": "Échec du chargement des webhooks",
+        "update": "Échec de la mise à jour du webhook"
       }
     }
   },

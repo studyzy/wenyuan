@@ -1,6 +1,6 @@
 import type { ServerConfig } from "./config";
 import { encodeBankId } from "./paths";
-import { callUpstream, passthrough, type UpstreamResult } from "./upstream";
+import { callUpstream, passthrough, type QueryValue, type UpstreamResult } from "./upstream";
 import { ERROR_KEY_FIELD, localizeError } from "./errors";
 import { negotiateLocale } from "../../i18n/negotiate";
 
@@ -22,7 +22,7 @@ export type ProxyOptions = {
   config: ServerConfig;
   request: Request;
   upstreamPath: string;
-  query?: Record<string, string | undefined>;
+  query?: Record<string, QueryValue>;
   method?: string;
   body?: BodyInit;
 };
@@ -165,6 +165,28 @@ export function upstreamUnavailableBody(
   });
   return new Response(JSON.stringify(localized), {
     status: 502,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+/**
+ * Delete that discards the upstream body and answers with a synthesized
+ * success payload at 200.
+ *
+ * Two routes behave this way rather than passing the upstream body through.
+ * Failures still follow the normal rule: the upstream status with the
+ * documented error envelope, and 502 when the call never reached the upstream.
+ */
+export async function serializeSynthesizedDelete(options: SerializeOptions): Promise<Response> {
+  let result: UpstreamResult;
+  try {
+    result = await callUpstream(options.config, forwardBody(options));
+  } catch {
+    return upstreamUnavailableBody(options);
+  }
+  if (!result.ok) return serializeResult(result, options);
+  return new Response(JSON.stringify({ success: true }), {
+    status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }

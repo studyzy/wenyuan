@@ -119,17 +119,30 @@ describe("child-resource 404 translation", () => {
 });
 
 describe("content routes proxy at their catalogued paths", () => {
-  it("webhook deliveries carries the paging parameters", async () => {
+  it("webhook deliveries forwards its limit and cursor, ignoring other paging params", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await deliveries.GET(
-        makeRequest("http://localhost/api/banks/acme/webhooks/w1/deliveries?limit=10&offset=20"),
+        makeRequest("http://localhost/api/banks/acme/webhooks/w1/deliveries?limit=10&cursor=c1&offset=20"),
         webhookCtx("acme", "w1"),
       );
       expect(stub.calls[0]).toContain("/v1/default/banks/acme/webhooks/w1/deliveries");
       expect(stub.calls[0]).toContain("limit=10");
-      expect(stub.calls[0]).toContain("offset=20");
+      expect(stub.calls[0]).toContain("cursor=c1");
+      expect(stub.calls[0]).not.toContain("offset=20");
+    });
+  });
+
+  it("webhook deliveries substitutes a default limit when the caller omits it", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await deliveries.GET(
+        makeRequest("http://localhost/api/banks/acme/webhooks/w1/deliveries"),
+        webhookCtx("acme", "w1"),
+      );
+      expect(stub.calls[0]).toContain("limit=50");
     });
   });
 
@@ -162,6 +175,181 @@ describe("content routes proxy at their catalogued paths", () => {
         bank("acme"),
       );
       expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/prompts/preview");
+    });
+  });
+});
+describe("content success statuses follow the contract", () => {
+  it("returns 201 for directive and webhook create", async () => {
+    for (const [label, call] of [
+      [
+        "directive create",
+        () =>
+          directives.POST(makeRequest("http://localhost/api/banks/acme/directives", { method: "POST", body: "{}" }), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "webhook create",
+        () =>
+          webhooks.POST(makeRequest("http://localhost/api/banks/acme/webhooks", { method: "POST", body: "{}" }), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+    ] as const) {
+      const stub = stubFetch([{ status: 200, body: { ok: true } }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status, `${label} should report 201`).toBe(201);
+      });
+    }
+  });
+
+  it("returns 202 for mental-model create", async () => {
+    const stub = stubFetch([{ status: 200, body: { operation_id: "op-1" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await mentalModels.POST(
+        makeRequest("http://localhost/api/banks/acme/mental-models", { method: "POST", body: "{}" }),
+        { params: Promise.resolve({ bankId: "acme" }) },
+      );
+      expect(response.status).toBe(202);
+    });
+  });
+
+  it("returns 200 for the list and read routes even when the upstream says 201", async () => {
+    for (const [label, call] of [
+      [
+        "directive list",
+        () =>
+          directives.GET(makeRequest("http://localhost/api/banks/acme/directives"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "mental-model list",
+        () =>
+          mentalModels.GET(makeRequest("http://localhost/api/banks/acme/mental-models"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+      [
+        "observation scopes",
+        () =>
+          scopes.GET(makeRequest("http://localhost/api/banks/acme/observations/scopes"), {
+            params: Promise.resolve({ bankId: "acme" }),
+          }),
+      ],
+    ] as const) {
+      const stub = stubFetch([{ status: 201, body: {} }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await call();
+        expect(response.status, `${label} should report 200`).toBe(200);
+      });
+    }
+  });
+});
+
+describe("observations collection reshapes memories", () => {
+  it("pins the observation type and limit, then returns an items object", async () => {
+    const stub = stubFetch([
+      {
+        status: 200,
+        body: {
+          items: [{ id: "m1", text: "hello", tags: ["a"], date: "2026-01-01T00:00:00Z" }],
+        },
+      },
+    ]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await observations.GET(makeRequest("http://localhost/api/banks/acme/observations"), {
+        params: Promise.resolve({ bankId: "acme" }),
+      });
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("type=observation");
+      expect(stub.calls[0]).toContain("limit=1000");
+
+      const payload = await readJson(response);
+      const items = payload.items as Array<Record<string, unknown>>;
+      expect(Array.isArray(items)).toBe(true);
+      expect(items[0]).toMatchObject({
+        id: "m1",
+        bank_id: "acme",
+        text: "hello",
+        proof_count: 1,
+        tags: ["a"],
+        source_memory_ids: [],
+        source_memories: [],
+        created_at: "2026-01-01T00:00:00Z",
+      });
+    });
+  });
+
+  it("maps an upstream failure to 500 rather than passing the status through", async () => {
+    const stub = stubFetch([{ status: 422, body: { detail: "nope" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await observations.GET(
+        makeRequest("http://localhost/api/banks/acme/observations", { acceptLanguage: "en" }),
+        { params: Promise.resolve({ bankId: "acme" }) },
+      );
+      expect(response.status).toBe(500);
+      const payload = await readJson(response);
+      expectNoErrorKey(payload);
+    });
+  });
+});
+
+describe("tag filter forwarding is guarded", () => {
+  it("forwards tags with a known mode and drops an unknown mode", async () => {
+    for (const [query, expectMode] of [
+      ["tags=a&tags=b&tags_match=all", true],
+      ["tags=a&tags_match=bogus", false],
+    ] as const) {
+      const stub = stubFetch([{ status: 200, body: {} }]);
+      restore = stub.restore;
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        await directives.GET(makeRequest(`http://localhost/api/banks/acme/directives?${query}`), {
+          params: Promise.resolve({ bankId: "acme" }),
+        });
+        const called = stub.calls[0] ?? "";
+        expect(called).toContain("tags=a");
+        expect(called.includes("tags_match="), `${query} -> tags_match forwarded?`).toBe(expectMode);
+      });
+    }
+  });
+
+  it("does not forward tags_match on its own", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await directives.GET(makeRequest("http://localhost/api/banks/acme/directives?tags_match=all"), {
+        params: Promise.resolve({ bankId: "acme" }),
+      });
+      expect(stub.calls[0]).not.toContain("tags_match");
+    });
+  });
+});
+
+describe("content failures use the localized envelope", () => {
+  it("keeps the upstream status on a 4xx failure and strips the internal key", async () => {
+    const stub = stubFetch([{ status: 403, body: { detail: "forbidden" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await directives.POST(
+        makeRequest("http://localhost/api/banks/acme/directives", {
+          method: "POST",
+          acceptLanguage: "en",
+          body: "{}",
+        }),
+        { params: Promise.resolve({ bankId: "acme" }) },
+      );
+      expect(response.status).toBe(403);
+      const payload = await readJson(response);
+      expect(typeof payload.error).toBe("string");
+      expectNoErrorKey(payload);
+      expect(payload.upstream).toMatchObject({ status: 403 });
     });
   });
 });

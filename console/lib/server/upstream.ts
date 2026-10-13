@@ -15,10 +15,16 @@ export type UpstreamResult = {
   ok: boolean;
 };
 
+/**
+ * A query value may be a single string or a list, because some upstream
+ * parameters are repeated rather than overwritten (for example the tag filter).
+ */
+export type QueryValue = string | readonly string[] | undefined;
+
 export type UpstreamRequest = {
   path: string;
   method?: string;
-  query?: Record<string, string | undefined>;
+  query?: Record<string, QueryValue>;
   headers?: Record<string, string>;
   body?: BodyInit;
   signal?: AbortSignal;
@@ -38,7 +44,14 @@ export function buildUpstreamUrl(
   const url = new URL(`${config.dataplaneUrl}${request.path}`);
   if (request.query) {
     for (const [key, value] of Object.entries(request.query)) {
-      if (value !== undefined && value !== "") url.searchParams.set(key, value);
+      if (value === undefined) continue;
+      if (typeof value === "string") {
+        if (value !== "") url.searchParams.set(key, value);
+        continue;
+      }
+      for (const item of value) {
+        if (item !== "") url.searchParams.append(key, item);
+      }
     }
   }
   return url.toString();
