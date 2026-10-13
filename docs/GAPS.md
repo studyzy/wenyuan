@@ -356,14 +356,14 @@ POST   /operations/{operation_id}/delete     ← Wenyuan 仅有 DELETE /operatio
 
 | # | 缺口 | 现状 |
 |---|---|---|
-| D1 | 无 PG 端到端测试 | `-tags pgx` 仅验证编译，真实 SQL 未执行 |
-| D2 | 无真实 e2e | 仅 `internal/app/parity_integration_test.go` 8 个 HTTP 契约用例 |
-| D3 | 无基准测试 | recall 多路融合、migration 导入无 benchmark |
-| D4 | 无容器化 / 部署形态 | 参照有 `docker/standalone` 单容器、docker-compose 14 变体、helm chart、`pip install hindsight-api`、嵌入式 `hindsight-all`（含 `pg0`） |
-| D5 | 无 Release / Tag | `CHANGELOG.md` 停在 `[Unreleased]` |
-| D6 | `entities.metadata` 幽灵列 | `internal/storage/schema.go` 的 `EntitiesColumns` 列出但 DDL 无此列 |
-| D7 | `async_operations.error` 死列 | `0001` 建 `error`，`0005` 加 `error_message`，代码只用后者 |
-| D8 | 无覆盖率门槛 | CI 无 `go test -cover` 阈值 |
+| D1 | 无 PG 端到端测试 | **已实现**：CI `postgres` job 用 pgvector 服务跑 `make test-pg`；本地 `make test-pg`（需 `WENYUAN_TEST_DATABASE_URL`） |
+| D2 | 无真实 e2e | **已实现**：`internal/app/e2e_lifecycle_test.go` 走完整生命周期（retain→recall→list→reflect→stats）；另有 8 个 parity 契约用例 |
+| D3 | 无基准测试 | **已实现**：`internal/storage/bench_test.go` 5 个基准，`make bench` |
+| D4 | 无容器化 / 部署形态 | **已实现**：多阶段 `Dockerfile`（server+worker+bankctl，distroless）与 `docker-compose.yml`（pgvector + api + worker） |
+| D5 | 无 Release / Tag | **已实现**：`CHANGELOG.md` `[0.1.0]` 条目，打 `v0.1.0` 标签 |
+| D6 | `entities.metadata` 幽灵列 | **已修复**：迁移 0014 添加该列 |
+| D7 | `async_operations.error` 死列 | **已修复**：迁移 0015 删除该列 |
+| D8 | 无覆盖率门槛 | **已实现**：`make cover-check`（`COVERAGE_MIN`，当前 40%），已接入 CI |
 
 ---
 
