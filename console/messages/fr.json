@@ -428,7 +428,31 @@
         "id": "Id",
         "summary": "Résumé",
         "tags": "Étiquettes"
-      }
+      },
+      "dispositionsTitle": "Dispositions",
+      "dispositionsDescription": "Comment cette banque pèse les preuves. Chaque trait est noté de 1 à 5, 3 étant neutre.",
+      "traitSkepticism": "Scepticisme",
+      "traitSkepticismHint": "À quel point elle doute de ce qu'on lui dit.",
+      "traitLiteralism": "Littéralisme",
+      "traitLiteralismHint": "À quel point elle s'en tient à ce qui est dit littéralement.",
+      "traitEmpathy": "Empathie",
+      "traitEmpathyHint": "Le poids qu'elle accorde à l'intention de l'interlocuteur.",
+      "missionTitle": "Mission de réflexion",
+      "missionDescription": "Instructions permanentes appliquées lors de la réflexion.",
+      "missionPlaceholder": "Sur quoi cette banque doit-elle se concentrer en réfléchissant ?",
+      "originOverride": "Remplacé",
+      "originInherited": "Hérité",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "reset": "Réinitialiser",
+      "resetting": "Réinitialisation…",
+      "unsaved": "Modifications non enregistrées",
+      "saveFailed": "La configuration n'a pas pu être enregistrée.",
+      "resetFailed": "La configuration n'a pas pu être réinitialisée.",
+      "cancel": "Annuler",
+      "resetConfirmTitle": "Réinitialiser la configuration de cette banque ?",
+      "resetConfirmDescription": "Tous les remplacements sont supprimés et la banque revient aux valeurs héritées. Cette action est irréversible.",
+      "resetConfirmAction": "Réinitialiser"
     }
   },
   "constellation": {

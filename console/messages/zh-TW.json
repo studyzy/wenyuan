@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "摘要",
         "tags": "標籤"
-      }
+      },
+      "dispositionsTitle": "性格傾向",
+      "dispositionsDescription": "此庫如何權衡證據。每項取值 1 到 5，3 為中性。",
+      "traitSkepticism": "懷疑度",
+      "traitSkepticismHint": "對被告知內容的懷疑程度。",
+      "traitLiteralism": "字面度",
+      "traitLiteralismHint": "對原話字面含義的遵循程度。",
+      "traitEmpathy": "共情度",
+      "traitEmpathyHint": "對說話者意圖的重視程度。",
+      "missionTitle": "反思使命",
+      "missionDescription": "此庫在反思時遵循的長期指令。",
+      "missionPlaceholder": "此庫反思時應關注什麼？",
+      "originOverride": "已覆寫",
+      "originInherited": "繼承值",
+      "save": "儲存",
+      "saving": "儲存中…",
+      "reset": "重設",
+      "resetting": "重設中…",
+      "unsaved": "有未儲存的變更",
+      "saveFailed": "設定儲存失敗。",
+      "resetFailed": "設定重設失敗。",
+      "cancel": "取消",
+      "resetConfirmTitle": "重設此庫的設定？",
+      "resetConfirmDescription": "所有覆寫項將被移除，此庫回到繼承的預設值。此操作無法復原。",
+      "resetConfirmAction": "重設"
     }
   },
   "constellation": {

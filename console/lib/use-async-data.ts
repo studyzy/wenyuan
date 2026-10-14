@@ -15,6 +15,13 @@ export type AsyncState<T> = {
   loading: boolean;
   error: boolean;
   reload: () => void;
+  /**
+   * Write a value the caller already has — typically the response to a write
+   * it just performed — so the panel reflects it without a second round trip.
+   * The version counter is advanced, so a reload response still in flight
+   * cannot overwrite this value with an older read.
+   */
+  replace: (next: T) => void;
 };
 
 export function useAsyncData<T>(
@@ -75,7 +82,15 @@ export function useAsyncData<T>(
 
   const reload = useCallback(() => setNonce((value) => value + 1), []);
 
-  return { data, loading, error, reload };
+  const replace = useCallback((next: T) => {
+    // Advancing the sequence makes any in-flight read stale, so it cannot land
+    // on top of the value the caller just obtained.
+    seq.current++;
+    setData(next);
+    setError(false);
+  }, []);
+
+  return { data, loading, error, reload, replace };
 }
 
 /** Narrow an unknown response to a list under a named key, tolerating a bare array. */

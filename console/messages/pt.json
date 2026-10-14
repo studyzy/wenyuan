@@ -428,7 +428,31 @@
         "id": "Id",
         "summary": "Resumo",
         "tags": "Etiquetas"
-      }
+      },
+      "dispositionsTitle": "Disposições",
+      "dispositionsDescription": "Como este banco pondera as evidências. Cada traço é avaliado de 1 a 5, sendo 3 neutro.",
+      "traitSkepticism": "Ceticismo",
+      "traitSkepticismHint": "Com que facilidade duvida do que lhe é dito.",
+      "traitLiteralism": "Literalidade",
+      "traitLiteralismHint": "Até que ponto se atém ao que foi dito literalmente.",
+      "traitEmpathy": "Empatia",
+      "traitEmpathyHint": "Quanto peso dá à intenção de quem fala.",
+      "missionTitle": "Missão de reflexão",
+      "missionDescription": "Instruções permanentes aplicadas ao refletir.",
+      "missionPlaceholder": "Em que este banco deve focar ao refletir?",
+      "originOverride": "Substituído",
+      "originInherited": "Herdado",
+      "save": "Guardar",
+      "saving": "A guardar…",
+      "reset": "Restaurar",
+      "resetting": "A restaurar…",
+      "unsaved": "Alterações não guardadas",
+      "saveFailed": "Não foi possível guardar a configuração.",
+      "resetFailed": "Não foi possível restaurar a configuração.",
+      "cancel": "Cancelar",
+      "resetConfirmTitle": "Restaurar a configuração deste banco?",
+      "resetConfirmDescription": "Todas as substituições são removidas e o banco volta aos valores herdados. Não pode ser anulado.",
+      "resetConfirmAction": "Restaurar"
     }
   },
   "constellation": {

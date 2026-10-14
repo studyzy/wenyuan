@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "摘要",
         "tags": "标签"
-      }
+      },
+      "dispositionsTitle": "性格倾向",
+      "dispositionsDescription": "该库如何权衡证据。每项取值 1 到 5，3 为中性。",
+      "traitSkepticism": "怀疑度",
+      "traitSkepticismHint": "对被告知内容的怀疑程度。",
+      "traitLiteralism": "字面度",
+      "traitLiteralismHint": "对原话字面含义的遵循程度。",
+      "traitEmpathy": "共情度",
+      "traitEmpathyHint": "对说话者意图的重视程度。",
+      "missionTitle": "反思使命",
+      "missionDescription": "该库在反思时遵循的长期指令。",
+      "missionPlaceholder": "该库反思时应关注什么？",
+      "originOverride": "已覆盖",
+      "originInherited": "继承值",
+      "save": "保存",
+      "saving": "保存中…",
+      "reset": "重置",
+      "resetting": "重置中…",
+      "unsaved": "有未保存的更改",
+      "saveFailed": "配置保存失败。",
+      "resetFailed": "配置重置失败。",
+      "cancel": "取消",
+      "resetConfirmTitle": "重置该库的配置？",
+      "resetConfirmDescription": "所有覆盖项将被移除，该库回到继承的默认值。此操作不可撤销。",
+      "resetConfirmAction": "重置"
     }
   },
   "constellation": {

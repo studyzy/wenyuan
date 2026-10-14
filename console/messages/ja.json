@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "概要",
         "tags": "タグ"
-      }
+      },
+      "dispositionsTitle": "気質",
+      "dispositionsDescription": "このバンクが証拠をどう重んじるか。各項目は 1〜5 で、3 が中立です。",
+      "traitSkepticism": "懐疑",
+      "traitSkepticismHint": "告げられた内容をどれだけ疑うか。",
+      "traitLiteralism": "字義性",
+      "traitLiteralismHint": "文字どおりの発言にどれだけ従うか。",
+      "traitEmpathy": "共感",
+      "traitEmpathyHint": "話し手の意図をどれだけ重んじるか。",
+      "missionTitle": "内省の使命",
+      "missionDescription": "このバンクが内省するときに適用する常設の指示。",
+      "missionPlaceholder": "内省時に何に注目すべきですか？",
+      "originOverride": "上書き",
+      "originInherited": "継承",
+      "save": "保存",
+      "saving": "保存中…",
+      "reset": "リセット",
+      "resetting": "リセット中…",
+      "unsaved": "未保存の変更があります",
+      "saveFailed": "設定を保存できませんでした。",
+      "resetFailed": "設定をリセットできませんでした。",
+      "cancel": "キャンセル",
+      "resetConfirmTitle": "このバンクの設定をリセットしますか？",
+      "resetConfirmDescription": "すべての上書きが削除され、継承された既定値に戻ります。元に戻せません。",
+      "resetConfirmAction": "リセット"
     }
   },
   "constellation": {

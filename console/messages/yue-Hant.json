@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "摘要",
         "tags": "標籤"
-      }
+      },
+      "dispositionsTitle": "性格傾向",
+      "dispositionsDescription": "呢個庫點樣衡量證據。每項由 1 到 5，3 係中性。",
+      "traitSkepticism": "懷疑度",
+      "traitSkepticismHint": "對人講嘅嘢有幾懷疑。",
+      "traitLiteralism": "字面度",
+      "traitLiteralismHint": "幾跟原本字面嘅意思。",
+      "traitEmpathy": "共情度",
+      "traitEmpathyHint": "幾重視講話人嘅用意。",
+      "missionTitle": "反思使命",
+      "missionDescription": "呢個庫反思時跟嘅長期指示。",
+      "missionPlaceholder": "呢個庫反思時應該關注咩？",
+      "originOverride": "已覆蓋",
+      "originInherited": "繼承值",
+      "save": "儲存",
+      "saving": "儲存緊…",
+      "reset": "重設",
+      "resetting": "重設緊…",
+      "unsaved": "有未儲存嘅改動",
+      "saveFailed": "設定儲存唔到。",
+      "resetFailed": "設定重設唔到。",
+      "cancel": "取消",
+      "resetConfirmTitle": "重設呢個庫嘅設定？",
+      "resetConfirmDescription": "所有覆蓋項都會移除，個庫返去繼承嘅預設值。呢個動作冇得還原。",
+      "resetConfirmAction": "重設"
     }
   },
   "constellation": {

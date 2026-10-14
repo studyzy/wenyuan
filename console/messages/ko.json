@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "요약",
         "tags": "태그"
-      }
+      },
+      "dispositionsTitle": "성향",
+      "dispositionsDescription": "이 뱅크가 증거를 어떻게 저울질하는지. 각 항목은 1~5이며 3이 중립입니다.",
+      "traitSkepticism": "회의성",
+      "traitSkepticismHint": "들은 내용을 얼마나 의심하는지.",
+      "traitLiteralism": "문자성",
+      "traitLiteralismHint": "말한 그대로를 얼마나 따르는지.",
+      "traitEmpathy": "공감성",
+      "traitEmpathyHint": "화자의 의도를 얼마나 중시하는지.",
+      "missionTitle": "성찰 임무",
+      "missionDescription": "이 뱅크가 성찰할 때 적용하는 상시 지침.",
+      "missionPlaceholder": "성찰할 때 무엇에 주목해야 합니까?",
+      "originOverride": "재정의",
+      "originInherited": "상속",
+      "save": "저장",
+      "saving": "저장 중…",
+      "reset": "재설정",
+      "resetting": "재설정 중…",
+      "unsaved": "저장되지 않은 변경 사항",
+      "saveFailed": "구성을 저장하지 못했습니다.",
+      "resetFailed": "구성을 재설정하지 못했습니다.",
+      "cancel": "취소",
+      "resetConfirmTitle": "이 뱅크의 구성을 재설정할까요?",
+      "resetConfirmDescription": "모든 재정의가 제거되고 상속된 기본값으로 돌아갑니다. 되돌릴 수 없습니다.",
+      "resetConfirmAction": "재설정"
     }
   },
   "constellation": {

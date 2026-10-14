@@ -428,7 +428,31 @@
         "id": "Id",
         "summary": "Resumen",
         "tags": "Etiquetas"
-      }
+      },
+      "dispositionsTitle": "Disposiciones",
+      "dispositionsDescription": "Cómo sopesa esta banca la evidencia. Cada rasgo se puntúa de 1 a 5, siendo 3 neutral.",
+      "traitSkepticism": "Escepticismo",
+      "traitSkepticismHint": "Con qué facilidad duda de lo que se le dice.",
+      "traitLiteralism": "Literalidad",
+      "traitLiteralismHint": "Hasta qué punto se ciñe a lo dicho literalmente.",
+      "traitEmpathy": "Empatía",
+      "traitEmpathyHint": "Cuánto peso da a la intención de quien habla.",
+      "missionTitle": "Misión de reflexión",
+      "missionDescription": "Instrucciones permanentes que aplica al reflexionar.",
+      "missionPlaceholder": "¿En qué debe centrarse esta banca al reflexionar?",
+      "originOverride": "Reemplazado",
+      "originInherited": "Heredado",
+      "save": "Guardar",
+      "saving": "Guardando…",
+      "reset": "Restablecer",
+      "resetting": "Restableciendo…",
+      "unsaved": "Cambios sin guardar",
+      "saveFailed": "No se pudo guardar la configuración.",
+      "resetFailed": "No se pudo restablecer la configuración.",
+      "cancel": "Cancelar",
+      "resetConfirmTitle": "¿Restablecer la configuración de esta banca?",
+      "resetConfirmDescription": "Se eliminan todos los reemplazos y la banca vuelve a los valores heredados. No se puede deshacer.",
+      "resetConfirmAction": "Restablecer"
     }
   },
   "constellation": {

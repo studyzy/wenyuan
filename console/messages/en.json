@@ -428,7 +428,31 @@
         "id": "Id",
         "summary": "Summary",
         "tags": "Tags"
-      }
+      },
+      "dispositionsTitle": "Dispositions",
+      "dispositionsDescription": "How this bank weighs evidence. Each trait is graded from 1 to 5, with 3 neutral.",
+      "traitSkepticism": "Skepticism",
+      "traitSkepticismHint": "How readily it doubts what it is told.",
+      "traitLiteralism": "Literalism",
+      "traitLiteralismHint": "How closely it holds to what was literally said.",
+      "traitEmpathy": "Empathy",
+      "traitEmpathyHint": "How much weight it gives the speaker's intent.",
+      "missionTitle": "Reflection mission",
+      "missionDescription": "Standing instructions the bank applies when it reflects.",
+      "missionPlaceholder": "What should this bank focus on when it reflects?",
+      "originOverride": "Override",
+      "originInherited": "Inherited",
+      "save": "Save",
+      "saving": "Saving…",
+      "reset": "Reset",
+      "resetting": "Resetting…",
+      "unsaved": "Unsaved changes",
+      "saveFailed": "The configuration could not be saved.",
+      "resetFailed": "The configuration could not be reset.",
+      "cancel": "Cancel",
+      "resetConfirmTitle": "Reset this bank's configuration?",
+      "resetConfirmDescription": "Every override is removed and the bank returns to the inherited defaults. This cannot be undone.",
+      "resetConfirmAction": "Reset"
     }
   },
   "constellation": {

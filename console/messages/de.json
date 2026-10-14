@@ -428,7 +428,31 @@
         "id": "ID",
         "summary": "Zusammenfassung",
         "tags": "Tags"
-      }
+      },
+      "dispositionsTitle": "Dispositionen",
+      "dispositionsDescription": "Wie diese Bank Belege gewichtet. Jedes Merkmal wird von 1 bis 5 bewertet, 3 ist neutral.",
+      "traitSkepticism": "Skepsis",
+      "traitSkepticismHint": "Wie bereitwillig sie Gesagtes anzweifelt.",
+      "traitLiteralism": "Wörtlichkeit",
+      "traitLiteralismHint": "Wie eng sie am wörtlich Gesagten bleibt.",
+      "traitEmpathy": "Empathie",
+      "traitEmpathyHint": "Wie stark sie die Absicht des Sprechers gewichtet.",
+      "missionTitle": "Reflexionsauftrag",
+      "missionDescription": "Dauerhafte Anweisungen, die die Bank beim Reflektieren anwendet.",
+      "missionPlaceholder": "Worauf soll diese Bank beim Reflektieren achten?",
+      "originOverride": "Überschrieben",
+      "originInherited": "Geerbt",
+      "save": "Speichern",
+      "saving": "Speichern…",
+      "reset": "Zurücksetzen",
+      "resetting": "Zurücksetzen…",
+      "unsaved": "Ungespeicherte Änderungen",
+      "saveFailed": "Die Konfiguration konnte nicht gespeichert werden.",
+      "resetFailed": "Die Konfiguration konnte nicht zurückgesetzt werden.",
+      "cancel": "Abbrechen",
+      "resetConfirmTitle": "Konfiguration dieser Bank zurücksetzen?",
+      "resetConfirmDescription": "Alle Überschreibungen werden entfernt und die Bank fällt auf die geerbten Standardwerte zurück. Das kann nicht rückgängig gemacht werden.",
+      "resetConfirmAction": "Zurücksetzen"
     }
   },
   "constellation": {

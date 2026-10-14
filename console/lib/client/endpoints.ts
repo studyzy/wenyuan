@@ -4,6 +4,41 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
 export type Bank = { bank_id: string; name?: string; created_at?: string };
 export type BankList = { banks: Bank[] };
 
+/**
+ * The resolved bank configuration.
+ *
+ * The three disposition traits are graded 1..5 with 3 neutral; the reflection
+ * mission is free text. Both the effective values and the bank-specific
+ * overrides are returned, so a reader can tell a configured value from an
+ * inherited one.
+ */
+export type BankConfig = {
+  config: {
+    disposition_skepticism: number;
+    disposition_literalism: number;
+    disposition_empathy: number;
+    reflect_mission: string;
+  };
+  overrides: {
+    disposition_skepticism?: number;
+    disposition_literalism?: number;
+    disposition_empathy?: number;
+    reflect_mission?: string;
+  };
+};
+
+/** The overridable configuration keys, and the bounds the traits are graded on. */
+export const DISPOSITION_TRAITS = [
+  "disposition_skepticism",
+  "disposition_literalism",
+  "disposition_empathy",
+] as const;
+export const DISPOSITION_MIN = 1;
+export const DISPOSITION_MAX = 5;
+export const DISPOSITION_NEUTRAL = 3;
+/** The reflection mission is the one non-numeric overridable key. */
+export const REFLECT_MISSION_KEY = "reflect_mission";
+
 export const banksApi = {
   list: () => apiGet<BankList>("/api/banks"),
   get: (bankId: string) => apiGet<Bank>(`/api/banks/${encodeURIComponent(bankId)}`),
@@ -12,7 +47,12 @@ export const banksApi = {
     apiPatch<Bank>(`/api/banks/${encodeURIComponent(bankId)}`, payload),
   remove: (bankId: string) => apiDelete<void>(`/api/banks/${encodeURIComponent(bankId)}`),
   aliases: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/aliases`),
-  config: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/config`),
+  config: (bankId: string) => apiGet<BankConfig>(`/api/banks/${encodeURIComponent(bankId)}/config`),
+  /** Updates travel as an updates object, which is the shape the route reads. */
+  updateConfig: (bankId: string, updates: Record<string, number | string>) =>
+    apiPatch<BankConfig>(`/api/banks/${encodeURIComponent(bankId)}/config`, { updates }),
+  resetConfig: (bankId: string) =>
+    apiDelete<BankConfig>(`/api/banks/${encodeURIComponent(bankId)}/config`),
   webhooks: (bankId: string) => apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/webhooks`),
   mentalModels: (bankId: string) =>
     apiGet<unknown>(`/api/banks/${encodeURIComponent(bankId)}/mental-models`),

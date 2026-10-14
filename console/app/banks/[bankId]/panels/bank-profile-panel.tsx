@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "../../../../components/ui/table";
 import { DetailRow, PanelHeader, PanelState } from "./panel-state";
+import { BankConfigEditor } from "./bank-config-editor";
 import type { ConfigurationSubTab } from "../../../../lib/bank-detail";
 
 /**
@@ -110,7 +111,13 @@ export function BankProfilePanel({
         <div>
           <PanelHeader title={t("configurationTitle")} description={t("configurationDescription")} />
           <PanelState loading={config.loading} error={config.error} onRetry={config.reload}>
-            <JsonViewer value={config.data} className="bg-muted" />
+            {config.data && (
+              <BankConfigEditor
+                bankId={bankId}
+                initial={config.data}
+                onSaved={(next) => config.replace(next)}
+              />
+            )}
           </PanelState>
           <div className="mt-6">
             <h3 className="mb-2 text-[13px] font-semibold">{t("mentalModelsTitle")}</h3>
