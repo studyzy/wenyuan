@@ -117,13 +117,28 @@ func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (st
 		}
 		backend = selected
 	}
-	return backend.Open(ctx, storage.BackendConfig{
+	store, err := backend.Open(ctx, storage.BackendConfig{
 		DatabaseURL:         cfg.DatabaseURL,
 		Schema:              cfg.DatabaseSchema,
 		VectorExtension:     cfg.VectorExtension,
 		TextSearchExtension: cfg.TextSearchExtension,
 		RunMigrations:       cfg.RunMigrationsOnStartup,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return attachObjectStore(store, cfg), nil
+}
+
+// attachObjectStore points the store's payload persistence at an object store
+// when one is configured. The in-process backend keeps its payloads in memory,
+// so only a database-backed store takes the attachment.
+func attachObjectStore(store storage.Store, cfg config.Config) storage.Store {
+	pg, ok := store.(*storage.PostgresStore)
+	if !ok || !cfg.FileStorage.Enabled() {
+		return store
+	}
+	return pg.WithObjectStore(newObjectStore(cfg.FileStorage.S3))
 }
 
 // backendNameFor picks the in-process backend when no database URL is

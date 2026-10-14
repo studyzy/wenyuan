@@ -53,6 +53,16 @@ const (
 	EnvWorkerMaxBackoffSeconds = "HINDSIGHT_API_WORKER_MAX_BACKOFF_SECONDS"
 	EnvGzipMinSize             = "HINDSIGHT_API_GZIP_MIN_SIZE"
 	EnvRetainBatchEnabled      = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
+	// EnvFileStorageType selects the attachment storage backend. Empty or
+	// "postgresql" keeps payloads in the database, which is the default.
+	EnvFileStorageType = "HINDSIGHT_API_FILE_STORAGE_TYPE"
+	// The S3 family configures the S3-compatible backend, which also serves
+	// MinIO, Cloudflare R2, Tigris and any other S3-compliant endpoint.
+	EnvFileStorageS3Bucket          = "HINDSIGHT_API_FILE_STORAGE_S3_BUCKET"
+	EnvFileStorageS3Region          = "HINDSIGHT_API_FILE_STORAGE_S3_REGION"
+	EnvFileStorageS3Endpoint        = "HINDSIGHT_API_FILE_STORAGE_S3_ENDPOINT"
+	EnvFileStorageS3AccessKeyID     = "HINDSIGHT_API_FILE_STORAGE_S3_ACCESS_KEY_ID"
+	EnvFileStorageS3SecretAccessKey = "HINDSIGHT_API_FILE_STORAGE_S3_SECRET_ACCESS_KEY"
 	// EnvRecallStrategyBoosts prioritises one or more recall retrieval arms
 	// over the others. The value is a comma-separated list of arm:level pairs
 	// where level is low, medium or high.
@@ -126,6 +136,11 @@ type Config struct {
 	// ReflectSearchObservationsIncludeEntities is the shipped per-bank
 	// reflection default for entity attachment on observation evidence.
 	ReflectSearchObservationsIncludeEntities *bool
+
+	// FileStorage is the resolved attachment backend. An empty Type keeps
+	// payloads in the database, which is what a deployment with no object
+	// store configured gets.
+	FileStorage FileStorageConfig
 
 	// Provider is the resolved model-provider configuration, resolved inside
 	// the same environment source as every other key.
@@ -215,6 +230,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.WebhookAllowedHosts = hostListFromEnv(lookup, EnvWebhookAllowedHosts)
 	cfg.NullDropFields = boolFromEnv(lookup, EnvNullDropFields, false)
 	cfg.RetainBatchEnabled = boolFromEnv(lookup, EnvRetainBatchEnabled, false)
+	cfg.FileStorage = resolveFileStorage(lookup)
 	if v, ok := lookup(EnvRecallStrategyBoosts); ok {
 		cfg.RecallStrategyBoosts = ParseStrategyBoosts(v)
 	}

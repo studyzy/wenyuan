@@ -45,7 +45,39 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 type PostgresStore struct {
 	db     DB
 	schema string
+	// objectStore, when set, holds the attachment and archive payloads
+	// outside the database. It is an interface so the storage area carries no
+	// object-store import, and the composition root supplies the
+	// implementation.
+	objectStore ObjectStore
 }
+
+// ObjectStore persists opaque payloads outside the database.
+//
+// It is declared here rather than importing an implementation so the storage
+// area owns the shape it needs while the object-store package owns the
+// protocol.
+type ObjectStore interface {
+	// Put stores the payload under the key, replacing any existing object.
+	Put(ctx context.Context, key string, data []byte, contentType string) error
+	// Get returns the payload stored under the key, or ErrObjectNotFound.
+	Get(ctx context.Context, key string) ([]byte, string, error)
+}
+
+// ErrObjectNotFound is the object-store miss, translated into the storage
+// area's own sentinel so a caller sees ErrStoredFileNotFound either way.
+var ErrObjectNotFound = errors.New("object not found")
+
+// WithObjectStore returns the store with an external payload backend
+// attached, so attachment and archive bytes live in the object store instead
+// of the database.
+func (s *PostgresStore) WithObjectStore(objectStore ObjectStore) *PostgresStore {
+	s.objectStore = objectStore
+	return s
+}
+
+// UsesObjectStore reports whether payloads are kept outside the database.
+func (s *PostgresStore) UsesObjectStore() bool { return s.objectStore != nil }
 
 // Schema returns the configured schema target.
 func (s *PostgresStore) Schema() string { return s.schema }

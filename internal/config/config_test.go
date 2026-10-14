@@ -118,3 +118,50 @@ func TestReflectDefaultsFromEnv(t *testing.T) {
 		t.Fatalf("entity-attachment default not read: %+v", cfg.ReflectSearchObservationsIncludeEntities)
 	}
 }
+
+// The attachment backend defaults to the database, and selecting the object
+// store reads its endpoint settings.
+func TestResolveFileStorage(t *testing.T) {
+	base := map[string]string{}
+	lookup := func(key string) (string, bool) {
+		value, ok := base[key]
+		return value, ok
+	}
+	if got := resolveFileStorage(lookup); got.Type != FileStoragePostgres {
+		t.Fatalf("default type = %q, want the database", got.Type)
+	}
+	if resolveFileStorage(lookup).Enabled() {
+		t.Fatal("the database backend must not report an object store")
+	}
+
+	base[EnvFileStorageType] = FileStorageS3
+	base[EnvFileStorageS3Bucket] = "bank-data"
+	base[EnvFileStorageS3Endpoint] = "https://minio.internal"
+	base[EnvFileStorageS3AccessKeyID] = "key"
+	base[EnvFileStorageS3SecretAccessKey] = "secret"
+	got := resolveFileStorage(lookup)
+	if !got.Enabled() {
+		t.Fatal("the s3 backend must report an object store")
+	}
+	if got.S3.Bucket != "bank-data" || got.S3.Endpoint != "https://minio.internal" {
+		t.Fatalf("s3 settings = %+v", got.S3)
+	}
+	if !got.S3.BucketConfigured() {
+		t.Fatal("a named bucket must report as configured")
+	}
+}
+
+// An unrecognised backend name falls back to the database rather than failing
+// startup, so a typo degrades a deployment instead of blocking it.
+func TestResolveFileStorageUnknownType(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		if key == EnvFileStorageType {
+			return "gcs", true
+		}
+		return "", false
+	}
+	got := resolveFileStorage(lookup)
+	if got.Type != FileStoragePostgres {
+		t.Fatalf("type = %q, want the database fallback", got.Type)
+	}
+}
