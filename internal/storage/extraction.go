@@ -29,6 +29,10 @@ type ExtractedFact struct {
 	// Confidence is the extractor's certainty in the fact, in the unit
 	// interval. Zero means it did not report one.
 	Confidence float64
+	// CausedByIndexes names the earlier facts in the same item that caused
+	// this one, by their position in the item's fact list. They are resolved
+	// to stored units once the units exist, and become caused_by links.
+	CausedByIndexes []int
 }
 
 // extractForItems runs the configured extractor for every item, one entry per

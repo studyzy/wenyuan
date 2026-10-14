@@ -12,6 +12,11 @@ import "time"
 type itemContent struct {
 	unit     MemoryUnit
 	entities []RetainEntity
+	// causedByIndexes names the earlier units within the same item that caused
+	// this one, by their position in the item's unit list. The position is
+	// resolved to a stored unit once identifiers exist, which is why it is
+	// carried rather than turned into a link here.
+	causedByIndexes []int
 }
 
 // itemContents builds the units one item produces, given the bank, the
@@ -69,8 +74,9 @@ func factContents(bankID, docID string, chunkIDs []string, item RetainItem, fact
 		applyItemDates(&unit, item)
 		applyFactDates(&unit, fact)
 		out = append(out, itemContent{
-			unit:     unit,
-			entities: append(append([]RetainEntity{}, item.Entities...), fact.Entities...),
+			unit:            unit,
+			entities:        append(append([]RetainEntity{}, item.Entities...), fact.Entities...),
+			causedByIndexes: fact.CausedByIndexes,
 		})
 	}
 	return out
@@ -130,6 +136,34 @@ func anchorChunkID(chunkIDs []string) string {
 		return ""
 	}
 	return chunkIDs[0]
+}
+
+// causalLinksFor returns the caused_by links joining an item's units to the
+// earlier units that caused them.
+//
+// The link points from the effect to its cause, which is the direction the
+// contract fixed: a fact records what caused it. An index outside the item's
+// unit list is dropped, because it names a unit this write did not store.
+func causalLinksFor(bankID string, unitIDs []string, contents []itemContent) []MemoryLink {
+	links := make([]MemoryLink, 0)
+	for index, content := range contents {
+		if index >= len(unitIDs) {
+			break
+		}
+		for _, target := range content.causedByIndexes {
+			if target < 0 || target >= len(unitIDs) || target == index {
+				continue
+			}
+			links = append(links, MemoryLink{
+				ID:       newID(),
+				BankID:   bankID,
+				FromID:   unitIDs[index],
+				ToID:     unitIDs[target],
+				LinkType: LinkCausedBy,
+			})
+		}
+	}
+	return links
 }
 
 // linkTuplesFor returns the semantic links joining consecutive units one item

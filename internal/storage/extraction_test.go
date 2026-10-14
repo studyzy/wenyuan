@@ -233,3 +233,74 @@ func parseTime(t *testing.T, value string) *time.Time {
 	}
 	return &parsed
 }
+
+// A fact's declared cause becomes a caused_by link from the effect's unit to
+// the causing unit, in that direction: the edge records what caused it.
+func TestRetainPersistsCausalLinks(t *testing.T) {
+	store := NewMemoryStore("public")
+	content := "lost the job, then could not pay rent"
+	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
+		content: {
+			{Text: "They lost the job."},
+			{Text: "They could not pay rent.", CausedByIndexes: []int{0}},
+		},
+	}}
+	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID:     "b1",
+		Items:      []RetainItem{{Content: content, DocumentID: "doc-1"}},
+		Extraction: extractor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := outcome.ItemUnitIDs[0]
+	if len(units) != 2 {
+		t.Fatalf("stored %d units, want 2", len(units))
+	}
+	graph, err := store.Graph(context.TODO(), "b1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var causal []GraphEdgeData
+	for _, edge := range graph.Edges {
+		if edge.Type == string(LinkCausedBy) {
+			causal = append(causal, edge)
+		}
+	}
+	if len(causal) != 1 {
+		t.Fatalf("caused_by edges = %d, want 1: %+v", len(causal), graph.Edges)
+	}
+	if causal[0].From != units[1] || causal[0].To != units[0] {
+		t.Fatalf("edge = %s -> %s, want effect %s -> cause %s", causal[0].From, causal[0].To, units[1], units[0])
+	}
+}
+
+// A causal index that names no unit this write stored is dropped rather than
+// persisted as a dangling edge.
+func TestCausalLinkOutOfRangeIsDropped(t *testing.T) {
+	store := NewMemoryStore("public")
+	content := "standalone fact"
+	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
+		content: {{Text: "A fact with no cause.", CausedByIndexes: []int{4, -1}}},
+	}}
+	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID:     "b1",
+		Items:      []RetainItem{{Content: content, DocumentID: "doc-1"}},
+		Extraction: extractor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.ItemUnitIDs[0]) != 1 {
+		t.Fatalf("stored %d units, want 1", len(outcome.ItemUnitIDs[0]))
+	}
+	graph, err := store.Graph(context.TODO(), "b1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range graph.Edges {
+		if edge.Type == string(LinkCausedBy) {
+			t.Fatalf("a droppable causal index produced an edge: %+v", edge)
+		}
+	}
+}

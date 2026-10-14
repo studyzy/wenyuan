@@ -99,7 +99,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 		}
 		units = append(units, stored.ID)
 	}
-	if err := s.linkItemUnits(ctx, req.BankID, units); err != nil {
+	if err := s.linkItemUnits(ctx, req.BankID, units, contents); err != nil {
 		return nil, err
 	}
 	return units, nil
@@ -123,9 +123,11 @@ func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, conten
 	return chunkIDs, nil
 }
 
-// linkItemUnits records the links between consecutive units one item produced.
-func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitIDs []string) error {
-	for _, link := range linkTuplesFor(bankID, unitIDs) {
+// linkItemUnits records the links one item's units take part in: the semantic
+// links between consecutive units and the caused_by links extraction declared.
+func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitIDs []string, contents []itemContent) error {
+	links := append(linkTuplesFor(bankID, unitIDs), causalLinksFor(bankID, unitIDs, contents)...)
+	for _, link := range links {
 		if err := s.UpsertLink(ctx, link); err != nil {
 			return err
 		}

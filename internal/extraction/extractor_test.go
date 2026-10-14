@@ -195,3 +195,59 @@ func TestFactsAreBounded(t *testing.T) {
 		t.Fatalf("facts = %d, want the bound %d", len(result.Facts), maxFactsPerItem)
 	}
 }
+
+// Causal relations are read from the model's answer, keeping only the edges
+// that point at an earlier fact in the same list.
+func TestCausalRelationsResolveToEarlierFacts(t *testing.T) {
+	raw := []any{
+		map[string]any{"text": "lost the job"},
+		map[string]any{"text": "could not pay rent", "causal_relations": []any{
+			map[string]any{"target_index": float64(0)},
+		}},
+		map[string]any{"text": "moved apartment", "causal_relations": []any{
+			map[string]any{"target_index": float64(1)},
+			map[string]any{"target_index": float64(9)}, // out of range
+			map[string]any{"target_index": float64(2)}, // points at itself
+		}},
+	}
+	stub := &stubProvider{name: "openai", structured: map[string]any{"facts": raw}}
+	result, err := New(stub).Extract(context.Background(), "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Facts) != 3 {
+		t.Fatalf("facts = %d, want 3", len(result.Facts))
+	}
+	if got := result.Facts[0].CausalRelations; got != nil {
+		t.Fatalf("a first fact cannot be caused by anything: %v", got)
+	}
+	if got := result.Facts[1].CausalRelations; len(got) != 1 || got[0].TargetIndex != 0 {
+		t.Fatalf("fact 1 causes = %v, want one edge to 0", got)
+	}
+	if got := result.Facts[2].CausalRelations; len(got) != 1 || got[0].TargetIndex != 1 {
+		t.Fatalf("fact 2 causes = %v, want one edge to 1", got)
+	}
+}
+
+// A fact may declare at most the contract's cap of causal edges.
+func TestCausalRelationsAreCapped(t *testing.T) {
+	relations := []any{
+		map[string]any{"target_index": float64(0)},
+		map[string]any{"target_index": float64(1)},
+		map[string]any{"target_index": float64(2)},
+		map[string]any{"target_index": float64(3)},
+	}
+	raw := make([]any, 0, 5)
+	for i := 0; i < 4; i++ {
+		raw = append(raw, map[string]any{"text": "earlier"})
+	}
+	raw = append(raw, map[string]any{"text": "effect", "causal_relations": relations})
+	stub := &stubProvider{name: "openai", structured: map[string]any{"facts": raw}}
+	result, err := New(stub).Extract(context.Background(), "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(result.Facts[4].CausalRelations); got != maxCausalRelationsPerFact {
+		t.Fatalf("causal relations = %d, want the cap %d", got, maxCausalRelationsPerFact)
+	}
+}

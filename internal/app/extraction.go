@@ -57,12 +57,17 @@ func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.Extr
 		for _, name := range fact.Entities {
 			entities = append(entities, storage.RetainEntity{Text: name})
 		}
+		causes := make([]int, 0, len(fact.CausalRelations))
+		for _, relation := range fact.CausalRelations {
+			causes = append(causes, relation.TargetIndex)
+		}
 		facts = append(facts, storage.ExtractedFact{
-			Text:          fact.Text,
-			Entities:      entities,
-			OccurredStart: fact.OccurredStart,
-			OccurredEnd:   fact.OccurredEnd,
-			Confidence:    fact.Confidence,
+			Text:            fact.Text,
+			Entities:        entities,
+			OccurredStart:   fact.OccurredStart,
+			OccurredEnd:     fact.OccurredEnd,
+			Confidence:      fact.Confidence,
+			CausedByIndexes: causes,
 		})
 	}
 	return facts, nil

@@ -107,6 +107,7 @@ func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, facts 
 		units = append(units, unit.ID)
 	}
 	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
+	s.links = append(s.links, causalLinksFor(req.BankID, units, contents)...)
 	return units
 }
 

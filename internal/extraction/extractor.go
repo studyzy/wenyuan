@@ -22,6 +22,21 @@ import (
 // cannot turn one write into an unbounded number of units.
 const maxFactsPerItem = 64
 
+// maxCausalRelationsPerFact bounds the causal edges one fact may declare. The
+// limit is the contract's: a model asked for causes will otherwise relate every
+// fact to every other and turn the graph into noise.
+const maxCausalRelationsPerFact = 2
+
+// CausalRelation is one causal edge a fact declares to an earlier fact. Target
+// is the index of the causing fact within the same item, which is how the model
+// refers to it; the index is resolved to a stored unit after the writes.
+type CausalRelation struct {
+	// TargetIndex is the position of the causing fact in the item's fact list.
+	// It must be lower than the declaring fact's own index: a cause precedes
+	// its effect in the text.
+	TargetIndex int
+}
+
 // Fact is one extracted memory. Everything but the text is optional, because a
 // model may not supply it and an absent value must not become a wrong one.
 type Fact struct {
@@ -30,6 +45,8 @@ type Fact struct {
 	OccurredStart string
 	OccurredEnd   string
 	Confidence    float64
+	// CausalRelations are the facts this fact was caused by, by index.
+	CausalRelations []CausalRelation
 }
 
 // Result is the outcome of extracting one item.
@@ -112,6 +129,10 @@ Return one entry per fact. For each fact give:
 - entities: the named people, places, organisations, products or things the fact mentions
 - occurred_start and occurred_end: an ISO-8601 timestamp when the fact is tied to a time, otherwise omit
 - confidence: a number between 0 and 1 for how certain the text is
+- causal_relations: up to two facts this one was caused by, each naming the position
+  of the causing fact in this same list with target_index. The target must be an
+  earlier fact: a cause is stated before its effect. Use it only for a real causal
+  link, such as "lost job" then "could not pay rent", and omit it otherwise.
 Do not invent facts the text does not state, and do not summarise the text as a whole.`
 
 // factSchema declares the structured-output contract.
@@ -129,6 +150,16 @@ func factSchema() *provider.Schema {
 						"occurred_start": {Type: "string"},
 						"occurred_end":   {Type: "string"},
 						"confidence":     {Type: "number"},
+						"causal_relations": {
+							Type: "array",
+							Items: &provider.Schema{
+								Type: "object",
+								Properties: map[string]*provider.Schema{
+									"target_index": {Type: "integer"},
+								},
+								Required: []string{"target_index"},
+							},
+						},
 					},
 					Required: []string{"text"},
 				},
@@ -168,6 +199,10 @@ func parseFacts(structured any, _ string) ([]Fact, error) {
 			OccurredEnd:   stringValue(entry["occurred_end"]),
 			Confidence:    numberValue(entry["confidence"]),
 		}
+		// Relations are resolved against the index this fact will have, so a
+		// forward or out-of-range reference is dropped rather than kept as a
+		// dangling edge.
+		fact.CausalRelations = causalRelations(entry["causal_relations"], len(facts))
 		facts = append(facts, fact)
 		if len(facts) >= maxFactsPerItem {
 			break
@@ -261,6 +296,52 @@ func isSentenceEnd(r rune) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// causalRelations reads a fact's declared causal edges, keeping only those that
+// point at an earlier fact in the same list and capping the count. Index is the
+// position the declaring fact will occupy, so a cause must be strictly below it.
+func causalRelations(value any, index int) []CausalRelation {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]CausalRelation, 0, len(raw))
+	seen := map[int]bool{}
+	for _, entry := range raw {
+		if len(out) >= maxCausalRelationsPerFact {
+			break
+		}
+		object, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		target, ok := intValue(object["target_index"])
+		if !ok || target < 0 || target >= index || seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, CausalRelation{TargetIndex: target})
+	}
+	return out
+}
+
+// intValue reads an integer that may be absent. A float that is whole counts,
+// because a JSON schema constrained model may still emit 1.0 for an index.
+func intValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	default:
+		return 0, false
 	}
 }
 
