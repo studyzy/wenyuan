@@ -51,8 +51,30 @@ const (
 	EnvWorkerInitialBackoffSeconds = "HINDSIGHT_API_WORKER_INITIAL_BACKOFF_SECONDS"
 	// EnvWorkerMaxBackoffSeconds is the retry backoff ceiling.
 	EnvWorkerMaxBackoffSeconds = "HINDSIGHT_API_WORKER_MAX_BACKOFF_SECONDS"
-	EnvGzipMinSize             = "HINDSIGHT_API_GZIP_MIN_SIZE"
-	EnvRetainBatchEnabled      = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
+	// EnvRetentionSweepIntervalSeconds is how often the retention jobs run.
+	EnvRetentionSweepIntervalSeconds = "HINDSIGHT_API_RETENTION_SWEEP_INTERVAL_SECONDS"
+	// EnvAuditLogRetentionDays is how long an audit row is kept; a negative
+	// value keeps them forever.
+	EnvAuditLogRetentionDays = "HINDSIGHT_API_AUDIT_LOG_RETENTION_DAYS"
+	// EnvConsolidationReconcileIntervalSeconds is how often banks holding
+	// stranded consolidation facts are re-scheduled.
+	EnvConsolidationReconcileIntervalSeconds = "HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS"
+	// EnvMentalModelRefreshTickSeconds is how often scheduled mental models are
+	// checked for due-ness.
+	EnvMentalModelRefreshTickSeconds = "HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS"
+	// EnvOperationCleanupIntervalSeconds is how often terminal operations are
+	// pruned.
+	EnvOperationCleanupIntervalSeconds = "HINDSIGHT_API_OPERATION_CLEANUP_INTERVAL_SECONDS"
+	// EnvOperationRetentionDays is how long a terminal operation is kept; zero
+	// disables the prune.
+	EnvOperationRetentionDays = "HINDSIGHT_API_OPERATION_RETENTION_DAYS"
+	// EnvOperationCleanupBatchSize bounds one prune per schema per run.
+	EnvOperationCleanupBatchSize = "HINDSIGHT_API_OPERATION_CLEANUP_BATCH_SIZE"
+	// EnvMaintenanceStartJitterSeconds spreads the first maintenance tick, so a
+	// fleet started together does not fire every probe at once.
+	EnvMaintenanceStartJitterSeconds = "HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS"
+	EnvGzipMinSize                   = "HINDSIGHT_API_GZIP_MIN_SIZE"
+	EnvRetainBatchEnabled            = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
 	// EnvFileStorageType selects the attachment storage backend. Empty or
 	// "postgresql" keeps payloads in the database, which is the default.
 	EnvFileStorageType = "HINDSIGHT_API_FILE_STORAGE_TYPE"
@@ -116,6 +138,8 @@ type Config struct {
 	EnableDocumentImportAPI bool
 	// Worker tunes the background queue consumer.
 	Worker WorkerConfig
+	// Maintenance tunes the background maintenance loop.
+	Maintenance MaintenanceConfig
 	// WebhookAllowInsecure permits a plain-HTTP webhook target.
 	WebhookAllowInsecure bool
 	// WebhookAllowPrivateHosts permits a webhook target inside the private
@@ -225,6 +249,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.EnableDocumentExportAPI = boolFromEnv(lookup, EnvEnableDocumentExportAPI, false)
 	cfg.EnableDocumentImportAPI = boolFromEnv(lookup, EnvEnableDocumentImportAPI, false)
 	cfg.Worker = resolveWorker(lookup)
+	cfg.Maintenance = resolveMaintenance(lookup)
 	cfg.WebhookAllowInsecure = boolFromEnv(lookup, EnvWebhookAllowInsecure, false)
 	cfg.WebhookAllowPrivateHosts = boolFromEnv(lookup, EnvWebhookAllowPrivateHosts, false)
 	cfg.WebhookAllowedHosts = hostListFromEnv(lookup, EnvWebhookAllowedHosts)

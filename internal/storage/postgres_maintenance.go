@@ -1,0 +1,197 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+)
+
+// PurgeExpiredRows deletes expired rows from one table in bounded chunks,
+// claimed oldest-first with FOR UPDATE SKIP LOCKED.
+//
+// SKIP LOCKED is what makes a leaderless fleet safe: a chunk never waits on
+// another sweeper, and two processes sweeping the same table take disjoint
+// chunks rather than redoing each other's work. Each chunk commits on its own,
+// so no transaction holds locks longer than one batch.
+func (s *PostgresStore) PurgeExpiredRows(ctx context.Context, schema, table, tsColumn string, cutoff time.Time, batchSize, maxBatches int) (int, error) {
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	if maxBatches <= 0 {
+		return 0, nil
+	}
+	qualified := quoteIdent(schema) + "." + quoteIdent(table)
+	column := quoteIdent(tsColumn)
+	deleted := 0
+	for batch := 0; batch < maxBatches; batch++ {
+		if ctx.Err() != nil {
+			return deleted, ctx.Err()
+		}
+		removed, err := s.purgeChunk(ctx, qualified, column, cutoff, batchSize)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += removed
+		// A short chunk means the expired range is drained, or that another
+		// sweeper holds the rest — either way there is nothing left to take.
+		if removed < batchSize {
+			break
+		}
+	}
+	return deleted, nil
+}
+
+// purgeChunk removes one bounded batch of expired rows.
+func (s *PostgresStore) purgeChunk(ctx context.Context, qualified, column string, cutoff time.Time, batchSize int) (int, error) {
+	query := `WITH expired AS (
+	            SELECT id FROM ` + qualified + `
+	            WHERE ` + column + ` < $1
+	            ORDER BY ` + column + `
+	            LIMIT $2
+	            FOR UPDATE SKIP LOCKED
+	          ), removed AS (
+	            DELETE FROM ` + qualified + ` t USING expired e WHERE t.id = e.id RETURNING 1
+	          )
+	          SELECT count(*) FROM removed`
+	var removed int
+	if err := s.db.QueryRowContext(ctx, query, cutoff, batchSize).Scan(&removed); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// BanksNeedingConsolidation returns the banks in one schema holding facts that
+// are eligible for consolidation with none queued.
+//
+// A fact is stranded when a consolidation operation failed terminally after the
+// fact was written: both consolidation timestamps are null, so nothing will
+// pick it up again. The bank-level enable switch is not consulted here — this
+// answers "is there work", and the caller filters by configuration before
+// queueing.
+func (s *PostgresStore) BanksNeedingConsolidation(ctx context.Context, schema string) ([]string, error) {
+	query := `SELECT DISTINCT m.bank_id
+	          FROM ` + quoteIdent(schema) + `.memory_units m
+	          WHERE m.consolidated_at IS NULL
+	            AND m.consolidation_failed_at IS NULL
+	            AND m.type IN ('experience', 'world')
+	            AND NOT EXISTS (
+	                SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations o
+	                WHERE o.bank_id = m.bank_id
+	                  AND o.operation_type = $1
+	                  AND o.status IN ('pending', 'processing')
+	            )`
+	rows, err := s.db.QueryContext(ctx, query, OperationTypeConsolidate)
+	if err != nil {
+		// A schema whose tables are missing or mid-migration has no work to
+		// reconcile, which is not a failure of the job.
+		if isUndefinedTable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanStrings(rows)
+}
+
+// MentalModelsWithSchedule returns the scheduled models of one schema.
+//
+// A model with a refresh already queued or running is excluded, so a fleet
+// whose every process runs this job does not queue one wave per process. The
+// exclusion is a read and so advisory only; the enqueue itself is what makes it
+// idempotent.
+func (s *PostgresStore) MentalModelsWithSchedule(ctx context.Context, schema string) ([]ScheduledMentalModel, error) {
+	query := `SELECT mm.bank_id, mm.id, COALESCE(mm.trigger->>'refresh_cron',''), mm.last_refreshed_at
+	          FROM ` + quoteIdent(schema) + `.mental_models mm
+	          WHERE COALESCE(mm.trigger->>'refresh_cron', '') <> ''
+	            AND NOT EXISTS (
+	                SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations o
+	                WHERE o.bank_id = mm.bank_id
+	                  AND o.operation_type = $1
+	                  AND o.status IN ('pending', 'processing')
+	                  AND o.task_payload->>'mental_model_id' = mm.id
+	            )`
+	rows, err := s.db.QueryContext(ctx, query, OperationTypeRefreshMentalModel)
+	if err != nil {
+		if isUndefinedTable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]ScheduledMentalModel, 0)
+	for rows.Next() {
+		var entry ScheduledMentalModel
+		var refreshed sql.NullTime
+		if err := rows.Scan(&entry.BankID, &entry.MentalModelID, &entry.RefreshCron, &refreshed); err != nil {
+			return nil, err
+		}
+		if refreshed.Valid {
+			entry.LastRefreshedAt = refreshed.Time
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+// PruneTerminalOperations removes settled operations past their retention.
+//
+// Only terminal rows are eligible, so a schema holding nothing but outstanding
+// work removes nothing. The batch is claimed oldest-first under SKIP LOCKED for
+// the same reason the retention sweep is: every process runs this and they must
+// take disjoint work rather than collide.
+func (s *PostgresStore) PruneTerminalOperations(ctx context.Context, schema string, cutoff time.Time, batchSize int) (int, error) {
+	if batchSize <= 0 {
+		return 0, nil
+	}
+	query := `WITH expired AS (
+	            SELECT id FROM ` + quoteIdent(schema) + `.async_operations
+	            WHERE status = ANY($1::text[])
+	              AND updated_at < $2
+	            ORDER BY updated_at, id
+	            LIMIT $3
+	            FOR UPDATE SKIP LOCKED
+	          ), removed AS (
+	            DELETE FROM ` + quoteIdent(schema) + `.async_operations o
+	            USING expired e WHERE o.id = e.id RETURNING 1
+	          )
+	          SELECT count(*) FROM removed`
+	var removed int
+	if err := s.db.QueryRowContext(ctx, query, TerminalOperationStatuses, cutoff, batchSize).Scan(&removed); err != nil {
+		if isUndefinedTable(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return removed, nil
+}
+
+// scanStrings reads a single text column from every row.
+func scanStrings(rows *sql.Rows) ([]string, error) {
+	out := make([]string, 0)
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, rows.Err()
+}
+
+// isUndefinedTable reports whether an error is a missing table, which on a
+// schema mid-migration means nothing to do rather than a failure.
+//
+// It is matched on the SQL state rather than the driver's error type, because
+// the storage area compiles without the driver on the default build.
+func isUndefinedTable(err error) bool {
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) {
+		// 42P01 undefined_table, 3F000 invalid_schema_name.
+		switch state.SQLState() {
+		case "42P01", "3F000":
+			return true
+		}
+	}
+	return false
+}

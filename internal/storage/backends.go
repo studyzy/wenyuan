@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Backend names selectable from configuration.
@@ -54,6 +55,9 @@ type MemoryStore struct {
 	writes        map[string]WriteResult
 	memories      map[string][]RecallMatch
 	mentalModels  map[string][]ReflectMentalModel
+	// retentionRows is the in-memory stand-in for the retention tables, so the
+	// sweep jobs are exercised on the default offline path.
+	retentionRows map[string][]retentionRow
 	directives    map[string][]ReflectDirective
 	documents     map[string]Document
 	chunks        []Chunk
@@ -150,4 +154,28 @@ func (s *MemoryStore) SeedMemory(bankID string, match RecallMatch) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.memories[bankID] = append(s.memories[bankID], match)
+}
+
+// AgeOperation backdates one stored operation, so a retention window can be
+// exercised without waiting for real time to pass. PutOperation stamps the
+// current time on every write, so this is the only way to age a row.
+func (s *MemoryStore) AgeOperation(id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.operations[id]
+	if !ok {
+		return ErrOperationNotFound
+	}
+	op.CreatedAt = at
+	op.UpdatedAt = at
+	s.operations[id] = op
+	return nil
+}
+
+// SeedUnit records a stored memory unit directly, for tests that need the
+// authoritative unit store rather than the derived recall projection.
+func (s *MemoryStore) SeedUnit(unit MemoryUnit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upsertUnitLocked(unit)
 }

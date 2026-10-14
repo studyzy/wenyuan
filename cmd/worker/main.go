@@ -1,7 +1,7 @@
-// Command wenyuan-worker is the process entrypoint for the background queue
-// consumer. It resolves configuration the same way the server does, opens the
-// same storage backend, and drains the asynchronous operation queue until it
-// is asked to stop.
+// Command wenyuan-worker is the process entrypoint for the background work:
+// the queue consumer and the maintenance loop. It resolves configuration the
+// same way the server does, opens the same storage backend, and runs both until
+// it is asked to stop.
 //
 // It shares the server's configuration resolution and storage selection rather
 // than duplicating them, so a deployment configures both entrypoints
@@ -18,6 +18,8 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/app"
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/maintenance"
+	"github.com/studyzy/wenyuan/internal/worker"
 )
 
 func main() {
@@ -71,9 +73,46 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	reflection := app.NewReflectRunner(model)
 
-	consumer := app.NewQueueConsumer(store, model, app.NewReflectRunner(model), cfg.Worker)
-	return app.RunQueueConsumer(ctx, consumer)
+	// The maintenance loop runs beside the consumer rather than in the server,
+	// so the housekeeping work and the queued work share one process's
+	// lifetime: a deployment that runs a worker gets the maintenance without
+	// having to run the API too.
+	//
+	// It is started in every worker process with no leader election, which is
+	// safe because each job's work is collision-proof rather than because one
+	// process is chosen.
+	loop := app.NewMaintenanceLoop(store, model, reflection, app.NewTenantExtension(cfg), cfg.Maintenance)
+	if loop.Enabled() {
+		slog.Info("maintenance enabled",
+			"jobs", len(loop.Jobs),
+			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
+	}
+
+	consumer := app.NewQueueConsumer(store, model, reflection, cfg.Worker)
+	return runBoth(ctx, consumer, loop)
+}
+
+// runBoth drives the consumer and the maintenance loop together, returning
+// when the context ends.
+//
+// They share one context so a shutdown stops both: a loop still sweeping while
+// the queue drains would keep the process alive past its stop, and the reverse
+// would abandon queued work.
+//
+// The consumer's error is the one reported, because a queue failure is what a
+// deployment needs to hear about; a maintenance failure is logged per job and
+// retried on the next tick rather than being fatal.
+func runBoth(ctx context.Context, consumer *worker.Consumer, loop *maintenance.Loop) error {
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- app.RunMaintenanceLoop(ctx, loop) }()
+
+	consumerErr := app.RunQueueConsumer(ctx, consumer)
+	if err := <-loopDone; err != nil && consumerErr == nil {
+		return err
+	}
+	return consumerErr
 }
 
 // applyWorkerFlags layers the supplied flags over the resolved worker

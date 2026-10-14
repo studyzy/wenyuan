@@ -92,13 +92,17 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 		return EnqueueResult{}, err
 	}
 
+	// A running operation is preferred over a merely queued one. Both suppress
+	// the insert, but the running one is the work actually under way, so it is
+	// the honest thing to report back — and preferring it makes the answer
+	// deterministic rather than dependent on row order.
 	var existingID string
 	err = tx.QueryRowContext(ctx,
 		`SELECT id FROM `+table+`
 		 WHERE bank_id = $1 AND operation_type = $2
 		   AND status = ANY($3::text[])
 		   AND task_payload ->> $4 = $5
-		 ORDER BY created_at, id
+		 ORDER BY (status = 'processing') DESC, created_at, id
 		 LIMIT 1`,
 		op.BankID, op.OperationType, blockingStatuses, subjectKey, subjectValue(op.Payload, subjectKey)).Scan(&existingID)
 	switch {

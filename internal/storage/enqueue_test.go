@@ -58,8 +58,7 @@ func TestEnqueueProcessingDeduplicationIsCallerChoice(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewMemoryStore("public")
-	first, err := store.EnqueueOperation(ctx, enqueueRequest("b1", "mm-1", true))
-	if err != nil {
+	if _, err := store.EnqueueOperation(ctx, enqueueRequest("b1", "mm-1", true)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ClaimNextOperation(ctx, "worker-1", time.Minute); err != nil {
@@ -79,8 +78,11 @@ func TestEnqueueProcessingDeduplicationIsCallerChoice(t *testing.T) {
 	if !automatic.Deduplicated {
 		t.Error("an automatic enqueue must fold into a running refresh")
 	}
-	if automatic.Operation.ID != first.Operation.ID {
-		t.Errorf("the running operation must be returned, got %s", automatic.Operation.ID)
+	// The operation returned is whichever is running, which is not necessarily
+	// the one enqueued first: the explicit enqueue above inserted a second
+	// operation, and the claim may have taken either.
+	if automatic.Operation.Status != StatusProcessing {
+		t.Errorf("the returned operation must be the running one, got status %q", automatic.Operation.Status)
 	}
 }
 

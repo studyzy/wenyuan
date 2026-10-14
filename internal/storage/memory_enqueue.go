@@ -77,7 +77,13 @@ func subjectValue(payload map[string]any, key string) string {
 // caller's decision: an automatic trigger is content with a running refresh
 // covering its intent, while an explicit request may need a run of its own
 // because the running one could have read its inputs before the caller's edit.
+//
+// A *running* match is preferred over a pending one. Both suppress the insert,
+// but the running operation is the one whose work is actually under way, so it
+// is the honest thing to report back — and it makes the answer deterministic
+// rather than dependent on map iteration order.
 func (s *MemoryStore) operationForSubject(op Operation, key, subject string, includeProcessing bool) (Operation, bool) {
+	var pending *Operation
 	for _, existing := range s.operations {
 		if existing.ID == op.ID || existing.OperationType != op.OperationType {
 			continue
@@ -85,18 +91,24 @@ func (s *MemoryStore) operationForSubject(op Operation, key, subject string, inc
 		if existing.BankID != op.BankID {
 			continue
 		}
+		if subjectValue(existing.Payload, key) != subject {
+			continue
+		}
 		switch existing.Status {
-		case StatusPending:
 		case StatusProcessing:
 			if !includeProcessing {
 				continue
 			}
-		default:
-			continue
-		}
-		if subjectValue(existing.Payload, key) == subject {
 			return existing, true
+		case StatusPending:
+			if pending == nil {
+				candidate := existing
+				pending = &candidate
+			}
 		}
+	}
+	if pending != nil {
+		return *pending, true
 	}
 	return Operation{}, false
 }

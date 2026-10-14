@@ -4,6 +4,10 @@ go 1.24
 
 require (
 	github.com/jackc/pgx/v5 v5.5.4
+	// robfig/cron parses the mental-model refresh schedules stored in a
+	// trigger. It computes the previous fire time only; scheduling stays with
+	// the maintenance loop's own cadence. MIT-licensed, pure Go.
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/tiktoken-go/tokenizer v0.7.0
 )
 
