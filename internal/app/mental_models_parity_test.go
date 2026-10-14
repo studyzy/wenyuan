@@ -50,6 +50,10 @@ func TestMentalModelLifecycle(t *testing.T) {
 	app := newParityApp(t)
 	base := "/v1/default/banks/mm-bank/mental-models"
 
+	// The refresh runs as a queued operation, so the test drains it with the
+	// same processor a worker would use.
+	processor := archiveProcessor{store: app.Store}
+
 	// Create.
 	rec := send(app, http.MethodPost, base,
 		`{"subtype":"pinned","name":"deploy days","description":"when deployments happen","source_query":"deployment"}`)
@@ -117,11 +121,25 @@ func TestMentalModelLifecycle(t *testing.T) {
 		t.Fatalf("dry run must report itself: %v", dry)
 	}
 
-	// A real refresh records history.
+	// A real refresh queues the work rather than performing it in the request,
+	// because it regenerates the model's content through a model call. The
+	// request reports the accepted operation, and the caller polls that.
 	rec = send(app, http.MethodPost, base+"/"+id+"/refresh", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("refresh = %d (body %s)", rec.Code, rec.Body.String())
 	}
+	var queued map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued["queued"] != true {
+		t.Fatalf("refresh must report the work as queued: %v", queued)
+	}
+	operationID, _ := queued["operation_id"].(string)
+	if operationID == "" {
+		t.Fatalf("refresh must name the queued operation: %v", queued)
+	}
+	// Nothing has been recorded yet: the operation has not run.
 	rec = send(app, http.MethodGet, base+"/"+id+"/history", "")
 	var history struct {
 		Entries []map[string]any `json:"history"`
@@ -129,8 +147,25 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
 		t.Fatal(err)
 	}
+	if len(history.Entries) != 0 {
+		t.Fatalf("history has %d entries before the operation ran, want 0", len(history.Entries))
+	}
+
+	// Running the queued operation records the history entry.
+	if err := processor.Process(context.Background(), storage.Operation{
+		ID:            operationID,
+		BankID:        "mm-bank",
+		OperationType: storage.OperationTypeRefreshMentalModel,
+		Payload:       map[string]any{storage.MentalModelIDPayloadKey: id},
+	}); err != nil {
+		t.Fatalf("run the queued refresh: %v", err)
+	}
+	rec = send(app, http.MethodGet, base+"/"+id+"/history", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
 	if len(history.Entries) != 1 {
-		t.Fatalf("history has %d entries after one refresh, want 1", len(history.Entries))
+		t.Fatalf("history has %d entries after the refresh ran, want 1", len(history.Entries))
 	}
 
 	// Clear keeps the record but empties its content.

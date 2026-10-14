@@ -104,3 +104,10 @@ func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.Extr
 	}
 	return facts, nil
 }
+
+// NewReflectRunner is the exported form of the reflection-loop constructor, so
+// a binary other than the server can wire the same loop without duplicating the
+// provider-selection rule.
+func NewReflectRunner(p provider.Provider) storage.ReflectRunner {
+	return newReflectRunner(p)
+}

@@ -65,13 +65,14 @@ func run(args []string) error {
 		"lease_seconds", int(cfg.Worker.Lease.Seconds()))
 
 	// The worker shares the server's provider resolution, so a queued
-	// consolidation pass calls the same model the server would.
+	// consolidation pass and a queued mental-model refresh call the same model
+	// the server would.
 	model, err := app.ResolveProvider(cfg)
 	if err != nil {
 		return err
 	}
 
-	consumer := app.NewQueueConsumer(store, model, cfg.Worker)
+	consumer := app.NewQueueConsumer(store, model, app.NewReflectRunner(model), cfg.Worker)
 	return app.RunQueueConsumer(ctx, consumer)
 }
 

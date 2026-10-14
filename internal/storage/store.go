@@ -142,6 +142,19 @@ type Store interface {
 	// a tool-driving failure, a shed retrieval or an over-budget run.
 	Reflect(ctx context.Context, query ReflectQuery) (ReflectOutcome, error)
 
+	// BankWriteWatermark returns the time of the newest write to a bank, or
+	// the zero time when it has never been written. A scoped staleness check
+	// asks this first, so a quiet bank costs no scan.
+	BankWriteWatermark(ctx context.Context, bankID string) time.Time
+	// MarkMentalModelSeen stamps the bank write watermark a refresh observed
+	// and clears any failure park. It is called only after the new content is
+	// stored, which is what makes a failed refresh retryable.
+	MarkMentalModelSeen(ctx context.Context, bankID, id string, seenAt time.Time) error
+	// RecordMentalModelRefreshFailure parks an automatic refresh after a
+	// failure without advancing the watermark, so the window that failed is
+	// re-read by the next attempt.
+	RecordMentalModelRefreshFailure(ctx context.Context, bankID, id string, failedAt time.Time) error
+
 	// PutOperation records an asynchronous operation in its initial state.
 	PutOperation(ctx context.Context, op Operation) (Operation, error)
 	// EnqueueOperation records a background operation, refusing to duplicate

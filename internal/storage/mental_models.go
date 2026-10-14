@@ -69,8 +69,16 @@ type MentalModel struct {
 	History                  []map[string]any
 	LastRefreshedSourceQuery string
 	LastRefreshedAt          time.Time
-	LastUpdated              time.Time
-	CreatedAt                time.Time
+	// LastMemorySeenAt is the bank write watermark this model's last
+	// successful refresh observed. Staleness compares against it rather than
+	// against the refresh time, because a refresh that found nothing new still
+	// moved its clock.
+	LastMemorySeenAt *time.Time
+	// LastRefreshFailedAt parks an automatic refresh after a failure, so a
+	// schedule that cannot succeed stops spending a model call per tick.
+	LastRefreshFailedAt *time.Time
+	LastUpdated         time.Time
+	CreatedAt           time.Time
 }
 
 // MentalModelHistoryEntry is one recorded refresh of a mental model.

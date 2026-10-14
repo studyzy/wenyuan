@@ -50,3 +50,14 @@ type EnqueueResult struct {
 type OperationEnqueuer interface {
 	EnqueueOperation(ctx context.Context, req EnqueueRequest) (EnqueueResult, error)
 }
+
+// MentalModelIDPayloadKey names the payload field holding the mental model an
+// operation works on. It is both the dedup subject key and what the discovery
+// routine's in-flight probe compares, so the two cannot drift.
+const MentalModelIDPayloadKey = "mental_model_id"
+
+// MentalModelSerializationKey is the key that keeps two refreshes of one model
+// from running at the same time.
+func MentalModelSerializationKey(modelID string) string {
+	return "mental_model:" + modelID
+}

@@ -56,6 +56,12 @@ type RefreshResult struct {
 	Refreshed bool   `json:"refreshed"`
 	DryRun    bool   `json:"dry_run"`
 	Reason    string `json:"reason,omitempty"`
+	// OperationID names the queued refresh, so a caller can poll it to
+	// completion. It is empty when nothing was queued.
+	OperationID string `json:"operation_id,omitempty"`
+	// Queued reports that the refresh was accepted for background execution
+	// rather than performed within the request.
+	Queued bool `json:"queued,omitempty"`
 }
 
 // HistoryEntry is one recorded refresh.

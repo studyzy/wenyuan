@@ -183,22 +183,27 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSONFor(w, r, http.StatusOK, HistoryResponse{BankID: bankID, MentalModel: id, Entries: out})
 }
 
-// Refresh re-runs a mental model's source query against its own bank.
+// Refresh enqueues a refresh of a mental model.
+//
+// The refresh itself runs as a background operation rather than in this
+// request, because it regenerates the model's content by running its source
+// query through the reflection loop — a model call whose duration is not
+// bounded by anything a request should wait on. The response reports the
+// accepted operation, and the model's current state, so a caller can poll the
+// operation to completion.
 //
 // A model with no source query has nothing to re-run, so the refresh reports
-// that reason rather than inventing content. The model's observations are the
-// refresh input: they are read from the bank's memories when a source query is
-// present, and otherwise left untouched.
+// that reason rather than queueing work that would immediately refuse.
 func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	h.refresh(w, r, false)
 }
 
-// DryRunRefresh reports what a refresh would do without applying it.
+// DryRunRefresh reports what a refresh would do without queueing it.
 func (h *Handlers) DryRunRefresh(w http.ResponseWriter, r *http.Request) {
 	h.refresh(w, r, true)
 }
 
-// refresh implements both the applying and the dry-run form.
+// refresh implements both the enqueueing and the dry-run form.
 func (h *Handlers) refresh(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	bankID, id, ok := h.member(w, r)
 	if !ok {
@@ -227,42 +232,30 @@ func (h *Handlers) refresh(w http.ResponseWriter, r *http.Request, dryRun bool) 
 		return
 	}
 
-	// The refresh reads the bank's memories through the same recall path the
-	// API exposes, so a refreshed note reflects current content rather than a
-	// snapshot taken when the note was created.
-	recalled, err := h.Store.Recall(r.Context(), storage.RecallQuery{
-		BankID: bankID,
-		Query:  record.SourceQuery,
-		Limit:  20,
+	// An explicit refresh does not fold into a *running* one: that run may have
+	// read its inputs before whatever change prompted this request. It does
+	// fold into a merely queued one, since that run has not started and will
+	// read the same current state.
+	result, err := h.Store.EnqueueOperation(r.Context(), storage.EnqueueRequest{
+		Operation: storage.Operation{
+			BankID:           bankID,
+			OperationType:    storage.OperationTypeRefreshMentalModel,
+			Payload:          map[string]any{storage.MentalModelIDPayloadKey: id},
+			SerializationKey: storage.MentalModelSerializationKey(id),
+		},
+		DedupeByPayloadKey: storage.MentalModelIDPayloadKey,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	observations := make([]any, 0, len(recalled.Matches))
-	for _, match := range recalled.Matches {
-		observations = append(observations, map[string]any{
-			"id":   match.ID,
-			"text": match.Text,
-		})
-	}
-	updated, err := h.Store.UpdateMentalModel(r.Context(), bankID, id, storage.MentalModelPatch{
-		Observations: &map[string]any{"observations": observations},
+	httpx.WriteJSONFor(w, r, http.StatusOK, RefreshResult{
+		Model:       toModel(record),
+		Refreshed:   false,
+		OperationID: result.Operation.ID,
+		Queued:      true,
+		Reason:      "a refresh has been queued",
 	})
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	if err := h.Store.RecordMentalModelHistory(r.Context(), bankID, id, storage.MentalModelHistoryEntry{
-		RefreshedAt: h.Now(),
-		SourceQuery: record.SourceQuery,
-		Content:     updated.Content,
-		Reason:      "refresh",
-	}); err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, RefreshResult{Model: toModel(updated), Refreshed: true})
 }
 
 // BindRoutes registers the family's route table.

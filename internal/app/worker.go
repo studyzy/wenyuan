@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -24,7 +25,14 @@ import (
 type archiveProcessor struct {
 	store    storage.Store
 	provider provider.Provider
+	// reflection, when non-nil, makes a queued mental-model refresh write
+	// prose through the model-driven loop rather than the deterministic
+	// fallback.
+	reflection storage.ReflectRunner
 }
+
+// logger returns the worker log sink.
+func (p archiveProcessor) logger() *slog.Logger { return slog.Default() }
 
 // Process runs one queued operation.
 func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) error {
@@ -39,11 +47,41 @@ func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) err
 		return p.applyClone(ctx, op)
 	case storage.OperationTypeConsolidate:
 		return p.applyConsolidation(ctx, op)
+	case storage.OperationTypeRefreshMentalModel:
+		return p.applyMentalModelRefresh(ctx, op)
 	default:
 		// An unknown operation type is permanent: the same input would be
 		// rejected again, so retrying only wastes the attempt budget.
 		return worker.Permanent(fmt.Errorf("unsupported operation type %q", op.OperationType))
 	}
+}
+
+// applyMentalModelRefresh regenerates one mental model from its source query.
+//
+// A refresh that cannot produce a document safe to store is a permanent
+// refusal: the same query over the same memories would fail the same way, so
+// retrying only spends the attempt budget. Recording the failure is what parks
+// an automatic refresh, so a schedule that cannot succeed stops spending a
+// model call on every tick.
+func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storage.Operation) error {
+	modelID, _ := op.Payload[storage.MentalModelIDPayloadKey].(string)
+	if modelID == "" {
+		return worker.Permanent(errors.New("refresh operation carries no mental model id"))
+	}
+	runner := newMentalModelRefresh(p.store, p.provider, p.reflection)
+	if _, err := runner.refresh(ctx, op.BankID, modelID); err != nil {
+		if permanentRefreshFailure(err) {
+			if recordErr := p.store.RecordMentalModelRefreshFailure(ctx, op.BankID, modelID, time.Now().UTC()); recordErr != nil {
+				// A failure that cannot be recorded is still the failure that
+				// matters; the operation's own error carries the reason.
+				p.logger().Warn("could not record mental model refresh failure",
+					"bank_id", op.BankID, "mental_model_id", modelID, "error", recordErr)
+			}
+			return worker.Permanent(err)
+		}
+		return err
+	}
+	return nil
 }
 
 // applyConsolidation runs one consolidation pass over the operation's bank. A
@@ -204,8 +242,8 @@ func readArchiveBytes(data []byte) (*hindsightarchive.Archive, error) {
 
 // NewQueueConsumer builds the queue consumer over the store, translating the
 // resolved worker configuration into the consumer's tuning.
-func NewQueueConsumer(store storage.Store, model provider.Provider, cfg config.WorkerConfig) *worker.Consumer {
-	return worker.New(store, archiveProcessor{store: store, provider: model}, worker.Config{
+func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner, cfg config.WorkerConfig) *worker.Consumer {
+	return worker.New(store, archiveProcessor{store: store, provider: model, reflection: reflection}, worker.Config{
 		WorkerID:       cfg.ID,
 		MaxRetries:     cfg.MaxRetries,
 		InitialBackoff: cfg.InitialBackoff,
