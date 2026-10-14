@@ -210,7 +210,7 @@ func (s *scriptedProvider) Embed(context.Context, provider.EmbeddingRequest) (pr
 	return provider.EmbeddingResult{}, nil
 }
 func (s *scriptedProvider) VerifyConnection(context.Context) error { return nil }
-func (s *scriptedProvider) Dimensions() int                        { return 384 }
+func (s *scriptedProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
 
 // The consolidation-store adapter maps between the engine's value types and the
 // storage records.

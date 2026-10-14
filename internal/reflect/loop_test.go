@@ -35,7 +35,7 @@ func (s *scriptedProvider) Embed(context.Context, provider.EmbeddingRequest) (pr
 	return provider.EmbeddingResult{}, nil
 }
 func (s *scriptedProvider) VerifyConnection(context.Context) error { return nil }
-func (s *scriptedProvider) Dimensions() int                        { return 384 }
+func (s *scriptedProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
 
 // stubRetrieval records which tools the loop asked for and returns canned
 // evidence, so a test can prove the model drove the choice.

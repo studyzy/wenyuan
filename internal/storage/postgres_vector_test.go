@@ -50,7 +50,7 @@ func postgresVectorStore(t *testing.T) Store {
 	return store
 }
 
-// unitVector builds a 384-wide vector that is dense only at one position, so
+// unitVector builds a 1024-wide vector that is dense only at one position, so
 // two vectors sharing a position are cosine-similar and two that do not are
 // orthogonal. That makes the expected ranking unambiguous without needing a
 // real embedding provider.

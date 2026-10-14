@@ -30,7 +30,7 @@ func (s *stubProvider) Embed(context.Context, provider.EmbeddingRequest) (provid
 	return provider.EmbeddingResult{}, nil
 }
 func (s *stubProvider) VerifyConnection(context.Context) error { return nil }
-func (s *stubProvider) Dimensions() int                        { return 384 }
+func (s *stubProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
 
 // test-no-provider-uses-the-deterministic-fallback: with no model configured
 // the extraction segments the text itself, so a deployment without a provider

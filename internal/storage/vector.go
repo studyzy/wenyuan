@@ -8,10 +8,10 @@ import (
 )
 
 // EmbeddingDimensions is the vector width the stored column uses. It is fixed
-// at 384 to match the reference implementation and the provider boundary's
-// declared dimension, and it is defined here once so the column and the
-// boundary cannot drift apart.
-const EmbeddingDimensions = 384
+// at 1024 to match the reference implementation's column and the provider
+// boundary's declared dimension, and it is defined here once so the column and
+// the boundary cannot drift apart.
+const EmbeddingDimensions = 1024
 
 // ErrEmbeddingDimensions reports an embedding whose width does not match the
 // stored column. Such a value is rejected rather than truncated, because a

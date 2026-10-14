@@ -26,7 +26,7 @@ func (s *stubProvider) Embed(context.Context, provider.EmbeddingRequest) (provid
 	return provider.EmbeddingResult{}, nil
 }
 func (s *stubProvider) VerifyConnection(context.Context) error { return nil }
-func (s *stubProvider) Dimensions() int                        { return 384 }
+func (s *stubProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
 
 // stubStore records what the pass applied.
 type stubStore struct {
