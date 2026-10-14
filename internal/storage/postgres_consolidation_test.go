@@ -14,9 +14,9 @@ func TestConsolidationRoundTrip(t *testing.T) {
 	store := postgresVectorStore(t)
 	ctx := context.Background()
 
-	for _, id := range []string{"fact-1", "fact-2"} {
+	for _, id := range []string{pgUUID("fact-1"), pgUUID("fact-2")} {
 		if _, err := store.UpsertUnit(ctx, MemoryUnit{
-			ID: id, BankID: "vec-bank", Text: "text of " + id, Type: TypeExperience,
+			ID: id, BankID: "vec-bank", Text: "text of " + id, FactType: TypeExperience,
 		}); err != nil {
 			t.Fatalf("seed fact %s: %v", id, err)
 		}
@@ -31,7 +31,7 @@ func TestConsolidationRoundTrip(t *testing.T) {
 	}
 
 	observationID, err := store.CreateObservation(ctx, "vec-bank", "a consolidated conclusion",
-		[]string{"fact-1", "fact-2"})
+		[]string{pgUUID("fact-1"), pgUUID("fact-2")})
 	if err != nil {
 		t.Fatalf("create observation: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestConsolidationRoundTrip(t *testing.T) {
 		t.Fatalf("observation = %+v, want id %q with two sources", observations[0], observationID)
 	}
 
-	if err := store.MarkConsolidated(ctx, "vec-bank", []string{"fact-1", "fact-2"}); err != nil {
+	if err := store.MarkConsolidated(ctx, "vec-bank", []string{pgUUID("fact-1"), pgUUID("fact-2")}); err != nil {
 		t.Fatalf("mark consolidated: %v", err)
 	}
 	facts, err = store.ConsolidationFacts(ctx, "vec-bank", 10)
@@ -59,7 +59,7 @@ func TestConsolidationRoundTrip(t *testing.T) {
 	}
 
 	// An update rewrites the observation and attaches more evidence.
-	if err := store.UpdateObservation(ctx, "vec-bank", observationID, "a revised conclusion", []string{"fact-1"}); err != nil {
+	if err := store.UpdateObservation(ctx, "vec-bank", observationID, "a revised conclusion", []string{pgUUID("fact-1")}); err != nil {
 		t.Fatalf("update observation: %v", err)
 	}
 	observations, err = store.ConsolidationObservations(ctx, "vec-bank", 10)

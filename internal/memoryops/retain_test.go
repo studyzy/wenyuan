@@ -16,7 +16,7 @@ import (
 func newServer(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(store, 5, 30000)
@@ -226,7 +226,7 @@ func TestImageContentRejected(t *testing.T) {
 // ts-0015 / err-0007 / cmp-0008: batch mode rejects a synchronous write.
 func TestBatchModeRejectsSynchronousWrite(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(store, 5, 30000)
@@ -304,8 +304,8 @@ func TestEntityResolutionSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if existing.Kind != storage.EntityKindRegular {
-		t.Fatalf("entity kind = %q, want regular", existing.Kind)
+	if existing.EntityKind != storage.EntityKindRegular {
+		t.Fatalf("entity kind = %q, want regular", existing.EntityKind)
 	}
 }
 

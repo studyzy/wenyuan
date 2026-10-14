@@ -222,12 +222,10 @@ func (p archiveProcessor) applyClone(ctx context.Context, op storage.Operation) 
 	// Recreating the bank with the source's dispositions is what makes the copy
 	// evolve independently rather than sharing state with the original.
 	if _, err := p.store.CreateBank(ctx, storage.Bank{
-		ID:                    target,
-		Name:                  source.Name,
-		DispositionSkepticism: source.DispositionSkepticism,
-		DispositionLiteralism: source.DispositionLiteralism,
-		DispositionEmpathy:    source.DispositionEmpathy,
-		ReflectMission:        source.ReflectMission,
+		BankID:      target,
+		Name:        source.Name,
+		Disposition: source.NormalizedDisposition(),
+		Mission:     source.Mission,
 	}); err != nil {
 		return err
 	}

@@ -14,7 +14,7 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	}
 	query := `SELECT id, text, occurred_start, occurred_end, mentioned_at
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
-	          WHERE bank_id = $1 AND type <> $2 AND consolidated_at IS NULL
+	          WHERE bank_id = $1 AND fact_type <> $2 AND consolidated_at IS NULL
 	          ORDER BY created_at DESC
 	          LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, bankID, string(TypeObservation), limit)
@@ -38,17 +38,16 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 }
 
 // ConsolidationObservations returns a bank's existing observations, newest
-// first, with the facts each rests on.
+// first, with the facts each rests on. The evidence is the observation's own
+// source_memory_ids array, which is where the reference keeps it.
 func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID string, limit int) ([]ConsolidationObservation, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	query := `SELECT u.id, u.text, u.mentioned_at,
-	                 COALESCE(array_agg(os.source_id) FILTER (WHERE os.source_id IS NOT NULL), '{}'::text[])
+	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text
 	          FROM ` + quoteIdent(s.schema) + `.memory_units u
-	          LEFT JOIN ` + quoteIdent(s.schema) + `.observation_sources os ON os.observation_id = u.id
-	          WHERE u.bank_id = $1 AND u.type = $2
-	          GROUP BY u.id, u.text, u.mentioned_at, u.created_at
+	          WHERE u.bank_id = $1 AND u.fact_type = $2
 	          ORDER BY u.created_at DESC
 	          LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, bankID, string(TypeObservation), limit)
@@ -74,7 +73,7 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 
 // CreateObservation records a new observation resting on the given facts.
 func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
-	unit := MemoryUnit{BankID: bankID, Text: text, Type: TypeObservation}
+	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
 		return "", err
@@ -89,8 +88,8 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 // source already linked is left alone, so re-running a pass is idempotent.
 func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error {
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
-	          SET text = $3, mentioned_at = now()
-	          WHERE bank_id = $1 AND id = $2 AND type = $4`
+	          SET text = $3, search_vector = ` + searchVectorSQL + `, mentioned_at = now()
+	          WHERE bank_id = $1 AND id = $2 AND fact_type = $4`
 	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation))
 	if err != nil {
 		return err
@@ -101,15 +100,12 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 	return s.linkObservationSources(ctx, observationID, sourceIDs)
 }
 
-// DeleteObservation removes one observation and its evidence links.
+// DeleteObservation removes one observation. Its evidence is an array on the
+// row itself, so it goes with the row.
 func (s *PostgresStore) DeleteObservation(ctx context.Context, bankID, observationID string) error {
 	query := `DELETE FROM ` + quoteIdent(s.schema) + `.memory_units
-	          WHERE bank_id = $1 AND id = $2 AND type = $3`
-	if _, err := s.db.ExecContext(ctx, query, bankID, observationID, string(TypeObservation)); err != nil {
-		return err
-	}
-	links := `DELETE FROM ` + quoteIdent(s.schema) + `.observation_sources WHERE observation_id = $1`
-	_, err := s.db.ExecContext(ctx, links, observationID)
+	          WHERE bank_id = $1 AND id = $2 AND fact_type = $3`
+	_, err := s.db.ExecContext(ctx, query, bankID, observationID, string(TypeObservation))
 	return err
 }
 
@@ -120,20 +116,27 @@ func (s *PostgresStore) MarkConsolidated(ctx context.Context, bankID string, fac
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
 	          SET consolidated_at = now()
-	          WHERE bank_id = $1 AND id = ANY($2::text[])`
+	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
 	_, err := s.db.ExecContext(ctx, query, bankID, factIDs)
 	return err
 }
 
-// linkObservationSources records the facts an observation rests on. The write
-// is idempotent because the edge is a primary key.
+// linkObservationSources records the facts an observation rests on, in the
+// observation's own source_memory_ids array, and keeps proof_count in step.
+// Both are derived from the union of the existing evidence and the new, so
+// re-running a pass is idempotent.
 func (s *PostgresStore) linkObservationSources(ctx context.Context, observationID string, sourceIDs []string) error {
 	if len(sourceIDs) == 0 {
 		return nil
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.observation_sources (observation_id, source_id)
-	          SELECT $1, unnest($2::text[])
-	          ON CONFLICT DO NOTHING`
+	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	          SET source_memory_ids = (
+	                  SELECT array_agg(DISTINCT e)
+	                  FROM unnest(COALESCE(source_memory_ids, '{}'::uuid[]) || $2::text[]::uuid[]) e),
+	              proof_count = (
+	                  SELECT count(DISTINCT e)
+	                  FROM unnest(COALESCE(source_memory_ids, '{}'::uuid[]) || $2::text[]::uuid[]) e)
+	          WHERE id = $1`
 	_, err := s.db.ExecContext(ctx, query, observationID, sourceIDs)
 	return err
 }

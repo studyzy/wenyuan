@@ -20,7 +20,7 @@ func TestTransferRouteFamilyIsMounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{ID: "route-bank", Name: "route-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "route-bank", Name: "route-bank"}); err != nil {
 		t.Fatal(err)
 	}
 

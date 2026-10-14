@@ -24,7 +24,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	limit := clampLimit(query.Limit, 50)
 	filter := `bank_id = $1
 	           AND ($2 = '' OR original_text ILIKE '%' || $2 || '%')
-	           AND ($3::text[] IS NULL OR tags @> $3)`
+	           AND ($3::text[] IS NULL OR tags::text[] @> $3)`
 	var total int
 	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.documents WHERE ` + filter
 	tags := nullableTagArray(query.Tags)
@@ -32,8 +32,8 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 		return DocumentPage{}, err
 	}
 	listQuery := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
-	                     COALESCE(metadata, '{}'::jsonb), COALESCE(retain_params, '{}'::jsonb),
-	                     COALESCE(tags, '{}'), created_at, created_at,
+	                     COALESCE(retain_params, '{}'::jsonb),
+	                     COALESCE(tags, '{}'), created_at, updated_at,
 	                     (SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.memory_units u
 	                      WHERE u.bank_id = d.bank_id AND u.document_id = d.id)
 	              FROM ` + quoteIdent(s.schema) + `.documents d
@@ -65,11 +65,11 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 		query.BankID, query.DocumentID).Scan(&total); err != nil {
 		return ChunkPage{}, err
 	}
-	listQuery := `SELECT id, bank_id, COALESCE(document_id,''), COALESCE(index,0), COALESCE(text,''),
+	listQuery := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                     COALESCE(content_hash,''), created_at
 	              FROM ` + quoteIdent(s.schema) + `.chunks
 	              WHERE ` + filter + `
-	              ORDER BY document_id ASC, index ASC LIMIT $3 OFFSET $4`
+	              ORDER BY document_id ASC, chunk_index ASC LIMIT $3 OFFSET $4`
 	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.DocumentID, limit, query.Offset)
 	if err != nil {
 		return ChunkPage{}, err
@@ -88,9 +88,9 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 
 // GetChunk returns one stored chunk by identifier.
 func (s *PostgresStore) GetChunk(ctx context.Context, bankID, chunkID string) (Chunk, error) {
-	query := `SELECT id, bank_id, COALESCE(document_id,''), COALESCE(index,0), COALESCE(text,''),
+	query := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                 COALESCE(content_hash,''), created_at
-	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE bank_id = $1 AND id = $2`
+	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE bank_id = $1 AND chunk_id = $2`
 	chunk, err := scanChunkRow(s.db.QueryRowContext(ctx, query, bankID, chunkID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -127,15 +127,15 @@ func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount
 // ListEntities returns one page of a bank's entities plus the total.
 func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error) {
 	limit := clampLimit(query.Limit, 50)
-	filter := `bank_id = $1 AND ($2 = '' OR kind = $2)
-	           AND ($3 = '' OR name ILIKE '%' || $3 || '%')`
+	filter := `bank_id = $1 AND ($2 = '' OR entity_kind = $2)
+	           AND ($3 = '' OR canonical_name ILIKE '%' || $3 || '%')`
 	var total int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+quoteIdent(s.schema)+`.entities WHERE `+filter,
 		query.BankID, string(query.Kind), strings.TrimSpace(query.Query)).Scan(&total); err != nil {
 		return EntityPage{}, err
 	}
-	listQuery := `SELECT id, bank_id, COALESCE(name,''), COALESCE(kind,''),
+	listQuery := `SELECT id, bank_id, COALESCE(canonical_name,''), COALESCE(entity_kind,''),
 	                     COALESCE(metadata, '{}'::jsonb), first_seen, last_seen, COALESCE(mention_count,0)
 	              FROM ` + quoteIdent(s.schema) + `.entities
 	              WHERE ` + filter + `
@@ -166,7 +166,7 @@ func (s *PostgresStore) Graph(ctx context.Context, bankID string, limit int) (Gr
 		bankID).Scan(&total); err != nil {
 		return GraphData{}, err
 	}
-	unitQuery := `SELECT id, COALESCE(text,''), COALESCE(type,''), COALESCE(context,''),
+	unitQuery := `SELECT id::text, COALESCE(text,''), COALESCE(fact_type,''), COALESCE(context,''),
 	                     occurred_start, occurred_end, mentioned_at, event_date,
 	                     COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}')
 	              FROM ` + quoteIdent(s.schema) + `.memory_units
@@ -209,7 +209,7 @@ func (s *PostgresStore) Graph(ctx context.Context, bankID string, limit int) (Gr
 	}
 
 	// An edge is kept only when both endpoints are inside the bounded node set.
-	edgeQuery := `SELECT id, bank_id, COALESCE(from_id,''), COALESCE(to_id,''), COALESCE(link_type,'')
+	edgeQuery := `SELECT bank_id, from_unit_id::text, to_unit_id::text, COALESCE(link_type,'')
 	              FROM ` + quoteIdent(s.schema) + `.memory_links WHERE bank_id = $1`
 	edgeRows, err := s.db.QueryContext(ctx, edgeQuery, bankID)
 	if err != nil {
@@ -220,12 +220,13 @@ func (s *PostgresStore) Graph(ctx context.Context, bankID string, limit int) (Gr
 	for edgeRows.Next() {
 		var edge GraphEdgeData
 		var edgeBank string
-		if err := edgeRows.Scan(&edge.ID, &edgeBank, &edge.From, &edge.To, &edge.Type); err != nil {
+		if err := edgeRows.Scan(&edgeBank, &edge.From, &edge.To, &edge.Type); err != nil {
 			return GraphData{}, err
 		}
 		if !kept[edge.From] || !kept[edge.To] {
 			continue
 		}
+		edge.ID = edge.From + "->" + edge.To
 		edges = append(edges, edge)
 	}
 	return GraphData{Nodes: nodes, Edges: edges, TableRows: tableRows, Total: total, Limit: limit}, edgeRows.Err()
@@ -240,7 +241,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, bankID string, limit in
 		bankID).Scan(&totalEntities); err != nil {
 		return EntityGraph{}, err
 	}
-	nodeQuery := `SELECT id, COALESCE(name,'') FROM ` + quoteIdent(s.schema) + `.entities
+	nodeQuery := `SELECT id::text, COALESCE(canonical_name,'') FROM ` + quoteIdent(s.schema) + `.entities
 	              WHERE bank_id = $1 ORDER BY mention_count DESC, id ASC LIMIT $2`
 	rows, err := s.db.QueryContext(ctx, nodeQuery, bankID, limit)
 	if err != nil {
@@ -261,10 +262,10 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, bankID string, limit in
 		return EntityGraph{}, err
 	}
 
-	edgeQuery := `SELECT COALESCE(entity_a,''), COALESCE(entity_b,''), COALESCE(count,0)
-	              FROM ` + quoteIdent(s.schema) + `.entity_cooccurrences WHERE bank_id = $1
-	              ORDER BY entity_a ASC, entity_b ASC`
-	edgeRows, err := s.db.QueryContext(ctx, edgeQuery, bankID)
+	edgeQuery := `SELECT entity_id_1::text, entity_id_2::text, COALESCE(cooccurrence_count,0)
+	              FROM ` + quoteIdent(s.schema) + `.entity_cooccurrences
+	              ORDER BY entity_id_1 ASC, entity_id_2 ASC`
+	edgeRows, err := s.db.QueryContext(ctx, edgeQuery)
 	if err != nil {
 		return EntityGraph{}, err
 	}
@@ -290,14 +291,14 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, bankID string, limit in
 // scanDocumentRow reads the document projection.
 func scanDocumentRow(row rowScanner) (Document, error) {
 	var doc Document
-	var metadata, retainParams, tagsRaw []byte
+	var retainParams, tagsRaw []byte
 	if err := row.Scan(&doc.ID, &doc.BankID, &doc.OriginalText, &doc.ContentHash,
-		&metadata, &retainParams, &tagsRaw, &doc.CreatedAt, &doc.UpdatedAt,
+		&retainParams, &tagsRaw, &doc.CreatedAt, &doc.UpdatedAt,
 		&doc.MemoryUnitCount); err != nil {
 		return Document{}, err
 	}
-	doc.Metadata = decodeJSONMap(metadata)
 	doc.RetainParams = decodeJSONMap(retainParams)
+	doc.Metadata = documentMetadata(doc.RetainParams)
 	doc.Tags = decodePostgresTextArray(tagsRaw)
 	return doc, nil
 }
@@ -305,8 +306,8 @@ func scanDocumentRow(row rowScanner) (Document, error) {
 // scanChunkRow reads the chunk projection.
 func scanChunkRow(row rowScanner) (Chunk, error) {
 	var chunk Chunk
-	if err := row.Scan(&chunk.ID, &chunk.BankID, &chunk.DocumentID, &chunk.Index,
-		&chunk.Text, &chunk.ContentHash, &chunk.CreatedAt); err != nil {
+	if err := row.Scan(&chunk.ChunkID, &chunk.BankID, &chunk.DocumentID, &chunk.ChunkIndex,
+		&chunk.ChunkText, &chunk.ContentHash, &chunk.CreatedAt); err != nil {
 		return Chunk{}, err
 	}
 	return chunk, nil
@@ -318,11 +319,11 @@ func scanEntityRow(row rowScanner) (Entity, error) {
 	var kind string
 	var metadata []byte
 	var firstSeen, lastSeen sql.NullTime
-	if err := row.Scan(&entity.ID, &entity.BankID, &entity.Name, &kind,
+	if err := row.Scan(&entity.ID, &entity.BankID, &entity.CanonicalName, &kind,
 		&metadata, &firstSeen, &lastSeen, &entity.MentionCount); err != nil {
 		return Entity{}, err
 	}
-	entity.Kind = EntityKind(kind)
+	entity.EntityKind = EntityKind(kind)
 	entity.Metadata = decodeJSONMap(metadata)
 	entity.FirstSeen = nullTimePtr(firstSeen)
 	entity.LastSeen = nullTimePtr(lastSeen)
@@ -336,4 +337,19 @@ func nullableTagArray(tags []string) any {
 		return nil
 	}
 	return tags
+}
+
+// documentMetadata reads the document metadata the reference keeps inside
+// retain_params. The document has no metadata column, and this series serves
+// the value on the same wire key the reference does, so it is derived from the
+// nested object rather than stored beside it.
+func documentMetadata(retainParams map[string]any) map[string]any {
+	if retainParams == nil {
+		return nil
+	}
+	nested, ok := retainParams["metadata"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return nested
 }

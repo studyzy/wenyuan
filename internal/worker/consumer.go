@@ -245,20 +245,20 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 
 // complete marks an operation succeeded.
 func (c *Consumer) complete(ctx context.Context, op storage.Operation) {
-	if _, err := c.store.AdvanceOperation(ctx, op.ID, storage.StatusCompleted, ""); err != nil {
-		c.cfg.Logger.Error("complete failed", "operation_id", op.ID, "error", err)
+	if _, err := c.store.AdvanceOperation(ctx, op.OperationID, storage.StatusCompleted, ""); err != nil {
+		c.cfg.Logger.Error("complete failed", "operation_id", op.OperationID, "error", err)
 		return
 	}
-	c.cfg.Logger.Info("operation completed", "operation_id", op.ID, "bank_id", op.BankID)
+	c.cfg.Logger.Info("operation completed", "operation_id", op.OperationID, "bank_id", op.BankID)
 }
 
 // fail marks an operation terminally failed.
 func (c *Consumer) fail(ctx context.Context, op storage.Operation, detail string) {
-	if _, err := c.store.AdvanceOperation(ctx, op.ID, storage.StatusFailed, detail); err != nil {
-		c.cfg.Logger.Error("fail failed", "operation_id", op.ID, "error", err)
+	if _, err := c.store.AdvanceOperation(ctx, op.OperationID, storage.StatusFailed, detail); err != nil {
+		c.cfg.Logger.Error("fail failed", "operation_id", op.OperationID, "error", err)
 		return
 	}
-	c.cfg.Logger.Warn("operation failed permanently", "operation_id", op.ID, "detail", detail)
+	c.cfg.Logger.Warn("operation failed permanently", "operation_id", op.OperationID, "detail", detail)
 }
 
 // retry schedules another attempt, or fails the operation once the attempt
@@ -274,16 +274,16 @@ func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error)
 	// operation to the claimable pool. The claim is released so another
 	// consumer may take it when the gate passes.
 	next := c.cfg.Now().Add(c.BackoffFor(attempt))
-	if err := c.store.ScheduleOperationRetry(ctx, op.ID, op.RetryCount+1, next, cause.Error()); err != nil {
-		c.cfg.Logger.Error("retry scheduling failed", "operation_id", op.ID, "error", err)
+	if err := c.store.ScheduleOperationRetry(ctx, op.OperationID, op.RetryCount+1, next, cause.Error()); err != nil {
+		c.cfg.Logger.Error("retry scheduling failed", "operation_id", op.OperationID, "error", err)
 		return
 	}
-	if err := c.store.ReleaseOperationClaim(ctx, op.ID, c.workerID()); err != nil {
-		c.cfg.Logger.Error("claim release failed", "operation_id", op.ID, "error", err)
+	if err := c.store.ReleaseOperationClaim(ctx, op.OperationID, c.workerID()); err != nil {
+		c.cfg.Logger.Error("claim release failed", "operation_id", op.OperationID, "error", err)
 		return
 	}
 	c.cfg.Logger.Info("operation scheduled for retry",
-		"operation_id", op.ID, "attempt", attempt, "next_retry_at", next)
+		"operation_id", op.OperationID, "attempt", attempt, "next_retry_at", next)
 }
 
 // wait pauses before the next empty poll, waking early on shutdown.
@@ -314,11 +314,11 @@ func (c *Consumer) releaseHeldWork() {
 		if op.WorkerID != c.workerID() {
 			continue
 		}
-		if err := c.store.ReleaseOperationClaim(ctx, op.ID, c.workerID()); err != nil {
-			c.cfg.Logger.Warn("could not release held work", "operation_id", op.ID, "error", err)
+		if err := c.store.ReleaseOperationClaim(ctx, op.OperationID, c.workerID()); err != nil {
+			c.cfg.Logger.Warn("could not release held work", "operation_id", op.OperationID, "error", err)
 			continue
 		}
-		c.cfg.Logger.Info("released claimed work on shutdown", "operation_id", op.ID)
+		c.cfg.Logger.Info("released claimed work on shutdown", "operation_id", op.OperationID)
 	}
 }
 

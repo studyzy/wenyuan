@@ -15,7 +15,7 @@ import (
 func newServer(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()

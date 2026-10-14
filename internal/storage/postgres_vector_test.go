@@ -4,6 +4,8 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"testing"
@@ -44,7 +46,7 @@ func postgresVectorStore(t *testing.T) Store {
 			_ = closer.Close()
 		}
 	})
-	if _, err := store.CreateBank(ctx, Bank{ID: "vec-bank", Name: "vec-bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "vec-bank", Name: "vec-bank"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 	return store
@@ -81,8 +83,8 @@ func TestVectorSimilarityRanksByDistance(t *testing.T) {
 	}
 	for _, u := range units {
 		if _, err := store.UpsertUnit(ctx, MemoryUnit{
-			ID: u.id, BankID: "vec-bank", Text: u.text,
-			Type: TypeWorld, Embedding: unitVector(u.position),
+			ID: pgUUID(u.id), BankID: "vec-bank", Text: u.text,
+			FactType: TypeWorld, Embedding: unitVector(u.position),
 		}); err != nil {
 			t.Fatalf("upsert %s: %v", u.id, err)
 		}
@@ -106,14 +108,14 @@ func TestVectorSimilarityRanksByDistance(t *testing.T) {
 	if len(result.Matches) != 3 {
 		t.Fatalf("recall returned %d matches, want 3", len(result.Matches))
 	}
-	if result.Matches[0].ID != "unit-far" {
+	if result.Matches[0].ID != pgUUID("unit-far") {
 		t.Fatalf("closest match = %s, want unit-far (ordered %v)",
 			result.Matches[0].ID, idsOf(result.Matches))
 	}
-	if result.Matches[1].ID != "unit-mid" {
+	if result.Matches[1].ID != pgUUID("unit-mid") {
 		t.Fatalf("second match = %s, want unit-mid", result.Matches[1].ID)
 	}
-	if result.Matches[2].ID != "unit-near" {
+	if result.Matches[2].ID != pgUUID("unit-near") {
 		t.Fatalf("third match = %s, want unit-near", result.Matches[2].ID)
 	}
 
@@ -137,14 +139,14 @@ func TestVectorRecallSkipsUnembeddedRows(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := store.UpsertUnit(ctx, MemoryUnit{
-		ID: "embedded", BankID: "vec-bank", Text: "has a vector",
-		Type: TypeWorld, Embedding: unitVector(3),
+		ID: pgUUID("embedded"), BankID: "vec-bank", Text: "has a vector",
+		FactType: TypeWorld, Embedding: unitVector(3),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.UpsertUnit(ctx, MemoryUnit{
-		ID: "unembedded", BankID: "vec-bank", Text: "has no vector",
-		Type: TypeWorld,
+		ID: pgUUID("unembedded"), BankID: "vec-bank", Text: "has no vector",
+		FactType: TypeWorld,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +160,7 @@ func TestVectorRecallSkipsUnembeddedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Matches) != 1 || result.Matches[0].ID != "embedded" {
+	if len(result.Matches) != 1 || result.Matches[0].ID != pgUUID("embedded") {
 		t.Fatalf("only the embedded row may match, got %v", idsOf(result.Matches))
 	}
 }
@@ -174,8 +176,8 @@ func TestEmbeddingRoundTrips(t *testing.T) {
 		original[i] = float32(i%7) / 7
 	}
 	if _, err := store.UpsertUnit(ctx, MemoryUnit{
-		ID: "round-trip", BankID: "vec-bank", Text: "round trip",
-		Type: TypeWorld, Embedding: original,
+		ID: pgUUID("round-trip"), BankID: "vec-bank", Text: "round trip",
+		FactType: TypeWorld, Embedding: original,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +188,7 @@ func TestEmbeddingRoundTrips(t *testing.T) {
 	}
 	var raw string
 	query := `SELECT COALESCE(embedding::text, '') FROM ` + quoteIdent(pg.schema) + `.memory_units WHERE id = $1`
-	if err := pg.db.QueryRowContext(ctx, query, "round-trip").Scan(&raw); err != nil {
+	if err := pg.db.QueryRowContext(ctx, query, pgUUID("round-trip")).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := DecodeEmbedding(raw)
@@ -211,7 +213,7 @@ func TestWrongWidthEmbeddingIsRejected(t *testing.T) {
 
 	_, err := store.UpsertUnit(ctx, MemoryUnit{
 		ID: "wrong-width", BankID: "vec-bank", Text: "too short",
-		Type: TypeWorld, Embedding: []float32{1, 2, 3},
+		FactType: TypeWorld, Embedding: []float32{1, 2, 3},
 	})
 	if err == nil {
 		t.Fatal("a wrong-width embedding must be rejected")
@@ -243,4 +245,18 @@ func idsOf(matches []RecallMatch) []string {
 		out = append(out, m.ID)
 	}
 	return out
+}
+
+// pgUUID derives a deterministic uuid from a label so a test fixture can name
+// a row readably. The reference declares these identities as uuid, so a
+// literal like "fact-1" cannot be stored; the label is hashed into the
+// canonical layout with the version and variant bits set.
+func pgUUID(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	buf := make([]byte, 16)
+	copy(buf, sum[:16])
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	hexed := hex.EncodeToString(buf)
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
 }

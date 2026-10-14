@@ -26,7 +26,7 @@ func webhookApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{ID: "wh-bank", Name: "wh-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "wh-bank", Name: "wh-bank"}); err != nil {
 		t.Fatal(err)
 	}
 	return app
@@ -59,10 +59,12 @@ func TestWebhookLifecycle(t *testing.T) {
 		t.Fatalf("the response must say a secret is set: %v", created)
 	}
 
-	// Read one.
+	// The reference exposes no single-webhook read: only the list, the create,
+	// the update and the delete. A GET on the member path is therefore not
+	// routable, and the surface must not offer one.
 	rec := send(app, http.MethodGet, base+"/"+id, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("get = %d", rec.Code)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("member GET = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 
 	// List.
@@ -120,7 +122,7 @@ func TestWebhookGuardBlocksInternalTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := strict.Store.CreateBank(context.Background(), storage.Bank{ID: "wh-bank", Name: "wh-bank"}); err != nil {
+	if _, err := strict.Store.CreateBank(context.Background(), storage.Bank{BankID: "wh-bank", Name: "wh-bank"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +161,7 @@ func TestWebhookNotFound(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"unknown webhook", http.MethodGet, "/v1/default/banks/wh-bank/webhooks/absent"},
+		{"unknown webhook", http.MethodDelete, "/v1/default/banks/wh-bank/webhooks/absent"},
 		{"unknown webhook deliveries", http.MethodGet, "/v1/default/banks/wh-bank/webhooks/absent/deliveries"},
 		{"unknown bank", http.MethodGet, "/v1/default/banks/ghost/webhooks"},
 	}

@@ -252,7 +252,7 @@ func (h *Handlers) refresh(w http.ResponseWriter, r *http.Request, dryRun bool) 
 	httpx.WriteJSONFor(w, r, http.StatusOK, RefreshResult{
 		Model:       toModel(record),
 		Refreshed:   false,
-		OperationID: result.Operation.ID,
+		OperationID: result.Operation.OperationID,
 		Queued:      true,
 		Reason:      "a refresh has been queued",
 	})

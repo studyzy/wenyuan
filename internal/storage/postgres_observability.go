@@ -78,12 +78,12 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 	if stats.TotalLinks, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.memory_links WHERE bank_id = $1`, bankID); err != nil {
 		return BankStats{}, err
 	}
-	if stats.TotalObservations, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 AND type = 'observation'`, bankID); err != nil {
+	if stats.TotalObservations, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 AND fact_type = 'observation'`, bankID); err != nil {
 		return BankStats{}, err
 	}
 
 	if stats.NodesByFactType, err = s.groupedInts(ctx,
-		`SELECT COALESCE(type,''), COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 GROUP BY type`, bankID); err != nil {
+		`SELECT COALESCE(fact_type,''), COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 GROUP BY fact_type`, bankID); err != nil {
 		return BankStats{}, err
 	}
 	if stats.LinksByLinkType, err = s.groupedInts(ctx,
@@ -358,7 +358,7 @@ func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string
 	// read from there rather than from a dedicated column.
 	query := `SELECT COALESCE(NULLIF(metadata->>'scope',''), 'default') AS scope, COUNT(*)
 	          FROM ` + qualified + `.memory_units
-	          WHERE bank_id = $1 AND type = 'observation'
+	          WHERE bank_id = $1 AND fact_type = 'observation'
 	          GROUP BY scope ORDER BY scope ASC`
 	rows, err := s.db.QueryContext(ctx, query, bankID)
 	if err != nil {

@@ -21,7 +21,7 @@ func newParityApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{ID: "mm-bank", Name: "mm-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "mm-bank", Name: "mm-bank"}); err != nil {
 		t.Fatal(err)
 	}
 	return app
@@ -153,7 +153,7 @@ func TestMentalModelLifecycle(t *testing.T) {
 
 	// Running the queued operation records the history entry.
 	if err := processor.Process(context.Background(), storage.Operation{
-		ID:            operationID,
+		OperationID:   operationID,
 		BankID:        "mm-bank",
 		OperationType: storage.OperationTypeRefreshMentalModel,
 		Payload:       map[string]any{storage.MentalModelIDPayloadKey: id},

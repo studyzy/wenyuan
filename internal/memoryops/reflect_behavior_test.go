@@ -14,7 +14,7 @@ import (
 // rewrite; a blank rewrite leaves the original answer standing.
 func TestReflectLengthRewrite(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("word ", 80)
@@ -42,7 +42,7 @@ func TestReflectLengthRewrite(t *testing.T) {
 // beh-0022: a client disconnect cancels the in-flight reflection cooperatively.
 func TestReflectDisconnectCancels(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(canceledStore{Store: store}, 5, 30000)
@@ -60,7 +60,7 @@ func TestReflectDisconnectCancels(t *testing.T) {
 // beh-0012 / err-0003: a wall-clock budget that elapses surfaces as a 504.
 func TestReflectDeadlineExceededIsTimeout(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandlers(deadlineStore{Store: store}, 5, 30000)

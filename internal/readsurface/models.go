@@ -260,11 +260,11 @@ func toDocumentListItem(doc storage.Document) DocumentListItem {
 // toChunkResponse renders a stored chunk.
 func toChunkResponse(chunk storage.Chunk) ChunkResponse {
 	return ChunkResponse{
-		ChunkID:    chunk.ID,
+		ChunkID:    chunk.ChunkID,
 		DocumentID: chunk.DocumentID,
 		BankID:     chunk.BankID,
-		ChunkIndex: chunk.Index,
-		ChunkText:  chunk.Text,
+		ChunkIndex: chunk.ChunkIndex,
+		ChunkText:  chunk.ChunkText,
 		CreatedAt:  formatTime(chunk.CreatedAt),
 	}
 }
@@ -273,7 +273,7 @@ func toChunkResponse(chunk storage.Chunk) ChunkResponse {
 func toEntityListItem(entity storage.Entity) EntityListItem {
 	return EntityListItem{
 		ID:            entity.ID,
-		CanonicalName: entity.Name,
+		CanonicalName: entity.CanonicalName,
 		MentionCount:  entity.MentionCount,
 		FirstSeen:     formatTimePtr(entity.FirstSeen),
 		LastSeen:      formatTimePtr(entity.LastSeen),

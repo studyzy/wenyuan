@@ -34,8 +34,8 @@ func post(t *testing.T, mux *http.ServeMux, path, body string) *httptest.Respons
 // field names and the pre-paging total, limit and offset.
 func TestBankListingPageEnvelope(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "b1", Name: "First"})
-	mustCreate(t, store, storage.Bank{ID: "b2", Name: "Second"})
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "First"})
+	mustCreate(t, store, storage.Bank{BankID: "b2", Name: "Second"})
 
 	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?limit=1&offset=0", "")
 	if rec.Code != http.StatusOK {
@@ -66,7 +66,7 @@ func TestBankListingPageEnvelope(t *testing.T) {
 // fields.
 func TestBankListRowFields(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "b1", Name: "First"})
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "First"})
 	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks", "")
 	for _, field := range []string{
 		"bank_id", "name", "disposition", "mission", "created_at", "updated_at",
@@ -85,8 +85,8 @@ func TestBankListRowFields(t *testing.T) {
 // does, and sorts most-recently-written first.
 func TestBankListOrdersByRecency(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "older", Name: "Older"})
-	mustCreate(t, store, storage.Bank{ID: "newer", Name: "Newer"})
+	mustCreate(t, store, storage.Bank{BankID: "older", Name: "Older"})
+	mustCreate(t, store, storage.Bank{BankID: "newer", Name: "Newer"})
 	if _, err := store.RecordWrite(context.TODO(), storage.WriteRequest{BankID: "older", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestBankListOrdersByRecency(t *testing.T) {
 func TestBankListPagingAndSearch(t *testing.T) {
 	mux, store := newTestServer(t)
 	for _, id := range []string{"alpha", "beta", "gamma", "delta"} {
-		mustCreate(t, store, storage.Bank{ID: id, Name: id})
+		mustCreate(t, store, storage.Bank{BankID: id, Name: id})
 	}
 	// Search matches a single bank's identifier.
 	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?q=alpha", "")
@@ -152,7 +152,7 @@ func TestBankListPagingAndSearch(t *testing.T) {
 // matched; a row matched on its own fields reports an empty list.
 func TestBankListMatchedAliases(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
 	// An alias match is attributed to the owning bank.
 	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"nickname","primary":false}`)
 
@@ -220,7 +220,7 @@ func TestCreateOrReplaceAndPrecedence(t *testing.T) {
 // create a missing bank.
 func TestPatchUpdateAndMissingBank(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "b6", Name: "Six"})
+	mustCreate(t, store, storage.Bank{BankID: "b6", Name: "Six"})
 	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b6", `{"mission":"careful"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch status = %d", rec.Code)
@@ -269,7 +269,7 @@ func TestOversizeIdentifierRejected(t *testing.T) {
 // deleting a bank that never existed reports zero.
 func TestDeleteEnvelope(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "b8", Name: "Eight"})
+	mustCreate(t, store, storage.Bank{BankID: "b8", Name: "Eight"})
 	rec := doJSON(t, mux, http.MethodDelete, "/v1/default/banks/b8", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d", rec.Code)

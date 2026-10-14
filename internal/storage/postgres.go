@@ -102,7 +102,10 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdent(s.schema))); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s", quoteIdent(s.schema))); err != nil {
+	// The extension schema stays on the path: a statement in this store may
+	// name a type or an operator class the extension provides, and a connection
+	// that carried this SET would otherwise lose sight of it.
+	if _, err := s.db.ExecContext(ctx, "SET search_path TO "+s.searchPath()); err != nil {
 		return err
 	}
 	if err := s.ensureExtension(ctx, "vector"); err != nil {
@@ -112,6 +115,11 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	// that cannot install it still serves: the resolver falls back to exact
 	// matching when the probe fails.
 	if err := s.ensureExtension(ctx, "pg_trgm"); err != nil {
+		return err
+	}
+	// btree_gin provides the operator classes the reference's multi-column GIN
+	// indexes use, so it is as required as the vector type.
+	if err := s.ensureExtension(ctx, "btree_gin"); err != nil {
 		return err
 	}
 	if err := s.ensureMigrationTable(ctx); err != nil {
@@ -132,6 +140,22 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// extensionSchema is the schema the extensions are installed in.
+//
+// The reference keeps vector, pg_trgm and btree_gin in `public`, and keeping
+// them there is what lets a connection resolve them without any session
+// setup: the search path is per connection, and a pool hands out connections
+// that never saw a SET. Objects in this store's own schema are addressed by
+// name, so only the extension types and operator classes have to be reachable
+// by an unqualified name.
+const extensionSchema = "public"
+
+// searchPath is the path every statement of this store resolves against: its
+// own schema first, then the extensions.
+func (s *PostgresStore) searchPath() string {
+	return quoteIdent(s.schema) + ", " + quoteIdent(extensionSchema)
 }
 
 // ensureMigrationTable creates the record of applied migrations.
@@ -177,6 +201,13 @@ func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration)
 	if err != nil {
 		return err
 	}
+	// The path is set on this transaction rather than left to the session: a
+	// migration's unqualified names have to resolve in this store's schema even
+	// when the pool hands out a connection that never carried a SET.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path TO "+s.searchPath()); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("migration %04d failed: %w", migration.Version, err)
+	}
 	for _, statement := range migration.Statements() {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			_ = tx.Rollback()
@@ -196,14 +227,14 @@ func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration)
 	return nil
 }
 
-// ensureExtension installs a named extension if it is missing and puts its
-// schema on the search path, so an object using the extension resolves
-// regardless of which schema actually holds it.
+// ensureExtension installs a named extension if it is missing. An extension
+// that is already present anywhere is left where it is.
 //
-// The extension is installed in the schema that already has it when present,
-// and otherwise in the first schema on the search path. Installing it into this
-// store's own schema would hide it from a deployment whose extension lives
-// elsewhere.
+// The creation runs in a transaction holding the same advisory lock the
+// migration series takes. CREATE EXTENSION IF NOT EXISTS is not
+// concurrency-safe: every process of a deployment installs its extensions at
+// start, so two of them coming up together both pass the existence check and
+// one fails on the catalogue's unique index on the extension name.
 func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error {
 	var installed string
 	probe := `SELECT n.nspname FROM pg_extension e
@@ -212,27 +243,24 @@ func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error 
 	err := s.db.QueryRowContext(ctx, probe, name).Scan(&installed)
 	switch {
 	case err == nil && installed != "":
-		// Already present somewhere; make it visible.
-		_, err := s.db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s, %s", quoteIdent(s.schema), quoteIdent(installed)))
-		return err
+		return nil
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
 
-	// Not installed: place it in the first schema already on the path, which is
-	// this store's schema, and then make that schema visible to the table.
-	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS `+quoteIdent(name)); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('wenyuan:extensions'))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`CREATE EXTENSION IF NOT EXISTS `+quoteIdent(name)+` SCHEMA `+quoteIdent(extensionSchema)); err != nil {
 		return fmt.Errorf("install %s extension: %w", name, err)
 	}
-	var target string
-	if err := s.db.QueryRowContext(ctx, probe, name).Scan(&target); err != nil {
-		return err
-	}
-	if target != "" && target != s.schema {
-		_, err := s.db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s, %s", quoteIdent(s.schema), quoteIdent(target)))
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 // quoteIdent quotes an SQL identifier. Identifiers come from trusted

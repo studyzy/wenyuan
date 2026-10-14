@@ -69,7 +69,7 @@ func TestPostgresContractReadSurface(t *testing.T) {
 	if err != nil || len(chunks.Chunks) == 0 {
 		t.Fatalf("list chunks = %d (err %v)", len(chunks.Chunks), err)
 	}
-	if _, err := store.GetChunk(ctx, "vec-bank", chunks.Chunks[0].ID); err != nil {
+	if _, err := store.GetChunk(ctx, "vec-bank", chunks.Chunks[0].ChunkID); err != nil {
 		t.Fatalf("get chunk: %v", err)
 	}
 	if tags, err := store.ListTags(ctx, "vec-bank"); err != nil || len(tags) == 0 {
@@ -96,7 +96,7 @@ func TestPostgresContractWebhooks(t *testing.T) {
 		t.Fatalf("unknown webhook = %v, want ErrWebhookNotFound", err)
 	}
 	webhook, err := store.PutWebhook(ctx, Webhook{
-		ID: "w1", BankID: "vec-bank", URL: "https://example.test/hook",
+		ID: pgUUID("w1"), BankID: "vec-bank", URL: "https://example.test/hook",
 		EventTypes: []string{"memory.created"}, Enabled: true,
 	})
 	if err != nil {

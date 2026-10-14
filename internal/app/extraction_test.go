@@ -32,7 +32,7 @@ func (p *completingProvider) Embed(_ context.Context, _ provider.EmbeddingReques
 // into the served handler rather than merely present in the tree.
 func TestRetainExtractsFactsThroughServedHandler(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	model := &completingProvider{
@@ -74,7 +74,7 @@ func TestRetainExtractsFactsThroughServedHandler(t *testing.T) {
 // so the default offline deployment behaves exactly as before.
 func TestRetainStoresVerbatimWithoutModelThroughServedHandler(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	application, err := New(context.Background(), testConfig(), Dependencies{Store: store})

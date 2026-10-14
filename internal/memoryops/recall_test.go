@@ -222,7 +222,7 @@ func TestRecallIncludeDefaults(t *testing.T) {
 	mux, store := newServer(t)
 	store.SeedMemory("b1", storage.RecallMatch{
 		ID: "m1", Text: "alpha beta", Type: "world",
-		Entities: []string{"e1"}, ChunkID: "c1", SourceFactIDs: []string{"f1"},
+		Entities: []string{"e1"}, ChunkID: "c1", SourceMemoryIDs: []string{"f1"},
 	})
 	def := post(t, mux, "/v1/default/banks/b1/memories/recall", `{"query":"alpha","max_tokens":100}`)
 	var defResp RecallResponse
@@ -247,19 +247,19 @@ func TestRecallIncludeDefaults(t *testing.T) {
 func TestRecallResultExposesDocumentedFields(t *testing.T) {
 	mux, store := newServer(t)
 	store.SeedMemory("b1", storage.RecallMatch{
-		ID:            "m1",
-		Text:          "hello world",
-		Type:          "world",
-		Context:       "ctx",
-		ChunkID:       "c1",
-		DocumentID:    "d1",
-		Metadata:      map[string]any{"k": "v"},
-		SourceFactIDs: []string{"f1"},
-		Scores:        map[string]float64{"semantic": 0.9},
-		Entities:      []string{"e1"},
-		OccurredStart: timePtr(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		OccurredEnd:   timePtr(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)),
-		MentionedAt:   timePtr(time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)),
+		ID:              "m1",
+		Text:            "hello world",
+		Type:            "world",
+		Context:         "ctx",
+		ChunkID:         "c1",
+		DocumentID:      "d1",
+		Metadata:        map[string]any{"k": "v"},
+		SourceMemoryIDs: []string{"f1"},
+		Scores:          map[string]float64{"semantic": 0.9},
+		Entities:        []string{"e1"},
+		OccurredStart:   timePtr(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		OccurredEnd:     timePtr(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)),
+		MentionedAt:     timePtr(time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)),
 	})
 	body := `{"query":"hello","max_tokens":100,"include":{"entities":{},"chunks":{},"source_facts":{}},"trace":true}`
 	rec := post(t, mux, "/v1/default/banks/b1/memories/recall", body)

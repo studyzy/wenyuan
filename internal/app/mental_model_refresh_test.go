@@ -14,7 +14,7 @@ func refreshFixture(t *testing.T, sourceQuery string) (*storage.MemoryStore, str
 	t.Helper()
 	store := storage.NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	store.SeedMemory("b1", storage.RecallMatch{

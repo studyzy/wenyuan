@@ -8,7 +8,7 @@ import (
 // bankMatches reports whether a bank matches the search filter against its
 // identifier, display name or any alias.
 func bankMatches(bank Bank, aliases []string, search string) bool {
-	if matchesSearch(bank.ID, search) || matchesSearch(bank.Name, search) {
+	if matchesSearch(bank.BankID, search) || matchesSearch(bank.Name, search) {
 		return true
 	}
 	return len(aliasHits(aliases, search)) > 0
@@ -38,7 +38,7 @@ func sortBanksByRecency(banks []Bank) {
 		if !li.Equal(lj) {
 			return li.After(lj)
 		}
-		return banks[i].ID < banks[j].ID
+		return banks[i].BankID < banks[j].BankID
 	})
 }
 

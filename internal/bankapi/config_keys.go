@@ -11,34 +11,38 @@ import (
 // configPatch converts a configuration override map into a storage patch. Keys
 // may be given in internal field form or environment-variable form; only the
 // hierarchical per-bank fields may be overridden.
+//
+// The disposition traits are three keys of the single reference-side
+// disposition object, so they are collected and applied as one partial map.
 func configPatch(updates map[string]any) (storage.BankPatch, *httpx.ValidationFailure) {
 	var failure *httpx.ValidationFailure
 	patch := storage.BankPatch{}
+	traits := map[string]int{}
 	var items []httpx.ValidationError
 
 	for key, raw := range updates {
 		switch normalizeConfigKey(key) {
 		case "disposition_skepticism":
 			if value, ok := asInt(raw); ok {
-				patch.DispositionSkepticism = &value
+				traits[storage.DispositionKeySkepticism] = value
 			} else {
 				items = append(items, invalidConfigItem(key))
 			}
 		case "disposition_literalism":
 			if value, ok := asInt(raw); ok {
-				patch.DispositionLiteralism = &value
+				traits[storage.DispositionKeyLiteralism] = value
 			} else {
 				items = append(items, invalidConfigItem(key))
 			}
 		case "disposition_empathy":
 			if value, ok := asInt(raw); ok {
-				patch.DispositionEmpathy = &value
+				traits[storage.DispositionKeyEmpathy] = value
 			} else {
 				items = append(items, invalidConfigItem(key))
 			}
 		case "reflect_mission":
 			if value, ok := raw.(string); ok {
-				patch.ReflectMission = &value
+				patch.Mission = &value
 			} else {
 				items = append(items, invalidConfigItem(key))
 			}
@@ -50,6 +54,9 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.ValidationFa
 				Input: raw,
 			})
 		}
+	}
+	if len(traits) > 0 {
+		patch.Disposition = &traits
 	}
 	if len(items) > 0 {
 		failure = &httpx.ValidationFailure{Errors: items}

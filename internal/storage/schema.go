@@ -11,19 +11,22 @@ var MemoryDomainTables = []string{
 	"chunks",
 	"entities",
 	"memory_units",
+	"invalidated_memory_units",
 	"unit_entities",
 	"memory_links",
 	"entity_cooccurrences",
+	"entity_maintenance_queue",
+	"graph_maintenance_queue",
 	"async_operations",
 	"file_storage",
 	"mental_models",
+	"mental_model_history",
+	"observation_history",
 	"directives",
 	"audit_log",
 	"llm_requests",
-	"observation_sources",
-	"knowledge_nodes",
+	"knowledge_pages",
 	"webhooks",
-	"webhook_deliveries",
 	"attachments",
 	"bank_stats_cache",
 }
@@ -45,27 +48,28 @@ const (
 	TableAsyncOperations     TableName = "async_operations"
 )
 
-// BanksColumns are the bank identity, disposition, mission and watermark
-// columns.
+// BanksColumns are the bank identity, disposition, mission and configuration
+// columns. The activity watermarks a bank listing shows are not stored: they
+// are read from the newest document and the newest memory unit the bank holds.
 var BanksColumns = []string{
-	"id",
+	"bank_id",
 	"name",
-	"disposition_skepticism",
-	"disposition_literalism",
-	"disposition_empathy",
-	"reflect_mission",
+	"disposition",
 	"created_at",
 	"updated_at",
-	"last_write_at",
-	"last_document_at",
+	"mission",
+	"last_consolidated_at",
+	"mission_changed_at",
+	"config",
+	"internal_id",
 }
 
 // BankAliasesColumns are the persisted alias contract columns.
 var BankAliasesColumns = []string{
 	"alias",
 	"bank_id",
-	"is_primary",
 	"created_at",
+	"is_primary",
 }
 
 // BankAliasIndexes are the named indexes over the alias table.
@@ -74,29 +78,32 @@ var BankAliasIndexes = []string{
 	"idx_bank_aliases_one_primary",
 }
 
-// MemoryUnitsColumns are the unit text/type,timestamp/metadata columns.
+// MemoryUnitsColumns are the unit text/fact-type/timestamp/metadata columns.
 var MemoryUnitsColumns = []string{
 	"id",
 	"bank_id",
+	"document_id",
 	"text",
-	"type",
+	"embedding",
+	"context",
+	"event_date",
 	"occurred_start",
 	"occurred_end",
 	"mentioned_at",
+	"fact_type",
 	"metadata",
-	"document_id",
+	"created_at",
+	"updated_at",
 	"chunk_id",
 	"tags",
-	"source_fact_ids",
-	"context",
-	"event_date",
-	"confidence_score",
-	"access_count",
-	"embedding",
-	"source_id",
-	"observation_scopes",
+	"proof_count",
+	"source_memory_ids",
 	"consolidated_at",
+	"observation_scopes",
+	"text_signals",
+	"search_vector",
 	"consolidation_failed_at",
+	"edited_at",
 	"attachment_ids",
 }
 
@@ -106,37 +113,54 @@ var DocumentsColumns = []string{
 	"bank_id",
 	"original_text",
 	"content_hash",
-	"metadata",
+	"created_at",
+	"updated_at",
 	"retain_params",
 	"tags",
-	"created_at",
+	"file_storage_key",
+	"file_original_name",
+	"file_content_type",
 }
 
 // ChunksColumns are the chunk identity/index/text columns.
 var ChunksColumns = []string{
-	"id",
-	"bank_id",
+	"chunk_id",
 	"document_id",
-	"index",
-	"text",
+	"bank_id",
+	"chunk_index",
+	"chunk_text",
+	"created_at",
 	"content_hash",
 }
 
 // EntitiesColumns are the entity identity/kind/count columns.
 var EntitiesColumns = []string{
 	"id",
+	"canonical_name",
 	"bank_id",
-	"name",
-	"kind",
 	"metadata",
 	"first_seen",
 	"last_seen",
 	"mention_count",
+	"entity_kind",
+}
+
+// MemoryLinksColumns are the columns of a directed memory link. The reference
+// identifies a link by its endpoints and type rather than a synthetic row id,
+// so there is no id column.
+var MemoryLinksColumns = []string{
+	"from_unit_id",
+	"to_unit_id",
+	"link_type",
+	"entity_id",
+	"weight",
+	"created_at",
+	"bank_id",
 }
 
 // AsyncOperationsColumns are the operation identity/status/timestamp columns.
 var AsyncOperationsColumns = []string{
-	"id",
+	"operation_id",
 	"bank_id",
 	"operation_type",
 	"status",
@@ -145,13 +169,12 @@ var AsyncOperationsColumns = []string{
 	"completed_at",
 	"error_message",
 	"result_metadata",
-	"retry_count",
-	"next_retry_at",
-	"progress",
 	"worker_id",
 	"claimed_at",
-	"serialization_key",
+	"retry_count",
 	"task_payload",
+	"next_retry_at",
+	"serialization_key",
 }
 
 // FileStorageColumns are the columns of the stored-file table. Payload bytes
@@ -166,15 +189,15 @@ var FileStorageColumns = []string{
 // document plus the content hash; the bytes live behind the storage key.
 var AttachmentsColumns = []string{
 	"bank_id",
-	"document_id",
 	"attachment_hash",
 	"short_id",
 	"media_type",
 	"byte_size",
 	"storage_key",
 	"kind",
-	"filename",
 	"created_at",
+	"document_id",
+	"filename",
 }
 
 // BankStatsCacheColumns are the columns of the cross-process bank-statistics
@@ -190,23 +213,24 @@ var BankStatsCacheColumns = []string{
 var MentalModelsColumns = []string{
 	"id",
 	"bank_id",
-	"subtype",
 	"name",
-	"description",
 	"source_query",
 	"content",
 	"embedding",
+	"tags",
+	"last_refreshed_at",
+	"created_at",
+	"search_vector",
+	"reflect_response",
+	"max_tokens",
+	"trigger",
+	"last_refreshed_source_query",
+	"structured_content",
+	"subtype",
+	"description",
 	"entity_id",
 	"observations",
 	"links",
-	"tags",
-	"max_tokens",
-	"trigger",
-	"structured_content",
-	"reflect_response",
-	"history",
-	"last_refreshed_source_query",
-	"last_refreshed_at",
 	// last_memory_seen_at is the newest memory write a refresh actually saw.
 	// Staleness compares against it rather than against the refresh time,
 	// because a refresh that found nothing new still moved its clock.
@@ -231,28 +255,18 @@ var WebhooksColumns = []string{
 	"updated_at",
 }
 
-// WebhookDeliveriesColumns are the columns of the delivery records.
-var WebhookDeliveriesColumns = []string{
-	"id",
-	"webhook_id",
-	"bank_id",
-	"event_type",
-	"status",
-	"status_code",
-	"error",
-	"attempt",
-	"delivered_at",
-}
-
-// KnowledgeNodesColumns are the columns of the knowledge tree.
-var KnowledgeNodesColumns = []string{
+// KnowledgePagesColumns are the columns of the knowledge tree. A row carries
+// the name and the position; a page's text, tags and description live on the
+// mental model the row points at.
+var KnowledgePagesColumns = []string{
 	"id",
 	"bank_id",
 	"parent_id",
 	"kind",
-	"title",
-	"text",
-	"tags",
+	"name",
+	"mental_model_id",
+	"sort_order",
+	"managed",
 	"created_at",
 	"updated_at",
 }
@@ -288,20 +302,13 @@ var LLMRequestsColumns = []string{
 	"input_tokens",
 	"output_tokens",
 	"cached_tokens",
-	"thoughts_tokens",
 	"total_tokens",
 	"input",
 	"output",
 	"error",
 	"llm_info",
 	"metadata",
-}
-
-// ObservationSourcesColumns are the columns tying an observation to its
-// evidence.
-var ObservationSourcesColumns = []string{
-	"observation_id",
-	"source_id",
+	"thoughts_tokens",
 }
 
 // DirectivesColumns are the columns of the directive table. A directive is a

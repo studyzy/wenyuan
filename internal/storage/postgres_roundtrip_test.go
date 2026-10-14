@@ -20,11 +20,11 @@ func TestArchiveFactFieldsRoundTrip(t *testing.T) {
 	consolidated := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 	failed := time.Date(2026, 2, 4, 4, 5, 6, 0, time.UTC)
 	unit := MemoryUnit{
-		ID:                    "roundtrip-unit",
+		ID:                    pgUUID("roundtrip-unit"),
 		BankID:                "vec-bank",
 		Text:                  "the archive carried more than the text",
-		Type:                  TypeExperience,
-		SourceID:              "archive-fact-42",
+		FactType:              TypeExperience,
+		SourceMemoryIDs:       []string{"11111111-1111-4111-8111-111111111111"},
 		ObservationScopes:     json.RawMessage(`[["scope-a","scope-b"]]`),
 		ConsolidatedAt:        &consolidated,
 		ConsolidationFailedAt: &failed,
@@ -34,19 +34,20 @@ func TestArchiveFactFieldsRoundTrip(t *testing.T) {
 	}
 
 	var (
-		sourceID    string
+		sourceRaw   []byte
 		scopes      string
 		consolidate *time.Time
 		failedAt    *time.Time
 	)
-	query := `SELECT source_id, observation_scopes::text, consolidated_at, consolidation_failed_at
+	query := `SELECT source_memory_ids, observation_scopes::text, consolidated_at, consolidation_failed_at
 	          FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.memory_units WHERE id = $1`
-	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, "roundtrip-unit").
-		Scan(&sourceID, &scopes, &consolidate, &failedAt); err != nil {
+	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, pgUUID("roundtrip-unit")).
+		Scan(&sourceRaw, &scopes, &consolidate, &failedAt); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if sourceID != "archive-fact-42" {
-		t.Errorf("source_id = %q, want %q", sourceID, "archive-fact-42")
+	sourceIDs := decodePostgresTextArray(sourceRaw)
+	if len(sourceIDs) != 1 || sourceIDs[0] != "11111111-1111-4111-8111-111111111111" {
+		t.Errorf("source_memory_ids = %v, want the one archived id", sourceIDs)
 	}
 	if scopes != `[["scope-a", "scope-b"]]` {
 		t.Errorf("observation_scopes = %s, want [[\"scope-a\", \"scope-b\"]]", scopes)

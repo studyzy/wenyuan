@@ -6,12 +6,25 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// Disposition is the bank's three bounded integer traits, carried as an object
-// in the profile response and accepted as a deprecated request object.
+// Disposition is the bank's three bounded integer traits as the profile
+// response carries them. Every member is populated, because the stored object
+// is normalized before it is rendered.
 type Disposition struct {
 	Skepticism int `json:"skepticism"`
 	Literalism int `json:"literalism"`
 	Empathy    int `json:"empathy"`
+}
+
+// DispositionInput is the deprecated request object. Its members are pointers
+// so an absent member stays distinguishable from an explicit value: the
+// reference declares all three as required on the object form, and reports a
+// missing member as a missing field rather than as an out-of-range zero. A
+// plain int would collapse "not sent" into 0 and turn the omission into a
+// range error naming the wrong fault.
+type DispositionInput struct {
+	Skepticism *int `json:"skepticism"`
+	Literalism *int `json:"literalism"`
+	Empathy    *int `json:"empathy"`
 }
 
 // BankResponse is the public bank profile representation. Every field name
@@ -58,7 +71,7 @@ type BankListResponse struct {
 type BankRequest struct {
 	Name string `json:"name"`
 
-	Disposition *Disposition `json:"disposition"`
+	Disposition *DispositionInput `json:"disposition"`
 
 	DispositionSkepticism *int `json:"disposition_skepticism"`
 	DispositionLiteralism *int `json:"disposition_literalism"`
@@ -115,15 +128,11 @@ type ConfigWriteRequest struct {
 // ToResponse converts a stored bank into its public profile representation.
 func ToResponse(bank storage.Bank) BankResponse {
 	return BankResponse{
-		BankID: bank.ID,
-		Name:   bank.Name,
-		Disposition: Disposition{
-			Skepticism: bank.DispositionSkepticism,
-			Literalism: bank.DispositionLiteralism,
-			Empathy:    bank.DispositionEmpathy,
-		},
-		Mission:    bank.ReflectMission,
-		Background: bank.ReflectMission,
+		BankID:      bank.BankID,
+		Name:        bank.Name,
+		Disposition: dispositionOf(bank),
+		Mission:     bank.Mission,
+		Background:  bank.Mission,
 	}
 }
 
@@ -134,11 +143,11 @@ func ToListRow(bank storage.Bank, displayAlias string, matched []string) BankLis
 		matched = []string{}
 	}
 	return BankListRow{
-		BankID:         bank.ID,
+		BankID:         bank.BankID,
 		Name:           bank.Name,
 		Disposition:    dispositionOf(bank),
-		Mission:        bank.ReflectMission,
-		Background:     bank.ReflectMission,
+		Mission:        bank.Mission,
+		Background:     bank.Mission,
 		CreatedAt:      bank.CreatedAt,
 		UpdatedAt:      bank.UpdatedAt,
 		FactCount:      bank.FactCount,
@@ -150,10 +159,11 @@ func ToListRow(bank storage.Bank, displayAlias string, matched []string) BankLis
 }
 
 func dispositionOf(bank storage.Bank) Disposition {
+	disposition := bank.NormalizedDisposition()
 	return Disposition{
-		Skepticism: bank.DispositionSkepticism,
-		Literalism: bank.DispositionLiteralism,
-		Empathy:    bank.DispositionEmpathy,
+		Skepticism: disposition[storage.DispositionKeySkepticism],
+		Literalism: disposition[storage.DispositionKeyLiteralism],
+		Empathy:    disposition[storage.DispositionKeyEmpathy],
 	}
 }
 
@@ -170,28 +180,41 @@ func ToAliasResponse(bankID string, aliases []storage.BankAlias) AliasResponse {
 // documented precedence and neutral defaults.
 func (r BankRequest) ToStorage(id string) storage.Bank {
 	return storage.Bank{
-		ID:                    id,
-		Name:                  r.Name,
-		DispositionSkepticism: r.trait(r.DispositionSkepticism, func(d Disposition) int { return d.Skepticism }, storage.DispositionTraitNeutral),
-		DispositionLiteralism: r.trait(r.DispositionLiteralism, func(d Disposition) int { return d.Literalism }, storage.DispositionTraitNeutral),
-		DispositionEmpathy:    r.trait(r.DispositionEmpathy, func(d Disposition) int { return d.Empathy }, storage.DispositionTraitNeutral),
-		ReflectMission:        r.missionValue(),
+		BankID: id,
+		Name:   r.Name,
+		Disposition: map[string]int{
+			storage.DispositionKeySkepticism: r.trait(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }, storage.DispositionTraitNeutral),
+			storage.DispositionKeyLiteralism: r.trait(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }, storage.DispositionTraitNeutral),
+			storage.DispositionKeyEmpathy:    r.trait(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }, storage.DispositionTraitNeutral),
+		},
+		Mission: r.missionValue(),
 	}
 }
 
-// ToPatch converts a partial-update request into a storage patch.
+// ToPatch converts a partial-update request into a storage patch. Only the
+// traits the request actually carried are included in the partial map, so a
+// patch never resets a trait the caller left alone.
 func (r BankRequest) ToPatch() storage.BankPatch {
-	patch := storage.BankPatch{
-		DispositionSkepticism: r.traitPtr(r.DispositionSkepticism, func(d Disposition) int { return d.Skepticism }),
-		DispositionLiteralism: r.traitPtr(r.DispositionLiteralism, func(d Disposition) int { return d.Literalism }),
-		DispositionEmpathy:    r.traitPtr(r.DispositionEmpathy, func(d Disposition) int { return d.Empathy }),
+	patch := storage.BankPatch{}
+	traits := map[string]int{}
+	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
+		traits[storage.DispositionKeySkepticism] = *value
+	}
+	if value := r.traitPtr(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }); value != nil {
+		traits[storage.DispositionKeyLiteralism] = *value
+	}
+	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
+		traits[storage.DispositionKeyEmpathy] = *value
+	}
+	if len(traits) > 0 {
+		patch.Disposition = &traits
 	}
 	if r.Name != "" {
 		name := r.Name
 		patch.Name = &name
 	}
 	if mission := r.missionValuePtr(); mission != nil {
-		patch.ReflectMission = mission
+		patch.Mission = mission
 	}
 	return patch
 }
@@ -215,24 +238,25 @@ func (r BankRequest) missionValuePtr() *string {
 }
 
 // trait prefers the explicit individual field, then the deprecated disposition
-// object trait, then the supplied default.
-func (r BankRequest) trait(explicit *int, fromObject func(Disposition) int, fallback int) int {
-	if explicit != nil {
-		return *explicit
-	}
-	if r.Disposition != nil {
-		return fromObject(*r.Disposition)
+// object member, then the supplied default.
+//
+// A member the object did not carry is not a value: it falls through to the
+// default, exactly as the reference does when its individual field is absent.
+// Treating the absent member as zero would both produce a range error and
+// overwrite a stored trait with a value the caller never sent.
+func (r BankRequest) trait(explicit *int, fromObject func(DispositionInput) *int, fallback int) int {
+	if value := r.traitPtr(explicit, fromObject); value != nil {
+		return *value
 	}
 	return fallback
 }
 
-func (r BankRequest) traitPtr(explicit *int, fromObject func(Disposition) int) *int {
+func (r BankRequest) traitPtr(explicit *int, fromObject func(DispositionInput) *int) *int {
 	if explicit != nil {
 		return explicit
 	}
 	if r.Disposition != nil {
-		value := fromObject(*r.Disposition)
-		return &value
+		return fromObject(*r.Disposition)
 	}
 	return nil
 }

@@ -153,7 +153,7 @@ func TestUnknownAndMalformedOperationID(t *testing.T) {
 func TestFetchOperationIncludesPayload(t *testing.T) {
 	mux, store := newServer(t)
 	op, err := store.PutOperation(context.TODO(), storage.Operation{
-		ID: validOpID, BankID: "b1", OperationType: storage.OperationTypeRetain,
+		OperationID: validOpID, BankID: "b1", OperationType: storage.OperationTypeRetain,
 		Status: storage.StatusCompleted, Payload: map[string]any{"items": 1},
 	})
 	if err != nil {
@@ -202,7 +202,7 @@ func containsStatus(value string) bool {
 func seedOp(t *testing.T, store *storage.MemoryStore, id string, status storage.OperationStatus) {
 	t.Helper()
 	if _, err := store.PutOperation(context.TODO(), storage.Operation{
-		ID: id, BankID: "b1", OperationType: storage.OperationTypeRetain, Status: storage.StatusPending,
+		OperationID: id, BankID: "b1", OperationType: storage.OperationTypeRetain, Status: storage.StatusPending,
 	}); err != nil {
 		t.Fatal(err)
 	}

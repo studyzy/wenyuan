@@ -194,7 +194,7 @@ func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error
 	}
 	banks := make([]map[string]any, 0, len(page.Banks))
 	for _, bank := range page.Banks {
-		banks = append(banks, map[string]any{"id": bank.ID, "name": bank.Name})
+		banks = append(banks, map[string]any{"id": bank.BankID, "name": bank.Name})
 	}
 	return map[string]any{"banks": banks, "total": page.Total}, nil
 }
@@ -209,7 +209,7 @@ func (s *Server) getBank(ctx context.Context, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": bank.ID, "name": bank.Name}, nil
+	return map[string]any{"id": bank.BankID, "name": bank.Name}, nil
 }
 
 // listMemories lists a bank's memory units.
@@ -227,7 +227,7 @@ func (s *Server) listMemories(ctx context.Context, args map[string]any) (any, er
 	items := make([]map[string]any, 0, len(page.Memories))
 	for _, unit := range page.Memories {
 		items = append(items, map[string]any{
-			"id": unit.ID, "text": unit.Text, "type": string(unit.Type),
+			"id": unit.ID, "text": unit.Text, "type": string(unit.FactType),
 		})
 	}
 	return map[string]any{"memories": items, "total": page.Total}, nil
@@ -243,7 +243,7 @@ func (s *Server) getMemory(ctx context.Context, args map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": unit.ID, "text": unit.Text, "type": string(unit.Type)}, nil
+	return map[string]any{"id": unit.ID, "text": unit.Text, "type": string(unit.FactType)}, nil
 }
 
 // listMentalModels lists a bank's mental models.

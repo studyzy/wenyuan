@@ -17,7 +17,7 @@ func stalenessFixture(t *testing.T) (*MemoryStore, string, time.Time) {
 	t.Helper()
 	store := NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	written := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
@@ -44,7 +44,7 @@ func seedWrite(t *testing.T, store *MemoryStore, bankID string, match RecallMatc
 	defer store.mu.Unlock()
 	store.upsertUnitLocked(MemoryUnit{
 		ID: match.ID, BankID: bankID, Text: match.Text,
-		Type: MemoryUnitType(match.Type), Tags: match.Tags,
+		FactType: MemoryUnitType(match.Type), Tags: match.Tags,
 		MentionedAt: &written, OccurredStart: match.OccurredStart,
 	})
 	bank := store.banks[bankID]
@@ -94,7 +94,7 @@ func TestStaleWhenNeverSeen(t *testing.T) {
 func TestTagScopedModelIgnoresUnscopedWrites(t *testing.T) {
 	store := NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	watermark := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)

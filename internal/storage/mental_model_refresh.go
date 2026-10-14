@@ -79,12 +79,14 @@ func (s *MemoryStore) RecordMentalModelRefreshFailure(ctx context.Context, bankI
 	return nil
 }
 
-// BankWriteWatermark reads the bank's last write time. A bank that does not
-// exist, or has never been written, reports the zero time.
+// BankWriteWatermark reads the newest memory write in the bank, which is what a
+// mental model's staleness is measured against. A bank with no memories
+// reports the zero time. The value is not stored: it is the newest
+// memory_units.updated_at, which is where the reference reads it from.
 func (s *PostgresStore) BankWriteWatermark(ctx context.Context, bankID string) time.Time {
 	var last *time.Time
-	query := `SELECT COALESCE(last_write_at, created_at) FROM ` +
-		quoteIdent(s.schema) + `.banks WHERE id = $1`
+	query := `SELECT MAX(updated_at) FROM ` +
+		quoteIdent(s.schema) + `.memory_units WHERE bank_id = $1`
 	if err := s.db.QueryRowContext(ctx, query, bankID).Scan(&last); err != nil {
 		return time.Time{}
 	}

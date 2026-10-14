@@ -47,6 +47,12 @@ type Dependencies struct {
 	Provider provider.Provider
 	// Listen probes the resolved listen address before initialization.
 	Listen func(network, address string) (net.Listener, error)
+	// AddressAlreadyBound tells composition that the caller holds the listen
+	// address, so the fail-fast probe must be skipped. Serving binds the
+	// address before composing, and a probe of an address the same process
+	// already holds fails with address-in-use — which is not a startup error,
+	// it is the probe colliding with its own listener.
+	AddressAlreadyBound bool
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }
@@ -59,13 +65,17 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		listen = net.Listen
 	}
 
-	// Probe the listen address before expensive initialization.
-	probe, err := probeAddress(cfg, listen)
-	if err != nil {
-		return nil, err
-	}
-	if probe != nil {
-		_ = probe.Close()
+	// Probe the listen address before expensive initialization. A caller that
+	// already holds the address skips this: the probe would collide with that
+	// listener and report a false failure.
+	if !deps.AddressAlreadyBound {
+		probe, err := probeAddress(cfg, listen)
+		if err != nil {
+			return nil, err
+		}
+		if probe != nil {
+			_ = probe.Close()
+		}
 	}
 
 	store, err := resolveStore(ctx, cfg, deps)

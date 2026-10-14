@@ -15,7 +15,7 @@ import (
 func newHandlers(t *testing.T, exportEnabled, importEnabled bool) (*Handlers, *storage.MemoryStore) {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	return NewHandlers(store, exportEnabled, importEnabled), store

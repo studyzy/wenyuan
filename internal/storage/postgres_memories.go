@@ -9,7 +9,7 @@ import (
 
 // ListMemories returns one page of a bank's memory units, newest first.
 func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
-	filter := `bank_id = $1 AND ($2 = '' OR type = $2)`
+	filter := `bank_id = $1 AND ($2 = '' OR fact_type = $2)`
 	qualified := quoteIdent(s.schema)
 	var total int
 	if err := s.db.QueryRowContext(ctx,
@@ -19,7 +19,7 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 	}
 	limit := clampLimit(query.Limit, 50)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, bank_id, COALESCE(text,''), COALESCE(type,''), COALESCE(context,''),
+		`SELECT id, bank_id, COALESCE(text,''), COALESCE(fact_type,''), COALESCE(context,''),
 		        occurred_start, occurred_end, mentioned_at, event_date,
 		        COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}'),
 		        COALESCE(metadata, '{}'::jsonb)
@@ -44,7 +44,7 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 // GetMemory returns one memory unit by identifier.
 func (s *PostgresStore) GetMemory(ctx context.Context, bankID, memoryID string) (MemoryUnit, error) {
 	qualified := quoteIdent(s.schema)
-	query := `SELECT id, bank_id, COALESCE(text,''), COALESCE(type,''), COALESCE(context,''),
+	query := `SELECT id, bank_id, COALESCE(text,''), COALESCE(fact_type,''), COALESCE(context,''),
 	                 occurred_start, occurred_end, mentioned_at, event_date,
 	                 COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}'),
 	                 COALESCE(metadata, '{}'::jsonb)
@@ -80,7 +80,7 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 		return MemoryUnit{}, err
 	}
 	query := `UPDATE ` + qualified + `.memory_units
-	          SET text = $3, tags = $4, metadata = $5::jsonb
+	          SET text = $3, search_vector = ` + searchVectorSQL + `, tags = $4, metadata = $5::jsonb
 	          WHERE bank_id = $1 AND id = $2`
 	if _, err := s.db.ExecContext(ctx, query, bankID, memoryID,
 		current.Text, normalizeTags(current.Tags), metadata); err != nil {
@@ -130,11 +130,13 @@ func (s *PostgresStore) MemoryHistory(ctx context.Context, bankID, memoryID stri
 }
 
 // DeleteObservations removes the observations of a bank, or of one memory.
+// An observation is tied to a memory by carrying it as evidence, so the filter
+// is an overlap test against the observation's source_memory_ids array.
 func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID string) (int, error) {
 	qualified := quoteIdent(s.schema)
 	query := `DELETE FROM ` + qualified + `.memory_units
-	          WHERE bank_id = $1 AND type = 'observation'
-	            AND ($2 = '' OR id IN (SELECT observation_id FROM ` + qualified + `.observation_sources WHERE source_id = $2))`
+	          WHERE bank_id = $1 AND fact_type = 'observation'
+	            AND ($2 = '' OR source_memory_ids && ARRAY[$2::uuid])`
 	result, err := s.db.ExecContext(ctx, query, bankID, memoryID)
 	if err != nil {
 		return 0, err
@@ -158,7 +160,7 @@ func (s *PostgresStore) EnqueueConsolidation(ctx context.Context, bankID string)
 		return Operation{}, false, err
 	}
 	op, err := s.PutOperation(ctx, Operation{
-		ID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
 		Status: StatusPending,
 	})
 	if err != nil {
@@ -170,7 +172,7 @@ func (s *PostgresStore) EnqueueConsolidation(ctx context.Context, bankID string)
 // findPendingConsolidation returns a non-terminal consolidation for a bank.
 func (s *PostgresStore) findPendingConsolidation(ctx context.Context, bankID string) (Operation, error) {
 	qualified := quoteIdent(s.schema)
-	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run,
+	query := `SELECT operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''),
 	                 created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at,
 	                 result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')
 	          FROM ` + qualified + `.async_operations
@@ -215,7 +217,7 @@ func scanMemoryUnitRow(row rowScanner) (MemoryUnit, error) {
 		&unit.DocumentID, &unit.ChunkID, &tagsRaw, &metadataRaw); err != nil {
 		return MemoryUnit{}, err
 	}
-	unit.Type = MemoryUnitType(unitType)
+	unit.FactType = MemoryUnitType(unitType)
 	unit.OccurredStart = nullTimePtr(occurredStart)
 	unit.OccurredEnd = nullTimePtr(occurredEnd)
 	unit.MentionedAt = nullTimePtr(mentionedAt)

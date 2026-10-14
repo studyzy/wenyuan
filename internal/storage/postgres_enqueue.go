@@ -10,8 +10,8 @@ import (
 // enqueueColumns is the shared column list for reading an operation back.
 // %[1]s qualifies each column with the alias in scope, so the same list works
 // in each place the operation row is read.
-const enqueueColumns = `%[1]sid, %[1]sbank_id, COALESCE(%[1]soperation_type,''), %[1]sstatus,
-	COALESCE(%[1]serror_message,''), %[1]srun, %[1]screated_at, %[1]supdated_at,
+const enqueueColumns = `%[1]soperation_id, %[1]sbank_id, COALESCE(%[1]soperation_type,''), %[1]sstatus,
+	COALESCE(%[1]serror_message,''), %[1]screated_at, %[1]supdated_at,
 	%[1]scompleted_at, COALESCE(%[1]sretry_count,0), %[1]snext_retry_at,
 	%[1]sresult_metadata, COALESCE(%[1]sworker_id,''), %[1]sclaimed_at,
 	COALESCE(%[1]stask_payload, 'null'::jsonb), COALESCE(%[1]sserialization_key,'')`
@@ -35,8 +35,8 @@ func qualifiedColumns(alias string) string {
 // prevent. Here the statement itself is the arbiter.
 func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest) (EnqueueResult, error) {
 	op := req.Operation
-	if op.ID == "" {
-		op.ID = newID()
+	if op.OperationID == "" {
+		op.OperationID = newID()
 	}
 	if op.Status == "" {
 		op.Status = StatusPending
@@ -84,7 +84,7 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 
 	var bankPresent int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE id = $1 FOR NO KEY UPDATE`,
+		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
 		op.BankID).Scan(&bankPresent); err != nil {
 		// A bank that is not present holds no queued work, and the insert would
 		// fail its foreign key anyway, so there is nothing to deduplicate
@@ -98,11 +98,11 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 	// deterministic rather than dependent on row order.
 	var existingID string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM `+table+`
+		`SELECT operation_id FROM `+table+`
 		 WHERE bank_id = $1 AND operation_type = $2
 		   AND status = ANY($3::text[])
 		   AND task_payload ->> $4 = $5
-		 ORDER BY (status = 'processing') DESC, created_at, id
+		 ORDER BY (status = 'processing') DESC, created_at, operation_id
 		 LIMIT 1`,
 		op.BankID, op.OperationType, blockingStatuses, subjectKey, subjectValue(op.Payload, subjectKey)).Scan(&existingID)
 	switch {
@@ -120,14 +120,14 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 	}
 
 	query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
-		"          (id, bank_id, operation_type, status, error_message, run, retry_count," +
+		"          (bank_id, operation_type, status, error_message, retry_count," +
 		"           result_metadata, task_payload, serialization_key)" +
-		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)" +
+		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +
 		"          RETURNING " + qualifiedColumns("")
 	var stored Operation
 	stored, err = scanOperation(tx.QueryRowContext(ctx, query,
-		op.ID, op.BankID, op.OperationType, string(op.Status), op.Error,
-		maxInt(op.Run, 1), op.RetryCount, metadata, payload, op.SerializationKey))
+		op.BankID, op.OperationType, string(op.Status), op.Error,
+		op.RetryCount, metadata, payload, op.SerializationKey))
 	if err != nil {
 		return EnqueueResult{}, err
 	}
@@ -141,20 +141,20 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 func getOperationTx(ctx context.Context, tx Tx, schema, opID string) (Operation, error) {
 	row := tx.QueryRowContext(ctx,
 		`SELECT `+qualifiedColumns("")+`
-		 FROM `+quoteIdent(schema)+`.async_operations WHERE id = $1`, opID)
+		 FROM `+quoteIdent(schema)+`.async_operations WHERE operation_id = $1`, opID)
 	return scanOperation(row)
 }
 
 // insertOperation performs the unguarded insert.
 func (s *PostgresStore) insertOperation(ctx context.Context, op Operation, metadata, payload []byte) (Operation, error) {
 	query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
-		"          (id, bank_id, operation_type, status, error_message, run, retry_count," +
+		"          (bank_id, operation_type, status, error_message, retry_count," +
 		"           result_metadata, task_payload, serialization_key)" +
-		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)" +
+		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +
 		"          RETURNING " + qualifiedColumns("")
 	row := s.db.QueryRowContext(ctx, query,
-		op.ID, op.BankID, op.OperationType, string(op.Status), op.Error,
-		maxInt(op.Run, 1), op.RetryCount, metadata, payload, op.SerializationKey)
+		op.BankID, op.OperationType, string(op.Status), op.Error,
+		op.RetryCount, metadata, payload, op.SerializationKey)
 	return scanOperation(row)
 }
 

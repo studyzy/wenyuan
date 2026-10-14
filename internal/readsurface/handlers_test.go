@@ -21,7 +21,7 @@ func newServer(t *testing.T) *http.ServeMux {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: bank, Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	// A document written through the retain pipeline brings its chunks, units

@@ -90,7 +90,7 @@ func (s *MemoryStore) BanksNeedingConsolidation(ctx context.Context, schema stri
 		if unit.ConsolidatedAt != nil || unit.ConsolidationFailedAt != nil {
 			continue
 		}
-		if unit.Type != TypeExperience && unit.Type != TypeWorld {
+		if unit.FactType != TypeExperience && unit.FactType != TypeWorld {
 			continue
 		}
 		if pending[unit.BankID] {

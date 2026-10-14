@@ -14,7 +14,7 @@ import (
 func seedReadSurface(t *testing.T, app *App) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := app.Store.CreateBank(ctx, storage.Bank{ID: "rs-bank", Name: "rs-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(ctx, storage.Bank{BankID: "rs-bank", Name: "rs-bank"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.PutDocument(ctx, "rs-bank", "doc-1", storage.Document{
@@ -26,7 +26,7 @@ func seedReadSurface(t *testing.T, app *App) {
 	}
 	if _, err := app.Store.UpsertUnit(ctx, storage.MemoryUnit{
 		ID: "unit-1", BankID: "rs-bank", Text: "the deployment runs on Tuesdays",
-		Type: storage.TypeWorld, DocumentID: "doc-1", ChunkID: "chunk-1",
+		FactType: storage.TypeWorld, DocumentID: "doc-1", ChunkID: "chunk-1",
 		Tags: []string{"ops"},
 	}); err != nil {
 		t.Fatal(err)

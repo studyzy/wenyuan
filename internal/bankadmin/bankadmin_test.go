@@ -12,7 +12,7 @@ import (
 func seedStore(t *testing.T) *storage.MemoryStore {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "old", Name: "Old"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "old", Name: "Old"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "old", "nick", true); err != nil {

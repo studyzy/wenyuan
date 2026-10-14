@@ -104,13 +104,15 @@ func ensureBank(ctx context.Context, store storage.Store, bankID string, opts Op
 		now = opts.Now()
 	}
 	bank := storage.Bank{
-		ID:                    bankID,
-		Name:                  bankID,
-		DispositionSkepticism: 3,
-		DispositionLiteralism: 3,
-		DispositionEmpathy:    3,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		BankID: bankID,
+		Name:   bankID,
+		Disposition: map[string]int{
+			storage.DispositionKeySkepticism: 3,
+			storage.DispositionKeyLiteralism: 3,
+			storage.DispositionKeyEmpathy:    3,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if _, err := store.CreateBank(ctx, bank); err != nil {
 		return fmt.Errorf("create target bank %s: %w", bankID, err)
@@ -153,11 +155,11 @@ func writeDocument(ctx context.Context, store storage.Store, bankID string, doc 
 				continue
 			}
 			link := storage.MemoryLink{
-				ID:       linkID(bankID, unit.ID, factUnitID(bankID, doc.ID, relation.TargetFactIndex), relation.RelationType),
-				BankID:   bankID,
-				FromID:   unit.ID,
-				ToID:     factUnitID(bankID, doc.ID, relation.TargetFactIndex),
-				LinkType: storage.MemoryLinkType(relation.RelationType),
+				BankID:     bankID,
+				FromUnitID: unit.ID,
+				ToUnitID:   factUnitID(bankID, doc.ID, relation.TargetFactIndex),
+				LinkType:   storage.MemoryLinkType(relation.RelationType),
+				Weight:     1,
 			}
 			if err := store.UpsertLink(ctx, link); err != nil {
 				return fmt.Errorf("write causal link from %s: %w", unit.ID, err)

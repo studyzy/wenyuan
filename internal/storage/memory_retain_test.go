@@ -29,14 +29,14 @@ func TestRetainSegmentsIntoChunks(t *testing.T) {
 		t.Fatalf("expected three stored chunks, got %d", len(store.chunks))
 	}
 	for i, chunk := range store.chunks {
-		if chunk.Index != i {
-			t.Fatalf("chunk index = %d, want %d", chunk.Index, i)
+		if chunk.ChunkIndex != i {
+			t.Fatalf("chunk index = %d, want %d", chunk.ChunkIndex, i)
 		}
-		if chunk.Text == "" || chunk.ContentHash == "" {
+		if chunk.ChunkText == "" || chunk.ContentHash == "" {
 			t.Fatalf("chunk %d must carry text and a content hash: %+v", i, chunk)
 		}
-		if len(chunk.Text) > ChunkSize {
-			t.Fatalf("chunk %d is over the size budget: %d chars", i, len(chunk.Text))
+		if len(chunk.ChunkText) > ChunkSize {
+			t.Fatalf("chunk %d is over the size budget: %d chars", i, len(chunk.ChunkText))
 		}
 	}
 }
@@ -138,8 +138,8 @@ func TestEntityResolutionModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if label.Kind != EntityKindLabel {
-		t.Fatalf("label entity kind = %q", label.Kind)
+	if label.EntityKind != EntityKindLabel {
+		t.Fatalf("label entity kind = %q", label.EntityKind)
 	}
 }
 
@@ -156,10 +156,10 @@ func TestUnitAndLinkPersistence(t *testing.T) {
 	if len(units) == 0 {
 		t.Fatal("expected at least one stored unit")
 	}
-	if !IsValidMemoryUnitType(units[0].Type) {
-		t.Fatalf("stored unit type %q is not an accepted value", units[0].Type)
+	if !IsValidMemoryUnitType(units[0].FactType) {
+		t.Fatalf("stored unit type %q is not an accepted value", units[0].FactType)
 	}
-	link := MemoryLink{BankID: "b1", FromID: units[0].ID, ToID: units[0].ID, LinkType: LinkCausedBy}
+	link := MemoryLink{BankID: "b1", FromUnitID: units[0].ID, ToUnitID: units[0].ID, LinkType: LinkCausedBy, Weight: 1}
 	if err := store.UpsertLink(context.TODO(), link); err != nil {
 		t.Fatal(err)
 	}
@@ -238,18 +238,18 @@ func TestRetainOperationIdempotency(t *testing.T) {
 // one conflicts.
 func TestCancelOperationLifecycle(t *testing.T) {
 	store := NewMemoryStore("public")
-	op, err := store.PutOperation(context.TODO(), Operation{ID: "op-a", BankID: "b1", Status: StatusPending})
+	op, err := store.PutOperation(context.TODO(), Operation{OperationID: "op-a", BankID: "b1", Status: StatusPending})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := store.CancelOperation(context.TODO(), op.ID)
+	cancelled, err := store.CancelOperation(context.TODO(), op.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cancelled.Status != StatusCancelled {
 		t.Fatalf("cancelled status = %q", cancelled.Status)
 	}
-	if _, err := store.CancelOperation(context.TODO(), op.ID); err != ErrOperationConflict {
+	if _, err := store.CancelOperation(context.TODO(), op.OperationID); err != ErrOperationConflict {
 		t.Fatalf("cancel of a terminal operation err = %v, want conflict", err)
 	}
 }

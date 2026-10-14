@@ -48,6 +48,8 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		return err
 	}
 
+	// The address is held from here on, so composition must not probe it.
+	deps.AddressAlreadyBound = true
 	composed, err := New(ctx, cfg, deps)
 	if err != nil {
 		_ = listener.Close()

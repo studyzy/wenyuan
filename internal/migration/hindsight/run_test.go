@@ -165,10 +165,10 @@ func TestRunAppendKeepsExistingRows(t *testing.T) {
 	}
 	// Write one extra unit into the same bank directly.
 	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
-		ID:     "pre-existing",
-		BankID: "migrated-bank",
-		Text:   "A pre-existing memory about Alice.",
-		Type:   storage.TypeWorld,
+		ID:       "pre-existing",
+		BankID:   "migrated-bank",
+		Text:     "A pre-existing memory about Alice.",
+		FactType: storage.TypeWorld,
 	}); err != nil {
 		t.Fatal(err)
 	}

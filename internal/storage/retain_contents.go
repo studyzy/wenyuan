@@ -43,7 +43,7 @@ func verbatimContents(bankID, docID string, item RetainItem, tags []string) []it
 		unit := MemoryUnit{
 			BankID:        bankID,
 			Text:          chunk,
-			Type:          TypeWorld,
+			FactType:      TypeWorld,
 			Metadata:      item.Metadata,
 			DocumentID:    docID,
 			Tags:          tags,
@@ -63,8 +63,7 @@ func factContents(bankID, docID string, chunkIDs []string, item RetainItem, fact
 		unit := MemoryUnit{
 			BankID:        bankID,
 			Text:          fact.Text,
-			Type:          TypeWorld,
-			Confidence:    fact.Confidence,
+			FactType:      TypeWorld,
 			Metadata:      item.Metadata,
 			DocumentID:    docID,
 			ChunkID:       anchorChunkID(chunkIDs),
@@ -155,11 +154,11 @@ func causalLinksFor(bankID string, unitIDs []string, contents []itemContent) []M
 				continue
 			}
 			links = append(links, MemoryLink{
-				ID:       newID(),
-				BankID:   bankID,
-				FromID:   unitIDs[index],
-				ToID:     unitIDs[target],
-				LinkType: LinkCausedBy,
+				BankID:     bankID,
+				FromUnitID: unitIDs[index],
+				ToUnitID:   unitIDs[target],
+				LinkType:   LinkCausedBy,
+				Weight:     1,
 			})
 		}
 	}
@@ -172,11 +171,11 @@ func linkTuplesFor(bankID string, unitIDs []string) []MemoryLink {
 	links := make([]MemoryLink, 0, maxInt(len(unitIDs)-1, 0))
 	for i := 1; i < len(unitIDs); i++ {
 		links = append(links, MemoryLink{
-			ID:       newID(),
-			BankID:   bankID,
-			FromID:   unitIDs[i-1],
-			ToID:     unitIDs[i],
-			LinkType: LinkSemantic,
+			BankID:     bankID,
+			FromUnitID: unitIDs[i-1],
+			ToUnitID:   unitIDs[i],
+			LinkType:   LinkSemantic,
+			Weight:     1,
 		})
 	}
 	return links

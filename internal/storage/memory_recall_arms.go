@@ -134,11 +134,11 @@ func (s *MemoryStore) spreadFromSeeds(seeds []recallHit, bankID string) map[stri
 				if propagated <= 0 {
 					continue
 				}
-				if existing, ok := best[link.ToID]; ok && existing >= propagated {
+				if existing, ok := best[link.ToUnitID]; ok && existing >= propagated {
 					continue
 				}
-				best[link.ToID] = propagated
-				next = append(next, link.ToID)
+				best[link.ToUnitID] = propagated
+				next = append(next, link.ToUnitID)
 			}
 		}
 		sort.Strings(next)
@@ -154,7 +154,7 @@ func (s *MemoryStore) outgoingLinks(bankID string) map[string][]MemoryLink {
 		if link.BankID != bankID {
 			continue
 		}
-		out[link.FromID] = append(out[link.FromID], link)
+		out[link.FromUnitID] = append(out[link.FromUnitID], link)
 	}
 	return out
 }
@@ -186,7 +186,7 @@ func (s *MemoryStore) spreadTemporal(seeds []recallHit, bankID string) []recallH
 		if link.BankID != bankID {
 			continue
 		}
-		out[link.FromID] = append(out[link.FromID], link)
+		out[link.FromUnitID] = append(out[link.FromUnitID], link)
 	}
 	frontier := make([]string, 0, len(best))
 	for id := range best {
@@ -206,11 +206,11 @@ func (s *MemoryStore) spreadTemporal(seeds []recallHit, bankID string) []recallH
 				if propagated <= 0 {
 					continue
 				}
-				if existing, ok := best[link.ToID]; ok && existing >= propagated {
+				if existing, ok := best[link.ToUnitID]; ok && existing >= propagated {
 					continue
 				}
-				best[link.ToID] = propagated
-				next = append(next, link.ToID)
+				best[link.ToUnitID] = propagated
+				next = append(next, link.ToUnitID)
 			}
 		}
 		sort.Strings(next)

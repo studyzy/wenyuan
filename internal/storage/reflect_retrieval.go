@@ -36,7 +36,7 @@ func (s *MemoryStore) ReflectObservations(ctx context.Context, bankID, query str
 	out := make([]ReflectCitation, 0)
 	budget := maxTokens
 	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.Type != TypeObservation {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
 		if query != "" && !containsFold(unit.Text, query) {
@@ -65,7 +65,7 @@ func (s *MemoryStore) ReflectMemories(ctx context.Context, bankID, query string,
 	out := make([]ReflectCitation, 0)
 	budget := maxTokens
 	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.Type == TypeObservation {
+		if unit.BankID != bankID || unit.FactType == TypeObservation {
 			continue
 		}
 		if query != "" && !containsFold(unit.Text, query) {

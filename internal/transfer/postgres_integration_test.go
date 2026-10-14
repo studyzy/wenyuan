@@ -69,7 +69,7 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	}
 
 	const bankID = "e2e-bank"
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: bankID, Name: bankID}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bankID, Name: bankID}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 

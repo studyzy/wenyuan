@@ -76,7 +76,8 @@ POST /v1/default/banks/{bank_id}/background
 - 存储接口任何新方法须在 **memory 与 postgres 两个后端**同时实现（`internal/storage/store.go`）。
 - 不得在 `internal/bankapi` / `internal/memoryops` 中写 SQL；只能经 `internal/storage`。边界由 `internal/storage/boundary_test.go` 强制。
 - 归属表固定为：`banks, bank_aliases, documents, chunks, entities, memory_units, unit_entities, memory_links, entity_cooccurrences, async_operations`。
-- 迁移文件**两处副本**须同步：`migrations/` 与 `internal/storage/embedded/`；编号必须从 1 连续到 N（当前最新为 `0020_entity_trigram_index.sql`）。
+- 迁移**两处副本**须同步：`migrations/` 与 `internal/storage/embedded/`；编号必须从 1 连续到 N（当前为 `0001_extensions` … `0005_reference_functions`）。
+  **整套迁移由 `scripts/reference_schema_migrations.py` 从上游数据库目录直接生成**（见 `docs/SCHEMA-ALIGNMENT.md`），不要手写、不要手改：schema 的唯一事实是上游库，改 schema 就等于改上游库再重新生成。
 - 单文件 ≤500 行，测试文件 ≤800 行。
 
 **验证门槛（`make check`）**：build + test + vet + pgx build + lint。
@@ -212,7 +213,8 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 `GET /knowledge-base/search`、`GET /knowledge-base/pages/{page_id}`、
 `PATCH/DELETE /knowledge-base/nodes/{node_id}`。
 
-- 包：`internal/reporting/knowledge.go`；存储 `internal/storage/memory_knowledge.go` / `postgres_knowledge.go`；迁移 `0011_knowledge_nodes.sql`
+- 包：`internal/reporting/knowledge.go`；存储 `internal/storage/memory_knowledge.go` / `postgres_knowledge.go`。
+  存储落在上游表 `knowledge_pages`：一个 page 由一条 `mental_models` 行承载正文与 tags（`mental_model_id` 指向它），folder 只是容器。
 
 ### B3. Directives — ✅ 5 条
 
@@ -406,7 +408,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
   （SKIP LOCKED + 入队去重），而非选出单一进程。
 
 配套补齐：`internal/tenant/`（schema 发现接口 + 单租户默认实现）、
-迁移 0021（四个跨 schema 发现例程 + `last_memory_seen_at` / `last_refresh_failed_at`）、
+迁移里的四个跨 schema 发现例程（现为 `0005_reference_functions.sql`，正文照抄上游）、
 迁移 0022（`serialization_key`）、队列的按主题入队去重与串行化键。
 
 **refresh 语义已对齐上游**：由同步重跑 recall 改为入队 `refresh_mental_model`
@@ -456,11 +458,16 @@ s=open('../hindsight/hindsight-api-slim/hindsight_api/api/http.py').read()
 print(len(set((m.group(1).upper(), m.group(2))
   for m in re.finditer(r'@app\.(get|post|put|delete|patch)\(\s*\n?\s*\"([^\"]+)\"', s, re.M))))"   # 99
 
-# 迁移数量与最新编号
-ls migrations/ | wc -l && ls migrations/ | tail -1               # 20, 0020_...
+# 迁移数量与最新编号（从上游目录生成的系列）
+ls migrations/ | wc -l && ls migrations/ | tail -1               # 5, 0005_reference_functions.sql
 
-# 索引总数
-grep -h "CREATE INDEX" migrations/*.sql | wc -l                 # 49
+# 索引总数（应与上游一致）
+grep -h "^CREATE INDEX\|^CREATE UNIQUE INDEX" migrations/*.sql | wc -l   # 75
+
+# 与上游库逐对象比对（期望全部为 0）
+psql -d <upstream> -v schema=public -f scripts/schema_diff.sql > /tmp/up.schema
+psql -d <wenyuan>  -v schema=public -f scripts/schema_diff.sql > /tmp/wy.schema
+python3 scripts/schema_inventory.py
 
 # 迁移丢字段（函数体应为 return nil）
 grep -n "func unmappedFields" -A 3 internal/migration/hindsight/map.go
@@ -481,7 +488,7 @@ grep -n "^func maintenanceJobs" internal/app/maintenance_jobs.go
 grep -n "EnvRetentionSweepIntervalSeconds" internal/config/maintenance.go
 
 # 四个发现例程是否在迁移里（两份副本应各 4 处）
-grep -c "CREATE OR REPLACE FUNCTION" migrations/0021_*.sql internal/storage/embedded/0021_*.sql
+grep -c "CREATE OR REPLACE FUNCTION" migrations/0005_reference_functions.sql internal/storage/embedded/0005_reference_functions.sql
 
 # 真实运行维护循环（需要 pgx 构建 + 本地库）
 go build -tags pgx -o /tmp/worker ./cmd/worker

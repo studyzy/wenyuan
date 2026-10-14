@@ -11,7 +11,7 @@ import (
 func (s *PostgresStore) ResolveBankID(ctx context.Context, name string) (string, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE id = $1`, name).Scan(&exists)
+		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, name).Scan(&exists)
 	if err == nil {
 		return name, nil
 	}
@@ -137,7 +137,7 @@ func (s *PostgresStore) ownsAlias(ctx context.Context, bankID, alias string) boo
 func (s *PostgresStore) bankExists(ctx context.Context, bankID string) (string, bool) {
 	var id string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM `+quoteIdent(s.schema)+`.banks WHERE id = $1`, bankID).Scan(&id)
+		`SELECT id FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&id)
 	return id, err == nil
 }
 

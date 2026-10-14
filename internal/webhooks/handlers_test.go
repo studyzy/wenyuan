@@ -17,7 +17,7 @@ import (
 func newServer(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	guard := NewGuard(GuardConfig{AllowPrivateHosts: true, AllowedHosts: []string{"example.test"}})
@@ -90,8 +90,10 @@ func TestWebhookLifecycle(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	if rec := send(mux, http.MethodGet, base+"/"+webhook.ID, ""); rec.Code != http.StatusOK {
-		t.Fatalf("get: %d", rec.Code)
+	// The reference exposes no single-webhook read, so a GET on the member path
+	// is not routable and must not answer 200.
+	if rec := send(mux, http.MethodGet, base+"/"+webhook.ID, ""); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("member get: %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 	updated := send(mux, http.MethodPatch, base+"/"+webhook.ID, `{"enabled":false,"event_types":["memory.updated"]}`)
 	if updated.Code != http.StatusOK {
@@ -120,8 +122,10 @@ func TestWebhookLifecycle(t *testing.T) {
 	if rec := send(mux, http.MethodDelete, base+"/"+webhook.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d", rec.Code)
 	}
-	if rec := send(mux, http.MethodGet, base+"/"+webhook.ID, ""); rec.Code != http.StatusNotFound {
-		t.Fatalf("get after delete: %d, want 404", rec.Code)
+	// With no member read route, a repeated delete is how the absence of a
+	// webhook is observed.
+	if rec := send(mux, http.MethodDelete, base+"/"+webhook.ID, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("delete after delete: %d, want 404", rec.Code)
 	}
 }
 
@@ -177,7 +181,9 @@ func TestWebhookNegativeCases(t *testing.T) {
 	}
 
 	seeded, _ := newServer(t)
-	if rec := send(seeded, http.MethodGet, "/v1/default/banks/b1/webhooks/does-not-exist", ""); rec.Code != http.StatusNotFound {
+	// The member path has no read route, so an unknown webhook is probed with
+	// a method the surface actually offers.
+	if rec := send(seeded, http.MethodDelete, "/v1/default/banks/b1/webhooks/does-not-exist", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown webhook: %d, want 404", rec.Code)
 	}
 }

@@ -49,7 +49,6 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 
 	// Memory sub-routes.
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMemoriesDryRunExtract), h.DryRunExtract)
-	handle(http.MethodPost, httpx.BankPath(httpx.SuffixOperationMemberDelete), h.OperationDeleteAlias)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMemoriesList), h.ListMemories)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMemoryMember), h.GetMemory)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixMemoryMember), h.UpdateMemory)
@@ -366,7 +365,7 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusAccepted, ConsolidationResponse{
-		OperationID: op.ID, Deduplicated: deduplicated,
+		OperationID: op.OperationID, Deduplicated: deduplicated,
 	})
 }
 
@@ -478,28 +477,6 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		"dry_run":    true,
 		"characters": len(body.Text),
 		"extracted":  []any{},
-	})
-}
-
-// OperationDeleteAlias accepts a delete addressed to the member path, which is
-// the form a client may send instead of the collection delete.
-func (h *Handlers) OperationDeleteAlias(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	opID := strings.TrimSpace(r.PathValue("operation_id"))
-	if opID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "operation not found"))
-		return
-	}
-	op, err := h.Store.CancelOperation(r.Context(), opID)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, map[string]any{
-		"operation_id": op.ID, "status": string(op.Status), "bank_id": bankID,
 	})
 }
 

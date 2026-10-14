@@ -8,14 +8,18 @@ import (
 // Bank is the stored bank representation. Field names on the JSON representation
 // are the compatibility surface and are declared by the bank API area.
 type Bank struct {
-	ID                    string
-	Name                  string
-	DispositionSkepticism int
-	DispositionLiteralism int
-	DispositionEmpathy    int
-	ReflectMission        string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// BankID is the bank's primary key, named for the reference's column.
+	BankID string
+	Name   string
+	// Disposition is the reference's single jsonb column holding the graded
+	// traits. It is one column rather than three because that is the stored
+	// shape; the accessors below expose a trait by name so a caller reads a
+	// value it can use rather than a map it must know the keys of.
+	Disposition map[string]int
+	// Mission is the standing instruction applied when the bank reflects.
+	Mission   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 
 	// FactCount is the number of stored memory units owned by the bank.
 	FactCount int
@@ -25,13 +29,52 @@ type Bank struct {
 	LastWriteAt *time.Time
 }
 
+// Disposition trait keys, which are the reference's own key names inside the
+// jsonb object. Declared once so a read and a write cannot disagree on spelling.
+const (
+	DispositionKeySkepticism = "skepticism"
+	DispositionKeyLiteralism = "literalism"
+	DispositionKeyEmpathy    = "empathy"
+)
+
+// Trait reads one graded disposition by its reference key, returning the neutral
+// value when the bank has not set it.
+func (b Bank) Trait(key string) int {
+	if value, ok := b.Disposition[key]; ok && value != 0 {
+		return value
+	}
+	return DispositionTraitNeutral
+}
+
+// WithTrait returns a copy of the disposition with one trait replaced. It copies
+// rather than mutates so a shared map cannot be changed through one bank.
+func (b Bank) WithTrait(key string, value int) map[string]int {
+	next := make(map[string]int, len(b.Disposition)+1)
+	for existing, current := range b.Disposition {
+		next[existing] = current
+	}
+	next[key] = value
+	return next
+}
+
+// NormalizedDisposition returns the disposition with every trait present,
+// filling an absent one with the neutral value so a stored row and a freshly
+// built value have the same shape.
+func (b Bank) NormalizedDisposition() map[string]int {
+	return map[string]int{
+		DispositionKeySkepticism: b.Trait(DispositionKeySkepticism),
+		DispositionKeyLiteralism: b.Trait(DispositionKeyLiteralism),
+		DispositionKeyEmpathy:    b.Trait(DispositionKeyEmpathy),
+	}
+}
+
 // BankPatch carries a partial bank update; nil fields are left unchanged.
 type BankPatch struct {
-	Name                  *string
-	DispositionSkepticism *int
-	DispositionLiteralism *int
-	DispositionEmpathy    *int
-	ReflectMission        *string
+	Name *string
+	// Disposition, when set, merges into the bank's traits rather than
+	// replacing the set, so a caller setting one trait does not clear the rest.
+	Disposition *map[string]int
+	Mission     *string
 }
 
 // BankAlias is one extra identifier that routes to a bank. Persisted in the
@@ -120,18 +163,18 @@ type RecallRequest struct {
 
 // RecallMatch is one recall result row before envelope assembly.
 type RecallMatch struct {
-	ID            string
-	Text          string
-	Type          string
-	Context       string
-	OccurredStart *time.Time
-	OccurredEnd   *time.Time
-	MentionedAt   *time.Time
-	ChunkID       string
-	DocumentID    string
-	Metadata      map[string]any
-	SourceFactIDs []string
-	Attachments   []RecallAttachment
+	ID              string
+	Text            string
+	Type            string
+	Context         string
+	OccurredStart   *time.Time
+	OccurredEnd     *time.Time
+	MentionedAt     *time.Time
+	ChunkID         string
+	DocumentID      string
+	Metadata        map[string]any
+	SourceMemoryIDs []string
+	Attachments     []RecallAttachment
 	// Scores carries per-stage values keyed by stage name (semantic, keyword,
 	// reranker). A stage that did not surface the result is absent.
 	Scores   map[string]float64
@@ -288,25 +331,25 @@ type Document struct {
 
 // Chunk is one ordered segment of a document.
 type Chunk struct {
-	ID          string
+	ChunkID     string
 	BankID      string
 	DocumentID  string
-	Index       int
-	Text        string
+	ChunkIndex  int
+	ChunkText   string
 	ContentHash string
 	CreatedAt   time.Time
 }
 
 // Entity is a resolved entity identity within a bank.
 type Entity struct {
-	ID           string
-	BankID       string
-	Name         string
-	Kind         EntityKind
-	Metadata     map[string]any
-	FirstSeen    *time.Time
-	LastSeen     *time.Time
-	MentionCount int
+	ID            string
+	BankID        string
+	CanonicalName string
+	EntityKind    EntityKind
+	Metadata      map[string]any
+	FirstSeen     *time.Time
+	LastSeen      *time.Time
+	MentionCount  int
 }
 
 // MemoryUnit is one extracted fact to persist.
@@ -320,15 +363,19 @@ type MemoryUnit struct {
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time
-	Type          MemoryUnitType
-	Confidence    float64
-	Metadata      map[string]any
-	DocumentID    string
-	ChunkID       string
-	Tags          []string
-	// SourceID is the archive-internal fact identity, carried so an
-	// export/import round trip is lossless.
-	SourceID string
+	// FactType is the reference's name for the unit's kind. It is not the
+	// caller's label for an entity; that is EntityKind.
+	FactType MemoryUnitType
+	// ProofCount is how many facts an observation was folded from — evidence
+	// strength, not the caller's certainty about the write.
+	ProofCount int
+	Metadata   map[string]any
+	DocumentID string
+	ChunkID    string
+	Tags       []string
+	// SourceMemoryIDs are the reference-side identities of the memories this
+	// unit was drawn from, carried so an export/import round trip is lossless.
+	SourceMemoryIDs []string
 	// ObservationScopes is the scoping the unit was retained under, kept as
 	// the raw JSON value so the mode and explicit-group forms both survive a
 	// read/write round trip.
@@ -378,12 +425,20 @@ type ConsolidationObservation struct {
 }
 
 // MemoryLink is one directed link between two memory units.
+// MemoryLink has no synthetic identifier: the reference identifies a link by its
+// endpoints and its type, and carries a weight and an optional entity the link
+// was resolved through.
 type MemoryLink struct {
-	ID       string
-	BankID   string
-	FromID   string
-	ToID     string
-	LinkType MemoryLinkType
+	BankID     string
+	FromUnitID string
+	ToUnitID   string
+	LinkType   MemoryLinkType
+	// EntityID is the entity the link was resolved through, empty when the link
+	// is not entity-mediated.
+	EntityID string
+	// Weight is the link's strength, used by the propagation passes.
+	Weight    float64
+	CreatedAt time.Time
 }
 
 // OperationQuery is the operation listing query.

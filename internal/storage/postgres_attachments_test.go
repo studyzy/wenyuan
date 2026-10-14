@@ -50,7 +50,7 @@ func TestAttachmentsPersistAndLinkToUnit(t *testing.T) {
 	}
 
 	unit := MemoryUnit{
-		ID: "att-unit", BankID: "vec-bank", Text: "a diagram", Type: TypeExperience,
+		ID: pgUUID("att-unit"), BankID: "vec-bank", Text: "a diagram", FactType: TypeExperience,
 		AttachmentIDs: []string{"deadbeef0123"},
 	}
 	if _, err := store.UpsertUnit(ctx, unit); err != nil {
@@ -58,7 +58,7 @@ func TestAttachmentsPersistAndLinkToUnit(t *testing.T) {
 	}
 	var ids string
 	query := `SELECT attachment_ids::text FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.memory_units WHERE id = $1`
-	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, "att-unit").Scan(&ids); err != nil {
+	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, pgUUID("att-unit")).Scan(&ids); err != nil {
 		t.Fatalf("read attachment_ids: %v", err)
 	}
 	if ids != `{deadbeef0123}` {

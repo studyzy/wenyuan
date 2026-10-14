@@ -12,31 +12,6 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// fakeObjectStore records payloads in memory so a decorator can be exercised
-// without a live endpoint.
-type fakeObjectStore struct {
-	objects map[string][]byte
-	types   map[string]string
-}
-
-func newFakeObjectStore() *fakeObjectStore {
-	return &fakeObjectStore{objects: map[string][]byte{}, types: map[string]string{}}
-}
-
-func (f *fakeObjectStore) Put(_ context.Context, key string, data []byte, contentType string) error {
-	f.objects[key] = data
-	f.types[key] = contentType
-	return nil
-}
-
-func (f *fakeObjectStore) Get(_ context.Context, key string) ([]byte, string, error) {
-	data, ok := f.objects[key]
-	if !ok {
-		return nil, "", storage.ErrObjectNotFound
-	}
-	return data, f.types[key], nil
-}
-
 // Only a database-backed store takes an object store; the in-process backend
 // keeps its payloads in memory and is returned unchanged.
 func TestAttachObjectStoreSkipsMemoryBackend(t *testing.T) {

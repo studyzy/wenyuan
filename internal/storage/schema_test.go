@@ -2,21 +2,19 @@ package storage
 
 import "testing"
 
-// ts-0029: the bank and memory-unit core columns exist with the expected names.
+// The bank and memory-unit core columns exist with the reference names.
 func TestBankAndMemoryUnitColumnContracts(t *testing.T) {
 	for _, name := range []string{
-		"id", "name",
-		"disposition_skepticism", "disposition_literalism", "disposition_empathy",
-		"reflect_mission",
+		"bank_id", "name", "disposition", "mission",
 	} {
 		if !containsString(BanksColumns, name) {
 			t.Fatalf("banks column contract is missing %q", name)
 		}
 	}
 	for _, name := range []string{
-		"text", "type",
+		"text", "fact_type", "proof_count",
 		"occurred_start", "occurred_end", "mentioned_at", "metadata",
-		"context", "event_date", "confidence_score", "access_count",
+		"context", "event_date", "source_memory_ids",
 	} {
 		if !containsString(MemoryUnitsColumns, name) {
 			t.Fatalf("memory_units column contract is missing %q", name)
@@ -24,15 +22,16 @@ func TestBankAndMemoryUnitColumnContracts(t *testing.T) {
 	}
 }
 
-// ts-0019 / neg-0004 / inv-0005: the memory-domain table set is exactly the
-// documented set and is owned by the storage area.
+// The memory-domain table set is exactly the documented set and is owned by
+// the storage area.
 func TestMemoryDomainTableInventory(t *testing.T) {
 	expected := []string{
 		"banks", "bank_aliases", "documents", "chunks", "entities", "memory_units",
-		"unit_entities", "memory_links", "entity_cooccurrences", "async_operations",
-		"file_storage", "mental_models", "directives",
-		"audit_log", "llm_requests", "observation_sources", "knowledge_nodes",
-		"webhooks", "webhook_deliveries", "attachments", "bank_stats_cache",
+		"invalidated_memory_units", "unit_entities", "memory_links", "entity_cooccurrences",
+		"entity_maintenance_queue", "graph_maintenance_queue", "async_operations",
+		"file_storage", "mental_models", "mental_model_history", "observation_history",
+		"directives", "audit_log", "llm_requests", "knowledge_pages",
+		"webhooks", "attachments", "bank_stats_cache",
 	}
 	if len(MemoryDomainTables) != len(expected) {
 		t.Fatalf("table count = %d, want %d", len(MemoryDomainTables), len(expected))
@@ -63,10 +62,10 @@ func TestRetainColumnContracts(t *testing.T) {
 		columns []string
 		names   []string
 	}{
-		"documents":        {DocumentsColumns, []string{"original_text", "content_hash", "metadata", "retain_params"}},
-		"chunks":           {ChunksColumns, []string{"id", "bank_id", "document_id", "index", "text", "content_hash"}},
-		"entities":         {EntitiesColumns, []string{"name", "bank_id", "metadata", "first_seen", "last_seen", "mention_count", "kind"}},
-		"async_operations": {AsyncOperationsColumns, []string{"id", "bank_id", "operation_type", "status", "created_at", "updated_at", "completed_at", "error_message", "result_metadata"}},
+		"documents":        {DocumentsColumns, []string{"original_text", "content_hash", "retain_params", "tags"}},
+		"chunks":           {ChunksColumns, []string{"chunk_id", "bank_id", "document_id", "chunk_index", "chunk_text", "content_hash"}},
+		"entities":         {EntitiesColumns, []string{"canonical_name", "bank_id", "metadata", "first_seen", "last_seen", "mention_count", "entity_kind"}},
+		"async_operations": {AsyncOperationsColumns, []string{"operation_id", "bank_id", "operation_type", "status", "created_at", "updated_at", "completed_at", "error_message", "result_metadata"}},
 	}
 	for table, tc := range cases {
 		for _, name := range tc.names {
@@ -91,7 +90,7 @@ func TestMigrationDefinesRetainPipeline(t *testing.T) {
 	for _, needle := range []string{
 		"retain_params", "content_hash", "original_text", "mention_count",
 		"operation_type", "error_message", "result_metadata", "retry_count",
-		"next_retry_at", "completed_at", "progress",
+		"next_retry_at", "completed_at",
 	} {
 		if !containsFold(sql, needle) {
 			t.Fatalf("the migration series must define %q", needle)

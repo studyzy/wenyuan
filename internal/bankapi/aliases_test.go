@@ -22,7 +22,7 @@ func decodeAliases(t *testing.T, body []byte) AliasResponse {
 // bank's own identifier and the full alias list; add returns the created status.
 func TestAliasLifecycle(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
 
 	rec := post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"first","primary":true}`)
 	if rec.Code != http.StatusCreated {
@@ -68,8 +68,8 @@ func TestAliasLifecycle(t *testing.T) {
 // ts-0012: a colliding alias is a conflict; a self-alias is a client error.
 func TestAliasConflictAndSelfAlias(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
-	mustCreate(t, store, storage.Bank{ID: "other", Name: "Other"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "other", Name: "Other"})
 	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"taken","primary":false}`)
 
 	rec := post(t, mux, "/v1/default/banks/other/aliases", `{"alias":"taken","primary":false}`)
@@ -86,7 +86,7 @@ func TestAliasConflictAndSelfAlias(t *testing.T) {
 // ts-0013: promoting or removing an alias the bank does not own is not-found.
 func TestAliasNotFound(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
 	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/owner/aliases/ghost", `{"primary":true}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("promote unknown alias status = %d", rec.Code)
 	}
@@ -99,7 +99,7 @@ func TestAliasNotFound(t *testing.T) {
 // canonical identifier.
 func TestAliasResolvesAtEveryRoute(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
 	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"nick","primary":false}`)
 
 	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/nick", `{"mission":"via alias"}`)
@@ -128,7 +128,7 @@ func TestAliasResolvesAtEveryRoute(t *testing.T) {
 // ts-0015: creating a bank under a name that is already an alias is a conflict.
 func TestCreateBankUnderExistingAliasConflicts(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "owner", Name: "Owner"})
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
 	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"blocked","primary":false}`)
 
 	rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/blocked", `{"name":"Blocked"}`)
@@ -141,8 +141,8 @@ func TestCreateBankUnderExistingAliasConflicts(t *testing.T) {
 // otherwise.
 func TestListReportsDisplayAlias(t *testing.T) {
 	mux, store := newTestServer(t)
-	mustCreate(t, store, storage.Bank{ID: "promoted", Name: "Promoted"})
-	mustCreate(t, store, storage.Bank{ID: "plain", Name: "Plain"})
+	mustCreate(t, store, storage.Bank{BankID: "promoted", Name: "Promoted"})
+	mustCreate(t, store, storage.Bank{BankID: "plain", Name: "Plain"})
 	post(t, mux, "/v1/default/banks/promoted/aliases", `{"alias":"shiny","primary":true}`)
 
 	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks", "")
@@ -167,7 +167,7 @@ func TestListReportsDisplayAlias(t *testing.T) {
 // ts-0017: the configuration read always answers; the write is gated.
 func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	mustCreate(t, store, storage.Bank{ID: "b1", Name: "One"})
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 
 	gated := NewHandlers(store)
 	gated.WithConfigAPI(false)
@@ -200,7 +200,7 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bank.DispositionEmpathy != 5 || bank.ReflectMission != "live" {
+	if bank.Trait(storage.DispositionKeyEmpathy) != 5 || bank.Mission != "live" {
 		t.Fatalf("config write must apply the overrides: %+v", bank)
 	}
 }
@@ -209,7 +209,7 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 // bank on the global configuration, and is gated like the write.
 func TestBankConfigResetClearsOverrides(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	mustCreate(t, store, storage.Bank{ID: "b1", Name: "One"})
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 
 	gated := NewHandlers(store)
 	gated.WithConfigAPI(false)
@@ -243,7 +243,7 @@ func TestBankConfigResetClearsOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bank.DispositionEmpathy != storage.DispositionTraitNeutral || bank.ReflectMission != "" {
+	if bank.Trait(storage.DispositionKeyEmpathy) != storage.DispositionTraitNeutral || bank.Mission != "" {
 		t.Fatalf("reset must persist the defaults: %+v", bank)
 	}
 }

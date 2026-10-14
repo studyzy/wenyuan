@@ -75,7 +75,7 @@ func toResultItem(match storage.RecallMatch) RecallResultItem {
 		ChunkID:       match.ChunkID,
 		DocumentID:    match.DocumentID,
 		Metadata:      match.Metadata,
-		SourceFactIDs: nonNilStrings(match.SourceFactIDs),
+		SourceFactIDs: nonNilStrings(match.SourceMemoryIDs),
 		Scores:        toScoreObject(match),
 		Entities:      nonNilStrings(match.Entities),
 		Tags:          nonNilStrings(match.Tags),

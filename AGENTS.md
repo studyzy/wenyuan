@@ -95,13 +95,9 @@ Tests live next to the code as `*_test.go`.
 and fails if it finds SQL-shaped references (`FROM banks`, `INTO chunks`,
 `UPDATE memory_units`, ...) to any table in `storage.MemoryDomainTables`.
 
-The owned tables are:
-
-```
-banks, bank_aliases, documents, chunks, entities,
-memory_units, unit_entities, memory_links,
-entity_cooccurrences, async_operations
-```
+The owned tables are listed in `storage.MemoryDomainTables`
+(`internal/storage/schema.go`); the set is the reference schema's, and
+`internal/storage/schema_test.go` pins it.
 
 Practical consequence: handlers in `internal/bankapi` and `internal/memoryops`
 must go through the `storage` interface. Never write SQL in a handler package.
@@ -129,22 +125,31 @@ interface will not compile. Files are split by area:
 
 ### Migrations — read this before touching SQL
 
-- Numbered, one concern per file: `migrations/000N_name.sql`.
-- **The migrations are duplicated.** The authoritative source is `migrations/`,
-  but the binary does not read it. `internal/storage/migrate.go` embeds
-  `internal/storage/embedded/` via `//go:embed all:embedded`, and that directory
-  holds a **second copy** of every migration.
-- **A migration must be updated in both places.** There is no Makefile target,
-  generator script, or test that keeps them in sync — the only sync test
-  (`migrate_test.go`) just asserts the embedded series is non-empty. Editing
-  only `migrations/` has no effect on runtime behavior; editing only
-  `embedded/` leaves the visible series wrong. The two copies already differ in
-  whitespace and comments, so a plain `diff` will always show noise — compare
-  the statements, not the bytes.
-- `internal/storage/schema.go` declares the expected table set; `schema_test.go`
-  cross-checks it. Adding a table means touching `schema.go` and both migration
-  copies.
-- Never edit an already-released migration in place — add a new one.
+**The migration series is generated, not written.** The PostgreSQL schema this
+project serves *is* the upstream Hindsight schema, so the series is emitted from
+the reference database's own catalogue:
+
+```sh
+python3 scripts/reference_schema_migrations.py   # regenerates both copies
+```
+
+It writes `migrations/` and `internal/storage/embedded/` as five files —
+`0001_extensions`, `0002_reference_tables`, `0003_reference_constraints`,
+`0004_reference_indexes`, `0005_reference_functions`. Two consequences:
+
+- **Do not hand-edit a migration.** To change the schema, change the reference
+  and regenerate. A hand edit reintroduces exactly the drift the generation
+  exists to prevent.
+- **The two copies are written together** by the generator; there is nothing to
+  keep in sync by hand. `internal/storage/migrate.go` embeds
+  `internal/storage/embedded/` via `//go:embed all:embedded`, and that is the
+  copy the binary reads.
+
+`docs/SCHEMA-ALIGNMENT.md` is the standing comparison against the live
+reference, produced by `scripts/schema_diff.sql` and
+`scripts/schema_inventory.py`. It must stay empty: no object missing, extra or
+differing. `internal/storage/schema.go` declares the expected table set;
+`schema_test.go` cross-checks the declarations against the series.
 
 ## Known gaps — do not assume these work
 

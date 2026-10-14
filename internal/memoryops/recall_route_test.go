@@ -22,7 +22,7 @@ func TestRecallRouteBoundUnderBankPrefix(t *testing.T) {
 // beh-0010 / ts-0015: results belong to the addressed bank only.
 func TestRecallIsBankScoped(t *testing.T) {
 	mux, store := newServer(t)
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{ID: "b2", Name: "Other"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b2", Name: "Other"}); err != nil {
 		t.Fatal(err)
 	}
 	store.SeedMemory("b1", storage.RecallMatch{ID: "one", Text: "alpha", Type: "world"})

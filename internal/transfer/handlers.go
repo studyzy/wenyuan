@@ -63,12 +63,19 @@ func (h *Handlers) submitRejected(w http.ResponseWriter, r *http.Request, detail
 }
 
 // newOperationID builds an opaque operation identifier.
+//
+// The reference declares the operation key as uuid, so the value is laid out in
+// the canonical 8-4-4-4-12 form with the version and variant bits set; a
+// prefixed hex string would not be storable.
 func newOperationID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("op-%d", time.Now().UnixNano())
+		return "00000000-0000-4000-8000-000000000000"
 	}
-	return "op-" + hex.EncodeToString(raw[:])
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	hexed := hex.EncodeToString(raw[:])
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
 }
 
 // recordOperation persists an accepted asynchronous operation. The payload
@@ -77,7 +84,7 @@ func newOperationID() string {
 // recorded; delivery is explicitly out of scope.
 func (h *Handlers) recordOperation(ctx context.Context, bankID, opType string, payload map[string]any) (storage.Operation, error) {
 	return h.Store.PutOperation(ctx, storage.Operation{
-		ID:            newOperationID(),
+		OperationID:   newOperationID(),
 		BankID:        bankID,
 		OperationType: opType,
 		Status:        storage.StatusPending,
@@ -93,7 +100,7 @@ func writeAccepted(w http.ResponseWriter, r *http.Request, op storage.Operation)
 	if strings.TrimSpace(status) == "" {
 		status = string(storage.StatusPending)
 	}
-	httpx.WriteJSONFor(w, r, http.StatusAccepted, operationAccepted{OperationID: op.ID, Status: status})
+	httpx.WriteJSONFor(w, r, http.StatusAccepted, operationAccepted{OperationID: op.OperationID, Status: status})
 }
 
 // stashUpload persists an uploaded archive under a bank-scoped key and returns

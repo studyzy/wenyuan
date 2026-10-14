@@ -18,7 +18,7 @@ func TestGraphArmReachesLinkedMemories(t *testing.T) {
 		RecallMatch{ID: "unlinked", Text: "unrelated note about weather", Type: "world"},
 	)
 	if err := store.UpsertLink(context.TODO(), MemoryLink{
-		ID: "l1", BankID: "b1", FromID: "seed", ToID: "linked", LinkType: LinkSemantic,
+		BankID: "b1", FromUnitID: "seed", ToUnitID: "linked", LinkType: LinkSemantic, Weight: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestGraphArmAppearsInTrace(t *testing.T) {
 		RecallMatch{ID: "linked", Text: "the campus is in mountain view", Type: "world"},
 	)
 	if err := store.UpsertLink(context.TODO(), MemoryLink{
-		ID: "l1", BankID: "b1", FromID: "seed", ToID: "linked", LinkType: LinkSemantic,
+		BankID: "b1", FromUnitID: "seed", ToUnitID: "linked", LinkType: LinkSemantic, Weight: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestGraphArmCanBeDisabled(t *testing.T) {
 		RecallMatch{ID: "linked", Text: "the campus is in mountain view", Type: "world"},
 	)
 	if err := store.UpsertLink(context.TODO(), MemoryLink{
-		ID: "l1", BankID: "b1", FromID: "seed", ToID: "linked", LinkType: LinkSemantic,
+		BankID: "b1", FromUnitID: "seed", ToUnitID: "linked", LinkType: LinkSemantic, Weight: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestGraphArmIsBounded(t *testing.T) {
 			from = idFor(i - 1)
 		}
 		if err := store.UpsertLink(context.TODO(), MemoryLink{
-			ID: "l" + idFor(i), BankID: "b1", FromID: from, ToID: idFor(i), LinkType: LinkSemantic,
+			BankID: "b1", FromUnitID: from, ToUnitID: idFor(i), LinkType: LinkSemantic, Weight: 1,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -129,9 +129,7 @@ func TestGraphArmEmptyWithoutLinks(t *testing.T) {
 func TestGraphArmExcludesSeeds(t *testing.T) {
 	store := NewMemoryStore("public")
 	seedBank(t, store, "b1", RecallMatch{ID: "seed", Text: "alice works at google", Type: "world"})
-	if err := store.UpsertLink(context.TODO(), MemoryLink{
-		ID: "l1", BankID: "b1", FromID: "seed", ToID: "seed", LinkType: LinkSemantic,
-	}); err != nil {
+	if err := store.UpsertLink(context.TODO(), MemoryLink{}); err != nil {
 		t.Fatal(err)
 	}
 	hits := store.runGraphArm(RecallQuery{BankID: "b1", Query: "alice google"}, []string{"world"}, "alice google")

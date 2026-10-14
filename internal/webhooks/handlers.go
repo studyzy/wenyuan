@@ -94,7 +94,6 @@ func NewHandlers(store storage.Store, guard *Guard) *Handlers {
 func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhooks), h.List)
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixWebhooks), h.Create)
-	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhookMember), h.Get)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixWebhookMember), h.Update)
 	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixWebhookMember), h.Delete)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhookDeliveries), h.ListDeliveries)
@@ -116,20 +115,6 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		out = append(out, toWebhook(record))
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, ListResponse{BankID: bankID, Webhooks: out})
-}
-
-// Get returns one webhook.
-func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
-	bankID, webhookID, ok := h.member(w, r)
-	if !ok {
-		return
-	}
-	record, err := h.Store.GetWebhook(r.Context(), bankID, webhookID)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toWebhook(record))
 }
 
 // Create registers a webhook after validating its target URL.

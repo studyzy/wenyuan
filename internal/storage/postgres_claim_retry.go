@@ -11,7 +11,7 @@ func (s *PostgresStore) ScheduleOperationRetry(ctx context.Context, opID string,
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status = 'pending', retry_count = $2, next_retry_at = $3, error_message = $4,
 	              worker_id = NULL, claimed_at = NULL, updated_at = now()
-	          WHERE id = $1 AND status NOT IN ('completed','failed','cancelled')`
+	          WHERE operation_id = $1 AND status NOT IN ('completed','failed','cancelled')`
 	result, err := s.db.ExecContext(ctx, query, opID, retryCount, nextRetryAt.UTC(), errMsg)
 	if err != nil {
 		return err

@@ -39,7 +39,7 @@ func TestPostgresEnqueueIsAtomicUnderConcurrency(t *testing.T) {
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if _, err := pg.CreateBank(ctx, Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestPostgresEnqueueIsAtomicUnderConcurrency(t *testing.T) {
 			if !result.Deduplicated {
 				inserted++
 			}
-			seen[result.Operation.ID]++
+			seen[result.Operation.OperationID]++
 		}()
 	}
 	close(start)
@@ -126,7 +126,7 @@ func TestPostgresClaimRespectsSerializationKey(t *testing.T) {
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if _, err := pg.CreateBank(ctx, Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestPostgresClaimRespectsSerializationKey(t *testing.T) {
 	if _, err := pg.ClaimNextOperation(ctx, "worker-2", time.Minute); err != ErrOperationNotFound {
 		t.Fatalf("the second operation must wait for the key: err = %v", err)
 	}
-	if err := pg.ReleaseOperationClaim(ctx, claimed.ID, "worker-1"); err != nil {
+	if err := pg.ReleaseOperationClaim(ctx, claimed.OperationID, "worker-1"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if _, err := pg.ClaimNextOperation(ctx, "worker-2", time.Minute); err != nil {

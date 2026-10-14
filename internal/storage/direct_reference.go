@@ -14,11 +14,11 @@ import (
 // and renders them as an archive, so a bank can be moved without first writing
 // an export file by hand.
 //
-// The reference schema names several columns differently from the destination
-// (`fact_type` where the destination says `type`, `canonical_name` where it says
-// `name`, a `bank_id` column where the destination keys banks on `id`). The
-// reader translates those names here, which is what confines the difference to
-// one place instead of spreading it through the importer.
+// The schema this reads is the reference's own, which the destination now
+// mirrors column for column. The reader is kept separate from the destination
+// storage anyway: it opens an externally supplied database whose version may
+// lag the one this build targets, and reading it through the same code path the
+// served routes use would tie a migration tool to the running schema.
 type DirectSource struct {
 	db     DB
 	bankID string
@@ -102,7 +102,7 @@ func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.D
 
 // attachChunks reads the bank's chunks and hangs each on its document.
 func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*hindsightarchive.Document) error {
-	query := `SELECT document_id, chunk_index, COALESCE(chunk_text, text, '')
+	query := `SELECT document_id, chunk_index, COALESCE(chunk_text, '')
 	          FROM chunks WHERE bank_id = $1 ORDER BY document_id, chunk_index`
 	rows, err := s.db.QueryContext(ctx, query, s.bankID)
 	if err != nil {
@@ -129,7 +129,7 @@ func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*
 // fact is lost.
 func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*hindsightarchive.Document) error {
 	query := `SELECT id, document_id, text, fact_type, context, event_date,
-	                 occurred_start, occurred_end, mentioned_at, confidence_score,
+	                 occurred_start, occurred_end, mentioned_at,
 	                 metadata, created_at
 	          FROM memory_units WHERE bank_id = $1 ORDER BY created_at, id`
 	rows, err := s.db.QueryContext(ctx, query, s.bankID)
@@ -146,12 +146,11 @@ func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*h
 			occurredStart      sql.NullTime
 			occurredEnd        sql.NullTime
 			mentionedAt        sql.NullTime
-			confidence         sql.NullFloat64
 			metadataJSON       []byte
 			createdAt          sql.NullTime
 		)
 		if err := rows.Scan(&id, &documentID, &text, &factType, &context, &eventDate,
-			&occurredStart, &occurredEnd, &mentionedAt, &confidence, &metadataJSON, &createdAt); err != nil {
+			&occurredStart, &occurredEnd, &mentionedAt, &metadataJSON, &createdAt); err != nil {
 			return err
 		}
 		fact := hindsightarchive.Fact{
@@ -164,12 +163,6 @@ func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*h
 			MentionedAt:   nullTime(mentionedAt),
 			Metadata:      decodeObject(metadataJSON),
 			CreatedAt:     nullTime(createdAt),
-		}
-		if confidence.Valid {
-			if fact.Metadata == nil {
-				fact.Metadata = map[string]any{}
-			}
-			fact.Metadata["confidence_score"] = confidence.Float64
 		}
 		target := byDocument[documentID.String]
 		if target == nil {

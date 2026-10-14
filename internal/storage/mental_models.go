@@ -66,7 +66,6 @@ type MentalModel struct {
 	Trigger                  map[string]any
 	Structured               map[string]any
 	ReflectResult            map[string]any
-	History                  []map[string]any
 	LastRefreshedSourceQuery string
 	LastRefreshedAt          time.Time
 	// LastMemorySeenAt is the bank write watermark this model's last

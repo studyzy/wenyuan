@@ -28,7 +28,7 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 			continue
 		}
 		stats.TotalNodes++
-		stats.NodesByFactType[string(unit.Type)]++
+		stats.NodesByFactType[string(unit.FactType)]++
 	}
 	for _, link := range s.links {
 		if link.BankID != bankID {
@@ -61,7 +61,7 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 		}
 	}
 	for _, unit := range s.units {
-		if unit.BankID == bankID && unit.Type == TypeObservation {
+		if unit.BankID == bankID && unit.FactType == TypeObservation {
 			stats.TotalObservations++
 		}
 	}
@@ -255,7 +255,7 @@ func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, 
 	defer s.mu.RUnlock()
 	counts := map[string]int{}
 	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.Type != TypeObservation {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
 		scope := "default"

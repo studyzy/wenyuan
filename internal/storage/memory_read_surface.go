@@ -72,7 +72,7 @@ func (s *MemoryStore) ListChunks(ctx context.Context, query ChunkQuery) (ChunkPa
 		if matched[i].DocumentID != matched[j].DocumentID {
 			return matched[i].DocumentID < matched[j].DocumentID
 		}
-		return matched[i].Index < matched[j].Index
+		return matched[i].ChunkIndex < matched[j].ChunkIndex
 	})
 	total := len(matched)
 	start, end := pageBounds(total, query.Offset, query.Limit)
@@ -87,7 +87,7 @@ func (s *MemoryStore) GetChunk(ctx context.Context, bankID, chunkID string) (Chu
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, chunk := range s.chunks {
-		if chunk.BankID == bankID && chunk.ID == chunkID {
+		if chunk.BankID == bankID && chunk.ChunkID == chunkID {
 			return chunk, nil
 		}
 	}
@@ -141,11 +141,11 @@ func (s *MemoryStore) ListEntities(ctx context.Context, query EntityQuery) (Enti
 		if entity.BankID != query.BankID {
 			continue
 		}
-		if query.Kind != "" && entity.Kind != query.Kind {
+		if query.Kind != "" && entity.EntityKind != query.Kind {
 			continue
 		}
 		if term := strings.ToLower(strings.TrimSpace(query.Query)); term != "" &&
-			!strings.Contains(strings.ToLower(entity.Name), term) {
+			!strings.Contains(strings.ToLower(entity.CanonicalName), term) {
 			continue
 		}
 		matched = append(matched, entity)
@@ -208,7 +208,7 @@ func (s *MemoryStore) Graph(ctx context.Context, bankID string, limit int) (Grap
 		kept[unit.ID] = true
 		entities := s.entityNamesForUnitLocked(unit.ID)
 		nodes = append(nodes, GraphNodeData{
-			ID: unit.ID, Text: unit.Text, FactType: string(unit.Type),
+			ID: unit.ID, Text: unit.Text, FactType: string(unit.FactType),
 			Entities: entities, DocumentID: unit.DocumentID, ChunkID: unit.ChunkID,
 			Tags: unit.Tags, Mentioned: unit.MentionedAt,
 		})
@@ -217,7 +217,7 @@ func (s *MemoryStore) Graph(ctx context.Context, bankID string, limit int) (Grap
 			OccurredStart: unit.OccurredStart, OccurredEnd: unit.OccurredEnd,
 			MentionedAt: unit.MentionedAt, Date: unit.EventDate,
 			Entities:   strings.Join(entities, ","),
-			DocumentID: unit.DocumentID, ChunkID: unit.ChunkID, FactType: string(unit.Type),
+			DocumentID: unit.DocumentID, ChunkID: unit.ChunkID, FactType: string(unit.FactType),
 			Tags: unit.Tags, ProofCount: 1,
 		})
 	}
@@ -226,11 +226,11 @@ func (s *MemoryStore) Graph(ctx context.Context, bankID string, limit int) (Grap
 	// set, so the client never receives a dangling reference.
 	edges := make([]GraphEdgeData, 0)
 	for _, link := range s.links {
-		if link.BankID != bankID || !kept[link.FromID] || !kept[link.ToID] {
+		if link.BankID != bankID || !kept[link.FromUnitID] || !kept[link.ToUnitID] {
 			continue
 		}
 		edges = append(edges, GraphEdgeData{
-			ID: link.ID, From: link.FromID, To: link.ToID, Type: string(link.LinkType),
+			ID: link.FromUnitID + "->" + link.ToUnitID, From: link.FromUnitID, To: link.ToUnitID, Type: string(link.LinkType),
 		})
 	}
 	return GraphData{Nodes: nodes, Edges: edges, TableRows: rows, Total: total, Limit: limit}, nil
@@ -270,7 +270,7 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, bankID string, limit int)
 	nodes := make([]EntityGraphNode, 0, len(entities))
 	for _, entity := range entities {
 		kept[entity.ID] = true
-		nodes = append(nodes, EntityGraphNode{ID: entity.ID, Label: entity.Name})
+		nodes = append(nodes, EntityGraphNode{ID: entity.ID, Label: entity.CanonicalName})
 	}
 
 	edges := make([]EntityGraphEdge, 0)
@@ -329,7 +329,7 @@ func (s *MemoryStore) entityNamesForUnitLocked(unitID string) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if entity, ok := s.entities[id]; ok {
-			out = append(out, entity.Name)
+			out = append(out, entity.CanonicalName)
 		}
 	}
 	sort.Strings(out)

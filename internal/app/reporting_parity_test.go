@@ -14,23 +14,23 @@ import (
 func seedReporting(t *testing.T, app *App) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := app.Store.CreateBank(ctx, storage.Bank{ID: "rp-bank", Name: "rp-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(ctx, storage.Bank{BankID: "rp-bank", Name: "rp-bank"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.UpsertUnit(ctx, storage.MemoryUnit{
 		ID: "mem-1", BankID: "rp-bank", Text: "the deployment runs on Tuesdays",
-		Type: storage.TypeWorld, Tags: []string{"ops"},
+		FactType: storage.TypeWorld, Tags: []string{"ops"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.UpsertUnit(ctx, storage.MemoryUnit{
 		ID: "obs-1", BankID: "rp-bank", Text: "deployments happen weekly",
-		Type: storage.TypeObservation,
+		FactType: storage.TypeObservation,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.PutOperation(ctx, storage.Operation{
-		ID: "op-1", BankID: "rp-bank", OperationType: storage.OperationTypeTransferExport,
+		OperationID: "op-1", BankID: "rp-bank", OperationType: storage.OperationTypeTransferExport,
 		Status: storage.StatusPending,
 	}); err != nil {
 		t.Fatal(err)

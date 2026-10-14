@@ -54,7 +54,7 @@ func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, l
 	claimed.WorkerID = workerID
 	claimed.ClaimedAt = &now
 	claimed.UpdatedAt = now
-	s.operations[claimed.ID] = claimed
+	s.operations[claimed.OperationID] = claimed
 	return claimed, nil
 }
 
@@ -120,7 +120,7 @@ func (s *MemoryStore) serializationHeldLocked(op Operation, now time.Time, lease
 		return false
 	}
 	for id, held := range s.operations {
-		if id == op.ID || held.SerializationKey != op.SerializationKey {
+		if id == op.OperationID || held.SerializationKey != op.SerializationKey {
 			continue
 		}
 		if held.Status != StatusProcessing {

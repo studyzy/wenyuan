@@ -74,12 +74,15 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	neutral := storage.DispositionTraitNeutral
+	traits := map[string]int{
+		storage.DispositionKeySkepticism: neutral,
+		storage.DispositionKeyLiteralism: neutral,
+		storage.DispositionKeyEmpathy:    neutral,
+	}
 	empty := ""
 	bank, err := h.Store.UpdateBank(r.Context(), bankID, storage.BankPatch{
-		DispositionSkepticism: &neutral,
-		DispositionLiteralism: &neutral,
-		DispositionEmpathy:    &neutral,
-		ReflectMission:        &empty,
+		Disposition: &traits,
+		Mission:     &empty,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, validateBankExists(err))
@@ -93,12 +96,15 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // bankOverrides extracts only the bank-specific trait and mission overrides.
+// The wire keys stay in the flat four-key form the client expects even though
+// storage keeps the traits as one object.
 func bankOverrides(bank storage.Bank) map[string]any {
+	disposition := bank.NormalizedDisposition()
 	return map[string]any{
-		"disposition_skepticism": bank.DispositionSkepticism,
-		"disposition_literalism": bank.DispositionLiteralism,
-		"disposition_empathy":    bank.DispositionEmpathy,
-		"reflect_mission":        bank.ReflectMission,
+		"disposition_skepticism": disposition[storage.DispositionKeySkepticism],
+		"disposition_literalism": disposition[storage.DispositionKeyLiteralism],
+		"disposition_empathy":    disposition[storage.DispositionKeyEmpathy],
+		"reflect_mission":        bank.Mission,
 	}
 }
 

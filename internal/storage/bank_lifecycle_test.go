@@ -10,7 +10,7 @@ import (
 func TestMemoryListBanksPaging(t *testing.T) {
 	store := NewMemoryStore("public")
 	for _, id := range []string{"a", "b", "c"} {
-		if _, err := store.CreateBank(context.TODO(), Bank{ID: id, Name: id}); err != nil {
+		if _, err := store.CreateBank(context.TODO(), Bank{BankID: id, Name: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,7 +33,7 @@ func TestMemoryListBanksPaging(t *testing.T) {
 // ts-0004: the alias-attributed match is reported; a direct match reports none.
 func TestMemoryListMatchedAliases(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "owner", Name: "Owner"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "owner", Name: "Owner"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "owner", "nickname", false); err != nil {
@@ -56,7 +56,7 @@ func TestMemoryListMatchedAliases(t *testing.T) {
 // alias sorts first.
 func TestMemoryAliasPromotion(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "b", "one", true); err != nil {
@@ -86,7 +86,7 @@ func TestMemoryAliasPromotion(t *testing.T) {
 // ts-0013: targeting an alias the bank does not own is a not-found.
 func TestMemoryAliasNotFound(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.PromoteAlias(context.TODO(), "b", "ghost"); err != ErrAliasNotFound {
@@ -100,10 +100,10 @@ func TestMemoryAliasNotFound(t *testing.T) {
 // ts-0012 / ec-0005: a self-alias is invalid and a colliding alias conflicts.
 func TestMemoryAliasConflictAndSelfAlias(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "other", Name: "Other"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "other", Name: "Other"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "b", "b", false); err != ErrInvalidBankID {
@@ -132,10 +132,10 @@ func TestMemoryLazyBankCreationOnWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bank.Name != "fresh" || bank.ReflectMission != "" {
+	if bank.Name != "fresh" || bank.Mission != "" {
 		t.Fatalf("lazily created bank = %+v", bank)
 	}
-	if bank.DispositionSkepticism != DispositionTraitNeutral {
+	if bank.Trait(DispositionKeySkepticism) != DispositionTraitNeutral {
 		t.Fatalf("lazily created bank must have a neutral disposition: %+v", bank)
 	}
 	if bank.LastWriteAt == nil {
@@ -158,7 +158,7 @@ func TestMemoryDeleteNeverCreatedIsNoOp(t *testing.T) {
 // st-0003 / inv-0006: deleting a bank removes its alias rows.
 func TestMemoryDeleteRemovesAliases(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "b", "nick", true); err != nil {
@@ -176,16 +176,16 @@ func TestMemoryDeleteRemovesAliases(t *testing.T) {
 // bank.
 func TestMemoryBankWinsOverAlias(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "real", Name: "Real"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "real", Name: "Real"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddAlias(context.TODO(), "b", "shared", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "shared", Name: "Shared"}); err != ErrAliasConflict {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "shared", Name: "Shared"}); err != ErrAliasConflict {
 		t.Fatalf("creating a bank under an existing alias err = %v", err)
 	}
 }
@@ -193,7 +193,7 @@ func TestMemoryBankWinsOverAlias(t *testing.T) {
 // tmg-0004 / beh-0014: a bank write invalidates the process cache entry.
 func TestMemoryCacheInvalidatedOnWrite(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b", Name: "B"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	bank, _ := store.GetBank(context.TODO(), "b")
@@ -212,7 +212,7 @@ func TestMemoryCacheInvalidatedOnWrite(t *testing.T) {
 // sec-0001: two schemas that choose the same identifier never share an entry.
 func TestMemoryCacheScopesBySchema(t *testing.T) {
 	store := NewMemoryStore("public")
-	store.Cache().put("tenant_a", "shared", Bank{ID: "shared", Name: "A"})
+	store.Cache().put("tenant_a", "shared", Bank{BankID: "shared", Name: "A"})
 	if _, ok := store.Cache().get("tenant_b", "shared"); ok {
 		t.Fatal("a cache lookup must not leak across tenants")
 	}
@@ -234,7 +234,7 @@ func TestMigrationDefinesAliasContract(t *testing.T) {
 	}
 	for _, needle := range []string{
 		"bank_aliases", "idx_bank_aliases_bank", "idx_bank_aliases_one_primary",
-		"last_write_at", "last_document_at",
+		"bank_aliases_pkey",
 	} {
 		if !containsFold(sql, needle) {
 			t.Fatalf("the migration series must define %q", needle)

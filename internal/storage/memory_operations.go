@@ -10,8 +10,8 @@ import (
 func (s *MemoryStore) PutOperation(ctx context.Context, op Operation) (Operation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if op.ID == "" {
-		op.ID = newID()
+	if op.OperationID == "" {
+		op.OperationID = newID()
 	}
 	if op.Status == "" {
 		op.Status = StatusPending
@@ -22,7 +22,7 @@ func (s *MemoryStore) PutOperation(ctx context.Context, op Operation) (Operation
 	if op.Run == 0 {
 		op.Run = 1
 	}
-	s.operations[op.ID] = op
+	s.operations[op.OperationID] = op
 	return op, nil
 }
 
@@ -109,7 +109,7 @@ func (s *MemoryStore) ListOperations(ctx context.Context, query OperationQuery) 
 		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
 			return matched[i].CreatedAt.After(matched[j].CreatedAt)
 		}
-		return matched[i].ID < matched[j].ID
+		return matched[i].OperationID < matched[j].OperationID
 	})
 	total := len(matched)
 	start, end := pageBounds(total, query.Offset, query.Limit)
@@ -133,5 +133,22 @@ func (s *MemoryStore) CancelOperation(ctx context.Context, opID string) (Operati
 	op.UpdatedAt = now
 	op.CompletedAt = &now
 	s.operations[opID] = op
+	return op, nil
+}
+
+// DeleteOperation permanently removes a terminal operation, returning
+// ErrOperationNotFound when the identifier is unknown or belongs to another
+// bank, and ErrOperationNotTerminal while the operation is still live.
+func (s *MemoryStore) DeleteOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.operations[opID]
+	if !ok || op.BankID != bankID {
+		return Operation{}, ErrOperationNotFound
+	}
+	if !op.Status.Terminal() {
+		return op, ErrOperationNotTerminal
+	}
+	delete(s.operations, opID)
 	return op, nil
 }

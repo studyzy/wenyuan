@@ -244,7 +244,6 @@ func cloneMentalModel(model MentalModel) MentalModel {
 	out.Trigger = copyAnyMap(model.Trigger)
 	out.Structured = copyAnyMap(model.Structured)
 	out.ReflectResult = copyAnyMap(model.ReflectResult)
-	out.History = append([]map[string]any(nil), model.History...)
 	return out
 }
 

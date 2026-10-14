@@ -88,7 +88,7 @@ func TestPostgresRetainLinksSuppliedEntities(t *testing.T) {
 	}
 	names := make(map[string]bool, len(page.Entities))
 	for _, entity := range page.Entities {
-		names[entity.Name] = true
+		names[entity.CanonicalName] = true
 	}
 	for _, want := range []string{"Alice", "Google"} {
 		if !names[want] {

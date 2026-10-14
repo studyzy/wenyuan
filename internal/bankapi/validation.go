@@ -52,11 +52,46 @@ func ValidatePatch(req BankRequest) *httpx.ValidationFailure {
 
 // traitErrors reports out-of-range bounded disposition traits, taking the
 // explicit individual field over the deprecated disposition object.
+//
+// The object form is checked for completeness first: the reference declares
+// all three members required, so a partial object is rejected with a missing
+// field rather than being read as zeros. Without this the omission would
+// surface as a misleading range error on a value the caller never sent.
 func traitErrors(req BankRequest) []httpx.ValidationError {
 	var items []httpx.ValidationError
-	items = append(items, traitError("disposition_skepticism", req.traitPtr(req.DispositionSkepticism, func(d Disposition) int { return d.Skepticism }))...)
-	items = append(items, traitError("disposition_literalism", req.traitPtr(req.DispositionLiteralism, func(d Disposition) int { return d.Literalism }))...)
-	items = append(items, traitError("disposition_empathy", req.traitPtr(req.DispositionEmpathy, func(d Disposition) int { return d.Empathy }))...)
+	items = append(items, missingTraitErrors(req)...)
+	items = append(items, traitError("disposition_skepticism", req.traitPtr(req.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }))...)
+	items = append(items, traitError("disposition_literalism", req.traitPtr(req.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }))...)
+	items = append(items, traitError("disposition_empathy", req.traitPtr(req.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }))...)
+	return items
+}
+
+// missingTraitErrors reports the members a supplied disposition object left
+// out. Each is reported at the member's own path, as the reference does.
+func missingTraitErrors(req BankRequest) []httpx.ValidationError {
+	if req.Disposition == nil {
+		return nil
+	}
+	members := []struct {
+		name  string
+		value *int
+	}{
+		{"skepticism", req.Disposition.Skepticism},
+		{"literalism", req.Disposition.Literalism},
+		{"empathy", req.Disposition.Empathy},
+	}
+	var items []httpx.ValidationError
+	for _, member := range members {
+		if member.value != nil {
+			continue
+		}
+		items = append(items, httpx.ValidationError{
+			Loc:   []string{"body", "disposition", member.name},
+			Msg:   "Field required",
+			Type:  "value_error.missing",
+			Input: nil,
+		})
+	}
 	return items
 }
 

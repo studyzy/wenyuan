@@ -44,14 +44,15 @@ func (e Exporter) Export(ctx context.Context, bankID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	disposition := bank.NormalizedDisposition()
 	archive := Archive{
 		Bank: BankArchive{
-			ID:                    bank.ID,
+			ID:                    bank.BankID,
 			Name:                  bank.Name,
-			DispositionSkepticism: bank.DispositionSkepticism,
-			DispositionLiteralism: bank.DispositionLiteralism,
-			DispositionEmpathy:    bank.DispositionEmpathy,
-			ReflectMission:        bank.ReflectMission,
+			DispositionSkepticism: disposition[storage.DispositionKeySkepticism],
+			DispositionLiteralism: disposition[storage.DispositionKeyLiteralism],
+			DispositionEmpathy:    disposition[storage.DispositionKeyEmpathy],
+			ReflectMission:        bank.Mission,
 		},
 		Aliases: make([]AliasArchive, 0, len(aliases)),
 	}
@@ -71,12 +72,14 @@ func (e Exporter) Import(ctx context.Context, data []byte, targetID string) erro
 		return storage.ErrInvalidBankID
 	}
 	if _, err := e.Store.CreateBank(ctx, storage.Bank{
-		ID:                    targetID,
-		Name:                  archive.Bank.Name,
-		DispositionSkepticism: archive.Bank.DispositionSkepticism,
-		DispositionLiteralism: archive.Bank.DispositionLiteralism,
-		DispositionEmpathy:    archive.Bank.DispositionEmpathy,
-		ReflectMission:        archive.Bank.ReflectMission,
+		BankID: targetID,
+		Name:   archive.Bank.Name,
+		Disposition: map[string]int{
+			storage.DispositionKeySkepticism: archive.Bank.DispositionSkepticism,
+			storage.DispositionKeyLiteralism: archive.Bank.DispositionLiteralism,
+			storage.DispositionKeyEmpathy:    archive.Bank.DispositionEmpathy,
+		},
+		Mission: archive.Bank.ReflectMission,
 	}); err != nil {
 		return err
 	}

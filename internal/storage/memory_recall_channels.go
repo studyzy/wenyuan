@@ -62,9 +62,9 @@ func (s *MemoryStore) chunksFor(matches []RecallMatch) []ChunkEntry {
 		seen[m.ChunkID] = true
 		entry := ChunkEntry{ID: m.ChunkID}
 		for _, chunk := range s.chunks {
-			if chunk.ID == m.ChunkID {
-				entry.Text = chunk.Text
-				entry.Index = chunk.Index
+			if chunk.ChunkID == m.ChunkID {
+				entry.Text = chunk.ChunkText
+				entry.Index = chunk.ChunkIndex
 				break
 			}
 		}
@@ -79,7 +79,7 @@ func (s *MemoryStore) chunksFor(matches []RecallMatch) []ChunkEntry {
 func (s *MemoryStore) sourceFactsFor(matches []RecallMatch) (map[string]string, bool) {
 	out := map[string]string{}
 	for _, m := range matches {
-		for _, id := range m.SourceFactIDs {
+		for _, id := range m.SourceMemoryIDs {
 			if _, ok := out[id]; ok {
 				continue
 			}

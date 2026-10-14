@@ -186,17 +186,22 @@ var ErrKnowledgeNodeNotFound = errors.New("knowledge node not found")
 // ErrMemoryNotFound is returned when a memory identifier is unknown to a bank.
 var ErrMemoryNotFound = errors.New("memory not found")
 
-// KnowledgeNode is one node of a bank's knowledge tree.
+// KnowledgeNode is one node of a bank's knowledge tree. A page is backed by a
+// mental model that holds its text and tags; a folder is a container with none.
 type KnowledgeNode struct {
-	ID        string
-	BankID    string
-	ParentID  string
-	Kind      KnowledgeKind
-	Title     string
-	Text      string
-	Tags      []string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID       string
+	BankID   string
+	ParentID string
+	Kind     KnowledgeKind
+	Title    string
+	// MentalModelID names the model behind a page, empty for a folder. It is
+	// the row's identity in mental_models, so a reader can reach the page's
+	// content through either surface.
+	MentalModelID string
+	Text          string
+	Tags          []string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // KnowledgeNodePatch carries a partial knowledge-node update.

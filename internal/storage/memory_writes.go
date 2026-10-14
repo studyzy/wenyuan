@@ -30,13 +30,13 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 	memoryID := newID()
 	now := time.Now().UTC()
 	match := RecallMatch{
-		ID:            memoryID,
-		Text:          req.Content,
-		Type:          string(TypeWorld),
-		DocumentID:    req.DocumentID,
-		Entities:      req.Entities,
-		Scores:        map[string]float64{},
-		SourceFactIDs: []string{},
+		ID:              memoryID,
+		Text:            req.Content,
+		Type:            string(TypeWorld),
+		DocumentID:      req.DocumentID,
+		Entities:        req.Entities,
+		Scores:          map[string]float64{},
+		SourceMemoryIDs: []string{},
 	}
 	s.memories[req.BankID] = append(s.memories[req.BankID], match)
 	s.recordWriteWatermarkLocked(req.BankID, now)
@@ -45,12 +45,12 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 	s.writes[opID] = result
 
 	op := Operation{
-		ID:        opID,
-		BankID:    req.BankID,
-		Status:    StatusCompleted,
-		Run:       1,
-		CreatedAt: now,
-		UpdatedAt: now,
+		OperationID: opID,
+		BankID:      req.BankID,
+		Status:      StatusCompleted,
+		Run:         1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if req.Async {
 		op.Status = StatusPending
@@ -66,14 +66,14 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 func (s *MemoryStore) createBankLocked(bankID string) Bank {
 	now := time.Now().UTC()
 	bank := Bank{
-		ID:                    bankID,
-		Name:                  bankID,
-		DispositionSkepticism: DispositionTraitNeutral,
-		DispositionLiteralism: DispositionTraitNeutral,
-		DispositionEmpathy:    DispositionTraitNeutral,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		BankID:    bankID,
+		Name:      bankID,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
+	// A lazily created bank starts neutral in every trait, which is what a bank
+	// with no stored disposition means.
+	bank.Disposition = bank.NormalizedDisposition()
 	s.banks[bankID] = bank
 	s.order = append(s.order, bankID)
 	s.invalidateBankLocked(bankID)

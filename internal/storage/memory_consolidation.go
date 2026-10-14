@@ -22,7 +22,7 @@ func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, lim
 	}
 	var candidates []ConsolidationFact
 	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.Type == TypeObservation {
+		if unit.BankID != bankID || unit.FactType == TypeObservation {
 			continue
 		}
 		if _, folded := s.consolidated[unit.ID]; folded {
@@ -58,7 +58,7 @@ func (s *MemoryStore) ConsolidationObservations(ctx context.Context, bankID stri
 	}
 	var candidates []ConsolidationObservation
 	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.Type != TypeObservation {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
 		sources := append([]string(nil), s.observationSources[unit.ID]...)
@@ -100,7 +100,7 @@ func (s *MemoryStore) CreateObservation(ctx context.Context, bankID, text string
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	unit, err := s.UpsertUnit(ctx, MemoryUnit{BankID: bankID, Text: text, Type: TypeObservation})
+	unit, err := s.UpsertUnit(ctx, MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation})
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +125,7 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 		return s.writeErr
 	}
 	unit, ok := s.units[observationID]
-	if !ok || unit.BankID != bankID || unit.Type != TypeObservation {
+	if !ok || unit.BankID != bankID || unit.FactType != TypeObservation {
 		return ErrMemoryNotFound
 	}
 	unit.Text = text
@@ -151,7 +151,7 @@ func (s *MemoryStore) DeleteObservation(ctx context.Context, bankID, observation
 		return s.writeErr
 	}
 	unit, ok := s.units[observationID]
-	if !ok || unit.BankID != bankID || unit.Type != TypeObservation {
+	if !ok || unit.BankID != bankID || unit.FactType != TypeObservation {
 		return nil
 	}
 	delete(s.units, observationID)

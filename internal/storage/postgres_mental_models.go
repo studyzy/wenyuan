@@ -15,7 +15,7 @@ const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''),
        COALESCE(content,''), COALESCE(entity_id::text,''), COALESCE(observations, '{}'::jsonb),
        COALESCE(links, '{}')::text, COALESCE(tags, '{}')::text, COALESCE(max_tokens, 2048),
        COALESCE(trigger, '{}'::jsonb), structured_content, reflect_response,
-       COALESCE(history, '[]'::jsonb), COALESCE(last_refreshed_source_query, ''),
+       COALESCE(last_refreshed_source_query, ''),
        last_refreshed_at, last_updated, created_at`
 
 // ListMentalModels returns the mental models of one bank, newest first.
@@ -81,10 +81,6 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	if err != nil {
 		return MentalModel{}, err
 	}
-	history, err := jsonHistory(model.History)
-	if err != nil {
-		return MentalModel{}, err
-	}
 	maxTokens := model.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 2048
@@ -92,9 +88,9 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_models
 	          (id, bank_id, subtype, name, description, source_query, content, embedding, entity_id,
 	           observations, links, tags, max_tokens, trigger, structured_content, reflect_response,
-	           history, last_refreshed_source_query, last_refreshed_at, last_updated, created_at)
+	           last_refreshed_source_query, last_refreshed_at, last_updated, created_at)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::vector,NULLIF($9,'')::uuid,$10::jsonb,$11,$12,$13,$14::jsonb,
-	                  $15::jsonb,$16::jsonb,$17::jsonb,$18, now(), now(), now())
+	                  $15::jsonb,$16::jsonb,$17, now(), now(), now())
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
 	              subtype = EXCLUDED.subtype, name = EXCLUDED.name, description = EXCLUDED.description,
 	              source_query = EXCLUDED.source_query, content = EXCLUDED.content,
@@ -102,13 +98,12 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	              observations = EXCLUDED.observations, links = EXCLUDED.links, tags = EXCLUDED.tags,
 	              max_tokens = EXCLUDED.max_tokens, trigger = EXCLUDED.trigger,
 	              structured_content = EXCLUDED.structured_content, reflect_response = EXCLUDED.reflect_response,
-	              history = EXCLUDED.history,
 	              last_refreshed_source_query = EXCLUDED.last_refreshed_source_query,
 	              last_updated = now()`
 	_, err = s.db.ExecContext(ctx, query, model.ID, model.BankID, string(model.Subtype), model.Name,
 		model.Description, model.SourceQuery, model.Content, embedding, model.EntityID,
 		observations, model.Links, model.Tags, maxTokens, trigger, structured, reflectResult,
-		history, model.LastRefreshedSourceQuery)
+		model.LastRefreshedSourceQuery)
 	if err != nil {
 		return MentalModel{}, err
 	}
@@ -147,7 +142,7 @@ func (s *PostgresStore) DeleteMentalModel(ctx context.Context, bankID, id string
 func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string) (MentalModel, error) {
 	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
 	          SET content = '', structured_content = NULL, reflect_response = NULL,
-	              observations = '{"observations": []}'::jsonb, history = '[]'::jsonb,
+	              observations = '{"observations": []}'::jsonb,
 	              last_updated = now(), last_refreshed_at = now()
 	          WHERE bank_id = $1 AND id = $2`
 	result, err := s.db.ExecContext(ctx, query, bankID, id)
@@ -165,30 +160,48 @@ func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string)
 }
 
 // MentalModelHistory returns the recorded refreshes of one mental model,
-// newest first.
+// newest first. Each is a row of mental_model_history, which is where the
+// reference keeps a change log rather than a column on the model.
 func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id string) ([]MentalModelHistoryEntry, error) {
-	model, err := s.GetMentalModel(ctx, bankID, id)
+	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
+		return nil, err
+	}
+	query := `SELECT content FROM ` + quoteIdent(s.schema) + `.mental_model_history
+	          WHERE bank_id = $1 AND mental_model_id = $2
+	          ORDER BY changed_at DESC, id DESC`
+	rows, err := s.db.QueryContext(ctx, query, bankID, id)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]MentalModelHistoryEntry, 0, len(model.History))
-	for _, raw := range model.History {
-		entries = append(entries, historyEntryFromMap(raw))
+	defer func() { _ = rows.Close() }()
+	entries := make([]MentalModelHistoryEntry, 0)
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		entries = append(entries, historyEntryFromMap(decodeJSONMap(raw)))
 	}
-	return entries, nil
+	return entries, rows.Err()
 }
 
 // RecordMentalModelHistory appends one refresh to a mental model's history.
+// The identity is left to the column's default, as the reference leaves it.
 func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id string, entry MentalModelHistoryEntry) error {
-	model, err := s.GetMentalModel(ctx, bankID, id)
-	if err != nil {
+	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
 		return err
 	}
 	if entry.RefreshedAt.IsZero() {
 		entry.RefreshedAt = time.Now().UTC()
 	}
-	model.History = append(model.History, historyEntryToMap(entry))
-	_, err = s.PutMentalModel(ctx, model)
+	payload, err := json.Marshal(historyEntryToMap(entry))
+	if err != nil {
+		return err
+	}
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_model_history
+	          (mental_model_id, bank_id, content, changed_at)
+	          VALUES ($1, $2, $3::jsonb, $4)`
+	_, err = s.db.ExecContext(ctx, query, id, bankID, payload, entry.RefreshedAt)
 	return err
 }
 
@@ -196,13 +209,13 @@ func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id
 func scanMentalModel(row rowScanner) (MentalModel, error) {
 	var model MentalModel
 	var subtype string
-	var observations, trigger, structured, reflectResult, history []byte
+	var observations, trigger, structured, reflectResult []byte
 	var links, tags string
 	var lastRefreshedAt, lastUpdated sql.NullTime
 	if err := row.Scan(&model.ID, &model.BankID, &subtype, &model.Name, &model.Description,
 		&model.SourceQuery, &model.Content, &model.EntityID, &observations,
 		&links, &tags, &model.MaxTokens, &trigger, &structured, &reflectResult,
-		&history, &model.LastRefreshedSourceQuery, &lastRefreshedAt, &lastUpdated, &model.CreatedAt); err != nil {
+		&model.LastRefreshedSourceQuery, &lastRefreshedAt, &lastUpdated, &model.CreatedAt); err != nil {
 		return MentalModel{}, err
 	}
 	model.Subtype = MentalModelSubtype(subtype)
@@ -214,7 +227,6 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 	model.Trigger = decodeJSONMap(trigger)
 	model.Structured = decodeJSONMap(structured)
 	model.ReflectResult = decodeJSONMap(reflectResult)
-	model.History = decodeJSONList(history)
 	return model, nil
 }
 
@@ -234,32 +246,12 @@ func jsonOrNull(value map[string]any) (any, error) {
 	return json.Marshal(value)
 }
 
-// jsonHistory encodes a history list as a JSON array.
-func jsonHistory(history []map[string]any) ([]byte, error) {
-	if history == nil {
-		return []byte("[]"), nil
-	}
-	return json.Marshal(history)
-}
-
 // decodeJSONMap decodes a jsonb object, tolerating null.
 func decodeJSONMap(raw []byte) map[string]any {
 	if len(raw) == 0 {
 		return nil
 	}
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
-	}
-	return out
-}
-
-// decodeJSONList decodes a jsonb array of objects, tolerating null.
-func decodeJSONList(raw []byte) []map[string]any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var out []map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil
 	}

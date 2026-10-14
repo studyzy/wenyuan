@@ -139,7 +139,7 @@ func TestOperationCleanupPrunesOnlyTerminalOperations(t *testing.T) {
 		{"running", storage.StatusProcessing},
 	} {
 		if _, err := store.PutOperation(ctx, storage.Operation{
-			ID: tc.id, BankID: "b1", OperationType: storage.OperationTypeConsolidate, Status: tc.status,
+			OperationID: tc.id, BankID: "b1", OperationType: storage.OperationTypeConsolidate, Status: tc.status,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -158,7 +158,7 @@ func TestOperationCleanupPrunesOnlyTerminalOperations(t *testing.T) {
 	}
 	remaining := map[string]bool{}
 	for _, op := range page.Operations {
-		remaining[op.ID] = true
+		remaining[op.OperationID] = true
 	}
 	if remaining["done"] || remaining["failed"] {
 		t.Errorf("settled operations were not pruned: %v", remaining)
@@ -188,11 +188,11 @@ func TestReconcileQueuesOnlyStrandedBanks(t *testing.T) {
 	// A bank holding an eligible fact with no consolidation queued. The fact is
 	// recorded through the real write path, because the reconcile reads the
 	// authoritative unit store rather than the derived recall projection.
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "stranded", Name: "stranded"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "stranded", Name: "stranded"}); err != nil {
 		t.Fatal(err)
 	}
 	store.SeedUnit(storage.MemoryUnit{
-		ID: "u1", BankID: "stranded", Text: "a fact", Type: storage.TypeWorld,
+		ID: "u1", BankID: "stranded", Text: "a fact", FactType: storage.TypeWorld,
 	})
 	if err := reconcileConsolidation(ctx, store, tenant.NewDefault("public")); err != nil {
 		t.Fatal(err)

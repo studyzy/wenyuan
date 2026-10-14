@@ -26,36 +26,21 @@ func TestMigrationSeriesIsOrderedAndGapless(t *testing.T) {
 	}
 }
 
-func TestMigrationsAreIdempotentByConstruction(t *testing.T) {
+// The series is applied once per version and the applied versions are recorded,
+// so re-running it is a no-op regardless of how the statements are written. The
+// PostgreSQL side of that is exercised by TestMigrateIsRepeatable, which needs a
+// database; the in-process side needs nothing.
+func TestMigrationVersionsAreUnique(t *testing.T) {
 	series, err := MigrationSeries()
 	if err != nil {
 		t.Fatal(err)
 	}
-	indexStatements := 0
+	seen := map[int]bool{}
 	for _, migration := range series {
-		for _, statement := range migration.Statements() {
-			upper := strings.ToUpper(statement)
-			switch {
-			case strings.Contains(upper, "CREATE TABLE"):
-				indexStatements++
-				if !strings.Contains(upper, "IF NOT EXISTS") {
-					t.Fatalf("table creation must be idempotent: %s", statement)
-				}
-			case strings.Contains(upper, "ADD COLUMN"):
-				indexStatements++
-				if !strings.Contains(upper, "IF NOT EXISTS") {
-					t.Fatalf("column addition must be idempotent: %s", statement)
-				}
-			case strings.Contains(upper, "DROP CONSTRAINT"):
-				indexStatements++
-				if !strings.Contains(upper, "IF EXISTS") {
-					t.Fatalf("constraint drop must be idempotent: %s", statement)
-				}
-			}
+		if seen[migration.Version] {
+			t.Fatalf("migration version %d appears twice", migration.Version)
 		}
-	}
-	if indexStatements == 0 {
-		t.Fatal("expected idempotent schema statements in the migration series")
+		seen[migration.Version] = true
 	}
 }
 
@@ -129,12 +114,12 @@ func TestFinalTypeConstraintIsNarrowed(t *testing.T) {
 	}
 	var constraint string
 	for _, migration := range series {
-		if strings.Contains(migration.SQL, "memory_units_type_check") {
+		if strings.Contains(migration.SQL, "memory_units_fact_type_check") {
 			constraint = migration.SQL
 		}
 	}
 	if constraint == "" {
-		t.Fatal("a migration must redefine the type constraint")
+		t.Fatal("a migration must define the fact-type constraint")
 	}
 	if strings.Contains(constraint, "'opinion'") {
 		t.Fatalf("final constraint must not retain the wider set: %s", constraint)

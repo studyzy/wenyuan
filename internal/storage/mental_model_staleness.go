@@ -127,7 +127,7 @@ func (scope MentalModelScope) includesUnit(unit MemoryUnit) bool {
 	if len(scope.FactTypes) > 0 {
 		matched := false
 		for _, factType := range scope.FactTypes {
-			if string(unit.Type) == factType {
+			if string(unit.FactType) == factType {
 				matched = true
 				break
 			}

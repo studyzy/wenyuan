@@ -37,7 +37,7 @@ func (s *MemoryStore) DeleteDocument(ctx context.Context, bankID, docID string) 
 	s.chunks = chunks
 	links := s.links[:0]
 	for _, link := range s.links {
-		if removed[link.FromID] || removed[link.ToID] {
+		if removed[link.FromUnitID] || removed[link.ToUnitID] {
 			continue
 		}
 		links = append(links, link)

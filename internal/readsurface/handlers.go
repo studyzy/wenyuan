@@ -194,7 +194,7 @@ func (h *Handlers) ReprocessDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	op, err := h.Store.PutOperation(r.Context(), storage.Operation{
-		ID:            newID(),
+		OperationID:   newID(),
 		BankID:        bankID,
 		OperationType: storage.OperationTypeRetain,
 		Status:        storage.StatusPending,
@@ -205,7 +205,7 @@ func (h *Handlers) ReprocessDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, ReprocessDocumentResponse{
-		Success: true, OperationID: op.ID,
+		Success: true, OperationID: op.OperationID,
 	})
 }
 
@@ -337,7 +337,7 @@ func (h *Handlers) RegenerateEntity(w http.ResponseWriter, r *http.Request) {
 	}
 	// Re-resolving with resolve enabled refreshes the entity's stored form from
 	// the mentions already recorded, so the response reflects current state.
-	refreshed, err := h.Store.ResolveEntity(r.Context(), bankID, entity.Name, entity.Kind, true)
+	refreshed, err := h.Store.ResolveEntity(r.Context(), bankID, entity.CanonicalName, entity.EntityKind, true)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -389,7 +389,7 @@ func (h *Handlers) entityDetail(ctx context.Context, entity storage.Entity, bank
 	}
 	return EntityDetailResponse{
 		ID:            entity.ID,
-		CanonicalName: entity.Name,
+		CanonicalName: entity.CanonicalName,
 		MentionCount:  entity.MentionCount,
 		FirstSeen:     formatTimePtr(entity.FirstSeen),
 		LastSeen:      formatTimePtr(entity.LastSeen),
@@ -406,7 +406,7 @@ func (h *Handlers) findChunkByID(ctx context.Context, chunkID string) (storage.C
 		return storage.Chunk{}, err
 	}
 	for _, bank := range banks.Banks {
-		chunk, err := h.Store.GetChunk(ctx, bank.ID, chunkID)
+		chunk, err := h.Store.GetChunk(ctx, bank.BankID, chunkID)
 		if err == nil {
 			return chunk, nil
 		}

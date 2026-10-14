@@ -421,7 +421,7 @@ func combinedBoost(cand *recallCandidate, q RecallQuery) float64 {
 	// The logarithmic curve keeps a large count from dominating: 1 proof is
 	// neutral and the signal saturates well before the count is huge.
 	proof := 0.5
-	if count := len(cand.match.SourceFactIDs); count >= 1 {
+	if count := len(cand.match.SourceMemoryIDs); count >= 1 {
 		proof = math.Max(0, math.Min(1, 0.5+math.Log(float64(count))/10))
 	}
 	return confidenceBoost(recency, recencyAlpha) *

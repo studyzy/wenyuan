@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -185,4 +186,50 @@ func splitHostPort(t *testing.T, address string) (string, int) {
 		port = port*10 + int(ch-'0')
 	}
 	return host, port
+}
+
+// A real startup serves traffic. The compose-only tests above never exercise
+// this path, which is how a serve that could not start stayed green: Serve
+// binds the listen address and then composes, and composition used to probe
+// that same address while the listener was still held, so every real start
+// failed with address-in-use before serving a request.
+func TestServeServesTraffic(t *testing.T) {
+	cfg := testConfig()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.BindGrace = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The listener is bound by the test so the port is known before Serve runs.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Port = listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	served := make(chan error, 1)
+	go func() {
+		served <- Serve(ctx, cfg, Dependencies{Store: storage.NewMemoryStore("public")}, ServeOptions{})
+	}()
+
+	// Poll until the address answers, then assert the served handler replies.
+	address := cfg.Address()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + address + "/health/live")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("liveness status = %d", resp.StatusCode)
+			}
+			return
+		}
+		lastErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the served address never answered: %v", lastErr)
 }

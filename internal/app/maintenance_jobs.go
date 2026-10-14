@@ -27,9 +27,6 @@ const retentionBatch = 2000
 // drains; the remainder waits for the next sweep.
 const retentionMaxBatches = 1000
 
-// retentionBatchPause paces one process between chunks.
-const retentionBatchPause = 250 * time.Millisecond
-
 // maintenanceJobs builds the recurring jobs from the resolved configuration.
 //
 // A disabled job is omitted rather than added with a zero interval, so the loop

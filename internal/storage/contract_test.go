@@ -13,7 +13,7 @@ import (
 func newContractStore(t *testing.T) (*MemoryStore, string) {
 	t.Helper()
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	return store, "b1"
@@ -64,7 +64,7 @@ func TestContractConsolidation(t *testing.T) {
 	store, bank := newContractStore(t)
 	ctx := context.Background()
 	for _, id := range []string{"f1", "f2"} {
-		if _, err := store.UpsertUnit(ctx, MemoryUnit{ID: id, BankID: bank, Text: "fact " + id, Type: TypeWorld}); err != nil {
+		if _, err := store.UpsertUnit(ctx, MemoryUnit{ID: id, BankID: bank, Text: "fact " + id, FactType: TypeWorld}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestContractOperationQueue(t *testing.T) {
 	store, bank := newContractStore(t)
 	ctx := context.Background()
 	op, err := store.PutOperation(ctx, Operation{
-		ID: "op-1", BankID: bank, OperationType: OperationTypeConsolidate, Status: StatusPending,
+		OperationID: "op-1", BankID: bank, OperationType: OperationTypeConsolidate, Status: StatusPending,
 	})
 	if err != nil {
 		t.Fatalf("put operation: %v", err)
@@ -130,7 +130,7 @@ func TestContractOperationQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if claimed.ID != op.ID || claimed.Status != StatusProcessing {
+	if claimed.OperationID != op.OperationID || claimed.Status != StatusProcessing {
 		t.Fatalf("claimed = %+v", claimed)
 	}
 	// A second worker finds nothing claimable while the first holds the lease.
@@ -138,14 +138,14 @@ func TestContractOperationQueue(t *testing.T) {
 		t.Fatalf("second claim = %v, want ErrOperationNotFound", err)
 	}
 
-	if err := store.ReleaseOperationClaim(ctx, op.ID, "worker-a"); err != nil {
+	if err := store.ReleaseOperationClaim(ctx, op.OperationID, "worker-a"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if _, err := store.ClaimNextOperation(ctx, "worker-b", time.Minute); err != nil {
 		t.Fatalf("reclaim after release: %v", err)
 	}
 
-	if err := store.ScheduleOperationRetry(ctx, op.ID, 1, time.Now().Add(time.Hour), "boom"); err != nil {
+	if err := store.ScheduleOperationRetry(ctx, op.OperationID, 1, time.Now().Add(time.Hour), "boom"); err != nil {
 		t.Fatalf("schedule retry: %v", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestContractAliases(t *testing.T) {
 	if err != nil || len(aliases) == 0 {
 		t.Fatalf("list aliases = %v (err %v)", aliases, err)
 	}
-	if _, err := store.CreateBank(ctx, Bank{ID: "other", Name: "Other"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "other", Name: "Other"}); err != nil {
 		t.Fatalf("create second bank: %v", err)
 	}
 	if _, err := store.AddAlias(ctx, "other", "work", false); !errors.Is(err, ErrAliasConflict) {
@@ -256,13 +256,13 @@ func TestContractBankLifecycle(t *testing.T) {
 	store, bank := newContractStore(t)
 	ctx := context.Background()
 
-	replaced, err := store.ReplaceBank(ctx, Bank{ID: bank, Name: "Renamed"})
+	replaced, err := store.ReplaceBank(ctx, Bank{BankID: bank, Name: "Renamed"})
 	if err != nil || replaced.Name != "Renamed" {
 		t.Fatalf("replace bank = %+v (err %v)", replaced, err)
 	}
 	mission := "be helpful"
-	updated, err := store.UpdateBank(ctx, bank, BankPatch{ReflectMission: &mission})
-	if err != nil || updated.ReflectMission != mission {
+	updated, err := store.UpdateBank(ctx, bank, BankPatch{Mission: &mission})
+	if err != nil || updated.Mission != mission {
 		t.Fatalf("update bank = %+v (err %v)", updated, err)
 	}
 	page, err := store.ListBanks(ctx, BankQuery{Limit: 10})
@@ -270,7 +270,7 @@ func TestContractBankLifecycle(t *testing.T) {
 		t.Fatalf("list banks = %+v (err %v)", page, err)
 	}
 	// Creating a bank whose identifier is already taken is a conflict.
-	if _, err := store.CreateBank(ctx, Bank{ID: bank, Name: "dup"}); !errors.Is(err, ErrOperationConflict) {
+	if _, err := store.CreateBank(ctx, Bank{BankID: bank, Name: "dup"}); !errors.Is(err, ErrOperationConflict) {
 		t.Fatalf("duplicate bank = %v, want ErrOperationConflict", err)
 	}
 	if _, err := store.DeleteBank(ctx, bank); err != nil {

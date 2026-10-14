@@ -73,7 +73,7 @@ func (h *Handlers) ImportTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result.ConfigApplied = true
-	result.OperationIDs = []string{op.ID}
+	result.OperationIDs = []string{op.OperationID}
 	httpx.WriteJSONFor(w, r, http.StatusOK, result)
 }
 

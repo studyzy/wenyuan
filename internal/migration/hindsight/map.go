@@ -61,11 +61,10 @@ func chunkID(bankID, documentID string, index int) string {
 	return stableID("chunk", bankID, documentID, fmt.Sprintf("%d", index))
 }
 
-func linkID(bankID, fromID, toID, linkType string) string {
-	return stableID("link", bankID, fromID, toID, linkType)
-}
-
-// stableID builds a deterministic identifier from its parts.
+// stableID builds a deterministic uuid identifier from its parts. The
+// reference declares these identities as uuid, so the digest is laid out in the
+// canonical 8-4-4-4-12 form with the version and variant bits set; a textual
+// prefix would not be storable in the column.
 func stableID(kind string, parts ...string) string {
 	h := sha256.New()
 	h.Write([]byte(kind))
@@ -74,7 +73,12 @@ func stableID(kind string, parts ...string) string {
 		h.Write([]byte(part))
 	}
 	sum := h.Sum(nil)
-	return kind + "-" + hex.EncodeToString(sum[:12])
+	buf := make([]byte, 16)
+	copy(buf, sum[:16])
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	hexed := hex.EncodeToString(buf)
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
 }
 
 // unitFromFact converts one archive fact into a memory unit for the target bank.
@@ -83,17 +87,16 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 		ID:                    factUnitID(bankID, documentID, index),
 		BankID:                bankID,
 		Text:                  fact.Text,
-		Type:                  storage.MemoryUnitType(fact.FactType),
+		FactType:              storage.MemoryUnitType(fact.FactType),
 		Context:               fact.Context,
 		EventDate:             fact.EventDate,
 		OccurredStart:         fact.OccurredStart,
 		OccurredEnd:           fact.OccurredEnd,
 		MentionedAt:           fact.MentionedAt,
-		Confidence:            confidenceFromMetadata(fact.Metadata),
 		Metadata:              fact.Metadata,
 		DocumentID:            documentID,
 		Tags:                  fact.Tags,
-		SourceID:              fact.SourceID,
+		SourceMemoryIDs:       sourceMemoryIDs(fact.SourceID),
 		ObservationScopes:     archiveScopes(fact.ObservationScopes),
 		ConsolidatedAt:        fact.ConsolidatedAt,
 		ConsolidationFailedAt: fact.ConsolidationFailedAt,
@@ -110,6 +113,38 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 	return unit
 }
 
+// sourceMemoryIDs maps the archive's single source reference onto the
+// reference's source_memory_ids array. The column is uuid[] upstream, so a
+// reference that is not uuid-shaped is dropped rather than stored and rejected
+// by the database.
+func sourceMemoryIDs(sourceID string) []string {
+	if !isUUID(sourceID) {
+		return []string{}
+	}
+	return []string{sourceID}
+}
+
+// isUUID reports whether value has the canonical 8-4-4-4-12 form.
+func isUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // archiveScopes encodes the archive's scope list into the JSON value the
 // storage column holds. The archive carries the explicit-group form only, so
 // an empty list means the fact was retained unscoped and yields no value.
@@ -122,23 +157,6 @@ func archiveScopes(scopes []string) json.RawMessage {
 		return nil
 	}
 	return encoded
-}
-
-// confidenceFromMetadata reads an optional stored confidence value. The archive
-// schema does not carry confidence as a top-level field, so a value is honored
-// only when present in metadata under its source name.
-func confidenceFromMetadata(metadata map[string]any) float64 {
-	if metadata == nil {
-		return 0
-	}
-	switch value := metadata["confidence_score"].(type) {
-	case float64:
-		return value
-	case int:
-		return float64(value)
-	default:
-		return 0
-	}
 }
 
 // unmappedFields reports the archive fields that have no Wenyuan column. The

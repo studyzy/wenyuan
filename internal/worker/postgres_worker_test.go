@@ -4,6 +4,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -53,7 +55,7 @@ func postgresWorkerStore(t *testing.T) storage.Store {
 			_ = closer.Close()
 		}
 	})
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "bank-a", Name: "bank-a"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "bank-a", Name: "bank-a"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 	return store
@@ -70,7 +72,7 @@ func TestPostgresClaimIsAtomicUnderContention(t *testing.T) {
 	const operations = 20
 	for i := 0; i < operations; i++ {
 		if _, err := store.PutOperation(ctx, storage.Operation{
-			ID:            fmt.Sprintf("op-%02d", i),
+			OperationID:   pgUUIDStr(fmt.Sprintf("op-%02d", i)),
 			BankID:        "bank-a",
 			OperationType: storage.OperationTypeTransferImport,
 			Status:        storage.StatusPending,
@@ -100,12 +102,12 @@ func TestPostgresClaimIsAtomicUnderContention(t *testing.T) {
 					return
 				}
 				mu.Lock()
-				if previous, seen := claimedBy[op.ID]; seen {
+				if previous, seen := claimedBy[op.OperationID]; seen {
 					mu.Unlock()
-					t.Errorf("operation %s was claimed twice: by %s then %s", op.ID, previous, workerID)
+					t.Errorf("operation %s was claimed twice: by %s then %s", op.OperationID, previous, workerID)
 					return
 				}
-				claimedBy[op.ID] = workerID
+				claimedBy[op.OperationID] = workerID
 				mu.Unlock()
 			}
 		}(c)
@@ -128,7 +130,7 @@ func TestPostgresClaimLeaseExpiry(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := store.PutOperation(ctx, storage.Operation{
-		ID: "op-lease", BankID: "bank-a",
+		OperationID: pgUUIDStr("op-lease"), BankID: "bank-a",
 		OperationType: storage.OperationTypeTransferImport,
 		Status:        storage.StatusPending,
 		CreatedAt:     time.Now().UTC(), UpdatedAt: time.Now().UTC(),
@@ -162,7 +164,7 @@ func TestPostgresWorkerDrainsQueue(t *testing.T) {
 
 	for i := 0; i < 6; i++ {
 		if _, err := store.PutOperation(ctx, storage.Operation{
-			ID:            fmt.Sprintf("drain-%02d", i),
+			OperationID:   pgUUIDStr(fmt.Sprintf("drain-%02d", i)),
 			BankID:        "bank-a",
 			OperationType: storage.OperationTypeTransferImport,
 			Status:        storage.StatusPending,
@@ -179,10 +181,10 @@ func TestPostgresWorkerDrainsQueue(t *testing.T) {
 	seen := map[string]int{}
 	consumer := New(store, ProcessorFunc(func(_ context.Context, op storage.Operation) error {
 		mu.Lock()
-		seen[op.ID]++
-		attempt := seen[op.ID]
+		seen[op.OperationID]++
+		attempt := seen[op.OperationID]
 		mu.Unlock()
-		if op.ID == "drain-03" && attempt == 1 {
+		if op.OperationID == pgUUIDStr("drain-03") && attempt == 1 {
 			return errors.New("transient on the first attempt")
 		}
 		return nil
@@ -225,7 +227,7 @@ func TestPostgresWorkerDrainsQueue(t *testing.T) {
 		}
 		// A completed operation must not still look held.
 		if op.Status.Terminal() && op.WorkerID != "" {
-			t.Fatalf("terminal operation %s still holds a claim by %q", op.ID, op.WorkerID)
+			t.Fatalf("terminal operation %s still holds a claim by %q", op.OperationID, op.WorkerID)
 		}
 	}
 	if completed != 6 {
@@ -234,7 +236,7 @@ func TestPostgresWorkerDrainsQueue(t *testing.T) {
 
 	// The retried operation must have needed exactly two attempts.
 	mu.Lock()
-	retried := seen["drain-03"]
+	retried := seen[pgUUIDStr("drain-03")]
 	mu.Unlock()
 	if retried != 2 {
 		t.Fatalf("the transient operation was attempted %d times, want 2", retried)
@@ -246,4 +248,17 @@ func TestPostgresWorkerDrainsQueue(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("consumer did not stop")
 	}
+}
+
+// pgUUIDStr derives a deterministic uuid from a label so a fixture can name an
+// operation readably. The reference declares the operation key as uuid, so a
+// literal like "op-00" cannot be stored.
+func pgUUIDStr(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	buf := make([]byte, 16)
+	copy(buf, sum[:16])
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	hexed := hex.EncodeToString(buf)
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
 }

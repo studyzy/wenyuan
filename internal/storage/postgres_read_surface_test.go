@@ -39,7 +39,7 @@ func postgresReadStore(t *testing.T) Store {
 			_ = closer.Close()
 		}
 	})
-	if _, err := store.CreateBank(ctx, Bank{ID: "read-bank", Name: "read-bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "read-bank", Name: "read-bank"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
 	return store
@@ -73,8 +73,8 @@ func TestPostgresDocumentListCarriesMetadata(t *testing.T) {
 
 	// One unit for the document, so the derived count is one rather than zero.
 	if _, err := store.UpsertUnit(ctx, MemoryUnit{
-		ID: "unit-1", BankID: "read-bank", Text: "a fact", DocumentID: "doc-1",
-		Type: TypeWorld,
+		ID: pgUUID("unit-1"), BankID: "read-bank", Text: "a fact", DocumentID: "doc-1",
+		FactType: TypeWorld,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,15 +139,15 @@ func TestPostgresGraphKeepsEndpoints(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		if _, err := store.UpsertUnit(ctx, MemoryUnit{
-			ID: fmt.Sprintf("unit-%d", i), BankID: "read-bank",
-			Text: "fact", Type: TypeWorld,
+			ID: pgUUID(fmt.Sprintf("unit-%d", i)), BankID: "read-bank",
+			Text: "fact", FactType: TypeWorld,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := store.UpsertLink(ctx, MemoryLink{
-		ID: "link-1", BankID: "read-bank", FromID: "unit-0", ToID: "unit-1",
-		LinkType: LinkCauses,
+		BankID: "read-bank", FromUnitID: pgUUID("unit-0"), ToUnitID: pgUUID("unit-1"),
+		LinkType: LinkCauses, Weight: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}

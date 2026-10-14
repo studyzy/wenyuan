@@ -11,41 +11,45 @@ import (
 	"time"
 )
 
-// referenceSchema is a minimal reference-shaped schema: the column names the
-// reference uses (`fact_type`, `canonical_name`, `bank_id`), which is exactly
-// what the direct reader has to translate.
+// referenceSchema is the shape the reference database actually has, narrowed
+// to the columns the direct reader touches. It is a fixture for the reader's
+// SQL: the columns, names and defaults are the reference's own, so a query that
+// drifts from the reference fails here rather than only in a real migration.
 const referenceSchema = `
 CREATE TABLE documents (
     id            TEXT NOT NULL,
     bank_id       TEXT NOT NULL,
     original_text TEXT,
     retain_params JSONB DEFAULT '{}'::jsonb,
-    tags          JSONB DEFAULT '[]'::jsonb,
-    created_at    TIMESTAMPTZ,
+    tags          VARCHAR(255)[] DEFAULT '{}'::character varying[],
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    updated_at    TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (id, bank_id)
 );
 CREATE TABLE chunks (
-    id          TEXT PRIMARY KEY,
+    chunk_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id TEXT NOT NULL,
     bank_id     TEXT NOT NULL,
-    document_id TEXT,
-    chunk_index INT,
-    text        TEXT,
-    chunk_text  TEXT
+    chunk_index INT NOT NULL,
+    chunk_text  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    content_hash TEXT
 );
 CREATE TABLE memory_units (
-    id           TEXT PRIMARY KEY,
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     bank_id      TEXT NOT NULL,
     document_id  TEXT,
     text         TEXT NOT NULL,
-    fact_type    TEXT NOT NULL DEFAULT 'world',
     context      TEXT,
     event_date   TIMESTAMPTZ,
     occurred_start TIMESTAMPTZ,
     occurred_end TIMESTAMPTZ,
     mentioned_at TIMESTAMPTZ,
-    confidence_score DOUBLE PRECISION,
+    fact_type    TEXT NOT NULL DEFAULT 'world',
     metadata     JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at   TIMESTAMPTZ
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    updated_at   TIMESTAMPTZ DEFAULT now(),
+    chunk_id     TEXT
 );
 `
 
@@ -88,11 +92,12 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO documents (id, bank_id, original_text, created_at) VALUES ('d1','src-bank','about Alice', now())`,
-		`INSERT INTO chunks (id, bank_id, document_id, chunk_index, chunk_text) VALUES ('c1','src-bank','d1',0,'about Alice')`,
-		`INSERT INTO memory_units (id, bank_id, document_id, text, fact_type, confidence_score, metadata)
-		   VALUES ('u1','src-bank','d1','Alice works at Google','world',0.8,'{"k":"v"}')`,
+		`INSERT INTO chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text)
+		   VALUES (gen_random_uuid(),'src-bank','d1',0,'about Alice')`,
+		`INSERT INTO memory_units (id, bank_id, document_id, text, fact_type, metadata)
+		   VALUES (gen_random_uuid(),'src-bank','d1','Alice works at Google','world','{"k":"v"}')`,
 		`INSERT INTO memory_units (id, bank_id, document_id, text, fact_type)
-		   VALUES ('u2','src-bank','d1','Alice prefers tea','opinion')`,
+		   VALUES (gen_random_uuid(),'src-bank','d1','Alice prefers tea','opinion')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.ExecContext(ctx, statement); err != nil {

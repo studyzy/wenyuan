@@ -10,7 +10,7 @@ import (
 func seedBank(t *testing.T, s *MemoryStore, bankID string, matches ...RecallMatch) {
 	t.Helper()
 	if _, ok := s.banks[bankID]; !ok {
-		if _, err := s.CreateBank(context.Background(), Bank{ID: bankID, Name: bankID}); err != nil {
+		if _, err := s.CreateBank(context.Background(), Bank{BankID: bankID, Name: bankID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -270,7 +270,7 @@ func TestRecallTemporalSpreadingThroughLinks(t *testing.T) {
 		RecallMatch{ID: "seed", Text: "alpha", Type: "world", MentionedAt: &mention},
 		RecallMatch{ID: "linked", Text: "unrelated text", Type: "world"},
 	)
-	if err := s.UpsertLink(context.Background(), MemoryLink{ID: "l1", BankID: "b1", FromID: "seed", ToID: "linked", LinkType: LinkCauses}); err != nil {
+	if err := s.UpsertLink(context.Background(), MemoryLink{BankID: "b1", FromUnitID: "seed", ToUnitID: "linked", LinkType: LinkCauses, Weight: 1}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := s.Recall(context.Background(), RecallQuery{BankID: "b1", Query: "alpha"})
@@ -291,8 +291,8 @@ func TestRecallTemporalSpreadingStrongestPath(t *testing.T) {
 		RecallMatch{ID: "target", Text: "unrelated", Type: "world"},
 	)
 	// A causal edge propagates further than a temporal edge to the same target.
-	_ = s.UpsertLink(context.Background(), MemoryLink{ID: "l1", BankID: "b1", FromID: "seed", ToID: "target", LinkType: LinkTemporal})
-	_ = s.UpsertLink(context.Background(), MemoryLink{ID: "l2", BankID: "b1", FromID: "seed", ToID: "target", LinkType: LinkCauses})
+	_ = s.UpsertLink(context.Background(), MemoryLink{BankID: "b1", FromUnitID: "seed", ToUnitID: "target", LinkType: LinkTemporal, Weight: 1})
+	_ = s.UpsertLink(context.Background(), MemoryLink{BankID: "b1", FromUnitID: "seed", ToUnitID: "target", LinkType: LinkCauses, Weight: 1})
 	result, err := s.Recall(context.Background(), RecallQuery{BankID: "b1", Query: "alpha"})
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ func TestRecallTemporalSpreadingStrongestPath(t *testing.T) {
 func TestRecallSourceFactChannel(t *testing.T) {
 	s := NewMemoryStore("public")
 	seedBank(t, s, "b1",
-		RecallMatch{ID: "obs", Text: "alpha", Type: "observation", SourceFactIDs: []string{"f1"}},
+		RecallMatch{ID: "obs", Text: "alpha", Type: "observation", SourceMemoryIDs: []string{"f1"}},
 	)
 	result, err := s.Recall(context.Background(), RecallQuery{
 		BankID: "b1", Query: "alpha", Types: []string{"observation"}, IncludeSourceFacts: true,

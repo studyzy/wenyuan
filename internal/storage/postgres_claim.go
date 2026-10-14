@@ -33,7 +33,7 @@ func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string,
 	// disjunction, and without the grouping a later conjunct would bind to only
 	// its right-hand side.
 	query := `WITH candidate AS (
-	            SELECT id FROM ` + quoteIdent(s.schema) + `.async_operations
+	            SELECT operation_id FROM ` + quoteIdent(s.schema) + `.async_operations
 	            WHERE ((status = 'pending'
 	                    AND (next_retry_at IS NULL OR next_retry_at <= now()))
 	                OR (status = 'processing'
@@ -45,20 +45,20 @@ func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string,
 	                        SELECT 1 FROM ` + quoteIdent(s.schema) + `.async_operations held
 	                        WHERE held.serialization_key = ` + quoteIdent(s.schema) + `.async_operations.serialization_key
 	                          AND held.status = 'processing'
-	                          AND held.id <> ` + quoteIdent(s.schema) + `.async_operations.id
+	                          AND held.operation_id <> ` + quoteIdent(s.schema) + `.async_operations.operation_id
 	                          AND ($2 <= 0
 	                               OR held.claimed_at IS NULL
 	                               OR held.claimed_at > now() - make_interval(secs => $2))))
-	            ORDER BY created_at ASC, id ASC
+	            ORDER BY created_at ASC, operation_id ASC
 	            FOR UPDATE SKIP LOCKED
 	            LIMIT 1
 	          )
 	          UPDATE ` + quoteIdent(s.schema) + `.async_operations AS o
 	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now()
 	          FROM candidate
-	          WHERE o.id = candidate.id
-	          RETURNING o.id, o.bank_id, COALESCE(o.operation_type,''), o.status,
-	                    COALESCE(o.error_message,''), o.run, o.created_at, o.updated_at,
+	          WHERE o.operation_id = candidate.operation_id
+	          RETURNING o.operation_id, o.bank_id, COALESCE(o.operation_type,''), o.status,
+	                    COALESCE(o.error_message,''), o.created_at, o.updated_at,
 	                    o.completed_at, COALESCE(o.retry_count,0), o.next_retry_at,
 	                    o.result_metadata, COALESCE(o.worker_id,''), o.claimed_at,
 	                    COALESCE(o.task_payload, 'null'::jsonb), COALESCE(o.serialization_key,'')`
@@ -107,7 +107,7 @@ func (s *PostgresStore) claimOnce(ctx context.Context, query, workerID string, l
 func (s *PostgresStore) ReleaseOperationClaim(ctx context.Context, opID, workerID string) error {
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status = 'pending', worker_id = NULL, claimed_at = NULL, updated_at = now()
-	          WHERE id = $1 AND worker_id = $2`
+	          WHERE operation_id = $1 AND worker_id = $2`
 	result, err := s.db.ExecContext(ctx, query, opID, workerID)
 	if err != nil {
 		return err

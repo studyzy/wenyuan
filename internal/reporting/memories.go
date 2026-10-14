@@ -74,7 +74,7 @@ func toMemoryItem(unit storage.MemoryUnit) MemoryItem {
 		tags = []string{}
 	}
 	return MemoryItem{
-		ID: unit.ID, BankID: unit.BankID, Text: unit.Text, Type: string(unit.Type),
+		ID: unit.ID, BankID: unit.BankID, Text: unit.Text, Type: string(unit.FactType),
 		Context: unit.Context, DocumentID: unit.DocumentID, ChunkID: unit.ChunkID,
 		Tags: tags, Metadata: unit.Metadata,
 		OccurredStart: formatTimePtr(unit.OccurredStart),

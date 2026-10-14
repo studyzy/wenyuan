@@ -26,7 +26,7 @@ func recordImportOperation(t *testing.T, store *storage.MemoryStore, archive []b
 		t.Fatal(err)
 	}
 	op, err := store.PutOperation(ctx, storage.Operation{
-		ID: "op-import", BankID: "b1", OperationType: storage.OperationTypeTransferImport,
+		OperationID: "op-import", BankID: "b1", OperationType: storage.OperationTypeTransferImport,
 		Status: storage.StatusPending,
 		Payload: map[string]any{
 			storage.OperationPayloadKeyStoredFile: key,
@@ -69,7 +69,7 @@ func buildImportArchive(t *testing.T) []byte {
 func TestArchiveProcessorImportsStashedArchive(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	op := recordImportOperation(t, store, buildImportArchive(t))
@@ -90,7 +90,7 @@ func TestArchiveProcessorImportsStashedArchive(t *testing.T) {
 func TestArchiveProcessorImportWithoutKey(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	err := archiveProcessor{store: store}.Process(context.Background(), storage.Operation{
-		ID: "op-1", BankID: "b1", OperationType: storage.OperationTypeTransferImport,
+		OperationID: "op-1", BankID: "b1", OperationType: storage.OperationTypeTransferImport,
 	})
 	if err == nil || !worker.IsPermanent(err) {
 		t.Fatalf("error = %v, want a permanent failure", err)
@@ -102,12 +102,12 @@ func TestArchiveProcessorClonesBank(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
 	if _, err := store.CreateBank(ctx, storage.Bank{
-		ID: "b1", Name: "Source", ReflectMission: "be helpful", DispositionEmpathy: 7,
+		BankID: "b1", Name: "Source", Mission: "be helpful", Disposition: map[string]int{storage.DispositionKeyEmpathy: 7},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	err := archiveProcessor{store: store}.Process(ctx, storage.Operation{
-		ID: "op-clone", BankID: "b1", OperationType: storage.OperationTypeClone,
+		OperationID: "op-clone", BankID: "b1", OperationType: storage.OperationTypeClone,
 		Payload: map[string]any{"target_bank_id": "b2"},
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestArchiveProcessorClonesBank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the clone was not created: %v", err)
 	}
-	if clone.ReflectMission != "be helpful" || clone.DispositionEmpathy != 7 {
+	if clone.Mission != "be helpful" || clone.Trait(storage.DispositionKeyEmpathy) != 7 {
 		t.Fatalf("clone = %+v, want the source's profile", clone)
 	}
 }
@@ -128,12 +128,12 @@ func TestArchiveProcessorCloneOntoExistingBank(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
 	for _, id := range []string{"b1", "b2"} {
-		if _, err := store.CreateBank(ctx, storage.Bank{ID: id, Name: id}); err != nil {
+		if _, err := store.CreateBank(ctx, storage.Bank{BankID: id, Name: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	err := archiveProcessor{store: store}.Process(ctx, storage.Operation{
-		ID: "op-clone", BankID: "b1", OperationType: storage.OperationTypeClone,
+		OperationID: "op-clone", BankID: "b1", OperationType: storage.OperationTypeClone,
 		Payload: map[string]any{"target_bank_id": "b2"},
 	})
 	if err == nil || !worker.IsPermanent(err) {
@@ -146,7 +146,7 @@ func TestArchiveProcessorCloneOntoExistingBank(t *testing.T) {
 func TestArchiveProcessorExportIsNoop(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	if err := (archiveProcessor{store: store}).Process(context.Background(), storage.Operation{
-		ID: "op-export", BankID: "b1", OperationType: storage.OperationTypeTransferExport,
+		OperationID: "op-export", BankID: "b1", OperationType: storage.OperationTypeTransferExport,
 	}); err != nil {
 		t.Fatalf("export operation: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestArchiveProcessorExportIsNoop(t *testing.T) {
 func TestArchiveProcessorUnknownType(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	err := archiveProcessor{store: store}.Process(context.Background(), storage.Operation{
-		ID: "op-x", BankID: "b1", OperationType: "something-else",
+		OperationID: "op-x", BankID: "b1", OperationType: "something-else",
 	})
 	if err == nil || !worker.IsPermanent(err) {
 		t.Fatalf("error = %v, want a permanent failure", err)
@@ -168,7 +168,7 @@ func TestArchiveProcessorUnknownType(t *testing.T) {
 func TestArchiveProcessorConsolidation(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetainWrite(ctx, storage.RetainRequest{
@@ -176,7 +176,7 @@ func TestArchiveProcessorConsolidation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	op := storage.Operation{ID: "op-c", BankID: "b1", OperationType: storage.OperationTypeConsolidate}
+	op := storage.Operation{OperationID: "op-c", BankID: "b1", OperationType: storage.OperationTypeConsolidate}
 
 	// The no-model selection refuses permanently.
 	err := archiveProcessor{store: store, provider: none.New()}.Process(ctx, op)
@@ -217,10 +217,10 @@ func (s *scriptedProvider) Dimensions() int                        { return prov
 func TestConsolidationStoreAdapter(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: "b1", Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{ID: "f1", BankID: "b1", Text: "a fact", Type: storage.TypeWorld}); err != nil {
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{ID: "f1", BankID: "b1", Text: "a fact", FactType: storage.TypeWorld}); err != nil {
 		t.Fatal(err)
 	}
 	adapter := consolidationStore{store: store}

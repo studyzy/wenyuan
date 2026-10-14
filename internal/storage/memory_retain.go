@@ -54,7 +54,7 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 	s.recordWriteWatermarkLocked(req.BankID, now)
 	if req.Async {
 		s.operations[opID] = Operation{
-			ID:            opID,
+			OperationID:   opID,
 			BankID:        req.BankID,
 			OperationType: OperationTypeRetain,
 			Status:        StatusPending,
@@ -64,7 +64,7 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 		}
 	} else {
 		s.operations[opID] = Operation{
-			ID:            opID,
+			OperationID:   opID,
 			BankID:        req.BankID,
 			OperationType: OperationTypeRetain,
 			Status:        StatusCompleted,
@@ -119,7 +119,7 @@ func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string) []strin
 	for i, chunk := range chunks {
 		chunkID := newID()
 		s.chunks = append(s.chunks, Chunk{
-			ID: chunkID, BankID: bankID, DocumentID: docID, Index: i, Text: chunk, ContentHash: ContentHash(chunk),
+			ChunkID: chunkID, BankID: bankID, DocumentID: docID, ChunkIndex: i, ChunkText: chunk, ContentHash: ContentHash(chunk),
 		})
 		chunkIDs = append(chunkIDs, chunkID)
 	}
@@ -132,13 +132,17 @@ func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, item RetainI
 	if tags == nil {
 		tags = []string{}
 	}
+	params := map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode}
+	if len(item.Metadata) > 0 {
+		params["metadata"] = item.Metadata
+	}
 	s.documents[docID] = Document{
 		ID:           docID,
 		BankID:       bankID,
 		OriginalText: text,
 		ContentHash:  ContentHash(text),
 		Metadata:     item.Metadata,
-		RetainParams: map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode},
+		RetainParams: params,
 		Tags:         tags,
 		CreatedAt:    now,
 	}
@@ -177,19 +181,19 @@ func recallMatchFromUnit(unit MemoryUnit) RecallMatch {
 		tags = []string{}
 	}
 	return RecallMatch{
-		ID:            unit.ID,
-		Text:          unit.Text,
-		Type:          string(unit.Type),
-		Context:       unit.Context,
-		OccurredStart: unit.OccurredStart,
-		OccurredEnd:   unit.OccurredEnd,
-		MentionedAt:   unit.MentionedAt,
-		DocumentID:    unit.DocumentID,
-		ChunkID:       unit.ChunkID,
-		Metadata:      unit.Metadata,
-		Tags:          tags,
-		Scores:        map[string]float64{},
-		SourceFactIDs: []string{},
+		ID:              unit.ID,
+		Text:            unit.Text,
+		Type:            string(unit.FactType),
+		Context:         unit.Context,
+		OccurredStart:   unit.OccurredStart,
+		OccurredEnd:     unit.OccurredEnd,
+		MentionedAt:     unit.MentionedAt,
+		DocumentID:      unit.DocumentID,
+		ChunkID:         unit.ChunkID,
+		Metadata:        unit.Metadata,
+		Tags:            tags,
+		Scores:          map[string]float64{},
+		SourceMemoryIDs: []string{},
 	}
 }
 
@@ -213,7 +217,7 @@ func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, re
 	} else if match, found := s.exactEntityMatchLocked(bankID, name); found {
 		return match
 	}
-	created := Entity{ID: newID(), BankID: bankID, Name: name, Kind: EntityKindRegular, MentionCount: 1}
+	created := Entity{ID: newID(), BankID: bankID, CanonicalName: name, EntityKind: EntityKindRegular, MentionCount: 1}
 	s.entities[created.ID] = created
 	return created
 }
@@ -222,7 +226,7 @@ func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, re
 // case-insensitively.
 func (s *MemoryStore) exactEntityMatchLocked(bankID, name string) (Entity, bool) {
 	for id, stored := range s.entities {
-		if stored.BankID == bankID && strings.EqualFold(entityMatchKey(stored.Name), name) {
+		if stored.BankID == bankID && strings.EqualFold(entityMatchKey(stored.CanonicalName), name) {
 			return s.entities[id], true
 		}
 	}
@@ -239,7 +243,7 @@ func (s *MemoryStore) bestEntityMatchLocked(bankID, name string) (Entity, bool) 
 		if stored.BankID != bankID {
 			continue
 		}
-		score := entitySimilarity(stored.Name, name)
+		score := entitySimilarity(stored.CanonicalName, name)
 		if score < EntitySimilarityThreshold {
 			continue
 		}
@@ -335,7 +339,7 @@ func (s *MemoryStore) resolveEntityOfKindLocked(bankID, name string, kind Entity
 	resolved := s.resolveEntityLocked(bankID, entity, resolve)
 	if resolved.ID != "" && kind != "" && kind != EntityKindRegular {
 		stored := s.entities[resolved.ID]
-		stored.Kind = kind
+		stored.EntityKind = kind
 		s.entities[resolved.ID] = stored
 		resolved = stored
 	}
@@ -362,20 +366,27 @@ func (s *MemoryStore) UpsertUnitEntity(ctx context.Context, unitID, entityID str
 }
 
 // UpsertEntityCooccurrence records that two entities co-occur in a bank.
-func (s *MemoryStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityA, entityB string) error {
+func (s *MemoryStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := bankID + "\x00" + entityA + "\x00" + entityB
+	key := entityID1 + "\x00" + entityID2
 	s.cooccurrences[key]++
 	return nil
 }
 
 // UpsertLink persists one directed memory link.
+//
+// The reference identifies a link by its endpoints and type rather than a
+// synthetic row id, so a re-upsert of the same edge replaces it in place.
 func (s *MemoryStore) UpsertLink(ctx context.Context, link MemoryLink) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if link.ID == "" {
-		link.ID = newID()
+	for i, existing := range s.links {
+		if existing.BankID == link.BankID && existing.FromUnitID == link.FromUnitID &&
+			existing.ToUnitID == link.ToUnitID && existing.LinkType == link.LinkType {
+			s.links[i] = link
+			return nil
+		}
 	}
 	s.links = append(s.links, link)
 	return nil

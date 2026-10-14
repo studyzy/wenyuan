@@ -40,8 +40,8 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]BankListRow, 0, len(page.Banks))
 	for _, bank := range page.Banks {
-		display := h.displayAlias(r, bank.ID)
-		rows = append(rows, ToListRow(bank, display, page.MatchedAliases[bank.ID]))
+		display := h.displayAlias(r, bank.BankID)
+		rows = append(rows, ToListRow(bank, display, page.MatchedAliases[bank.BankID]))
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, BankListResponse{
 		Banks:  rows,

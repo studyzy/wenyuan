@@ -39,6 +39,11 @@ var ErrAliasNotFound = errors.New("alias not found")
 // ErrOperationNotFound is returned when an operation identifier is unknown.
 var ErrOperationNotFound = errors.New("operation not found")
 
+// ErrOperationNotTerminal is returned when an operation is still running and
+// therefore cannot be deleted. Only failed, cancelled or completed operations
+// are removable.
+var ErrOperationNotTerminal = errors.New("operation is not in a terminal state")
+
 // ErrDocumentConflict is returned when an append-mode write observes that the
 // stored document moved since the request read it; the request is retryable
 // rather than overwriting content it never saw.
@@ -86,6 +91,12 @@ type Store interface {
 	// DeleteBank removes a bank and its owned rows, returning how many bank
 	// rows were removed (0 for a bank that never existed).
 	DeleteBank(ctx context.Context, bankID string) (int, error)
+	// ClearBankMemories removes a bank's memory units together with their
+	// links and entity associations, returning how many units were removed.
+	// The bank row, its entities and its documents survive: this is the
+	// clear-memories operation, not a bank delete. An empty factType clears
+	// every type.
+	ClearBankMemories(ctx context.Context, bankID, factType string) (int, error)
 
 	// ResolveBankID maps an alias to its canonical bank identifier. An
 	// identifier that is itself a bank is returned unchanged; unknown
@@ -125,7 +136,9 @@ type Store interface {
 	// UpsertUnitEntity links a memory unit to an entity identity.
 	UpsertUnitEntity(ctx context.Context, unitID, entityID string) error
 	// UpsertEntityCooccurrence records that two entities co-occur in a bank.
-	UpsertEntityCooccurrence(ctx context.Context, bankID, entityA, entityB string) error
+	// The reference orders the pair by identifier, so the caller supplies the
+	// lower identifier first.
+	UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error
 	// UpsertLink persists one directed memory link.
 	UpsertLink(ctx context.Context, link MemoryLink) error
 
@@ -180,6 +193,11 @@ type Store interface {
 	CancelOperation(ctx context.Context, opID string) (Operation, error)
 	// RetryOperation starts a new run of a failed operation.
 	RetryOperation(ctx context.Context, opID string) (Operation, error)
+	// DeleteOperation permanently removes a terminal operation row and the
+	// archive an export operation owns. It reports ErrOperationNotFound when
+	// the identifier is unknown and ErrOperationNotTerminal when the row is
+	// still pending or running.
+	DeleteOperation(ctx context.Context, bankID, opID string) (Operation, error)
 
 	// ClaimNextOperation atomically claims the oldest claimable operation for
 	// the given worker and returns it. It reports ErrOperationNotFound when

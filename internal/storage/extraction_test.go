@@ -61,9 +61,6 @@ func TestRetainStoresOneUnitPerFact(t *testing.T) {
 	if _, ok := texts["Alice is employed."]; !ok {
 		t.Fatalf("extracted fact text was not stored: %+v", texts)
 	}
-	if confidence := texts["Alice is employed."].Confidence; confidence != 0.75 {
-		t.Fatalf("confidence = %v, want the extracted 0.75", confidence)
-	}
 }
 
 // An extracted fact carries its own dates, overriding the item's timestamp.
@@ -122,8 +119,8 @@ func TestRetainLinksFactsFromOneItem(t *testing.T) {
 		t.Fatalf("created %d links, want one between each consecutive pair", len(store.links))
 	}
 	for i, link := range store.links {
-		if link.FromID != units[i] || link.ToID != units[i+1] {
-			t.Fatalf("link %d joins %s->%s, want %s->%s", i, link.FromID, link.ToID, units[i], units[i+1])
+		if link.FromUnitID != units[i] || link.ToUnitID != units[i+1] {
+			t.Fatalf("link %d joins %s->%s, want %s->%s", i, link.FromUnitID, link.ToUnitID, units[i], units[i+1])
 		}
 		if link.LinkType != LinkSemantic {
 			t.Fatalf("link %d type = %q, want semantic", i, link.LinkType)
@@ -215,7 +212,7 @@ func TestRetainFactUnitsCarryBothEntitySources(t *testing.T) {
 	}
 	found := make(map[string]bool, 2)
 	for _, id := range entityIDs {
-		found[store.entities[id].Name] = true
+		found[store.entities[id].CanonicalName] = true
 	}
 	for _, want := range []string{"Alice", "Bob"} {
 		if !found[want] {

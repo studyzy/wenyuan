@@ -21,7 +21,7 @@ func newServer(t *testing.T) *http.ServeMux {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, storage.Bank{ID: bank, Name: "Bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetainWrite(ctx, storage.RetainRequest{
@@ -242,11 +242,6 @@ func TestPromptAndExtractPreviewRoutes(t *testing.T) {
 	}
 	if rec := send(mux, http.MethodPost, base+"/memories/dry-run-extract", `{"text":"Alice works at Google."}`); rec.Code != http.StatusOK {
 		t.Fatalf("dry-run extract: %d, body = %s", rec.Code, rec.Body.String())
-	}
-	// The operation delete alias retires an operation; an unknown one is a
-	// no-op success rather than an error, because deleting nothing succeeded.
-	if rec := send(mux, http.MethodPost, base+"/operations/does-not-exist/delete", ""); rec.Code >= 500 {
-		t.Fatalf("operation delete alias: %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

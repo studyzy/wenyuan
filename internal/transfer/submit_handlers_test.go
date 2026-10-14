@@ -42,7 +42,7 @@ func routeRequest(method, target string, body *bytes.Buffer, params map[string]s
 // seedBank creates a bank so a bank-scoped route authorizes.
 func seedBank(t *testing.T, store *storage.MemoryStore, bankID string) {
 	t.Helper()
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: bankID, Name: bankID}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: bankID, Name: bankID}); err != nil {
 		t.Fatalf("seed bank %q: %v", bankID, err)
 	}
 }

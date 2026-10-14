@@ -30,7 +30,7 @@ func TestEveryGAPSRouteIsMounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{ID: "cov-bank", Name: "cov-bank"}); err != nil {
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "cov-bank", Name: "cov-bank"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,13 +54,14 @@ func TestEveryGAPSRouteIsMounted(t *testing.T) {
 		// The MCP namespace answers JSON-RPC over POST.
 		{http.MethodPost, "/mcp"},
 		{http.MethodPost, base + "/memories"},
+		{http.MethodDelete, base + "/memories"},
 		{http.MethodPost, base + "/files/retain"},
 		{http.MethodPost, base + "/memories/recall"},
 		{http.MethodPost, base + "/reflect"},
 		{http.MethodGet, base + "/operations"},
 		{http.MethodPost, base + "/operations/x/retry"},
 		{http.MethodDelete, base + "/operations/x"},
-		{http.MethodPost, base + "/operations/x/delete"},
+		{http.MethodDelete, base + "/operations/x/delete"},
 		// Transfer family.
 		{http.MethodPost, base + "/import"},
 		{http.MethodGet, base + "/export"},

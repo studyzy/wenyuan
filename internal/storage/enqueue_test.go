@@ -44,8 +44,8 @@ func TestEnqueueDeduplicatesPendingRegardlessOfFlag(t *testing.T) {
 		if !second.Deduplicated {
 			t.Errorf("includeProcessing=%v: a pending operation must suppress the insert", includeProcessing)
 		}
-		if second.Operation.ID != first.Operation.ID {
-			t.Errorf("the surviving operation must be returned: got %s, want %s", second.Operation.ID, first.Operation.ID)
+		if second.Operation.OperationID != first.Operation.OperationID {
+			t.Errorf("the surviving operation must be returned: got %s, want %s", second.Operation.OperationID, first.Operation.OperationID)
 		}
 	}
 }
@@ -136,7 +136,7 @@ func TestEnqueueIgnoresSettledOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AdvanceOperation(ctx, first.Operation.ID, StatusCompleted, ""); err != nil {
+	if _, err := store.AdvanceOperation(ctx, first.Operation.OperationID, StatusCompleted, ""); err != nil {
 		t.Fatal(err)
 	}
 	next, err := store.EnqueueOperation(ctx, enqueueRequest("b1", "mm-1", true))
@@ -173,7 +173,7 @@ func TestClaimRespectsSerializationKey(t *testing.T) {
 		t.Fatalf("the second operation must wait for the key: err = %v", err)
 	}
 
-	if err := store.ReleaseOperationClaim(ctx, claimed.ID, "worker-1"); err != nil {
+	if err := store.ReleaseOperationClaim(ctx, claimed.OperationID, "worker-1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ClaimNextOperation(ctx, "worker-2", time.Minute); err != nil {
@@ -219,9 +219,9 @@ func TestAbandonedClaimReleasesTheKey(t *testing.T) {
 	}
 	// Age the claim past its lease without releasing it.
 	past := time.Now().UTC().Add(-2 * time.Minute)
-	stored := store.operations[claimed.ID]
+	stored := store.operations[claimed.OperationID]
 	stored.ClaimedAt = &past
-	store.operations[claimed.ID] = stored
+	store.operations[claimed.OperationID] = stored
 
 	if _, err := store.ClaimNextOperation(ctx, "worker-2", time.Minute); err != nil {
 		t.Fatalf("an abandoned claim must not hold the key: %v", err)

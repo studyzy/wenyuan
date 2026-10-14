@@ -156,7 +156,7 @@ func TestContractOperationLifecycle(t *testing.T) {
 		t.Fatalf("unknown operation = %v, want ErrOperationNotFound", err)
 	}
 	if _, err := store.PutOperation(ctx, Operation{
-		ID: "op-1", BankID: bank, OperationType: OperationTypeRetain, Status: StatusPending,
+		OperationID: "op-1", BankID: bank, OperationType: OperationTypeRetain, Status: StatusPending,
 	}); err != nil {
 		t.Fatalf("put operation: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestContractMemorySubRoutes(t *testing.T) {
 	}
 
 	op, deduplicated, err := store.EnqueueConsolidation(ctx, bank)
-	if err != nil || op.ID == "" {
+	if err != nil || op.OperationID == "" {
 		t.Fatalf("enqueue consolidation = %+v (err %v)", op, err)
 	}
 	// A second enqueue while one is pending is reported as deduplicated.

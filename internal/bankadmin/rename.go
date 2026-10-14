@@ -71,7 +71,7 @@ func (r Renamer) Rename(ctx context.Context, source, target string, dryRun bool)
 }
 
 func withID(bank storage.Bank, id string) storage.Bank {
-	bank.ID = id
+	bank.BankID = id
 	if bank.Name == "" {
 		bank.Name = id
 	}

@@ -29,11 +29,11 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 		return s.vectorRecall(ctx, q, types, limit)
 	}
 
-	query := `SELECT id, text, type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id
+	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1
 	            AND ($2 = '' OR text ILIKE '%' || $2 || '%')
-	            AND type = ANY($3)
+	            AND fact_type = ANY($3)
 	          LIMIT $4`
 	rows, err := s.db.QueryContext(ctx, query, q.BankID, strings.TrimSpace(q.Query), types, limit)
 	if err != nil {

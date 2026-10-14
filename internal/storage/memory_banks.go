@@ -69,15 +69,15 @@ func (s *MemoryStore) ListBanks(ctx context.Context, query BankQuery) (BankPage,
 
 // CreateBank inserts a bank and returns the stored representation.
 func (s *MemoryStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
-	if !ValidBankID(bank.ID) {
+	if !ValidBankID(bank.BankID) {
 		return Bank{}, ErrInvalidBankID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.banks[bank.ID]; exists {
+	if _, exists := s.banks[bank.BankID]; exists {
 		return Bank{}, ErrOperationConflict
 	}
-	if _, ok := s.aliasBankLocked(bank.ID); ok {
+	if _, ok := s.aliasBankLocked(bank.BankID); ok {
 		return Bank{}, ErrAliasConflict
 	}
 	now := time.Now().UTC()
@@ -85,9 +85,9 @@ func (s *MemoryStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
 	bank.UpdatedAt = now
 	applyDispositionDefaults(&bank)
 	storeBankDefaults(&bank)
-	s.banks[bank.ID] = bank
-	s.order = append(s.order, bank.ID)
-	s.invalidateBankLocked(bank.ID)
+	s.banks[bank.BankID] = bank
+	s.order = append(s.order, bank.BankID)
+	s.invalidateBankLocked(bank.BankID)
 	return bank, nil
 }
 
@@ -108,7 +108,7 @@ func (s *MemoryStore) GetBank(ctx context.Context, bankID string) (Bank, error) 
 func (s *MemoryStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	existing, ok := s.banks[bank.ID]
+	existing, ok := s.banks[bank.BankID]
 	if !ok {
 		return Bank{}, ErrBankNotFound
 	}
@@ -118,8 +118,8 @@ func (s *MemoryStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) 
 	bank.LastDocumentAt = existing.LastDocumentAt
 	applyDispositionDefaults(&bank)
 	storeBankDefaults(&bank)
-	s.banks[bank.ID] = bank
-	s.invalidateBankLocked(bank.ID)
+	s.banks[bank.BankID] = bank
+	s.invalidateBankLocked(bank.BankID)
 	return bank, nil
 }
 
@@ -179,42 +179,37 @@ func (s *MemoryStore) ResolveBankID(ctx context.Context, name string) (string, e
 }
 
 // applyBankPatch mutates a bank with the supplied non-nil patch fields.
+//
+// The disposition is one map, so a patch merges into the traits already set
+// rather than replacing the set: a caller that sets one trait means to change
+// that trait, not to clear the other two.
 func applyBankPatch(bank *Bank, patch BankPatch) {
 	if patch.Name != nil {
 		bank.Name = *patch.Name
 	}
-	if patch.DispositionSkepticism != nil {
-		bank.DispositionSkepticism = *patch.DispositionSkepticism
+	if patch.Disposition != nil {
+		merged := bank.NormalizedDisposition()
+		for key, value := range *patch.Disposition {
+			merged[key] = value
+		}
+		bank.Disposition = merged
 	}
-	if patch.DispositionLiteralism != nil {
-		bank.DispositionLiteralism = *patch.DispositionLiteralism
-	}
-	if patch.DispositionEmpathy != nil {
-		bank.DispositionEmpathy = *patch.DispositionEmpathy
-	}
-	if patch.ReflectMission != nil {
-		bank.ReflectMission = *patch.ReflectMission
+	if patch.Mission != nil {
+		bank.Mission = *patch.Mission
 	}
 }
 
-// applyDispositionDefaults replaces zero-valued disposition traits with the
-// neutral default so partially populated banks stay valid.
+// applyDispositionDefaults fills an absent trait with the neutral value, so a
+// partially populated bank reads as fully specified rather than as a bank with
+// a zero trait.
 func applyDispositionDefaults(bank *Bank) {
-	if bank.DispositionSkepticism == 0 {
-		bank.DispositionSkepticism = DispositionTraitNeutral
-	}
-	if bank.DispositionLiteralism == 0 {
-		bank.DispositionLiteralism = DispositionTraitNeutral
-	}
-	if bank.DispositionEmpathy == 0 {
-		bank.DispositionEmpathy = DispositionTraitNeutral
-	}
+	bank.Disposition = bank.NormalizedDisposition()
 }
 
 // storeBankDefaults fills a bank's display name from its identifier when the
 // name was omitted, so an implicitly created bank is immediately visible.
 func storeBankDefaults(bank *Bank) {
 	if bank.Name == "" {
-		bank.Name = bank.ID
+		bank.Name = bank.BankID
 	}
 }

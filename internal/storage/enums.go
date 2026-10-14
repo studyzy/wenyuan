@@ -41,7 +41,9 @@ func EntityKinds() []EntityKind {
 
 // Operation is an asynchronous unit of work persisted through the store.
 type Operation struct {
-	ID             string
+	// OperationID is the operation's primary key, named for the reference's
+	// column so a query and a struct read alike.
+	OperationID    string
 	BankID         string
 	OperationType  string
 	Status         OperationStatus

@@ -24,8 +24,8 @@ func (s *MemoryStore) EnqueueOperation(ctx context.Context, req EnqueueRequest) 
 	}
 
 	op := req.Operation
-	if op.ID == "" {
-		op.ID = newID()
+	if op.OperationID == "" {
+		op.OperationID = newID()
 	}
 	if op.Status == "" {
 		op.Status = StatusPending
@@ -43,7 +43,7 @@ func (s *MemoryStore) EnqueueOperation(ctx context.Context, req EnqueueRequest) 
 	if op.Run == 0 {
 		op.Run = 1
 	}
-	s.operations[op.ID] = op
+	s.operations[op.OperationID] = op
 	return EnqueueResult{Operation: op}, nil
 }
 
@@ -85,7 +85,7 @@ func subjectValue(payload map[string]any, key string) string {
 func (s *MemoryStore) operationForSubject(op Operation, key, subject string, includeProcessing bool) (Operation, bool) {
 	var pending *Operation
 	for _, existing := range s.operations {
-		if existing.ID == op.ID || existing.OperationType != op.OperationType {
+		if existing.OperationID == op.OperationID || existing.OperationType != op.OperationType {
 			continue
 		}
 		if existing.BankID != op.BankID {

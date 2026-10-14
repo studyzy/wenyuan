@@ -52,7 +52,7 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 		completedAt = &now
 	}
 	if _, err := s.PutOperation(ctx, Operation{
-		ID: opID, BankID: req.BankID, OperationType: OperationTypeRetain,
+		OperationID: opID, BankID: req.BankID, OperationType: OperationTypeRetain,
 		Status: status, Run: 1, CreatedAt: now, UpdatedAt: now, CompletedAt: completedAt,
 	}); err != nil {
 		return RetainOutcome{}, err
@@ -113,7 +113,7 @@ func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, conten
 	for i, chunk := range chunks {
 		chunkID := newID()
 		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO `+quoteIdent(s.schema)+`.chunks (id, bank_id, document_id, index, text, content_hash)
+			`INSERT INTO `+quoteIdent(s.schema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
 			 VALUES ($1,$2,$3,$4,$5,$6)`,
 			chunkID, bankID, docID, i, chunk, ContentHash(chunk)); err != nil {
 			return nil, err
@@ -152,36 +152,41 @@ func (s *PostgresStore) PutDocument(ctx context.Context, bankID, docID string, d
 	if doc.ContentHash == "" {
 		doc.ContentHash = ContentHash(doc.OriginalText)
 	}
-	// The metadata, retain-parameter and tag columns exist on the table, so
-	// they are written here rather than silently dropped.
-	metadata, err := jsonColumn(doc.Metadata)
-	if err != nil {
-		return Document{}, err
+	// The document carries no metadata column in the reference: the value is
+	// sourced from retain_params.metadata, so it is merged there before the
+	// write rather than stored beside it.
+	params := doc.RetainParams
+	if params == nil {
+		params = map[string]any{}
 	}
-	retainParams, err := jsonColumn(doc.RetainParams)
+	if len(doc.Metadata) > 0 {
+		params = copyAnyMap(params)
+		params["metadata"] = doc.Metadata
+	}
+	retainParams, err := jsonColumn(params)
 	if err != nil {
 		return Document{}, err
 	}
 	tags := normalizeTags(doc.Tags)
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.documents
-	          (id, bank_id, original_text, content_hash, metadata, retain_params, tags, created_at)
-	          VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7, now())
-	          ON CONFLICT (id) DO UPDATE SET
-	              original_text = $3, content_hash = $4, metadata = $5::jsonb,
-	              retain_params = $6::jsonb, tags = $7
+	          (id, bank_id, original_text, content_hash, retain_params, tags, created_at, updated_at)
+	          VALUES ($1,$2,$3,$4,$5::jsonb,$6, now(), now())
+	          ON CONFLICT (id, bank_id) DO UPDATE SET
+	              original_text = $3, content_hash = $4,
+	              retain_params = $5::jsonb, tags = $6, updated_at = now()
 	          RETURNING id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
-	                    COALESCE(metadata, '{}'::jsonb), COALESCE(retain_params, '{}'::jsonb),
-	                    COALESCE(tags, '{}'), created_at, created_at`
+	                    COALESCE(retain_params, '{}'::jsonb),
+	                    COALESCE(tags, '{}'), created_at, updated_at`
 	var out Document
-	var metadataRaw, retainRaw, tagsRaw []byte
+	var retainRaw, tagsRaw []byte
 	err = s.db.QueryRowContext(ctx, query, docID, bankID, doc.OriginalText, doc.ContentHash,
-		metadata, retainParams, tags).
-		Scan(&out.ID, &out.BankID, &out.OriginalText, &out.ContentHash, &metadataRaw, &retainRaw, &tagsRaw, &out.CreatedAt, &out.UpdatedAt)
+		retainParams, tags).
+		Scan(&out.ID, &out.BankID, &out.OriginalText, &out.ContentHash, &retainRaw, &tagsRaw, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return Document{}, err
 	}
-	out.Metadata = decodeJSONMap(metadataRaw)
 	out.RetainParams = decodeJSONMap(retainRaw)
+	out.Metadata = documentMetadata(out.RetainParams)
 	out.Tags = decodePostgresTextArray(tagsRaw)
 	return out, nil
 }
@@ -199,7 +204,7 @@ func (s *PostgresStore) AppendDocument(ctx context.Context, bankID, docID, text,
 
 // entityColumns is the column list every entity read selects, so a scan can
 // never drift from the query that produced it.
-const entityColumns = `id, bank_id, name, COALESCE(kind,'regular'), COALESCE(mention_count,0)`
+const entityColumns = `id, bank_id, canonical_name, COALESCE(entity_kind,'regular'), COALESCE(mention_count,0)`
 
 // ResolveEntity resolves an entity name against the bank, creating it with the
 // given kind when nothing matches.
@@ -233,8 +238,8 @@ func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name 
 	} else if found {
 		return existing, nil
 	}
-	entity := Entity{ID: newID(), BankID: bankID, Name: name, Kind: kind, MentionCount: 1}
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.entities (id, bank_id, name, kind, mention_count, first_seen, last_seen)
+	entity := Entity{ID: newID(), BankID: bankID, CanonicalName: name, EntityKind: kind, MentionCount: 1}
+	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.entities (id, bank_id, canonical_name, entity_kind, mention_count, first_seen, last_seen)
 	           VALUES ($1,$2,$3,$4,1,now(),now())
 	           ON CONFLICT (id) DO NOTHING`
 	if _, err := s.db.ExecContext(ctx, insert, entity.ID, bankID, name, string(kind)); err != nil {
@@ -249,7 +254,7 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 	table := quoteIdent(s.schema) + `.entities`
 	if !resolve {
 		query := `SELECT ` + entityColumns + ` FROM ` + table +
-			` WHERE bank_id=$1 AND lower(name)=lower($2) LIMIT 1`
+			` WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
 		return s.scanEntity(ctx, query, bankID, name)
 	}
 	// The trigram probe narrows the pool; the similarity score then decides the
@@ -262,7 +267,7 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 		// match keeps the write working rather than failing it, because
 		// failing to fuzzy-resolve is far less costly than refusing a memory.
 		fallback := `SELECT ` + entityColumns + ` FROM ` + table +
-			` WHERE bank_id=$1 AND lower(name)=lower($2) LIMIT 1`
+			` WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
 		return s.scanEntity(ctx, fallback, bankID, name)
 	}
 	return bestEntityCandidate(candidates, name)
@@ -272,8 +277,8 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 // the supplied name to be worth scoring.
 func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string) ([]Entity, error) {
 	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
-	          WHERE bank_id=$1 AND similarity(lower(name), lower($2)) >= $3
-	          ORDER BY similarity(lower(name), lower($2)) DESC, id ASC
+	          WHERE bank_id=$1 AND similarity(lower(canonical_name), lower($2)) >= $3
+	          ORDER BY similarity(lower(canonical_name), lower($2)) DESC, id ASC
 	          LIMIT 100`
 	rows, err := s.db.QueryContext(ctx, query, bankID, name, EntityCandidateSimilarity)
 	if err != nil {
@@ -283,7 +288,7 @@ func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name strin
 	candidates := make([]Entity, 0)
 	for rows.Next() {
 		var entity Entity
-		if err := rows.Scan(&entity.ID, &entity.BankID, &entity.Name, &entity.Kind, &entity.MentionCount); err != nil {
+		if err := rows.Scan(&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount); err != nil {
 			return nil, err
 		}
 		candidates = append(candidates, entity)
@@ -298,7 +303,7 @@ func bestEntityCandidate(candidates []Entity, name string) (Entity, bool, error)
 	best := Entity{}
 	bestScore := 0.0
 	for _, candidate := range candidates {
-		score := entitySimilarity(candidate.Name, name)
+		score := entitySimilarity(candidate.CanonicalName, name)
 		if score < EntitySimilarityThreshold {
 			continue
 		}
@@ -316,7 +321,7 @@ func bestEntityCandidate(candidates []Entity, name string) (Entity, bool, error)
 func (s *PostgresStore) scanEntity(ctx context.Context, query string, args ...any) (Entity, bool, error) {
 	var entity Entity
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
-		&entity.ID, &entity.BankID, &entity.Name, &entity.Kind, &entity.MentionCount)
+		&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entity{}, false, nil
 	}
@@ -341,9 +346,9 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 		embedding = NullableEmbedding(unit.Embedding)
 	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
-	           (id, bank_id, text, type, metadata, document_id, chunk_id, occurred_start, tags, embedding,
-	            source_id, observation_scopes, consolidated_at, consolidation_failed_at, attachment_ids)
-	           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12::jsonb,$13,$14,$15)
+	           (id, bank_id, text, search_vector, fact_type, metadata, document_id, chunk_id, occurred_start, tags, embedding,
+	            source_memory_ids, observation_scopes, consolidated_at, consolidation_failed_at, attachment_ids)
+	           VALUES ($1,$2,$3,` + searchVectorSQL + `,$4,$5,$6,$7,$8,$9,$10::vector,$11::uuid[],$12::jsonb,$13,$14,$15)
 	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
 	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
 	// A nil tag slice would violate the column's not-null constraint, so an
@@ -356,13 +361,17 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	if attachmentIDs == nil {
 		attachmentIDs = []string{}
 	}
+	sourceMemoryIDs := unit.SourceMemoryIDs
+	if sourceMemoryIDs == nil {
+		sourceMemoryIDs = []string{}
+	}
 	scopes := any(nil)
 	if len(unit.ObservationScopes) > 0 {
 		scopes = string(unit.ObservationScopes)
 	}
-	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.Type),
+	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.FactType),
 		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding,
-		nullString(unit.SourceID), scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt, attachmentIDs); err != nil {
+		sourceMemoryIDs, scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt, attachmentIDs); err != nil {
 		return MemoryUnit{}, err
 	}
 	return unit, nil
@@ -377,21 +386,31 @@ func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID s
 }
 
 // UpsertEntityCooccurrence records that two entities co-occur in a bank.
-func (s *PostgresStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityA, entityB string) error {
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.entity_cooccurrences (bank_id, entity_a, entity_b, count)
-	          VALUES ($1,$2,$3,1)
-	          ON CONFLICT (bank_id, entity_a, entity_b) DO UPDATE SET count = entity_cooccurrences.count + 1`
-	_, err := s.db.ExecContext(ctx, query, bankID, entityA, entityB)
+//
+// The reference keys the pair by identifier with a check that the lower one
+// comes first, so the row is not addressed by bank at all.
+func (s *PostgresStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error {
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.entity_cooccurrences (entity_id_1, entity_id_2, cooccurrence_count)
+	          VALUES ($1,$2,1)
+	          ON CONFLICT (entity_id_1, entity_id_2)
+	          DO UPDATE SET cooccurrence_count = entity_cooccurrences.cooccurrence_count + 1,
+	                        last_cooccurred = now()`
+	_, err := s.db.ExecContext(ctx, query, entityID1, entityID2)
 	return err
 }
 
 // UpsertLink persists one directed memory link.
+//
+// The reference identifies a link by its endpoints, type and entity, with a
+// null entity folded to the nil uuid so the uniqueness spans the null case.
+// The conflict target is the unique index's expression, which is what makes
+// the insert apply to an existing row rather than duplicate it.
 func (s *PostgresStore) UpsertLink(ctx context.Context, link MemoryLink) error {
-	if link.ID == "" {
-		link.ID = newID()
-	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_links (id, bank_id, from_id, to_id, link_type)
-	          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`
-	_, err := s.db.ExecContext(ctx, query, link.ID, link.BankID, link.FromID, link.ToID, string(link.LinkType))
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_links (bank_id, from_unit_id, to_unit_id, link_type, entity_id, weight)
+	          VALUES ($1,$2,$3,$4,$5,$6)
+	          ON CONFLICT (from_unit_id, to_unit_id, link_type, COALESCE(entity_id, '00000000-0000-0000-0000-000000000000'::uuid))
+	          DO UPDATE SET weight = EXCLUDED.weight`
+	_, err := s.db.ExecContext(ctx, query, link.BankID, link.FromUnitID, link.ToUnitID,
+		string(link.LinkType), nullString(link.EntityID), link.Weight)
 	return err
 }

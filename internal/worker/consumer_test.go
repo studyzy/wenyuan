@@ -18,7 +18,7 @@ import (
 func newStore(t *testing.T) *storage.MemoryStore {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "bank-a", Name: "bank-a"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "bank-a", Name: "bank-a"}); err != nil {
 		t.Fatal(err)
 	}
 	return store
@@ -28,7 +28,7 @@ func newStore(t *testing.T) *storage.MemoryStore {
 func queue(t *testing.T, store storage.Store, id, opType string) storage.Operation {
 	t.Helper()
 	op, err := store.PutOperation(context.Background(), storage.Operation{
-		ID:            id,
+		OperationID:   id,
 		BankID:        "bank-a",
 		OperationType: opType,
 		Status:        storage.StatusPending,

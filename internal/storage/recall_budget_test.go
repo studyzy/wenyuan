@@ -40,7 +40,7 @@ func TestBudgetLevelsAreOrdered(t *testing.T) {
 // makes the level a bound on work rather than a label.
 func TestRecallHonoursBudgetBound(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	// Write more facts than the low bound so the cap has to bite, but fewer
@@ -84,7 +84,7 @@ func TestRecallHonoursBudgetBound(t *testing.T) {
 // it asked for.
 func TestRecallExplicitLimitOverridesBudget(t *testing.T) {
 	store := NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	items := make([]RetainItem, 0, 10)

@@ -26,11 +26,11 @@ func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types [
 	if limit <= 0 || limit > semanticArmLimit {
 		limit = semanticArmLimit
 	}
-	query := `SELECT id, text, type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id,
+	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id,
 	                 embedding <=> $2::vector AS distance
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1
-	            AND type = ANY($3)
+	            AND fact_type = ANY($3)
 	            AND embedding IS NOT NULL
 	          ORDER BY embedding <=> $2::vector
 	          LIMIT $4`

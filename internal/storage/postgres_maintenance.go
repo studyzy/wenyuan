@@ -74,7 +74,7 @@ func (s *PostgresStore) BanksNeedingConsolidation(ctx context.Context, schema st
 	          FROM ` + quoteIdent(schema) + `.memory_units m
 	          WHERE m.consolidated_at IS NULL
 	            AND m.consolidation_failed_at IS NULL
-	            AND m.type IN ('experience', 'world')
+	            AND m.fact_type IN ('experience', 'world')
 	            AND NOT EXISTS (
 	                SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations o
 	                WHERE o.bank_id = m.bank_id
@@ -145,15 +145,15 @@ func (s *PostgresStore) PruneTerminalOperations(ctx context.Context, schema stri
 		return 0, nil
 	}
 	query := `WITH expired AS (
-	            SELECT id FROM ` + quoteIdent(schema) + `.async_operations
+	            SELECT operation_id FROM ` + quoteIdent(schema) + `.async_operations
 	            WHERE status = ANY($1::text[])
 	              AND updated_at < $2
-	            ORDER BY updated_at, id
+	            ORDER BY updated_at, operation_id
 	            LIMIT $3
 	            FOR UPDATE SKIP LOCKED
 	          ), removed AS (
 	            DELETE FROM ` + quoteIdent(schema) + `.async_operations o
-	            USING expired e WHERE o.id = e.id RETURNING 1
+	            USING expired e WHERE o.operation_id = e.operation_id RETURNING 1
 	          )
 	          SELECT count(*) FROM removed`
 	var removed int

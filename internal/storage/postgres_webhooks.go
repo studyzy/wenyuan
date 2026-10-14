@@ -10,7 +10,7 @@ import (
 // webhookSelect is the shared projection for webhook registrations. The event
 // type array is rendered to text so it can be scanned without a driver-specific
 // array codec, and decoded by scanWebhook.
-const webhookSelect = `id, bank_id, url, COALESCE(secret,''), COALESCE(event_types, '{}')::text,
+const webhookSelect = `id::text, bank_id, url, COALESCE(secret,''), COALESCE(event_types, '{}')::text,
        COALESCE(enabled, true), COALESCE(http_config, '{}'::jsonb), created_at, updated_at`
 
 // ListWebhooks returns a bank's webhook registrations, newest first.
@@ -36,7 +36,7 @@ func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webh
 // GetWebhook returns one webhook by identifier.
 func (s *PostgresStore) GetWebhook(ctx context.Context, bankID, webhookID string) (Webhook, error) {
 	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
-	          WHERE bank_id = $1 AND id = $2`
+	          WHERE bank_id = $1 AND id::text = $2`
 	webhook, err := scanWebhook(s.db.QueryRowContext(ctx, query, bankID, webhookID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -91,17 +91,19 @@ func (s *PostgresStore) UpdateWebhook(ctx context.Context, bankID, webhookID str
 	return s.PutWebhook(ctx, current)
 }
 
-// DeleteWebhook removes a webhook and its delivery records.
+// DeleteWebhook removes a webhook and its delivery records. A delivery is an
+// async_operations row, so the records go with the registration.
 func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID string) error {
 	qualified := quoteIdent(s.schema)
-	// The delivery records reference the webhook, so they go first.
 	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.webhook_deliveries WHERE bank_id = $1 AND webhook_id = $2`,
+		`DELETE FROM `+qualified+`.async_operations
+		 WHERE bank_id = $1 AND operation_type = 'webhook_delivery'
+		   AND task_payload->>'webhook_id' = $2`,
 		bankID, webhookID); err != nil {
 		return err
 	}
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.webhooks WHERE bank_id = $1 AND id = $2`, bankID, webhookID)
+		`DELETE FROM `+qualified+`.webhooks WHERE bank_id = $1 AND id::text = $2`, bankID, webhookID)
 	if err != nil {
 		return err
 	}
@@ -115,21 +117,33 @@ func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID str
 	return nil
 }
 
-// ListWebhookDeliveries returns one page of a webhook's delivery records.
+// ListWebhookDeliveries returns one page of a webhook's delivery records. A
+// delivery is an async_operations row of type webhook_delivery, which is where
+// the reference records one: the endpoint, the event and the outcome all live
+// on that row rather than in a table of their own.
 func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit, offset int) (WebhookDeliveryPage, error) {
-	filter := `bank_id = $1 AND ($2 = '' OR webhook_id = $2)`
+	filter := `bank_id = $1 AND operation_type = 'webhook_delivery'
+	           AND ($2 = '' OR task_payload->>'webhook_id' = $2)`
 	qualified := quoteIdent(s.schema)
 	var total int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+qualified+`.webhook_deliveries WHERE `+filter,
+		`SELECT COUNT(*) FROM `+qualified+`.async_operations WHERE `+filter,
 		bankID, webhookID).Scan(&total); err != nil {
 		return WebhookDeliveryPage{}, err
 	}
 	limit = clampLimit(limit, 50)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, webhook_id, bank_id, event_type, status, status_code, COALESCE(error,''), attempt, delivered_at
-		 FROM `+qualified+`.webhook_deliveries WHERE `+filter+`
-		 ORDER BY delivered_at DESC, id ASC LIMIT $3 OFFSET $4`,
+		`SELECT operation_id::text,
+		        COALESCE(task_payload->>'webhook_id', ''),
+		        bank_id,
+		        COALESCE(task_payload->>'event_type', ''),
+		        status,
+		        (result_metadata->>'last_status_code')::int,
+		        COALESCE(error_message, ''),
+		        COALESCE(retry_count, 0) + 1,
+		        updated_at
+		 FROM `+qualified+`.async_operations WHERE `+filter+`
+		 ORDER BY created_at DESC, operation_id ASC LIMIT $3 OFFSET $4`,
 		bankID, webhookID, limit, offset)
 	if err != nil {
 		return WebhookDeliveryPage{}, err

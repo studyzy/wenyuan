@@ -136,21 +136,32 @@ attachment content persistence/storage path is incomplete (upstream has
 
 ---
 
-## 2. Storage layer: differences from upstream Hindsight (no reuse of an existing DB)
+## 2. Storage layer: the schema is the reference's
 
-**Conclusion: Wenyuan's schema differs from Hindsight's; you cannot point it
-directly at an existing Hindsight database.**
+**Conclusion: the schema is upstream Hindsight's schema. A database built by
+Wenyuan's migration series is indistinguishable from one built by the reference,
+object for object.**
 
-Verified differences (these are **design facts**, not bugs):
+The series is generated rather than hand-written.
+`scripts/reference_schema_migrations.py` reads the reference database's own
+catalogue and emits the series — `0001_extensions`, `0002_reference_tables`,
+`0003_reference_constraints`, `0004_reference_indexes`,
+`0005_reference_functions` — into both copies (`migrations/` and
+`internal/storage/embedded/`). Emitting from the catalogue rather than replaying
+a `pg_dump` is what makes the result identical: PostgreSQL does not store back
+everything it is given, so a replayed dump produces, for example,
+`memory_units_bank_id_not_null1` where the reference says
+`memory_units_bank_id_not_null`.
 
-| Dimension | Hindsight | Wenyuan |
-|---|---|---|
-| Migration system | 112 Alembic migrations + `alembic_version` table | 6 hand-written SQL files, **no version table**, re-run on every startup (idempotent via `IF NOT EXISTS`) |
-| `banks` primary key | `bank_id` | `id` |
-| `banks` profile columns | `disposition JSONB`, `mission`, `config`, `internal_id` | `name`, `disposition_skepticism/literalism/empathy`, `reflect_mission` |
-| `memory_units` | includes `embedding vector(384)`, `context`, `event_date`, `fact_type`, `confidence_score`, `access_count` | `type` (not `fact_type`), `chunk_id`, `tags`, `source_fact_ids`; `context` / `event_date` / `confidence_score` / `access_count` have since been added by `0006` |
-| `entities` name column | `canonical_name` | `name` |
-| Vectors | `vector(384)` + HNSW/IVFFlat | none |
+`docs/SCHEMA-ALIGNMENT.md` is the standing report of how the built schema
+compares to the live reference, produced by `scripts/schema_diff.sql` and
+`scripts/schema_inventory.py`. As of the last run it is empty: no table, column,
+index, constraint, function, view, sequence, trigger or extension is missing,
+extra or different. A `pg_dump --schema-only` of each side diffs clean as well.
+
+The code addresses the reference's tables and columns by their reference names.
+There is no parallel naming layer, no renamed column and no table the reference
+does not have.
 
 ### 2.1 Migration tooling (already implemented) — how to use it
 
@@ -198,13 +209,6 @@ Code locations:
 
 - **Cross-process cache invalidation**: the per-process cache expires on time;
   consistency guarantees across worker processes are undefined.
-- **Exact index/constraint alignment**: Wenyuan has only 3 explicit indexes
-  (`idx_bank_aliases_bank`, `idx_bank_aliases_one_primary`,
-  `idx_documents_retain_params`), whereas upstream has a full set (trigram, GIN,
-  vector). Add them if performance demands it.
-- **`async_operations.error` is a legacy column**: `0001` created `error`, and
-  `0005` then added `error_message`; the code uses only the latter, leaving
-  `error` dead. Can be cleaned up when convenient.
 
 ---
 
@@ -265,19 +269,9 @@ requirements change:
 
 ### 4.3 Known small code-level issues — Priority: low
 
-1. **`schema.go`'s column lists were once inconsistent with the real DDL**:
-   `MemoryUnitsColumns` listed `embedding` (which does not exist), and
-   `EntitiesColumns` lists `metadata` (which does not exist). `embedding` has
-   been fixed; **`entities.metadata` is still a ghost column** and should be
-   checked and cleaned up alongside.
-   - Evidence: `EntitiesColumns` in `internal/storage/schema.go`.
-   - The related tests only assert "whether a name appears in the list" and do
-     not compare against the real DDL, so they pass CI.
-2. **`async_operations.error` is a dead column** (see §2.3).
-3. **`documents`' `metadata` / `retain_params` are never written**: the
-   `PutDocument` INSERT in `postgres_retain.go` does not include these two
-   columns, even though the Go structs carry values for them. Wire up the writes
-   if they are needed.
+1. **`documents`' `retain_params` / `tags` are written; `metadata` is not a
+   column at all**: the reference's `documents` table has no `metadata` column,
+   so the Go struct field has nowhere to go. Check before building on it.
 
 ---
 
@@ -314,13 +308,14 @@ internal/memoryops    retain / recall / reflect handlers and request/response mo
 internal/migration/hindsight  export → Wenyuan mapping and import (§2.1)
 internal/monitoring   health / live / ready / version / metrics
 internal/storage      storage interfaces + in-memory implementation + PostgreSQL implementation + migrations
-migrations/           PostgreSQL schema (0001..0006)
+migrations/           PostgreSQL schema, generated from the reference (0001..0005)
 ```
 
 **Migration series constraint**: `internal/storage/migrate.go` requires version
-numbers to run contiguously from 1 to N, so a new migration must be
-`0007_*.sql` and a copy must also be placed in `internal/storage/embedded/`
-(used by `go:embed`).
+numbers to run contiguously from 1 to N, and `internal/storage/embedded/` holds
+the copy the binary actually reads (`go:embed`). The series is generated by
+`scripts/reference_schema_migrations.py`, so a schema change is made in the
+reference and the series is regenerated, not edited by hand.
 
 ---
 

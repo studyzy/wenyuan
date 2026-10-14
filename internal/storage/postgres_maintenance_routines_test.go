@@ -174,7 +174,7 @@ func TestRetentionRoutineReportsOnlyExpiredSchemas(t *testing.T) {
 
 	// A fresh row is not expired, so this schema must not be reported.
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(schema)+`.audit_log (id, action, transport, bank_id, started_at) VALUES ('fresh', 'a', 'http', 'b1', now())`); err != nil {
+		`INSERT INTO `+quoteIdent(schema)+`.audit_log (id, action, transport, bank_id, started_at) VALUES (gen_random_uuid(), 'a', 'http', 'b1', now())`); err != nil {
 		t.Fatalf("insert fresh row: %v", err)
 	}
 	if got := reporting(30); len(got) != 0 {
@@ -183,7 +183,7 @@ func TestRetentionRoutineReportsOnlyExpiredSchemas(t *testing.T) {
 
 	// An old row is expired, so now it must be.
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(schema)+`.audit_log (id, action, transport, bank_id, started_at) VALUES ('old', 'a', 'http', 'b1', now() - interval '60 days')`); err != nil {
+		`INSERT INTO `+quoteIdent(schema)+`.audit_log (id, action, transport, bank_id, started_at) VALUES (gen_random_uuid(), 'a', 'http', 'b1', now() - interval '60 days')`); err != nil {
 		t.Fatalf("insert expired row: %v", err)
 	}
 	if got := reporting(30); len(got) != 1 {

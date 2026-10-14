@@ -40,7 +40,7 @@ func (p *toolCallingProvider) Complete(_ context.Context, req provider.Completio
 // loop: the model's answer comes back rather than the deterministic synthesis.
 func TestReflectUsesModelLoopThroughServedHandler(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetainWrite(context.Background(), storage.RetainRequest{
@@ -81,7 +81,7 @@ func TestReflectUsesModelLoopThroughServedHandler(t *testing.T) {
 // in-process loop, so the default offline deployment still answers.
 func TestReflectFallsBackWithoutModel(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.Background(), storage.Bank{ID: "b1", Name: "b1"}); err != nil {
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetainWrite(context.Background(), storage.RetainRequest{

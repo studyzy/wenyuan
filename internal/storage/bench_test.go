@@ -12,17 +12,17 @@ func seedBenchStore(b *testing.B, bankID string, count int) *MemoryStore {
 	b.Helper()
 	store := NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, Bank{ID: bankID, Name: bankID}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: bankID, Name: bankID}); err != nil {
 		b.Fatal(err)
 	}
 	for i := 0; i < count; i++ {
 		if _, err := store.UpsertUnit(ctx, MemoryUnit{
-			ID:      fmt.Sprintf("unit-%06d", i),
-			BankID:  bankID,
-			Text:    fmt.Sprintf("memory %d records that the deployment runs on day %d", i, i%7),
-			Type:    TypeWorld,
-			Tags:    []string{"ops"},
-			ChunkID: fmt.Sprintf("chunk-%06d", i),
+			ID:       fmt.Sprintf("unit-%06d", i),
+			BankID:   bankID,
+			Text:     fmt.Sprintf("memory %d records that the deployment runs on day %d", i, i%7),
+			FactType: TypeWorld,
+			Tags:     []string{"ops"},
+			ChunkID:  fmt.Sprintf("chunk-%06d", i),
 		}); err != nil {
 			b.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func BenchmarkRecallFusionLargeBank(b *testing.B) {
 func BenchmarkRetainWrite(b *testing.B) {
 	store := NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, Bank{ID: "bench-bank", Name: "bench-bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "bench-bank", Name: "bench-bank"}); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
@@ -91,7 +91,7 @@ func BenchmarkRetainWrite(b *testing.B) {
 func BenchmarkDocumentListing(b *testing.B) {
 	store := NewMemoryStore("public")
 	ctx := context.Background()
-	if _, err := store.CreateBank(ctx, Bank{ID: "bench-bank", Name: "bench-bank"}); err != nil {
+	if _, err := store.CreateBank(ctx, Bank{BankID: "bench-bank", Name: "bench-bank"}); err != nil {
 		b.Fatal(err)
 	}
 	for i := 0; i < 1000; i++ {
@@ -117,11 +117,11 @@ func BenchmarkGraphTraversal(b *testing.B) {
 	ctx := context.Background()
 	for i := 0; i < 500; i++ {
 		if err := store.UpsertLink(ctx, MemoryLink{
-			ID:       fmt.Sprintf("link-%06d", i),
-			BankID:   "bench-bank",
-			FromID:   fmt.Sprintf("unit-%06d", i),
-			ToID:     fmt.Sprintf("unit-%06d", i+1),
-			LinkType: LinkSemantic,
+			BankID:     "bench-bank",
+			FromUnitID: fmt.Sprintf("unit-%06d", i),
+			ToUnitID:   fmt.Sprintf("unit-%06d", i+1),
+			LinkType:   LinkSemantic,
+			Weight:     1,
 		}); err != nil {
 			b.Fatal(err)
 		}

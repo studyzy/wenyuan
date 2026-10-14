@@ -21,7 +21,7 @@ func (s *MemoryStore) ListMemories(ctx context.Context, query MemoryQuery) (Memo
 		if unit.BankID != query.BankID {
 			continue
 		}
-		if query.Type != "" && string(unit.Type) != query.Type {
+		if query.Type != "" && string(unit.FactType) != query.Type {
 			continue
 		}
 		matched = append(matched, cloneMemoryUnit(unit))
@@ -116,6 +116,66 @@ func (s *MemoryStore) MemoryHistory(ctx context.Context, bankID, memoryID string
 	return entries, nil
 }
 
+// ClearBankMemories removes a bank's memory units and the rows hanging off them
+// — links and entity associations — while leaving the bank, its entities and
+// its documents in place. An empty factType clears every type.
+func (s *MemoryStore) ClearBankMemories(ctx context.Context, bankID, factType string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	removed := 0
+	doomed := map[string]struct{}{}
+	for id, unit := range s.units {
+		if unit.BankID != bankID {
+			continue
+		}
+		if factType != "" && string(unit.FactType) != factType {
+			continue
+		}
+		doomed[id] = struct{}{}
+		delete(s.units, id)
+		delete(s.unitEntities, id)
+		delete(s.observationSources, id)
+		removed++
+	}
+	// Links and the derived recall projection reference units by id, so both
+	// have to drop the identifiers that just went away.
+	if len(doomed) > 0 {
+		kept := s.links[:0]
+		for _, link := range s.links {
+			if link.BankID != bankID {
+				kept = append(kept, link)
+				continue
+			}
+			if _, gone := doomed[link.FromUnitID]; gone {
+				continue
+			}
+			if _, gone := doomed[link.ToUnitID]; gone {
+				continue
+			}
+			kept = append(kept, link)
+		}
+		s.links = kept
+
+		matches := s.memories[bankID]
+		live := matches[:0]
+		for _, match := range matches {
+			if _, gone := doomed[match.ID]; gone {
+				continue
+			}
+			live = append(live, match)
+		}
+		s.memories[bankID] = live
+	}
+	s.invalidateBankLocked(bankID)
+	return removed, nil
+}
+
 // DeleteObservations removes the observations of a bank, or of one memory.
 func (s *MemoryStore) DeleteObservations(ctx context.Context, bankID, memoryID string) (int, error) {
 	if err := ctx.Err(); err != nil {
@@ -128,7 +188,7 @@ func (s *MemoryStore) DeleteObservations(ctx context.Context, bankID, memoryID s
 	}
 	removed := 0
 	for id, unit := range s.units {
-		if unit.BankID != bankID || unit.Type != TypeObservation {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
 		if memoryID != "" {
@@ -164,10 +224,10 @@ func (s *MemoryStore) EnqueueConsolidation(ctx context.Context, bankID string) (
 	}
 	now := time.Now().UTC()
 	op := Operation{
-		ID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
 		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
 	}
-	s.operations[op.ID] = op
+	s.operations[op.OperationID] = op
 	return op, false, nil
 }
 

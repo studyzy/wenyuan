@@ -47,7 +47,7 @@ func (h *Handlers) CancelOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, OperationActionResponse{
-		Success: true, Message: "operation cancelled", OperationID: op.ID,
+		Success: true, Message: "operation cancelled", OperationID: op.OperationID,
 	})
 }
 
@@ -64,8 +64,43 @@ func (h *Handlers) RetryOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, OperationActionResponse{
-		Success: true, Message: "operation requeued", OperationID: op.ID,
+		Success: true, Message: "operation requeued", OperationID: op.OperationID,
 	})
+}
+
+// DeleteOperation permanently removes a terminal operation. A malformed
+// identifier is rejected before any lookup, and only failed, cancelled or
+// completed operations are removable.
+func (h *Handlers) DeleteOperation(w http.ResponseWriter, r *http.Request) {
+	opID := r.PathValue(OperationIDPathParam)
+	// The reference rejects a non-UUID identifier with a 400 and a plain
+	// detail string, not the structured validation envelope.
+	if !IsValidUUIDShape(opID) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "Invalid operation_id format: "+opID))
+		return
+	}
+	bankID := r.PathValue("bank_id")
+	if _, err := h.Store.DeleteOperation(r.Context(), bankID, opID); err != nil {
+		httpx.WriteErrorFor(w, r, h.mapDeleteOperationError(err, opID))
+		return
+	}
+	httpx.WriteJSONFor(w, r, http.StatusOK, OperationActionResponse{
+		Success: true, Message: "Operation " + opID + " deleted", OperationID: opID,
+	})
+}
+
+// mapDeleteOperationError renders the delete-specific failures. A live
+// operation is a conflict whose message names the observed status.
+func (h *Handlers) mapDeleteOperationError(err error, opID string) error {
+	switch {
+	case errors.Is(err, storage.ErrOperationNotFound):
+		return httpx.NewHTTPError(httpx.KindNotFound, "Operation "+opID+" not found")
+	case errors.Is(err, storage.ErrOperationNotTerminal):
+		return httpx.NewHTTPError(httpx.KindConflict,
+			"Operation "+opID+" cannot be deleted: status is not terminal, expected 'failed', 'cancelled' or 'completed'")
+	default:
+		return httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal)
+	}
 }
 
 func (h *Handlers) mapOperationError(err error) error {
@@ -82,7 +117,7 @@ func (h *Handlers) mapOperationError(err error) error {
 // ToOperationDTO maps a stored operation into the public operation object.
 func ToOperationDTO(op storage.Operation, includePayload bool) Operation {
 	dto := Operation{
-		ID:             op.ID,
+		ID:             op.OperationID,
 		BankID:         op.BankID,
 		OperationType:  op.OperationType,
 		TaskType:       op.OperationType,

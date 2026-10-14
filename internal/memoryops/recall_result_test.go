@@ -59,18 +59,18 @@ func TestBuildRecallResponseTracePresentWhenRequested(t *testing.T) {
 
 func TestBuildRecallResponseMapsMatchFields(t *testing.T) {
 	source := storage.RecallResult{Matches: []storage.RecallMatch{{
-		ID:            "m1",
-		Text:          "text one two",
-		Type:          "world",
-		Context:       "ctx",
-		ChunkID:       "c1",
-		DocumentID:    "d1",
-		Metadata:      map[string]any{"k": "v"},
-		SourceFactIDs: []string{"f1"},
-		Scores:        map[string]float64{"semantic": 0.5},
-		Entities:      []string{"e1"},
-		Tags:          []string{"t1"},
-		Final:         0.9,
+		ID:              "m1",
+		Text:            "text one two",
+		Type:            "world",
+		Context:         "ctx",
+		ChunkID:         "c1",
+		DocumentID:      "d1",
+		Metadata:        map[string]any{"k": "v"},
+		SourceMemoryIDs: []string{"f1"},
+		Scores:          map[string]float64{"semantic": 0.5},
+		Entities:        []string{"e1"},
+		Tags:            []string{"t1"},
+		Final:           0.9,
 	}}}
 	response := BuildRecallResponse(source, RecallRequest{MaxTokens: intPtr(100)})
 	if len(response.Results) != 1 {
