@@ -387,6 +387,35 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 > 结论：§7 无剩余必做项。仍未覆盖的是上游**交互式认证类** provider 与
 > GCS/Azure 对象存储，二者均已在上文标注为有意的范围外。
 
+### 7.1 后台维护子系统（2026-10-14 补齐）
+
+这是 2026-10-13 二次审计确认的**相对上游最大功能缺口**（上游 `engine/maintenance.py`，
+654 行）。现已实现，见 `internal/maintenance/`、`internal/app/maintenance_jobs.go`：
+
+- **retention sweep** — 按保留窗口分批清理 `audit_log` 与 `llm_requests`，
+  批 2000 行、每表每 schema 上限 1000 批；`FOR UPDATE SKIP LOCKED` 让并发
+  sweeper 取不相交的块。
+- **consolidation reconcile** — 重新调度"已写入但没有 consolidation 排队"的
+  bank，恢复被终态失败搁浅的事实。
+- **scheduled mental model refresh** — 按 `trigger.refresh_cron` 判定到期
+  （`robfig/cron` 只用于求上一次触发点），再过 staleness 判定，避免一次
+  tick 为空转烧掉模型调用。
+- **operation cleanup** — 修剪过期终态操作，仅限 terminal 状态。
+- **循环骨架** — 单一 tick 上按各自节奏跑 due 的 job，启动抖动避开舰队同时打点；
+  **无 leader election，每个进程都跑**，安全性来自各 job 的*工作*本身幂等
+  （SKIP LOCKED + 入队去重），而非选出单一进程。
+
+配套补齐：`internal/tenant/`（schema 发现接口 + 单租户默认实现）、
+迁移 0021（四个跨 schema 发现例程 + `last_memory_seen_at` / `last_refresh_failed_at`）、
+迁移 0022（`serialization_key`）、队列的按主题入队去重与串行化键。
+
+**refresh 语义已对齐上游**：由同步重跑 recall 改为入队 `refresh_mental_model`
+异步操作，经 reflection 循环重新生成模型内容。这是**公开行为变更**——
+接口现在返回 `queued` 与 `operation_id`，调用方需轮询操作而非假定返回即完成。
+
+**仍为范围外**：`interleave_fusion`（上游仅由 consolidation dedup 选用，
+我们的 consolidation 直接列举候选，无调用点）。
+
 ---
 
 ## 8. 验证命令
@@ -445,6 +474,21 @@ grep -n "Extraction\|Reflection\|Reranker" internal/app/app.go
 # 对象存储后端
 ls internal/objectstore/                                         # s3.go
 grep -n "FileStorage" internal/config/filestorage.go
+
+# 维护子系统：循环 + 4 个 job + 配置 + 租户抽象
+ls internal/maintenance/ internal/tenant/                        # loop.go / tenant.go
+grep -n "^func maintenanceJobs" internal/app/maintenance_jobs.go
+grep -n "EnvRetentionSweepIntervalSeconds" internal/config/maintenance.go
+
+# 四个发现例程是否在迁移里（两份副本应各 4 处）
+grep -c "CREATE OR REPLACE FUNCTION" migrations/0021_*.sql internal/storage/embedded/0021_*.sql
+
+# 真实运行维护循环（需要 pgx 构建 + 本地库）
+go build -tags pgx -o /tmp/worker ./cmd/worker
+HINDSIGHT_API_DATABASE_URL="postgresql://hindsight:hindsight@127.0.0.1:5432/wenyuan_test" \
+HINDSIGHT_API_DATABASE_SCHEMA=probe HINDSIGHT_API_AUDIT_LOG_RETENTION_DAYS=30 \
+HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS=0 \
+  timeout 10 /tmp/worker        # 应打印 maintenance enabled / job finished 各行
 
 # 门槛与实测覆盖率
 grep -n "COVERAGE_MIN" Makefile                                  # 56 / 66
