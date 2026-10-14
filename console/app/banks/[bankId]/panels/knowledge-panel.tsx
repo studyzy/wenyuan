@@ -6,8 +6,8 @@ import { knowledgeBaseApi } from "../../../../lib/client/endpoints";
 import { readItems, useAsyncData } from "../../../../lib/use-async-data";
 import { useTranslations } from "../../../../i18n";
 import { Input } from "../../../../components/ui/input";
-import { JsonViewer } from "../../../../components/ui/json-viewer";
 import { PanelHeader, PanelState } from "./panel-state";
+import { MentalModelsView } from "./mental-models-view";
 import type { KnowledgeSubTab } from "../../../../lib/bank-detail";
 
 type KnowledgeNode = { id?: string; title?: string; name?: string; children?: KnowledgeNode[] };
@@ -40,20 +40,9 @@ export function KnowledgePanel({
   const [search, setSearch] = useState("");
 
   const tree = useAsyncData(() => knowledgeBaseApi.tree(bankId), [bankId]);
-  const models = useAsyncData(
-    () => (subTab === "models" ? knowledgeBaseApi.models(bankId) : Promise.resolve(null)),
-    [bankId, subTab],
-  );
 
   if (subTab === "models") {
-    return (
-      <div>
-        <PanelHeader title={t("modelsTitle")} description={t("modelsDescription")} />
-        <PanelState loading={models.loading} error={models.error} onRetry={models.reload}>
-          <JsonViewer value={models.data} className="bg-muted" />
-        </PanelState>
-      </div>
-    );
+    return <MentalModelsView bankId={bankId} />;
   }
 
   const nodes = readItems<KnowledgeNode>(tree.data, "nodes");
