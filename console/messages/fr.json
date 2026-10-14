@@ -344,7 +344,12 @@
       "description": "Rechercher dans les souvenirs de cette banque.",
       "placeholder": "Que cherchez-vous ?",
       "run": "Rechercher",
-      "idle": "Saisissez une requête pour rechercher."
+      "idle": "Saisissez une requête pour rechercher.",
+      "tabList": "Résultats ({total})",
+      "tabRaw": "Réponse brute",
+      "noResults": "Aucun résultat.",
+      "truncated": "La liste des résultats a été tronquée par le budget de jetons.",
+      "scoreFinal": "global"
     },
     "reflect": {
       "title": "Réflexion",
@@ -353,7 +358,17 @@
       "run": "Réfléchir",
       "idle": "Saisissez une question pour raisonner.",
       "includeFacts": "Inclure les faits",
-      "includeToolCalls": "Inclure les appels d’outils"
+      "includeToolCalls": "Inclure les appels d’outils",
+      "tabAnswer": "Réponse",
+      "tabEvidence": "Éléments ({total})",
+      "tabRaw": "Réponse brute",
+      "noAnswer": "Aucune réponse n'a été renvoyée.",
+      "noEvidence": "Cette réflexion n'a cité aucun élément.",
+      "evidenceMemories": "Souvenirs ({total})",
+      "evidenceModels": "Modèles mentaux ({total})",
+      "evidenceDirectives": "Directives ({total})",
+      "structuredOutput": "Sortie structurée",
+      "usage": "Jetons : {input} entrée, {output} sortie, {total} total"
     },
     "data": {
       "title": "Souvenirs",

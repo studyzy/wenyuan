@@ -344,7 +344,12 @@
       "description": "Search this bank's memories.",
       "placeholder": "What are you looking for?",
       "run": "Recall",
-      "idle": "Enter a query to search this bank's memories."
+      "idle": "Enter a query to search this bank's memories.",
+      "tabList": "Results ({total})",
+      "tabRaw": "Raw response",
+      "noResults": "Nothing matched.",
+      "truncated": "The result list was truncated by the token budget.",
+      "scoreFinal": "final"
     },
     "reflect": {
       "title": "Reflect",
@@ -353,7 +358,17 @@
       "run": "Reflect",
       "idle": "Enter a question to reason over this bank.",
       "includeFacts": "Include facts",
-      "includeToolCalls": "Include tool calls"
+      "includeToolCalls": "Include tool calls",
+      "tabAnswer": "Answer",
+      "tabEvidence": "Evidence ({total})",
+      "tabRaw": "Raw response",
+      "noAnswer": "No answer was returned.",
+      "noEvidence": "This reflection cited no evidence.",
+      "evidenceMemories": "Memories ({total})",
+      "evidenceModels": "Mental models ({total})",
+      "evidenceDirectives": "Directives ({total})",
+      "structuredOutput": "Structured output",
+      "usage": "Tokens: {input} in, {output} out, {total} total"
     },
     "data": {
       "title": "Memories",

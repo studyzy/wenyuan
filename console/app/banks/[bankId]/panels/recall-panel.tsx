@@ -6,16 +6,15 @@ import { recallApi } from "../../../../lib/client/endpoints";
 import { useTranslations } from "../../../../i18n";
 import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
-import { JsonViewer } from "../../../../components/ui/json-viewer";
 import { PanelHeader, PanelState } from "./panel-state";
+import { RecallResults } from "./recall-results";
 
 /**
  * Recall.
  *
- * The result is rendered as returned rather than projected into a fixed shape,
- * because the response is the contract: a client reading it expects the upstream
- * fields, and summarising them here would hide anything the model attached that
- * this view does not know about.
+ * The response is shown through the result view rather than projected here, so
+ * the ranked list and the raw envelope stay in one place and both read the same
+ * fetched payload.
  */
 export function RecallPanel({ bankId }: { bankId: string }) {
   const t = useTranslations("panels.recall");
@@ -60,7 +59,7 @@ export function RecallPanel({ bankId }: { bankId: string }) {
         </div>
       ) : (
         <PanelState loading={loading} error={error} onRetry={() => void run()}>
-          <JsonViewer value={result} className="bg-muted" />
+          <RecallResults payload={result} />
         </PanelState>
       )}
     </div>

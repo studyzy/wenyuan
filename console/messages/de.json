@@ -344,7 +344,12 @@
       "description": "Die Erinnerungen dieser Bank durchsuchen.",
       "placeholder": "Wonach suchen Sie?",
       "run": "Abrufen",
-      "idle": "Geben Sie eine Suchanfrage ein."
+      "idle": "Geben Sie eine Suchanfrage ein.",
+      "tabList": "Ergebnisse ({total})",
+      "tabRaw": "Rohantwort",
+      "noResults": "Keine Treffer.",
+      "truncated": "Die Ergebnisliste wurde durch das Token-Budget gekürzt.",
+      "scoreFinal": "Gesamt"
     },
     "reflect": {
       "title": "Reflexion",
@@ -353,7 +358,17 @@
       "run": "Reflektieren",
       "idle": "Geben Sie eine Frage ein.",
       "includeFacts": "Fakten einbeziehen",
-      "includeToolCalls": "Werkzeugaufrufe einbeziehen"
+      "includeToolCalls": "Werkzeugaufrufe einbeziehen",
+      "tabAnswer": "Antwort",
+      "tabEvidence": "Belege ({total})",
+      "tabRaw": "Rohantwort",
+      "noAnswer": "Es wurde keine Antwort zurückgegeben.",
+      "noEvidence": "Diese Reflexion hat keine Belege angeführt.",
+      "evidenceMemories": "Erinnerungen ({total})",
+      "evidenceModels": "Mentale Modelle ({total})",
+      "evidenceDirectives": "Anweisungen ({total})",
+      "structuredOutput": "Strukturierte Ausgabe",
+      "usage": "Token: {input} ein, {output} aus, {total} gesamt"
     },
     "data": {
       "title": "Erinnerungen",

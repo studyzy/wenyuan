@@ -6,16 +6,18 @@ import { reflectApi } from "../../../../lib/client/endpoints";
 import { useTranslations } from "../../../../i18n";
 import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
-import { JsonViewer } from "../../../../components/ui/json-viewer";
 import { Checkbox } from "../../../../components/ui/checkbox";
 import { PanelHeader, PanelState } from "./panel-state";
+import { ReflectResults } from "./reflect-results";
 
 /**
  * Reflect.
  *
  * The two legacy include booleans are offered as checkboxes and translated into
  * the include object the upstream expects, so the control matches what the
- * request actually carries instead of exposing the newer shape directly.
+ * request actually carries instead of exposing the newer shape directly. The
+ * response is shown through the result view, which reads the same payload for
+ * both its answer and its raw tabs.
  */
 export function ReflectPanel({ bankId }: { bankId: string }) {
   const t = useTranslations("panels.reflect");
@@ -82,7 +84,7 @@ export function ReflectPanel({ bankId }: { bankId: string }) {
         </div>
       ) : (
         <PanelState loading={loading} error={error} onRetry={() => void run()}>
-          <JsonViewer value={result} className="bg-muted" />
+          <ReflectResults payload={result} />
         </PanelState>
       )}
     </div>

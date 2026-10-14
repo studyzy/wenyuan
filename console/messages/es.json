@@ -344,7 +344,12 @@
       "description": "Buscar en los recuerdos de este banco.",
       "placeholder": "¿Qué busca?",
       "run": "Buscar",
-      "idle": "Introduzca una consulta para buscar."
+      "idle": "Introduzca una consulta para buscar.",
+      "tabList": "Resultados ({total})",
+      "tabRaw": "Respuesta sin procesar",
+      "noResults": "No hay coincidencias.",
+      "truncated": "La lista de resultados se truncó por el presupuesto de tokens.",
+      "scoreFinal": "global"
     },
     "reflect": {
       "title": "Reflexión",
@@ -353,7 +358,17 @@
       "run": "Reflexionar",
       "idle": "Introduzca una pregunta para razonar.",
       "includeFacts": "Incluir hechos",
-      "includeToolCalls": "Incluir llamadas a herramientas"
+      "includeToolCalls": "Incluir llamadas a herramientas",
+      "tabAnswer": "Respuesta",
+      "tabEvidence": "Evidencia ({total})",
+      "tabRaw": "Respuesta sin procesar",
+      "noAnswer": "No se devolvió ninguna respuesta.",
+      "noEvidence": "Esta reflexión no citó ninguna evidencia.",
+      "evidenceMemories": "Recuerdos ({total})",
+      "evidenceModels": "Modelos mentales ({total})",
+      "evidenceDirectives": "Directrices ({total})",
+      "structuredOutput": "Salida estructurada",
+      "usage": "Tokens: {input} entrada, {output} salida, {total} total"
     },
     "data": {
       "title": "Recuerdos",

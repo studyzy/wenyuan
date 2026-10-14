@@ -344,7 +344,12 @@
       "description": "이 뱅크의 메모리를 검색합니다.",
       "placeholder": "무엇을 찾으시나요?",
       "run": "검색",
-      "idle": "쿼리를 입력해 이 뱅크의 메모리를 검색하세요."
+      "idle": "쿼리를 입력해 이 뱅크의 메모리를 검색하세요.",
+      "tabList": "결과 ({total})",
+      "tabRaw": "원본 응답",
+      "noResults": "일치하는 결과가 없습니다.",
+      "truncated": "토큰 예산으로 결과 목록이 잘렸습니다.",
+      "scoreFinal": "종합"
     },
     "reflect": {
       "title": "성찰",
@@ -353,7 +358,17 @@
       "run": "성찰",
       "idle": "질문을 입력해 이 뱅크를 추론하세요.",
       "includeFacts": "팩트 포함",
-      "includeToolCalls": "도구 호출 포함"
+      "includeToolCalls": "도구 호출 포함",
+      "tabAnswer": "답변",
+      "tabEvidence": "근거 ({total})",
+      "tabRaw": "원본 응답",
+      "noAnswer": "답변이 반환되지 않았습니다.",
+      "noEvidence": "이번 성찰은 아무 근거도 인용하지 않았습니다.",
+      "evidenceMemories": "기억 ({total})",
+      "evidenceModels": "멘탈 모델 ({total})",
+      "evidenceDirectives": "지침 ({total})",
+      "structuredOutput": "구조화 출력",
+      "usage": "토큰: 입력 {input}, 출력 {output}, 합계 {total}"
     },
     "data": {
       "title": "메모리",

@@ -344,7 +344,12 @@
       "description": "搜尋此銀行的記憶。",
       "placeholder": "你在找什麼？",
       "run": "召回",
-      "idle": "輸入查詢以搜尋此銀行的記憶。"
+      "idle": "輸入查詢以搜尋此銀行的記憶。",
+      "tabList": "結果（{total}）",
+      "tabRaw": "原始回應",
+      "noResults": "沒有相符結果。",
+      "truncated": "結果列表因 token 預算被截斷。",
+      "scoreFinal": "總分"
     },
     "reflect": {
       "title": "反思",
@@ -353,7 +358,17 @@
       "run": "反思",
       "idle": "輸入問題以對此銀行進行推理。",
       "includeFacts": "包含事實",
-      "includeToolCalls": "包含工具呼叫"
+      "includeToolCalls": "包含工具呼叫",
+      "tabAnswer": "回答",
+      "tabEvidence": "依據（{total}）",
+      "tabRaw": "原始回應",
+      "noAnswer": "未回傳回答。",
+      "noEvidence": "本次反思未引用任何依據。",
+      "evidenceMemories": "記憶（{total}）",
+      "evidenceModels": "心智模型（{total}）",
+      "evidenceDirectives": "指令（{total}）",
+      "structuredOutput": "結構化輸出",
+      "usage": "Token：輸入 {input}，輸出 {output}，合計 {total}"
     },
     "data": {
       "title": "記憶",

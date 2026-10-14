@@ -344,7 +344,12 @@
       "description": "このバンクのメモリを検索します。",
       "placeholder": "何をお探しですか？",
       "run": "検索",
-      "idle": "クエリを入力してこのバンクのメモリを検索します。"
+      "idle": "クエリを入力してこのバンクのメモリを検索します。",
+      "tabList": "結果（{total}）",
+      "tabRaw": "生のレスポンス",
+      "noResults": "一致する結果はありません。",
+      "truncated": "トークン予算により結果一覧が切り詰められました。",
+      "scoreFinal": "総合"
     },
     "reflect": {
       "title": "内省",
@@ -353,7 +358,17 @@
       "run": "内省",
       "idle": "質問を入力してこのバンクについて推論します。",
       "includeFacts": "ファクトを含める",
-      "includeToolCalls": "ツール呼び出しを含める"
+      "includeToolCalls": "ツール呼び出しを含める",
+      "tabAnswer": "回答",
+      "tabEvidence": "根拠（{total}）",
+      "tabRaw": "生のレスポンス",
+      "noAnswer": "回答が返されませんでした。",
+      "noEvidence": "この内省はいかなる根拠も引用していません。",
+      "evidenceMemories": "記憶（{total}）",
+      "evidenceModels": "メンタルモデル（{total}）",
+      "evidenceDirectives": "指令（{total}）",
+      "structuredOutput": "構造化出力",
+      "usage": "トークン：入力 {input}、出力 {output}、合計 {total}"
     },
     "data": {
       "title": "メモリ",
