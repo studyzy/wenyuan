@@ -75,3 +75,52 @@ func TestRerankModelFallsBack(t *testing.T) {
 		t.Fatalf("rerank model = %q, want the configured rerank model", got)
 	}
 }
+
+// Every OpenAI-compatible vendor is selectable under its own name and reaches
+// the vendor's endpoint, so adding a vendor needs a table entry rather than a
+// new adapter.
+func TestOpenAICompatibleVendorsSelect(t *testing.T) {
+	reg := provider.NewRegistry()
+	Register(reg)
+	for name, wantURL := range OpenAICompatibleProviders {
+		reg, ok := reg.Lookup(name)
+		if !ok {
+			t.Fatalf("provider %q is not registered", name)
+		}
+		if reg.DefaultBaseURL != wantURL {
+			t.Errorf("%s default base URL = %q, want %q", name, reg.DefaultBaseURL, wantURL)
+		}
+		built, err := reg.Build(provider.Settings{})
+		if err != nil {
+			t.Fatalf("build %s: %v", name, err)
+		}
+		if built.Name() != name {
+			t.Errorf("built provider name = %q, want %q", built.Name(), name)
+		}
+	}
+}
+
+// A loopback vendor does not require a credential, because it serves from the
+// operator's own machine; a cloud vendor does.
+func TestVendorCredentialRequirement(t *testing.T) {
+	reg := provider.NewRegistry()
+	Register(reg)
+	for _, local := range []string{"ollama", "lmstudio"} {
+		entry, ok := reg.Lookup(local)
+		if !ok {
+			t.Fatalf("%s is not registered", local)
+		}
+		if entry.RequiresCredential {
+			t.Errorf("%s must not require a credential", local)
+		}
+	}
+	for _, cloud := range []string{"openai", "groq", "deepseek", "fireworks"} {
+		entry, ok := reg.Lookup(cloud)
+		if !ok {
+			t.Fatalf("%s is not registered", cloud)
+		}
+		if !entry.RequiresCredential {
+			t.Errorf("%s must require a credential", cloud)
+		}
+	}
+}

@@ -8,12 +8,17 @@ const (
 	ConfigKeyProvider = "HINDSIGHT_API_LLM_PROVIDER"
 	// ConfigKeyAPIKey is the operator key holding the chat credential.
 	ConfigKeyAPIKey = "HINDSIGHT_API_LLM_API_KEY"
+	// ConfigKeyEmbeddingProvider is the operator key that selects the
+	// embedding provider, which is configured independently of chat.
+	ConfigKeyEmbeddingProvider = "HINDSIGHT_API_EMBEDDING_PROVIDER"
 )
 
 // Scope names used when reporting an unconfigured provider.
 const (
 	// ScopeChat is the global chat scope.
 	ScopeChat = "chat"
+	// ScopeEmbedding is the embedding scope.
+	ScopeEmbedding = "embedding"
 	// ScopeConsolidation is the second, independently configured scope.
 	ScopeConsolidation = "consolidation"
 )

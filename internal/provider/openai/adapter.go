@@ -7,8 +7,16 @@ import (
 	"github.com/studyzy/wenyuan/internal/provider"
 )
 
-// Name reports the registered provider name.
-func (c *Client) Name() string { return NameOpenAI }
+// Name reports the registered provider name. It is the name the operator
+// selected, which for the OpenAI-compatible vendors is their own name rather
+// than "openai", so error messages and configuration checks name the endpoint
+// the operator actually configured.
+func (c *Client) Name() string {
+	if c.Settings.Provider != "" {
+		return c.Settings.Provider
+	}
+	return NameOpenAI
+}
 
 // Dimensions reports the boundary's declared dimension. The adapter never
 // computes a width locally: the stored width is the boundary constant.
@@ -23,7 +31,7 @@ func (c *Client) VerifyConnection(ctx context.Context) error {
 		Scope:     "verification",
 	})
 	if err != nil {
-		return &provider.TransientError{Cause: &verifyError{provider: NameOpenAI, model: c.Settings.Model, cause: err}}
+		return &provider.TransientError{Cause: &verifyError{provider: c.Name(), model: c.Settings.Model, cause: err}}
 	}
 	return nil
 }
@@ -46,17 +54,31 @@ func (e *verifyError) Error() string {
 
 func (e *verifyError) Unwrap() error { return e.cause }
 
-// Register adds the OpenAI-compatible adapter to a registry. A blank base URL
-// falls back to the adapter's documented default.
+// Register adds the OpenAI-compatible adapter to a registry. Every vendor that
+// speaks the OpenAI protocol is registered here against its own endpoint, so
+// selecting one of them needs no separate adapter; a blank base URL falls back
+// to the adapter's documented default for the selected vendor.
 func Register(reg *provider.Registry) {
+	register(reg, NameOpenAI, DefaultBaseURL, true)
+	for name, baseURL := range OpenAICompatibleProviders {
+		register(reg, name, baseURL, true)
+	}
+}
+
+// register adds one provider name against its default endpoint. A loopback
+// vendor does not require a credential, because it serves from the operator's
+// own machine and has no key to supply.
+func register(reg *provider.Registry, name, defaultBaseURL string, cloud bool) {
+	local := LocalProviders[name]
 	reg.Register(provider.Registration{
-		Name:               NameOpenAI,
-		RequiresCredential: true,
-		DefaultBaseURL:     DefaultBaseURL,
+		Name:               name,
+		RequiresCredential: cloud && !local,
+		DefaultBaseURL:     defaultBaseURL,
 		Build: func(settings provider.Settings) (provider.Provider, error) {
 			if strings.TrimSpace(settings.BaseURL) == "" {
-				settings.BaseURL = DefaultBaseURL
+				settings.BaseURL = defaultBaseURL
 			}
+			settings.Provider = name
 			return NewClient(settings, nil), nil
 		},
 	})

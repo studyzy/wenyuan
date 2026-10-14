@@ -15,6 +15,31 @@ import (
 // NameOpenAI is the provider name that selects this adapter.
 const NameOpenAI = "openai"
 
+// OpenAICompatibleProviders maps an operator-selected provider name to the
+// endpoint that serves its OpenAI-compatible API. These vendors differ only in
+// the endpoint and the default credential requirement, not in the protocol, so
+// one adapter serves them all rather than one adapter each.
+var OpenAICompatibleProviders = map[string]string{
+	"groq":         "https://api.groq.com/openai/v1",
+	"ollama":       "http://localhost:11434/v1",
+	"ollama-cloud": "https://ollama.com/v1",
+	"lmstudio":     "http://localhost:1234/v1",
+	"minimax":      "https://api.minimax.io/v1",
+	"deepseek":     "https://api.deepseek.com",
+	"openrouter":   "https://openrouter.ai/api/v1",
+	"requesty":     "https://router.requesty.ai/v1",
+	"zai":          "https://api.z.ai/api/coding/paas/v4",
+	"opencode-go":  "https://opencode.ai/zen/go/v1",
+	"atlas":        "https://api.atlascloud.ai/v1",
+	"meta":         "https://api.meta.ai/v1",
+	"fireworks":    "https://api.fireworks.ai/inference/v1",
+}
+
+// LocalProviders are the vendors that serve from the loopback address, so a
+// missing credential is expected and a stand-in is supplied instead of failing
+// selection.
+var LocalProviders = map[string]bool{"ollama": true, "lmstudio": true}
+
 // DefaultBaseURL is applied when the operator configures no endpoint.
 const DefaultBaseURL = "https://api.openai.com/v1"
 
@@ -61,6 +86,12 @@ func NewClient(settings provider.Settings, doer HTTPDoer) *Client {
 func NewClientWithPool(settings provider.Settings, doer HTTPDoer, pool *Pool) *Client {
 	if doer == nil {
 		doer = &http.Client{Timeout: settings.Timeout}
+	}
+	// A loopback vendor serves from the operator's own machine and has no key
+	// to supply, so a stand-in is used rather than failing every call on an
+	// absent credential.
+	if LocalProviders[settings.Provider] && settings.APIKey == "" {
+		settings.APIKey = "local"
 	}
 	return &Client{
 		Settings: settings,

@@ -3,13 +3,16 @@ package app
 import (
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/provider/anthropic"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/provider/openai"
 )
 
 // ProviderRegistry returns the provider registry the composition root builds
-// the active provider from. The no-model selection and the OpenAI-compatible
-// adapter are registered; additional vendors are deferred.
+// the active provider from. The no-model selection, the OpenAI-compatible
+// adapter (which serves every vendor speaking that protocol) and the native
+// Anthropic adapter are registered; the OAuth CLI-tool providers are not, as
+// they need an interactive login this service does not host.
 func ProviderRegistry() *provider.Registry {
 	reg := provider.NewRegistry()
 	reg.Register(provider.Registration{
@@ -20,6 +23,7 @@ func ProviderRegistry() *provider.Registry {
 		},
 	})
 	openai.Register(reg)
+	anthropic.Register(reg)
 	return reg
 }
 
