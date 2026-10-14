@@ -377,7 +377,13 @@
       },
       "viewChunks": "チャンク",
       "chunksTitle": "チャンク",
-      "untitled": "無題"
+      "untitled": "無題",
+      "chunkCount": "{total} 個のチャンク",
+      "noChunks": "この文書にはチャンクがありません。",
+      "reprocess": "再処理",
+      "reprocessing": "再処理中…",
+      "reprocessed": "再処理を開始しました。",
+      "reprocessFailed": "文書を再処理できませんでした。"
     },
     "entities": {
       "title": "エンティティ",

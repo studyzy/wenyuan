@@ -377,7 +377,13 @@
       },
       "viewChunks": "Chunks",
       "chunksTitle": "Chunks",
-      "untitled": "Untitled"
+      "untitled": "Untitled",
+      "chunkCount": "{total} chunks",
+      "noChunks": "This document has no chunks.",
+      "reprocess": "Reprocess",
+      "reprocessing": "Reprocessing…",
+      "reprocessed": "Reprocessing started.",
+      "reprocessFailed": "The document could not be reprocessed."
     },
     "entities": {
       "title": "Entities",

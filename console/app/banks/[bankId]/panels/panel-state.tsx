@@ -18,6 +18,7 @@ export function PanelState({
   loading,
   error,
   empty,
+  emptyLabel,
   onRetry,
   children,
 }: {
@@ -25,6 +26,12 @@ export function PanelState({
   error: boolean;
   /** True when the load succeeded but produced nothing to show. */
   empty?: boolean;
+  /**
+   * The message for the empty state. A panel with a specific emptiness — no
+   * chunks, no aliases — says so rather than falling back to a generic line
+   * that leaves the reader unsure whether anything loaded.
+   */
+  emptyLabel?: string;
   onRetry?: () => void;
   children?: ReactNode;
 }) {
@@ -54,7 +61,7 @@ export function PanelState({
   if (empty) {
     return (
       <div className="rounded-[16px] border border-border bg-card px-6 py-16 text-center">
-        <p className="text-[13px] text-muted-foreground">{t("empty")}</p>
+        <p className="text-[13px] text-muted-foreground">{emptyLabel ?? t("empty")}</p>
       </div>
     );
   }

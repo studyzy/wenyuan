@@ -377,7 +377,13 @@
       },
       "viewChunks": "分塊",
       "chunksTitle": "分塊",
-      "untitled": "未命名"
+      "untitled": "未命名",
+      "chunkCount": "共 {total} 個分塊",
+      "noChunks": "呢份文件冇分塊。",
+      "reprocess": "重新處理",
+      "reprocessing": "處理緊…",
+      "reprocessed": "已經開始重新處理。",
+      "reprocessFailed": "文件重新處理唔到。"
     },
     "entities": {
       "title": "實體",

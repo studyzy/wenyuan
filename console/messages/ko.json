@@ -377,7 +377,13 @@
       },
       "viewChunks": "청크",
       "chunksTitle": "청크",
-      "untitled": "제목 없음"
+      "untitled": "제목 없음",
+      "chunkCount": "청크 {total}개",
+      "noChunks": "이 문서에는 청크가 없습니다.",
+      "reprocess": "재처리",
+      "reprocessing": "재처리 중…",
+      "reprocessed": "재처리를 시작했습니다.",
+      "reprocessFailed": "문서를 재처리하지 못했습니다."
     },
     "entities": {
       "title": "엔터티",

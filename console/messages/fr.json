@@ -377,7 +377,13 @@
       },
       "viewChunks": "Segments",
       "chunksTitle": "Segments",
-      "untitled": "Sans titre"
+      "untitled": "Sans titre",
+      "chunkCount": "{total} segments",
+      "noChunks": "Ce document n'a aucun segment.",
+      "reprocess": "Retraiter",
+      "reprocessing": "Retraitement…",
+      "reprocessed": "Retraitement lancé.",
+      "reprocessFailed": "Le document n'a pas pu être retraité."
     },
     "entities": {
       "title": "Entités",

@@ -10,7 +10,6 @@ import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
 import { Pagination } from "../../../../components/ui/pagination";
 import { TagList } from "../../../../components/ui/facet-chip";
-import { JsonViewer } from "../../../../components/ui/json-viewer";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +25,7 @@ import {
   TableRow,
 } from "../../../../components/ui/table";
 import { PanelHeader, PanelState } from "./panel-state";
+import { DocumentChunks } from "./document-chunks";
 
 const PAGE_SIZE = 25;
 
@@ -51,10 +51,6 @@ export function DocumentsPanel({ bankId }: { bankId: string }) {
   const [openDocumentId, setOpenDocumentId] = useState<string | null>(null);
 
   const state = useAsyncData(() => documentsApi.list(bankId), [bankId, search]);
-  const chunks = useAsyncData(
-    () => (openDocumentId ? documentsApi.chunks(openDocumentId, bankId) : Promise.resolve(null)),
-    [openDocumentId],
-  );
 
   const rows = readItems<DocumentRow>(state.data, "documents");
   const filtered = rows.filter((row) => {
@@ -144,13 +140,13 @@ export function DocumentsPanel({ bankId }: { bankId: string }) {
           if (!open) setOpenDocumentId(null);
         }}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t("chunksTitle")}</DialogTitle>
           </DialogHeader>
-          <PanelState loading={chunks.loading} error={chunks.error} onRetry={chunks.reload}>
-            <JsonViewer value={chunks.data} className="bg-muted" />
-          </PanelState>
+          {openDocumentId && (
+            <DocumentChunks bankId={bankId} documentId={openDocumentId} />
+          )}
         </DialogContent>
       </Dialog>
     </div>

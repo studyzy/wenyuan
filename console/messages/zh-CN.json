@@ -377,7 +377,13 @@
       },
       "viewChunks": "分块",
       "chunksTitle": "分块",
-      "untitled": "未命名"
+      "untitled": "未命名",
+      "chunkCount": "共 {total} 个分块",
+      "noChunks": "该文档没有分块。",
+      "reprocess": "重新处理",
+      "reprocessing": "处理中…",
+      "reprocessed": "已开始重新处理。",
+      "reprocessFailed": "文档重新处理失败。"
     },
     "entities": {
       "title": "实体",

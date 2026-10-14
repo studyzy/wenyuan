@@ -377,7 +377,13 @@
       },
       "viewChunks": "Abschnitte",
       "chunksTitle": "Abschnitte",
-      "untitled": "Ohne Titel"
+      "untitled": "Ohne Titel",
+      "chunkCount": "{total} Abschnitte",
+      "noChunks": "Dieses Dokument hat keine Abschnitte.",
+      "reprocess": "Neu verarbeiten",
+      "reprocessing": "Verarbeitung…",
+      "reprocessed": "Neuverarbeitung gestartet.",
+      "reprocessFailed": "Das Dokument konnte nicht neu verarbeitet werden."
     },
     "entities": {
       "title": "Entitäten",

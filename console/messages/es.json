@@ -377,7 +377,13 @@
       },
       "viewChunks": "Fragmentos",
       "chunksTitle": "Fragmentos",
-      "untitled": "Sin título"
+      "untitled": "Sin título",
+      "chunkCount": "{total} fragmentos",
+      "noChunks": "Este documento no tiene fragmentos.",
+      "reprocess": "Reprocesar",
+      "reprocessing": "Reprocesando…",
+      "reprocessed": "Reprocesamiento iniciado.",
+      "reprocessFailed": "No se pudo reprocesar el documento."
     },
     "entities": {
       "title": "Entidades",

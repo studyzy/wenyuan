@@ -82,8 +82,23 @@ export const documentsApi = {
   list: (bankId: string) => apiGet<unknown>("/api/documents", { bank_id: bankId }),
   get: (documentId: string, bankId: string) =>
     apiGet<unknown>("/api/documents", { bank_id: bankId, document_id: documentId }),
-  chunks: (documentId: string, bankId: string) =>
-    apiGet<unknown>("/api/documents/chunks", { bank_id: bankId, document_id: documentId }),
+  /** Chunks are paged, because a document can carry hundreds of them. */
+  chunks: (
+    documentId: string,
+    bankId: string,
+    page?: { limit: number; offset: number },
+  ) =>
+    apiGet<unknown>("/api/documents/chunks", {
+      bank_id: bankId,
+      document_id: documentId,
+      limit: page ? String(page.limit) : undefined,
+      offset: page ? String(page.offset) : undefined,
+    }),
+  /** Reprocess re-runs extraction over a stored document. */
+  reprocess: (bankId: string, documentId: string) =>
+    apiPost<unknown>(
+      `/api/documents/reprocess?bank_id=${encodeURIComponent(bankId)}&document_id=${encodeURIComponent(documentId)}`,
+    ),
 };
 
 export const operationsApi = {
