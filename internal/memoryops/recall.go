@@ -61,6 +61,17 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		return storage.RecallQuery{}, httpx.NewHTTPError(httpx.KindBadRequest,
 			"temporal_window bounds must be ISO-8601 date strings")
 	}
+	// An explicit window always wins: the caller who named a range has stated
+	// what they mean, and a phrase in the question must not override it. With
+	// no window, a relative phrase in the query supplies one, anchored to the
+	// caller's reference time when they supplied one.
+	if window == nil {
+		reference := time.Now().UTC()
+		if queryTimestamp != nil {
+			reference = *queryTimestamp
+		}
+		window = temporalWindowFromQuery(req.Query, reference)
+	}
 	query := storage.RecallQuery{
 		BankID:             bankID,
 		Query:              req.Query,
