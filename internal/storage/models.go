@@ -214,15 +214,15 @@ type RetainEntity struct {
 // RetainItem is one ordered content item inside a memory write after
 // normalization. Content is the flattened canonical text.
 type RetainItem struct {
-	Content           string
-	Timestamp         *time.Time
-	HasTimestamp      bool
-	Context           string
-	Metadata          map[string]any
-	DocumentID        string
-	Entities          []RetainEntity
-	ResolveEntities   bool
-	Tags              []string
+	Content         string
+	Timestamp       *time.Time
+	HasTimestamp    bool
+	Context         string
+	Metadata        map[string]any
+	DocumentID      string
+	Entities        []RetainEntity
+	ResolveEntities bool
+	Tags            []string
 	// ObservationScopes is the caller's observation scoping as the raw JSON
 	// value they sent. The field accepts a scope mode name and a list of
 	// explicit tag groups, which are not interchangeable, so the value is
