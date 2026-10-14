@@ -1,18 +1,11 @@
 "use client";
 
-import {
-  banksApi,
-  directivesApi,
-  mentalModelsApi,
-  observationsApi,
-  webhooksApi,
-} from "../../../../lib/client/endpoints";
+import { banksApi, observationsApi, webhooksApi } from "../../../../lib/client/endpoints";
 import { auditLogsApi, llmRequestsApi } from "../../../../lib/client/endpoints";
 import { readItems, readString, useAsyncData } from "../../../../lib/use-async-data";
 import { formatRelativeTime } from "../../../../lib/relative-time";
 import { useTranslations } from "../../../../i18n";
 import { IdChip, TagList } from "../../../../components/ui/facet-chip";
-import { JsonViewer } from "../../../../components/ui/json-viewer";
 import {
   Table,
   TableBody,
@@ -23,6 +16,9 @@ import {
 } from "../../../../components/ui/table";
 import { DetailRow, PanelHeader, PanelState } from "./panel-state";
 import { BankConfigEditor } from "./bank-config-editor";
+import { DirectivesView } from "./directives-view";
+import { LlmRequestStats } from "./llm-request-stats";
+import { ObservationsList } from "./observations-list";
 import type { ConfigurationSubTab } from "../../../../lib/bank-detail";
 
 /**
@@ -63,14 +59,6 @@ export function BankProfilePanel({
   );
   const llm = useAsyncData(
     () => (subTab === "llm-requests" ? llmRequestsApi.list(bankId) : Promise.resolve(null)),
-    [bankId, subTab],
-  );
-  const directives = useAsyncData(
-    () => (subTab === "memory-defense" ? directivesApi.list(bankId) : Promise.resolve(null)),
-    [bankId, subTab],
-  );
-  const models = useAsyncData(
-    () => (subTab === "configuration" ? mentalModelsApi.list(bankId) : Promise.resolve(null)),
     [bankId, subTab],
   );
   const observations = useAsyncData(
@@ -120,10 +108,7 @@ export function BankProfilePanel({
             )}
           </PanelState>
           <div className="mt-6">
-            <h3 className="mb-2 text-[13px] font-semibold">{t("mentalModelsTitle")}</h3>
-            <PanelState loading={models.loading} error={models.error} onRetry={models.reload}>
-              <JsonViewer value={models.data} className="bg-muted" />
-            </PanelState>
+            <p className="text-[12px] text-muted-foreground">{t("modelsMovedHint")}</p>
           </div>
         </div>
       )}
@@ -150,7 +135,7 @@ export function BankProfilePanel({
         <div>
           <PanelHeader title={t("llmRequestsTitle")} description={t("llmRequestsDescription")} />
           <PanelState loading={llm.loading} error={llm.error} onRetry={llm.reload}>
-            <JsonViewer value={llm.data} className="bg-muted" />
+            <LlmRequestStats payload={llm.data} />
           </PanelState>
         </div>
       )}
@@ -159,9 +144,7 @@ export function BankProfilePanel({
         <div>
           <PanelHeader title={t("memoryDefenseTitle")} description={t("memoryDefenseDescription")} />
           <h3 className="mb-2 text-[13px] font-semibold">{t("directivesTitle")}</h3>
-          <PanelState loading={directives.loading} error={directives.error} onRetry={directives.reload}>
-            <JsonViewer value={directives.data} className="bg-muted" />
-          </PanelState>
+          <DirectivesView bankId={bankId} />
           <div className="mt-6">
             <h3 className="mb-2 text-[13px] font-semibold">{t("observationsTitle")}</h3>
             <PanelState
@@ -169,7 +152,7 @@ export function BankProfilePanel({
               error={observations.error}
               onRetry={observations.reload}
             >
-              <JsonViewer value={observations.data} className="bg-muted" />
+              <ObservationsList payload={observations.data} />
             </PanelState>
           </div>
         </div>
