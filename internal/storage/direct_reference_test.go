@@ -61,7 +61,6 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer func() { _ = db.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -69,7 +68,16 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE") })
+	// The schema is dropped on a context of its own, and the pool closed after
+	// it, because a deferred cancel and close run before a registered cleanup:
+	// dropping on the test's context would execute against a cancelled context
+	// and a closed pool, and the discarded error would hide it.
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		_ = db.Close()
+	})
 	if _, err := db.ExecContext(ctx, "SET search_path TO "+schema); err != nil {
 		t.Fatalf("set search path: %v", err)
 	}

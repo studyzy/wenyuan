@@ -33,7 +33,7 @@ func TestPostgresEnqueueIsAtomicUnderConcurrency(t *testing.T) {
 	}
 	pg := store.(*PostgresStore)
 	defer func() {
-		_, _ = pg.db.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+quoteIdent(schema)+` CASCADE`)
+		_ = pg.DropSchemaForTest(schema)
 		_ = pg.Close()
 	}()
 	if err := pg.Migrate(ctx); err != nil {
@@ -120,7 +120,7 @@ func TestPostgresClaimRespectsSerializationKey(t *testing.T) {
 	}
 	pg := store.(*PostgresStore)
 	defer func() {
-		_, _ = pg.db.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+quoteIdent(schema)+` CASCADE`)
+		_ = pg.DropSchemaForTest(schema)
 		_ = pg.Close()
 	}()
 	if err := pg.Migrate(ctx); err != nil {

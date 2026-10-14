@@ -42,6 +42,13 @@ func postgresWorkerStore(t *testing.T) storage.Store {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() {
+		// Drop the schema, not just the connection: every run migrates a
+		// uniquely named schema, and leaving it behind accumulates until the
+		// cross-schema discovery routines run out of lock table opening a
+		// cursor per schema.
+		if dropper, ok := store.(interface{ DropSchemaForTest(string) error }); ok {
+			_ = dropper.DropSchemaForTest(schema)
+		}
 		if closer, ok := store.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}

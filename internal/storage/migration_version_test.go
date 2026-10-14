@@ -20,10 +20,8 @@ func postgresMigrationStore(t *testing.T) *PostgresStore {
 	}
 	ctx := context.Background()
 	backend := &PostgresBackend{}
-	store, err := backend.Open(ctx, BackendConfig{
-		DatabaseURL: url,
-		Schema:      fmt.Sprintf("migver_e2e_%d", time.Now().UnixNano()),
-	})
+	schema := fmt.Sprintf("migver_e2e_%d", time.Now().UnixNano())
+	store, err := backend.Open(ctx, BackendConfig{DatabaseURL: url, Schema: schema})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -31,7 +29,13 @@ func postgresMigrationStore(t *testing.T) *PostgresStore {
 	if !ok {
 		t.Fatal("expected a postgres store")
 	}
-	t.Cleanup(func() { _ = pg.Close() })
+	// Drop the schema as well as closing the pool: a run that leaves its schema
+	// behind contributes to an accumulation the cross-schema routines then have
+	// to walk.
+	t.Cleanup(func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	})
 	return pg
 }
 

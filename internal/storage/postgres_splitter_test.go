@@ -37,7 +37,7 @@ func TestRealDatabaseCreatesDollarQuotedRoutine(t *testing.T) {
 	if _, err := pg.db.ExecContext(ctx, `CREATE SCHEMA `+quoteIdent(schema)); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	defer func() { _, _ = pg.db.ExecContext(ctx, `DROP SCHEMA `+quoteIdent(schema)+` CASCADE`) }()
+	defer func() { _ = pg.DropSchemaForTest(schema) }()
 
 	// The body deliberately contains several semicolons and a nested block, so
 	// a split on the first inner one would produce an unusable statement.

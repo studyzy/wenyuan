@@ -31,7 +31,10 @@ func TestMaintenanceRoutinesExist(t *testing.T) {
 		t.Fatalf("open postgres backend: %v", err)
 	}
 	pg := store.(*PostgresStore)
-	defer func() { _ = pg.Close() }()
+	defer func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	}()
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -96,7 +99,10 @@ func TestMentalModelMaintenanceColumns(t *testing.T) {
 		t.Fatalf("open postgres backend: %v", err)
 	}
 	pg := store.(*PostgresStore)
-	defer func() { _ = pg.Close() }()
+	defer func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	}()
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -137,7 +143,10 @@ func TestRetentionRoutineReportsOnlyExpiredSchemas(t *testing.T) {
 		t.Fatalf("open postgres backend: %v", err)
 	}
 	pg := store.(*PostgresStore)
-	defer func() { _ = pg.Close() }()
+	defer func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	}()
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

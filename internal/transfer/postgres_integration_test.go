@@ -49,9 +49,17 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 		t.Fatalf("open postgres backend: %v", err)
 	}
 	store := opened
-	if closer, ok := opened.(interface{ Close() error }); ok {
-		defer func() { _ = closer.Close() }()
-	}
+	// Drop the schema and close the pool from one registered cleanup, in that
+	// order. A deferred Close would run before any cleanup, so the drop would
+	// execute against a closed pool and leave the schema behind.
+	t.Cleanup(func() {
+		if dropper, ok := opened.(interface{ DropSchemaForTest(string) error }); ok {
+			_ = dropper.DropSchemaForTest(schema)
+		}
+		if closer, ok := opened.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
 
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

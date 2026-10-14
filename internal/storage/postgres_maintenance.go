@@ -195,3 +195,21 @@ func isUndefinedTable(err error) bool {
 	}
 	return false
 }
+
+// DropSchemaForTest removes a schema and everything in it.
+//
+// It lives in a non-test file because a test in another package reaches the
+// store through the interface and cannot see a method that only exists under a
+// test build. Every harness that migrates a uniquely named schema calls this
+// when it finishes: leaving schemas behind accumulates across runs, and the
+// cross-schema discovery routines then run out of lock table opening a cursor
+// per schema.
+//
+// It is destructive and scoped to a schema whose name the caller chose, which
+// is what makes it safe for a harness and unsuitable for anything else.
+func (s *PostgresStore) DropSchemaForTest(schema string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+quoteIdent(schema)+` CASCADE`)
+	return err
+}
