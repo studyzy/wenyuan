@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Bank is the stored bank representation. Field names on the JSON representation
 // are the compatibility surface and are declared by the bank API area.
@@ -220,7 +223,11 @@ type RetainItem struct {
 	Entities          []RetainEntity
 	ResolveEntities   bool
 	Tags              []string
-	ObservationScopes []string
+	// ObservationScopes is the caller's observation scoping as the raw JSON
+	// value they sent. The field accepts a scope mode name and a list of
+	// explicit tag groups, which are not interchangeable, so the value is
+	// stored verbatim rather than flattened to a string list.
+	ObservationScopes json.RawMessage
 	Strategy          string
 	UpdateMode        string
 	// AttachmentIDs are the short attachment ids this item's content carries.
@@ -322,8 +329,10 @@ type MemoryUnit struct {
 	// SourceID is the archive-internal fact identity, carried so an
 	// export/import round trip is lossless.
 	SourceID string
-	// ObservationScopes are the observation scopes the unit contributes to.
-	ObservationScopes []string
+	// ObservationScopes is the scoping the unit was retained under, kept as
+	// the raw JSON value so the mode and explicit-group forms both survive a
+	// read/write round trip.
+	ObservationScopes json.RawMessage
 	// ConsolidatedAt and ConsolidationFailedAt record the consolidation pass
 	// outcome for the unit.
 	ConsolidatedAt        *time.Time

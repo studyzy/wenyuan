@@ -171,6 +171,47 @@ func TestTimestampTriState(t *testing.T) {
 	}
 }
 
+// The "unset" sentinel stores the item without a timestamp, and is matched
+// case-insensitively; an empty string means the same.
+func TestTimestampUnsetSentinel(t *testing.T) {
+	for _, raw := range []string{`"unset"`, `"UNSET"`, `"Unset"`, `""`} {
+		t.Run(raw, func(t *testing.T) {
+			mux, _ := newServer(t)
+			body := `{"items":[{"content":"x","timestamp":` + raw + `}]}`
+			if rec := post(t, mux, "/v1/default/banks/b1/memories", body); rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// An omitted timestamp defaults to the write time; an explicit "unset" leaves
+// the item without one, so the two are distinguishable in the store.
+func TestTimestampOmissionDefaultsToNow(t *testing.T) {
+	mux, store := newServer(t)
+	body := `{"items":[{"content":"dated"},{"content":"undated","timestamp":"unset"}]}`
+	rec := post(t, mux, "/v1/default/banks/b1/memories", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dated, undated bool
+	for _, row := range page.Memories {
+		if row.Text == "dated" && row.OccurredStart != nil {
+			dated = true
+		}
+		if row.Text == "undated" && row.OccurredStart == nil {
+			undated = true
+		}
+	}
+	if !dated || !undated {
+		t.Fatalf("dated defaulted = %v, undated cleared = %v", dated, undated)
+	}
+}
+
 // ts-0013 / err-0002: image content against a non-vision model is rejected with
 // the unprocessable-entity status.
 func TestImageContentRejected(t *testing.T) {
@@ -211,13 +252,37 @@ func TestDocumentTagsAliasAccepted(t *testing.T) {
 	}
 }
 
-// ts-0018 / in-0003: a JSON-encoded tag string is coerced into a list.
+// ts-0018 / in-0003: a JSON-encoded tag string is coerced into a list, and the
+// explicit observation-scope groups are accepted alongside it.
 func TestJSONEncodedTagStringCoerced(t *testing.T) {
 	mux, _ := newServer(t)
-	body := `{"items":[{"content":"x","tags":"[\"a\",\"b\"]","observation_scopes":["s1"],"strategy":"fast"}]}`
+	body := `{"items":[{"content":"x","tags":"[\"a\",\"b\"]","observation_scopes":[["s1"]],"strategy":"fast"}]}`
 	rec := post(t, mux, "/v1/default/banks/b1/memories", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The observation scope accepts the named mode literal as well as explicit
+// tag groups, and rejects a flat string list, which names neither.
+func TestObservationScopeAcceptsModeAndGroups(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"mode literal", `"per_tag"`, http.StatusOK},
+		{"explicit groups", `[["a","b"],["c"]]`, http.StatusOK},
+		{"flat list is not a form", `["s1"]`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux, _ := newServer(t)
+			body := `{"items":[{"content":"x","observation_scopes":` + tc.raw + `}]}`
+			rec := post(t, mux, "/v1/default/banks/b1/memories", body)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }
 

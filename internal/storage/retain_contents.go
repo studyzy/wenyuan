@@ -76,11 +76,22 @@ func factContents(bankID, docID string, chunkIDs []string, item RetainItem, fact
 	return out
 }
 
-// applyItemDates sets the unit's dates from the item's timestamp.
+// applyItemDates sets the unit's dates from the item's timestamp. An item that
+// supplied an explicit timestamp uses it; an item that omitted one defaults to
+// the write time; an item that asked for no timestamp (null or the unset
+// sentinel) leaves the dates unset, which is what distinguishes it from an
+// omission.
 func applyItemDates(unit *MemoryUnit, item RetainItem) {
-	if item.Timestamp != nil {
+	switch {
+	case item.Timestamp != nil:
 		unit.EventDate = item.Timestamp
 		unit.OccurredStart = item.Timestamp
+	case item.HasTimestamp:
+		// Timestamped as "none": the item carries no date by request.
+	default:
+		now := time.Now().UTC()
+		unit.EventDate = &now
+		unit.OccurredStart = &now
 	}
 }
 

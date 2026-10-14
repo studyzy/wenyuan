@@ -9,6 +9,7 @@ package hindsight
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
@@ -93,7 +94,7 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 		DocumentID:            documentID,
 		Tags:                  fact.Tags,
 		SourceID:              fact.SourceID,
-		ObservationScopes:     fact.ObservationScopes,
+		ObservationScopes:     archiveScopes(fact.ObservationScopes),
 		ConsolidatedAt:        fact.ConsolidatedAt,
 		ConsolidationFailedAt: fact.ConsolidationFailedAt,
 	}
@@ -107,6 +108,20 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 		unit.Tags = []string{}
 	}
 	return unit
+}
+
+// archiveScopes encodes the archive's scope list into the JSON value the
+// storage column holds. The archive carries the explicit-group form only, so
+// an empty list means the fact was retained unscoped and yields no value.
+func archiveScopes(scopes []string) json.RawMessage {
+	if len(scopes) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(scopes)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 // confidenceFromMetadata reads an optional stored confidence value. The archive

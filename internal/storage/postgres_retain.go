@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"time"
 )
@@ -357,11 +356,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	}
 	scopes := any(nil)
 	if len(unit.ObservationScopes) > 0 {
-		encoded, err := json.Marshal(unit.ObservationScopes)
-		if err != nil {
-			return MemoryUnit{}, err
-		}
-		scopes = string(encoded)
+		scopes = string(unit.ObservationScopes)
 	}
 	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, string(unit.Type),
 		"{}", nullString(unit.DocumentID), nullString(unit.ChunkID), unit.OccurredStart, tags, embedding,

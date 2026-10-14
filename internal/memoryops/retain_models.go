@@ -27,7 +27,7 @@ type RetainItem struct {
 	Entities          EntityInputList `json:"entities,omitempty"`
 	ResolveEntities   bool            `json:"resolve_entities,omitempty"`
 	Tags              TagList         `json:"tags,omitempty"`
-	ObservationScopes []string        `json:"observation_scopes,omitempty"`
+	ObservationScopes ScopeList       `json:"observation_scopes,omitempty"`
 	Strategy          string          `json:"strategy,omitempty"`
 	UpdateMode        string          `json:"update_mode,omitempty"`
 	// AttachmentIDs are the short attachment ids the upload was recorded
@@ -110,15 +110,21 @@ func (c Content) Flatten() string {
 
 // TimestampField is the item event-date value. It is tri-state: an unset value
 // (omitted) defaults to now, an explicit null stores no timestamp, and an ISO
-// string sets the observation time.
+// string sets the observation time. The sentinel "unset" and the empty string
+// both mean the same as null: store the item without a timestamp.
 type TimestampField struct {
 	Set   bool
 	Null  bool
 	Value *time.Time
 }
 
-// UnmarshalJSON records the tri-state: absent is Set=false, null is Null=true,
-// and an ISO string is parsed into Value.
+// TimestampUnset is the sentinel that asks for no timestamp. It is matched
+// case-insensitively, as the contract states.
+const TimestampUnset = "unset"
+
+// UnmarshalJSON records the tri-state: absent is Set=false, null (or the
+// "unset" sentinel, or an empty string) is Null=true, and an ISO string is
+// parsed into Value.
 func (t *TimestampField) UnmarshalJSON(data []byte) error {
 	t.Set = true
 	trimmed := trimSpaceBytes(data)
@@ -129,6 +135,10 @@ func (t *TimestampField) UnmarshalJSON(data []byte) error {
 	var text string
 	if err := json.Unmarshal(data, &text); err != nil {
 		return errors.New("timestamp must be an ISO string, null, or omitted")
+	}
+	if text == "" || strings.EqualFold(text, TimestampUnset) {
+		t.Null = true
+		return nil
 	}
 	parsed, err := time.Parse(time.RFC3339, text)
 	if err != nil {
@@ -213,11 +223,59 @@ func (t *TagList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ObservationScopeModes are the named scope literals the write accepts.
+var ObservationScopeModes = []string{"per_tag", "combined", "all_combinations", "shared"}
+
+// ScopeList is the observation scope a caller supplied. The contract accepts
+// two forms: one of the named mode literals, or a list of explicit tag groups
+// where each group is itself a list of tag names. Both are kept because they
+// mean different things — a mode asks the server to derive the groups, an
+// explicit list states them.
+type ScopeList struct {
+	// Mode is the named literal, empty when the caller sent explicit groups.
+	Mode string
+	// Groups is the explicit tag groups, nil when the caller sent a mode.
+	Groups [][]string
+	// raw keeps the accepted JSON so the value can be forwarded to storage
+	// without re-encoding, which would have to guess which form was sent.
+	raw json.RawMessage
+}
+
+// IsZero reports whether no scope was supplied.
+func (s ScopeList) IsZero() bool { return len(s.raw) == 0 }
+
+// RawJSON returns the accepted value in the form it arrived, or nil when no
+// scope was supplied.
+func (s ScopeList) RawJSON() json.RawMessage {
+	if len(s.raw) == 0 {
+		return nil
+	}
+	return s.raw
+}
+
+// UnmarshalJSON accepts the named literal and the list-of-groups forms.
+func (s *ScopeList) UnmarshalJSON(data []byte) error {
+	trimmed := trimSpaceBytes(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		if err := json.Unmarshal(data, &s.Mode); err != nil {
+			return err
+		}
+	} else if err := json.Unmarshal(data, &s.Groups); err != nil {
+		return errors.New("observation_scopes must be a mode name or a list of tag groups")
+	}
+	s.raw = append(json.RawMessage(nil), trimmed...)
+	return nil
+}
+
 // trimSpaceString trims the surrounding whitespace from a string.
 func trimSpaceString(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// trimSpaceBytes trims the surrounding whitespace from raw JSON.
 func trimSpaceBytes(data []byte) []byte {
 	start := 0
 	for start < len(data) && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r') {

@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ func TestArchiveFactFieldsRoundTrip(t *testing.T) {
 		Text:                  "the archive carried more than the text",
 		Type:                  TypeExperience,
 		SourceID:              "archive-fact-42",
-		ObservationScopes:     []string{"scope-a", "scope-b"},
+		ObservationScopes:     json.RawMessage(`[["scope-a","scope-b"]]`),
 		ConsolidatedAt:        &consolidated,
 		ConsolidationFailedAt: &failed,
 	}
@@ -47,8 +48,8 @@ func TestArchiveFactFieldsRoundTrip(t *testing.T) {
 	if sourceID != "archive-fact-42" {
 		t.Errorf("source_id = %q, want %q", sourceID, "archive-fact-42")
 	}
-	if scopes != `["scope-a", "scope-b"]` {
-		t.Errorf("observation_scopes = %s, want [\"scope-a\", \"scope-b\"]", scopes)
+	if scopes != `[["scope-a", "scope-b"]]` {
+		t.Errorf("observation_scopes = %s, want [[\"scope-a\", \"scope-b\"]]", scopes)
 	}
 	if consolidate == nil || !consolidate.Equal(consolidated) {
 		t.Errorf("consolidated_at = %v, want %v", consolidate, consolidated)

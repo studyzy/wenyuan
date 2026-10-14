@@ -186,7 +186,7 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		Entities:          toStorageEntities(item.Entities),
 		ResolveEntities:   item.ResolveEntities,
 		Tags:              item.Tags,
-		ObservationScopes: item.ObservationScopes,
+		ObservationScopes: item.ObservationScopes.RawJSON(),
 		Strategy:          item.Strategy,
 		UpdateMode:        item.UpdateMode,
 		AttachmentIDs:     item.AttachmentIDs,
