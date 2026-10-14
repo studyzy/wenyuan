@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/studyzy/wenyuan/internal/extraction"
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/reflect"
@@ -18,6 +19,37 @@ func newReflectRunner(p provider.Provider) storage.ReflectRunner {
 		return nil
 	}
 	return reflect.NewRunner(p)
+}
+
+// rerankScorer adapts the provider's cross-encoder onto the recall pipeline's
+// boundary, so the storage area reaches a rerank score without importing a
+// provider.
+type rerankScorer struct {
+	reranker provider.Reranker
+}
+
+// Rerank scores the candidate texts against the query, in candidate order.
+func (r rerankScorer) Rerank(ctx context.Context, query string, texts []string) ([]float64, error) {
+	result, err := r.reranker.Rerank(ctx, provider.RerankRequest{Query: query, Documents: texts})
+	if err != nil {
+		return nil, err
+	}
+	return result.Scores, nil
+}
+
+// newRecallReranker builds the recall reranker from the provider boundary. A
+// provider with no reranking capability, the no-model selection, or a nil
+// provider yields a nil reranker, which leaves recall on its best-per-arm
+// fallback.
+func newRecallReranker(p provider.Provider) memoryops.RecallReranker {
+	if p == nil || p.Name() == none.NameNone {
+		return nil
+	}
+	reranker := provider.ProviderReranker(p)
+	if reranker == nil {
+		return nil
+	}
+	return rerankScorer{reranker: reranker}
 }
 
 // factExtractor adapts the extraction engine onto the storage area's fact

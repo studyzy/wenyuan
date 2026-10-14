@@ -189,6 +189,9 @@ func (a *App) mount(router *httpx.Router) {
 	// The model-driven reflection loop replaces the deterministic one when a
 	// model is configured.
 	memops.Reflection = newReflectRunner(a.Provider)
+	// The cross-encoder replaces the best-per-arm relevance fallback when the
+	// provider can rerank.
+	memops.Reranker = newRecallReranker(a.Provider)
 	memops.BankReflectDefaults = &memoryops.BankReflectDefaults{
 		SearchObservationsMaxTokens:       a.Config.ReflectSearchObservationsMaxTokens,
 		SearchObservationsIncludeEntities: a.Config.ReflectSearchObservationsIncludeEntities,

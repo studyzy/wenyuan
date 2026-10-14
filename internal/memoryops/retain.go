@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -48,6 +49,23 @@ type Handlers struct {
 	// Reflection, when non-nil, replaces the deterministic in-process
 	// reflection with the model-driven retrieval loop.
 	Reflection storage.ReflectRunner
+	// Reranker, when non-nil, rescoring of the fused recall candidates runs
+	// through the cross-encoder instead of falling back to the best per-arm
+	// score. A deployment with no rerank model leaves it nil.
+	Reranker RecallReranker
+	// RerankDepth bounds how many candidates reach the reranker, in ranked
+	// order. Zero means every candidate does.
+	RerankDepth int
+}
+
+// RecallReranker scores fused recall candidates against the query. It is the
+// boundary between the recall pipeline and the cross-encoder, so the storage
+// area stays free of any provider import.
+type RecallReranker interface {
+	// Rerank returns one score per candidate, in candidate order, on the
+	// backend's own relevance scale. An error leaves the caller on its
+	// fallback rather than failing the recall.
+	Rerank(ctx context.Context, query string, texts []string) ([]float64, error)
 }
 
 // ReflectCatalog resolves the perspective and directive candidates for a bank.

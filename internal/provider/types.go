@@ -1,6 +1,9 @@
 package provider
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Role identifies the speaking party in a completion conversation.
 type Role string
@@ -138,6 +141,42 @@ type EmbeddingResult struct {
 	Vectors [][]float32
 	// Dimensions is the width of every returned vector.
 	Dimensions int
+}
+
+// RerankRequest asks a cross-encoder to score candidate documents against one
+// query. It is a separate boundary from Provider because only some backends
+// serve a reranking model, and a deployment without one must keep working.
+type RerankRequest struct {
+	// Query is the text every document is scored against.
+	Query string
+	// Documents are the candidate texts, in caller order. The result
+	// preserves this order so the caller can pair scores back to candidates.
+	Documents []string
+	// Model names the reranking model; empty means the adapter's default.
+	Model string
+}
+
+// RerankResult is the outcome of a reranking call.
+type RerankResult struct {
+	// Scores holds one relevance score per input document, in input order.
+	// Scores are the backend's own scale and are not normalized here.
+	Scores []float64
+}
+
+// Reranker is the cross-encoder boundary. A provider may implement it when it
+// can score query-document pairs; the recall pipeline uses it when present and
+// falls back to the best per-arm score when it is not.
+type Reranker interface {
+	// Rerank scores each document against the query, in input order.
+	Rerank(ctx context.Context, req RerankRequest) (RerankResult, error)
+}
+
+// ProviderReranker returns the provider's reranking capability, or nil when it
+// has none. It is a type assertion rather than a Provider method so a provider
+// that cannot rerank does not have to declare a method it would only stub.
+func ProviderReranker(p Provider) Reranker {
+	reranker, _ := p.(Reranker)
+	return reranker
 }
 
 // Duration is a wall-clock span reported by an adapter. It is a distinct

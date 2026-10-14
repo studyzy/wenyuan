@@ -79,6 +79,10 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		Limit:              req.Limit,
 		Offset:             req.Offset,
 	}
+	if h.Reranker != nil {
+		query.Rerank = h.Reranker.Rerank
+		query.RerankDepth = h.RerankDepth
+	}
 	if req.Include != nil {
 		query.IncludeEntities = req.Include.Entities != nil
 		query.IncludeChunks = req.Include.Chunks != nil

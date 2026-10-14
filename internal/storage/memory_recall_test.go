@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -315,5 +316,159 @@ func TestRecallSourceFactChannel(t *testing.T) {
 	}
 	if _, ok := result.SourceFactMap["f1"]; !ok {
 		t.Fatalf("source-fact map must be keyed by cited ids: %+v", result.SourceFactMap)
+	}
+}
+
+// A configured reranker decides the relevance of the fused pool: the candidate
+// it scores highest outranks one the arms alone would have put first.
+func TestRecallRerankerOverridesArmRelevance(t *testing.T) {
+	s := NewMemoryStore("public")
+	seedBank(t, s, "b1",
+		RecallMatch{ID: "arm-first", Text: "alpha", Type: "world"},
+		RecallMatch{ID: "rerank-first", Text: "alpha", Type: "world"},
+	)
+	calls := 0
+	result, err := s.Recall(context.Background(), RecallQuery{
+		BankID: "b1", Query: "alpha",
+		Rerank: func(_ context.Context, _ string, texts []string) ([]float64, error) {
+			calls++
+			// Score by position in the batch, so whichever candidate the
+			// pipeline ordered second is reranked to the top.
+			scores := make([]float64, len(texts))
+			for i := range scores {
+				scores[i] = float64(i)
+			}
+			return scores, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("reranker called %d times, want once per recall", calls)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("reranker must not drop candidates: %v", recallIDs(result))
+	}
+	if result.Matches[0].ID != "rerank-first" {
+		t.Fatalf("reranked order = %v, want rerank-first at the head", recallIDs(result))
+	}
+}
+
+// A reranker that fails leaves recall on its fallback rather than failing the
+// request, so a flaky cross-encoder degrades quality instead of availability.
+func TestRecallRerankerFailureFallsBack(t *testing.T) {
+	s := NewMemoryStore("public")
+	seedBank(t, s, "b1", RecallMatch{ID: "m1", Text: "alpha", Type: "world"})
+	fallback, err := s.Recall(context.Background(), RecallQuery{BankID: "b1", Query: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rerankDown := errors.New("cross-encoder unavailable")
+	failed, err := s.Recall(context.Background(), RecallQuery{
+		BankID: "b1", Query: "alpha",
+		Rerank: func(context.Context, string, []string) ([]float64, error) {
+			return nil, rerankDown
+		},
+	})
+	if err != nil {
+		t.Fatalf("a reranker failure must not fail the recall: %v", err)
+	}
+	if len(failed.Matches) != len(fallback.Matches) {
+		t.Fatalf("fallback returned %v, failed-rerank returned %v", recallIDs(fallback), recallIDs(failed))
+	}
+}
+
+// A reranker returning the wrong number of scores is treated as a failure
+// rather than paired with the wrong candidate.
+func TestRecallRerankerShortResponseFallsBack(t *testing.T) {
+	s := NewMemoryStore("public")
+	seedBank(t, s, "b1",
+		RecallMatch{ID: "m1", Text: "alpha", Type: "world"},
+		RecallMatch{ID: "m2", Text: "alpha", Type: "world"},
+	)
+	result, err := s.Recall(context.Background(), RecallQuery{
+		BankID: "b1", Query: "alpha",
+		Rerank: func(context.Context, string, []string) ([]float64, error) {
+			return []float64{1}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("a short rerank response must not drop candidates: %v", recallIDs(result))
+	}
+}
+
+// The strategy boost promotes in rank space rather than multiplying the score,
+// so its displacement is bounded by the level's divisor: a boosted arm's rank r
+// beats another arm's rank s exactly when r < divisor*s, independent of the RRF
+// constant and of the pool size.
+func TestBoostedRRFPromotionIsRankBased(t *testing.T) {
+	semanticRank1 := &recallCandidate{armRanks: map[string]int{ArmSemantic: 1}, armScores: map[string]float64{ArmSemantic: 0.5}}
+	keywordRank1 := &recallCandidate{armRanks: map[string]int{ArmKeyword: 1}, armScores: map[string]float64{ArmKeyword: 0.5}}
+
+	fused := func(c *recallCandidate, level string) float64 {
+		total := 0.0
+		for _, rank := range c.armRanks {
+			total += 1 / (rrfConstant + float64(rank))
+		}
+		return stage1Boost(c, total, map[string]string{ArmKeyword: level})
+	}
+
+	// low has divisor 2: keyword rank 1 reaches past semantic rank 1, but
+	// keyword rank 3 does not (3 >= 2*1).
+	if fused(keywordRank1, "low") <= fused(semanticRank1, "low") {
+		t.Fatalf("low: keyword rank 1 %v must beat semantic rank 1 %v",
+			fused(keywordRank1, "low"), fused(semanticRank1, "low"))
+	}
+	keywordRank3 := &recallCandidate{armRanks: map[string]int{ArmKeyword: 3}}
+	if fused(keywordRank3, "low") >= fused(semanticRank1, "low") {
+		t.Fatalf("low: keyword rank 3 %v must stay below semantic rank 1 %v",
+			fused(keywordRank3, "low"), fused(semanticRank1, "low"))
+	}
+
+	// high has divisor 8, so the same rank 3 does reach past semantic rank 1:
+	// the level, not the constant, decides how far the promotion reaches.
+	if fused(keywordRank3, "high") <= fused(semanticRank1, "high") {
+		t.Fatalf("high: keyword rank 3 %v must beat semantic rank 1 %v",
+			fused(keywordRank3, "high"), fused(semanticRank1, "high"))
+	}
+
+	// Without a boost the fused score is the plain RRF sum, so the two arms'
+	// rank-1 candidates tie.
+	if plain := stage1Boost(keywordRank1, 1/(rrfConstant+1), nil); plain != 1/(rrfConstant+1) {
+		t.Fatalf("no boost changed the fused score to %v", plain)
+	}
+}
+
+// The post-rerank boost decays with the candidate's rank in the boosted arm,
+// except for the temporal arm, which is ranked by date rather than relevance.
+func TestStage2BoostDecaysExceptTemporal(t *testing.T) {
+	boosts := map[string]string{ArmGraph: "high", ArmTemporal: "high"}
+	high := &recallCandidate{armRanks: map[string]int{ArmGraph: 1}}
+	deep := &recallCandidate{armRanks: map[string]int{ArmGraph: 50}}
+	if stage2Boost(high, boosts) <= stage2Boost(deep, boosts) {
+		t.Fatalf("graph bump must decay with rank: high=%v deep=%v",
+			stage2Boost(high, boosts), stage2Boost(deep, boosts))
+	}
+	nearTemporal := &recallCandidate{armRanks: map[string]int{ArmTemporal: 1}}
+	farTemporal := &recallCandidate{armRanks: map[string]int{ArmTemporal: 50}}
+	if stage2Boost(nearTemporal, boosts) != stage2Boost(farTemporal, boosts) {
+		t.Fatalf("temporal bump must not decay: near=%v far=%v",
+			stage2Boost(nearTemporal, boosts), stage2Boost(farTemporal, boosts))
+	}
+}
+
+// A boost level that is not one of the three known names contributes nothing,
+// so a typo cannot silently promote an arm.
+func TestUnknownBoostLevelIsIgnored(t *testing.T) {
+	cand := &recallCandidate{armRanks: map[string]int{ArmKeyword: 1}}
+	if got := stage2Boost(cand, map[string]string{ArmKeyword: "extreme"}); got != 0 {
+		t.Fatalf("unknown boost level contributed %v, want 0", got)
+	}
+	if got := stage1Boost(cand, 1, map[string]string{ArmKeyword: "extreme"}); got != 1 {
+		t.Fatalf("unknown boost level changed the fused score to %v, want 1", got)
 	}
 }

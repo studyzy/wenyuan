@@ -158,6 +158,26 @@ type Settings struct {
 	ForcedTool bool
 	// Embedding holds the parallel embedding settings; nil when unused.
 	Embedding *EmbeddingSettings
+	// Rerank holds the cross-encoder settings; nil when unused, which selects
+	// the best-per-arm fallback the recall pipeline has always scored with.
+	Rerank *RerankSettings
+}
+
+// RerankSettings is the resolved cross-encoder configuration.
+type RerankSettings struct {
+	// Provider is the selected rerank provider name.
+	Provider string
+	// APIKey authenticates the vendor-scoped rerank endpoint.
+	APIKey string
+	// BaseURL is the rerank endpoint.
+	BaseURL string
+	// Model is the reranking model identifier; empty means the adapter's
+	// default.
+	Model string
+	// CandidateDepth bounds how many candidates reach the reranker.
+	CandidateDepth int
+	// Retry is the retry tuning for rerank calls.
+	Retry RetryPolicy
 }
 
 // EmbeddingSettings is the resolved embedding-provider configuration.

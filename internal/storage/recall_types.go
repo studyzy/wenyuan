@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Recall budget levels accepted by the recall request. The stored string
 // values are the compatibility surface.
@@ -157,7 +160,21 @@ type RecallQuery struct {
 	// Limit and Offset page the ranked result list before envelope assembly.
 	Limit  int
 	Offset int
+	// Rerank, when non-nil, rescoring of the fused candidates runs through
+	// this cross-encoder boundary instead of the best-per-arm fallback. It is
+	// called once with every fused candidate's text, in candidate order, and
+	// must return one score per candidate in the same order. An error leaves
+	// the fallback in place rather than failing the recall.
+	Rerank RerankFunc
+	// RerankDepth bounds how many candidates reach the reranker, in ranked
+	// order. Zero means every candidate does.
+	RerankDepth int
 }
+
+// RerankFunc scores candidate texts against a query. It is a function type
+// rather than an interface so the storage area needs no provider import and
+// the caller can pass a closure that captures its own client.
+type RerankFunc func(ctx context.Context, query string, texts []string) ([]float64, error)
 
 // TagGroup is one compound tag filter node: either a boolean node (And/Or/Not
 // set) or a leaf with one tag and its resolution/match mode.
