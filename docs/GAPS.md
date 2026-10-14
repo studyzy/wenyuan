@@ -346,28 +346,46 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 ## 7. 剩余工作（按优先级）
 
 > 原"建议重写顺序"所列的 A1–A7、B1–B10、C1–C8、D1–D8 **均已完成**
-> （见 §2–§5 的状态标记）。本节的排序由 2026-10-13 的复核对齐上游后得出。
+> （见 §2–§5 的状态标记）。本节在 2026-10-13 复核对齐上游后列出的 8 项，
+> **已于 2026-10-14 全部处理完毕**，逐项结论如下。
 
-1. **cross-encoder reranker** — recall 的 `reranker` 分现为 `bestArmScore`
-   （`internal/storage/memory_recall.go`），非神经相关性。上游走
-   `engine/cross_encoder.py` + `reranking.py`。这是检索质量与上游差距最大处。
-2. **融合与 boost 代数对齐** — 现硬编码 RRF、无 `interleave_fusion`；boost 为
-   自造常数，上游是 recency 衰减曲线（halflife 90d）+ proof-count 对数归一
-   （`engine/search/reranking.py`、`recall_boost.py`）。
-3. **查询文本时间解析** — 上游 `engine/query_analyzer.py` 从 query 自然语言
-   抽时间约束；Wenyuan 只读显式 `temporal_window`。
-4. **字段级契约修正** — `observation_scopes` 需接受上游的
-   `Literal["per_tag","combined","all_combinations","shared"] | list[list[str]]`
-   两种形式（现为 `[]string`）；`timestamp` 需接受哨兵值 `"unset"`
-   （现被拒）；`operation_id` 需校验 UUID（现不校验）。
-5. **更多 provider 适配器** — 现仅 `openai`（OpenAI 兼容）+ `none`；
-   上游 23 个（含 Anthropic / Gemini / LiteLLM / 各 OAuth 类）。
-6. **causal 链接生成** — 抽取结果目前只建 `LinkSemantic`，
-   不生成 `causes` / `caused_by`（上游 `engine/causal_links.py`）。
-7. **retain 折叠与 token 预算** — 上游 `engine/retain/fold.py`、
-   `memory_budget.py`；Wenyuan 未实现。
-8. **外部对象存储后端** — 附件现仅内联持久化；上游有 S3 / GCS / Azure
-   （`engine/storage/`）。
+1. ~~**cross-encoder reranker**~~ — **已完成**。`provider.Reranker` 为可选能力接口，
+   OpenAI 兼容适配器实现 `/rerank`；`storage.RecallQuery.Rerank` 在融合后重打分，
+   按 batch 归一化，失败回落 `bestArmScore`。见 `internal/provider/openai/rerank.go`、
+   `internal/storage/memory_recall.go`。
+2. ~~**融合与 boost 代数对齐**~~ — **已完成**。boost 改为 rank-space 提升
+   （`1/(k + rank/divisor)`，divisor 2/4/8）加衰减式 rank 后置加项（temporal 平坦）；
+   recency 改为 halflife 90d 衰减曲线，证据强度改为 proof-count 对数归一。
+   `interleave_fusion` **未移植**：上游仅由 consolidation dedup 选用，而 Wenyuan 的
+   consolidation 以 `ConsolidationObservations` 直接列举候选，不经融合，故无调用点。
+3. ~~**查询文本时间解析**~~ — **已完成**。`internal/memoryops/query_time.go` 解析相对词、
+   星期/月份名、`N units ago`、`last|next|this <unit>`、`in the last N units`；
+   显式 `temporal_window` 优先，`query_timestamp` 作参考时刻。
+4. ~~**字段级契约修正**~~ — **已完成**。`observation_scopes` 接受模式字面量与
+   tag 组列表两种形式（按原始 JSON 存 jsonb，round-trip 无损）；`timestamp` 接受
+   大小写不敏感的 `"unset"` 与空串（等同显式 null）；`operation_id` 校验 UUID。
+5. ~~**更多 provider 适配器**~~ — **已完成（可移植部分）**。13 个 OpenAI 兼容厂商
+   （groq/ollama/ollama-cloud/lmstudio/minimax/deepseek/openrouter/requesty/zai/
+   opencode-go/atlas/meta/fireworks）按表注册到同一适配器；Anthropic 因协议不同
+   单独实现（`internal/provider/anthropic/`）。**未移植**：OAuth CLI 类
+   （claude-code、codex、cursor、github-copilot、xai-oauth）——需交互式登录，
+   本服务不承载；Gemini 原生协议、LiteLLM router、bedrock、llamacpp 亦未单独实现，
+   但 gateway 可经 OpenAI 兼容适配器接入。
+6. ~~**causal 链接生成**~~ — **已完成**。抽取提示与 schema 增加 `causal_relations`
+   （每 fact 至多 2 条、必须指向更早的 fact）；写入后解析为 `caused_by`
+   边（effect → cause），越界索引丢弃。
+7. ~~**retain 折叠与 token 预算**~~ — **不适用**。上游的 `fold.py` 与
+   `memory_budget.py` 服务于其**流式生产/消费管线**（batch 消费 + 背压字节预算）。
+   Wenyuan 的 retain 是单趟同步循环，既无在飞队列亦无背压点，故无对应实现；
+   此为设计差异而非缺口。
+8. ~~**外部对象存储后端**~~ — **已完成（S3 兼容）**。`internal/objectstore/` 实现
+   S3 REST 子集并自签 SigV4（无厂商 SDK），经 `storage.ObjectStore` 边界接入；
+   环境键沿用上游（`HINDSIGHT_API_FILE_STORAGE_TYPE` 等）。**未实现**：
+   GCS / Azure——上游三者共用同一个 obstore 包装器，仅客户端配置不同；如需，
+   可依同一 `ObjectStore` 边界补实现。
+
+> 结论：§7 无剩余必做项。仍未覆盖的是上游**交互式认证类** provider 与
+> GCS/Azure 对象存储，二者均已在上文标注为有意的范围外。
 
 ---
 
@@ -419,10 +437,14 @@ grep -h "CREATE INDEX" migrations/*.sql | wc -l                 # 49
 grep -n "func unmappedFields" -A 3 internal/migration/hindsight/map.go
 
 # provider 适配器
-ls internal/provider/                                            # openai/ none/
+ls internal/provider/                                            # anthropic/ none/ openai/
 
 # 引擎是否真的接线到服务路径（应各有一行）
-grep -n "Extraction\|Reflection" internal/app/app.go
+grep -n "Extraction\|Reflection\|Reranker" internal/app/app.go
+
+# 对象存储后端
+ls internal/objectstore/                                         # s3.go
+grep -n "FileStorage" internal/config/filestorage.go
 
 # 门槛与实测覆盖率
 grep -n "COVERAGE_MIN" Makefile                                  # 56 / 66
