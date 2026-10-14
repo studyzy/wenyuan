@@ -142,6 +142,11 @@ type Store interface {
 	// a tool-driving failure, a shed retrieval or an over-budget run.
 	Reflect(ctx context.Context, query ReflectQuery) (ReflectOutcome, error)
 
+	// IsStale reports whether a write inside a model's refresh scope has
+	// landed since it last looked, which is the question the scheduled refresh
+	// asks before deciding to spend a model call. A model whose scope has not
+	// moved is up to date even if its clock is old.
+	IsStale(ctx context.Context, bankID string, model MentalModel) bool
 	// BankWriteWatermark returns the time of the newest write to a bank, or
 	// the zero time when it has never been written. A scoped staleness check
 	// asks this first, so a quiet bank costs no scan.
