@@ -79,29 +79,114 @@ func parseMigrationName(fileName string) (int, string, error) {
 
 // Statements splits a migration body into individual statements for ordered
 // execution by a backend.
+//
+// The split is a small scanner rather than a split on ";" because a semicolon
+// is only a statement boundary when it is outside every quoted region. Three
+// regions would otherwise break the split:
+//
+//   - a dollar-quoted block ($$ ... $$ or $tag$ ... $tag$), which is how a
+//     PL/pgSQL function body is written — its inner semicolons separate
+//     statements *of the function*, not of the migration;
+//   - a single-quoted string, where a semicolon is just a character;
+//   - a line comment, where everything to end of line is ignored.
+//
+// A migration that only holds plain DDL parses exactly as before, so the
+// existing series is unaffected.
 func (m Migration) Statements() []string {
-	raw := strings.Split(m.SQL, ";")
-	out := make([]string, 0, len(raw))
-	for _, statement := range raw {
-		trimmed := strings.TrimSpace(stripSQLComments(statement))
-		if trimmed == "" {
+	var (
+		out     []string
+		current strings.Builder
+		// delimiter is the open dollar-quote tag, empty when outside one.
+		delimiter string
+		single    bool
+	)
+	body := m.SQL
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+
+		// A line comment runs to end of line, unless it is inside a quoted
+		// region where "--" is literal text.
+		if delimiter == "" && !single && c == '-' && i+1 < len(body) && body[i+1] == '-' {
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+			// Keep the newline so statement text stays line-separated.
+			current.WriteByte('\n')
 			continue
 		}
-		out = append(out, trimmed)
+
+		if delimiter == "" && c == '\'' {
+			// A doubled quote inside a string is an escaped quote, not the end.
+			if single && i+1 < len(body) && body[i+1] == '\'' {
+				current.WriteString("''")
+				i++
+				continue
+			}
+			single = !single
+			current.WriteByte(c)
+			continue
+		}
+
+		if !single && c == '$' {
+			if tag, width := scanDollarTag(body[i:]); width > 0 {
+				if delimiter == "" {
+					delimiter = tag
+					current.WriteString(tag)
+				} else if tag == delimiter {
+					delimiter = ""
+					current.WriteString(tag)
+				} else {
+					current.WriteString(tag)
+				}
+				i += width - 1
+				continue
+			}
+		}
+
+		if c == ';' && delimiter == "" && !single {
+			if statement := strings.TrimSpace(current.String()); statement != "" {
+				out = append(out, statement)
+			}
+			current.Reset()
+			continue
+		}
+
+		current.WriteByte(c)
+	}
+	if statement := strings.TrimSpace(current.String()); statement != "" {
+		out = append(out, statement)
 	}
 	return out
 }
 
-func stripSQLComments(statement string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(statement, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "--") {
-			continue
-		}
-		b.WriteString(line)
-		b.WriteString("\n")
+// scanDollarTag reads a dollar-quote tag at the start of s and reports it with
+// its width in bytes, or a zero width when s does not open one.
+//
+// A tag is "$" optionally followed by an identifier, then "$". The bare "$$" is
+// the common form; a named tag exists so a body may contain "$$" as data.
+func scanDollarTag(s string) (string, int) {
+	if len(s) == 0 || s[0] != '$' {
+		return "", 0
 	}
-	return b.String()
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c == '$' {
+			return s[:i+1], i + 1
+		}
+		// An identifier character keeps the tag open; anything else means this
+		// was not a dollar quote (a positional parameter, say).
+		if !isTagChar(c) {
+			return "", 0
+		}
+	}
+	return "", 0
+}
+
+// isTagChar reports whether c may appear in a dollar-quote tag. The rule is the
+// identifier rule minus the leading character restriction, which the caller
+// already applied by requiring the opening "$".
+func isTagChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // LatestVersion returns the highest migration version in the series.
