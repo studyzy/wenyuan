@@ -32,6 +32,14 @@ func postgresVectorStore(t *testing.T) Store {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() {
+		// Drop the schema, not just the connection. Each test migrates its own
+		// uniquely named schema, and leaving it behind accumulates: the
+		// cross-schema discovery routines walk pg_class, so a database that
+		// keeps every retired test schema eventually runs out of lock table
+		// when a routine opens a cursor per schema.
+		if pg, ok := store.(*PostgresStore); ok {
+			_, _ = pg.db.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+quoteIdent(schema)+` CASCADE`)
+		}
 		if closer, ok := store.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}

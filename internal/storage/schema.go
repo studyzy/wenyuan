@@ -206,6 +206,13 @@ var MentalModelsColumns = []string{
 	"history",
 	"last_refreshed_source_query",
 	"last_refreshed_at",
+	// last_memory_seen_at is the newest memory write a refresh actually saw.
+	// Staleness compares against it rather than against the refresh time,
+	// because a refresh that found nothing new still moved its clock.
+	"last_memory_seen_at",
+	// last_refresh_failed_at parks an automatic refresh after a failure, so a
+	// schedule that cannot succeed stops spending a model call per tick.
+	"last_refresh_failed_at",
 	"last_updated",
 	"created_at",
 }

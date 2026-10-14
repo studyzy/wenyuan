@@ -59,21 +59,65 @@ func TestMigrationsAreIdempotentByConstruction(t *testing.T) {
 	}
 }
 
-func TestMigrationStatementsSplitAndStripComments(t *testing.T) {
+// A statement must be handed to the database whole, with no comment text
+// interrupting it and no terminator left over.
+//
+// The original form of this test asserted that no statement *contains* "--",
+// which held only while comments appeared between statements. Inside a
+// dollar-quoted function body a "--" is content, and removing it would corrupt
+// the body — so the assertion is the property that matters: a comment must not
+// split a statement. A statement carrying a "--" is therefore fine when the
+// comment sits inside a quoted region, and is a split when it does not.
+func TestMigrationStatementsAreWholeAndUnterminated(t *testing.T) {
 	series, err := MigrationSeries()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, migration := range series {
 		for _, statement := range migration.Statements() {
-			if strings.Contains(statement, "--") {
-				t.Fatalf("comments must be stripped from executed statements: %s", statement)
-			}
 			if strings.HasSuffix(strings.TrimSpace(statement), ";") {
 				t.Fatalf("statements must not retain the trailing semicolon: %q", statement)
 			}
+			if splitByComment(statement) {
+				t.Fatalf("a comment split a statement: %q", firstLine(statement))
+			}
 		}
 	}
+}
+
+// splitByComment reports whether a statement holds a comment outside every
+// quoted region, which means it is a fragment rather than a statement.
+func splitByComment(statement string) bool {
+	var (
+		delimiter string
+		single    bool
+	)
+	for i := 0; i < len(statement); i++ {
+		c := statement[i]
+		if delimiter == "" && !single && c == '\'' {
+			if single && i+1 < len(statement) && statement[i+1] == '\'' {
+				i++
+				continue
+			}
+			single = !single
+			continue
+		}
+		if !single && c == '$' {
+			if tag, width := scanDollarTag(statement[i:]); width > 0 {
+				if delimiter == "" {
+					delimiter = tag
+				} else if tag == delimiter {
+					delimiter = ""
+				}
+				i += width - 1
+				continue
+			}
+		}
+		if delimiter == "" && !single && c == '-' && i+1 < len(statement) && statement[i+1] == '-' {
+			return true
+		}
+	}
+	return false
 }
 
 // ts-0014 / ec-0004: the final type constraint accepts exactly the narrowed
