@@ -61,6 +61,12 @@ type Operation struct {
 	// ClaimedAt is when the current claim was taken. A claim older than the
 	// lease is treated as abandoned and becomes reclaimable.
 	ClaimedAt *time.Time
+	// SerializationKey narrows concurrency: at most one operation carrying a
+	// given key runs at a time, so two refreshes of the same record cannot
+	// apply their writes beside each other and leave whichever finished last
+	// winning regardless of which read more. Empty means no constraint, which
+	// is what every operation other than a per-record refresh wants.
+	SerializationKey string
 }
 
 // Terminal reports whether the operation has reached a terminal status.

@@ -144,6 +144,13 @@ type Store interface {
 
 	// PutOperation records an asynchronous operation in its initial state.
 	PutOperation(ctx context.Context, op Operation) (Operation, error)
+	// EnqueueOperation records a background operation, refusing to duplicate
+	// work already queued or running for the same subject. It is separate from
+	// PutOperation because the two are idempotent on different things: an
+	// operation a caller polls by id, versus the subject that operation works
+	// on. A leaderless fleet needs the latter, since every process reaches the
+	// same decision at the same instant.
+	EnqueueOperation(ctx context.Context, req EnqueueRequest) (EnqueueResult, error)
 	// GetOperation returns one operation by identifier.
 	GetOperation(ctx context.Context, opID string) (Operation, error)
 	// AdvanceOperation moves an operation forward in its status lifecycle.

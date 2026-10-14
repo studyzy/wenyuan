@@ -150,6 +150,7 @@ var AsyncOperationsColumns = []string{
 	"progress",
 	"worker_id",
 	"claimed_at",
+	"serialization_key",
 	"task_payload",
 }
 

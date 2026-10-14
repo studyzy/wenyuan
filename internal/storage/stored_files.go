@@ -18,6 +18,11 @@ const (
 	// OperationTypeConsolidate is the consolidation pass, which folds related
 	// memories into observations.
 	OperationTypeConsolidate = "consolidate"
+	// OperationTypeRefreshMentalModel regenerates one mental model from its
+	// source query. It is the operation the scheduled refresh enqueues, and it
+	// carries a serialization key so two refreshes of the same model cannot run
+	// beside each other.
+	OperationTypeRefreshMentalModel = "refresh_mental_model"
 )
 
 // OperationPayloadKeyStoredFile is the operation payload field carrying the

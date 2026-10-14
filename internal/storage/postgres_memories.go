@@ -172,7 +172,7 @@ func (s *PostgresStore) findPendingConsolidation(ctx context.Context, bankID str
 	qualified := quoteIdent(s.schema)
 	query := `SELECT id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), run,
 	                 created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at,
-	                 result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb)
+	                 result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')
 	          FROM ` + qualified + `.async_operations
 	          WHERE bank_id = $1 AND operation_type = $2 AND status IN ('pending','processing')
 	          ORDER BY created_at ASC LIMIT 1`

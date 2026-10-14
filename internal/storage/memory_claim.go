@@ -26,9 +26,16 @@ func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, l
 	now := time.Now().UTC()
 	candidates := make([]string, 0, len(s.operations))
 	for id, op := range s.operations {
-		if claimable(op, now, lease) {
-			candidates = append(candidates, id)
+		if !claimable(op, now, lease) {
+			continue
 		}
+		// An operation whose serialization key another live claim holds is not
+		// claimable: the key exists so two runs of the same work cannot proceed
+		// beside each other and leave whichever finished last winning.
+		if s.serializationHeldLocked(op, now, lease) {
+			continue
+		}
+		candidates = append(candidates, id)
 	}
 	if len(candidates) == 0 {
 		return Operation{}, ErrOperationNotFound
@@ -99,4 +106,30 @@ func claimable(op Operation, now time.Time, lease time.Duration) bool {
 	default:
 		return false
 	}
+}
+
+// serializationHeldLocked reports whether another live claim holds this
+// operation's serialization key.
+//
+// An operation carries no key, or a key nobody else holds, in which case
+// nothing constrains it. A claim past its lease is abandoned, so a consumer
+// that died holding a key does not block that key forever — the same rule the
+// claim itself applies.
+func (s *MemoryStore) serializationHeldLocked(op Operation, now time.Time, lease time.Duration) bool {
+	if op.SerializationKey == "" {
+		return false
+	}
+	for id, held := range s.operations {
+		if id == op.ID || held.SerializationKey != op.SerializationKey {
+			continue
+		}
+		if held.Status != StatusProcessing {
+			continue
+		}
+		if held.ClaimedAt == nil || lease <= 0 || now.Sub(*held.ClaimedAt) >= lease {
+			continue
+		}
+		return true
+	}
+	return false
 }
