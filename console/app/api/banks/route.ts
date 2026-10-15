@@ -1,5 +1,6 @@
 import { resolveServerConfig } from "../../../lib/server/config";
 import {
+  bankScopedPath,
   requestLocale,
   serializeUpstream,
   upstreamUnavailableBody,
@@ -12,8 +13,10 @@ const LIST_PARAMS = ["q", "limit", "offset"] as const;
  * Bank collection.
  *
  * GET returns 200 with a banks list plus total, limit and offset, accepting a
- * search term and numeric pagination. POST creates a bank from a JSON body
- * carrying a required bank id and returns 201. An unparseable body is a 400.
+ * search term and numeric pagination. POST creates a bank and returns 201: the
+ * body carries only the bank id, and creation is an upsert on the bank's own
+ * resource, because the collection itself has no create operation. An
+ * unparseable body is a 400.
  */
 export async function GET(request: Request): Promise<Response> {
   const locale = requestLocale(request);
@@ -57,9 +60,11 @@ export async function POST(request: Request): Promise<Response> {
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: "/v1/default/banks",
-      method: "POST",
-      body: raw,
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId),
+      method: "PUT",
+      // The collection takes no create body; the id is what the caller chose and
+      // the bank is created empty.
+      body: "{}",
       successStatus: 201,
       ...failure,
     });

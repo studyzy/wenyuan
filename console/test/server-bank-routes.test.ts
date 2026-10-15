@@ -95,19 +95,27 @@ describe("route method sets", () => {
   });
 });
 describe("bank collection and detail follow the contract", () => {
-  it("returns 201 on create and requires a bank id in the body", async () => {
-    const stub = stubFetch([{ status: 200, body: { bank_id: "acme" } }]);
+  it("creates a bank through its own resource, because the collection has no create", async () => {
+    // The collection is list-only upstream: posting to it is a 405, so creation
+    // has to reach the bank's own path — and the id may hold characters that are
+    // meaningful in a path segment.
+    const stub = stubFetch([{ status: 200, body: { bank_id: "team:alpha" } }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const created = await banksCollection.POST(
         makeRequest("http://localhost/api/banks", {
           method: "POST",
-          body: JSON.stringify({ bank_id: "acme" }),
+          body: JSON.stringify({ bank_id: "team:alpha" }),
         }),
       );
-      expect(created.status).toBe(201);
-    });
 
+      expect(created.status).toBe(201);
+      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/team%3Aalpha");
+      expect(stub.methods[0]).toBe("PUT");
+    });
+  });
+
+  it("returns 400 when a create body names no bank", async () => {
     const missing = await banksCollection.POST(
       makeRequest("http://localhost/api/banks", {
         method: "POST",
