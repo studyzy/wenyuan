@@ -14,7 +14,7 @@ describe("POST /api/auth/login", () => {
       const response = await login(
         makeRequest("http://localhost/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({ accessKey: "x" }),
+          body: JSON.stringify({ key: "x" }),
         }),
       );
       expect(response.status).toBe(503);
@@ -37,7 +37,7 @@ describe("POST /api/auth/login", () => {
       const response = await login(
         makeRequest("http://localhost/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({ accessKey: "wrong" }),
+          body: JSON.stringify({ key: "wrong" }),
         }),
       );
       expect(response.status).toBe(401);
@@ -50,7 +50,7 @@ describe("POST /api/auth/login", () => {
       const response = await login(
         makeRequest("http://localhost/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({ accessKey: "secret" }),
+          body: JSON.stringify({ key: "secret" }),
         }),
       );
       expect(response.status).toBe(200);
@@ -62,12 +62,28 @@ describe("POST /api/auth/login", () => {
     });
   });
 
+  it("ignores a submitted key that arrives under another field name", async () => {
+    // The login form posts `key`; a route that reads a different name answers
+    // 401 to every sign-in while its own tests, which post that other name,
+    // still pass. The field name is the contract between the two.
+    await withEnv({ HINDSIGHT_CP_ACCESS_KEY: "secret" }, async () => {
+      const response = await login(
+        makeRequest("http://localhost/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ accessKey: "secret" }),
+        }),
+      );
+      expect(response.status).toBe(401);
+      expectNoErrorKey(await readJson(response));
+    });
+  });
+
   it("marks the cookie secure only for an HTTPS-originated request", async () => {
     await withEnv({ HINDSIGHT_CP_ACCESS_KEY: "secret" }, async () => {
       const secure = await login(
         makeRequest("http://localhost/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({ accessKey: "secret" }),
+          body: JSON.stringify({ key: "secret" }),
           forwardedProto: "https",
         }),
       );
@@ -76,7 +92,7 @@ describe("POST /api/auth/login", () => {
       const plain = await login(
         makeRequest("http://localhost/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({ accessKey: "secret" }),
+          body: JSON.stringify({ key: "secret" }),
           forwardedProto: "http",
         }),
       );

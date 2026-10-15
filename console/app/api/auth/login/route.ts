@@ -12,6 +12,9 @@ import { negotiateLocale } from "../../../../i18n/negotiate";
 /**
  * Login route. Binds POST, returning documented localized errors and issuing
  * the signed session cookie on success.
+ *
+ * The submitted key travels in the `key` field, which is what the login form
+ * posts; reading any other name would leave the form unable to sign in.
  */
 export async function POST(request: Request): Promise<Response> {
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
@@ -24,14 +27,14 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse("api.errors.auth.keyNotConfigured", 503, locale);
   }
 
-  let payload: { accessKey?: string } | undefined;
+  let payload: { key?: string } | undefined;
   try {
-    payload = (await request.json()) as { accessKey?: string };
+    payload = (await request.json()) as { key?: string };
   } catch {
     return errorResponse("api.errors.auth.invalidRequestBody", 400, locale);
   }
 
-  const submitted = typeof payload?.accessKey === "string" ? payload.accessKey : "";
+  const submitted = typeof payload?.key === "string" ? payload.key : "";
   if (!verifyAccessKey(config.accessKey, submitted)) {
     return errorResponse("api.errors.auth.wrongKey", 401, locale);
   }

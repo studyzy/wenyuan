@@ -155,12 +155,12 @@ gate=$(curl -sS -o /dev/null -w '%{http_code}' "$CONSOLE_URL/api/banks")
 check "an unauthenticated API call is refused" 401 "$gate"
 
 login=$(curl -sS -X POST -H 'content-type: application/json' \
-  -d "{\"accessKey\":\"$ACCESS_KEY\"}" -c "$COOKIE_JAR" \
+  -d "{\"key\":\"$ACCESS_KEY\"}" -c "$COOKIE_JAR" \
   -o /dev/null -w '%{http_code}' "$CONSOLE_URL/api/auth/login")
 check "the login route admits the access key" 200 "$login"
 
 wrong=$(curl -sS -X POST -H 'content-type: application/json' \
-  -d '{"accessKey":"not-the-key"}' -o /dev/null -w '%{http_code}' \
+  -d '{"key":"not-the-key"}' -o /dev/null -w '%{http_code}' \
   "$CONSOLE_URL/api/auth/login")
 check "the login route refuses a wrong key" 401 "$wrong"
 
