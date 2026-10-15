@@ -42,6 +42,24 @@ type AdminTableStore interface {
 	// statement also needs no CASCADE, so a table outside the set is never
 	// emptied by surprise.
 	TruncateTables(ctx context.Context, tables []string) error
+	// RestoreBinary replaces the contents of the named tables with raw
+	// PostgreSQL binary COPY streams, atomically: one transaction truncates
+	// the whole set, replays each stream in the order given, and advances
+	// identity sequences so a later insert cannot collide with a restored id.
+	// The order must place every table after the tables it references, so a
+	// row's references exist by the time the row lands.
+	RestoreBinary(ctx context.Context, loads []BinaryLoad) error
+}
+
+// BinaryLoad is one table's binary COPY stream for
+// AdminTableStore.RestoreBinary. The stream is replayed byte-for-byte — the
+// columns list it is replayed against must match the stream's field order,
+// which the caller validates against the archive manifest before anything
+// destructive happens.
+type BinaryLoad struct {
+	Table   string
+	Columns []string
+	Data    []byte
 }
 
 // The migration series is the authority for the persistent table set. These

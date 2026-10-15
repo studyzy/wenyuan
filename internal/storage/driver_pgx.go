@@ -6,7 +6,8 @@ import (
 	"context"
 	"database/sql"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // init registers the pgx-backed constructor when this file is built in. The
@@ -14,7 +15,7 @@ import (
 // alone; build with `-tags pgx` to enable live PostgreSQL access.
 func init() {
 	RegisterDriver(func(url string, budget PoolBudget) (DB, error) {
-		db, err := sql.Open("pgx", url)
+		db, err := openWithSession(url, budget)
 		if err != nil {
 			return nil, err
 		}
@@ -28,6 +29,27 @@ func init() {
 		}
 		return &sqlDB{db: db}, nil
 	})
+}
+
+// openWithSession opens the pool, carrying the deployment's session settings as
+// connection parameters so every connection the pool creates has them. A
+// deployment that configured none keeps the plain constructor.
+func openWithSession(url string, budget PoolBudget) (*sql.DB, error) {
+	params := budget.Session.RuntimeParams()
+	if len(params) == 0 {
+		return sql.Open("pgx", url)
+	}
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	if config.RuntimeParams == nil {
+		config.RuntimeParams = map[string]string{}
+	}
+	for name, value := range params {
+		config.RuntimeParams[name] = value
+	}
+	return stdlib.OpenDB(*config), nil
 }
 
 // sqlDB adapts *sql.DB to the narrow DB interface.
@@ -53,6 +75,13 @@ func (d *sqlDB) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 func (d *sqlDB) Close() error { return d.db.Close() }
+
+// RawConn checks one connection out of the pool for direct driver access. The
+// admin binary-COPY restore uses it to hand raw COPY streams to the server.
+// The connection is returned to the pool when the caller closes it.
+func (d *sqlDB) RawConn(ctx context.Context) (*sql.Conn, error) {
+	return d.db.Conn(ctx)
+}
 
 // PoolStats reports the pool's current utilization for the readiness payload.
 // The standard library exposes in-use, idle and maximum connections; it has no

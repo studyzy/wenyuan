@@ -19,10 +19,11 @@ import (
 // PostgreSQL. The embedded store supplies the rest of the Store contract.
 type fakeTableStore struct {
 	*storage.MemoryStore
-	columns   map[string][]storage.AdminColumn
-	dump      map[string]string
-	truncated []string
-	loaded    []string
+	columns     map[string][]storage.AdminColumn
+	dump        map[string]string
+	truncated   []string
+	loaded      []string
+	binaryLoads []storage.BinaryLoad
 }
 
 func newFakeTableStore() *fakeTableStore {
@@ -54,6 +55,15 @@ func (f *fakeTableStore) LoadTable(_ context.Context, table string, _ []byte) er
 
 func (f *fakeTableStore) TruncateTables(_ context.Context, tables []string) error {
 	f.truncated = append(f.truncated, tables...)
+	return nil
+}
+
+func (f *fakeTableStore) RestoreBinary(_ context.Context, loads []storage.BinaryLoad) error {
+	for _, load := range loads {
+		f.truncated = append(f.truncated, load.Table)
+		f.loaded = append(f.loaded, load.Table)
+	}
+	f.binaryLoads = append(f.binaryLoads, loads...)
 	return nil
 }
 

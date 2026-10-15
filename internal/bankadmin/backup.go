@@ -9,14 +9,16 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// backupManifestVersion is the archive format version. A restore refuses any
-// other version rather than guessing at a shape it does not know.
+// backupManifestVersion is the JSON-row archive format this project writes.
+// Restore also accepts the binary-COPY format (version 2, see backup_v2.go);
+// anything else is refused rather than guessed at.
 const backupManifestVersion = 1
 
 // BackupFlags is the parsed admin backup command surface.
@@ -74,12 +76,25 @@ func ParseRestore(args []string) (RestoreFlags, error) {
 }
 
 // backupManifest describes one archive: the tables it holds and the column
-// shape each had when it was taken.
+// shape each had when it was taken. The version field is raw JSON because two
+// encodings are in circulation: this project's own archives write a JSON
+// number, the binary-COPY format writes the same number as a string.
 type backupManifest struct {
-	Version   int                    `json:"version"`
+	Version   json.RawMessage        `json:"version"`
 	Schema    string                 `json:"schema"`
 	CreatedAt string                 `json:"created_at"`
 	Tables    map[string]backupTable `json:"tables"`
+}
+
+// manifestVersion decodes the raw version field into a number, accepting both
+// a JSON number and its string encoding. The bool is false when the field is
+// neither, and the caller refuses the archive.
+func manifestVersion(raw json.RawMessage) (int, bool) {
+	version, err := strconv.Atoi(strings.Trim(string(raw), `"`))
+	if err != nil {
+		return 0, false
+	}
+	return version, true
 }
 
 // backupTable is one table's entry in the manifest.
@@ -118,7 +133,7 @@ func RunBackup(ctx context.Context, store storage.Store, flags BackupFlags, out 
 	archive := zip.NewWriter(file)
 
 	manifest := backupManifest{
-		Version:   backupManifestVersion,
+		Version:   json.RawMessage(strconv.Itoa(backupManifestVersion)),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Tables:    map[string]backupTable{},
 	}
@@ -191,10 +206,24 @@ func RunRestore(ctx context.Context, store storage.Store, flags RestoreFlags, in
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		return fmt.Errorf("parse manifest: %w", err)
 	}
-	if manifest.Version != backupManifestVersion {
-		return fmt.Errorf("unsupported backup version %d (this binary restores version %d)", manifest.Version, backupManifestVersion)
+	version, ok := manifestVersion(manifest.Version)
+	if !ok {
+		return fmt.Errorf("backup manifest carries an unparseable version %s", manifest.Version)
 	}
+	switch version {
+	case backupManifestVersion:
+		return runRestoreJSON(ctx, caps, reader, manifest, flags.Input, out)
+	case binaryCopyManifestVersion:
+		return runRestoreBinary(ctx, caps, reader, manifest, flags.Input, out)
+	default:
+		return fmt.Errorf("unsupported backup version %d (this binary restores versions %d and %d)",
+			version, backupManifestVersion, binaryCopyManifestVersion)
+	}
+}
 
+// runRestoreJSON loads a JSON-row archive back: one <table>.json member per
+// table, replayed through the store's row loader in dependency order.
+func runRestoreJSON(ctx context.Context, caps storage.AdminTableStore, reader *zip.ReadCloser, manifest backupManifest, input string, out io.Writer) error {
 	order, err := restoreOrder(manifest)
 	if err != nil {
 		return err
@@ -236,7 +265,7 @@ func RunRestore(ctx context.Context, store storage.Store, flags RestoreFlags, in
 		totalRows += rows
 		_, _ = fmt.Fprintf(out, "  restored %s: %d row(s)\n", table, rows)
 	}
-	_, _ = fmt.Fprintf(out, "restored %d row(s) across %d table(s) from %s\n", totalRows, len(order), flags.Input)
+	_, _ = fmt.Fprintf(out, "restored %d row(s) across %d table(s) from %s\n", totalRows, len(order), input)
 	return nil
 }
 

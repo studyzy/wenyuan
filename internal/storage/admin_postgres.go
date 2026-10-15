@@ -121,16 +121,20 @@ func (s *PostgresStore) TruncateTables(ctx context.Context, tables []string) err
 	return nil
 }
 
-// syncIdentitySequences advances each identity sequence of the table past the
-// largest restored value. A restore writes ids explicitly, which does not move
-// the sequence, so without this a later insert could collide.
-func (s *PostgresStore) syncIdentitySequences(ctx context.Context, table string) error {
-	query := `SELECT a.attname FROM pg_catalog.pg_attribute a
+// identityColumnsQuery lists a table's identity columns. A restore writes ids
+// explicitly, which does not move the sequence, so every identity column a
+// table has needs its sequence advanced once the rows are in.
+const identityColumnsQuery = `SELECT a.attname FROM pg_catalog.pg_attribute a
 	          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 	          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 	          WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
 	            AND a.attidentity <> ''`
-	rows, err := s.db.QueryContext(ctx, query, s.schema, table)
+
+// syncIdentitySequences advances each identity sequence of the table past the
+// largest restored value. A restore writes ids explicitly, which does not move
+// the sequence, so without this a later insert could collide.
+func (s *PostgresStore) syncIdentitySequences(ctx context.Context, table string) error {
+	rows, err := s.db.QueryContext(ctx, identityColumnsQuery, s.schema, table)
 	if err != nil {
 		return err
 	}
