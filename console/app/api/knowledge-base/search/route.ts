@@ -5,7 +5,7 @@ import {
   serializeUpstream,
   upstreamUnavailableBody,
 } from "../../../../lib/server/proxy";
-import { errorResponse, jsonResponse } from "../../../../lib/server/http";
+import { errorResponse, jsonResponse, rawTagFilterParams } from "../../../../lib/server/http";
 
 /**
  * Knowledge-base search.
@@ -35,7 +35,7 @@ export async function GET(request: Request): Promise<Response> {
       config,
       request,
       upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/knowledge-base/search"),
-      query: { q: query, limit: searchParams.get("limit") ?? "10" },
+      query: { q: query, limit: searchParams.get("limit") ?? "10", ...rawTagFilterParams(request) },
       method: "GET",
       ...failure,
     });

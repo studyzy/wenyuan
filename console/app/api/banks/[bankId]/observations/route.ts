@@ -35,7 +35,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
   let result;
   try {
     result = await callUpstream(config, {
-      path: bankScopedPath("/v1/default/banks", bankId, "/memories"),
+      path: bankScopedPath("/v1/default/banks", bankId, "/memories/list"),
       method: "GET",
       query: { type: "observation", limit: "1000" },
     });

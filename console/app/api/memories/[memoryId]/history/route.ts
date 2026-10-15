@@ -1,5 +1,5 @@
 import { resolveServerConfig } from "../../../../../lib/server/config";
-import { requestLocale } from "../../../../../lib/server/proxy";
+import { bankScopedPath, requestLocale } from "../../../../../lib/server/proxy";
 import { errorResponse } from "../../../../../lib/server/http";
 import { callUpstream } from "../../../../../lib/server/upstream";
 
@@ -25,7 +25,11 @@ export async function GET(request: Request, context: Context): Promise<Response>
   let result;
   try {
     result = await callUpstream(config, {
-      path: `/v1/default/memories/${encodeURIComponent(memoryId)}/history`,
+      path: bankScopedPath(
+        "/v1/default/banks",
+        bankId,
+        `/memories/${encodeURIComponent(memoryId)}/history`,
+      ),
       method: "GET",
     });
   } catch {

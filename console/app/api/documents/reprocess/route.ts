@@ -1,5 +1,6 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
 import {
+  bankScopedPath,
   requestLocale,
   serializeUpstream,
   upstreamUnavailableBody,
@@ -9,8 +10,8 @@ import { errorResponse } from "../../../../lib/server/http";
 /**
  * Document reprocess.
  *
- * Bank and document identifiers travel in the query string by contract. The
- * caller's body is forwarded when present.
+ * The bank and document identifiers select a member sub-resource, so the
+ * document id travels in the path. No query parameters are forwarded.
  */
 export async function POST(request: Request): Promise<Response> {
   const locale = requestLocale(request);
@@ -34,8 +35,11 @@ export async function POST(request: Request): Promise<Response> {
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: "/v1/default/documents/reprocess",
-      query: { bank_id: bankId, document_id: documentId },
+      upstreamPath: bankScopedPath(
+        "/v1/default/banks",
+        bankId,
+        `/documents/${encodeURIComponent(documentId)}/reprocess`,
+      ),
       method: "POST",
       body: body.length > 0 ? body : undefined,
       ...failure,

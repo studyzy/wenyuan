@@ -5,15 +5,11 @@
  * configured. The upstream credential is never handled here; authorization and
  * session state remain server-side.
  */
-export function publicBasePath(): string {
-  const raw = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-  if (!raw || raw === "/") return "";
-  const withLeading = raw.startsWith("/") ? raw : `/${raw}`;
-  return withLeading.replace(/\/+$/, "");
-}
+export { normalizeBasePath as publicBasePath } from "../base-path";
+import { normalizeBasePath } from "../base-path";
 
 export function apiUrl(path: string, query?: Record<string, string | undefined>): string {
-  const base = publicBasePath();
+  const base = normalizeBasePath();
   const normalized = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${base}${normalized}`, "http://console.local");
   if (query) {

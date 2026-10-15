@@ -35,7 +35,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
       upstreamPath: bankScopedPath(
         "/v1/default/banks",
         bankId,
-        `/observations/${encodeURIComponent(modelId)}`,
+        `/memories/${encodeURIComponent(modelId)}`,
       ),
       method: "GET",
       ...failure,

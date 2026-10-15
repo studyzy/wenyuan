@@ -8,7 +8,7 @@ import {
 import {
   errorResponse,
   passthroughQueryParams,
-  tagFilterParams,
+  rawTagFilterParams,
 } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ bankId: string }> };
@@ -16,7 +16,7 @@ type Context = { params: Promise<{ bankId: string }> };
 const LIST_PARAMS = ["detail", "limit", "offset"] as const;
 
 function scopedQuery(request: Request): Record<string, string | string[]> {
-  return { ...tagFilterParams(request), ...passthroughQueryParams(request, LIST_PARAMS) };
+  return { ...rawTagFilterParams(request), ...passthroughQueryParams(request, LIST_PARAMS) };
 }
 
 /**

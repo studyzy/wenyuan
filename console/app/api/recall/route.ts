@@ -6,17 +6,43 @@ import { callUpstream } from "../../../lib/server/upstream";
 /**
  * Recall.
  *
- * The bank id is required. Returns the whole upstream recall body unchanged at
- * 200 with no field projection. A failure, or a success that carries no data,
- * is a 500 with the recall key.
+ * The bank the memories are recalled from travels in the request body, because
+ * that is the shape the browser client posts; a request that names no bank falls
+ * back to the default one. `fact_type` is the legacy spelling of `types` and is
+ * normalised rather than forwarded, and the budget defaults so the retrieval
+ * arms always have one. Returns the whole upstream body unchanged at 200 with no
+ * field projection — a hand-picked projection dropped fields the caller asked
+ * for. A failure, or a success that carries no data, is a 500 with the recall
+ * key.
  */
 export async function POST(request: Request): Promise<Response> {
   const locale = requestLocale(request);
-  const searchParams = new URL(request.url).searchParams;
-  const bankId = searchParams.get("bank_id") ?? searchParams.get("agent_id");
-  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
 
-  const body = await request.text();
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return errorResponse("api.errors.recall.failed", 500, locale);
+  }
+
+  const bankId = (body.bank_id as string) || (body.agent_id as string) || "default";
+
+  const upstreamBody: Record<string, unknown> = {
+    query: body.query,
+    types: body.types ?? body.fact_type,
+    prefer_observations: body.prefer_observations,
+    max_tokens: body.max_tokens,
+    trace: body.trace,
+    budget: body.budget || "mid",
+    include: body.include,
+    query_timestamp: body.query_timestamp,
+    tags: body.tags,
+    tags_match: body.tags_match,
+    tag_groups: body.tag_groups,
+    min_scores: body.min_scores,
+    temporal_window: body.temporal_window,
+  };
+
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
 
   let result;
@@ -25,7 +51,7 @@ export async function POST(request: Request): Promise<Response> {
       path: bankScopedPath("/v1/default/banks", bankId, "/memories/recall"),
       method: "POST",
       headers: { "content-type": "application/json" },
-      body,
+      body: JSON.stringify(upstreamBody),
     });
   } catch {
     return errorResponse("api.errors.recall.failed", 500, locale);

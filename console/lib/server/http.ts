@@ -74,6 +74,26 @@ export function tagFilterParams(request: Request): Record<string, string | strin
 }
 
 /**
+ * Read the repeated `tags` filter and its match mode exactly as the caller sent
+ * them.
+ *
+ * This is the unvalidated counterpart of `tagFilterParams`: `tags_match` is
+ * forwarded even with no tags present (an `exact` mode on its own selects the
+ * upstream's global/untagged scope) and the mode is not checked against the
+ * known set. Used by the routes whose upstream accepts the caller's filter
+ * verbatim.
+ */
+export function rawTagFilterParams(request: Request): Record<string, string | string[]> {
+  const searchParams = new URL(request.url).searchParams;
+  const result: Record<string, string | string[]> = {};
+  const tags = searchParams.getAll("tags").filter((tag) => tag.length > 0);
+  if (tags.length > 0) result.tags = tags;
+  const mode = searchParams.get("tags_match");
+  if (mode) result.tags_match = mode;
+  return result;
+}
+
+/**
  * Forward the named query parameters verbatim, dropping any whose value is
  * empty. Used by the read routes whose upstream accepts the caller's filters
  * unchanged.

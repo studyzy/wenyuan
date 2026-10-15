@@ -24,17 +24,16 @@ const PASSTHROUGH_FIELDS = [
 /**
  * Reflect.
  *
- * The legacy include booleans are translated into an include object with facts
- * and tool_calls sub-objects. The budget defaults to a mid value when a legacy
- * thinking budget is present and no budget was given, and to a low value
- * otherwise. Other optional fields are forwarded only when truthy. Returns 200
- * with the reflect payload.
+ * The bank being reflected on travels in the request body, because that is the
+ * shape the browser client posts; a request that names no bank falls back to the
+ * default one. The legacy include booleans are translated into an include object
+ * with facts and tool_calls sub-objects. The budget defaults to a mid value when
+ * a legacy thinking budget is present and no budget was given, and to a low
+ * value otherwise. Other optional fields are forwarded only when truthy. Returns
+ * 200 with the reflect payload.
  */
 export async function POST(request: Request): Promise<Response> {
   const locale = requestLocale(request);
-  const searchParams = new URL(request.url).searchParams;
-  const bankId = searchParams.get("bank_id") ?? searchParams.get("agent_id");
-  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
 
   const raw = await request.text();
   let parsed: Record<string, unknown>;
@@ -43,6 +42,9 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return errorResponse("api.errors.auth.invalidRequestBody", 400, locale);
   }
+
+  const bankId =
+    (parsed.bank_id as string) || (parsed.agent_id as string) || "default";
 
   const includeOptions: Record<string, unknown> = {};
   if (parsed.include_facts) includeOptions.facts = {};

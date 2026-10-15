@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveTheme, themeBootstrapScript, THEME_STORAGE_KEY } from "../app/providers/theme-bootstrap";
 
+function read(relativePath: string): string {
+  return readFileSync(join(process.cwd(), relativePath), "utf8");
+}
+
 describe("application shell", () => {
   it("renders the pre-paint theme bootstrap consistent with the theme resolver", () => {
     const script = themeBootstrapScript();
@@ -13,16 +17,29 @@ describe("application shell", () => {
     expect(resolveTheme(null)).toBe("light");
   });
 
-  it("declares the document root with a locale lang attribute and providers", () => {
-    const layout = readFileSync(join(process.cwd(), "app/layout.tsx"), "utf8");
+  it("keeps the root layout a pass-through with no document element", () => {
+    const layout = read("app/layout.tsx");
+    expect(layout).toContain('"./globals.css"');
+    // A pass-through returns its children; the document element lives in the
+    // locale layout (asserted below), so this file renders no <html>/<body>.
+    expect(layout).toContain("return children");
+  });
+
+  it("declares the document root in the locale layout", () => {
+    const layout = read("app/[locale]/layout.tsx");
     expect(layout).toContain("lang={locale}");
-    expect(layout).toContain("Providers");
+    expect(layout).toContain("<body");
+    expect(layout).toContain("ThemeProvider");
+    expect(layout).toContain("FeaturesProvider");
+    expect(layout).toContain("BankProvider");
     expect(layout).toContain("NextIntlClientProvider");
     expect(layout).toContain("themeBootstrapScript");
+    expect(layout).toContain("generateStaticParams");
+    expect(layout).toContain("hasLocale");
   });
 
   it("declares the console package with its build entrypoints", () => {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    const pkg = JSON.parse(read("package.json")) as {
       scripts: Record<string, string>;
       license: string;
     };
@@ -31,50 +48,46 @@ describe("application shell", () => {
     }
     expect(pkg.license).toBe("ISC");
   });
+
+  it("declares the startup instrumentation entrypoint", () => {
+    const source = read("instrumentation.ts");
+    expect(source).toContain("HINDSIGHT_CP_DATAPLANE_API_URL");
+    expect(source).toContain("register");
+  });
 });
+
 describe("navigation shell", () => {
-  const shellDir = join(process.cwd(), "components/shell");
+  const shellComponents = [
+    "bank-selector.tsx",
+    "banks-overview.tsx",
+    "language-switcher.tsx",
+    "sidebar.tsx",
+  ];
 
   it("declares the shell components", () => {
-    for (const file of [
-      "app-shell.tsx",
-      "bank-selector.tsx",
-      "banks-overview.tsx",
-      "language-switcher.tsx",
-      "sidebar.tsx",
-    ]) {
-      expect(existsSync(join(shellDir, file)), file).toBe(true);
+    for (const file of shellComponents) {
+      expect(existsSync(join(process.cwd(), "components", file)), file).toBe(true);
     }
   });
 
-  it("drives the shell from the shared providers and the client endpoint layer", () => {
-    const selector = readFileSync(join(shellDir, "bank-selector.tsx"), "utf8");
-    expect(selector).toContain("useBank");
-    expect(selector).toContain("banksApi");
-
-    const overview = readFileSync(join(shellDir, "banks-overview.tsx"), "utf8");
-    expect(overview).toContain("useBank");
-    expect(overview).toContain("banksApi");
-
-    const sidebar = readFileSync(join(shellDir, "sidebar.tsx"), "utf8");
-    expect(sidebar).toContain("useBank");
-    expect(sidebar).toContain("bankRoute");
+  it("drives the shell from the shared bank context and the route builder", () => {
+    for (const file of shellComponents) {
+      const source = read(join("components", file));
+      if (file === "language-switcher.tsx") continue;
+      expect(source, `${file} should read the bank context`).toContain("useBank");
+    }
+    for (const file of ["bank-selector.tsx", "banks-overview.tsx", "sidebar.tsx"]) {
+      const source = read(join("components", file));
+      expect(source, `${file} should use bankRoute`).toContain("bankRoute");
+    }
   });
 
   it("never puts the locale in a URL path", () => {
-    // The locale travels in a cookie, so a locale segment must not appear in
-    // any user-visible route the shell builds.
-    const switcher = readFileSync(join(shellDir, "language-switcher.tsx"), "utf8");
-    expect(switcher).toContain("NEXT_LOCALE");
+    // The locale travels in the NEXT_LOCALE cookie, resolved by next-intl under
+    // localePrefix "never"; the switcher navigates through next-intl's own
+    // router so no locale segment is ever hand-built into a URL.
+    const switcher = read("components/language-switcher.tsx");
+    expect(switcher).toContain("@/i18n/navigation");
     expect(switcher).not.toMatch(/\/\$\{?locale\}?\//);
-  });
-
-  it("routes every bank link through the shared route builder", () => {
-    for (const file of ["bank-selector.tsx", "banks-overview.tsx", "sidebar.tsx"]) {
-      const source = readFileSync(join(shellDir, file), "utf8");
-      if (source.includes("/banks/")) {
-        expect(source, `${file} should use bankRoute`).toContain("bankRoute");
-      }
-    }
   });
 });

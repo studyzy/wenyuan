@@ -5,14 +5,18 @@ import {
   serializeUpstream,
   upstreamUnavailableBody,
 } from "../../../../../lib/server/proxy";
-import { errorResponse, passthroughQueryParams, tagFilterParams } from "../../../../../lib/server/http";
+import {
+  errorResponse,
+  passthroughQueryParams,
+  rawTagFilterParams,
+} from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ bankId: string }> };
 
 const LIST_PARAMS = ["limit", "offset"] as const;
 
 function scopedQuery(request: Request): Record<string, string | string[]> {
-  return { ...tagFilterParams(request), ...passthroughQueryParams(request, LIST_PARAMS) };
+  return { ...rawTagFilterParams(request), ...passthroughQueryParams(request, LIST_PARAMS) };
 }
 
 /**

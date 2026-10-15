@@ -1,136 +1,173 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { resolveServerConfig, type ServerConfig } from "../../../../lib/server/config";
-import { requestLocale, searchParamsObject } from "../../../../lib/server/proxy";
+import { bankScopedPath, requestLocale } from "../../../../lib/server/proxy";
 import { errorResponse } from "../../../../lib/server/http";
-import { buildUpstreamUrl, callUpstream, upstreamHeaders } from "../../../../lib/server/upstream";
+import {
+  type UpstreamResult,
+  buildUpstreamUrl,
+  callUpstream,
+  passthrough,
+  upstreamHeaders,
+} from "../../../../lib/server/upstream";
 
-/** Fixed poll interval and bounded overall deadline for the export orchestration. */
-const POLL_INTERVAL_MS = 1_000;
-const EXPORT_TIMEOUT_MS = 60_000;
+/**
+ * Poll interval and bounded overall deadline for the export orchestration.
+ * The upstream export is asynchronous, so the route submits it, polls the
+ * operation to completion and then streams the finished archive back — one zip
+ * download from the caller's point of view.
+ */
+const EXPORT_POLL_INTERVAL_MS = 1_500;
+const EXPORT_TIMEOUT_MS = 5 * 60 * 1000;
 
-type ExportSubmission = { operation_id?: unknown; id?: unknown };
+type OperationState = {
+  status?: unknown;
+  result_metadata?: { download_url?: unknown } | null;
+};
 
-function operationIdFrom(payload: ArrayBuffer): string | undefined {
+/** The submitted export's operation id, if the acceptance payload carried one. */
+function operationIdOf(result: UpstreamResult): string | undefined {
   try {
-    const decoded = JSON.parse(new TextDecoder().decode(payload)) as ExportSubmission;
-    if (typeof decoded.operation_id === "string") return decoded.operation_id;
-    if (typeof decoded.id === "string") return decoded.id;
+    const decoded = JSON.parse(new TextDecoder().decode(result.body)) as { operation_id?: unknown };
+    return typeof decoded.operation_id === "string" ? decoded.operation_id : undefined;
   } catch {
-    // Unparseable submission payload: treated as a failed export.
-  }
-  return undefined;
-}
-
-type OperationState = { status?: unknown; result?: unknown };
-
-function archivePathFrom(payload: ArrayBuffer): string | undefined {
-  try {
-    const decoded = JSON.parse(new TextDecoder().decode(payload)) as OperationState;
-    const result = decoded.result as Record<string, unknown> | undefined;
-    const candidate = result?.["download_url"] ?? result?.["path"] ?? decoded.result;
-    if (typeof candidate === "string" && candidate.startsWith("/")) return candidate;
-  } catch {
-    // Unparseable operation payload: keep polling until the deadline.
-  }
-  return undefined;
-}
-
-function isTerminal(payload: ArrayBuffer): boolean {
-  try {
-    const decoded = JSON.parse(new TextDecoder().decode(payload)) as OperationState;
-    return decoded.status === "completed" || decoded.status === "succeeded";
-  } catch {
-    return false;
+    return undefined;
   }
 }
 
-function isFailed(payload: ArrayBuffer): boolean {
+function operationState(result: UpstreamResult): OperationState {
   try {
-    const decoded = JSON.parse(new TextDecoder().decode(payload)) as OperationState;
-    return decoded.status === "failed" || decoded.status === "error";
+    return JSON.parse(new TextDecoder().decode(result.body)) as OperationState;
   } catch {
-    return false;
+    return {};
+  }
+}
+
+/** Stream the finished archive with the reference's zip content type. */
+async function downloadArchive(config: ServerConfig, downloadUrl: string): Promise<Response> {
+  const response = await fetch(buildUpstreamUrl(config, { path: downloadUrl }), {
+    method: "GET",
+    headers: upstreamHeaders(config),
+  });
+  if (!response.ok) {
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      status: response.status,
+      headers: {
+        "content-type": response.headers.get("content-type") ?? "application/json",
+      },
+    });
+  }
+  const headers = new Headers({ "content-type": "application/zip" });
+  headers.set(
+    "content-disposition",
+    response.headers.get("content-disposition") ?? 'attachment; filename="documents.zip"',
+  );
+  return new Response(await response.arrayBuffer(), { status: 200, headers });
+}
+
+/**
+ * Export documents as a transfer ZIP archive.
+ *
+ * Orchestrates the upstream async export (submit, poll, download) and streams
+ * the binary zip back. A subset export carries no bank-level sections, so the
+ * bank config and history flags are set false when document ids are named.
+ */
+export async function GET(request: Request): Promise<Response> {
+  const locale = requestLocale(request);
+  const searchParams = new URL(request.url).searchParams;
+  const bankId = searchParams.get("bank_id");
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
+  const config = resolveServerConfig(process.env as Record<string, string | undefined>);
+
+  const documentIds = searchParams.getAll("document_id");
+  const query: Record<string, string | string[]> = {};
+  if (documentIds.length > 0) query.document_id = documentIds;
+  if (searchParams.get("include_observations") === "true") query.include_observations = "true";
+  if (searchParams.get("include_knowledge_base") === "true") {
+    query.include_knowledge_base = "true";
+  }
+  if (documentIds.length > 0) {
+    query.include_bank_config = "false";
+    query.include_history = "false";
+  }
+
+  try {
+    const submitted = await callUpstream(config, {
+      path: bankScopedPath("/v1/default/banks", bankId, "/transfer/export"),
+      method: "POST",
+      query,
+    });
+    if (!submitted.ok) return passthrough(submitted);
+
+    const operationId = operationIdOf(submitted);
+    if (!operationId) return errorResponse("api.errors.documents.export", 500, locale);
+
+    const deadline = Date.now() + EXPORT_TIMEOUT_MS;
+    for (;;) {
+      const status = operationState(
+        await callUpstream(config, {
+          path: bankScopedPath(
+            "/v1/default/banks",
+            bankId,
+            `/operations/${encodeURIComponent(operationId)}`,
+          ),
+        }),
+      );
+      if (status.status === "completed") {
+        const downloadUrl = status.result_metadata?.download_url;
+        if (typeof downloadUrl !== "string" || downloadUrl.length === 0) {
+          return errorResponse("api.errors.documents.export", 500, locale);
+        }
+        return await downloadArchive(config, downloadUrl);
+      }
+      if (status.status === "failed" || status.status === "cancelled") {
+        return errorResponse("api.errors.documents.export", 500, locale);
+      }
+      if (Date.now() >= deadline) {
+        return errorResponse("api.errors.documents.export", 504, locale);
+      }
+      await sleep(EXPORT_POLL_INTERVAL_MS);
+    }
+  } catch {
+    return errorResponse("api.errors.documents.export", 500, locale);
   }
 }
 
 /**
- * Document transfer export.
+ * Import a transfer ZIP archive into a bank.
  *
- * The upstream asynchronous export is hidden from the caller: the export is
- * submitted, its operation is polled at a fixed interval up to a bounded
- * overall deadline, then the finished archive is streamed back as a single
- * binary response. The success status is the upstream status, not a surrogate.
+ * Proxies the multipart upload to the bank's transfer import with mode=merge,
+ * which folds the archive's documents into the bank the caller is looking at.
  */
-export async function GET(request: Request): Promise<Response> {
-  const locale = requestLocale(request);
-  const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  const query = searchParamsObject(request);
-
-  const submitted = await callUpstream(config, {
-    path: "/v1/default/documents/transfer",
-    method: "POST",
-    query,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...query, mode: "export" }),
-  });
-  if (!submitted.ok) return passthroughResult(submitted);
-
-  const operationId = operationIdFrom(submitted.body);
-  if (!operationId) return errorResponse("api.errors.generic.internal", 500, locale);
-
-  const deadline = Date.now() + EXPORT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await delay(POLL_INTERVAL_MS);
-    const operation = await callUpstream(config, {
-      path: `/v1/default/documents/transfer/${encodeURIComponent(operationId)}`,
-      method: "GET",
-    });
-    if (isFailed(operation.body)) return errorResponse("api.errors.generic.internal", 500, locale);
-    if (isTerminal(operation.body)) {
-      const archivePath = archivePathFrom(operation.body);
-      if (!archivePath) return errorResponse("api.errors.generic.internal", 500, locale);
-      const archive = await fetchBinary(config, archivePath);
-      return archive;
-    }
-  }
-  return errorResponse("api.errors.generic.internal", 500, locale);
-}
-
-/** Document transfer import. */
 export async function POST(request: Request): Promise<Response> {
+  const locale = requestLocale(request);
+  const searchParams = new URL(request.url).searchParams;
+  const bankId = searchParams.get("bank_id");
+  if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
+
+  const onConflict = searchParams.get("on_conflict") || "skip";
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
-  const body = await request.arrayBuffer();
-  const result = await callUpstream(config, {
-    path: "/v1/default/documents/transfer",
-    method: "POST",
-    query: searchParamsObject(request),
-    headers: { "content-type": request.headers.get("content-type") ?? "application/octet-stream" },
-    body,
-  });
-  return passthroughResult(result);
-}
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof Blob)) {
+    return errorResponse("api.errors.validation.fileRequired", 400, locale);
+  }
 
-function passthroughResult(result: {
-  status: number;
-  contentType: string | null;
-  contentDisposition: string | null;
-  body: ArrayBuffer;
-}): Response {
-  const headers = new Headers();
-  if (result.contentType) headers.set("content-type", result.contentType);
-  if (result.contentDisposition) headers.set("content-disposition", result.contentDisposition);
-  return new Response(result.body, { status: result.status, headers });
-}
+  const outbound = new FormData();
+  outbound.append("file", file, file instanceof File ? file.name : "transfer.zip");
 
-async function fetchBinary(config: ServerConfig, path: string): Promise<Response> {
-  const response = await fetch(buildUpstreamUrl(config, { path }), {
-    method: "GET",
-    headers: upstreamHeaders(config),
-  });
-  const headers = new Headers();
-  headers.set("content-type", response.headers.get("content-type") ?? "application/octet-stream");
-  return new Response(await response.arrayBuffer(), { status: response.status, headers });
+  try {
+    const result = await callUpstream(config, {
+      path: bankScopedPath("/v1/default/banks", bankId, "/transfer/import"),
+      method: "POST",
+      query: { mode: "merge", document_conflict: onConflict },
+      body: outbound,
+    });
+    return passthrough(result);
+  } catch {
+    return errorResponse("api.errors.documents.import", 500, locale);
+  }
 }

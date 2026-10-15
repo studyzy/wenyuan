@@ -45,8 +45,11 @@ export function useAsyncData<T>(
 
   // The loader is captured in a memo keyed on the caller's dependencies rather
   // than read through a ref written during render, which would mutate a ref
-  // while rendering.
-  const requestKey = useMemo(() => [...deps, nonce], [deps, nonce]);
+  // while rendering. The key is derived from the dependencies' *values*: callers
+  // pass a fresh array literal every render, so comparing the array by identity
+  // would re-key on every render and refetch forever.
+  const depsKey = JSON.stringify(deps);
+  const requestKey = useMemo(() => `${depsKey}\u0000${nonce}`, [depsKey, nonce]);
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;

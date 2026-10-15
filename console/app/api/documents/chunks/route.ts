@@ -1,5 +1,6 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
 import {
+  bankScopedPath,
   requestLocale,
   serializeUpstream,
   upstreamUnavailableBody,
@@ -9,9 +10,9 @@ import { errorResponse } from "../../../../lib/server/http";
 /**
  * Document chunk listing.
  *
- * Bank and document identifiers travel in the query string by contract. The
- * limit and offset parameters carry their documented defaults when the caller
- * omits them.
+ * The bank and document identifiers select a member sub-resource, so the
+ * document id travels in the path. The limit and offset parameters carry their
+ * documented defaults when the caller omits them.
  */
 export async function GET(request: Request): Promise<Response> {
   const locale = requestLocale(request);
@@ -34,10 +35,12 @@ export async function GET(request: Request): Promise<Response> {
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: "/v1/default/documents/chunks",
+      upstreamPath: bankScopedPath(
+        "/v1/default/banks",
+        bankId,
+        `/documents/${encodeURIComponent(documentId)}/chunks`,
+      ),
       query: {
-        bank_id: bankId,
-        document_id: documentId,
         limit: searchParams.get("limit") || "100",
         offset: searchParams.get("offset") || "0",
       },

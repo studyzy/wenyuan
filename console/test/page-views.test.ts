@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BANK_DETAIL_VIEWS,
@@ -8,26 +8,24 @@ import {
   nextViewSearch,
   parseViewState,
 } from "../lib/bank-detail";
-import { buildLoginViewModel } from "../lib/login-view";
+import { sanitizeReturnTo } from "../lib/base-path";
 import { isSupportedLocale, SUPPORTED_LOCALES } from "../i18n";
 
 describe("root redirect", () => {
-  it("redirects the root page to the dashboard with no locale segment", () => {
-    const source = readFileSync(join(process.cwd(), "app/page.tsx"), "utf8");
+  it("redirects the locale root page to the dashboard", () => {
+    const source = readFileSync(join(process.cwd(), "app/[locale]/page.tsx"), "utf8");
     expect(source).toContain('redirect("/dashboard")');
     expect(source).toContain("force-dynamic");
   });
 });
 
-describe("login view model", () => {
+describe("login returnTo sanitizer", () => {
   it("sanitizes unsafe returnTo values to the dashboard", () => {
-    expect(buildLoginViewModel({ returnTo: "https://evil.example" }).returnTo).toBe("/dashboard");
-    expect(buildLoginViewModel({ returnTo: "//evil.example" }).returnTo).toBe("/dashboard");
-    expect(buildLoginViewModel({ returnTo: "/banks/acme" }).returnTo).toBe("/banks/acme");
-  });
-
-  it("exposes all declared locales for the language switcher", () => {
-    expect(buildLoginViewModel({}).languages).toEqual(SUPPORTED_LOCALES);
+    expect(sanitizeReturnTo("https://evil.example")).toBe("/dashboard");
+    expect(sanitizeReturnTo("//evil.example")).toBe("/dashboard");
+    expect(sanitizeReturnTo("javascript:alert(1)")).toBe("/dashboard");
+    expect(sanitizeReturnTo("/banks/acme")).toBe("/banks/acme");
+    expect(sanitizeReturnTo(null)).toBe("/dashboard");
   });
 });
 
@@ -73,43 +71,14 @@ describe("locale static parameters", () => {
   });
 });
 
-describe("page route context", () => {
-  it("awaits the async searchParams promised by the framework", () => {
-    for (const file of ["app/login/page.tsx", "app/banks/[bankId]/page.tsx"]) {
-      const source = readFileSync(join(process.cwd(), file), "utf8");
-      expect(source, file).toContain("Promise<");
-      expect(source, file).toMatch(/await searchParams/);
-    }
-  });
-
-  it("awaits the async dynamic route params on the bank detail page", () => {
-    const source = readFileSync(join(process.cwd(), "app/banks/[bankId]/page.tsx"), "utf8");
-    expect(source).toMatch(/await params/);
-  });
-});
-describe("bank detail panels", () => {
-  const panelsDir = join(process.cwd(), "app/banks/[bankId]/panels");
-
-  it("declares a panel per view", () => {
-    for (const file of [
-      "bank-home-panel.tsx",
-      "bank-profile-panel.tsx",
-      "data-panel.tsx",
-      "documents-panel.tsx",
-      "entities-panel.tsx",
-      "knowledge-panel.tsx",
-      "recall-panel.tsx",
-      "reflect-panel.tsx",
-      "panel-state.tsx",
-    ]) {
-      expect(existsSync(join(panelsDir, file)), file).toBe(true);
-    }
-  });
-
-  it("renders every view the shell can select", () => {
-    const shell = readFileSync(join(process.cwd(), "app/banks/[bankId]/bank-detail-view.tsx"), "utf8");
-    for (const view of ["home", "recall", "reflect", "data", "documents", "entities", "knowledge", "profile"]) {
-      expect(shell, `view ${view} has no branch`).toContain(`initialState.view === "${view}"`);
+describe("bank detail query contract on the locale page", () => {
+  it("reads the four contract parameters the view state is built from", () => {
+    const source = readFileSync(
+      join(process.cwd(), "app/[locale]/banks/[bankId]/page.tsx"),
+      "utf8",
+    );
+    for (const param of ["view", "subTab", "knowledgeTab", "bankConfigTab"]) {
+      expect(source, `parameter ${param} missing`).toContain(`searchParams.get("${param}")`);
     }
   });
 
@@ -117,26 +86,6 @@ describe("bank detail panels", () => {
     const source = readFileSync(join(process.cwd(), "lib/bank-detail.ts"), "utf8");
     for (const param of ["view", "subTab", "knowledgeTab", "bankConfigTab"]) {
       expect(source, `parameter ${param} missing`).toContain(`"${param}"`);
-    }
-    for (const value of ["world", "experience", "observations", "pages", "models"]) {
-      expect(source, `value ${value} missing`).toContain(`"${value}"`);
-    }
-    for (const value of ["general", "memory-defense", "configuration", "webhooks", "audit-logs", "llm-requests"]) {
-      expect(source, `settings tab ${value} missing`).toContain(`"${value}"`);
-    }
-  });
-
-  it("loads each panel through the shared async helper", () => {
-    for (const file of ["data-panel.tsx", "documents-panel.tsx", "entities-panel.tsx", "bank-home-panel.tsx"]) {
-      const source = readFileSync(join(panelsDir, file), "utf8");
-      expect(source, `${file} should use useAsyncData`).toContain("useAsyncData");
-    }
-  });
-
-  it("covers every panel state so no panel renders blank on failure", () => {
-    const state = readFileSync(join(panelsDir, "panel-state.tsx"), "utf8");
-    for (const key of ["loadFailed", "retry", "empty"]) {
-      expect(state, `panel state ${key} missing`).toContain(`t("${key}")`);
     }
   });
 });

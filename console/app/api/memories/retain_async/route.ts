@@ -1,5 +1,6 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
 import {
+  bankScopedPath,
   requestLocale,
   serializeUpstream,
   upstreamUnavailableBody,
@@ -39,7 +40,7 @@ export async function POST(request: Request): Promise<Response> {
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: "/v1/default/memories/retain_async",
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/memories"),
       method: "POST",
       body: raw,
       ...failure,

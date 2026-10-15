@@ -24,7 +24,7 @@ export async function POST(request: Request, context: Context): Promise<Response
       upstreamPath: bankScopedPath(
         "/v1/default/banks",
         (await context.params).bankId,
-        "/consolidation-recover",
+        "/consolidation/recover",
       ),
       method: "POST",
       body: body.length > 0 ? body : undefined,

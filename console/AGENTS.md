@@ -67,3 +67,50 @@ test/              vitest suites plus shared fixtures and harnesses
 
 Code files stay under 500 lines, test files under 800. Message catalogs are the
 only structural exception.
+
+## Provenance: this tree is a copy of the reference frontend
+
+The UI here is **copied from the reference control plane** (`../hindsight/hindsight-control-plane/src/**`)
+rather than re-derived, by the owner's decision: "前端可以复制". So:
+
+- When a view, dialog or store hook misbehaves, **read the reference file** and port the difference;
+  do not invent a parallel implementation. Copy verbatim and adapt only import specifiers and local
+  wiring.
+- **Brand**: product-visible text stays ours (`wenyuan`, `WenYuan`, `文渊`); the upstream product name
+  never appears. **Contract strings stay byte-identical** and are never "cleaned up": environment
+  variable names (`HINDSIGHT_CP_*`), cookie names, and the health route's `SERVICE_NAME` — a
+  deployment reads those.
+- **Do not fork the plumbing.** `lib/server/**` (the upstream proxy), `lib/middleware/**` (access gate
+  and locale), `lib/server/session.ts`, `lib/client/**` and `lib/use-async-data.ts` are ours: the
+  reference's `@/lib/hindsight-client` (its generated SDK), `@/lib/auth/session` and
+  `@/i18n/navigation` are not portable and must map onto ours. The locale set has one source of truth
+  in `i18n/locales.ts`; `i18n/routing.ts` reads it.
+- Copied files are exempt from the `react-hooks` rules in `eslint.config.mjs`'s scoped block, because
+  the reference registers that plugin but enables none of its rules. Fix rather than exempt when the
+  rule is pointing at real misbehaviour (a stale closure that changes output, an effect loop, a ref
+  read during render) — `use-async-data.ts`'s request key was one of those, and every panel refetched
+  forever until it was fixed.
+
+## Gates
+
+```sh
+npm run typecheck && npm run lint && npm run test && npm run build   # from console/
+```
+
+`scripts/console_integration.sh` (repo root) is the cross-stack gate: it starts this repository's own
+service on a private database, builds and starts this console with its dataplane pointed at it, and
+then proves the things unit tests cannot — that the access gate admits and refuses the right callers,
+that the BFF reads and writes through to the service, that a memory written through a console route is
+visible through a console read route, and that the pages render server-side. Run it after any change to
+a route handler, the proxy, the session/gate, or the page structure. Its checks print the offending
+body on failure.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

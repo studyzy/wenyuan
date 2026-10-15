@@ -9,9 +9,9 @@ import { resolveHarnessLogo } from "../../lib/harness-logo";
  * qualifies and carries no border or fill of its own, so a table row spends one
  * glyph on it instead of another badge competing with the facet chips.
  *
- * A registered agent with no shipped asset renders its label instead, and an
- * unrecognised one renders nothing at all — callers still show the raw value as
- * ordinary metadata, so a new agent is never silently invisible.
+ * A registered agent renders its shipped asset; an unrecognised one renders
+ * nothing at all — callers still show the raw value as ordinary metadata, so a
+ * new agent is never silently invisible.
  */
 export function HarnessLogo({
   harness,
@@ -30,18 +30,6 @@ export function HarnessLogo({
   if (!logo) return null;
 
   const title = titlePrefix ? `${titlePrefix}: ${logo.label}` : logo.label;
-
-  if (!logo.src) {
-    return (
-      <span
-        title={title}
-        className={cn("shrink-0 text-muted-foreground", className)}
-        style={{ fontSize: Math.max(10, size - 4) }}
-      >
-        {logo.label}
-      </span>
-    );
-  }
 
   return (
     // A plain img: a static local asset of a few KB gains nothing from an image

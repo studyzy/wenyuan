@@ -26,7 +26,6 @@ export {
   flatKeys,
   type MessageCatalog,
 } from "./catalog";export {
-  LocaleProvider,
   useLocale,
   useCatalog,
   useTranslations,

@@ -46,7 +46,7 @@ export async function GET(request: Request): Promise<Response> {
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/memories"),
+      upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/memories/list"),
       query: { ...tagFilterParams(request), ...passthroughQueryParams(request, LIST_PARAMS) },
       method: "GET",
       ...failure,

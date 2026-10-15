@@ -5,7 +5,7 @@ import {
   serializeUpstream,
   upstreamUnavailableBody,
 } from "../../../../lib/server/proxy";
-import { errorResponse, tagFilterParams } from "../../../../lib/server/http";
+import { errorResponse, rawTagFilterParams } from "../../../../lib/server/http";
 
 /**
  * Knowledge-base tree.
@@ -31,7 +31,7 @@ export async function GET(request: Request): Promise<Response> {
       config,
       request,
       upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/knowledge-base/tree"),
-      query: tagFilterParams(request),
+      query: rawTagFilterParams(request),
       method: "GET",
       ...failure,
     });

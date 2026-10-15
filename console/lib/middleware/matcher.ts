@@ -52,4 +52,4 @@ export function shouldProcess(pathname: string): boolean {
 
 /** The matcher pattern exported to the framework. */
 export const MIDDLEWARE_MATCHER =
-  "/((?!_next/static|_next/image|favicon.ico).*)";
+  "/((?!_next|_vercel|.*\\.(?:png|jpe?g|gif|svg|webp|ico|css|js|map|woff2?|ttf|eot|txt|xml|json)$).*)";

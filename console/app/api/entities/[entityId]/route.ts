@@ -4,7 +4,7 @@ import {
   serializeUpstream,
   upstreamUnavailableBody,
 } from "../../../../lib/server/proxy";
-import { errorResponse } from "../../../../lib/server/http";
+import { errorResponse, tagFilterParams } from "../../../../lib/server/http";
 
 type Context = { params: Promise<{ entityId: string }> };
 
@@ -42,6 +42,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
       config,
       request,
       upstreamPath: `/v1/default/banks/${encodeURIComponent(bankId)}/entities/${encodeURIComponent(entityId)}`,
+      query: tagFilterParams(request),
       method: "GET",
       ...failure,
     });

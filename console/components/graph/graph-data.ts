@@ -1,10 +1,11 @@
-/**
- * Shared graph data model and conversion.
- *
- * Framework-agnostic on purpose: the renderer consumes these types, and the
- * converter turns the upstream API response into them, so a second renderer
- * would not have to re-derive either.
- */
+// Shared graph data model + conversion used by the memory visualizations
+// (Constellation, entities view). The Cytoscape-based "Graph" view that used to
+// live here was removed; only the framework-agnostic types and the API-response
+// converter remain, since the constellation and entity views build on them.
+
+// ============================================================================
+// Types & Interfaces
+// ============================================================================
 
 export interface GraphNode {
   id: string;
@@ -49,43 +50,37 @@ export interface UpstreamGraphPayload {
   table_rows?: Array<{ id: string; text: string; entities?: string; context?: string }>;
 }
 
-/** Longest label taken from a memory's text before it is elided. */
-const LABEL_MAX = 40;
+// ============================================================================
+// Utility Functions
+// ============================================================================
 
-/**
- * Convert the upstream graph response into the renderer's model.
- *
- * The upstream separates the structural graph (nodes and edges) from the rows
- * that describe them, so the two are joined here: a node's label prefers its own
- * label, falls back to its memory text, and finally to a short id prefix so
- * every node is labelled with something.
- *
- * An edge with no explicit link type is classified from its line style, which is
- * how the upstream distinguishes a temporal link from a semantic one.
- */
-export function convertHindsightGraphData(upstream: UpstreamGraphPayload): GraphData {
-  const nodes: GraphNode[] = (upstream.nodes ?? []).map((entry) => {
-    const row = upstream.table_rows?.find((candidate) => candidate.id === entry.data.id);
-    let label = entry.data.label;
-    if (!label && row?.text) {
-      label = row.text.length > LABEL_MAX ? `${row.text.substring(0, LABEL_MAX)}...` : row.text;
+export function convertHindsightGraphData(hindsightData: UpstreamGraphPayload): GraphData {
+  const nodes: GraphNode[] = (hindsightData.nodes || []).map((n) => {
+    const tableRow = hindsightData.table_rows?.find((r) => r.id === n.data.id);
+    // Use memory text as label, truncated to ~40 chars
+    let label = n.data.label;
+    if (!label && tableRow?.text) {
+      label = tableRow.text.length > 40 ? tableRow.text.substring(0, 40) + "..." : tableRow.text;
     }
-    if (!label) label = entry.data.id.substring(0, 8);
+    if (!label) {
+      label = n.data.id.substring(0, 8);
+    }
     return {
-      id: entry.data.id,
+      id: n.data.id,
       label,
-      color: entry.data.color,
-      metadata: row as Record<string, unknown> | undefined,
+      color: n.data.color,
+      metadata: tableRow,
     };
   });
 
-  const links: GraphLink[] = (upstream.edges ?? []).map((entry) => ({
-    source: entry.data.source,
-    target: entry.data.target,
-    color: entry.data.color,
-    type: entry.data.linkType ?? (entry.data.lineStyle === "dashed" ? "temporal" : "semantic"),
-    entity: entry.data.entityName,
-    weight: entry.data.weight ?? entry.data.similarity,
+  const links: GraphLink[] = (hindsightData.edges || []).map((e) => ({
+    source: e.data.source,
+    target: e.data.target,
+    color: e.data.color,
+    // Use linkType directly from API, fallback to lineStyle check, default to semantic
+    type: e.data.linkType || (e.data.lineStyle === "dashed" ? "temporal" : "semantic"),
+    entity: e.data.entityName, // API returns entityName
+    weight: e.data.weight ?? e.data.similarity,
   }));
 
   return { nodes, links };

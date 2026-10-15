@@ -1,5 +1,6 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
 import {
+  bankScopedPath,
   requestLocale,
   serializeUpstream,
   upstreamUnavailableBody,
@@ -21,8 +22,8 @@ const CURATION_FIELDS = [
   "reason",
 ] as const;
 
-function memoryPath(memoryId: string): string {
-  return `/v1/default/memories/${encodeURIComponent(memoryId)}`;
+function memoryPath(bankId: string, memoryId: string): string {
+  return bankScopedPath("/v1/default/banks", bankId, `/memories/${encodeURIComponent(memoryId)}`);
 }
 
 function readBankId(request: Request, body?: Record<string, unknown>): string | undefined {
@@ -49,7 +50,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
 
   let result;
   try {
-    result = await callUpstream(config, { path: memoryPath(memoryId), method: "GET" });
+    result = await callUpstream(config, { path: memoryPath(bankId, memoryId), method: "GET" });
   } catch {
     return errorResponse("api.errors.memories.fetch", 500, locale);
   }
@@ -100,7 +101,7 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: memoryPath(memoryId),
+      upstreamPath: memoryPath(bankId, memoryId),
       method: "PATCH",
       body: JSON.stringify(forwarded),
       ...failure,

@@ -85,3 +85,75 @@ describe("memory route method sets", () => {
     expect(typeof graph.GET).toBe("function");
   });
 });
+
+describe("recall and reflect take the bank from the request body", () => {
+  it("routes recall to the bank named in the body and normalises a legacy fact type", async () => {
+    const stub = stubFetch([{ status: 200, body: { memories: [] } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await recall.POST(
+        makeRequest("http://localhost/api/recall", {
+          method: "POST",
+          body: JSON.stringify({ bank_id: "team/alpha", query: "q", fact_type: "world" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("/banks/team%2Falpha/memories/recall");
+      const forwarded = JSON.parse(stub.bodies[0] ?? "{}");
+      expect(forwarded.types).toBe("world");
+      expect(forwarded).not.toHaveProperty("fact_type");
+      // The budget always reaches the retrieval arms, so an unset one is mid.
+      expect(forwarded.budget).toBe("mid");
+    });
+  });
+
+  it("falls back to the default bank when recall names none", async () => {
+    const stub = stubFetch([{ status: 200, body: { memories: [] } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await recall.POST(
+        makeRequest("http://localhost/api/recall", {
+          method: "POST",
+          body: JSON.stringify({ query: "q" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("/banks/default/memories/recall");
+    });
+  });
+
+  it("routes reflect to the bank named in the body and keeps the id out of the upstream body", async () => {
+    const stub = stubFetch([{ status: 200, body: { answer: "ok" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await reflect.POST(
+        makeRequest("http://localhost/api/reflect", {
+          method: "POST",
+          body: JSON.stringify({ bank_id: "acme", query: "q" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("/banks/acme/reflect");
+      expect(JSON.parse(stub.bodies[0] ?? "{}")).not.toHaveProperty("bank_id");
+    });
+  });
+
+  it("falls back to the default bank when reflect names none", async () => {
+    const stub = stubFetch([{ status: 200, body: { answer: "ok" } }]);
+    restore = stub.restore;
+    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await reflect.POST(
+        makeRequest("http://localhost/api/reflect", {
+          method: "POST",
+          body: JSON.stringify({ query: "q" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("/banks/default/reflect");
+    });
+  });
+});

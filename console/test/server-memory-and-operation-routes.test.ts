@@ -68,16 +68,16 @@ describe("required query parameters", () => {
   });
 });
 
-describe("document and chunk identifiers travel in the query string", () => {
-  it("carries a slashed document id in the query string", async () => {
+describe("document member sub-resources travel in the path", () => {
+  it("carries a slashed document id in the encoded member path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await documentChunks.GET(
         makeRequest("http://localhost/api/documents/chunks?document_id=dir%2Ffile.md&bank_id=acme"),
       );
-      expect(stub.calls[0]).toContain("/v1/default/documents/chunks");
-      expect(stub.calls[0]).toContain("document_id=dir%2Ffile.md");
+      expect(stub.calls[0]).toContain("/v1/default/banks/acme/documents/dir%2Ffile.md/chunks");
+      expect(stub.calls[0]).not.toContain("document_id=");
     });
   });
 });
@@ -126,7 +126,7 @@ describe("document transfer export orchestration", () => {
   it("submits the export, polls the operation, then streams the archive", async () => {
     const stub = stubFetch([
       { status: 200, body: { operation_id: "op1" } },
-      { status: 200, body: { status: "completed", result: { download_url: "/v1/default/files/archive.zip" } } },
+      { status: 200, body: { status: "completed", result_metadata: { download_url: "/v1/default/files/archive.zip" } } },
       { status: 200, body: "zip-bytes", contentType: "application/zip" },
     ]);
     restore = stub.restore;

@@ -9,7 +9,7 @@ import { errorResponse, passthroughQueryParams } from "../../../../../lib/server
 
 type Context = { params: Promise<{ bankId: string }> };
 
-const LIST_PARAMS = ["limit", "offset"] as const;
+const LIST_PARAMS = ["q", "source", "limit", "offset"] as const;
 
 /**
  * Bank tag listing.

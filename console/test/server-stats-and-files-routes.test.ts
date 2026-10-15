@@ -57,3 +57,74 @@ describe("stats and files method sets", () => {
     expect(typeof filesDownload.GET).toBe("function");
   });
 });
+
+describe("file retain takes the bank from the multipart request part", () => {
+  function uploadForm(requestPart: unknown): FormData {
+    const form = new FormData();
+    if (requestPart !== undefined) form.set("request", JSON.stringify(requestPart));
+    form.set("file", new Blob(["hello"], { type: "text/plain" }), "a.txt");
+    return form;
+  }
+
+  it("routes the upload to the bank named in the request part", async () => {
+    const stub = stubFetch([{ status: 200, body: { retained: 1 } }]);
+    const restore = stub.restore;
+    try {
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await filesRetain.POST(
+          makeRequest("http://localhost/api/files/retain", {
+            method: "POST",
+            body: uploadForm({ bank_id: "team/alpha" }),
+          }),
+        );
+
+        expect(response.status).toBe(200);
+        expect(stub.calls[0]).toContain("/banks/team%2Falpha/files/retain");
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects an upload whose request part names no bank", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    const restore = stub.restore;
+    try {
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await filesRetain.POST(
+          makeRequest("http://localhost/api/files/retain", {
+            method: "POST",
+            body: uploadForm({ context: "no bank here" }),
+          }),
+        );
+
+        expect(response.status).toBe(400);
+        expectNoErrorKey(await readJson(response));
+        expect(stub.calls).toHaveLength(0);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects an upload with no request part at all", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    const restore = stub.restore;
+    try {
+      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+        const response = await filesRetain.POST(
+          makeRequest("http://localhost/api/files/retain", {
+            method: "POST",
+            body: uploadForm(undefined),
+          }),
+        );
+
+        expect(response.status).toBe(400);
+        expectNoErrorKey(await readJson(response));
+        expect(stub.calls).toHaveLength(0);
+      });
+    } finally {
+      restore();
+    }
+  });
+});

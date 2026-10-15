@@ -71,7 +71,7 @@ export async function POST(request: Request, context: Context): Promise<Response
     return await serializeUpstream({
       config,
       request,
-      upstreamPath: operationPath(bankId, operationId),
+      upstreamPath: `${operationPath(bankId, operationId)}/retry`,
       method: "POST",
       body: body.length > 0 ? body : undefined,
       ...failure,

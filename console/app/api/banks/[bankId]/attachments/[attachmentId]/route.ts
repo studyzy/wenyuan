@@ -40,7 +40,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const headers = new Headers();
   headers.set("content-type", result.contentType ?? FALLBACK_BINARY_CONTENT_TYPE);
   headers.set("x-content-type-options", "nosniff");
-  headers.set("cache-control", "public, max-age=31536000, immutable");
+  headers.set("cache-control", "private, max-age=31536000, immutable");
   if (result.contentDisposition) headers.set("content-disposition", result.contentDisposition);
   return new Response(result.body, { status: result.status, headers });
 }

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { evaluateGate } from "../lib/middleware/gate";
 import { isPublicPath, PUBLIC_PATH_PREFIXES } from "../lib/middleware/whitelist";
 import { LOCALE_PREFIX_POLICY, resolveLocale, rewriteForLocale } from "../lib/middleware/locale";
@@ -196,7 +198,17 @@ describe("base path prefix", () => {
 describe("middleware matcher", () => {
   it("exposes a matcher that excludes framework internals", () => {
     expect(MIDDLEWARE_MATCHER).toContain("_next");
-    expect(MIDDLEWARE_MATCHER).toContain("favicon.ico");
+    expect(MIDDLEWARE_MATCHER).toContain("_vercel");
+    expect(MIDDLEWARE_MATCHER).toContain("ico");
+  });
+
+  it("inlines the exported matcher verbatim in middleware.ts", () => {
+    // Next requires the matcher to be a statically analyzable literal in
+    // middleware.ts, so it cannot reference the exported constant; this keeps
+    // the two copies from drifting. The source escapes the backslash, hence the
+    // doubled form being compared against the raw text.
+    const source = readFileSync(join(process.cwd(), "middleware.ts"), "utf8");
+    expect(source).toContain(MIDDLEWARE_MATCHER.replace(/\\/g, "\\\\"));
   });
 
   it("processes dotted dynamic segments that are not static assets", () => {

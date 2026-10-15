@@ -15,6 +15,7 @@ import * as dryRunExtract from "../app/api/banks/[bankId]/memories/dry-run-extra
 import * as webhooks from "../app/api/banks/[bankId]/webhooks/route";
 import * as webhook from "../app/api/banks/[bankId]/webhooks/[webhookId]/route";
 import * as deliveries from "../app/api/banks/[bankId]/webhooks/[webhookId]/deliveries/route";
+import * as entities from "../app/api/entities/route";
 import { stubFetch, withEnv } from "./support/fixtures";
 import { expectNoErrorKey, makeRequest, readJson } from "./support/harness";
 
@@ -146,14 +147,14 @@ describe("content routes proxy at their catalogued paths", () => {
     });
   });
 
-  it("observations/[modelId] reads at its catalogued path", async () => {
+  it("observations/[modelId] reads the bank memory member", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await observation.GET(makeRequest("http://localhost/api/banks/acme/observations/m1"), {
         params: Promise.resolve({ bankId: "acme", modelId: "m1" }),
       });
-      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/observations/m1");
+      expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/memories/m1");
     });
   });
 
@@ -301,33 +302,31 @@ describe("observations collection reshapes memories", () => {
   });
 });
 
-describe("tag filter forwarding is guarded", () => {
-  it("forwards tags with a known mode and drops an unknown mode", async () => {
+describe("tag filter forwarding", () => {
+  it("drops tags_match without tags and any unknown mode on the guarded routes", async () => {
     for (const [query, expectMode] of [
       ["tags=a&tags=b&tags_match=all", true],
       ["tags=a&tags_match=bogus", false],
+      ["tags_match=all", false],
     ] as const) {
       const stub = stubFetch([{ status: 200, body: {} }]);
       restore = stub.restore;
       await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
-        await directives.GET(makeRequest(`http://localhost/api/banks/acme/directives?${query}`), {
-          params: Promise.resolve({ bankId: "acme" }),
-        });
+        await entities.GET(makeRequest(`http://localhost/api/entities?bank_id=acme&${query}`));
         const called = stub.calls[0] ?? "";
-        expect(called).toContain("tags=a");
         expect(called.includes("tags_match="), `${query} -> tags_match forwarded?`).toBe(expectMode);
       });
     }
   });
 
-  it("does not forward tags_match on its own", async () => {
+  it("forwards tags_match verbatim on the routes that accept the caller's filter", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
     await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await directives.GET(makeRequest("http://localhost/api/banks/acme/directives?tags_match=all"), {
         params: Promise.resolve({ bankId: "acme" }),
       });
-      expect(stub.calls[0]).not.toContain("tags_match");
+      expect(stub.calls[0]).toContain("tags_match=all");
     });
   });
 });

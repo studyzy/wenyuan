@@ -5,19 +5,21 @@ import {
   serializeUpstream,
   upstreamUnavailableBody,
 } from "../../../../../lib/server/proxy";
-import { errorResponse, passthroughQueryParams } from "../../../../../lib/server/http";
+import { errorResponse } from "../../../../../lib/server/http";
 
 type Context = { params: Promise<{ agentId: string }> };
 
-const SERIES_PARAMS = ["period", "start_date", "end_date"] as const;
+const SERIES_DEFAULTS: Record<string, string> = { period: "7d", time_field: "created_at" };
 
 /**
  * Memory time series for the dashboard charts.
  *
- * Returns 200 with the time-series payload.
+ * Returns 200 with the time-series payload. `period` and `time_field` carry
+ * their documented defaults when the caller omits them.
  */
 export async function GET(request: Request, context: Context): Promise<Response> {
   const locale = requestLocale(request);
+  const searchParams = new URL(request.url).searchParams;
   const bankId = (await context.params).agentId;
   if (!bankId) return errorResponse("api.errors.validation.bankIdRequired", 400, locale);
 
@@ -33,7 +35,10 @@ export async function GET(request: Request, context: Context): Promise<Response>
       config,
       request,
       upstreamPath: bankScopedPath("/v1/default/banks", bankId, "/stats/memories-timeseries"),
-      query: passthroughQueryParams(request, SERIES_PARAMS),
+      query: {
+        period: searchParams.get("period") || SERIES_DEFAULTS.period,
+        time_field: searchParams.get("time_field") || SERIES_DEFAULTS.time_field,
+      },
       method: "GET",
       ...failure,
     });
