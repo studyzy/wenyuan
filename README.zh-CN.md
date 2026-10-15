@@ -67,10 +67,21 @@ go run ./cmd/server --host 0.0.0.0 --port 8888
 ### 管理命令行
 
 ```sh
-bankctl bank rename --source OLD --to NEW [--dry-run]
-bankctl bank archive export --archive FILE [--target ID]
-bankctl bank import  --archive FILE [--target ID]
+bankctl bank rename --from OLD --to NEW [--dry-run]
+bankctl bank export-bank --bank ID --output FILE [--include-history]
+bankctl bank import-bank --archive FILE [--target-bank ID] [--include-history]
+bankctl bank backup [--output] FILE
+bankctl bank restore [--input] FILE [--yes]
+bankctl bank run-db-migration [--embedding-dimension N] [--skip-extension-reconcile]
+bankctl bank repair-bank (--bank ID | --all) [--dry-run]
+bankctl bank worker-status
+bankctl bank decommission-worker [--worker] ID [--yes]
+bankctl bank decommission-workers [--yes]
 ```
+
+Every database command takes `--schema/-s` to point at a schema other than the
+configured one, and `--schema`-less migrations cover the base schema plus every
+schema the tenant extension reports.
 
 ## 配置
 

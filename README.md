@@ -75,10 +75,42 @@ go run ./cmd/server --host 0.0.0.0 --port 8888
 ### Admin CLI
 
 ```sh
-bankctl bank rename --source OLD --to NEW [--dry-run]
-bankctl bank archive export --archive FILE [--target ID]
-bankctl bank import  --archive FILE [--target ID]
+bankctl bank rename --from OLD --to NEW [--dry-run]
+bankctl bank export-bank --bank ID --output FILE [--include-history]
+bankctl bank import-bank --archive FILE [--target-bank ID] [--include-history]
+bankctl bank backup [--output] FILE
+bankctl bank restore [--input] FILE [--yes]
+bankctl bank run-db-migration [--embedding-dimension N] [--skip-extension-reconcile]
+bankctl bank repair-bank (--bank ID | --all) [--dry-run]
+bankctl bank worker-status
+bankctl bank decommission-worker [--worker] ID [--yes]
+bankctl bank decommission-workers [--yes]
 ```
+
+Every database command takes `--schema/-s` to point at a schema other than the
+configured one, and `--schema`-less migrations cover the base schema plus every
+schema the tenant extension reports.
+
+### Client CLI
+
+`wenyuan-admin` is the client command-line tool for the served API. It is
+built from `cmd/wenyuan` into `bin/` by `make install`.
+
+```sh
+wenyuan-admin configure --api-url http://localhost:8888 [--api-key KEY]
+wenyuan-admin bank list
+wenyuan-admin memory retain BANK_ID "text"
+wenyuan-admin memory recall BANK_ID "query"
+wenyuan-admin knowledge-base tree BANK_ID
+wenyuan-admin fs mount BANK_ID /path/to/folder   # live markdown mirror
+wenyuan-admin explore                            # interactive TUI
+wenyuan-admin ui                                 # launch the web console
+```
+
+Output is `pretty` by default; `-o json` / `-o yaml` switch to machine
+formats. Configuration lives in `~/.wenyuan/config` with named profiles in
+`~/.wenyuan/cli-profiles/`; `HINDSIGHT_API_URL` and `HINDSIGHT_API_KEY`
+override both.
 
 ## Configuration
 
@@ -163,9 +195,11 @@ The PostgreSQL schema lives in `migrations/`; the same files are embedded under
 ```
 cmd/server        process entrypoint (HTTP API)
 cmd/bankctl       administrative bank command surface
+cmd/wenyuan       client CLI entrypoint (wenyuan-admin binary)
 internal/app      application composition and middleware
 internal/bankapi  bank lifecycle handlers and routes
 internal/bankadmin bank rename / archive commands
+internal/cli      client CLI implementation (registry, HTTP client, commands)
 internal/config   flag > environment > default resolution
 internal/httpx    router, middleware, JSON and error envelopes
 internal/memoryops retain / recall / reflect handlers and models
