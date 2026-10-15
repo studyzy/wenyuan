@@ -46,12 +46,11 @@ func (g *Guard) Validate(raw string) error {
 	if err != nil {
 		return fmt.Errorf("%w: url is not parseable", storage.ErrWebhookURLNotAllowed)
 	}
+	// The reference accepts both schemes: SSRF is stopped by refusing the
+	// address, not by requiring TLS, because a plain-HTTP receiver on a
+	// private address is exactly what an operator allowlists for testing.
 	switch parsed.Scheme {
-	case "https":
-	case "http":
-		if !g.cfg.AllowInsecure {
-			return fmt.Errorf("%w: only https is accepted", storage.ErrWebhookURLNotAllowed)
-		}
+	case "http", "https":
 	default:
 		return fmt.Errorf("%w: scheme %q is not accepted", storage.ErrWebhookURLNotAllowed, parsed.Scheme)
 	}
@@ -65,13 +64,60 @@ func (g *Guard) Validate(raw string) error {
 	}
 
 	host := parsed.Hostname()
-	if len(g.cfg.AllowedHosts) > 0 && !g.hostAllowed(host) {
-		return fmt.Errorf("%w: host %q is not on the allowlist", storage.ErrWebhookURLNotAllowed, host)
+	// An allowlist entry is an exemption from the private-address block, not a
+	// whole-bank restriction: it names the hosts an operator has deliberately
+	// permitted (a loopback receiver in a test, an internal endpoint).
+	if g.hostAllowed(host) || g.addressAllowed(ipLiteral(host)) {
+		return nil
 	}
 	if g.cfg.AllowPrivateHosts {
 		return nil
 	}
-	return g.refusePrivateAddresses(host)
+	// Registration is a syntactic check. A literal address in a blocked range
+	// is refused here so the caller learns immediately; a DNS name is accepted
+	// and vetted when it is resolved, which keeps the request path off the
+	// network and is where a rebind is actually caught.
+	if ip := ipLiteral(host); ip != nil {
+		return g.refuseAddress(ip)
+	}
+	return nil
+}
+
+// ipLiteral parses a host that is a literal IP address, or nil for a DNS name.
+// A legacy dotted-IPv4 shorthand the resolver folds onto an address is not
+// recognised here and is treated as a name, which is vetted when it is dialed.
+func ipLiteral(host string) net.IP {
+	return net.ParseIP(strings.Trim(host, "[]"))
+}
+
+// addressAllowed reports whether an address is named by the allowlist, either
+// as a literal or as CIDR membership.
+func (g *Guard) addressAllowed(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, allowed := range g.cfg.AllowedHosts {
+		entry := strings.TrimSpace(allowed)
+		if entry == "" {
+			continue
+		}
+		if parsed := net.ParseIP(entry); parsed != nil && parsed.Equal(ip) {
+			return true
+		}
+		if _, network, err := net.ParseCIDR(entry); err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseAddress reports an address in a range that is unsafe for a
+// caller-supplied fetch.
+func (g *Guard) refuseAddress(ip net.IP) error {
+	if isPrivateAddress(ip) {
+		return fmt.Errorf("%w: address %s is not a public address", storage.ErrWebhookURLNotAllowed, ip)
+	}
+	return nil
 }
 
 // hostAllowed reports whether a host matches the allowlist exactly.
@@ -84,30 +130,22 @@ func (g *Guard) hostAllowed(host string) bool {
 	return false
 }
 
-// refusePrivateAddresses resolves a host and refuses it when any address it
-// resolves to is not a public one.
-//
-// Every resolved address is checked rather than only the first, because a
-// hostile name can return a public address first and a private one second.
-func (g *Guard) refusePrivateAddresses(host string) error {
-	// A literal address needs no resolution.
-	if ip := net.ParseIP(host); ip != nil {
-		if isPrivateAddress(ip) {
-			return fmt.Errorf("%w: address %s is not a public address", storage.ErrWebhookURLNotAllowed, host)
-		}
+// CheckResolvedAddress reports whether a delivery may connect to the given
+// resolved address. Validate checks the name before the request; this checks
+// the address the connection actually uses, so a name that resolves publicly
+// when it is validated and privately when it is dialed (DNS rebinding) is still
+// refused. The delivery transport installs it as the dialer's control, which
+// runs after resolution and before the connect.
+func (g *Guard) CheckResolvedAddress(address string) error {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return fmt.Errorf("%w: %q is not an address", storage.ErrWebhookURLNotAllowed, address)
+	}
+	if g.cfg.AllowPrivateHosts || g.addressAllowed(ip) {
 		return nil
 	}
-	addresses, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("%w: host %q does not resolve", storage.ErrWebhookURLNotAllowed, host)
-	}
-	if len(addresses) == 0 {
-		return fmt.Errorf("%w: host %q does not resolve", storage.ErrWebhookURLNotAllowed, host)
-	}
-	for _, address := range addresses {
-		if isPrivateAddress(address) {
-			return fmt.Errorf("%w: host %q resolves to a non-public address", storage.ErrWebhookURLNotAllowed, host)
-		}
+	if isPrivateAddress(ip) {
+		return fmt.Errorf("%w: address %s is not a public address", storage.ErrWebhookURLNotAllowed, ip)
 	}
 	return nil
 }

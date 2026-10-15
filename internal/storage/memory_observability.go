@@ -21,6 +21,8 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 		BankID:             bankID,
 		NodesByFactType:    map[string]int{},
 		LinksByLinkType:    map[string]int{},
+		LinksByFactType:    map[string]int{},
+		LinksBreakdown:     map[string]map[string]int{},
 		OperationsByStatus: map[string]int{},
 	}
 	for _, unit := range s.units {
@@ -36,6 +38,14 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 		}
 		stats.TotalLinks++
 		stats.LinksByLinkType[string(link.LinkType)]++
+		// The link is attributed to its source unit's fact type, so
+		// links_by_fact_type and links_breakdown describe where links come from.
+		factType := string(s.units[link.FromUnitID].FactType)
+		stats.LinksByFactType[factType]++
+		if stats.LinksBreakdown[factType] == nil {
+			stats.LinksBreakdown[factType] = map[string]int{}
+		}
+		stats.LinksBreakdown[factType][string(link.LinkType)]++
 	}
 	for _, doc := range s.documents {
 		if doc.BankID == bankID {
@@ -79,30 +89,92 @@ func (s *MemoryStore) MemoriesTimeseries(ctx context.Context, bankID, period, ti
 		return Timeseries{}, s.readErr
 	}
 
-	period, trunc := normalizePeriod(period)
-	if timeField == "" {
-		timeField = "created_at"
+	window := ResolveTimeseriesWindow(period)
+	timeField = ResolveTimeseriesTimeField(timeField)
+	// The window covers everything since one full period back, on the resolved
+	// axis, so a row older than the window is not counted.
+	since := time.Now().UTC().Add(-window.Step * time.Duration(window.Count))
+	type accumulator struct {
+		count       int
+		world       int
+		experience  int
+		observation int
 	}
-	counts := map[time.Time]int{}
+	counts := map[time.Time]*accumulator{}
 	for _, unit := range s.units {
 		if unit.BankID != bankID {
 			continue
 		}
-		stamp := unit.MentionedAt
-		if timeField == "created_at" || stamp == nil {
-			if unit.OccurredStart != nil {
-				stamp = unit.OccurredStart
-			}
-		}
-		if stamp == nil {
+		stamp := seriesStamp(unit, timeField)
+		if stamp == nil || stamp.Before(since) {
 			continue
 		}
-		counts[truncate(*stamp, trunc)]++
+		bucket := truncateBucket(*stamp, window.Trunc)
+		if counts[bucket] == nil {
+			counts[bucket] = &accumulator{}
+		}
+		counts[bucket].count++
+		switch unit.FactType {
+		case TypeWorld:
+			counts[bucket].world++
+		case TypeExperience:
+			counts[bucket].experience++
+		case TypeObservation:
+			counts[bucket].observation++
+		}
 	}
+	buckets := make([]TimeseriesBucket, 0, len(counts))
+	for stamp, acc := range counts {
+		buckets = append(buckets, TimeseriesBucket{
+			Time: stamp, Count: acc.count,
+			World: acc.world, Experience: acc.experience, Observation: acc.observation,
+		})
+	}
+	sort.SliceStable(buckets, func(i, j int) bool { return buckets[i].Time.Before(buckets[j].Time) })
 	return Timeseries{
-		BankID: bankID, Period: period, Trunc: trunc, TimeField: timeField,
-		Buckets: sortedTimeseriesBuckets(counts),
+		BankID: bankID, Period: window.Period, Trunc: window.Trunc, TimeField: timeField,
+		Buckets: buckets,
 	}, nil
+}
+
+// seriesStamp reads the timestamp the series buckets this unit by. The event
+// axes fall back to the record's own creation time when the row carries no event
+// stamp, so a backfilled corpus still shows up in the chart.
+func seriesStamp(unit MemoryUnit, timeField string) *time.Time {
+	switch timeField {
+	case "mentioned_at":
+		if unit.MentionedAt != nil {
+			return unit.MentionedAt
+		}
+		if unit.OccurredStart != nil {
+			return unit.OccurredStart
+		}
+	case "occurred_start":
+		if unit.OccurredStart != nil {
+			return unit.OccurredStart
+		}
+		if unit.MentionedAt != nil {
+			return unit.MentionedAt
+		}
+	}
+	return unit.CreatedAt
+}
+
+// RecordAuditLog appends one audit entry to the in-process trail.
+func (s *MemoryStore) RecordAuditLog(ctx context.Context, entry AuditEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	if entry.ID == "" {
+		entry.ID = newID()
+	}
+	if entry.StartedAt.IsZero() {
+		entry.StartedAt = time.Now().UTC()
+	}
+	s.auditEntries = append(s.auditEntries, entry)
+	return nil
 }
 
 // ListAuditLog returns one page of the audit trail.
@@ -110,8 +182,8 @@ func (s *MemoryStore) ListAuditLog(ctx context.Context, query AuditQuery) (Audit
 	if err := ctx.Err(); err != nil {
 		return AuditPage{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
 	if s.readErr != nil {
 		return AuditPage{}, s.readErr
 	}
@@ -124,6 +196,12 @@ func (s *MemoryStore) ListAuditLog(ctx context.Context, query AuditQuery) (Audit
 			continue
 		}
 		if query.Transport != "" && entry.Transport != query.Transport {
+			continue
+		}
+		if query.StartDate != nil && entry.StartedAt.Before(*query.StartDate) {
+			continue
+		}
+		if query.EndDate != nil && !entry.StartedAt.Before(*query.EndDate) {
 			continue
 		}
 		matched = append(matched, entry)
@@ -140,16 +218,19 @@ func (s *MemoryStore) ListAuditLog(ctx context.Context, query AuditQuery) (Audit
 }
 
 // AuditLogStats buckets the audit trail over a period.
-func (s *MemoryStore) AuditLogStats(ctx context.Context, bankID, period string) (AuditStats, error) {
+func (s *MemoryStore) AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error) {
 	if err := ctx.Err(); err != nil {
 		return AuditStats{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
 	period, trunc := normalizePeriod(period)
 	buckets := map[time.Time]map[string]int{}
 	for _, entry := range s.auditEntries {
 		if bankID != "" && entry.BankID != bankID {
+			continue
+		}
+		if action != "" && entry.Action != action {
 			continue
 		}
 		bucket := truncate(entry.StartedAt, trunc)
@@ -175,20 +256,16 @@ func (s *MemoryStore) ListLLMRequests(ctx context.Context, query LLMRequestQuery
 	if err := ctx.Err(); err != nil {
 		return LLMRequestPage{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
 	if s.readErr != nil {
 		return LLMRequestPage{}, s.readErr
 	}
 	matched := make([]LLMRequest, 0, len(s.llmRequests))
 	for _, request := range s.llmRequests {
-		if query.BankID != "" && request.BankID != query.BankID {
-			continue
+		if matchesLLMRequest(request, query) {
+			matched = append(matched, request)
 		}
-		if query.Status != "" && request.Status != query.Status {
-			continue
-		}
-		matched = append(matched, request)
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
 		if !matched[i].StartedAt.Equal(matched[j].StartedAt) {
@@ -196,18 +273,146 @@ func (s *MemoryStore) ListLLMRequests(ctx context.Context, query LLMRequestQuery
 		}
 		return matched[i].ID < matched[j].ID
 	})
+	if query.Group {
+		return groupLLMRuns(matched, query), nil
+	}
 	total := len(matched)
 	start, end := pageBounds(total, query.Offset, query.Limit)
 	return LLMRequestPage{Requests: matched[start:end], Total: total, Limit: query.Limit, Offset: query.Offset}, nil
 }
 
+// matchesLLMRequest reports whether a stored trace row passes every filter the
+// query sets. An unset filter (empty string, nil bound) matches everything.
+func matchesLLMRequest(request LLMRequest, query LLMRequestQuery) bool {
+	if query.BankID != "" && request.BankID != query.BankID {
+		return false
+	}
+	if query.Status != "" && request.Status != query.Status {
+		return false
+	}
+	if query.Operation != "" && request.Operation != query.Operation {
+		return false
+	}
+	if query.Scope != "" && request.Scope != query.Scope {
+		return false
+	}
+	if query.Provider != "" && request.Provider != query.Provider {
+		return false
+	}
+	if query.TraceID != "" && request.TraceID != query.TraceID {
+		return false
+	}
+	if query.DocumentID != "" && metadataString(request.Metadata, "document_id") != query.DocumentID {
+		return false
+	}
+	if query.MemoryID != "" && !metadataHoldsID(request.Metadata, "memory_ids", query.MemoryID) &&
+		!metadataHoldsID(request.Metadata, "source_memory_ids", query.MemoryID) {
+		return false
+	}
+	if query.StartDate != nil && request.StartedAt.Before(*query.StartDate) {
+		return false
+	}
+	if query.EndDate != nil && !request.StartedAt.Before(*query.EndDate) {
+		return false
+	}
+	return true
+}
+
+// groupLLMRuns pages whole operation runs. A run is one trace; an untraced row
+// is a run of its own, keyed by its identifier. Runs are ordered by their most
+// recent call, and the page's rows are returned newest first.
+func groupLLMRuns(matched []LLMRequest, query LLMRequestQuery) LLMRequestPage {
+	type run struct {
+		key  string
+		end  time.Time
+		rows []LLMRequest
+	}
+	order := make([]*run, 0)
+	index := map[string]*run{}
+	for _, request := range matched {
+		key := request.TraceID
+		if key == "" {
+			key = "single:" + request.ID
+		}
+		entry := index[key]
+		if entry == nil {
+			entry = &run{key: key}
+			index[key] = entry
+			order = append(order, entry)
+		}
+		entry.rows = append(entry.rows, request)
+		if request.StartedAt.After(entry.end) {
+			entry.end = request.StartedAt
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		if !order[i].end.Equal(order[j].end) {
+			return order[i].end.After(order[j].end)
+		}
+		return order[i].key < order[j].key
+	})
+	total := len(order)
+	start, end := pageBounds(total, query.Offset, query.Limit)
+	requests := make([]LLMRequest, 0)
+	for _, entry := range order[start:end] {
+		requests = append(requests, entry.rows...)
+	}
+	sort.SliceStable(requests, func(i, j int) bool {
+		if !requests[i].StartedAt.Equal(requests[j].StartedAt) {
+			return requests[i].StartedAt.After(requests[j].StartedAt)
+		}
+		return requests[i].ID < requests[j].ID
+	})
+	return LLMRequestPage{Requests: requests, Total: total, Limit: query.Limit, Offset: query.Offset}
+}
+
+// metadataString reads a string value from a row's metadata, empty when absent.
+func metadataString(metadata map[string]any, key string) string {
+	value, ok := metadata[key].(string)
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+// metadataHoldsID reports whether a metadata array holds the identifier.
+func metadataHoldsID(metadata map[string]any, key, id string) bool {
+	values, ok := metadata[key].([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range values {
+		if text, ok := value.(string); ok && text == id {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordLLMRequest appends one model-request trace row.
+func (s *MemoryStore) RecordLLMRequest(ctx context.Context, request LLMRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	if request.ID == "" {
+		request.ID = newID()
+	}
+	if request.StartedAt.IsZero() {
+		request.StartedAt = time.Now().UTC()
+	}
+	s.llmRequests = append(s.llmRequests, request)
+	return nil
+}
+
 // LLMRequestStats buckets the model-request trace over a period.
-func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period string) (LLMRequestStats, error) {
+func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error) {
 	if err := ctx.Err(); err != nil {
 		return LLMRequestStats{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
 	period, trunc := normalizePeriod(period)
 	type accumulator struct {
 		statuses map[string]int
@@ -216,6 +421,9 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period string
 	buckets := map[time.Time]*accumulator{}
 	for _, request := range s.llmRequests {
 		if bankID != "" && request.BankID != bankID {
+			continue
+		}
+		if operation != "" && request.Operation != operation {
 			continue
 		}
 		bucket := truncate(request.StartedAt, trunc)
@@ -275,6 +483,12 @@ func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, 
 }
 
 // normalizePeriod maps a period name to its bucket width, defaulting to a day.
+//
+// The chart endpoints accept the reference's day-scale periods ("1d", "7d",
+// "30d", "90d", default "7d") and always bucket by day — the period only picks
+// the window, never the width. Those names are echoed back as the period but
+// truncate by day, so date_trunc receives a unit PostgreSQL knows rather than
+// the literal "1d".
 func normalizePeriod(period string) (string, string) {
 	switch period {
 	case "hour":
@@ -286,7 +500,7 @@ func normalizePeriod(period string) (string, string) {
 	case "day", "":
 		return "day", "day"
 	default:
-		return period, period
+		return period, "day"
 	}
 }
 
@@ -303,14 +517,4 @@ func truncate(value time.Time, width string) time.Time {
 	default:
 		return value.UTC().Truncate(24 * time.Hour)
 	}
-}
-
-// sortedTimeseriesBuckets renders a count map in time order.
-func sortedTimeseriesBuckets(counts map[time.Time]int) []TimeseriesBucket {
-	out := make([]TimeseriesBucket, 0, len(counts))
-	for stamp, count := range counts {
-		out = append(out, TimeseriesBucket{Time: stamp, Count: count})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
-	return out
 }

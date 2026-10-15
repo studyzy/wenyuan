@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ func maintenanceJobs(
 	reflection storage.ReflectRunner,
 	tenants tenant.Extension,
 	cfg config.MaintenanceConfig,
+	vectorIndex config.VectorIndexConfig,
 ) []maintenance.Job {
 	jobs := make([]maintenance.Job, 0, 4)
 
@@ -86,7 +88,115 @@ func maintenanceJobs(
 			},
 		})
 	}
+	if vectorIndex.MinRows > 0 {
+		jobs = append(jobs, maintenance.Job{
+			Name:     "vector_index.reconcile",
+			Interval: time.Duration(vectorIndex.ReconcileInterval) * time.Second,
+			Run: func(ctx context.Context) error {
+				return reconcileVectorIndexes(ctx, store, vectorIndex.MinRows)
+			},
+		})
+	}
+	if cfg.ConsolidationReconcileInterval > 0 {
+		jobs = append(jobs, maintenance.Job{
+			Name:     "graph.maintenance",
+			Interval: cfg.ConsolidationReconcileInterval,
+			Run: func(ctx context.Context) error {
+				// A store without the maintenance queue — the in-memory one —
+				// has nothing to drain, so the job is a no-op there.
+				maintainer, ok := store.(storage.GraphMaintainer)
+				if !ok {
+					return nil
+				}
+				return drainGraphMaintenance(ctx, maintainer)
+			},
+		})
+	}
 	return jobs
+}
+
+// reconcileVectorIndexes brings every qualifying bank's partial vector index
+// coverage to the plan.
+//
+// A backend without per-bank indexes — the in-memory one — does not implement
+// the capability, so the job is a no-op there. A single bank's failure is
+// reported but does not stop the sweep, because the next tick retries it and
+// one bad bank should not starve the rest.
+func reconcileVectorIndexes(ctx context.Context, store storage.Store, minRows int) error {
+	reconciler, ok := store.(storage.VectorIndexReconciler)
+	if !ok {
+		return nil
+	}
+	banks, err := reconciler.BanksNeedingVectorIndexes(ctx, minRows)
+	if err != nil {
+		return fmt.Errorf("discover banks needing vector indexes: %w", err)
+	}
+	var firstErr error
+	for _, bankID := range banks {
+		if _, err := reconciler.ReconcileBankVectorIndexes(ctx, bankID, minRows); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Default().Warn("vector index reconcile failed", "bank_id", bankID, "error", err)
+		}
+	}
+	return firstErr
+}
+
+// drainGraphMaintenance relinks units left behind by a deletion and prunes
+// entities no unit mentions any more, in bounded batches.
+//
+// The drain removes each target from its queue before the work runs, so a
+// failure would strand it: the row is already gone and nothing else re-enqueues
+// it. A failed target is therefore put back on the queue — with a fresh
+// enqueued_at, sending it to the back — and the sweep keeps going, because one
+// bad target must not discard the rest of the batch. The first error is still
+// returned so the job's failure stays visible.
+func drainGraphMaintenance(ctx context.Context, store storage.GraphMaintainer) error {
+	var firstErr error
+	relink, err := store.DrainGraphMaintenance(ctx, 500)
+	if err != nil {
+		return err
+	}
+	var failedRelink []storage.MaintenanceTarget
+	for _, target := range relink {
+		if err := store.RelinkUnit(ctx, target.BankID, target.ID); err != nil {
+			slog.Default().Warn("graph relink failed; returning target to the queue",
+				"bank_id", target.BankID, "unit_id", target.ID, "error", err)
+			failedRelink = append(failedRelink, target)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := store.RequeueGraphMaintenance(ctx, failedRelink); err != nil {
+		slog.Default().Error("could not requeue failed graph relink targets", "count", len(failedRelink), "error", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	prune, err := store.DrainEntityMaintenance(ctx, 500)
+	if err != nil {
+		return err
+	}
+	var failedPrune []storage.MaintenanceTarget
+	for _, target := range prune {
+		if err := store.PruneEntity(ctx, target.BankID, target.ID); err != nil {
+			slog.Default().Warn("entity prune failed; returning target to the queue",
+				"bank_id", target.BankID, "entity_id", target.ID, "error", err)
+			failedPrune = append(failedPrune, target)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := store.RequeueEntityMaintenance(ctx, failedPrune); err != nil {
+		slog.Default().Error("could not requeue failed entity prune targets", "count", len(failedPrune), "error", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // purgeExpired removes rows older than the window from one table, in bounded
@@ -150,8 +260,9 @@ func reconcileConsolidation(ctx context.Context, store storage.Store, tenants te
 			// keeps every process in a fleet from queueing its own copy.
 			if _, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
 				Operation: storage.Operation{
-					BankID:        bankID,
-					OperationType: storage.OperationTypeConsolidate,
+					BankID:           bankID,
+					OperationType:    storage.OperationTypeConsolidate,
+					SerializationKey: storage.ConsolidationSerializationKey(bankID),
 				},
 			}); err != nil {
 				return fmt.Errorf("schedule consolidation for %s: %w", bankID, err)
@@ -193,6 +304,11 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 				continue
 			}
 			if !store.IsStale(ctx, entry.BankID, model) {
+				continue
+			}
+			// A model whose last refresh failed is parked against automatic
+			// triggers, so a cron tick does not re-queue the same doomed run.
+			if refreshPaused(model) {
 				continue
 			}
 			// An automatic refresh folds into a running one: the caller did not

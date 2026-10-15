@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/audit"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -51,6 +53,12 @@ type Config struct {
 	Now func() time.Time
 	// Sleep is injectable so backoff is testable without real waiting.
 	Sleep func(time.Duration)
+	// WallTimeouts bounds one operation type's wall-clock budget. A type absent
+	// from the map is bounded only by the claim's lease.
+	WallTimeouts map[string]time.Duration
+	// ReservedSlots reserves a floor of the consumer's concurrency for a given
+	// operation type, so a bank mid-bulk-ingest cannot starve it.
+	ReservedSlots map[string]int
 }
 
 // Processor performs the work of one operation. It is supplied by the caller so
@@ -83,6 +91,66 @@ func (e *PermanentError) Error() string {
 // Unwrap exposes the cause so callers can inspect it.
 func (e *PermanentError) Unwrap() error { return e.Cause }
 
+// DeferralError marks a failure that should be deferred rather than counted
+// against the retry budget: the work itself is fine, but a transient external
+// condition (a provider rate limit, a saturated store) says "try again later".
+type DeferralError struct{ Cause error }
+
+func (e *DeferralError) Error() string { return e.Cause.Error() }
+func (e *DeferralError) Unwrap() error { return e.Cause }
+
+// Defer marks an error as a deferral.
+func Defer(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &DeferralError{Cause: err}
+}
+
+// IsDeferral reports whether an error is marked deferrable.
+func IsDeferral(err error) bool {
+	var target *DeferralError
+	return errors.As(err, &target)
+}
+
+// deferredAtError is a deferral that names its own delay.
+type deferredAtError struct {
+	delay time.Duration
+	cause error
+}
+
+func (e *deferredAtError) Error() string { return e.cause.Error() }
+func (e *deferredAtError) Unwrap() error { return e.cause }
+
+// DeferAt marks an error as deferrable with an explicit retry delay, for a
+// schedule the caller controls (a webhook's backoff ladder, say).
+func DeferAt(delay time.Duration, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &deferredAtError{delay: delay, cause: err}
+}
+
+// deferralDelay returns the deferral's explicit delay, if it named one.
+func deferralDelay(err error) (time.Duration, bool) {
+	var target *deferredAtError
+	if errors.As(err, &target) {
+		return target.delay, true
+	}
+	return 0, false
+}
+
+// isDeferral reports whether an error asks for a deferral, explicit or not.
+func isDeferral(err error) bool {
+	return IsDeferral(err) || isExplicitDeferral(err)
+}
+
+// isExplicitDeferral reports whether the error carries an explicit delay.
+func isExplicitDeferral(err error) bool {
+	_, ok := deferralDelay(err)
+	return ok
+}
+
 // Permanent marks an error as non-retryable.
 func Permanent(err error) error {
 	if err == nil {
@@ -103,9 +171,29 @@ type Consumer struct {
 	processor Processor
 	cfg       Config
 
+	// auditor, when non-nil, records each processed operation on the trail.
+	auditor Auditor
+
 	wg     sync.WaitGroup
 	stopCh chan struct{}
 	once   sync.Once
+
+	inflightMu sync.Mutex
+	inflight   map[string]int
+}
+
+// Auditor decides and records system-transport audit entries. It is satisfied
+// by *audit.Logger.
+type Auditor interface {
+	ShouldAudit(ctx context.Context, action, bankID string) bool
+	Record(ctx context.Context, entry audit.Entry)
+}
+
+// WithAuditor wires the audit logger the consumer records processed operations
+// through. It returns the consumer so composition can chain the call.
+func (c *Consumer) WithAuditor(auditor Auditor) *Consumer {
+	c.auditor = auditor
+	return c
 }
 
 // New builds a consumer over the store and processor, applying defaults to any
@@ -205,7 +293,7 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 		if ctx.Err() != nil {
 			return
 		}
-		op, err := c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease)
+		op, err := c.claim(ctx)
 		if err != nil {
 			if errors.Is(err, storage.ErrOperationNotFound) {
 				c.wait(ctx)
@@ -219,54 +307,178 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 			continue
 		}
 		c.handle(ctx, op)
+		c.trackInflight(op.OperationType, -1)
 	}
+}
+
+// claim takes the next operation, honouring per-type reserved slots: a type
+// with a reserved floor is claimed first while the consumer's in-flight count
+// for it is below the reservation, and any work is claimed otherwise.
+func (c *Consumer) claim(ctx context.Context) (storage.Operation, error) {
+	if preferred := c.preferredTypes(); len(preferred) > 0 {
+		op, err := c.store.ClaimNextOperationForTypes(ctx, c.workerID(), c.cfg.Lease, preferred)
+		if err == nil {
+			c.trackInflight(op.OperationType, 1)
+			return op, nil
+		}
+		if !errors.Is(err, storage.ErrOperationNotFound) {
+			return storage.Operation{}, err
+		}
+	}
+	op, err := c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease)
+	if err == nil {
+		c.trackInflight(op.OperationType, 1)
+	}
+	return op, err
+}
+
+// preferredTypes lists the reserved types whose floor is not yet met by the
+// consumer's in-flight work.
+func (c *Consumer) preferredTypes() []string {
+	if len(c.cfg.ReservedSlots) == 0 {
+		return nil
+	}
+	c.inflightMu.Lock()
+	defer c.inflightMu.Unlock()
+	preferred := make([]string, 0, len(c.cfg.ReservedSlots))
+	for opType, reserved := range c.cfg.ReservedSlots {
+		if reserved > 0 && c.inflight[opType] < reserved {
+			preferred = append(preferred, opType)
+		}
+	}
+	sort.Strings(preferred)
+	return preferred
+}
+
+// trackInflight adjusts the in-flight count for one operation type.
+func (c *Consumer) trackInflight(opType string, delta int) {
+	c.inflightMu.Lock()
+	defer c.inflightMu.Unlock()
+	if c.inflight == nil {
+		c.inflight = map[string]int{}
+	}
+	c.inflight[opType] += delta
 }
 
 // handle runs one claimed operation and settles its outcome.
 func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 	// The operation continues under a background context so a shutdown drains
-	// it rather than leaving it half-applied. It is bounded by the lease.
-	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cfg.Lease)
+	// it rather than leaving it half-applied. It is bounded by the lease, and
+	// more tightly by a per-type wall ceiling when one is configured: a wedged
+	// task then frees its slot at the ceiling rather than at the lease.
+	budget := c.cfg.Lease
+	if ceiling := c.cfg.WallTimeouts[op.OperationType]; ceiling > 0 && ceiling < budget {
+		budget = ceiling
+	}
+	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 
+	// The sink collects whatever the processor reports about this run. It is
+	// read only after Process returns, so no lock is needed, and a processor
+	// that reports nothing leaves it empty and takes the plain path below.
+	sink := &outcomeSink{}
+	workCtx = context.WithValue(workCtx, outcomeKey{}, sink)
+
+	// The audit decision and the entry's start are taken before the work runs,
+	// so the recorded duration brackets the operation itself.
+	audited := c.auditor != nil && c.auditor.ShouldAudit(ctx, op.OperationType, op.BankID)
+	started := time.Now().UTC()
+
 	err := c.processor.Process(workCtx, op)
+
+	if audited {
+		entry := audit.Entry{
+			Action:    op.OperationType,
+			Transport: audit.TransportSystem,
+			BankID:    op.BankID,
+			StartedAt: started,
+			EndedAt:   time.Now().UTC(),
+			Request:   op.Payload,
+		}
+		if err != nil {
+			entry.Error = err.Error()
+		} else if len(sink.metadata) > 0 {
+			entry.Response = sink.metadata
+		}
+		// Recording must outlive the shutdown context that may have cancelled
+		// the work, so it drops that cancellation.
+		c.auditor.Record(context.WithoutCancel(ctx), entry)
+	}
+
 	if err == nil {
-		c.complete(ctx, op)
+		c.complete(ctx, op, sink.metadata)
 		return
 	}
 	if IsPermanent(err) {
 		// A permanent failure is terminal on the first try; it must not consume
 		// the retry budget.
-		c.fail(ctx, op, err.Error())
+		c.fail(ctx, op, err.Error(), sink.metadata)
 		return
 	}
-	c.retry(ctx, op, err)
+	if isBackpressure(err) || isDeferral(err) {
+		// A store that is shedding load, or a handler that asked for a deferral
+		// (a provider rate limit, say), is a transient condition, not a failure
+		// of this operation: defer it without consuming the retry budget, so a
+		// sustained condition does not permanently fail work that would clear.
+		// The attempt's report is kept: a deferral did work enough to name a
+		// reason (a webhook's receiver status, an explicit retry delay), and
+		// that is exactly what an operator reads across a retry.
+		c.deferOperation(ctx, op, err, sink.metadata)
+		return
+	}
+	c.retry(ctx, op, err, sink.metadata)
 }
 
-// complete marks an operation succeeded.
-func (c *Consumer) complete(ctx context.Context, op storage.Operation) {
-	if _, err := c.store.AdvanceOperation(ctx, op.OperationID, storage.StatusCompleted, ""); err != nil {
-		c.cfg.Logger.Error("complete failed", "operation_id", op.OperationID, "error", err)
-		return
-	}
-	c.cfg.Logger.Info("operation completed", "operation_id", op.OperationID, "bank_id", op.BankID)
+// isBackpressure reports whether a failure is the store shedding load rather
+// than the operation itself failing.
+func isBackpressure(err error) bool {
+	return errors.Is(err, storage.ErrWritesUnavailable) || errors.Is(err, storage.ErrReadShed)
 }
 
-// fail marks an operation terminally failed.
-func (c *Consumer) fail(ctx context.Context, op storage.Operation, detail string) {
-	if _, err := c.store.AdvanceOperation(ctx, op.OperationID, storage.StatusFailed, detail); err != nil {
-		c.cfg.Logger.Error("fail failed", "operation_id", op.OperationID, "error", err)
+// deferOperation reschedules an operation without consuming its retry budget,
+// so backpressure does not walk work toward the permanent-failure cliff.
+//
+// It keeps whatever the processor reported about the attempt, when the store can
+// carry it, so a deferral does not throw away the one thing an operator needs to
+// tell "the endpoint is refusing us" from "we never reached it". A processor
+// that reported nothing takes the plain scheduling path unchanged.
+func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cause error, metadata map[string]any) {
+	delay := c.BackoffFor(op.RetryCount + 1)
+	if explicit, ok := deferralDelay(cause); ok && explicit > 0 {
+		delay = explicit
+	}
+	next := c.cfg.Now().Add(delay)
+	// The refusal reason belongs in the log, not in the error column: a
+	// deferral is backpressure rather than a failure, and a caller that waits
+	// for a bank to settle reads a pending operation carrying an error as
+	// already lost.
+	c.cfg.Logger.Info("operation deferred under backpressure",
+		"operation_id", op.OperationID, "next_retry_at", next, "reason", cause.Error())
+	// A store that can reschedule without recording a failure takes that path;
+	// one that cannot falls back to the retry write, which keeps the deferral
+	// scheduled at the cost of a message on the record.
+	if deferrer, ok := c.store.(storage.OperationDeferrer); ok {
+		if err := deferrer.DeferOperation(ctx, op.OperationID, next, metadata); err != nil {
+			c.cfg.Logger.Error("defer scheduling failed", "operation_id", op.OperationID, "error", err)
+		}
 		return
 	}
-	c.cfg.Logger.Warn("operation failed permanently", "operation_id", op.OperationID, "detail", detail)
+	if err := c.scheduleRetry(ctx, op, op.RetryCount, next, cause.Error(), metadata); err != nil {
+		c.cfg.Logger.Error("defer scheduling failed", "operation_id", op.OperationID, "error", err)
+		return
+	}
+	if err := c.store.ReleaseOperationClaim(ctx, op.OperationID, c.workerID()); err != nil {
+		c.cfg.Logger.Error("claim release failed", "operation_id", op.OperationID, "error", err)
+		return
+	}
 }
 
 // retry schedules another attempt, or fails the operation once the attempt
 // budget is spent.
-func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error) {
+func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error, metadata map[string]any) {
 	attempt := op.RetryCount + 1
 	if attempt > c.cfg.MaxRetries {
-		c.fail(ctx, op, fmt.Sprintf("retry budget exhausted after %d attempt(s): %v", op.RetryCount, cause))
+		c.fail(ctx, op, fmt.Sprintf("retry budget exhausted after %d attempt(s): %v", op.RetryCount, cause), metadata)
 		return
 	}
 

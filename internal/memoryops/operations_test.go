@@ -136,15 +136,146 @@ func TestRetryFailedOperation(t *testing.T) {
 	}
 }
 
-// ts-0020 / err-0006 / cmp-0007: an unknown identifier is 404; a malformed one
-// is a client error.
+// ts-0020 / err-0006 / cmp-0007: an unknown identifier reads as a 200 with
+// status "not_found" (the reference does not 404 the operation read), while a
+// malformed one is a client error.
 func TestUnknownAndMalformedOperationID(t *testing.T) {
 	mux, _ := newServer(t)
-	if rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID); rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown id status = %d, want 404", rec.Code)
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown id status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	if rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/not-a-uuid"); rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("malformed id status = %d, want 422", rec.Code)
+	var missing map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing["status"] != "not_found" {
+		t.Fatalf("unknown id status field = %v, want not_found", missing["status"])
+	}
+	if missing["operation_id"] != validOpID {
+		t.Fatalf("unknown id must echo the identifier, got %v", missing["operation_id"])
+	}
+	if rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/not-a-uuid"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed id status = %d, want 400", rec.Code)
+	}
+}
+
+// test-operation-bank-scope: a route addressed to a bank that does not own the
+// operation must not expose or mutate it. The read reports not_found; the
+// cancel and retry writes are 404.
+func TestOperationScopedToBank(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b2", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+	seedOp(t, store, validOpID, storage.StatusFailed)
+
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b2/operations/"+validOpID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-bank read = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "not_found" {
+		t.Fatalf("cross-bank read status = %v, want not_found", got["status"])
+	}
+	if rec := do(t, mux, http.MethodDelete, "/v1/default/banks/b2/operations/"+validOpID); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-bank cancel = %d, want 404", rec.Code)
+	}
+	if rec := do(t, mux, http.MethodPost, "/v1/default/banks/b2/operations/"+validOpID+"/retry"); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-bank retry = %d, want 404", rec.Code)
+	}
+	// The operation is untouched in its owning bank.
+	if op, err := store.GetOperation(context.TODO(), "b1", validOpID); err != nil || op.Status != storage.StatusFailed {
+		t.Fatalf("owning bank operation changed: %+v, %v", op, err)
+	}
+}
+
+// test-operation-child-rollup: a parent operation read returns its child
+// operations under child_operations, ordered by sub-batch index, and the raw
+// task payload lives under task_payload.
+func TestOperationChildOperations(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: "batch_retain", Status: storage.StatusCompleted,
+		ResultMetadata: map[string]any{"is_parent": true, "num_sub_batches": 2},
+		Payload:        map[string]any{"items": 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{validOpID2, "33333333-3333-3333-3333-333333333333"} {
+		if _, err := store.PutOperation(context.TODO(), storage.Operation{
+			OperationID: id, BankID: "b1", OperationType: "retain", Status: storage.StatusCompleted,
+			ResultMetadata: map[string]any{
+				"parent_operation_id": validOpID, "sub_batch_index": i, "items_count": i + 1,
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ChildOperations []map[string]any `json:"child_operations"`
+		TaskPayload     map[string]any   `json:"task_payload"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ChildOperations) != 2 {
+		t.Fatalf("child_operations = %+v", got.ChildOperations)
+	}
+	if got.ChildOperations[0]["operation_id"] != validOpID2 {
+		t.Fatalf("children must be ordered by sub_batch_index: %+v", got.ChildOperations)
+	}
+	if got.TaskPayload == nil {
+		t.Fatalf("include_payload must carry task_payload: %s", rec.Body.String())
+	}
+	if _, ok := got.TaskPayload["items"]; !ok {
+		t.Fatalf("task_payload = %+v", got.TaskPayload)
+	}
+}
+
+// test-list-operations-exclude-parents: exclude_parents hides parent batch
+// operations from both the page and the total.
+func TestListOperationsExcludeParents(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: "batch_retain", Status: storage.StatusCompleted,
+		ResultMetadata: map[string]any{"is_parent": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedOp(t, store, validOpID2, storage.StatusCompleted)
+
+	var all struct {
+		Total      int              `json:"total"`
+		Operations []map[string]any `json:"operations"`
+	}
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations")
+	if err := json.Unmarshal(rec.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if all.Total != 2 {
+		t.Fatalf("unfiltered total = %d, want 2", all.Total)
+	}
+	var filtered struct {
+		Total      int              `json:"total"`
+		Operations []map[string]any `json:"operations"`
+	}
+	rec = do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations?exclude_parents=true")
+	if err := json.Unmarshal(rec.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || len(filtered.Operations) != 1 {
+		t.Fatalf("exclude_parents page = %+v", filtered)
+	}
+	if filtered.Operations[0]["id"] != validOpID2 {
+		t.Fatalf("exclude_parents must hide the parent, got %+v", filtered.Operations[0])
 	}
 }
 
@@ -162,7 +293,7 @@ func TestFetchOperationIncludesPayload(t *testing.T) {
 	if op.OperationType != storage.OperationTypeRetain {
 		t.Fatalf("operation type = %q", op.OperationType)
 	}
-	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include=payload")
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -170,11 +301,27 @@ func TestFetchOperationIncludesPayload(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := got["payload"]; !ok {
-		t.Fatalf("include switch must carry the raw payload: %s", rec.Body.String())
+	if _, ok := got["task_payload"]; !ok {
+		t.Fatalf("include switch must carry the raw payload under task_payload: %s", rec.Body.String())
+	}
+	if _, ok := got["payload"]; ok {
+		t.Fatalf("the raw payload must not appear under the non-contract 'payload' key: %s", rec.Body.String())
 	}
 	if got["operation_type"] != "retain" {
 		t.Fatalf("operation_type = %v", got["operation_type"])
+	}
+	// The single read names the operation under `operation_id`, and the
+	// include_payload spelling is accepted as an alias for include=payload.
+	if got["operation_id"] != validOpID {
+		t.Fatalf("operation_id = %v, want %s", got["operation_id"], validOpID)
+	}
+	rec = do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
+	var aliased map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &aliased); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := aliased["task_payload"]; !ok {
+		t.Fatalf("include_payload must carry the raw payload: %s", rec.Body.String())
 	}
 }
 

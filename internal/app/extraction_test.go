@@ -97,3 +97,67 @@ func TestRetainStoresVerbatimWithoutModelThroughServedHandler(t *testing.T) {
 		t.Fatalf("expected the verbatim path: %+v", units)
 	}
 }
+
+// A fact the model marked "assistant" reaches storage as the agent-perspective
+// type through the served write, not as an objective world fact.
+func TestRetainStoresAssistantFactAsExperienceThroughServedHandler(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	model := &completingProvider{
+		name: "openai-compatible",
+		structured: map[string]any{
+			"facts": []any{
+				map[string]any{"text": "I checked the deployment log.", "fact_type": "assistant"},
+			},
+		},
+	}
+	application, err := New(context.Background(), testConfig(), Dependencies{Store: store, Provider: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := send(application, http.MethodPost, "/v1/default/banks/b1/memories",
+		`{"items":[{"content":"I checked the deployment log.","document_id":"doc-1"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retain status = %d: %s", rec.Code, rec.Body.String())
+	}
+	units := store.UnitsForTest("b1")
+	if len(units) != 1 {
+		t.Fatalf("stored %d units, want 1: %+v", len(units), units)
+	}
+	if units[0].FactType != storage.TypeExperience {
+		t.Fatalf("assistant fact stored as %q, want %q", units[0].FactType, storage.TypeExperience)
+	}
+}
+
+// The observation scoping the request carried reaches the stored unit through
+// the served write, so the consolidation pass can fold at the requested scope.
+func TestRetainCarriesObservationScopesThroughServedHandler(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	model := &completingProvider{
+		name: "openai-compatible",
+		structured: map[string]any{
+			"facts": []any{map[string]any{"text": "Alice moved to Berlin."}},
+		},
+	}
+	application, err := New(context.Background(), testConfig(), Dependencies{Store: store, Provider: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := send(application, http.MethodPost, "/v1/default/banks/b1/memories",
+		`{"items":[{"content":"Alice moved to Berlin.","document_id":"doc-1","observation_scopes":"per_tag"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retain status = %d: %s", rec.Code, rec.Body.String())
+	}
+	units := store.UnitsForTest("b1")
+	if len(units) != 1 {
+		t.Fatalf("stored %d units, want 1: %+v", len(units), units)
+	}
+	if string(units[0].ObservationScopes) != `"per_tag"` {
+		t.Fatalf("unit observation scopes = %s, want the request's", units[0].ObservationScopes)
+	}
+}

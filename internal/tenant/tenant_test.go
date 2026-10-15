@@ -84,3 +84,15 @@ func TestCustomExtensionSatisfiesInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The default extension supplies no overrides, so a deployment that keys no
+// configuration by tenant resolves exactly as it did before the layer existed.
+func TestDefaultSuppliesNoOverrides(t *testing.T) {
+	resolved, err := NewDefault("public").Authenticate(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Overrides != nil {
+		t.Fatalf("overrides = %v, want none from the default extension", resolved.Overrides)
+	}
+}

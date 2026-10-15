@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 )
 
 // ConsolidationFacts returns the newest raw facts of a bank that have not yet
@@ -12,7 +14,8 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	if limit <= 0 {
 		limit = 200
 	}
-	query := `SELECT id, text, occurred_start, occurred_end, mentioned_at
+	query := `SELECT id, text, occurred_start, occurred_end, mentioned_at,
+	                 COALESCE(tags, '{}'::text[])::text, observation_scopes::text
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type <> $2 AND consolidated_at IS NULL
 	          ORDER BY created_at DESC
@@ -26,12 +29,18 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	for rows.Next() {
 		var fact ConsolidationFact
 		var start, end, mentioned sql.NullTime
-		if err := rows.Scan(&fact.ID, &fact.Text, &start, &end, &mentioned); err != nil {
+		var tags string
+		var scopes sql.NullString
+		if err := rows.Scan(&fact.ID, &fact.Text, &start, &end, &mentioned, &tags, &scopes); err != nil {
 			return nil, err
 		}
 		fact.OccurredStart = nullTimePtr(start)
 		fact.OccurredEnd = nullTimePtr(end)
 		fact.MentionedAt = nullTimePtr(mentioned)
+		fact.Tags = decodeTextArray(tags)
+		if scopes.Valid && scopes.String != "" {
+			fact.ObservationScopes = json.RawMessage(scopes.String)
+		}
 		facts = append(facts, fact)
 	}
 	return facts, rows.Err()
@@ -45,8 +54,15 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 		limit = 100
 	}
 	query := `SELECT u.id, u.text, u.mentioned_at,
-	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text
+	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
+	                 COALESCE(u.tags, '{}'::text[])::text,
+	                 COALESCE(src.texts, ARRAY[]::text[])::text
 	          FROM ` + quoteIdent(s.schema) + `.memory_units u
+	          LEFT JOIN LATERAL (
+	              SELECT array_agg(m.text ORDER BY source.ord) AS texts
+	              FROM unnest(u.source_memory_ids) WITH ORDINALITY AS source(sid, ord)
+	              JOIN ` + quoteIdent(s.schema) + `.memory_units m ON m.id = source.sid
+	          ) src ON true
 	          WHERE u.bank_id = $1 AND u.fact_type = $2
 	          ORDER BY u.created_at DESC
 	          LIMIT $3`
@@ -59,13 +75,15 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 	for rows.Next() {
 		var observation ConsolidationObservation
 		var mentioned sql.NullTime
-		var sources string
-		if err := rows.Scan(&observation.ID, &observation.Text, &mentioned, &sources); err != nil {
+		var sources, tags, sourceTexts string
+		if err := rows.Scan(&observation.ID, &observation.Text, &mentioned, &sources, &tags, &sourceTexts); err != nil {
 			return nil, err
 		}
 		observation.MentionedAt = nullTimePtr(mentioned)
 		observation.SourceIDs = decodeTextArray(sources)
+		observation.SourceTexts = decodeTextArray(sourceTexts)
 		observation.ProofCount = len(observation.SourceIDs)
+		observation.Scope = canonicalScope(decodeTextArray(tags))
 		observations = append(observations, observation)
 	}
 	return observations, rows.Err()
@@ -74,6 +92,7 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 // CreateObservation records a new observation resting on the given facts.
 func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
 	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
+	unit.Embedding = embedObservation(ctx, s.observationEmbedder, text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
 		return "", err
@@ -86,9 +105,17 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 
 // UpdateObservation rewrites an observation and attaches more evidence. A
 // source already linked is left alone, so re-running a pass is idempotent.
+//
+// The pre-update state is snapshotted into observation_history first, so what
+// the conclusion said before it was reinforced remains readable, and the
+// history is bounded per observation so a frequently-reinforced observation does
+// not grow without bound.
 func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error {
+	if err := s.appendObservationHistory(ctx, bankID, observationID); err != nil {
+		return err
+	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
-	          SET text = $3, search_vector = ` + searchVectorSQL + `, mentioned_at = now()
+	          SET text = $3, search_vector = ` + searchVectorExpr("$3", "''", "''") + `, mentioned_at = now()
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $4`
 	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation))
 	if err != nil {
@@ -98,6 +125,62 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 		return ErrMemoryNotFound
 	}
 	return s.linkObservationSources(ctx, observationID, sourceIDs)
+}
+
+// ObservationHistoryMaxEntries bounds one observation's stored history, so a
+// frequently-reinforced conclusion keeps a useful tail without growing forever.
+const ObservationHistoryMaxEntries = 20
+
+// appendObservationHistory records the observation's current text as a history
+// entry, then drops the entries beyond the retention bound.
+//
+// The snapshot is one JSONB row rather than a copy of every column, because the
+// history answers "what did this conclusion say before" and nothing else. An
+// observation that does not exist yet (or was removed by a concurrent pass) has
+// nothing to snapshot, which is not an error.
+func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, observationID string) error {
+	qualified := quoteIdent(s.schema)
+	current, err := s.observationText(ctx, bankID, observationID)
+	if err != nil {
+		return err
+	}
+	if current == "" {
+		return nil
+	}
+	snapshot, err := jsonColumn(map[string]any{"text": current})
+	if err != nil {
+		return err
+	}
+	insert := `INSERT INTO ` + qualified + `.observation_history (observation_id, bank_id, content, changed_at)
+	          VALUES ($1, $2, $3::jsonb, now())`
+	if _, err := s.db.ExecContext(ctx, insert, observationID, bankID, snapshot); err != nil {
+		return err
+	}
+	prune := `DELETE FROM ` + qualified + `.observation_history
+	          WHERE observation_id = $1
+	            AND id NOT IN (
+	                SELECT id FROM ` + qualified + `.observation_history
+	                WHERE observation_id = $1
+	                ORDER BY changed_at DESC, id DESC
+	                LIMIT $2
+	            )`
+	_, err = s.db.ExecContext(ctx, prune, observationID, ObservationHistoryMaxEntries)
+	return err
+}
+
+// observationText returns one observation's text, or "" when it is gone.
+func (s *PostgresStore) observationText(ctx context.Context, bankID, observationID string) (string, error) {
+	query := `SELECT text FROM ` + quoteIdent(s.schema) + `.memory_units
+	          WHERE bank_id = $1 AND id = $2 AND fact_type = $3`
+	var text string
+	err := s.db.QueryRowContext(ctx, query, bankID, observationID, string(TypeObservation)).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 // DeleteObservation removes one observation. Its evidence is an array on the
@@ -119,6 +202,135 @@ func (s *PostgresStore) MarkConsolidated(ctx context.Context, bankID string, fac
 	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
 	_, err := s.db.ExecContext(ctx, query, bankID, factIDs)
 	return err
+}
+
+// MarkConsolidationFailed records that a pass gave up on the given facts. The
+// candidates read excludes them (consolidation_failed_at IS NOT NULL), so they
+// stay out of later passes until RecoverConsolidations requeues them.
+func (s *PostgresStore) MarkConsolidationFailed(ctx context.Context, bankID string, factIDs []string) error {
+	if len(factIDs) == 0 {
+		return nil
+	}
+	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	          SET consolidation_failed_at = now()
+	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
+	_, err := s.db.ExecContext(ctx, query, bankID, factIDs)
+	return err
+}
+
+// DeleteStaleObservations removes the observations that rest on any of the
+// given facts, and requeues the source facts they shared with them. It mirrors
+// the reference's delete_stale_observations: an observation's text was
+// synthesised from its evidence, so once even one source is about to disappear
+// the observation is stale and must go rather than keep answering.
+//
+// It runs in a transaction of its own, which is what a standalone caller wants.
+// A caller that must sweep inside a wider delete transaction (so the sweep and
+// the cascade hold one set of locks) calls deleteStaleObservationsTx directly.
+func (s *PostgresStore) DeleteStaleObservations(ctx context.Context, bankID string, factIDs []string) (int, error) {
+	if len(factIDs) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	deleted, err := s.deleteStaleObservationsTx(ctx, tx, bankID, factIDs)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// deleteStaleObservationsTx is the body of the sweep, run on the caller's
+// transaction so it can share the locks a delete cascade holds.
+func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, bankID string, factIDs []string) (int, error) {
+	if len(factIDs) == 0 {
+		return 0, nil
+	}
+	qualified := quoteIdent(s.schema)
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, COALESCE(source_memory_ids, '{}'::uuid[])::text
+		 FROM `+qualified+`.memory_units
+		 WHERE bank_id = $1 AND fact_type = $2 AND source_memory_ids && $3::uuid[]`,
+		bankID, string(TypeObservation), factIDs)
+	if err != nil {
+		return 0, err
+	}
+	doomed := make([]string, 0)
+	deleted := make(map[string]bool, len(factIDs))
+	for _, id := range factIDs {
+		deleted[id] = true
+	}
+	remaining := make([]string, 0)
+	seen := map[string]bool{}
+	for rows.Next() {
+		var observationID, sources string
+		if err := rows.Scan(&observationID, &sources); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		doomed = append(doomed, observationID)
+		for _, source := range decodePostgresTextArray([]byte(sources)) {
+			if deleted[source] || seen[source] {
+				continue
+			}
+			seen[source] = true
+			remaining = append(remaining, source)
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(doomed) == 0 {
+		return 0, nil
+	}
+	// Lock every row this sweep touches — the outgoing facts, the observations
+	// and their surviving co-sources, which may belong to another document — in
+	// one id order before writing any of them. Two sweeps over a shared
+	// observation otherwise each hold a row the other writes next and deadlock;
+	// taking the locks in a fixed order means the second sweep simply waits.
+	// FOR NO KEY UPDATE still excludes a concurrent sweep or consolidation's
+	// shared lock, but lets foreign-key checks on these rows finish.
+	lockIDs := make([]string, 0, len(factIDs)+len(doomed)+len(remaining))
+	lockIDs = append(lockIDs, factIDs...)
+	lockIDs = append(lockIDs, doomed...)
+	lockIDs = append(lockIDs, remaining...)
+	if _, err := tx.ExecContext(ctx,
+		`SELECT id FROM `+qualified+`.memory_units
+		 WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR NO KEY UPDATE`,
+		bankID, lockIDs); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+		bankID, doomed); err != nil {
+		return 0, err
+	}
+	// The history is keyed by observation_id and does not cascade from
+	// memory_units, so drop the deleted observations' snapshots explicitly
+	// rather than leaving them to accumulate unreachable.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.observation_history WHERE bank_id = $1 AND observation_id = ANY($2::uuid[])`,
+		bankID, doomed); err != nil {
+		return 0, err
+	}
+	if len(remaining) > 0 {
+		// The surviving co-sources re-consolidate under a fresh observation;
+		// nothing about them changed, so only the scheduler marker is cleared.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
+			 WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+			bankID, remaining); err != nil {
+			return 0, err
+		}
+	}
+	return len(doomed), nil
 }
 
 // linkObservationSources records the facts an observation rests on, in the

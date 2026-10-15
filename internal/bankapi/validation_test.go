@@ -82,8 +82,8 @@ func TestPartialDispositionObjectReportsMissingMembers(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, item := range failure.Errors {
-		if item.Type != "value_error.missing" {
-			t.Errorf("error type = %q, want value_error.missing", item.Type)
+		if item.Type != "missing" {
+			t.Errorf("error type = %q, want missing", item.Type)
 		}
 		if len(item.Loc) != 3 || item.Loc[0] != "body" || item.Loc[1] != "disposition" {
 			t.Errorf("error location = %v, want the disposition member path", item.Loc)

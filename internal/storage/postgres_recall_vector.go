@@ -26,16 +26,19 @@ func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types [
 	if limit <= 0 || limit > semanticArmLimit {
 		limit = semanticArmLimit
 	}
-	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id,
-	                 embedding <=> $2::vector AS distance
+	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
+	                 COALESCE(source_memory_ids, '{}'::uuid[])::text,
+	                 embedding <=> $3::vector AS distance
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1
-	            AND fact_type = ANY($3)
+	            AND fact_type = ANY($2)
 	            AND embedding IS NOT NULL
-	          ORDER BY embedding <=> $2::vector
+	            AND ` + recallPredicates(q) + `
+	          ORDER BY embedding <=> $3::vector
 	          LIMIT $4`
 	vector := EncodeEmbedding(q.QueryEmbedding)
-	rows, err := s.db.QueryContext(ctx, query, q.BankID, vector, types, limit)
+	args := append(armArgs(q), vector, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -45,61 +48,26 @@ func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types [
 	for rows.Next() {
 		var m RecallMatch
 		var occurredStart, occurredEnd, mentionedAt sql.NullTime
-		var chunkID, documentID sql.NullString
+		var chunkID, documentID, context sql.NullString
+		var metadataRaw, tagsRaw, sourceRaw []byte
 		var distance float64
 		if err := rows.Scan(&m.ID, &m.Text, &m.Type, &occurredStart, &occurredEnd,
-			&mentionedAt, &chunkID, &documentID, &distance); err != nil {
+			&mentionedAt, &chunkID, &documentID, &context, &metadataRaw, &tagsRaw, &sourceRaw, &distance); err != nil {
 			return nil, err
 		}
-		m.OccurredStart = nullTimePtr(occurredStart)
-		m.OccurredEnd = nullTimePtr(occurredEnd)
-		m.MentionedAt = nullTimePtr(mentionedAt)
+		m.OccurredStart = utcTimePtr(nullTimePtr(occurredStart))
+		m.OccurredEnd = utcTimePtr(nullTimePtr(occurredEnd))
+		m.MentionedAt = utcTimePtr(nullTimePtr(mentionedAt))
 		m.ChunkID = chunkID.String
 		m.DocumentID = documentID.String
+		m.Context = context.String
+		m.Metadata = decodeJSONMap(metadataRaw)
+		m.Tags = decodePostgresTextArray(tagsRaw)
+		m.SourceMemoryIDs = decodePostgresTextArray(sourceRaw)
 		hits = append(hits, recallHit{match: m, score: CosineSimilarity(distance)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return hits, nil
-}
-
-// embeddingProviderAvailable reports whether a query vector was supplied, which
-// is what selects the real semantic arm over the stand-in.
-func embeddingProviderAvailable(q RecallQuery) bool {
-	return len(q.QueryEmbedding) > 0
-}
-
-// vectorRecall is the semantic-first recall path. It is used when the caller
-// supplied an embedded query, so ranking is by cosine similarity rather than by
-// textual containment.
-func (s *PostgresStore) vectorRecall(ctx context.Context, q RecallQuery, types []string, limit int) (RecallResult, error) {
-	hits, err := s.semanticHits(ctx, q, types, limit)
-	if err != nil {
-		return RecallResult{}, err
-	}
-	if floor, ok := q.MinScores[ArmSemantic]; ok {
-		filtered := hits[:0]
-		for _, hit := range hits {
-			if hit.score >= floor {
-				filtered = append(filtered, hit)
-			}
-		}
-		hits = filtered
-	}
-
-	matches := make([]RecallMatch, 0, len(hits))
-	for rank, hit := range hits {
-		match := hit.match
-		match.Scores = map[string]float64{ArmSemantic: hit.score}
-		match.ArmRanks = map[string]int{ArmSemantic: rank + 1}
-		match.Final = hit.score
-		matches = append(matches, match)
-	}
-	return RecallResult{Matches: matches, Trace: RecallTrace{
-		Budget:          len(matches),
-		BudgetUsed:      len(matches),
-		CandidatesFound: len(matches),
-		StageCounts:     map[string]int{"semantic": len(matches), "keyword": 0, "reranker": 0},
-	}}, nil
 }

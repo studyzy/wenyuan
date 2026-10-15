@@ -16,12 +16,24 @@ var ErrEntityNotFound = errors.New("entity not found")
 // DocumentQuery pages and filters a document listing.
 type DocumentQuery struct {
 	BankID string
-	// Tags narrows to documents carrying every listed tag.
+	// Tags narrows to documents whose tags satisfy TagsMatch.
 	Tags []string
-	// Query is a case-insensitive substring match on the document text.
+	// TagsMatch is one of any, all, any_strict, all_strict, exact. Empty means
+	// any_strict, the reference's default for the document listing.
+	TagsMatch string
+	// TagGroups, when set, replaces the flat tag filter with a compound tree,
+	// which is how a caller's resolved read scope is AND-ed into the listing.
+	TagGroups []TagGroup
+	// Query is a case-insensitive substring match on the document id.
 	Query  string
 	Limit  int
 	Offset int
+	// TimeField selects which timestamp the bounds apply to: created_at
+	// (default) or updated_at.
+	TimeField string
+	// TimeStart and TimeEnd bound the selected timestamp when set.
+	TimeStart *time.Time
+	TimeEnd   *time.Time
 }
 
 // ChunkQuery pages a chunk listing.
@@ -32,14 +44,40 @@ type ChunkQuery struct {
 	Offset     int
 }
 
-// EntityQuery pages and filters an entity listing.
+// EntityQuery pages and filters an entity listing. A tag filter restricts the
+// listing to entities a matching memory mentions, and recomputes each entity's
+// mention count over the matching memories only.
 type EntityQuery struct {
 	BankID string
-	Kind   EntityKind
-	// Query is a case-insensitive substring match on the canonical name.
-	Query  string
-	Limit  int
-	Offset int
+	// ID, when set, restricts the listing to that one entity (applied after the
+	// tag filter, so an unmatched filter yields an empty page).
+	ID string
+	// Tags, TagsMatch and TagGroups restrict which memories count.
+	Tags      []string
+	TagsMatch string
+	TagGroups []TagGroup
+	Limit     int
+	Offset    int
+}
+
+// tagFilterActive reports whether a tag predicate narrows a read: explicit
+// tags, tag groups, or an exact-match mode (whose empty request selects the
+// untagged scope).
+func tagFilterActive(tags []string, mode string, groups []TagGroup) bool {
+	return len(tags) > 0 || len(groups) > 0 || mode == TagsMatchExact
+}
+
+// matchesTagFilter applies a read's tag predicate to one unit's tags. With no
+// explicit tags and a non-exact mode no filter is applied, so the row stays
+// visible regardless of what it carries.
+func matchesTagFilter(present, tags []string, mode string, groups []TagGroup) bool {
+	if len(groups) > 0 {
+		return matchTagGroups(present, groups)
+	}
+	if len(tags) == 0 && mode != TagsMatchExact {
+		return true
+	}
+	return matchFlatTags(present, tags, mode)
 }
 
 // DocumentPage is one page of documents with the pre-paging total.
@@ -76,21 +114,26 @@ type TagCount struct {
 type GraphNodeData struct {
 	ID         string
 	Text       string
+	Context    string
 	FactType   string
 	Entities   []string
 	DocumentID string
 	ChunkID    string
 	Tags       []string
 	Mentioned  *time.Time
+	Date       *time.Time
 	CreatedAt  *time.Time
 }
 
 // GraphEdgeData is the payload of a memory-graph edge.
 type GraphEdgeData struct {
-	ID   string
-	From string
-	To   string
-	Type string
+	ID       string
+	From     string
+	To       string
+	Type     string
+	Entity   string
+	Weight   float64
+	LineType string
 }
 
 // GraphTableRow is one memory rendered as a flat row, so a client can present
@@ -112,6 +155,26 @@ type GraphTableRow struct {
 	ProofCount    int
 }
 
+// GraphQuery filters and bounds a memory-graph read. The filters select the
+// units that become nodes and table rows before the limit is applied.
+type GraphQuery struct {
+	BankID string
+	// Type narrows to one fact type: world|experience|observation; "" = all.
+	Type string
+	// Query is a case-insensitive substring match on unit text.
+	Query string
+	// Tags and TagsMatch narrow by tag; empty TagsMatch means all_strict.
+	Tags      []string
+	TagsMatch string
+	// TagGroups, when set, replaces the flat tag filter.
+	TagGroups []TagGroup
+	// DocumentID and ChunkID narrow to units from one document or chunk.
+	DocumentID string
+	ChunkID    string
+	// Limit caps the node set; negative means the store default.
+	Limit int
+}
+
 // GraphData is the memory graph of one bank.
 type GraphData struct {
 	Nodes     []GraphNodeData
@@ -121,12 +184,27 @@ type GraphData struct {
 	Limit     int
 }
 
+// EntityGraphQuery filters and bounds an entity co-occurrence graph read. A tag
+// filter restricts which memories count, so node mention counts and edges are
+// recomputed from the matching memories only.
+type EntityGraphQuery struct {
+	BankID string
+	// Limit caps the edge set; negative means the store default.
+	Limit int
+	// MinCount is the minimum cooccurrence weight an edge needs; <1 means 1.
+	MinCount  int
+	Tags      []string
+	TagsMatch string
+	TagGroups []TagGroup
+}
+
 // EntityGraphNode is one node of the entity graph, in the shape the client
 // renders directly.
 type EntityGraphNode struct {
-	ID    string
-	Label string
-	Color string
+	ID           string
+	Label        string
+	Color        string
+	MentionCount int
 }
 
 // EntityGraphEdge is one weighted relation between two entities.
@@ -145,6 +223,18 @@ type EntityGraph struct {
 	TotalEntities int
 	TotalEdges    int
 	Limit         int
+}
+
+// EntityMention is one memory text that mentions an entity.
+type EntityMention struct {
+	Text        string
+	MentionedAt *time.Time
+}
+
+// MaintenanceTarget is one bank-scoped identifier queued for maintenance.
+type MaintenanceTarget struct {
+	BankID string
+	ID     string
 }
 
 // jsonColumn encodes a map for a jsonb column, defaulting to an empty object so

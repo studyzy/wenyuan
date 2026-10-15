@@ -41,7 +41,7 @@ func TestContractKnowledgeBase(t *testing.T) {
 	if err != nil || updated.Title != "Deployment" {
 		t.Fatalf("update node = %+v (err %v)", updated, err)
 	}
-	if hits, err := store.SearchKnowledgeNodes(ctx, bank, "pipeline", 10); err != nil || len(hits) == 0 {
+	if hits, err := store.SearchKnowledgeNodes(ctx, KnowledgeSearchQuery{BankID: bank, Query: "pipeline", Limit: 10}); err != nil || len(hits) == 0 {
 		t.Fatalf("search nodes = %v (err %v)", hits, err)
 	}
 	if err := store.DeleteKnowledgeNode(ctx, bank, page.ID); err != nil {
@@ -84,7 +84,7 @@ func TestContractMentalModels(t *testing.T) {
 		t.Fatalf("update model = %+v (err %v)", updated, err)
 	}
 	if err := store.RecordMentalModelHistory(ctx, bank, model.ID, MentalModelHistoryEntry{
-		RefreshedAt: time.Now().UTC(), SourceQuery: model.SourceQuery, Content: "refreshed", Reason: "refresh",
+		ChangedAt: time.Now().UTC(), PreviousContent: strPtr("prior"),
 	}); err != nil {
 		t.Fatalf("record history: %v", err)
 	}
@@ -129,13 +129,13 @@ func TestContractObservability(t *testing.T) {
 	if _, err := store.ListAuditLog(ctx, AuditQuery{BankID: bank, Limit: 10}); err != nil {
 		t.Fatalf("audit log: %v", err)
 	}
-	if _, err := store.AuditLogStats(ctx, bank, "day"); err != nil {
+	if _, err := store.AuditLogStats(ctx, bank, "day", ""); err != nil {
 		t.Fatalf("audit stats: %v", err)
 	}
 	if _, err := store.ListLLMRequests(ctx, LLMRequestQuery{BankID: bank, Limit: 10}); err != nil {
 		t.Fatalf("llm requests: %v", err)
 	}
-	if _, err := store.LLMRequestStats(ctx, bank, "day"); err != nil {
+	if _, err := store.LLMRequestStats(ctx, bank, "day", ""); err != nil {
 		t.Fatalf("llm stats: %v", err)
 	}
 	scopes, err := store.ListObservationScopes(ctx, bank, 10, 0)
@@ -152,7 +152,7 @@ func TestContractObservability(t *testing.T) {
 func TestContractOperationLifecycle(t *testing.T) {
 	store, bank := newContractStore(t)
 	ctx := context.Background()
-	if _, err := store.GetOperation(ctx, "missing"); !errors.Is(err, ErrOperationNotFound) {
+	if _, err := store.GetOperation(ctx, bank, "missing"); !errors.Is(err, ErrOperationNotFound) {
 		t.Fatalf("unknown operation = %v, want ErrOperationNotFound", err)
 	}
 	if _, err := store.PutOperation(ctx, Operation{
@@ -170,6 +170,77 @@ func TestContractOperationLifecycle(t *testing.T) {
 	page, err := store.ListOperations(ctx, OperationQuery{BankID: bank, Limit: 10})
 	if err != nil || page.Total != 1 {
 		t.Fatalf("list operations = %+v (err %v)", page, err)
+	}
+}
+
+// Advancing with a result merges the reported metadata onto the operation,
+// leaving anything already recorded in place, and is a no-op when nothing is
+// reported.
+func TestContractAdvanceOperationWithResultMergesMetadata(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+	if _, err := store.PutOperation(ctx, Operation{
+		OperationID: "op-1", BankID: bank, OperationType: OperationTypeRefreshMentalModel,
+		Status: StatusPending, ResultMetadata: map[string]any{"mental_model_id": "mm-1"},
+	}); err != nil {
+		t.Fatalf("put operation: %v", err)
+	}
+
+	advanced, err := store.AdvanceOperationWithResult(ctx, "op-1", StatusCompleted, "", map[string]any{
+		"outcome":        "content_written",
+		"failure_reason": nil,
+	})
+	if err != nil {
+		t.Fatalf("advance with result: %v", err)
+	}
+	if advanced.ResultMetadata["outcome"] != "content_written" {
+		t.Fatalf("metadata = %+v, want the reported outcome", advanced.ResultMetadata)
+	}
+	if _, ok := advanced.ResultMetadata["failure_reason"]; !ok {
+		t.Fatalf("metadata = %+v, want the explicitly cleared reason", advanced.ResultMetadata)
+	}
+	if advanced.ResultMetadata["mental_model_id"] != "mm-1" {
+		t.Fatalf("metadata = %+v, want the pre-existing field preserved", advanced.ResultMetadata)
+	}
+}
+
+// Scheduling a retry with a result merges the reported metadata onto the
+// operation while leaving the retry schedule — status, count and next attempt
+// time — exactly as the plain scheduling path sets it.
+func TestContractScheduleOperationRetryWithResultMergesMetadata(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+	if _, err := store.PutOperation(ctx, Operation{
+		OperationID: "op-1", BankID: bank, OperationType: OperationTypeTransferImport,
+		Status: StatusProcessing, ResultMetadata: map[string]any{"webhook_id": "wh-1"},
+	}); err != nil {
+		t.Fatalf("put operation: %v", err)
+	}
+	// A compile-time proof that the memory backend carries the capability, then
+	// the behavioural one that its metadata survives.
+	var recorder OperationRetryRecorder = store
+	next := time.Now().UTC().Add(time.Minute)
+	if err := recorder.ScheduleOperationRetryWithResult(ctx, "op-1", 0, next, "rate limited", map[string]any{
+		"last_status_code": 429,
+	}); err != nil {
+		t.Fatalf("schedule retry with result: %v", err)
+	}
+	after, err := store.GetOperation(ctx, bank, "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ResultMetadata["last_status_code"] != 429 {
+		t.Fatalf("metadata = %+v, want the reported status", after.ResultMetadata)
+	}
+	if after.ResultMetadata["webhook_id"] != "wh-1" {
+		t.Fatalf("metadata = %+v, want the pre-existing field preserved", after.ResultMetadata)
+	}
+	if after.Status != StatusPending || after.RetryCount != 0 || after.NextRetryAt == nil {
+		t.Fatalf("the retry schedule must be unchanged: %+v", after)
+	}
+	// An empty report takes the plain path: only the schedule moves.
+	if err := recorder.ScheduleOperationRetryWithResult(ctx, "op-1", 0, next, "again", nil); err != nil {
+		t.Fatalf("schedule retry without result: %v", err)
 	}
 }
 

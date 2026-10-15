@@ -54,6 +54,31 @@ type OperationPruner interface {
 	PruneTerminalOperations(ctx context.Context, schema string, cutoff time.Time, batchSize int) (int, error)
 }
 
+// GraphMaintainer is the relink/prune queue the graph-maintenance job drains.
+//
+// It is taken as a narrow capability rather than the whole Store so the job is
+// testable with a stub, and it carries the requeue side of the queue as well as
+// the drain side: the drain removes each target before it is processed, so a
+// target that fails has to go back on the queue explicitly or its work is lost.
+type GraphMaintainer interface {
+	// DrainGraphMaintenance claims up to limit queued graph-relink targets and
+	// removes them from the queue.
+	DrainGraphMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error)
+	// RelinkUnit recomputes one unit's semantic links from its embedding.
+	RelinkUnit(ctx context.Context, bankID, unitID string) error
+	// DrainEntityMaintenance claims up to limit queued entity-prune targets and
+	// removes them from the queue.
+	DrainEntityMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error)
+	// PruneEntity removes an entity no memory unit mentions any more.
+	PruneEntity(ctx context.Context, bankID, entityID string) error
+	// RequeueGraphMaintenance returns relink targets to the queue for a later
+	// drain, deduplicating against rows already queued.
+	RequeueGraphMaintenance(ctx context.Context, targets []MaintenanceTarget) error
+	// RequeueEntityMaintenance returns entity-prune targets to the queue for a
+	// later drain, deduplicating against rows already queued.
+	RequeueEntityMaintenance(ctx context.Context, targets []MaintenanceTarget) error
+}
+
 // TerminalOperationStatuses are the statuses a prune may remove. A pending or
 // processing operation is never prunable: its work is still outstanding, and
 // removing the row would lose it silently.

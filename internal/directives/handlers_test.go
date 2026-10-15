@@ -52,7 +52,7 @@ func TestDirectiveLifecycle(t *testing.T) {
 	const base = "/v1/default/banks/b1/directives"
 
 	created := send(mux, http.MethodPost, base, `{"name":"tone","content":"be terse","priority":5}`)
-	if created.Code != http.StatusCreated {
+	if created.Code != http.StatusOK {
 		t.Fatalf("create: %d, body = %s", created.Code, created.Body.String())
 	}
 	var directive Directive
@@ -74,7 +74,7 @@ func TestDirectiveLifecycle(t *testing.T) {
 	if err := json.Unmarshal(listed.Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Directives) != 1 || list.BankID != "b1" {
+	if len(list.Items) != 1 || list.Total != 1 {
 		t.Fatalf("list = %+v", list)
 	}
 
@@ -96,25 +96,116 @@ func TestDirectiveLifecycle(t *testing.T) {
 	}
 
 	deleted := send(mux, http.MethodDelete, base+"/"+directive.ID, "")
-	if deleted.Code != http.StatusNoContent {
+	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete: %d", deleted.Code)
+	}
+	var deletedBody DeleteResponse
+	if err := json.Unmarshal(deleted.Body.Bytes(), &deletedBody); err != nil {
+		t.Fatal(err)
+	}
+	if deletedBody.Status != "deleted" {
+		t.Fatalf("delete body = %+v", deletedBody)
 	}
 	if got := send(mux, http.MethodGet, base+"/"+directive.ID, ""); got.Code != http.StatusNotFound {
 		t.Fatalf("get after delete: %d, want 404", got.Code)
 	}
 }
 
-// A create without a name or without content is rejected.
+// A create without a name or without content is a structured 422.
 func TestDirectiveCreateValidation(t *testing.T) {
 	mux, _ := newServer(t)
 	const base = "/v1/default/banks/b1/directives"
 	for _, body := range []string{`{"content":"x"}`, `{"name":"x"}`, `{}`} {
-		if rec := send(mux, http.MethodPost, base, body); rec.Code != http.StatusBadRequest {
-			t.Fatalf("create %s: %d, want 400", body, rec.Code)
+		rec := send(mux, http.MethodPost, base, body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("create %s: %d, want 422", body, rec.Code)
+		}
+		var failure struct {
+			Detail []struct {
+				Loc []string `json:"loc"`
+				Msg string   `json:"msg"`
+			} `json:"detail"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &failure); err != nil {
+			t.Fatal(err)
+		}
+		if len(failure.Detail) == 0 || failure.Detail[0].Loc[0] != "body" {
+			t.Fatalf("create %s detail = %+v", body, failure.Detail)
 		}
 	}
-	if rec := send(mux, http.MethodPost, base, `not json`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("malformed body: %d, want 400", rec.Code)
+	if rec := send(mux, http.MethodPost, base, `not json`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed body: %d, want 422", rec.Code)
+	}
+}
+
+// The list defaults to active-only and orders by priority, and untagged
+// directives stay in scope when a tag filter is supplied.
+func TestDirectiveListDefaultsAndOrdering(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	// A low-priority active directive, a high-priority one created first, an
+	// inactive one, and an untagged global directive.
+	send(mux, http.MethodPost, base, `{"name":"high","content":"h","priority":9}`)
+	send(mux, http.MethodPost, base, `{"name":"low","content":"l","priority":1}`)
+	send(mux, http.MethodPost, base, `{"name":"off","content":"x","priority":50,"is_active":false}`)
+	send(mux, http.MethodPost, base, `{"name":"global","content":"g","priority":5}`)
+
+	rec := send(mux, http.MethodGet, base, "")
+	var list ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	// The inactive directive is excluded by default; the rest are priority-ordered.
+	if list.Total != 3 {
+		t.Fatalf("default list must exclude inactive directives: %+v", list)
+	}
+	if list.Items[0].Name != "high" || list.Items[1].Name != "global" || list.Items[2].Name != "low" {
+		t.Fatalf("directives must be priority-ordered: %+v", list.Items)
+	}
+	if list.Limit != 100 {
+		t.Fatalf("default limit = %d, want 100", list.Limit)
+	}
+
+	// active_only=false includes the inactive directive.
+	rec = send(mux, http.MethodGet, base+"?active_only=false", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Total != 4 {
+		t.Fatalf("active_only=false list = %+v", list)
+	}
+
+	// An invalid tags_match is a structured 422 on the query parameter.
+	rec = send(mux, http.MethodGet, base+"?tags_match=all_strict", "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid tags_match: %d, want 422", rec.Code)
+	}
+	// An out-of-range limit is a structured 422.
+	if rec := send(mux, http.MethodGet, base+"?limit=0", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("limit=0: %d, want 422", rec.Code)
+	}
+}
+
+// A tag filter admits untagged (global) directives plus any tagged directive
+// whose tags match the requested scope.
+func TestDirectiveTagScoping(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	send(mux, http.MethodPost, base, `{"name":"global","content":"g"}`)
+	send(mux, http.MethodPost, base, `{"name":"team","content":"t","tags":["team"]}`)
+	send(mux, http.MethodPost, base, `{"name":"other","content":"o","tags":["other"]}`)
+
+	rec := send(mux, http.MethodGet, base+"?tags=team", "")
+	var list ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, item := range list.Items {
+		names[item.Name] = true
+	}
+	if !names["global"] || !names["team"] || names["other"] {
+		t.Fatalf("tag scoping = %+v", list.Items)
 	}
 }
 

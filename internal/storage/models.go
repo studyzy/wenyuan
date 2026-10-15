@@ -3,6 +3,8 @@ package storage
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/entitylabels"
 )
 
 // Bank is the stored bank representation. Field names on the JSON representation
@@ -17,7 +19,11 @@ type Bank struct {
 	// value it can use rather than a map it must know the keys of.
 	Disposition map[string]int
 	// Mission is the standing instruction applied when the bank reflects.
-	Mission   string
+	Mission string
+	// Config is the bank's configuration overrides, keyed by the public config
+	// names. It holds the fields the reference stores per bank beyond the
+	// disposition traits and the mission, such as the recall arm toggles.
+	Config    map[string]any
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
@@ -27,6 +33,34 @@ type Bank struct {
 	LastDocumentAt *time.Time
 	// LastWriteAt is the last write watermark, nil for a never-written bank.
 	LastWriteAt *time.Time
+}
+
+// RecallDisabledArms returns the recall arms the bank's configuration turns
+// off. Each toggle defaults to on, so an unset override leaves the arm enabled.
+// The cross-encoder pass travels in this list too, as ArmReranker.
+func (b Bank) RecallDisabledArms() []string {
+	out := make([]string, 0, 4)
+	if !bankConfigBool(b.Config, "enable_text_search") {
+		out = append(out, ArmKeyword)
+	}
+	if !bankConfigBool(b.Config, "enable_temporal_retrieval") {
+		out = append(out, ArmTemporal)
+	}
+	if !bankConfigBool(b.Config, "enable_graph_retrieval") {
+		out = append(out, ArmGraph)
+	}
+	if !bankConfigBool(b.Config, "enable_reranking") {
+		out = append(out, ArmReranker)
+	}
+	return out
+}
+
+// bankConfigBool reads a boolean override, defaulting to true.
+func bankConfigBool(config map[string]any, key string) bool {
+	if value, ok := config[key].(bool); ok {
+		return value
+	}
+	return true
 }
 
 // Disposition trait keys, which are the reference's own key names inside the
@@ -73,8 +107,19 @@ type BankPatch struct {
 	Name *string
 	// Disposition, when set, merges into the bank's traits rather than
 	// replacing the set, so a caller setting one trait does not clear the rest.
+	// Only the traits it names are stored, so which traits a bank overrides is
+	// preserved rather than materialized into every trait.
 	Disposition *map[string]int
-	Mission     *string
+	// ClearDisposition removes every stored trait when true, so a reset leaves
+	// the bank on the neutral defaults rather than on traits it once set.
+	ClearDisposition bool
+	Mission          *string
+	// Config, when set, merges into the bank's configuration overrides; a nil
+	// value for a key removes it.
+	Config *map[string]any
+	// ClearConfig removes every configuration override when true, so a reset
+	// returns the bank to the process defaults.
+	ClearConfig bool
 }
 
 // BankAlias is one extra identifier that routes to a bank. Persisted in the
@@ -201,7 +246,7 @@ type RecallResult struct {
 	// Rich side channels produced by the recall pipeline.
 	EntityStates         []EntityState
 	ChunkEntries         []ChunkEntry
-	SourceFactMap        map[string]string
+	SourceFactMap        map[string]RecallMatch
 	SourceFactsTruncated bool
 
 	// Trace carries the recall debug counts. It is populated by the retrieval
@@ -222,6 +267,10 @@ type RecallTrace struct {
 	StageCounts map[string]int
 	// PhaseMetrics carries per-phase timings in milliseconds.
 	PhaseMetrics RecallPhaseMetrics
+	// Detail carries the reference-shaped retrieval trace: the per-arm results,
+	// the RRF merge and the reranked entries with their score components. It is
+	// populated by the retrieval pipeline for the trace route.
+	Detail *RecallTraceDetail
 }
 
 // RecallPhaseMetrics is the per-phase timing of a recall, in milliseconds.
@@ -273,10 +322,28 @@ type RetainItem struct {
 	ObservationScopes json.RawMessage
 	Strategy          string
 	UpdateMode        string
+	// ForceReextract re-extracts an unchanged document instead of skipping it.
+	// Without it a re-retain whose content hash matches the stored one is a
+	// no-op, which is what makes a repeated import idempotent.
+	ForceReextract bool
 	// AttachmentIDs are the short attachment ids this item's content carries.
 	// The file route stores the uploaded bytes and records them here so the
 	// units built from the item can name their provenance.
 	AttachmentIDs []string
+	// Attachments are the inline attachments' decoded bytes, in block order,
+	// carried so the extractor can put each image into the prompt where its
+	// placeholder stands. The ids here match AttachmentIDs.
+	Attachments []RetainAttachment
+}
+
+// RetainAttachment is one inline attachment's decoded bytes, carried from the
+// retain ingress to the extractor. The short id is what the document text's
+// placeholder names, so the extractor can resolve a placeholder to its image.
+type RetainAttachment struct {
+	ShortID   string
+	MediaType string
+	Kind      string
+	Data      []byte
 }
 
 // RetainRequest is a normalized memory write submitted through the retain
@@ -291,6 +358,43 @@ type RetainRequest struct {
 	// Extraction turns items into facts. A nil value stores each item's text
 	// verbatim, which is what a deployment with no model configured gets.
 	Extraction FactExtraction
+	// ExtractionMission and ExtractionInstructions are the bank's retain
+	// mission and custom instructions, rendered into the extraction prompt as
+	// their own labelled blocks. Empty leaves the default prompt unchanged.
+	ExtractionMission      string
+	ExtractionInstructions string
+	// ExtractionMode is the bank's retain_extraction_mode: concise (the
+	// default), verbose, custom, verbatim or chunks. It selects the extraction
+	// prompt and response schema, and chunks skips the model call entirely.
+	ExtractionMode string
+	// OptionalFactDimensions lets the four descriptive dimensions be omitted
+	// rather than spelled "N/A"; it relaxes the dimensions in the prompt and
+	// the schema.
+	OptionalFactDimensions bool
+	// Vocabulary is the bank's controlled label vocabulary. When set, each
+	// label an extraction selects becomes an entity named key:value, and a
+	// group flagged tag:true also lands on the unit's tags. Nil leaves both the
+	// extraction contract and the stored unit exactly as they were.
+	Vocabulary *entitylabels.Vocabulary
+	// ChunkSize and StructuredChunkSize bound a stored segment's text: the
+	// prose boundary and the structured (JSON/JSONL) boundary respectively.
+	// Zero uses the default, so a bank that configures nothing chunks exactly
+	// as it did before.
+	ChunkSize           int
+	StructuredChunkSize int
+	// Embeddings, when non-nil, embeds each stored unit so the vector recall
+	// arm and its ANN index have vectors to rank.
+	Embeddings EmbeddingGenerator
+	// DiscardDocumentText suppresses persistence of the raw source text: the
+	// document's original_text and each chunk's text are stored empty while
+	// the content hashes are still computed from the real text, so delta
+	// dedup is unaffected. It is false by default, which keeps the text.
+	DiscardDocumentText bool
+	// SkipOperationRecord makes the write leave the operation queue alone.
+	// A queued write already owns its operation record — the worker that
+	// dequeued it will settle it — so creating a second one would leave a
+	// stray operation behind for every async retain.
+	SkipOperationRecord bool
 }
 
 // RetainOutcome is the persisted outcome of a retain write.
@@ -386,6 +490,19 @@ type MemoryUnit struct {
 	ConsolidationFailedAt *time.Time
 	// AttachmentIDs are the short attachment ids the unit was drawn from.
 	AttachmentIDs []string
+	// TextSignals is the entity names plus spelled-out event dates the unit's
+	// full-text vector is enriched with (the reference's text_signals column).
+	// Empty when the unit mentions no entity and carries no event date.
+	TextSignals string
+	// CreatedAt, UpdatedAt and EditedAt are the unit's record timestamps, so a
+	// recall/list read can report when the memory was written and last changed.
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
+	EditedAt  *time.Time
+	// InvalidatedAt and InvalidationReason are set when the unit has been
+	// curated to the invalidated state.
+	InvalidatedAt      *time.Time
+	InvalidationReason *string
 }
 
 // Attachment is one document's copy of an inline retain attachment. The bytes
@@ -412,16 +529,29 @@ type ConsolidationFact struct {
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time
+	// Tags are the fact's own tags, which the default combined scope folds it
+	// under.
+	Tags []string
+	// ObservationScopes is the unit's raw observation_scopes request, carried
+	// so consolidation can resolve which concrete scopes the fact writes to.
+	ObservationScopes json.RawMessage
 }
 
 // ConsolidationObservation is one existing consolidated conclusion offered to a
 // consolidation pass as a merge candidate.
 type ConsolidationObservation struct {
-	ID          string
-	Text        string
-	ProofCount  int
-	SourceIDs   []string
+	ID         string
+	Text       string
+	ProofCount int
+	SourceIDs  []string
+	// SourceTexts are the texts of the facts this observation rests on, aligned
+	// with SourceIDs where the store can supply them. They are the evidence a
+	// consolidation call shows the model, bounded by the source-fact budgets.
+	SourceTexts []string
 	MentionedAt *time.Time
+	// Scope is the observation's tag scope, the canonical tag set it was
+	// written at. An empty slice is the untagged (default) scope.
+	Scope []string
 }
 
 // MemoryLink is one directed link between two memory units.
@@ -449,8 +579,11 @@ type OperationQuery struct {
 	// WorkerID narrows the listing to the operations one consumer currently
 	// holds, which is what a graceful shutdown scans.
 	WorkerID string
-	Limit    int
-	Offset   int
+	// ExcludeParents drops parent batch operations (those carrying
+	// result_metadata["is_parent"]=true) from the listing.
+	ExcludeParents bool
+	Limit          int
+	Offset         int
 }
 
 // OperationPage is one page of operations with the pre-paging total.

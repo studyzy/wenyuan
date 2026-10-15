@@ -32,6 +32,7 @@ func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, lim
 			ID: unit.ID, Text: unit.Text,
 			OccurredStart: unit.OccurredStart, OccurredEnd: unit.OccurredEnd,
 			MentionedAt: unit.MentionedAt,
+			Tags:        canonicalScope(unit.Tags), ObservationScopes: unit.ObservationScopes,
 		})
 	}
 	sortNewestFirst(candidates, func(f ConsolidationFact) *time.Time { return f.MentionedAt },
@@ -64,7 +65,9 @@ func (s *MemoryStore) ConsolidationObservations(ctx context.Context, bankID stri
 		sources := append([]string(nil), s.observationSources[unit.ID]...)
 		candidates = append(candidates, ConsolidationObservation{
 			ID: unit.ID, Text: unit.Text, SourceIDs: sources,
-			ProofCount: len(sources), MentionedAt: unit.MentionedAt,
+			SourceTexts: s.sourceTextsLocked(sources),
+			ProofCount:  len(sources), MentionedAt: unit.MentionedAt,
+			Scope: canonicalScope(unit.Tags),
 		})
 	}
 	sortNewestFirst(candidates, func(o ConsolidationObservation) *time.Time { return o.MentionedAt },
@@ -100,18 +103,20 @@ func (s *MemoryStore) CreateObservation(ctx context.Context, bankID, text string
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	unit, err := s.UpsertUnit(ctx, MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation})
+	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
+	unit.Embedding = embedObservation(ctx, s.observationEmbedderRef(), text)
+	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
 		return "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sourceID := range sourceIDs {
-		if !containsString(s.observationSources[unit.ID], sourceID) {
-			s.observationSources[unit.ID] = append(s.observationSources[unit.ID], sourceID)
+		if !containsString(s.observationSources[stored.ID], sourceID) {
+			s.observationSources[stored.ID] = append(s.observationSources[stored.ID], sourceID)
 		}
 	}
-	return unit.ID, nil
+	return stored.ID, nil
 }
 
 // UpdateObservation rewrites an observation and attaches more evidence.
@@ -128,6 +133,12 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 	if !ok || unit.BankID != bankID || unit.FactType != TypeObservation {
 		return ErrMemoryNotFound
 	}
+	// The pre-update text is kept as a history entry, so what the conclusion
+	// said before it was reinforced stays readable. The tail is bounded so a
+	// frequently-reinforced observation does not grow forever.
+	if unit.Text != text {
+		s.recordObservationHistoryLocked(observationID, unit.Text)
+	}
 	unit.Text = text
 	now := time.Now().UTC()
 	unit.MentionedAt = &now
@@ -138,6 +149,22 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 		}
 	}
 	return nil
+}
+
+// recordObservationHistoryLocked appends one pre-update snapshot and trims the
+// history to its retention bound. The caller holds the write lock.
+func (s *MemoryStore) recordObservationHistoryLocked(observationID, text string) {
+	if s.memoryHistory == nil {
+		s.memoryHistory = map[string][]MemoryHistoryEntry{}
+	}
+	s.memoryHistory[observationID] = append(s.memoryHistory[observationID], MemoryHistoryEntry{
+		ChangedAt: time.Now().UTC(),
+		Reason:    "consolidated",
+		Text:      text,
+	})
+	if len(s.memoryHistory[observationID]) > ObservationHistoryMaxEntries {
+		s.memoryHistory[observationID] = s.memoryHistory[observationID][len(s.memoryHistory[observationID])-ObservationHistoryMaxEntries:]
+	}
 }
 
 // DeleteObservation removes one observation and its evidence links.
@@ -178,4 +205,95 @@ func (s *MemoryStore) MarkConsolidated(ctx context.Context, bankID string, factI
 		}
 	}
 	return nil
+}
+
+// MarkConsolidationFailed records that a pass gave up on the given facts, so
+// the candidates read excludes them until recovery requeues them.
+func (s *MemoryStore) MarkConsolidationFailed(ctx context.Context, bankID string, factIDs []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	now := time.Now().UTC()
+	for _, id := range factIDs {
+		unit, ok := s.units[id]
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		failed := now
+		unit.ConsolidationFailedAt = &failed
+		s.units[id] = unit
+	}
+	return nil
+}
+
+// DeleteStaleObservations removes the observations that rest on any of the
+// given facts and requeues their surviving co-sources, before those facts are
+// deleted. An observation that has lost a source is stale.
+func (s *MemoryStore) DeleteStaleObservations(ctx context.Context, bankID string, factIDs []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(factIDs) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	return s.deleteStaleObservationsLocked(bankID, factIDs)
+}
+
+// deleteStaleObservationsLocked is the body of the sweep, run while the caller
+// already holds the write lock so a wider retag can share it.
+func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []string) (int, error) {
+	deleted := make(map[string]bool, len(factIDs))
+	for _, id := range factIDs {
+		deleted[id] = true
+	}
+	doomed := make([]string, 0)
+	remaining := make([]string, 0)
+	seen := map[string]bool{}
+	for id, unit := range s.units {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
+			continue
+		}
+		sources := s.observationSources[id]
+		hit := false
+		for _, source := range sources {
+			if deleted[source] {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		doomed = append(doomed, id)
+		for _, source := range sources {
+			if deleted[source] || seen[source] {
+				continue
+			}
+			seen[source] = true
+			remaining = append(remaining, source)
+		}
+	}
+	for _, id := range doomed {
+		delete(s.units, id)
+		delete(s.observationSources, id)
+		delete(s.consolidated, id)
+	}
+	for _, id := range remaining {
+		if unit, ok := s.units[id]; ok {
+			unit.ConsolidatedAt = nil
+			s.units[id] = unit
+			delete(s.consolidated, id)
+		}
+	}
+	return len(doomed), nil
 }

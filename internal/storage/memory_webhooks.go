@@ -98,6 +98,9 @@ func (s *MemoryStore) UpdateWebhook(ctx context.Context, bankID, webhookID strin
 	if patch.Enabled != nil {
 		webhook.Enabled = *patch.Enabled
 	}
+	if patch.HTTPConfig != nil {
+		webhook.HTTPConfig = *patch.HTTPConfig
+	}
 	webhook.UpdatedAt = time.Now().UTC()
 	s.webhooks[key] = cloneWebhook(webhook)
 	return cloneWebhook(webhook), nil
@@ -118,41 +121,60 @@ func (s *MemoryStore) DeleteWebhook(ctx context.Context, bankID, webhookID strin
 		return ErrWebhookNotFound
 	}
 	delete(s.webhooks, key)
-	// The delivery records describe a webhook that no longer exists.
-	kept := s.webhookDeliveries[:0]
-	for _, delivery := range s.webhookDeliveries {
-		if delivery.WebhookID == webhookID {
-			continue
-		}
-		kept = append(kept, delivery)
-	}
-	s.webhookDeliveries = kept
+	// The delivery records are operations, and an operation is a historical
+	// fact: a deleted webhook's past deliveries stay readable, exactly as the
+	// database backend leaves them.
 	return nil
 }
 
 // ListWebhookDeliveries returns one page of a webhook's delivery records.
-func (s *MemoryStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit, offset int) (WebhookDeliveryPage, error) {
+//
+// A delivery is an operation of type webhook_delivery, which is where the
+// reference records one: the endpoint, the event and the outcome all live on
+// that row rather than in a table of their own. Deriving the page from the
+// operations keeps the two backends answering the same question the same way.
+func (s *MemoryStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit int, cursor string) (WebhookDeliveryPage, error) {
 	if err := ctx.Err(); err != nil {
 		return WebhookDeliveryPage{}, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	matched := make([]WebhookDelivery, 0)
-	for _, delivery := range s.webhookDeliveries {
-		if delivery.BankID == bankID && (webhookID == "" || delivery.WebhookID == webhookID) {
-			matched = append(matched, delivery)
+	for _, op := range s.operations {
+		if op.BankID != bankID || op.OperationType != OperationTypeWebhookDelivery {
+			continue
 		}
+		delivery := deliveryFromOperation(op)
+		if webhookID != "" && delivery.WebhookID != webhookID {
+			continue
+		}
+		matched = append(matched, delivery)
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
-		if !matched[i].DeliveredAt.Equal(matched[j].DeliveredAt) {
-			return matched[i].DeliveredAt.After(matched[j].DeliveredAt)
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
 		}
 		return matched[i].ID < matched[j].ID
 	})
-	total := len(matched)
-	start, end := pageBounds(total, offset, limit)
-	return WebhookDeliveryPage{Deliveries: matched[start:end], Total: total,
-		Limit: limit, Offset: offset}, nil
+	if cursor != "" {
+		if after, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
+			filtered := matched[:0]
+			for _, delivery := range matched {
+				if delivery.CreatedAt.Before(after) {
+					filtered = append(filtered, delivery)
+				}
+			}
+			matched = filtered
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	hasMore := len(matched) > limit
+	if hasMore {
+		matched = matched[:limit]
+	}
+	return WebhookDeliveryPage{Deliveries: matched, HasMore: hasMore}, nil
 }
 
 // cloneWebhook copies the mutable fields.
@@ -161,4 +183,38 @@ func cloneWebhook(webhook Webhook) Webhook {
 	out.EventTypes = append([]string(nil), webhook.EventTypes...)
 	out.HTTPConfig = copyAnyMap(webhook.HTTPConfig)
 	return out
+}
+
+// deliveryFromOperation renders one webhook-delivery operation as a delivery
+// record, the same projection the Postgres backend reads from its column set.
+func deliveryFromOperation(op Operation) WebhookDelivery {
+	delivery := WebhookDelivery{
+		ID:          op.OperationID,
+		BankID:      op.BankID,
+		Status:      string(op.Status),
+		Attempts:    op.RetryCount + 1,
+		LastError:   op.Error,
+		NextRetryAt: op.NextRetryAt,
+		CreatedAt:   op.CreatedAt,
+		UpdatedAt:   op.UpdatedAt,
+	}
+	if webhookID, ok := op.Payload["webhook_id"].(string); ok {
+		delivery.WebhookID = webhookID
+	}
+	if eventType, ok := op.Payload["event_type"].(string); ok {
+		delivery.EventType = eventType
+	}
+	if url, ok := op.Payload["url"].(string); ok {
+		delivery.URL = url
+	}
+	if op.ResultMetadata != nil {
+		switch code := op.ResultMetadata["last_status_code"].(type) {
+		case int:
+			delivery.LastResponseStatus = &code
+		case float64:
+			intCode := int(code)
+			delivery.LastResponseStatus = &intCode
+		}
+	}
+	return delivery
 }

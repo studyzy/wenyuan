@@ -1,6 +1,10 @@
 package memoryops
 
 import (
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -13,18 +17,158 @@ func BuildRecallResponse(result storage.RecallResult, req RecallRequest) RecallR
 	for _, match := range selected {
 		items = append(items, toResultItem(match))
 	}
-	response := RecallResponse{
-		Results:   items,
-		Truncated: result.Truncated,
-	}
+	response := RecallResponse{Results: items}
 	response.Entities = buildEntityChannel(result)
 	response.Chunks = buildChunkChannel(result)
 	response.SourceFacts = buildSourceFactChannel(result)
 	response.SourceFactsTruncated = result.SourceFactsTruncated
+	if req.Include != nil {
+		if req.Include.Entities != nil {
+			response.Entities = capEntityChannel(response.Entities, req.Include.Entities.MaxTokens)
+		}
+		if req.Include.Chunks != nil {
+			response.Chunks = capChunkChannel(response.Chunks, req.Include.Chunks.MaxTokens)
+		}
+		if req.Include.SourceFacts != nil {
+			var truncated bool
+			response.SourceFacts, truncated = capSourceFactChannel(response.SourceFacts,
+				req.Include.SourceFacts.MaxTokens, req.Include.SourceFacts.MaxTokensPerObservation)
+			response.SourceFactsTruncated = response.SourceFactsTruncated || truncated
+		}
+	}
 	if req.Trace {
 		response.Trace = buildRecallTraceResponse(result, req, len(items))
 	}
 	return response
+}
+
+// capEntityChannel bounds the entity channel by total observation tokens,
+// clipping the last observations that fit and dropping the rest.
+func capEntityChannel(channels map[string]EntityStateEntry, maxTokens int) map[string]EntityStateEntry {
+	if maxTokens <= 0 || len(channels) == 0 {
+		return channels
+	}
+	remaining := maxTokens
+	for _, key := range sortedEntityKeys(channels) {
+		entry := channels[key]
+		kept := entry.Observations[:0]
+		for _, observation := range entry.Observations {
+			tokens := tokenCount(observation.Text)
+			if remaining <= 0 {
+				break
+			}
+			if tokens > remaining {
+				observation.Text = clipToTokens(observation.Text, remaining)
+				tokens = remaining
+			}
+			remaining -= tokens
+			kept = append(kept, observation)
+		}
+		entry.Observations = kept
+		channels[key] = entry
+	}
+	return channels
+}
+
+// capChunkChannel bounds the chunk channel by total tokens, marking a clipped
+// chunk as truncated and dropping the chunks beyond the budget.
+func capChunkChannel(channels map[string]ChunkEntry, maxTokens int) map[string]ChunkEntry {
+	if maxTokens <= 0 || len(channels) == 0 {
+		return channels
+	}
+	remaining := maxTokens
+	for _, key := range sortedChunkKeys(channels) {
+		entry := channels[key]
+		tokens := tokenCount(entry.Text)
+		if tokens > remaining {
+			if remaining <= 0 {
+				delete(channels, key)
+				continue
+			}
+			entry.Text = clipToTokens(entry.Text, remaining)
+			entry.Truncated = true
+			remaining = 0
+		} else {
+			remaining -= tokens
+		}
+		channels[key] = entry
+	}
+	return channels
+}
+
+// capSourceFactChannel bounds the source-fact channel by total tokens and each
+// entry by its per-observation budget, reporting whether anything was clipped.
+func capSourceFactChannel(channels map[string]RecallResultItem, maxTokens, perObservation int) (map[string]RecallResultItem, bool) {
+	if len(channels) == 0 {
+		return channels, false
+	}
+	truncated := false
+	remaining := maxTokens
+	for _, key := range sortedResultKeys(channels) {
+		entry := channels[key]
+		if perObservation > 0 {
+			if tokens := tokenCount(entry.Text); tokens > perObservation {
+				entry.Text = clipToTokens(entry.Text, perObservation)
+				truncated = true
+			}
+		}
+		if maxTokens > 0 {
+			tokens := tokenCount(entry.Text)
+			if tokens > remaining {
+				if remaining <= 0 {
+					delete(channels, key)
+					truncated = true
+					continue
+				}
+				entry.Text = clipToTokens(entry.Text, remaining)
+				remaining = 0
+				truncated = true
+			} else {
+				remaining -= tokens
+			}
+		}
+		channels[key] = entry
+	}
+	return channels, truncated
+}
+
+// clipToTokens clips a text to at most maxTokens whitespace fields.
+func clipToTokens(text string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return ""
+	}
+	fields := strings.Fields(text)
+	if len(fields) <= maxTokens {
+		return text
+	}
+	return strings.Join(fields[:maxTokens], " ")
+}
+
+func sortedEntityKeys(channels map[string]EntityStateEntry) []string {
+	keys := make([]string, 0, len(channels))
+	for key := range channels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedChunkKeys(channels map[string]ChunkEntry) []string {
+	keys := make([]string, 0, len(channels))
+	for key := range channels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedResultKeys(channels map[string]RecallResultItem) []string {
+	keys := make([]string, 0, len(channels))
+	for key := range channels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // buildRecallTraceResponse renders the debug trace for a recall that asked for one. The shape
@@ -43,13 +187,14 @@ func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, re
 		"assembly_ms":  result.Trace.PhaseMetrics.AssemblyMillis,
 		"total_ms":     result.Trace.PhaseMetrics.TotalMillis,
 	}
-	return map[string]any{
-		"query": map[string]any{
-			"query_text": req.Query,
-			"budget":     result.Trace.Budget,
-			"max_tokens": req.MaxTokens,
-			"tags":       nonNilStrings(req.Tags),
-		},
+	query := map[string]any{
+		"query_text": req.Query,
+		"budget":     result.Trace.Budget,
+		"max_tokens": req.MaxTokens,
+		"tags":       nonNilStrings(req.Tags),
+	}
+	trace := map[string]any{
+		"query": query,
 		"summary": map[string]any{
 			"candidates_found":  result.Trace.CandidatesFound,
 			"budget_used":       result.Trace.BudgetUsed,
@@ -59,7 +204,110 @@ func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, re
 			"phase_metrics":     phaseMetrics,
 			"stage_counts":      stageCounts,
 		},
+		"retrieval_results": []any{},
+		"rrf_merged":        []any{},
+		"reranked":          []any{},
 	}
+	if detail := result.Trace.Detail; detail != nil {
+		renderTraceDetail(query, trace, detail)
+	}
+	return trace
+}
+
+// renderTraceDetail folds the reference-shaped retrieval detail into the trace:
+// the query block reports the anchor the ranking was measured against, and the
+// three result lists describe the arms, the fusion and the rerank.
+func renderTraceDetail(query, trace map[string]any, detail *storage.RecallTraceDetail) {
+	query["timestamp"] = detail.Anchor.UTC().Format(time.RFC3339Nano)
+	query["budget"] = detail.Budget
+	if detail.TagsMatch != "" {
+		query["tags_match"] = detail.TagsMatch
+	}
+	if detail.TemporalStart != nil || detail.TemporalEnd != nil {
+		constraint := map[string]any{}
+		if detail.TemporalStart != nil {
+			constraint["start"] = detail.TemporalStart.UTC().Format(time.RFC3339Nano)
+		}
+		if detail.TemporalEnd != nil {
+			constraint["end"] = detail.TemporalEnd.UTC().Format(time.RFC3339Nano)
+		}
+		query["temporal_constraint"] = constraint
+	}
+	trace["retrieval_results"] = renderArmResults(detail.RetrievalResults)
+	trace["rrf_merged"] = renderRRFMerged(detail.RRFMerged)
+	trace["reranked"] = renderReranked(detail.Reranked)
+}
+
+// renderArmResults renders one entry per retrieval arm and fact type.
+func renderArmResults(arms []storage.TraceArmResults) []any {
+	out := make([]any, 0, len(arms))
+	for _, arm := range arms {
+		results := make([]any, 0, len(arm.Results))
+		for _, hit := range arm.Results {
+			entry := map[string]any{
+				"rank":       hit.Rank,
+				"node_id":    hit.NodeID,
+				"text":       hit.Text,
+				"context":    hit.Context,
+				"fact_type":  hit.FactType,
+				"score":      hit.Score,
+				"score_name": hit.ScoreName,
+			}
+			if hit.EventDate != nil {
+				entry["event_date"] = hit.EventDate.UTC().Format(time.RFC3339Nano)
+			} else {
+				entry["event_date"] = nil
+			}
+			results = append(results, entry)
+		}
+		out = append(out, map[string]any{
+			"method_name": arm.MethodName,
+			"fact_type":   arm.FactType,
+			"results":     results,
+		})
+	}
+	return out
+}
+
+// renderRRFMerged renders the fused candidate list with each candidate's rank
+// per contributing arm.
+func renderRRFMerged(entries []storage.TraceRRFEntry) []any {
+	out := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		sourceRanks := make(map[string]any, len(entry.SourceRanks))
+		for key, rank := range entry.SourceRanks {
+			sourceRanks[key] = rank
+		}
+		out = append(out, map[string]any{
+			"node_id":        entry.NodeID,
+			"text":           entry.Text,
+			"rrf_score":      entry.RRFScore,
+			"source_ranks":   sourceRanks,
+			"final_rrf_rank": entry.FinalRRFRank,
+		})
+	}
+	return out
+}
+
+// renderReranked renders the ranked list with the components behind each score.
+func renderReranked(entries []storage.TraceRerankedEntry) []any {
+	out := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		components := make(map[string]any, len(entry.ScoreComponents))
+		for key, value := range entry.ScoreComponents {
+			components[key] = value
+		}
+		out = append(out, map[string]any{
+			"node_id":          entry.NodeID,
+			"text":             entry.Text,
+			"rerank_score":     entry.RerankScore,
+			"rerank_rank":      entry.RerankRank,
+			"rrf_rank":         entry.RRFRank,
+			"rank_change":      entry.RankChange,
+			"score_components": components,
+		})
+	}
+	return out
 }
 
 // toResultItem maps a storage match into a public result item.
@@ -74,7 +322,7 @@ func toResultItem(match storage.RecallMatch) RecallResultItem {
 		MentionedAt:   match.MentionedAt,
 		ChunkID:       match.ChunkID,
 		DocumentID:    match.DocumentID,
-		Metadata:      match.Metadata,
+		Metadata:      nonNilMap(match.Metadata),
 		SourceFactIDs: nonNilStrings(match.SourceMemoryIDs),
 		Scores:        toScoreObject(match),
 		Entities:      nonNilStrings(match.Entities),
@@ -105,7 +353,7 @@ func toScoreObject(match storage.RecallMatch) RecallScoreObject {
 func toAttachments(attachments []storage.RecallAttachment) []Attachment {
 	out := make([]Attachment, 0, len(attachments))
 	for _, a := range attachments {
-		out = append(out, Attachment{ID: a.ID, Kind: a.Kind, URI: a.URI})
+		out = append(out, attachmentFromRecall(a))
 	}
 	return out
 }
@@ -122,7 +370,7 @@ func buildEntityChannel(result storage.RecallResult) map[string]EntityStateEntry
 			obs = append(obs, EntityObservationEntry{Text: o.Text, MentionedAt: o.MentionedAt})
 		}
 		out[state.Name] = EntityStateEntry{
-			ID:            state.ID,
+			EntityID:      state.ID,
 			CanonicalName: state.CanonicalName,
 			Observations:  obs,
 		}
@@ -137,17 +385,23 @@ func buildChunkChannel(result storage.RecallResult) map[string]ChunkEntry {
 	}
 	out := make(map[string]ChunkEntry, len(result.ChunkEntries))
 	for _, c := range result.ChunkEntries {
-		out[c.ID] = ChunkEntry{ID: c.ID, Text: c.Text, Index: c.Index, Truncated: c.Truncated}
+		out[c.ID] = ChunkEntry{ID: c.ID, Text: c.Text, ChunkIndex: c.Index, Truncated: c.Truncated}
 	}
 	return out
 }
 
-// buildSourceFactChannel keys the source-fact map by source-fact id.
-func buildSourceFactChannel(result storage.RecallResult) map[string]string {
+// buildSourceFactChannel keys the source-fact map by source-fact id, carrying
+// the same result shape as the ranked list so a client can read a source
+// fact's text, type and scores rather than only its text.
+func buildSourceFactChannel(result storage.RecallResult) map[string]RecallResultItem {
 	if len(result.SourceFactMap) == 0 {
 		return nil
 	}
-	return result.SourceFactMap
+	out := make(map[string]RecallResultItem, len(result.SourceFactMap))
+	for id, match := range result.SourceFactMap {
+		out[id] = toResultItem(match)
+	}
+	return out
 }
 
 // applyTokenCap returns the highest-ranked facts that fit the token cap. An
@@ -182,30 +436,29 @@ func applyTokenCap(matches []storage.RecallMatch, capPtr *int) []storage.RecallM
 	return selected
 }
 
-// tokenCount approximates the token cost of a text as its whitespace fields; an
-// empty text costs one token.
+// tokenCount is the token cost the recall token budget is measured in: the
+// real BPE count under the selected vocabulary, so a cap means the same thing
+// to this service as it does to a caller budgeting a model's context. An empty
+// text still costs one token, so it can never be free.
 func tokenCount(text string) int {
-	n := 0
-	inWord := false
-	for _, r := range text {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			inWord = false
-			continue
-		}
-		if !inWord {
-			n++
-			inWord = true
-		}
+	if n := storage.CountTokens(text); n > 0 {
+		return n
 	}
-	if n == 0 {
-		return 1
-	}
-	return n
+	return 1
 }
 
 func nonNilStrings(values []string) []string {
 	if values == nil {
 		return []string{}
+	}
+	return values
+}
+
+// nonNilMap returns the map unchanged, or an empty one when it is nil, so a
+// recall result always reports `metadata` as an object rather than omitting it.
+func nonNilMap(values map[string]any) map[string]any {
+	if values == nil {
+		return map[string]any{}
 	}
 	return values
 }

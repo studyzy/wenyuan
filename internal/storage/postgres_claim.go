@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 )
@@ -25,6 +24,16 @@ import (
 // check reads the same table the statement writes, which READ COMMITTED would
 // let race, so the claim runs at SERIALIZABLE and a lost race is retried.
 func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, nil)
+}
+
+// ClaimNextOperationForTypes claims the oldest claimable operation whose type
+// is in types. An empty list is equivalent to ClaimNextOperation.
+func (s *PostgresStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, types)
+}
+
+func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
 	if workerID == "" {
 		return Operation{}, ErrInvalidOperationID
 	}
@@ -40,6 +49,8 @@ func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string,
 	                    AND ($2 <= 0
 	                         OR claimed_at IS NULL
 	                         OR claimed_at <= now() - make_interval(secs => $2))))
+	              AND ($3::text[] IS NULL OR operation_type = ANY($3))
+	              AND operation_type <> ` + quoteLiteral(AsyncRetainType) + `
 	              AND (serialization_key IS NULL
 	                   OR NOT EXISTS (
 	                        SELECT 1 FROM ` + quoteIdent(s.schema) + `.async_operations held
@@ -49,7 +60,15 @@ func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string,
 	                          AND ($2 <= 0
 	                               OR held.claimed_at IS NULL
 	                               OR held.claimed_at > now() - make_interval(secs => $2))))
-	            ORDER BY created_at ASC, operation_id ASC
+	            -- Bank fairness: the candidate whose bank has the oldest pending work is
+	            -- served first, so one bank's backlog cannot starve the others.
+	            -- Within a bank the order stays oldest-first.
+	            ORDER BY (SELECT MIN(pending.created_at)
+	                      FROM ` + quoteIdent(s.schema) + `.async_operations pending
+	                      WHERE pending.bank_id = ` + quoteIdent(s.schema) + `.async_operations.bank_id
+	                        AND pending.status = 'pending'
+	                        AND (pending.next_retry_at IS NULL OR pending.next_retry_at <= now())),
+	                     created_at ASC, operation_id ASC
 	            FOR UPDATE SKIP LOCKED
 	            LIMIT 1
 	          )
@@ -63,7 +82,7 @@ func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string,
 	                    o.result_metadata, COALESCE(o.worker_id,''), o.claimed_at,
 	                    COALESCE(o.task_payload, 'null'::jsonb), COALESCE(o.serialization_key,'')`
 	for attempt := 0; ; attempt++ {
-		op, err := s.claimOnce(ctx, query, workerID, leaseSeconds)
+		op, err := s.claimOnce(ctx, query, workerID, leaseSeconds, types)
 		if err == nil {
 			return op, nil
 		}
@@ -84,16 +103,23 @@ const claimSerializationAttempts = 3
 var errOperationNotFoundSentinel = errors.New("no claimable operation")
 
 // claimOnce runs one claim attempt.
-func (s *PostgresStore) claimOnce(ctx context.Context, query, workerID string, leaseSeconds float64) (Operation, error) {
-	row := s.db.QueryRowContext(ctx, query, workerID, leaseSeconds)
-	op, err := scanOperationWithClaim(row)
+func (s *PostgresStore) claimOnce(ctx context.Context, query, workerID string, leaseSeconds float64, types []string) (Operation, error) {
+	rows, err := s.db.QueryContext(ctx, query, workerID, leaseSeconds, nullableTagArray(types))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Operation{}, errOperationNotFoundSentinel
+		return Operation{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			if isSerializationFailure(err) {
+				return Operation{}, errOperationNotFoundSentinel
+			}
+			return Operation{}, err
 		}
-		// A serialization failure means another claim committed the key we
-		// were deciding against. Retrying re-reads the committed state, which
-		// is the point of the isolation level rather than a workaround for it.
+		return Operation{}, errOperationNotFoundSentinel
+	}
+	op, err := scanOperationWithClaim(rows)
+	if err != nil {
 		if isSerializationFailure(err) {
 			return Operation{}, errOperationNotFoundSentinel
 		}

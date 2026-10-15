@@ -201,7 +201,7 @@ func TestRetryThenExhaustion(t *testing.T) {
 	if got := attempts.Load(); got != 3 {
 		t.Fatalf("attempts = %d, want 3 (one try plus two retries)", got)
 	}
-	final, err := store.GetOperation(context.Background(), "op-1")
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestGracefulStopReleasesHeldWork(t *testing.T) {
 
 	// The work was either completed by the in-flight handler or handed back;
 	// it must not still be held by the stopped consumer.
-	final, err := store.GetOperation(context.Background(), "op-1")
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,12 +357,314 @@ func waitForStatus(t *testing.T, store storage.Store, id string, want storage.Op
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		op, err := store.GetOperation(context.Background(), id)
+		op, err := store.GetOperation(context.Background(), "bank-a", id)
 		if err == nil && op.Status == want {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	op, _ := store.GetOperation(context.Background(), id)
+	op, _ := store.GetOperation(context.Background(), "bank-a", id)
 	t.Fatalf("operation %s status = %s, want %s", id, op.Status, want)
+}
+
+// stubProcessor returns a scripted error.
+type stubProcessor struct{ err error }
+
+func (s stubProcessor) Process(context.Context, storage.Operation) error { return s.err }
+
+// Store backpressure defers the operation without consuming the retry budget,
+// so a sustained shed cannot walk work toward permanent failure.
+func TestBackpressureDefersWithoutBudget(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, stubProcessor{err: storage.ErrWritesUnavailable}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Second,
+		MaxBackoff: time.Minute, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now: func() time.Time { return time.Now().UTC() }, Sleep: func(time.Duration) {},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RetryCount != 0 {
+		t.Fatalf("backpressure must not consume the retry budget: %+v", after)
+	}
+	if after.Status != storage.StatusPending {
+		t.Fatalf("a deferred operation must return to the pool: %+v", after)
+	}
+}
+
+// blockingProcessor waits for the work context and reports its cancellation.
+type blockingProcessor struct{}
+
+func (blockingProcessor) Process(ctx context.Context, _ storage.Operation) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A per-type wall ceiling bounds a wedged task below the lease, so the slot is
+// freed and the operation is retried.
+func TestWallCeilingBoundsATask(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, blockingProcessor{}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now:          func() time.Time { return time.Now().UTC() },
+		Sleep:        func(time.Duration) {},
+		WallTimeouts: map[string]time.Duration{storage.OperationTypeTransferImport: 10 * time.Millisecond},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RetryCount != 1 {
+		t.Fatalf("wal-capped task must be retried once, got %+v", after)
+	}
+}
+
+// A bank with a backlog does not starve another bank: claims interleave by each
+// bank's oldest pending work.
+func TestClaimInterleavesBanks(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	base := time.Now().UTC()
+	put := func(id, bank string, at time.Time) {
+		if _, err := store.PutOperation(ctx, storage.Operation{
+			OperationID: id, BankID: bank, OperationType: storage.OperationTypeTransferImport,
+			Status: storage.StatusPending, CreatedAt: at, UpdatedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("a1", "bank-a", base)
+	put("b1", "bank-b", base.Add(time.Second))
+	put("a2", "bank-a", base.Add(2*time.Second))
+
+	var order []string
+	for i := 0; i < 3; i++ {
+		op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order = append(order, op.OperationID)
+	}
+	want := []string{"a1", "b1", "a2"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("claim order = %v, want %v", order, want)
+		}
+	}
+}
+
+// A handler-requested deferral is not counted against the retry budget.
+func TestDeferralDoesNotConsumeBudget(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, stubProcessor{err: Defer(errors.New("provider rate limited"))}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now: func() time.Time { return time.Now().UTC() }, Sleep: func(time.Duration) {},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RetryCount != 0 || after.Status != storage.StatusPending {
+		t.Fatalf("a deferral must not consume the budget: %+v", after)
+	}
+}
+
+// An explicit deferral delay controls the next attempt time.
+func TestExplicitDeferralDelay(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delay := time.Hour
+	consumer := New(store, stubProcessor{err: DeferAt(delay, errors.New("retry later"))}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now: func() time.Time { return time.Now().UTC() }, Sleep: func(time.Duration) {},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NextRetryAt == nil || time.Until(*after.NextRetryAt) < 30*time.Minute {
+		t.Fatalf("explicit deferral delay not applied: %+v", after.NextRetryAt)
+	}
+}
+
+// A reserved type is claimed ahead of older work while its floor is unmet, so
+// a bank mid-bulk-ingest cannot starve consolidation.
+func TestReservedSlotsPreferReservedType(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-import", storage.OperationTypeTransferImport)
+	queue(t, store, "op-consolidate", "consolidate")
+	consumer := New(store, stubProcessor{}, Config{
+		WorkerID: "worker-1", Concurrency: 1, Lease: time.Hour,
+		ReservedSlots: map[string]int{"consolidate": 1},
+		Logger:        quietLogger(),
+	})
+	op, err := consumer.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.OperationType != "consolidate" {
+		t.Fatalf("claimed %q, want the reserved type first", op.OperationType)
+	}
+	// With the floor met, the next claim takes the remaining work.
+	op2, err := consumer.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op2.OperationType != storage.OperationTypeTransferImport {
+		t.Fatalf("second claim = %q, want the unreserved work", op2.OperationType)
+	}
+}
+
+// A processor's reported outcome is persisted on the operation record when the
+// consumer settles it, so an operator can read what the work did rather than
+// only whether it finished.
+func TestCompletedOperationCarriesReportedOutcome(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeRefreshMentalModel)
+
+	consumer := New(store, ProcessorFunc(func(ctx context.Context, _ storage.Operation) error {
+		ReportOutcome(ctx, map[string]any{
+			"outcome":        "content_written",
+			"created_before": "2026-01-01T00:00:00Z",
+		})
+		return nil
+	}), Config{WorkerID: "w1", Concurrency: 1, PollInterval: 5 * time.Millisecond, Logger: quietLogger()})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForStatus(t, store, "op-1", storage.StatusCompleted)
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.ResultMetadata["outcome"] != "content_written" {
+		t.Fatalf("result metadata = %+v, want the reported outcome", final.ResultMetadata)
+	}
+	if final.ResultMetadata["created_before"] != "2026-01-01T00:00:00Z" {
+		t.Fatalf("result metadata = %+v, want the reported window", final.ResultMetadata)
+	}
+}
+
+// A refusal is reported in the same vocabulary as a success, so a failed
+// operation carries its outcome and reason rather than only a prose detail.
+func TestFailedOperationCarriesReportedOutcome(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeRefreshMentalModel)
+
+	consumer := New(store, ProcessorFunc(func(ctx context.Context, _ storage.Operation) error {
+		ReportOutcome(ctx, map[string]any{
+			"outcome":        "refresh_failed_error",
+			"failure_reason": "no_answer",
+		})
+		return Permanent(errors.New("the reflection produced no answer"))
+	}), Config{WorkerID: "w1", Concurrency: 1, PollInterval: 5 * time.Millisecond, Logger: quietLogger()})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForStatus(t, store, "op-1", storage.StatusFailed)
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.ResultMetadata["outcome"] != "refresh_failed_error" {
+		t.Fatalf("result metadata = %+v, want the failure outcome", final.ResultMetadata)
+	}
+	if final.ResultMetadata["failure_reason"] != "no_answer" {
+		t.Fatalf("result metadata = %+v, want the failure reason", final.ResultMetadata)
+	}
+	if final.Error == "" {
+		t.Fatal("the prose detail must survive alongside the structured record")
+	}
+}
+
+// A processor that reports nothing completes exactly as before: no metadata is
+// invented for it.
+func TestOperationWithoutReportedOutcomeCompletesAsBefore(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return nil
+	}), Config{WorkerID: "w1", Concurrency: 1, PollInterval: 5 * time.Millisecond, Logger: quietLogger()})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForStatus(t, store, "op-1", storage.StatusCompleted)
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.ResultMetadata) != 0 {
+		t.Fatalf("a processor that reports nothing must record nothing: %+v", final.ResultMetadata)
+	}
+}
+
+// storeWithoutResults hides the optional result capability, standing in for a
+// backend that cannot record operation metadata.
+type storeWithoutResults struct{ storage.Store }
+
+// A store without the capability still completes the operation; the reported
+// metadata is dropped rather than turning completion into a failure.
+func TestStoreWithoutResultCapabilityStillCompletes(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeRefreshMentalModel)
+
+	consumer := New(storeWithoutResults{Store: store}, ProcessorFunc(func(ctx context.Context, _ storage.Operation) error {
+		ReportOutcome(ctx, map[string]any{"outcome": "content_written"})
+		return nil
+	}), Config{WorkerID: "w1", Concurrency: 1, PollInterval: 5 * time.Millisecond, Logger: quietLogger()})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForStatus(t, store, "op-1", storage.StatusCompleted)
+	final, err := store.GetOperation(context.Background(), "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.ResultMetadata) != 0 {
+		t.Fatalf("a store without the capability must not record metadata: %+v", final.ResultMetadata)
+	}
 }

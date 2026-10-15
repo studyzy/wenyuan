@@ -23,8 +23,9 @@ func NewMaintenanceLoop(
 	reflection storage.ReflectRunner,
 	tenants tenant.Extension,
 	cfg config.MaintenanceConfig,
+	vectorIndex config.VectorIndexConfig,
 ) *maintenance.Loop {
-	jobs := maintenanceJobs(store, model, reflection, tenants, cfg)
+	jobs := maintenanceJobs(store, model, reflection, tenants, cfg, vectorIndex)
 	loop := maintenance.New(jobs, nil)
 	loop.StartJitter = cfg.StartJitter
 	return loop

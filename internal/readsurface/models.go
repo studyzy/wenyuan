@@ -12,13 +12,13 @@ import (
 type DocumentListItem struct {
 	ID              string         `json:"id"`
 	BankID          string         `json:"bank_id"`
-	ContentHash     string         `json:"content_hash,omitempty"`
+	ContentHash     *string        `json:"content_hash"`
 	CreatedAt       string         `json:"created_at"`
 	UpdatedAt       string         `json:"updated_at"`
 	TextLength      int            `json:"text_length"`
 	MemoryUnitCount int            `json:"memory_unit_count"`
-	RetainParams    map[string]any `json:"retain_params,omitempty"`
-	Metadata        map[string]any `json:"document_metadata,omitempty"`
+	RetainParams    map[string]any `json:"retain_params"`
+	Metadata        map[string]any `json:"document_metadata"`
 	Tags            []string       `json:"tags"`
 }
 
@@ -30,18 +30,40 @@ type DocumentListResponse struct {
 	Offset int                `json:"offset"`
 }
 
+// ChunkAttachment is one attachment a document or chunk text references, in the
+// shape every read surface returns it: the placeholder id, the full content
+// hash, how to classify and fetch the bytes, and the bank-scoped URL that
+// serves them.
+type ChunkAttachment struct {
+	ID        string  `json:"id"`
+	Hash      string  `json:"hash"`
+	Kind      string  `json:"kind"`
+	MediaType string  `json:"media_type"`
+	ByteSize  int64   `json:"byte_size"`
+	Filename  *string `json:"filename"`
+	URL       string  `json:"url"`
+}
+
 // DocumentResponse is one document's detail.
 type DocumentResponse struct {
-	ID              string         `json:"id"`
-	BankID          string         `json:"bank_id"`
-	OriginalText    string         `json:"original_text"`
-	ContentHash     string         `json:"content_hash,omitempty"`
+	ID     string `json:"id"`
+	BankID string `json:"bank_id"`
+	// OriginalText is the stored source text, or null when the deployment opted
+	// out of keeping it (store_document_text disabled) or when it was never
+	// stored.
+	OriginalText    *string        `json:"original_text"`
+	ContentHash     *string        `json:"content_hash"`
 	CreatedAt       string         `json:"created_at"`
 	UpdatedAt       string         `json:"updated_at"`
 	MemoryUnitCount int            `json:"memory_unit_count"`
 	Tags            []string       `json:"tags"`
-	Metadata        map[string]any `json:"document_metadata,omitempty"`
-	RetainParams    map[string]any `json:"retain_params,omitempty"`
+	Metadata        map[string]any `json:"document_metadata"`
+	RetainParams    map[string]any `json:"retain_params"`
+	NodesByFactType map[string]int `json:"nodes_by_fact_type"`
+	// ObservationScopes is the scope spec configured at retain time: a mode
+	// name or a list of tag groups, so it stays the shape the caller sent.
+	ObservationScopes any               `json:"observation_scopes"`
+	Attachments       []ChunkAttachment `json:"attachments"`
 }
 
 // UpdateDocumentRequest is the partial-update body. A nil field is unchanged.
@@ -55,14 +77,23 @@ type UpdateDocumentResponse struct {
 	Success bool `json:"success"`
 }
 
+// DeleteDocumentResponse reports the cascade a document delete performed.
+type DeleteDocumentResponse struct {
+	Success            bool   `json:"success"`
+	Message            string `json:"message"`
+	DocumentID         string `json:"document_id"`
+	MemoryUnitsDeleted int    `json:"memory_units_deleted"`
+}
+
 // ChunkResponse is one chunk.
 type ChunkResponse struct {
-	ChunkID    string `json:"chunk_id"`
-	DocumentID string `json:"document_id"`
-	BankID     string `json:"bank_id"`
-	ChunkIndex int    `json:"chunk_index"`
-	ChunkText  string `json:"chunk_text"`
-	CreatedAt  string `json:"created_at"`
+	ChunkID     string            `json:"chunk_id"`
+	DocumentID  string            `json:"document_id"`
+	BankID      string            `json:"bank_id"`
+	ChunkIndex  int               `json:"chunk_index"`
+	ChunkText   string            `json:"chunk_text"`
+	CreatedAt   string            `json:"created_at"`
+	Attachments []ChunkAttachment `json:"attachments,omitempty"`
 }
 
 // ChunkListResponse is the chunk listing envelope.
@@ -131,13 +162,13 @@ type EntityDetailResponse struct {
 
 // GraphNodeData is the payload of a memory-graph node.
 type GraphNodeData struct {
-	ID         string   `json:"id"`
-	Text       string   `json:"text"`
-	FactType   string   `json:"fact_type,omitempty"`
-	Entities   []string `json:"entities,omitempty"`
-	DocumentID string   `json:"document_id,omitempty"`
-	ChunkID    string   `json:"chunk_id,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
+	ID       string  `json:"id"`
+	Label    string  `json:"label"`
+	Text     string  `json:"text"`
+	Date     *string `json:"date"`
+	Context  string  `json:"context,omitempty"`
+	Entities string  `json:"entities"`
+	Color    string  `json:"color,omitempty"`
 }
 
 // GraphNode wraps a node payload, matching the shape clients render.
@@ -147,10 +178,14 @@ type GraphNode struct {
 
 // GraphEdgeData is the payload of a memory-graph edge.
 type GraphEdgeData struct {
-	ID   string `json:"id"`
-	From string `json:"from"`
-	To   string `json:"to"`
-	Type string `json:"type,omitempty"`
+	ID         string  `json:"id"`
+	Source     string  `json:"source"`
+	Target     string  `json:"target"`
+	LinkType   string  `json:"linkType,omitempty"`
+	Weight     float64 `json:"weight"`
+	EntityName string  `json:"entityName,omitempty"`
+	Color      string  `json:"color,omitempty"`
+	LineStyle  string  `json:"lineStyle,omitempty"`
 }
 
 // GraphEdge wraps an edge payload.
@@ -167,6 +202,7 @@ type GraphTableRow struct {
 	OccurredEnd   *string  `json:"occurred_end"`
 	MentionedAt   *string  `json:"mentioned_at"`
 	Date          *string  `json:"date"`
+	CreatedAt     *string  `json:"created_at"`
 	Entities      string   `json:"entities"`
 	DocumentID    string   `json:"document_id,omitempty"`
 	ChunkID       string   `json:"chunk_id,omitempty"`
@@ -186,9 +222,10 @@ type GraphResponse struct {
 
 // EntityGraphNodeData is one entity-graph node.
 type EntityGraphNodeData struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Color string `json:"color,omitempty"`
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	Color        string `json:"color,omitempty"`
+	MentionCount int    `json:"mentionCount"`
 }
 
 // EntityGraphNode wraps an entity-graph node.
@@ -198,11 +235,14 @@ type EntityGraphNode struct {
 
 // EntityGraphEdgeData is one entity-graph relation.
 type EntityGraphEdgeData struct {
-	ID     string `json:"id"`
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Weight int    `json:"weight"`
-	Color  string `json:"color,omitempty"`
+	ID             string  `json:"id"`
+	Source         string  `json:"source"`
+	Target         string  `json:"target"`
+	Weight         int     `json:"weight"`
+	Color          string  `json:"color,omitempty"`
+	LinkType       string  `json:"linkType,omitempty"`
+	LineStyle      string  `json:"lineStyle,omitempty"`
+	LastCooccurred *string `json:"lastCooccurred"`
 }
 
 // EntityGraphEdge wraps an entity-graph relation.
@@ -228,12 +268,18 @@ func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-// formatTimePtr renders an optional timestamp.
+// formatTimePtr renders an optional timestamp at the stored resolution.
+//
+// RFC3339Nano keeps the sub-second part when there is one and drops it when
+// there is not, which is what the reference's own “isoformat“ does — and it
+// matters where ordering is read off the string: two mentions of an entity a
+// moment apart are the same second, so a second-resolution format would report
+// “first_seen == last_seen“ for an entity that was in fact seen twice.
 func formatTimePtr(value *time.Time) *string {
 	if value == nil || value.IsZero() {
 		return nil
 	}
-	formatted := value.UTC().Format(time.RFC3339)
+	formatted := value.UTC().Format(time.RFC3339Nano)
 	return &formatted
 }
 
@@ -246,7 +292,7 @@ func toDocumentListItem(doc storage.Document) DocumentListItem {
 	return DocumentListItem{
 		ID:              doc.ID,
 		BankID:          doc.BankID,
-		ContentHash:     doc.ContentHash,
+		ContentHash:     optionalString(doc.ContentHash),
 		CreatedAt:       formatTime(doc.CreatedAt),
 		UpdatedAt:       formatTime(doc.UpdatedAt),
 		TextLength:      len(doc.OriginalText),
@@ -257,16 +303,53 @@ func toDocumentListItem(doc storage.Document) DocumentListItem {
 	}
 }
 
-// toChunkResponse renders a stored chunk.
-func toChunkResponse(chunk storage.Chunk) ChunkResponse {
+// toChunkResponse renders a stored chunk with the attachments its units were
+// drawn from.
+func toChunkResponse(chunk storage.Chunk, attachments []storage.Attachment) ChunkResponse {
 	return ChunkResponse{
-		ChunkID:    chunk.ChunkID,
-		DocumentID: chunk.DocumentID,
-		BankID:     chunk.BankID,
-		ChunkIndex: chunk.ChunkIndex,
-		ChunkText:  chunk.ChunkText,
-		CreatedAt:  formatTime(chunk.CreatedAt),
+		ChunkID:     chunk.ChunkID,
+		DocumentID:  chunk.DocumentID,
+		BankID:      chunk.BankID,
+		ChunkIndex:  chunk.ChunkIndex,
+		ChunkText:   chunk.ChunkText,
+		CreatedAt:   formatTime(chunk.CreatedAt),
+		Attachments: toChunkAttachments(chunk.BankID, attachments),
 	}
+}
+
+// toChunkAttachments renders stored attachments in the shape the read surface
+// returns them, including the bank-scoped URL that serves each one's bytes.
+func toChunkAttachments(bankID string, attachments []storage.Attachment) []ChunkAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]ChunkAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		out = append(out, chunkAttachment(bankID, attachment))
+	}
+	return out
+}
+
+// chunkAttachment renders one stored attachment.
+func chunkAttachment(bankID string, attachment storage.Attachment) ChunkAttachment {
+	return ChunkAttachment{
+		ID:        attachment.ShortID,
+		Hash:      attachment.AttachmentHash,
+		Kind:      attachment.Kind,
+		MediaType: attachment.MediaType,
+		ByteSize:  attachment.ByteSize,
+		Filename:  optionalString(attachment.Filename),
+		URL:       bankAttachmentURL(bankID, attachment.ShortID),
+	}
+}
+
+// optionalString renders a possibly-empty string as a nullable field, so an
+// absent value is a JSON null rather than an empty string.
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // toEntityListItem renders a stored entity.

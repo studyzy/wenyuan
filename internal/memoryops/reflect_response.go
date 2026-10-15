@@ -50,7 +50,7 @@ func buildCitedEvidence(outcome storage.ReflectOutcome) *CitedEvidence {
 	for _, f := range outcome.Facts {
 		attachments := make([]Attachment, 0, len(f.Attachments))
 		for _, a := range f.Attachments {
-			attachments = append(attachments, Attachment{ID: a.ID, Kind: a.Kind, URI: a.URI})
+			attachments = append(attachments, attachmentFromRecall(a))
 		}
 		evidence.Memories = append(evidence.Memories, ReflectCitedFact{
 			ID:            f.ID,
@@ -153,10 +153,20 @@ func looksLikeIdentifier(token string) bool {
 	return hasSeparator && hasLetter
 }
 
-// applyStructuredOutput parses the structured-output object against the schema
-// and records the success or the failure reason. A success carries no error; a
-// failure carries the error string only.
+// applyStructuredOutput records the structured-output object for the answer and
+// the reason it is missing, if it is.
+//
+// The reshape is the model's job: the reflection loop makes a second call that
+// reads the answer back into the caller's schema, and reports what it got.
+// Without a model the reshape has no call to make, so the answer is parsed
+// directly — that path can only recover an answer that already is a JSON
+// document, which is exactly what a deployment with no model can offer.
 func applyStructuredOutput(response *ReflectResponse, schema map[string]any, outcome storage.ReflectOutcome) {
+	if outcome.StructuredOutput != nil || outcome.StructuredOutputError != "" {
+		response.StructuredOutput = outcome.StructuredOutput
+		response.StructuredOutputError = outcome.StructuredOutputError
+		return
+	}
 	parsed, err := parseStructuredOutput(schema, outcome.Answer)
 	if err != nil {
 		response.StructuredOutputError = err.Error()

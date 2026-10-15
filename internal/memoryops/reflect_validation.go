@@ -17,58 +17,31 @@ type ReflectSchemaValidator func(schema map[string]any) error
 func ValidateReflect(req ReflectRequest, schemaValidator ReflectSchemaValidator) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
 	if !hasWordCharacter(appendContext(req.Query, req.Context)) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "query"},
-			Msg:   "query must contain at least one word character",
-			Type:  "value_error.missing",
-			Input: req.Query,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "query"}, req.Query,
+			"query must contain at least one word character after normalization"))
 	}
 	if req.Budget != "" && !storage.IsReflectBudgetLevel(req.Budget) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "budget"},
-			Msg:   "budget must be one of low, mid, high",
-			Type:  "value_error.enum",
-			Input: req.Budget,
-		})
+		items = append(items, httpx.Enum([]string{"body", "budget"}, req.Budget, storageBudgetLevels()))
 	}
 	if req.TagsMatch != "" && !containsToken(storageTagMatchModes(), req.TagsMatch) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "tags_match"},
-			Msg:   "tags_match must be one of any, all, any_strict, all_strict, exact",
-			Type:  "value_error.enum",
-			Input: req.TagsMatch,
-		})
+		items = append(items, httpx.Literal([]string{"body", "tags_match"}, req.TagsMatch, storageTagMatchModes()))
 	}
 	if req.FactTypes != nil && len(req.FactTypes) == 0 {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "fact_types"},
-			Msg:  "fact_types must not be empty; omit it to select every fact type",
-			Type: "value_error.missing",
-		})
+		items = append(items, httpx.ValueError([]string{"body", "fact_types"}, []any{},
+			"fact_types must not be empty. Use null to include all fact types."))
 	}
 	if unsupported := unsupportedTypes(req.FactTypes); len(unsupported) > 0 {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "fact_types"},
-			Msg:   "unsupported fact type; accepted types are " + joinTokens(acceptedFactTypes),
-			Type:  "value_error.enum",
-			Input: unsupported,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "fact_types"}, unsupported,
+			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
 	}
 	if len(req.Tags) > 0 && len(req.TagGroups.Groups) > 0 {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "tag_groups"},
-			Msg:  "tags and tag_groups are mutually exclusive",
-			Type: "value_error.mode",
-		})
+		items = append(items, httpx.ValueError([]string{"body"}, nil,
+			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}
 	if req.ResponseSchema != nil && schemaValidator != nil {
 		if err := schemaValidator(req.ResponseSchema); err != nil {
-			items = append(items, httpx.ValidationError{
-				Loc:  []string{"body", "response_schema"},
-				Msg:  "response_schema is not a valid structured-output schema: " + err.Error(),
-				Type: "value_error.schema",
-			})
+			items = append(items, httpx.ValueError([]string{"body", "response_schema"}, req.ResponseSchema,
+				"response_schema is not a valid structured-output schema: "+err.Error()))
 		}
 	}
 	if len(items) == 0 {

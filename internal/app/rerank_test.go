@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 )
@@ -31,10 +32,11 @@ type plainStub struct {
 
 func (p *plainStub) Name() string { return "plain" }
 
-// A provider with no reranking capability yields no recall reranker, so a
-// deployment whose model cannot score pairs keeps working on the fallback.
+// A provider with no reranking capability, and no dedicated reranker, yields no
+// recall reranker, so a deployment whose model cannot score pairs keeps working
+// on the fallback.
 func TestNoRerankerWithoutCapability(t *testing.T) {
-	if got := newRecallReranker(&plainStub{}); got != nil {
+	if got, _, _, _, _ := recallRerankerWiring(config.Config{}, &plainStub{}, nil); got != nil {
 		t.Fatalf("a provider without a reranker must yield nil, got %T", got)
 	}
 }
@@ -42,10 +44,10 @@ func TestNoRerankerWithoutCapability(t *testing.T) {
 // The no-model selection yields no reranker, matching the other model-backed
 // boundaries.
 func TestNoRerankerForNoModelSelection(t *testing.T) {
-	if got := newRecallReranker(none.New()); got != nil {
+	if got, _, _, _, _ := recallRerankerWiring(config.Config{}, none.New(), nil); got != nil {
 		t.Fatalf("the no-model selection must yield nil, got %T", got)
 	}
-	if got := newRecallReranker(nil); got != nil {
+	if got, _, _, _, _ := recallRerankerWiring(config.Config{}, nil, nil); got != nil {
 		t.Fatalf("a nil provider must yield nil, got %T", got)
 	}
 }
@@ -54,9 +56,12 @@ func TestNoRerankerForNoModelSelection(t *testing.T) {
 // one score per candidate in order.
 func TestRerankerAdapterScoresInOrder(t *testing.T) {
 	stub := &rerankingStub{scores: []float64{0.9, 0.1}}
-	reranker := newRecallReranker(stub)
+	reranker, _, byRank, prunes, seed := recallRerankerWiring(config.Config{}, stub, nil)
 	if reranker == nil {
 		t.Fatal("a reranking provider must yield a reranker")
+	}
+	if byRank || prunes || seed {
+		t.Fatalf("a plain chat reranker must set no flags, got byRank=%v prunes=%v seed=%v", byRank, prunes, seed)
 	}
 	scores, err := reranker.Rerank(context.Background(), "q", []string{"a", "b"})
 	if err != nil {
@@ -67,5 +72,32 @@ func TestRerankerAdapterScoresInOrder(t *testing.T) {
 	}
 	if stub.calls != 1 {
 		t.Fatalf("reranker calls = %d, want 1", stub.calls)
+	}
+}
+
+// A dedicated RERANKER-family backend wins over the chat provider's own
+// capability, and the candidate depth is carried through from the resolved
+// configuration.
+func TestDedicatedRerankerWinsAndCarriesDepth(t *testing.T) {
+	chat := &rerankingStub{scores: []float64{0.1, 0.9}}
+	dedicated := &rerankingStub{scores: []float64{0.4, 0.6}}
+	cfg := config.Config{}
+	cfg.Provider.Rerank.CandidateDepth = 25
+	reranker, depth, _, _, _ := recallRerankerWiring(cfg, chat, dedicated)
+	if reranker == nil {
+		t.Fatal("a dedicated reranker must yield a reranker")
+	}
+	if depth != 25 {
+		t.Fatalf("depth = %d, want 25", depth)
+	}
+	scores, err := reranker.Rerank(context.Background(), "q", []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dedicated.calls != 1 || chat.calls != 0 {
+		t.Fatalf("dedicated calls = %d, chat calls = %d, want 1 and 0", dedicated.calls, chat.calls)
+	}
+	if scores[0] != 0.4 {
+		t.Fatalf("scores = %v, want the dedicated reranker's", scores)
 	}
 }

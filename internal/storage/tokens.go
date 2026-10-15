@@ -7,42 +7,99 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
-// Token counting is one operation with two possible backends: the real BPE
-// tokenizer, and a character-based approximation used only when the tokenizer
-// cannot be initialised. The approximation keeps the service serving rather
-// than failing a write because a vocabulary could not be loaded.
+// DefaultTokenEncoding is the vocabulary this build counts with unless the
+// operator selects another. It matches the reference's default (o200k_base,
+// the vocabulary current OpenAI models tokenize with) rather than cl100k_base:
+// the two agree to within a fraction of a percent on English, but o200k_base is
+// far closer on non-Latin scripts, and these counts drive the budgets that
+// stand in for a model's context window.
+const DefaultTokenEncoding = tokenizer.O200kBase
+
+// Token counting is one operation with two possible backends per vocabulary:
+// the real BPE tokenizer, and a character-based approximation used only when
+// the tokenizer cannot be initialised. The approximation keeps the service
+// serving rather than failing a write because a vocabulary could not be loaded.
 var (
-	tokenCounterOnce sync.Once
-	tokenCounter     tokenCounterFunc
+	tokenCounterMu     sync.RWMutex
+	tokenCounterName   = string(DefaultTokenEncoding)
+	tokenCounterByName = map[string]tokenCounterFunc{}
 )
 
 // tokenCounterFunc reports how many tokens text costs.
 type tokenCounterFunc func(text string) int
 
-// CountTokens reports the number of BPE tokens in text.
-//
-// The count is what the response's processed-content figure and the chunk
-// budget are measured in, so it must be the same measure every time: the
-// tokenizer is initialised once and reused.
-func CountTokens(text string) int {
-	if text == "" {
-		return 0
+// SetTokenEncoding selects the vocabulary CountTokens measures with. An empty
+// or unknown name leaves the selection unchanged, so a misconfigured value
+// degrades to the default rather than disabling token counting.
+func SetTokenEncoding(name string) {
+	if name == "" || !tokenizerSupported(name) {
+		return
 	}
-	tokenCounterOnce.Do(func() {
-		codec, err := tokenizer.Get(tokenizer.Cl100kBase)
-		if err != nil {
-			tokenCounter = approximateTokenCount
-			return
-		}
-		tokenCounter = func(text string) int {
+	tokenCounterMu.Lock()
+	tokenCounterName = name
+	tokenCounterMu.Unlock()
+}
+
+// TokenEncoding reports the vocabulary CountTokens currently measures with.
+func TokenEncoding() string {
+	tokenCounterMu.RLock()
+	defer tokenCounterMu.RUnlock()
+	return tokenCounterName
+}
+
+// tokenizerSupported reports whether the named vocabulary can be loaded.
+func tokenizerSupported(name string) bool {
+	_, err := tokenizer.Get(tokenizer.Encoding(name))
+	return err == nil
+}
+
+// counterFor returns the cached counter for a vocabulary, loading it once. A
+// vocabulary that cannot be loaded falls back to the character approximation.
+func counterFor(name string) tokenCounterFunc {
+	if name == "" {
+		name = string(DefaultTokenEncoding)
+	}
+	tokenCounterMu.RLock()
+	cached, ok := tokenCounterByName[name]
+	tokenCounterMu.RUnlock()
+	if ok {
+		return cached
+	}
+	counter := approximateTokenCount
+	if codec, err := tokenizer.Get(tokenizer.Encoding(name)); err == nil {
+		counter = func(text string) int {
 			count, err := codec.Count(text)
 			if err != nil {
 				return approximateTokenCount(text)
 			}
 			return count
 		}
-	})
-	return tokenCounter(text)
+	}
+	tokenCounterMu.Lock()
+	tokenCounterByName[name] = counter
+	tokenCounterMu.Unlock()
+	return counter
+}
+
+// CountTokens reports the number of BPE tokens in text under the selected
+// vocabulary.
+//
+// The count is what the response's processed-content figure and the chunk
+// budget are measured in, so it must be the same measure every time: the
+// tokenizer is initialised once per vocabulary and reused.
+func CountTokens(text string) int {
+	return CountTokensWith(text, TokenEncoding())
+}
+
+// CountTokensWith counts text under an explicitly named vocabulary. A caller
+// that knows the vocabulary it is budgeting against (the embedding model's own
+// tokenizer, say) passes it here so its count matches what the provider
+// enforces, rather than the general-purpose selection.
+func CountTokensWith(text, encoding string) int {
+	if text == "" {
+		return 0
+	}
+	return counterFor(encoding)(text)
 }
 
 // approximateTokenCount estimates tokens from characters alone. It is the

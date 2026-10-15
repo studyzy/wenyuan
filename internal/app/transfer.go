@@ -28,23 +28,27 @@ func bindTransferRoutes(handlers *transfer.Handlers, handle func(method, pattern
 	for _, route := range transfer.Routes() {
 		switch route.Pattern {
 		case httpx.BankPath(httpx.SuffixImport):
-			handle(route.Method, route.Pattern, handlers.SubmitImportRoute)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.ImportTemplate, "dry_run"))
 		case httpx.BankPath(httpx.SuffixExport):
-			handle(route.Method, route.Pattern, handlers.Export)
+			handle(route.Method, route.Pattern, handlers.ExportTemplate)
 		case httpx.BankPath(httpx.SuffixDocumentTransfer):
 			if route.Method == http.MethodGet {
 				handle(route.Method, route.Pattern, handlers.ServeRetiredDocumentTransfer)
 				continue
 			}
-			handle(route.Method, route.Pattern, handlers.SubmitDocumentImport)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.SubmitDocumentImport, "on_conflict"))
 		case httpx.BankPath(httpx.SuffixDocumentTransfer + httpx.SuffixExport):
-			handle(route.Method, route.Pattern, handlers.SubmitDocumentTransferExport)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.SubmitDocumentTransferExport,
+				"document_id", "include_observations", "include_knowledge_base"))
 		case httpx.BankPath(httpx.SuffixTransferExport):
-			handle(route.Method, route.Pattern, handlers.SubmitTransferExport)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.SubmitTransferExport,
+				"include_data", "include_bank_config", "include_history", "document_id"))
 		case httpx.BankPath(httpx.SuffixTransferImport):
-			handle(route.Method, route.Pattern, handlers.SubmitTransferImport)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.SubmitTransferImport,
+				"mode", "target_bank_id", "document_conflict", "include_data", "include_bank_config", "include_history"))
 		case httpx.BankPath(httpx.SuffixClone):
-			handle(route.Method, route.Pattern, handlers.SubmitClone)
+			handle(route.Method, route.Pattern, httpx.QueryParams(handlers.SubmitClone,
+				"target_bank_id", "include_data", "include_bank_config", "include_history"))
 		case httpx.BankPath(httpx.SuffixAttachmentMember):
 			handle(route.Method, route.Pattern, handlers.ServeAttachment)
 		}

@@ -83,12 +83,37 @@ func (s *MemoryStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
 	now := time.Now().UTC()
 	bank.CreatedAt = now
 	bank.UpdatedAt = now
-	applyDispositionDefaults(&bank)
 	storeBankDefaults(&bank)
 	s.banks[bank.BankID] = bank
 	s.order = append(s.order, bank.BankID)
 	s.invalidateBankLocked(bank.BankID)
 	return bank, nil
+}
+
+// EnsureBank lazily creates the bank when it is absent, so a bank-scoped write
+// that addresses a bank by name does not need the caller to declare it first.
+func (s *MemoryStore) EnsureBank(ctx context.Context, bankID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.banks[bankID]; ok {
+		return nil
+	}
+	if !ValidBankID(bankID) {
+		return ErrInvalidBankID
+	}
+	if _, ok := s.aliasBankLocked(bankID); ok {
+		return ErrAliasConflict
+	}
+	now := time.Now().UTC()
+	bank := Bank{BankID: bankID, CreatedAt: now, UpdatedAt: now}
+	storeBankDefaults(&bank)
+	s.banks[bankID] = bank
+	s.order = append(s.order, bankID)
+	s.invalidateBankLocked(bankID)
+	return nil
 }
 
 // GetBank returns one bank by identifier.
@@ -116,7 +141,6 @@ func (s *MemoryStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) 
 	bank.UpdatedAt = time.Now().UTC()
 	bank.LastWriteAt = existing.LastWriteAt
 	bank.LastDocumentAt = existing.LastDocumentAt
-	applyDispositionDefaults(&bank)
 	storeBankDefaults(&bank)
 	s.banks[bank.BankID] = bank
 	s.invalidateBankLocked(bank.BankID)
@@ -187,8 +211,17 @@ func applyBankPatch(bank *Bank, patch BankPatch) {
 	if patch.Name != nil {
 		bank.Name = *patch.Name
 	}
+	if patch.ClearDisposition {
+		bank.Disposition = nil
+	}
 	if patch.Disposition != nil {
-		merged := bank.NormalizedDisposition()
+		// The patch carries only the traits the caller set, so it merges into
+		// the raw map rather than a normalized one: normalizing here would
+		// materialize every unset trait and lose which ones were explicit.
+		merged := make(map[string]int, len(bank.Disposition)+len(*patch.Disposition))
+		for key, value := range bank.Disposition {
+			merged[key] = value
+		}
 		for key, value := range *patch.Disposition {
 			merged[key] = value
 		}
@@ -197,13 +230,23 @@ func applyBankPatch(bank *Bank, patch BankPatch) {
 	if patch.Mission != nil {
 		bank.Mission = *patch.Mission
 	}
-}
-
-// applyDispositionDefaults fills an absent trait with the neutral value, so a
-// partially populated bank reads as fully specified rather than as a bank with
-// a zero trait.
-func applyDispositionDefaults(bank *Bank) {
-	bank.Disposition = bank.NormalizedDisposition()
+	if patch.ClearConfig {
+		bank.Config = nil
+	}
+	if patch.Config != nil {
+		merged := map[string]any{}
+		for key, value := range bank.Config {
+			merged[key] = value
+		}
+		for key, value := range *patch.Config {
+			if value == nil {
+				delete(merged, key)
+				continue
+			}
+			merged[key] = value
+		}
+		bank.Config = merged
+	}
 }
 
 // storeBankDefaults fills a bank's display name from its identifier when the

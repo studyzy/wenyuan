@@ -46,6 +46,9 @@ type stubRetrieval struct {
 	facts        []Evidence
 	expanded     []Evidence
 	directives   []string
+	// askedIDs records the ids the id-addressed tools were called with, so a
+	// test can prove an alias resolved before the lookup.
+	askedIDs []string
 }
 
 func (s *stubRetrieval) note(name string) { s.calls = append(s.calls, name) }
@@ -62,12 +65,14 @@ func (s *stubRetrieval) ReflectMemories(context.Context, string, int) ([]Evidenc
 	s.note(ToolRecall)
 	return s.facts, nil
 }
-func (s *stubRetrieval) ReflectReadModels(context.Context, []string) ([]Evidence, error) {
+func (s *stubRetrieval) ReflectReadModels(_ context.Context, ids []string) ([]Evidence, error) {
 	s.note(ToolReadMentalModels)
+	s.askedIDs = append(s.askedIDs, ids...)
 	return s.models, nil
 }
-func (s *stubRetrieval) ReflectExpand(context.Context, []string) ([]Evidence, error) {
+func (s *stubRetrieval) ReflectExpand(_ context.Context, ids []string, _ string) ([]Evidence, error) {
 	s.note(ToolExpand)
+	s.askedIDs = append(s.askedIDs, ids...)
 	return s.expanded, nil
 }
 func (s *stubRetrieval) Directives(context.Context) []string { return s.directives }
@@ -120,19 +125,44 @@ func TestModelDecidesWhichToolRuns(t *testing.T) {
 }
 
 // test-done-ends-the-loop-immediately: the done tool retrieves nothing and ends
-// the loop.
+// the loop once evidence has been gathered. A done before any evidence is
+// ignored by the loop's guardrail.
 func TestDoneEndsTheLoop(t *testing.T) {
-	p := &scriptedProvider{name: "openai", script: turnScript(toolCall(ToolDone, nil))}
-	retrieval := &stubRetrieval{}
+	p := &scriptedProvider{name: "openai", script: turnScript(
+		toolCall(ToolRecall, map[string]any{"query": "anything"}),
+		toolCall(ToolDone, nil),
+	)}
+	retrieval := &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "anything?"}).Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retrieval.calls) != 0 {
+	if len(retrieval.calls) != 1 || retrieval.calls[0] != ToolRecall {
 		t.Fatalf("done must retrieve nothing, but ran %v", retrieval.calls)
 	}
-	if len(outcome.Turns) != 1 {
-		t.Fatalf("loop ran %d turns, want 1", len(outcome.Turns))
+	if len(outcome.Turns) != 2 {
+		t.Fatalf("loop ran %d turns, want 2", len(outcome.Turns))
+	}
+}
+
+// A done with no evidence gathered is ignored, so the model cannot answer from
+// nothing.
+func TestDoneBeforeEvidenceIsIgnored(t *testing.T) {
+	p := &scriptedProvider{name: "openai", script: turnScript(
+		toolCall(ToolDone, nil),
+		toolCall(ToolRecall, map[string]any{"query": "x"}),
+		toolCall(ToolDone, nil),
+	)}
+	retrieval := &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}
+	outcome, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrieval.calls) == 0 {
+		t.Fatal("the first done must be ignored and a retrieval forced")
+	}
+	if len(outcome.Evidence) == 0 {
+		t.Fatal("the loop must gather evidence before it finishes")
 	}
 }
 
@@ -234,8 +264,10 @@ func TestToolsAreOfferedToTheModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	offered := p.requests[0].Tools
-	if len(offered) != len(ToolNames()) {
-		t.Fatalf("offered %d tools, want %d", len(offered), len(ToolNames()))
+	// The descent opens by offering only the cheapest rung, so a model that
+	// ignores tool_choice cannot skip it by calling something else.
+	if len(offered) != 1 || offered[0].Name != ToolSearchMentalModels {
+		t.Fatalf("opening turn offered %d tools (%v), want just %q", len(offered), offered, ToolSearchMentalModels)
 	}
 	for _, definition := range offered {
 		if !IsKnownTool(definition.Name) {
@@ -285,11 +317,45 @@ func TestToolArgumentDefaults(t *testing.T) {
 // instead of answering must be reported, not returned as an empty answer.
 func TestEmptyAnswerIsReported(t *testing.T) {
 	p := &scriptedProvider{name: "openai", script: turnScript(
+		toolCall(ToolRecall, map[string]any{"query": "x"}),
 		toolCall(ToolDone, nil),
 		// The answering call returns a tool call, so it produced no prose.
 		toolCall(ToolRecall, map[string]any{"query": "x"}),
 	)}
-	if _, err := NewLoop(p, &stubRetrieval{}, Config{Question: "q"}).Run(context.Background()); !errors.Is(err, ErrNoAnswer) {
+	if _, err := NewLoop(p, &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}, Config{Question: "q"}).Run(context.Background()); !errors.Is(err, ErrNoAnswer) {
 		t.Fatalf("error = %v, want ErrNoAnswer", err)
+	}
+}
+
+// Every tool schema requires a reason, and the recall/read/expand schemas carry
+// the parameters the reference documents.
+func TestToolSchemasMatchReference(t *testing.T) {
+	for _, name := range ToolNames() {
+		var schema map[string]any
+		if err := json.Unmarshal(toolParameters(name), &schema); err != nil {
+			t.Fatalf("%s schema is not JSON: %v", name, err)
+		}
+		required, _ := schema["required"].([]any)
+		found := false
+		for _, item := range required {
+			if item == "reason" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s must require reason: %v", name, required)
+		}
+	}
+	recall := string(toolParameters(ToolRecall))
+	if !strings.Contains(recall, "max_chunk_tokens") {
+		t.Fatalf("recall schema must carry max_chunk_tokens: %s", recall)
+	}
+	read := string(toolParameters(ToolReadMentalModels))
+	if !strings.Contains(read, "mental_model_ids") {
+		t.Fatalf("read schema must use mental_model_ids: %s", read)
+	}
+	expand := string(toolParameters(ToolExpand))
+	if !strings.Contains(expand, "depth") {
+		t.Fatalf("expand schema must carry depth: %s", expand)
 	}
 }

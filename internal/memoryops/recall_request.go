@@ -47,22 +47,79 @@ func (f *TagGroupsField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// TagGroupChildren decodes a node's and/or/not member. The reference accepts
+// both a single child object and a list of them, so a filter written as
+// {"not": {...}} is as valid as {"not": [{...}]} — the object form is the one a
+// caller reaches for when the group has exactly one child.
+type TagGroupChildren []TagGroupRequest
+
+// UnmarshalJSON accepts a single child object or a list of them.
+func (c *TagGroupChildren) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*c = nil
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		out := make(TagGroupChildren, 0, len(items))
+		for _, item := range items {
+			group, err := decodeTagGroup(item)
+			if err != nil {
+				return err
+			}
+			out = append(out, group)
+		}
+		*c = out
+		return nil
+	}
+	group, err := decodeTagGroup(data)
+	if err != nil {
+		return err
+	}
+	*c = TagGroupChildren{group}
+	return nil
+}
+
 // decodeTagGroup decodes one tag-group item, which may be a tag list or a
 // boolean/leaf object.
+//
+// An object carrying neither a tag set nor one of the boolean keys is rejected.
+// Accepting it would decode to a node that constrains nothing, so a client that
+// meant to narrow the search would silently get a wider answer than it asked
+// for — the one direction a filter must never fail in.
 func decodeTagGroup(item json.RawMessage) (TagGroupRequest, error) {
 	trimmed := strings.TrimSpace(string(item))
 	if strings.HasPrefix(trimmed, "[") {
 		var tags []string
 		if err := json.Unmarshal(item, &tags); err != nil {
-			return TagGroupRequest{}, err
+			return TagGroupRequest{}, ErrMalformedTagGroup
+		}
+		if len(tags) == 0 {
+			return TagGroupRequest{}, ErrMalformedTagGroup
 		}
 		return TagGroupRequest{Tags: tags}, nil
 	}
 	var group TagGroupRequest
 	if err := json.Unmarshal(item, &group); err != nil {
-		return TagGroupRequest{}, err
+		return TagGroupRequest{}, ErrMalformedTagGroup
+	}
+	if !group.constrains() {
+		return TagGroupRequest{}, ErrMalformedTagGroup
 	}
 	return group, nil
+}
+
+// constrains reports whether a tag-group node actually filters anything: a leaf
+// names tags, and a compound node names at least one child.
+func (g TagGroupRequest) constrains() bool {
+	if strings.TrimSpace(g.Tag) != "" || len(g.Tags) > 0 {
+		return true
+	}
+	return len(g.And) > 0 || len(g.Or) > 0 || len(g.Not) > 0
 }
 
 // toStorageTagGroups converts the decoded request groups into the storage
@@ -113,30 +170,33 @@ func containsValue(values []string, target string) bool {
 // ErrUnknownTemporalWindow reports an unparseable temporal-window bound.
 var ErrUnknownTemporalWindow = errors.New("invalid temporal window bound")
 
+// ErrMalformedTagGroup reports a tag group that constrains nothing: a leaf with
+// no tags, or an object with none of the boolean keys.
+var ErrMalformedTagGroup = errors.New("each tag group must be a non-empty list of tags or an object with and/or/not")
+
 // parseTemporalWindow parses the request window into the storage shape. A bound
 // that is present but malformed is a bad request; an empty window is ignored.
 func parseTemporalWindow(req *TemporalWindowRequest) (*storage.TemporalWindow, error) {
 	if req == nil {
 		return nil, nil
 	}
-	window := &storage.TemporalWindow{}
-	if strings.TrimSpace(req.Start) != "" {
-		start, err := parseISODate(req.Start)
-		if err != nil {
-			return nil, ErrUnknownTemporalWindow
-		}
-		window.Start = start
-		window.HasStart = true
+	// Both bounds are required and the range must be ordered, so an inverted or
+	// half-open window is rejected rather than silently matching nothing.
+	if strings.TrimSpace(req.Start) == "" || strings.TrimSpace(req.End) == "" {
+		return nil, ErrUnknownTemporalWindow
 	}
-	if strings.TrimSpace(req.End) != "" {
-		end, err := parseISODate(req.End)
-		if err != nil {
-			return nil, ErrUnknownTemporalWindow
-		}
-		window.End = end
-		window.HasEnd = true
+	start, err := parseISODate(req.Start)
+	if err != nil {
+		return nil, ErrUnknownTemporalWindow
 	}
-	return window, nil
+	end, err := parseISODate(req.End)
+	if err != nil {
+		return nil, ErrUnknownTemporalWindow
+	}
+	if end.Before(start) {
+		return nil, ErrUnknownTemporalWindow
+	}
+	return &storage.TemporalWindow{Start: start, End: end, HasStart: true, HasEnd: true}, nil
 }
 
 // parseISODate parses an ISO-8601 timestamp, reading a naive value as UTC.

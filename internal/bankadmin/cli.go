@@ -1,14 +1,97 @@
 package bankadmin
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
+	"strings"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
+
+// UsageError marks a missing or malformed flag value. The dispatcher maps it
+// to exit code 2, which is what the reference's parser does; every other
+// failure is a runtime error and exits 1.
+type UsageError struct{ msg string }
+
+// Error returns the message.
+func (e *UsageError) Error() string { return e.msg }
+
+// NewUsageError builds a usage error from a format.
+func NewUsageError(format string, args ...any) error {
+	return &UsageError{msg: fmt.Sprintf(format, args...)}
+}
+
+// ErrAborted is returned when an operator declines a confirmation prompt. The
+// dispatcher reports it as "Aborted!" and exits 1, matching the reference's
+// aborted-prompt behaviour.
+var ErrAborted = errors.New("Aborted!") //nolint:staticcheck // exact copy text of the reference CLI
+
+// Confirm writes prompt and reads one answer line from in. y/yes
+// case-insensitively is a yes; anything else, including an empty answer or
+// EOF, declines.
+func Confirm(in io.Reader, out io.Writer, prompt string) bool {
+	if in == nil {
+		return false
+	}
+	_, _ = fmt.Fprintf(out, "%s [y/N]: ", prompt)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// resolveRequired resolves a command's one required argument, given the
+// positional (if any) and the flag's own value.
+//
+// The argument is accepted either way: the reference takes these as positionals
+// (restore INPUT, decommission-worker WORKER_ID) and wenyuan's flag spellings are
+// kept as an alternative, so both a reference-shaped script and an existing one
+// work. Supplying both is a mistake rather than a precedence question.
+func resolveRequired(positional, flagValue, name string) (string, error) {
+	switch {
+	case positional != "" && flagValue != "":
+		return "", NewUsageError("give %s either as a positional argument or with its flag, not both", name)
+	case flagValue != "":
+		return flagValue, nil
+	case positional != "":
+		return positional, nil
+	default:
+		return "", NewUsageError("%s is required", name)
+	}
+}
+
+// parsePositionals parses args where flags and positional tokens are
+// interspersed, returning the single positional. The standard flag set stops at
+// the first non-flag, so parsing resumes after each positional; more than one
+// positional is an error.
+func parsePositionals(fs *flag.FlagSet, args []string) (string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return "", err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
+	}
+	switch len(positionals) {
+	case 0:
+		return "", nil
+	case 1:
+		return positionals[0], nil
+	default:
+		return "", NewUsageError("unexpected extra argument %q", positionals[1])
+	}
+}
 
 // RenameFlags is the parsed administrative rename command surface.
 type RenameFlags struct {
@@ -18,13 +101,14 @@ type RenameFlags struct {
 }
 
 // ParseRename parses a bank rename command. Flags may be supplied as
-// --source/--to/--dry-run or with the short aliases -s/-t/-n.
+// --from/--to/--dry-run or with the short aliases -f/-t/-n.
 func ParseRename(args []string) (RenameFlags, error) {
 	fs := flag.NewFlagSet("bank rename", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var flags RenameFlags
-	fs.StringVar(&flags.Source, "source", "", "source bank identifier")
-	fs.StringVar(&flags.Source, "s", "", "source bank identifier (short)")
+	fs.StringVar(&flags.Source, "from", "", "source bank identifier")
+	fs.StringVar(&flags.Source, "f", "", "source bank identifier (short)")
+	fs.StringVar(&flags.Source, "source", "", "source bank identifier (deprecated spelling of --from)")
 	fs.StringVar(&flags.Target, "to", "", "target bank identifier")
 	fs.StringVar(&flags.Target, "t", "", "target bank identifier (short)")
 	fs.BoolVar(&flags.DryRun, "dry-run", false, "report the plan without changing anything")
@@ -33,39 +117,7 @@ func ParseRename(args []string) (RenameFlags, error) {
 		return RenameFlags{}, err
 	}
 	if flags.Source == "" || flags.Target == "" {
-		return RenameFlags{}, fmt.Errorf("both a source and a target identifier are required")
-	}
-	return flags, nil
-}
-
-// ArchiveFlags is the parsed administrative archive command surface.
-type ArchiveFlags struct {
-	// Action is "export" or "import".
-	Action string
-	// Archive is the archive file path.
-	Archive string
-	// TargetID is the target identifier for an import.
-	TargetID string
-}
-
-// ParseArchive parses a bank archive command.
-func ParseArchive(action string, args []string) (ArchiveFlags, error) {
-	fs := flag.NewFlagSet("bank archive "+action, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	var flags ArchiveFlags
-	flags.Action = action
-	fs.StringVar(&flags.Archive, "archive", "", "archive file path")
-	fs.StringVar(&flags.Archive, "a", "", "archive file path (short)")
-	fs.StringVar(&flags.TargetID, "target", "", "target bank identifier for an import")
-	fs.StringVar(&flags.TargetID, "t", "", "target bank identifier for an import (short)")
-	if err := fs.Parse(args); err != nil {
-		return ArchiveFlags{}, err
-	}
-	if flags.Archive == "" {
-		return ArchiveFlags{}, fmt.Errorf("an archive path is required")
-	}
-	if action == "import" && flags.TargetID == "" {
-		return ArchiveFlags{}, fmt.Errorf("a target identifier is required for an import")
+		return RenameFlags{}, NewUsageError("both a source and a target identifier are required")
 	}
 	return flags, nil
 }
@@ -83,33 +135,4 @@ func RunRename(ctx context.Context, store storage.Store, flags RenameFlags, out 
 	_, _ = fmt.Fprintf(out, "%s %d bank row(s) and %d alias row(s) from %q to %q\n",
 		verb, plan.Rows, plan.Aliases, plan.Source, plan.Target)
 	return plan, nil
-}
-
-// RunArchive executes a parsed archive command against a store.
-func RunArchive(ctx context.Context, store storage.Store, flags ArchiveFlags, out io.Writer) error {
-	exporter := Exporter{Store: store}
-	switch flags.Action {
-	case "export":
-		data, err := exporter.Export(ctx, flags.TargetID)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(flags.Archive, data, 0o600); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(out, "exported %d bytes to %s\n", len(data), flags.Archive)
-		return nil
-	case "import":
-		data, err := os.ReadFile(flags.Archive)
-		if err != nil {
-			return err
-		}
-		if err := exporter.Import(ctx, data, flags.TargetID); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(out, "imported %s as %q\n", flags.Archive, flags.TargetID)
-		return nil
-	default:
-		return fmt.Errorf("unknown archive action %q", flags.Action)
-	}
 }

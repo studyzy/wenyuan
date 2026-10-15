@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -14,14 +13,10 @@ import (
 // route behavior can be exercised without reaching a real network.
 func webhookApp(t *testing.T) *App {
 	t.Helper()
-	cfg := config.FromEnv(func(key string) (string, bool) {
-		// The guard would otherwise refuse the reserved test address, which is
-		// the point of the guard; the route behavior is what this exercises.
-		if key == config.EnvWebhookAllowPrivateHosts {
-			return "true", true
-		}
-		return "", false
-	})
+	cfg := testConfig()
+	// The guard would otherwise refuse the reserved test address, which is the
+	// point of the guard; the route behavior is what this exercises.
+	cfg.WebhookAllowPrivateHosts = true
 	app, err := New(context.Background(), cfg, Dependencies{Store: storage.NewMemoryStore("public")})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +34,7 @@ func TestWebhookLifecycle(t *testing.T) {
 	base := "/v1/default/banks/wh-bank/webhooks"
 
 	create := send(app, http.MethodPost, base,
-		`{"url":"https://hooks.example.com/endpoint","secret":"s3cret","event_types":["memory.created"]}`)
+		`{"url":"https://hooks.example.com/endpoint","secret":"s3cret","event_types":["retain.completed"]}`)
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create = %d (body %s)", create.Code, create.Body.String())
 	}
@@ -51,12 +46,13 @@ func TestWebhookLifecycle(t *testing.T) {
 	if id == "" {
 		t.Fatalf("create must return an id: %v", created)
 	}
-	// The secret must not be readable back.
-	if _, leaked := created["secret"]; leaked {
-		t.Fatalf("the response must not carry the secret: %v", created)
+	// The secret must be present and null, never readable back, and there is no
+	// has_secret field.
+	if value, leaked := created["secret"]; !leaked || value != nil {
+		t.Fatalf("the response must carry a null secret: %v", created)
 	}
-	if created["has_secret"] != true {
-		t.Fatalf("the response must say a secret is set: %v", created)
+	if _, present := created["has_secret"]; present {
+		t.Fatalf("the response must not carry has_secret: %v", created)
 	}
 
 	// The reference exposes no single-webhook read: only the list, the create,
@@ -70,13 +66,13 @@ func TestWebhookLifecycle(t *testing.T) {
 	// List.
 	rec = send(app, http.MethodGet, base, "")
 	var listed struct {
-		Webhooks []map[string]any `json:"webhooks"`
+		Items []map[string]any `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Webhooks) != 1 {
-		t.Fatalf("list returned %d webhooks, want 1", len(listed.Webhooks))
+	if len(listed.Items) != 1 {
+		t.Fatalf("list returned %d webhooks, want 1", len(listed.Items))
 	}
 
 	// Update one field without restating the rest.
@@ -100,7 +96,7 @@ func TestWebhookLifecycle(t *testing.T) {
 
 	// Delete, and a repeated delete is not-found.
 	rec = send(app, http.MethodDelete, base+"/"+id, "")
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d", rec.Code)
 	}
 	rec = send(app, http.MethodDelete, base+"/"+id, "")
@@ -117,7 +113,7 @@ func TestWebhookGuardBlocksInternalTargets(t *testing.T) {
 
 	// A guard that permits private hosts is configured for the fixture, so the
 	// loopback case is exercised through a fresh application with the default.
-	strict, err := New(context.Background(), config.FromEnv(func(string) (string, bool) { return "", false }),
+	strict, err := New(context.Background(), testConfig(),
 		Dependencies{Store: storage.NewMemoryStore("public")})
 	if err != nil {
 		t.Fatal(err)
@@ -126,11 +122,14 @@ func TestWebhookGuardBlocksInternalTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The guard follows the reference: http and https are both acceptable
+	// schemes, and what is refused is a private or link-local target (or a
+	// scheme that is not a web request at all). A public host is therefore not
+	// in this list — refusing it would be stricter than the reference.
 	blocked := []string{
 		`{"url":"https://127.0.0.1/hook"}`,
 		`{"url":"https://169.254.169.254/latest/meta-data"}`,
 		`{"url":"https://10.0.0.5/hook"}`,
-		`{"url":"http://example.com/hook"}`,
 		`{"url":"file:///etc/passwd"}`,
 	}
 	for _, body := range blocked {

@@ -1,10 +1,12 @@
 package memoryops
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -21,8 +23,16 @@ const defaultTagMatchMode = storage.TagsMatchAny
 func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
 	var req RecallRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.WriteValidationFor(w, r, bodyFailure())
+	body, err := decodeJSON(r, &req)
+	if err != nil {
+		// A malformed tag-group filter gets its own message: the body is valid
+		// JSON, so "not valid JSON" would send the caller looking in the wrong
+		// place.
+		if errors.Is(err, ErrMalformedTagGroup) {
+			httpx.WriteValidationFor(w, r, tagGroupFailure())
+			return
+		}
+		httpx.WriteValidationFor(w, r, httpx.BodyDecodeFailure(err, body))
 		return
 	}
 	if failure := ValidateRecall(req); failure != nil {
@@ -31,7 +41,9 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.RerankerScoresByRankPosition && hasRerankerFloor(req.MinScores) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
-			"a reranker score floor cannot be combined with a rank-position reranker"))
+			"min_scores.reranker is not supported with a rank-position reranker: its scores are rank "+
+				"positions within each result set, so a floor would keep a fixed share of results regardless "+
+				"of relevance. Use min_scores.final, or a pointwise reranker."))
 		return
 	}
 	query, httpErr := h.buildRecallQuery(bankID, req)
@@ -39,9 +51,39 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpErr)
 		return
 	}
+	query = applyRecallTagScope(r, query)
+	// With an embedding model configured, the query text is embedded so the
+	// semantic arm can rank by vector similarity. A failed embedding degrades
+	// to the lexical path rather than failing the read, because recall is an
+	// enhancement surface and the non-vector arms still answer.
+	if h.Embeddings != nil {
+		if text := strings.TrimSpace(req.Query); text != "" {
+			if vector, err := h.Embeddings.EmbedQuery(r.Context(), text); err == nil {
+				query.QueryEmbedding = vector
+			}
+		}
+	}
+	// A bank may turn recall arms off in its own configuration; those arms are
+	// merged with the process-level exclusions. The configuration is read fresh
+	// rather than from the process-local bank cache, so a change another server
+	// wrote takes effect on the next request. The tenant's overrides layer under
+	// the bank's own, and the bank still wins any key it names.
+	if bankConfig, err := h.Store.BankConfig(r.Context(), bankID); err == nil {
+		resolved := config.ResolveLayers(bankConfig, httpx.TenantOverridesFrom(r), nil)
+		bank := storage.Bank{Config: resolved}
+		query.DisabledArms = append(query.DisabledArms, bank.RecallDisabledArms()...)
+	}
+	// The cross-encoder is an optional precision pass, so a bank that turned it
+	// off is answered from the fused order rather than refused. The gate runs
+	// here, after the bank's own configuration has been merged in, because the
+	// bank is what turned it off.
+	if disabledArm(query.DisabledArms, storage.ArmReranker) {
+		query.Rerank = nil
+		query.RerankDepth = 0
+	}
 	result, err := h.Store.Recall(r.Context(), query)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, h.mapReadError(err))
+		h.writeReadError(w, r, err)
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, BuildRecallResponse(result, req))
@@ -86,21 +128,27 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		Temporal:           window,
 		QueryTimestamp:     queryTimestamp,
 		StrategyBoosts:     h.RecallStrategyBoosts,
+		Recency:            h.RecallRecency,
 		DisabledArms:       h.DisabledRecallArms,
-		Limit:              req.Limit,
-		Offset:             req.Offset,
 	}
 	if h.Reranker != nil {
 		query.Rerank = h.Reranker.Rerank
 		query.RerankDepth = h.RerankDepth
+		// A rank-position reranker echoes ranks rather than relevance, so the
+		// fused order is what seeds the score instead of a min-max normalisation
+		// of those echoes.
+		query.RerankRankPosition = h.RerankerScoresByRankPosition
+		query.RerankPrunesCandidates = h.RerankerPrunesCandidates
+		query.RerankSeedFromFused = h.RerankerSeedFromFused
 	}
 	if req.Include != nil {
+		// Entity states default to included: the include decoder leaves Entities
+		// non-nil unless the caller explicitly nulls it, so an omitted key still
+		// means include. Chunks and source facts stay excluded unless supplied.
 		query.IncludeEntities = req.Include.Entities != nil
 		query.IncludeChunks = req.Include.Chunks != nil
 		query.IncludeSourceFacts = req.Include.SourceFacts != nil
 	} else {
-		// Entity states are included by default; chunks and source facts are
-		// excluded unless their sub-object is supplied.
 		query.IncludeEntities = true
 	}
 	return query, nil
@@ -147,4 +195,14 @@ func tagsMatchOrDefault(mode string) string {
 		return defaultTagMatchMode
 	}
 	return mode
+}
+
+// disabledArm reports whether the named arm or pass is turned off.
+func disabledArm(arms []string, target string) bool {
+	for _, arm := range arms {
+		if arm == target {
+			return true
+		}
+	}
+	return false
 }

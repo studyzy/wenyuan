@@ -111,8 +111,8 @@ func TestModelFactsAreRead(t *testing.T) {
 	if stub.lastReq.ResponseSchema == nil {
 		t.Fatal("the extraction call must request a response schema")
 	}
-	if stub.lastReq.Scope != "retain" {
-		t.Fatalf("scope = %q, want retain", stub.lastReq.Scope)
+	if stub.lastReq.Scope != "retain_extract_facts" {
+		t.Fatalf("scope = %q, want retain_extract_facts", stub.lastReq.Scope)
 	}
 }
 
@@ -249,5 +249,65 @@ func TestCausalRelationsAreCapped(t *testing.T) {
 	}
 	if got := len(result.Facts[4].CausalRelations); got != maxCausalRelationsPerFact {
 		t.Fatalf("causal relations = %d, want the cap %d", got, maxCausalRelationsPerFact)
+	}
+}
+
+// A punctuation-only "fact" is dropped, an experience fact_type survives, and
+// the model's "assistant" perspective is passed through rather than collapsed
+// to world, so the storage mapping can resolve it.
+func TestParseFactsFiltersDegenerateAndKeepsType(t *testing.T) {
+	structured := map[string]any{"facts": []any{
+		map[string]any{"text": "..."},
+		map[string]any{"text": "Alice moved to Berlin.", "where": "Berlin", "fact_kind": "event", "fact_type": "experience"},
+		map[string]any{"text": "I checked the deployment log.", "fact_type": "assistant"},
+	}}
+	facts, err := parseFacts(structured, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("degenerate fact must be dropped, got %d facts", len(facts))
+	}
+	if facts[0].Type != "experience" || facts[0].Where != "Berlin" || facts[0].Kind != "event" {
+		t.Fatalf("extended fields not parsed: %+v", facts[0])
+	}
+	if facts[1].Type != "assistant" {
+		t.Fatalf("assistant fact_type = %q, want it kept for the storage mapping", facts[1].Type)
+	}
+}
+
+// sequenceProvider returns a different structured value per call.
+type sequenceProvider struct {
+	results []any
+	calls   int
+}
+
+func (s *sequenceProvider) Name() string { return "openai" }
+func (s *sequenceProvider) Complete(context.Context, provider.CompletionRequest) (provider.CompletionResult, error) {
+	if s.calls >= len(s.results) {
+		return provider.CompletionResult{}, nil
+	}
+	value := s.results[s.calls]
+	s.calls++
+	return provider.CompletionResult{Structured: value}, nil
+}
+func (s *sequenceProvider) Embed(context.Context, provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	return provider.EmbeddingResult{}, nil
+}
+func (s *sequenceProvider) VerifyConnection(context.Context) error { return nil }
+func (s *sequenceProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
+
+// A malformed first response triggers exactly one self-correcting round.
+func TestExtractRepairsMalformedResponse(t *testing.T) {
+	provider := &sequenceProvider{results: []any{
+		"not an object",
+		map[string]any{"facts": []any{map[string]any{"text": "Alice works at Google."}}},
+	}}
+	result, err := New(provider).Extract(context.Background(), "Alice works at Google.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Facts) != 1 || provider.calls != 2 {
+		t.Fatalf("repair did not recover facts: %+v (calls %d)", result, provider.calls)
 	}
 }

@@ -12,7 +12,7 @@ func (s *MemoryStore) attachSideChannels(result *RecallResult, q RecallQuery, ty
 		result.EntityStates = s.entityStatesFor(q.BankID, result.Matches)
 	}
 	if q.IncludeChunks {
-		result.ChunkEntries = s.chunksFor(result.Matches)
+		result.ChunkEntries = s.chunksFor(q, result.Matches)
 	}
 	if q.IncludeSourceFacts {
 		facts, truncated := s.sourceFactsFor(result.Matches)
@@ -51,12 +51,30 @@ func (s *MemoryStore) entityStatesFor(bankID string, matches []RecallMatch) []En
 }
 
 // chunksFor assembles the chunk side channel keyed by chunk id for the chunks
-// the returned matches reference.
-func (s *MemoryStore) chunksFor(matches []RecallMatch) []ChunkEntry {
+// the returned matches reference. A chunk is returned only when its document
+// passes the reader's tag filter, so a fact shared through a tag never drags
+// along a document the reader's filter excludes (#5030); a chunk with no
+// document is withheld under a filter (fail closed).
+func (s *MemoryStore) chunksFor(q RecallQuery, matches []RecallMatch) []ChunkEntry {
 	seen := map[string]bool{}
 	out := make([]ChunkEntry, 0)
+	documentIDs := make([]string, 0, len(matches))
 	for _, m := range matches {
 		if m.ChunkID == "" || seen[m.ChunkID] {
+			continue
+		}
+		documentIDs = append(documentIDs, m.DocumentID)
+	}
+	visible := s.visibleDocumentIDsLocked(q.BankID, documentIDs, q.Tags, q.TagsMatch, q.TagGroups)
+	active := tagFilterActive(q.Tags, q.TagsMatch, q.TagGroups)
+	for _, m := range matches {
+		if m.ChunkID == "" || seen[m.ChunkID] {
+			continue
+		}
+		if m.DocumentID != "" && !visible[m.DocumentID] {
+			continue
+		}
+		if m.DocumentID == "" && active {
 			continue
 		}
 		seen[m.ChunkID] = true
@@ -76,14 +94,14 @@ func (s *MemoryStore) chunksFor(matches []RecallMatch) []ChunkEntry {
 
 // sourceFactsFor assembles the source-fact map keyed by source-fact id for the
 // source facts the returned observations cite.
-func (s *MemoryStore) sourceFactsFor(matches []RecallMatch) (map[string]string, bool) {
-	out := map[string]string{}
+func (s *MemoryStore) sourceFactsFor(matches []RecallMatch) (map[string]RecallMatch, bool) {
+	out := map[string]RecallMatch{}
 	for _, m := range matches {
 		for _, id := range m.SourceMemoryIDs {
 			if _, ok := out[id]; ok {
 				continue
 			}
-			out[id] = sourceFactText(id, s)
+			out[id] = sourceFactMatch(id, s)
 		}
 	}
 	if len(out) == 0 {
@@ -92,13 +110,24 @@ func (s *MemoryStore) sourceFactsFor(matches []RecallMatch) (map[string]string, 
 	return out, false
 }
 
-// sourceFactText resolves a source-fact id to its text when it names a stored
-// memory unit; otherwise the id itself is a stable placeholder.
-func sourceFactText(id string, s *MemoryStore) string {
+// sourceFactMatch resolves a source-fact id to the stored unit it names, so the
+// source-fact channel can carry the same result shape as the ranked list. An
+// id that names no stored unit becomes a placeholder carrying its own id as
+// text, which keeps the reference stable without inventing a fact.
+func sourceFactMatch(id string, s *MemoryStore) RecallMatch {
 	if unit, ok := s.units[id]; ok {
-		return unit.Text
+		return RecallMatch{
+			ID:            unit.ID,
+			Text:          unit.Text,
+			Type:          string(unit.FactType),
+			DocumentID:    unit.DocumentID,
+			ChunkID:       unit.ChunkID,
+			OccurredStart: unit.OccurredStart,
+			OccurredEnd:   unit.OccurredEnd,
+			MentionedAt:   unit.MentionedAt,
+		}
 	}
-	return id
+	return RecallMatch{ID: id, Text: id}
 }
 
 // wordSet lowercases a string and splits it into a set of alphabetic words.

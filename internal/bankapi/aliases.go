@@ -28,8 +28,8 @@ func (h *Handlers) AddAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req AliasRequest
-	if err := decodeBody(r, &req); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "request body is not valid JSON"))
+	if err := httpx.DecodeBody(r, &req); err != nil {
+		httpx.WriteErrorFor(w, r, err)
 		return
 	}
 	if writeIdentifierError(w, r, req.Alias) {
@@ -43,24 +43,38 @@ func (h *Handlers) AddAlias(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSONFor(w, r, http.StatusCreated, ToAliasResponse(bankID, aliases))
 }
 
-// PromoteAlias serves the alias display route, demoting any previous display
-// alias.
+// PromoteAlias serves the alias display route: primary true displays the bank
+// under the alias (demoting any previous display alias), primary false returns
+// it to its own id without touching the other aliases.
 func (h *Handlers) PromoteAlias(w http.ResponseWriter, r *http.Request) {
 	bankID, ok := h.resolveCanonical(w, r)
 	if !ok {
 		return
 	}
 	var req AliasUpdateRequest
-	if r.Body != nil {
-		_ = decodeBody(r, &req)
+	if err := httpx.DecodeBody(r, &req); err != nil {
+		httpx.WriteErrorFor(w, r, err)
+		return
+	}
+	if req.Primary == nil {
+		httpx.WriteValidationFor(w, r, primaryRequiredFailure())
+		return
 	}
 	alias := r.PathValue("alias")
-	aliases, err := h.Store.PromoteAlias(r.Context(), bankID, alias)
+	aliases, err := h.Store.SetAliasPrimary(r.Context(), bankID, alias, *req.Primary)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, ToAliasResponse(bankID, aliases))
+}
+
+// primaryRequiredFailure reports the required primary field of the alias
+// display body.
+func primaryRequiredFailure() *httpx.ValidationFailure {
+	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.Missing([]string{"body", "primary"}, map[string]any{}),
+	}}
 }
 
 // RemoveAlias serves the alias removal route.

@@ -99,7 +99,7 @@ func TestRecallResponseSerializationFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := string(encoded)
-	for _, field := range []string{`"results"`, `"id"`, `"text"`, `"type"`, `"truncated"`, `"scores"`, `"final"`} {
+	for _, field := range []string{`"results"`, `"id"`, `"text"`, `"type"`, `"scores"`, `"final"`} {
 		if !strings.Contains(raw, field) {
 			t.Fatalf("serialized response missing %s: %s", field, raw)
 		}
@@ -141,5 +141,20 @@ func TestSelectByTokenBudgetNonPositive(t *testing.T) {
 	matches := []storage.RecallMatch{{ID: "a", Text: "text"}}
 	if got := applyTokenCap(matches, intPtr(0)); len(got) != 0 {
 		t.Fatalf("non-positive cap must return no facts: %+v", got)
+	}
+}
+
+// A channel-level token budget clips a chunk and marks it truncated.
+func TestCapChunkChannelTruncates(t *testing.T) {
+	chunks := map[string]ChunkEntry{
+		"c1": {ID: "c1", Text: "one two three four five six"},
+	}
+	capped := capChunkChannel(chunks, 3)
+	entry := capped["c1"]
+	if !entry.Truncated {
+		t.Fatalf("an over-budget chunk must be marked truncated: %+v", entry)
+	}
+	if tokenCount(entry.Text) > 3 {
+		t.Fatalf("clipped chunk has %d tokens, want <= 3", tokenCount(entry.Text))
 	}
 }

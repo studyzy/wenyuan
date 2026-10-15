@@ -97,9 +97,14 @@ func TestAsyncWriteWithoutIDIsDistinct(t *testing.T) {
 	}
 }
 
-// ts-0005 / err-0001 / sec-0002: reusing an operation identifier returns a
-// conflict and enqueues no duplicate.
-func TestReusedOperationIDConflicts(t *testing.T) {
+// ts-0005 / err-0001 / sec-0002: a resubmitted identifier rejoins the original
+// submission rather than queueing a second copy of the work.
+//
+// The reference resolves the identifier before it queues anything: an id that
+// already names this bank's batch returns that operation, and the work is not
+// duplicated. Only an identifier in use by another bank — or by another kind of
+// operation — is a conflict.
+func TestReusedOperationIDRejoinsTheSubmission(t *testing.T) {
 	mux, store := newServer(t)
 	opID := "11111111-1111-1111-1111-111111111111"
 	body := `{"items":[{"content":"first"}],"async":true,"operation_id":"` + opID + `"}`
@@ -107,15 +112,20 @@ func TestReusedOperationIDConflicts(t *testing.T) {
 		t.Fatalf("first write status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	rec := post(t, mux, "/v1/default/banks/b1/memories", body)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("second write status = %d, want 409: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second write status = %d, want 200 (a replay of the same submission): %s", rec.Code, rec.Body.String())
+	}
+	if got := decodeOpID(t, rec); got != opID {
+		t.Fatalf("a resubmitted identifier must return the original operation, got %q", got)
 	}
 	page, err := store.ListOperations(context.TODO(), storage.OperationQuery{BankID: "b1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 1 {
-		t.Fatalf("a reused identifier must not enqueue a duplicate, got %d operations", page.Total)
+	// One parent and its one child: the resubmission must not add a second
+	// batch to the queue.
+	if page.Total != 2 {
+		t.Fatalf("a resubmitted identifier must not enqueue a duplicate, got %d operations", page.Total)
 	}
 }
 
@@ -142,11 +152,16 @@ func TestEmptyItemsRejected(t *testing.T) {
 	}
 }
 
-func TestMalformedWriteBodyReturnsBadRequest(t *testing.T) {
+func TestMalformedWriteBodyIsUnprocessable(t *testing.T) {
 	mux, _ := newServer(t)
 	rec := post(t, mux, "/v1/default/banks/b1/memories", `{oops`)
-	if rec.Code != http.StatusBadRequest {
+	// A rejected body is the reference framework's structured 422, not a 400
+	// sentence.
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"json_invalid"`) {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 
@@ -155,7 +170,9 @@ func TestMalformedWriteBodyReturnsBadRequest(t *testing.T) {
 func TestUnparseableTimestampRejected(t *testing.T) {
 	mux, _ := newServer(t)
 	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"x","timestamp":"not-a-time"}]}`)
-	if rec.Code != http.StatusBadRequest {
+	// The reference framework rejects a malformed field value as a validation
+	// item, so the status is 422 rather than 400.
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
@@ -194,16 +211,16 @@ func TestTimestampOmissionDefaultsToNow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1"})
+	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var dated, undated bool
 	for _, row := range page.Memories {
-		if row.Text == "dated" && row.OccurredStart != nil {
+		if row.Text == "dated" && row.MentionedAt != nil {
 			dated = true
 		}
-		if row.Text == "undated" && row.OccurredStart == nil {
+		if row.Text == "undated" && row.MentionedAt == nil {
 			undated = true
 		}
 	}
@@ -273,7 +290,7 @@ func TestObservationScopeAcceptsModeAndGroups(t *testing.T) {
 	}{
 		{"mode literal", `"per_tag"`, http.StatusOK},
 		{"explicit groups", `[["a","b"],["c"]]`, http.StatusOK},
-		{"flat list is not a form", `["s1"]`, http.StatusBadRequest},
+		{"flat list is not a form", `["s1"]`, http.StatusUnprocessableEntity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mux, _ := newServer(t)
@@ -329,14 +346,13 @@ func TestFileRetainIsAsync(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var got struct {
-		Async        bool     `json:"async"`
 		OperationIDs []string `json:"operation_ids"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Async || len(got.OperationIDs) == 0 {
-		t.Fatalf("file route must process asynchronously: %s", rec.Body.String())
+	if len(got.OperationIDs) == 0 {
+		t.Fatalf("file route must return the queued operation ids: %s", rec.Body.String())
 	}
 }
 
@@ -360,14 +376,29 @@ func TestFileRetainPersistsAttachment(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	attachments, err := store.ListAttachments(context.TODO(), "b1", "diagram.png")
+	// The upload names no document, so the ingress mints one — and the
+	// attachment is filed under that document, which is the id the memory units
+	// will carry. Filing it under the file's name instead would leave the
+	// attachment unreachable from the document it belongs to.
+	documents, err := store.ListDocuments(context.TODO(), storage.DocumentQuery{BankID: "b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents.Documents) != 1 {
+		t.Fatalf("documents = %d, want 1", len(documents.Documents))
+	}
+	documentID := documents.Documents[0].ID
+	attachments, err := store.ListAttachments(context.TODO(), "b1", documentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(attachments) != 1 {
-		t.Fatalf("attachments = %d, want 1", len(attachments))
+		t.Fatalf("attachments for document %q = %d, want 1", documentID, len(attachments))
 	}
 	attachment := attachments[0]
+	if attachment.Filename != "diagram.png" {
+		t.Fatalf("filename = %q, want the uploaded name", attachment.Filename)
+	}
 	if len(attachment.ShortID) != attachmentShortIDLength {
 		t.Fatalf("short id = %q, want %d chars", attachment.ShortID, attachmentShortIDLength)
 	}
@@ -407,4 +438,193 @@ func decodeOpID(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatal(err)
 	}
 	return got.OperationID
+}
+
+// The retain entity-resolution switch defaults to true when omitted, matching
+// the reference: an omitted resolve_entities resolves supplied entity names
+// against the bank, and only an explicit false takes them literally.
+func TestRetainResolveEntitiesDefaultsTrue(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"omitted defaults true", `{"items":[{"content":"x","entities":["Alice"]}]}`, true},
+		{"explicit true", `{"items":[{"content":"x","entities":["Alice"],"resolve_entities":true}]}`, true},
+		{"explicit false", `{"items":[{"content":"x","entities":["Alice"],"resolve_entities":false}]}`, false},
+	}
+	for _, tc := range tests {
+		var req RetainRequest
+		if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := toStorageRetainItem(req.Items[0]).ResolveEntities; got != tc.want {
+			t.Fatalf("%s: ResolveEntities = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The retain timestamp accepts the naive ISO form the reference's
+// datetime.fromisoformat accepts, not only the timezone-qualified RFC3339 form.
+func TestRetainAcceptsNaiveISOTimestamp(t *testing.T) {
+	var req RetainRequest
+	if err := json.Unmarshal([]byte(`{"items":[{"content":"x","timestamp":"2024-01-15T10:30:00"}]}`), &req); err != nil {
+		t.Fatalf("naive ISO timestamp rejected: %v", err)
+	}
+	stored := toStorageRetainItem(req.Items[0])
+	if !stored.HasTimestamp || stored.Timestamp == nil {
+		t.Fatalf("naive timestamp not captured: %+v", stored)
+	}
+}
+
+// The file retain route reports not-found when the file-upload API is
+// disabled, matching the reference's gate.
+func TestFileRetainGatedWhenDisabled(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	h.FileUploadDisabled = true
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, _ := w.CreateFormFile("files", "notes.txt")
+	_, _ = part.Write([]byte("body"))
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled file upload = %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// The file route validates the optional request parser against the allowlist.
+func TestFileRetainRejectsUnknownParser(t *testing.T) {
+	mux, _ := newServer(t)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, _ := w.CreateFormFile("files", "notes.txt")
+	_, _ = part.Write([]byte("body"))
+	_ = w.WriteField("request", `{"parser":"nope"}`)
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown parser = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// When the deployment opts out of storing raw source text, a retain keeps the
+// document's text out of storage while the content hash still comes from the
+// real content.
+func TestRetainDiscardsDocumentTextWhenDisabled(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	h.DiscardDocumentText = true
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"the raw secret","document_id":"d1"}],"async":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	doc, err := store.GetDocument(context.TODO(), "b1", "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.OriginalText != "" {
+		t.Fatalf("raw text must not be stored, got %q", doc.OriginalText)
+	}
+	if doc.ContentHash != storage.ContentHash("the raw secret") {
+		t.Fatalf("content hash must come from the real content")
+	}
+	chunks, err := store.ListChunks(context.TODO(), storage.ChunkQuery{BankID: "b1", DocumentID: "d1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks.Chunks) == 0 {
+		t.Fatal("chunks must still be stored")
+	}
+	for _, chunk := range chunks.Chunks {
+		if chunk.ChunkText != "" {
+			t.Fatalf("chunk text must not be stored, got %q", chunk.ChunkText)
+		}
+	}
+}
+
+// A bank's own store_document_text override wins over the deployment default,
+// in both directions.
+func TestBankStoreDocumentTextOverride(t *testing.T) {
+	// Deployment keeps text; the bank opts out.
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{
+		BankID: "b1", Name: "Bank", Config: map[string]any{"store_document_text": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	if rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"bank opted out","document_id":"d1"}],"async":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	doc, _ := store.GetDocument(context.TODO(), "b1", "d1")
+	if doc.OriginalText != "" {
+		t.Fatalf("bank override must discard text, got %q", doc.OriginalText)
+	}
+
+	// Deployment discards; the bank opts back in.
+	store2 := storage.NewMemoryStore("public")
+	if _, err := store2.CreateBank(context.TODO(), storage.Bank{
+		BankID: "b2", Name: "Bank", Config: map[string]any{"store_document_text": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h2 := NewHandlers(store2, 5, 30000)
+	h2.DiscardDocumentText = true
+	mux2 := http.NewServeMux()
+	h2.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux2.HandleFunc(method+" "+pattern, handler)
+	})
+	if rec := post(t, mux2, "/v1/default/banks/b2/memories", `{"items":[{"content":"bank opted in","document_id":"d1"}],"async":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	doc2, _ := store2.GetDocument(context.TODO(), "b2", "d1")
+	if doc2.OriginalText != "bank opted in" {
+		t.Fatalf("bank override must keep text, got %q", doc2.OriginalText)
+	}
+}
+
+// An append-mode write is refused when document text storage is off: there is
+// no stored text to prepend to.
+func TestAppendRefusedWhenTextStorageDisabled(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{
+		BankID: "b1", Name: "Bank", Config: map[string]any{"store_document_text": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"more","document_id":"d1","update_mode":"append"}],"async":false}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("append with text storage off = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
 }

@@ -2,6 +2,7 @@ package hindsightarchive
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,5 +95,170 @@ func TestReadRejectsDocumentWithoutID(t *testing.T) {
 		map[string]string{"000000.json": `{"original_text":"no id"}`})
 	if _, err := OpenZip(path); err == nil {
 		t.Fatal("a document without an id must be rejected")
+	}
+}
+
+// An archive with attachments round-trips its rows and their bytes: the bytes
+// travel as their own entries, named by the row, so nothing caller-shaped
+// becomes a path inside the archive.
+func TestAttachmentBlobsRoundTrip(t *testing.T) {
+	bytesOf := func(name string) []byte { return []byte("bytes of " + name) }
+	archive := &Archive{
+		Manifest: Manifest{
+			SchemaVersion:   SupportedSchemaVersion,
+			SourceBankID:    "b1",
+			ArchiveType:     "bank",
+			AttachmentCount: 2,
+		},
+		Attachments: []Attachment{
+			{
+				BankID: "b1", DocumentID: "d1", AttachmentHash: "h1", ShortID: "s1",
+				MediaType: "image/png", ByteSize: int64(len(bytesOf("one"))), Kind: "image",
+				Filename: "one.png", Entry: BlobEntry(0),
+			},
+			{
+				BankID: "b1", DocumentID: "d1", AttachmentHash: "h2", ShortID: "s2",
+				MediaType: "image/jpeg", ByteSize: int64(len(bytesOf("two"))), Kind: "image",
+				Entry: BlobEntry(1),
+			},
+		},
+		Blobs: map[string][]byte{BlobEntry(0): bytesOf("one"), BlobEntry(1): bytesOf("two")},
+	}
+	data, err := Write(archive)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	got, err := Read(reader)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.Manifest.AttachmentCount != 2 || len(got.Attachments) != 2 {
+		t.Fatalf("attachments = %d, manifest = %+v", len(got.Attachments), got.Manifest)
+	}
+	if got.Attachments[0].Filename != "one.png" || got.Attachments[0].Entry != BlobEntry(0) {
+		t.Fatalf("row = %+v", got.Attachments[0])
+	}
+	if string(got.Blobs[BlobEntry(0)]) != "bytes of one" || string(got.Blobs[BlobEntry(1)]) != "bytes of two" {
+		t.Fatalf("blobs = %q", got.Blobs)
+	}
+}
+
+// A row whose entry the archive does not hold is an error, not an attachment
+// that silently restores empty.
+func TestAttachmentWithMissingBlobIsRejected(t *testing.T) {
+	archive := &Archive{
+		Manifest: Manifest{SchemaVersion: SupportedSchemaVersion, SourceBankID: "b1", ArchiveType: "bank"},
+		Attachments: []Attachment{
+			{BankID: "b1", DocumentID: "d1", ShortID: "s1", Entry: BlobEntry(0)},
+		},
+	}
+	if _, err := Write(archive); err == nil {
+		t.Fatal("a row naming bytes the archive does not hold must be refused")
+	}
+
+	// And a foreign archive that lies about carrying them is refused on read.
+	honest := &Archive{
+		Manifest: Manifest{SchemaVersion: SupportedSchemaVersion, SourceBankID: "b1", ArchiveType: "bank"},
+	}
+	data, err := Write(honest)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	got, err := Read(reader)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	got.Attachments = []Attachment{{BankID: "b1", DocumentID: "d1", ShortID: "s1", Entry: BlobEntry(9)}}
+	if _, err := Write(got); err == nil {
+		t.Fatal("a reassembled dangling row must be refused")
+	}
+}
+
+// A row naming no entry at all is refused rather than written as a dangling
+// reference.
+func TestAttachmentWithoutEntryIsRejected(t *testing.T) {
+	archive := &Archive{
+		Manifest:    Manifest{SchemaVersion: SupportedSchemaVersion, SourceBankID: "b1", ArchiveType: "bank"},
+		Attachments: []Attachment{{BankID: "b1", DocumentID: "d1", ShortID: "s1"}},
+	}
+	if _, err := Write(archive); err == nil {
+		t.Fatal("a row naming no entry must be refused")
+	}
+}
+
+// The history sections round-trip: a model's refresh log rides with the data,
+// and the operational tables are carried only when they are present.
+func TestHistorySectionsRoundTrip(t *testing.T) {
+	archive := &Archive{
+		Manifest: Manifest{
+			SchemaVersion: SupportedSchemaVersion, SourceBankID: "b1",
+			ArchiveType: "bank", IncludesHistory: true,
+		},
+		MentalModelHistory: []map[string]any{
+			{"mental_model_id": "mm-1", "bank_id": "b1", "content": map[string]any{"previous_content": "old"}, "changed_at": "2026-01-01T00:00:00Z"},
+		},
+		History: map[string][]map[string]any{
+			AuditLogTable:    {{"id": "a-1", "action": "recall", "bank_id": "b1"}},
+			LLMRequestsTable: {{"id": "l-1", "operation": "retain", "bank_id": "b1"}},
+		},
+	}
+	data, err := Write(archive)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range reader.File {
+		names[f.Name] = true
+	}
+	for _, want := range []string{MentalModelHistoryName, HistoryEntry(AuditLogTable), HistoryEntry(LLMRequestsTable)} {
+		if !names[want] {
+			t.Fatalf("archive missing %s: %v", want, names)
+		}
+	}
+	got, err := Read(reader)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got.MentalModelHistory) != 1 || got.MentalModelHistory[0]["mental_model_id"] != "mm-1" {
+		t.Fatalf("mental model history = %+v", got.MentalModelHistory)
+	}
+	if len(got.History[AuditLogTable]) != 1 || len(got.History[LLMRequestsTable]) != 1 {
+		t.Fatalf("history = %+v", got.History)
+	}
+}
+
+// An archive with no history carries no history entries, so an empty table is
+// distinguishable from a table that was never selected.
+func TestHistoryAbsentWhenNotSelected(t *testing.T) {
+	archive := &Archive{
+		Manifest: Manifest{SchemaVersion: SupportedSchemaVersion, SourceBankID: "b1", ArchiveType: "bank"},
+		History:  map[string][]map[string]any{AuditLogTable: {}},
+	}
+	data, err := Write(archive)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	got, err := Read(reader)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.History != nil {
+		t.Fatalf("history = %+v, want nil", got.History)
 	}
 }

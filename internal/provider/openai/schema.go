@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -75,9 +76,11 @@ func supported(kind string) bool {
 }
 
 // MarshalStrictSchema serializes a schema into the shape the configured
-// backend accepts: discriminated unions use an anyOf representation rather
-// than oneOf with a discriminator, numeric bound keywords are removed, and
-// sibling keywords alongside a reference are removed.
+// backend accepts for strict structured output: discriminated unions use an
+// anyOf representation rather than oneOf with a discriminator, numeric bound
+// keywords are removed, sibling keywords alongside a reference are removed, and
+// every object carries the strict subset (additionalProperties=false and every
+// property required).
 func MarshalStrictSchema(schema *provider.Schema, settings provider.Settings) (json.RawMessage, error) {
 	if err := ValidateSchema(schema); err != nil {
 		return nil, err
@@ -102,7 +105,20 @@ func serializeSchema(schema *provider.Schema, settings provider.Settings) map[st
 		}
 		out["properties"] = props
 	}
-	if len(schema.Required) > 0 {
+	if len(schema.Properties) > 0 {
+		// This serializer serves the strict path only, and a strict schema
+		// demands that every object carry additionalProperties=false and list
+		// every property as required. A backend that enforces the subset rejects
+		// the request otherwise, which would turn an extraction into a provider
+		// error rather than a result.
+		out["additionalProperties"] = false
+		names := make([]string, 0, len(schema.Properties))
+		for name := range schema.Properties {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		out["required"] = names
+	} else if len(schema.Required) > 0 {
 		out["required"] = append([]string(nil), schema.Required...)
 	}
 	if schema.Items != nil {

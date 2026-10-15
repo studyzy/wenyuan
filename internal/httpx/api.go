@@ -1,7 +1,10 @@
 package httpx
 
-// APIVersion is the API version string advertised by the version endpoint.
-const APIVersion = "1.0.0"
+// APIVersion is the API version string advertised by the version endpoint. It
+// is the reference release whose surface this service serves: a client that
+// gates behavior on the version asks what API it is talking to, not which build
+// answered. A test pins it to the served contract document's own version.
+const APIVersion = ReferenceAPIVersion
 
 // Route namespace and path constants that form the public URL contract.
 const (
@@ -31,16 +34,17 @@ const (
 	SuffixOperations  = "/operations"
 
 	// Read surface: documents, chunks, tags, entities, graph.
-	SuffixDocuments         = "/documents"
-	SuffixDocumentMember    = "/documents/{document_id}"
-	SuffixDocumentChunks    = "/documents/{document_id}/chunks"
-	SuffixDocumentReprocess = "/documents/{document_id}/reprocess"
-	SuffixTags              = "/tags"
-	SuffixGraph             = "/graph"
-	SuffixEntities          = "/entities"
-	SuffixEntitiesGraph     = "/entities/graph"
-	SuffixEntityMember      = "/entities/{entity_id}"
-	SuffixEntityRegenerate  = "/entities/{entity_id}/regenerate"
+	SuffixDocuments = "/documents"
+	// Document member routes are a subtree rather than a pattern: the reference
+	// declares the document id as a path-style parameter, so it may span
+	// segments, and the routed handler splits the remainder.
+	SuffixDocumentMember   = "/documents/"
+	SuffixTags             = "/tags"
+	SuffixGraph            = "/graph"
+	SuffixEntities         = "/entities"
+	SuffixEntitiesGraph    = "/entities/graph"
+	SuffixEntityMember     = "/entities/{entity_id}"
+	SuffixEntityRegenerate = "/entities/{entity_id}/regenerate"
 
 	// PrefixChunksV1 is the non-bank-scoped chunk namespace, because a chunk
 	// identifier is already globally unique.
@@ -52,6 +56,7 @@ const (
 	SuffixWebhookDeliveries = "/webhooks/{webhook_id}/deliveries"
 
 	// Memories that are not one of the CRUD sub-routes.
+	SuffixFileRetain            = "/files/retain"
 	SuffixMemoriesDryRunExtract = "/memories/dry-run-extract"
 	SuffixOperationMemberDelete = "/operations/{operation_id}/delete"
 
@@ -112,45 +117,3 @@ const (
 	// pattern form rather than a single path parameter.
 	PrefixFilesDownload = PrefixDefaultV1 + "/files/download/"
 )
-
-// TransferAcceptedQueryParams lists the query parameters the archive transfer
-// routes accept. They are registered with the query filter so a caller sees
-// only genuinely unknown parameters in the ignored-parameter header.
-var transferAcceptedQueryParams = []string{
-	"subtype",
-	"tag",
-	"kind",
-	"fact_type",
-	"memory_type",
-	"node_id",
-	"page_id",
-	"days",
-	"action",
-	"transport",
-	"mode",
-	"target_bank_id",
-	"on_conflict",
-	"document_conflict",
-	"include_data",
-	"include_bank_config",
-	"include_history",
-	"include_observations",
-	"include_knowledge_base",
-	"document_id",
-	"dry_run",
-}
-
-// TransferQueryFilter returns the accepted-parameter filter for the transfer
-// route family, combined with the standard set.
-func TransferQueryFilter() QueryFilter {
-	return NewQueryFilter(append(append([]string{}, defaultAcceptedQueryParams...), transferAcceptedQueryParams...)...)
-}
-
-// IgnoredQueryParamsAccepted lists the query parameters the bank-scoped routes
-// accept. Every other parameter is ignored and reported.
-var defaultAcceptedQueryParams = []string{"limit", "offset", "q", "type", "tags", "tags_match", "since", "until"}
-
-// DefaultQueryFilter returns the standard accepted-parameter filter.
-func DefaultQueryFilter() QueryFilter {
-	return NewQueryFilter(defaultAcceptedQueryParams...)
-}

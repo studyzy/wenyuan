@@ -24,11 +24,19 @@ func (c *Client) Dimensions() int { return provider.DeclaredDimensions() }
 
 // VerifyConnection issues a small probe completion and reports whether the
 // provider is reachable, naming the provider and model on failure.
+//
+// The prompt is a literal, not a greeting: a probe is only useful if it passes
+// on every endpoint the deployment supports, and an endpoint that answers the
+// prompt at all is the whole question. The budget is the operational
+// verification allowance, so a provider that needs a couple of tokens of
+// scaffolding before its answer is not judged unreachable.
 func (c *Client) VerifyConnection(ctx context.Context) error {
+	policy := provider.VerificationRetryPolicy()
 	_, err := c.Complete(ctx, provider.CompletionRequest{
-		Messages:  []provider.Message{{Role: provider.RoleUser, Content: "ping"}},
-		MaxTokens: 1,
+		Messages:  []provider.Message{{Role: provider.RoleUser, Content: provider.VerificationPrompt}},
+		MaxTokens: provider.VerificationMaxTokens,
 		Scope:     "verification",
+		Retry:     &policy,
 	})
 	if err != nil {
 		return &provider.TransientError{Cause: &verifyError{provider: c.Name(), model: c.Settings.Model, cause: err}}

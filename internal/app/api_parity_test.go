@@ -84,9 +84,18 @@ func TestDeleteOperationContract(t *testing.T) {
 		t.Fatalf("delete response = %v", body)
 	}
 
-	// It is gone afterwards.
-	if rec := send(app, http.MethodGet, base+"/11111111-1111-1111-1111-111111111111", ""); rec.Code != http.StatusNotFound {
-		t.Fatalf("deleted operation still readable = %d", rec.Code)
+	// It is gone afterwards: the single read reports not_found in-band (200),
+	// matching the reference rather than a 404.
+	rec = send(app, http.MethodGet, base+"/11111111-1111-1111-1111-111111111111", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deleted operation read = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var gone map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &gone); err != nil {
+		t.Fatal(err)
+	}
+	if gone["status"] != "not_found" {
+		t.Fatalf("deleted operation status = %v, want not_found", gone["status"])
 	}
 
 	// The member path is a DELETE; the old POST form is not routable.

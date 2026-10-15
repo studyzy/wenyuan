@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"io"
 )
 
 // PutStoredFile persists a payload in the in-memory backend.
@@ -43,4 +45,19 @@ func (s *MemoryStore) GetStoredFile(ctx context.Context, key string) (StoredFile
 	copied := file
 	copied.Data = append([]byte(nil), file.Data...)
 	return copied, nil
+}
+
+// OpenStoredFile opens a payload from the in-memory backend for streaming
+// read. The bytes already live in memory, so the reader simply wraps them; the
+// gain is that the caller stops needing a separate whole-payload handle.
+func (s *MemoryStore) OpenStoredFile(ctx context.Context, key string) (StoredFileStream, error) {
+	file, err := s.GetStoredFile(ctx, key)
+	if err != nil {
+		return StoredFileStream{}, err
+	}
+	return StoredFileStream{
+		Reader:      io.NopCloser(bytes.NewReader(file.Data)),
+		ContentType: file.ContentType,
+		Size:        int64(len(file.Data)),
+	}, nil
 }

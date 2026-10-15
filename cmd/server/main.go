@@ -13,6 +13,7 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/app"
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/monitoring"
 )
 
 func main() {
@@ -57,6 +58,7 @@ func run(args []string) error {
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	slog.SetDefault(slog.New(monitoring.NewLogHandler(cfg)))
 	defer stop()
 
 	slog.Info("starting", "address", cfg.Address(), "entrypoint", config.EntrypointName)

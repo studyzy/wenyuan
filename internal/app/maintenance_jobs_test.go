@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/maintenance"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
@@ -22,7 +24,7 @@ func newJobStore(t *testing.T) *storage.MemoryStore {
 // interval, so the loop carries no work it will never run.
 func TestMaintenanceJobsOmittedWhenDisabled(t *testing.T) {
 	store := newJobStore(t)
-	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), config.MaintenanceConfig{})
+	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), config.MaintenanceConfig{}, config.VectorIndexConfig{})
 	if len(jobs) != 0 {
 		t.Fatalf("jobs = %d, want none for a fully disabled configuration", len(jobs))
 	}
@@ -41,7 +43,7 @@ func TestMaintenanceJobsBuiltFromConfiguration(t *testing.T) {
 		OperationRetentionDays:         7,
 		OperationCleanupBatchSize:      100,
 	}
-	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), cfg)
+	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), cfg, config.VectorIndexConfig{})
 	names := map[string]bool{}
 	for _, job := range jobs {
 		if names[job.Name] {
@@ -72,7 +74,7 @@ func TestMaintenanceJobsBuiltFromConfiguration(t *testing.T) {
 func TestLLMRetentionJobRequiresTracing(t *testing.T) {
 	store := newJobStore(t)
 	base := config.MaintenanceConfig{RetentionSweepInterval: time.Hour, LLMTraceRetentionDays: 30}
-	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), base)
+	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), base, config.VectorIndexConfig{})
 	for _, job := range jobs {
 		if job.Name == "retention.llm_requests" {
 			t.Fatal("the model-request sweep must not run when tracing is off")
@@ -80,7 +82,7 @@ func TestLLMRetentionJobRequiresTracing(t *testing.T) {
 	}
 
 	base.LLMTraceEnabled = true
-	jobs = maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), base)
+	jobs = maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), base, config.VectorIndexConfig{})
 	found := false
 	for _, job := range jobs {
 		if job.Name == "retention.llm_requests" {
@@ -215,5 +217,138 @@ func TestReconcileQueuesOnlyStrandedBanks(t *testing.T) {
 	}
 	if page.Total != 1 {
 		t.Fatalf("queued %d consolidations after a second run, want 1", page.Total)
+	}
+}
+
+// The vector index sweep exists only when a threshold is configured, and it is
+// a no-op on a backend that holds no per-bank indexes.
+func TestVectorIndexReconcileJobGatedOnThreshold(t *testing.T) {
+	store := newJobStore(t)
+	jobs := maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), config.MaintenanceConfig{}, config.VectorIndexConfig{})
+	for _, job := range jobs {
+		if job.Name == "vector_index.reconcile" {
+			t.Fatal("the vector index sweep must not run at a zero threshold")
+		}
+	}
+
+	jobs = maintenanceJobs(store, nil, nil, tenant.NewDefault("public"), config.MaintenanceConfig{},
+		config.VectorIndexConfig{MinRows: 100, ReconcileInterval: 60})
+	var sweep *maintenance.Job
+	for i := range jobs {
+		if jobs[i].Name == "vector_index.reconcile" {
+			job := jobs[i]
+			sweep = &job
+		}
+	}
+	if sweep == nil {
+		t.Fatal("a positive threshold must register the sweep")
+	}
+	if sweep.Interval != time.Minute {
+		t.Fatalf("interval = %v", sweep.Interval)
+	}
+	// The in-memory store holds no per-bank indexes, so the sweep is a no-op
+	// rather than an error.
+	if err := sweep.Run(context.Background()); err != nil {
+		t.Fatalf("sweep over a store without indexes: %v", err)
+	}
+}
+
+// graphMaintainerStub records the relink/prune work the job drives and fails
+// the targets a test names, so a partial batch can be observed offline.
+type graphMaintainerStub struct {
+	relink []storage.MaintenanceTarget
+	prune  []storage.MaintenanceTarget
+	fail   map[string]bool
+
+	relinked []string
+	pruned   []string
+	requeued []storage.MaintenanceTarget
+}
+
+func (s *graphMaintainerStub) DrainGraphMaintenance(context.Context, int) ([]storage.MaintenanceTarget, error) {
+	return s.relink, nil
+}
+
+func (s *graphMaintainerStub) RelinkUnit(_ context.Context, _, unitID string) error {
+	s.relinked = append(s.relinked, unitID)
+	if s.fail[unitID] {
+		return errStubFailure
+	}
+	return nil
+}
+
+func (s *graphMaintainerStub) DrainEntityMaintenance(context.Context, int) ([]storage.MaintenanceTarget, error) {
+	return s.prune, nil
+}
+
+func (s *graphMaintainerStub) PruneEntity(_ context.Context, _, entityID string) error {
+	s.pruned = append(s.pruned, entityID)
+	if s.fail[entityID] {
+		return errStubFailure
+	}
+	return nil
+}
+
+func (s *graphMaintainerStub) RequeueGraphMaintenance(_ context.Context, targets []storage.MaintenanceTarget) error {
+	s.requeued = append(s.requeued, targets...)
+	return nil
+}
+
+func (s *graphMaintainerStub) RequeueEntityMaintenance(_ context.Context, targets []storage.MaintenanceTarget) error {
+	s.requeued = append(s.requeued, targets...)
+	return nil
+}
+
+var errStubFailure = errors.New("transient maintenance failure")
+
+// A target failing partway through a claimed batch must not discard the rest of
+// the batch: the drain already removed them from the queue, so the job has to
+// work through all of them and return the failed one to the queue, and still
+// report the failure.
+func TestGraphMaintenanceKeepsBatchOnFailure(t *testing.T) {
+	stub := &graphMaintainerStub{
+		relink: []storage.MaintenanceTarget{
+			{BankID: "b1", ID: "u1"}, {BankID: "b1", ID: "u2"}, {BankID: "b1", ID: "u3"},
+		},
+		prune: []storage.MaintenanceTarget{
+			{BankID: "b1", ID: "e1"}, {BankID: "b1", ID: "e2"},
+		},
+		fail: map[string]bool{"u2": true, "e1": true},
+	}
+	err := drainGraphMaintenance(context.Background(), stub)
+	if err == nil {
+		t.Fatal("a failed target must still surface as a job failure")
+	}
+	// Every target in the claimed batch is attempted: the ones after the
+	// failure are not lost with the queue row that was already deleted.
+	if got, want := len(stub.relinked), 3; got != want {
+		t.Fatalf("relinked %v, want %d units", stub.relinked, want)
+	}
+	if got, want := len(stub.pruned), 2; got != want {
+		t.Fatalf("pruned %v, want %d entities", stub.pruned, want)
+	}
+	// The failed targets go back on the queue so a later drain retries them.
+	requeued := map[string]bool{}
+	for _, target := range stub.requeued {
+		requeued[target.ID] = true
+	}
+	if !requeued["u2"] || !requeued["e1"] {
+		t.Fatalf("requeued %v, want both failed targets", stub.requeued)
+	}
+	if requeued["u1"] || requeued["u3"] || requeued["e2"] {
+		t.Fatalf("requeued %v, want only the failed targets", stub.requeued)
+	}
+}
+
+// A fully successful batch reports no failure.
+func TestGraphMaintenanceReportsNoFailureWhenAllSucceed(t *testing.T) {
+	stub := &graphMaintainerStub{
+		relink: []storage.MaintenanceTarget{{BankID: "b1", ID: "u1"}},
+	}
+	if err := drainGraphMaintenance(context.Background(), stub); err != nil {
+		t.Fatalf("a clean batch: %v", err)
+	}
+	if len(stub.requeued) != 0 {
+		t.Fatalf("requeued %v, want nothing on success", stub.requeued)
 	}
 }

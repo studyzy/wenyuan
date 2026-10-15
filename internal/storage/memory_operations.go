@@ -26,15 +26,57 @@ func (s *MemoryStore) PutOperation(ctx context.Context, op Operation) (Operation
 	return op, nil
 }
 
-// GetOperation returns one operation by identifier.
-func (s *MemoryStore) GetOperation(ctx context.Context, opID string) (Operation, error) {
+// GetOperation returns one operation by identifier, scoped to the bank; an
+// identifier belonging to another bank reads as ErrOperationNotFound.
+func (s *MemoryStore) GetOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	op, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return Operation{}, err
+	}
+	if bankID != "" && op.BankID != bankID {
+		return Operation{}, ErrOperationNotFound
+	}
+	return op, nil
+}
+
+// getOperation returns one operation by identifier alone, for internal callers
+// that already hold a bank-scoped reference.
+func (s *MemoryStore) getOperation(ctx context.Context, opID string) (Operation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	op, ok := s.operations[opID]
 	if !ok {
 		return Operation{}, ErrOperationNotFound
 	}
+	op.IsParent = operationIsParent(op.ResultMetadata)
 	return op, nil
+}
+
+// GetOperationChildren returns the child operations of a parent batch, ordered
+// by sub-batch index.
+func (s *MemoryStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	children := make([]ChildOperation, 0)
+	for _, op := range s.operations {
+		if op.BankID != bankID || stringFromMetadata(op.ResultMetadata, "parent_operation_id") != opID {
+			continue
+		}
+		children = append(children, ChildOperation{
+			OperationID:   op.OperationID,
+			Status:        op.Status,
+			SubBatchIndex: intFromMetadata(op.ResultMetadata, "sub_batch_index"),
+			ItemsCount:    intFromMetadata(op.ResultMetadata, "items_count"),
+			ErrorMessage:  op.Error,
+		})
+	}
+	sort.SliceStable(children, func(i, j int) bool {
+		if children[i].SubBatchIndex != children[j].SubBatchIndex {
+			return children[i].SubBatchIndex < children[j].SubBatchIndex
+		}
+		return children[i].OperationID < children[j].OperationID
+	})
+	return children, nil
 }
 
 // AdvanceOperation moves an operation forward in its lifecycle, rejecting
@@ -64,16 +106,60 @@ func (s *MemoryStore) AdvanceOperation(ctx context.Context, opID string, next Op
 	return op, nil
 }
 
-// RetryOperation starts a new run of a failed operation.
-func (s *MemoryStore) RetryOperation(ctx context.Context, opID string) (Operation, error) {
+// AdvanceOperationWithResult advances an operation and merges result metadata
+// onto it, implementing OperationResultRecorder so a processor's report reaches
+// the operation record on the in-memory backend too.
+func (s *MemoryStore) AdvanceOperationWithResult(ctx context.Context, opID string, next OperationStatus, errMsg string, result map[string]any) (Operation, error) {
+	advanced, err := s.AdvanceOperation(ctx, opID, next, errMsg)
+	if err != nil {
+		return advanced, err
+	}
+	if len(result) == 0 {
+		return advanced, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-read under the lock: AdvanceOperation released it, and a concurrent
+	// settle must not be lost by writing back a stale copy.
+	op := s.operations[opID]
+	mergeOperationMetadata(&op, result)
+	s.operations[opID] = op
+	return op, nil
+}
+
+// mergeOperationMetadata folds result into an operation's metadata, key by key,
+// so a field written earlier — when the operation was enqueued, or by an earlier
+// attempt — survives. The caller must hold the store lock.
+func mergeOperationMetadata(op *Operation, result map[string]any) {
+	if op.ResultMetadata == nil {
+		op.ResultMetadata = map[string]any{}
+	}
+	for key, value := range result {
+		op.ResultMetadata[key] = value
+	}
+}
+
+// RetryOperation starts a new run of a failed operation, scoped to the bank.
+//
+// A failed batch parent is retried by re-running the work that failed beneath
+// it: the parent holds no task payload of its own, so resetting the parent
+// alone would queue a row nothing executes. Its failed and cancelled children
+// go back to pending with their stored payloads intact, and the parent is
+// revived so it re-aggregates once they finish. The reference's own rule, and
+// the reason it does not simply create a new submission: re-ingesting from
+// scratch is what duplicates memories.
+func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (Operation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op, ok := s.operations[opID]
-	if !ok {
+	if !ok || (bankID != "" && op.BankID != bankID) {
 		return Operation{}, ErrOperationNotFound
 	}
 	if op.Status != StatusFailed {
 		return op, ErrOperationConflict
+	}
+	if op.OperationType == AsyncRetainType {
+		return s.retryBatchParentLocked(op)
 	}
 	op.Status = StatusPending
 	op.Error = ""
@@ -82,6 +168,52 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, opID string) (Operatio
 	op.UpdatedAt = time.Now().UTC()
 	s.operations[opID] = op
 	return op, nil
+}
+
+// retryBatchParentLocked requeues a failed batch's children and revives the
+// parent over them. The caller must hold the store lock.
+func (s *MemoryStore) retryBatchParentLocked(parent Operation) (Operation, error) {
+	now := time.Now().UTC()
+	outstanding := false
+	for id, op := range s.operations {
+		if op.BankID != parent.BankID {
+			continue
+		}
+		if childParent, _ := op.ResultMetadata["parent_operation_id"].(string); childParent != parent.OperationID {
+			continue
+		}
+		if op.Status == StatusFailed || op.Status == StatusCancelled {
+			op.Status = StatusPending
+			op.Error = ""
+			op.NextRetryAt = nil
+			op.WorkerID = ""
+			op.ClaimedAt = nil
+			op.CompletedAt = nil
+			op.RetryCount = 0
+			op.UpdatedAt = now
+			s.operations[id] = op
+			outstanding = true
+			continue
+		}
+		if !op.Status.Terminal() {
+			// A live child still owns its run; resetting one already
+			// processing would let a second worker race it on the document.
+			outstanding = true
+		}
+	}
+	if !outstanding {
+		// Nothing beneath it can be re-run, so reviving the parent would strand
+		// it pending with no child left to promote it.
+		return parent, ErrOperationConflict
+	}
+	parent.Status = StatusPending
+	parent.Error = ""
+	parent.CompletedAt = nil
+	parent.NextRetryAt = nil
+	parent.RetryCount = 0
+	parent.UpdatedAt = now
+	s.operations[parent.OperationID] = parent
+	return parent, nil
 }
 
 // ListOperations returns one page of operations matching the query, most
@@ -103,6 +235,10 @@ func (s *MemoryStore) ListOperations(ctx context.Context, query OperationQuery) 
 		if query.WorkerID != "" && op.WorkerID != query.WorkerID {
 			continue
 		}
+		if query.ExcludeParents && operationIsParent(op.ResultMetadata) {
+			continue
+		}
+		op.IsParent = operationIsParent(op.ResultMetadata)
 		matched = append(matched, op)
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
@@ -112,17 +248,24 @@ func (s *MemoryStore) ListOperations(ctx context.Context, query OperationQuery) 
 		return matched[i].OperationID < matched[j].OperationID
 	})
 	total := len(matched)
-	start, end := pageBounds(total, query.Offset, query.Limit)
+	// An omitted/non-positive limit is the internal scan default; the API
+	// layer always passes a concrete page size (upstream declares ge=1).
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	start, end := pageBounds(total, query.Offset, limit)
 	return OperationPage{Operations: matched[start:end], Total: total, Limit: query.Limit, Offset: query.Offset}, nil
 }
 
 // CancelOperation cancels a non-terminal operation, returning
-// ErrOperationConflict when the operation is already terminal.
-func (s *MemoryStore) CancelOperation(ctx context.Context, opID string) (Operation, error) {
+// ErrOperationConflict when the operation is already terminal, scoped to the
+// bank.
+func (s *MemoryStore) CancelOperation(ctx context.Context, bankID, opID string) (Operation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op, ok := s.operations[opID]
-	if !ok {
+	if !ok || (bankID != "" && op.BankID != bankID) {
 		return Operation{}, ErrOperationNotFound
 	}
 	if op.Status.Terminal() {

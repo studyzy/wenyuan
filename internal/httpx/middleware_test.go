@@ -7,17 +7,17 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ts-0005: an unrecognized query parameter yields success plus the
 // ignored-parameters header naming it.
 func TestIgnoredParamsHeaderOnUnknownParameter(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/default/banks/{bank_id}", func(w http.ResponseWriter, r *http.Request) {
-		recorded := RecordIgnoredParamsFor(r, DefaultQueryFilter())
-		WriteJSONFor(w, recorded, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
-	})
-	handler := Chain(mux, IgnoredParamsMiddleware(DefaultQueryFilter()))
+	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
+	}, "limit"))
+	handler := Chain(mux, IgnoredParamsMiddleware())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1?limt=10", nil))
@@ -31,11 +31,10 @@ func TestIgnoredParamsHeaderOnUnknownParameter(t *testing.T) {
 
 func TestKnownParametersAreNotReported(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/default/banks/{bank_id}", func(w http.ResponseWriter, r *http.Request) {
-		recorded := RecordIgnoredParamsFor(r, DefaultQueryFilter())
-		WriteJSONFor(w, recorded, http.StatusOK, map[string]any{"ok": true})
-	})
-	handler := Chain(mux, IgnoredParamsMiddleware(DefaultQueryFilter()))
+	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+	}, "limit", "tags"))
+	handler := Chain(mux, IgnoredParamsMiddleware())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1?limit=10&tags=x", nil))
@@ -44,12 +43,63 @@ func TestKnownParametersAreNotReported(t *testing.T) {
 	}
 }
 
-func TestIgnoredParamsAreSortedAndJoined(t *testing.T) {
-	filter := NewQueryFilter("limit")
-	req := httptest.NewRequest(http.MethodGet, "/x?zebra=1&apple=2&limit=3", nil)
-	unknown := filter.Unknown(req)
-	if strings.Join(unknown, ",") != "apple,zebra" {
-		t.Fatalf("unknown = %v", unknown)
+// An accepted name is reported on a route that does not declare it: the report
+// is per-route, so a parameter accepted elsewhere is still unknown here.
+func TestParameterAcceptedElsewhereIsReportedHere(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /accepted", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+	}, "tag"))
+	mux.HandleFunc("GET /other", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+	}))
+	handler := Chain(mux, IgnoredParamsMiddleware())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/other?tag=x", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "tag" {
+		t.Fatalf("a parameter accepted on another route must still be reported here, got %q", got)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/accepted?tag=x", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("the declaring route accepts the parameter, got %q", got)
+	}
+}
+
+// A query parameter that merely repeats a path-parameter name is never
+// reported, matching the reference which skips the endpoint's path parameters.
+func TestPathParameterNamedQueryParameterIsNotReported(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
+	}))
+	handler := Chain(mux, IgnoredParamsMiddleware())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1?bank_id=b1", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("a path-parameter-named query parameter must not be reported, got %q", got)
+	}
+}
+
+func TestIgnoredParamsPreserveEncounterOrder(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /x", QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+	}, "limit"))
+	handler := Chain(mux, IgnoredParamsMiddleware())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x?zebra=1&apple=2&limit=3", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "zebra, apple" {
+		t.Fatalf("X-Ignored-Params = %q, want %q", got, "zebra, apple")
+	}
+	// A repeated name is reported once.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x?apple=1&apple=2&zebra=3", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "apple, zebra" {
+		t.Fatalf("duplicate handling = %q", got)
 	}
 }
 
@@ -130,15 +180,16 @@ func TestMetricsMiddlewareCountsRequests(t *testing.T) {
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Chain(mux, MetricsMiddleware(recorder))
+	handler := Chain(mux, MetricsMiddleware(recorder, func(*http.Request) string { return "/ping" }))
 	for i := 0; i < 3; i++ {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
 	}
-	if recorder.Requests.Load() != 3 {
-		t.Fatalf("requests = %d, want 3", recorder.Requests.Load())
+	snap := recorder.Snapshot()
+	if len(snap.Requests) != 1 || snap.Requests[0].Count != 3 {
+		t.Fatalf("requests = %+v, want one series with count 3", snap.Requests)
 	}
-	if recorder.InFlight.Load() != 0 {
-		t.Fatalf("in-flight should return to zero, got %d", recorder.InFlight.Load())
+	if inProgress := snap.InProgress; len(inProgress) != 1 || inProgress[0].Count != 0 {
+		t.Fatalf("in-flight should return to zero, got %+v", inProgress)
 	}
 }
 
@@ -148,8 +199,8 @@ func TestUnknownBodyFieldsAreReported(t *testing.T) {
 	allowed := map[string]struct{}{"items": {}, "async": {}}
 	body := []byte(`{"items":[],"unknown_field":1,"another":2}`)
 	got := UnknownBodyFields(body, allowed)
-	if len(got) != 2 || got[0] != "another" || got[1] != "unknown_field" {
-		t.Fatalf("unknown body fields = %v, want [another unknown_field]", got)
+	if len(got) != 2 || got[0] != "unknown_field" || got[1] != "another" {
+		t.Fatalf("unknown body fields = %v, want [unknown_field another]", got)
 	}
 	// A known body has nothing to report.
 	if got := UnknownBodyFields([]byte(`{"items":[]}`), allowed); len(got) != 0 {
@@ -159,4 +210,77 @@ func TestUnknownBodyFieldsAreReported(t *testing.T) {
 	if got := UnknownBodyFields([]byte(`[1,2]`), allowed); len(got) != 0 {
 		t.Fatalf("array body reported fields: %v", got)
 	}
+}
+
+// The accepted body fields are read from the request model's json tags, so the
+// reported set stays in step with the model.
+func TestAllowedBodyFieldsFromModel(t *testing.T) {
+	type sample struct {
+		Query    string `json:"query"`
+		Limit    int    `json:"limit,omitempty"`
+		Skipped  string `json:"-"`
+		Untagged string
+	}
+	allowed := AllowedBodyFields(&sample{})
+	if _, ok := allowed["query"]; !ok {
+		t.Fatal("a tagged field must be accepted")
+	}
+	if _, ok := allowed["limit"]; !ok {
+		t.Fatal("a tagged field with options must be accepted by its name")
+	}
+	if _, ok := allowed["-"]; ok {
+		t.Fatal("a json:- field must not be accepted")
+	}
+	if len(allowed) != 2 {
+		t.Fatalf("allowed = %v, want exactly the two tagged fields", allowed)
+	}
+}
+
+// An open-row response keeps explicit null fields even when null-dropping is
+// enabled for the request.
+func TestOpenRowKeepsNulls(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /graph", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSONOpenRow(w, r, http.StatusOK, map[string]any{"date": nil, "id": "n1"})
+	})
+	handler := Chain(mux, NullDropMiddleware(true))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/graph", nil))
+	if !strings.Contains(rec.Body.String(), `"date":null`) {
+		t.Fatalf("an open-row response must keep null fields: %s", rec.Body.String())
+	}
+}
+
+// A saturated admission lane sheds with 503 and Retry-After, and a request that
+// goes away while waiting is reported as 499.
+func TestAdmissionShedsWhenSaturated(t *testing.T) {
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /memories", func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Chain(mux, AdmissionMiddleware(AdmissionConfig{
+		Rules:             []AdmissionRule{{Suffix: "/memories", Limit: 1}},
+		MaxWait:           10 * time.Millisecond,
+		RetryAfterSeconds: 3,
+	}))
+
+	// Occupy the only slot.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/memories", nil))
+	}()
+	time.Sleep(10 * time.Millisecond)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/memories", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("saturated lane = %d, want 503", rec.Code)
+	}
+	if rec.Header().Get(HeaderRetryAfter) == "" {
+		t.Fatalf("a shed request must carry Retry-After")
+	}
+	close(release)
+	<-firstDone
 }

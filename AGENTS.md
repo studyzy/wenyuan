@@ -70,6 +70,8 @@ Any new import used only under the tag still needs to be in `go.mod`.
 ```
 cmd/server/            API server entrypoint
 cmd/bankctl/           admin CLI (bank operations, migration)
+cmd/wenyuan/           client CLI (wenyuan-admin binary) — API client, never
+                       imports server packages; lives in internal/cli/
 internal/app/          composition root: wires config, storage, routes
 internal/bankapi/      bank lifecycle HTTP handlers + route table
 internal/memoryops/    retain / recall / reflect HTTP handlers + route table
@@ -106,6 +108,14 @@ There is also `schema_test.go` and `migrate_test.go` guarding schema consistency
 `migrate_test.go` only checks the embedded series is non-empty, so it will **not**
 catch a migration added to one copy and not the other — see the migrations
 section below.
+
+**`internal/cli` is an API client: it must not import server packages.** The
+CLI talks to the served HTTP API like any external client. It declares its own
+response structs instead of importing `internal/monitoring`, `internal/app`,
+`internal/storage`, or other server-side packages (the e2e `_test.go` files
+are the only exception, via `internal/app`). Keeping the dependency edge out
+keeps the `wenyuan-admin` binary small and the CLI decoupled from server
+refactors.
 
 ## Storage layer conventions
 
@@ -144,6 +154,16 @@ It writes `migrations/` and `internal/storage/embedded/` as five files —
   keep in sync by hand. `internal/storage/migrate.go` embeds
   `internal/storage/embedded/` via `//go:embed all:embedded`, and that is the
   copy the binary reads.
+- **The embedding column width is not part of the series.** The dumped
+  reference declares whichever width that deployment's embedding model had,
+  and upstream resolves the column width at startup, so this service does the
+  same: `internal/storage/embedding_dimension.go` reconciles every `embedding`
+  column to `storage.EmbeddingDimensions` inside the migration transaction -
+  equal width is a no-op, a mismatch with stored vectors is refused with both
+  widths named, a mismatch on an empty table drops the vector index, alters the
+  column, and rebuilds the index from its captured definition. Do not hand-edit
+  the width in a migration: a regeneration would silently revert it and every
+  vector write would then fail on a width nobody configured.
 
 `docs/SCHEMA-ALIGNMENT.md` is the standing comparison against the live
 reference, produced by `scripts/schema_diff.sql` and

@@ -19,14 +19,36 @@ const (
 	RoleTool Role = "tool"
 )
 
+// ContentPart is one ordered piece of a multimodal message. A message that
+// carries Parts sends them in place of Content, in the order written; a message
+// without them keeps the plain-string form, so a text-only request is
+// byte-identical to before.
+type ContentPart struct {
+	// Type is the part's kind: "text" or "image_url".
+	Type string
+	// Text is the part's text, for a text part.
+	Text string
+	// ImageURL is the data URI an image_url part carries.
+	ImageURL string
+}
+
 // Message is one turn of a completion conversation.
 type Message struct {
 	// Role is the speaking party.
 	Role Role
-	// Content is the turn's text payload.
+	// Content is the turn's text payload. It is used when Parts is empty.
 	Content string
+	// Parts, when non-empty, is the turn's ordered multimodal content. It
+	// replaces Content so an image sits exactly where its placeholder stood.
+	Parts []ContentPart
 	// Name optionally labels the turn within its role.
 	Name string
+	// ToolCalls lists the functions an assistant turn asked the caller to run.
+	// A message that carries them is an assistant turn; each call is answered by
+	// a following tool-role message keyed by ToolCallID.
+	ToolCalls []ToolCall
+	// ToolCallID keys a tool-role message to the assistant call it answers.
+	ToolCallID string
 }
 
 // ToolDefinition describes a function a model may ask the caller to run.
@@ -175,8 +197,19 @@ type Reranker interface {
 // has none. It is a type assertion rather than a Provider method so a provider
 // that cannot rerank does not have to declare a method it would only stub.
 func ProviderReranker(p Provider) Reranker {
+	if capable, ok := p.(RerankCapable); ok {
+		return capable.RerankCapability()
+	}
 	reranker, _ := p.(Reranker)
 	return reranker
+}
+
+// RerankCapable is implemented by a wrapper that delegates to an inner
+// provider. It lets ProviderReranker look through the wrapper, so wrapping a
+// provider for tracing does not hand callers a reranker the inner provider
+// does not have.
+type RerankCapable interface {
+	RerankCapability() Reranker
 }
 
 // Duration is a wall-clock span reported by an adapter. It is a distinct

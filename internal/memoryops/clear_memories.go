@@ -22,10 +22,10 @@ type ClearMemoriesResponse struct {
 // the removal to one memory type.
 func (h *Handlers) ClearMemories(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
-	factType := strings.TrimSpace(r.URL.Query().Get("type"))
+	factType := strings.TrimSpace(httpx.Query(r, "type"))
 	removed, err := h.Store.ClearBankMemories(r.Context(), bankID, factType)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, h.mapReadError(err))
+		h.writeReadError(w, r, err)
 		return
 	}
 	scope := ""

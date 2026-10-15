@@ -68,7 +68,7 @@ func TestReportingRoutesResolve(t *testing.T) {
 		{"observation scopes", http.MethodGet, base + "/observations/scopes", http.StatusOK},
 		{"consolidation preview", http.MethodPost, base + "/consolidation-strategies/preview", http.StatusOK},
 		{"consolidation recover", http.MethodPost, base + "/consolidation/recover", http.StatusOK},
-		{"consolidate", http.MethodPost, base + "/consolidate", http.StatusAccepted},
+		{"consolidate", http.MethodPost, base + "/consolidate", http.StatusOK},
 		{"memories list", http.MethodGet, base + "/memories/list", http.StatusOK},
 		{"memory get", http.MethodGet, base + "/memories/mem-1", http.StatusOK},
 		{"memory history", http.MethodGet, base + "/memories/mem-1/history", http.StatusOK},
@@ -125,8 +125,8 @@ func TestReportingStatsCounts(t *testing.T) {
 	}
 }
 
-// test-memory-update-records-history: an update changes the memory and leaves a
-// history entry behind.
+// test-memory-update-records-history: an update changes the memory; only an
+// observation carries a history, a source fact reports an empty array.
 func TestReportingMemoryUpdateAndHistory(t *testing.T) {
 	app := reportingApp(t)
 	base := "/v1/default/banks/rp-bank/memories/mem-1"
@@ -143,18 +143,34 @@ func TestReportingMemoryUpdateAndHistory(t *testing.T) {
 		t.Fatalf("update did not apply: %v", updated)
 	}
 
+	// A source fact has no history.
 	rec = send(app, http.MethodGet, base+"/history", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("history = %d", rec.Code)
 	}
-	var history struct {
-		History []map[string]any `json:"history"`
+	var worldHistory []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &worldHistory); err != nil {
+		t.Fatalf("history must be a bare array: %v (%s)", err, rec.Body.String())
 	}
+	if len(worldHistory) != 0 {
+		t.Fatalf("a source fact must report no history, got %d", len(worldHistory))
+	}
+
+	// An observation's update leaves a history entry.
+	obs := "/v1/default/banks/rp-bank/memories/obs-1"
+	if rec := send(app, http.MethodPatch, obs, `{"text":"deployments happen every week"}`); rec.Code != http.StatusOK {
+		t.Fatalf("observation update = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	rec = send(app, http.MethodGet, obs+"/history", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("observation history = %d", rec.Code)
+	}
+	var history []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
-		t.Fatal(err)
+		t.Fatalf("history must be a bare array: %v (%s)", err, rec.Body.String())
 	}
-	if len(history.History) != 1 {
-		t.Fatalf("history has %d entries after one update, want 1", len(history.History))
+	if len(history) != 1 {
+		t.Fatalf("history has %d entries after one update, want 1", len(history))
 	}
 }
 
@@ -165,7 +181,7 @@ func TestReportingConsolidationDeduplicated(t *testing.T) {
 	path := "/v1/default/banks/rp-bank/consolidate"
 
 	first := send(app, http.MethodPost, path, "")
-	if first.Code != http.StatusAccepted {
+	if first.Code != http.StatusOK {
 		t.Fatalf("first consolidate = %d (body %s)", first.Code, first.Body.String())
 	}
 	var firstBody struct {
@@ -207,65 +223,107 @@ func TestReportingKnowledgeTreeLifecycle(t *testing.T) {
 		t.Fatalf("create folder = %d (body %s)", folderRec.Code, folderRec.Body.String())
 	}
 	var folder struct {
-		Page struct {
-			ID string `json:"id"`
-		} `json:"page"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(folderRec.Body.Bytes(), &folder); err != nil {
 		t.Fatal(err)
 	}
 
 	pageRec := send(app, http.MethodPost, base+"/pages",
-		`{"title":"deploy runbook","text":"deployments run on Tuesdays","parent_id":"`+folder.Page.ID+`"}`)
+		`{"name":"deploy runbook","text":"deployments run on Tuesdays","parent_id":"`+folder.ID+`"}`)
 	if pageRec.Code != http.StatusCreated {
 		t.Fatalf("create page = %d (body %s)", pageRec.Code, pageRec.Body.String())
 	}
 	var page struct {
-		Page struct {
-			ID string `json:"id"`
-		} `json:"page"`
+		PageID string `json:"page_id"`
 	}
 	if err := json.Unmarshal(pageRec.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
+	}
+	if page.PageID == "" {
+		t.Fatalf("create page must return a page_id")
 	}
 
 	// The tree nests the page under its folder.
 	treeRec := send(app, http.MethodGet, base+"/tree", "")
 	var tree struct {
-		Nodes []map[string]any `json:"nodes"`
+		Roots []map[string]any `json:"roots"`
 	}
 	if err := json.Unmarshal(treeRec.Body.Bytes(), &tree); err != nil {
 		t.Fatal(err)
 	}
-	if len(tree.Nodes) != 1 {
-		t.Fatalf("tree has %d roots, want 1: %v", len(tree.Nodes), tree.Nodes)
+	if len(tree.Roots) != 1 {
+		t.Fatalf("tree has %d roots, want 1: %v", len(tree.Roots), tree.Roots)
 	}
-	children, _ := tree.Nodes[0]["children"].([]any)
+	children, _ := tree.Roots[0]["children"].([]any)
 	if len(children) != 1 {
-		t.Fatalf("the folder must hold one child, got %v", tree.Nodes[0]["children"])
+		t.Fatalf("the folder must hold one child, got %v", tree.Roots[0]["children"])
 	}
 
 	// Search finds the page by its body text.
 	searchRec := send(app, http.MethodGet, base+"/search?q=Tuesdays", "")
 	var search struct {
-		Hits []map[string]any `json:"hits"`
+		Results []map[string]any `json:"results"`
 	}
 	if err := json.Unmarshal(searchRec.Body.Bytes(), &search); err != nil {
 		t.Fatal(err)
 	}
-	if len(search.Hits) != 1 {
-		t.Fatalf("search returned %d hits, want 1", len(search.Hits))
+	if len(search.Results) != 1 {
+		t.Fatalf("search returned %d results, want 1", len(search.Results))
 	}
 
 	// Deleting the folder removes the page with it, so the tree cannot hold an
 	// unreachable node.
-	delRec := send(app, http.MethodDelete, base+"/nodes/"+folder.Page.ID, "")
-	if delRec.Code != http.StatusNoContent {
+	delRec := send(app, http.MethodDelete, base+"/nodes/"+folder.ID, "")
+	if delRec.Code != http.StatusOK {
 		t.Fatalf("delete folder = %d (body %s)", delRec.Code, delRec.Body.String())
 	}
-	pageGet := send(app, http.MethodGet, base+"/pages/"+page.Page.ID, "")
+	pageGet := send(app, http.MethodGet, base+"/pages/"+page.PageID, "")
 	if pageGet.Code != http.StatusNotFound {
 		t.Fatalf("a page inside a deleted folder must be gone, got %d", pageGet.Code)
+	}
+}
+
+// test-reporting-memory-nulls-kept: the memory list and detail models keep
+// their declared null fields under the global null-dropping rule.
+func TestReportingMemoryKeepsDeclaredNulls(t *testing.T) {
+	app := reportingApp(t)
+	base := "/v1/default/banks/rp-bank"
+
+	listRec := send(app, http.MethodGet, base+"/memories/list", "")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list = %d (body %s)", listRec.Code, listRec.Body.String())
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) == 0 {
+		t.Fatalf("no items: %s", listRec.Body.String())
+	}
+	for _, key := range []string{"fact_type", "invalidation_reason", "invalidated_at", "updated_at"} {
+		if _, ok := list.Items[0][key]; !ok {
+			t.Fatalf("list item dropped declared null field %q: %v", key, list.Items[0])
+		}
+	}
+
+	detailRec := send(app, http.MethodGet, base+"/memories/mem-1", "")
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail = %d (body %s)", detailRec.Code, detailRec.Body.String())
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"invalidation_reason", "invalidated_at", "chunk_id"} {
+		if _, ok := detail[key]; !ok {
+			t.Fatalf("detail dropped declared null field %q: %v", key, detail)
+		}
+	}
+	if _, ok := detail["bank_id"]; ok {
+		t.Fatalf("detail must not carry bank_id: %v", detail)
 	}
 }
 

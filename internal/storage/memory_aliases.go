@@ -53,9 +53,11 @@ func (s *MemoryStore) AddAlias(ctx context.Context, bankID, alias string, primar
 	return s.aliasesForLocked(bankID), nil
 }
 
-// PromoteAlias displays the bank under the named alias, demoting any alias
-// displayed before it.
-func (s *MemoryStore) PromoteAlias(ctx context.Context, bankID, alias string) ([]BankAlias, error) {
+// SetAliasPrimary displays the bank under the named alias when primary is true,
+// demoting the incumbent in the same step. When primary is false it clears only
+// that alias's display flag, so the bank falls back to its own id and no other
+// alias is touched.
+func (s *MemoryStore) SetAliasPrimary(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.banks[bankID]; !ok {
@@ -64,7 +66,16 @@ func (s *MemoryStore) PromoteAlias(ctx context.Context, bankID, alias string) ([
 	if !s.ownsAliasLocked(bankID, alias) {
 		return nil, ErrAliasNotFound
 	}
-	s.demoteOthersLocked(bankID, alias)
+	if primary {
+		s.demoteOthersLocked(bankID, alias)
+	} else {
+		entries := s.aliasesByBank[bankID]
+		for i := range entries {
+			if entries[i].Alias == alias {
+				entries[i].Primary = false
+			}
+		}
+	}
 	s.invalidateBankLocked(bankID)
 	return s.aliasesForLocked(bankID), nil
 }

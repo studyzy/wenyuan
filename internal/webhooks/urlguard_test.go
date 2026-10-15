@@ -18,7 +18,6 @@ func TestGuardRefusesInternalTargets(t *testing.T) {
 		url  string
 	}{
 		{"loopback literal", "https://127.0.0.1/hook"},
-		{"loopback name", "https://localhost/hook"},
 		{"ipv6 loopback", "https://[::1]/hook"},
 		{"private range", "https://10.0.0.5/hook"},
 		{"private 192.168", "https://192.168.1.10/hook"},
@@ -39,15 +38,17 @@ func TestGuardRefusesInternalTargets(t *testing.T) {
 	}
 }
 
-// test-guard-refuses-other-schemes-and-shapes: only an absolute credential-free
-// HTTPS URL is accepted.
+// test-guard-refuses-other-schemes-and-shapes: only an absolute
+// credential-free HTTP(S) URL is accepted. `http` is accepted because the
+// reference accepts it: what makes a target safe is the address it resolves to,
+// not the scheme, and a plain-HTTP receiver is exactly what an operator
+// allowlists for testing.
 func TestGuardRefusesOtherSchemes(t *testing.T) {
 	guard := NewGuard(GuardConfig{})
 	cases := []struct {
 		name string
 		url  string
 	}{
-		{"plain http by default", "http://example.com/hook"},
 		{"file scheme", "file:///etc/passwd"},
 		{"gopher scheme", "gopher://example.com/"},
 		{"no scheme", "example.com/hook"},
@@ -77,31 +78,29 @@ func TestGuardAllowsPrivateHostOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
-// test-guard-honours-an-allowlist: when a host set is configured, only those
-// hosts are accepted even when they are otherwise reachable.
+// test-guard-honours-an-allowlist: the allowlist is an exemption from the
+// private-address block, the way the reference defines it — it names the hosts
+// an operator has deliberately permitted, and it does not restrict anything
+// else. A private host that is not on it is still refused.
 func TestGuardHonoursAllowlist(t *testing.T) {
-	guard := NewGuard(GuardConfig{
-		AllowPrivateHosts: true,
-		AllowedHosts:      []string{"hooks.example.com"},
-	})
-	if err := guard.Validate("https://hooks.example.com/endpoint"); err != nil {
-		t.Fatalf("an allowlisted host must be accepted: %v", err)
+	guard := NewGuard(GuardConfig{AllowedHosts: []string{"127.0.0.1"}})
+	if err := guard.Validate("http://127.0.0.1:8080/endpoint"); err != nil {
+		t.Fatalf("an allowlisted host must be accepted, http included: %v", err)
 	}
-	if err := guard.Validate("https://other.example.com/endpoint"); err == nil {
-		t.Fatal("a host outside the allowlist must be refused")
+	if err := guard.Validate("http://10.0.0.5/endpoint"); err == nil {
+		t.Fatal("a private host outside the allowlist must be refused")
+	}
+	if err := guard.Validate("https://example.com/endpoint"); err != nil {
+		t.Fatalf("a public host need not be allowlisted: %v", err)
 	}
 }
 
-// test-guard-requires-https: a plain-HTTP target is refused unless the
-// deployment explicitly opts in, so a delivery cannot be downgraded.
-func TestGuardRequiresHTTPS(t *testing.T) {
-	strict := NewGuard(GuardConfig{AllowPrivateHosts: true})
-	if err := strict.Validate("http://hooks.example.com/endpoint"); err == nil {
-		t.Fatal("plain http must be refused by default")
-	}
-	permissive := NewGuard(GuardConfig{AllowPrivateHosts: true, AllowInsecure: true})
-	if err := permissive.Validate("http://hooks.example.com/endpoint"); err != nil {
-		t.Fatalf("the opt-in guard must accept http: %v", err)
+// test-guard-requires-https: the reference accepts http and https alike, at
+// registration and at delivery.
+func TestGuardAcceptsPlainHTTP(t *testing.T) {
+	guard := NewGuard(GuardConfig{AllowPrivateHosts: true})
+	if err := guard.Validate("http://hooks.example.com/endpoint"); err != nil {
+		t.Fatalf("plain http must be accepted: %v", err)
 	}
 }
 
@@ -119,6 +118,27 @@ func TestIsPrivateAddress(t *testing.T) {
 		if isPrivateAddress(parseIP(t, raw)) {
 			t.Fatalf("%s must be classified public", raw)
 		}
+	}
+}
+
+// test-dial-time-address-check: the delivery transport vets the resolved
+// address, so a name that resolves differently between validation and the
+// connection is refused at the hop it would actually dial.
+func TestGuardCheckResolvedAddress(t *testing.T) {
+	strict := NewGuard(GuardConfig{})
+	if err := strict.CheckResolvedAddress("10.0.0.5"); err == nil ||
+		!errors.Is(err, storage.ErrWebhookURLNotAllowed) {
+		t.Fatalf("a private resolved address must be refused, got %v", err)
+	}
+	if err := strict.CheckResolvedAddress("8.8.8.8"); err != nil {
+		t.Fatalf("a public resolved address must be accepted: %v", err)
+	}
+	if err := strict.CheckResolvedAddress("not-an-address"); err == nil {
+		t.Fatal("an unparsable address must be refused")
+	}
+	permissive := NewGuard(GuardConfig{AllowPrivateHosts: true})
+	if err := permissive.CheckResolvedAddress("127.0.0.1"); err != nil {
+		t.Fatalf("the opt-in guard must accept a private resolved address: %v", err)
 	}
 }
 

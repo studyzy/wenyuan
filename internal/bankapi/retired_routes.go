@@ -6,40 +6,40 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 )
 
-// RetiredHandler returns the terminal gone status for retired bank routes
-// after enforcing authentication.
-type RetiredHandler struct {
-	// Auth enforces authentication before the retirement status is revealed.
-	Auth httpx.Authenticator
-}
+// RetiredHandler answers the retired bank routes with the terminal gone status.
+// It consults no authenticator: the reference's retired handlers raise before
+// any authenticated engine call, so the retirement status is revealed without a
+// credential, and the router's tenant authentication (when a deployment enables
+// it) exempts these paths.
+type RetiredHandler struct{}
 
-// Serve rejects unauthenticated callers and otherwise returns the gone status
-// whose message names the configuration routes and the bank list route.
-func (h *RetiredHandler) Serve(w http.ResponseWriter, r *http.Request) {
-	if h.Auth == nil || !h.Auth.Authenticated(r) {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(http.StatusUnauthorized, "authentication required"))
-		return
+// Serve returns the gone handler for one retirement message.
+func (h *RetiredHandler) Serve(detail string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindGone, detail))
 	}
-	httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindGone, httpx.DetailRetired))
 }
 
-// RetiredRoute is one retired route with its method and path pattern.
+// RetiredRoute is one retired route with its method, path pattern and the
+// message the reference answers it with.
 type RetiredRoute struct {
 	Method  string
 	Pattern string
+	Detail  string
 }
 
 // RetiredRoutes lists the retired bank routes. They must remain routable so
-// existing clients receive the terminal status rather than a not-found.
+// existing clients receive the terminal status rather than a not-found. The two
+// profile routes share one message; the background route has its own.
 var RetiredRoutes = []RetiredRoute{
-	{Method: http.MethodGet, Pattern: httpx.BankPath(httpx.SuffixProfile)},
-	{Method: http.MethodPut, Pattern: httpx.BankPath(httpx.SuffixProfile)},
-	{Method: http.MethodPost, Pattern: httpx.BankPath(httpx.SuffixBackground)},
+	{Method: http.MethodGet, Pattern: httpx.BankPath(httpx.SuffixProfile), Detail: httpx.DetailRetiredProfile},
+	{Method: http.MethodPut, Pattern: httpx.BankPath(httpx.SuffixProfile), Detail: httpx.DetailRetiredProfile},
+	{Method: http.MethodPost, Pattern: httpx.BankPath(httpx.SuffixBackground), Detail: httpx.DetailRetiredBackground},
 }
 
-// BindRetiredRoutes registers every retired route with the shared handler.
+// BindRetiredRoutes registers every retired route with its own handler.
 func (h *RetiredHandler) BindRetiredRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
 	for _, route := range RetiredRoutes {
-		handle(route.Method, route.Pattern, h.Serve)
+		handle(route.Method, route.Pattern, h.Serve(route.Detail))
 	}
 }

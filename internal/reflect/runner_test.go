@@ -37,8 +37,8 @@ func (s *storageRetrieval) ReflectReadModels(_ context.Context, bankID string, _
 	return s.models, nil
 }
 
-func (s *storageRetrieval) ReflectExpand(_ context.Context, bankID string, _ []string) ([]storage.ReflectCitation, error) {
-	s.banks = append(s.banks, bankID)
+func (s *storageRetrieval) ReflectExpand(_ context.Context, req storage.ReflectExpandRequest) ([]storage.ReflectCitation, error) {
+	s.banks = append(s.banks, req.BankID)
 	return s.memories, nil
 }
 
@@ -108,7 +108,11 @@ func TestRunnerBindsTheRequestedBank(t *testing.T) {
 // Directives supplied with the request reach the model as standing
 // instructions, so a bank's rules shape the reflection.
 func TestRunnerPassesDirectivesToTheModel(t *testing.T) {
-	model := &scriptedProvider{name: "openai-compatible"}
+	// A tool-calling turn first: a model that answers in prose before calling
+	// any tool has not driven the loop at all, which is a different story.
+	model := &scriptedProvider{name: "openai-compatible", script: turnScript(
+		toolCall(ToolRecall, map[string]any{"query": "q"}),
+	)}
 	outcome, err := NewRunner(model).Run(context.TODO(), storage.AgenticReflectRequest{
 		BankID:     "b1",
 		Question:   "q",

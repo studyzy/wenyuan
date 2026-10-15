@@ -55,5 +55,13 @@ func (s *PostgresStore) ClearBankMemories(ctx context.Context, bankID, factType 
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	if factType == "" {
+		// A cleared bank goes on existing, so nothing cascades from the bank
+		// row: the images must be retired explicitly or they stay downloadable
+		// from a bank with no documents.
+		if err := s.DeleteBankAttachments(ctx, bankID); err != nil {
+			return 0, err
+		}
+	}
 	return int(affected), nil
 }

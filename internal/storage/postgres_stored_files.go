@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 )
 
 // PutStoredFile persists a payload. With an object store configured the bytes
@@ -54,4 +56,45 @@ func (s *PostgresStore) GetStoredFile(ctx context.Context, key string) (StoredFi
 		return StoredFile{}, err
 	}
 	return StoredFile{Key: storedKey, Data: data, ContentType: contentTypeForKey(storedKey)}, nil
+}
+
+// OpenStoredFile opens a payload for streaming read. With an object store that
+// can stream, the object body is handed straight to the caller so the first
+// byte is written without the object being buffered. Otherwise — the row
+// backend, or an object store without a streaming capability — the payload is
+// loaded and wrapped, which keeps every backend working.
+func (s *PostgresStore) OpenStoredFile(ctx context.Context, key string) (StoredFileStream, error) {
+	if err := ValidateStoredFileKey(key); err != nil {
+		return StoredFileStream{}, ErrStoredFileNotFound
+	}
+	if s.objectStore != nil {
+		if streamer, ok := s.objectStore.(objectStreamer); ok {
+			reader, contentType, size, err := streamer.OpenStream(ctx, key)
+			if err != nil {
+				if errors.Is(err, ErrObjectNotFound) {
+					return StoredFileStream{}, ErrStoredFileNotFound
+				}
+				return StoredFileStream{}, err
+			}
+			// A stream always carries a reader, so the backend must report a
+			// miss as an error rather than a nil reader; guard anyway so a
+			// misbehaving implementation cannot hand back a nil body.
+			if reader == nil {
+				return StoredFileStream{}, ErrStoredFileNotFound
+			}
+			if contentType == "" {
+				contentType = contentTypeForKey(key)
+			}
+			return StoredFileStream{Reader: reader, ContentType: contentType, Size: size}, nil
+		}
+	}
+	file, err := s.GetStoredFile(ctx, key)
+	if err != nil {
+		return StoredFileStream{}, err
+	}
+	return StoredFileStream{
+		Reader:      io.NopCloser(bytes.NewReader(file.Data)),
+		ContentType: file.ContentType,
+		Size:        int64(len(file.Data)),
+	}, nil
 }

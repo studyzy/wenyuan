@@ -10,8 +10,10 @@ GOFLAGS   ?= -mod=mod
 PKGS      ?= ./...
 BINARY    ?= bin/wenyuan
 BANKCTL   ?= bin/bankctl
+WENYUANCLI ?= bin/wenyuan-admin
 CMD       ?= ./cmd/server
 CMDCTL    ?= ./cmd/bankctl
+CMDCLI    ?= ./cmd/wenyuan
 GOLANGCI_LINT ?= golangci-lint
 
 # The PostgreSQL-backed suite needs a live instance and is therefore opt-in:
@@ -27,9 +29,18 @@ COVERAGE_MIN ?= 56
 COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run install help \
-        bench test-pg cover cover-check cover-check-pg
+        bench test-pg cover cover-check cover-check-pg parity
 
 all: check
+
+## parity: run the reference's own system-test stories against this service
+# The reference ships 77 blackbox stories that drive a real server through the
+# published Python client with the model, embedding model and reranker pointed at
+# a stub. Running them against this build is the executable definition of
+# "the same service"; see scripts/run_parity_suite.sh for what it needs
+# (the reference checkout and its system-test virtualenv).
+parity:
+	scripts/run_parity_suite.sh $(PARITY_ARGS)
 
 ## build: compile all packages (default build, no pgx)
 build:
@@ -101,10 +112,11 @@ tidy:
 run:
 	$(GO) run $(CMD) $(ARGS)
 
-## install: build the server and admin binaries into ./bin
+## install: build the server, admin and client CLI binaries into ./bin
 install:
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BINARY) $(CMD)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BANKCTL) $(CMDCTL)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(WENYUANCLI) $(CMDCLI)
 
 ## clean: remove build output
 clean:

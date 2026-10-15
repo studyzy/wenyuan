@@ -36,17 +36,11 @@ func TestMigrateIsRepeatable(t *testing.T) {
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
-	before, err := pg.appliedMigrations(ctx)
-	if err != nil {
-		t.Fatalf("read the ledger: %v", err)
-	}
+	before := recordedVersions(t, pg)
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
-	after, err := pg.appliedMigrations(ctx)
-	if err != nil {
-		t.Fatalf("read the ledger after the second pass: %v", err)
-	}
+	after := recordedVersions(t, pg)
 	if len(before) != len(after) {
 		t.Fatalf("the second pass changed the ledger: %d -> %d entries", len(before), len(after))
 	}

@@ -69,9 +69,9 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	}
 
 	const bankID = "e2e-bank"
-	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bankID, Name: bankID}); err != nil {
-		t.Fatalf("create bank: %v", err)
-	}
+	// The operation is recorded against this bank; the restore writes into a
+	// different one, because a restore refuses a target that already exists.
+	const targetBankID = "e2e-bank-restored"
 
 	h := NewHandlers(store, true, true)
 	data := archiveBytes(t, bankID)
@@ -89,7 +89,8 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := routeRequest(http.MethodPost, "/v1/default/banks/"+bankID+"/transfer/import?mode=replace&include_data=true", &body,
+	req := routeRequest(http.MethodPost, "/v1/default/banks/"+bankID+
+		"/transfer/import?mode=restore&include_data=true&target_bank_id="+targetBankID, &body,
 		map[string]string{"bank_id": bankID})
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
@@ -107,9 +108,18 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	}
 
 	// The operation must be readable back from the database.
-	op, err := store.GetOperation(ctx, accepted.OperationID)
+	page, err := store.ListOperations(ctx, storage.OperationQuery{BankID: bankID})
 	if err != nil {
 		t.Fatalf("operation must persist in postgres: %v", err)
+	}
+	var op storage.Operation
+	for _, candidate := range page.Operations {
+		if candidate.OperationID == accepted.OperationID {
+			op = candidate
+		}
+	}
+	if op.OperationID == "" {
+		t.Fatalf("operation %s must persist in postgres", accepted.OperationID)
 	}
 	if op.BankID != bankID || op.Status != storage.StatusPending {
 		t.Fatalf("operation = %+v", op)

@@ -10,7 +10,7 @@ import (
 
 func TestWriteErrorEnvelopeUsesDetailField(t *testing.T) {
 	rec := httptest.NewRecorder()
-	WriteError(rec, NewHTTPError(KindNotFound, DetailUnknownBank), EncodeOptions{})
+	WriteError(rec, NewHTTPError(KindNotFound, DetailMissingBank), EncodeOptions{})
 	if rec.Code != KindNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -18,7 +18,7 @@ func TestWriteErrorEnvelopeUsesDetailField(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body[FieldDetail] != DetailUnknownBank {
+	if body[FieldDetail] != DetailMissingBank {
 		t.Fatalf("envelope detail = %v", body[FieldDetail])
 	}
 }
@@ -48,15 +48,15 @@ func TestWriteValidationFailureShape(t *testing.T) {
 		t.Fatalf("status = %d, want 422", rec.Code)
 	}
 	var body struct {
-		Errors []ValidationError `json:"errors"`
+		Detail []ValidationError `json:"detail"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Errors) != 1 {
-		t.Fatalf("expected one error item, got %d", len(body.Errors))
+	if len(body.Detail) != 1 {
+		t.Fatalf("expected one error item, got %d", len(body.Detail))
 	}
-	item := body.Errors[0]
+	item := body.Detail[0]
 	if item.Loc[1] != "skepticism" || item.Msg == "" || item.Type == "" || item.Input == nil {
 		t.Fatalf("error-item missing fields: %+v", item)
 	}

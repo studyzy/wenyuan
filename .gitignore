@@ -1,6 +1,11 @@
 # Build output
 /bin/
 /schematool
+# Stray binaries from a hand-run `go build .` at the repo root; `make` puts
+# them in bin/.
+/server
+/bankctl
+/wenyuan
 
 # Go
 *.exe

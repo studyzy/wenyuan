@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -129,4 +130,31 @@ func (s *stubProvider) Complete(ctx context.Context, req provider.CompletionRequ
 }
 func (s *stubProvider) Embed(ctx context.Context, req provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
 	return provider.EmbeddingResult{}, nil
+}
+
+// A provider setting this build parses but cannot act on fails startup by name,
+// rather than being silently ignored.
+func TestUnsupportedProviderSettingsFailFast(t *testing.T) {
+	base := testConfig()
+	if _, err := ResolveProvider(base); err != nil {
+		t.Fatalf("an unconfigured deployment must resolve: %v", err)
+	}
+
+	cases := map[string]func(*config.Config){
+		"litellm router":   func(c *config.Config) { c.Provider.LiteLLMRouterConfig = []string{"deployment-1"} },
+		"local embeddings": func(c *config.Config) { c.Provider.Embeddings.LocalModel = "bge-small" },
+	}
+	for name, apply := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			apply(&cfg)
+			_, err := ResolveProvider(cfg)
+			if err == nil {
+				t.Fatal("a setting this build cannot honour must fail startup")
+			}
+			if !strings.Contains(err.Error(), "not supported by this build") {
+				t.Fatalf("error = %v, want the explicit refusal", err)
+			}
+		})
+	}
 }

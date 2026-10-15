@@ -61,3 +61,11 @@ const MentalModelIDPayloadKey = "mental_model_id"
 func MentalModelSerializationKey(modelID string) string {
 	return "mental_model:" + modelID
 }
+
+// ConsolidationSerializationKey is the key that keeps two consolidation passes
+// over one bank from running at the same time. A pass reads the bank's
+// unconsolidated facts and writes back the ones it folded, so two concurrent
+// passes would both read the same facts and create twin observations.
+func ConsolidationSerializationKey(bankID string) string {
+	return "consolidate:" + bankID
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // test-postgres-contract: the PostgreSQL backend honours the same contract the
@@ -30,7 +31,7 @@ func TestPostgresContractAliasesAndBanks(t *testing.T) {
 	if err != nil || len(aliases) == 0 {
 		t.Fatalf("list aliases = %v (err %v)", aliases, err)
 	}
-	if _, err := store.PromoteAlias(ctx, "vec-bank", "work"); err != nil {
+	if _, err := store.SetAliasPrimary(ctx, "vec-bank", "work", true); err != nil {
 		t.Fatalf("promote alias: %v", err)
 	}
 	if _, err := store.RemoveAlias(ctx, "vec-bank", "work"); err != nil {
@@ -78,10 +79,10 @@ func TestPostgresContractReadSurface(t *testing.T) {
 	if entities, err := store.ListEntities(ctx, EntityQuery{BankID: "vec-bank", Limit: 10}); err != nil || len(entities.Entities) == 0 {
 		t.Fatalf("list entities = %d (err %v)", len(entities.Entities), err)
 	}
-	if _, err := store.Graph(ctx, "vec-bank", 10); err != nil {
+	if _, err := store.Graph(ctx, GraphQuery{BankID: "vec-bank", Limit: 10}); err != nil {
 		t.Fatalf("graph: %v", err)
 	}
-	if _, err := store.EntityGraph(ctx, "vec-bank", 10); err != nil {
+	if _, err := store.EntityGraph(ctx, EntityGraphQuery{BankID: "vec-bank", Limit: 10}); err != nil {
 		t.Fatalf("entity graph: %v", err)
 	}
 }
@@ -110,7 +111,7 @@ func TestPostgresContractWebhooks(t *testing.T) {
 	if err != nil || updated.Enabled {
 		t.Fatalf("update webhook = %+v (err %v)", updated, err)
 	}
-	if deliveries, err := store.ListWebhookDeliveries(ctx, "vec-bank", webhook.ID, 10, 0); err != nil {
+	if deliveries, err := store.ListWebhookDeliveries(ctx, "vec-bank", webhook.ID, 10, ""); err != nil {
 		t.Fatalf("list deliveries: %v", err)
 	} else if deliveries.Deliveries == nil {
 		t.Fatal("deliveries must be an array, not nil")
@@ -157,7 +158,7 @@ func TestPostgresContractKnowledgeAndModels(t *testing.T) {
 	if nodes, err := store.ListKnowledgeNodes(ctx, "vec-bank"); err != nil || len(nodes) != 2 {
 		t.Fatalf("list knowledge nodes = %d (err %v)", len(nodes), err)
 	}
-	if hits, err := store.SearchKnowledgeNodes(ctx, "vec-bank", "pipeline", 10); err != nil || len(hits) == 0 {
+	if hits, err := store.SearchKnowledgeNodes(ctx, KnowledgeSearchQuery{BankID: "vec-bank", Query: "pipeline", Limit: 10}); err != nil || len(hits) == 0 {
 		t.Fatalf("search knowledge = %v (err %v)", hits, err)
 	}
 
@@ -171,7 +172,7 @@ func TestPostgresContractKnowledgeAndModels(t *testing.T) {
 		t.Fatalf("list mental models = %v (err %v)", models, err)
 	}
 	if err := store.RecordMentalModelHistory(ctx, "vec-bank", model.ID, MentalModelHistoryEntry{
-		RefreshedAt: model.CreatedAt, Content: "refreshed", Reason: "refresh",
+		ChangedAt: model.CreatedAt, PreviousContent: strPtr("prior"),
 	}); err != nil {
 		t.Fatalf("record history: %v", err)
 	}
@@ -183,5 +184,75 @@ func TestPostgresContractKnowledgeAndModels(t *testing.T) {
 	}
 	if err := store.DeleteMentalModel(ctx, "vec-bank", model.ID); err != nil {
 		t.Fatalf("delete mental model: %v", err)
+	}
+}
+
+// Scheduling a retry with a result against the real database merges the report
+// onto the operation while leaving the retry schedule — status, count and next
+// attempt time — exactly as the plain scheduling path sets it.
+func TestPostgresContractScheduleRetryWithResult(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	// async_operations.operation_id is a uuid column in the reference schema.
+	opID := pgUUID("op-retry")
+	if _, err := store.PutOperation(ctx, Operation{
+		OperationID: opID, BankID: "vec-bank", OperationType: OperationTypeTransferImport,
+		Status: StatusProcessing, ResultMetadata: map[string]any{"webhook_id": "wh-1"},
+	}); err != nil {
+		t.Fatalf("put operation: %v", err)
+	}
+	recorder := store.(OperationRetryRecorder)
+	next := time.Now().UTC().Add(time.Minute)
+	if err := recorder.ScheduleOperationRetryWithResult(ctx, opID, 0, next, "rate limited", map[string]any{
+		"last_status_code": 429,
+	}); err != nil {
+		t.Fatalf("schedule retry with result: %v", err)
+	}
+	after, err := store.GetOperation(ctx, "vec-bank", opID)
+	if err != nil {
+		t.Fatalf("get operation: %v", err)
+	}
+	// JSON numbers round-trip as float64.
+	if after.ResultMetadata["last_status_code"] != float64(429) {
+		t.Fatalf("metadata = %+v, want the reported status", after.ResultMetadata)
+	}
+	if after.ResultMetadata["webhook_id"] != "wh-1" {
+		t.Fatalf("metadata = %+v, want the pre-existing field preserved", after.ResultMetadata)
+	}
+	if after.Status != StatusPending || after.RetryCount != 0 || after.NextRetryAt == nil {
+		t.Fatalf("the retry schedule must be unchanged: %+v", after)
+	}
+}
+
+// The memory listing and the memory graph honour a compound read scope: the
+// resolved tag groups AND into the filter on the real SQL side, so a scoped
+// reader sees only the memories its scope admits and the total agrees.
+func TestPostgresContractReadScopeTagGroups(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	for _, item := range []RetainItem{
+		{Content: "Kate is interviewing at another company.", DocumentID: "kate-doc", Tags: []string{"user:kate"}},
+		{Content: "Dan is planning a production deploy.", DocumentID: "dan-doc", Tags: []string{"user:dan"}},
+	} {
+		if _, err := store.RetainWrite(ctx, RetainRequest{BankID: "vec-bank", Items: []RetainItem{item}}); err != nil {
+			t.Fatalf("retain: %v", err)
+		}
+	}
+	scope := []TagGroup{{Tags: []string{"user:dan", "kind:rule"}, Match: TagsMatchAnyStrict}}
+
+	memories, err := store.ListMemories(ctx, MemoryQuery{BankID: "vec-bank", TagGroups: scope, Limit: 10})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+	if memories.Total != 1 || len(memories.Memories) != 1 || memories.Memories[0].DocumentID != "dan-doc" {
+		t.Fatalf("scoped memory list = %+v, want only dan-doc", memories)
+	}
+
+	graph, err := store.Graph(ctx, GraphQuery{BankID: "vec-bank", TagGroups: scope, Limit: 10})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if graph.Total != 1 || len(graph.TableRows) != 1 || graph.TableRows[0].DocumentID != "dan-doc" {
+		t.Fatalf("scoped graph = %+v, want only dan-doc", graph)
 	}
 }

@@ -178,3 +178,15 @@ func isSerializationFailure(err error) bool {
 	}
 	return false
 }
+
+// isUniqueViolation reports whether a statement lost a race on a unique
+// constraint. A writer that reads first and inserts second can always be beaten
+// to the insert by a concurrent one, so the loser retries against what the
+// winner wrote rather than failing the caller's work.
+func isUniqueViolation(err error) bool {
+	var state interface{ SQLState() string }
+	if !errors.As(err, &state) {
+		return false
+	}
+	return state.SQLState() == "23505"
+}

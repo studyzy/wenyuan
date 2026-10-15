@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ErrDriverUnavailable is returned when the PostgreSQL backend is selected but
@@ -25,7 +26,13 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 	if !DriverAvailable() {
 		return nil, ErrDriverUnavailable
 	}
-	db, err := openDB(cfg.DatabaseURL)
+	// The URL is normalized before the driver sees it, so a string copied from
+	// the reference's own configuration (SQLAlchemy scheme, `ssl=` parameter)
+	// connects rather than failing on a scheme the driver does not know.
+	db, err := openDB(NormalizeDatabaseURL(cfg.DatabaseURL), PoolBudget{
+		MaxOpenConns: cfg.MaxOpenConns,
+		MaxIdleConns: cfg.MaxIdleConns,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -33,11 +40,21 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 		_ = db.Close()
 		return nil, err
 	}
+	// Some statements in this package render client-supplied values as SQL
+	// literals — the compound tag predicate and the per-bank vector index DDL,
+	// which a utility statement cannot take as bind parameters. Escaping by
+	// doubling the quote is only complete when the server treats backslashes
+	// literally, so a server configured otherwise is refused here rather than
+	// escaping values differently from every other query.
+	if err := requireStandardConformingStrings(db.QueryRowContext(ctx, "SHOW standard_conforming_strings")); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	schema := cfg.Schema
 	if strings.TrimSpace(schema) == "" {
 		schema = "public"
 	}
-	return &PostgresStore{db: db, schema: schema}, nil
+	return &PostgresStore{db: db, schema: schema, vectorExtension: cfg.VectorExtension, bankStatsCacheTTL: cfg.BankStatsCacheTTL}, nil
 }
 
 // PostgresStore is the database-backed Store. It is the sole owner of the
@@ -45,11 +62,31 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 type PostgresStore struct {
 	db     DB
 	schema string
+	// vectorExtension names the index access method family the deployment runs
+	// on, so the per-bank vector index DDL matches the stored vectors.
+	vectorExtension string
+	// bankStatsCacheTTL is the freshness window for a cached bank-statistics
+	// summary. Zero disables the cache.
+	bankStatsCacheTTL time.Duration
 	// objectStore, when set, holds the attachment and archive payloads
 	// outside the database. It is an interface so the storage area carries no
 	// object-store import, and the composition root supplies the
 	// implementation.
 	objectStore ObjectStore
+	// observationEmbedder, when set, embeds the text of an observation the
+	// consolidation pass writes. Without it an observation carries no vector
+	// and the vector recall arm cannot rank it, so recall would reach the
+	// synthesis only by keyword.
+	observationEmbedder EmbeddingGenerator
+}
+
+// SetObservationEmbedder gives the store the generator the consolidation write
+// path embeds observations with. The composition root calls it once at startup;
+// a deployment with no embedding model passes nil and observations stay
+// unembedded, exactly as the retain path leaves facts when no model is
+// configured.
+func (s *PostgresStore) SetObservationEmbedder(generator EmbeddingGenerator) {
+	s.observationEmbedder = generator
 }
 
 // ObjectStore persists opaque payloads outside the database.
@@ -90,44 +127,147 @@ func (s *PostgresStore) Ready(ctx context.Context) error {
 	return s.db.Ping(ctx)
 }
 
+// PoolStats reports the connection pool's utilization for the readiness
+// payload. It is best-effort: a database handle that cannot report it returns
+// false, and the readiness body then omits the pool keys, as the reference
+// does.
+func (s *PostgresStore) PoolStats() (PoolStats, bool) {
+	provider, ok := s.db.(interface{ PoolStats() PoolStats })
+	if !ok {
+		return PoolStats{}, false
+	}
+	return provider.PoolStats(), true
+}
+
 // Ping satisfies the monitoring dependency contract.
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.Ready(ctx) }
 
-// Migrate applies the ordered, idempotent migration series.
+// Migrate brings the target database to the schema the series describes.
+//
+// The database is first recognised for what it already is. A database the
+// reference service migrated itself holds the reference's schema but records
+// its state in the reference's own bookkeeping, which this build does not read
+// — so before anything runs, the catalogue is compared against the objects the
+// series creates, and a database already carrying all of them is adopted: its
+// migrations are recorded and no object is created.
 func (s *PostgresStore) Migrate(ctx context.Context) error {
+	return s.migrate(ctx, migrateOptions{})
+}
+
+// MigrateWithoutExtensions runs the series without installing or reconciling the
+// extensions it depends on, for a deployment that installs them out of band.
+//
+// A schema that is missing an extension then fails on the first object that
+// needs it, naming the type it could not resolve — which is the actionable
+// error an operator who asked to skip the step wants.
+func (s *PostgresStore) MigrateWithoutExtensions(ctx context.Context) error {
+	return s.migrate(ctx, migrateOptions{skipExtensions: true})
+}
+
+// migrateOptions tunes one migration run.
+type migrateOptions struct {
+	// skipExtensions skips installing the extensions the series depends on.
+	skipExtensions bool
+}
+
+func (s *PostgresStore) migrate(ctx context.Context, opts migrateOptions) error {
 	series, err := MigrationSeries()
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdent(s.schema))); err != nil {
+	expected, err := ExpectedSchemaOf()
+	if err != nil {
+		return err
+	}
+	// The extensions are installed before the series, each in its own
+	// transaction holding the extension lock, because the objects the series
+	// creates need the types and operator classes they provide. They are
+	// installed before the adoption decision rather than after it so that an
+	// adopted database gets them too: its objects depend on them just as much,
+	// and installing an extension that is already there is a no-op.
+	if !opts.skipExtensions {
+		if err := s.ensureExtension(ctx, "vector"); err != nil {
+			return err
+		}
+		// The trigram extension backs fuzzy entity-name resolution. A deployment
+		// that cannot install it still serves: the resolver falls back to exact
+		// matching when the probe fails.
+		if err := s.ensureExtension(ctx, "pg_trgm"); err != nil {
+			return err
+		}
+		// btree_gin provides the operator classes the reference's multi-column GIN
+		// indexes use, so it is as required as the vector type.
+		if err := s.ensureExtension(ctx, "btree_gin"); err != nil {
+			return err
+		}
+	}
+
+	// One transaction carries the whole decision and the whole series. The
+	// advisory lock inside it serializes the processes of a deployment: two
+	// coming up together would otherwise both find the series unrecorded, both
+	// read the same catalogue, and both create its objects, and one would fail
+	// on an object that already exists.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('wenyuan:migrations'))`); err != nil {
+		return err
+	}
+	// The schema is created inside the lock so two processes cannot race on its
+	// creation either.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdent(s.schema))); err != nil {
 		return err
 	}
 	// The extension schema stays on the path: a statement in this store may
-	// name a type or an operator class the extension provides, and a connection
-	// that carried this SET would otherwise lose sight of it.
-	if _, err := s.db.ExecContext(ctx, "SET search_path TO "+s.searchPath()); err != nil {
+	// name a type or an operator class the extension provides.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path TO "+s.searchPath()); err != nil {
 		return err
 	}
-	if err := s.ensureExtension(ctx, "vector"); err != nil {
+	if err := s.ensureMigrationTableTx(ctx, tx); err != nil {
 		return err
 	}
-	// The trigram extension backs fuzzy entity-name resolution. A deployment
-	// that cannot install it still serves: the resolver falls back to exact
-	// matching when the probe fails.
-	if err := s.ensureExtension(ctx, "pg_trgm"); err != nil {
-		return err
-	}
-	// btree_gin provides the operator classes the reference's multi-column GIN
-	// indexes use, so it is as required as the vector type.
-	if err := s.ensureExtension(ctx, "btree_gin"); err != nil {
-		return err
-	}
-	if err := s.ensureMigrationTable(ctx); err != nil {
-		return err
-	}
-	applied, err := s.appliedMigrations(ctx)
+	applied, err := s.appliedMigrationsTx(ctx, tx)
 	if err != nil {
 		return err
+	}
+	if len(applied) < len(series) {
+		if err := s.reconcileSeries(ctx, tx, series, applied, expected); err != nil {
+			return err
+		}
+	}
+	// The stored vector width is a deployment setting rather than part of the
+	// schema the series renders, so it is reconciled here against what this
+	// service's provider boundary declares - whether the schema was just created
+	// or adopted. See reconcileEmbeddingColumns.
+	if err := s.reconcileEmbeddingColumns(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// reconcileSeries decides what a series that is not fully recorded means for
+// this database: run it, adopt it, or refuse it.
+//
+// The three outcomes are the only safe ones. Running the series against a
+// database that already carries its objects fails on the first one; recording
+// it against a database that carries only some of them would skip the
+// migrations that built the rest; so the catalogue has to be read and the
+// decision made from it before either happens.
+func (s *PostgresStore) reconcileSeries(ctx context.Context, tx Tx, series []Migration, applied map[int]bool, expected *ExpectedSchema) error {
+	snapshot, err := s.readCatalogue(ctx, tx)
+	if err != nil {
+		return err
+	}
+	state, missing := classifySchema(expected, snapshot)
+	switch state {
+	case schemaComplete:
+		// The database is already the schema this build serves, whoever built
+		// it. The ledger is brought up to date and nothing is created.
+		return s.adoptSeries(ctx, tx, series, applied, expected, snapshot)
+	case schemaPartial:
+		return s.partialSchemaError(missing, expected, snapshot)
 	}
 	for _, migration := range series {
 		if applied[migration.Version] {
@@ -135,7 +275,7 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 			// not a full replay and a destructive statement cannot repeat.
 			continue
 		}
-		if err := s.applyMigration(ctx, migration); err != nil {
+		if err := s.applyMigrationTx(ctx, tx, migration); err != nil {
 			return err
 		}
 	}
@@ -158,24 +298,25 @@ func (s *PostgresStore) searchPath() string {
 	return quoteIdent(s.schema) + ", " + quoteIdent(extensionSchema)
 }
 
-// ensureMigrationTable creates the record of applied migrations.
+// ensureMigrationTableTx creates the record of applied migrations.
 //
 // Without it every start replays the whole series, which is both wasted work
 // and a hazard: a migration is only idempotent while someone remembers to write
 // it that way.
-func (s *PostgresStore) ensureMigrationTable(ctx context.Context) error {
+func (s *PostgresStore) ensureMigrationTableTx(ctx context.Context, tx Tx) error {
 	query := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(s.schema) + `.schema_migrations (
 	              version     INTEGER PRIMARY KEY,
 	              name        TEXT NOT NULL,
 	              applied_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 	          )`
-	_, err := s.db.ExecContext(ctx, query)
+	_, err := tx.ExecContext(ctx, query)
 	return err
 }
 
-// appliedMigrations returns the versions already recorded.
-func (s *PostgresStore) appliedMigrations(ctx context.Context) (map[int]bool, error) {
-	rows, err := s.db.QueryContext(ctx,
+// appliedMigrationsTx returns the versions recorded in the ledger the queryer
+// sees, which inside Migrate is the transaction holding the migration lock.
+func (s *PostgresStore) appliedMigrationsTx(ctx context.Context, q queryer) (map[int]bool, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT version FROM `+quoteIdent(s.schema)+`.schema_migrations`)
 	if err != nil {
 		return nil, err
@@ -192,25 +333,14 @@ func (s *PostgresStore) appliedMigrations(ctx context.Context) (map[int]bool, er
 	return applied, rows.Err()
 }
 
-// applyMigration runs one migration's statements and records it.
+// applyMigrationTx runs one migration's statements and records it on the
+// caller's transaction, whose search path the caller has already set.
 //
-// The statements share a transaction, so a migration that fails halfway leaves
-// no partial schema behind and is not recorded as applied.
-func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	// The path is set on this transaction rather than left to the session: a
-	// migration's unqualified names have to resolve in this store's schema even
-	// when the pool hands out a connection that never carried a SET.
-	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path TO "+s.searchPath()); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("migration %04d failed: %w", migration.Version, err)
-	}
+// The statements share that transaction, so a migration that fails halfway
+// leaves no partial schema behind and is not recorded as applied.
+func (s *PostgresStore) applyMigrationTx(ctx context.Context, tx Tx, migration Migration) error {
 	for _, statement := range migration.Statements() {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("migration %04d failed: %w", migration.Version, err)
 		}
 	}
@@ -218,11 +348,7 @@ func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration)
 		`INSERT INTO `+quoteIdent(s.schema)+`.schema_migrations (version, name) VALUES ($1, $2)
 		 ON CONFLICT (version) DO NOTHING`,
 		migration.Version, migration.Name); err != nil {
-		_ = tx.Rollback()
 		return fmt.Errorf("recording migration %04d failed: %w", migration.Version, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing migration %04d failed: %w", migration.Version, err)
 	}
 	return nil
 }
@@ -230,8 +356,8 @@ func (s *PostgresStore) applyMigration(ctx context.Context, migration Migration)
 // ensureExtension installs a named extension if it is missing. An extension
 // that is already present anywhere is left where it is.
 //
-// The creation runs in a transaction holding the same advisory lock the
-// migration series takes. CREATE EXTENSION IF NOT EXISTS is not
+// The creation runs in a transaction holding the extension advisory lock the
+// series' own extension statements take. CREATE EXTENSION IF NOT EXISTS is not
 // concurrency-safe: every process of a deployment installs its extensions at
 // start, so two of them coming up together both pass the existence check and
 // one fails on the catalogue's unique index on the extension name.
@@ -267,4 +393,12 @@ func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error 
 // configuration, never from request input.
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// quoteLiteral renders an SQL string literal. It is for the rare statement that
+// has to name a constant in its own text rather than through a parameter — the
+// claim query's exclusion of a non-executable operation type, for instance,
+// where a parameter would renumber the statement's other placeholders.
+func quoteLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }

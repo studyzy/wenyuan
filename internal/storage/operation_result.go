@@ -1,0 +1,78 @@
+package storage
+
+import (
+	"context"
+	"time"
+)
+
+// OperationResultRecorder is the optional capability a backend implements when
+// it can carry structured result metadata onto an operation as that operation
+// is settled.
+//
+// AdvanceOperation deliberately stays metadata-free: an operation type that
+// reports nothing — which is every type but a mental model refresh today — must
+// take the plain path unchanged, and a backend that cannot record the metadata
+// must not be forced to pretend it can. The worker falls back to AdvanceOperation
+// whenever a store does not implement this, so the capability only ever adds a
+// richer record; it never becomes a requirement.
+type OperationResultRecorder interface {
+	// AdvanceOperationWithResult advances the operation to next, records detail
+	// in its error column, and merges result into its result metadata. A key in
+	// result replaces any existing value rather than the whole metadata being
+	// overwritten, so fields written when the operation was enqueued survive.
+	AdvanceOperationWithResult(ctx context.Context, opID string, next OperationStatus, detail string, result map[string]any) (Operation, error)
+}
+
+// OperationRetryRecorder is the optional capability a backend implements when it
+// can record a retry — a deferral or an ordinary backoff — together with the
+// structured result metadata the processor reported about the attempt that led
+// to it.
+//
+// ScheduleOperationRetry deliberately stays metadata-free for the same reason
+// AdvanceOperation does: a processor that reports nothing must take the plain
+// path unchanged, and a backend that cannot record metadata must not be forced
+// to pretend it can. A processor that reports before asking for a deferral — a
+// webhook delivery naming the receiver's status, say — needs the report to
+// survive the retry, so the worker merges it here rather than dropping it.
+type OperationRetryRecorder interface {
+	// ScheduleOperationRetryWithResult records a failed attempt and the moment
+	// the next one becomes claimable, returning the operation to the claimable
+	// pool, and merges result into its result metadata. A key in result replaces
+	// any existing value rather than the whole metadata being overwritten, so
+	// fields written when the operation was enqueued survive.
+	ScheduleOperationRetryWithResult(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, detail string, result map[string]any) error
+}
+
+// Both backends carry the capability; a store that did not would fail this at
+// compile time rather than silently dropping a processor's report.
+var (
+	_ OperationResultRecorder = (*MemoryStore)(nil)
+	_ OperationResultRecorder = (*PostgresStore)(nil)
+	_ OperationRetryRecorder  = (*MemoryStore)(nil)
+	_ OperationRetryRecorder  = (*PostgresStore)(nil)
+)
+
+// OperationDeferrer is the optional capability a backend implements when it can
+// reschedule an operation without recording it as a failure.
+//
+// A deferral is intentional backpressure, not a verdict on the work: a provider
+// rate limit, a saturated store, or an append that lost its race and must be
+// read again. The reference keeps those two things apart in the record, because
+// a caller that waits for a bank to settle treats a pending operation carrying
+// an error as already lost — which a deferral is not. So a deferral moves the
+// next attempt and leaves the error column alone, and the reason goes to the
+// log and to whatever the processor reported about the attempt.
+type OperationDeferrer interface {
+	// DeferOperation returns the operation to the claimable pool for next,
+	// without spending its retry budget and without recording a failure, and
+	// merges result into its result metadata when the processor reported
+	// anything about the attempt.
+	DeferOperation(ctx context.Context, opID string, next time.Time, result map[string]any) error
+}
+
+// Both backends carry the capability; a store that did not would fall back to
+// the retry path in the consumer, which does record a failure message.
+var (
+	_ OperationDeferrer = (*MemoryStore)(nil)
+	_ OperationDeferrer = (*PostgresStore)(nil)
+)

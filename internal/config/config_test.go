@@ -29,8 +29,18 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.GzipMinSize != DefaultGzipMinSize {
 		t.Fatalf("gzip floor default = %d", cfg.GzipMinSize)
 	}
-	if cfg.RunMigrationsOnStartup || cfg.MCPEnabled || cfg.EnableBankConfigAPI {
-		t.Fatalf("boolean env defaults must be false")
+	// The defaults are the reference's own, so a deployment that sets only the
+	// values it cares about sees the same surface either way.
+	// RunMigrationsOnStartup defaults on, as it does in the reference; the
+	// other two are opt-in.
+	if !cfg.RunMigrationsOnStartup || cfg.PprofEnabled || cfg.AuditLogEnabled {
+		t.Fatalf("boolean env defaults must match the reference: %+v", cfg)
+	}
+	if !cfg.MCPEnabled || !cfg.EnableBankConfigAPI || !cfg.EnableObservations || !cfg.StoreDocumentText {
+		t.Fatalf("boolean env defaults must match the reference: %+v", cfg)
+	}
+	if !cfg.NullDropFields {
+		t.Fatal("null fields are dropped by default, as the reference drops them")
 	}
 }
 
@@ -76,16 +86,30 @@ func TestFromEnvIgnoresUnparseableValues(t *testing.T) {
 }
 
 func TestAddressAndFeatureMap(t *testing.T) {
-	cfg := FromEnv(envMap(map[string]string{EnvHost: "127.0.0.1", EnvPort: "8080", EnvMCPEnabled: "true"}))
+	cfg := FromEnv(envMap(map[string]string{
+		EnvHost: "127.0.0.1", EnvPort: "8080",
+		EnvMCPEnabled: "false", EnvEnableBankConfigAPI: "false", EnvAuditLogEnabled: "true",
+	}))
 	if got := cfg.Address(); got != "127.0.0.1:8080" {
 		t.Fatalf("address = %q", got)
 	}
 	features := cfg.FeatureMap()
-	if !features["mcp"] {
+	if features["mcp"] {
 		t.Fatalf("feature map must reflect mcp enablement: %v", features)
 	}
 	if features["bank_config_api"] {
-		t.Fatalf("feature map must reflect bank config gate: %v", features)
+		t.Fatalf("feature map must reflect the bank config gate: %v", features)
+	}
+	if !features["audit_log"] {
+		t.Fatalf("feature map must reflect the audit log gate: %v", features)
+	}
+	// Every flag the reference reports is present.
+	for _, name := range []string{"observations", "mcp", "worker", "bank_config_api", "bank_llm_health",
+		"file_upload_api", "document_export_api", "document_import_api", "audit_log", "llm_trace",
+		"store_document_text"} {
+		if _, ok := features[name]; !ok {
+			t.Fatalf("the feature map must carry %q: %v", name, features)
+		}
 	}
 }
 
@@ -156,12 +180,57 @@ func TestResolveFileStorage(t *testing.T) {
 func TestResolveFileStorageUnknownType(t *testing.T) {
 	lookup := func(key string) (string, bool) {
 		if key == EnvFileStorageType {
-			return "gcs", true
+			return "nonsense", true
 		}
 		return "", false
 	}
 	got := resolveFileStorage(lookup)
 	if got.Type != FileStoragePostgres {
 		t.Fatalf("type = %q, want the database fallback", got.Type)
+	}
+}
+
+// The version endpoint's feature map reports all eleven reference keys, so a
+// client that gates on one of them sees it.
+func TestFeatureMapHasReferenceKeys(t *testing.T) {
+	cfg := FromEnv(func(string) (string, bool) { return "", false })
+	features := cfg.FeatureMap()
+	want := []string{
+		"observations", "mcp", "worker", "bank_config_api", "bank_llm_health",
+		"file_upload_api", "document_export_api", "document_import_api",
+		"audit_log", "llm_trace", "store_document_text",
+	}
+	for _, key := range want {
+		if _, ok := features[key]; !ok {
+			t.Fatalf("feature map is missing %q: %v", key, features)
+		}
+	}
+	if len(features) != len(want) {
+		t.Fatalf("feature map has %d keys, want %d: %v", len(features), len(want), features)
+	}
+}
+
+// The reference's worker key names are accepted as aliases.
+func TestWorkerReferenceKeyAliases(t *testing.T) {
+	environ := func(key string) (string, bool) {
+		switch key {
+		case "HINDSIGHT_API_WORKER_POLL_INTERVAL_MS":
+			return "250", true
+		case "HINDSIGHT_API_WORKER_MAX_SLOTS":
+			return "12", true
+		case "HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS":
+			return "7", true
+		}
+		return "", false
+	}
+	cfg := FromEnv(environ)
+	if cfg.Worker.PollInterval.Milliseconds() != 250 {
+		t.Fatalf("poll interval = %v, want 250ms", cfg.Worker.PollInterval)
+	}
+	if cfg.Worker.Concurrency != 12 {
+		t.Fatalf("concurrency = %d, want 12", cfg.Worker.Concurrency)
+	}
+	if cfg.Worker.InitialBackoff.Seconds() != 7 {
+		t.Fatalf("initial backoff = %v, want 7s", cfg.Worker.InitialBackoff)
 	}
 }

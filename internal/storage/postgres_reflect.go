@@ -2,14 +2,55 @@ package storage
 
 import "context"
 
-// Reflect runs the database-backed reflection loop. It resolves the bank,
-// retrieves candidate facts, then runs the same bounded retrieval-and-synthesis
-// loop the in-process store uses, so the observable contract is identical
-// across backends. The perspective and directive catalogues are supplied by the
-// caller on the query, since those tables are owned by the model unit.
+// Reflect runs the database-backed reflection.
+//
+// A supplied runner takes precedence: it is the model-driven loop, and the store
+// is the retrieval surface that loop calls back into, exactly as the in-memory
+// store is. Without a runner the deterministic in-process loop runs against the
+// store's own recall results, so a deployment with no model is unchanged.
 func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return ReflectOutcome{}, err
+	}
+	// The model-driven branch resolves the bank lazily: the loop's retrieval
+	// does it (recall enforces existence), so probing here would force a
+	// database round trip before any model work, and would make the dispatch
+	// untestable without a database. The deterministic branch below keeps the
+	// up-front bank probe it has always done.
+	if query.Reflection != nil {
+		directives, err := s.reflectDirectives(ctx, query)
+		if err != nil {
+			return ReflectOutcome{}, err
+		}
+		// The profile is read only when the store has a database: the offline
+		// dispatch test supplies a runner with no database, and a bank that
+		// configured no identity produces the same prompt from an empty profile.
+		var bankName, mission string
+		var disposition map[string]int
+		if s.db != nil {
+			bank, err := s.GetBank(ctx, query.BankID)
+			if err != nil {
+				return ReflectOutcome{}, err
+			}
+			bankName, mission, disposition = ReflectProfile(bank)
+		}
+		return query.Reflection.Run(ctx, AgenticReflectRequest{
+			BankID:           query.BankID,
+			Question:         query.Query,
+			MaxTokens:        query.MaxTokens,
+			MaxIterations:    query.MaxIterations,
+			Budget:           query.Budget,
+			Retrieval:        s,
+			Directives:       directives,
+			ResponseSchema:   query.ResponseSchema,
+			BankName:         bankName,
+			Mission:          mission,
+			Disposition:      disposition,
+			AnswerAsDocument: query.AnswerAsDocument,
+			Tags:             query.Tags,
+			TagsMatch:        query.TagsMatch,
+			TagGroups:        query.TagGroups,
+		})
 	}
 	if _, err := s.GetBank(ctx, query.BankID); err != nil {
 		return ReflectOutcome{}, err
@@ -41,4 +82,38 @@ func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (Reflec
 	}
 	loop := newReflectLoop(query, facts)
 	return loop.run(ctx)
+}
+
+// reflectDirectives resolves the directive contents the agentic loop follows.
+//
+// The caller usually supplies the bank's directives on the query. When it does
+// not — the PostgreSQL deployment has no seeded perspective/directive catalogue
+// — they are read from the bank's own table, mirroring how the in-memory store
+// defaults them from its seeded catalogue. An empty directive contributes
+// nothing, exactly as on the in-memory path.
+func (s *PostgresStore) reflectDirectives(ctx context.Context, query ReflectQuery) ([]string, error) {
+	directives := query.Directives
+	if directives == nil {
+		stored, err := s.ListDirectives(ctx, query.BankID)
+		if err != nil {
+			return nil, err
+		}
+		directives = make([]ReflectDirective, 0, len(stored))
+		for _, directive := range stored {
+			directives = append(directives, ReflectDirective{
+				ID:      directive.ID,
+				Name:    directive.Name,
+				Content: directive.Content,
+				Tags:    directive.Tags,
+				Active:  directive.IsActive,
+			})
+		}
+	}
+	out := make([]string, 0, len(directives))
+	for _, directive := range directives {
+		if directive.Content != "" {
+			out = append(out, directive.Content)
+		}
+	}
+	return out, nil
 }

@@ -49,9 +49,10 @@ func recencyKey(bank Bank) time.Time {
 	return bank.CreatedAt
 }
 
-// pageBounds clamps a limit/offset window to the match count. A zero limit
-// means "no limit" and is reported unchanged to the caller. An offset past the
-// end yields an empty slice.
+// pageBounds clamps a limit/offset window to the match count. A limit of zero
+// is a valid explicit page size that returns nothing (the reference's list
+// endpoints declare ge=0); a negative limit is the internal "unbounded"
+// sentinel. An offset past the end yields an empty slice.
 func pageBounds(total, offset, limit int) (int, int) {
 	if offset < 0 {
 		offset = 0
@@ -60,7 +61,12 @@ func pageBounds(total, offset, limit int) (int, int) {
 		offset = total
 	}
 	end := total
-	if limit > 0 && offset+limit < total {
+	switch {
+	case limit < 0:
+		end = total
+	case limit == 0:
+		end = offset
+	case offset+limit < total:
 		end = offset + limit
 	}
 	return offset, end

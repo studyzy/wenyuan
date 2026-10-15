@@ -16,7 +16,7 @@ const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''),
        COALESCE(links, '{}')::text, COALESCE(tags, '{}')::text, COALESCE(max_tokens, 2048),
        COALESCE(trigger, '{}'::jsonb), structured_content, reflect_response,
        COALESCE(last_refreshed_source_query, ''),
-       last_refreshed_at, last_updated, created_at`
+       last_refreshed_at, last_memory_seen_at, last_refresh_failed_at, last_updated, created_at`
 
 // ListMentalModels returns the mental models of one bank, newest first.
 func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, subtype MentalModelSubtype) ([]MentalModel, error) {
@@ -85,12 +85,26 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	if maxTokens <= 0 {
 		maxTokens = 2048
 	}
+	// The column is NOT NULL DEFAULT now(), so a create is stamped here too: the
+	// reference's insert omits the column and lets the default do it, and passing
+	// an explicit NULL would fail the constraint instead of taking the default.
+	lastRefreshedAt := model.LastRefreshedAt
+	if lastRefreshedAt.IsZero() {
+		lastRefreshedAt = time.Now().UTC()
+	}
+	var lastRefreshFailedAt any
+	if model.LastRefreshFailedAt != nil {
+		lastRefreshFailedAt = *model.LastRefreshFailedAt
+	}
+	if model.LastRefreshFailedAt != nil {
+		lastRefreshFailedAt = *model.LastRefreshFailedAt
+	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_models
 	          (id, bank_id, subtype, name, description, source_query, content, embedding, entity_id,
 	           observations, links, tags, max_tokens, trigger, structured_content, reflect_response,
-	           last_refreshed_source_query, last_refreshed_at, last_updated, created_at)
+	           last_refreshed_source_query, last_refreshed_at, last_refresh_failed_at, last_updated, created_at)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::vector,NULLIF($9,'')::uuid,$10::jsonb,$11,$12,$13,$14::jsonb,
-	                  $15::jsonb,$16::jsonb,$17, now(), now(), now())
+	                  $15::jsonb,$16::jsonb,$17, $18, $19, now(), now())
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
 	              subtype = EXCLUDED.subtype, name = EXCLUDED.name, description = EXCLUDED.description,
 	              source_query = EXCLUDED.source_query, content = EXCLUDED.content,
@@ -99,11 +113,13 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	              max_tokens = EXCLUDED.max_tokens, trigger = EXCLUDED.trigger,
 	              structured_content = EXCLUDED.structured_content, reflect_response = EXCLUDED.reflect_response,
 	              last_refreshed_source_query = EXCLUDED.last_refreshed_source_query,
+	              last_refreshed_at = EXCLUDED.last_refreshed_at,
+	              last_refresh_failed_at = EXCLUDED.last_refresh_failed_at,
 	              last_updated = now()`
 	_, err = s.db.ExecContext(ctx, query, model.ID, model.BankID, string(model.Subtype), model.Name,
 		model.Description, model.SourceQuery, model.Content, embedding, model.EntityID,
 		observations, model.Links, model.Tags, maxTokens, trigger, structured, reflectResult,
-		model.LastRefreshedSourceQuery)
+		model.LastRefreshedSourceQuery, lastRefreshedAt, lastRefreshFailedAt)
 	if err != nil {
 		return MentalModel{}, err
 	}
@@ -166,7 +182,7 @@ func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id strin
 	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
 		return nil, err
 	}
-	query := `SELECT content FROM ` + quoteIdent(s.schema) + `.mental_model_history
+	query := `SELECT content, changed_at FROM ` + quoteIdent(s.schema) + `.mental_model_history
 	          WHERE bank_id = $1 AND mental_model_id = $2
 	          ORDER BY changed_at DESC, id DESC`
 	rows, err := s.db.QueryContext(ctx, query, bankID, id)
@@ -177,10 +193,11 @@ func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id strin
 	entries := make([]MentalModelHistoryEntry, 0)
 	for rows.Next() {
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
+		var changedAt time.Time
+		if err := rows.Scan(&raw, &changedAt); err != nil {
 			return nil, err
 		}
-		entries = append(entries, historyEntryFromMap(decodeJSONMap(raw)))
+		entries = append(entries, historyEntryFromMap(decodeJSONMap(raw), changedAt))
 	}
 	return entries, rows.Err()
 }
@@ -191,17 +208,17 @@ func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id
 	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
 		return err
 	}
-	if entry.RefreshedAt.IsZero() {
-		entry.RefreshedAt = time.Now().UTC()
+	if entry.ChangedAt.IsZero() {
+		entry.ChangedAt = time.Now().UTC()
 	}
-	payload, err := json.Marshal(historyEntryToMap(entry))
+	payload, err := json.Marshal(entry.Payload())
 	if err != nil {
 		return err
 	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_model_history
 	          (mental_model_id, bank_id, content, changed_at)
 	          VALUES ($1, $2, $3::jsonb, $4)`
-	_, err = s.db.ExecContext(ctx, query, id, bankID, payload, entry.RefreshedAt)
+	_, err = s.db.ExecContext(ctx, query, id, bankID, payload, entry.ChangedAt)
 	return err
 }
 
@@ -211,17 +228,20 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 	var subtype string
 	var observations, trigger, structured, reflectResult []byte
 	var links, tags string
-	var lastRefreshedAt, lastUpdated sql.NullTime
+	var lastRefreshedAt, lastMemorySeenAt, lastRefreshFailedAt, lastUpdated sql.NullTime
 	if err := row.Scan(&model.ID, &model.BankID, &subtype, &model.Name, &model.Description,
 		&model.SourceQuery, &model.Content, &model.EntityID, &observations,
 		&links, &tags, &model.MaxTokens, &trigger, &structured, &reflectResult,
-		&model.LastRefreshedSourceQuery, &lastRefreshedAt, &lastUpdated, &model.CreatedAt); err != nil {
+		&model.LastRefreshedSourceQuery, &lastRefreshedAt, &lastMemorySeenAt, &lastRefreshFailedAt,
+		&lastUpdated, &model.CreatedAt); err != nil {
 		return MentalModel{}, err
 	}
 	model.Subtype = MentalModelSubtype(subtype)
 	model.Links = decodeTextArray(links)
 	model.Tags = decodeTextArray(tags)
 	model.LastRefreshedAt = derefTime(lastRefreshedAt)
+	model.LastMemorySeenAt = nullTimePtr(lastMemorySeenAt)
+	model.LastRefreshFailedAt = nullTimePtr(lastRefreshFailedAt)
 	model.LastUpdated = derefTime(lastUpdated)
 	model.Observations = decodeJSONMap(observations)
 	model.Trigger = decodeJSONMap(trigger)
@@ -266,32 +286,47 @@ func derefTime(value sql.NullTime) time.Time {
 	return time.Time{}
 }
 
-// historyEntryToMap renders a history entry for storage.
+// historyEntryToMap renders a history entry for storage, under the reference's
+// keys: the content and reflect response a refresh replaced, plus the failure
+// fields a refused write records.
 func historyEntryToMap(entry MentalModelHistoryEntry) map[string]any {
-	return map[string]any{
-		"refreshed_at": entry.RefreshedAt.UTC().Format(time.RFC3339Nano),
-		"source_query": entry.SourceQuery,
-		"content":      entry.Content,
-		"reason":       entry.Reason,
+	out := map[string]any{
+		"previous_content":          nil,
+		"previous_reflect_response": entry.PreviousReflectResponse,
 	}
+	if entry.PreviousContent != nil {
+		out["previous_content"] = *entry.PreviousContent
+	}
+	if entry.Kind != "" {
+		out["kind"] = entry.Kind
+		out["outcome"] = entry.Outcome
+		out["failure_reason"] = entry.FailureReason
+		out["error_message"] = entry.ErrorMessage
+	}
+	return out
 }
 
-// historyEntryFromMap reads a history entry back from storage.
-func historyEntryFromMap(raw map[string]any) MentalModelHistoryEntry {
-	entry := MentalModelHistoryEntry{}
-	if v, ok := raw["refreshed_at"].(string); ok {
-		if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
-			entry.RefreshedAt = parsed
-		}
+// historyEntryFromMap reads a history entry back from storage. changedAt is the
+// row's own column, not part of the JSON blob.
+func historyEntryFromMap(raw map[string]any, changedAt time.Time) MentalModelHistoryEntry {
+	entry := MentalModelHistoryEntry{ChangedAt: changedAt}
+	if value, ok := raw["previous_content"].(string); ok {
+		entry.PreviousContent = &value
 	}
-	if v, ok := raw["source_query"].(string); ok {
-		entry.SourceQuery = v
+	if value, ok := raw["previous_reflect_response"].(map[string]any); ok {
+		entry.PreviousReflectResponse = value
 	}
-	if v, ok := raw["content"].(string); ok {
-		entry.Content = v
+	if value, ok := raw["kind"].(string); ok {
+		entry.Kind = value
 	}
-	if v, ok := raw["reason"].(string); ok {
-		entry.Reason = v
+	if value, ok := raw["outcome"].(string); ok {
+		entry.Outcome = value
+	}
+	if value, ok := raw["failure_reason"].(string); ok {
+		entry.FailureReason = value
+	}
+	if value, ok := raw["error_message"].(string); ok {
+		entry.ErrorMessage = value
 	}
 	return entry
 }

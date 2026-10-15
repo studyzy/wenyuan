@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+// The default vocabulary is the reference's, and CountTokens measures with it.
+func TestDefaultTokenEncodingMatchesReference(t *testing.T) {
+	if TokenEncoding() != "o200k_base" {
+		t.Fatalf("default encoding = %q, want o200k_base", TokenEncoding())
+	}
+	if DefaultTokenEncoding != "o200k_base" {
+		t.Fatalf("DefaultTokenEncoding = %q, want o200k_base", DefaultTokenEncoding)
+	}
+}
+
+// The two vocabularies measure a mixed-script string differently, and the
+// default count matches the reference's o200k_base.
+func TestCountTokensWithSelectsVocabulary(t *testing.T) {
+	mixed := "🧠 a naïve café 東京 مرحبا"
+	cl := CountTokensWith(mixed, "cl100k_base")
+	o200k := CountTokensWith(mixed, "o200k_base")
+	if cl == o200k {
+		t.Fatalf("cl100k_base and o200k_base both counted %d; the vocabularies must differ", cl)
+	}
+	if got := CountTokens(mixed); got != o200k {
+		t.Fatalf("CountTokens = %d, want the o200k_base count %d", got, o200k)
+	}
+}
+
+// Selecting a vocabulary changes what CountTokens reports; an unknown name
+// leaves the selection unchanged rather than disabling counting.
+func TestSetTokenEncoding(t *testing.T) {
+	original := TokenEncoding()
+	t.Cleanup(func() { SetTokenEncoding(original) })
+	SetTokenEncoding("cl100k_base")
+	if TokenEncoding() != "cl100k_base" {
+		t.Fatalf("encoding = %q, want cl100k_base", TokenEncoding())
+	}
+	SetTokenEncoding("not-a-vocabulary")
+	if TokenEncoding() != "cl100k_base" {
+		t.Fatalf("an unknown name changed the encoding to %q", TokenEncoding())
+	}
+}
+
 // Token counting measures real BPE tokens rather than a character
 // approximation, so the reported figure matches what the model sees.
 func TestCountTokensCountsRealTokens(t *testing.T) {

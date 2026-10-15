@@ -48,10 +48,10 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 	            ) f ON f.bank_id = b.bank_id` + where + `
 	            ORDER BY COALESCE(GREATEST(d.last_document_write_at, f.last_fact_at), b.created_at) DESC,
 	                     b.bank_id ASC`
-	if query.Limit > 0 {
+	if query.Limit >= 0 {
 		listSQL += fmt.Sprintf(" LIMIT %d OFFSET %d", query.Limit, maxInt(query.Offset, 0))
 	} else if query.Offset > 0 {
-		listSQL += fmt.Sprintf(" OFFSET %d", query.Offset)
+		listSQL += fmt.Sprintf(" OFFSET %d", maxInt(query.Offset, 0))
 	}
 
 	rows, err := s.db.QueryContext(ctx, listSQL, args...)
@@ -75,19 +75,73 @@ func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error)
 		return Bank{}, ErrInvalidBankID
 	}
 	storeBankDefaults(&bank)
-	applyDispositionDefaults(&bank)
 	disposition, err := marshalMetadata(dispositionAsAny(bank.Disposition))
+	if err != nil {
+		return Bank{}, err
+	}
+	config, err := marshalMetadata(bank.Config)
 	if err != nil {
 		return Bank{}, err
 	}
 	// The reference names the bank key `bank_id` and carries the traits in one
 	// jsonb column, so a row written here is one the reference service reads.
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.banks
-	          (bank_id, name, disposition, mission)
-	          VALUES ($1,$2,$3,$4)
+	          (bank_id, name, disposition, mission, config)
+	          VALUES ($1,$2,$3,$4,$5::jsonb)
 	          RETURNING ` + bankSelectColumns
-	row := s.db.QueryRowContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission)
+	row := s.db.QueryRowContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission, config)
 	return scanBank(row)
+}
+
+// ensureBankExists lazily creates the bank row if it is absent, returning
+// whether this call inserted it.
+//
+// A bank row is the foreign-key target of every bank-scoped write, and callers
+// address a bank by name without having to declare it first, so a first write
+// to an unknown bank creates it rather than failing on a raw foreign-key
+// violation. The insert is idempotent: concurrent callers race benignly, one
+// inserts and the rest observe the row the winner wrote.
+//
+// A deployment-configured default bank template is not applied here: the key
+// that would name it is refused by configuration rather than honoured, so
+// there is no template to apply and inventing one would be a second, silently
+// different bank-creation path.
+func (s *PostgresStore) ensureBankExists(ctx context.Context, bankID string) (bool, error) {
+	if !ValidBankID(bankID) {
+		return false, ErrInvalidBankID
+	}
+	bank := Bank{BankID: bankID}
+	storeBankDefaults(&bank)
+	disposition, err := marshalMetadata(dispositionAsAny(bank.Disposition))
+	if err != nil {
+		return false, err
+	}
+	config, err := marshalMetadata(bank.Config)
+	if err != nil {
+		return false, err
+	}
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.banks
+	          (bank_id, name, disposition, mission, config)
+	          VALUES ($1,$2,$3,$4,$5::jsonb)
+	          ON CONFLICT (bank_id) DO NOTHING`
+	result, err := s.db.ExecContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission, config)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, nil
+	}
+	return affected > 0, nil
+}
+
+// EnsureBank lazily creates the bank row when it is absent, so a bank-scoped
+// write that addresses a bank by name — a webhook registration, an async
+// operation — lands on the row its foreign key needs rather than failing on a
+// constraint violation. Concurrent callers race benignly.
+func (s *PostgresStore) EnsureBank(ctx context.Context, bankID string) error {
+	_, err := s.ensureBankExists(ctx, bankID)
+	return err
 }
 
 func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error) {
@@ -103,16 +157,19 @@ func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error
 
 func (s *PostgresStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) {
 	storeBankDefaults(&bank)
-	applyDispositionDefaults(&bank)
 	disposition, err := marshalMetadata(dispositionAsAny(bank.Disposition))
 	if err != nil {
 		return Bank{}, err
 	}
+	config, err := marshalMetadata(bank.Config)
+	if err != nil {
+		return Bank{}, err
+	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.banks SET
-	          name=$2, disposition=$3, mission=$4, updated_at=now()
+	          name=$2, disposition=$3, mission=$4, config=$5::jsonb, updated_at=now()
 	          WHERE bank_id=$1
 	          RETURNING ` + bankSelectColumns
-	row := s.db.QueryRowContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission)
+	row := s.db.QueryRowContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission, config)
 	stored, err := scanBank(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bank{}, ErrBankNotFound
@@ -131,7 +188,17 @@ func (s *PostgresStore) UpdateBank(ctx context.Context, bankID string, patch Ban
 
 // DeleteBank removes a bank and its owned rows, returning how many bank rows
 // were removed. Alias rows disappear through the cascade.
+//
+// It also drops the bank's per-(bank, fact_type) partial vector indexes, before
+// the DELETE. Those indexes are named after the bank identifier (see
+// BankVectorIndexName) and the sweep plans from the banks table, so once the row
+// is gone no later reconcile can name them — the deletion path is the only one
+// that owns this guarantee. Dropping first means a failed drop leaves the bank
+// to be retried rather than stranding an unreachable index.
 func (s *PostgresStore) DeleteBank(ctx context.Context, bankID string) (int, error) {
+	if err := s.dropBankVectorIndexes(ctx, bankID); err != nil {
+		return 0, fmt.Errorf("drop vector indexes for bank %s: %w", bankID, err)
+	}
 	query := `DELETE FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
 	res, err := s.db.ExecContext(ctx, query, bankID)
 	if err != nil {
@@ -141,7 +208,32 @@ func (s *PostgresStore) DeleteBank(ctx context.Context, bankID string) (int, err
 	if err != nil {
 		return 0, err
 	}
+	// Reclaim the bank's external payloads. A bank that never existed has no
+	// rows and no objects; a failed sweep is a warning rather than a failure,
+	// because the rows are already gone and a stray object is only wasted
+	// space.
+	if int(affected) > 0 && s.objectStore != nil {
+		if deleter, ok := s.objectStore.(prefixDeleter); ok {
+			if err := deleter.DeletePrefix(ctx, bankStoragePrefix(bankID)); err != nil {
+				// A sweep failure leaves orphaned objects the next teardown
+				// can reclaim; it must not fail the delete.
+				_ = err
+			}
+		}
+	}
 	return int(affected), nil
+}
+
+// prefixDeleter is the optional object-store capability a bank teardown uses to
+// reclaim a bank's payloads.
+type prefixDeleter interface {
+	DeletePrefix(ctx context.Context, prefix string) error
+}
+
+// bankStoragePrefix is the key prefix every payload of one bank is stored
+// under.
+func bankStoragePrefix(bankID string) string {
+	return "banks/" + encodeSegment(bankID) + "/"
 }
 
 type rowScanner interface {
@@ -153,16 +245,17 @@ type rowScanner interface {
 // The activity watermarks a listing shows are not here: a single bank has no
 // place to put them, and the reference's own profile read does not carry them.
 const bankSelectColumns = `bank_id, COALESCE(name,''), COALESCE(disposition, '{}'::jsonb),
-	COALESCE(mission,''), created_at, updated_at`
+	COALESCE(mission,''), COALESCE(config, '{}'::jsonb), created_at, updated_at`
 
 func scanBank(row rowScanner) (Bank, error) {
 	var bank Bank
-	var disposition []byte
+	var disposition, config []byte
 	if err := row.Scan(&bank.BankID, &bank.Name, &disposition,
-		&bank.Mission, &bank.CreatedAt, &bank.UpdatedAt); err != nil {
+		&bank.Mission, &config, &bank.CreatedAt, &bank.UpdatedAt); err != nil {
 		return Bank{}, err
 	}
 	bank.Disposition = decodeDisposition(disposition)
+	bank.Config = decodeJSONMap(config)
 	return bank, nil
 }
 

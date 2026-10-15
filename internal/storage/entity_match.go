@@ -32,11 +32,50 @@ const (
 	jaroWinklerMaxPrefix   = 4
 )
 
+// EntityNameMaxLength is the longest entity name intake will accept, measured in
+// characters (runes).
+//
+// A model can emit an unbounded label — base64, SVG path data, a JSON
+// fragment — and the entity table's btree index cannot hold a tuple that long,
+// so the INSERT would fail the whole retain, not just the one entity. A name
+// past the cap is dropped at intake rather than truncated, so it never becomes a
+// registry identity a later artifact could merge onto. 512 matches the
+// reference's cap.
+const EntityNameMaxLength = 512
+
+// normalizeEntityName collapses a name's internal whitespace to single spaces
+// and trims the ends, the intake every candidate entity name passes through.
+//
+// ok is false when the normalized name is blank or past EntityNameMaxLength, in
+// which case the name is dropped rather than stored: a blank name is not an
+// entity, and an over-long one is an extraction artifact (a run of markup or
+// base64) that the btree index over canonical_name cannot hold.
+func normalizeEntityName(name string) (string, bool) {
+	normalized := strings.Join(strings.Fields(name), " ")
+	if normalized == "" {
+		return "", false
+	}
+	// A byte length within the cap proves the rune length is too, so the
+	// common short name never pays for a rune conversion.
+	if len(normalized) <= EntityNameMaxLength {
+		return normalized, true
+	}
+	if len([]rune(normalized)) <= EntityNameMaxLength {
+		return normalized, true
+	}
+	return "", false
+}
+
 // entityMatchKey normalizes a name for comparison: surrounding whitespace is
 // dropped and internal whitespace runs collapse to a single space. Case is
 // folded by the comparer, not here, so the stored display form keeps its case.
+//
+// Only a name intake accepted ever reaches the comparison, so the key is
+// whatever normalizeEntityName returned for it; a name intake dropped is never
+// stored and so never has a key to match against.
 func entityMatchKey(name string) string {
-	return strings.Join(strings.Fields(name), " ")
+	normalized, _ := normalizeEntityName(name)
+	return normalized
 }
 
 // entitySimilarity scores how alike two entity names are, in the unit interval.

@@ -3,9 +3,11 @@ package bankapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -62,6 +64,45 @@ func TestAliasLifecycle(t *testing.T) {
 	rec = doJSON(t, mux, http.MethodGet, "/v1/default/banks/owner/aliases", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list aliases status = %d", rec.Code)
+	}
+}
+
+// The display route honours primary=false: it returns the bank to its own id
+// without touching the other aliases or promoting anything.
+func TestAliasDemoteReturnsToBankID(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
+	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"first","primary":false}`)
+	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"second","primary":false}`)
+	post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"third","primary":true}`)
+
+	// Demoting the displayed alias clears only its flag.
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/owner/aliases/third", `{"primary":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("demote status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	list := decodeAliases(t, rec.Body.Bytes())
+	for _, alias := range list.Aliases {
+		if alias.Primary {
+			t.Fatalf("demote must clear the display flag: %+v", list.Aliases)
+		}
+	}
+
+	// With no primary alias the list reports none.
+	rec = doJSON(t, mux, http.MethodGet, "/v1/default/banks", "")
+	var envelope struct {
+		Banks []BankListRow `json:"banks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Banks) != 1 || envelope.Banks[0].DisplayAlias != nil {
+		t.Fatalf("a demoted bank must present its own id: %+v", envelope.Banks)
+	}
+
+	// A body with no primary field is the reference's required-field error.
+	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/owner/aliases/first", `{}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing primary = %d, want 422", rec.Code)
 	}
 }
 
@@ -154,7 +195,11 @@ func TestListReportsDisplayAlias(t *testing.T) {
 	}
 	display := map[string]string{}
 	for _, row := range envelope.Banks {
-		display[row.BankID] = row.DisplayAlias
+		if row.DisplayAlias != nil {
+			display[row.BankID] = *row.DisplayAlias
+		} else {
+			display[row.BankID] = ""
+		}
 	}
 	if display["promoted"] != "shiny" {
 		t.Fatalf("promoted bank must report its display alias: %v", display)
@@ -169,7 +214,7 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 
-	gated := NewHandlers(store)
+	gated := newConfigHandler(store)
 	gated.WithConfigAPI(false)
 	mux := newMux(gated)
 
@@ -183,6 +228,9 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	}
 	if read.Config == nil || read.Overrides == nil {
 		t.Fatalf("config read must carry config and overrides: %+v", read)
+	}
+	if read.BankID != "b1" {
+		t.Fatalf("config read must name the bank: %+v", read)
 	}
 
 	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", `{"updates":{"reflect_mission":"x"}}`); rec.Code != http.StatusNotFound {
@@ -211,14 +259,13 @@ func TestBankConfigResetClearsOverrides(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 
-	gated := NewHandlers(store)
+	gated := newConfigHandler(store)
 	gated.WithConfigAPI(false)
 	if rec := doJSON(t, newMux(gated), http.MethodDelete, "/v1/default/banks/b1/config", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("config reset must be gated off: %d", rec.Code)
 	}
 
-	ungated := NewHandlers(store)
-	ungated.WithConfigAPI(true)
+	ungated := newConfigHandler(store)
 	mux := newMux(ungated)
 	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config",
 		`{"updates":{"disposition_empathy":5,"reflect_mission":"live"}}`); rec.Code != http.StatusOK {
@@ -233,11 +280,20 @@ func TestBankConfigResetClearsOverrides(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &reset); err != nil {
 		t.Fatal(err)
 	}
-	if value, _ := reset.Overrides["disposition_empathy"].(float64); value != float64(storage.DispositionTraitNeutral) {
-		t.Fatalf("reset must clear the overrides: %+v", reset.Overrides)
+	// A reset clears the bank's overrides, and the resolved configuration goes
+	// back to the process defaults — which is where the disposition traits and
+	// the mission now read from. The reference clears its `config` column and
+	// leaves nothing behind, so an override key surviving here would be the bug.
+	for _, key := range []string{"disposition_empathy", "reflect_mission"} {
+		if _, present := reset.Overrides[key]; present {
+			t.Fatalf("reset must clear %s from the overrides: %+v", key, reset.Overrides)
+		}
 	}
-	if reset.Overrides["reflect_mission"] != "" {
-		t.Fatalf("reset must clear the mission: %+v", reset.Overrides)
+	// The process default for a disposition trait is null (the reference leaves
+	// the traits and the mission unset unless a bank sets them), so the resolved
+	// read reports the key with a null value rather than a neutral number.
+	if value, present := reset.Config["disposition_empathy"]; !present || value != nil {
+		t.Fatalf("reset must return the resolved trait to its default: %+v", reset.Config)
 	}
 	bank, err := store.GetBank(context.TODO(), "b1")
 	if err != nil {
@@ -254,4 +310,46 @@ func newMux(h *Handlers) *http.ServeMux {
 		mux.HandleFunc(method+" "+pattern, handler)
 	})
 	return mux
+}
+
+// newConfigHandler builds a handler set the way the composition root does: the
+// bank-config routes on, and the process defaults layered under a bank's
+// overrides so the resolved read exposes every configurable field.
+func newConfigHandler(store storage.Store) *Handlers {
+	h := NewHandlers(store)
+	h.WithConfigAPI(true)
+	h.WithConfigDefaults(PublicConfigDefaults(config.FromEnv(func(string) (string, bool) { return "", false })))
+	return h
+}
+
+// A reset on a bank that does not exist is a no-op that still reports the
+// resulting state, which is what the reference's unconditional update of the
+// bank row's config column produces: the statement matches no row, the
+// following config read answers defaults, and no bank is created. Answering 404 would make "clear my overrides" fail on the one bank
+// that has nothing to clear; creating the row would answer a read that the
+// reference's own config read refuses with 404.
+func TestBankConfigResetOnAMissingBankIsANoOp(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	handler := newConfigHandler(store)
+	mux := newMux(handler)
+
+	rec := doJSON(t, mux, http.MethodDelete, "/v1/default/banks/absent/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resetting an absent bank's config must answer 200: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var reset ConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &reset); err != nil {
+		t.Fatal(err)
+	}
+	if reset.BankID != "absent" || len(reset.Overrides) != 0 {
+		t.Fatalf("the reset must report the absent bank on the defaults: %+v", reset)
+	}
+	// Nothing was created: the reference updates no row, so a later read still
+	// answers the missing-bank 404 rather than an empty configuration.
+	if _, err := store.GetBank(context.TODO(), "absent"); !errors.Is(err, storage.ErrBankNotFound) {
+		t.Fatalf("a reset must not create the bank: %v", err)
+	}
+	if rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks/absent/config", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("reading the absent bank's config must still be 404: %d", rec.Code)
+	}
 }

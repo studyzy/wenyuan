@@ -34,12 +34,34 @@ type Tx interface {
 	Rollback() error
 }
 
-// OpenDBFunc constructs a DB from a data source URL. The pgx-backed
-// implementation is registered here by a driver-specific file so this package
-// builds with the standard library alone.
-type OpenDBFunc func(url string) (DB, error)
+// PoolStats is current database connection-pool utilization, reported for the
+// readiness payload.
+type PoolStats struct {
+	InUse int
+	Max   int
+	Idle  int
+}
 
-var openDB OpenDBFunc = func(url string) (DB, error) {
+// PoolBudget bounds the connection pool one store opens.
+//
+// An unbounded pool grows until the database refuses connections, which turns
+// a load spike into an outage for every other client of that database. The
+// budget is per store, because a deployment runs one store per process.
+type PoolBudget struct {
+	// MaxOpenConns bounds simultaneous connections. Zero leaves the driver's
+	// own default.
+	MaxOpenConns int
+	// MaxIdleConns bounds connections kept open when unused. Zero leaves the
+	// driver's own default.
+	MaxIdleConns int
+}
+
+// OpenDBFunc constructs a DB from a data source URL and pool budget. The
+// pgx-backed implementation is registered here by a driver-specific file so
+// this package builds with the standard library alone.
+type OpenDBFunc func(url string, budget PoolBudget) (DB, error)
+
+var openDB OpenDBFunc = func(string, PoolBudget) (DB, error) {
 	return nil, ErrDriverUnavailable
 }
 
@@ -59,7 +81,12 @@ func DriverAvailable() bool { return openDB != nil }
 // driver. It is the public entry for callers that need to read a foreign,
 // reference-shaped database rather than open this project's own store.
 func OpenDatabase(url string) (DB, error) {
-	return openDB(url)
+	return openDB(url, PoolBudget{})
+}
+
+// OpenDatabaseWithBudget constructs a database handle with a connection budget.
+func OpenDatabaseWithBudget(url string, budget PoolBudget) (DB, error) {
+	return openDB(url, budget)
 }
 
 // NewPostgresStore wraps an already-constructed DB in the PostgreSQL store.

@@ -54,10 +54,10 @@ func ParseMigrate(args []string) (MigrateFlags, error) {
 		return MigrateFlags{}, err
 	}
 	if flags.Archive == "" && flags.SourceURL == "" {
-		return MigrateFlags{}, fmt.Errorf("an --archive path or a --source-url is required")
+		return MigrateFlags{}, NewUsageError("an --archive path or a --source-url is required")
 	}
 	if flags.Archive != "" && flags.SourceURL != "" {
-		return MigrateFlags{}, fmt.Errorf("--archive and --source-url are mutually exclusive")
+		return MigrateFlags{}, NewUsageError("--archive and --source-url are mutually exclusive")
 	}
 	modes := 0
 	for _, set := range []bool{flags.Replace, flags.Append, flags.Incremental} {
@@ -66,7 +66,7 @@ func ParseMigrate(args []string) (MigrateFlags, error) {
 		}
 	}
 	if modes > 1 {
-		return MigrateFlags{}, fmt.Errorf("--replace, --append and --incremental are mutually exclusive")
+		return MigrateFlags{}, NewUsageError("--replace, --append and --incremental are mutually exclusive")
 	}
 	return flags, nil
 }

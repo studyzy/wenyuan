@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,18 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
+// withTestAddress gives a composed test configuration a listen address nothing
+// else uses, so the startup probe cannot collide with a service already running
+// on the default address. Nothing in these tests serves on it.
+func withTestAddress(cfg config.Config) config.Config {
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.BindGrace = 0
+	return cfg
+}
+
 func testConfig() config.Config {
-	return config.FromEnv(func(string) (string, bool) { return "", false })
+	return withTestAddress(config.FromEnv(func(string) (string, bool) { return "", false }))
 }
 
 func TestComposesServedApplication(t *testing.T) {
@@ -38,7 +49,17 @@ func TestComposesServedApplication(t *testing.T) {
 // that answers the public routes.
 func TestEntrypointResolvesToServedApplication(t *testing.T) {
 	t.Setenv(config.EnvRunMigrationsOnStartup, "false")
-	t.Setenv(config.EnvDatabaseURL, "")
+	t.Setenv(config.EnvDatabaseURL, "memory")
+	t.Setenv(config.EnvHost, "127.0.0.1")
+	// Composition probes the listen address; ask for an ephemeral one so a
+	// machine already serving on the default port does not fail this test.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port := splitHostPort(t, listener.Addr().String())
+	_ = listener.Close()
+	t.Setenv(config.EnvPort, strconv.Itoa(port))
 	application, err := Application.Resolve(context.Background())
 	if err != nil {
 		t.Fatal(err)

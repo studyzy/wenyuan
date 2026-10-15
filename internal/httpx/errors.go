@@ -1,6 +1,10 @@
 package httpx
 
-import "net/http"
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+)
 
 // Public error identifiers. The shared envelope always carries the message
 // under the canonical "detail" field.
@@ -15,17 +19,55 @@ const (
 )
 
 // ValidationError describes one rejected request field. It follows the
-// framework's standard structured error-item list shape.
+// framework's standard structured error-item list shape: the same keys the
+// reference emits under "detail" for a request validation failure.
 type ValidationError struct {
-	Loc   []string `json:"loc"`
-	Msg   string   `json:"msg"`
-	Type  string   `json:"type"`
-	Input any      `json:"input,omitempty"`
+	Type string   `json:"type"`
+	Loc  []string `json:"loc"`
+	Msg  string   `json:"msg"`
+	// Input is the rejected value. The framework always emits the key (null when
+	// there is no value to name), so it is not omitted here.
+	Input any `json:"input"`
+	// Ctx carries the type-specific context the framework adds (a bound, the
+	// expected members of an enum). It is emitted only when present.
+	Ctx any `json:"ctx,omitempty"`
 }
 
-// ValidationFailure is an ordered list of structured error items.
+// MarshalJSON emits the item in the framework's own shape, in which a segment
+// of loc is a string for a named field and a number for a position in a list.
+// A segment that is entirely digits is therefore emitted as a number: the only
+// numeric segments the framework produces are list positions.
+func (e ValidationError) MarshalJSON() ([]byte, error) {
+	loc := make([]any, 0, len(e.Loc))
+	for _, segment := range e.Loc {
+		if index, err := strconv.Atoi(segment); err == nil && strconv.Itoa(index) == segment {
+			loc = append(loc, index)
+			continue
+		}
+		loc = append(loc, segment)
+	}
+	return json.Marshal(struct {
+		Type  string `json:"type"`
+		Loc   []any  `json:"loc"`
+		Msg   string `json:"msg"`
+		Input any    `json:"input"`
+		Ctx   any    `json:"ctx,omitempty"`
+	}{Type: e.Type, Loc: loc, Msg: e.Msg, Input: e.Input, Ctx: e.Ctx})
+}
+
+// ValidationFailure is an ordered list of structured error items. It marshals
+// under the same "detail" envelope as every other error, because the reference
+// uses one key for both request validation and non-validation failures.
 type ValidationFailure struct {
-	Errors []ValidationError `json:"errors"`
+	Errors []ValidationError
+}
+
+// MarshalJSON emits the shared envelope so a validation failure is wire
+// compatible with the reference's {"detail":[...]} shape.
+func (v ValidationFailure) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Detail []ValidationError `json:"detail"`
+	}{Detail: v.Errors})
 }
 
 func (v *ValidationFailure) Error() string {
@@ -45,6 +87,7 @@ type ErrorEnvelope struct {
 // Error kinds routable through the shared envelope writer.
 const (
 	KindBadRequest    = http.StatusBadRequest
+	KindForbidden     = http.StatusForbidden
 	KindNotFound      = http.StatusNotFound
 	KindConflict      = http.StatusConflict
 	KindGone          = http.StatusGone
@@ -79,9 +122,29 @@ func (e *HTTPError) WithHeader(name, value string) *HTTPError {
 
 // Error constants reused by every area so message wording stays centralized.
 const (
-	DetailUnknownBank = "bank not found"
-	DetailRetired     = "this endpoint has been retired; read the bank configuration with GET /v1/default/banks/{bank_id}/config, write it with PATCH /v1/default/banks/{bank_id}/config, and read the display name from GET /v1/default/banks"
-	DetailWritesDown  = "memory writes are temporarily unavailable"
-	DetailSearchTO    = "search timed out"
-	DetailInternal    = "internal server error"
+	// DetailMissingBank marks a not-found response about a bank. The writer names
+	// the bank from the request path, so an error mapper does not need the id.
+	DetailMissingBank = "Bank not found"
+	// DetailRetiredProfile is the message the reference answers the removed bank
+	// profile routes with.
+	DetailRetiredProfile = "The bank profile endpoints have been removed. Disposition traits and the reflect mission are bank " +
+		"configuration: read them from GET /v1/default/banks/{bank_id}/config as `disposition_skepticism`, " +
+		"`disposition_literalism`, `disposition_empathy` and `reflect_mission`, and write them with " +
+		"PATCH /v1/default/banks/{bank_id}/config. The `name` field this endpoint also returned was a " +
+		"display-only label; read it from GET /v1/default/banks."
+	// DetailRetiredBackground is the message the reference answers the removed
+	// background route with.
+	DetailRetiredBackground = "The bank background endpoint has been removed. The background was folded into the reflect " +
+		"mission: write it with PATCH /v1/default/banks/{bank_id}/config as `reflect_mission`. That " +
+		"call replaces the value rather than merging into it, so read the current mission from " +
+		"GET /v1/default/banks/{bank_id}/config first if you relied on this endpoint's append behaviour."
+	DetailWritesDown = "memory writes are temporarily unavailable"
+	DetailSearchTO   = "search timed out"
+	DetailInternal   = "internal server error"
 )
+
+// BankNotFoundDetail is the body of a missing-bank response, naming the bank the
+// way the reference names it.
+func BankNotFoundDetail(bankID string) string {
+	return "Bank '" + bankID + "' not found"
+}

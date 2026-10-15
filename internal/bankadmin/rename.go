@@ -32,7 +32,9 @@ type Renamer struct {
 	Store storage.Store
 }
 
-// Rename moves a bank from source to target. The bank keeps its aliases.
+// Rename moves a bank from source to target. The bank keeps its aliases and
+// every row scoped to it: the store moves them in one operation rather than
+// recreating an empty bank under the new identifier.
 func (r Renamer) Rename(ctx context.Context, source, target string, dryRun bool) (RenamePlan, error) {
 	if _, err := r.Store.GetBank(ctx, source); err != nil {
 		return RenamePlan{}, err
@@ -48,32 +50,9 @@ func (r Renamer) Rename(ctx context.Context, source, target string, dryRun bool)
 	if dryRun {
 		return plan, nil
 	}
-
-	bank, err := r.Store.GetBank(ctx, source)
-	if err != nil {
+	if err := r.Store.RenameBank(ctx, source, target); err != nil {
 		return RenamePlan{}, err
-	}
-	if _, err := r.Store.CreateBank(ctx, withID(bank, target)); err != nil {
-		return RenamePlan{}, err
-	}
-	// Remove the source (which drops its alias rows) before re-attaching the
-	// aliases to the target, so the alias uniqueness rule is not violated.
-	if _, err := r.Store.DeleteBank(ctx, source); err != nil {
-		return RenamePlan{}, err
-	}
-	for _, alias := range aliases {
-		if _, err := r.Store.AddAlias(ctx, target, alias.Alias, alias.Primary); err != nil {
-			return RenamePlan{}, err
-		}
 	}
 	plan.Applied = true
 	return plan, nil
-}
-
-func withID(bank storage.Bank, id string) storage.Bank {
-	bank.BankID = id
-	if bank.Name == "" {
-		bank.Name = id
-	}
-	return bank
 }

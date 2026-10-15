@@ -79,7 +79,7 @@ func TestPostgresDocumentListCarriesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page, err := store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank"})
+	page, err := store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank", Limit: 100})
 	if err != nil {
 		t.Fatalf("list documents: %v", err)
 	}
@@ -90,20 +90,45 @@ func TestPostgresDocumentListCarriesMetadata(t *testing.T) {
 		t.Fatalf("derived unit count = %d, want 1", page.Documents[0].MemoryUnitCount)
 	}
 
-	// A tag filter narrows to documents carrying every listed tag.
-	page, err = store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank", Tags: []string{"ops", "weekly"}})
+	// An explicit page size of zero selects nothing while the total still
+	// counts the matches, which is the page contract both backends share.
+	empty, err := store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank", Limit: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Total != 1 || len(empty.Documents) != 0 {
+		t.Fatalf("a zero limit must page nothing, got %d of %d", len(empty.Documents), empty.Total)
+	}
+
+	// A tag filter narrows to documents carrying every listed tag under the
+	// all modes; the listing's default, any_strict, is the reference's OR.
+	page, err = store.ListDocuments(ctx, DocumentQuery{
+		BankID: "read-bank", Tags: []string{"ops", "weekly"}, TagsMatch: TagsMatchAllStrict, Limit: 100,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 1 {
 		t.Fatalf("tag filter returned %d, want 1", page.Total)
 	}
-	page, err = store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank", Tags: []string{"ops", "absent"}})
+	page, err = store.ListDocuments(ctx, DocumentQuery{
+		BankID: "read-bank", Tags: []string{"ops", "absent"}, TagsMatch: TagsMatchAllStrict, Limit: 100,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 0 {
-		t.Fatalf("a tag filter requiring an absent tag must match nothing, got %d", page.Total)
+		t.Fatalf("an all filter requiring an absent tag must match nothing, got %d", page.Total)
+	}
+	// The default mode is neither: one carried tag is enough.
+	page, err = store.ListDocuments(ctx, DocumentQuery{
+		BankID: "read-bank", Tags: []string{"ops", "absent"}, TagsMatch: TagsMatchAnyStrict, Limit: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("an any_strict filter must match on one carried tag, got %d", page.Total)
 	}
 }
 
@@ -113,8 +138,12 @@ func TestPostgresTagCounts(t *testing.T) {
 	ctx := context.Background()
 
 	for i, tags := range [][]string{{"ops", "weekly"}, {"ops"}} {
-		if _, err := store.PutDocument(ctx, "read-bank", fmt.Sprintf("doc-%d", i), Document{
-			OriginalText: "text", Tags: tags,
+		// The histogram is sourced from the bank's memory units, the table the
+		// reference's tag listing reads, so the fixture carries the tags there
+		// rather than on a document.
+		if _, err := store.UpsertUnit(ctx, MemoryUnit{
+			ID: pgUUID(fmt.Sprintf("tagged-unit-%d", i)), BankID: "read-bank",
+			Text: "text", FactType: TypeWorld, Tags: tags,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +181,7 @@ func TestPostgresGraphKeepsEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	graph, err := store.Graph(ctx, "read-bank", 100)
+	graph, err := store.Graph(ctx, GraphQuery{BankID: "read-bank", Limit: 100})
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -168,7 +197,7 @@ func TestPostgresGraphKeepsEndpoints(t *testing.T) {
 
 	// With a bound of one node, the edge's other endpoint falls outside the set
 	// and the edge must be dropped rather than returned dangling.
-	bounded, err := store.Graph(ctx, "read-bank", 1)
+	bounded, err := store.Graph(ctx, GraphQuery{BankID: "read-bank", Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +226,7 @@ func TestPostgresEntityListingAndChunkNotFound(t *testing.T) {
 	if _, err := store.ResolveEntity(ctx, "read-bank", "Tuesday", EntityKindRegular, true); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.ListEntities(ctx, EntityQuery{BankID: "read-bank"})
+	page, err := store.ListEntities(ctx, EntityQuery{BankID: "read-bank", Limit: 100})
 	if err != nil {
 		t.Fatalf("list entities: %v", err)
 	}

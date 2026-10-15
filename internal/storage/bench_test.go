@@ -128,7 +128,7 @@ func BenchmarkGraphTraversal(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := store.Graph(ctx, "bench-bank", 100); err != nil {
+		if _, err := store.Graph(ctx, GraphQuery{BankID: "bench-bank", Limit: 100}); err != nil {
 			b.Fatal(err)
 		}
 	}

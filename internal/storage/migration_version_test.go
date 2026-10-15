@@ -56,10 +56,7 @@ func TestMigrationsAreRecordedAndNotReplayed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.appliedMigrations(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := recordedVersions(t, store)
 	if len(first) != len(series) {
 		t.Fatalf("recorded %d migrations, want all %d", len(first), len(series))
 	}
@@ -68,10 +65,7 @@ func TestMigrationsAreRecordedAndNotReplayed(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("second migrate must be a no-op, got %v", err)
 	}
-	second, err := store.appliedMigrations(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := recordedVersions(t, store)
 	if len(second) != len(first) {
 		t.Fatalf("a second run changed the record from %d to %d", len(first), len(second))
 	}
@@ -86,16 +80,23 @@ func TestFailedMigrationIsNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A deliberately broken migration must not be recorded.
-	broken := Migration{Version: 9999, Name: "broken", SQL: "CREATE TABLE this_is_not_valid_sql (;"}
-	if err := store.applyMigration(ctx, broken); err == nil {
-		t.Fatal("a malformed migration must fail")
-	}
-	applied, err := store.appliedMigrations(ctx)
+	// A deliberately broken migration must not be recorded. It runs on its own
+	// transaction, because that is where the series' atomicity comes from: the
+	// statements and the ledger row commit together or not at all.
+	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied[9999] {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path TO "+store.searchPath()); err != nil {
+		t.Fatal(err)
+	}
+	broken := Migration{Version: 9999, Name: "broken", SQL: "CREATE TABLE this_is_not_valid_sql (;"}
+	if err := store.applyMigrationTx(ctx, tx, broken); err == nil {
+		t.Fatal("a malformed migration must fail")
+	}
+	_ = tx.Rollback()
+
+	if recordedVersions(t, store)[9999] {
 		t.Fatal("a failed migration must not be recorded as applied")
 	}
 }

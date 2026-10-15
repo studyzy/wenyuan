@@ -2,8 +2,53 @@ package storage
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
+
+// ReflectProfile resolves a bank's prompt identity: its name, its reflect
+// mission and its graded disposition.
+//
+// A config override wins over the legacy column, exactly as the reference
+// resolves the profile: “reflect_mission“ beats “banks.mission“, and each
+// “disposition_<trait>“ beats the matching trait in “banks.disposition“.
+func ReflectProfile(bank Bank) (name, mission string, disposition map[string]int) {
+	name = bank.Name
+	mission = bank.Mission
+	if value, ok := configStringValue(bank.Config["reflect_mission"]); ok {
+		mission = value
+	}
+	disposition = bank.NormalizedDisposition()
+	for _, key := range []string{DispositionKeySkepticism, DispositionKeyLiteralism, DispositionKeyEmpathy} {
+		if value, ok := configIntValue(bank.Config["disposition_"+key]); ok {
+			disposition[key] = value
+		}
+	}
+	return name, mission, disposition
+}
+
+// configStringValue reads a config entry as a string.
+func configStringValue(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	return text, true
+}
+
+// configIntValue reads a config entry as an integer, accepting the float64 a
+// JSON decode produces as well as a native int.
+func configIntValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	}
+	return 0, false
+}
 
 // Reflection sentinel errors. Callers map each to a distinct public status:
 // a no-answer outcome and a tool-loop failure are internal errors, an
@@ -95,6 +140,10 @@ type ReflectCitation struct {
 	Metadata      map[string]any
 	Tags          []string
 	Attachments   []RecallAttachment
+	// Fresh reports that a perspective is current enough to answer from
+	// without descending to raw facts. It is meaningful only for a mental-model
+	// citation; a fact never carries it.
+	Fresh bool
 }
 
 // ReflectMentalModelCitation is one cited synthesized perspective.
@@ -156,6 +205,12 @@ type ReflectOutcome struct {
 	Facts        []ReflectCitation
 	MentalModels []ReflectMentalModelCitation
 	Directives   []ReflectDirectiveCitation
+	// StructuredOutput is the answer reshaped into the caller's schema, when
+	// the request supplied one and the reshape succeeded.
+	StructuredOutput map[string]any
+	// StructuredOutputError reports why an asked-for reshape produced nothing,
+	// so a failed extraction cannot read as an empty one.
+	StructuredOutputError string
 	// Usage reports token accounting.
 	Usage ReflectUsage
 	// Trace is present only when the request asked for it.
@@ -172,6 +227,11 @@ type ReflectQuery struct {
 	// MaxIterations bounds the model-driven loop's retrieval turns; zero means
 	// the runner's default.
 	MaxIterations int
+
+	// AnswerAsDocument takes the answer from the loop's `done` call as a
+	// structure rather than composing prose afterwards. A mental-model refresh
+	// sets it so the stored document is the render of the model's structure.
+	AnswerAsDocument bool
 
 	// Reflection, when non-nil, replaces the deterministic in-process
 	// reflection with the model-driven agentic loop. The caller supplies it

@@ -29,6 +29,10 @@ var ErrReadShed = errors.New("store is shedding reads")
 // characters.
 var ErrInvalidBankID = errors.New("invalid bank identifier")
 
+// ErrBankExists is returned when a rename or create targets an identifier that
+// already names a bank.
+var ErrBankExists = errors.New("bank already exists")
+
 // ErrAliasConflict is returned when an alias or bank identifier collides with
 // an existing bank or alias.
 var ErrAliasConflict = errors.New("alias conflicts with an existing bank or alias")
@@ -57,16 +61,45 @@ var ErrDocumentNotFound = errors.New("document not found")
 // identifier shape.
 var ErrInvalidOperationID = errors.New("invalid operation identifier")
 
+// ErrInvalidMemoryID reports a memory unit offered without an identifier, which
+// no row can be keyed by.
+var ErrInvalidMemoryID = errors.New("invalid memory identifier")
+
 // ErrStoredFileNotFound is returned when a stored-file key is unknown. A
 // caller must not be able to distinguish an absent key from a key it is not
 // allowed to see, so this single sentinel covers both cases.
 var ErrStoredFileNotFound = errors.New("stored file not found")
 
-// Identifier limits for bank identifiers and aliases. BankIDMaxBytes is a
-// fixed UTF-8 byte budget chosen so storage keys remain within their limits.
+// Identifier limits for bank identifiers and aliases. BankIDMaxBytes is the
+// reference's 192-byte UTF-8 budget, sized so a 64-character CJK identifier
+// fits and a storage key percent-encoding it stays within its limits.
 const (
-	BankIDMaxBytes = 255
+	BankIDMaxBytes = 192
 )
+
+// ArchivedMemoryStore is the optional capability of a backend that keeps a
+// curation archive: units a caller invalidated but can still revert, held in a
+// table of their own.
+//
+// Its rows carry columns the live unit model does not — a unit's entity ids, its
+// causal links, when and why it was invalidated — so a transfer carries the rows
+// themselves rather than a projection that would quietly drop them.
+type ArchivedMemoryStore interface {
+	// ListArchivedMemories returns a bank's curation archive as rows, oldest
+	// first so a restore keeps the order a reader pages through.
+	ListArchivedMemories(ctx context.Context, bankID string) ([]map[string]any, error)
+	// PutArchivedMemory inserts one archived row, reporting whether it did. A
+	// row whose id is already archived is left alone, so a repeated restore is
+	// idempotent and the caller can report what actually landed.
+	PutArchivedMemory(ctx context.Context, row map[string]any) (bool, error)
+}
+
+// SchemaMigrator is the optional capability of a backend whose migration can be
+// run without installing or reconciling the extensions it depends on. A backend
+// without it always installs what the series declares.
+type SchemaMigrator interface {
+	MigrateWithoutExtensions(ctx context.Context) error
+}
 
 // Store is the single public Go API through which every other area reaches
 // memory-domain storage. No area outside this package may address the
@@ -74,14 +107,19 @@ const (
 type Store interface {
 	// Migrate applies the ordered, idempotent migration series.
 	Migrate(ctx context.Context) error
+
 	// Ready reports whether the database is reachable for readiness probing.
 	Ready(ctx context.Context) error
 
-	// ListBanks returns one page of banks in most-recently-written-first order
-	// together with the pre-paging match count.
+	// ListBanks returns one page of banks, together with the pre-paging match count.
 	ListBanks(ctx context.Context, query BankQuery) (BankPage, error)
 	// CreateBank inserts a bank and returns the stored representation.
 	CreateBank(ctx context.Context, bank Bank) (Bank, error)
+	// EnsureBank lazily creates the bank row when it is absent, so a first
+	// write to a bank a caller has not declared yet lands on the row every
+	// bank-scoped write needs as its foreign-key target. It is idempotent and
+	// safe under concurrent callers.
+	EnsureBank(ctx context.Context, bankID string) error
 	// GetBank returns one bank by identifier.
 	GetBank(ctx context.Context, bankID string) (Bank, error)
 	// ReplaceBank overwrites a bank's configuration.
@@ -91,6 +129,11 @@ type Store interface {
 	// DeleteBank removes a bank and its owned rows, returning how many bank
 	// rows were removed (0 for a bank that never existed).
 	DeleteBank(ctx context.Context, bankID string) (int, error)
+	// RenameBank moves every bank-scoped row from source to target in one
+	// operation, so a rename preserves the bank's data rather than recreating
+	// an empty bank. It fails with ErrBankNotFound for an unknown source and
+	// ErrBankExists when target already names a bank.
+	RenameBank(ctx context.Context, source, target string) error
 	// ClearBankMemories removes a bank's memory units together with their
 	// links and entity associations, returning how many units were removed.
 	// The bank row, its entities and its documents survive: this is the
@@ -109,8 +152,10 @@ type Store interface {
 	// AddAlias attaches an alias to a bank, optionally displaying the bank
 	// under it, and returns the whole alias list.
 	AddAlias(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error)
-	// PromoteAlias displays the bank under the named alias, demoting any other.
-	PromoteAlias(ctx context.Context, bankID, alias string) ([]BankAlias, error)
+	// SetAliasPrimary displays the bank under the named alias when primary is
+	// true (demoting the incumbent in one step), or clears the alias's own
+	// display flag when false, leaving the bank's other aliases untouched.
+	SetAliasPrimary(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error)
 	// RemoveAlias detaches the named alias from the bank.
 	RemoveAlias(ctx context.Context, bankID, alias string) ([]BankAlias, error)
 
@@ -128,6 +173,11 @@ type Store interface {
 	// AppendDocument concatenates text onto the stored document, failing with
 	// ErrDocumentConflict when the stored hash no longer matches expectedHash.
 	AppendDocument(ctx context.Context, bankID, docID, text, expectedHash string) (Document, error)
+	// RetagDocumentMemories carries a document's renamed tags onto its units and
+	// the observation scopes frozen on them, then rebuilds the observations built
+	// over them and returns how many were deleted. oldTags is the document's tag
+	// set before the retag, newTags the one being written.
+	RetagDocumentMemories(ctx context.Context, bankID, docID string, oldTags, newTags []string) (int, error)
 	// ResolveEntity resolves an entity name against the bank, honoring the
 	// resolution switch, and returns the canonical stored identity.
 	ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error)
@@ -156,10 +206,19 @@ type Store interface {
 	Reflect(ctx context.Context, query ReflectQuery) (ReflectOutcome, error)
 
 	// IsStale reports whether a write inside a model's refresh scope has
-	// landed since it last looked, which is the question the scheduled refresh
-	// asks before deciding to spend a model call. A model whose scope has not
-	// moved is up to date even if its clock is old.
+	// landed since it last looked, or whether evidence the model cites has since
+	// gone. The second case is the retraction check: a removed row raises no
+	// watermark, so a model whose only change is a retraction would otherwise
+	// never refresh. This is the question the scheduled refresh asks before
+	// deciding to spend a model call. A model whose scope has not moved is up to
+	// date even if its clock is old.
 	IsStale(ctx context.Context, bankID string, model MentalModel) bool
+	// BankConfig returns a bank's configuration overrides, read fresh rather
+	// than through the process-local bank cache. A configuration change made by
+	// another server must take effect on the next request, so the paths that
+	// depend on configuration ask for it directly; the cached row keeps serving
+	// existence and profile reads.
+	BankConfig(ctx context.Context, bankID string) (map[string]any, error)
 	// BankWriteWatermark returns the time of the newest write to a bank, or
 	// the zero time when it has never been written. A scoped staleness check
 	// asks this first, so a quiet bank costs no scan.
@@ -182,17 +241,35 @@ type Store interface {
 	// on. A leaderless fleet needs the latter, since every process reaches the
 	// same decision at the same instant.
 	EnqueueOperation(ctx context.Context, req EnqueueRequest) (EnqueueResult, error)
-	// GetOperation returns one operation by identifier.
-	GetOperation(ctx context.Context, opID string) (Operation, error)
+	// GetOperation returns one operation by identifier, scoped to the bank; an
+	// identifier belonging to another bank reads as ErrOperationNotFound.
+	GetOperation(ctx context.Context, bankID, opID string) (Operation, error)
 	// AdvanceOperation moves an operation forward in its status lifecycle.
 	AdvanceOperation(ctx context.Context, opID string, next OperationStatus, errMsg string) (Operation, error)
 	// ListOperations returns one page of operations matching the query.
 	ListOperations(ctx context.Context, query OperationQuery) (OperationPage, error)
 	// CancelOperation cancels a non-terminal operation, returning ErrOperationConflict
 	// when the operation is already terminal.
-	CancelOperation(ctx context.Context, opID string) (Operation, error)
+	CancelOperation(ctx context.Context, bankID, opID string) (Operation, error)
 	// RetryOperation starts a new run of a failed operation.
-	RetryOperation(ctx context.Context, opID string) (Operation, error)
+	RetryOperation(ctx context.Context, bankID, opID string) (Operation, error)
+	// GetOperationChildren returns the child operations of a parent batch
+	// operation, ordered by their sub-batch index.
+	GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error)
+	// FinalizeBatchParent promotes a parent batch operation to a terminal
+	// status once every child has reached one, aggregating the children's
+	// outcome metadata onto the parent. It reports the promoted operation and
+	// whether this call is the one that promoted it; a parent still waiting on
+	// a child, or already terminal, is returned unchanged with promoted false.
+	FinalizeBatchParent(ctx context.Context, bankID, parentID string) (Operation, bool, error)
+	// SubmitAsyncRetain queues an asynchronous write: one parent batch
+	// operation that aggregates the submission and carries no work a worker
+	// runs, plus one child operation per token-bounded sub-batch, each holding
+	// the items and the settings resolved when the request was accepted. A
+	// caller-supplied operation id that already names this bank's batch joins
+	// that submission instead of queueing a second copy of the work. The
+	// synchronous path is untouched by it.
+	SubmitAsyncRetain(ctx context.Context, req RetainRequest, tokensPerBatch int) (AsyncRetainSubmission, error)
 	// DeleteOperation permanently removes a terminal operation row and the
 	// archive an export operation owns. It reports ErrOperationNotFound when
 	// the identifier is unknown and ErrOperationNotTerminal when the row is
@@ -204,6 +281,10 @@ type Store interface {
 	// nothing is claimable. A claim older than lease is reclaimable, so a
 	// consumer that died mid-operation does not strand its work.
 	ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error)
+	// ClaimNextOperationForTypes claims the oldest claimable operation whose
+	// type is in types, so a reserved type's floor can be honoured. An empty
+	// types list is equivalent to ClaimNextOperation.
+	ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error)
 	// ReleaseOperationClaim returns a claimed operation to the claimable pool
 	// without recording a failure. It is what a graceful shutdown uses to hand
 	// its in-flight work back.
@@ -224,8 +305,10 @@ type Store interface {
 	UpdateWebhook(ctx context.Context, bankID, webhookID string, patch WebhookPatch) (Webhook, error)
 	// DeleteWebhook removes a webhook and its delivery records.
 	DeleteWebhook(ctx context.Context, bankID, webhookID string) error
-	// ListWebhookDeliveries returns one page of a webhook's delivery records.
-	ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit, offset int) (WebhookDeliveryPage, error)
+	// ListWebhookDeliveries returns one page of a webhook's delivery records,
+	// newest first. cursor is the created_at of the last record of the previous
+	// page; empty starts at the newest.
+	ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit int, cursor string) (WebhookDeliveryPage, error)
 
 	// --- Knowledge base -------------------------------------------------
 	// ListKnowledgeNodes returns every knowledge node of one bank.
@@ -238,8 +321,10 @@ type Store interface {
 	UpdateKnowledgeNode(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch) (KnowledgeNode, error)
 	// DeleteKnowledgeNode removes a node and its descendants.
 	DeleteKnowledgeNode(ctx context.Context, bankID, nodeID string) error
-	// SearchKnowledgeNodes searches a bank's pages by text.
-	SearchKnowledgeNodes(ctx context.Context, bankID, query string, limit int) ([]KnowledgeHit, error)
+	// SearchKnowledgeNodes searches a bank's pages by a hybrid of the text
+	// query and, when the caller supplies a query embedding, vector
+	// similarity, fused by the store.
+	SearchKnowledgeNodes(ctx context.Context, query KnowledgeSearchQuery) ([]KnowledgeHit, error)
 
 	// --- Memory sub-routes ----------------------------------------------
 	// ListMemories returns one page of a bank's memory units.
@@ -268,21 +353,34 @@ type Store interface {
 	MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error)
 	// ListAuditLog returns one page of the audit trail.
 	ListAuditLog(ctx context.Context, query AuditQuery) (AuditPage, error)
-	// AuditLogStats buckets the audit trail over a period.
-	AuditLogStats(ctx context.Context, bankID, period string) (AuditStats, error)
+	// RecordAuditLog appends one audit entry. A write failure is the caller's
+	// to ignore: recording an operation must never fail the operation it
+	// describes.
+	RecordAuditLog(ctx context.Context, entry AuditEntry) error
+	// AuditLogStats buckets the audit trail over a period, narrowed to one
+	// action when action is not empty.
+	AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error)
 	// ListLLMRequests returns one page of the model-request trace.
 	ListLLMRequests(ctx context.Context, query LLMRequestQuery) (LLMRequestPage, error)
-	// LLMRequestStats buckets the model-request trace over a period.
-	LLMRequestStats(ctx context.Context, bankID, period string) (LLMRequestStats, error)
+	// RecordLLMRequest appends one model-request trace row, so the trace the
+	// read endpoints serve is populated by the calls that actually happened.
+	RecordLLMRequest(ctx context.Context, request LLMRequest) error
+	// LLMRequestStats buckets the model-request trace over a period, narrowed to
+	// one operation when operation is not empty.
+	LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error)
 	// ListObservationScopes returns the distinct observation scopes of a bank.
 	ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error)
 
 	// --- Read surface ---------------------------------------------------
 	// ListDocuments returns one page of a bank's documents plus the total.
 	ListDocuments(ctx context.Context, query DocumentQuery) (DocumentPage, error)
-	// DeleteDocument removes a document and the units extracted from it, so a
-	// retrieval never returns evidence whose source no longer exists.
-	DeleteDocument(ctx context.Context, bankID, docID string) error
+	// DeleteDocument removes a document and the units extracted from it,
+	// returning how many memory units were removed so a caller can report the
+	// cascade size.
+	DeleteDocument(ctx context.Context, bankID, docID string) (int, error)
+	// DocumentFactCounts returns the document's memory units grouped by fact
+	// type, so a document read can report its node breakdown.
+	DocumentFactCounts(ctx context.Context, bankID, docID string) (map[string]int, error)
 	// ListChunks returns one page of a bank's chunks plus the total.
 	ListChunks(ctx context.Context, query ChunkQuery) (ChunkPage, error)
 	// GetChunk returns one stored chunk by identifier.
@@ -291,10 +389,26 @@ type Store interface {
 	ListTags(ctx context.Context, bankID string) ([]TagCount, error)
 	// ListEntities returns one page of a bank's entities plus the total.
 	ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error)
-	// Graph returns the bank's memory graph.
-	Graph(ctx context.Context, bankID string, limit int) (GraphData, error)
-	// EntityGraph returns the bank's entity graph.
-	EntityGraph(ctx context.Context, bankID string, limit int) (EntityGraph, error)
+	// EntityMentions returns the memory texts that mention an entity, so the
+	// entity-detail read can report its observations.
+	EntityMentions(ctx context.Context, bankID, entityID string, limit int) ([]EntityMention, error)
+	// UnitEntities returns the canonical names of the entities one memory unit
+	// mentions, in name order.
+	UnitEntities(ctx context.Context, bankID, unitID string) ([]string, error)
+	// DrainGraphMaintenance claims up to limit queued graph-relink targets and
+	// removes them from the queue, so a deleted unit's neighbours are relinked.
+	DrainGraphMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error)
+	// RelinkUnit recomputes one unit's semantic links from its embedding.
+	RelinkUnit(ctx context.Context, bankID, unitID string) error
+	// DrainEntityMaintenance claims up to limit queued entity-prune targets and
+	// removes them from the queue.
+	DrainEntityMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error)
+	// PruneEntity removes an entity no memory unit mentions any more.
+	PruneEntity(ctx context.Context, bankID, entityID string) error
+	// Graph returns the bank's memory graph for the query's filtered unit set.
+	Graph(ctx context.Context, query GraphQuery) (GraphData, error)
+	// EntityGraph returns the bank's entity graph for the query.
+	EntityGraph(ctx context.Context, query EntityGraphQuery) (EntityGraph, error)
 
 	// --- Mental models -------------------------------------------------
 	// ListMentalModels returns the mental models of one bank, optionally
@@ -345,6 +459,13 @@ type Store interface {
 	// ListAttachments returns the attachments a document carries, ordered by
 	// creation, so provenance resolves deterministically.
 	ListAttachments(ctx context.Context, bankID, documentID string) ([]Attachment, error)
+	// GetAttachment returns one attachment by its short id, which is the handle
+	// a placeholder token and an attachment URL carry. It reports
+	// ErrAttachmentNotFound when the id is unknown to the bank.
+	GetAttachment(ctx context.Context, bankID, attachmentID string) (Attachment, error)
+	// ChunkAttachments returns each chunk's attachments, keyed by chunk id, so
+	// a chunk read can show the attachments its units were drawn from.
+	ChunkAttachments(ctx context.Context, bankID, documentID string) (map[string][]Attachment, error)
 
 	// ConsolidationFacts returns the newest raw facts of a bank that have not
 	// yet been folded into an observation.
@@ -361,6 +482,15 @@ type Store interface {
 	// MarkConsolidated records that the given facts have been folded, so the
 	// next pass does not reconsider them.
 	MarkConsolidated(ctx context.Context, bankID string, factIDs []string) error
+	// MarkConsolidationFailed records that a pass gave up on the given facts,
+	// so later passes skip them until recovery requeues them. It is the
+	// backlog gauge's source and the exclusion the candidates read applies.
+	MarkConsolidationFailed(ctx context.Context, bankID string, factIDs []string) error
+	// DeleteStaleObservations removes the observations that rest on any of the
+	// given facts and requeues their surviving co-sources. It is called before
+	// facts are deleted, so an observation never outlives its whole evidence
+	// base and keeps answering as though it could be justified.
+	DeleteStaleObservations(ctx context.Context, bankID string, factIDs []string) (int, error)
 }
 
 // Backend selects a PostgreSQL driver implementation. The only backend in
@@ -378,4 +508,14 @@ type BackendConfig struct {
 	VectorExtension     string
 	TextSearchExtension string
 	RunMigrations       bool
+	// MaxOpenConns and MaxIdleConns bound the connection pool. Zero leaves the
+	// driver's own default, which is unbounded for open connections.
+	MaxOpenConns int
+	MaxIdleConns int
+	// BankInfoCacheTTL bounds the per-process bank profile cache and
+	// BankStatsCacheTTL the cross-process bank-statistics summary. Zero (the
+	// zero value) disables the corresponding cache, matching the reference's
+	// "0 disables" convention.
+	BankInfoCacheTTL  time.Duration
+	BankStatsCacheTTL time.Duration
 }

@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// serverVersion is the reported server version.
-const serverVersion = "0.1.0"
+// serverVersion is the reference release reported in serverInfo.
+const serverVersion = "0.10.3"
 
 // tool is one entry of the tools/list response.
 type tool struct {
@@ -19,147 +19,133 @@ type tool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-// toolDefinitions is the roster the server advertises. Each tool maps onto one
-// storage call, so the protocol layer adds no behavior of its own.
-func toolDefinitions() []tool {
-	stringProperty := func(description string) map[string]any {
-		return map[string]any{"type": "string", "description": description}
-	}
-	integerProperty := func(description string, fallback int) map[string]any {
-		return map[string]any{"type": "integer", "description": description, "default": fallback}
-	}
-	object := func(required []string, properties map[string]any) map[string]any {
-		schema := map[string]any{"type": "object", "properties": properties}
-		if len(required) > 0 {
-			schema["required"] = required
-		}
-		return schema
-	}
-
-	return []tool{
-		{
-			Name:        "retain",
-			Description: "Persist a memory into a bank. Content becomes a document whose extracted facts are recallable.",
-			InputSchema: object([]string{"bank_id", "content"}, map[string]any{
-				"bank_id": stringProperty("the bank that owns the memory"),
-				"content": stringProperty("the text to retain"),
-				"context": stringProperty("optional surrounding context"),
-			}),
-		},
-		{
-			Name:        "recall",
-			Description: "Search a bank's memories and return the best matches.",
-			InputSchema: object([]string{"bank_id", "query"}, map[string]any{
-				"bank_id": stringProperty("the bank to search"),
-				"query":   stringProperty("the search query"),
-				"limit":   integerProperty("how many matches to return", 10),
-			}),
-		},
-		{
-			Name:        "reflect",
-			Description: "Answer a question from a bank's memories.",
-			InputSchema: object([]string{"bank_id", "question"}, map[string]any{
-				"bank_id":  stringProperty("the bank to reflect over"),
-				"question": stringProperty("the question to answer"),
-			}),
-		},
-		{
-			Name:        "list_banks",
-			Description: "List the banks this server holds.",
-			InputSchema: object(nil, map[string]any{
-				"limit": integerProperty("how many banks to return", 50),
-			}),
-		},
-		{
-			Name:        "get_bank",
-			Description: "Read one bank's settings.",
-			InputSchema: object([]string{"bank_id"}, map[string]any{
-				"bank_id": stringProperty("the bank to read"),
-			}),
-		},
-		{
-			Name:        "list_memories",
-			Description: "List a bank's memory units.",
-			InputSchema: object([]string{"bank_id"}, map[string]any{
-				"bank_id": stringProperty("the bank to list"),
-				"limit":   integerProperty("how many units to return", 20),
-			}),
-		},
-		{
-			Name:        "get_memory",
-			Description: "Read one memory unit by identifier.",
-			InputSchema: object([]string{"bank_id", "memory_id"}, map[string]any{
-				"bank_id":   stringProperty("the bank that owns the memory"),
-				"memory_id": stringProperty("the memory identifier"),
-			}),
-		},
-		{
-			Name:        "list_mental_models",
-			Description: "List a bank's mental models.",
-			InputSchema: object([]string{"bank_id"}, map[string]any{
-				"bank_id": stringProperty("the bank to list"),
-			}),
-		},
-		{
-			Name:        "list_directives",
-			Description: "List a bank's directives.",
-			InputSchema: object([]string{"bank_id"}, map[string]any{
-				"bank_id": stringProperty("the bank to list"),
-			}),
-		},
-	}
+// roster assembles the reference tool roster in registration order.
+func roster() []tool {
+	defs := coreTools()
+	defs = append(defs, mentalModelTools()...)
+	defs = append(defs, memoryTools()...)
+	defs = append(defs, adminTools()...)
+	defs = append(defs, knowledgeTools()...)
+	return defs
 }
 
-// invoke runs one tool against the store.
-func (s *Server) invoke(ctx context.Context, name string, args map[string]any) (any, error) {
-	switch name {
-	case "retain":
-		return s.retain(ctx, args)
-	case "recall":
-		return s.recall(ctx, args)
-	case "reflect":
-		return s.reflect(ctx, args)
-	case "list_banks":
-		return s.listBanks(ctx, args)
-	case "get_bank":
-		return s.getBank(ctx, args)
-	case "list_memories":
-		return s.listMemories(ctx, args)
-	case "get_memory":
-		return s.getMemory(ctx, args)
-	case "list_mental_models":
-		return s.listMentalModels(ctx, args)
-	case "list_directives":
-		return s.listDirectives(ctx, args)
-	default:
-		return nil, fmt.Errorf("unknown tool %q", name)
+// singleBankOmitted is the bank-management subset the reference withholds when
+// a server serves exactly one bank: the tools that would otherwise manage the
+// fleet of banks rather than the memories inside one.
+var singleBankOmitted = map[string]bool{
+	"list_banks":     true,
+	"create_bank":    true,
+	"get_bank_stats": true,
+}
+
+// toolDefinitions is the roster the server advertises. A multi-bank server
+// exposes every tool with an optional bank_id argument; a single-bank server
+// (the reference's /mcp/{bank_id}) drops the bank-management tools and the
+// bank_id argument, because the bank is fixed by the URL.
+func toolDefinitions(multiBank bool) []tool {
+	defs := roster()
+	if multiBank {
+		return defs
 	}
+	single := make([]tool, 0, len(defs))
+	for _, def := range defs {
+		if singleBankOmitted[def.Name] {
+			continue
+		}
+		if properties, ok := def.InputSchema["properties"].(map[string]any); ok {
+			delete(properties, "bank_id")
+		}
+		single = append(single, def)
+	}
+	return single
 }
 
 // retain persists one memory write.
 func (s *Server) retain(ctx context.Context, args map[string]any) (any, error) {
-	bankID, content := stringArgument(args, "bank_id"), stringArgument(args, "content")
-	if bankID == "" || content == "" {
-		return nil, errors.New("retain requires bank_id and content")
+	bankID, err := s.bankArgument(ctx, args, "retain")
+	if err != nil {
+		return nil, err
+	}
+	content := stringArgument(args, "content")
+	if content == "" {
+		return nil, errors.New("retain requires content")
+	}
+	item := retainItem(args, content)
+	if item.Context == "" {
+		item.Context = "general"
 	}
 	outcome, err := s.store.RetainWrite(ctx, storage.RetainRequest{
 		BankID: bankID,
-		Items:  []storage.RetainItem{{Content: content, Context: stringArgument(args, "context")}},
+		Items:  []storage.RetainItem{item},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"bank_id": bankID, "unit_ids": outcome.ItemUnitIDs}, nil
+	return map[string]any{"status": "accepted", "bank_id": bankID, "unit_ids": outcome.ItemUnitIDs}, nil
+}
+
+// syncRetain persists one memory write and reports the stored unit identifiers.
+func (s *Server) syncRetain(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "sync_retain")
+	if err != nil {
+		return nil, err
+	}
+	content := stringArgument(args, "content")
+	if content == "" {
+		return nil, errors.New("sync_retain requires content")
+	}
+	item := retainItem(args, content)
+	if item.Context == "" {
+		item.Context = "general"
+	}
+	outcome, err := s.store.RetainWrite(ctx, storage.RetainRequest{
+		BankID: bankID,
+		Items:  []storage.RetainItem{item},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": "stored", "bank_id": bankID, "unit_ids": outcome.ItemUnitIDs, "async": false}, nil
+}
+
+// retainItem maps the retain tool's arguments onto one stored item.
+func retainItem(args map[string]any, content string) storage.RetainItem {
+	item := storage.RetainItem{
+		Content:    content,
+		Context:    stringArgument(args, "context"),
+		DocumentID: stringArgument(args, "document_id"),
+		Tags:       stringListArgument(args, "tags"),
+		Metadata:   objectArgument(args, "metadata"),
+		Strategy:   stringArgument(args, "strategy"),
+		UpdateMode: stringArgument(args, "update_mode"),
+	}
+	if raw := stringArgument(args, "timestamp"); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			item.Timestamp, item.HasTimestamp = &parsed, true
+		}
+	}
+	return item
 }
 
 // recall searches a bank's memories.
 func (s *Server) recall(ctx context.Context, args map[string]any) (any, error) {
-	bankID, query := stringArgument(args, "bank_id"), stringArgument(args, "query")
-	if bankID == "" || query == "" {
-		return nil, errors.New("recall requires bank_id and query")
+	bankID, err := s.bankArgument(ctx, args, "recall")
+	if err != nil {
+		return nil, err
+	}
+	query := stringArgument(args, "query")
+	if query == "" {
+		return nil, errors.New("recall requires query")
 	}
 	result, err := s.store.Recall(ctx, storage.RecallQuery{
-		BankID: bankID, Query: query, Limit: intArgument(args, "limit", 10),
+		BankID:             bankID,
+		Query:              query,
+		Types:              stringListArgument(args, "types"),
+		PreferObservations: boolArgument(args, "prefer_observations", false),
+		Budget:             stringArgument(args, "budget"),
+		MaxTokens:          intArgument(args, "max_tokens", 4096),
+		Tags:               stringListArgument(args, "tags"),
+		TagsMatch:          stringArgument(args, "tags_match"),
 	})
 	if err != nil {
 		return nil, err
@@ -175,11 +161,15 @@ func (s *Server) recall(ctx context.Context, args map[string]any) (any, error) {
 
 // reflect answers a question from a bank's memories.
 func (s *Server) reflect(ctx context.Context, args map[string]any) (any, error) {
-	bankID, question := stringArgument(args, "bank_id"), stringArgument(args, "question")
-	if bankID == "" || question == "" {
-		return nil, errors.New("reflect requires bank_id and question")
+	bankID, err := s.bankArgument(ctx, args, "reflect")
+	if err != nil {
+		return nil, err
 	}
-	outcome, err := s.store.Reflect(ctx, storage.ReflectQuery{BankID: bankID, Query: question})
+	query := stringArgument(args, "query")
+	if query == "" {
+		return nil, errors.New("reflect requires query")
+	}
+	outcome, err := s.store.Reflect(ctx, storage.ReflectQuery{BankID: bankID, Query: query})
 	if err != nil {
 		return nil, err
 	}
@@ -188,38 +178,113 @@ func (s *Server) reflect(ctx context.Context, args map[string]any) (any, error) 
 
 // listBanks lists the server's banks.
 func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error) {
-	page, err := s.store.ListBanks(ctx, storage.BankQuery{Limit: intArgument(args, "limit", 50)})
+	page, err := s.store.ListBanks(ctx, storage.BankQuery{
+		Search: stringArgument(args, "query"),
+		Limit:  intArgument(args, "limit", 100),
+		Offset: intArgument(args, "offset", 0),
+	})
 	if err != nil {
 		return nil, err
 	}
 	banks := make([]map[string]any, 0, len(page.Banks))
 	for _, bank := range page.Banks {
-		banks = append(banks, map[string]any{"id": bank.BankID, "name": bank.Name})
+		banks = append(banks, map[string]any{"id": bank.BankID, "name": bank.Name, "mission": bank.Mission})
 	}
 	return map[string]any{"banks": banks, "total": page.Total}, nil
 }
 
-// getBank reads one bank.
-func (s *Server) getBank(ctx context.Context, args map[string]any) (any, error) {
+// createBank creates a bank.
+func (s *Server) createBank(ctx context.Context, args map[string]any) (any, error) {
 	bankID := stringArgument(args, "bank_id")
 	if bankID == "" {
-		return nil, errors.New("get_bank requires bank_id")
+		return nil, errors.New("create_bank requires bank_id")
+	}
+	bank, err := s.store.CreateBank(ctx, storage.Bank{
+		BankID:  bankID,
+		Name:    stringArgument(args, "name"),
+		Mission: stringArgument(args, "mission"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"bank_id": bank.BankID, "name": bank.Name}, nil
+}
+
+// getBank reads one bank.
+func (s *Server) getBank(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "get_bank")
+	if err != nil {
+		return nil, err
 	}
 	bank, err := s.store.GetBank(ctx, bankID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": bank.BankID, "name": bank.Name}, nil
+	return map[string]any{"bank_id": bank.BankID, "name": bank.Name, "mission": bank.Mission, "disposition": bank.Disposition}, nil
+}
+
+// updateBank applies a partial bank update.
+func (s *Server) updateBank(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "update_bank")
+	if err != nil {
+		return nil, err
+	}
+	patch := storage.BankPatch{}
+	if name := stringArgument(args, "name"); name != "" {
+		patch.Name = &name
+	}
+	if mission := stringArgument(args, "mission"); mission != "" {
+		patch.Mission = &mission
+	}
+	if config := objectArgument(args, "config_updates"); config != nil {
+		patch.Config = &config
+	}
+	bank, err := s.store.UpdateBank(ctx, bankID, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"bank_id": bank.BankID, "name": bank.Name}, nil
+}
+
+// deleteBank removes a bank and its data.
+func (s *Server) deleteBank(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "delete_bank")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.store.DeleteBank(ctx, bankID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"success": true}, nil
+}
+
+// clearMemories removes a bank's memory units.
+func (s *Server) clearMemories(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "clear_memories")
+	if err != nil {
+		return nil, err
+	}
+	removed, err := s.store.ClearBankMemories(ctx, bankID, stringArgument(args, "type"))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted_count": removed}, nil
 }
 
 // listMemories lists a bank's memory units.
 func (s *Server) listMemories(ctx context.Context, args map[string]any) (any, error) {
-	bankID := stringArgument(args, "bank_id")
-	if bankID == "" {
-		return nil, errors.New("list_memories requires bank_id")
+	bankID, err := s.bankArgument(ctx, args, "list_memories")
+	if err != nil {
+		return nil, err
 	}
 	page, err := s.store.ListMemories(ctx, storage.MemoryQuery{
-		BankID: bankID, Limit: intArgument(args, "limit", 20),
+		BankID:    bankID,
+		Type:      stringArgument(args, "type"),
+		Q:         stringArgument(args, "q"),
+		Tags:      stringListArgument(args, "tags"),
+		TagsMatch: stringArgument(args, "tags_match"),
+		Limit:     intArgument(args, "limit", 100),
+		Offset:    intArgument(args, "offset", 0),
 	})
 	if err != nil {
 		return nil, err
@@ -230,14 +295,18 @@ func (s *Server) listMemories(ctx context.Context, args map[string]any) (any, er
 			"id": unit.ID, "text": unit.Text, "type": string(unit.FactType),
 		})
 	}
-	return map[string]any{"memories": items, "total": page.Total}, nil
+	return map[string]any{"items": items, "total": page.Total}, nil
 }
 
 // getMemory reads one memory unit.
 func (s *Server) getMemory(ctx context.Context, args map[string]any) (any, error) {
-	bankID, memoryID := stringArgument(args, "bank_id"), stringArgument(args, "memory_id")
-	if bankID == "" || memoryID == "" {
-		return nil, errors.New("get_memory requires bank_id and memory_id")
+	bankID, err := s.bankArgument(ctx, args, "get_memory")
+	if err != nil {
+		return nil, err
+	}
+	memoryID := stringArgument(args, "memory_id")
+	if memoryID == "" {
+		return nil, errors.New("get_memory requires memory_id")
 	}
 	unit, err := s.store.GetMemory(ctx, bankID, memoryID)
 	if err != nil {
@@ -246,11 +315,52 @@ func (s *Server) getMemory(ctx context.Context, args map[string]any) (any, error
 	return map[string]any{"id": unit.ID, "text": unit.Text, "type": string(unit.FactType)}, nil
 }
 
+// updateMemory applies a partial update to one memory unit.
+func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "update_memory")
+	if err != nil {
+		return nil, err
+	}
+	memoryID := stringArgument(args, "memory_id")
+	if memoryID == "" {
+		return nil, errors.New("update_memory requires memory_id")
+	}
+	patch := storage.MemoryPatch{}
+	if text := stringArgument(args, "text"); text != "" {
+		patch.Text = &text
+	}
+	if tags := stringListArgument(args, "tags"); tags != nil {
+		patch.Tags = &tags
+	}
+	unit, err := s.store.UpdateMemory(ctx, bankID, memoryID, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": unit.ID, "text": unit.Text}, nil
+}
+
+// invalidateMemory clears a memory's observations.
+func (s *Server) invalidateMemory(ctx context.Context, args map[string]any) (any, error) {
+	bankID, err := s.bankArgument(ctx, args, "invalidate_memory")
+	if err != nil {
+		return nil, err
+	}
+	memoryID := stringArgument(args, "memory_id")
+	if memoryID == "" {
+		return nil, errors.New("invalidate_memory requires memory_id")
+	}
+	removed, err := s.store.DeleteObservations(ctx, bankID, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted_count": removed}, nil
+}
+
 // listMentalModels lists a bank's mental models.
 func (s *Server) listMentalModels(ctx context.Context, args map[string]any) (any, error) {
-	bankID := stringArgument(args, "bank_id")
-	if bankID == "" {
-		return nil, errors.New("list_mental_models requires bank_id")
+	bankID, err := s.bankArgument(ctx, args, "list_mental_models")
+	if err != nil {
+		return nil, err
 	}
 	models, err := s.store.ListMentalModels(ctx, bankID, "")
 	if err != nil {
@@ -260,14 +370,14 @@ func (s *Server) listMentalModels(ctx context.Context, args map[string]any) (any
 	for _, model := range models {
 		items = append(items, map[string]any{"id": model.ID, "name": model.Name})
 	}
-	return map[string]any{"mental_models": items}, nil
+	return map[string]any{"items": items}, nil
 }
 
 // listDirectives lists a bank's directives.
 func (s *Server) listDirectives(ctx context.Context, args map[string]any) (any, error) {
-	bankID := stringArgument(args, "bank_id")
-	if bankID == "" {
-		return nil, errors.New("list_directives requires bank_id")
+	bankID, err := s.bankArgument(ctx, args, "list_directives")
+	if err != nil {
+		return nil, err
 	}
 	directives, err := s.store.ListDirectives(ctx, bankID)
 	if err != nil {
@@ -277,7 +387,7 @@ func (s *Server) listDirectives(ctx context.Context, args map[string]any) (any, 
 	for _, directive := range directives {
 		items = append(items, map[string]any{"id": directive.ID, "name": directive.Name})
 	}
-	return map[string]any{"directives": items}, nil
+	return map[string]any{"items": items}, nil
 }
 
 // toolResult wraps a tool payload in the content shape the protocol returns.

@@ -1,14 +1,22 @@
 # Wenyuan — Outstanding Work and Known Limitations (Handover Document)
 
-> **⚠️ Partially superseded (2026-10-13).** This document was written at an
-> earlier baseline. Its §1 ("Unfinished API capabilities") and the §2 schema
-> comparison predate a large body of work: the route surface is now **99/99
-> complete**, vector search, the provider layer, the background worker, the
-> export/import endpoints, MCP, and the extraction/reflect wiring all exist.
-> **`docs/GAPS.md` is the authoritative current-state document** — its §7 lists
-> what actually remains. The §3 contract-item list and §4 engineering notes
-> below are still broadly useful, but check any "missing" claim against the
-> code before acting on it.
+> **⚠️ Superseded (2026-10-14).** This document was written at an earlier
+> baseline and every "unfinished" claim in it has since been worked through.
+> The audit, the per-item implementation records, the acceptance commands and
+> the live-run evidence now live in **`docs/PARITY-PLAN.md`** (all five phases —
+> A contract surface, B engine behaviour, C subsystems, D operational — are
+> closed; §8 is the log). `docs/GAPS.md` is the earlier baseline's checklist,
+> with its status table corrected to match. Nothing in this file should be
+> treated as current state: check the code and `PARITY-PLAN.md` before acting on
+> any claim below.
+>
+> What remains is **explicitly out of scope**, recorded in `PARITY-PLAN.md`:
+> interactive-auth provider adapters, the GCS/Azure object-store backends and
+> presigned download URLs, upstream's dynamic plug-in loader, a reranker
+> failover chain and local MLX, the `dateparser` dependency and Chinese
+> numerals, and upstream's `reflect/observations.py` (which nothing upstream
+> calls). (The document-parsing chain is implemented — see
+> `docs/PARITY-PLAN.md` §8, C7.)
 >
 > Baseline at time of writing: 277 tests green, and `go build` / `go vet` /
 > `gofmt` / `go build -tags pgx` all pass; CI (`.github/workflows/ci.yml`) runs
@@ -298,9 +306,12 @@ recommended order is:
 ```
 cmd/server             process entrypoint (HTTP API)
 cmd/bankctl            admin commands: bank rename / archive / migrate
+cmd/wenyuan            client CLI entrypoint (wenyuan-admin binary)
 internal/app           application assembly, middleware, authentication
 internal/bankapi       bank lifecycle + aliases + config + retired routes
 internal/bankadmin    rename / archive / migrate command implementations
+internal/cli           client CLI: registry, HTTP client, error classifier,
+                       resource commands, fs mirror engine, explore TUI
 internal/config        flags > environment variables > defaults
 internal/httpx        router, middleware, JSON/error envelope, ignored-param reporting
 internal/hindsightarchive  Hindsight export ZIP parsing (§2.1)

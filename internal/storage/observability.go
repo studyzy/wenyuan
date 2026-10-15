@@ -26,6 +26,10 @@ type AuditQuery struct {
 	BankID    string
 	Action    string
 	Transport string
+	// StartDate and EndDate bound the window on the entry's start time,
+	// inclusive at the start and exclusive at the end.
+	StartDate *time.Time
+	EndDate   *time.Time
 	Limit     int
 	Offset    int
 }
@@ -83,10 +87,28 @@ type LLMRequest struct {
 
 // LLMRequestQuery pages and filters the model-request trace.
 type LLMRequestQuery struct {
-	BankID string
-	Status string
-	Limit  int
-	Offset int
+	BankID    string
+	Status    string
+	Operation string
+	Scope     string
+	Provider  string
+	TraceID   string
+	// DocumentID matches the trace's recorded document, carried in the row's
+	// metadata.
+	DocumentID string
+	// MemoryID matches a trace that produced the unit (metadata.memory_ids) or
+	// consumed it as a consolidation source (metadata.source_memory_ids).
+	MemoryID string
+	// Group paginates by operation run (all calls sharing a trace_id) rather
+	// than by call, so every returned run is whole. Limit, offset and total
+	// then count runs.
+	Group bool
+	// StartDate and EndDate bound the window on the call's start time,
+	// inclusive at the start and exclusive at the end.
+	StartDate *time.Time
+	EndDate   *time.Time
+	Limit     int
+	Offset    int
 }
 
 // LLMRequestPage is one page of model requests with the pre-paging total.
@@ -131,6 +153,8 @@ type BankStats struct {
 	TotalDocuments       int
 	NodesByFactType      map[string]int
 	LinksByLinkType      map[string]int
+	LinksByFactType      map[string]int
+	LinksBreakdown       map[string]map[string]int
 	PendingOperations    int
 	FailedOperations     int
 	OperationsByStatus   map[string]int
@@ -141,10 +165,15 @@ type BankStats struct {
 	TotalObservations    int
 }
 
-// TimeseriesBucket is one bucket of the memory-count histogram.
+// TimeseriesBucket is one bucket of the memory-count histogram. The per-type
+// counts let a client chart the composition of each bucket rather than only its
+// total.
 type TimeseriesBucket struct {
-	Time  time.Time
-	Count int
+	Time        time.Time
+	Count       int
+	World       int
+	Experience  int
+	Observation int
 }
 
 // Timeseries is the memory-count histogram over a period.
@@ -200,8 +229,12 @@ type KnowledgeNode struct {
 	MentalModelID string
 	Text          string
 	Tags          []string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Managed reports whether the page was created by the API rather than the
+	// user, and SortOrder positions it among its siblings.
+	Managed   bool
+	SortOrder int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // KnowledgeNodePatch carries a partial knowledge-node update.
@@ -210,6 +243,21 @@ type KnowledgeNodePatch struct {
 	Text     *string
 	ParentID *string
 	Tags     *[]string
+}
+
+// KnowledgeSearchQuery is one knowledge-page search: the bank's text query, an
+// optional query embedding for the vector arm, and a result bound.
+//
+// Embedding is produced by the caller (the deployment's embedding provider)
+// because storage neither imports a model provider nor knows which one is
+// configured. A nil or empty Embedding leaves the search on its text arm alone,
+// which is what a deployment with no embedding model — or a caller like the MCP
+// tool that has no model to reach — gets.
+type KnowledgeSearchQuery struct {
+	BankID    string
+	Query     string
+	Embedding []float32
+	Limit     int
 }
 
 // KnowledgeHit is one knowledge search result.
@@ -222,8 +270,30 @@ type KnowledgeHit struct {
 type MemoryQuery struct {
 	BankID string
 	Type   string
-	Limit  int
-	Offset int
+	// Q is a case-insensitive substring match on the unit text.
+	Q string
+	// DocumentID narrows to one document's units.
+	DocumentID string
+	// EntityID narrows to units mentioning one entity.
+	EntityID string
+	// Tags and TagsMatch narrow by tag.
+	Tags      []string
+	TagsMatch string
+	// TagGroups, when set, replaces the flat tag filter with a compound tree,
+	// which is how a caller's resolved read scope is AND-ed into the listing.
+	TagGroups []TagGroup
+	// State filters by curation state: "valid" (the live view, the default) or
+	// "invalidated" (the archive).
+	State string
+	// ConsolidationState filters source facts by consolidation state: "failed",
+	// "pending" or "done".
+	ConsolidationState string
+	// TimeField selects which timestamp the bounds apply to.
+	TimeField string
+	TimeStart *time.Time
+	TimeEnd   *time.Time
+	Limit     int
+	Offset    int
 }
 
 // MemoryPage is one page of memories with the pre-paging total.
@@ -234,11 +304,27 @@ type MemoryPage struct {
 	Offset   int
 }
 
-// MemoryPatch carries a partial memory-unit update.
+// MemoryPatch carries a partial memory-unit update. A nil field is left
+// unchanged; a non-nil one is applied. State moves the unit between the live
+// and invalidated views ("valid" reverts an invalidated unit); Reason is the
+// free text recorded alongside an invalidation.
 type MemoryPatch struct {
 	Text     *string
 	Tags     *[]string
 	Metadata *map[string]any
+	// Context, OccurredStart, OccurredEnd and FactType correct the extracted
+	// fields; an empty string clears a date or context to NULL.
+	Context       *string
+	OccurredStart *string
+	OccurredEnd   *string
+	FactType      *string
+	// Entities replaces the unit's entity set; ResolveEntities selects whether
+	// the names are resolved against the bank or taken literally.
+	Entities        *[]string
+	ResolveEntities *bool
+	// State and Reason change the unit's curation state.
+	State  *string
+	Reason *string
 }
 
 // MemoryHistoryEntry is one recorded change to a memory unit.
@@ -247,6 +333,15 @@ type MemoryHistoryEntry struct {
 	Reason    string
 	Text      string
 	Tags      []string
+	// PreviousText, PreviousTags and the previous timestamps describe the unit
+	// before the change.
+	PreviousText          *string
+	PreviousTags          []string
+	PreviousOccurredStart *time.Time
+	PreviousOccurredEnd   *time.Time
+	PreviousMentionedAt   *time.Time
+	// NewSourceMemoryIDs are the source memories the entry folded in.
+	NewSourceMemoryIDs []string
 }
 
 // ErrWebhookNotFound is returned when a webhook identifier is unknown.
@@ -274,30 +369,46 @@ type WebhookPatch struct {
 	Secret     *string
 	EventTypes *[]string
 	Enabled    *bool
+	HTTPConfig *map[string]any
 }
 
-// WebhookDelivery is one recorded delivery attempt.
+// WebhookDelivery is one recorded delivery attempt, read from the delivery
+// operation that owns it.
 type WebhookDelivery struct {
-	ID          string
-	WebhookID   string
-	BankID      string
-	EventType   string
-	Status      string
-	StatusCode  *int
-	Error       string
-	Attempt     int
-	DeliveredAt time.Time
+	ID        string
+	WebhookID string
+	BankID    string
+	URL       string
+	EventType string
+	Status    string
+	Attempts  int
+	// NextRetryAt is when a retry is scheduled, nil when none is.
+	NextRetryAt *time.Time
+	// LastError is the recorded failure, empty when none.
+	LastError string
+	// LastResponseStatus is the receiver's last HTTP status, nil when the
+	// receiver never answered.
+	LastResponseStatus *int
+	// LastResponseBody is the receiver's last response body. It is withheld
+	// from API callers by default, so this is nil on the read path.
+	LastResponseBody *string
+	// LastAttemptAt is when the last attempt ran, nil when it never did.
+	LastAttemptAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
-// WebhookDeliveryPage is one page of delivery records.
+// WebhookDeliveryPage is one page of delivery records. HasMore reports that at
+// least one more record follows, so the caller can emit a next cursor.
 type WebhookDeliveryPage struct {
 	Deliveries []WebhookDelivery
-	Total      int
-	Limit      int
-	Offset     int
+	HasMore    bool
 }
 
 // WebhookEventTypes returns the event names a webhook may subscribe to.
 func WebhookEventTypes() []string {
-	return []string{"memory.created", "memory.updated", "memory.deleted", "bank.created", "consolidation.completed"}
+	return []string{"consolidation.completed", "retain.completed", "memory_defense.triggered"}
 }
+
+// ErrAttachmentNotFound reports an attachment identifier the bank does not hold.
+var ErrAttachmentNotFound = errors.New("attachment not found")

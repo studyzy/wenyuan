@@ -1,7 +1,10 @@
 package memoryops
 
 import (
+	"encoding/json"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // Validation bounds for the write request.
@@ -25,8 +28,6 @@ type RecallRequest struct {
 	Trace              bool                   `json:"trace,omitempty"`
 	PreferObservations bool                   `json:"prefer_observations,omitempty"`
 	QueryTimestamp     string                 `json:"query_timestamp,omitempty"`
-	Limit              int                    `json:"limit,omitempty"`
-	Offset             int                    `json:"offset,omitempty"`
 }
 
 // IncludeRequest is the recall include sub-object. Entity states are included
@@ -36,6 +37,46 @@ type IncludeRequest struct {
 	Entities    *IncludeEntityRequest     `json:"entities"`
 	Chunks      *IncludeChunkRequest      `json:"chunks"`
 	SourceFacts *IncludeSourceFactRequest `json:"source_facts"`
+}
+
+// UnmarshalJSON applies the reference's default-factory semantics: an omitted
+// entities key behaves like the default options object, so entities are
+// included, and only an explicit null disables them. Chunks and source facts
+// stay excluded unless supplied. Distinguishing "key absent" from "key null"
+// needs this decoder, because a plain *IncludeEntityRequest collapses both to
+// nil.
+func (i *IncludeRequest) UnmarshalJSON(data []byte) error {
+	trimmed := trimSpaceBytes(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	i.Entities = &IncludeEntityRequest{}
+	if raw, ok := fields["entities"]; ok {
+		i.Entities = nil
+		if string(trimSpaceBytes(raw)) != "null" {
+			i.Entities = &IncludeEntityRequest{}
+			if err := json.Unmarshal(raw, i.Entities); err != nil {
+				return err
+			}
+		}
+	}
+	if raw, ok := fields["chunks"]; ok && string(trimSpaceBytes(raw)) != "null" {
+		i.Chunks = &IncludeChunkRequest{}
+		if err := json.Unmarshal(raw, i.Chunks); err != nil {
+			return err
+		}
+	}
+	if raw, ok := fields["source_facts"]; ok && string(trimSpaceBytes(raw)) != "null" {
+		i.SourceFacts = &IncludeSourceFactRequest{}
+		if err := json.Unmarshal(raw, i.SourceFacts); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IncludeEntityRequest carries the entity-state inclusion options.
@@ -65,29 +106,31 @@ type TemporalWindowRequest struct {
 // nests boolean nodes under and/or/not and leaves under tag(s), resolve and
 // match.
 type TagGroupRequest struct {
-	And     []TagGroupRequest `json:"and,omitempty"`
-	Or      []TagGroupRequest `json:"or,omitempty"`
-	Not     []TagGroupRequest `json:"not,omitempty"`
-	Tag     string            `json:"tag,omitempty"`
-	Tags    []string          `json:"tags,omitempty"`
-	Resolve string            `json:"resolve,omitempty"`
-	Match   string            `json:"match,omitempty"`
+	And     TagGroupChildren `json:"and,omitempty"`
+	Or      TagGroupChildren `json:"or,omitempty"`
+	Not     TagGroupChildren `json:"not,omitempty"`
+	Tag     string           `json:"tag,omitempty"`
+	Tags    []string         `json:"tags,omitempty"`
+	Resolve string           `json:"resolve,omitempty"`
+	Match   string           `json:"match,omitempty"`
 }
 
 // RecallResultItem is one recall result object. Every field name is public
 // surface. Fields without omitempty are always present, defaulting to an empty
 // collection, so consumers can rely on their shape.
 type RecallResultItem struct {
-	ID            string            `json:"id"`
-	Text          string            `json:"text"`
-	Type          string            `json:"type"`
-	Context       string            `json:"context,omitempty"`
+	ID   string `json:"id"`
+	Text string `json:"text"`
+	Type string `json:"type"`
+	// Context is always present: the reference reports the empty string when a
+	// memory carries no context, so a client can read the key unconditionally.
+	Context       string            `json:"context"`
 	OccurredStart *time.Time        `json:"occurred_start,omitempty"`
 	OccurredEnd   *time.Time        `json:"occurred_end,omitempty"`
 	MentionedAt   *time.Time        `json:"mentioned_at,omitempty"`
 	ChunkID       string            `json:"chunk_id,omitempty"`
 	DocumentID    string            `json:"document_id,omitempty"`
-	Metadata      map[string]any    `json:"metadata,omitempty"`
+	Metadata      map[string]any    `json:"metadata"`
 	SourceFactIDs []string          `json:"source_fact_ids"`
 	Scores        RecallScoreObject `json:"scores"`
 	Entities      []string          `json:"entities"`
@@ -110,12 +153,36 @@ type Attachment struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind,omitempty"`
 	URI  string `json:"uri,omitempty"`
+	// The reflect citation shape carries the fetched bytes' identity instead of
+	// a bare uri: hash, media_type, byte_size and url. recall results keep uri;
+	// both are emitted so one type serves both renderers.
+	Hash      string `json:"hash,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	ByteSize  int64  `json:"byte_size,omitempty"`
+	Filename  string `json:"filename,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+// attachmentFromRecall maps a storage recall attachment into the response
+// shape, filling both the recall-side uri and the citation-side url with the
+// same bank-scoped path.
+func attachmentFromRecall(a storage.RecallAttachment) Attachment {
+	return Attachment{
+		ID:        a.ID,
+		Kind:      a.Kind,
+		URI:       a.URI,
+		Hash:      a.Hash,
+		MediaType: a.MediaType,
+		ByteSize:  a.ByteSize,
+		Filename:  a.Filename,
+		URL:       a.URI,
+	}
 }
 
 // EntityStateEntry is one entry of the entity-state side channel. It is keyed
 // by entity name at the envelope layer.
 type EntityStateEntry struct {
-	ID            string                   `json:"id"`
+	EntityID      string                   `json:"entity_id"`
 	CanonicalName string                   `json:"canonical_name"`
 	Observations  []EntityObservationEntry `json:"observations"`
 }
@@ -129,10 +196,11 @@ type EntityObservationEntry struct {
 // ChunkEntry is one entry of the chunk side channel. It is keyed by chunk id at
 // the envelope layer.
 type ChunkEntry struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
-	Index     int    `json:"index"`
-	Truncated bool   `json:"truncated"`
+	ID          string       `json:"id"`
+	Text        string       `json:"text"`
+	ChunkIndex  int          `json:"chunk_index"`
+	Truncated   bool         `json:"truncated"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // RecallResponse is the recall response envelope with its optional side
@@ -141,9 +209,8 @@ type RecallResponse struct {
 	Results              []RecallResultItem          `json:"results"`
 	Entities             map[string]EntityStateEntry `json:"entities,omitempty"`
 	Chunks               map[string]ChunkEntry       `json:"chunks,omitempty"`
-	SourceFacts          map[string]string           `json:"source_facts,omitempty"`
-	SourceFactsTruncated bool                        `json:"source_facts_truncated,omitempty"`
-	Truncated            bool                        `json:"truncated"`
+	SourceFacts          map[string]RecallResultItem `json:"source_facts,omitempty"`
+	SourceFactsTruncated bool                        `json:"source_facts_truncated"`
 	Trace                map[string]any              `json:"trace,omitempty"`
 }
 

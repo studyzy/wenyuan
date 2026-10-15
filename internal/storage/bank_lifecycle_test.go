@@ -30,6 +30,22 @@ func TestMemoryListBanksPaging(t *testing.T) {
 	}
 }
 
+// list-0002: an explicit limit of 0 is a valid page size and returns nothing,
+// while the total still reflects the match count.
+func TestMemoryListBanksZeroLimit(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "a", Name: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListBanks(context.TODO(), BankQuery{Limit: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Banks) != 0 {
+		t.Fatalf("limit=0 page = %+v, want empty with total 1", page)
+	}
+}
+
 // ts-0004: the alias-attributed match is reported; a direct match reports none.
 func TestMemoryListMatchedAliases(t *testing.T) {
 	store := NewMemoryStore("public")
@@ -65,7 +81,7 @@ func TestMemoryAliasPromotion(t *testing.T) {
 	if _, err := store.AddAlias(context.TODO(), "b", "two", false); err != nil {
 		t.Fatal(err)
 	}
-	aliases, err := store.PromoteAlias(context.TODO(), "b", "two")
+	aliases, err := store.SetAliasPrimary(context.TODO(), "b", "two", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +99,40 @@ func TestMemoryAliasPromotion(t *testing.T) {
 	}
 }
 
+// inv-0003: primary=false demotes just that alias, so the bank falls back to its
+// own id and any other alias is left as it was.
+func TestMemoryAliasDemotion(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(context.TODO(), "b", "one", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAlias(context.TODO(), "b", "two", false); err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := store.SetAliasPrimary(context.TODO(), "b", "one", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range aliases {
+		if alias.Primary {
+			t.Fatalf("primary=false must clear the display flag: %+v", aliases)
+		}
+	}
+	if primary := store.PrimaryAlias(context.TODO(), "b"); primary != "" {
+		t.Fatalf("bank must fall back to its own id, primary alias = %q", primary)
+	}
+}
+
 // ts-0013: targeting an alias the bank does not own is a not-found.
 func TestMemoryAliasNotFound(t *testing.T) {
 	store := NewMemoryStore("public")
 	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PromoteAlias(context.TODO(), "b", "ghost"); err != ErrAliasNotFound {
+	if _, err := store.SetAliasPrimary(context.TODO(), "b", "ghost", true); err != ErrAliasNotFound {
 		t.Fatalf("promote unknown alias err = %v", err)
 	}
 	if _, err := store.RemoveAlias(context.TODO(), "b", "ghost"); err != ErrAliasNotFound {

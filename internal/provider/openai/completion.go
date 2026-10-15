@@ -23,9 +23,15 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role string `json:"role"`
+	// Content is a string for a text-only turn, or an ordered list of parts for
+	// a multimodal one (OpenAI's content-parts shape).
+	Content any    `json:"content"`
 	Name    string `json:"name,omitempty"`
+	// ToolCalls ride an assistant turn; ToolCallID keys a tool result back to
+	// its call.
+	ToolCalls  []toolCallWire `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
 type responseFormat struct {
@@ -52,6 +58,7 @@ type toolFunction struct {
 
 type toolCallWire struct {
 	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
 	Function struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
@@ -191,21 +198,97 @@ func decodeChatResponse(raw []byte, req provider.CompletionRequest, queueWait, l
 	return result, nil
 }
 
-// usageFrom maps the wire accounting onto the boundary's usage type.
+// usageFrom maps the wire accounting onto the boundary's usage type, keeping
+// the visible output separable from the provider's hidden reasoning.
+//
+// The boundary's Usage treats OutputTokens/TotalTokens as *visible* output,
+// with reasoning surfaced separately in ReasoningTokens — the same contract the
+// reference's visible_token_usage normalizes to. OpenAI-compatible upstreams do
+// not agree on where reasoning lives on the wire: folded (OpenAI's own
+// reasoning models) reports total = prompt + completion with completion already
+// including reasoning; unfolded (several gateways and proxies) reports
+// total = prompt + completion + reasoning with completion already visible-only.
+// Subtracting reasoning from completion unconditionally clamps a real
+// completion to zero on the unfolded shape whenever reasoning exceeds the
+// visible output.
+//
+// total reads as prompt + visible + reasoning under *both* shapes, so visible
+// output is derived from it and never needs the shape to be known; it is then
+// clamped to the two admissible readings — completion (unfolded) and
+// completion - reasoning (folded) — so a drifted total degrades to the nearer
+// count rather than to a bogus one. A missing or zero total leaves nothing to
+// derive from and falls back to the folded reading.
+//
+// A provider that reports no reasoning at all cannot be split, so the whole
+// completion is visible output.
 func usageFrom(u usageWire) provider.Usage {
+	input := u.PromptTokens
+	completion := u.CompletionTokens
+	thoughts := u.CompletionTokensDetails.ReasoningTokens
+
+	folded := completion - thoughts
+	if folded < 0 {
+		folded = 0
+	}
+	var output int
+	switch {
+	case thoughts == 0:
+		output = completion
+	case u.TotalTokens > 0:
+		derived := (u.TotalTokens - thoughts) - input
+		output = min(completion, max(folded, derived))
+	default:
+		output = folded
+	}
 	return provider.Usage{
-		InputTokens:       u.PromptTokens,
-		OutputTokens:      u.CompletionTokens,
-		TotalTokens:       u.TotalTokens,
+		InputTokens:       input,
+		OutputTokens:      output,
+		TotalTokens:       input + output,
 		CachedInputTokens: u.PromptTokensDetails.CachedTokens,
-		ReasoningTokens:   u.CompletionTokensDetails.ReasoningTokens,
+		ReasoningTokens:   thoughts,
 	}
 }
 
 func toWireMessages(messages []provider.Message) []chatMessage {
 	out := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
-		out = append(out, chatMessage{Role: string(m.Role), Content: m.Content, Name: m.Name})
+		message := chatMessage{Role: string(m.Role), Name: m.Name}
+		switch {
+		case len(m.ToolCalls) > 0:
+			// An assistant turn that asked for tools carries the calls (and no
+			// text), so the following tool results have something to answer.
+			calls := make([]toolCallWire, 0, len(m.ToolCalls))
+			for _, call := range m.ToolCalls {
+				var wire toolCallWire
+				wire.ID = call.ID
+				wire.Type = "function"
+				wire.Function.Name = call.Name
+				wire.Function.Arguments = string(call.Arguments)
+				calls = append(calls, wire)
+			}
+			message.ToolCalls = calls
+			message.Content = nil
+		case m.ToolCallID != "":
+			// A tool result answers one call by id.
+			message.ToolCallID = m.ToolCallID
+			message.Content = m.Content
+		case len(m.Parts) == 0:
+			message.Content = m.Content
+		default:
+			parts := make([]map[string]any, 0, len(m.Parts))
+			for _, part := range m.Parts {
+				if part.Type == "image_url" {
+					parts = append(parts, map[string]any{
+						"type":      "image_url",
+						"image_url": map[string]any{"url": part.ImageURL},
+					})
+					continue
+				}
+				parts = append(parts, map[string]any{"type": "text", "text": part.Text})
+			}
+			message.Content = parts
+		}
+		out = append(out, message)
 	}
 	return out
 }

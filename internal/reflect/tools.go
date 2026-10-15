@@ -84,15 +84,21 @@ var (
 
 // ToolDefinitions is the tool set as the provider boundary expects it.
 func ToolDefinitions() []provider.ToolDefinition {
-	defs := make([]provider.ToolDefinition, 0, len(ToolNames()))
-	for _, name := range ToolNames() {
-		defs = append(defs, provider.ToolDefinition{
-			Name:        name,
-			Description: toolDescription(name),
-			Parameters:  toolParameters(name),
-		})
+	names := ToolNames()
+	defs := make([]provider.ToolDefinition, 0, len(names))
+	for _, name := range names {
+		defs = append(defs, ToolDefinition(name))
 	}
 	return defs
+}
+
+// ToolDefinition is one tool as the provider boundary expects it.
+func ToolDefinition(name string) provider.ToolDefinition {
+	return provider.ToolDefinition{
+		Name:        name,
+		Description: toolDescription(name),
+		Parameters:  toolParameters(name),
+	}
 }
 
 // toolDescription explains one tool to the model.
@@ -129,31 +135,39 @@ func toolParameters(name string) json.RawMessage {
 			`"reason":` + reason + `,` +
 			`"query":` + query + `,` +
 			`"max_results":{"type":"integer","description":"Maximum perspectives to return (default 5)"}` +
-			`},"required":["query"]}`)
+			`},"required":["reason","query"]}`)
 	case ToolSearchObservations:
 		return json.RawMessage(`{"type":"object","properties":{` +
 			`"reason":` + reason + `,` +
 			`"query":` + query + `,` +
 			`"max_tokens":{"type":"integer","description":"Maximum tokens of results to return"}` +
-			`},"required":["query"]}`)
+			`},"required":["reason","query"]}`)
 	case ToolRecall:
 		return json.RawMessage(`{"type":"object","properties":{` +
 			`"reason":` + reason + `,` +
 			`"query":` + query + `,` +
-			`"max_tokens":{"type":"integer","description":"Maximum tokens of results to return"}` +
-			`},"required":["query"]}`)
+			`"max_tokens":{"type":"integer","description":"Maximum tokens of results to return"},` +
+			`"max_chunk_tokens":{"type":"integer","description":"Maximum tokens of source chunk text to attach"}` +
+			`},"required":["reason","query"]}`)
 	case ToolReadMentalModels:
 		return json.RawMessage(`{"type":"object","properties":{` +
 			`"reason":` + reason + `,` +
-			`"ids":{"type":"array","items":{"type":"string"},"description":"Identifiers a previous search returned"}` +
-			`},"required":["ids"]}`)
+			`"mental_model_ids":{"type":"array","items":{"type":"string"},"description":"Identifiers a previous search returned"},` +
+			`"ids":{"type":"array","items":{"type":"string"},"description":"Deprecated alias for mental_model_ids"},` +
+			`"max_tokens":{"type":"integer","description":"Maximum tokens of model content to return (default 6000)"}` +
+			`},"required":["reason"]}`)
 	case ToolExpand:
 		return json.RawMessage(`{"type":"object","properties":{` +
 			`"reason":` + reason + `,` +
-			`"ids":{"type":"array","items":{"type":"string"},"description":"Identifiers of the memories to expand"}` +
-			`},"required":["ids"]}`)
+			`"memory_ids":{"type":"array","items":{"type":"string"},"description":"Identifiers of the memories to expand (from recall results)"},` +
+			`"ids":{"type":"array","items":{"type":"string"},"description":"Deprecated alias for memory_ids"},` +
+			`"depth":{"type":"string","enum":["chunk","document"],"description":"Whether to expand to the chunk or the whole document"}` +
+			`},"required":["reason","memory_ids","depth"]}`)
 	case ToolDone:
-		return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `}}`)
+		return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
+			`"answer":{"type":"string","description":"The final synthesized answer as markdown"},` +
+			`"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
+			`},"required":["reason"]}`)
 	default:
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}

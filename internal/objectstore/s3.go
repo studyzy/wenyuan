@@ -119,6 +119,133 @@ const maxPayloadBytes = 64 << 20 // 64 MiB
 // signs in place of a payload digest.
 const emptyDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
+// DeletePrefix removes every object whose key begins with prefix, listing in
+// pages so a bank with many attachments is swept without loading every key at
+// once. It is what a bank teardown uses to reclaim object storage.
+func (s *Store) DeletePrefix(ctx context.Context, prefix string) error {
+	token := ""
+	for {
+		keys, next, err := s.listKeys(ctx, prefix, token)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if err := s.Delete(ctx, key); err != nil {
+				return err
+			}
+		}
+		if next == "" {
+			return nil
+		}
+		token = next
+	}
+}
+
+// listObjectsResult is the subset of the ListObjectsV2 response we read.
+type listObjectsResult struct {
+	Contents []struct {
+		Key string `xml:"Key"`
+	} `xml:"Contents"`
+	IsTruncated           bool   `xml:"IsTruncated"`
+	NextContinuationToken string `xml:"NextContinuationToken"`
+}
+
+// listKeys pages one ListObjectsV2 response.
+func (s *Store) listKeys(ctx context.Context, prefix, token string) ([]string, string, error) {
+	base, host, err := s.bucketURL()
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	query := req.URL.Query()
+	query.Set("list-type", "2")
+	query.Set("prefix", prefix)
+	if token != "" {
+		query.Set("continuation-token", token)
+	}
+	req.URL.RawQuery = query.Encode()
+	req.Host = host
+	now := s.now().UTC()
+	req.Header.Set("x-amz-date", now.Format("20060102T150405Z"))
+	if s.cfg.AccessKeyID != "" {
+		req.Header.Set("x-amz-content-sha256", emptyDigest)
+		req.Header.Set("Authorization", s.sign(req, host, now, emptyDigest))
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", s.statusError(resp)
+	}
+	var result listObjectsResult
+	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, "", err
+	}
+	keys := make([]string, 0, len(result.Contents))
+	for _, entry := range result.Contents {
+		keys = append(keys, entry.Key)
+	}
+	if result.IsTruncated {
+		return keys, result.NextContinuationToken, nil
+	}
+	return keys, "", nil
+}
+
+// Delete removes one object. A key that is already gone is not an error, so a
+// delete is idempotent.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	resp, err := s.do(ctx, http.MethodDelete, key, nil, map[string]string{
+		"x-amz-content-sha256": emptyDigest,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	return s.statusError(resp)
+}
+
+// bucketURL builds the bucket-level URL (no key) used by the listing calls.
+func (s *Store) bucketURL() (string, string, error) {
+	if s.cfg.Bucket == "" {
+		return "", "", errors.New("object store has no bucket configured")
+	}
+	endpoint := strings.TrimRight(s.cfg.Endpoint, "/")
+	if endpoint == "" {
+		region := s.cfg.Region
+		if region == "" {
+			region = "us-east-1"
+		}
+		if region == "us-east-1" {
+			endpoint = "https://" + s.cfg.Bucket + ".s3.amazonaws.com"
+		} else {
+			endpoint = "https://" + s.cfg.Bucket + ".s3." + region + ".amazonaws.com"
+		}
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return "", "", err
+		}
+		return strings.TrimRight(endpoint, "/"), parsed.Host, nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", "", fmt.Errorf("object store endpoint is not a URL: %w", err)
+	}
+	if s.cfg.PathStyle {
+		parsed.Path = joinPath(parsed.Path, s.cfg.Bucket)
+		return strings.TrimRight(parsed.String(), "/"), parsed.Host, nil
+	}
+	parsed.Host = s.cfg.Bucket + "." + parsed.Host
+	return strings.TrimRight(parsed.String(), "/"), parsed.Host, nil
+}
+
 // do signs and sends one request, returning the raw response for the caller to
 // classify.
 func (s *Store) do(ctx context.Context, method, key string, body []byte, headers map[string]string) (*http.Response, error) {
@@ -248,14 +375,20 @@ func (s *Store) sign(req *http.Request, host string, now time.Time, payloadHash 
 		sha256Hex([]byte(canonicalRequest)),
 	}, "\n")
 
-	key := hmacSHA256([]byte("AWS4"+s.cfg.SecretAccessKey), date)
-	key = hmacSHA256(key, region)
-	key = hmacSHA256(key, "s3")
-	key = hmacSHA256(key, "aws4_request")
-	signature := hex.EncodeToString(hmacSHA256(key, stringToSign))
+	signature := hex.EncodeToString(hmacSHA256(s.signingKey(date, region), stringToSign))
 
 	return "AWS4-HMAC-SHA256 Credential=" + s.cfg.AccessKeyID + "/" + scope +
 		", SignedHeaders=" + signedNames + ", Signature=" + signature
+}
+
+// signingKey derives the SigV4 signing key for a date and region. The
+// derivation is the same for a header signature and for the query-string form
+// a presigned URL uses, so it lives in one place.
+func (s *Store) signingKey(date, region string) []byte {
+	key := hmacSHA256([]byte("AWS4"+s.cfg.SecretAccessKey), date)
+	key = hmacSHA256(key, region)
+	key = hmacSHA256(key, "s3")
+	return hmacSHA256(key, "aws4_request")
 }
 
 // canonicalQuery renders the query string in the sorted, escaped form the

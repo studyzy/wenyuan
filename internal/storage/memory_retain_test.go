@@ -74,6 +74,43 @@ func TestDocumentCarriesHashAndText(t *testing.T) {
 	}
 }
 
+// Disabling document-text storage drops the raw source text from the document
+// and its chunks, while the content hashes are still computed from the real
+// text so delta dedup is unaffected.
+func TestDiscardDocumentTextKeepsHashes(t *testing.T) {
+	store := NewMemoryStore("public")
+	content := "first paragraph\n\n" + strings.Repeat("x", ChunkSize) + "\n\nthird paragraph"
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID:              "b1",
+		Items:               []RetainItem{{Content: content, DocumentID: "d1"}},
+		DiscardDocumentText: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.GetDocument(context.TODO(), "b1", "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.OriginalText != "" {
+		t.Fatalf("raw text must not be stored, got %q", doc.OriginalText)
+	}
+	if doc.ContentHash != ContentHash(content) {
+		t.Fatalf("content hash must come from the real text")
+	}
+	if len(store.chunks) == 0 {
+		t.Fatal("chunks must still be stored")
+	}
+	realChunks := SegmentWith(content, SegmentOptions{})
+	for i, chunk := range store.chunks {
+		if chunk.ChunkText != "" {
+			t.Fatalf("chunk %d text must not be stored, got %q", i, chunk.ChunkText)
+		}
+		if chunk.ContentHash != ContentHash(realChunks[i]) {
+			t.Fatalf("chunk %d hash must come from the real text", i)
+		}
+	}
+}
+
 // ts-0009 / beh-0006 / neg-0003: re-using a document identifier replaces the
 // prior document's data.
 func TestReusedDocumentIDReplacesText(t *testing.T) {
@@ -242,14 +279,14 @@ func TestCancelOperationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := store.CancelOperation(context.TODO(), op.OperationID)
+	cancelled, err := store.CancelOperation(context.TODO(), "b1", op.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cancelled.Status != StatusCancelled {
 		t.Fatalf("cancelled status = %q", cancelled.Status)
 	}
-	if _, err := store.CancelOperation(context.TODO(), op.OperationID); err != ErrOperationConflict {
+	if _, err := store.CancelOperation(context.TODO(), "b1", op.OperationID); err != ErrOperationConflict {
 		t.Fatalf("cancel of a terminal operation err = %v, want conflict", err)
 	}
 }

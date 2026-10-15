@@ -3,6 +3,8 @@ package consolidation
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -11,6 +13,7 @@ import (
 // stubProvider returns a scripted completion so the pass can be exercised
 // without a live model.
 type stubProvider struct {
+	mu       sync.Mutex
 	name     string
 	response provider.CompletionResult
 	err      error
@@ -19,7 +22,9 @@ type stubProvider struct {
 
 func (s *stubProvider) Name() string { return s.name }
 func (s *stubProvider) Complete(_ context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
+	s.mu.Lock()
 	s.last = req
+	s.mu.Unlock()
 	return s.response, s.err
 }
 func (s *stubProvider) Embed(context.Context, provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
@@ -28,37 +33,83 @@ func (s *stubProvider) Embed(context.Context, provider.EmbeddingRequest) (provid
 func (s *stubProvider) VerifyConnection(context.Context) error { return nil }
 func (s *stubProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
 
+// lastRequest returns the most recent completion request, so a test can assert
+// on the prompt the model was actually sent.
+func (s *stubProvider) lastRequest() provider.CompletionRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
+}
+
 // stubStore records what the pass applied.
 type stubStore struct {
-	facts        []Fact
-	observations []Observation
-	created      []Create
-	updated      []Update
-	deleted      []string
-	marked       []string
+	mu            sync.Mutex
+	facts         []Fact
+	observations  []Observation
+	related       []Observation
+	askedRelated  bool
+	created       []Create
+	createdScopes [][]string
+	updated       []Update
+	deleted       []string
+	marked        []string
+	failed        []string
+	config        map[string]any
+	poolLimit     int
 }
 
 func (s *stubStore) ConsolidationFacts(context.Context, string, int) ([]Fact, error) {
 	return s.facts, nil
 }
-func (s *stubStore) ConsolidationObservations(context.Context, string, int) ([]Observation, error) {
-	return s.observations, nil
+func (s *stubStore) ConsolidationObservations(_ context.Context, _ string, scope []string, limit int) ([]Observation, error) {
+	s.mu.Lock()
+	s.poolLimit = limit
+	s.mu.Unlock()
+	var scoped []Observation
+	for _, observation := range s.observations {
+		if sameScope(observation.Scope, scope) {
+			scoped = append(scoped, observation)
+		}
+	}
+	return scoped, nil
 }
-func (s *stubStore) CreateObservation(_ context.Context, _, text string, sourceIDs []string) (string, error) {
+func (s *stubStore) CreateObservation(_ context.Context, _, text string, sourceIDs, scope []string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.created = append(s.created, Create{Text: text, SourceIDs: sourceIDs})
+	s.createdScopes = append(s.createdScopes, scope)
 	return "obs-new", nil
 }
 func (s *stubStore) UpdateObservation(_ context.Context, _, observationID, text string, sourceIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.updated = append(s.updated, Update{ObservationID: observationID, Text: text, SourceIDs: sourceIDs})
 	return nil
 }
 func (s *stubStore) DeleteObservation(_ context.Context, _, observationID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deleted = append(s.deleted, observationID)
 	return nil
 }
 func (s *stubStore) MarkConsolidated(_ context.Context, _ string, factIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.marked = append(s.marked, factIDs...)
 	return nil
+}
+func (s *stubStore) MarkConsolidationFailed(_ context.Context, _ string, factIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed = append(s.failed, factIDs...)
+	return nil
+}
+func (s *stubStore) RelatedObservations(context.Context, string, []string, []string, int) ([]Observation, error) {
+	s.askedRelated = true
+	return s.related, nil
+}
+func (s *stubStore) BankConfig(context.Context, string) (map[string]any, error) {
+	return s.config, nil
 }
 
 // The pass applies a create, an update and a delete, and marks only the facts a
@@ -165,5 +216,80 @@ func TestConsolidatorSkipsUntargetedDelete(t *testing.T) {
 	}
 	if result.Deleted != 0 || len(store.deleted) != 0 {
 		t.Fatalf("deleted = %v, want none", store.deleted)
+	}
+}
+
+// A create that restates an existing observation's text is dropped, so a twin
+// observation does not accumulate.
+func TestConsolidatorSkipsDuplicateCreate(t *testing.T) {
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
+		observations: []Observation{{ID: "o1", Text: "Alice owns a Honda"}},
+	}
+	model := &stubProvider{
+		name: "openai",
+		response: provider.CompletionResult{Structured: map[string]any{
+			"creates": []any{map[string]any{"text": "alice   owns a honda", "source_fact_ids": []any{"f1"}}},
+		}},
+	}
+	result, err := New(model, store).Run(context.Background(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 0 || result.Skipped != 1 {
+		t.Fatalf("result = %+v, want the duplicate create skipped", result)
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("a duplicate must not be written: %+v", store.created)
+	}
+}
+
+// A create that nearly restates an existing observation is dropped as a
+// near-duplicate, not only an exact one.
+func TestConsolidatorSkipsNearDuplicateCreate(t *testing.T) {
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
+		observations: []Observation{{ID: "o1", Text: "Alice owns a red Honda car"}},
+	}
+	model := &stubProvider{
+		name: "openai",
+		response: provider.CompletionResult{Structured: map[string]any{
+			"creates": []any{map[string]any{"text": "Alice owns the red Honda car", "source_fact_ids": []any{"f1"}}},
+		}},
+	}
+	result, err := New(model, store).Run(context.Background(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 0 || result.Skipped != 1 {
+		t.Fatalf("result = %+v, want the near-duplicate skipped", result)
+	}
+}
+
+// A near-identical twin that the recency-ordered pool did not contain is looked
+// up and offered as a merge candidate, and is not added twice.
+func TestConsolidatorWidensPoolWithRelatedObservations(t *testing.T) {
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice prefers tea"}},
+		observations: []Observation{{ID: "o1", Text: "unrelated conclusion"}},
+		related: []Observation{
+			{ID: "o2", Text: "Alice prefers tea over coffee", ProofCount: 3},
+			{ID: "o1", Text: "unrelated conclusion"},
+		},
+	}
+	model := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.askedRelated {
+		t.Fatal("the near-duplicate lookup must run")
+	}
+	// The prompt offered both the pooled and the related observation, once each.
+	user := model.last.Messages[len(model.last.Messages)-1].Content
+	if strings.Count(user, "Alice prefers tea over coffee") != 1 {
+		t.Fatalf("the related observation must be offered exactly once: %s", user)
+	}
+	if strings.Count(user, "unrelated conclusion") != 1 {
+		t.Fatalf("a pooled observation must not be duplicated: %s", user)
 	}
 }

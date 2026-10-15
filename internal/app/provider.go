@@ -1,11 +1,15 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/anthropic"
+	"github.com/studyzy/wenyuan/internal/provider/mock"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/provider/openai"
+	"github.com/studyzy/wenyuan/internal/provider/routing"
 )
 
 // ProviderRegistry returns the provider registry the composition root builds
@@ -24,6 +28,13 @@ func ProviderRegistry() *provider.Registry {
 	})
 	openai.Register(reg)
 	anthropic.Register(reg)
+	reg.Register(provider.Registration{
+		Name:               mock.NameMock,
+		RequiresCredential: false,
+		Build: func(settings provider.Settings) (provider.Provider, error) {
+			return &mock.Provider{}, nil
+		},
+	})
 	return reg
 }
 
@@ -33,6 +44,14 @@ func ProviderRegistry() *provider.Registry {
 // single function.
 func ResolveProvider(cfg config.Config) (provider.Provider, error) {
 	pc := cfg.Provider
+	// A setting this build cannot honour fails startup rather than being
+	// silently ignored: an operator who configured a routing strategy or a
+	// local embedding model must be told it is doing nothing, because the
+	// alternative is a deployment that believes it routes across models and
+	// does not.
+	if err := unsupportedProviderKeys(cfg); err != nil {
+		return nil, err
+	}
 	selected := pc.Provider
 	if selected == "" {
 		// No provider configured is the documented no-model mode, not an
@@ -41,7 +60,50 @@ func ResolveProvider(cfg config.Config) (provider.Provider, error) {
 	}
 	settings := ProviderSettings(pc)
 	settings.Provider = selected
-	return provider.Select(ProviderRegistry(), settings)
+	reg := ProviderRegistry()
+	built, err := provider.Select(reg, settings)
+	if err != nil && provider.IsInvalidProvider(err) {
+		// A name this build has no adapter for must name the key the operator
+		// has to change, not merely the list of names that would work.
+		return nil, fmt.Errorf("%s: %w", config.EnvLLMProvider, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A malformed routing-strategy document fails startup rather than silently
+	// routing nothing, which is what the reference does.
+	if cfg.Provider.StrategyError != nil {
+		return nil, cfg.Provider.StrategyError
+	}
+	// When a strategy is configured, cross the primary with every indexed
+	// member: the chain is what routes a request across them.
+	strategy, routed := routingStrategy(cfg.Provider.Strategy, len(cfg.Provider.LLMMembers))
+	if !routed {
+		return built, nil
+	}
+	members, err := chatChainMembers(reg, cfg, built)
+	if err != nil {
+		return nil, err
+	}
+	return routing.New(members, strategy)
+}
+
+// SupportsVision resolves whether the configured write model can read inline
+// image content, mirroring the reference's supports_vision(): an explicit
+// HINDSIGHT_API_LLM_VISION wins, otherwise the provider's own answer — the
+// OpenAI adapter claims support only for OpenAI itself, the native Anthropic
+// adapter claims it, and every gateway or proxy is unknown, which a retain
+// refuses rather than silently dropping the image.
+func SupportsVision(cfg config.Config) bool {
+	if cfg.Provider.Vision != nil {
+		return *cfg.Provider.Vision
+	}
+	switch cfg.Provider.Provider {
+	case "openai", "anthropic", mock.NameMock:
+		return true
+	default:
+		return false
+	}
 }
 
 // ProviderSettings maps the resolved provider configuration onto the
@@ -102,4 +164,12 @@ func ProviderSettings(pc config.ProviderConfig) provider.Settings {
 		}
 	}
 	return settings
+}
+
+// unsupportedProviderKeys reports the provider settings this build parses but
+// cannot act on. It is the explicit answer to a silent no-op: the provider
+// family classification lives in the configuration package, next to the key
+// list it is derived from, and this call site only forwards it.
+func unsupportedProviderKeys(cfg config.Config) error {
+	return cfg.ValidateSupported()
 }

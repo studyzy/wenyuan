@@ -7,14 +7,16 @@ import (
 )
 
 // Worker defaults. The attempt budget matches the reference consumer, which
-// retries a failed operation three times beyond its first try.
+// retries a failed operation three times beyond its first try. The concurrency
+// ceiling, poll interval and retry backoff are the reference's own defaults.
 const (
 	DefaultWorkerMaxRetries      = 3
-	DefaultWorkerConcurrency     = 4
+	DefaultWorkerConcurrency     = 10
 	DefaultWorkerLeaseSeconds    = 300
-	DefaultWorkerPollSeconds     = 1
-	DefaultWorkerInitialBackoffS = 1
+	DefaultWorkerPollInterval    = 500 * time.Millisecond
+	DefaultWorkerInitialBackoffS = 60
 	DefaultWorkerMaxBackoffS     = 60
+	DefaultWorkerHTTPPort        = 8889
 )
 
 // WorkerConfig tunes the background queue consumer.
@@ -33,6 +35,70 @@ type WorkerConfig struct {
 	InitialBackoff time.Duration
 	// MaxBackoff is the retry backoff ceiling.
 	MaxBackoff time.Duration
+	// HTTPPort is the port the worker's health/metrics surface binds. Zero
+	// disables it.
+	HTTPPort int
+	// WallTimeouts bounds one operation type's wall-clock budget. A type absent
+	// from the map is bounded only by the claim's lease.
+	WallTimeouts map[string]time.Duration
+	// ReservedSlots reserves a floor of the consumer's concurrency for a type.
+	ReservedSlots map[string]int
+	// RecallMaxCandidatesPerSource caps each recall retrieval arm before fusion.
+	// Zero disables the cap.
+	RecallMaxCandidatesPerSource int
+}
+
+// resolveWallTimeouts reads the per-operation wall ceilings. A key that is
+// absent leaves the operation bounded only by the claim's lease.
+//
+// The reference spells these HINDSIGHT_API_<OP>_WALL_TIMEOUT; this project
+// shipped the same knob earlier as HINDSIGHT_API_WORKER_<OP>_WALL_TIMEOUT_SECONDS.
+// The reference name is read first and the earlier name is honoured as a
+// fallback, so an environment written either way resolves the same ceiling.
+func resolveWallTimeouts(lookup func(string) (string, bool)) map[string]time.Duration {
+	out := map[string]time.Duration{
+		// The reference's per-operation ceilings, applied when neither the
+		// reference key nor the legacy alias is set.
+		"retain":      DefaultRetainWallTimeoutS * time.Second,
+		"consolidate": DefaultConsolidationWallTimeoutS * time.Second,
+		"reflect":     DefaultReflectWallTimeoutS * time.Second,
+	}
+	for _, spec := range []struct{ ref, legacy, opType string }{
+		{EnvRetainWallTimeout, EnvWorkerRetainWallSeconds, "retain"},
+		{EnvConsolidationWallTimeout, EnvWorkerConsolidationWallSeconds, "consolidate"},
+		{EnvReflectWallTimeout, EnvWorkerReflectWallSeconds, "reflect"},
+	} {
+		key := spec.ref
+		if _, ok := lookup(key); !ok {
+			key = spec.legacy
+		}
+		if value, ok := lookup(key); ok {
+			if seconds := intFromString(value); seconds > 0 {
+				out[spec.opType] = time.Duration(seconds) * time.Second
+			}
+		}
+	}
+	return out
+}
+
+// The reference's default per-operation wall ceilings, in seconds.
+const (
+	DefaultRetainWallTimeoutS        = 3600
+	DefaultConsolidationWallTimeoutS = 7200
+	DefaultReflectWallTimeoutS       = 300
+)
+
+// resolveReservedSlots reads the per-type concurrency floors. The consolidation
+// floor defaults to two, matching the reference, so a bank mid-bulk-ingest does
+// not starve observation folding.
+func resolveReservedSlots(lookup func(string) (string, bool)) map[string]int {
+	out := map[string]int{"consolidate": 2}
+	if value, ok := lookup(EnvWorkerConsolidationReservedSlots); ok {
+		if slots := intFromString(value); slots >= 0 {
+			out["consolidate"] = slots
+		}
+	}
+	return out
 }
 
 // resolveWorker reads the worker tuning through the shared resolution rules: a
@@ -44,7 +110,7 @@ func resolveWorker(lookup func(string) (string, bool)) WorkerConfig {
 		MaxRetries:     DefaultWorkerMaxRetries,
 		Concurrency:    DefaultWorkerConcurrency,
 		Lease:          DefaultWorkerLeaseSeconds * time.Second,
-		PollInterval:   DefaultWorkerPollSeconds * time.Second,
+		PollInterval:   DefaultWorkerPollInterval,
 		InitialBackoff: DefaultWorkerInitialBackoffS * time.Second,
 		MaxBackoff:     DefaultWorkerMaxBackoffS * time.Second,
 	}
@@ -52,8 +118,28 @@ func resolveWorker(lookup func(string) (string, bool)) WorkerConfig {
 	cfg.Concurrency = intFromEnv(lookup, EnvWorkerConcurrency, cfg.Concurrency)
 	cfg.Lease = secondsFromEnv(lookup, EnvWorkerLeaseSeconds, cfg.Lease)
 	cfg.PollInterval = secondsFromEnv(lookup, EnvWorkerPollSeconds, cfg.PollInterval)
+	cfg.WallTimeouts = resolveWallTimeouts(lookup)
+	cfg.ReservedSlots = resolveReservedSlots(lookup)
+	cfg.RecallMaxCandidatesPerSource = intFromEnv(lookup, EnvRecallMaxCandidatesPerSource, DefaultRecallMaxCandidatesPerSource)
 	cfg.InitialBackoff = secondsFromEnv(lookup, EnvWorkerInitialBackoffSeconds, cfg.InitialBackoff)
 	cfg.MaxBackoff = secondsFromEnv(lookup, EnvWorkerMaxBackoffSeconds, cfg.MaxBackoff)
+	cfg.HTTPPort = intFromEnv(lookup, EnvWorkerHTTPPort, DefaultWorkerHTTPPort)
+	// Reference aliases: the reference names these keys differently and
+	// expresses the poll interval in milliseconds, so an existing deployment's
+	// environment is honoured rather than silently ignored.
+	if cfg.Concurrency == DefaultWorkerConcurrency {
+		cfg.Concurrency = intFromEnv(lookup, EnvWorkerMaxSlots, cfg.Concurrency)
+	}
+	if cfg.InitialBackoff == DefaultWorkerInitialBackoffS*time.Second {
+		cfg.InitialBackoff = secondsFromEnv(lookup, EnvWorkerTaskRetryBackoffSecs, cfg.InitialBackoff)
+	}
+	if cfg.PollInterval == DefaultWorkerPollInterval {
+		if value, ok := lookup(EnvWorkerPollIntervalMS); ok {
+			if ms := intFromString(value); ms > 0 {
+				cfg.PollInterval = time.Duration(ms) * time.Millisecond
+			}
+		}
+	}
 
 	// A non-positive attempt budget would mean "no retry at all", so it is
 	// clamped at zero rather than allowed to go negative.
@@ -86,6 +172,13 @@ func secondsFromEnv(lookup func(string) (string, bool), key string, fallback tim
 // hostListFromEnv reads a comma-separated host allowlist. A blank value yields
 // an empty list, which the guard treats as "no allowlist configured".
 func hostListFromEnv(lookup func(string) (string, bool), key string) []string {
+	return stringListFromEnv(lookup, key)
+}
+
+// stringListFromEnv reads a comma-separated list, trimming each element and
+// dropping empties. A blank or absent value yields nil, which callers read as
+// "unset" distinct from an explicit empty list.
+func stringListFromEnv(lookup func(string) (string, bool), key string) []string {
 	raw, ok := lookup(key)
 	if !ok || strings.TrimSpace(raw) == "" {
 		return nil

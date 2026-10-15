@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -26,8 +27,13 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 	if s.writeErr != nil {
 		return RetainOutcome{}, s.writeErr
 	}
+	// A first write declares the bank, as the postgres backend does. An
+	// identifier the create path refuses is refused here too, so a write cannot
+	// leave a bank behind under a name the create route would not accept.
 	if _, ok := s.banks[req.BankID]; !ok {
-		s.createBankLocked(req.BankID)
+		if err := s.createBankLocked(req.BankID); err != nil {
+			return RetainOutcome{}, err
+		}
 	}
 	opID := req.OperationID
 	if opID == "" {
@@ -39,7 +45,10 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 
 	grouped := make([][]string, 0, len(req.Items))
 	for index, item := range req.Items {
-		units := s.writeItemLocked(req, item, extracted[index], now)
+		units, err := s.writeItemLocked(ctx, req, item, extracted[index], now)
+		if err != nil {
+			return RetainOutcome{}, err
+		}
 		grouped = append(grouped, units)
 	}
 
@@ -52,6 +61,11 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 		ProcessedContentTokens: processedTokens,
 	}
 	s.recordWriteWatermarkLocked(req.BankID, now)
+	if req.SkipOperationRecord {
+		// The caller (a queued write's worker) already owns the operation
+		// record, so the write leaves the queue alone.
+		return outcome, nil
+	}
 	if req.Async {
 		s.operations[opID] = Operation{
 			OperationID:   opID,
@@ -78,74 +92,303 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 }
 
 // writeItemLocked persists one item and returns the created unit identifiers in
-// segmentation order.
-// writeItemLocked persists one item and returns the created unit identifiers in
 // extraction order when the item was extracted, and in segmentation order
 // otherwise.
-func (s *MemoryStore) writeItemLocked(req RetainRequest, item RetainItem, facts []ExtractedFact, now time.Time) []string {
+func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, item RetainItem, facts []ExtractedFact, now time.Time) ([]string, error) {
 	docID := item.DocumentID
 	if docID == "" {
 		docID = newID()
 	}
-	s.putDocumentLocked(req.BankID, docID, item.Content, item, now)
+	originalText := item.Content
+	baseIndex := 0
+	var existingHashes map[string]bool
+	// pruneCandidates are the entities the replaced text named; each is dropped
+	// after the write if nothing mentions it any more.
+	var pruneCandidates []string
+	// A re-retain against an explicit document id honours the update mode:
+	// replace discards the previous document's units, chunks and links, append
+	// concatenates the new text onto the stored document.
+	if item.DocumentID != "" {
+		// Delta retain: an unchanged document is not re-extracted, so a
+		// repeated import is idempotent.
+		if !item.ForceReextract && item.UpdateMode != "replace" && item.UpdateMode != "append" {
+			if existing, ok := s.documents[item.DocumentID]; ok &&
+				existing.BankID == req.BankID && existing.ContentHash == ContentHash(item.Content) {
+				return s.unitIDsForDocumentLocked(req.BankID, item.DocumentID), nil
+			}
+		}
+		// The default mode is replace: re-retaining a document id with new
+		// content supersedes what the document said, so its units, chunks and
+		// links are discarded before the new evidence is written. "append" is
+		// the only mode that keeps what is already stored.
+		switch item.UpdateMode {
+		case "append":
+			if existing, ok := s.documents[docID]; ok && existing.OriginalText != "" {
+				originalText = joinDocumentParts(existing.OriginalText, item.Content)
+				baseIndex, existingHashes = s.documentChunkStateLocked(req.BankID, docID)
+			}
+		default:
+			// The replaced text's entities become prune candidates: one only the
+			// old text named has no mention left once the new evidence is
+			// written, but the prune waits until then so an entity the new text
+			// still names survives as the same identity.
+			pruneCandidates = s.clearDocumentUnitsLocked(req.BankID, docID)
+		}
+	}
+	s.putDocumentLocked(req.BankID, docID, originalText, !req.DiscardDocumentText, item, now)
+	// An attachment is derived from the document's canonical text and nothing
+	// else, so a re-retain that drops an image retires it here.
+	s.syncDocumentAttachmentsLocked(req.BankID, docID, item.Content)
 	tags := mergeTags(item.Tags, req.DocumentTags)
 
-	chunkIDs := s.putItemChunksLocked(req.BankID, docID, item.Content)
-	contents := itemContents(req.BankID, docID, chunkIDs, item, facts, tags)
+	chunkBySegment := s.putItemChunksLocked(req.BankID, docID, item.Content, !req.DiscardDocumentText, segmentOptionsFor(req), baseIndex, existingHashes)
+	contents := itemContents(req.BankID, docID, chunkBySegment, item, facts, tags, segmentOptionsFor(req), modelExtractionEnabled(req))
+	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
+		return nil, err
+	}
 	units := make([]string, 0, len(contents))
 	for _, content := range contents {
 		unit := content.unit
 		unit.ID = newID()
 		s.upsertUnitLocked(unit)
+		mentioned := make([]string, 0, len(content.entities))
+		seen := map[string]bool{}
 		for _, entity := range content.entities {
 			resolved := s.resolveEntityLocked(req.BankID, entity, item.ResolveEntities)
 			if resolved.ID == "" {
 				continue
 			}
 			s.unitEntities[unit.ID] = append(s.unitEntities[unit.ID], resolved.ID)
+			// A mention moves the entity's stats: the count is per mention, not
+			// per entity, and the last mention stamps last_seen.
+			if stored, ok := s.entities[resolved.ID]; ok {
+				stored.MentionCount++
+				stamp := now
+				stored.LastSeen = &stamp
+				s.entities[resolved.ID] = stored
+			}
+			if !seen[resolved.ID] {
+				seen[resolved.ID] = true
+				mentioned = append(mentioned, resolved.ID)
+			}
+		}
+		// Every pair of entities this unit mentions co-occurs, which is what the
+		// entity graph draws and resolution weights. Per unit, so two entities a
+		// unit does not share are not neighbours.
+		for i := range len(mentioned) {
+			for j := i + 1; j < len(mentioned); j++ {
+				a, b := mentioned[i], mentioned[j]
+				if a > b {
+					a, b = b, a
+				}
+				s.cooccurrences[req.BankID+"\x00"+a+"\x00"+b]++
+			}
 		}
 		units = append(units, unit.ID)
 	}
 	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
 	s.links = append(s.links, causalLinksFor(req.BankID, units, contents)...)
-	return units
+	// Embedding-similar units are linked semantically, among this item's units
+	// and their nearest existing neighbours.
+	s.links = append(s.links, s.semanticLinksLocked(req.BankID, units)...)
+	if len(pruneCandidates) > 0 {
+		s.pruneEntitiesIfOrphanedLocked(req.BankID, pruneCandidates)
+	}
+	return units, nil
+}
+
+// semanticLinksLocked builds semantic links for a freshly written item: its own
+// units plus a bounded window of the bank's existing units, so a neighbour set
+// is available without scanning the whole bank.
+func (s *MemoryStore) semanticLinksLocked(bankID string, unitIDs []string) []MemoryLink {
+	candidates := make([]MemoryUnit, 0, len(unitIDs)+semanticNeighbourWindow)
+	for _, id := range unitIDs {
+		if unit, ok := s.units[id]; ok {
+			candidates = append(candidates, unit)
+		}
+	}
+	added := 0
+	for _, unit := range s.units {
+		if added >= semanticNeighbourWindow {
+			break
+		}
+		if unit.BankID != bankID || len(unit.Embedding) == 0 {
+			continue
+		}
+		candidates = append(candidates, unit)
+		added++
+	}
+	return semanticLinksFor(bankID, candidates)
+}
+
+// semanticNeighbourWindow bounds how many existing units a write compares
+// against when building semantic links.
+const semanticNeighbourWindow = 200
+
+// unitIDsForDocumentLocked returns the ids of a document's stored units in a
+// deterministic order, so a delta-skipped retain reports the units already on
+// record.
+func (s *MemoryStore) unitIDsForDocumentLocked(bankID, docID string) []string {
+	ids := make([]string, 0)
+	for id, unit := range s.units {
+		if unit.BankID == bankID && unit.DocumentID == docID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// clearDocumentUnitsLocked removes a document's units, chunks and links while
+// keeping the document row, so a replace-mode re-retain rebuilds the document's
+// evidence instead of accumulating it. It returns the entities the removed
+// units mentioned — the candidates a later prune re-checks, once the new
+// evidence is written and an entity the new text still names has been re-linked.
+func (s *MemoryStore) clearDocumentUnitsLocked(bankID, docID string) []string {
+	removed := map[string]bool{}
+	candidates := map[string]bool{}
+	for id, unit := range s.units {
+		if unit.BankID == bankID && unit.DocumentID == docID {
+			for _, entityID := range s.unitEntities[id] {
+				candidates[entityID] = true
+			}
+			delete(s.units, id)
+			delete(s.unitEntities, id)
+			removed[id] = true
+		}
+	}
+	chunks := s.chunks[:0]
+	for _, chunk := range s.chunks {
+		if chunk.BankID == bankID && chunk.DocumentID == docID {
+			continue
+		}
+		chunks = append(chunks, chunk)
+	}
+	s.chunks = chunks
+	links := s.links[:0]
+	for _, link := range s.links {
+		if removed[link.FromUnitID] || removed[link.ToUnitID] {
+			continue
+		}
+		links = append(links, link)
+	}
+	s.links = links
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// pruneEntitiesIfOrphanedLocked deletes the named entities that no surviving
+// unit mentions, along with the co-occurrence rows that named them.
+func (s *MemoryStore) pruneEntitiesIfOrphanedLocked(bankID string, entityIDs []string) {
+	pruned := map[string]bool{}
+	for _, id := range entityIDs {
+		entity, ok := s.entities[id]
+		if !ok || entity.BankID != bankID {
+			continue
+		}
+		if entityMentioned(id, s.unitEntities) {
+			continue
+		}
+		delete(s.entities, id)
+		pruned[id] = true
+	}
+	if len(pruned) > 0 {
+		for key := range s.cooccurrences {
+			if cooccurrenceTouches(key, pruned) {
+				delete(s.cooccurrences, key)
+			}
+		}
+	}
 }
 
 // putItemChunksLocked stores one item's segments and returns their identifiers
-// in order.
-func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string) []string {
-	chunks := Segment(content)
-	chunkIDs := make([]string, 0, len(chunks))
+// in order. When storeText is false the raw chunk text is not kept, but the
+// content hash is still computed from it so delta dedup is unaffected.
+func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string, storeText bool, sizes SegmentOptions, baseIndex int, existing map[string]bool) map[int]string {
+	chunks := SegmentWith(content, sizes)
+	bySegment := make(map[int]string, len(chunks))
+	next := baseIndex
 	for i, chunk := range chunks {
-		chunkID := newID()
+		if existing[ContentHash(chunk)] {
+			continue
+		}
+		chunkID := BuildChunkID(bankID, docID, next)
+		text := chunk
+		if !storeText {
+			text = ""
+		}
 		s.chunks = append(s.chunks, Chunk{
-			ChunkID: chunkID, BankID: bankID, DocumentID: docID, ChunkIndex: i, ChunkText: chunk, ContentHash: ContentHash(chunk),
+			ChunkID: chunkID, BankID: bankID, DocumentID: docID, ChunkIndex: next, ChunkText: text, ContentHash: ContentHash(chunk),
 		})
-		chunkIDs = append(chunkIDs, chunkID)
+		bySegment[i] = chunkID
+		next++
 	}
-	return chunkIDs
+	return bySegment
+}
+
+// documentChunkStateLocked returns a document's stored chunk content hashes and
+// how many it holds, so an append skips a tail it already stored and numbers its
+// new chunks past the ones present.
+func (s *MemoryStore) documentChunkStateLocked(bankID, docID string) (int, map[string]bool) {
+	hashes := map[string]bool{}
+	count := 0
+	for _, chunk := range s.chunks {
+		if chunk.BankID == bankID && chunk.DocumentID == docID {
+			hashes[chunk.ContentHash] = true
+			count++
+		}
+	}
+	return count, hashes
+}
+
+// retainParamsFor assembles the retain parameters persisted on a document: the
+// strategy and update mode plus the item context, event date, observation
+// scopes and metadata, so a document read reports what the write was given.
+func retainParamsFor(item RetainItem) map[string]any {
+	params := map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode}
+	if item.Context != "" {
+		params["context"] = item.Context
+	}
+	if item.Timestamp != nil {
+		params["event_date"] = item.Timestamp.Format(time.RFC3339)
+	}
+	if len(item.Metadata) > 0 {
+		params["metadata"] = item.Metadata
+	}
+	if len(item.ObservationScopes) > 0 {
+		var scopes any
+		if err := json.Unmarshal(item.ObservationScopes, &scopes); err == nil {
+			params["observation_scopes"] = scopes
+		}
+	}
+	return params
 }
 
 // putDocumentLocked stores a document's text, hash, metadata and parameters.
-func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, item RetainItem, now time.Time) {
+// When storeText is false the raw text is not kept, but the content hash is
+// still computed from it so delta dedup is unaffected.
+func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, storeText bool, item RetainItem, now time.Time) {
 	tags := item.Tags
 	if tags == nil {
 		tags = []string{}
 	}
-	params := map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode}
-	if len(item.Metadata) > 0 {
-		params["metadata"] = item.Metadata
-	}
-	s.documents[docID] = Document{
+	params := retainParamsFor(item)
+	stored := Document{
 		ID:           docID,
 		BankID:       bankID,
-		OriginalText: text,
 		ContentHash:  ContentHash(text),
 		Metadata:     item.Metadata,
 		RetainParams: params,
 		Tags:         tags,
 		CreatedAt:    now,
 	}
+	if storeText {
+		stored.OriginalText = text
+	}
+	s.documents[docID] = stored
 }
 
 // upsertUnitLocked stores a memory unit in the in-process store, keeping the
@@ -153,6 +396,12 @@ func (s *MemoryStore) putDocumentLocked(bankID, docID, text string, item RetainI
 // list while unit lookups read the map, so a unit written through either path
 // must appear in both.
 func (s *MemoryStore) upsertUnitLocked(unit MemoryUnit) {
+	// The column has a default, so a unit written without a creation time is
+	// stamped at insert; the created_at axis of the statistics reads it.
+	if unit.CreatedAt == nil {
+		now := time.Now().UTC()
+		unit.CreatedAt = &now
+	}
 	_, existed := s.units[unit.ID]
 	s.units[unit.ID] = unit
 	if existed {
@@ -217,7 +466,7 @@ func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, re
 	} else if match, found := s.exactEntityMatchLocked(bankID, name); found {
 		return match
 	}
-	created := Entity{ID: newID(), BankID: bankID, CanonicalName: name, EntityKind: EntityKindRegular, MentionCount: 1}
+	created := Entity{ID: newID(), BankID: bankID, CanonicalName: name, EntityKind: EntityKindRegular, MentionCount: 0}
 	s.entities[created.ID] = created
 	return created
 }
@@ -323,6 +572,55 @@ func (s *MemoryStore) AppendDocument(ctx context.Context, bankID, docID, text, e
 	return doc, nil
 }
 
+// RetagDocumentMemories carries a document's renamed tags onto its units and
+// the observation scopes frozen on them, then removes the observations built
+// over them and returns how many were deleted. It mirrors the database-backed
+// store: the units' tags and scopes move together and the stale-observation
+// sweep that follows requeues the surviving co-sources.
+func (s *MemoryStore) RetagDocumentMemories(
+	ctx context.Context, bankID, docID string, oldTags, newTags []string,
+) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	srcIDs := make([]string, 0)
+	for id, unit := range s.units {
+		if unit.BankID != bankID || unit.DocumentID != docID {
+			continue
+		}
+		if rewritten := renamedScopes(unit.ObservationScopes, oldTags, newTags); rewritten != nil {
+			unit.ObservationScopes = rewritten
+		}
+		unit.Tags = append([]string(nil), normalizeTags(newTags)...)
+		s.units[id] = unit
+		if unit.FactType == TypeWorld || unit.FactType == TypeExperience {
+			srcIDs = append(srcIDs, id)
+		}
+	}
+	if len(srcIDs) == 0 {
+		return 0, nil
+	}
+	deleted, err := s.deleteStaleObservationsLocked(bankID, srcIDs)
+	if err != nil {
+		return 0, err
+	}
+	if deleted > 0 {
+		for _, id := range srcIDs {
+			if unit, ok := s.units[id]; ok {
+				unit.ConsolidatedAt = nil
+				s.units[id] = unit
+				delete(s.consolidated, id)
+			}
+		}
+	}
+	return deleted, nil
+}
+
 // ResolveEntity resolves an entity name against the bank, creating it with the
 // given kind when nothing matches.
 func (s *MemoryStore) ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
@@ -369,7 +667,12 @@ func (s *MemoryStore) UpsertUnitEntity(ctx context.Context, unitID, entityID str
 func (s *MemoryStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := entityID1 + "\x00" + entityID2
+	// One row per unordered pair, smaller id first, keyed by bank so reads stay
+	// bank-scoped — the same shape the reader in EntityGraph parses.
+	if entityID1 > entityID2 {
+		entityID1, entityID2 = entityID2, entityID1
+	}
+	key := bankID + "\x00" + entityID1 + "\x00" + entityID2
 	s.cooccurrences[key]++
 	return nil
 }

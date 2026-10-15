@@ -45,6 +45,11 @@ func (e *AuthenticationError) Unwrap() error { return ErrAuthentication }
 type Context struct {
 	// Schema is the PostgreSQL schema name.
 	Schema string
+	// Overrides are the tenant's configuration overrides, keyed by the public
+	// config names. They sit between the process configuration they layer over
+	// and the bank's own overrides, which win per key; a deployment that does
+	// not key configuration by tenant leaves this nil.
+	Overrides map[string]any
 }
 
 // Tenant is one schema a background worker should process. It is the discovery
@@ -57,6 +62,11 @@ type Tenant struct {
 	// carry it so configuration resolution honours tenant-level overrides; it
 	// is empty for a deployment that does not key configuration by tenant.
 	ID string
+	// Overrides are the tenant's configuration overrides, keyed by the public
+	// config names. Background work that resolves configuration for a tenant
+	// applies them beneath the bank's own overrides; a deployment that does not
+	// key configuration by tenant leaves this nil.
+	Overrides map[string]any
 }
 
 // Extension resolves the schema for a request and enumerates the schemas a

@@ -4,16 +4,7 @@ import (
 	"compress/gzip"
 	"net/http"
 	"strings"
-	"sync/atomic"
 )
-
-// MetricsRecorder counts requests and compressed bodies. It backs the
-// monitoring metrics endpoint without adding a metrics dependency.
-type MetricsRecorder struct {
-	Requests   atomic.Int64
-	Compressed atomic.Int64
-	InFlight   atomic.Int64
-}
 
 // Middleware is the standard handler decorator shape.
 type Middleware func(http.Handler) http.Handler
@@ -39,37 +30,55 @@ func Chain(handler http.Handler, middlewares ...Middleware) http.Handler {
 	return wrapped
 }
 
-// IgnoredParamsMiddleware reports unknown query parameter names on the
-// response. Handlers record the names; parameters discovered upstream are also
-// reported so the header is present even on simple routes.
-func IgnoredParamsMiddleware(filter QueryFilter) Middleware {
+// IgnoredParamsMiddleware reports unknown query parameters on the response.
+// The report is route-specific: the matched route declares the parameters it
+// accepts through QueryParams, and the query side is computed from that
+// declaration (plus the route's path-parameter names) when the response is
+// written. Body fields a handler records are added to the same collector. The
+// header is written when the response status is first written, because a header
+// set after WriteHeader is dropped.
+//
+// An already-installed collector is reused rather than replaced, so a caller
+// that wraps a request with IgnoredParamTrace observes the same request the
+// middleware reports on.
+func IgnoredParamsMiddleware() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			recorded := RecordIgnoredParamsFor(r, filter)
-			recorder := &ignoredHeaderWriter{ResponseWriter: w, names: nil}
-			next.ServeHTTP(recorder, recorded)
-			names := ignoredParamsFrom(recorded.Context())
-			if len(names) == 0 {
-				names = recorder.names
+			// The reference intercepts the MCP namespace in a wrapping
+			// middleware, so an MCP request never reaches the reporting route
+			// class and produces no ignored-parameter header. Passing it
+			// through untouched keeps that behaviour.
+			if strings.HasPrefix(r.URL.Path, NamespaceMCP) {
+				next.ServeHTTP(w, r)
+				return
 			}
-			if len(names) > 0 {
-				recorder.Header().Set(HeaderIgnoredParams, formatIgnoredParams(names))
+			collector := collectorFrom(r.Context())
+			if collector == nil {
+				collector = newIgnoredCollector()
+				r = withIgnoredCollector(r, collector)
 			}
+			recorder := &ignoredHeaderWriter{ResponseWriter: w, collector: collector, request: r}
+			next.ServeHTTP(recorder, r)
 		})
 	}
 }
 
-// ignoredHeaderWriter defers header writes until the handler has populated the
-// ignored-parameter list.
+// ignoredHeaderWriter injects the ignored-parameters header at the moment the
+// response status is committed, so the header survives even though handlers
+// call WriteHeader themselves.
 type ignoredHeaderWriter struct {
 	http.ResponseWriter
-	names []string
-	wrote bool
+	collector *ignoredCollector
+	request   *http.Request
+	wrote     bool
 }
 
 func (w *ignoredHeaderWriter) WriteHeader(status int) {
 	if w.wrote {
 		return
+	}
+	if names := w.collector.ignoredFor(w.request); len(names) > 0 {
+		w.Header().Set(HeaderIgnoredParams, formatIgnoredParams(names))
 	}
 	w.wrote = true
 	w.ResponseWriter.WriteHeader(status)
@@ -77,7 +86,7 @@ func (w *ignoredHeaderWriter) WriteHeader(status int) {
 
 func (w *ignoredHeaderWriter) Write(b []byte) (int, error) {
 	if !w.wrote {
-		w.wrote = true
+		w.WriteHeader(http.StatusOK)
 	}
 	return w.ResponseWriter.Write(b)
 }
@@ -190,29 +199,14 @@ func (w *gzipResponseWriter) VaryHeader() {
 	}
 }
 
-// MetricsMiddleware records request counts and in-flight depth.
-func MetricsMiddleware(recorder *MetricsRecorder) Middleware {
-	return func(next http.Handler) http.Handler {
-		if recorder == nil {
-			return next
-		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			recorder.InFlight.Add(1)
-			defer recorder.InFlight.Add(-1)
-			recorder.Requests.Add(1)
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// DisconnectCancelMiddleware cancels the request context when the client goes
-// away so long-running read work stops early.
+// DisconnectCancelMiddleware passes the request context through unchanged. The
+// standard library already cancels it when the client disconnects, so a handler
+// that selects on the context observes the disconnect; the admission lane uses
+// it to report 499.
 func DisconnectCancelMiddleware() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, cancel := contextWithCloseNotify(r)
-			defer cancel()
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -237,10 +231,34 @@ func WriteJSONFor(w http.ResponseWriter, r *http.Request, status int, payload an
 	WriteJSON(w, status, payload, EncodeOptionsFor(r))
 }
 
+// nameMissingBank replaces the missing-bank marker with the reference's message,
+// which names the bank. The mapper that produced the error has no bank id; the
+// request does, so the substitution happens here.
+func nameMissingBank(r *http.Request, err error) error {
+	httpErr, ok := err.(*HTTPError)
+	if !ok || httpErr.Status != KindNotFound || httpErr.Detail != DetailMissingBank {
+		return err
+	}
+	bankID := r.PathValue("bank_id")
+	if bankID == "" {
+		return err
+	}
+	named := *httpErr
+	named.Detail = BankNotFoundDetail(bankID)
+	return &named
+}
+
+// WriteJSONOpenRow writes a response whose object rows must keep explicit null
+// fields. The reference keeps nulls for open-row payloads such as graph nodes,
+// so this overrides the request's null-dropping option for those responses.
+func WriteJSONOpenRow(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	WriteJSON(w, status, payload, EncodeOptions{DropNullFields: false})
+}
+
 // WriteErrorFor writes a shared error envelope using the request's shaping
 // options.
 func WriteErrorFor(w http.ResponseWriter, r *http.Request, err error) {
-	WriteError(w, err, EncodeOptionsFor(r))
+	WriteError(w, nameMissingBank(r, err), EncodeOptionsFor(r))
 }
 
 // WriteValidationFor writes a validation failure body using the request's

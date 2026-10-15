@@ -65,7 +65,7 @@ func TestPostgresDeleteOperation(t *testing.T) {
 	if _, err := pg.DeleteOperation(ctx, "b1", terminal); err != nil {
 		t.Fatalf("delete terminal: %v", err)
 	}
-	if _, err := pg.GetOperation(ctx, terminal); !errors.Is(err, ErrOperationNotFound) {
+	if _, err := pg.GetOperation(ctx, "b1", terminal); !errors.Is(err, ErrOperationNotFound) {
 		t.Fatalf("deleted operation still readable: %v", err)
 	}
 	if _, err := pg.DeleteOperation(ctx, "b1", live); !errors.Is(err, ErrOperationNotTerminal) {
@@ -78,7 +78,7 @@ func TestPostgresDeleteOperation(t *testing.T) {
 	if _, err := pg.DeleteOperation(ctx, "b1", foreign); !errors.Is(err, ErrOperationNotFound) {
 		t.Fatalf("cross-bank delete = %v, want ErrOperationNotFound", err)
 	}
-	if _, err := pg.GetOperation(ctx, foreign); err != nil {
+	if _, err := pg.GetOperation(ctx, "b2", foreign); err != nil {
 		t.Fatalf("foreign operation must survive: %v", err)
 	}
 }

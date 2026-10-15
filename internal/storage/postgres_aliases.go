@@ -71,20 +71,38 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 	return s.listAliases(ctx, bankID)
 }
 
-// PromoteAlias displays the bank under the named alias, demoting any other.
-func (s *PostgresStore) PromoteAlias(ctx context.Context, bankID, alias string) ([]BankAlias, error) {
+// SetAliasPrimary displays the bank under the named alias when primary is true,
+// demoting the incumbent in the same transaction. When primary is false it
+// clears only that alias's display flag, leaving the bank's other aliases as
+// they are.
+func (s *PostgresStore) SetAliasPrimary(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error) {
 	if _, err := s.GetBank(ctx, bankID); err != nil {
 		return nil, err
 	}
 	if !s.ownsAlias(ctx, bankID, alias) {
 		return nil, ErrAliasNotFound
 	}
-	if err := s.clearPrimary(ctx, bankID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = TRUE WHERE bank_id = $1 AND alias = $2`,
-		bankID, alias); err != nil {
+	defer func() { _ = tx.Rollback() }()
+	if primary {
+		// Demote first: the primary-uniqueness index forbids the overlap that
+		// setting the new one before clearing the old would create.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = FALSE
+			 WHERE bank_id = $1 AND is_primary = TRUE AND alias <> $2`,
+			bankID, alias); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = $1 WHERE bank_id = $2 AND alias = $3`,
+		primary, bankID, alias); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.listAliases(ctx, bankID)

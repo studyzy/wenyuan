@@ -10,15 +10,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/app"
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/maintenance"
+	"github.com/studyzy/wenyuan/internal/monitoring"
+	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
@@ -42,6 +49,7 @@ func run(args []string) error {
 	}
 
 	cfg := config.FromEnvironment()
+	slog.SetDefault(slog.New(monitoring.NewLogHandler(cfg)))
 	cfg = config.ApplyFlags(cfg, config.FlagValues{LogLevel: optionalString(flags, "log-level", logLevel)})
 	applyWorkerFlags(&cfg.Worker, flags, workerID, concurrency, maxRetries)
 
@@ -73,7 +81,18 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The worker records its model calls in the same trace the server writes,
+	// so a queued consolidation or refresh is visible to /llm-requests too.
+	model = app.TraceProvider(model, store, cfg.Provider)
 	reflection := app.NewReflectRunner(model)
+
+	// The worker resolves the embedding backend the same way the server does,
+	// so queued writes embed with the deployment's configured provider instead
+	// of falling back to the non-vector recall arms.
+	embedder, err := app.ResolveEmbedder(cfg)
+	if err != nil {
+		return err
+	}
 
 	// The maintenance loop runs beside the consumer rather than in the server,
 	// so the housekeeping work and the queued work share one process's
@@ -83,15 +102,56 @@ func run(args []string) error {
 	// It is started in every worker process with no leader election, which is
 	// safe because each job's work is collision-proof rather than because one
 	// process is chosen.
-	loop := app.NewMaintenanceLoop(store, model, reflection, app.NewTenantExtension(cfg), cfg.Maintenance)
+	loop := app.NewMaintenanceLoop(store, model, reflection, app.NewTenantExtension(cfg), cfg.Maintenance, cfg.VectorIndex)
 	if loop.Enabled() {
 		slog.Info("maintenance enabled",
 			"jobs", len(loop.Jobs),
 			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
 	}
 
-	consumer := app.NewQueueConsumer(store, model, reflection, cfg.Worker)
+	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, app.NewWebhookGuard(cfg), cfg.Provider.RetainMaxRetries).
+		WithAuditor(app.NewAuditLogger(cfg, store))
+	startWorkerHTTP(ctx, cfg, store)
 	return runBoth(ctx, consumer, loop)
+}
+
+// workerPinger adapts the store's readiness probe to the monitoring boundary.
+type workerPinger struct{ store storage.Store }
+
+func (p workerPinger) Ping(r *http.Request) error { return p.store.Ready(r.Context()) }
+
+// startWorkerHTTP serves the worker's health surface on its own port, so an
+// orchestrator can probe the worker exactly as it probes the API. A
+// non-positive port disables the surface.
+func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store) {
+	if cfg.Worker.HTTPPort <= 0 {
+		return
+	}
+	handler := &monitoring.WorkerHandler{
+		HealthHandler: monitoring.HealthHandler{DB: workerPinger{store: store}, Version: httpx.APIVersion, Started: time.Now()},
+		WorkerID:      cfg.Worker.ID,
+		IsShutdown:    func() bool { return ctx.Err() != nil },
+	}
+	mux := http.NewServeMux()
+	monitoring.BindWorkerRoutes(handler, func(method, pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, h)
+	})
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Worker.HTTPPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("worker health surface failed", "error", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
 }
 
 // runBoth drives the consumer and the maintenance loop together, returning

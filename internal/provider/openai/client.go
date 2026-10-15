@@ -33,6 +33,7 @@ var OpenAICompatibleProviders = map[string]string{
 	"atlas":        "https://api.atlascloud.ai/v1",
 	"meta":         "https://api.meta.ai/v1",
 	"fireworks":    "https://api.fireworks.ai/inference/v1",
+	"volcano":      "https://ark.cn-beijing.volces.com/api/v3",
 }
 
 // LocalProviders are the vendors that serve from the loopback address, so a

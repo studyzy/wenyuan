@@ -37,123 +37,156 @@ func serve(h *Handlers, method, path, body string, handler http.HandlerFunc) *ht
 	return rec
 }
 
-// The export route produces a zip archive carrying the bank's data.
-func TestExportProducesArchive(t *testing.T) {
+// The export route is the JSON bank-template export, not an archive.
+func TestExportReturnsTemplateManifest(t *testing.T) {
 	h, store := newHandlers(t, true, true)
-	if _, err := store.RetainWrite(context.Background(), storage.RetainRequest{
-		BankID: "b1",
-		Items:  []storage.RetainItem{{Content: "Alice works at Google.", DocumentID: "doc-1"}},
+	if _, err := store.PutMentalModel(context.Background(), storage.MentalModel{
+		ID: "goals", BankID: "b1", Subtype: storage.SubtypePinned, Name: "Goals",
+		SourceQuery: "what are the goals?", Tags: []string{}, MaxTokens: 2048,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	rec := serve(h, http.MethodGet, "/v1/default/banks/b1/export", "", h.Export)
+	rec := serve(h, http.MethodGet, "/v1/default/banks/b1/export", "", h.ExportTemplate)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("export: %d, body = %s", rec.Code, rec.Body.String())
 	}
-	// The whole-bank export is the bankadmin JSON archive, and it round-trips
-	// back into a bank.
-	var archive struct {
-		Bank struct {
-			ID string `json:"bank_id"`
-		} `json:"bank"`
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("export must be JSON, got content type %q", got)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &archive); err != nil {
-		t.Fatalf("exported bytes are not a readable archive: %v", err)
-	}
-	if archive.Bank.ID != "b1" {
-		t.Fatalf("archive bank = %q, want b1", archive.Bank.ID)
-	}
-}
-
-// The export route refuses a selection it cannot honour: a document subset
-// cannot be combined with a whole-bank section.
-func TestExportRejectsBadSelection(t *testing.T) {
-	h, _ := newHandlers(t, true, true)
-	rec := serve(h, http.MethodGet, "/v1/default/banks/b1/export?document_id=d1&include_data=true", "", h.Export)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("an incoherent selection must be refused, got %d", rec.Code)
-	}
-}
-
-// The template export renders the bank's configuration.
-func TestExportTemplateRendersManifest(t *testing.T) {
-	h, _ := newHandlers(t, true, true)
-	rec := serve(h, http.MethodGet, "/v1/default/banks/b1/export-template", "", h.ExportTemplate)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("export template: %d", rec.Code)
+	if got := rec.Header().Get("Content-Disposition"); got != "" {
+		t.Fatalf("a template export is not a download attachment, got %q", got)
 	}
 	var manifest templateManifest
 	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.BankID != "b1" {
-		t.Fatalf("manifest = %+v", manifest)
+	if manifest.Version != currentTemplateVersion {
+		t.Fatalf("manifest version = %q, want %q", manifest.Version, currentTemplateVersion)
+	}
+	if len(manifest.MentalModels) != 1 || manifest.MentalModels[0].ID != "goals" {
+		t.Fatalf("manifest models = %+v", manifest.MentalModels)
 	}
 }
 
-// The template import validates and, unless it is a dry run, queues the work.
-func TestImportTemplateDryRunAndApply(t *testing.T) {
+// The export route reports not-found for an unknown bank.
+func TestExportTemplateUnknownBankIsNotFound(t *testing.T) {
 	h, _ := newHandlers(t, true, true)
-	body := `{"bank_id":"b1","config":{"mental_models":["goals"],"directives":["tone"]}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/default/banks/missing/export", nil)
+	req.SetPathValue("bank_id", "missing")
+	h.ExportTemplate(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown-bank export = %d, want 404", rec.Code)
+	}
+}
 
-	dry := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template?dry_run=true", body, h.ImportTemplate)
+// The template import validates and, unless it is a dry run, applies the
+// manifest's config, mental models and directives.
+func TestImportTemplateDryRunAndApply(t *testing.T) {
+	h, store := newHandlers(t, true, true)
+	body := `{"version":"1","bank":{"reflect_mission":"help"},"mental_models":[{"id":"goals","name":"Goals","source_query":"what goals?"}],"directives":[{"name":"tone","content":"be nice"}]}`
+
+	dry := serve(h, http.MethodPost, "/v1/default/banks/b1/import?dry_run=true", body, h.ImportTemplate)
 	if dry.Code != http.StatusOK {
 		t.Fatalf("dry run: %d, body = %s", dry.Code, dry.Body.String())
 	}
-	var dryResult templateImportResult
+	var dryResult BankTemplateImportResponse
 	if err := json.Unmarshal(dry.Body.Bytes(), &dryResult); err != nil {
 		t.Fatal(err)
 	}
-	if !dryResult.DryRun || dryResult.ConfigApplied || len(dryResult.OperationIDs) != 0 {
-		t.Fatalf("dry run applied changes: %+v", dryResult)
+	if !dryResult.DryRun || !dryResult.ConfigApplied || len(dryResult.OperationIDs) != 0 {
+		t.Fatalf("dry run result = %+v", dryResult)
+	}
+	if len(dryResult.MentalModelsCreated) != 1 || dryResult.MentalModelsCreated[0] != "goals" {
+		t.Fatalf("dry-run created models = %v", dryResult.MentalModelsCreated)
+	}
+	if _, err := store.GetMentalModel(context.Background(), "b1", "goals"); err == nil {
+		t.Fatal("a dry run must not create anything")
 	}
 
-	apply := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template", body, h.ImportTemplate)
+	apply := serve(h, http.MethodPost, "/v1/default/banks/b1/import", body, h.ImportTemplate)
 	if apply.Code != http.StatusOK {
 		t.Fatalf("apply: %d, body = %s", apply.Code, apply.Body.String())
 	}
-	var applied templateImportResult
+	var applied BankTemplateImportResponse
 	if err := json.Unmarshal(apply.Body.Bytes(), &applied); err != nil {
 		t.Fatal(err)
 	}
-	if !applied.ConfigApplied || len(applied.OperationIDs) == 0 {
+	if !applied.ConfigApplied || len(applied.OperationIDs) != 1 {
 		t.Fatalf("apply result = %+v", applied)
 	}
+	if len(applied.MentalModelsCreated) != 1 || applied.MentalModelsCreated[0] != "goals" {
+		t.Fatalf("created models = %v", applied.MentalModelsCreated)
+	}
+	if len(applied.DirectivesCreated) != 1 || applied.DirectivesCreated[0] != "tone" {
+		t.Fatalf("created directives = %v", applied.DirectivesCreated)
+	}
+	if _, err := store.GetMentalModel(context.Background(), "b1", "goals"); err != nil {
+		t.Fatalf("the model must be applied: %v", err)
+	}
+	directives, err := store.ListDirectives(context.Background(), "b1")
+	if err != nil || len(directives) != 1 || directives[0].Name != "tone" {
+		t.Fatalf("directives = %+v (err %v)", directives, err)
+	}
+	// reflect_mission is the bank's mission column rather than a stored override,
+	// so the applied value is read back from the bank row; the config view that
+	// merges it into the overrides is the bank API's, not the raw store's.
+	bank, err := store.GetBank(context.Background(), "b1")
+	if err != nil || bank.Mission != "help" {
+		t.Fatalf("bank mission = %q (err %v)", bank.Mission, err)
+	}
+	if _, err := store.BankConfig(context.Background(), "b1"); err != nil {
+		t.Fatalf("bank config must be readable: %v", err)
+	}
 }
 
-// A template whose manifest names a different bank is refused, and a malformed
-// body is refused.
+// A template import creates the bank when it does not exist.
+func TestImportTemplateCreatesMissingBank(t *testing.T) {
+	h, store := newHandlers(t, true, true)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/new-bank/import",
+		strings.NewReader(`{"version":"1","directives":[{"name":"tone","content":"be nice"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("bank_id", "new-bank")
+	h.ImportTemplate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import into a missing bank = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.GetBank(context.Background(), "new-bank"); err != nil {
+		t.Fatalf("the bank must be created: %v", err)
+	}
+}
+
+// A manifest that is missing a version, names an unsupported one, carries a
+// malformed id or repeats a match key is refused.
 func TestImportTemplateValidation(t *testing.T) {
 	h, _ := newHandlers(t, true, true)
-	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template", `{"bank_id":"other"}`, h.ImportTemplate); rec.Code != http.StatusBadRequest {
-		t.Fatalf("mismatched bank: %d, want 400", rec.Code)
+	cases := []string{
+		`{"bank":{"reflect_mission":"x"}}`,
+		`{"version":"2"}`,
+		`{"version":"abc"}`,
+		`{"version":"1","mental_models":[{"id":"Bad_ID","name":"n","source_query":"q"}]}`,
+		`{"version":"1","directives":[{"name":"d","content":"c"},{"name":"d","content":"c2"}]}`,
+		`not json`,
 	}
-	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template", `not json`, h.ImportTemplate); rec.Code != http.StatusBadRequest {
-		t.Fatalf("malformed body: %d, want 400", rec.Code)
+	for _, body := range cases {
+		if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import", body, h.ImportTemplate); rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q: status = %d, want 400", body, rec.Code)
+		}
 	}
 }
 
-// A gated route is indistinguishable from an absent one.
-func TestGatedRoutesAreNotFound(t *testing.T) {
+// The template routes are a bank configuration surface, not the gated document
+// import: a disabled document-import gate leaves them available.
+func TestTemplateRoutesIgnoreDocumentImportGate(t *testing.T) {
 	h, _ := newHandlers(t, false, false)
-	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/document-transfer",
-		bodyForImport(t), h.SubmitDocumentImport); rec.Code != http.StatusNotFound {
-		t.Fatalf("gated document import: %d, want 404", rec.Code)
+	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import", `{"version":"1"}`, h.ImportTemplate); rec.Code != http.StatusOK {
+		t.Fatalf("template import under a closed document gate: %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template", `{"bank_id":"b1"}`, h.ImportTemplate); rec.Code != http.StatusNotFound {
-		t.Fatalf("gated template apply: %d, want 404", rec.Code)
+	if rec := serve(h, http.MethodGet, "/v1/default/banks/b1/export", "", h.ExportTemplate); rec.Code != http.StatusOK {
+		t.Fatalf("template export under a closed document gate: %d, want 200", rec.Code)
 	}
-	// A dry run is a read, so it is answered even when the gate is off.
-	if rec := serve(h, http.MethodPost, "/v1/default/banks/b1/import-template?dry_run=true", `{"bank_id":"b1"}`, h.ImportTemplate); rec.Code != http.StatusOK {
-		t.Fatalf("dry run under a closed gate: %d, want 200", rec.Code)
-	}
-}
-
-// bodyForImport builds a multipart body naming an archive field.
-func bodyForImport(t *testing.T) string {
-	t.Helper()
-	return "not-a-real-multipart-body"
 }
 
 // The route table declares the family's public contract, and the download

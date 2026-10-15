@@ -33,8 +33,9 @@ type Synthesis interface {
 func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
 	var req ReflectRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.WriteValidationFor(w, r, bodyFailure())
+	body, err := decodeJSON(r, &req)
+	if err != nil {
+		httpx.WriteValidationFor(w, r, httpx.BodyDecodeFailure(err, body))
 		return
 	}
 	if failure := ValidateReflect(req, h.ReflectSchemaValidator); failure != nil {
@@ -171,7 +172,7 @@ func reflectTimeoutContext(r *http.Request, budget time.Duration) (context.Conte
 func (h *Handlers) mapReflectError(err error) error {
 	switch {
 	case errors.Is(err, storage.ErrBankNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailUnknownBank)
+		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	case errors.Is(err, storage.ErrReadShed):
 		return httpx.NewHTTPError(httpx.KindUnavailable, "reflection is temporarily unavailable").
 			WithHeader(httpx.HeaderRetryAfter, itoa(h.DefaultRetryAfterSeconds))

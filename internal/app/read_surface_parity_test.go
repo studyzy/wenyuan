@@ -38,6 +38,18 @@ func seedReadSurface(t *testing.T, app *App) {
 	if err := app.Store.UpsertUnitEntity(ctx, "unit-1", entity.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Two entities named by one memory co-occur, which is what puts them in the
+	// entity graph: the reference draws nodes only for entities an edge joins.
+	second, err := app.Store.ResolveEntity(ctx, "rs-bank", "Friday", storage.EntityKindRegular, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.UpsertUnitEntity(ctx, "unit-1", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.UpsertEntityCooccurrence(ctx, "rs-bank", entity.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // readApp composes an in-memory application with the read-surface fixture.
@@ -142,6 +154,12 @@ func TestReadSurfaceGraphShape(t *testing.T) {
 	if _, ok := body.Nodes[0]["data"]; !ok {
 		t.Fatalf("a graph node must carry a data payload: %v", body.Nodes[0])
 	}
+	data, _ := body.Nodes[0]["data"].(map[string]any)
+	for _, key := range []string{"id", "label", "text", "entities"} {
+		if _, ok := data[key]; !ok {
+			t.Fatalf("a graph node must carry %q in its data payload: %v", key, data)
+		}
+	}
 }
 
 // test-entity-graph-shape: the entity graph reports its nodes and totals.
@@ -153,16 +171,40 @@ func TestReadSurfaceEntityGraphShape(t *testing.T) {
 	}
 	var body struct {
 		Nodes         []map[string]any `json:"nodes"`
+		Edges         []map[string]any `json:"edges"`
 		TotalEntities int              `json:"total_entities"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.TotalEntities != 1 || len(body.Nodes) != 1 {
+	if body.TotalEntities != 2 || len(body.Nodes) != 2 {
 		t.Fatalf("entity graph returned %d nodes of %d", len(body.Nodes), body.TotalEntities)
 	}
-	if _, ok := body.Nodes[0]["data"]; !ok {
-		t.Fatalf("an entity node must carry a data payload: %v", body.Nodes[0])
+	if len(body.Edges) != 1 {
+		t.Fatalf("entity graph returned %d edges, want the co-occurrence", len(body.Edges))
+	}
+	edge := body.Edges[0]
+	edgeData, _ := edge["data"].(map[string]any)
+	if edgeData["linkType"] != "cooccurrence" || edgeData["lineStyle"] != "solid" || edgeData["weight"] != float64(1) {
+		t.Fatalf("edge = %v", edgeData)
+	}
+	if edgeData["id"] != edgeData["source"].(string)+"-"+edgeData["target"].(string) {
+		t.Fatalf("the edge id must derive from its endpoints: %v", edgeData)
+	}
+	nodes := map[string]map[string]any{}
+	for _, raw := range body.Nodes {
+		data, _ := raw["data"].(map[string]any)
+		id, _ := data["id"].(string)
+		nodes[id] = data
+	}
+	for _, data := range nodes {
+		if _, ok := data["mentionCount"]; !ok {
+			t.Fatalf("an entity node must carry mentionCount: %v", data)
+		}
+	}
+	// An entity no edge joins is not a node, which is what the reference does.
+	if _, ok := nodes["absent"]; ok {
+		t.Fatal("an entity without a co-occurrence must not be a node")
 	}
 }
 
@@ -198,30 +240,20 @@ func TestReadSurfaceNotFound(t *testing.T) {
 
 // test-entity-regenerate-refreshes: regenerating an entity returns its detail
 // rather than an empty body.
-func TestReadSurfaceEntityRegenerate(t *testing.T) {
+func TestReadSurfaceEntityRegenerateIsGone(t *testing.T) {
 	app := readApp(t)
-	page := send(app, http.MethodGet, "/v1/default/banks/rs-bank/entities", "")
-	var listed struct {
-		Items []map[string]any `json:"items"`
+	rec := send(app, http.MethodPost, "/v1/default/banks/rs-bank/entities/deadbeef/regenerate", "")
+	// The reference keeps the route and answers 410: entity observations were
+	// replaced by mental models, so there is nothing to regenerate.
+	if rec.Code != http.StatusGone {
+		t.Fatalf("regenerate = %d (body %s), want %d", rec.Code, rec.Body.String(), http.StatusGone)
 	}
-	if err := json.Unmarshal(page.Body.Bytes(), &listed); err != nil {
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Items) != 1 {
-		t.Fatalf("expected one entity, got %d", len(listed.Items))
-	}
-	id, _ := listed.Items[0]["id"].(string)
-
-	rec := send(app, http.MethodPost, "/v1/default/banks/rs-bank/entities/"+id+"/regenerate", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("regenerate = %d (body %s)", rec.Code, rec.Body.String())
-	}
-	var detail map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
-		t.Fatal(err)
-	}
-	if detail["canonical_name"] != "Tuesday" {
-		t.Fatalf("regenerated detail = %v", detail)
+	if body["detail"] != "This endpoint is deprecated. Entity observations are no longer supported." {
+		t.Fatalf("detail = %v", body["detail"])
 	}
 }
 
@@ -230,8 +262,19 @@ func TestReadSurfaceEntityRegenerate(t *testing.T) {
 func TestReadSurfaceDocumentDeleteRemovesUnits(t *testing.T) {
 	app := readApp(t)
 	rec := send(app, http.MethodDelete, "/v1/default/banks/rs-bank/documents/doc-1", "")
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var deleted struct {
+		Success            bool   `json:"success"`
+		DocumentID         string `json:"document_id"`
+		MemoryUnitsDeleted int    `json:"memory_units_deleted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &deleted); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted.Success || deleted.DocumentID != "doc-1" || deleted.MemoryUnitsDeleted == 0 {
+		t.Fatalf("delete body must report the cascade: %s", rec.Body.String())
 	}
 	// The document is gone...
 	rec = send(app, http.MethodGet, "/v1/default/banks/rs-bank/documents/doc-1", "")

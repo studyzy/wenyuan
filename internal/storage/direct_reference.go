@@ -60,7 +60,7 @@ func (s *DirectSource) Read(ctx context.Context) (*hindsightarchive.Archive, err
 		Manifest: hindsightarchive.Manifest{
 			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
 			SourceBankID:  s.bankID,
-			ExportedAt:    time.Now().UTC(),
+			ExportedAt:    exportTime(),
 			DocumentCount: len(rendered),
 			FactCount:     facts,
 			ArchiveType:   "direct",
@@ -71,7 +71,11 @@ func (s *DirectSource) Read(ctx context.Context) (*hindsightarchive.Archive, err
 
 // readDocuments reads the bank's documents.
 func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.Document, error) {
-	query := `SELECT id, original_text, retain_params, tags, created_at
+	// original_text is nullable in the reference: a deployment that keeps no
+	// source text (store_document_text off) stores NULL. The archive carries
+	// the empty string in that case, the same value the reference's own export
+	// renders (`original_text or ""`).
+	query := `SELECT id, COALESCE(original_text, ''), retain_params, tags, created_at
 	          FROM documents WHERE bank_id = $1 ORDER BY created_at, id`
 	rows, err := s.db.QueryContext(ctx, query, s.bankID)
 	if err != nil {
@@ -209,4 +213,12 @@ func decodeStrings(data []byte) []string {
 		return nil
 	}
 	return decoded
+}
+
+// exportTime is the moment an archive rendered now was exported. The manifest
+// carries it as an optional field, so a renderer that has no clock to read
+// leaves it absent rather than inventing one.
+func exportTime() *time.Time {
+	now := time.Now().UTC()
+	return &now
 }

@@ -91,6 +91,15 @@ func TestContractConsolidation(t *testing.T) {
 	if err := store.UpdateObservation(ctx, bank, observationID, "a revised conclusion", []string{"f1"}); err != nil {
 		t.Fatalf("update observation: %v", err)
 	}
+	// The rewrite is recorded, so what the conclusion said before it was
+	// reinforced stays readable.
+	history, err := store.MemoryHistory(ctx, bank, observationID)
+	if err != nil {
+		t.Fatalf("observation history: %v", err)
+	}
+	if len(history) == 0 || history[0].Reason != "consolidated" || history[0].Text != "a conclusion" {
+		t.Fatalf("history = %+v, want the pre-update snapshot", history)
+	}
 	if err := store.UpdateObservation(ctx, bank, "missing", "x", nil); !errors.Is(err, ErrMemoryNotFound) {
 		t.Fatalf("updating an unknown observation = %v, want ErrMemoryNotFound", err)
 	}
@@ -209,7 +218,7 @@ func TestContractAliases(t *testing.T) {
 	if _, err := store.AddAlias(ctx, "other", "work", false); !errors.Is(err, ErrAliasConflict) {
 		t.Fatalf("conflicting alias = %v, want ErrAliasConflict", err)
 	}
-	if _, err := store.PromoteAlias(ctx, bank, "work"); err != nil {
+	if _, err := store.SetAliasPrimary(ctx, bank, "work", true); err != nil {
 		t.Fatalf("promote alias: %v", err)
 	}
 	if primary := store.PrimaryAlias(ctx, bank); primary != "work" {
@@ -243,7 +252,7 @@ func TestContractDocuments(t *testing.T) {
 	if err != nil || page.Total != 1 {
 		t.Fatalf("list documents = %+v (err %v)", page, err)
 	}
-	if err := store.DeleteDocument(ctx, bank, "doc-1"); err != nil {
+	if _, err := store.DeleteDocument(ctx, bank, "doc-1"); err != nil {
 		t.Fatalf("delete document: %v", err)
 	}
 	if _, err := store.GetDocument(ctx, bank, "doc-1"); !errors.Is(err, ErrDocumentNotFound) {
@@ -308,5 +317,36 @@ func TestContractReadErrorAndReadiness(t *testing.T) {
 	notReady.SetReadyError(ErrWritesUnavailable)
 	if err := notReady.Ready(context.Background()); !errors.Is(err, ErrWritesUnavailable) {
 		t.Fatalf("ready = %v, want ErrWritesUnavailable", err)
+	}
+}
+
+// A rewrite of the same text is not a change, so it records no history entry.
+func TestObservationHistoryIgnoresUnchangedRewrite(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "h-bank", Name: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	observationID, err := store.CreateObservation(ctx, "h-bank", "steady conclusion", []string{"f1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateObservation(ctx, "h-bank", observationID, "steady conclusion", []string{"f2"}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.MemoryHistory(ctx, "h-bank", observationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("history = %+v, want none for an unchanged rewrite", history)
+	}
+	// The evidence still grew.
+	observations, err := store.ConsolidationObservations(ctx, "h-bank", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || observations[0].ProofCount != 2 {
+		t.Fatalf("observations = %+v, want both sources counted", observations)
 	}
 }

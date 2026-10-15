@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 )
 
 // referenceSchema is the shape the reference database actually has, narrowed
@@ -92,6 +94,9 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO documents (id, bank_id, original_text, created_at) VALUES ('d1','src-bank','about Alice', now())`,
+		// A document whose text was withheld (store_document_text off) stores
+		// NULL; the archive must carry it as empty rather than fail the scan.
+		`INSERT INTO documents (id, bank_id, original_text, created_at) VALUES ('d2','src-bank',NULL, now())`,
 		`INSERT INTO chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text)
 		   VALUES (gen_random_uuid(),'src-bank','d1',0,'about Alice')`,
 		`INSERT INTO memory_units (id, bank_id, document_id, text, fact_type, metadata)
@@ -109,12 +114,19 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("direct read: %v", err)
 	}
-	if len(archive.Documents) != 1 {
-		t.Fatalf("documents = %d, want 1", len(archive.Documents))
+	if len(archive.Documents) != 2 {
+		t.Fatalf("documents = %d, want 2", len(archive.Documents))
 	}
-	doc := archive.Documents[0]
+	byID := map[string]hindsightarchive.Document{}
+	for _, rendered := range archive.Documents {
+		byID[rendered.ID] = rendered
+	}
+	doc := byID["d1"]
 	if doc.ID != "d1" || doc.OriginalText != "about Alice" {
 		t.Fatalf("document = %+v", doc)
+	}
+	if withheld, ok := byID["d2"]; !ok || withheld.OriginalText != "" {
+		t.Fatalf("a NULL original_text must read as empty, got %+v", withheld)
 	}
 	if len(doc.Chunks) != 1 || doc.Chunks[0].ChunkText != "about Alice" {
 		t.Fatalf("chunks = %+v", doc.Chunks)

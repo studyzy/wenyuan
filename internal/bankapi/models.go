@@ -40,20 +40,22 @@ type BankResponse struct {
 
 // BankListRow is one bank row in the collection envelope. List rows add the
 // fact count, the last-document-ingestion time, the last-write time and the
-// alias display information.
+// alias display information. They carry no background: the reference's
+// BankListItem has no such field, unlike the profile response.
 type BankListRow struct {
 	BankID         string      `json:"bank_id"`
 	Name           string      `json:"name"`
 	Disposition    Disposition `json:"disposition"`
 	Mission        string      `json:"mission"`
-	Background     string      `json:"background"`
 	CreatedAt      time.Time   `json:"created_at"`
 	UpdatedAt      time.Time   `json:"updated_at"`
 	FactCount      int         `json:"fact_count"`
 	LastDocumentAt *time.Time  `json:"last_document_at"`
 	LastWriteAt    *time.Time  `json:"last_write_at"`
-	DisplayAlias   string      `json:"display_alias"`
-	MatchedAliases []string    `json:"matched_aliases"`
+	// DisplayAlias names the promoted alias the bank is presented under, or
+	// null when no alias is promoted and the bank is shown under its own id.
+	DisplayAlias   *string  `json:"display_alias"`
+	MatchedAliases []string `json:"matched_aliases"`
 }
 
 // BankListResponse is the collection envelope for the bank listing route.
@@ -67,7 +69,8 @@ type BankListResponse struct {
 // BankRequest is the create-or-replace and partial-update body. The individual
 // disposition_* fields take precedence over the deprecated disposition object;
 // reflect_mission takes precedence over mission which takes precedence over the
-// deprecated background alias.
+// deprecated background alias. The operational fields below are applied through
+// the same configuration path the config write route uses.
 type BankRequest struct {
 	Name string `json:"name"`
 
@@ -80,6 +83,64 @@ type BankRequest struct {
 	Mission        *string `json:"mission"`
 	ReflectMission *string `json:"reflect_mission"`
 	Background     *string `json:"background"`
+
+	// Operational configuration, applied via the config resolver.
+	RetainMission                *string `json:"retain_mission"`
+	RetainExtractionMode         *string `json:"retain_extraction_mode"`
+	RetainCustomInstructions     *string `json:"retain_custom_instructions"`
+	RetainChunkSize              *int    `json:"retain_chunk_size"`
+	RetainStructuredChunkSize    *int    `json:"retain_structured_chunk_size"`
+	RetainMaxAttachmentsPerChunk *int    `json:"retain_max_attachments_per_chunk"`
+	EnableObservations           *bool   `json:"enable_observations"`
+	ObservationsMission          *string `json:"observations_mission"`
+	EnableTextSearch             *bool   `json:"enable_text_search"`
+	EnableTemporalRetrieval      *bool   `json:"enable_temporal_retrieval"`
+	EnableGraphRetrieval         *bool   `json:"enable_graph_retrieval"`
+	EnableReranking              *bool   `json:"enable_reranking"`
+}
+
+// configUpdates returns only the operational configuration fields the request
+// explicitly set, in the same map form the config write route accepts. It
+// mirrors the reference's get_config_updates for these fields.
+func (r BankRequest) configUpdates() map[string]any {
+	updates := map[string]any{}
+	if r.RetainMission != nil {
+		updates["retain_mission"] = *r.RetainMission
+	}
+	if r.RetainExtractionMode != nil {
+		updates["retain_extraction_mode"] = *r.RetainExtractionMode
+	}
+	if r.RetainCustomInstructions != nil {
+		updates["retain_custom_instructions"] = *r.RetainCustomInstructions
+	}
+	if r.RetainChunkSize != nil {
+		updates["retain_chunk_size"] = *r.RetainChunkSize
+	}
+	if r.RetainStructuredChunkSize != nil {
+		updates["retain_structured_chunk_size"] = *r.RetainStructuredChunkSize
+	}
+	if r.RetainMaxAttachmentsPerChunk != nil {
+		updates["retain_max_attachments_per_chunk"] = *r.RetainMaxAttachmentsPerChunk
+	}
+	if r.EnableObservations != nil {
+		updates["enable_observations"] = *r.EnableObservations
+	}
+	if r.ObservationsMission != nil {
+		updates["observations_mission"] = *r.ObservationsMission
+	}
+	if r.EnableTextSearch != nil {
+		updates["enable_text_search"] = *r.EnableTextSearch
+	}
+	if r.EnableTemporalRetrieval != nil {
+		updates["enable_temporal_retrieval"] = *r.EnableTemporalRetrieval
+	}
+	if r.EnableGraphRetrieval != nil {
+		updates["enable_graph_retrieval"] = *r.EnableGraphRetrieval
+	}
+	if r.EnableReranking != nil {
+		updates["enable_reranking"] = *r.EnableReranking
+	}
+	return updates
 }
 
 // AliasEntry is one alias in an alias response.
@@ -101,9 +162,12 @@ type AliasRequest struct {
 	Primary bool   `json:"primary"`
 }
 
-// AliasUpdateRequest is the alias display body.
+// AliasUpdateRequest is the alias display body. Primary is a pointer so an
+// absent field is distinguishable from an explicit false: the reference
+// declares it required, so a body that omits it is a missing-field error
+// rather than a silent demotion.
 type AliasUpdateRequest struct {
-	Primary bool `json:"primary"`
+	Primary *bool `json:"primary"`
 }
 
 // DeleteResponse is the bank deletion envelope.
@@ -116,13 +180,17 @@ type DeleteResponse struct {
 // ConfigResponse carries the fully resolved configuration and the bank-specific
 // overrides.
 type ConfigResponse struct {
+	BankID    string         `json:"bank_id"`
 	Config    map[string]any `json:"config"`
 	Overrides map[string]any `json:"overrides"`
 }
 
 // ConfigWriteRequest is the configuration write body carrying the override map.
+// Updates is a pointer so an absent field is distinguishable from an explicit
+// empty object: the reference declares it required, so a body that omits it is
+// a missing-field error.
 type ConfigWriteRequest struct {
-	Updates map[string]any `json:"updates"`
+	Updates *map[string]any `json:"updates"`
 }
 
 // ToResponse converts a stored bank into its public profile representation.
@@ -138,7 +206,7 @@ func ToResponse(bank storage.Bank) BankResponse {
 
 // ToListRow converts a stored bank into a list row, attaching the alias display
 // information resolved by the handler.
-func ToListRow(bank storage.Bank, displayAlias string, matched []string) BankListRow {
+func ToListRow(bank storage.Bank, displayAlias *string, matched []string) BankListRow {
 	if matched == nil {
 		matched = []string{}
 	}
@@ -147,7 +215,6 @@ func ToListRow(bank storage.Bank, displayAlias string, matched []string) BankLis
 		Name:           bank.Name,
 		Disposition:    dispositionOf(bank),
 		Mission:        bank.Mission,
-		Background:     bank.Mission,
 		CreatedAt:      bank.CreatedAt,
 		UpdatedAt:      bank.UpdatedAt,
 		FactCount:      bank.FactCount,
@@ -178,16 +245,27 @@ func ToAliasResponse(bankID string, aliases []storage.BankAlias) AliasResponse {
 
 // ToStorage converts a create-or-replace request into a stored bank with the
 // documented precedence and neutral defaults.
+//
+// Only the disposition traits the request actually named are stored. A trait
+// the caller left alone is absent rather than written as the neutral value, so
+// the bank's own overrides name exactly what it set — which is what the
+// configuration read and the template export report.
 func (r BankRequest) ToStorage(id string) storage.Bank {
+	disposition := map[string]int{}
+	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
+		disposition[storage.DispositionKeySkepticism] = *value
+	}
+	if value := r.traitPtr(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }); value != nil {
+		disposition[storage.DispositionKeyLiteralism] = *value
+	}
+	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
+		disposition[storage.DispositionKeyEmpathy] = *value
+	}
 	return storage.Bank{
-		BankID: id,
-		Name:   r.Name,
-		Disposition: map[string]int{
-			storage.DispositionKeySkepticism: r.trait(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }, storage.DispositionTraitNeutral),
-			storage.DispositionKeyLiteralism: r.trait(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }, storage.DispositionTraitNeutral),
-			storage.DispositionKeyEmpathy:    r.trait(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }, storage.DispositionTraitNeutral),
-		},
-		Mission: r.missionValue(),
+		BankID:      id,
+		Name:        r.Name,
+		Disposition: disposition,
+		Mission:     r.missionValue(),
 	}
 }
 
@@ -237,20 +315,13 @@ func (r BankRequest) missionValuePtr() *string {
 	return r.Background
 }
 
-// trait prefers the explicit individual field, then the deprecated disposition
-// object member, then the supplied default.
+// traitPtr resolves a trait with the explicit individual field taking
+// precedence over the deprecated disposition object member, returning nil when
+// neither named it.
 //
-// A member the object did not carry is not a value: it falls through to the
-// default, exactly as the reference does when its individual field is absent.
-// Treating the absent member as zero would both produce a range error and
-// overwrite a stored trait with a value the caller never sent.
-func (r BankRequest) trait(explicit *int, fromObject func(DispositionInput) *int, fallback int) int {
-	if value := r.traitPtr(explicit, fromObject); value != nil {
-		return *value
-	}
-	return fallback
-}
-
+// A member the object did not carry is not a value: it stays nil rather than
+// falling through to a default, so the caller can tell "left alone" from
+// "explicitly set", which is what keeps a partial write partial.
 func (r BankRequest) traitPtr(explicit *int, fromObject func(DispositionInput) *int) *int {
 	if explicit != nil {
 		return explicit

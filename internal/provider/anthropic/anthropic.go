@@ -74,11 +74,17 @@ func (c *Client) Embed(context.Context, provider.EmbeddingRequest) (provider.Emb
 }
 
 // VerifyConnection issues a small probe completion and reports reachability.
+//
+// The probe is this vendor's own: a short literal with a small budget and no
+// retries, so an endpoint that is down is reported down at startup instead of
+// being waited out.
 func (c *Client) VerifyConnection(ctx context.Context) error {
+	policy := provider.AnthropicVerificationRetryPolicy()
 	_, err := c.Complete(ctx, provider.CompletionRequest{
-		Messages:  []provider.Message{{Role: provider.RoleUser, Content: "ping"}},
-		MaxTokens: 1,
+		Messages:  []provider.Message{{Role: provider.RoleUser, Content: provider.AnthropicVerificationPrompt}},
+		MaxTokens: provider.AnthropicVerificationMaxTokens,
 		Scope:     "verification",
+		Retry:     &policy,
 	})
 	if err != nil {
 		return &provider.TransientError{Cause: err}
@@ -111,10 +117,11 @@ type toolWire struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
-// toolChoiceWire forces a named tool.
+// toolChoiceWire forces or constrains tool selection. Name is set only for the
+// pinned-tool form.
 type toolChoiceWire struct {
 	Type string `json:"type"`
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 // messagesResponse is the response body the Messages API returns.
@@ -122,6 +129,7 @@ type messagesResponse struct {
 	Content []struct {
 		Type  string          `json:"type"`
 		Text  string          `json:"text"`
+		ID    string          `json:"id"`
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	} `json:"content"`
@@ -155,8 +163,45 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 		}
 		body.Tools = []toolWire{{Name: structuredToolName, InputSchema: schema}}
 		body.ToolChoice = &toolChoiceWire{Type: "tool", Name: structuredToolName}
+	} else if len(req.Tools) > 0 {
+		// Without a response schema this is a plain tool-calling turn — the
+		// reflection loop drives all of its retrieval this way — so the caller's
+		// tools and pinned choice must reach the wire. Dropping them would leave
+		// the model answering from its own knowledge with no evidence.
+		body.Tools = toWireTools(req.Tools)
+		body.ToolChoice = toWireToolChoice(req.ToolChoice)
 	}
 	return c.call(ctx, body, req.ResponseSchema != nil)
+}
+
+// toWireTools maps the boundary's tool definitions onto the Messages API
+// shape, whose parameter object is named input_schema.
+func toWireTools(tools []provider.ToolDefinition) []toolWire {
+	out := make([]toolWire, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, toolWire{Name: tool.Name, Description: tool.Description, InputSchema: tool.Parameters})
+	}
+	return out
+}
+
+// toWireToolChoice maps the boundary's selection policy onto the API's
+// tool_choice object. A pinned tool becomes the named-tool form; otherwise the
+// mode maps onto the API's any/none/auto.
+func toWireToolChoice(policy *provider.ToolSelectionPolicy) *toolChoiceWire {
+	if policy == nil || policy.Mode == "" {
+		return nil
+	}
+	if policy.Name != "" {
+		return &toolChoiceWire{Type: "tool", Name: policy.Name}
+	}
+	switch policy.Mode {
+	case "required":
+		return &toolChoiceWire{Type: "any"}
+	case "none":
+		return &toolChoiceWire{Type: "none"}
+	default:
+		return &toolChoiceWire{Type: "auto"}
+	}
 }
 
 // call sends one request, retrying transient failures with capped backoff.
@@ -230,15 +275,21 @@ func decodeResult(raw []byte, structured bool) (provider.CompletionResult, error
 		case "text":
 			result.Content += block.Text
 		case "tool_use":
-			// A forced structured-output call returns its value here.
-			if block.Name != structuredToolName {
+			// The forced structured-output tool carries the parsed value; every
+			// other tool_use is a call the caller must run itself.
+			if structured && block.Name == structuredToolName {
+				var value any
+				if err := json.Unmarshal(block.Input, &value); err != nil {
+					return provider.CompletionResult{}, &provider.MalformedResponseError{Detail: "structured response was not valid JSON", Cause: err}
+				}
+				result.Structured = value
 				continue
 			}
-			var value any
-			if err := json.Unmarshal(block.Input, &value); err != nil {
-				return provider.CompletionResult{}, &provider.MalformedResponseError{Detail: "structured response was not valid JSON", Cause: err}
-			}
-			result.Structured = value
+			result.ToolCalls = append(result.ToolCalls, provider.ToolCall{
+				ID:        block.ID,
+				Name:      block.Name,
+				Arguments: block.Input,
+			})
 		}
 	}
 	if structured {

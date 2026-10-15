@@ -88,6 +88,9 @@ func (s *PostgresStore) UpdateWebhook(ctx context.Context, bankID, webhookID str
 	if patch.Enabled != nil {
 		current.Enabled = *patch.Enabled
 	}
+	if patch.HTTPConfig != nil {
+		current.HTTPConfig = *patch.HTTPConfig
+	}
 	return s.PutWebhook(ctx, current)
 }
 
@@ -121,47 +124,64 @@ func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID str
 // delivery is an async_operations row of type webhook_delivery, which is where
 // the reference records one: the endpoint, the event and the outcome all live
 // on that row rather than in a table of their own.
-func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit, offset int) (WebhookDeliveryPage, error) {
+func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit int, cursor string) (WebhookDeliveryPage, error) {
+	qualified := quoteIdent(s.schema)
 	filter := `bank_id = $1 AND operation_type = 'webhook_delivery'
 	           AND ($2 = '' OR task_payload->>'webhook_id' = $2)`
-	qualified := quoteIdent(s.schema)
-	var total int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+qualified+`.async_operations WHERE `+filter,
-		bankID, webhookID).Scan(&total); err != nil {
-		return WebhookDeliveryPage{}, err
+	args := []any{bankID, webhookID}
+	if cursor != "" {
+		filter += ` AND created_at < $3::timestamptz`
+		args = append(args, cursor)
 	}
 	limit = clampLimit(limit, 50)
+	args = append(args, limit+1) // one extra row tells the caller a page follows
+	limitClause := "$" + itoa(len(args))
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT operation_id::text,
 		        COALESCE(task_payload->>'webhook_id', ''),
 		        bank_id,
+		        COALESCE(task_payload->>'url', ''),
 		        COALESCE(task_payload->>'event_type', ''),
 		        status,
-		        (result_metadata->>'last_status_code')::int,
-		        COALESCE(error_message, ''),
 		        COALESCE(retry_count, 0) + 1,
+		        next_retry_at,
+		        COALESCE(error_message, ''),
+		        (result_metadata->>'last_status_code')::int,
+		        created_at,
 		        updated_at
 		 FROM `+qualified+`.async_operations WHERE `+filter+`
-		 ORDER BY created_at DESC, operation_id ASC LIMIT $3 OFFSET $4`,
-		bankID, webhookID, limit, offset)
+		 ORDER BY created_at DESC, operation_id ASC LIMIT `+limitClause,
+		args...)
 	if err != nil {
 		return WebhookDeliveryPage{}, err
 	}
 	defer func() { _ = rows.Close() }()
-	out := make([]WebhookDelivery, 0)
+	out := make([]WebhookDelivery, 0, limit)
 	for rows.Next() {
 		var delivery WebhookDelivery
 		var statusCode sql.NullInt64
-		if err := rows.Scan(&delivery.ID, &delivery.WebhookID, &delivery.BankID,
-			&delivery.EventType, &delivery.Status, &statusCode, &delivery.Error,
-			&delivery.Attempt, &delivery.DeliveredAt); err != nil {
+		var nextRetryAt sql.NullTime
+		if err := rows.Scan(&delivery.ID, &delivery.WebhookID, &delivery.BankID, &delivery.URL,
+			&delivery.EventType, &delivery.Status, &delivery.Attempts, &nextRetryAt,
+			&delivery.LastError, &statusCode, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
 			return WebhookDeliveryPage{}, err
 		}
-		delivery.StatusCode = nullIntPtr(statusCode)
+		delivery.LastResponseStatus = nullIntPtr(statusCode)
+		if nextRetryAt.Valid {
+			value := nextRetryAt.Time
+			delivery.NextRetryAt = &value
+		}
 		out = append(out, delivery)
 	}
-	return WebhookDeliveryPage{Deliveries: out, Total: total, Limit: limit, Offset: offset}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return WebhookDeliveryPage{}, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return WebhookDeliveryPage{Deliveries: out, HasMore: hasMore}, nil
 }
 
 // scanWebhook reads the shared projection.

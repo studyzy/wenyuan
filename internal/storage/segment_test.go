@@ -110,3 +110,28 @@ func onlyNonSpace(text string) string {
 	}
 	return builder.String()
 }
+
+// A JSON conversation is chunked whole turns, not mid-turn.
+func TestSegmentConversation(t *testing.T) {
+	content := `[{"role":"user","content":"hello"},{"role":"assistant","content":"hi there"}]`
+	chunks := Segment(content)
+	if len(chunks) == 0 {
+		t.Fatal("conversation produced no chunks")
+	}
+	joined := strings.Join(chunks, "\n")
+	if !strings.Contains(joined, "user: hello") || !strings.Contains(joined, "assistant: hi there") {
+		t.Fatalf("a turn must not be split mid-turn: %v", chunks)
+	}
+}
+
+// A JSONL body is chunked whole records, not mid-record.
+func TestSegmentJSONLines(t *testing.T) {
+	content := `{"a":1}` + "\n" + `{"b":2}` + "\n"
+	chunks := Segment(content)
+	if len(chunks) != 1 {
+		t.Fatalf("small JSONL must pack into one chunk, got %v", chunks)
+	}
+	if chunks[0] != `{"a":1}`+"\n"+`{"b":2}` {
+		t.Fatalf("JSONL chunk = %q", chunks[0])
+	}
+}

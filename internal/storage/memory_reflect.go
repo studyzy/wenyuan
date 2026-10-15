@@ -24,25 +24,32 @@ var reflectAllToolNames = []string{"search_facts", "search_mental_models", "sear
 
 // Reflect runs the in-process reflection loop.
 func (s *MemoryStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectOutcome, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	if err := ctx.Err(); err != nil {
 		return ReflectOutcome{}, err
 	}
+	// The store's lock is held only while its own maps are read: the model loop
+	// calls out to a provider, and a provider call that traces or audits writes
+	// through the same store. Holding the read lock across that call would block
+	// the trace's write lock on the reader this goroutine still holds — a
+	// self-deadlock, which is what a deployment with tracing on hit.
+	s.mu.RLock()
 	if _, ok := s.banks[query.BankID]; !ok {
+		s.mu.RUnlock()
 		return ReflectOutcome{}, ErrBankNotFound
 	}
 	if s.readErr != nil {
+		s.mu.RUnlock()
 		return ReflectOutcome{}, s.readErr
 	}
-
 	if query.MentalModels == nil {
 		query.MentalModels = append([]ReflectMentalModel(nil), s.mentalModels[query.BankID]...)
 	}
 	if query.Directives == nil {
 		query.Directives = append([]ReflectDirective(nil), s.directives[query.BankID]...)
 	}
+	bankName, mission, disposition := ReflectProfile(s.banks[query.BankID])
+	s.mu.RUnlock()
+
 	// A supplied runner takes precedence: it is the model-driven loop, and the
 	// deterministic in-process loop is the fallback for a deployment with no
 	// model configured.
@@ -54,12 +61,21 @@ func (s *MemoryStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectO
 			}
 		}
 		return query.Reflection.Run(ctx, AgenticReflectRequest{
-			BankID:        query.BankID,
-			Question:      query.Query,
-			MaxTokens:     query.MaxTokens,
-			MaxIterations: query.MaxIterations,
-			Retrieval:     s,
-			Directives:    directives,
+			BankID:           query.BankID,
+			Question:         query.Query,
+			MaxTokens:        query.MaxTokens,
+			MaxIterations:    query.MaxIterations,
+			Budget:           query.Budget,
+			Retrieval:        s,
+			Directives:       directives,
+			ResponseSchema:   query.ResponseSchema,
+			BankName:         bankName,
+			Mission:          mission,
+			Disposition:      disposition,
+			AnswerAsDocument: query.AnswerAsDocument,
+			Tags:             query.Tags,
+			TagsMatch:        query.TagsMatch,
+			TagGroups:        query.TagGroups,
 		})
 	}
 	loop := newReflectLoop(query, s.rawFacts(query.BankID))
@@ -95,8 +111,12 @@ func (s *MemoryStore) Directives(bankID string) []ReflectDirective {
 }
 
 // rawFacts returns a copy of a bank's stored matches as reflection citations.
+// It takes the read lock itself: its caller runs the model loop outside the
+// lock, so the copy is what keeps the read safe.
 func (s *MemoryStore) rawFacts(bankID string) []ReflectCitation {
-	matches := s.memories[bankID]
+	s.mu.RLock()
+	matches := append([]RecallMatch(nil), s.memories[bankID]...)
+	s.mu.RUnlock()
 	out := make([]ReflectCitation, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, ReflectCitation{

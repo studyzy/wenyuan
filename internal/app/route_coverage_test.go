@@ -20,12 +20,13 @@ func TestEveryGAPSRouteIsMounted(t *testing.T) {
 	// The MCP namespace is a feature-gated surface, so the probe enables it the
 	// way a deployment would rather than assuming the default.
 	environ := func(key string) (string, bool) {
-		if key == "HINDSIGHT_API_MCP_ENABLED" {
+		switch key {
+		case "HINDSIGHT_API_MCP_ENABLED", "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH":
 			return "true", true
 		}
 		return "", false
 	}
-	app, err := New(context.Background(), config.FromEnv(environ),
+	app, err := New(context.Background(), withTestAddress(config.FromEnv(environ)),
 		Dependencies{Store: storage.NewMemoryStore("public")})
 	if err != nil {
 		t.Fatal(err)

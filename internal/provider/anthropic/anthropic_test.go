@@ -224,3 +224,107 @@ func TestRegister(t *testing.T) {
 		t.Errorf("name = %q", built.Name())
 	}
 }
+
+// A caller that supplies tools without a response schema — the reflection
+// loop's shape — must have those tools and the pinned choice put on the wire,
+// and the model's tool_use blocks decoded into tool calls. Before this the
+// adapter dropped both, so a reflection answered with no evidence.
+func TestCallerToolsAreForwardedAndDecoded(t *testing.T) {
+	body := `{"content":[
+		{"type":"tool_use","id":"toolu_1","name":"keyword_search","input":{"query":"ada lovelace"}},
+		{"type":"text","text":"final answer"}],
+		"stop_reason":"tool_use"}`
+	c, doer := testClient(body)
+	result, err := c.Complete(context.Background(), provider.CompletionRequest{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "who?"}},
+		Tools: []provider.ToolDefinition{
+			{Name: "keyword_search", Description: "search", Parameters: json.RawMessage(`{"type":"object"}`)},
+		},
+		ToolChoice: &provider.ToolSelectionPolicy{Mode: "required", Name: "keyword_search"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent messagesRequest
+	if err := json.Unmarshal(doer.lastN, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Tools) != 1 || sent.Tools[0].Name != "keyword_search" {
+		t.Fatalf("tools = %+v, want the caller's tool forwarded", sent.Tools)
+	}
+	if string(sent.Tools[0].InputSchema) != `{"type":"object"}` {
+		t.Fatalf("input_schema = %s, want the caller's parameter schema", sent.Tools[0].InputSchema)
+	}
+	if sent.ToolChoice == nil || sent.ToolChoice.Type != "tool" || sent.ToolChoice.Name != "keyword_search" {
+		t.Fatalf("tool_choice = %+v, want the pinned tool", sent.ToolChoice)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %+v, want the tool_use decoded", result.ToolCalls)
+	}
+	call := result.ToolCalls[0]
+	if call.ID != "toolu_1" || call.Name != "keyword_search" {
+		t.Fatalf("tool call = %+v", call)
+	}
+	var args map[string]any
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		t.Fatalf("arguments = %s", call.Arguments)
+	}
+	if args["query"] != "ada lovelace" {
+		t.Fatalf("arguments = %s, want the tool input", call.Arguments)
+	}
+	if result.Content != "final answer" {
+		t.Fatalf("content = %q, want the text block kept", result.Content)
+	}
+}
+
+// An autonomous tool choice maps onto the API's auto form with no pinned name.
+func TestAutoToolChoiceMapsToAuto(t *testing.T) {
+	c, doer := testClient(`{"content":[{"type":"text","text":"ok"}]}`)
+	if _, err := c.Complete(context.Background(), provider.CompletionRequest{
+		Messages:   []provider.Message{{Role: provider.RoleUser, Content: "q"}},
+		Tools:      []provider.ToolDefinition{{Name: "search", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice: &provider.ToolSelectionPolicy{Mode: "auto"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var sent messagesRequest
+	if err := json.Unmarshal(doer.lastN, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.ToolChoice == nil || sent.ToolChoice.Type != "auto" || sent.ToolChoice.Name != "" {
+		t.Fatalf("tool_choice = %+v, want auto with no name", sent.ToolChoice)
+	}
+}
+
+// The structured-output path still forces its own tool and keeps the caller's
+// tools off the wire, so adding tool forwarding did not disturb it.
+func TestStructuredPathIgnoresCallerTools(t *testing.T) {
+	body := `{"content":[{"type":"tool_use","id":"toolu_s","name":"structured_response","input":{"a":1}}]}`
+	c, doer := testClient(body)
+	result, err := c.Complete(context.Background(), provider.CompletionRequest{
+		Messages:       []provider.Message{{Role: provider.RoleUser, Content: "extract"}},
+		ResponseSchema: &provider.Schema{Type: "object"},
+		Tools:          []provider.ToolDefinition{{Name: "search", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice:     &provider.ToolSelectionPolicy{Mode: "auto"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent messagesRequest
+	if err := json.Unmarshal(doer.lastN, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Tools) != 1 || sent.Tools[0].Name != structuredToolName {
+		t.Fatalf("tools = %+v, want only the forced structured tool", sent.Tools)
+	}
+	if sent.ToolChoice == nil || sent.ToolChoice.Type != "tool" || sent.ToolChoice.Name != structuredToolName {
+		t.Fatalf("tool_choice = %+v, want the forced structured tool", sent.ToolChoice)
+	}
+	object, ok := result.Structured.(map[string]any)
+	if !ok || object["a"] != float64(1) {
+		t.Fatalf("structured = %+v, want the forced tool's value", result.Structured)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("tool calls = %+v, want the structured tool kept out of them", result.ToolCalls)
+	}
+}

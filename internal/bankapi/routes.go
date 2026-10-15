@@ -12,7 +12,7 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	collection := httpx.BanksCollectionPath()
 	member := httpx.BankMemberPath()
 
-	handle(http.MethodGet, collection, h.ListBanks)
+	handle(http.MethodGet, collection, httpx.QueryParams(h.ListBanks, "q", "limit", "offset"))
 	handle(http.MethodPut, member, h.ReplaceBank)
 	handle(http.MethodPatch, member, h.UpdateBank)
 	handle(http.MethodDelete, member, h.DeleteBank)

@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/monitoring"
 )
 
 // Entrypoint is the application import target. A process manager resolves this
@@ -55,6 +57,29 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		_ = listener.Close()
 		return err
 	}
+
+	// The reference's standalone mode drains the queue and runs housekeeping in
+	// the same process as the API, so a deployment that runs only the server
+	// still processes its queued work. The roles share the served application's
+	// store and provider and stop with the context.
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	stopBackground := startBackgroundRoles(bgCtx, composed)
+	defer func() {
+		bgCancel()
+		stopBackground()
+		// The servers have stopped by the time Serve returns, so the tracer's
+		// queued spans can be flushed with no completion still producing one.
+		composed.Close()
+	}()
+
+	// The loop-lag probe reports a scheduler stall, which a liveness probe
+	// would otherwise only observe as a timeout.
+	probe := &monitoring.LoopLagProbe{
+		Interval: cfg.LoopLagReport,
+		Stall:    cfg.LoopLagStall,
+		Logger:   slog.Default(),
+	}
+	go probe.Run(bgCtx)
 
 	server := &http.Server{
 		Handler:           composed.Handler,

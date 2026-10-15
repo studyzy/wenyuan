@@ -133,7 +133,9 @@ func TestRecallValidationFailures(t *testing.T) {
 		{"unsupported type", `{"query":"q","types":["bogus"]}`, http.StatusUnprocessableEntity},
 		{"malformed body", `{"query":`, http.StatusUnprocessableEntity},
 		{"mutually exclusive tags", `{"query":"q","tags":["t"],"tag_groups":[["x"]]}`, http.StatusUnprocessableEntity},
-		{"out of range pagination", `{"query":"q","limit":5000}`, http.StatusUnprocessableEntity},
+		// The recall body has no pagination fields, so one is ignored rather
+		// than rejected — the reference's model declares none.
+		{"undocumented pagination is ignored", `{"query":"q","limit":5000}`, http.StatusOK},
 	}
 	mux, _ := newServer(t)
 	for _, tc := range cases {
@@ -240,6 +242,23 @@ func TestRecallIncludeDefaults(t *testing.T) {
 	}
 	if rich.Chunks == nil {
 		t.Fatalf("chunks must be present when included: %s", withChunks.Body.String())
+	}
+	// The chunk and entity side channels use the reference field names, and a
+	// source fact is a result object rather than a bare text string.
+	withAll := post(t, mux, "/v1/default/banks/b1/memories/recall",
+		`{"query":"alpha","max_tokens":100,"include":{"entities":{},"chunks":{},"source_facts":{}}}`)
+	raw := withAll.Body.String()
+	for _, want := range []string{`"chunk_index"`, `"entity_id"`, `"source_facts"`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("recall side channels missing %s: %s", want, raw)
+		}
+	}
+	var all RecallResponse
+	if err := json.Unmarshal(withAll.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if fact, ok := all.SourceFacts["f1"]; !ok || fact.ID == "" {
+		t.Fatalf("a source fact must be a result object: %s", raw)
 	}
 }
 

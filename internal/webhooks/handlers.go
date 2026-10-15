@@ -1,15 +1,12 @@
 package webhooks
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -17,64 +14,6 @@ import (
 
 // maxBodyBytes bounds a request body on this route family.
 const maxBodyBytes = 1 << 20
-
-// Webhook is the wire shape. Field names are public surface.
-type Webhook struct {
-	ID         string   `json:"id"`
-	BankID     string   `json:"bank_id"`
-	URL        string   `json:"url"`
-	EventTypes []string `json:"event_types"`
-	Enabled    bool     `json:"enabled"`
-	// Secret is never returned, because a receiver's signing secret must not be
-	// readable through the API once it is set.
-	HasSecret bool   `json:"has_secret"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-// CreateRequest is the create body.
-type CreateRequest struct {
-	URL        string   `json:"url"`
-	Secret     string   `json:"secret"`
-	EventTypes []string `json:"event_types"`
-	Enabled    *bool    `json:"enabled"`
-}
-
-// UpdateRequest is the partial-update body.
-type UpdateRequest struct {
-	URL        *string   `json:"url"`
-	Secret     *string   `json:"secret"`
-	EventTypes *[]string `json:"event_types"`
-	Enabled    *bool     `json:"enabled"`
-}
-
-// ListResponse is the collection envelope.
-type ListResponse struct {
-	BankID   string    `json:"bank_id"`
-	Webhooks []Webhook `json:"webhooks"`
-}
-
-// Delivery is one recorded delivery attempt.
-type Delivery struct {
-	ID          string `json:"id"`
-	WebhookID   string `json:"webhook_id"`
-	EventType   string `json:"event_type"`
-	Status      string `json:"status"`
-	StatusCode  *int   `json:"status_code"`
-	Error       string `json:"error,omitempty"`
-	Attempt     int    `json:"attempt"`
-	DeliveredAt string `json:"delivered_at"`
-}
-
-// DeliveryListResponse is the delivery listing envelope.
-type DeliveryListResponse struct {
-	BankID     string     `json:"bank_id"`
-	WebhookID  string     `json:"webhook_id"`
-	Deliveries []Delivery `json:"deliveries"`
-	Total      int        `json:"total"`
-	Limit      int        `json:"limit"`
-	Offset     int        `json:"offset"`
-}
 
 // Handlers serves the webhook route family.
 type Handlers struct {
@@ -92,19 +31,19 @@ func NewHandlers(store storage.Store, guard *Guard) *Handlers {
 
 // BindRoutes registers the family's route table.
 func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
-	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhooks), h.List)
+	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhooks), httpx.QueryParams(h.List, "limit", "offset"))
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixWebhooks), h.Create)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixWebhookMember), h.Update)
 	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixWebhookMember), h.Delete)
-	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhookDeliveries), h.ListDeliveries)
+	handle(http.MethodGet, httpx.BankPath(httpx.SuffixWebhookDeliveries), httpx.QueryParams(h.ListDeliveries, "limit", "cursor"))
 }
 
 // List returns the bank's webhooks.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	if _, ok := h.requireBank(w, r); !ok {
 		return
 	}
+	bankID := r.PathValue("bank_id")
 	records, err := h.Store.ListWebhooks(r.Context(), bankID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -114,16 +53,31 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	for _, record := range records {
 		out = append(out, toWebhook(record))
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ListResponse{BankID: bankID, Webhooks: out})
+	total := len(out)
+	limit, offset := pageParams(r)
+	out = pageSlice(out, offset, limit)
+	// The response model keeps null fields (the redacted secret), so it is
+	// written through the open-row writer.
+	httpx.WriteJSONOpenRow(w, r, http.StatusOK, ListResponse{Items: out, Total: total, Limit: limit, Offset: offset})
 }
 
 // Create registers a webhook after validating its target URL.
+//
+// The bank is created on demand: a webhook registration is a bank-scoped write
+// and the bank row is its foreign-key target, so a caller that has not declared
+// the bank yet gets it created here rather than a not-found refusal. Listing and
+// the other reads still refuse an unknown bank.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	if bankID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
 	}
-	var body CreateRequest
+	if err := h.Store.EnsureBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	body := CreateRequest{HTTPConfig: defaultHTTPConfig()}
 	if err := decodeBody(r, &body); err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
 		return
@@ -139,19 +93,28 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
 		return
 	}
+	// A webhook with no explicit subscription follows consolidation, matching
+	// the reference's default.
+	if len(events) == 0 {
+		events = []string{"consolidation.completed"}
+	}
 	enabled := true
 	if body.Enabled != nil {
 		enabled = *body.Enabled
 	}
+	secret := ""
+	if body.Secret != nil {
+		secret = *body.Secret
+	}
 	record, err := h.Store.PutWebhook(r.Context(), storage.Webhook{
 		ID: newID(), BankID: bankID, URL: strings.TrimSpace(body.URL),
-		Secret: body.Secret, EventTypes: events, Enabled: enabled,
+		Secret: secret, EventTypes: events, Enabled: enabled, HTTPConfig: toStorageConfig(body.HTTPConfig),
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusCreated, toWebhook(record))
+	httpx.WriteJSONOpenRow(w, r, http.StatusCreated, toWebhook(record))
 }
 
 // Update applies a partial update, re-validating any new URL.
@@ -180,14 +143,19 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		events = &validated
 	}
+	var config *map[string]any
+	if body.HTTPConfig != nil {
+		config = toStorageConfigPtr(*body.HTTPConfig)
+	}
 	record, err := h.Store.UpdateWebhook(r.Context(), bankID, webhookID, storage.WebhookPatch{
 		URL: body.URL, Secret: body.Secret, EventTypes: events, Enabled: body.Enabled,
+		HTTPConfig: config,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toWebhook(record))
+	httpx.WriteJSONOpenRow(w, r, http.StatusOK, toWebhook(record))
 }
 
 // Delete removes a webhook.
@@ -200,10 +168,12 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteResponse{Success: true, Message: "Deleted successfully"})
 }
 
-// ListDeliveries returns one page of a webhook's delivery records.
+// ListDeliveries returns one page of a webhook's delivery records, newest
+// first, addressed by the created_at cursor of the last item of the previous
+// page.
 //
 // The webhook must exist: an empty list for an unknown identifier would read as
 // "this webhook has delivered nothing" rather than "there is no such webhook".
@@ -216,23 +186,22 @@ func (h *Handlers) ListDeliveries(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	page, err := h.Store.ListWebhookDeliveries(r.Context(), bankID, webhookID, pageLimit(r), pageOffset(r))
+	cursor := strings.TrimSpace(httpx.Query(r, "cursor"))
+	page, err := h.Store.ListWebhookDeliveries(r.Context(), bankID, webhookID, deliveryLimit(r), cursor)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	out := make([]Delivery, 0, len(page.Deliveries))
 	for _, record := range page.Deliveries {
-		out = append(out, Delivery{
-			ID: record.ID, WebhookID: record.WebhookID, EventType: record.EventType,
-			Status: record.Status, StatusCode: record.StatusCode, Error: record.Error,
-			Attempt: record.Attempt, DeliveredAt: formatTime(record.DeliveredAt),
-		})
+		out = append(out, toDelivery(record))
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, DeliveryListResponse{
-		BankID: bankID, WebhookID: webhookID, Deliveries: out,
-		Total: page.Total, Limit: pageLimit(r), Offset: pageOffset(r),
-	})
+	var next *string
+	if page.HasMore && len(page.Deliveries) > 0 {
+		value := formatDeliveryTime(page.Deliveries[len(page.Deliveries)-1].CreatedAt)
+		next = &value
+	}
+	httpx.WriteJSONOpenRow(w, r, http.StatusOK, DeliveryListResponse{Items: out, NextCursor: next})
 }
 
 // validateEvents rejects an unknown event name, so a webhook cannot subscribe
@@ -277,43 +246,34 @@ func (h *Handlers) member(w http.ResponseWriter, r *http.Request) (string, strin
 func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, bool) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	if bankID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "bank not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", false
 	}
 	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "bank not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", false
 	}
 	return bankID, true
-}
-
-// toWebhook renders a stored record, withholding the secret.
-func toWebhook(record storage.Webhook) Webhook {
-	events := record.EventTypes
-	if events == nil {
-		events = []string{}
-	}
-	return Webhook{
-		ID: record.ID, BankID: record.BankID, URL: record.URL,
-		EventTypes: events, Enabled: record.Enabled,
-		HasSecret: record.Secret != "",
-		CreatedAt: formatTime(record.CreatedAt), UpdatedAt: formatTime(record.UpdatedAt),
-	}
 }
 
 // decodeBody decodes a JSON body with a size bound.
 func decodeBody(r *http.Request, target any) error {
 	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	defer func() { _ = limited.Close() }()
-	if err := json.NewDecoder(limited).Decode(target); err != nil {
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return fmt.Errorf("request body must be JSON: %w", err)
+	}
+	httpx.RecordUnknownBodyFields(r, body, target)
+	if err := json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("request body must be JSON: %w", err)
 	}
 	return nil
 }
 
-// pageLimit reads the page size.
+// pageLimit reads the page size for the webhook collection.
 func pageLimit(r *http.Request) int {
-	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	raw := strings.TrimSpace(httpx.Query(r, "limit"))
 	if raw == "" {
 		return 50
 	}
@@ -327,9 +287,9 @@ func pageLimit(r *http.Request) int {
 	return value
 }
 
-// pageOffset reads the page offset.
+// pageOffset reads the page offset for the webhook collection.
 func pageOffset(r *http.Request) int {
-	raw := strings.TrimSpace(r.URL.Query().Get("offset"))
+	raw := strings.TrimSpace(httpx.Query(r, "offset"))
 	if raw == "" {
 		return 0
 	}
@@ -340,35 +300,33 @@ func pageOffset(r *http.Request) int {
 	return value
 }
 
-// formatTime renders a timestamp as the API reports it.
-func formatTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
+// pageParams reads the collection's page size and offset.
+func pageParams(r *http.Request) (int, int) { return pageLimit(r), pageOffset(r) }
+
+// pageSlice returns one page of a slice.
+func pageSlice[T any](items []T, offset, limit int) []T {
+	if offset >= len(items) {
+		return items[len(items):]
 	}
-	return value.UTC().Format(time.RFC3339)
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
 }
 
-// asHTTPError maps a storage error to the shared envelope.
-func asHTTPError(err error) *httpx.HTTPError {
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, storage.ErrBankNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "bank not found")
-	case errors.Is(err, storage.ErrWebhookNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "webhook not found")
-	case errors.Is(err, storage.ErrWebhookURLNotAllowed):
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
-	default:
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+// deliveryLimit reads the delivery page size: default 50, capped at 200.
+func deliveryLimit(r *http.Request) int {
+	raw := strings.TrimSpace(httpx.Query(r, "limit"))
+	if raw == "" {
+		return 50
 	}
-}
-
-// newID builds an opaque identifier.
-func newID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("wh-%d", time.Now().UnixNano())
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 50
 	}
-	return hex.EncodeToString(raw[:])
+	if value > 200 {
+		return 200
+	}
+	return value
 }

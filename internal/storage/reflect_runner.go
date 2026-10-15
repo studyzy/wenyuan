@@ -24,10 +24,43 @@ type AgenticReflectRequest struct {
 	// MaxIterations bounds the retrieval turns; zero means the runner's
 	// default.
 	MaxIterations int
+	// Budget is the caller's effort level (storage.ReflectBudget*); it tunes
+	// the loop's forced-descent short-circuit.
+	Budget string
+	// ResponseSchema is the caller's structured-output schema; when set, the
+	// runner makes a second call that reshapes the answer into it.
+	ResponseSchema map[string]any
 	// Retrieval reads the bank's memories, observations and perspectives.
 	Retrieval ReflectionRetrieval
 	// Directives are the standing instructions that apply.
 	Directives []string
+	// BankName, Mission and Disposition are the bank's profile: the name and
+	// mission as the prompt writes them, and the graded traits. Mission is the
+	// resolved reflect mission (a config override beats the bank column).
+	BankName    string
+	Mission     string
+	Disposition map[string]int
+	// AnswerAsDocument takes the answer from the loop's `done` call as a
+	// structure rather than composing prose afterwards.
+	AnswerAsDocument bool
+	// Tags, TagsMatch and TagGroups are the caller's resolved tag scope, so a
+	// retrieval that must honour the reader's scope (expand's document
+	// visibility) has it.
+	Tags      []string
+	TagsMatch string
+	TagGroups []TagGroup
+}
+
+// ReflectExpandRequest is what the expand tool asks the retrieval surface for:
+// the memories to open, how far to open them, and the reader's tag scope, so
+// the document the source text came from can be checked before it is read.
+type ReflectExpandRequest struct {
+	BankID    string
+	IDs       []string
+	Depth     string
+	Tags      []string
+	TagsMatch string
+	TagGroups []TagGroup
 }
 
 // ReflectionRetrieval is the read surface a reflection loop needs. The store
@@ -43,6 +76,7 @@ type ReflectionRetrieval interface {
 	ReflectMemories(ctx context.Context, bankID, query string, maxTokens int) ([]ReflectCitation, error)
 	// ReflectReadModels returns specific perspectives by identifier.
 	ReflectReadModels(ctx context.Context, bankID string, ids []string) ([]ReflectCitation, error)
-	// ReflectExpand returns the source context of specific memories.
-	ReflectExpand(ctx context.Context, bankID string, ids []string) ([]ReflectCitation, error)
+	// ReflectExpand returns the source context of specific memories, scoped to
+	// the reader.
+	ReflectExpand(ctx context.Context, req ReflectExpandRequest) ([]ReflectCitation, error)
 }

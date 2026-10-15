@@ -70,6 +70,10 @@ func (s *MemoryStore) PutMentalModel(ctx context.Context, model MentalModel) (Me
 		model.CreatedAt = now
 	}
 	model.LastUpdated = now
+	// The column is NOT NULL DEFAULT now() in the reference's schema, so a row is
+	// stamped when it is created. That stamp says "written now", not "read the
+	// bank": the refresh's delta window reads last_memory_seen_at instead, which
+	// stays unset until a refresh records how far through the bank it looked.
 	if model.LastRefreshedAt.IsZero() {
 		model.LastRefreshedAt = now
 	}
@@ -158,7 +162,7 @@ func (s *MemoryStore) MentalModelHistory(ctx context.Context, bankID, id string)
 	}
 	entries := append([]MentalModelHistoryEntry(nil), s.mentalModelHistory[mentalModelKey(bankID, id)]...)
 	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].RefreshedAt.After(entries[j].RefreshedAt)
+		return entries[i].ChangedAt.After(entries[j].ChangedAt)
 	})
 	return entries, nil
 }
@@ -177,8 +181,8 @@ func (s *MemoryStore) RecordMentalModelHistory(ctx context.Context, bankID, id s
 	if s.mentalModelHistory == nil {
 		s.mentalModelHistory = map[string][]MentalModelHistoryEntry{}
 	}
-	if entry.RefreshedAt.IsZero() {
-		entry.RefreshedAt = time.Now().UTC()
+	if entry.ChangedAt.IsZero() {
+		entry.ChangedAt = time.Now().UTC()
 	}
 	s.mentalModelHistory[key] = append(s.mentalModelHistory[key], entry)
 	return nil
@@ -212,6 +216,18 @@ func applyMentalModelPatch(model *MentalModel, patch MentalModelPatch) {
 	}
 	if patch.Content != nil {
 		model.Content = *patch.Content
+		// A content write is a refresh as far as the clock is concerned - a hand
+		// edit and a completed refresh both leave the document current - and it
+		// clears the failure park, because the document was just written
+		// successfully. The reference advances last_refreshed_at on exactly these
+		// two events; the data watermark moves separately, only when a refresh
+		// records how far through the bank it read.
+		now := time.Now().UTC()
+		model.LastRefreshedAt = now
+		model.LastRefreshFailedAt = nil
+	}
+	if patch.LastRefreshedSourceQuery != nil {
+		model.LastRefreshedSourceQuery = *patch.LastRefreshedSourceQuery
 	}
 	if patch.Tags != nil {
 		model.Tags = append([]string(nil), (*patch.Tags)...)

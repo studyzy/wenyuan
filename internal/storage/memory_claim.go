@@ -11,6 +11,16 @@ import (
 // operation is claimable only when its claim is older than the lease, which is
 // how a consumer that died mid-operation stops stranding its work.
 func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, nil)
+}
+
+// ClaimNextOperationForTypes claims the oldest claimable operation whose type
+// is in types. An empty list is equivalent to ClaimNextOperation.
+func (s *MemoryStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, types)
+}
+
+func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
 	if err := ctx.Err(); err != nil {
 		return Operation{}, err
 	}
@@ -29,6 +39,15 @@ func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, l
 		if !claimable(op, now, lease) {
 			continue
 		}
+		// A batch parent is a status aggregator nothing executes: its
+		// lifecycle is driven by its children reaching terminal states. A
+		// claim would mark it processing and then settle it as if it had run.
+		if op.OperationType == AsyncRetainType {
+			continue
+		}
+		if len(types) > 0 && !containsString(types, op.OperationType) {
+			continue
+		}
 		// An operation whose serialization key another live claim holds is not
 		// claimable: the key exists so two runs of the same work cannot proceed
 		// beside each other and leave whichever finished last winning.
@@ -40,9 +59,25 @@ func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, l
 	if len(candidates) == 0 {
 		return Operation{}, ErrOperationNotFound
 	}
-	// Deterministic order so two callers never race on which one is oldest.
+	// Deterministic order so two callers never race on which one is oldest. The
+	// bank with the oldest pending work is served first, so one bank's backlog
+	// cannot starve the others; within a bank the order stays oldest-first.
+	bankOldest := map[string]time.Time{}
+	for _, op := range s.operations {
+		if op.Status != StatusPending {
+			continue
+		}
+		if existing, ok := bankOldest[op.BankID]; !ok || op.CreatedAt.Before(existing) {
+			bankOldest[op.BankID] = op.CreatedAt
+		}
+	}
 	sort.Slice(candidates, func(i, j int) bool {
 		left, right := s.operations[candidates[i]], s.operations[candidates[j]]
+		leftBank, okLeft := bankOldest[left.BankID]
+		rightBank, okRight := bankOldest[right.BankID]
+		if okLeft && okRight && !leftBank.Equal(rightBank) {
+			return leftBank.Before(rightBank)
+		}
 		if !left.CreatedAt.Equal(right.CreatedAt) {
 			return left.CreatedAt.Before(right.CreatedAt)
 		}

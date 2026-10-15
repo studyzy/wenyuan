@@ -3,6 +3,7 @@ package httpx
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -78,6 +79,11 @@ func pruneNullObjects(value any) any {
 
 // WriteError emits a shared error envelope with the detail field.
 func WriteError(w http.ResponseWriter, err error, opts EncodeOptions) {
+	var failure *ValidationFailure
+	if errors.As(err, &failure) {
+		WriteValidationFailure(w, failure, opts)
+		return
+	}
 	httpErr := asHTTPError(err)
 	for name, values := range httpErr.Header {
 		for _, v := range values {
@@ -88,8 +94,11 @@ func WriteError(w http.ResponseWriter, err error, opts EncodeOptions) {
 }
 
 // WriteValidationFailure emits the structured validation error-item body with
-// the unprocessable-entity status.
+// the unprocessable-entity status. A validation item is contract surface rather
+// than a model whose nulls are optional: the reference always carries loc, msg,
+// type and input, so a null input is rendered instead of dropped.
 func WriteValidationFailure(w http.ResponseWriter, failure *ValidationFailure, opts EncodeOptions) {
+	opts.DropNullFields = false
 	WriteJSON(w, KindUnprocessable, failure, opts)
 }
 
@@ -99,6 +108,13 @@ func asHTTPError(err error) *HTTPError {
 	}
 	if httpErr, ok := err.(*HTTPError); ok {
 		return httpErr
+	}
+	// A validation failure is an error like any other, so a caller that hands
+	// one to the shared writer gets the structured body and the status the
+	// reference uses for it.
+	var failure *ValidationFailure
+	if errors.As(err, &failure) {
+		return &HTTPError{Status: KindUnprocessable, Detail: failure.Error()}
 	}
 	return &HTTPError{Status: KindInternal, Detail: DetailInternal}
 }

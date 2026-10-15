@@ -232,7 +232,7 @@ func TestConsolidationStoreAdapter(t *testing.T) {
 	if facts[0].ID != "f1" {
 		t.Fatalf("fact = %+v", facts[0])
 	}
-	observationID, err := adapter.CreateObservation(ctx, "b1", "a conclusion", []string{"f1"})
+	observationID, err := adapter.CreateObservation(ctx, "b1", "a conclusion", []string{"f1"}, []string{"scope-a"})
 	if err != nil {
 		t.Fatalf("create observation: %v", err)
 	}
@@ -242,9 +242,12 @@ func TestConsolidationStoreAdapter(t *testing.T) {
 	if err := adapter.MarkConsolidated(ctx, "b1", []string{"f1"}); err != nil {
 		t.Fatalf("mark consolidated: %v", err)
 	}
-	observations, err := adapter.ConsolidationObservations(ctx, "b1", 10)
+	observations, err := adapter.ConsolidationObservations(ctx, "b1", []string{"scope-a"}, 10)
 	if err != nil || len(observations) != 1 {
 		t.Fatalf("observations = %v (err %v)", observations, err)
+	}
+	if len(observations[0].Scope) != 1 || observations[0].Scope[0] != "scope-a" {
+		t.Fatalf("observation scope = %v, want [scope-a]", observations[0].Scope)
 	}
 	if err := adapter.DeleteObservation(ctx, "b1", observationID); err != nil {
 		t.Fatalf("delete observation: %v", err)
@@ -266,7 +269,7 @@ func TestFormatOptionalTime(t *testing.T) {
 // The queue consumer is constructed with the resolved worker configuration.
 func TestNewQueueConsumer(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	consumer := NewQueueConsumer(store, none.New(), nil, config.WorkerConfig{ID: "w1", Concurrency: 2})
+	consumer := NewQueueConsumer(store, none.New(), nil, nil, config.WorkerConfig{ID: "w1", Concurrency: 2}, nil, 0)
 	if consumer == nil {
 		t.Fatal("the consumer must be constructed")
 	}
@@ -274,3 +277,42 @@ func TestNewQueueConsumer(t *testing.T) {
 
 // Ensure the consolidation engine's own contract is what the adapter satisfies.
 var _ consolidation.Store = consolidationStore{}
+
+// A subscribed webhook receives a queued delivery when an event fires.
+func TestEnqueueWebhookEvent(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutWebhook(ctx, storage.Webhook{
+		ID: "w1", BankID: "b1", URL: "https://example.test/hook",
+		Secret: "s", EventTypes: []string{"consolidation.completed"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutWebhook(ctx, storage.Webhook{
+		ID: "w2", BankID: "b1", URL: "https://example.test/other",
+		EventTypes: []string{"retain.completed"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	processor := archiveProcessor{store: store}
+	processor.enqueueWebhookEvent(ctx, "b1", "consolidation.completed", map[string]any{})
+	page, err := store.ListOperations(ctx, storage.OperationQuery{BankID: "b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries := 0
+	for _, op := range page.Operations {
+		if op.OperationType == storage.OperationTypeWebhookDelivery {
+			deliveries++
+			if op.Payload["webhook_id"] != "w1" {
+				t.Fatalf("delivery for the wrong webhook: %v", op.Payload)
+			}
+		}
+	}
+	if deliveries != 1 {
+		t.Fatalf("queued %d deliveries, want only the subscribed webhook", deliveries)
+	}
+}

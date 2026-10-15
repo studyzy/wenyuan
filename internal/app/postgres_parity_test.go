@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -56,7 +57,7 @@ func postgresParityApp(t *testing.T) *App {
 		_ = cleanupCtx
 	})
 
-	cfg := config.FromEnv(func(string) (string, bool) { return "", false })
+	cfg := withTestAddress(config.FromEnv(func(string) (string, bool) { return "", false }))
 	cfg.EnableBankConfigAPI = true
 	application, err := New(ctx, cfg, Dependencies{Store: store})
 	if err != nil {
@@ -172,5 +173,75 @@ func TestPostgresParityRetainRecallReflect(t *testing.T) {
 	rec = exchange(a, http.MethodDelete, "/v1/default/banks/"+bank, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete bank = %d, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// test-postgres-fuzzy-knowledge-tags: a fuzzy `tag_groups` leaf on the
+// knowledge-base tree resolves through the bank's memory tag vocabulary on a
+// real database, where the vocabulary is a SQL read of memory_units rather than
+// a scan of an in-process map.
+//
+// The tree is served through the composed handler, so this covers the whole
+// path a console takes: parse the compound filter, read the bank's vocabulary,
+// resolve the token against it, and match the resolved tags against each page.
+func TestPostgresKnowledgeFuzzyTagGroups(t *testing.T) {
+	a := postgresParityApp(t)
+	const bank = "fuzzy-kb-bank"
+
+	rec := exchange(a, http.MethodPut, "/v1/default/banks/"+bank, `{"name":"Fuzzy KB"}`)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("create bank = %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// The vocabulary is the bank's memory tags. Before any memory carries the
+	// page's tag there is nothing for the token to resolve to.
+	page := exchange(a, http.MethodPost, "/v1/default/banks/"+bank+"/knowledge-base/pages",
+		`{"name":"Alpha","tags":["name:thee"]}`)
+	if page.Code != http.StatusCreated {
+		t.Fatalf("create page = %d, body %s", page.Code, page.Body.String())
+	}
+
+	roots := func(tagGroups string) []map[string]any {
+		t.Helper()
+		rec := exchange(a, http.MethodGet,
+			"/v1/default/banks/"+bank+"/knowledge-base/tree?tag_groups="+url.QueryEscape(tagGroups), "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tree = %d, body %s", rec.Code, rec.Body.String())
+		}
+		var tree struct {
+			Roots []map[string]any `json:"roots"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &tree); err != nil {
+			t.Fatalf("tree is not JSON: %v (%s)", err, rec.Body.String())
+		}
+		return tree.Roots
+	}
+
+	fuzzy := `[{"tags":["name:the"],"resolve":"fuzzy"}]`
+	if got := roots(fuzzy); len(got) != 0 {
+		t.Fatalf("a fuzzy leaf with an empty vocabulary must not match: %+v", got)
+	}
+	if got := roots(`[{"tags":["name:the"]}]`); len(got) != 0 {
+		t.Fatalf("a literal leaf must not match the near-miss tag: %+v", got)
+	}
+
+	// Once a memory carries the page's tag the token resolves to it, so the page
+	// is visible — while the same leaf read literally still is not.
+	if _, err := a.Store.UpsertUnit(context.Background(), storage.MemoryUnit{
+		BankID: bank, Text: "the scheme is named thee", FactType: storage.TypeWorld,
+		Tags: []string{"name:thee"},
+	}); err != nil {
+		t.Fatalf("seed memory tag: %v", err)
+	}
+	got := roots(fuzzy)
+	if len(got) != 1 || got[0]["name"] != "Alpha" {
+		t.Fatalf("fuzzy leaf tree = %+v", got)
+	}
+	if got := roots(`[{"tags":["name:the"]}]`); len(got) != 0 {
+		t.Fatalf("a literal leaf must not match a resolved tag: %+v", got)
+	}
+	// A token with no near vocabulary tag stays unsatisfiable.
+	if got := roots(`[{"tags":["name:zzzzzz"],"resolve":"fuzzy"}]`); len(got) != 0 {
+		t.Fatalf("an unresolvable fuzzy token must not match: %+v", got)
 	}
 }

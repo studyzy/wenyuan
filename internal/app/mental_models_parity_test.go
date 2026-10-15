@@ -15,7 +15,11 @@ import (
 // newParityApp composes an application over an in-memory store with one bank.
 func newParityApp(t *testing.T) *App {
 	t.Helper()
-	app, err := New(context.Background(), config.FromEnv(func(string) (string, bool) { return "", false }), Dependencies{
+	app, err := New(context.Background(), func() config.Config {
+		cfg := testConfig()
+		cfg.EnableBankLLMHealth = true
+		return cfg
+	}(), Dependencies{
 		Store: storage.NewMemoryStore("public"),
 	})
 	if err != nil {
@@ -54,19 +58,26 @@ func TestMentalModelLifecycle(t *testing.T) {
 	// same processor a worker would use.
 	processor := archiveProcessor{store: app.Store}
 
+	// The refresh reads the bank, so it needs something in scope to read: a
+	// bank with nothing to reflect over preserves the document and records no
+	// history.
+	if mem, ok := app.Store.(*storage.MemoryStore); ok {
+		mem.SeedMemory("mm-bank", storage.RecallMatch{ID: "mm-fact", Text: "deployment happens on tuesday", Type: "world"})
+	}
+
 	// Create.
 	rec := send(app, http.MethodPost, base,
 		`{"subtype":"pinned","name":"deploy days","description":"when deployments happen","source_query":"deployment"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create = %d (body %s)", rec.Code, rec.Body.String())
 	}
 	var created map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	id, _ := created["id"].(string)
+	id, _ := created["mental_model_id"].(string)
 	if id == "" {
-		t.Fatalf("create must return an id: %v", created)
+		t.Fatalf("create must return a mental_model_id: %v", created)
 	}
 
 	// Read.
@@ -81,13 +92,13 @@ func TestMentalModelLifecycle(t *testing.T) {
 		t.Fatalf("list = %d", rec.Code)
 	}
 	var listed struct {
-		Models []map[string]any `json:"mental_models"`
+		Items []map[string]any `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Models) != 1 {
-		t.Fatalf("list returned %d models, want 1", len(listed.Models))
+	if len(listed.Items) != 1 {
+		t.Fatalf("list returned %d models, want 1", len(listed.Items))
 	}
 
 	// A subtype filter with no match returns an empty list rather than an error.
@@ -117,8 +128,11 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &dry); err != nil {
 		t.Fatal(err)
 	}
-	if dry["dry_run"] != true {
-		t.Fatalf("dry run must report itself: %v", dry)
+	if dry["effective_mode"] == nil || dry["outcome"] == nil || dry["mental_model_id"] != id {
+		t.Fatalf("dry run must report the upstream result shape: %v", dry)
+	}
+	if dry["trace"] == nil {
+		t.Fatalf("a dry run must include a trace: %v", dry)
 	}
 
 	// A real refresh queues the work rather than performing it in the request,
@@ -132,8 +146,8 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &queued); err != nil {
 		t.Fatal(err)
 	}
-	if queued["queued"] != true {
-		t.Fatalf("refresh must report the work as queued: %v", queued)
+	if queued["status"] != "queued" {
+		t.Fatalf("refresh must report the operation as queued: %v", queued)
 	}
 	operationID, _ := queued["operation_id"].(string)
 	if operationID == "" {
@@ -141,14 +155,12 @@ func TestMentalModelLifecycle(t *testing.T) {
 	}
 	// Nothing has been recorded yet: the operation has not run.
 	rec = send(app, http.MethodGet, base+"/"+id+"/history", "")
-	var history struct {
-		Entries []map[string]any `json:"history"`
-	}
+	var history []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
-		t.Fatal(err)
+		t.Fatalf("history must be a bare array: %s", rec.Body.String())
 	}
-	if len(history.Entries) != 0 {
-		t.Fatalf("history has %d entries before the operation ran, want 0", len(history.Entries))
+	if len(history) != 0 {
+		t.Fatalf("history has %d entries before the operation ran, want 0", len(history))
 	}
 
 	// Running the queued operation records the history entry.
@@ -164,8 +176,11 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
 		t.Fatal(err)
 	}
-	if len(history.Entries) != 1 {
-		t.Fatalf("history has %d entries after the refresh ran, want 1", len(history.Entries))
+	if len(history) != 1 {
+		t.Fatalf("history has %d entries after the refresh ran, want 1", len(history))
+	}
+	if _, ok := history[0]["changed_at"]; !ok {
+		t.Fatalf("history entry must carry changed_at: %v", history[0])
 	}
 
 	// Clear keeps the record but empties its content.
@@ -180,7 +195,7 @@ func TestMentalModelLifecycle(t *testing.T) {
 
 	// Delete.
 	rec = send(app, http.MethodDelete, base+"/"+id, "")
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d", rec.Code)
 	}
 	rec = send(app, http.MethodGet, base+"/"+id, "")
@@ -195,8 +210,56 @@ func TestMentalModelRejectsUnknownSubtype(t *testing.T) {
 	app := newParityApp(t)
 	rec := send(app, http.MethodPost, "/v1/default/banks/mm-bank/mental-models",
 		`{"subtype":"nonsense","name":"x"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown subtype = %d, want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown subtype = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+// test-mental-model-trigger-and-id: a create carries a validated trigger and an
+// optional client-supplied id, both echoed, with a collision reported as 409.
+func TestMentalModelTriggerAndID(t *testing.T) {
+	app := newParityApp(t)
+	base := "/v1/default/banks/mm-bank/mental-models"
+
+	rec := send(app, http.MethodPost, base,
+		`{"id":"team-comms","name":"Team comms","source_query":"q","trigger":{"mode":"delta"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created["mental_model_id"] != "team-comms" {
+		t.Fatalf("client id not honored: %v", created)
+	}
+	// The trigger is echoed on read.
+	rec = send(app, http.MethodGet, base+"/team-comms", "")
+	var model map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	trigger, _ := model["trigger"].(map[string]any)
+	if trigger["mode"] != "delta" {
+		t.Fatalf("trigger not echoed: %v", model["trigger"])
+	}
+	// A duplicate id is a conflict.
+	if rec := send(app, http.MethodPost, base, `{"id":"team-comms","name":"again","source_query":"q"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate id = %d, want 409", rec.Code)
+	}
+	// An invalid trigger member is a structured 422.
+	rec = send(app, http.MethodPost, base, `{"name":"x","trigger":{"mode":"sideways"}}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid trigger = %d, want 422", rec.Code)
+	}
+	var failure struct {
+		Detail []map[string]any `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("validation body = %s", rec.Body.String())
+	}
+	if len(failure.Detail) == 0 {
+		t.Fatalf("validation detail empty: %s", rec.Body.String())
 	}
 }
 
@@ -207,11 +270,11 @@ func TestDirectiveLifecycle(t *testing.T) {
 	base := "/v1/default/banks/mm-bank/directives"
 
 	low := send(app, http.MethodPost, base, `{"name":"low","content":"low priority rule","priority":1}`)
-	if low.Code != http.StatusCreated {
+	if low.Code != http.StatusOK {
 		t.Fatalf("create low = %d (body %s)", low.Code, low.Body.String())
 	}
 	high := send(app, http.MethodPost, base, `{"name":"high","content":"high priority rule","priority":9}`)
-	if high.Code != http.StatusCreated {
+	if high.Code != http.StatusOK {
 		t.Fatalf("create high = %d", high.Code)
 	}
 	var highBody map[string]any
@@ -229,7 +292,7 @@ func TestDirectiveLifecycle(t *testing.T) {
 	// order the API returns.
 	rec := send(app, http.MethodGet, base, "")
 	var listed struct {
-		Directives []map[string]any `json:"directives"`
+		Directives []map[string]any `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
 		t.Fatal(err)
@@ -262,7 +325,7 @@ func TestDirectiveLifecycle(t *testing.T) {
 
 	// Delete, and a repeated delete is not-found.
 	rec = send(app, http.MethodDelete, base+"/"+highID, "")
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d", rec.Code)
 	}
 	rec = send(app, http.MethodDelete, base+"/"+highID, "")
@@ -272,32 +335,34 @@ func TestDirectiveLifecycle(t *testing.T) {
 }
 
 // test-directive-requires-content: a directive without content is a caller
-// error, because a nameless rule cannot be followed.
+// error, reported as a structured 422.
 func TestDirectiveRequiresContent(t *testing.T) {
 	app := newParityApp(t)
 	rec := send(app, http.MethodPost, "/v1/default/banks/mm-bank/directives", `{"name":"x"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("missing content = %d, want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing content = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
 	}
 }
 
-// test-families-reject-unknown-bank: both families report not-found for a bank
-// the store does not hold, rather than creating anything.
+// test-families-reject-unknown-bank: a read reports not-found for a bank the
+// store does not hold, while a mental-model create lazily creates it.
 func TestFamiliesRejectUnknownBank(t *testing.T) {
 	app := newParityApp(t)
-	cases := []struct {
-		method string
-		path   string
-	}{
-		{http.MethodGet, "/v1/default/banks/ghost/mental-models"},
-		{http.MethodPost, "/v1/default/banks/ghost/mental-models"},
-		{http.MethodGet, "/v1/default/banks/ghost/directives"},
-		{http.MethodPost, "/v1/default/banks/ghost/directives"},
-	}
-	for _, tc := range cases {
-		rec := send(app, tc.method, tc.path, `{"name":"x","content":"y"}`)
+	for _, path := range []string{
+		"/v1/default/banks/ghost/mental-models",
+		"/v1/default/banks/ghost/directives",
+	} {
+		rec := send(app, http.MethodGet, path, "")
 		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, http.StatusNotFound)
+			t.Fatalf("GET %s = %d, want %d", path, rec.Code, http.StatusNotFound)
 		}
+	}
+	// A create on an unknown bank succeeds, creating the bank.
+	rec := send(app, http.MethodPost, "/v1/default/banks/ghost/mental-models", `{"name":"x","source_query":"q"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST mental-models on unknown bank = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if _, err := app.Store.GetBank(context.Background(), "ghost"); err != nil {
+		t.Fatalf("bank was not created: %v", err)
 	}
 }

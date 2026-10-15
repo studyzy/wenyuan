@@ -1,5 +1,17 @@
 # Wenyuan 功能缺口与待办清单（净室重写交接文档）
 
+> **✅ 2026-10-14 状态**：`docs/PARITY-PLAN.md` 的全部五个阶段（A 契约面、B 引擎、C 子系统、
+> D 运维）**均已收口**，逐条实现记录、验收命令与"真实运行"证据见该文 §8。本文件保留为
+> 早期基线的对照材料；凡与 `PARITY-PLAN.md` §8 冲突处，以后者为准（下文 §7 已同步更正）。
+
+> **⚠️ 2026-10-14 更正（历史）**：§7 的"无剩余必做项"结论经独立逐模块复核**不成立**。
+> 本文件把"路由已挂载 / 接口已返回"等同于"功能已复刻"，但上游同一路由的
+> 请求/响应形状、状态码、引擎行为仍有大量差异，且若干整块子系统从未接线
+> （webhook 投递、worker HTTP、内嵌 worker、准入/499、LLM trace、MCP 工具集、
+> 文档解析器、扩展框架、对象存储后备、provider）。**当前权威清单与实施计划见
+> `docs/PARITY-PLAN.md`**；本文状态栏凡与之一致性存疑者，以 `PARITY-PLAN.md`
+> 与代码为准。
+
 > 本文档是**实现清单**，供后续净室重写 AI 逐项实现。
 > 只覆盖**服务后端**；前端 / Control Plane（9999）不在范围内。
 >
@@ -355,11 +367,12 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
    OpenAI 兼容适配器实现 `/rerank`；`storage.RecallQuery.Rerank` 在融合后重打分，
    按 batch 归一化，失败回落 `bestArmScore`。见 `internal/provider/openai/rerank.go`、
    `internal/storage/memory_recall.go`。
-2. ~~**融合与 boost 代数对齐**~~ — **已完成**。boost 改为 rank-space 提升
-   （`1/(k + rank/divisor)`，divisor 2/4/8）加衰减式 rank 后置加项（temporal 平坦）；
-   recency 改为 halflife 90d 衰减曲线，证据强度改为 proof-count 对数归一。
-   `interleave_fusion` **未移植**：上游仅由 consolidation dedup 选用，而 Wenyuan 的
-   consolidation 以 `ConsolidationObservations` 直接列举候选，不经融合，故无调用点。
+2. ~~**融合与 boost 代数对齐**~~ — **已完成，并已补齐 `interleave_fusion`**。boost 为 rank-space
+   提升（`1/(k + rank/divisor)`，divisor 2/4/8）加衰减式 rank 后置加项；recency 改为可配衰减曲线
+   （`HINDSIGHT_API_RECENCY_DECAY_FUNCTION`，linear/exponential/none）并对**粗粒度日期**从周期
+   末端起算且封顶中性；证据强度为 proof-count 对数归一。`interleave_fusion` **已落地并有真实调用点**：
+   `storage.RecallQuery.Fusion` + 按源预裁 `PerSourceCap`，由巩固的去重候选扩池
+   （`Store.RelatedObservations`）实际使用，另补 rerank 前裁剪 `RerankDepth`。
 3. ~~**查询文本时间解析**~~ — **已完成**。`internal/memoryops/query_time.go` 解析相对词、
    星期/月份名、`N units ago`、`last|next|this <unit>`、`in the last N units`；
    显式 `temporal_window` 优先，`query_timestamp` 作参考时刻。
@@ -371,23 +384,33 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
    opencode-go/atlas/meta/fireworks）按表注册到同一适配器；Anthropic 因协议不同
    单独实现（`internal/provider/anthropic/`）。**未移植**：OAuth CLI 类
    （claude-code、codex、cursor、github-copilot、xai-oauth）——需交互式登录，
-   本服务不承载；Gemini 原生协议、LiteLLM router、bedrock、llamacpp 亦未单独实现，
-   但 gateway 可经 OpenAI 兼容适配器接入。
+   本服务不承载；Gemini 原生协议、LiteLLM router、bedrock、llamacpp 亦未单独实现。
+   此后已补 `volcano` 厂商与确定性 `mock` provider；且**不再静默**：
+   `HINDSIGHT_API_LLM_STRATEGY` / `..._LLM_LITELLMROUTER_CONFIG` / `..._EMBEDDINGS_LOCAL_MODEL`
+   一旦配置即**启动失败并点名该键**。
 6. ~~**causal 链接生成**~~ — **已完成**。抽取提示与 schema 增加 `causal_relations`
    （每 fact 至多 2 条、必须指向更早的 fact）；写入后解析为 `caused_by`
    边（effect → cause），越界索引丢弃。
-7. ~~**retain 折叠与 token 预算**~~ — **不适用**。上游的 `fold.py` 与
-   `memory_budget.py` 服务于其**流式生产/消费管线**（batch 消费 + 背压字节预算）。
-   Wenyuan 的 retain 是单趟同步循环，既无在飞队列亦无背压点，故无对应实现；
-   此为设计差异而非缺口。
+7. ~~**retain 折叠与 token 预算**~~ — **已实现（后补）**。`FoldRetainItems` 折叠字段一致的小项
+   （每项 ≤2 KiB）并施加 32 KiB 请求预算；超预算项按 rune 截断并在 metadata 记录
+   （无损切分需存储协议变更，仍为范围外）。
 8. ~~**外部对象存储后端**~~ — **已完成（S3 兼容）**。`internal/objectstore/` 实现
    S3 REST 子集并自签 SigV4（无厂商 SDK），经 `storage.ObjectStore` 边界接入；
    环境键沿用上游（`HINDSIGHT_API_FILE_STORAGE_TYPE` 等）。**未实现**：
    GCS / Azure——上游三者共用同一个 obstore 包装器，仅客户端配置不同；如需，
    可依同一 `ObjectStore` 边界补实现。
 
-> 结论：§7 无剩余必做项。仍未覆盖的是上游**交互式认证类** provider 与
-> GCS/Azure 对象存储，二者均已在上文标注为有意的范围外。
+> **2026-10-15 补充：契约面逐项复核。** 以**上游自己的 OpenAPI 文档**（99 操作 / 195 schema）为基准，
+> 对全部路由做了 11 个切片的逐操作比对：路由面 99/99 完整，但字段/状态码/头/默认值层面存在大量偏差。
+> 该轮发现的每一项、修复状态与仍余项都记在 **`docs/CONTRACT-AUDIT.md`**，可用
+> `bash scripts/contract_smoke.sh <server-binary>` 复现其中 35 项线上事实。
+> 本文档继续作为功能面总览；契约面的权威清单以 `docs/CONTRACT-AUDIT.md` 为准。
+
+> 结论：本文件所列项目均已闭合；`docs/PARITY-PLAN.md` §8 的阶段记录是当前权威状态
+> （含每项的验收命令与真实运行证据）。仍未覆盖且**明确标注为范围外**的是：上游交互式认证类
+> provider、GCS/Azure 对象存储与预签名下载 URL、上游的动态插件加载器、
+> reranker failover 链与本地 MLX、dateparser 依赖与中文数字、以及上游无任何消费者的
+> `reflect/observations.py`（`trend`）。文档解析链（markitdown 等价 + llama_parse/iris）已实现，见 `docs/PARITY-PLAN.md` §8 的 C7 记录。
 
 ### 7.1 后台维护子系统（2026-10-14 补齐）
 
@@ -415,8 +438,9 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 异步操作，经 reflection 循环重新生成模型内容。这是**公开行为变更**——
 接口现在返回 `queued` 与 `operation_id`，调用方需轮询操作而非假定返回即完成。
 
-**仍为范围外**：`interleave_fusion`（上游仅由 consolidation dedup 选用，
-我们的 consolidation 直接列举候选，无调用点）。
+**已补齐（后）**：`interleave_fusion` 现由巩固的去重候选扩池使用；
+维护循环另有 `graph.maintenance`（图 relink + 实体修剪）与 `vector_index.reconcile`
+（按 (bank,fact_type) 的向量索引健康）两个作业。
 
 ---
 

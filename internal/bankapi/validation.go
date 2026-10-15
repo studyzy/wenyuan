@@ -20,7 +20,7 @@ func ValidateBankID(id string) (int, string, bool) {
 	case id == "":
 		msg = "bank identifier must not be empty"
 	case len(id) > storage.BankIDMaxBytes:
-		msg = "bank identifier must be at most 255 bytes"
+		msg = "bank identifier must be at most 192 bytes"
 	case !utf8.ValidString(id):
 		msg = "bank identifier must be valid UTF-8"
 	default:
@@ -85,27 +85,40 @@ func missingTraitErrors(req BankRequest) []httpx.ValidationError {
 		if member.value != nil {
 			continue
 		}
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "disposition", member.name},
-			Msg:   "Field required",
-			Type:  "value_error.missing",
-			Input: nil,
-		})
+		items = append(items, httpx.Missing([]string{"body", "disposition", member.name}, dispositionInput(req.Disposition)))
 	}
 	return items
+}
+
+// dispositionInput renders the disposition object as the caller supplied it, so
+// a missing-member item names the object it came from the way the framework
+// does.
+func dispositionInput(d *DispositionInput) map[string]any {
+	out := map[string]any{}
+	if d == nil {
+		return out
+	}
+	if d.Skepticism != nil {
+		out["skepticism"] = *d.Skepticism
+	}
+	if d.Literalism != nil {
+		out["literalism"] = *d.Literalism
+	}
+	if d.Empathy != nil {
+		out["empathy"] = *d.Empathy
+	}
+	return out
 }
 
 func traitError(field string, value *int) []httpx.ValidationError {
 	if value == nil {
 		return nil
 	}
-	if *value < storage.DispositionTraitMin || *value > storage.DispositionTraitMax {
-		return []httpx.ValidationError{{
-			Loc:   []string{"body", field},
-			Msg:   "must be an integer between 1 and 5",
-			Type:  "value_error.range",
-			Input: *value,
-		}}
+	if *value < storage.DispositionTraitMin {
+		return []httpx.ValidationError{httpx.GreaterThanEqual([]string{"body", field}, *value, storage.DispositionTraitMin)}
+	}
+	if *value > storage.DispositionTraitMax {
+		return []httpx.ValidationError{httpx.LessThanEqual([]string{"body", field}, *value, storage.DispositionTraitMax)}
 	}
 	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/studyzy/wenyuan/internal/extraction"
-	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/reflect"
@@ -37,21 +36,6 @@ func (r rerankScorer) Rerank(ctx context.Context, query string, texts []string) 
 	return result.Scores, nil
 }
 
-// newRecallReranker builds the recall reranker from the provider boundary. A
-// provider with no reranking capability, the no-model selection, or a nil
-// provider yields a nil reranker, which leaves recall on its best-per-arm
-// fallback.
-func newRecallReranker(p provider.Provider) memoryops.RecallReranker {
-	if p == nil || p.Name() == none.NameNone {
-		return nil
-	}
-	reranker := provider.ProviderReranker(p)
-	if reranker == nil {
-		return nil
-	}
-	return rerankScorer{reranker: reranker}
-}
-
 // factExtractor adapts the extraction engine onto the storage area's fact
 // boundary.
 //
@@ -65,23 +49,83 @@ type factExtractor struct {
 
 // newFactExtractor builds the adapter. A nil provider, or the no-model
 // selection, yields a nil adapter, which storage reads as "store text
-// verbatim".
-func newFactExtractor(p provider.Provider) storage.FactExtraction {
+// verbatim". correctionRetries bounds how many times a response whose facts came
+// back in a foreign shape is re-asked with the extractor's key correction.
+func newFactExtractor(p provider.Provider, correctionRetries int) storage.FactExtraction {
 	extractor := extraction.New(p)
 	if !extractor.Available() {
 		return nil
 	}
+	extractor.MaxCorrectionRetries = correctionRetries
 	return factExtractor{extractor: extractor}
 }
 
 // Extract turns one item's text into the facts storage should store.
 func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.ExtractedFact, error) {
-	result, err := f.extractor.Extract(ctx, text)
+	return f.ExtractWithOptions(ctx, text, storage.FactExtractionOptions{})
+}
+
+// ExtractWithOptions runs the extraction with the request's retain
+// configuration: the bank's mission and custom instructions, the item's
+// strategy, and the reference time a relative phrase in the text resolves
+// against.
+func (f factExtractor) ExtractWithOptions(ctx context.Context, text string, opts storage.FactExtractionOptions) ([]storage.ExtractedFact, error) {
+	result, err := f.extractor.ExtractWith(ctx, text, extractionOptions(opts))
 	if err != nil {
 		return nil, err
 	}
-	facts := make([]storage.ExtractedFact, 0, len(result.Facts))
-	for _, fact := range result.Facts {
+	return toStorageFacts(result.Facts), nil
+}
+
+// ExtractDryRun runs the extraction for the dry-run preview, reporting the
+// token usage alongside the candidate facts. It is the same call as
+// ExtractWithOptions; only the usage, which the storage boundary drops, is
+// carried out.
+func (f factExtractor) ExtractDryRun(ctx context.Context, text string, opts storage.FactExtractionOptions) (storage.DryRunExtraction, error) {
+	result, err := f.extractor.ExtractWith(ctx, text, extractionOptions(opts))
+	if err != nil {
+		return storage.DryRunExtraction{}, err
+	}
+	return storage.DryRunExtraction{
+		Facts: toStorageFacts(result.Facts),
+		Usage: storage.TokenUsage{
+			InputTokens:    result.Usage.InputTokens,
+			OutputTokens:   result.Usage.OutputTokens,
+			TotalTokens:    result.Usage.TotalTokens,
+			CachedTokens:   result.Usage.CachedInputTokens,
+			ThoughtsTokens: result.Usage.ReasoningTokens,
+		},
+	}, nil
+}
+
+// extractionOptions maps the storage-shaped per-item settings onto the
+// extraction engine's options.
+func extractionOptions(opts storage.FactExtractionOptions) extraction.Options {
+	attachments := make([]extraction.Attachment, 0, len(opts.Attachments))
+	for _, attachment := range opts.Attachments {
+		attachments = append(attachments, extraction.Attachment{
+			ShortID:   attachment.ShortID,
+			MediaType: attachment.MediaType,
+			Kind:      attachment.Kind,
+			Data:      attachment.Data,
+		})
+	}
+	return extraction.Options{
+		Mode:                   opts.Mode,
+		Mission:                opts.Mission,
+		Instructions:           opts.Instructions,
+		Strategy:               opts.Strategy,
+		ReferenceTime:          opts.ReferenceTime,
+		OptionalFactDimensions: opts.OptionalFactDimensions,
+		Vocabulary:             opts.Vocabulary,
+		Attachments:            attachments,
+	}
+}
+
+// toStorageFacts maps the extractor's facts onto the storage shape.
+func toStorageFacts(facts []extraction.Fact) []storage.ExtractedFact {
+	out := make([]storage.ExtractedFact, 0, len(facts))
+	for _, fact := range facts {
 		// An extracted name is the extractor's guess at who is named, not a
 		// label the caller authored, so it carries no type and is always
 		// resolved. Storage applies its own default label.
@@ -93,8 +137,13 @@ func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.Extr
 		for _, relation := range fact.CausalRelations {
 			causes = append(causes, relation.TargetIndex)
 		}
-		facts = append(facts, storage.ExtractedFact{
+		out = append(out, storage.ExtractedFact{
 			Text:            fact.Text,
+			Labels:          fact.Labels,
+			Where:           fact.Where,
+			Kind:            fact.Kind,
+			Type:            fact.Type,
+			FromAttachments: fact.FromAttachments,
 			Entities:        entities,
 			OccurredStart:   fact.OccurredStart,
 			OccurredEnd:     fact.OccurredEnd,
@@ -102,7 +151,7 @@ func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.Extr
 			CausedByIndexes: causes,
 		})
 	}
-	return facts, nil
+	return out
 }
 
 // NewReflectRunner is the exported form of the reflection-loop constructor, so

@@ -13,10 +13,18 @@ import (
 // default build omits it so the module compiles with the standard library
 // alone; build with `-tags pgx` to enable live PostgreSQL access.
 func init() {
-	RegisterDriver(func(url string) (DB, error) {
+	RegisterDriver(func(url string, budget PoolBudget) (DB, error) {
 		db, err := sql.Open("pgx", url)
 		if err != nil {
 			return nil, err
+		}
+		// The budget is applied before the pool is used, so a limit is in force
+		// from the first statement rather than after a first burst.
+		if budget.MaxOpenConns > 0 {
+			db.SetMaxOpenConns(budget.MaxOpenConns)
+		}
+		if budget.MaxIdleConns > 0 {
+			db.SetMaxIdleConns(budget.MaxIdleConns)
 		}
 		return &sqlDB{db: db}, nil
 	})
@@ -45,3 +53,12 @@ func (d *sqlDB) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 func (d *sqlDB) Close() error { return d.db.Close() }
+
+// PoolStats reports the pool's current utilization for the readiness payload.
+// The standard library exposes in-use, idle and maximum connections; it has no
+// analogue for the reference's current-waiters gauge, so that key is left
+// absent rather than reported as a misleading zero.
+func (d *sqlDB) PoolStats() PoolStats {
+	stats := d.db.Stats()
+	return PoolStats{InUse: stats.InUse, Max: stats.MaxOpenConnections, Idle: stats.Idle}
+}

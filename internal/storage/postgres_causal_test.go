@@ -34,7 +34,7 @@ func TestPostgresRetainPersistsCausalLinks(t *testing.T) {
 		t.Fatalf("stored %d units, want 2", len(units))
 	}
 
-	graph, err := store.Graph(ctx, "vec-bank", 100)
+	graph, err := store.Graph(ctx, GraphQuery{BankID: "vec-bank", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

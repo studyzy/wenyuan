@@ -26,7 +26,7 @@ func postgresVectorStore(t *testing.T) Store {
 
 	schema := fmt.Sprintf("vector_e2e_%d", time.Now().UnixNano())
 	backend := &PostgresBackend{}
-	store, err := backend.Open(ctx, BackendConfig{DatabaseURL: url, Schema: schema, RunMigrations: true})
+	store, err := backend.Open(ctx, BackendConfig{DatabaseURL: url, Schema: schema, RunMigrations: true, BankStatsCacheTTL: BankStatsCacheTTL})
 	if err != nil {
 		t.Fatalf("open postgres backend: %v", err)
 	}
@@ -52,7 +52,7 @@ func postgresVectorStore(t *testing.T) Store {
 	return store
 }
 
-// unitVector builds a 1024-wide vector that is dense only at one position, so
+// unitVector builds a full-width vector that is dense only at one position, so
 // two vectors sharing a position are cosine-similar and two that do not are
 // orthogonal. That makes the expected ranking unambiguous without needing a
 // real embedding provider.

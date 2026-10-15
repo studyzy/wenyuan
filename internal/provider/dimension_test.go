@@ -1,16 +1,32 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/studyzy/wenyuan/internal/storage"
+)
 
 // test-dimension-is-fixed-constant: the boundary reports the declared
 // dimension as the single fixed constant, and the constant is the
 // reference column's width.
 func TestDeclaredDimensionIsFixedConstant(t *testing.T) {
-	if EmbeddingDimensions != 1024 {
-		t.Fatalf("EmbeddingDimensions = %d, want 1024", EmbeddingDimensions)
+	if EmbeddingDimensions != 384 {
+		t.Fatalf("EmbeddingDimensions = %d, want 384", EmbeddingDimensions)
 	}
 	if got := DeclaredDimensions(); got != EmbeddingDimensions {
 		t.Fatalf("DeclaredDimensions() = %d, want %d", got, EmbeddingDimensions)
+	}
+}
+
+// The stored column width and the width the provider boundary guarantees are
+// declared in two packages - `storage` owns the column, `provider` owns the
+// boundary - and a mismatch between them would let a vector be produced at one
+// width and stored into a column of another. The two declarations are pinned
+// here so neither can move alone.
+func TestStoredWidthAgreesWithDeclaredWidth(t *testing.T) {
+	if storage.EmbeddingDimensions != EmbeddingDimensions {
+		t.Fatalf("storage.EmbeddingDimensions = %d, provider declares %d",
+			storage.EmbeddingDimensions, EmbeddingDimensions)
 	}
 }
 

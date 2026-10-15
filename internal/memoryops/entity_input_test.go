@@ -134,7 +134,7 @@ func TestRetainAcceptsTypedEntities(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
-	page, err := store.ListEntities(context.TODO(), storage.EntityQuery{BankID: "b1"})
+	page, err := store.ListEntities(context.TODO(), storage.EntityQuery{BankID: "b1", Limit: 20})
 	if err != nil {
 		t.Fatal(err)
 	}

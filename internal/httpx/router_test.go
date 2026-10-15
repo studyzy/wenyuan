@@ -58,6 +58,51 @@ func TestMCPNamespaceGating(t *testing.T) {
 	}
 }
 
+// The MCP namespace is served as a mounted sub-application, so no route
+// declares its query parameters and no ignored-parameter header is produced
+// for it, matching the reference where the reporting route class never sees an
+// MCP request.
+func TestMCPNamespaceReportsNoIgnoredParams(t *testing.T) {
+	router := NewRouter(RouterOptions{EnabledMCP: true})
+	rec := httptest.NewRecorder()
+	router.Service().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp/?bogus=1", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("MCP must not report ignored parameters, got %q", got)
+	}
+}
+
+// declaredExtension registers a route that declares one accepted parameter, so
+// the extension namespace's report is the extension's own declaration rather
+// than a process-wide allowlist.
+type declaredExtension struct{}
+
+func (d *declaredExtension) Mount(r RouteRegistrar) {
+	r.Handle(http.MethodGet, "/declared", QueryParams(func(w http.ResponseWriter, req *http.Request) {
+		WriteJSONFor(w, req, http.StatusOK, map[string]string{"ok": "1"})
+	}, "limit"))
+}
+
+// An extension route that declares a parameter does not report it, while a
+// name it did not declare is still reported: the extension namespace keeps its
+// own declaration rather than inheriting the core routes' parameters.
+func TestExtensionNamespaceDeclaresItsOwnParams(t *testing.T) {
+	host := NewExtensionHost()
+	host.Register(&declaredExtension{})
+	router := NewRouter(RouterOptions{Extensions: host})
+
+	rec := httptest.NewRecorder()
+	router.Service().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ext/declared?limit=1", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("a declared extension parameter must not be reported, got %q", got)
+	}
+
+	rec = httptest.NewRecorder()
+	router.Service().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ext/declared?tag=1", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "tag" {
+		t.Fatalf("an undeclared extension parameter must be reported, got %q", got)
+	}
+}
+
 func TestBankPathHelpers(t *testing.T) {
 	if got := BankPath(SuffixMemories); got != "/v1/default/banks/{bank_id}/memories" {
 		t.Fatalf("memory write path = %q", got)

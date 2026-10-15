@@ -23,6 +23,10 @@ const (
 	// carries a serialization key so two refreshes of the same model cannot run
 	// beside each other.
 	OperationTypeRefreshMentalModel = "refresh_mental_model"
+	// OperationTypeWebhookDelivery delivers one webhook event. It is a queued
+	// operation so delivery retries and the delivery record share the queue's
+	// lifecycle.
+	OperationTypeWebhookDelivery = "webhook_delivery"
 )
 
 // OperationPayloadKeyStoredFile is the operation payload field carrying the

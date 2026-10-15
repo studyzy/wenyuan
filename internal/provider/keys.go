@@ -10,7 +10,7 @@ const (
 	ConfigKeyAPIKey = "HINDSIGHT_API_LLM_API_KEY"
 	// ConfigKeyEmbeddingProvider is the operator key that selects the
 	// embedding provider, which is configured independently of chat.
-	ConfigKeyEmbeddingProvider = "HINDSIGHT_API_EMBEDDING_PROVIDER"
+	ConfigKeyEmbeddingProvider = "HINDSIGHT_API_EMBEDDINGS_PROVIDER"
 )
 
 // Scope names used when reporting an unconfigured provider.

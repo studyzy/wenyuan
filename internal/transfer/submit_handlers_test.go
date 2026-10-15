@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -47,15 +48,32 @@ func seedBank(t *testing.T, store *storage.MemoryStore, bankID string) {
 	}
 }
 
+// operationByID reads one recorded operation back by listing the bank's
+// operations, so the helper is independent of the single-operation accessor's
+// argument shape.
+func operationByID(store *storage.MemoryStore, bankID, opID string) (storage.Operation, error) {
+	page, err := store.ListOperations(context.Background(), storage.OperationQuery{BankID: bankID})
+	if err != nil {
+		return storage.Operation{}, err
+	}
+	for _, op := range page.Operations {
+		if op.OperationID == opID {
+			return op, nil
+		}
+	}
+	return storage.Operation{}, fmt.Errorf("operation %s not found", opID)
+}
+
 // archiveBytes builds a minimal valid archive payload.
 func archiveBytes(t *testing.T, sourceBank string) []byte {
 	t.Helper()
 	manifest := hindsightarchive.Manifest{
 		SchemaVersion: hindsightarchive.SupportedSchemaVersion,
 		SourceBankID:  sourceBank,
-		ExportedAt:    time.Now().UTC(),
 		ArchiveType:   "bank",
 	}
+	exportedAt := time.Now().UTC()
+	manifest.ExportedAt = &exportedAt
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -264,11 +282,11 @@ func TestMalformedArchiveRejectedSynchronously(t *testing.T) {
 func TestUploadIsStashedUnderBankScopedKey(t *testing.T) {
 	h, store := newTestHandlers(t)
 	seedBank(t, store, "bank-a")
-	data := archiveBytes(t, "bank-a")
+	data := archiveBytes(t, "fresh-bank")
 
 	body, contentType := multipartArchive(t, data)
 	rec := httptest.NewRecorder()
-	req := routeRequest(http.MethodPost, "/v1/default/banks/bank-a/transfer/import?mode=replace&include_data=true", body,
+	req := routeRequest(http.MethodPost, "/v1/default/banks/bank-a/transfer/import?mode=restore&include_data=true", body,
 		map[string]string{"bank_id": "bank-a"})
 	req.Header.Set("Content-Type", contentType)
 	h.SubmitTransferImport(rec, req)
@@ -282,7 +300,7 @@ func TestUploadIsStashedUnderBankScopedKey(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	op, err := store.GetOperation(context.Background(), payload.OperationID)
+	op, err := operationByID(store, "bank-a", payload.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,5 +319,85 @@ func TestUploadIsStashedUnderBankScopedKey(t *testing.T) {
 	}
 	if !bytes.Equal(file.Data, data) {
 		t.Fatal("stored payload does not match the upload")
+	}
+}
+
+// test-import-defaults: a transfer import body that omits mode, document
+// conflict and the include flags is a whole-bank restore with the reference's
+// defaults (data + bank config on, history off), not an error.
+func TestTransferImportAppliesReferenceDefaults(t *testing.T) {
+	h, store := newTestHandlers(t)
+	seedBank(t, store, "bank-a")
+	// The archive names a bank that does not exist yet: a restore creates its
+	// target, and restoring onto an existing bank is refused.
+	data := archiveBytes(t, "fresh-bank")
+
+	body, contentType := multipartArchive(t, data)
+	rec := httptest.NewRecorder()
+	req := routeRequest(http.MethodPost, "/v1/default/banks/bank-a/transfer/import", body,
+		map[string]string{"bank_id": "bank-a"})
+	req.Header.Set("Content-Type", contentType)
+	h.SubmitTransferImport(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var payload struct {
+		OperationID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	op, err := operationByID(store, "bank-a", payload.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Payload["mode"] != "restore" {
+		t.Fatalf("mode = %v, want restore", op.Payload["mode"])
+	}
+	if op.Payload["document_conflict"] != "skip" {
+		t.Fatalf("document_conflict = %v, want skip", op.Payload["document_conflict"])
+	}
+	scope, ok := op.Payload["scope"].(map[string]any)
+	if !ok || scope["bank_config"] != true || scope["history"] != false {
+		t.Fatalf("scope = %v, want bank_config on and history off", op.Payload["scope"])
+	}
+}
+
+// test-import-rejects-invalid-mode-and-conflict: the mode and document-conflict
+// vocabularies are validated, not accepted blindly.
+func TestTransferImportRejectsInvalidModeAndConflict(t *testing.T) {
+	h, store := newTestHandlers(t)
+	seedBank(t, store, "bank-a")
+	data := archiveBytes(t, "bank-a")
+
+	for _, suffix := range []string{"?mode=bogus", "?document_conflict=bogus"} {
+		body, contentType := multipartArchive(t, data)
+		rec := httptest.NewRecorder()
+		req := routeRequest(http.MethodPost, "/v1/default/banks/bank-a/transfer/import"+suffix, body,
+			map[string]string{"bank_id": "bank-a"})
+		req.Header.Set("Content-Type", contentType)
+		h.SubmitTransferImport(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body %s)", suffix, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// test-import-gate-disabled: the transfer import is gated like the document
+// import it supersedes, and a disabled gate is indistinguishable from absence.
+func TestTransferImportGateDisabledIsNotFound(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	h := NewHandlers(store, true, false)
+	seedBank(t, store, "bank-a")
+
+	body, contentType := multipartArchive(t, archiveBytes(t, "bank-a"))
+	rec := httptest.NewRecorder()
+	req := routeRequest(http.MethodPost, "/v1/default/banks/bank-a/transfer/import", body,
+		map[string]string{"bank_id": "bank-a"})
+	req.Header.Set("Content-Type", contentType)
+	h.SubmitTransferImport(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }

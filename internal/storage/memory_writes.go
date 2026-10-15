@@ -16,7 +16,9 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 		return WriteResult{}, s.writeErr
 	}
 	if _, ok := s.banks[req.BankID]; !ok {
-		s.createBankLocked(req.BankID)
+		if err := s.createBankLocked(req.BankID); err != nil {
+			return WriteResult{}, err
+		}
 	}
 	if req.OperationID != "" {
 		if existing, ok := s.writes[req.OperationID]; ok {
@@ -63,7 +65,18 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 
 // createBankLocked lazily creates a bank with neutral defaults, sharing the
 // write's transaction.
-func (s *MemoryStore) createBankLocked(bankID string) Bank {
+//
+// It refuses an identifier the explicit create path refuses: the reference caps
+// a new bank id at 192 UTF-8 bytes and rejects control characters, and applies
+// that rule to the implicit create a first write performs as much as to the
+// explicit one, so a write cannot leave a bank behind under a name the create
+// route would not accept. An existing bank is never re-checked, matching the
+// reference's "existing banks are never re-checked". This is the memory
+// backend's mirror of the postgres ensureBankExists check.
+func (s *MemoryStore) createBankLocked(bankID string) error {
+	if !ValidBankID(bankID) {
+		return ErrInvalidBankID
+	}
 	now := time.Now().UTC()
 	bank := Bank{
 		BankID:    bankID,
@@ -71,13 +84,12 @@ func (s *MemoryStore) createBankLocked(bankID string) Bank {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	// A lazily created bank starts neutral in every trait, which is what a bank
-	// with no stored disposition means.
-	bank.Disposition = bank.NormalizedDisposition()
+	// A lazily created bank has no stored trait overrides: every trait reads
+	// neutral, and the bank carries no override to show.
 	s.banks[bankID] = bank
 	s.order = append(s.order, bankID)
 	s.invalidateBankLocked(bankID)
-	return bank
+	return nil
 }
 
 // recordWriteWatermarkLocked advances a bank's last-write watermark after a

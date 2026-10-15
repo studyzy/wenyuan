@@ -82,7 +82,7 @@ func TestPostgresRetainLinksSuppliedEntities(t *testing.T) {
 		t.Fatalf("retain stored no units: %+v", outcome.ItemUnitIDs)
 	}
 
-	page, err := store.ListEntities(ctx, EntityQuery{BankID: "vec-bank"})
+	page, err := store.ListEntities(ctx, EntityQuery{BankID: "vec-bank", Limit: 100})
 	if err != nil {
 		t.Fatalf("list entities: %v", err)
 	}

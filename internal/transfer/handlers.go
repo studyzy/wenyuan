@@ -156,7 +156,7 @@ func repeatingValues(r *http.Request, field string) []string {
 	if r.MultipartForm != nil {
 		values = append(values, r.MultipartForm.Value[field]...)
 	}
-	values = append(values, r.URL.Query()[field]...)
+	values = append(values, httpx.QueryValues(r, field)...)
 	return values
 }
 
@@ -166,7 +166,7 @@ func asHTTPError(err error) *httpx.HTTPError {
 	case err == nil:
 		return nil
 	case errors.Is(err, storage.ErrBankNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "bank not found")
+		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	case errors.Is(err, storage.ErrOperationConflict):
 		return httpx.NewHTTPError(httpx.KindConflict, "the target bank already exists")
 	case errors.Is(err, storage.ErrDocumentConflict):

@@ -10,20 +10,15 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-type fixedAuth bool
-
-func (a fixedAuth) Authenticated(r *http.Request) bool { return bool(a) }
-
-// ts-0007 / sec-0002 / neg-0003: retired routes remain routable, reject
-// unauthenticated callers, and return the terminal gone status when
-// authenticated.
+// ts-0007 / sec-0002 / neg-0003: retired routes remain routable and answer the
+// terminal gone status without a credential, each with its own message.
 func TestRetiredRoutesRemainRoutable(t *testing.T) {
 	mux := http.NewServeMux()
 	register := func(method, pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(method+" "+pattern, handler)
 	}
 
-	retired := &RetiredHandler{Auth: fixedAuth(true)}
+	retired := &RetiredHandler{}
 	retired.BindRetiredRoutes(register)
 
 	for _, route := range RetiredRoutes {
@@ -37,46 +32,37 @@ func TestRetiredRoutesRemainRoutable(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatal(err)
 		}
-		if envelope["detail"] == "" {
-			t.Fatalf("retirement message must be present for %s: %s", path, rec.Body.String())
+		if envelope["detail"] != route.Detail {
+			t.Fatalf("retired %s %s detail = %q, want %q", route.Method, path, envelope["detail"], route.Detail)
 		}
 	}
 }
 
-func TestRetiredRoutesRejectUnauthenticatedCallers(t *testing.T) {
-	mux := http.NewServeMux()
-	register := func(method, pattern string, handler http.HandlerFunc) {
-		mux.HandleFunc(method+" "+pattern, handler)
-	}
-	(&RetiredHandler{Auth: fixedAuth(false)}).BindRetiredRoutes(register)
-
-	path := replaceBankID(RetiredRoutes[0].Pattern)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status = %d, want 401", rec.Code)
-	}
-}
-
-func TestRetiredRoutesWithNilAuthAreDenied(t *testing.T) {
+// The retired routes must not gate on a credential: the reference raises the
+// gone status before any authenticated call, so a caller with no Authorization
+// header still learns the route was retired.
+func TestRetiredRoutesAnswerWithoutCredential(t *testing.T) {
 	mux := http.NewServeMux()
 	(&RetiredHandler{}).BindRetiredRoutes(func(method, pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(method+" "+pattern, handler)
 	})
+
 	path := replaceBankID(RetiredRoutes[0].Pattern)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("a missing authenticator must deny access, got %d", rec.Code)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("retired status without a credential = %d, want 410", rec.Code)
 	}
 }
 
-// ts-0018: the retirement message names the configuration read and write routes
-// and the bank list route.
+// ts-0018: the two retirement messages each name the configuration routes and
+// the bank list route.
 func TestRetiredMessagePointsAtCurrentFields(t *testing.T) {
-	for _, needle := range []string{"config", "banks"} {
-		if !containsFold(httpx.DetailRetired, needle) {
-			t.Fatalf("retirement detail must name %q: %q", needle, httpx.DetailRetired)
+	for _, detail := range []string{httpx.DetailRetiredProfile, httpx.DetailRetiredBackground} {
+		for _, needle := range []string{"config", "banks"} {
+			if !containsFold(detail, needle) {
+				t.Fatalf("retirement detail must name %q: %q", needle, detail)
+			}
 		}
 	}
 }

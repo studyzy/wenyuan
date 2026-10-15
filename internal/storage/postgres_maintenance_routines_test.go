@@ -153,8 +153,11 @@ func TestRetentionRoutineReportsOnlyExpiredSchemas(t *testing.T) {
 
 	reporting := func(days int) []string {
 		t.Helper()
+		// The routine is qualified: an unqualified call would only resolve
+		// while the connection's search path happened to point here, which a
+		// pooled connection cannot be relied on to carry.
 		rows, err := pg.db.QueryContext(ctx,
-			`SELECT schemas_with_expired_rows($1, $2, $3)`, "audit_log", "started_at", days)
+			`SELECT `+quoteIdent(schema)+`.schemas_with_expired_rows($1, $2, $3)`, "audit_log", "started_at", days)
 		if err != nil {
 			t.Fatalf("call the routine: %v", err)
 		}

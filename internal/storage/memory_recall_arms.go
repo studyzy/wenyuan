@@ -56,6 +56,15 @@ const (
 	graphHopDecay     = 0.6
 	graphNodeBudget   = 64
 	graphIterationCap = 2
+	// graphSeedLimit bounds how many seeds the walk starts from. Upstream
+	// starts from the cosine-nearest handful (GRAPH_SEED_LIMIT = 20) rather than
+	// from every lexical match, so a broad lexical hit set does not fan the walk
+	// out from weak seeds.
+	graphSeedLimit = 20
+	// graphEntitySaturation is the upstream entity-saturation rate: a candidate
+	// sharing n entities with the seeds weights tanh(n * 0.5), which maps
+	// 1→0.46, 2→0.76, 3→0.91 and saturates naturally.
+	graphEntitySaturation = 0.5
 )
 
 // runGraphArm reaches the memories connected to the memories the lexical arms
@@ -65,17 +74,24 @@ const (
 // query — that is the point, since a fact linked to a relevant one is often
 // relevant itself without sharing its wording.
 func (s *MemoryStore) runGraphArm(q RecallQuery, types []string, term string) []recallHit {
-	if term == "" || len(s.links) == 0 {
+	if term == "" || !graphSeedsAllowed(q) {
 		return nil
 	}
 	seeds := s.graphSeeds(q, types, term)
 	if len(seeds) == 0 {
 		return nil
 	}
-	reached := s.spreadFromSeeds(seeds, q.BankID)
 	seedsSeen := make(map[string]bool, len(seeds))
 	for _, seed := range seeds {
 		seedsSeen[seed.match.ID] = true
+	}
+	reached := s.spreadFromSeeds(seeds, q.BankID)
+	// Entity co-occurrence is a first-class signal alongside the stored links:
+	// a unit that mentions the same entities as a seed is reachable even with
+	// no explicit link. Its weight is added to whatever the link walk already
+	// accumulated, so convergent evidence ranks higher.
+	for unitID, score := range s.entityExpansion(seedsSeen) {
+		reached[unitID] += score
 	}
 	hits := make([]recallHit, 0, len(reached))
 	for _, m := range s.memories[q.BankID] {
@@ -92,7 +108,9 @@ func (s *MemoryStore) runGraphArm(q RecallQuery, types []string, term string) []
 }
 
 // graphSeeds collects the memories the lexical arms match, which are where the
-// graph walk starts.
+// graph walk starts. Only the strongest graphSeedLimit seed the walk: upstream
+// starts from the cosine-nearest handful, and with no embeddings the offline
+// lexical score is the stand-in, so the same cap keeps the two backends alike.
 func (s *MemoryStore) graphSeeds(q RecallQuery, types []string, term string) []recallHit {
 	seeds := make([]recallHit, 0)
 	for _, m := range s.memories[q.BankID] {
@@ -104,11 +122,16 @@ func (s *MemoryStore) graphSeeds(q RecallQuery, types []string, term string) []r
 		}
 	}
 	sortHits(seeds)
+	if len(seeds) > graphSeedLimit {
+		seeds = seeds[:graphSeedLimit]
+	}
 	return seeds
 }
 
 // spreadFromSeeds walks the link graph outward from the seed scores, keeping the
-// strongest path to each memory reached.
+// strongest path to each memory reached. A hop's weight is additive across the
+// link kinds connecting its endpoints (see hopWeight), so a pair joined by more
+// than one signal propagates more strongly than any single signal.
 func (s *MemoryStore) spreadFromSeeds(seeds []recallHit, bankID string) map[string]float64 {
 	best := make(map[string]float64, len(seeds))
 	for _, seed := range seeds {
@@ -129,16 +152,16 @@ func (s *MemoryStore) spreadFromSeeds(seeds []recallHit, bankID string) map[stri
 				break
 			}
 			visited++
-			for _, link := range outgoing[id] {
-				propagated := best[id] * graphHopDecay * relationStrength(link.LinkType)
+			for _, edge := range outgoing[id] {
+				propagated := best[id] * graphHopDecay * edge.weight
 				if propagated <= 0 {
 					continue
 				}
-				if existing, ok := best[link.ToUnitID]; ok && existing >= propagated {
+				if existing, ok := best[edge.to]; ok && existing >= propagated {
 					continue
 				}
-				best[link.ToUnitID] = propagated
-				next = append(next, link.ToUnitID)
+				best[edge.to] = propagated
+				next = append(next, edge.to)
 			}
 		}
 		sort.Strings(next)
@@ -147,14 +170,102 @@ func (s *MemoryStore) spreadFromSeeds(seeds []recallHit, bankID string) map[stri
 	return best
 }
 
-// outgoingLinks indexes the bank's links by source unit.
-func (s *MemoryStore) outgoingLinks(bankID string) map[string][]MemoryLink {
-	out := make(map[string][]MemoryLink)
+// graphEdge is one hop of the walk: the unit reached and the weight of that
+// hop, additive across every link kind connecting the source to it.
+type graphEdge struct {
+	to     string
+	weight float64
+}
+
+// hopWeight returns the graph arm's per-hop weight for the link kinds that
+// connect one unit to another. Unlike a single per-relation multiplier, it is
+// additive across the kinds traversed, mirroring the upstream merge, which sums
+// the entity, semantic and causal signals:
+//
+//	hopWeight = Σ relationStrength(kind)
+//
+// A causes-only hop therefore weighs 1.0 and a temporal-only hop 0.5, while a
+// pair that is both causal and temporal accumulates 1.5: convergent evidence
+// propagates more strongly than any one signal.
+func hopWeight(kinds []MemoryLinkType) float64 {
+	total := 0.0
+	for _, kind := range kinds {
+		total += relationStrength(kind)
+	}
+	return total
+}
+
+// outgoingLinks indexes the bank's links by source unit, folding the links
+// between the same pair into one hop whose weight is the sum of their
+// contributions. Aggregating before the walk is what makes the per-hop weight
+// additive rather than letting the strongest single link win.
+func (s *MemoryStore) outgoingLinks(bankID string) map[string][]graphEdge {
+	folded := map[string]map[string]float64{}
 	for _, link := range s.links {
 		if link.BankID != bankID {
 			continue
 		}
-		out[link.FromUnitID] = append(out[link.FromUnitID], link)
+		targets := folded[link.FromUnitID]
+		if targets == nil {
+			targets = map[string]float64{}
+			folded[link.FromUnitID] = targets
+		}
+		targets[link.ToUnitID] += linkHopWeight(link)
+	}
+	out := make(map[string][]graphEdge, len(folded))
+	for from, targets := range folded {
+		edges := make([]graphEdge, 0, len(targets))
+		for to, weight := range targets {
+			edges = append(edges, graphEdge{to: to, weight: weight})
+		}
+		// Stable order keeps the walk deterministic independent of link
+		// insertion order.
+		sort.Slice(edges, func(i, j int) bool { return edges[i].to < edges[j].to })
+		out[from] = edges
+	}
+	return out
+}
+
+// linkHopWeight is one stored link's contribution to a hop. A semantic link
+// carries its stored similarity weight, so a strong precomputed neighbour
+// propagates further; every other kind is ranked by relationStrength.
+func linkHopWeight(link MemoryLink) float64 {
+	if link.LinkType == LinkSemantic && link.Weight > 0 {
+		return link.Weight
+	}
+	return hopWeight([]MemoryLinkType{link.LinkType})
+}
+
+// entityExpansion returns the units reachable from the seeds through a shared
+// entity, weighted by the upstream saturation curve tanh(shared * 0.5) over the
+// number of distinct entities a unit shares with the seed set. A seed is not
+// itself expanded, and a unit with no shared entity is absent from the result.
+func (s *MemoryStore) entityExpansion(seedsSeen map[string]bool) map[string]float64 {
+	seedEntities := map[string]bool{}
+	for unitID := range seedsSeen {
+		for _, entityID := range s.unitEntities[unitID] {
+			seedEntities[entityID] = true
+		}
+	}
+	if len(seedEntities) == 0 {
+		return nil
+	}
+	out := map[string]float64{}
+	for unitID, entityIDs := range s.unitEntities {
+		if seedsSeen[unitID] {
+			continue
+		}
+		seen := map[string]bool{}
+		shared := 0
+		for _, entityID := range entityIDs {
+			if seedEntities[entityID] && !seen[entityID] {
+				seen[entityID] = true
+				shared++
+			}
+		}
+		if shared > 0 {
+			out[unitID] = math.Tanh(float64(shared) * graphEntitySaturation)
+		}
 	}
 	return out
 }

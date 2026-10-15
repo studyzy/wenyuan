@@ -88,6 +88,41 @@ func TestBuildRecallQueryIncludeDefaults(t *testing.T) {
 	}
 }
 
+// An include object that omits the entities key still includes entities: the
+// reference's default-factory makes entities non-null unless explicitly nulled.
+func TestRecallIncludeOmitsEntitiesStillIncludes(t *testing.T) {
+	var req RecallRequest
+	if err := json.Unmarshal([]byte(`{"query":"q","include":{"chunks":{}}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Include.Entities == nil {
+		t.Fatal("omitted entities key must default to include")
+	}
+	query, err := (&Handlers{}).buildRecallQuery("b1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !query.IncludeEntities {
+		t.Fatal("include.entities omitted must mean include, like the reference default")
+	}
+	if !query.IncludeChunks {
+		t.Fatal("supplied chunks must be included")
+	}
+
+	// An explicit null still disables entity inclusion.
+	var nulled RecallRequest
+	if err := json.Unmarshal([]byte(`{"query":"q","include":{"entities":null}}`), &nulled); err != nil {
+		t.Fatal(err)
+	}
+	query2, err := (&Handlers{}).buildRecallQuery("b1", nulled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query2.IncludeEntities {
+		t.Fatal("an explicit null entities must exclude entity states")
+	}
+}
+
 // The budget and tag-match defaults are applied when the request omits them.
 func TestBuildRecallQueryDefaults(t *testing.T) {
 	h := &Handlers{}

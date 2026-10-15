@@ -227,3 +227,31 @@ func TestAbandonedClaimReleasesTheKey(t *testing.T) {
 		t.Fatalf("an abandoned claim must not hold the key: %v", err)
 	}
 }
+
+// A consolidation pass holds its bank's key: another bank's pass runs
+// concurrently, the same bank's waits.
+func TestConsolidationKeyIsBankScoped(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+
+	for _, bank := range []string{"bank-a", "bank-b"} {
+		if _, err := store.PutOperation(ctx, Operation{
+			OperationID: "op-" + bank, BankID: bank, OperationType: OperationTypeConsolidate,
+			Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bank),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := store.ClaimNextOperation(ctx, "worker-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.ClaimNextOperation(ctx, "worker-1", time.Minute)
+	if err != nil {
+		t.Fatalf("another bank's pass must run concurrently: %v", err)
+	}
+	if first.BankID == second.BankID {
+		t.Fatalf("two passes for one bank ran at once: %s", first.BankID)
+	}
+}

@@ -1,7 +1,6 @@
 package bankapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -16,6 +15,10 @@ type Handlers struct {
 	// ConfigEnabled gates the bank configuration write route; the read route
 	// is never gated.
 	ConfigEnabled bool
+	// ConfigDefaults is the process layer the configuration read resolves
+	// overrides on top of, so a field the bank did not override still reads its
+	// effective value. A nil map leaves the read showing only what was set.
+	ConfigDefaults map[string]any
 }
 
 // NewHandlers builds the bank API handler set.
@@ -30,9 +33,24 @@ func (h *Handlers) WithConfigAPI(enabled bool) *Handlers {
 	return h
 }
 
+// WithConfigDefaults returns the handler set with the process-level
+// configuration the read route resolves overrides on top of.
+func (h *Handlers) WithConfigDefaults(defaults map[string]any) *Handlers {
+	h.ConfigDefaults = defaults
+	return h
+}
+
+// defaultBankListLimit is the reference's page size when the request names no
+// limit.
+const defaultBankListLimit = 100
+
 // ListBanks serves the bank listing route with pagination and search.
 func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
-	query := parseBankQuery(r)
+	query, failure := parseBankQuery(r)
+	if failure != nil {
+		httpx.WriteValidationFor(w, r, failure)
+		return
+	}
 	page, err := h.Store.ListBanks(r.Context(), query)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
@@ -57,19 +75,22 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 // created.
 func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 	rawID := r.PathValue("bank_id")
-	if writeIdentifierError(w, r, rawID) {
-		return
-	}
 	var req BankRequest
-	if err := decodeBody(r, &req); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "request body is not valid JSON"))
+	if err := httpx.DecodeBody(r, &req); err != nil {
+		httpx.WriteErrorFor(w, r, err)
 		return
 	}
 	if failure := ValidateCreate(req); failure != nil {
 		httpx.WriteValidationFor(w, r, failure)
 		return
 	}
-	if _, err := h.Store.GetBank(r.Context(), rawID); err != nil {
+	configPatchValue, httpErr := configPatch(req.configUpdates())
+	if httpErr != nil {
+		httpx.WriteErrorFor(w, r, httpErr)
+		return
+	}
+	existing, err := h.Store.GetBank(r.Context(), rawID)
+	if err != nil {
 		if !errors.Is(err, storage.ErrBankNotFound) {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
 			return
@@ -80,20 +101,27 @@ func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias"))
 			return
 		}
-		bank, cerr := h.Store.CreateBank(r.Context(), req.ToStorage(rawID))
+		bank := req.ToStorage(rawID)
+		bank.Config = mergeConfig(nil, configPatchValue.Config)
+		created, cerr := h.Store.CreateBank(r.Context(), bank)
 		if cerr != nil {
 			httpx.WriteErrorFor(w, r, h.mapWriteError(cerr))
 			return
 		}
-		httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(bank))
+		httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(created))
 		return
 	}
-	bank, err := h.Store.ReplaceBank(r.Context(), req.ToStorage(rawID))
+	bank := req.ToStorage(rawID)
+	// The reference merges config updates into the bank's existing overrides
+	// rather than replacing them, so a replace that names no config field keeps
+	// every override the bank already had.
+	bank.Config = mergeConfig(existing.Config, configPatchValue.Config)
+	replaced, err := h.Store.ReplaceBank(r.Context(), bank)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(bank))
+	httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(replaced))
 }
 
 // UpdateBank serves the partial-update route. A missing bank is not created.
@@ -103,15 +131,24 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req BankRequest
-	if err := decodeBody(r, &req); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "request body is not valid JSON"))
+	if err := httpx.DecodeBody(r, &req); err != nil {
+		httpx.WriteErrorFor(w, r, err)
 		return
 	}
 	if failure := ValidatePatch(req); failure != nil {
 		httpx.WriteValidationFor(w, r, failure)
 		return
 	}
-	bank, err := h.Store.UpdateBank(r.Context(), bankID, req.ToPatch())
+	configPatchValue, httpErr := configPatch(req.configUpdates())
+	if httpErr != nil {
+		httpx.WriteErrorFor(w, r, httpErr)
+		return
+	}
+	storagePatch := req.ToPatch()
+	if configPatchValue.Config != nil {
+		storagePatch.Config = configPatchValue.Config
+	}
+	bank, err := h.Store.UpdateBank(r.Context(), bankID, storagePatch)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, validateBankExists(err))
 		return
@@ -123,9 +160,6 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 // is a zero-item no-op.
 func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 	rawID := r.PathValue("bank_id")
-	if writeIdentifierError(w, r, rawID) {
-		return
-	}
 	bankID, err := h.Store.ResolveBankID(r.Context(), rawID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
@@ -149,12 +183,13 @@ func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 
 // resolveCanonical rewrites a bank-scoped path parameter to its canonical
 // identifier after alias resolution. It writes a not-found error and reports
-// false when the identifier is malformed or the bank does not exist.
+// false when the bank does not exist.
+//
+// A bank identifier is not shape-checked here: the reference declares it an
+// unconstrained string and lets the store answer, so a malformed identifier
+// reaches the store and a missing bank is what the caller sees.
 func (h *Handlers) resolveCanonical(w http.ResponseWriter, r *http.Request) (string, bool) {
 	rawID := r.PathValue("bank_id")
-	if writeIdentifierError(w, r, rawID) {
-		return "", false
-	}
 	bankID, err := h.Store.ResolveBankID(r.Context(), rawID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
@@ -167,17 +202,18 @@ func (h *Handlers) resolveCanonical(w http.ResponseWriter, r *http.Request) (str
 	return bankID, true
 }
 
-func (h *Handlers) displayAlias(r *http.Request, bankID string) string {
+func (h *Handlers) displayAlias(r *http.Request, bankID string) *string {
 	aliases, err := h.Store.ListAliases(r.Context(), bankID)
 	if err != nil {
-		return ""
+		return nil
 	}
 	for _, alias := range aliases {
 		if alias.Primary {
-			return alias.Alias
+			value := alias.Alias
+			return &value
 		}
 	}
-	return ""
+	return nil
 }
 
 func (h *Handlers) mapWriteError(err error) error {
@@ -197,35 +233,82 @@ func (h *Handlers) mapWriteError(err error) error {
 
 func validateBankExists(err error) error {
 	if errors.Is(err, storage.ErrBankNotFound) {
-		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailUnknownBank)
+		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	}
 	return err
 }
 
-func parseBankQuery(r *http.Request) storage.BankQuery {
-	query := storage.BankQuery{Search: r.URL.Query().Get("q")}
-	if limit, ok := nonNegativeParam(r, "limit"); ok {
-		query.Limit = limit
+// parseBankQuery reads the list query. An absent limit uses the reference's
+// default page size; an absent offset is zero. A named limit or offset must be
+// a non-negative integer, and a value that is not is a validation failure, the
+// same 422 the reference's bounded query parameters produce.
+func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailure) {
+	query := storage.BankQuery{Search: httpx.Query(r, "q"), Limit: defaultBankListLimit}
+	var items []httpx.ValidationError
+	if raw, ok := httpx.QueryPresent(r, "limit"); ok {
+		value, failure := parseNonNegativeParam("limit", raw[0])
+		if failure != nil {
+			items = append(items, *failure)
+		} else {
+			query.Limit = value
+		}
 	}
-	if offset, ok := nonNegativeParam(r, "offset"); ok {
-		query.Offset = offset
+	if raw, ok := httpx.QueryPresent(r, "offset"); ok {
+		value, failure := parseNonNegativeParam("offset", raw[0])
+		if failure != nil {
+			items = append(items, *failure)
+		} else {
+			query.Offset = value
+		}
 	}
-	return query
+	if len(items) > 0 {
+		return storage.BankQuery{}, &httpx.ValidationFailure{Errors: items}
+	}
+	return query, nil
 }
 
-func nonNegativeParam(r *http.Request, name string) (int, bool) {
-	value := r.URL.Query().Get(name)
-	if value == "" {
-		return 0, false
+// parseNonNegativeParam parses one required non-negative integer query value,
+// reporting a parse failure and a range failure distinctly, as the reference
+// does.
+func parseNonNegativeParam(name, raw string) (int, *httpx.ValidationError) {
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		item := httpx.TypeMismatch("int_parsing", []string{"query", name}, raw)
+		return 0, &item
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 {
-		return 0, false
+	if parsed < 0 {
+		item := httpx.GreaterThanEqual([]string{"query", name}, parsed, 0)
+		return 0, &item
 	}
-	return parsed, true
+	return parsed, nil
 }
 
-func decodeBody(r *http.Request, target any) error {
-	decoder := json.NewDecoder(r.Body)
-	return decoder.Decode(target)
+// mergeConfig layers a validated configuration patch over a bank's existing
+// overrides. A nil patch leaves the base untouched; a nil value in the patch
+// removes the key (the reference's "server default" tombstone).
+func mergeConfig(base map[string]any, patch *map[string]any) map[string]any {
+	if patch == nil && base == nil {
+		return nil
+	}
+	merged := make(map[string]any, len(base)+configLen(patch))
+	for key, value := range base {
+		merged[key] = value
+	}
+	if patch != nil {
+		for key, value := range *patch {
+			if value == nil {
+				delete(merged, key)
+				continue
+			}
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func configLen(patch *map[string]any) int {
+	if patch == nil {
+		return 0
+	}
+	return len(*patch)
 }

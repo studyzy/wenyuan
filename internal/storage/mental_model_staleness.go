@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -69,6 +72,12 @@ func ScopeFromModel(model MentalModel) MentalModelScope {
 // existed. It is not equivalent — a refresh that found nothing new still moves
 // the refresh time — but it is strictly better than treating the model as
 // having seen nothing, which would refresh every model in a deployment at once.
+//
+// It is the *staleness* rule, matching the reference's (`since =
+// last_memory_seen_at or last_refreshed_at`). A refresh's delta window must not
+// use it: there the bound is the watermark alone, because a model carries a
+// refresh stamp from the moment it is created, and reading that as "already
+// seen everything" would make a new document's first refresh read nothing.
 func (m MentalModel) LastMemorySeenAtTime() time.Time {
 	if m.LastMemorySeenAt != nil {
 		return *m.LastMemorySeenAt
@@ -90,9 +99,14 @@ func (s *MemoryStore) IsStale(ctx context.Context, bankID string, model MentalMo
 		return true
 	}
 	if bankWatermark := s.BankWriteWatermark(ctx, bankID); !bankWatermark.After(scope.Since) {
-		return false
+		// Nothing was written since the last look, but evidence the document
+		// cites may have gone: a retraction raises no watermark.
+		return groundingRetracted(ctx, s, bankID, model)
 	}
-	return s.anyMemoryInScopeSince(ctx, bankID, scope)
+	if s.anyMemoryInScopeSince(ctx, bankID, scope) {
+		return true
+	}
+	return groundingRetracted(ctx, s, bankID, model)
 }
 
 // anyMemoryInScopeSince reports whether any memory matching the scope was
@@ -107,9 +121,20 @@ func (s *MemoryStore) anyMemoryInScopeSince(ctx context.Context, bankID string, 
 		if unit.BankID != bankID {
 			continue
 		}
-		written := unit.MentionedAt
+		// The written time is the unit's record timestamp — the same column the
+		// bank watermark reads — so a write that moves the watermark also makes
+		// the model stale. The mention and occurrence times are fallbacks for a
+		// unit whose record time is unset, which is the shape a seeded store can
+		// have; against a real row the record time is always the one to use.
+		written := unit.UpdatedAt
+		if written == nil {
+			written = unit.MentionedAt
+		}
 		if written == nil {
 			written = unit.OccurredStart
+		}
+		if written == nil {
+			written = unit.CreatedAt
 		}
 		if written == nil || !written.After(scope.Since) {
 			continue
@@ -326,9 +351,14 @@ func (s *PostgresStore) IsStale(ctx context.Context, bankID string, model Mental
 		return true
 	}
 	if watermark := s.BankWriteWatermark(ctx, bankID); !watermark.After(scope.Since) {
-		return false
+		// Nothing was written since the last look, but evidence the document
+		// cites may have gone: a retraction raises no watermark.
+		return groundingRetracted(ctx, s, bankID, model)
 	}
-	return s.anyMemoryInScopeSince(ctx, bankID, scope)
+	if s.anyMemoryInScopeSince(ctx, bankID, scope) {
+		return true
+	}
+	return groundingRetracted(ctx, s, bankID, model)
 }
 
 // anyMemoryInScopeSince asks the database whether any in-scope memory is newer
@@ -341,14 +371,20 @@ func (s *PostgresStore) IsStale(ctx context.Context, bankID string, model Mental
 func (s *PostgresStore) anyMemoryInScopeSince(ctx context.Context, bankID string, scope MentalModelScope) bool {
 	clauses := []string{"bank_id = $1"}
 	args := []any{bankID, scope.Since}
-	// The written time is the mention time, falling back to the occurred
-	// start: a memory with no mention time still has a time the model can be
-	// judged against.
-	clauses = append(clauses, "COALESCE(mentioned_at, occurred_start) > $2")
+	// The written time is the unit's record timestamp, the same column the bank
+	// watermark reads (MAX(updated_at)): a write must move both, or a fresh
+	// memory raises the watermark while the scoped check misses it and the
+	// model stays wrongly "current". Mention and occurrence times are fallbacks
+	// for a row whose record time is unset; a real row always carries one.
+	clauses = append(clauses, "COALESCE(updated_at, mentioned_at, occurred_start) > $2")
 
 	if len(scope.FactTypes) > 0 {
 		args = append(args, scope.FactTypes)
-		clauses = append(clauses, "type = ANY($"+itoa(len(args))+"::text[])")
+		// The column is fact_type, not type: memory_units carries the fact type
+		// under its own name (the reference's schema), and naming the wrong one
+		// made the query fail - which the caller below turned into "no source",
+		// so a page whose scope names fact types silently never refreshed.
+		clauses = append(clauses, "fact_type = ANY($"+itoa(len(args))+"::text[])")
 	}
 	if predicate, predicateArgs := tagPredicate(scope, len(args)); predicate != "" {
 		args = append(args, predicateArgs...)
@@ -360,6 +396,12 @@ func (s *PostgresStore) anyMemoryInScopeSince(ctx context.Context, bankID string
 	          LIMIT 1`
 	var found int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&found)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// Reading a failure as "not stale" parks the model, so the failure is
+		// logged rather than swallowed.
+		slog.Default().Warn("could not check whether a mental model's scope has newer memories",
+			"bank_id", bankID, "scope_since", scope.Since, "error", err)
+	}
 	return err == nil
 }
 
@@ -377,12 +419,12 @@ func tagPredicate(scope MentalModelScope, used int) (string, []any) {
 	switch scope.TagsMatch {
 	case TagsMatchAll, TagsMatchAllStrict:
 		// Every wanted tag must be present.
-		return "tags @> " + placeholder + "::text[]", []any{scope.Tags}
+		return "tags::text[] @> " + placeholder + "::text[]", []any{scope.Tags}
 	case TagsMatchExact:
 		// The set must be equal, not merely contain.
-		return "tags <@ " + placeholder + "::text[] AND tags @> " + placeholder + "::text[]", []any{scope.Tags}
+		return "tags::text[] <@ " + placeholder + "::text[] AND tags::text[] @> " + placeholder + "::text[]", []any{scope.Tags}
 	default: // any, any_strict
-		return "tags && " + placeholder + "::text[]", []any{scope.Tags}
+		return "tags::text[] && " + placeholder + "::text[]", []any{scope.Tags}
 	}
 }
 
@@ -428,10 +470,17 @@ func renderTagGroup(group TagGroup, used int) (string, []any) {
 			return "", nil
 		}
 		placeholder := "$" + itoa(used+1)
-		if group.Match == TagsMatchAll || group.Match == TagsMatchAllStrict {
-			return "tags @> " + placeholder + "::text[]", []any{wanted}
+		switch group.Match {
+		case TagsMatchAll, TagsMatchAllStrict:
+			return "tags::text[] @> " + placeholder + "::text[]", []any{wanted}
+		case TagsMatchExact:
+			// Set equality, matching recall's `exact` (flatTagClause) and the
+			// in-memory matcher, so a compound `exact` leaf means the same thing
+			// on both backends.
+			return "tags::text[] <@ " + placeholder + "::text[] AND tags::text[] @> " + placeholder + "::text[]", []any{wanted}
+		default:
+			return "tags::text[] && " + placeholder + "::text[]", []any{wanted}
 		}
-		return "tags && " + placeholder + "::text[]", []any{wanted}
 	}
 }
 

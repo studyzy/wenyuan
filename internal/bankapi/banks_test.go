@@ -265,6 +265,28 @@ func TestOversizeIdentifierRejected(t *testing.T) {
 	}
 }
 
+// A bank identifier is not shape-checked at the HTTP layer: the reference
+// declares it an unconstrained string and lets the store answer. So a
+// malformed identifier on a read is the store's missing-bank answer, not the
+// HTTP layer's own 400.
+func TestMalformedIdentifierReadReturnsStoreAnswer(t *testing.T) {
+	mux, _ := newTestServer(t)
+	long := strings.Repeat("a", storage.BankIDMaxBytes+1)
+	for _, id := range []string{long, "has%0Acontrol"} {
+		rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks/"+id+"/aliases", "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("id %q: status = %d, want the store's not-found, body = %s", id, rec.Code, rec.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("id %q: body is not JSON: %v", id, err)
+		}
+		if detail, _ := body["detail"].(string); !strings.Contains(detail, "not found") {
+			t.Fatalf("id %q: detail = %q, want the store's missing-bank answer", id, detail)
+		}
+	}
+}
+
 // ts-0010: the delete envelope carries success, message and deleted count;
 // deleting a bank that never existed reports zero.
 func TestDeleteEnvelope(t *testing.T) {
@@ -296,6 +318,38 @@ func TestDeleteEnvelope(t *testing.T) {
 	}
 	if envelope["deleted_count"].(float64) != 0 {
 		t.Fatalf("deleted_count = %v, want 0", envelope["deleted_count"])
+	}
+}
+
+// An absent limit uses the reference's default of 100, and a limit or offset
+// that is not a non-negative integer is refused with the reference's 422.
+func TestBankListDefaultLimitAndValidation(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("listing status = %d", rec.Code)
+	}
+	var envelope struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Limit != 100 {
+		t.Fatalf("default limit = %d, want 100", envelope.Limit)
+	}
+
+	// Zero is a valid limit (ge=0), and a positive limit is honoured.
+	if rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?limit=0", ""); rec.Code != http.StatusOK {
+		t.Fatalf("limit 0 = %d, want 200", rec.Code)
+	}
+	for _, query := range []string{"limit=-1", "limit=abc", "offset=-1", "offset=abc"} {
+		if rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?"+query, ""); rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("?%s = %d, want 422 (body %s)", query, rec.Code, rec.Body.String())
+		}
 	}
 }
 

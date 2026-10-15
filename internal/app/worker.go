@@ -1,19 +1,28 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"sort"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/consolidation"
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
-	"github.com/studyzy/wenyuan/internal/migration/hindsight"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
-	"github.com/studyzy/wenyuan/internal/transfer"
+	"github.com/studyzy/wenyuan/internal/webhooks"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
@@ -25,10 +34,37 @@ import (
 type archiveProcessor struct {
 	store    storage.Store
 	provider provider.Provider
+	// correctionRetries bounds how many times a queued retain's extraction is
+	// re-asked when the model returns facts in a foreign shape. It is the same
+	// server-level budget the synchronous retain path uses.
+	correctionRetries int
+	// recallPerSourceCap bounds each retrieval arm of the consolidation
+	// near-duplicate lookup; zero leaves it bound only by the pool budget.
+	recallPerSourceCap int
 	// reflection, when non-nil, makes a queued mental-model refresh write
 	// prose through the model-driven loop rather than the deterministic
 	// fallback.
 	reflection storage.ReflectRunner
+	// webhookGuard re-validates a delivery target and vets the address it
+	// dials. It is the same guard the registration route enforces, so a URL
+	// that was acceptable when stored is checked again against the policy in
+	// force at delivery time.
+	webhookGuard *webhooks.Guard
+	// embeddings is the deployment's embedding model. The archive import
+	// replays facts through the write path's embedding boundary, so an imported
+	// fact is embedded with the target bank's model exactly as a retained one
+	// is; a deployment with no embedding model leaves it nil.
+	embeddings storage.EmbeddingGenerator
+}
+
+// guard returns the delivery URL guard, defaulting to the strict policy when
+// none was configured. A deployment that never opts into private targets must
+// not deliver to one by accident.
+func (p archiveProcessor) guard() *webhooks.Guard {
+	if p.webhookGuard == nil {
+		return webhooks.NewGuard(webhooks.GuardConfig{})
+	}
+	return p.webhookGuard
 }
 
 // logger returns the worker log sink.
@@ -36,24 +72,218 @@ func (p archiveProcessor) logger() *slog.Logger { return slog.Default() }
 
 // Process runs one queued operation.
 func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) error {
+	err := p.dispatch(ctx, op)
+	// A provider rate limit is a transient condition: defer the operation
+	// without consuming the retry budget rather than failing it.
+	if err != nil && provider.IsRateLimitReset(err) {
+		return worker.Defer(err)
+	}
+	return err
+}
+
+// dispatch routes one operation to its handler.
+func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) error {
 	switch op.OperationType {
 	case storage.OperationTypeTransferImport, storage.OperationTypeDocumentImport:
 		return p.applyImport(ctx, op)
 	case storage.OperationTypeTransferExport, storage.OperationTypeDocumentExport:
-		// An export only records that the archive is available; the bytes are
-		// produced on demand by the export route.
-		return nil
+		return p.applyExport(ctx, op)
 	case storage.OperationTypeClone:
 		return p.applyClone(ctx, op)
 	case storage.OperationTypeConsolidate:
 		return p.applyConsolidation(ctx, op)
 	case storage.OperationTypeRefreshMentalModel:
 		return p.applyMentalModelRefresh(ctx, op)
+	case storage.OperationTypeWebhookDelivery:
+		return p.applyWebhookDelivery(ctx, op)
+	case storage.OperationTypeRetain:
+		return p.applyRetain(ctx, op)
+	case storage.AsyncRetainType:
+		// A batch parent carries no task payload: it is a status aggregator
+		// whose lifecycle is driven entirely by its children, so there is
+		// nothing to execute. The claim skips these rows, and reaching one here
+		// means a row was written by something that does not; completing it
+		// would report a batch finished while its children still run.
+		return worker.Permanent(fmt.Errorf("batch parent %s is not executable", op.OperationID))
 	default:
 		// An unknown operation type is permanent: the same input would be
 		// rejected again, so retrying only wastes the attempt budget.
 		return worker.Permanent(fmt.Errorf("unsupported operation type %q", op.OperationType))
 	}
+}
+
+// applyWebhookDelivery delivers one queued webhook event.
+//
+// The webhook's registration is read at delivery time, so an edit or a delete
+// takes effect on the next attempt rather than on the next event. A 4xx
+// response is permanent (the receiver rejects the shape); a transport failure
+// or a 5xx is retried, and a since-deleted webhook is a permanent no-op.
+func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.Operation) error {
+	webhookID, _ := op.Payload["webhook_id"].(string)
+	eventType, _ := op.Payload["event_type"].(string)
+	if webhookID == "" || eventType == "" {
+		return worker.Permanent(errors.New("webhook delivery carries no webhook or event type"))
+	}
+	webhook, err := p.store.GetWebhook(ctx, op.BankID, webhookID)
+	if err != nil {
+		if errors.Is(err, storage.ErrWebhookNotFound) {
+			return nil
+		}
+		return err
+	}
+	// The body was rendered when the event was raised, so the bytes sent are
+	// the bytes the signature covers, whatever the payload has been through
+	// since. A delivery queued by an older build without one is re-rendered.
+	body, _ := op.Payload["body"].(string)
+	bodyBytes := []byte(body)
+	if body == "" {
+		payload, _ := op.Payload["data"].(map[string]any)
+		rendered, err := marshalWebhookEvent(eventType, op.BankID, "", "completed", op.CreatedAt, payload)
+		if err != nil {
+			return worker.Permanent(err)
+		}
+		bodyBytes = rendered
+	}
+	status, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes)
+	if err != nil {
+		// A target the guard refuses at delivery time, or a receiver that
+		// answers with a redirect, is a permanent failure: the same
+		// registration fails the same way on every attempt, so retrying only
+		// spends the attempt budget. The receiver's status is recorded when it
+		// answered, so an operator can see what was refused.
+		if errors.Is(err, storage.ErrWebhookURLNotAllowed) || errors.Is(err, errWebhookRedirectRefused) {
+			worker.ReportOutcome(ctx, map[string]any{"last_status_code": nullableStatus(status)})
+			return worker.Permanent(err)
+		}
+		// A transport failure is retried on the reference's backoff ladder, and
+		// reported with no status because the receiver never answered.
+		worker.ReportOutcome(ctx, map[string]any{"last_status_code": nil})
+		return worker.DeferAt(webhookRetryDelay(op.RetryCount), err)
+	}
+	// The receiver's status is recorded on the delivery either way: it is what
+	// an operator reads to tell "the endpoint is refusing us" from "we never
+	// reached it".
+	worker.ReportOutcome(ctx, map[string]any{"last_status_code": status})
+	if status == 429 || status >= 500 {
+		return worker.DeferAt(webhookRetryDelay(op.RetryCount),
+			fmt.Errorf("webhook receiver failed with status %d", status))
+	}
+	if status >= 400 {
+		return worker.Permanent(fmt.Errorf("webhook receiver rejected the delivery with status %d", status))
+	}
+	return nil
+}
+
+// webhookRetryDelays is the delivery backoff ladder, matching the reference.
+var webhookRetryDelays = []time.Duration{
+	5 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 5 * time.Hour,
+}
+
+// webhookRetryDelay picks the delay for the given attempt, saturating at the
+// last rung.
+func webhookRetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(webhookRetryDelays) {
+		attempt = len(webhookRetryDelays) - 1
+	}
+	return webhookRetryDelays[attempt]
+}
+
+// errWebhookRedirectRefused marks a delivery the receiver answered with a
+// redirect. The guard checked the registered URL, not the hop, so following it
+// would carry the method and body at a target the guard never vetted.
+var errWebhookRedirectRefused = errors.New("webhook receiver answered with a redirect, which is not followed")
+
+// nullableStatus renders a delivery status for the recorded outcome, or nil
+// when the receiver never answered.
+func nullableStatus(status int) any {
+	if status == 0 {
+		return nil
+	}
+	return status
+}
+
+// deliverWebhook posts one signed delivery and returns the receiver's status.
+// The signature is HMAC-SHA256 over "<timestamp>.<body>", keyed by the
+// webhook's secret, carried in the reference's header shapes.
+//
+// The target is re-validated immediately before the request and the resolved
+// address is vetted again at connect time, because a name can resolve
+// differently at delivery than it did at registration. A redirect is refused
+// rather than followed: it would move the request to a target the guard never
+// checked.
+func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte) (int, error) {
+	guard := p.guard()
+	if err := guard.Validate(webhook.URL); err != nil {
+		return 0, err
+	}
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, bytes.NewReader(body))
+	if err != nil {
+		return 0, worker.Permanent(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Hindsight-Event", eventType)
+	if webhook.Secret != "" {
+		// The primary signature is over the raw body, `sha256=<hex>`, the
+		// same construction GitHub uses. The conventional header name carries
+		// the byte-identical value so a stock receiver verifies without a
+		// Hindsight-specific shim, and a timestamped variant lets a receiver
+		// that checks freshness reject a replayed delivery.
+		mac := hmac.New(sha256.New, []byte(webhook.Secret))
+		mac.Write(body)
+		signature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+		request.Header.Set("X-Hindsight-Signature", signature)
+		request.Header.Set("X-Hub-Signature-256", signature)
+		timed := hmac.New(sha256.New, []byte(webhook.Secret))
+		timed.Write([]byte(timestamp + "." + string(body)))
+		request.Header.Set("X-Hindsight-Signature-V2", "t="+timestamp+",v1="+hex.EncodeToString(timed.Sum(nil)))
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: p.webhookTransport(guard),
+		// A redirect would carry the request to a location the guard never
+		// saw; refusing here leaves the response to report, rather than
+		// silently following up to ten hops.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errWebhookRedirectRefused
+		},
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if errors.Is(err, errWebhookRedirectRefused) && response != nil {
+			return response.StatusCode, errWebhookRedirectRefused
+		}
+		return 0, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return response.StatusCode, nil
+}
+
+// webhookTransport dials through the guard's address check. The dialer's
+// control runs after a name is resolved and before the connection is made, so
+// the address that is actually connected to is vetted: a name that resolved
+// publicly at validation but privately at dial time cannot slip through.
+func (p archiveProcessor) webhookTransport(guard *webhooks.Guard) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{
+		Timeout: 15 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			return guard.CheckResolvedAddress(host)
+		},
+	}
+	transport.DialContext = dialer.DialContext
+	return transport
 }
 
 // applyMentalModelRefresh regenerates one mental model from its source query.
@@ -69,7 +299,28 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 		return worker.Permanent(errors.New("refresh operation carries no mental model id"))
 	}
 	runner := newMentalModelRefresh(p.store, p.provider, p.reflection)
-	if _, err := runner.refresh(ctx, op.BankID, modelID); err != nil {
+	_, report, err := runner.refresh(ctx, op.BankID, modelID)
+	// The outcome is the only place a refusal is distinguishable from an empty
+	// document: both leave the content as it was, and a refusal returns no
+	// error. Log it, so "the document never changed" has a name in the log.
+	slog.Default().Info("mental model refresh",
+		"bank_id", op.BankID, "mental_model_id", modelID,
+		"outcome", report.outcome, "failure_reason", report.failureReason)
+	// Record what the refresh did on the operation, in the reference's
+	// vocabulary: the outcome, why it refused to write, and the memory window it
+	// read from. The consumer persists it when it settles the operation —
+	// success and terminal failure alike — so an operator sees more than prose.
+	worker.ReportOutcome(ctx, report.metadata())
+	if err != nil {
+		// Every failure leaves a history row, so a refused write is visible on
+		// the model itself rather than only on the operation.
+		recordMentalModelRefreshFailure(ctx, p.store, op.BankID, modelID, report, err)
+		if transientRefreshFailure(err) {
+			// The provider is down or rate-limited; it will answer later, so the
+			// model is not parked. The operation still fails, so a caller sees
+			// the failure, but the next automatic trigger retries it.
+			return worker.Permanent(err)
+		}
 		if permanentRefreshFailure(err) {
 			if recordErr := p.store.RecordMentalModelRefreshFailure(ctx, op.BankID, modelID, time.Now().UTC()); recordErr != nil {
 				// A failure that cannot be recorded is still the failure that
@@ -84,21 +335,240 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 	return nil
 }
 
+// transientRefreshFailure reports whether a failed refresh failed because the
+// provider was temporarily unavailable — a rate limit, a 5xx, a timeout — rather
+// than because the prompt itself cannot be answered.
+//
+// The distinction decides whether the model is parked: a doomed prompt would
+// fail the same way forever, but a provider that is merely down will answer
+// later, and parking on it would freeze the model for days after the limit had
+// already reset.
+func transientRefreshFailure(err error) bool {
+	return provider.IsTransient(err) || provider.IsRateLimitReset(err)
+}
+
+// recordMentalModelRefreshFailure appends the history row every refused refresh
+// leaves, so the model's History shows what happened rather than the last
+// successful run as though it were current.
+func recordMentalModelRefreshFailure(ctx context.Context, store storage.Store, bankID, modelID string, report mentalModelRefreshReport, cause error) {
+	entry := storage.MentalModelHistoryEntry{
+		ChangedAt:     time.Now().UTC(),
+		Kind:          storage.MentalModelHistoryFailureKind,
+		Outcome:       report.outcome,
+		FailureReason: report.failureReason,
+		ErrorMessage:  cause.Error(),
+	}
+	if err := store.RecordMentalModelHistory(ctx, bankID, modelID, entry); err != nil {
+		slog.Default().Warn("could not record mental model refresh history",
+			"bank_id", bankID, "mental_model_id", modelID, "error", err)
+	}
+}
+
 // applyConsolidation runs one consolidation pass over the operation's bank. A
 // bank with no model configured is a permanent refusal rather than a retry,
 // because the same request would be refused again.
 func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Operation) error {
-	consolidator := consolidation.New(p.provider, consolidationStore{store: p.store})
+	consolidator := consolidation.New(p.provider, consolidationStore{store: p.store, perSourceCap: p.recallPerSourceCap})
 	if !consolidator.Available() {
 		return worker.Permanent(consolidation.ErrNoModel)
 	}
-	if _, err := consolidator.Run(ctx, op.BankID); err != nil {
+	if result, err := consolidator.Run(ctx, op.BankID); err != nil {
 		if errors.Is(err, consolidation.ErrNoModel) {
 			return worker.Permanent(err)
 		}
 		return err
+	} else {
+		// A completed consolidation is an event a webhook may subscribe to. The
+		// counts are the reference's ConsolidationEventData, so a subscriber
+		// sees what the pass did rather than only that it finished.
+		p.enqueueWebhookEvent(ctx, op.BankID, "consolidation.completed", map[string]any{
+			"operation_id":         op.OperationID,
+			"status":               "completed",
+			"observations_created": result.Created,
+			"observations_updated": result.Updated,
+			"observations_deleted": result.Deleted,
+		})
+		// A page that follows consolidation refreshes once the pass it was
+		// waiting on has landed, so the new observations are what it reads.
+		p.enqueueConsolidationRefreshes(ctx, op.BankID)
 	}
 	return nil
+}
+
+// enqueueConsolidationRefreshes queues a refresh for every model that follows
+// consolidation and has actually moved.
+//
+// The staleness check is what keeps a consolidation round from spending a model
+// call to regenerate content that would be identical, and the park check is what
+// stops a model whose last refresh failed from being re-queued on every round
+// (its failure already had its worker retries; re-sending the same prompt only
+// pays for the same failure).
+func (p archiveProcessor) enqueueConsolidationRefreshes(ctx context.Context, bankID string) {
+	models, err := p.store.ListMentalModels(ctx, bankID, "")
+	if err != nil {
+		slog.Default().Warn("could not list mental models for consolidation refresh",
+			"bank_id", bankID, "error", err)
+		return
+	}
+	for _, model := range models {
+		if !triggerRefreshAfterConsolidation(model.Trigger) {
+			continue
+		}
+		if refreshPaused(model) {
+			continue
+		}
+		if !p.store.IsStale(ctx, bankID, model) {
+			continue
+		}
+		if _, err := p.store.EnqueueOperation(ctx, storage.EnqueueRequest{
+			Operation: storage.Operation{
+				BankID:           bankID,
+				OperationType:    storage.OperationTypeRefreshMentalModel,
+				Payload:          map[string]any{storage.MentalModelIDPayloadKey: model.ID},
+				SerializationKey: storage.MentalModelSerializationKey(model.ID),
+			},
+			DedupeByPayloadKey:       storage.MentalModelIDPayloadKey,
+			DedupeIncludesProcessing: true,
+		}); err != nil {
+			slog.Default().Warn("could not queue a consolidation refresh",
+				"bank_id", bankID, "mental_model_id", model.ID, "error", err)
+		}
+	}
+}
+
+// triggerRefreshAfterConsolidation reports whether a trigger follows
+// consolidation.
+func triggerRefreshAfterConsolidation(trigger map[string]any) bool {
+	refresh, _ := trigger["refresh_after_consolidation"].(bool)
+	return refresh
+}
+
+// refreshPaused reports whether a model's last refresh failed and has not been
+// superseded by a success, which parks its automatic refreshes.
+func refreshPaused(model storage.MentalModel) bool {
+	if model.LastRefreshFailedAt == nil {
+		return false
+	}
+	return model.LastRefreshedAt.IsZero() || model.LastRefreshFailedAt.After(model.LastRefreshedAt)
+}
+
+// enqueueWebhookEvent queues a delivery for every enabled webhook of the bank
+// that subscribes to the event. A registration is read at delivery time, so the
+// queued work carries only the identity and the event.
+func (p archiveProcessor) enqueueWebhookEvent(ctx context.Context, bankID, eventType string, data map[string]any) {
+	enqueueWebhookEvent(ctx, p.store, bankID, eventType, data)
+}
+
+// enqueueWebhookEvent is the one place a webhook delivery is created: both the
+// worker's own events and the memoryops Memory Defense notifier go through it,
+// so a delivery has a single shape and a single subscription check.
+//
+// The event envelope is built here, once, and stored on the queued delivery:
+// the body is what a receiver verifies the signature over, so it must be the
+// exact bytes that go on the wire, not a re-serialization at delivery time.
+// Two reserved keys steer the envelope — `operation_id` and `status` — and are
+// taken out of the event data so they do not also appear inside it.
+func enqueueWebhookEvent(ctx context.Context, store storage.Store, bankID, eventType string, data map[string]any) {
+	webhooks, err := store.ListWebhooks(ctx, bankID)
+	if err != nil {
+		slog.Default().Warn("could not read webhooks for an event", "bank_id", bankID, "error", err)
+		return
+	}
+	payloadData := make(map[string]any, len(data))
+	for key, value := range data {
+		payloadData[key] = value
+	}
+	operationID, _ := payloadData["operation_id"].(string)
+	delete(payloadData, "operation_id")
+	status, _ := payloadData["status"].(string)
+	if status == "" {
+		status = "completed"
+	}
+	delete(payloadData, "status")
+	body, err := marshalWebhookEvent(eventType, bankID, operationID, status, time.Now().UTC(), payloadData)
+	if err != nil {
+		slog.Default().Warn("could not render a webhook event", "bank_id", bankID, "event_type", eventType, "error", err)
+		return
+	}
+	for _, webhook := range webhooks {
+		if !webhook.Enabled || !subscribesTo(webhook.EventTypes, eventType) {
+			continue
+		}
+		_, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
+			Operation: storage.Operation{
+				BankID:        bankID,
+				OperationType: storage.OperationTypeWebhookDelivery,
+				Payload: map[string]any{
+					"webhook_id": webhook.ID,
+					"event_type": eventType,
+					"url":        webhook.URL,
+					"body":       string(body),
+					"data":       payloadData,
+				},
+				SerializationKey: "webhook:" + webhook.ID,
+			},
+		})
+		if err != nil {
+			slog.Default().Warn("could not enqueue a webhook delivery",
+				"bank_id", bankID, "webhook_id", webhook.ID, "error", err)
+		}
+	}
+}
+
+// webhookEventBody is the wire payload of one delivery, in the reference's
+// WebhookEvent field order. The order matters: a receiver that recomputes the
+// signature from the body it parsed re-serializes in this same order, so the
+// bytes stay identical.
+type webhookEventBody struct {
+	Event       string         `json:"event"`
+	BankID      string         `json:"bank_id"`
+	OperationID string         `json:"operation_id"`
+	Status      string         `json:"status"`
+	Timestamp   string         `json:"timestamp"`
+	Data        map[string]any `json:"data"`
+}
+
+// marshalWebhookEvent renders the event envelope as compact JSON with no HTML
+// escaping, so a receiver's re-serialization of the parsed body reproduces these
+// exact bytes and the signature still verifies.
+func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.Time, data map[string]any) ([]byte, error) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(webhookEventBody{
+		Event:       eventType,
+		BankID:      bankID,
+		OperationID: operationID,
+		Status:      status,
+		Timestamp:   at.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+		Data:        data,
+	}); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// webhookNotifier adapts the worker's enqueue path to the capability interface
+// the memoryops handlers hold, so an event raised on a request path creates a
+// delivery exactly the way every other event does.
+type webhookNotifier struct{ store storage.Store }
+
+// EnqueueWebhookEvent queues one delivery per subscribed webhook of the bank.
+func (n webhookNotifier) EnqueueWebhookEvent(ctx context.Context, bankID, eventType string, data map[string]any) {
+	enqueueWebhookEvent(ctx, n.store, bankID, eventType, data)
+}
+
+// subscribesTo reports whether an event type is in a webhook's subscription.
+func subscribesTo(eventTypes []string, eventType string) bool {
+	for _, subscribed := range eventTypes {
+		if subscribed == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 // consolidationStore adapts the storage area to the consolidation engine's
@@ -107,6 +577,9 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 // types and the storage area stay free of the engine.
 type consolidationStore struct {
 	store storage.Store
+	// perSourceCap bounds each retrieval arm fed to the near-duplicate lookup,
+	// so one over-expanding arm cannot crowd the others out of the pool.
+	perSourceCap int
 }
 
 // ConsolidationFacts maps the storage facts into the engine's value type.
@@ -122,30 +595,75 @@ func (a consolidationStore) ConsolidationFacts(ctx context.Context, bankID strin
 			OccurredStart: formatOptionalTime(record.OccurredStart),
 			OccurredEnd:   formatOptionalTime(record.OccurredEnd),
 			MentionedAt:   formatOptionalTime(record.MentionedAt),
+			Tags:          record.Tags, ObservationScopes: record.ObservationScopes,
 		})
 	}
 	return facts, nil
 }
 
-// ConsolidationObservations maps the storage observations into the engine's
-// value type.
-func (a consolidationStore) ConsolidationObservations(ctx context.Context, bankID string, limit int) ([]consolidation.Observation, error) {
+// ConsolidationObservations maps the storage observations of one scope into the
+// engine's value type. A store that implements the scoped capability reads only
+// the scope's observations; a store that does not has its full pool filtered
+// here, so the two backends agree on which observations a pass may merge into.
+func (a consolidationStore) ConsolidationObservations(ctx context.Context, bankID string, scope []string, limit int) ([]consolidation.Observation, error) {
+	if scoped, ok := a.store.(storage.ConsolidationScopeStore); ok {
+		records, err := scoped.ConsolidationObservationsInScope(ctx, bankID, scope, limit)
+		if err != nil {
+			return nil, err
+		}
+		return mapObservations(records), nil
+	}
 	records, err := a.store.ConsolidationObservations(ctx, bankID, limit)
 	if err != nil {
 		return nil, err
 	}
+	mapped := mapObservations(records)
+	kept := mapped[:0]
+	for _, observation := range mapped {
+		if sameObservationScope(observation.Scope, scope) {
+			kept = append(kept, observation)
+		}
+	}
+	return kept, nil
+}
+
+// mapObservations translates storage observations into the engine's value type.
+func mapObservations(records []storage.ConsolidationObservation) []consolidation.Observation {
 	observations := make([]consolidation.Observation, 0, len(records))
 	for _, record := range records {
 		observations = append(observations, consolidation.Observation{
 			ID: record.ID, Text: record.Text, ProofCount: record.ProofCount,
-			SourceIDs: record.SourceIDs, MentionedAt: formatOptionalTime(record.MentionedAt),
+			SourceIDs: record.SourceIDs, SourceTexts: record.SourceTexts,
+			MentionedAt: formatOptionalTime(record.MentionedAt),
+			Scope:       record.Scope,
 		})
 	}
-	return observations, nil
+	return observations
 }
 
-// CreateObservation records a new observation.
-func (a consolidationStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
+// sameObservationScope reports whether two scopes name the same tag set.
+func sameObservationScope(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left := append([]string(nil), a...)
+	right := append([]string(nil), b...)
+	sort.Strings(left)
+	sort.Strings(right)
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// CreateObservation records a new observation at its scope, using the store's
+// scoped capability when it has one.
+func (a consolidationStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs, scope []string) (string, error) {
+	if scoped, ok := a.store.(storage.ConsolidationScopeStore); ok {
+		return scoped.CreateObservationInScope(ctx, bankID, text, sourceIDs, scope)
+	}
 	return a.store.CreateObservation(ctx, bankID, text, sourceIDs)
 }
 
@@ -164,6 +682,83 @@ func (a consolidationStore) MarkConsolidated(ctx context.Context, bankID string,
 	return a.store.MarkConsolidated(ctx, bankID, factIDs)
 }
 
+// MarkConsolidationFailed records that a pass gave up on the given facts.
+func (a consolidationStore) MarkConsolidationFailed(ctx context.Context, bankID string, factIDs []string) error {
+	return a.store.MarkConsolidationFailed(ctx, bankID, factIDs)
+}
+
+// BankConfig returns the bank's raw configuration overrides, which carry the
+// consolidation settings and strategies the pass reads.
+func (a consolidationStore) BankConfig(ctx context.Context, bankID string) (map[string]any, error) {
+	return a.store.BankConfig(ctx, bankID)
+}
+
+// RelatedObservations looks up the observations that resemble the facts being
+// folded, one recall per fact text.
+//
+// The recall runs in interleave fusion on purpose: summing reciprocal ranks
+// averages down a candidate that is the best hit of one arm but absent from the
+// others, which is exactly the near-identical twin this lookup exists to find.
+// Only the observation type is retrieved, and the results are de-duplicated
+// across the lookups.
+func (a consolidationStore) RelatedObservations(ctx context.Context, bankID string, scope []string, texts []string, limit int) ([]consolidation.Observation, error) {
+	perQuery := limit
+	if perQuery <= 0 {
+		perQuery = 5
+	}
+	// The lookup is restricted to the pass's scope so a differently-scoped
+	// observation can never be offered as a merge candidate. A non-empty scope
+	// matches under "all_strict" (the observation carries every scope tag and
+	// is not untagged); the empty scope leaves the recall unscoped and the
+	// engine drops anything that is not actually untagged.
+	var tags []string
+	tagsMatch := "any"
+	if len(scope) > 0 {
+		tags = scope
+		tagsMatch = "all_strict"
+	}
+	seen := map[string]bool{}
+	related := make([]consolidation.Observation, 0, limit)
+	for _, text := range texts {
+		if len(related) >= limit {
+			break
+		}
+		result, err := a.store.Recall(ctx, storage.RecallQuery{
+			BankID:       bankID,
+			Query:        text,
+			Types:        []string{string(storage.TypeObservation)},
+			Fusion:       storage.FusionInterleave,
+			PerSourceCap: a.perSourceCap,
+			Limit:        perQuery,
+			Budget:       "low",
+			Tags:         tags,
+			TagsMatch:    tagsMatch,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range result.Matches {
+			if match.Type != string(storage.TypeObservation) || seen[match.ID] {
+				continue
+			}
+			seen[match.ID] = true
+			sources := match.ObservationSourceIDs
+			if len(sources) == 0 {
+				sources = match.SourceMemoryIDs
+			}
+			related = append(related, consolidation.Observation{
+				ID: match.ID, Text: match.Text, ProofCount: len(sources),
+				SourceIDs: sources, MentionedAt: formatOptionalTime(match.MentionedAt),
+				Scope: match.Tags,
+			})
+			if len(related) >= limit {
+				break
+			}
+		}
+	}
+	return related, nil
+}
+
 // formatOptionalTime renders an optional timestamp for the model's input,
 // leaving an unknown time empty rather than substituting a misleading one.
 func formatOptionalTime(value *time.Time) string {
@@ -173,75 +768,21 @@ func formatOptionalTime(value *time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-// applyImport restores a stashed archive into the operation's bank.
-func (p archiveProcessor) applyImport(ctx context.Context, op storage.Operation) error {
-	key, _ := op.Payload[storage.OperationPayloadKeyStoredFile].(string)
-	if key == "" {
-		return worker.Permanent(errors.New("operation carries no stored archive key"))
-	}
-	file, err := p.store.GetStoredFile(ctx, key)
-	if err != nil {
-		// A missing payload cannot appear by retrying, so it is permanent.
-		return worker.Permanent(fmt.Errorf("stored archive is not readable: %w", err))
-	}
-	archive, err := readArchiveBytes(file.Data)
-	if err != nil {
-		return worker.Permanent(err)
-	}
-	target, _ := op.Payload["target_bank_id"].(string)
-	if target == "" {
-		target = op.BankID
-	}
-	mode := hindsight.Append
-	if raw, _ := op.Payload["mode"].(string); raw == "replace" {
-		mode = hindsight.Replace
-	}
-	if _, err := hindsight.Run(ctx, p.store, hindsight.Mapping{
-		Archive: archive,
-		BankID:  target,
-	}, hindsight.Options{Mode: mode}); err != nil {
-		return err
-	}
-	return nil
-}
-
-// applyClone copies a bank by exporting it and restoring the copy under the
-// target identifier.
-func (p archiveProcessor) applyClone(ctx context.Context, op storage.Operation) error {
-	target, _ := op.Payload["target_bank_id"].(string)
-	if target == "" {
-		return worker.Permanent(errors.New("clone carries no target bank"))
-	}
-	if _, err := p.store.GetBank(ctx, target); err == nil {
-		return worker.Permanent(fmt.Errorf("target bank %q already exists", target))
-	}
-	source, err := p.store.GetBank(ctx, op.BankID)
-	if err != nil {
-		return worker.Permanent(fmt.Errorf("source bank is not readable: %w", err))
-	}
-	// Recreating the bank with the source's dispositions is what makes the copy
-	// evolve independently rather than sharing state with the original.
-	if _, err := p.store.CreateBank(ctx, storage.Bank{
-		BankID:      target,
-		Name:        source.Name,
-		Disposition: source.NormalizedDisposition(),
-		Mission:     source.Mission,
-	}); err != nil {
-		return err
-	}
-	return nil
-}
-
-// readArchiveBytes parses an archive payload through the same parser the HTTP
-// routes validate with.
-func readArchiveBytes(data []byte) (*hindsightarchive.Archive, error) {
-	return transfer.ParseArchive(data)
-}
-
 // NewQueueConsumer builds the queue consumer over the store, translating the
-// resolved worker configuration into the consumer's tuning.
-func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner, cfg config.WorkerConfig) *worker.Consumer {
-	return worker.New(store, archiveProcessor{store: store, provider: model, reflection: reflection}, worker.Config{
+// resolved worker configuration into the consumer's tuning. The guard is the
+// deployment's webhook URL policy; it is enforced again at delivery time, not
+// only when a target was registered. The embeddings generator is the model an
+// archive import re-embeds with, exactly as the retain write path does.
+func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
+	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, guard *webhooks.Guard,
+	correctionRetries int) *worker.Consumer {
+	return worker.New(store, archiveProcessor{
+		store: store, provider: model, reflection: reflection,
+		recallPerSourceCap: cfg.RecallMaxCandidatesPerSource,
+		webhookGuard:       guard,
+		embeddings:         embeddings,
+		correctionRetries:  correctionRetries,
+	}, worker.Config{
 		WorkerID:       cfg.ID,
 		MaxRetries:     cfg.MaxRetries,
 		InitialBackoff: cfg.InitialBackoff,
@@ -249,6 +790,8 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 		Lease:          cfg.Lease,
 		Concurrency:    cfg.Concurrency,
 		PollInterval:   cfg.PollInterval,
+		WallTimeouts:   cfg.WallTimeouts,
+		ReservedSlots:  cfg.ReservedSlots,
 	})
 }
 

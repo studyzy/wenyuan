@@ -77,7 +77,7 @@ func TestTransportAndTuningKeys(t *testing.T) {
 		EnvLLMDefaultHeaders:      "X-A: one, X-B: two",
 		EnvLLMExtraBody:           `{"top_p":0.5}`,
 		EnvLLMCacheAffinity:       "prefix",
-		EnvLLMStrategy:            "round_robin",
+		EnvLLMStrategy:            `{"mode":"round-robin"}`,
 		EnvLLMLiteLLMRouterConfig: "a,b,c",
 		EnvLLMOpenAIServiceTier:   "flex",
 		EnvLLMOutputLanguage:      "en",
@@ -116,8 +116,8 @@ func TestTransportAndTuningKeys(t *testing.T) {
 	if cfg.Provider.OpenAIServiceTier != "flex" || cfg.Provider.OutputLanguage != "en" {
 		t.Fatalf("tier=%q lang=%q", cfg.Provider.OpenAIServiceTier, cfg.Provider.OutputLanguage)
 	}
-	if cfg.Provider.Strategy != "round_robin" || cfg.Provider.HTTPLogLevel != "debug" {
-		t.Fatalf("strategy=%q log=%q", cfg.Provider.Strategy, cfg.Provider.HTTPLogLevel)
+	if cfg.Provider.Strategy.Mode != "round-robin" || cfg.Provider.HTTPLogLevel != "debug" {
+		t.Fatalf("strategy=%q log=%q", cfg.Provider.Strategy.Mode, cfg.Provider.HTTPLogLevel)
 	}
 }
 
@@ -257,5 +257,134 @@ func TestPositiveIntValidation(t *testing.T) {
 	}
 	if err := ValidatePositiveInt(EnvLLMMaxConcurrent, ""); err != nil {
 		t.Fatalf("blank must be treated as unset: %v", err)
+	}
+}
+
+// test-multi-llm-strategy: the global strategy JSON is parsed and validated,
+// with weights checked against the member count and routes against the
+// metadata mode, and a malformed document recorded rather than ignored.
+func TestMultiLLMStrategyParsing(t *testing.T) {
+	cfg := FromEnv(envMap(map[string]string{
+		EnvLLMStrategy:                 `{"mode":"round-robin","weights":[1,3]}`,
+		"HINDSIGHT_API_LLM_1_PROVIDER": "openai",
+		"HINDSIGHT_API_LLM_2_PROVIDER": "cohere",
+		"HINDSIGHT_API_LLM_1_MODEL":    "gpt-4o-mini",
+	}))
+	if cfg.Provider.StrategyError != nil {
+		t.Fatalf("a valid strategy raised %v", cfg.Provider.StrategyError)
+	}
+	if cfg.Provider.Strategy.Mode != "round-robin" || len(cfg.Provider.Strategy.Weights) != 2 || cfg.Provider.Strategy.Weights[1] != 3 {
+		t.Fatalf("strategy = %+v", cfg.Provider.Strategy)
+	}
+	if len(cfg.Provider.LLMMembers) != 2 || cfg.Provider.LLMMembers[0].Provider != "openai" || cfg.Provider.LLMMembers[0].Model != "gpt-4o-mini" {
+		t.Fatalf("members = %+v", cfg.Provider.LLMMembers)
+	}
+
+	routes := FromEnv(envMap(map[string]string{
+		EnvLLMStrategy:                 `{"mode":"metadata","routes":[{"key":"bank","value":"acme","member":1}]}`,
+		"HINDSIGHT_API_LLM_1_PROVIDER": "openai",
+	}))
+	if routes.Provider.StrategyError != nil {
+		t.Fatalf("a valid routes strategy raised %v", routes.Provider.StrategyError)
+	}
+	if routes.Provider.Strategy.Mode != "metadata" || len(routes.Provider.Strategy.Routes) != 1 {
+		t.Fatalf("routes strategy = %+v", routes.Provider.Strategy)
+	}
+	route := routes.Provider.Strategy.Routes[0]
+	if route.Key != "bank" || route.Value != "acme" || route.Member != 1 {
+		t.Fatalf("route = %+v", route)
+	}
+
+	// A weight vector that does not match the member count is a startup error.
+	bad := FromEnv(envMap(map[string]string{
+		EnvLLMStrategy: `{"mode":"round-robin","weights":[1,2,3]}`,
+	}))
+	if bad.Provider.StrategyError == nil {
+		t.Fatal("weights for a different member count must be rejected")
+	}
+	// Routes under a non-metadata mode are rejected rather than ignored.
+	wrong := FromEnv(envMap(map[string]string{
+		EnvLLMStrategy: `{"mode":"failover","routes":[{"key":"k","value":"v","member":0}]}`,
+	}))
+	if wrong.Provider.StrategyError == nil {
+		t.Fatal("routes under a non-metadata mode must be rejected")
+	}
+	// An unparseable document is a startup error.
+	invalid := FromEnv(envMap(map[string]string{EnvLLMStrategy: "probe"}))
+	if invalid.Provider.StrategyError == nil {
+		t.Fatal("invalid JSON must be rejected")
+	}
+}
+
+// test-indexed-llm-members: the indexed extra members of each role resolve from
+// HINDSIGHT_API_{ROLE}_LLM_{n}_*, stopping at the first missing provider.
+func TestIndexedLLMMembersResolve(t *testing.T) {
+	cfg := FromEnv(envMap(map[string]string{
+		"HINDSIGHT_API_LLM_1_PROVIDER":         "openai",
+		"HINDSIGHT_API_LLM_1_MODEL":            "gpt-4o",
+		"HINDSIGHT_API_LLM_1_MAX_RETRIES":      "0",
+		"HINDSIGHT_API_LLM_2_PROVIDER":         "cohere",
+		"HINDSIGHT_API_REFLECT_LLM_1_PROVIDER": "anthropic",
+		"HINDSIGHT_API_REFLECT_LLM_1_TIMEOUT":  "15",
+	}))
+	if len(cfg.Provider.LLMMembers) != 2 {
+		t.Fatalf("global members = %+v", cfg.Provider.LLMMembers)
+	}
+	first := cfg.Provider.LLMMembers[0]
+	if first.Index != 1 || first.Provider != "openai" || first.Model != "gpt-4o" {
+		t.Fatalf("member 1 = %+v", first)
+	}
+	if !first.MaxRetriesSet || first.MaxRetries != 0 {
+		t.Fatalf("explicit zero retry override lost: %+v", first)
+	}
+	if cfg.Provider.LLMMembers[1].Provider != "cohere" {
+		t.Fatalf("member 2 = %+v", cfg.Provider.LLMMembers[1])
+	}
+	if len(cfg.Provider.ReflectLLMMembers) != 1 {
+		t.Fatalf("reflect members = %+v", cfg.Provider.ReflectLLMMembers)
+	}
+	if cfg.Provider.ReflectLLMMembers[0].Provider != "anthropic" ||
+		cfg.Provider.ReflectLLMMembers[0].Timeout.Seconds() != 15 {
+		t.Fatalf("reflect member = %+v", cfg.Provider.ReflectLLMMembers[0])
+	}
+}
+
+// test-reranker-chain: the unindexed reranker keys are the primary member and
+// the indexed keys are the fallback members, with the built-in defaults
+// filling anything left unset.
+func TestRerankerChainResolves(t *testing.T) {
+	cfg := FromEnv(envMap(map[string]string{
+		EnvRerankerProvider:                       "cohere",
+		EnvRerankerMaxCandidates:                  "25",
+		EnvRerankerMaxCandidatesLow:               "10",
+		EnvRerankerMaxCandidatesMid:               "20",
+		EnvRerankerMaxCandidatesHigh:              "40",
+		EnvRerankerSendBankAsHeader:               "true",
+		"HINDSIGHT_API_RERANKER_1_PROVIDER":       "tei",
+		"HINDSIGHT_API_RERANKER_1_TEI_URL":        "http://tei:8080",
+		"HINDSIGHT_API_RERANKER_1_TEI_BATCH_SIZE": "64",
+	}))
+	r := cfg.Provider.Rerank
+	if r.Provider != "cohere" || r.Primary.Provider != "cohere" {
+		t.Fatalf("primary = %+v", r.Primary)
+	}
+	if r.CandidateDepth != 25 || r.CandidateDepthLow != 10 || r.CandidateDepthMid != 20 || r.CandidateDepthHigh != 40 {
+		t.Fatalf("depths = %+v", r)
+	}
+	if !r.SendBankAsHeader {
+		t.Fatal("send bank as header did not resolve")
+	}
+	if len(r.Members) != 1 {
+		t.Fatalf("indexed members = %+v", r.Members)
+	}
+	if r.Members[0].Provider != "tei" || r.Members[0].TEIURL != "http://tei:8080" || r.Members[0].TEIBatchSize != 64 {
+		t.Fatalf("member 1 = %+v", r.Members[0])
+	}
+	// The primary keeps the built-in defaults for what it did not set.
+	if r.Primary.CohereModel != DefaultRerankerCohereModel {
+		t.Fatalf("cohere model = %q", r.Primary.CohereModel)
+	}
+	if r.Primary.MaxTokensPerCandidate != DefaultRerankerMaxTokensPerCandidate {
+		t.Fatalf("max tokens per candidate = %d", r.Primary.MaxTokensPerCandidate)
 	}
 }

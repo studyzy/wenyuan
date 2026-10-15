@@ -41,8 +41,11 @@ func run() error {
 	defer cancel()
 
 	backend := &storage.PostgresBackend{}
+	// The schema tool gives the pool a small budget: it runs a handful of
+	// statements and holding a hundred connections open would only take them
+	// from whoever else uses the database.
 	store, err := backend.Open(ctx, storage.BackendConfig{
-		DatabaseURL: *url, Schema: *schema, RunMigrations: true,
+		DatabaseURL: *url, Schema: *schema, RunMigrations: true, MaxOpenConns: 2, MaxIdleConns: 1,
 	})
 	if err != nil {
 		return err

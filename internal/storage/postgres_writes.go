@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -32,7 +33,7 @@ func (s *PostgresStore) RecordWrite(ctx context.Context, req WriteRequest) (Writ
 	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
 	           (id, bank_id, text, search_vector, fact_type, metadata, document_id, tags)
-	           VALUES ($1,$2,$3,` + searchVectorSQL + `,$4,$5,$6,$7)`
+	           VALUES ($1,$2,$3,` + searchVectorExpr("$3", "''", "''") + `,$4,$5,$6,$7)`
 	if _, err := s.db.ExecContext(ctx, insert, memoryID, req.BankID, req.Content,
 		string(TypeWorld), "{}", nullString(req.DocumentID), req.Tags); err != nil {
 		return WriteResult{}, err
@@ -136,17 +137,46 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 		return Operation{}, err
 	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
-	          (operation_id, bank_id, operation_type, status, error_message, retry_count, result_metadata, task_payload)
-	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	          (operation_id, bank_id, operation_type, status, error_message, retry_count, result_metadata, task_payload, serialization_key)
+	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	          ON CONFLICT (operation_id) DO UPDATE SET status=$4, error_message=$5, updated_at=now(),
-	              result_metadata=$7, task_payload=$8
-	          RETURNING operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')`
-	row := s.db.QueryRowContext(ctx, query, op.OperationID, op.BankID, op.OperationType, string(op.Status), op.Error, op.RetryCount, metadata, payload)
+	              result_metadata=$7, task_payload=$8, serialization_key=$9
+	          RETURNING ` + operationColumns
+	// An empty key is NULL rather than an empty string: the claim's serialization
+	// check matches keys by equality, and "" would make every keyless operation
+	// contend with every other one.
+	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
+	row := s.db.QueryRowContext(ctx, query, op.OperationID, op.BankID, op.OperationType, string(op.Status), op.Error, op.RetryCount, metadata, payload, serializationKey)
 	return scanOperation(row)
 }
 
-func (s *PostgresStore) GetOperation(ctx context.Context, opID string) (Operation, error) {
-	query := `SELECT operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')
+// operationColumns is the column list every statement that returns an
+// operation must use. It is written once because scanOperation reads exactly
+// these 15 columns in this order: a statement that returns fewer produces a
+// scan error at run time rather than a compile error, which is how the cancel
+// and retry paths were broken.
+const operationColumns = `operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''),
+	          created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at,
+	          result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb),
+	          COALESCE(serialization_key,'')`
+
+// GetOperation returns one operation by identifier, scoped to the bank; an
+// identifier belonging to another bank reads as ErrOperationNotFound.
+func (s *PostgresStore) GetOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	op, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return Operation{}, err
+	}
+	if bankID != "" && op.BankID != bankID {
+		return Operation{}, ErrOperationNotFound
+	}
+	return op, nil
+}
+
+// getOperation returns one operation by identifier alone, for internal callers
+// that already hold a bank-scoped reference.
+func (s *PostgresStore) getOperation(ctx context.Context, opID string) (Operation, error) {
+	query := `SELECT ` + operationColumns + `
 	          FROM ` + quoteIdent(s.schema) + `.async_operations WHERE operation_id = $1`
 	row := s.db.QueryRowContext(ctx, query, opID)
 	op, err := scanOperation(row)
@@ -156,6 +186,33 @@ func (s *PostgresStore) GetOperation(ctx context.Context, opID string) (Operatio
 	return op, err
 }
 
+// GetOperationChildren returns the child operations of a parent batch, ordered
+// by sub-batch index.
+func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {
+	query := `SELECT operation_id::text, status, COALESCE(error_message,''),
+	                 COALESCE((result_metadata->>'sub_batch_index')::int, 0),
+	                 COALESCE((result_metadata->>'items_count')::int, 0)
+	          FROM ` + quoteIdent(s.schema) + `.async_operations
+	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2
+	          ORDER BY COALESCE((result_metadata->>'sub_batch_index')::int, 0) ASC, operation_id ASC`
+	rows, err := s.db.QueryContext(ctx, query, bankID, opID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	children := make([]ChildOperation, 0)
+	for rows.Next() {
+		var child ChildOperation
+		var status string
+		if err := rows.Scan(&child.OperationID, &status, &child.ErrorMessage, &child.SubBatchIndex, &child.ItemsCount); err != nil {
+			return nil, err
+		}
+		child.Status = OperationStatus(status)
+		children = append(children, child)
+	}
+	return children, rows.Err()
+}
+
 // ListOperations returns one page of operations matching the query, most
 // recently created first, with the pre-paging total.
 func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery) (OperationPage, error) {
@@ -163,18 +220,27 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	if limit <= 0 {
 		limit = 100
 	}
+	// The two statements number their parameters differently: the count has no
+	// LIMIT/OFFSET, so its parent flag is $5 where the page's is $7. A parameter
+	// the server cannot find a use for has no inferable type, and PostgreSQL
+	// rejects the statement outright, so each statement is built with the
+	// numbering it actually uses rather than sharing one filter verbatim.
+	const parentPredicate = `(NOT $%[1]d::boolean OR NOT COALESCE(result_metadata->>'is_parent', 'false') = 'true')`
 	filter := `($1='' OR bank_id=$1) AND ($2='' OR status=$2) AND ($3='' OR operation_type=$3)
 	           AND ($4='' OR worker_id=$4)`
-	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations WHERE ` + filter
+	countFilter := filter + ` AND ` + fmt.Sprintf(parentPredicate, 5)
+	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations WHERE ` + countFilter
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID,
+		query.ExcludeParents).Scan(&total); err != nil {
 		return OperationPage{}, err
 	}
-	listQuery := `SELECT operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')
+	listFilter := filter + ` AND ` + fmt.Sprintf(parentPredicate, 7)
+	listQuery := `SELECT ` + operationColumns + `
 	              FROM ` + quoteIdent(s.schema) + `.async_operations
-	              WHERE ` + filter + `
+	              WHERE ` + listFilter + `
 	              ORDER BY created_at DESC, operation_id ASC LIMIT $5 OFFSET $6`
-	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset)
+	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset, query.ExcludeParents)
 	if err != nil {
 		return OperationPage{}, err
 	}
@@ -195,22 +261,25 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 
 // CancelOperation cancels a non-terminal operation, returning
 // ErrOperationConflict when the operation is already terminal.
-func (s *PostgresStore) CancelOperation(ctx context.Context, opID string) (Operation, error) {
-	current, err := s.GetOperation(ctx, opID)
+func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
+	}
+	if current.BankID != bankID {
+		return Operation{}, ErrOperationNotFound
 	}
 	if current.Status.Terminal() {
 		return current, ErrOperationConflict
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status=$2, completed_at=now(), updated_at=now() WHERE operation_id=$1
-	          RETURNING operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at`
+	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(StatusCancelled)))
 }
 
 func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next OperationStatus, errMsg string) (Operation, error) {
-	current, err := s.GetOperation(ctx, opID)
+	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
 	}
@@ -226,22 +295,115 @@ func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next 
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status=$2, error_message=$3, updated_at=now()` + assign + ` WHERE operation_id=$1
-	          RETURNING operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')`
+	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(next), errMsg))
 }
 
-func (s *PostgresStore) RetryOperation(ctx context.Context, opID string) (Operation, error) {
-	current, err := s.GetOperation(ctx, opID)
+// AdvanceOperationWithResult advances an operation and merges result metadata
+// onto it in the same statement, implementing OperationResultRecorder. The JSON
+// merge (||) leaves any metadata written when the operation was enqueued in
+// place, so a caller joining on those keys keeps working, and the success-path
+// metadata is written before the row is marked completed.
+func (s *PostgresStore) AdvanceOperationWithResult(ctx context.Context, opID string, next OperationStatus, errMsg string, result map[string]any) (Operation, error) {
+	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
+	}
+	if !validTransition(current.Status, next) {
+		return current, ErrOperationConflict
+	}
+	metadata, err := marshalMetadata(result)
+	if err != nil {
+		return Operation{}, err
+	}
+	assign := ""
+	if next.Terminal() {
+		// A terminal operation is finished with, so its claim is cleared at
+		// the same moment: a completed row that still looks held would mislead
+		// a shutdown scan into trying to hand it back.
+		assign = ", completed_at=now(), worker_id=NULL, claimed_at=NULL"
+	}
+	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	          SET status=$2, error_message=$3, result_metadata=(COALESCE(result_metadata, '{}'::jsonb) || $4::jsonb), updated_at=now()` + assign + ` WHERE operation_id=$1
+	          RETURNING ` + operationColumns
+	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(next), errMsg, metadata))
+}
+
+// RetryOperation starts a new run of a failed operation.
+//
+// A failed batch parent is retried by re-running the work that failed beneath
+// it, the same rule the in-memory backend applies: the parent holds no task
+// payload of its own, so reviving it alone would queue a row nothing executes.
+// Its failed and cancelled children go back to pending with their stored
+// payloads intact, and the parent is revived only when at least one child
+// remains to drive the roll-up — a parent left pending with nothing beneath it
+// would never reach a terminal status again.
+func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	current, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return Operation{}, err
+	}
+	if current.BankID != bankID {
+		return Operation{}, ErrOperationNotFound
 	}
 	if current.Status != StatusFailed {
 		return current, ErrOperationConflict
 	}
+	if current.OperationType == AsyncRetainType {
+		return s.retryBatchParent(ctx, current)
+	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status=$2, error_message='', retry_count=COALESCE(retry_count,0)+1, updated_at=now() WHERE operation_id=$1
-	          RETURNING operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at`
+	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(StatusPending)))
+}
+
+// retryBatchParent requeues a failed batch's children and revives the parent
+// over them.
+func (s *PostgresStore) retryBatchParent(ctx context.Context, parent Operation) (Operation, error) {
+	qualified := quoteIdent(s.schema)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Operation{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The children are locked before the parent, so two retries of one batch
+	// cannot both decide they are the one reviving it. The filter is built as
+	// JSON rather than interpolated into a literal, because a JSON string needs
+	// double quotes and the statement's parameter is a jsonb.
+	childFilter, err := marshalMetadata(map[string]any{"parent_operation_id": parent.OperationID})
+	if err != nil {
+		return Operation{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE `+qualified+`.async_operations
+	    SET status='pending', error_message='', completed_at=NULL, next_retry_at=NULL,
+	        worker_id=NULL, claimed_at=NULL, retry_count=0, updated_at=now()
+	    WHERE bank_id=$1 AND result_metadata @> $2::jsonb AND status IN ('failed','cancelled')`,
+		parent.BankID, childFilter); err != nil {
+		return Operation{}, err
+	}
+	var outstanding bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+qualified+`.async_operations child
+	    WHERE child.bank_id=$1 AND child.result_metadata @> $2::jsonb AND child.status <> 'completed'
+	      AND child.status <> 'failed' AND child.status <> 'cancelled')`,
+		parent.BankID, childFilter).Scan(&outstanding); err != nil {
+		return Operation{}, err
+	}
+	if !outstanding {
+		return parent, ErrOperationConflict
+	}
+	revived, err := scanOperation(tx.QueryRowContext(ctx, `UPDATE `+qualified+`.async_operations
+	    SET status='pending', error_message='', completed_at=NULL, next_retry_at=NULL,
+	        worker_id=NULL, claimed_at=NULL, retry_count=0, updated_at=now()
+	    WHERE operation_id=$1
+	    RETURNING `+operationColumns, parent.OperationID))
+	if err != nil {
+		return Operation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Operation{}, err
+	}
+	return revived, nil
 }
 
 // DeleteOperation permanently removes a terminal operation row. The delete is
@@ -255,7 +417,7 @@ func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string
 	query := `DELETE FROM ` + qualified + `.async_operations
 	          WHERE operation_id = $1 AND bank_id = $2
 	            AND status IN ('failed', 'cancelled', 'completed')
-	          RETURNING operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''), created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at, result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')`
+	          RETURNING ` + operationColumns
 	deleted, err := scanOperation(s.db.QueryRowContext(ctx, query, opID, bankID))
 	if err == nil {
 		return deleted, nil
@@ -265,7 +427,7 @@ func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string
 	}
 	// Nothing was removed. Distinguish a missing row from a live one, so the
 	// caller can answer 404 and 409 respectively.
-	current, getErr := s.GetOperation(ctx, opID)
+	current, getErr := s.getOperation(ctx, opID)
 	if getErr != nil || current.BankID != bankID {
 		return Operation{}, ErrOperationNotFound
 	}
@@ -290,6 +452,7 @@ func scanOperation(row rowScanner) (Operation, error) {
 	}
 	op.ResultMetadata = rest
 	op.Payload = decodeJSONObject(payload)
+	op.IsParent = operationIsParent(rest)
 	return op, nil
 }
 

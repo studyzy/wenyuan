@@ -22,51 +22,40 @@ const DefaultOperationLimit = 50
 // and identifier shape.
 func ValidateRetain(req RetainRequest, batchEnabled bool) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
-	if len(req.Items) < MinWriteItemsCount {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "items"},
-			Msg:  "items must contain at least one entry",
-			Type: "value_error.missing",
-		})
+	if req.Items == nil {
+		items = append(items, httpx.Missing([]string{"body", "items"}, map[string]any{}))
+	} else if len(req.Items) < MinWriteItemsCount {
+		items = append(items, httpx.ValueError([]string{"body", "items"}, []any{},
+			"items must contain at least one entry"))
 	}
 	if batchEnabled && !req.Async {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "async"},
-			Msg:  "batch write mode requires asynchronous processing; set async to true",
-			Type: "value_error.mode",
-		})
+		items = append(items, httpx.ValueError([]string{"body", "async"}, req.Async,
+			"batch write mode requires asynchronous processing; set async to true"))
 	}
 	for index, item := range req.Items {
 		if item.Content.Flatten() == "" && !item.Content.HasImage() {
-			items = append(items, httpx.ValidationError{
-				Loc:  []string{"body", "items", strconv.Itoa(index), "content"},
-				Msg:  "content is required",
-				Type: "value_error.missing",
-			})
+			items = append(items, httpx.Missing([]string{"body", "items", strconv.Itoa(index), "content"},
+				map[string]any{}))
 		}
+		items = append(items, itemFieldErrors(index, item)...)
 	}
 	if req.OperationID != "" && !IsValidUUIDShape(req.OperationID) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "operation_id"},
-			Msg:   "operation_id must be a valid identifier",
-			Type:  "value_error.identifier",
-			Input: req.OperationID,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "operation_id"}, req.OperationID,
+			"operation_id must be a valid UUID"))
 	}
 	if req.OperationID != "" && strategyGroupCount(req.Items) > 1 {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "operation_id"},
-			Msg:  "operation_id cannot be combined with items that resolve to more than one strategy",
-			Type: "value_error.mode",
-		})
+		items = append(items, httpx.ValueError([]string{"body", "operation_id"}, req.OperationID,
+			"operation_id cannot be combined with items that resolve to more than one strategy"))
 	}
-	if dup := duplicateDocumentID(req.Items); dup != "" {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "items"},
-			Msg:   "document_id must be unique within a request",
-			Type:  "value_error.duplicate",
-			Input: dup,
-		})
+	// The queued path fans items out to parallel workers with no per-document
+	// gate, so duplicate document ids there race; the synchronous path folds
+	// shared-document items into one document sequentially and is safe, which is
+	// what a client sending several turns for one document relies on.
+	if req.Async {
+		if dup := duplicateDocumentID(req.Items); dup != "" {
+			items = append(items, httpx.ValueError([]string{"body", "items"}, dup,
+				"document_id must be unique within a request"))
+		}
 	}
 	if len(items) == 0 {
 		return nil
@@ -74,27 +63,51 @@ func ValidateRetain(req RetainRequest, batchEnabled bool) *httpx.ValidationFailu
 	return &httpx.ValidationFailure{Errors: items}
 }
 
-// blockedWriteFailure reports the unprocessable-entity failure for a write whose
-// items all carry image content against a non-vision write model.
-func blockedWriteFailure(req RetainRequest) *httpx.ValidationFailure {
-	if len(req.Items) == 0 {
+// itemFieldErrors reports the per-item failures a decode-time custom validator
+// raises, at the item's own field path so the item names the exact member the
+// reference names. Both checks decode without failing so a whole body is still
+// described field by field, the way the reference's own validators report.
+func itemFieldErrors(index int, item RetainItem) []httpx.ValidationError {
+	var items []httpx.ValidationError
+	if item.Timestamp.Invalid {
+		items = append(items, httpx.ValueError(
+			[]string{"body", "items", strconv.Itoa(index), "timestamp"},
+			item.Timestamp.InvalidInput, item.Timestamp.InvalidMessage))
+	}
+	if item.ObservationScopes.Invalid {
+		items = append(items, httpx.ValueError(
+			[]string{"body", "items", strconv.Itoa(index), "observation_scopes"},
+			item.ObservationScopes.InvalidInput,
+			"observation_scopes must be a mode name or a list of tag groups"))
+	}
+	return items
+}
+
+// blockedWriteFailure reports the unprocessable-entity failure for a write that
+// carries inline image content against a write model that cannot read images.
+//
+// Failing before a byte is written is deliberate: extracting from the caption
+// and quietly ignoring the image would store a document that looks retained
+// while the information the caller cared about is gone. A vision-capable write
+// model accepts the images and returns nil.
+func blockedWriteFailure(req RetainRequest, visionEnabled bool) *httpx.ValidationFailure {
+	if visionEnabled {
 		return nil
 	}
-	allImages := true
+	carriesImage := false
 	for _, item := range req.Items {
-		if !item.Content.HasImage() {
-			allImages = false
+		if item.Content.HasImage() {
+			carriesImage = true
 			break
 		}
 	}
-	if !allImages {
+	if !carriesImage {
 		return nil
 	}
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{{
-		Loc:  []string{"body", "items", "content"},
-		Msg:  "image content is not supported by the configured write model",
-		Type: "value_error.unprocessable",
-	}}}
+	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.ValueError([]string{"body", "items", "content"}, nil,
+			"image content is not supported by the configured write model"),
+	}}
 }
 
 // strategyGroupCount counts the distinct named strategies across items; an
@@ -123,34 +136,18 @@ func duplicateDocumentID(items []RetainItem) string {
 	return ""
 }
 
-// ValidateOperationID rejects an operation identifier that is not a valid
-// identifier shape.
-func ValidateOperationID(opID string) *httpx.ValidationFailure {
-	if IsValidUUIDShape(opID) {
-		return nil
-	}
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{{
-		Loc:   []string{"path", "operation_id"},
-		Msg:   "operation_id must be a valid identifier",
-		Type:  "value_error.identifier",
-		Input: opID,
-	}}}
-}
-
 // ValidateOperationList checks the listing pagination bounds.
 func ValidateOperationList(limit, offset int) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
 	if limit != 0 && (limit < MinLimit || limit > MaxLimit) {
-		items = append(items, httpx.ValidationError{
-			Loc: []string{"query", "limit"}, Msg: "limit must be between 1 and 1000",
-			Type: "value_error.range", Input: limit,
-		})
+		if limit < MinLimit {
+			items = append(items, httpx.GreaterThanEqual([]string{"query", "limit"}, limit, MinLimit))
+		} else {
+			items = append(items, httpx.LessThanEqual([]string{"query", "limit"}, limit, MaxLimit))
+		}
 	}
 	if offset < MinOffset {
-		items = append(items, httpx.ValidationError{
-			Loc: []string{"query", "offset"}, Msg: "offset must not be negative",
-			Type: "value_error.range", Input: offset,
-		})
+		items = append(items, httpx.GreaterThanEqual([]string{"query", "offset"}, offset, MinOffset))
 	}
 	if len(items) == 0 {
 		return nil
@@ -164,66 +161,26 @@ func ValidateOperationList(limit, offset int) *httpx.ValidationFailure {
 func ValidateRecall(req RecallRequest) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
 	if !hasWordCharacter(req.Query) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "query"},
-			Msg:   "query must contain at least one word character",
-			Type:  "value_error.missing",
-			Input: req.Query,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "query"}, req.Query,
+			"query must contain at least one word character after normalization"))
 	}
 	if req.Budget != "" && !containsToken(storageBudgetLevels(), req.Budget) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "budget"},
-			Msg:   "budget must be one of low, mid, high",
-			Type:  "value_error.enum",
-			Input: req.Budget,
-		})
+		items = append(items, httpx.Enum([]string{"body", "budget"}, req.Budget, storageBudgetLevels()))
 	}
 	if req.TagsMatch != "" && !containsToken(storageTagMatchModes(), req.TagsMatch) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "tags_match"},
-			Msg:   "tags_match must be one of any, all, any_strict, all_strict, exact",
-			Type:  "value_error.enum",
-			Input: req.TagsMatch,
-		})
+		items = append(items, httpx.Literal([]string{"body", "tags_match"}, req.TagsMatch, storageTagMatchModes()))
 	}
 	if unsupported := unsupportedTypes(req.Types); len(unsupported) > 0 {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "types"},
-			Msg:   "unsupported fact type; accepted types are " + joinTokens(acceptedFactTypes),
-			Type:  "value_error.enum",
-			Input: unsupported,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "types"}, unsupported,
+			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
 	}
 	if len(req.Tags) > 0 && len(req.TagGroups.Groups) > 0 {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "tag_groups"},
-			Msg:  "tags and tag_groups are mutually exclusive",
-			Type: "value_error.mode",
-		})
+		items = append(items, httpx.ValueError([]string{"body"}, nil,
+			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}
 	if invertedTemporalWindow(req.TemporalWindow) {
-		items = append(items, httpx.ValidationError{
-			Loc:  []string{"body", "temporal_window"},
-			Msg:  "temporal_window end must not be earlier than start",
-			Type: "value_error.range",
-		})
-	}
-	if req.Limit != 0 && (req.Limit < MinLimit || req.Limit > MaxLimit) {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "limit"},
-			Msg:   "limit must be between 1 and 1000",
-			Type:  "value_error.range",
-			Input: req.Limit,
-		})
-	}
-	if req.Offset < MinOffset {
-		items = append(items, httpx.ValidationError{
-			Loc:   []string{"body", "offset"},
-			Msg:   "offset must not be negative",
-			Type:  "value_error.range",
-			Input: req.Offset,
-		})
+		items = append(items, httpx.ValueError([]string{"body", "temporal_window"}, nil,
+			"temporal_window end must not be earlier than start"))
 	}
 	if len(items) == 0 {
 		return nil
@@ -246,13 +203,11 @@ func invertedTemporalWindow(window *TemporalWindowRequest) bool {
 	return end.Before(start)
 }
 
-// bodyFailure reports a malformed request body at the request boundary.
-func bodyFailure() *httpx.ValidationFailure {
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{{
-		Loc:  []string{"body"},
-		Msg:  "request body is not valid JSON",
-		Type: "value_error.json",
-	}}}
+// tagGroupFailure reports a tag-group filter that would constrain nothing.
+func tagGroupFailure() *httpx.ValidationFailure {
+	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.ValueError([]string{"body", "tag_groups"}, nil, ErrMalformedTagGroup.Error()),
+	}}
 }
 
 // hasWordCharacter reports whether a query carries at least one searchable word

@@ -2,19 +2,68 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
+
+// test-bank-template-routes: /import and /export are the JSON bank-template
+// pair, not the archive importer and the ZIP exporter.
+func TestBankTemplateRoutesAreJSON(t *testing.T) {
+	app, err := New(context.Background(), testConfig(), Dependencies{
+		Store: storage.NewMemoryStore("public"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "tmpl-bank", Name: "tmpl-bank"}); err != nil {
+		t.Fatal(err)
+	}
+
+	export := httptest.NewRecorder()
+	app.Handler.ServeHTTP(export, httptest.NewRequest(http.MethodGet, "/v1/default/banks/tmpl-bank/export", nil))
+	if export.Code != http.StatusOK {
+		t.Fatalf("export = %d (body %s)", export.Code, export.Body.String())
+	}
+	if got := export.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("export must be JSON, got content type %q", got)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(export.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("export body is not a manifest: %v", err)
+	}
+	if manifest["version"] != "1" {
+		t.Fatalf("export manifest = %v, want version 1", manifest)
+	}
+
+	importRec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/tmpl-bank/import",
+		strings.NewReader(`{"version":"1","directives":[{"name":"tone","content":"be nice"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(importRec, req)
+	if importRec.Code != http.StatusOK {
+		t.Fatalf("import = %d (body %s)", importRec.Code, importRec.Body.String())
+	}
+	var result struct {
+		DirectivesCreated []string `json:"directives_created"`
+	}
+	if err := json.Unmarshal(importRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.DirectivesCreated) != 1 || result.DirectivesCreated[0] != "tone" {
+		t.Fatalf("import created directives = %v", result.DirectivesCreated)
+	}
+}
 
 // test-transfer-routes-mounted: the whole transfer family resolves through the
 // composed handler, and the retired synchronous read answers the terminal gone
 // status rather than being absent.
 func TestTransferRouteFamilyIsMounted(t *testing.T) {
-	app, err := New(context.Background(), config.FromEnv(func(string) (string, bool) { return "", false }), Dependencies{
+	app, err := New(context.Background(), testConfig(), Dependencies{
 		Store: storage.NewMemoryStore("public"),
 	})
 	if err != nil {
@@ -56,7 +105,7 @@ func TestTransferRouteFamilyIsMounted(t *testing.T) {
 // test-existing-routes-unchanged: mounting the transfer family must not change
 // the behavior of the routes that already existed.
 func TestExistingRoutesUnchangedAfterTransferMount(t *testing.T) {
-	app, err := New(context.Background(), config.FromEnv(func(string) (string, bool) { return "", false }), Dependencies{
+	app, err := New(context.Background(), testConfig(), Dependencies{
 		Store: storage.NewMemoryStore("public"),
 	})
 	if err != nil {
@@ -70,10 +119,10 @@ func TestExistingRoutesUnchangedAfterTransferMount(t *testing.T) {
 		want   int
 	}{
 		{"banks collection", http.MethodGet, "/v1/default/banks", http.StatusOK},
-		// The retired routes are auth-gated before they report gone, so an
-		// unauthenticated call is rejected first. Assert that ordering holds.
-		{"retired profile read unauthenticated", http.MethodGet, "/v1/default/banks/any/profile", http.StatusUnauthorized},
-		{"retired background unauthenticated", http.MethodPost, "/v1/default/banks/any/background", http.StatusUnauthorized},
+		// The retired routes raise the gone status before any authenticated
+		// call, so an unauthenticated caller still learns the route is gone.
+		{"retired profile read unauthenticated", http.MethodGet, "/v1/default/banks/any/profile", http.StatusGone},
+		{"retired background unauthenticated", http.MethodPost, "/v1/default/banks/any/background", http.StatusGone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

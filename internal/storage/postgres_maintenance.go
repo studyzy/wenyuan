@@ -38,9 +38,19 @@ func (s *PostgresStore) PurgeExpiredRows(ctx context.Context, schema, table, tsC
 		if removed < batchSize {
 			break
 		}
+		// A short pause between chunks gives concurrent writers a window to
+		// commit, so a long sweep does not monopolise the table's locks.
+		select {
+		case <-ctx.Done():
+			return deleted, ctx.Err()
+		case <-time.After(retentionBatchPause):
+		}
 	}
 	return deleted, nil
 }
+
+// retentionBatchPause is the pause between retention chunks.
+const retentionBatchPause = 250 * time.Millisecond
 
 // purgeChunk removes one bounded batch of expired rows.
 func (s *PostgresStore) purgeChunk(ctx context.Context, qualified, column string, cutoff time.Time, batchSize int) (int, error) {

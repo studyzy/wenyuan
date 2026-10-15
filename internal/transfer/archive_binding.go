@@ -3,13 +3,10 @@ package transfer
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 
-	"github.com/studyzy/wenyuan/internal/bankadmin"
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
-	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // maxArchiveUploadBytes bounds a single archive upload. A larger body is
@@ -55,11 +52,6 @@ type ArchiveReport struct {
 	Entity   int
 	Link     int
 	DryRun   bool
-}
-
-// exportBank produces an archive for one bank through the existing exporter.
-func exportBank(ctx context.Context, store storage.Store, bankID string) ([]byte, error) {
-	return bankadmin.Exporter{Store: store}.Export(ctx, bankID)
 }
 
 // readAllBounded reads a body with a hard ceiling so a hostile upload cannot

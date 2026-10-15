@@ -28,6 +28,7 @@ func parityApp(t *testing.T) *App {
 	t.Helper()
 	cfg := testConfig()
 	cfg.EnableBankConfigAPI = true
+	cfg.EnableBankLLMHealth = true
 	a, err := New(context.Background(), cfg, Dependencies{Store: storage.NewMemoryStore("public")})
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +58,27 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("response is not JSON: %v (body %s)", err, rec.Body.String())
 	}
 	return out
+}
+
+// An unknown top-level body field is reported on the response through the
+// ignored-parameter header, the body counterpart of an unknown query parameter.
+func TestParityUnknownBodyFieldReported(t *testing.T) {
+	a := parityApp(t)
+	if rec := exchange(a, http.MethodPut, "/v1/default/banks/b1", `{"name":"B"}`); rec.Code != http.StatusOK {
+		t.Fatalf("bank create status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec := exchange(a, http.MethodPost, "/v1/default/banks/b1/memories/recall", `{"query":"hello","max_token":5}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recall status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Ignored-Params"); !strings.Contains(got, "max_token") {
+		t.Fatalf("X-Ignored-Params = %q, want it to name max_token", got)
+	}
+	// A body-field typo on a bank write is reported the same way.
+	rec = exchange(a, http.MethodPatch, "/v1/default/banks/b1", `{"name":"B","nam":"typo"}`)
+	if got := rec.Header().Get("X-Ignored-Params"); !strings.Contains(got, "nam") {
+		t.Fatalf("X-Ignored-Params = %q, want it to name the bank-write typo", got)
+	}
 }
 
 // Contract reference: public HTTP behavior for this case.
@@ -141,19 +163,159 @@ func TestParityValidationErrorHandling(t *testing.T) {
 	}
 }
 
+// Contract reference: the reference's framework builds validation items with
+// include_url=False, so a served item carries exactly type, loc, msg, input and
+// — when the type has one — ctx, and the type and wording are the framework's
+// own. This pins the envelope the composed application actually serves, not the
+// item constructors.
+func TestParityServedValidationItemShape(t *testing.T) {
+	a := parityApp(t)
+
+	cases := []struct {
+		name         string
+		method       string
+		path         string
+		body         string
+		wantType     string
+		wantLoc      []any
+		wantMsg      string
+		wantCtx      bool
+		wantInput    any
+		wantInputNil bool
+	}{
+		{
+			name: "absent body", method: http.MethodPost,
+			path: "/v1/default/banks/vocab/memories/recall", body: "",
+			wantType: "missing", wantLoc: []any{"body"}, wantMsg: "Field required", wantInputNil: true,
+		},
+		{
+			name: "string for a list", method: http.MethodPost,
+			path: "/v1/default/banks/vocab/memories", body: `{"items":"x"}`,
+			wantType: "list_type", wantLoc: []any{"body", "items"},
+			wantMsg: "Input should be a valid array", wantInput: "x",
+		},
+		{
+			name: "truncated body", method: http.MethodPost,
+			path: "/v1/default/banks/vocab/memories/recall", body: `{"query": `,
+			wantType: "json_invalid", wantCtx: true, wantInput: map[string]any{},
+		},
+		{
+			name: "value above its inclusive bound", method: http.MethodGet,
+			path:     "/v1/default/banks/vocab/operations?limit=5000",
+			wantType: "less_than_equal", wantLoc: []any{"query", "limit"},
+			wantMsg: "Input should be less than or equal to 1000", wantCtx: true, wantInput: float64(5000),
+		},
+		{
+			name: "value outside an enum", method: http.MethodPost,
+			path: "/v1/default/banks/vocab/memories/recall", body: `{"query":"q","budget":"bogus"}`,
+			wantType: "enum", wantLoc: []any{"body", "budget"},
+			wantMsg: "Input should be 'low', 'mid' or 'high'", wantCtx: true, wantInput: "bogus",
+		},
+		{
+			name: "rejected custom field value", method: http.MethodPost,
+			path: "/v1/default/banks/vocab/memories", body: `{"items":[{"content":"x","timestamp":"nope"}]}`,
+			wantType: "value_error", wantLoc: []any{"body", "items", float64(0), "timestamp"},
+			wantCtx: true, wantInput: "nope",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := exchange(a, tc.method, tc.path, tc.body)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Detail []struct {
+					Type  string         `json:"type"`
+					Loc   []any          `json:"loc"`
+					Msg   string         `json:"msg"`
+					Input any            `json:"input"`
+					Ctx   map[string]any `json:"ctx"`
+				} `json:"detail"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("detail envelope: %v (body %s)", err, rec.Body.String())
+			}
+			if len(body.Detail) == 0 {
+				t.Fatalf("empty detail: %s", rec.Body.String())
+			}
+			item := body.Detail[0]
+			raw := firstItemKeys(t, rec)
+			if _, ok := raw["url"]; ok {
+				t.Fatalf("an item must not carry a url key: %s", rec.Body.String())
+			}
+			for _, key := range []string{"type", "loc", "msg", "input"} {
+				if _, ok := raw[key]; !ok {
+					t.Fatalf("item is missing key %q: %s", key, rec.Body.String())
+				}
+			}
+			if _, ok := raw["ctx"]; ok != tc.wantCtx {
+				t.Fatalf("ctx present = %v, want %v: %s", ok, tc.wantCtx, rec.Body.String())
+			}
+			if item.Type != tc.wantType {
+				t.Fatalf("type = %q, want %q", item.Type, tc.wantType)
+			}
+			if tc.wantMsg != "" && item.Msg != tc.wantMsg {
+				t.Fatalf("msg = %q, want %q", item.Msg, tc.wantMsg)
+			}
+			if tc.wantLoc != nil {
+				if len(item.Loc) != len(tc.wantLoc) {
+					t.Fatalf("loc = %v, want %v", item.Loc, tc.wantLoc)
+				}
+				for i := range tc.wantLoc {
+					if item.Loc[i] != tc.wantLoc[i] {
+						t.Fatalf("loc = %v, want %v", item.Loc, tc.wantLoc)
+					}
+				}
+			}
+			if tc.wantInputNil {
+				got, ok := raw["input"]
+				if !ok || string(got) != "null" {
+					t.Fatalf("input = %s (present %v), want null: %s", got, ok, rec.Body.String())
+				}
+			}
+			if tc.wantInput != nil {
+				got, want := json.RawMessage(mustJSON(t, item.Input)), json.RawMessage(mustJSON(t, tc.wantInput))
+				if string(got) != string(want) {
+					t.Fatalf("input = %s, want %s", got, want)
+				}
+			}
+		})
+	}
+}
+
+// firstItemKeys returns the keys the first detail item of a validation response
+// actually carries.
+func firstItemKeys(t *testing.T, rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+	t.Helper()
+	var body struct {
+		Detail []map[string]json.RawMessage `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("detail envelope: %v (body %s)", err, rec.Body.String())
+	}
+	if len(body.Detail) == 0 {
+		t.Fatalf("empty detail: %s", rec.Body.String())
+	}
+	return body.Detail[0]
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 // Contract reference: public HTTP behavior for this case.
-// The retired profile/background routes answer 410 Gone, but authentication is
-// evaluated first: an unauthenticated caller sees 401, and only an
-// authenticated caller sees the retirement status with its replacement message.
+// The retired profile/background routes answer 410 Gone without a credential:
+// the reference raises the retirement status before any authenticated call.
 // They must not create a bank as a side effect.
 func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 	a := parityApp(t)
-
-	// Authentication runs before the retirement status is revealed.
-	rec := exchange(a, http.MethodGet, "/v1/default/banks/retired_bank/profile", "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated retired read = %d, want 401", rec.Code)
-	}
 
 	cases := []struct {
 		method string
@@ -172,7 +334,6 @@ func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 			req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/json")
 		}
-		req.Header.Set("Authorization", "Bearer test")
 		rec := httptest.NewRecorder()
 		a.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusGone {
@@ -181,6 +342,15 @@ func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 		if !strings.Contains(strings.ToLower(rec.Body.String()), "config") {
 			t.Fatalf("%s %s message must name the config routes: %s", tc.method, tc.path, rec.Body.String())
 		}
+	}
+
+	// A request carrying a credential answers the same terminal status.
+	req := httptest.NewRequest(http.MethodGet, "/v1/default/banks/retired_bank/profile", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	rec := httptest.NewRecorder()
+	a.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("authenticated retired read = %d, want 410", rec.Code)
 	}
 
 	// The retired routes must not have created the bank.
@@ -404,5 +574,121 @@ func TestExistingDeterministicPathsPreservedWithProviderBoundary(t *testing.T) {
 	if baseReflect.Body.String() != boundaryReflect.Body.String() {
 		t.Fatalf("reflect output changed with the boundary present:\n baseline=%s\n boundary=%s",
 			baseReflect.Body.String(), boundaryReflect.Body.String())
+	}
+}
+
+// A recall through the served handler honours the request's tag scoping and the
+// deployment's recency decay: the public surface, not just the storage query.
+func TestParityRecallHonoursTagScopingAndRecency(t *testing.T) {
+	cfg := testConfig()
+	cfg.Recency.Function = "exponential"
+	cfg.Recency.HalflifeDays = 1
+	a, err := New(context.Background(), cfg, Dependencies{Store: storage.NewMemoryStore("public")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/v1/default/banks/parity-bank"
+	if rec := exchange(a, http.MethodPut, "/v1/default/banks/parity-bank", `{"name":"Parity"}`); rec.Code >= 300 {
+		t.Fatalf("create bank: %d %s", rec.Code, rec.Body.String())
+	}
+	write := func(body string) {
+		t.Helper()
+		rec := exchange(a, http.MethodPost, base+"/memories", body)
+		if rec.Code >= 300 {
+			t.Fatalf("retain %s: %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	write(`{"items":[{"content":"the deploy runbook uses a blue-green cutover","tags":["ops"]}]}`)
+	write(`{"items":[{"content":"the deploy runbook uses a canary cutover","tags":["personal"]}]}`)
+
+	// A compound tag group must constrain the answer set on the served path too:
+	// the wire shape is a list of groups, each a leaf {tags, match} or a
+	// compound {and|or|not}.
+	rec := exchange(a, http.MethodPost, base+"/memories/recall",
+		`{"query":"deploy runbook","tag_groups":[{"tags":["ops"]}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recall: %d %s", rec.Code, rec.Body.String())
+	}
+	payload := decodeJSON(t, rec)
+	results, _ := payload["results"].([]any)
+	if len(results) == 0 {
+		t.Fatalf("the tag-scoped recall returned nothing: %s", rec.Body.String())
+	}
+	for _, raw := range results {
+		item, _ := raw.(map[string]any)
+		text, _ := item["text"].(string)
+		if !strings.Contains(text, "blue-green cutover") {
+			t.Fatalf("a tag group scoped to ops returned %q", text)
+		}
+	}
+
+	// A group that constrains nothing is refused rather than widened to every
+	// memory: an object with no tags and none of the boolean keys is not a
+	// filter.
+	malformed := exchange(a, http.MethodPost, base+"/memories/recall",
+		`{"query":"deploy runbook","tag_groups":{"groups":[{"tags":["ops"]}]}}`)
+	if malformed.Code < 400 {
+		t.Fatalf("a malformed tag group must be refused: %d %s", malformed.Code, malformed.Body.String())
+	}
+}
+
+// A bank's retain configuration and label vocabulary are accepted by the config
+// API and actually reach the write, and an unusable vocabulary is refused.
+func TestParityBankRetainConfiguration(t *testing.T) {
+	a := parityApp(t)
+	base := "/v1/default/banks/retain-cfg"
+	if rec := exchange(a, http.MethodPut, base, `{"name":"Retain Config"}`); rec.Code >= 300 {
+		t.Fatalf("create bank: %d %s", rec.Code, rec.Body.String())
+	}
+
+	vocabulary := `[{"key":"pedagogy","type":"value","values":[{"value":"scaffolding"},{"value":"inquiry"}]},` +
+		`{"key":"interest","type":"multi-values","tag":true,"values":[{"value":"active"},{"value":"dormant"}]}]`
+	config := `{"updates":{"retain_mission":"record teaching decisions",` +
+		`"retain_chunk_size":120,` +
+		`"entity_labels":` + vocabulary + `}}`
+	if rec := exchange(a, http.MethodPatch, base+"/config", config); rec.Code >= 300 {
+		t.Fatalf("patch config: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := exchange(a, http.MethodPost, base+"/memories",
+		`{"items":[{"content":"Alice used scaffolding in the lesson and stayed active all term."}]}`)
+	if rec.Code >= 300 {
+		t.Fatalf("retain: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The tightened segment size reached the write: a bank that asked for 120
+	// characters cannot have stored one long segment for this content.
+	docs := exchange(a, http.MethodGet, base+"/documents", "")
+	if docs.Code != http.StatusOK {
+		t.Fatalf("documents: %d %s", docs.Code, docs.Body.String())
+	}
+
+	// An unusable vocabulary is refused where it is written, not silently
+	// ignored: a bank whose labels never extract is the failure this prevents.
+	bad := exchange(a, http.MethodPatch, base+"/config",
+		`{"updates":{"entity_labels":[{"key":"pedagogy","type":"nonsense"}]}}`)
+	if bad.Code < 400 {
+		t.Fatalf("an invalid vocabulary must be refused: %d %s", bad.Code, bad.Body.String())
+	}
+	if !strings.Contains(bad.Body.String(), "entity_labels") {
+		t.Fatalf("the refusal must name the field: %s", bad.Body.String())
+	}
+}
+
+// A segment size the bank sets is validated: a non-positive size would floor
+// every chunk, so it is refused rather than stored.
+func TestParityBankChunkSizeValidation(t *testing.T) {
+	a := parityApp(t)
+	base := "/v1/default/banks/chunk-cfg"
+	if rec := exchange(a, http.MethodPut, base, `{"name":"Chunk Config"}`); rec.Code >= 300 {
+		t.Fatalf("create bank: %d %s", rec.Code, rec.Body.String())
+	}
+	bad := exchange(a, http.MethodPatch, base+"/config", `{"updates":{"retain_chunk_size":0}}`)
+	if bad.Code < 400 {
+		t.Fatalf("a zero segment size must be refused: %d %s", bad.Code, bad.Body.String())
+	}
+	ok := exchange(a, http.MethodPatch, base+"/config", `{"updates":{"retain_chunk_size":500}}`)
+	if ok.Code >= 300 {
+		t.Fatalf("a positive segment size must be accepted: %d %s", ok.Code, ok.Body.String())
 	}
 }

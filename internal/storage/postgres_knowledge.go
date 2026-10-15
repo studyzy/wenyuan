@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,7 @@ import (
 // caller reads one node rather than two rows.
 const knowledgeSelect = `kp.id, kp.bank_id, COALESCE(kp.parent_id, ''), kp.kind, kp.name,
        COALESCE(kp.mental_model_id, ''), COALESCE(mm.content, ''), COALESCE(mm.tags, '{}')::text,
+       COALESCE(kp.managed, false), COALESCE(kp.sort_order, 0),
        kp.created_at, kp.updated_at`
 
 // knowledgeFrom is the shared source. The join is on the pair, not the model id
@@ -89,13 +91,14 @@ func (s *PostgresStore) PutKnowledgeNode(ctx context.Context, node KnowledgeNode
 	}
 
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.knowledge_pages
-	          (id, bank_id, parent_id, kind, name, mental_model_id, created_at, updated_at)
-	          VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''), now(), now())
+	          (id, bank_id, parent_id, kind, name, mental_model_id, managed, sort_order, created_at, updated_at)
+	          VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8, now(), now())
 	          ON CONFLICT (id) DO UPDATE SET
 	              parent_id = EXCLUDED.parent_id, kind = EXCLUDED.kind, name = EXCLUDED.name,
-	              mental_model_id = EXCLUDED.mental_model_id, updated_at = now()`
+	              mental_model_id = EXCLUDED.mental_model_id, managed = EXCLUDED.managed,
+	              sort_order = EXCLUDED.sort_order, updated_at = now()`
 	if _, err := tx.ExecContext(ctx, query, node.ID, node.BankID, node.ParentID,
-		string(node.Kind), node.Title, modelID); err != nil {
+		string(node.Kind), node.Title, modelID, node.Managed, node.SortOrder); err != nil {
 		return KnowledgeNode{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -173,25 +176,45 @@ func (s *PostgresStore) DeleteKnowledgeNode(ctx context.Context, bankID, nodeID 
 	                 WHERE child.bank_id = $1
 	             )`
 	rows, err := tx.QueryContext(ctx,
-		subtree+` SELECT mental_model_id FROM doomed WHERE mental_model_id IS NOT NULL`, bankID, nodeID)
+		subtree+` SELECT id, mental_model_id FROM doomed`, bankID, nodeID)
 	if err != nil {
 		return err
 	}
+	pageIDs := make([]string, 0)
 	modelIDs := make([]string, 0)
 	for rows.Next() {
-		var modelID string
-		if err := rows.Scan(&modelID); err != nil {
+		var pageID string
+		var modelID *string
+		if err := rows.Scan(&pageID, &modelID); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		modelIDs = append(modelIDs, modelID)
+		pageIDs = append(pageIDs, pageID)
+		if modelID != nil && *modelID != "" {
+			modelIDs = append(modelIDs, *modelID)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
 		return err
 	}
 	_ = rows.Close()
+	if len(pageIDs) == 0 {
+		return ErrKnowledgeNodeNotFound
+	}
 
+	// The subtree's rows are removed explicitly, and before their models: a
+	// page's mental_model_id carries ON DELETE CASCADE, so deleting the model
+	// first would take the page row with it and leave this statement affecting
+	// nothing — the delete would look like a miss on a node that existed.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.knowledge_pages WHERE bank_id = $1 AND id = ANY($2::text[])`,
+		bankID, pageIDs); err != nil {
+		return err
+	}
+
+	// The models are removed after their pages, so a page's model does not
+	// outlive the page that named it.
 	if len(modelIDs) > 0 {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM `+qualified+`.mental_models WHERE bank_id = $1 AND id = ANY($2::text[])`,
@@ -199,38 +222,154 @@ func (s *PostgresStore) DeleteKnowledgeNode(ctx context.Context, bankID, nodeID 
 			return err
 		}
 	}
-
-	result, err := tx.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.knowledge_pages WHERE bank_id = $1 AND id = $2`, bankID, nodeID)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return ErrKnowledgeNodeNotFound
-	}
 	return tx.Commit()
 }
 
-// SearchKnowledgeNodes searches a bank's pages by name and body. A name hit
-// outranks a body hit, so the ordering matches the ranking a caller sees rather
-// than an arbitrary row order.
-func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, bankID, query string, limit int) ([]KnowledgeHit, error) {
-	limit = clampLimit(limit, 50)
-	term := strings.TrimSpace(query)
-	sqlQuery := `SELECT ` + knowledgeSelect + `,
-	                    CASE WHEN kp.name ILIKE '%' || $2 || '%' THEN 1.0
-	                         WHEN COALESCE(mm.content,'') ILIKE '%' || $2 || '%' THEN 0.5
-	                         ELSE 0 END AS score
-	             FROM ` + s.knowledgeFrom() + `
-	             WHERE kp.bank_id = $1 AND kp.kind = 'page'
-	               AND ($2 = '' OR kp.name ILIKE '%' || $2 || '%'
-	                            OR COALESCE(mm.content,'') ILIKE '%' || $2 || '%')
-	             ORDER BY score DESC, kp.id ASC LIMIT $3`
-	rows, err := s.db.QueryContext(ctx, sqlQuery, bankID, term, limit)
+// knowledgeRRFK is the reciprocal-rank-fusion smoothing constant. It is the
+// same 60 the recall path fuses its arms with, so the two surfaces rank alike.
+const knowledgeRRFK = int(rrfConstant)
+
+// knowledgeRRFNorm maps one arm's raw RRF term onto 0..1: 1/(k+rank) tops out at
+// 1/(k+1), so multiplying by k+1 puts a single-arm top hit at 1.0 and a hit both
+// arms found — each contributing half — at 1.0 too. A page one arm ranked first
+// and the other missed therefore reports 0.5. The score is a *rank* score: it
+// says where a page placed, not how well it matched, so it is only comparable
+// within one result set.
+const knowledgeRRFNorm = knowledgeRRFK + 1
+
+// knowledgeSearchLimit bounds a knowledge-search result count the same way on
+// both backends, so the two cannot disagree on how many hits a query yields: a
+// non-positive limit falls back to the route's default page size and an
+// over-large one is capped.
+func knowledgeSearchLimit(limit int) int {
+	if limit <= 0 {
+		return 10
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+// knowledgeBM25Query builds the text the tsquery arms bind: the query's terms
+// joined disjunctively ("tok | tok"), the reference's native-backend form. An
+// OR query means a multi-word question matches a page that carries only one of
+// its words, which a conjunctive parse would miss; a term with no word
+// characters is dropped, and an empty result means there is nothing to match
+// on. Every term is letters and digits only, so it can never carry tsquery
+// syntax.
+func knowledgeBM25Query(query string) string {
+	tokens := knowledgeQueryTerms(query)
+	if len(tokens) == 0 {
+		return ""
+	}
+	return strings.Join(tokens, " | ")
+}
+
+// SearchKnowledgeNodes searches a bank's pages by a hybrid of full-text match
+// (ts_rank_cd) over the page name and content and vector similarity over the
+// backing mental model's embedding, fused with reciprocal-rank fusion. Folders
+// are excluded. Pages with no embedding are skipped by the vector arm but still
+// rank on the text arm, and a caller with no query embedding gets the text arm
+// alone. The reported score is normalised to 0..1 (see knowledgeRRFNorm).
+func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query KnowledgeSearchQuery) ([]KnowledgeHit, error) {
+	limit := knowledgeSearchLimit(query.Limit)
+	term := strings.TrimSpace(query.Query)
+	if term == "" {
+		return []KnowledgeHit{}, nil
+	}
+	bm25Text := knowledgeBM25Query(term)
+	embedding := query.Embedding
+	if len(embedding) > 0 {
+		if err := ValidateEmbedding(embedding); err != nil {
+			return nil, err
+		}
+	}
+	// With neither a term to match on nor an embedding to rank by there is
+	// nothing to search with, so the answer is empty rather than every page.
+	if bm25Text == "" && len(embedding) == 0 {
+		return []KnowledgeHit{}, nil
+	}
+	// Over-fetch each arm so fusion has room to reorder before the final cut.
+	fetch := limit * 4
+	if fetch < 40 {
+		fetch = 40
+	}
+	if fetch > 200 {
+		fetch = 200
+	}
+	norm := strconv.Itoa(knowledgeRRFNorm)
+	rrfK := strconv.Itoa(knowledgeRRFK)
+	pageID := `COALESCE(vec.page_id, bm.page_id)`
+
+	var (
+		sqlQuery string
+		args     []any
+	)
+	switch {
+	case len(embedding) > 0 && bm25Text != "":
+		// Two arms, each ranked independently, then fused (k=60) in SQL. The
+		// vector arm ranks by cosine distance; the text arm by ts_rank_cd over
+		// the generated search_vector, which is built from name and content.
+		sqlQuery = `WITH vec AS (
+		                SELECT kp.id AS page_id,
+		                       ROW_NUMBER() OVER (ORDER BY mm.embedding <=> $1::vector, kp.id) AS rnk
+		                FROM ` + s.knowledgeFrom() + `
+		                WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL
+		                ORDER BY mm.embedding <=> $1::vector, kp.id
+		                LIMIT $3
+		            ),
+		            bm AS (
+		                SELECT kp.id AS page_id,
+		                       ROW_NUMBER() OVER (ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id) AS rnk
+		                FROM ` + s.knowledgeFrom() + `
+		                WHERE kp.bank_id = $2 AND kp.kind = 'page'
+		                      AND mm.search_vector @@ to_tsquery('english', $4)
+		                ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id
+		                LIMIT $3
+		            ),
+		            fused AS (
+		                SELECT ` + pageID + ` AS page_id,
+		                       (` + norm + `.0 / 2)
+		                       * (COALESCE(1.0 / (` + rrfK + ` + vec.rnk), 0)
+		                          + COALESCE(1.0 / (` + rrfK + ` + bm.rnk), 0)) AS score
+		                FROM vec FULL OUTER JOIN bm ON vec.page_id = bm.page_id
+		            )
+		            SELECT ` + knowledgeSelect + `, f.score
+		            FROM fused f
+		            JOIN ` + quoteIdent(s.schema) + `.knowledge_pages kp ON kp.id = f.page_id AND kp.bank_id = $2
+		            LEFT JOIN ` + quoteIdent(s.schema) + `.mental_models mm
+		                   ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id
+		            ORDER BY f.score DESC, kp.id ASC
+		            LIMIT $5`
+		args = []any{EncodeEmbedding(embedding), query.BankID, fetch, bm25Text, limit}
+	case len(embedding) > 0:
+		// Vector-only: the query carried nothing to match on, so rank straight
+		// off the ANN scan. One arm at rank 1 reports the 1.0 ceiling.
+		sqlQuery = `SELECT ` + knowledgeSelect + `,
+		                   ` + norm + `.0 / (` + rrfK + ` + ROW_NUMBER() OVER (
+		                         ORDER BY mm.embedding <=> $1::vector, kp.id)) AS score
+		            FROM ` + s.knowledgeFrom() + `
+		            WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL
+		            ORDER BY mm.embedding <=> $1::vector, kp.id ASC
+		            LIMIT $3`
+		args = []any{EncodeEmbedding(embedding), query.BankID, limit}
+	default:
+		// Text-only: no arm to fuse with, so rank straight off ts_rank_cd and
+		// apply the same normalised RRF curve so the score means the same thing
+		// it does on the fused path — a top text hit reports 1.0.
+		sqlQuery = `SELECT ` + knowledgeSelect + `,
+		                   ` + norm + `.0
+		                   / (` + rrfK + ` + ROW_NUMBER() OVER (
+		                         ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id)) AS score
+		            FROM ` + s.knowledgeFrom() + `
+		            WHERE kp.bank_id = $1 AND kp.kind = 'page'
+		                  AND mm.search_vector @@ to_tsquery('english', $2)
+		            ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id ASC
+		            LIMIT $3`
+		args = []any{query.BankID, bm25Text, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +391,7 @@ func scanKnowledgeNode(row rowScanner) (KnowledgeNode, error) {
 	var node KnowledgeNode
 	var kind, tags string
 	if err := row.Scan(&node.ID, &node.BankID, &node.ParentID, &kind, &node.Title,
-		&node.MentalModelID, &node.Text, &tags, &node.CreatedAt, &node.UpdatedAt); err != nil {
+		&node.MentalModelID, &node.Text, &tags, &node.Managed, &node.SortOrder, &node.CreatedAt, &node.UpdatedAt); err != nil {
 		return KnowledgeNode{}, err
 	}
 	node.Kind = KnowledgeKind(kind)
@@ -264,7 +403,7 @@ func scanKnowledgeNode(row rowScanner) (KnowledgeNode, error) {
 func scanKnowledgeWithScore(row rowScanner, node *KnowledgeNode, score *float64) error {
 	var kind, tags string
 	if err := row.Scan(&node.ID, &node.BankID, &node.ParentID, &kind, &node.Title,
-		&node.MentalModelID, &node.Text, &tags, &node.CreatedAt, &node.UpdatedAt, score); err != nil {
+		&node.MentalModelID, &node.Text, &tags, &node.Managed, &node.SortOrder, &node.CreatedAt, &node.UpdatedAt, score); err != nil {
 		return err
 	}
 	node.Kind = KnowledgeKind(kind)

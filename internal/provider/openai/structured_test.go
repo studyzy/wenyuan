@@ -87,7 +87,7 @@ func TestUsageCapturedBeforeValidationFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("a type mismatch must fail validation")
 	}
-	if result.Usage.InputTokens != 10 || result.Usage.TotalTokens != 15 {
+	if result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 4 || result.Usage.TotalTokens != 14 {
 		t.Fatalf("usage was lost on failure: %+v", result.Usage)
 	}
 }

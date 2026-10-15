@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -122,15 +123,17 @@ func TestRetainLinksFactsFromOneItem(t *testing.T) {
 		if link.FromUnitID != units[i] || link.ToUnitID != units[i+1] {
 			t.Fatalf("link %d joins %s->%s, want %s->%s", i, link.FromUnitID, link.ToUnitID, units[i], units[i+1])
 		}
-		if link.LinkType != LinkSemantic {
-			t.Fatalf("link %d type = %q, want semantic", i, link.LinkType)
+		if link.LinkType != LinkTemporal {
+			t.Fatalf("link %d type = %q, want temporal", i, link.LinkType)
 		}
 	}
 }
 
-// An extractor that finds nothing leaves the verbatim path in place, so the
-// document is still stored rather than silently dropped.
-func TestRetainFallsBackToVerbatimWhenExtractionFindsNothing(t *testing.T) {
+// A model was asked and found nothing: the item's text is stored on the
+// document but yields no memory unit. Falling back to the raw text here would
+// store prose the model explicitly judged factless — which is how a document
+// that says nothing memorable ends up answering recalls with its own wording.
+func TestRetainStoresNoUnitWhenExtractionFindsNothing(t *testing.T) {
 	store := NewMemoryStore("public")
 	content := "some prose the model found no facts in"
 	extractor := &stubExtraction{facts: map[string][]ExtractedFact{}}
@@ -142,11 +145,18 @@ func TestRetainFallsBackToVerbatimWhenExtractionFindsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outcome.ItemUnitIDs[0]) != 1 || len(store.chunks) != 1 {
-		t.Fatalf("expected the verbatim path: units=%v chunks=%d", outcome.ItemUnitIDs, len(store.chunks))
+	if len(outcome.ItemUnitIDs[0]) != 0 || len(store.chunks) != 1 {
+		t.Fatalf("expected no units and one stored chunk: units=%v chunks=%d", outcome.ItemUnitIDs, len(store.chunks))
 	}
-	if units := store.UnitsForTest("b1"); len(units) != 1 || units[0].Text != content {
-		t.Fatalf("verbatim unit not stored: %+v", units)
+	if units := store.UnitsForTest("b1"); len(units) != 0 {
+		t.Fatalf("an empty extraction must store no unit: %+v", units)
+	}
+	doc, err := store.GetDocument(context.TODO(), "b1", "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.OriginalText != content {
+		t.Fatalf("the document text must still be stored: %q", doc.OriginalText)
 	}
 }
 
@@ -254,7 +264,7 @@ func TestRetainPersistsCausalLinks(t *testing.T) {
 	if len(units) != 2 {
 		t.Fatalf("stored %d units, want 2", len(units))
 	}
-	graph, err := store.Graph(context.TODO(), "b1", 100)
+	graph, err := store.Graph(context.TODO(), GraphQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +301,7 @@ func TestCausalLinkOutOfRangeIsDropped(t *testing.T) {
 	if len(outcome.ItemUnitIDs[0]) != 1 {
 		t.Fatalf("stored %d units, want 1", len(outcome.ItemUnitIDs[0]))
 	}
-	graph, err := store.Graph(context.TODO(), "b1", 100)
+	graph, err := store.Graph(context.TODO(), GraphQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,5 +309,201 @@ func TestCausalLinkOutOfRangeIsDropped(t *testing.T) {
 		if edge.Type == string(LinkCausedBy) {
 			t.Fatalf("a droppable causal index produced an edge: %+v", edge)
 		}
+	}
+}
+
+// contextualExtraction records the options it was called with.
+type contextualExtraction struct {
+	stubExtraction
+	options []FactExtractionOptions
+}
+
+func (c *contextualExtraction) ExtractWithOptions(ctx context.Context, text string, opts FactExtractionOptions) ([]ExtractedFact, error) {
+	c.options = append(c.options, opts)
+	return c.Extract(ctx, text)
+}
+
+// A request carrying retain configuration reaches the extractor that can use
+// it, and a request carrying none takes the plain call.
+func TestRetainPassesExtractionOptions(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	when := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	extractor := &contextualExtraction{}
+	if _, err := store.RetainWrite(ctx, RetainRequest{
+		BankID:                 "b1",
+		Extraction:             extractor,
+		ExtractionMission:      "track decisions",
+		ExtractionInstructions: "prefer the user's wording",
+		ExtractionMode:         "verbose",
+		Items: []RetainItem{{
+			Content: "Alice decided to ship on Friday.", DocumentID: "doc-1",
+			Strategy: "concise", Timestamp: &when,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(extractor.options) != 1 {
+		t.Fatalf("contextual calls = %d, want one", len(extractor.options))
+	}
+	got := extractor.options[0]
+	if got.Mission != "track decisions" || got.Instructions != "prefer the user's wording" ||
+		got.Strategy != "concise" || got.Mode != "verbose" || !got.ReferenceTime.Equal(when) {
+		t.Fatalf("options = %+v", got)
+	}
+
+	// With nothing configured the plain call is used, so an extractor that
+	// ignores configuration is never handed a call it cannot answer.
+	plain := &contextualExtraction{}
+	if _, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: "b1", Extraction: plain,
+		Items: []RetainItem{{Content: "Alice decided to ship.", DocumentID: "doc-2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.options) != 0 {
+		t.Fatalf("an unconfigured request must not use the contextual call: %+v", plain.options)
+	}
+	if len(plain.calls) != 1 {
+		t.Fatalf("plain calls = %v", plain.calls)
+	}
+}
+
+// The chunk boundaries a request asks for govern the stored segments.
+func TestRetainHonoursConfiguredChunkSize(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	// Two sentences, so a small budget must split them and a large one must not.
+	content := "Alice joined the team. Bob left the team."
+	if _, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: "b1", ChunkSize: 24,
+		Items: []RetainItem{{Content: content, DocumentID: "doc-small"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	small, err := store.ListChunks(ctx, ChunkQuery{BankID: "b1", DocumentID: "doc-small", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if small.Total < 2 {
+		t.Fatalf("a 24-character budget produced %d chunk(s)", small.Total)
+	}
+
+	if _, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: "b1", ChunkSize: 3000,
+		Items: []RetainItem{{Content: content, DocumentID: "doc-large"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	large, err := store.ListChunks(ctx, ChunkQuery{BankID: "b1", DocumentID: "doc-large", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if large.Total != 1 {
+		t.Fatalf("the default budget produced %d chunk(s), want one", large.Total)
+	}
+}
+
+// A retain that carries observation scopes writes them onto every unit its
+// item produced through the fact path, so consolidation can fold at the scope
+// the caller asked to keep separate.
+func TestRetainCarriesObservationScopesThroughFactPath(t *testing.T) {
+	store := NewMemoryStore("public")
+	const content = "Alice moved to Berlin."
+	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
+		content: {{Text: "Alice moved to Berlin."}, {Text: "Alice likes Berlin."}},
+	}}
+	if _, err := store.RetainWrite(context.Background(), RetainRequest{
+		BankID:     "b1",
+		Items:      []RetainItem{{Content: content, DocumentID: "doc-1", ObservationScopes: json.RawMessage(`"per_tag"`)}},
+		Extraction: extractor,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	units := store.UnitsForTest("b1")
+	if len(units) != 2 {
+		t.Fatalf("units = %d, want one per fact (2)", len(units))
+	}
+	for _, unit := range units {
+		if string(unit.ObservationScopes) != `"per_tag"` {
+			t.Fatalf("unit %q observation scopes = %s, want the item's", unit.Text, unit.ObservationScopes)
+		}
+	}
+}
+
+// A retain that carries observation scopes writes them onto the verbatim unit
+// too, so the segment path is scoped the same way the fact path is.
+func TestRetainCarriesObservationScopesThroughVerbatimPath(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.RetainWrite(context.Background(), RetainRequest{
+		BankID: "b1",
+		Items: []RetainItem{{
+			Content: "A verbatim note.", DocumentID: "doc-1",
+			ObservationScopes: json.RawMessage(`[["a"],["b"]]`),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	units := store.UnitsForTest("b1")
+	if len(units) == 0 {
+		t.Fatal("no unit was stored")
+	}
+	for _, unit := range units {
+		if string(unit.ObservationScopes) != `[["a"],["b"]]` {
+			t.Fatalf("unit observation scopes = %s, want the item's", unit.ObservationScopes)
+		}
+	}
+}
+
+// A fact the model marked "assistant" is stored as the agent-perspective type,
+// not as an objective world fact.
+func TestRetainStoresAssistantFactAsExperience(t *testing.T) {
+	store := NewMemoryStore("public")
+	const content = "I checked the deployment log."
+	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
+		content: {{Text: "I checked the deployment log.", Type: "assistant"}},
+	}}
+	if _, err := store.RetainWrite(context.Background(), RetainRequest{
+		BankID:     "b1",
+		Items:      []RetainItem{{Content: content, DocumentID: "doc-1"}},
+		Extraction: extractor,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	units := store.UnitsForTest("b1")
+	if len(units) != 1 {
+		t.Fatalf("units = %d, want 1", len(units))
+	}
+	if units[0].FactType != TypeExperience {
+		t.Fatalf("assistant fact stored as %q, want %q", units[0].FactType, TypeExperience)
+	}
+}
+
+// Chunks mode stores each segment of the item as its own unit and asks the
+// model nothing, even when an extractor is configured — so a bank on the chunks
+// mode keeps its raw segments rather than paying for an extraction it ignores.
+func TestChunksModeStoresOneUnitPerChunkWithoutCallingTheModel(t *testing.T) {
+	store := NewMemoryStore("public")
+	content := "alpha bravo\n\ncharlie delta\n\necho foxtrot"
+	extractor := &stubExtraction{}
+	outcome, err := store.RetainWrite(context.Background(), RetainRequest{
+		BankID:         "b1",
+		Items:          []RetainItem{{Content: content, DocumentID: "doc-1"}},
+		Extraction:     extractor,
+		ExtractionMode: "chunks",
+		ChunkSize:      5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extractor.calls) != 0 {
+		t.Fatalf("chunks mode must not call the model: %v", extractor.calls)
+	}
+	want := len(SegmentWith(content, SegmentOptions{ChunkSize: 5}))
+	if got := len(outcome.ItemUnitIDs[0]); got != want {
+		t.Fatalf("units = %d, want one per chunk (%d)", got, want)
+	}
+	if units := store.UnitsForTest("b1"); len(units) != want {
+		t.Fatalf("stored units = %d, want %d", len(units), want)
 	}
 }

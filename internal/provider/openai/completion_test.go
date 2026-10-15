@@ -26,7 +26,9 @@ func TestCompleteFreeFormReturnsContentAndUsage(t *testing.T) {
 	if result.Content != "hello there" {
 		t.Fatalf("content = %q", result.Content)
 	}
-	if result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 5 || result.Usage.TotalTokens != 15 {
+	// The body folds reasoning into completion (total = prompt + completion), so
+	// the visible output is completion minus reasoning and total is input+visible.
+	if result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 4 || result.Usage.TotalTokens != 14 {
 		t.Fatalf("usage = %+v", result.Usage)
 	}
 	if result.Usage.CachedInputTokens != 2 || result.Usage.ReasoningTokens != 1 {
@@ -120,4 +122,69 @@ func TestCredentialSentInHeader(t *testing.T) {
 	if got != "Bearer test-key" {
 		t.Fatalf("authorization = %q", got)
 	}
+}
+
+// test-usage-visible-and-reasoning-split: the OpenAI-shaped usage the upstream
+// reports is normalized to visible-only output with reasoning kept separate,
+// across both wire shapes (folded and unfolded) and the no-reasoning case. This
+// mirrors the reference's visible_token_usage.
+func TestUsageNormalizesReasoningShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		wire    usageWire
+		input   int
+		output  int
+		total   int
+		thought int
+	}{
+		{
+			// Folded: total = prompt + completion, and completion folds
+			// reasoning in. Visible = completion - reasoning.
+			name:    "folded reasoning",
+			wire:    usageWire{PromptTokens: 100, CompletionTokens: 80, TotalTokens: 180, CompletionTokensDetails: usageDetails(60)},
+			input:   100,
+			output:  20,
+			total:   120,
+			thought: 60,
+		},
+		{
+			// Unfolded: total = prompt + completion + reasoning, and completion
+			// is already visible-only. Visible = completion.
+			name:    "unfolded reasoning",
+			wire:    usageWire{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 180, CompletionTokensDetails: usageDetails(60)},
+			input:   100,
+			output:  20,
+			total:   120,
+			thought: 60,
+		},
+		{
+			// No reasoning reported: the whole completion is visible output.
+			name:    "no reasoning",
+			wire:    usageWire{PromptTokens: 100, CompletionTokens: 80, TotalTokens: 180},
+			input:   100,
+			output:  80,
+			total:   180,
+			thought: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := usageFrom(tc.wire)
+			if got.InputTokens != tc.input || got.OutputTokens != tc.output || got.TotalTokens != tc.total || got.ReasoningTokens != tc.thought {
+				t.Fatalf("usage = %+v, want input=%d output=%d total=%d thoughts=%d",
+					got, tc.input, tc.output, tc.total, tc.thought)
+			}
+		})
+	}
+}
+
+// usageDetails builds the completion_tokens_details block for a reasoning count.
+func usageDetails(reasoning int) struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+} {
+	var details struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	}
+	details.ReasoningTokens = reasoning
+	return details
 }

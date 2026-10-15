@@ -33,8 +33,8 @@ func TestRecallFactTypeTokens(t *testing.T) {
 // ts-0013: the temporal-window bound keys and the fuzzy resolution token are
 // distinct surfaces from the compound tag-group node keys.
 func TestRecallTagResolveTokens(t *testing.T) {
-	if TagResolveFuzzy != "fuzzy" || TagResolveLiteral != "literal" {
-		t.Fatalf("resolve tokens = %q, %q", TagResolveFuzzy, TagResolveLiteral)
+	if TagResolveFuzzy != "fuzzy" || TagResolveExact != "exact" {
+		t.Fatalf("resolve tokens = %q, %q", TagResolveFuzzy, TagResolveExact)
 	}
 }
 

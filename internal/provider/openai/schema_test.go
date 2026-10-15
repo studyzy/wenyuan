@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -123,5 +124,59 @@ func TestSupportedPropertyTypes(t *testing.T) {
 		if !want[kind] {
 			t.Fatalf("unexpected type %q", kind)
 		}
+	}
+}
+
+// A strict schema must satisfy the subset the OpenAI-compatible APIs enforce:
+// every object carries additionalProperties=false and lists every property as
+// required. A backend that enforces the subset rejects the request otherwise,
+// so the omission turned every extraction into a provider error.
+func TestMarshalStrictSchemaCarriesTheStrictSubset(t *testing.T) {
+	schema := &provider.Schema{
+		Type: "object",
+		Properties: map[string]*provider.Schema{
+			"facts": {
+				Type: "array",
+				Items: &provider.Schema{
+					Type: "object",
+					Properties: map[string]*provider.Schema{
+						"what": {Type: "string"},
+						"when": {Type: "string"},
+					},
+					Required: []string{"what"},
+				},
+			},
+		},
+	}
+	raw, err := MarshalStrictSchema(schema, provider.Settings{StrictSchema: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["additionalProperties"] != false {
+		t.Fatalf("the root object must forbid extra properties: %s", raw)
+	}
+	if got, ok := decoded["required"].([]any); !ok || len(got) != 1 || got[0] != "facts" {
+		t.Fatalf("every property must be required: %s", raw)
+	}
+	items := decoded["properties"].(map[string]any)["facts"].(map[string]any)["items"].(map[string]any)
+	if items["additionalProperties"] != false {
+		t.Fatalf("a nested object must forbid extra properties too: %s", raw)
+	}
+	if got, ok := items["required"].([]any); !ok || len(got) != 2 {
+		t.Fatalf("a nested object must require every property: %s", raw)
+	}
+	// The serializer serves the strict path only, so the subset is emitted
+	// regardless of how the settings resolved: what makes a request strict is
+	// the caller asking for a strict schema, not the deployment default.
+	raw, err = MarshalStrictSchema(schema, provider.Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"additionalProperties":false`) {
+		t.Fatalf("the strict subset must be emitted: %s", raw)
 	}
 }

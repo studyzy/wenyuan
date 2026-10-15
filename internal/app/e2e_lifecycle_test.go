@@ -9,8 +9,12 @@ package app
 // rather than in the consumer that first noticed.
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // TestMemoryLifecycleEndToEnd writes a memory through the retain route and then
@@ -61,5 +65,60 @@ func TestMemoryLifecycleEndToEnd(t *testing.T) {
 		if total, _ := decodeJSON(t, stats)["total_nodes"].(float64); total < 1 {
 			t.Fatalf("stats reported no nodes: %s", stats.Body.String())
 		}
+	}
+}
+
+// With document-text storage off, a retain through the served route keeps the
+// raw body out of storage, and the read routes report a null original_text and
+// blank chunk texts rather than the text they were handed. The write and read
+// sides must agree on the switch, so this follows one document both ways.
+func TestStoreDocumentTextSwitchEndToEnd(t *testing.T) {
+	cfg := testConfig()
+	cfg.StoreDocumentText = false
+	a, err := New(context.Background(), cfg, Dependencies{Store: storage.NewMemoryStore("public")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bank = "/v1/default/banks/store-text-bank"
+	if rec := exchange(a, http.MethodPut, bank, `{"name":"StoreText"}`); rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("create bank: %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	const secret = "the raw secret body"
+	retain := exchange(a, http.MethodPost, bank+"/memories",
+		`{"items":[{"content":"`+secret+`","document_id":"d1"}]}`)
+	if retain.Code != http.StatusOK {
+		t.Fatalf("retain: %d, body = %s", retain.Code, retain.Body.String())
+	}
+
+	doc := exchange(a, http.MethodGet, bank+"/documents/d1", "")
+	if doc.Code != http.StatusOK {
+		t.Fatalf("get document: %d, body = %s", doc.Code, doc.Body.String())
+	}
+	body := decodeJSON(t, doc)
+	if value, ok := body["original_text"]; !ok || value != nil {
+		t.Fatalf("original_text must be present and null, got %v (body %s)", value, doc.Body.String())
+	}
+	if strings.Contains(doc.Body.String(), secret) {
+		t.Fatalf("the discarded text must not surface on the document read: %s", doc.Body.String())
+	}
+
+	chunks := exchange(a, http.MethodGet, bank+"/documents/d1/chunks", "")
+	if chunks.Code != http.StatusOK {
+		t.Fatalf("list chunks: %d, body = %s", chunks.Code, chunks.Body.String())
+	}
+	if strings.Contains(chunks.Body.String(), secret) {
+		t.Fatalf("the discarded text must not surface on the chunk read: %s", chunks.Body.String())
+	}
+
+	// Append cannot work with no stored text, and is refused rather than
+	// silently degrading to a replace.
+	appendRec := exchange(a, http.MethodPost, bank+"/memories",
+		`{"items":[{"content":"more","document_id":"d1","update_mode":"append"}]}`)
+	if appendRec.Code != http.StatusBadRequest {
+		t.Fatalf("append with text storage off = %d, want 400 (body %s)", appendRec.Code, appendRec.Body.String())
+	}
+	if detail, _ := decodeJSON(t, appendRec)["detail"].(string); !strings.Contains(detail, "HINDSIGHT_API_STORE_DOCUMENT_TEXT") {
+		t.Fatalf("append refusal detail = %q, want the reference's wording", detail)
 	}
 }

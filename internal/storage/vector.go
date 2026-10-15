@@ -8,15 +8,34 @@ import (
 )
 
 // EmbeddingDimensions is the vector width the stored column uses. It is fixed
-// at 1024 to match the reference implementation's column and the provider
+// at 384 to match the reference implementation's column and the provider
 // boundary's declared dimension, and it is defined here once so the column and
 // the boundary cannot drift apart.
-const EmbeddingDimensions = 1024
+const EmbeddingDimensions = 384
 
 // ErrEmbeddingDimensions reports an embedding whose width does not match the
 // stored column. Such a value is rejected rather than truncated, because a
 // silently truncated vector would rank against every other row incorrectly.
 var ErrEmbeddingDimensions = fmt.Errorf("embedding must have %d dimensions", EmbeddingDimensions)
+
+// cosineBetween returns the cosine similarity of two equal-width vectors. Two
+// vectors of different widths, or with a zero magnitude, score zero rather than
+// producing a NaN.
+func cosineBetween(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
 
 // ValidateEmbedding reports whether a vector can be stored.
 func ValidateEmbedding(vec []float32) error {

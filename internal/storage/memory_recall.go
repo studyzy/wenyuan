@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"strings"
@@ -20,6 +21,18 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	if _, ok := s.banks[q.BankID]; !ok {
 		return RecallResult{}, ErrBankNotFound
 	}
+	// Fuzzy tag leaves resolve against the bank's own vocabulary once, here,
+	// before any arm runs: every arm then filters on literal tags, so no caller
+	// can reach a divergent per-row reading by choosing an arm. The resolution
+	// caps are enforced during resolution, so an over-large scope fails fast
+	// with an error the caller maps to a 422 rather than grinding.
+	if usesFuzzyTagResolution(q.TagGroups) {
+		resolved, err := ResolveRecallTagScope(q, s.tagVocabulary(q.BankID))
+		if err != nil {
+			return RecallResult{}, err
+		}
+		q = resolved
+	}
 	types := resolvedTypes(q.Types)
 	arms := activeArms(q)
 	term := strings.TrimSpace(q.Query)
@@ -36,10 +49,17 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 		armHits[arm] = s.runArm(arm, q, types, term)
 	}
 
-	// Merge candidates across arms, keeping the first rank observed per fact.
-	candidates := map[string]*recallCandidate{}
+	armTraces := make([]recallArmTrace, 0, len(arms))
 	for _, arm := range arms {
-		for rank, hit := range armHits[arm] {
+		armTraces = append(armTraces, recallArmTrace{arm: arm, hits: prepareArm(q, arm, armHits[arm])})
+	}
+
+	// Merge candidates across arms, keeping the first rank observed per fact.
+	// Each arm is capped to its best results first, so one over-expanding
+	// backend cannot crowd the others out of the merged pool.
+	candidates := map[string]*recallCandidate{}
+	for _, trace := range armTraces {
+		for rank, hit := range trace.hits {
 			cand := candidates[hit.match.ID]
 			if cand == nil {
 				m := hit.match
@@ -50,9 +70,9 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 				}
 				candidates[hit.match.ID] = cand
 			}
-			if _, seen := cand.armRanks[arm]; !seen {
-				cand.armRanks[arm] = rank + 1
-				cand.armScores[arm] = hit.score
+			if _, seen := cand.armRanks[trace.arm]; !seen {
+				cand.armRanks[trace.arm] = rank + 1
+				cand.armScores[trace.arm] = hit.score
 			}
 		}
 	}
@@ -68,8 +88,9 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	for _, cand := range ranked {
 		result.Matches = append(result.Matches, cand.toMatch())
 	}
+	s.enrichRecallAttachments(q.BankID, result.Matches)
 	s.attachSideChannels(&result, q, types)
-	result.Trace = buildRecallTrace(candidates, ranked)
+	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
 	return result, nil
 }
 
@@ -84,8 +105,10 @@ func capCandidates(ranked []*recallCandidate, limit int) []*recallCandidate {
 }
 
 // buildRecallTrace records what the pipeline looked at, so the trace route can
-// report it without re-deriving the counts from the ranked list.
-func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCandidate) RecallTrace {
+// report it without re-deriving the counts from the ranked list. It also
+// assembles the reference-shaped retrieval detail from the arm lists the
+// pipeline fanned out to.
+func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCandidate, armTraces []recallArmTrace, q RecallQuery, limit int) RecallTrace {
 	// Every arm a candidate was surfaced by is counted, so the trace reports
 	// which retrieval paths actually contributed rather than a fixed subset.
 	stageCounts := map[string]int{}
@@ -94,12 +117,12 @@ func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCa
 			stageCounts[stage]++
 		}
 	}
-	budget := len(candidates)
 	return RecallTrace{
-		Budget:          budget,
+		Budget:          limit,
 		BudgetUsed:      len(ranked),
 		CandidatesFound: len(candidates),
 		StageCounts:     stageCounts,
+		Detail:          buildRecallTraceDetail(candidates, ranked, armTraces, q, limit),
 	}
 }
 
@@ -145,6 +168,10 @@ type recallCandidate struct {
 	match     RecallMatch
 	armRanks  map[string]int
 	armScores map[string]float64
+	// rrfScore is the reciprocal-rank-fusion total before any boost, and
+	// components is the breakdown the trace reports.
+	rrfScore   float64
+	components map[string]float64
 }
 
 // rrfConstant is the reciprocal-rank-fusion smoothing constant.
@@ -247,8 +274,32 @@ func scoreCandidates(ctx context.Context, candidates map[string]*recallCandidate
 
 	// The cross-encoder scores the fused pool once, in the deterministic order
 	// above, so a score can be paired back to its candidate by position. A
-	// failure leaves every candidate on the best-per-arm fallback.
+	// failure leaves every candidate on the best-per-arm fallback. A
+	// rank-position reranker's output carries no relevance of its own, so its
+	// base is seeded from the fused ordering instead (see passthroughRerankSeed).
 	reranked := rerankCandidates(ctx, list, q)
+	// A pruning reranker judges relevance, marking a candidate it would remove
+	// with a score of exactly 0.0. Acting on that verdict here — where the
+	// candidates live — is what shrinks the result; the reranker itself only
+	// returns one score per pair and never sees them. A candidate the reranker
+	// left unscored carries NaN and is never pruned, because NaN means "keep
+	// the fused score", not "irrelevant".
+	if reranked != nil && q.RerankPrunesCandidates {
+		keptList := list[:0]
+		keptScores := reranked[:0]
+		for i, cand := range list {
+			if !(reranked[i] == 0 && !math.IsNaN(reranked[i])) {
+				keptList = append(keptList, cand)
+				keptScores = append(keptScores, reranked[i])
+			}
+		}
+		list = keptList
+		reranked = keptScores
+	}
+	var seed []float64
+	if reranked != nil && q.RerankSeedFromFused {
+		seed = passthroughRerankSeed(list, arms)
+	}
 
 	for index, cand := range list {
 		fused := 0.0
@@ -257,73 +308,89 @@ func scoreCandidates(ctx context.Context, candidates map[string]*recallCandidate
 				fused += 1 / (rrfConstant + float64(rank))
 			}
 		}
+		cand.rrfScore = fused
 		fused = stage1Boost(cand, fused, q.StrategyBoosts)
-		// Relevance is the cross-encoder's score when one ran, normalized
-		// against the batch so it lands on the same scale as the per-arm
-		// fallback it replaces; otherwise the best arm score, which is neutral
-		// when no arm surfaced a positive score.
-		reranker := bestArmScore(cand)
-		if reranked != nil {
-			reranker = normalizeRerankScore(reranked[index], reranked)
+		// Relevance: when the cross-encoder ran, its normalized score is the
+		// base and the reciprocal-rank fusion is dropped from it — the
+		// reference excludes RRF from the post-rerank score. Without a
+		// reranker the base is the fused score scaled by the best arm score
+		// (neutral when no arm surfaced a positive one). A candidate the
+		// reranker did not score — a partial result or one past the rerank
+		// depth — keeps that same fused base, which is what "unscored
+		// candidates keep their fused order" means.
+		base := fused * neutralArmScore(cand)
+		scoredByReranker := reranked != nil && !math.IsNaN(reranked[index])
+		if scoredByReranker {
+			if seed != nil {
+				base = seed[index]
+			} else {
+				base = normalizeRerankScore(reranked[index], reranked)
+			}
 		}
+		// The combined boost multiplies the base (recency, temporal proximity,
+		// proof strength).
 		boost := combinedBoost(cand, q)
-		final := fused * reranker * boost
-		if reranker > 0 && boost == 0 {
-			final = fused * reranker
+		final := base * boost
+		if boost == 0 {
+			final = base
 		}
-		// The strategy boost is a post-rerank add, so it lands on the final
-		// weight rather than multiplying into it.
-		final += stage2Boost(cand, q.StrategyBoosts) * fused
+		// The strategy boost is a post-rerank add: an absolute bump on the
+		// final weight, not scaled by the fused score.
+		final += stage2Boost(cand, q.StrategyBoosts)
 		cand.match.Final = final
 		cand.match.ArmRanks = cloneIntMap(cand.armRanks)
-		cand.match.Scores = candidateScores(cand)
-		if reranked != nil {
-			cand.match.Scores["reranker"] = reranker
+		cand.match.Scores = candidateScores(cand, q)
+		// The score breakdown the trace reports. It always carries the RRF,
+		// temporal, recency, proof and combined components; the cross-encoder
+		// pair is added when a reranker scored this candidate.
+		recency, temporal, proof := combinedSignals(cand, q)
+		components := map[string]float64{
+			"rrf_score":      fused,
+			"temporal":       temporal,
+			"recency":        recency,
+			"proof_norm":     proof,
+			"combined_score": final,
 		}
+		if scoredByReranker {
+			components["cross_encoder_score"] = reranked[index]
+			components["cross_encoder_score_normalized"] = base
+		}
+		cand.components = components
+		// A rank-position reranker's value is not a relevance score, so it is
+		// not published: the top candidate would read 1.0 on every recall
+		// however weak it is, and a consumer comparing it to a floor would be
+		// misled.
+		if reranked != nil && !q.RerankRankPosition && !math.IsNaN(reranked[index]) {
+			cand.match.Scores["reranker"] = base
+		}
+	}
+	// The RRF component is normalized across the batch so the trace reports a
+	// comparable value rather than the raw reciprocal-rank sum.
+	normalizeRRFComponent(list)
+	// Interleave fusion is an explicit caller choice where the position *is*
+	// the order: each arm is guaranteed a slot, so the score is strictly
+	// decreasing by interleave position and the sort downstream reproduces it.
+	if usesInterleave(q) {
+		ordered := interleaveFusion(list, arms)
+		total := len(ordered)
+		for position, cand := range ordered {
+			cand.match.Final = float64(total - position)
+		}
+		return ordered
 	}
 	return list
 }
 
-// rerankCandidates scores the fused pool through the cross-encoder boundary,
-// returning one score per candidate in list order. It returns nil when no
-// reranker is configured, the pool is empty, or the call failed — all of which
-// leave the caller on its fallback.
-func rerankCandidates(ctx context.Context, list []*recallCandidate, q RecallQuery) []float64 {
-	if q.Rerank == nil || len(list) == 0 {
-		return nil
-	}
-	if q.RerankDepth > 0 && len(list) > q.RerankDepth {
-		// Only the depth the caller budgeted reaches the cross-encoder; the
-		// rest keeps its fallback score, which is what a shallow reranker
-		// means.
-		list = list[:q.RerankDepth]
-	}
-	texts := make([]string, 0, len(list))
+// normalizeRRFComponent writes the batch-normalized RRF score into every
+// candidate's component map, so the trace reports a comparable value rather
+// than the raw reciprocal-rank sum.
+func normalizeRRFComponent(list []*recallCandidate) {
+	low, high := math.Inf(1), math.Inf(-1)
 	for _, cand := range list {
-		texts = append(texts, cand.match.Text)
-	}
-	scores, err := q.Rerank(ctx, q.Query, texts)
-	if err != nil || len(scores) != len(texts) {
-		return nil
-	}
-	// Pad the tail with the neutral zero so the slice indexes by candidate
-	// position whether or not the pool was truncated to the rerank depth.
-	if len(scores) < len(list) {
-		scores = append(scores, make([]float64, len(list)-len(scores))...)
-	}
-	return scores
-}
-
-// normalizeRerankScore maps a reranked score onto [0, 1] using the batch's own
-// range, so the value is comparable to the per-arm scores it replaces. A batch
-// whose scores are all equal has no range to normalize against and yields the
-// neutral 1, which leaves fusion ordering intact.
-func normalizeRerankScore(score float64, scores []float64) float64 {
-	if scores == nil {
-		return 0
-	}
-	low, high := scores[0], scores[0]
-	for _, value := range scores {
+		if cand.components == nil {
+			continue
+		}
+		value := cand.components["rrf_score"]
 		if value < low {
 			low = value
 		}
@@ -331,13 +398,180 @@ func normalizeRerankScore(score float64, scores []float64) float64 {
 			high = value
 		}
 	}
+	for _, cand := range list {
+		if cand.components == nil {
+			continue
+		}
+		value := cand.components["rrf_score"]
+		switch {
+		case math.IsInf(low, 1):
+			cand.components["rrf_normalized"] = 0
+		case high <= low:
+			cand.components["rrf_normalized"] = 1
+		default:
+			cand.components["rrf_normalized"] = (value - low) / (high - low)
+		}
+	}
+}
+
+// neutralArmScore returns the best arm score, or 1 when no arm surfaced a
+// positive score, so the fused weight still governs a candidate no arm scored.
+func neutralArmScore(cand *recallCandidate) float64 {
+	score := bestArmScore(cand)
+	if score <= 0 {
+		return 1
+	}
+	return score
+}
+
+// rerankCandidates scores the fused pool through the cross-encoder boundary,
+// returning one score per candidate in list order. It returns nil when no
+// reranker is configured, the pool is empty, or the call failed outright — all
+// of which leave the caller on its fused fallback.
+//
+// A candidate past the rerank depth, and any candidate a partial reranker left
+// unscored, is marked NaN so the caller keeps its fused score rather than
+// pairing it with a score it never earned.
+func rerankCandidates(ctx context.Context, list []*recallCandidate, q RecallQuery) []float64 {
+	if q.Rerank == nil || len(list) == 0 {
+		return nil
+	}
+	depth := len(list)
+	if q.RerankDepth > 0 && depth > q.RerankDepth {
+		depth = q.RerankDepth
+	}
+	texts := make([]string, 0, depth)
+	for _, cand := range list[:depth] {
+		texts = append(texts, cand.match.Text)
+	}
+	scores, err := q.Rerank(ctx, q.Query, texts)
+	if err != nil {
+		// A partial result is the point of the error: the reranker scored what
+		// it could before failing or timing out, and the remainder should keep
+		// the fused order rather than the whole recall falling back.
+		var partial *PartialRerankError
+		if !errors.As(err, &partial) || len(partial.Scores) != len(texts) {
+			return nil
+		}
+		scores = partial.Scores
+	}
+	if len(scores) != len(texts) {
+		return nil
+	}
+	// Restore one score per candidate so the slice indexes by position whether
+	// or not the pool was truncated: candidates the reranker never saw carry
+	// NaN, which the caller reads as "keep the fused score".
+	if len(scores) < len(list) {
+		padded := make([]float64, len(list))
+		copy(padded, scores)
+		for i := depth; i < len(list); i++ {
+			padded[i] = math.NaN()
+		}
+		scores = padded
+	}
+	return scores
+}
+
+// passthroughRerankSeed derives the base score from the fused ordering for a
+// rank-position reranker (RecallQuery.RerankRankPosition).
+//
+// A rank-position reranker returns scores that echo candidate position rather
+// than measuring relevance, so min-max normalising them adds no information and
+// can even invert the fused order. Seeding rank → [0.1, 1.0] from the
+// descending fused order instead preserves what fusion already computed and
+// leaves the recency / temporal / proof boosts room to separate neighbours,
+// which is exactly the reference's passthrough seeding. The condition that
+// selects it is RerankRankPosition together with a non-nil reranker result;
+// every other case keeps the normalizeRerankScore path.
+//
+// The returned slice is indexed by the candidate's position in list.
+func passthroughRerankSeed(list []*recallCandidate, arms []string) []float64 {
+	fused := make([]float64, len(list))
+	for i, cand := range list {
+		total := 0.0
+		for _, arm := range arms {
+			if rank, ok := cand.armRanks[arm]; ok {
+				total += 1 / (rrfConstant + float64(rank))
+			}
+		}
+		fused[i] = total
+	}
+	order := make([]int, len(list))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		ia, ib := order[a], order[b]
+		if fused[ia] != fused[ib] {
+			return fused[ia] > fused[ib]
+		}
+		return list[ia].match.ID < list[ib].match.ID
+	})
+	seed := make([]float64, len(list))
+	denom := float64(len(list) - 1)
+	if denom < 1 {
+		denom = 1
+	}
+	for rank, index := range order {
+		seed[index] = 1 - 0.9*float64(rank)/denom
+	}
+	return seed
+}
+
+// normalizeRerankScore maps a reranked score onto [0, 1]. A batch already in
+// [0, 1] is passed through, preserving the provider's calibrated confidence; a
+// batch that looks like logits is squashed through a logistic; anything else is
+// min-max normalized over the batch. A batch with no range yields the neutral 1
+// so fusion ordering stays intact.
+//
+// NaN entries mark candidates the reranker never scored (a partial result or a
+// candidate past the rerank depth). They are excluded from the batch range: a
+// partial result still normalizes against the scores that were produced, and an
+// unscored candidate is left to the caller's fused fallback.
+func normalizeRerankScore(score float64, scores []float64) float64 {
+	if scores == nil || math.IsNaN(score) {
+		return 0
+	}
+	low, high := math.Inf(1), math.Inf(-1)
+	for _, value := range scores {
+		if math.IsNaN(value) {
+			continue
+		}
+		if value < low {
+			low = value
+		}
+		if value > high {
+			high = value
+		}
+	}
+	if math.IsInf(low, 1) {
+		// No finite score to normalize against.
+		return 0
+	}
+	// Provider scores that already sit in [0, 1] are calibrated confidence and
+	// are returned unchanged.
+	if low >= 0 && high <= 1 {
+		if score <= 0 {
+			return 0.01
+		}
+		return score
+	}
+	// A batch outside [0, 1] is treated as raw logits and squashed. The sigmoid
+	// keeps a top candidate high and a low one low, rather than stretching the
+	// batch's own range to [0, 1] regardless of absolute confidence.
+	if low >= -50 && high <= 50 {
+		return logistic(score)
+	}
 	if high <= low {
 		return 1
 	}
 	normalized := (score - low) / (high - low)
-	// Keep the value strictly positive so the multiplier never zeroes a
-	// candidate that fusion ranked, which would drop it from the result.
 	return 0.01 + 0.99*normalized
+}
+
+// logistic is the standard sigmoid, mapping a logit onto (0, 1).
+func logistic(x float64) float64 {
+	return 1 / (1 + math.Exp(-x))
 }
 
 // bestArmScore returns the strongest per-arm score for a candidate.
@@ -356,37 +590,10 @@ func bestArmScore(cand *recallCandidate) float64 {
 // [1-alpha/2, 1+alpha/2] and never overpowers the base relevance score it
 // modulates.
 const (
-	recencyAlpha      = 0.2
-	temporalAlpha     = 0.2
-	proofCountAlpha   = 0.1
-	recencyHalflife   = 90.0
-	recencyLinearDays = 365.0
+	recencyAlpha    = 0.2
+	temporalAlpha   = 0.2
+	proofCountAlpha = 0.1
 )
-
-// recencyDecayFunction selects the age-to-freshness curve. "linear" is the
-// default; "exponential" halves the signal every recencyHalflife days; "none"
-// disables the signal.
-const recencyDecayFunction = "linear"
-
-// recencyForMaps an age in days onto a freshness signal in [0, 1] whose neutral
-// point is 0.5. A future-dated memory clamps to the maximum so it is never
-// penalised for being ahead of the clock.
-func recencySignal(daysAgo float64) float64 {
-	switch recencyDecayFunction {
-	case "none":
-		return 0.5
-	case "exponential":
-		if daysAgo <= 0 {
-			return 1
-		}
-		return math.Pow(0.5, daysAgo/recencyHalflife)
-	default:
-		if daysAgo <= 0 {
-			return 1
-		}
-		return math.Max(0.1, math.Min(1, 1-daysAgo/recencyLinearDays))
-	}
-}
 
 // confidenceBoost turns a signal in [0, 1] into its multiplicative factor:
 // 1.0 at the neutral 0.5 and up to 1±alpha/2 at the extremes.
@@ -402,50 +609,103 @@ func combinedBoost(cand *recallCandidate, q RecallQuery) float64 {
 	if len(cand.armScores) == 0 {
 		return 1
 	}
-	// Recency is graded by the match's age rather than a flat present/absent
-	// bump, so a fresh memory ranks above a stale one when relevance ties.
-	recency := 0.5
-	if instant := recallInstant(cand.match); instant != nil {
-		anchor := time.Now().UTC()
-		if q.QueryTimestamp != nil {
-			anchor = *q.QueryTimestamp
-		}
-		recency = recencySignal(anchor.Sub(*instant).Hours() / 24)
-	}
-	// Temporal proximity is meaningful only for a query that named a window.
-	temporal := 0.5
-	if q.Temporal != nil && q.Temporal.Contains(cand.match.OccurredStart, cand.match.OccurredEnd) {
-		temporal = 1
-	}
-	// Proof count measures evidence strength, which only an observation has.
-	// The logarithmic curve keeps a large count from dominating: 1 proof is
-	// neutral and the signal saturates well before the count is huge.
-	proof := 0.5
-	if count := len(cand.match.SourceMemoryIDs); count >= 1 {
-		proof = math.Max(0, math.Min(1, 0.5+math.Log(float64(count))/10))
-	}
+	recency, temporal, proof := combinedSignals(cand, q)
 	return confidenceBoost(recency, recencyAlpha) *
 		confidenceBoost(temporal, temporalAlpha) *
 		confidenceBoost(proof, proofCountAlpha)
 }
 
-// recallInstant returns the time a match should be aged from. It follows the
-// same precedence the retrieval date uses, so a memory carrying only a mention
-// time still gets a real recency signal rather than the neutral value.
-func recallInstant(match RecallMatch) *time.Time {
-	switch {
-	case match.OccurredStart != nil:
-		return match.OccurredStart
-	case match.MentionedAt != nil:
-		return match.MentionedAt
-	default:
-		return match.OccurredEnd
+// combinedSignals returns the three bounded signals the combined boost folds
+// in: the recency of the match, its proximity to a requested window, and the
+// strength of its evidence. Each is in [0, 1] with 0.5 neutral.
+func combinedSignals(cand *recallCandidate, q RecallQuery) (recency, temporal, proof float64) {
+	// Recency is graded by the match's age rather than a flat present/absent
+	// bump, so a fresh memory ranks above a stale one when relevance ties. The
+	// decay shape is the deployment's choice.
+	anchor := time.Now().UTC()
+	if q.QueryTimestamp != nil {
+		anchor = *q.QueryTimestamp
 	}
+	recency = RecencyForUnit(cand.match.OccurredStart, cand.match.OccurredEnd, cand.match.MentionedAt, anchor, q.Recency)
+	// Temporal proximity is meaningful only for a query that named a window.
+	// It grades toward the window's midpoint rather than answering
+	// in/out: a unit dated at the centre scores 1, one at either edge scores 0,
+	// and one with no window (or no date) is neutral 0.5.
+	temporal = temporalProximity(q.Temporal, cand.match.OccurredStart, cand.match.OccurredEnd, cand.match.MentionedAt)
+	// Proof count measures evidence strength, which only an observation has.
+	// The logarithmic curve keeps a large count from dominating: 1 proof is
+	// neutral and the signal saturates well before the count is huge.
+	proof = 0.5
+	if count := len(cand.match.SourceMemoryIDs); count >= 1 {
+		proof = math.Max(0, math.Min(1, 0.5+math.Log(float64(count))/10))
+	}
+	return recency, temporal, proof
+}
+
+// temporalProximity grades a unit's closeness to the requested window onto
+// [0, 1] with a neutral 0.5: a unit dated at the window's midpoint scores 1, one
+// at either edge (or beyond) scores 0, and a unit with no usable date, or a
+// request with no window, stays neutral.
+//
+// This is the graded form of the reference's temporal-proximity signal. The
+// earlier in/out reading threw away the ordering the window already encodes:
+// every in-window unit tied at 1, so a unit at the centre could not outrank one
+// at the fringe even though the caller's window says it is nearer.
+func temporalProximity(window *TemporalWindow, occurredStart, occurredEnd, mentionedAt *time.Time) float64 {
+	if window == nil {
+		return 0.5
+	}
+	best := unitTemporalPoint(occurredStart, occurredEnd, mentionedAt)
+	if best == nil {
+		return 0.5
+	}
+	// A window that does not name both bounds cannot define a midpoint or a
+	// span, so it degrades to the containment reading. The request boundary
+	// always supplies a pair; this is defensive.
+	if !window.HasStart || !window.HasEnd {
+		if window.Contains(occurredStart, occurredEnd) {
+			return 1
+		}
+		return 0.5
+	}
+	span := window.End.Sub(window.Start)
+	if span <= 0 {
+		// An instant window: any dated unit is exactly on it, which is the
+		// reference's reading of a zero-length window.
+		return 1
+	}
+	mid := window.Start.Add(span / 2)
+	daysFromMid := math.Abs(best.Sub(mid).Hours() / 24)
+	halfSpanDays := span.Hours() / 24 / 2
+	return 1 - math.Min(daysFromMid/halfSpanDays, 1)
+}
+
+// unitTemporalPoint reduces a unit's dates to the single instant the window
+// proximity grades. A genuine span is read from its midpoint; a unit carrying
+// only one date (or only a mention) uses that. Nil when the unit has no date.
+func unitTemporalPoint(start, end, mentioned *time.Time) *time.Time {
+	if start != nil && end != nil {
+		mid := start.Add(end.Sub(*start) / 2)
+		return &mid
+	}
+	if start != nil {
+		return start
+	}
+	if end != nil {
+		return end
+	}
+	return mentioned
 }
 
 // candidateScores builds the per-stage score object as a stage-keyed map. A
 // stage that did not surface the candidate reports no value.
-func candidateScores(cand *recallCandidate) map[string]float64 {
+//
+// Only the stages the reference's recall envelope reports appear here. The
+// temporal signal is deliberately absent: the reference grades the unit's
+// proximity to a requested window and folds it into the combined weight, but
+// reports only final/reranker/semantic/keyword, so a temporal key would be a
+// surface of our own invention.
+func candidateScores(cand *recallCandidate, q RecallQuery) map[string]float64 {
 	scores := map[string]float64{}
 	if v, ok := cand.armScores[ArmSemantic]; ok {
 		scores["semantic"] = v
@@ -453,9 +713,12 @@ func candidateScores(cand *recallCandidate) map[string]float64 {
 	if v, ok := cand.armScores[ArmKeyword]; ok {
 		scores["keyword"] = v
 	}
-	if best := bestArmScore(cand); best > 0 {
-		scores["reranker"] = best
-	}
+	// "reranker" is deliberately absent here: the caller fills it with the
+	// reranker's own score, and only when the reranker actually scored this
+	// candidate. Synthesising it from the best arm score would publish a
+	// relevance number for a pipeline that has no reranker — and, worse, would
+	// hand a rank-position reranker's pool a value it never produced, the very
+	// misreading the rank-position rule exists to prevent (it must read None).
 	return scores
 }
 
@@ -475,33 +738,54 @@ func filterFloors(candidates []*recallCandidate, minScores map[string]float64) [
 	return out
 }
 
-// matchesFloors reports whether a candidate clears every post-ranking floor.
-// A stage the candidate carries no value for is not floored.
+// retrievalArmStages are the min_scores keys that gate a retrieval arm rather
+// than the result. A floor on one of these removes the fact from that arm; the
+// fact survives if any other arm still surfaces it, matching the reference's
+// per-arm gating (a fact disappears only when every arm excludes it).
+var retrievalArmStages = map[string]bool{
+	ArmSemantic: true,
+	ArmKeyword:  true,
+	ArmGraph:    true,
+	ArmTemporal: true,
+}
+
+// matchesFloors reports whether a candidate survives the post-ranking floors.
+// The reranker and final floors act as per-result predicates; a retrieval floor
+// removes only its own arm, so a fact reached another way is kept.
 func matchesFloors(cand *recallCandidate, minScores map[string]float64) bool {
 	if len(minScores) == 0 {
 		return true
 	}
-	for stage, floor := range minScores {
-		switch stage {
-		case "final":
-			if cand.match.Final < floor {
-				return false
-			}
-		case "reranker":
-			if v, ok := cand.match.Scores["reranker"]; ok && v < floor {
-				return false
-			}
-		default:
-			// semantic and keyword floors constrain only their own arm; a
-			// result reached another way is not excluded.
-			if cand.armRanks[stage] > 0 {
-				if score, ok := cand.armScores[stage]; ok && score < floor {
-					return false
-				}
-			}
+	if floor, ok := minScores["final"]; ok && cand.match.Final < floor {
+		return false
+	}
+	if floor, ok := minScores["reranker"]; ok {
+		if value, has := cand.match.Scores["reranker"]; has && value < floor {
+			return false
 		}
 	}
-	return true
+	hasArmFloor := false
+	for stage := range minScores {
+		if retrievalArmStages[stage] {
+			hasArmFloor = true
+			break
+		}
+	}
+	if !hasArmFloor {
+		return true
+	}
+	// With an arm floor in play, the fact survives only if at least one arm
+	// still surfaces it once the floored-out arms are dropped.
+	for stage := range cand.armRanks {
+		floor, floored := minScores[stage]
+		if floored && retrievalArmStages[stage] {
+			if score, ok := cand.armScores[stage]; ok && score < floor {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // preferObservations drops raw facts superseded by a returned observation when
@@ -519,7 +803,14 @@ func preferObservations(candidates []*recallCandidate, q RecallQuery) []*recallC
 		if cand.match.Type != string(TypeObservation) {
 			continue
 		}
-		for _, id := range cand.match.ObservationSourceIDs {
+		// An observation's source facts live in SourceMemoryIDs — the same ids
+		// the response reports as source_fact_ids — so the dedicated field is
+		// only a test seam; prefer the real one.
+		ids := cand.match.ObservationSourceIDs
+		if len(ids) == 0 {
+			ids = cand.match.SourceMemoryIDs
+		}
+		for _, id := range ids {
 			superseded[id] = true
 		}
 	}

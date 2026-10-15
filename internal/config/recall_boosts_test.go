@@ -33,3 +33,35 @@ func TestParseStrategyBoostsIgnoresInvalid(t *testing.T) {
 		t.Fatalf("invalid pairs must be dropped, got %+v", got)
 	}
 }
+
+// The recency decay shape is configurable, and an unrecognised name falls back
+// to the default rather than failing startup.
+func TestResolveRecency(t *testing.T) {
+	base := FromEnv(envMap(nil)).Recency
+	if base.Function != DefaultRecencyDecayFunction {
+		t.Fatalf("default function = %q", base.Function)
+	}
+	if base.LinearWindowDays != DefaultRecencyDecayLinearWindowDays || base.HalflifeDays != DefaultRecencyDecayHalflifeDays {
+		t.Fatalf("default tunings = %+v", base)
+	}
+
+	cfg := FromEnv(envMap(map[string]string{
+		EnvRecencyDecayFunction:         "EXPONENTIAL",
+		EnvRecencyDecayLinearWindowDays: "30",
+		EnvRecencyDecayHalflifeDays:     "7.5",
+	})).Recency
+	if cfg.Function != "exponential" || cfg.LinearWindowDays != 30 || cfg.HalflifeDays != 7.5 {
+		t.Fatalf("resolved = %+v", cfg)
+	}
+
+	fallback := FromEnv(envMap(map[string]string{EnvRecencyDecayFunction: "sigmoid"})).Recency
+	if fallback.Function != DefaultRecencyDecayFunction {
+		t.Fatalf("an unrecognised function = %q, want the default", fallback.Function)
+	}
+	// A non-positive window is refused, because a zero-width window would floor
+	// every memory.
+	window := FromEnv(envMap(map[string]string{EnvRecencyDecayLinearWindowDays: "0"})).Recency
+	if window.LinearWindowDays != DefaultRecencyDecayLinearWindowDays {
+		t.Fatalf("a zero window = %v, want the default", window.LinearWindowDays)
+	}
+}

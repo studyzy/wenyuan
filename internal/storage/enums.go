@@ -69,6 +69,25 @@ type Operation struct {
 	// winning regardless of which read more. Empty means no constraint, which
 	// is what every operation other than a per-record refresh wants.
 	SerializationKey string
+	// IsParent reports whether this is a parent batch operation, derived from
+	// result_metadata["is_parent"].
+	IsParent bool
+}
+
+// ChildOperation is one child of a parent batch operation.
+type ChildOperation struct {
+	OperationID   string
+	Status        OperationStatus
+	SubBatchIndex int
+	ItemsCount    int
+	ErrorMessage  string
+}
+
+// operationIsParent reports whether a stored result metadata marks the
+// operation as a parent batch operation.
+func operationIsParent(metadata map[string]any) bool {
+	value, ok := metadata["is_parent"].(bool)
+	return ok && value
 }
 
 // Terminal reports whether the operation has reached a terminal status.
