@@ -8,8 +8,9 @@
 # them to the binary this repository builds.
 #
 # What it needs:
-#   - the reference checkout (for the story files, the stub and its embedded
-#     PostgreSQL) and its system-test virtualenv;
+#   - the suite itself, copied verbatim into tests/system (fallback: the
+#     reference checkout), plus the reference's system-test virtualenv, which
+#     holds the published Python client the stories drive;
 #   - a PostgreSQL the service may migrate and use. The suite asks for its
 #     embedded instance; resolving that URL is done here with the reference's own
 #     helper, so the service and the stories share one database.
@@ -27,17 +28,25 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HINDSIGHT_REPO=${HINDSIGHT_REPO:-/code/hindsight}
-SUITE="$HINDSIGHT_REPO/hindsight-system-tests"
+# The suite is copied verbatim into tests/system; fall back to the reference
+# checkout when the copy is absent. The virtualenv always comes from the
+# reference checkout: it holds the editable hindsight-client the stories drive,
+# which the copy deliberately does not vendor.
+SUITE=${PARITY_SUITE:-$ROOT/tests/system}
+UPSTREAM_SUITE="$HINDSIGHT_REPO/hindsight-system-tests"
+if [ ! -d "$SUITE/tests" ]; then
+  SUITE="$UPSTREAM_SUITE"
+fi
 PG0_URL=${PG0_URL:-pg0://hindsight-systest:15499}
 
 if [ ! -d "$SUITE/tests" ]; then
-  echo "the reference's system tests are not at $SUITE; set HINDSIGHT_REPO" >&2
+  echo "the system tests are not at $SUITE; set PARITY_SUITE or HINDSIGHT_REPO" >&2
   exit 2
 fi
 
-PYTHON="$SUITE/.venv/bin/python"
+PYTHON="$UPSTREAM_SUITE/.venv/bin/python"
 if [ ! -x "$PYTHON" ]; then
-  echo "the suite's virtualenv is missing at $SUITE/.venv; build it with uv sync" >&2
+  echo "the suite's virtualenv is missing at $UPSTREAM_SUITE/.venv; build it with uv sync" >&2
   exit 2
 fi
 
@@ -78,5 +87,5 @@ fi
 
 WENYUAN_BIN="$BIN" \
 WENYUAN_DATABASE_URL="$DB_URL" \
-PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$ROOT/scripts:$SUITE${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON" -m pytest "$SUITE/$1" "${@:2}" -p system_parity_plugin
