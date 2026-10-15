@@ -3,6 +3,7 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslations } from "../../i18n";
+import { withBasePath } from "../../lib/base-path";
 import { prepare, prepareWithSegments, layoutWithLines } from "@chenglou/pretext";
 import type { GraphData, GraphNode, GraphLink } from "./graph-data";
 
@@ -1385,12 +1386,12 @@ export function Constellation({
     return () => clearTimeout(timer);
   }, [isFullscreen]);
 
-  // Hindsight logo, fetched once and cached as a base64 data URL so the
+  // The product mark, fetched once and cached as a base64 data URL so the
   // exported SVG can inline it and stay self-contained when shared.
   const logoDataUrlRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    loadDataUrl("/logo.png")
+    loadDataUrl(withBasePath("/favicon.png"))
       .then((url) => {
         if (!cancelled) logoDataUrlRef.current = url;
       })
@@ -1403,7 +1404,7 @@ export function Constellation({
   // ----- SVG export (shareable, branded poster of the whole graph) -----
   // Independent of the live camera: fits every node into a fixed high-res
   // poster on a dark "night sky" — soft bottom glow, plus-grid, glowing node
-  // bubbles and the Hindsight logo top-left. No labels/legends/footer, so the
+  // bubbles and the product mark top-left. No labels/legends/footer, so the
   // graph itself is the hero. Hover dimming is omitted; every node shines.
   const buildSvgString = useCallback(
     (logoDataUrl: string | null): string => {
@@ -1525,13 +1526,15 @@ export function Constellation({
       parts.push(`<g>${haloParts.join("")}</g>`);
       parts.push(`<g>${nodeParts.join("")}</g>`);
 
-      // --- Edge vignette to sink the corners, then the Hindsight logo ---
+      // --- Edge vignette to sink the corners, then the product mark. The box
+      // only reserves space: `meet` fits the mark's own aspect inside it, so a
+      // mark that is not this box's shape is never stretched. ---
       parts.push(`<rect width="${W}" height="${H}" fill="url(#hs-vignette)"/>`);
       if (logoDataUrl) {
         const logoW = 190;
-        const logoH = (logoW * 139) / 529; // preserve logo aspect ratio
+        const logoH = 50;
         parts.push(
-          `<image x="48" y="46" width="${logoW}" height="${f(logoH)}" href="${logoDataUrl}" preserveAspectRatio="xMinYMid meet"/>`
+          `<image x="48" y="46" width="${logoW}" height="${logoH}" href="${logoDataUrl}" preserveAspectRatio="xMinYMid meet"/>`
         );
       }
 
@@ -1545,7 +1548,7 @@ export function Constellation({
     let logo = logoDataUrlRef.current;
     if (!logo) {
       try {
-        logo = await loadDataUrl("/logo.png");
+        logo = await loadDataUrl(withBasePath("/favicon.png"));
         logoDataUrlRef.current = logo;
       } catch {
         logo = null;
@@ -1556,7 +1559,7 @@ export function Constellation({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "hindsight-constellation.svg";
+    link.download = "wenyuan-constellation.svg";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
