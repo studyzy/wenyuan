@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -288,5 +289,69 @@ func TestContractMemorySubRoutes(t *testing.T) {
 	_ = deduplicated
 	if _, err := store.RecoverConsolidations(ctx, bank); err != nil {
 		t.Fatalf("recover consolidations: %v", err)
+	}
+}
+
+// Curation replaces a unit's entity set, and the names resolve the way retain
+// resolves them: a name that matches an existing entity is linked to it, and a
+// name that matches nothing becomes one. Before this, only the in-memory
+// backend rewrote the links, so editing entities through the API worked in
+// tests and did nothing against PostgreSQL.
+func TestCurationReplacesUnitEntities(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+	outcome, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: bank,
+		Items: []RetainItem{{
+			Content: "Ada Lovelace wrote notes.",
+			Entities: []RetainEntity{
+				{Text: "Ada Lovelace"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryID := outcome.ItemUnitIDs[0][0]
+
+	// One name already exists from retain; the other is new to the bank. Both
+	// end up linked, and the retained entity keeps its link.
+	names := []string{"Ada Lovelace", "Charles Babbage"}
+	if _, err := store.UpdateMemory(ctx, bank, memoryID, MemoryPatch{Entities: &names}); err != nil {
+		t.Fatalf("update entities: %v", err)
+	}
+	got, err := store.UnitEntities(ctx, bank, memoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"Ada Lovelace", "Charles Babbage"}) {
+		t.Fatalf("entities = %v, want both names", got)
+	}
+
+	// Replacing with a subset drops the entity that is no longer named and
+	// leaves the other one's mention count alone.
+	subset := []string{"Ada Lovelace"}
+	if _, err := store.UpdateMemory(ctx, bank, memoryID, MemoryPatch{Entities: &subset}); err != nil {
+		t.Fatalf("replace entities: %v", err)
+	}
+	got, err = store.UnitEntities(ctx, bank, memoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"Ada Lovelace"}) {
+		t.Fatalf("entities after replace = %v, want only the kept name", got)
+	}
+
+	// An empty set detaches everything.
+	none := []string{}
+	if _, err := store.UpdateMemory(ctx, bank, memoryID, MemoryPatch{Entities: &none}); err != nil {
+		t.Fatalf("clear entities: %v", err)
+	}
+	got, err = store.UnitEntities(ctx, bank, memoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("entities after clearing = %v, want none", got)
 	}
 }

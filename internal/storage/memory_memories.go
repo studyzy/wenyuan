@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -208,7 +209,7 @@ func (s *MemoryStore) UpdateMemory(ctx context.Context, bankID, memoryID string,
 	unit.OccurredStart = applyDatePatch(unit.OccurredStart, patch.OccurredStart)
 	unit.OccurredEnd = applyDatePatch(unit.OccurredEnd, patch.OccurredEnd)
 	if patch.Entities != nil {
-		s.replaceUnitEntitiesLocked(unit.ID, *patch.Entities)
+		s.setUnitEntitiesLocked(bankID, unit.ID, *patch.Entities, patch.ResolveEntities == nil || *patch.ResolveEntities)
 	}
 
 	now := time.Now().UTC()
@@ -249,20 +250,46 @@ func (s *MemoryStore) putUnitLocked(memoryID string, unit MemoryUnit) {
 	s.units[memoryID] = unit
 }
 
-// replaceUnitEntitiesLocked resolves the supplied names against the bank's
-// existing entities and rebuilds the unit's entity associations. Names with no
-// matching entity are left unassociated rather than minting new identities.
-func (s *MemoryStore) replaceUnitEntitiesLocked(unitID string, names []string) {
-	ids := make([]string, 0, len(names))
-	for _, name := range names {
-		for id, entity := range s.entities {
-			if strings.EqualFold(entity.CanonicalName, name) {
-				ids = append(ids, id)
-				break
-			}
-		}
+// SetUnitEntities replaces the entities one memory unit mentions.
+//
+// Names resolve through the same path retain uses, so a name that matches an
+// existing entity is linked to it and a name that matches nothing creates one;
+// the entities the caller leaves in place keep their link.
+func (s *MemoryStore) SetUnitEntities(ctx context.Context, bankID, unitID string, names []string, resolve bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	s.unitEntities[unitID] = ids
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	unit, ok := s.units[unitID]
+	if !ok {
+		unit, ok = s.invalidated[unitID]
+	}
+	if !ok || unit.BankID != bankID {
+		return ErrMemoryNotFound
+	}
+	s.setUnitEntitiesLocked(bankID, unitID, names, resolve)
+	return nil
+}
+
+// setUnitEntitiesLocked rewrites a unit's entity links. It expects s.mu held.
+func (s *MemoryStore) setUnitEntitiesLocked(bankID, unitID string, names []string, resolve bool) {
+	wanted := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		entity := s.resolveEntityOfKindLocked(bankID, trimmed, EntityKindRegular, resolve)
+		if entity.ID == "" || slices.Contains(wanted, entity.ID) {
+			continue
+		}
+		wanted = append(wanted, entity.ID)
+	}
+	s.unitEntities[unitID] = wanted
 }
 
 // applyDatePatch applies a date/context patch: an absent value leaves the

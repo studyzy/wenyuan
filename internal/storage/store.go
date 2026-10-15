@@ -185,6 +185,12 @@ type Store interface {
 	UpsertUnit(ctx context.Context, unit MemoryUnit) (MemoryUnit, error)
 	// UpsertUnitEntity links a memory unit to an entity identity.
 	UpsertUnitEntity(ctx context.Context, unitID, entityID string) error
+	// SetUnitEntities replaces the entities one memory unit mentions. Each name
+	// is resolved against the bank — created when nothing matches, and matched
+	// by similarity rather than case when resolve is on — and a name that is
+	// already linked keeps its link, so a rewrite of the set is not a second
+	// mention for the entities the caller left in place.
+	SetUnitEntities(ctx context.Context, bankID, unitID string, names []string, resolve bool) error
 	// UpsertEntityCooccurrence records that two entities co-occur in a bank.
 	// The reference orders the pair by identifier, so the caller supplies the
 	// lower identifier first.
@@ -518,4 +524,8 @@ type BackendConfig struct {
 	// "0 disables" convention.
 	BankInfoCacheTTL  time.Duration
 	BankStatsCacheTTL time.Duration
+	// Session holds the settings every connection of the pool carries. The
+	// reference applies them per connection, so a deployment's statement
+	// timeout and planner limits reach every statement rather than one.
+	Session SessionSettings
 }

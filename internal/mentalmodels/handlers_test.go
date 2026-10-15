@@ -146,6 +146,30 @@ func TestMentalModelLifecycle(t *testing.T) {
 		t.Fatalf("get: %d", rec.Code)
 	}
 
+	// A model no refresh has written to yet still carries `content`, as the empty
+	// string. The console's detail pane counts its characters, so a response that
+	// omits the key crashes the pane instead of showing an empty one.
+	fresh := send(mux, http.MethodPost, base, `{"name":"untouched","source_query":"nothing yet"}`)
+	var freshResp CreateResponse
+	if err := json.Unmarshal(fresh.Body.Bytes(), &freshResp); err != nil {
+		t.Fatal(err)
+	}
+	detail := send(mux, http.MethodGet, base+"/"+freshResp.MentalModelID, "")
+	if detail.Code != http.StatusOK {
+		t.Fatalf("get fresh: %d", detail.Code)
+	}
+	var detailBody map[string]json.RawMessage
+	if err := json.Unmarshal(detail.Body.Bytes(), &detailBody); err != nil {
+		t.Fatal(err)
+	}
+	content, ok := detailBody["content"]
+	if !ok {
+		t.Fatalf("a model with no content must still report the key: %s", detail.Body.String())
+	}
+	if string(content) != `""` {
+		t.Fatalf("content before a refresh = %s, want an empty string", content)
+	}
+
 	updated := send(mux, http.MethodPatch, base+"/"+model.ID, `{"description":"the current goals"}`)
 	if updated.Code != http.StatusOK {
 		t.Fatalf("update: %d, body = %s", updated.Code, updated.Body.String())

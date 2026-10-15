@@ -12,15 +12,18 @@ import (
 
 // Model is the wire shape of a mental model. Field names are public surface.
 type Model struct {
-	ID          string   `json:"id"`
-	BankID      string   `json:"bank_id"`
-	Subtype     string   `json:"subtype"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	SourceQuery string   `json:"source_query,omitempty"`
-	Content     string   `json:"content,omitempty"`
-	Tags        []string `json:"tags"`
-	MaxTokens   int      `json:"max_tokens"`
+	ID          string `json:"id"`
+	BankID      string `json:"bank_id"`
+	Subtype     string `json:"subtype"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SourceQuery string `json:"source_query,omitempty"`
+	// Content is always present, as the empty string before a refresh has
+	// written anything: the console's detail pane reads its length and a client
+	// that has to treat an absent key as empty would be one more place to guess.
+	Content   string   `json:"content"`
+	Tags      []string `json:"tags"`
+	MaxTokens int      `json:"max_tokens"`
 	// Trigger is the model's refresh trigger, exposed so a client can read the
 	// schedule it was created with.
 	Trigger map[string]any `json:"trigger,omitempty"`

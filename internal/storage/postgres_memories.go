@@ -182,6 +182,14 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 	}
 	current.OccurredStart = applyDatePatch(current.OccurredStart, patch.OccurredStart)
 	current.OccurredEnd = applyDatePatch(current.OccurredEnd, patch.OccurredEnd)
+	// The entity set is a relation rather than a column, so it is rewritten
+	// through its own path instead of the UPDATE below.
+	if patch.Entities != nil {
+		resolve := patch.ResolveEntities == nil || *patch.ResolveEntities
+		if err := s.SetUnitEntities(ctx, bankID, memoryID, *patch.Entities, resolve); err != nil {
+			return MemoryUnit{}, err
+		}
+	}
 	metadata, err := jsonColumn(current.Metadata)
 	if err != nil {
 		return MemoryUnit{}, err

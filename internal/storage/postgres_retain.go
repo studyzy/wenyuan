@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -293,7 +294,7 @@ func (s *PostgresStore) createSemanticLinks(ctx context.Context, bankID string, 
 		 WHERE u1.bank_id = $1 AND u1.id = ANY($2::uuid[]) AND u1.embedding IS NOT NULL
 		   AND 1 - (u1.embedding <=> u2.embedding) >= $3
 		 ON CONFLICT DO NOTHING`,
-		bankID, unitIDs, SemanticLinkMinSimilarity)
+		bankID, unitIDs, s.tuning.SemanticLinkMinSimilarity)
 	return err
 }
 
@@ -635,11 +636,19 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 // entityCandidates returns the stored entities whose names are close enough to
 // the supplied name to be worth scoring.
 func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string) ([]Entity, error) {
+	limit := s.tuning.EntityResolutionCandidates
+	if limit <= 0 {
+		limit = DefaultEntityResolutionCandidates
+	}
+	floor := s.tuning.EntityCandidateSimilarity
+	if floor <= 0 {
+		floor = EntityCandidateSimilarity
+	}
 	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
 	          WHERE bank_id=$1 AND similarity(lower(canonical_name), lower($2)) >= $3
 	          ORDER BY similarity(lower(canonical_name), lower($2)) DESC, id ASC
-	          LIMIT 100`
-	rows, err := s.db.QueryContext(ctx, query, bankID, name, EntityCandidateSimilarity)
+	          LIMIT $4`
+	rows, err := s.db.QueryContext(ctx, query, bankID, name, floor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -774,6 +783,70 @@ func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID s
 	          SET mention_count = mention_count + 1, last_seen = GREATEST(last_seen, now())
 	          WHERE id = $1::uuid`, entityID)
 	return err
+}
+
+// SetUnitEntities replaces the entities one memory unit mentions.
+//
+// The names are resolved first so a name that creates an entity is not left
+// half-applied when another name fails; then the links that are no longer named
+// are dropped and the new ones are added. An entity that stays in the set keeps
+// its existing link, because write-then-delete would count the same mention
+// twice in the mention count that reads project.
+func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID string, names []string, resolve bool) error {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		entity, err := s.ResolveEntity(ctx, bankID, trimmed, EntityKindRegular, resolve)
+		if err != nil {
+			return err
+		}
+		if entity.ID == "" {
+			continue
+		}
+		wanted[entity.ID] = struct{}{}
+	}
+
+	qualified := quoteIdent(s.schema)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT entity_id::text FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid`, unitID)
+	if err != nil {
+		return err
+	}
+	linked := make([]string, 0, len(wanted))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		linked = append(linked, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
+	for _, id := range linked {
+		if _, keep := wanted[id]; keep {
+			delete(wanted, id)
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid AND entity_id = $2::uuid`,
+			unitID, id); err != nil {
+			return err
+		}
+	}
+	for id := range wanted {
+		if err := s.UpsertUnitEntity(ctx, unitID, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpsertEntityCooccurrence records that two entities co-occur in a bank.
