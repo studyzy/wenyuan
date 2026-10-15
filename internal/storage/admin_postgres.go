@@ -7,10 +7,11 @@ import (
 )
 
 // The PostgreSQL implementation of AdminTableStore. It moves a whole table
-// through JSON in one statement per direction: `row_to_json` on the way out and
-// `json_populate_recordset` on the way in. Neither needs a column-by-column
-// hand-written mapping, so a table added by a migration is backed up and
-// restored without the admin code learning its shape.
+// through one statement per direction: a binary COPY stream on the way out
+// (DumpBinary) and `json_populate_recordset` on the way in for JSON-row
+// archives (LoadTable). Neither needs a column-by-column hand-written mapping,
+// so a table added by a migration is backed up and restored without the admin
+// code learning its shape.
 //
 // Generated columns are excluded from both directions: a column the database
 // computes cannot be written, and its value is recomputed on restore.
@@ -50,27 +51,6 @@ func (s *PostgresStore) TableColumns(ctx context.Context, table string) ([]Admin
 		return nil, fmt.Errorf("table %q not found in schema %q", table, s.schema)
 	}
 	return columns, nil
-}
-
-// DumpTable returns every row of the table as a JSON array of objects keyed by
-// column name.
-func (s *PostgresStore) DumpTable(ctx context.Context, table string) ([]byte, error) {
-	columns, err := s.TableColumns(ctx, table)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, len(columns))
-	for i, column := range columns {
-		names[i] = quoteIdent(column.Name)
-	}
-	query := fmt.Sprintf(
-		`SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT %s FROM %s.%s) t`,
-		strings.Join(names, ", "), quoteIdent(s.schema), quoteIdent(table))
-	var data []byte
-	if err := s.db.QueryRowContext(ctx, query).Scan(&data); err != nil {
-		return nil, fmt.Errorf("dump table %q: %w", table, err)
-	}
-	return data, nil
 }
 
 // LoadTable inserts the rows of the JSON array into the table, then advances

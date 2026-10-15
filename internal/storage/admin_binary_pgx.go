@@ -43,6 +43,107 @@ func (s *PostgresStore) RestoreBinary(ctx context.Context, loads []BinaryLoad) e
 	})
 }
 
+// DumpBinary captures the named tables as binary COPY streams on one pooled
+// connection inside one REPEATABLE READ transaction, so the set is a
+// consistent snapshot no matter how long the copy takes. The columns each
+// stream was taken against travel with it, read from the same snapshot.
+func (s *PostgresStore) DumpBinary(ctx context.Context, tables []string) ([]BinaryDump, error) {
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	raw, ok := s.db.(interface {
+		RawConn(context.Context) (*sql.Conn, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("binary backup needs a driver that hands over a raw connection")
+	}
+	conn, err := raw.RawConn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire a connection for the backup: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	var dumps []BinaryDump
+	err = conn.Raw(func(driverConn any) error {
+		stdlibConn, ok := driverConn.(*stdlib.Conn)
+		if !ok {
+			return fmt.Errorf("binary backup needs the pgx driver; the pooled connection is %T", driverConn)
+		}
+		dumps, err = dumpBinaryOnConn(ctx, s.schema, stdlibConn.Conn(), tables)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return dumps, nil
+}
+
+// dumpBinaryOnConn copies every table out on one connection inside one
+// REPEATABLE READ transaction. The stream is the server's own binary COPY
+// output, byte-for-byte; no type here needs to be known to this code.
+func dumpBinaryOnConn(ctx context.Context, schema string, conn *pgx.Conn, tables []string) ([]BinaryDump, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin the backup snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return nil, fmt.Errorf("isolate the backup snapshot: %w", err)
+	}
+
+	dumps := make([]BinaryDump, 0, len(tables))
+	for _, table := range tables {
+		columns, err := tableColumnsOnTx(ctx, tx, schema, table)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(columns))
+		for _, column := range columns {
+			names = append(names, quoteIdent(column.Name))
+		}
+		copySQL := fmt.Sprintf("COPY %s (%s) TO STDOUT WITH (FORMAT BINARY)",
+			quoteIdent(schema)+"."+quoteIdent(table), strings.Join(names, ", "))
+		var buffer bytes.Buffer
+		// The connection is inside the snapshot transaction the tx handle
+		// opened, so every table is read from the same database state.
+		if _, err := conn.PgConn().CopyTo(ctx, &buffer, copySQL); err != nil {
+			return nil, fmt.Errorf("dump table %q: %w", table, err)
+		}
+		dumps = append(dumps, BinaryDump{Table: table, Columns: columns, Data: buffer.Bytes()})
+	}
+	return dumps, tx.Commit(ctx)
+}
+
+// tableColumnsOnTx reads the table's insertable columns in declaration order
+// on the backup's own transaction, mirroring TableColumns on the pool.
+func tableColumnsOnTx(ctx context.Context, tx pgx.Tx, schema, table string) ([]AdminColumn, error) {
+	query := `SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+	          FROM pg_catalog.pg_attribute a
+	          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+	          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+	          WHERE n.nspname = $1 AND c.relname = $2 AND ` + insertableColumnPredicate + `
+	          ORDER BY a.attnum`
+	rows, err := tx.Query(ctx, query, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("list columns of %q: %w", table, err)
+	}
+	defer rows.Close()
+	columns := make([]AdminColumn, 0)
+	for rows.Next() {
+		var column AdminColumn
+		if err := rows.Scan(&column.Name, &column.Type); err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("table %q not found in schema %q", table, schema)
+	}
+	return columns, nil
+}
+
 // restoreBinaryOnConn runs the restore on one pgx connection: a single
 // transaction truncates the full table set in one statement (PostgreSQL
 // refuses to truncate a referenced table unless the referencing tables clear

@@ -30,6 +30,49 @@ func checkBinaryCopyHeader(data []byte) (int, error) {
 	return pos, nil
 }
 
+// countBinaryCopyTuples reports how many tuples a binary COPY stream carries.
+// The count comes from the stream itself rather than a separate COUNT query,
+// so the manifest describes exactly the rows the member holds.
+func countBinaryCopyTuples(data []byte) (int, error) {
+	pos, err := checkBinaryCopyHeader(data)
+	if err != nil {
+		return 0, err
+	}
+	rows := 0
+	for {
+		if pos+2 > len(data) {
+			return 0, fmt.Errorf("binary COPY stream is truncated mid-tuple")
+		}
+		fieldCount := int(int16(binary.BigEndian.Uint16(data[pos:])))
+		pos += 2
+		if fieldCount == -1 {
+			break
+		}
+		if fieldCount < 0 {
+			return 0, fmt.Errorf("binary COPY tuple has invalid field count %d", fieldCount)
+		}
+		for index := 0; index < fieldCount; index++ {
+			if pos+4 > len(data) {
+				return 0, fmt.Errorf("binary COPY stream is truncated mid-field")
+			}
+			length := int(int32(binary.BigEndian.Uint32(data[pos:])))
+			pos += 4
+			if length < 0 {
+				continue // NULL: no payload follows a negative length.
+			}
+			if pos+length > len(data) {
+				return 0, fmt.Errorf("binary COPY stream is truncated mid-field")
+			}
+			pos += length
+		}
+		rows++
+	}
+	if pos != len(data) {
+		return 0, fmt.Errorf("binary COPY stream has %d trailing byte(s) after the end-of-data marker", len(data)-pos)
+	}
+	return rows, nil
+}
+
 // stripBinaryCopyFields rewrites a binary COPY stream so every tuple drops the
 // fields at the given indices. Binary COPY carries no column identities — the
 // fields match the COPY column list purely by position — so a backed-up column

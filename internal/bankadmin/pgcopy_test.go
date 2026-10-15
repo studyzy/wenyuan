@@ -136,6 +136,27 @@ func TestStripBinaryCopyFieldsRejectsMalformedStreams(t *testing.T) {
 	}
 }
 
+func TestCountBinaryCopyTuples(t *testing.T) {
+	stream := buildBinaryCopyStream(
+		[]field{[]byte("a"), nil, []byte("ccc")},
+		[]field{},
+		[]field{nil},
+	)
+	rows, err := countBinaryCopyTuples(stream)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 3 {
+		t.Fatalf("rows = %d, want 3", rows)
+	}
+	if _, err := countBinaryCopyTuples([]byte("not a stream")); err == nil {
+		t.Fatal("a non-stream must be rejected")
+	}
+	if _, err := countBinaryCopyTuples(stream[:len(stream)-1]); err == nil {
+		t.Fatal("a truncated stream must be rejected")
+	}
+}
+
 func TestStripBinaryCopyFieldsRejectsWrongTupleWidth(t *testing.T) {
 	stream := buildBinaryCopyStream(stripFieldsTestTuple)
 	if _, err := stripBinaryCopyFields(stream, []int{0}, 4); err == nil {

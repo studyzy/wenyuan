@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 type fakeTableStore struct {
 	*storage.MemoryStore
 	columns     map[string][]storage.AdminColumn
-	dump        map[string]string
+	dumps       map[string]storage.BinaryDump
 	truncated   []string
 	loaded      []string
 	binaryLoads []storage.BinaryLoad
@@ -30,7 +31,7 @@ func newFakeTableStore() *fakeTableStore {
 	return &fakeTableStore{
 		MemoryStore: storage.NewMemoryStore("public"),
 		columns:     map[string][]storage.AdminColumn{},
-		dump:        map[string]string{},
+		dumps:       map[string]storage.BinaryDump{},
 	}
 }
 
@@ -41,11 +42,23 @@ func (f *fakeTableStore) TableColumns(_ context.Context, table string) ([]storag
 	return []storage.AdminColumn{{Name: "id", Type: "text"}}, nil
 }
 
-func (f *fakeTableStore) DumpTable(_ context.Context, table string) ([]byte, error) {
-	if data, ok := f.dump[table]; ok {
-		return []byte(data), nil
+// DumpBinary returns the configured dump for every requested table, in the
+// requested order; an unconfigured table dumps as an empty stream so a test
+// only has to seed what it asserts on.
+func (f *fakeTableStore) DumpBinary(ctx context.Context, tables []string) ([]storage.BinaryDump, error) {
+	dumps := make([]storage.BinaryDump, 0, len(tables))
+	for _, table := range tables {
+		if dump, ok := f.dumps[table]; ok {
+			dumps = append(dumps, dump)
+			continue
+		}
+		columns, err := f.TableColumns(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		dumps = append(dumps, storage.BinaryDump{Table: table, Columns: columns, Data: buildBinaryCopyStream()})
 	}
-	return []byte("[]"), nil
+	return dumps, nil
 }
 
 func (f *fakeTableStore) LoadTable(_ context.Context, table string, _ []byte) error {
@@ -67,11 +80,16 @@ func (f *fakeTableStore) RestoreBinary(_ context.Context, loads []storage.Binary
 	return nil
 }
 
-// backup lists every persistent table: the set is derived from the migrations,
-// and the dependency order is the one a restore relies on.
+// backup writes every table the reference backup carries (the persistent set
+// minus runtime caches), one binary COPY stream per table, and a manifest that
+// counts rows from the streams themselves.
 func TestBackupWritesEveryPersistentTable(t *testing.T) {
 	store := newFakeTableStore()
-	store.dump["banks"] = `[{"bank_id":"old"}]`
+	store.dumps["banks"] = storage.BinaryDump{
+		Table:   "banks",
+		Columns: []storage.AdminColumn{{Name: "bank_id", Type: "text"}},
+		Data:    buildBinaryCopyStream([]field{[]byte("b1")}, []field{[]byte("b2")}),
+	}
 	path := filepath.Join(t.TempDir(), "backup.zip")
 	var out bytes.Buffer
 
@@ -82,16 +100,32 @@ func TestBackupWritesEveryPersistentTable(t *testing.T) {
 		t.Fatalf("backup output = %q", out.String())
 	}
 
-	want, err := storage.PersistentTables()
+	want, err := backupTables()
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest := readManifest(t, path)
+	version, ok := manifestVersion(manifest.Version)
+	if !ok || version != binaryCopyManifestVersion {
+		t.Fatalf("manifest version = %s, want the binary-COPY format version", manifest.Version)
+	}
 	if len(manifest.Tables) != len(want) {
 		t.Fatalf("backup holds %d tables, want %d", len(manifest.Tables), len(want))
 	}
-	if manifest.Tables["banks"].Rows != 1 {
-		t.Fatalf("banks rows = %d, want 1", manifest.Tables["banks"].Rows)
+	if manifest.Tables["banks"].Rows != 2 {
+		t.Fatalf("banks rows = %d, want 2 (counted from the stream)", manifest.Tables["banks"].Rows)
+	}
+	if manifest.Tables["banks"].SizeBytes == 0 {
+		t.Fatal("the manifest must record each member's size")
+	}
+
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	if _, err := readZipEntry(&reader.Reader, "banks.bin"); err != nil {
+		t.Fatalf("member banks.bin: %v", err)
 	}
 }
 
@@ -99,7 +133,11 @@ func TestBackupWritesEveryPersistentTable(t *testing.T) {
 // keys survive; it replaces the target's rows with the archive's.
 func TestRestoreOrdersTruncateAndLoad(t *testing.T) {
 	source := newFakeTableStore()
-	source.dump["banks"] = `[{"bank_id":"b1"}]`
+	source.dumps["banks"] = storage.BinaryDump{
+		Table:   "banks",
+		Columns: []storage.AdminColumn{{Name: "bank_id", Type: "text"}},
+		Data:    buildBinaryCopyStream([]field{[]byte("b1")}),
+	}
 	path := filepath.Join(t.TempDir(), "backup.zip")
 	if err := RunBackup(context.Background(), source, BackupFlags{Output: path}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("backup: %v", err)
@@ -111,18 +149,17 @@ func TestRestoreOrdersTruncateAndLoad(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	order, err := storage.PersistentTables()
+	order, err := backupTables()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(target.loaded) != len(order) {
-		t.Fatalf("loaded %d tables, want %d", len(target.loaded), len(order))
+	if len(target.binaryLoads) != len(order) {
+		t.Fatalf("loaded %d tables, want %d", len(target.binaryLoads), len(order))
 	}
-	// Load order must place a parent before each of its children, and truncate
-	// order must be its exact reverse.
+	// Load order must place a parent before each of its children.
 	position := map[string]int{}
-	for i, name := range target.loaded {
-		position[name] = i
+	for i, load := range target.binaryLoads {
+		position[load.Table] = i
 	}
 	for _, edge := range [][2]string{
 		{"banks", "async_operations"},
@@ -135,19 +172,60 @@ func TestRestoreOrdersTruncateAndLoad(t *testing.T) {
 			t.Fatalf("load order places %s before its parent %s", edge[0], edge[1])
 		}
 	}
-	// Every table is cleared, and in one statement: PostgreSQL refuses a
-	// per-table TRUNCATE as soon as another table references the one named, so
-	// the set has to travel together.
+	// The restored set replaces every table the archive carries, and the
+	// streams arrive in dependency order.
 	if len(target.truncated) != len(order) {
 		t.Fatalf("truncated %d tables, want %d: %v", len(target.truncated), len(order), target.truncated)
 	}
-	for i, name := range target.truncated {
-		if name != order[i] {
-			t.Fatalf("truncated %v, want the persistent set %v", target.truncated, order)
-		}
-	}
 	if !strings.Contains(out.String(), "restored") {
 		t.Fatalf("restore output = %q", out.String())
+	}
+}
+
+// restore of this project's original JSON-row archive truncates the manifest's
+// tables in dependency order and loads them forward.
+func TestRestoreJSONArchiveOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.zip")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	archive := zip.NewWriter(file)
+	manifest, err := json.Marshal(backupManifest{
+		Version: json.RawMessage(`1`),
+		Tables: map[string]backupTable{
+			"banks":            {Rows: 1, Columns: []storage.AdminColumn{{Name: "bank_id", Type: "text"}}},
+			"async_operations": {Rows: 1, Columns: []storage.AdminColumn{{Name: "id", Type: "text"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeZipEntry(archive, "manifest.json", manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeZipEntry(archive, "banks.json", []byte(`[{"bank_id":"b1"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeZipEntry(archive, "async_operations.json", []byte(`[{"id":"op-1"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	target := newFakeTableStore()
+	if err := RunRestore(context.Background(), target, RestoreFlags{Input: path, Yes: true}, nil, &bytes.Buffer{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	// The persistent order is the manifest's: banks before its async_operations
+	// child, and the truncate set travels in that same order.
+	if len(target.loaded) != 2 || target.loaded[0] != "banks" || target.loaded[1] != "async_operations" {
+		t.Fatalf("loaded = %v, want banks before async_operations", target.loaded)
+	}
+	if len(target.truncated) != 2 || target.truncated[0] != "banks" || target.truncated[1] != "async_operations" {
+		t.Fatalf("truncated = %v, want banks before async_operations", target.truncated)
 	}
 }
 

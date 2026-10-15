@@ -23,12 +23,11 @@ type AdminColumn struct {
 // schema, so it cannot enumerate a table set or reproduce PostgreSQL's types.
 //
 // PostgreSQL implements it by reading its catalogue and moving whole tables
-// through JSON, which the same binary can read back without a new dependency.
+// through binary COPY, which the same binary can read back without a new
+// dependency.
 type AdminTableStore interface {
 	// TableColumns returns the table's insertable columns in declaration order.
 	TableColumns(ctx context.Context, table string) ([]AdminColumn, error)
-	// DumpTable returns every row of the table as a JSON array of objects.
-	DumpTable(ctx context.Context, table string) ([]byte, error)
 	// LoadTable inserts the rows of a JSON array into the table. It advances
 	// any identity sequence past the restored ids so a later insert cannot
 	// collide with a row the backup carried.
@@ -49,6 +48,12 @@ type AdminTableStore interface {
 	// The order must place every table after the tables it references, so a
 	// row's references exist by the time the row lands.
 	RestoreBinary(ctx context.Context, loads []BinaryLoad) error
+	// DumpBinary captures every named table as a raw binary COPY stream on one
+	// connection inside one REPEATABLE READ transaction, so the archive is a
+	// consistent snapshot: a row written while the backup runs appears in
+	// either every table or none. Each dump carries the columns the stream was
+	// taken against, in stream order, so a manifest can pin the shape.
+	DumpBinary(ctx context.Context, tables []string) ([]BinaryDump, error)
 }
 
 // BinaryLoad is one table's binary COPY stream for
@@ -59,6 +64,15 @@ type AdminTableStore interface {
 type BinaryLoad struct {
 	Table   string
 	Columns []string
+	Data    []byte
+}
+
+// BinaryDump is one table's binary COPY stream captured by
+// AdminTableStore.DumpBinary, with the column list the stream was taken
+// against in stream order.
+type BinaryDump struct {
+	Table   string
+	Columns []AdminColumn
 	Data    []byte
 }
 

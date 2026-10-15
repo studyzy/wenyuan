@@ -16,9 +16,10 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// backupManifestVersion is the JSON-row archive format this project writes.
-// Restore also accepts the binary-COPY format (version 2, see backup_v2.go);
-// anything else is refused rather than guessed at.
+// backupManifestVersion is this project's original JSON-row archive format,
+// still accepted on restore. Backup now writes the binary-COPY format instead
+// (binaryCopyManifestVersion, see backup_v2.go); anything else is refused
+// rather than guessed at.
 const backupManifestVersion = 1
 
 // BackupFlags is the parsed admin backup command surface.
@@ -99,8 +100,9 @@ func manifestVersion(raw json.RawMessage) (int, bool) {
 
 // backupTable is one table's entry in the manifest.
 type backupTable struct {
-	Rows    int                   `json:"rows"`
-	Columns []storage.AdminColumn `json:"columns"`
+	Rows      int                   `json:"rows"`
+	SizeBytes int                   `json:"size_bytes"`
+	Columns   []storage.AdminColumn `json:"columns"`
 }
 
 // adminTableStore resolves the optional capability the backup and restore
@@ -113,14 +115,38 @@ func adminTableStore(store storage.Store) (storage.AdminTableStore, error) {
 	return caps, nil
 }
 
-// RunBackup writes every persistent table to one archive. It refuses backends
-// that cannot enumerate a table set rather than writing a partial backup.
+// backupExcludedTables names the persistent tables an archive does not carry:
+// runtime caches, which recompute themselves and would only bloat the archive
+// with data a restore must not trust anyway. Excluding them keeps the archive's
+// table set the same one the reference implementation's backup writes, so
+// either tool can restore the other's archive.
+var backupExcludedTables = map[string]bool{"bank_stats_cache": true}
+
+// backupTables returns the tables an archive carries, in foreign-key
+// dependency order, minus the excluded caches.
+func backupTables() ([]string, error) {
+	all, err := storage.PersistentTables()
+	if err != nil {
+		return nil, err
+	}
+	tables := make([]string, 0, len(all))
+	for _, name := range all {
+		if !backupExcludedTables[name] {
+			tables = append(tables, name)
+		}
+	}
+	return tables, nil
+}
+
+// RunBackup writes every persistent table to one archive as binary COPY
+// streams. It refuses backends that cannot enumerate a table set rather than
+// writing a partial backup.
 func RunBackup(ctx context.Context, store storage.Store, flags BackupFlags, out io.Writer) error {
 	caps, err := adminTableStore(store)
 	if err != nil {
 		return err
 	}
-	tables, err := storage.PersistentTables()
+	tables, err := backupTables()
 	if err != nil {
 		return err
 	}
@@ -132,9 +158,17 @@ func RunBackup(ctx context.Context, store storage.Store, flags BackupFlags, out 
 	defer func() { _ = file.Close() }()
 	archive := zip.NewWriter(file)
 
+	// One snapshot for the whole archive: the streams are captured on a single
+	// connection inside one REPEATABLE READ transaction, so a row written
+	// while the backup runs appears in either every table or none.
+	dumps, err := caps.DumpBinary(ctx, tables)
+	if err != nil {
+		return err
+	}
+
 	manifest := backupManifest{
-		Version:   json.RawMessage(strconv.Itoa(backupManifestVersion)),
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Version:   json.RawMessage(strconv.Quote(strconv.Itoa(binaryCopyManifestVersion))),
+		CreatedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000000+00:00"),
 		Tables:    map[string]backupTable{},
 	}
 	// The schema name is recorded for the operator's benefit; a store that does
@@ -143,25 +177,19 @@ func RunBackup(ctx context.Context, store storage.Store, flags BackupFlags, out 
 		manifest.Schema = named.Schema()
 	}
 	totalRows := 0
-	for _, table := range tables {
-		columns, err := caps.TableColumns(ctx, table)
+	for _, dump := range dumps {
+		// Count from the stream itself, so the manifest describes exactly the
+		// rows the member holds, and a malformed capture fails the backup.
+		rows, err := countBinaryCopyTuples(dump.Data)
 		if err != nil {
+			return fmt.Errorf("%s: %w", dump.Table, err)
+		}
+		if err := writeZipEntry(archive, dump.Table+".bin", dump.Data); err != nil {
 			return err
 		}
-		data, err := caps.DumpTable(ctx, table)
-		if err != nil {
-			return err
-		}
-		rows, err := jsonRowCount(data)
-		if err != nil {
-			return err
-		}
-		if err := writeZipEntry(archive, table+".json", data); err != nil {
-			return err
-		}
-		manifest.Tables[table] = backupTable{Rows: rows, Columns: columns}
+		manifest.Tables[dump.Table] = backupTable{Rows: rows, SizeBytes: len(dump.Data), Columns: dump.Columns}
 		totalRows += rows
-		_, _ = fmt.Fprintf(out, "  %s: %d row(s)\n", table, rows)
+		_, _ = fmt.Fprintf(out, "  %s: %d row(s)\n", dump.Table, rows)
 	}
 
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
@@ -174,7 +202,7 @@ func RunBackup(ctx context.Context, store storage.Store, flags BackupFlags, out 
 	if err := archive.Close(); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "backed up %d row(s) across %d table(s) to %s\n", totalRows, len(tables), flags.Output)
+	_, _ = fmt.Fprintf(out, "backed up %d row(s) across %d table(s) to %s\n", totalRows, len(dumps), flags.Output)
 	return nil
 }
 
