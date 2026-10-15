@@ -55,21 +55,52 @@ func truncateForEmbedding(text string) string {
 }
 
 // indexedEmbeddingText renders the string a unit is indexed by. It is not the
-// unit's stored text: the reference anchors each memory to the wall clock at
-// retain ("(happened in <Month> <Year>)") and appends the entity mentions, so
-// the indexed vector differs from the text a reader sees. The vector recall arm
-// scores against this representation, which is why a fact's semantic score moves
-// when its entities change even though its text does not.
-func indexedEmbeddingText(text string, entities []RetainEntity, now time.Time) string {
-	indexed := text + " (happened in " + now.Format("January 2006") + ")"
+// text that is stored or shown: it is what the semantic arm compares a query
+// against and what the unit's search vector covers.
+//
+// It mirrors the reference's augment_texts_with_dates field for field, because
+// the augmentation is itself a retrieval signal:
+//
+//   - The date is the unit's own — occurred_start, falling back to mentioned_at
+//     — never the retain clock. A fact about 2021 embedded as the month it was
+//     retained asserts a time the fact does not, and a query for "camping in
+//     June" then cannot reach it.
+//   - A span whose end differs from its start reads as a range, so a fact that
+//     covers a period is reachable from either end of it.
+//   - A unit with no date at all gets no date clause, rather than a clause
+//     naming the clock.
+//   - Entity names are bracketed and comma-joined, so they read as a distinct
+//     field rather than as more of the sentence.
+func indexedEmbeddingText(unit MemoryUnit, entities []RetainEntity) string {
+	indexed := unit.Text
+	start := unit.OccurredStart
+	if start == nil {
+		start = unit.MentionedAt
+	}
+	switch {
+	case start == nil:
+		// No date to name: the reference leaves the text unaugmented rather than
+		// substituting one.
+	case unit.OccurredEnd != nil && (unit.OccurredStart == nil || !unit.OccurredEnd.Equal(*unit.OccurredStart)):
+		indexed += " (happened from " + formatReadableDate(*start) + " to " + formatReadableDate(*unit.OccurredEnd) + ")"
+	default:
+		indexed += " (happened in " + formatReadableDate(*start) + ")"
+	}
 	if len(entities) > 0 {
 		names := make([]string, 0, len(entities))
 		for _, entity := range entities {
 			names = append(names, entity.Text)
 		}
-		indexed += " " + strings.Join(names, " ")
+		indexed += " [" + strings.Join(names, ", ") + "]"
 	}
 	return indexed
+}
+
+// formatReadableDate renders a date the way the reference's own formatter does
+// ("June 2024"), so a query phrased as a month and a year matches the text the
+// index holds.
+func formatReadableDate(at time.Time) string {
+	return at.UTC().Format("January 2006")
 }
 
 // embedContents fills each content's unit embedding from the generator. A nil
@@ -85,9 +116,8 @@ func embedContents(ctx context.Context, generator EmbeddingGenerator, contents [
 		return nil
 	}
 	texts := make([]string, 0, len(contents))
-	now := time.Now()
 	for _, content := range contents {
-		texts = append(texts, truncateForEmbedding(indexedEmbeddingText(content.unit.Text, content.entities, now)))
+		texts = append(texts, truncateForEmbedding(indexedEmbeddingText(content.unit, content.entities)))
 	}
 	vectors, err := generator.EmbedPassages(ctx, texts)
 	if err != nil {

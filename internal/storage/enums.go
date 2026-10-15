@@ -18,10 +18,11 @@ const (
 	StatusNotFound OperationStatus = "not_found"
 )
 
-// OperationTypes returns every async-operation type in stable order.
+// OperationTypeRetain is the operation type of an asynchronous retain. Reflect
+// is not an async-operation type: it runs inside the request that asked for it
+// and is reported through the LLM trace, not the operations queue.
 const (
-	OperationTypeRetain  = "retain"
-	OperationTypeReflect = "reflect"
+	OperationTypeRetain = "retain"
 )
 
 // EntityKind is the entity-kind enumeration. The stored string values are the

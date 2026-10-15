@@ -218,7 +218,7 @@ func New(p provider.Provider, store Store) *Consolidator {
 		store:           store,
 		maxFacts:        DefaultMaxFacts,
 		maxObservations: DefaultMaxObservations,
-		scope:           "consolidate",
+		scope:           provider.ScopeConsolidation,
 		settings:        DefaultSettings(),
 	}
 }

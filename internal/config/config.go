@@ -703,11 +703,23 @@ func cacheTTLFromEnv(lookup func(string) (string, bool), key string, fallback ti
 func collectUnsupportedRuntimeKeys(lookup func(string) (string, bool)) *Unsupported {
 	unsupported := &Unsupported{}
 	for _, key := range referenceRuntimeKeys {
-		if key.Resolve != nil || key.Delegated != "" {
+		if key.Delegated != "" {
 			continue
 		}
 		value, ok := lookup(key.Name)
 		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		// A value-conditional refusal comes first because it also governs keys
+		// this build resolves: a key can be honoured for one value and refused
+		// for the rest, which the resolved/refused split alone cannot express.
+		if key.UnsupportedWhen != nil {
+			if key.UnsupportedWhen(value) {
+				unsupported.Add(key.Name, key.Reason)
+			}
+			continue
+		}
+		if key.Resolve != nil {
 			continue
 		}
 		unsupported.Add(key.Name, key.Reason)

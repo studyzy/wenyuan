@@ -5,7 +5,370 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Added
+
+- The control-plane console is now the reference frontend, copied rather than
+  reconstructed: `console/components/*` (the views, modals and editors),
+  `app/[locale]/**` with the reference's `localePrefix: "never"` routing (clean
+  URLs, the locale never a path segment), its `tests/**` suite (43 files, run
+  beside ours), the 14 lib modules the views need, and the merged message
+  catalogs (2446 keys per locale, up from 471, with a coverage test that fails if
+  a used key is missing). Product-visible strings stay ours; the deployment
+  contract — `HINDSIGHT_CP_*`, the session cookie names, the health route's
+  `SERVICE_NAME` — is byte-identical. `scripts/console_integration.sh` is the new
+  cross-stack gate: it starts this service on a private database, builds and
+  serves the console against it, and proves the access gate, the BFF read and
+  write paths, and server-side page rendering.
+
+
+- The log stream's shape is configurable the way the reference's is:
+  `HINDSIGHT_API_LOG_FORMAT=json` writes one JSON object per record with the
+  reference's keys and spellings (`severity`, `message`, `timestamp`, `logger`,
+  with `WARN` reported as `WARNING`), `HINDSIGHT_API_LOG_JSON_FIELDS` narrows
+  those keys, and records go to stdout. `HINDSIGHT_API_ACCESS_LOG` (or
+  `--access-log`) writes the reference's per-request access line —
+  `LEVEL:     <client> - "<request line>" <status>` — which the reference's JSON
+  formatter does not touch either.
+- A reflection no longer deadlocks a deployment with tracing on: the in-process
+  store held its read lock across the model loop, so the trace write that the
+  provider call makes blocked on the reader the same goroutine still held. The
+  loop now runs outside the store's lock, and the diagnostic buffers (audit
+  trail, model-request trace) have their own lock so a store operation can never
+  deadlock against its own diagnostics again.
+
+- The default bind address and port are the reference's: `0.0.0.0:8888` (was
+  `127.0.0.1:8000`), and `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` defaults on.
+  A deployment that sets neither now binds all interfaces on the port a
+  reference deployment uses.
+- An unset `HINDSIGHT_API_DATABASE_URL` refuses startup, naming both ways out: a
+  `postgresql://` URL, or the explicit `memory` opt-in for a non-persistent
+  backend. The reference provisions an embedded PostgreSQL there, which this
+  build cannot manage, and silently serving from memory would lose data on
+  restart without saying so.
+- Document uploads are converted to text: the parser chain
+  (`HINDSIGHT_API_FILE_PARSER`, default `markitdown`) now has a local
+  implementation covering PDF, DOCX, XLSX, PPTX, HTML, CSV/TSV, JSON/JSONL and
+  plain text with no new dependencies, plus the remote `llama_parse` and `iris`
+  parsers over their HTTP APIs. The allowlist, the batch limits
+  (`HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE(_MB)`) and
+  `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN` are honoured; a format nothing can
+  convert is refused by name.
+- The separate reranker and embedding provider families exist:
+  `HINDSIGHT_API_RERANKER_PROVIDER` selects `siliconflow`, `cohere`,
+  `zeroentropy`, `openrouter`, `tei`, `typesafe` or the in-process `rrf`
+  (failover chain supported), and `HINDSIGHT_API_EMBEDDINGS_PROVIDER` selects
+  `openai`, `openrouter`, `requesty`, `litellm`, `cohere`, `tei`, `zeroentropy`
+  or `gemini`. Members needing a local runtime (`onnx`, `local`, `flashrank`,
+  jina-mlx, litellm-sdk, google, alibaba) are refused at startup naming the key.
+  `HINDSIGHT_API_EMBEDDING_DIMENSION` resolves the width (default 384).
+- `HINDSIGHT_API_LLM_STRATEGY` and the per-role `*_LLM_STRATEGY` keys select
+  multi-member chat routing: failover, weighted round-robin, or routing by a
+  request's metadata, over members configured with the reference's
+  `HINDSIGHT_API_<ROLE>LLM_<n>_*` convention.
+- A reranker that marks a candidate 0.0 prunes it (the reference's
+  `prunes_candidates`); unscored candidates survive.
+- The retain extraction mode selects the reference's prompt and schema:
+  `concise`, `verbose`, `custom`, `verbatim` and `chunks` each carry their own
+  prompt, their own dimension fields (`what`/`when`/`where`/`who`/`why`) and the
+  reference's collapse rule into the stored text; `chunks` stores one unit per
+  chunk without a model call.
+- Consolidation is configurable per bank the way the reference is:
+  `observations_mission`, the strategy that claims a scope (with its own mission
+  and limits), the per-scope observation cap, the source-fact token budgets and
+  the batch/parallelism knobs all reach the pass, so the preview reports what
+  the pass does.
+- Token counts use the reference's vocabulary by default: `o200k_base`
+  (`HINDSIGHT_API_TOKENIZER_ENCODING` selects between it and `cl100k_base`).
+- The keyword arm selects its terms by document frequency from the planner's
+  statistics instead of weighing every term in a long query, and the statement
+  runs with a timeout, which is the reference's guard against a broad query
+  ranking a whole bank.
+- `HINDSIGHT_API_PROFILE` is the reference's JSON profiling request, validated at
+  startup, and the periodic report is a real CPU profile: per-thread CPU plus a
+  `tottime`/`cumtime`/`ncalls` table per window, parsed with the Go toolchain's
+  own profile reader.
+- Audit logging covers the reference's action set across all three transports:
+  an HTTP middleware resolves the matched route to its action, the MCP dispatch
+  records its auditable tools, and the worker records each processed operation.
+  The global switch, the per-bank override and the action allowlist
+  (`HINDSIGHT_API_AUDIT_LOG_ACTIONS`) gate it, and a failing write never fails
+  the operation it describes.
+
+- The server can be pointed at a database the reference service created and
+  migrated itself. Startup reads the target schema's catalogue instead of
+  trusting a bookkeeping table: a database that already carries every table,
+  column, constraint and function the migration series creates has the series
+  recorded as applied and nothing is re-created, an empty schema runs the series
+  as before, and a schema holding only some of those objects is refused with an
+  error naming the first missing one. The whole decision and the series run in
+  one transaction under an advisory lock, so concurrent starts are safe, and an
+  index the database lacks is reported rather than built (the reference creates
+  its vector indexes outside its migrations, so their names differ between
+  databases at the same recorded revision).
+- `HINDSIGHT_API_FILE_STORAGE_TYPE` accepts `gcs` and `azure` in addition to
+  `s3`: the payload backend is now selectable across Google Cloud Storage
+  (`HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET`, `..._GCS_SERVICE_ACCOUNT_KEY`) and
+  Azure Blob Storage (`..._AZURE_CONTAINER`, `..._AZURE_ACCOUNT_NAME`,
+  `..._AZURE_ACCOUNT_KEY`), each spoken over its own REST API with no vendor
+  SDK, and each verified by its own stub-endpoint suite.
+- Every object-store backend can sign a time-limited download URL (S3 SigV4
+  query string, GCS V4 signed URL, Azure service SAS), and the archive download
+  route hands the client a redirect to that URL when the configured store can
+  sign one, falling back to proxying the payload otherwise.
+- A database URL is normalized before the driver sees it
+  (`postgresql+asyncpg://…?ssl=require` → `postgresql://…?sslmode=require`), and
+  the connection pool is bounded by `HINDSIGHT_API_DB_POOL_MAX_SIZE` (100) and
+  `..._MIN_SIZE` (5) instead of growing without limit.
+- A bank's configuration-dependent behaviour is read fresh rather than from the
+  process-local bank cache, so a change written by another server takes effect
+  on the next request.
+- Configuration layers: a tenant extension may supply overrides that sit between
+  the process environment and the bank's own configuration, with the bank
+  winning per key. A deployment without a tenant layer is unaffected.
+- Webhook delivery is complete: a completed write raises `retain.completed`, and
+  each delivery records the receiver's status (`last_status_code`) on its
+  operation, so a refusing endpoint is distinguishable from an unreachable one.
+- Uploads are bounded: `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB` (20) and
+  `..._MAX_COUNT` (50) cap one request's body, each file and the file count,
+  each refusal naming the limit.
+- Byte serving streams: the S3 object store hands back its live response body
+  and the download routes stream it instead of buffering the whole payload,
+  keeping every response header identical to the buffered path.
+- An operation-validator extension point: a deployment can veto a retain or
+  recall at the request boundary (with its own status and reason) and confine a
+  caller to a tag scope that can narrow but never widen what it sees.
+- `bankctl` gains `backup`, `restore`, `run-db-migration`,
+  `decommission-worker` and `decommission-workers`.
+- A provider setting this build cannot honour
+  (`HINDSIGHT_API_LLM_STRATEGY`, `..._LLM_LITELLMROUTER_CONFIG`,
+  `..._EMBEDDINGS_LOCAL_MODEL`) now fails startup by name instead of being
+  silently ignored.
+- Retain configuration is now reachable: a bank's `retain_mission`,
+  `retain_custom_instructions`, `retain_chunk_size`, `retain_structured_chunk_size`
+  and `entity_labels` are accepted by the config API (validated, 422 on an
+  unusable vocabulary or a non-positive segment size) and actually reach the
+  write. The label vocabulary constrains the extraction schema, and a selected
+  label becomes a `key:value` entity (plus a tag when the group asks for one).
+  A file upload in a format this build cannot parse (PDF, DOCX, PPT, XLS) is
+  refused instead of being stored as binary noise, an attachment inside
+  retained content renders as a stable `⟦hs-att:<id>⟧` placeholder, small
+  consecutive items fold into one extraction call under a byte budget, and the
+  bank's `memory_defense` policy screens content for secrets and PII before
+  extraction (redacting in place or dropping the item, and firing
+  `memory_defense.triggered`).
+- Extraction retries a token-limited response by splitting the text, infers a
+  coarse date ("in 2015", "in March 2026") as the period it spans, and carries
+  the bank's retain mission, custom instructions and per-item strategy into its
+  prompt. Embedding calls truncate an over-long input.
+- Observation scopes take effect: a consolidation pass folds facts only with
+  facts of the same scope and stores the scope on the observation.
+- A mental model whose cited evidence has gone is stale even with no new write,
+  a reflection records its grounding, and a reflection presents its evidence
+  under short aliases with the forced retrieval hierarchy and the fresh-page
+  short-circuit.
+- Recency decay is configurable (`HINDSIGHT_API_RECENCY_DECAY_FUNCTION` =
+  `linear|exponential|none`, plus `..._LINEAR_WINDOW_DAYS`/`..._HALFLIFE_DAYS`),
+  and a coarse date ("in 2015") ages from the end of its period, capped at
+  neutral, instead of reading as stale from the first instant of the period.
+- Postgres recall renders compound `tag_groups` into its predicate (they were
+  silently ignored), tag `resolve` uses the reference's `exact` token, an arm's
+  `min_scores` floor is applied before fusion, and a bank's
+  `enable_reranking=false` now really drops the cross-encoder pass.
+- Retention persists `context`, `mentioned_at`, `event_date`, `occurred_end` and
+  real `metadata` on Postgres (they were dropped), and an entity name longer
+  than 512 characters is truncated instead of failing the write.
+- Recall fusion gains an interleave mode (round-robin across arms, so one arm's
+  best hit is never averaged down) and an optional per-source cap
+  (`HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE`) applied before fusion.
+  Consolidation now widens its merge-candidate pool with a near-duplicate lookup
+  that uses both, so a near-identical twin the recency-ordered pool missed is
+  still offered to the model.
+- Fact retraction: a refresh records its grounding (`reflect_response.based_on`),
+  a mental model citing evidence that has since gone now counts as stale even
+  though no watermark moved, and a delta merge is told to unsay the retracted
+  statements. A document whose every citation is gone is treated as a broken
+  link, not a retraction, and cited siblings or directives are never mistaken
+  for missing memories.
+- Rewriting an observation snapshots its previous text into `observation_history`
+  (bounded at 20 entries per observation), and `GET
+  /memories/{id}/history` merges those snapshots with the audit trail, so a
+  consolidation rewrite is visible where it used to be invisible.
+- The reasoning loop runs a turn's independent retrieval calls in parallel
+  (bounded at four), recording their results in the order the model asked for
+  them; a failed lookup still fails the run.
+- A reflection answer over its `max_tokens` budget is shortened after the fact
+  (the budget is a target for the visible answer, not a provider cap that a
+  thinking model would eat), with the rewrite billed and an empty rewrite never
+  emptying the answer.
+- `POST /prompts/preview` renders the real prompt of `retain`, `consolidation`
+  and `reflect` from the same builders those operations call, with bracketed
+  `«…»` stand-ins for runtime data, and refuses an unknown operation instead of
+  inventing one.
+- Reflection renders the bank's directives as a mandatory opening section and a
+  numbered reminder closing the answering prompt, so a later turn cannot
+  out-rank them. `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is now actually applied —
+  as a directive on the system message of every completion, covering extracted
+  facts, observations, reflections and mental-model bodies alike.
+- Reflection presents retrieved evidence under short aliases (`f1`, `o1`,
+  `p1`, `c1`) instead of full identifiers, resolves an alias the model echoes —
+  in its answer or in a tool's arguments — back to the real id, and replaces an
+  identifier the model was never shown with `[unverified id]`.
+- Extraction now honours `fact_type: "assistant"` (stored as `experience`, with
+  a `fact_kind` fallback) and `from_attachments` (resolved to the units'
+  attachment ids by position or identifier).
+- Per-`(bank, fact_type)` partial vector indexes with a row threshold
+  (`HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS`, default 0 = off): a partition above
+  the threshold earns its own index, one below loses it, built and dropped
+  `CONCURRENTLY`. Reconciled by a maintenance sweep and
+  `bankctl bank repair-bank --vector-index-min-rows`.
+- OpenTelemetry tracing: with `HINDSIGHT_API_OTEL_TRACES_ENABLED=true` and an
+  `HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT`, every model call exports a GenAI
+  span over OTLP/HTTP JSON. Dependency-free, off the latency path, and shed
+  rather than buffered when the collector stalls.
+- Document detail reports the retain-time `observation_scopes` spec, and chunk
+  reads report the `attachments` their units were drawn from. The Postgres
+  `GetDocument` now returns `retain_params`, `tags` and `updated_at`.
+- Creating a knowledge page whose name already exists in the same folder is
+  refused with 409.
+- Consolidation passes are serialized per bank (`consolidate:<bank>` key), so
+  two passes over one bank cannot read the same facts and create twin
+  observations; different banks still run concurrently.
+- The worker reserves a concurrency floor per operation type
+  (`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`, default 2), so a bank
+  mid-bulk-ingest cannot starve observation folding.
+- Consolidation drops a near-duplicate observation create (token Jaccard ≥ 0.7
+  against existing or same-pass observations), not only an exact restatement.
+- Webhook delivery retries on the reference's backoff ladder
+  (`[5s, 5m, 30m, 2h, 5h]`); a handler can name an explicit deferral delay with
+  `worker.DeferAt`.
+- The S3 object store can delete a key prefix, and deleting a bank reclaims
+  that bank's external payloads.
+- The provider roster gains the `volcano` vendor and a deterministic `mock`
+  provider for offline model-driven paths.
+- A handler can mark a failure deferrable (`worker.Defer`); a provider rate
+  limit is mapped to one, so the operation is rescheduled without consuming its
+  retry budget. Retention sweeps pause 250 ms between chunks.
+- Queue claiming is bank-fair: the claim serves the bank with the oldest
+  pending work, so one bank's backlog cannot starve the others.
+- Fact extraction retries once with a self-correcting instruction when the
+  model's first response cannot be parsed as the required JSON shape.
+- `/metrics` reports `wenyuan_async_operations_pending` and
+  `wenyuan_async_operations_failed`, aggregated across banks at scrape time.
+- A per-operation-type wall ceiling
+  (`HINDSIGHT_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`)
+  bounds a wedged task below the claim's lease, freeing its slot sooner.
+- A loop-lag probe reports a scheduler stall past
+  `HINDSIGHT_API_LOOP_LAG_STALL_SECONDS` at
+  `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS` cadence.
+- A mental-model refresh honours a `delta` trigger mode: it folds new evidence
+  into the existing document (preserving unchanged sections) and falls back to
+  the full answer when it cannot, recording `delta`/`delta_fallback` in history.
+- The worker treats store backpressure (`ErrWritesUnavailable`, `ErrReadShed`)
+  as a deferral rather than a failure: the operation is rescheduled without
+  consuming its retry budget, so a sustained shed cannot permanently fail work.
+- Settings honour the reference's worker key names as aliases
+  (`WORKER_POLL_INTERVAL_MS`, `WORKER_MAX_SLOTS`,
+  `WORKER_TASK_RETRY_BACKOFF_SECONDS`), and `HINDSIGHT_API_PROFILE=true` mounts
+  the `/debug/pprof/*` endpoints.
+- A knowledge tree node reports `managed` (set for an API-created page) and its
+  `sort_order` round-trips through storage; a page's body was already carried by
+  its backing mental model.
+- A `graph.maintenance` job drains the graph-relink and entity-prune queues: a
+  relinked unit rebuilds its semantic edges from its embedding, and an entity no
+  unit mentions any more is pruned.
+- `bankctl` gains `export-bank`/`import-bank`, `repair-bank` (re-schedules
+  stranded consolidation) and `worker-status` (per-bank pending/failed counts).
+- Recall, retain and reflect are admitted through per-operation concurrency
+  lanes: a saturated lane sheds with `503` and `Retry-After`, and a request that
+  goes away while queued is reported as `499` (`HINDSIGHT_API_ADMISSION_*`).
+- The MCP tool roster covers the reference surface: bank lifecycle, memories and
+  documents, operations, tags and stats, mental models, directives, the
+  knowledge base, entities, consolidation, observation scopes and webhooks.
+- The worker process serves `/health`, `/health/ready` and `/health/live` on
+  `HINDSIGHT_API_WORKER_HTTP_PORT` (default 8889), with a liveness payload
+  carrying `worker_id`, `is_shutdown` and `seconds_since_last_poll`.
+- Webhook delivery is wired: a `consolidation.completed` event queues a
+  `webhook_delivery` operation for each subscribed webhook, and the worker
+  delivers it with an HMAC-SHA256 signature (`X-Hindsight-Signature`,
+  `X-Hub-Signature-256`), retrying transport and 5xx failures.
+- A re-retain of an unchanged document (`document_id` set, hash unchanged, no
+  `force_reextract`) is a no-op that returns the existing units; a per-bank
+  config can disable recall arms (`enable_*` toggles); and `temporal_window`
+  requires both bounds in order.
+- Consolidation drops an exact-duplicate observation create or a no-op update,
+  so a restated conclusion does not accumulate as a twin.
+- Chunking keeps structured inputs whole: a JSON conversation is chunked per
+  turn and a JSONL body per record, so a chunk never splits a turn or a record.
+- Fuzzy tag matching uses trigram Jaccard (≥ 0.45) within a namespace rather
+  than substring containment.
+- Fact extraction declares `where`, `fact_kind`, `fact_type` (world|experience)
+  and `from_attachments`; an experience fact is stored as an experience unit and
+  its `where`/`fact_kind` round-trip through metadata; punctuation-only facts
+  are rejected.
+- The retain write path creates `semantic` links between units whose embeddings
+  are within the similarity floor (0.75 cosine), in the in-process store by
+  cosine and in PostgreSQL by the pgvector distance operator; consecutive units
+  of one item are linked as `temporal` rather than mislabelled `semantic`.
+- PostgreSQL recall runs the same multi-arm pipeline as the in-process store:
+  a pgvector semantic arm, a `ts_rank_cd` BM25 keyword arm and a
+  link-expansion graph arm, fused by reciprocity and scored through the shared
+  path, honouring tags, the temporal window and per-arm floors.
+- The API process runs the queue consumer and the maintenance loop when
+  `HINDSIGHT_API_WORKER_ENABLED` is set (default true), matching the reference's
+  standalone mode; the `worker` feature flag is reported by the version
+  endpoint.
+- The retain write path honours `update_mode`: `replace` rebuilds a document's
+  units, chunks and links and `append` concatenates onto the stored document;
+  retains persist `context` and `mentioned_at`; and a chunk id is the
+  injective `bank_doc_index` form the reference builds (`BuildChunkID`).
+- The retain write path embeds each stored unit and recall embeds the query text
+  when an embedding model is configured, so the vector recall arm and its ANN
+  index have vectors to rank.
+- `llm_requests` is populated: each completion is recorded at the provider
+  boundary when `HINDSIGHT_API_LLM_TRACE_ENABLED` is set.
+- `/version` and `/v1/version` report all eleven reference feature keys
+  (`observations`, `mcp`, `worker`, `bank_config_api`, `bank_llm_health`,
+  `file_upload_api`, `document_export_api`, `document_import_api`, `audit_log`,
+  `llm_trace`, `store_document_text`), and the versioned route returns the same
+  payload as the root endpoint.
+- The readiness and liveness probes report the reference's fields: readiness
+  names the database state and the connection-acquire latency, liveness reports
+  the version and process uptime.
+- The per-bank `/health/llm` route is gated by
+  `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH` (default off → 404) and the file retain
+  route by `HINDSIGHT_API_ENABLE_FILE_UPLOAD_API` (default on → 404 when off).
+- The bank configuration read/write/reset responses include `bank_id`.
+
 ### Fixed
+
+- Async operation types carry the reference's names: `consolidation`,
+  `export_documents`, `import_documents`, `export_bank`, `import_bank`,
+  `clone_bank`. They are a public field on the operations API and the console
+  filters and labels on them, so the six values this service had invented
+  (`consolidate`, `document_export`, `document_import`, `transfer_export`,
+  `transfer_import`, `clone`) were a wire divergence — the copied operations view
+  could not have filtered on its own engine's output. The dead `reflect`
+  operation type is gone with them, the consolidation LLM call reports the
+  reference's `consolidation` scope, and the worker's wall ceilings are keyed by
+  operation type so a refresh is bounded (it shares reflect's budget, as the
+  reference records: without a ceiling a wedged refresh held its worker slot).
+- A memory's indexed embedding text is the reference's augmentation, field for
+  field: the date is the unit's own `occurred_start` (falling back to
+  `mentioned_at`) rather than the retain clock, a span renders as a range,
+  entities are bracketed, and a unit with no date gets no date clause. Indexing a
+  2021 fact with the month it was retained asserts a time the fact does not.
+- `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` is refused for the values this build
+  cannot honour (only the native tsvector backend is implemented) instead of
+  being accepted and ignored, and its dictionary key is refused only for a
+  dictionary other than `english` rather than for being set at all.
+- A retain whose items the bank's Memory Defense policy blocks **in full** is
+  refused with 422 and the violations under `detail`, as the reference does,
+  rather than answered 200 having written nothing. The screen runs on the items
+  the caller submitted, before folding, so a blocked item no longer takes a clean
+  neighbour with it and the reported positions are the caller's.
+- The console's `useAsyncData` keyed its requests by the identity of a caller's
+  inline dependency array, so every panel refetched on every render (211 requests
+  in 3s); it is value-keyed now, with a regression test.
 
 - Validation failures carry the reference's vocabulary: the entries were named by
   the *input* type before the target type was consulted (`{}` sent to an integer
@@ -340,326 +703,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure. A body that arrives empty is the framework's `missing` item, and the
   item names the value the decode failed on for the recall and reflection routes
   too.
-
-### Added
-
-- The log stream's shape is configurable the way the reference's is:
-  `HINDSIGHT_API_LOG_FORMAT=json` writes one JSON object per record with the
-  reference's keys and spellings (`severity`, `message`, `timestamp`, `logger`,
-  with `WARN` reported as `WARNING`), `HINDSIGHT_API_LOG_JSON_FIELDS` narrows
-  those keys, and records go to stdout. `HINDSIGHT_API_ACCESS_LOG` (or
-  `--access-log`) writes the reference's per-request access line —
-  `LEVEL:     <client> - "<request line>" <status>` — which the reference's JSON
-  formatter does not touch either.
-- A reflection no longer deadlocks a deployment with tracing on: the in-process
-  store held its read lock across the model loop, so the trace write that the
-  provider call makes blocked on the reader the same goroutine still held. The
-  loop now runs outside the store's lock, and the diagnostic buffers (audit
-  trail, model-request trace) have their own lock so a store operation can never
-  deadlock against its own diagnostics again.
-
-- The default bind address and port are the reference's: `0.0.0.0:8888` (was
-  `127.0.0.1:8000`), and `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` defaults on.
-  A deployment that sets neither now binds all interfaces on the port a
-  reference deployment uses.
-- An unset `HINDSIGHT_API_DATABASE_URL` refuses startup, naming both ways out: a
-  `postgresql://` URL, or the explicit `memory` opt-in for a non-persistent
-  backend. The reference provisions an embedded PostgreSQL there, which this
-  build cannot manage, and silently serving from memory would lose data on
-  restart without saying so.
-- Document uploads are converted to text: the parser chain
-  (`HINDSIGHT_API_FILE_PARSER`, default `markitdown`) now has a local
-  implementation covering PDF, DOCX, XLSX, PPTX, HTML, CSV/TSV, JSON/JSONL and
-  plain text with no new dependencies, plus the remote `llama_parse` and `iris`
-  parsers over their HTTP APIs. The allowlist, the batch limits
-  (`HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE(_MB)`) and
-  `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN` are honoured; a format nothing can
-  convert is refused by name.
-- The separate reranker and embedding provider families exist:
-  `HINDSIGHT_API_RERANKER_PROVIDER` selects `siliconflow`, `cohere`,
-  `zeroentropy`, `openrouter`, `tei`, `typesafe` or the in-process `rrf`
-  (failover chain supported), and `HINDSIGHT_API_EMBEDDINGS_PROVIDER` selects
-  `openai`, `openrouter`, `requesty`, `litellm`, `cohere`, `tei`, `zeroentropy`
-  or `gemini`. Members needing a local runtime (`onnx`, `local`, `flashrank`,
-  jina-mlx, litellm-sdk, google, alibaba) are refused at startup naming the key.
-  `HINDSIGHT_API_EMBEDDING_DIMENSION` resolves the width (default 384).
-- `HINDSIGHT_API_LLM_STRATEGY` and the per-role `*_LLM_STRATEGY` keys select
-  multi-member chat routing: failover, weighted round-robin, or routing by a
-  request's metadata, over members configured with the reference's
-  `HINDSIGHT_API_<ROLE>LLM_<n>_*` convention.
-- A reranker that marks a candidate 0.0 prunes it (the reference's
-  `prunes_candidates`); unscored candidates survive.
-- The retain extraction mode selects the reference's prompt and schema:
-  `concise`, `verbose`, `custom`, `verbatim` and `chunks` each carry their own
-  prompt, their own dimension fields (`what`/`when`/`where`/`who`/`why`) and the
-  reference's collapse rule into the stored text; `chunks` stores one unit per
-  chunk without a model call.
-- Consolidation is configurable per bank the way the reference is:
-  `observations_mission`, the strategy that claims a scope (with its own mission
-  and limits), the per-scope observation cap, the source-fact token budgets and
-  the batch/parallelism knobs all reach the pass, so the preview reports what
-  the pass does.
-- Token counts use the reference's vocabulary by default: `o200k_base`
-  (`HINDSIGHT_API_TOKENIZER_ENCODING` selects between it and `cl100k_base`).
-- The keyword arm selects its terms by document frequency from the planner's
-  statistics instead of weighing every term in a long query, and the statement
-  runs with a timeout, which is the reference's guard against a broad query
-  ranking a whole bank.
-- `HINDSIGHT_API_PROFILE` is the reference's JSON profiling request, validated at
-  startup, and the periodic report is a real CPU profile: per-thread CPU plus a
-  `tottime`/`cumtime`/`ncalls` table per window, parsed with the Go toolchain's
-  own profile reader.
-- Audit logging covers the reference's action set across all three transports:
-  an HTTP middleware resolves the matched route to its action, the MCP dispatch
-  records its auditable tools, and the worker records each processed operation.
-  The global switch, the per-bank override and the action allowlist
-  (`HINDSIGHT_API_AUDIT_LOG_ACTIONS`) gate it, and a failing write never fails
-  the operation it describes.
-
-- The server can be pointed at a database the reference service created and
-  migrated itself. Startup reads the target schema's catalogue instead of
-  trusting a bookkeeping table: a database that already carries every table,
-  column, constraint and function the migration series creates has the series
-  recorded as applied and nothing is re-created, an empty schema runs the series
-  as before, and a schema holding only some of those objects is refused with an
-  error naming the first missing one. The whole decision and the series run in
-  one transaction under an advisory lock, so concurrent starts are safe, and an
-  index the database lacks is reported rather than built (the reference creates
-  its vector indexes outside its migrations, so their names differ between
-  databases at the same recorded revision).
-- `HINDSIGHT_API_FILE_STORAGE_TYPE` accepts `gcs` and `azure` in addition to
-  `s3`: the payload backend is now selectable across Google Cloud Storage
-  (`HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET`, `..._GCS_SERVICE_ACCOUNT_KEY`) and
-  Azure Blob Storage (`..._AZURE_CONTAINER`, `..._AZURE_ACCOUNT_NAME`,
-  `..._AZURE_ACCOUNT_KEY`), each spoken over its own REST API with no vendor
-  SDK, and each verified by its own stub-endpoint suite.
-- Every object-store backend can sign a time-limited download URL (S3 SigV4
-  query string, GCS V4 signed URL, Azure service SAS), and the archive download
-  route hands the client a redirect to that URL when the configured store can
-  sign one, falling back to proxying the payload otherwise.
-- A database URL is normalized before the driver sees it
-  (`postgresql+asyncpg://…?ssl=require` → `postgresql://…?sslmode=require`), and
-  the connection pool is bounded by `HINDSIGHT_API_DB_POOL_MAX_SIZE` (100) and
-  `..._MIN_SIZE` (5) instead of growing without limit.
-- A bank's configuration-dependent behaviour is read fresh rather than from the
-  process-local bank cache, so a change written by another server takes effect
-  on the next request.
-- Configuration layers: a tenant extension may supply overrides that sit between
-  the process environment and the bank's own configuration, with the bank
-  winning per key. A deployment without a tenant layer is unaffected.
-- Webhook delivery is complete: a completed write raises `retain.completed`, and
-  each delivery records the receiver's status (`last_status_code`) on its
-  operation, so a refusing endpoint is distinguishable from an unreachable one.
-- Uploads are bounded: `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB` (20) and
-  `..._MAX_COUNT` (50) cap one request's body, each file and the file count,
-  each refusal naming the limit.
-- Byte serving streams: the S3 object store hands back its live response body
-  and the download routes stream it instead of buffering the whole payload,
-  keeping every response header identical to the buffered path.
-- An operation-validator extension point: a deployment can veto a retain or
-  recall at the request boundary (with its own status and reason) and confine a
-  caller to a tag scope that can narrow but never widen what it sees.
-- `bankctl` gains `backup`, `restore`, `run-db-migration`,
-  `decommission-worker` and `decommission-workers`.
-- A provider setting this build cannot honour
-  (`HINDSIGHT_API_LLM_STRATEGY`, `..._LLM_LITELLMROUTER_CONFIG`,
-  `..._EMBEDDINGS_LOCAL_MODEL`) now fails startup by name instead of being
-  silently ignored.
-- Retain configuration is now reachable: a bank's `retain_mission`,
-  `retain_custom_instructions`, `retain_chunk_size`, `retain_structured_chunk_size`
-  and `entity_labels` are accepted by the config API (validated, 422 on an
-  unusable vocabulary or a non-positive segment size) and actually reach the
-  write. The label vocabulary constrains the extraction schema, and a selected
-  label becomes a `key:value` entity (plus a tag when the group asks for one).
-  A file upload in a format this build cannot parse (PDF, DOCX, PPT, XLS) is
-  refused instead of being stored as binary noise, an attachment inside
-  retained content renders as a stable `⟦hs-att:<id>⟧` placeholder, small
-  consecutive items fold into one extraction call under a byte budget, and the
-  bank's `memory_defense` policy screens content for secrets and PII before
-  extraction (redacting in place or dropping the item, and firing
-  `memory_defense.triggered`).
-- Extraction retries a token-limited response by splitting the text, infers a
-  coarse date ("in 2015", "in March 2026") as the period it spans, and carries
-  the bank's retain mission, custom instructions and per-item strategy into its
-  prompt. Embedding calls truncate an over-long input.
-- Observation scopes take effect: a consolidation pass folds facts only with
-  facts of the same scope and stores the scope on the observation.
-- A mental model whose cited evidence has gone is stale even with no new write,
-  a reflection records its grounding, and a reflection presents its evidence
-  under short aliases with the forced retrieval hierarchy and the fresh-page
-  short-circuit.
-- Recency decay is configurable (`HINDSIGHT_API_RECENCY_DECAY_FUNCTION` =
-  `linear|exponential|none`, plus `..._LINEAR_WINDOW_DAYS`/`..._HALFLIFE_DAYS`),
-  and a coarse date ("in 2015") ages from the end of its period, capped at
-  neutral, instead of reading as stale from the first instant of the period.
-- Postgres recall renders compound `tag_groups` into its predicate (they were
-  silently ignored), tag `resolve` uses the reference's `exact` token, an arm's
-  `min_scores` floor is applied before fusion, and a bank's
-  `enable_reranking=false` now really drops the cross-encoder pass.
-- Retention persists `context`, `mentioned_at`, `event_date`, `occurred_end` and
-  real `metadata` on Postgres (they were dropped), and an entity name longer
-  than 512 characters is truncated instead of failing the write.
-- Recall fusion gains an interleave mode (round-robin across arms, so one arm's
-  best hit is never averaged down) and an optional per-source cap
-  (`HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE`) applied before fusion.
-  Consolidation now widens its merge-candidate pool with a near-duplicate lookup
-  that uses both, so a near-identical twin the recency-ordered pool missed is
-  still offered to the model.
-- Fact retraction: a refresh records its grounding (`reflect_response.based_on`),
-  a mental model citing evidence that has since gone now counts as stale even
-  though no watermark moved, and a delta merge is told to unsay the retracted
-  statements. A document whose every citation is gone is treated as a broken
-  link, not a retraction, and cited siblings or directives are never mistaken
-  for missing memories.
-- Rewriting an observation snapshots its previous text into `observation_history`
-  (bounded at 20 entries per observation), and `GET
-  /memories/{id}/history` merges those snapshots with the audit trail, so a
-  consolidation rewrite is visible where it used to be invisible.
-- The reasoning loop runs a turn's independent retrieval calls in parallel
-  (bounded at four), recording their results in the order the model asked for
-  them; a failed lookup still fails the run.
-- A reflection answer over its `max_tokens` budget is shortened after the fact
-  (the budget is a target for the visible answer, not a provider cap that a
-  thinking model would eat), with the rewrite billed and an empty rewrite never
-  emptying the answer.
-- `POST /prompts/preview` renders the real prompt of `retain`, `consolidation`
-  and `reflect` from the same builders those operations call, with bracketed
-  `«…»` stand-ins for runtime data, and refuses an unknown operation instead of
-  inventing one.
-- Reflection renders the bank's directives as a mandatory opening section and a
-  numbered reminder closing the answering prompt, so a later turn cannot
-  out-rank them. `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is now actually applied —
-  as a directive on the system message of every completion, covering extracted
-  facts, observations, reflections and mental-model bodies alike.
-- Reflection presents retrieved evidence under short aliases (`f1`, `o1`,
-  `p1`, `c1`) instead of full identifiers, resolves an alias the model echoes —
-  in its answer or in a tool's arguments — back to the real id, and replaces an
-  identifier the model was never shown with `[unverified id]`.
-- Extraction now honours `fact_type: "assistant"` (stored as `experience`, with
-  a `fact_kind` fallback) and `from_attachments` (resolved to the units'
-  attachment ids by position or identifier).
-- Per-`(bank, fact_type)` partial vector indexes with a row threshold
-  (`HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS`, default 0 = off): a partition above
-  the threshold earns its own index, one below loses it, built and dropped
-  `CONCURRENTLY`. Reconciled by a maintenance sweep and
-  `bankctl bank repair-bank --vector-index-min-rows`.
-- OpenTelemetry tracing: with `HINDSIGHT_API_OTEL_TRACES_ENABLED=true` and an
-  `HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT`, every model call exports a GenAI
-  span over OTLP/HTTP JSON. Dependency-free, off the latency path, and shed
-  rather than buffered when the collector stalls.
-- Document detail reports the retain-time `observation_scopes` spec, and chunk
-  reads report the `attachments` their units were drawn from. The Postgres
-  `GetDocument` now returns `retain_params`, `tags` and `updated_at`.
-- Creating a knowledge page whose name already exists in the same folder is
-  refused with 409.
-- Consolidation passes are serialized per bank (`consolidate:<bank>` key), so
-  two passes over one bank cannot read the same facts and create twin
-  observations; different banks still run concurrently.
-- The worker reserves a concurrency floor per operation type
-  (`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`, default 2), so a bank
-  mid-bulk-ingest cannot starve observation folding.
-- Consolidation drops a near-duplicate observation create (token Jaccard ≥ 0.7
-  against existing or same-pass observations), not only an exact restatement.
-- Webhook delivery retries on the reference's backoff ladder
-  (`[5s, 5m, 30m, 2h, 5h]`); a handler can name an explicit deferral delay with
-  `worker.DeferAt`.
-- The S3 object store can delete a key prefix, and deleting a bank reclaims
-  that bank's external payloads.
-- The provider roster gains the `volcano` vendor and a deterministic `mock`
-  provider for offline model-driven paths.
-- A handler can mark a failure deferrable (`worker.Defer`); a provider rate
-  limit is mapped to one, so the operation is rescheduled without consuming its
-  retry budget. Retention sweeps pause 250 ms between chunks.
-- Queue claiming is bank-fair: the claim serves the bank with the oldest
-  pending work, so one bank's backlog cannot starve the others.
-- Fact extraction retries once with a self-correcting instruction when the
-  model's first response cannot be parsed as the required JSON shape.
-- `/metrics` reports `wenyuan_async_operations_pending` and
-  `wenyuan_async_operations_failed`, aggregated across banks at scrape time.
-- A per-operation-type wall ceiling
-  (`HINDSIGHT_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`)
-  bounds a wedged task below the claim's lease, freeing its slot sooner.
-- A loop-lag probe reports a scheduler stall past
-  `HINDSIGHT_API_LOOP_LAG_STALL_SECONDS` at
-  `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS` cadence.
-- A mental-model refresh honours a `delta` trigger mode: it folds new evidence
-  into the existing document (preserving unchanged sections) and falls back to
-  the full answer when it cannot, recording `delta`/`delta_fallback` in history.
-- The worker treats store backpressure (`ErrWritesUnavailable`, `ErrReadShed`)
-  as a deferral rather than a failure: the operation is rescheduled without
-  consuming its retry budget, so a sustained shed cannot permanently fail work.
-- Settings honour the reference's worker key names as aliases
-  (`WORKER_POLL_INTERVAL_MS`, `WORKER_MAX_SLOTS`,
-  `WORKER_TASK_RETRY_BACKOFF_SECONDS`), and `HINDSIGHT_API_PROFILE=true` mounts
-  the `/debug/pprof/*` endpoints.
-- A knowledge tree node reports `managed` (set for an API-created page) and its
-  `sort_order` round-trips through storage; a page's body was already carried by
-  its backing mental model.
-- A `graph.maintenance` job drains the graph-relink and entity-prune queues: a
-  relinked unit rebuilds its semantic edges from its embedding, and an entity no
-  unit mentions any more is pruned.
-- `bankctl` gains `export-bank`/`import-bank`, `repair-bank` (re-schedules
-  stranded consolidation) and `worker-status` (per-bank pending/failed counts).
-- Recall, retain and reflect are admitted through per-operation concurrency
-  lanes: a saturated lane sheds with `503` and `Retry-After`, and a request that
-  goes away while queued is reported as `499` (`HINDSIGHT_API_ADMISSION_*`).
-- The MCP tool roster covers the reference surface: bank lifecycle, memories and
-  documents, operations, tags and stats, mental models, directives, the
-  knowledge base, entities, consolidation, observation scopes and webhooks.
-- The worker process serves `/health`, `/health/ready` and `/health/live` on
-  `HINDSIGHT_API_WORKER_HTTP_PORT` (default 8889), with a liveness payload
-  carrying `worker_id`, `is_shutdown` and `seconds_since_last_poll`.
-- Webhook delivery is wired: a `consolidation.completed` event queues a
-  `webhook_delivery` operation for each subscribed webhook, and the worker
-  delivers it with an HMAC-SHA256 signature (`X-Hindsight-Signature`,
-  `X-Hub-Signature-256`), retrying transport and 5xx failures.
-- A re-retain of an unchanged document (`document_id` set, hash unchanged, no
-  `force_reextract`) is a no-op that returns the existing units; a per-bank
-  config can disable recall arms (`enable_*` toggles); and `temporal_window`
-  requires both bounds in order.
-- Consolidation drops an exact-duplicate observation create or a no-op update,
-  so a restated conclusion does not accumulate as a twin.
-- Chunking keeps structured inputs whole: a JSON conversation is chunked per
-  turn and a JSONL body per record, so a chunk never splits a turn or a record.
-- Fuzzy tag matching uses trigram Jaccard (≥ 0.45) within a namespace rather
-  than substring containment.
-- Fact extraction declares `where`, `fact_kind`, `fact_type` (world|experience)
-  and `from_attachments`; an experience fact is stored as an experience unit and
-  its `where`/`fact_kind` round-trip through metadata; punctuation-only facts
-  are rejected.
-- The retain write path creates `semantic` links between units whose embeddings
-  are within the similarity floor (0.75 cosine), in the in-process store by
-  cosine and in PostgreSQL by the pgvector distance operator; consecutive units
-  of one item are linked as `temporal` rather than mislabelled `semantic`.
-- PostgreSQL recall runs the same multi-arm pipeline as the in-process store:
-  a pgvector semantic arm, a `ts_rank_cd` BM25 keyword arm and a
-  link-expansion graph arm, fused by reciprocity and scored through the shared
-  path, honouring tags, the temporal window and per-arm floors.
-- The API process runs the queue consumer and the maintenance loop when
-  `HINDSIGHT_API_WORKER_ENABLED` is set (default true), matching the reference's
-  standalone mode; the `worker` feature flag is reported by the version
-  endpoint.
-- The retain write path honours `update_mode`: `replace` rebuilds a document's
-  units, chunks and links and `append` concatenates onto the stored document;
-  retains persist `context` and `mentioned_at`; and a chunk id is the
-  injective `bank_doc_index` form the reference builds (`BuildChunkID`).
-- The retain write path embeds each stored unit and recall embeds the query text
-  when an embedding model is configured, so the vector recall arm and its ANN
-  index have vectors to rank.
-- `llm_requests` is populated: each completion is recorded at the provider
-  boundary when `HINDSIGHT_API_LLM_TRACE_ENABLED` is set.
-- `/version` and `/v1/version` report all eleven reference feature keys
-  (`observations`, `mcp`, `worker`, `bank_config_api`, `bank_llm_health`,
-  `file_upload_api`, `document_export_api`, `document_import_api`, `audit_log`,
-  `llm_trace`, `store_document_text`), and the versioned route returns the same
-  payload as the root endpoint.
-- The readiness and liveness probes report the reference's fields: readiness
-  names the database state and the connection-acquire latency, liveness reports
-  the version and process uptime.
-- The per-bank `/health/llm` route is gated by
-  `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH` (default off → 404) and the file retain
-  route by `HINDSIGHT_API_ENABLE_FILE_UPLOAD_API` (default on → 404 when off).
-- The bank configuration read/write/reset responses include `bank_id`.
 
 ### Changed
 

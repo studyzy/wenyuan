@@ -150,7 +150,7 @@ func TestOperationCommands(t *testing.T) {
 			name: "list renders one block per operation",
 			args: []string{"operation", "list", "b1"},
 			body: `{"bank_id":"b1","total":2,"limit":50,"offset":0,"operations":[` +
-				`{"id":"op-1","task_type":"consolidate","operation_id":null,"operation_type":null,"items_count":3,` +
+				`{"id":"op-1","task_type":"consolidation","operation_id":null,"operation_type":null,"items_count":3,` +
 				`"document_id":"d-1","filename":"f.pdf","mental_model_id":null,"details":null,` +
 				`"created_at":"2026-01-01T00:00:00Z","updated_at":null,"status":"completed","error_message":null,` +
 				`"retry_count":0,"next_retry_at":null,"progress":null},` +
@@ -163,7 +163,7 @@ func TestOperationCommands(t *testing.T) {
 			out: []string{
 				"Found 2 operation(s)",
 				"  Operation ID: op-1",
-				"    Type: consolidate",
+				"    Type: consolidation",
 				"    Status: completed",
 				"    Items: 3",
 				"    Filename: f.pdf",
@@ -294,7 +294,7 @@ func TestOperationCommands(t *testing.T) {
 // TestOperationListJSON pins the machine-mode envelope.
 func TestOperationListJSON(t *testing.T) {
 	body := `{"bank_id":"b1","total":1,"limit":50,"offset":0,"operations":[` +
-		`{"id":"op-1","task_type":"consolidate","operation_id":null,"operation_type":null,"items_count":2,` +
+		`{"id":"op-1","task_type":"consolidation","operation_id":null,"operation_type":null,"items_count":2,` +
 		`"document_id":null,"filename":null,"mental_model_id":null,"details":null,` +
 		`"created_at":"2026-01-01T00:00:00Z","updated_at":null,"status":"completed","error_message":null,` +
 		`"retry_count":0,"next_retry_at":null,"progress":null}]}`

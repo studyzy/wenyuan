@@ -90,6 +90,10 @@ func WriteError(w http.ResponseWriter, err error, opts EncodeOptions) {
 			w.Header().Add(name, v)
 		}
 	}
+	if httpErr.Payload != nil {
+		WriteJSON(w, httpErr.Status, PayloadEnvelope{Detail: httpErr.Payload}, opts)
+		return
+	}
 	WriteJSON(w, httpErr.Status, ErrorEnvelope{Detail: httpErr.Detail}, opts)
 }
 

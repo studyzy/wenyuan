@@ -2,6 +2,7 @@ package memoryops
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -111,15 +112,41 @@ func TestRedactRuleStoresPlaceholder(t *testing.T) {
 	assertDefenseEvent(t, notifier.defenseCalls()[0], notifier.bankIDs[0], "redact", secret)
 }
 
-// A block rule drops the item from the write entirely.
-func TestBlockRuleDropsItem(t *testing.T) {
+// A batch the policy blocks in full is refused: the caller asked for something
+// to be remembered and nothing was, so it is a client error about their content
+// rather than a successful write of nothing. The reference answers 422 with the
+// violations under `detail` — an object rather than its usual sentence — so a
+// caller can see which item matched what.
+func TestBlockRuleRefusesABatchItBlocksInFull(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("b", 36)
 	notifier := &recordingDefenseNotifier{}
 	mux, store := defenseServer(t, defensePolicy("block"), notifier)
 
 	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"my token is `+secret+`"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Detail struct {
+			Violations []struct {
+				Index    int    `json:"index"`
+				Detector string `json:"detector"`
+				Message  string `json:"message"`
+			} `json:"violations"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the refusal: %v (%s)", err, rec.Body.String())
+	}
+	if len(body.Detail.Violations) != 1 {
+		t.Fatalf("violations = %+v, want exactly the one blocked item", body.Detail.Violations)
+	}
+	violation := body.Detail.Violations[0]
+	if violation.Index != 0 || violation.Detector != "sensitive_data" || violation.Message == "" {
+		t.Fatalf("violation = %+v, want index 0, the detector that matched, and its message", violation)
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Error("a refusal must not echo the blocked content")
 	}
 	if texts := storedTexts(t, store); len(texts) != 0 {
 		t.Fatalf("a blocked item must not be stored: %v", texts)
@@ -128,6 +155,30 @@ func TestBlockRuleDropsItem(t *testing.T) {
 		t.Fatalf("defense events = %d, want exactly one", len(calls))
 	}
 	assertDefenseEvent(t, notifier.defenseCalls()[0], notifier.bankIDs[0], "block", secret)
+}
+
+// A partial block is a smaller write, not a refusal: the surviving items are
+// stored and the caller sees a result for them.
+func TestBlockRuleDropsOnlyTheBlockedItems(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("c", 36)
+	notifier := &recordingDefenseNotifier{}
+	mux, store := defenseServer(t, defensePolicy("block"), notifier)
+
+	rec := post(t, mux, "/v1/default/banks/b1/memories",
+		`{"items":[{"content":"my token is `+secret+`"},{"content":"Alice moved to Berlin"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 because one item survives, body = %s", rec.Code, rec.Body.String())
+	}
+	texts := storedTexts(t, store)
+	if len(texts) != 1 || !strings.Contains(texts[0], "Alice moved to Berlin") {
+		t.Fatalf("stored = %v, want only the surviving item", texts)
+	}
+	if strings.Contains(strings.Join(texts, " "), secret) {
+		t.Fatal("the blocked item must not reach storage")
+	}
+	if calls := notifier.defenseCalls(); len(calls) != 1 {
+		t.Fatalf("defense events = %d, want exactly one", len(calls))
+	}
 }
 
 // A disabled policy stores the secret untouched.

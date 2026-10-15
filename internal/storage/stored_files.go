@@ -6,18 +6,21 @@ import (
 	"strings"
 )
 
-// Operation type identifiers for the archive transfer family. They are stored
-// in the operation record so a consumer can tell which kind of work it is
-// claiming.
+// Operation type identifiers. They are stored in the operation record so a
+// consumer can tell which kind of work it is claiming.
+//
+// The string is the wire contract: it is what `operation_type` carries in the
+// operations API, what the console filters and labels on, and what the
+// service's own queries match against. The Go identifier is free to differ.
 const (
-	OperationTypeDocumentExport = "document_export"
-	OperationTypeDocumentImport = "document_import"
-	OperationTypeTransferExport = "transfer_export"
-	OperationTypeTransferImport = "transfer_import"
-	OperationTypeClone          = "clone"
+	OperationTypeDocumentExport = "export_documents"
+	OperationTypeDocumentImport = "import_documents"
+	OperationTypeTransferExport = "export_bank"
+	OperationTypeTransferImport = "import_bank"
+	OperationTypeClone          = "clone_bank"
 	// OperationTypeConsolidate is the consolidation pass, which folds related
 	// memories into observations.
-	OperationTypeConsolidate = "consolidate"
+	OperationTypeConsolidate = "consolidation"
 	// OperationTypeRefreshMentalModel regenerates one mental model from its
 	// source query. It is the operation the scheduled refresh enqueues, and it
 	// carries a serialization key so two refreshes of the same model cannot run
@@ -27,6 +30,17 @@ const (
 	// operation so delivery retries and the delivery record share the queue's
 	// lifecycle.
 	OperationTypeWebhookDelivery = "webhook_delivery"
+	// OperationTypeFileConvertRetain, OperationTypeGraphMaintenance and
+	// OperationTypeVectorIndexMaintenance complete the reference's async
+	// operation vocabulary. This service does that work without a queue row of
+	// its own — an upload is converted at ingress and queued as a retain, and
+	// graph and vector-index upkeep runs as a periodic maintenance job rather
+	// than an operation — so nothing here enqueues them. They are declared so
+	// the operation-type vocabulary this service serves, and the console that
+	// filters on it, stays in step with the reference.
+	OperationTypeFileConvertRetain      = "file_convert_retain"
+	OperationTypeGraphMaintenance       = "graph_maintenance"
+	OperationTypeVectorIndexMaintenance = "vector_index_maintenance"
 )
 
 // OperationPayloadKeyStoredFile is the operation payload field carrying the

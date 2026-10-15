@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -527,17 +528,17 @@ func TestExplicitDeferralDelay(t *testing.T) {
 func TestReservedSlotsPreferReservedType(t *testing.T) {
 	store := newStore(t)
 	queue(t, store, "op-import", storage.OperationTypeTransferImport)
-	queue(t, store, "op-consolidate", "consolidate")
+	queue(t, store, "op-consolidate", storage.OperationTypeConsolidate)
 	consumer := New(store, stubProcessor{}, Config{
 		WorkerID: "worker-1", Concurrency: 1, Lease: time.Hour,
-		ReservedSlots: map[string]int{"consolidate": 1},
+		ReservedSlots: map[string]int{storage.OperationTypeConsolidate: 1},
 		Logger:        quietLogger(),
 	})
 	op, err := consumer.claim(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.OperationType != "consolidate" {
+	if op.OperationType != storage.OperationTypeConsolidate {
 		t.Fatalf("claimed %q, want the reserved type first", op.OperationType)
 	}
 	// With the floor met, the next claim takes the remaining work.
@@ -666,5 +667,45 @@ func TestStoreWithoutResultCapabilityStillCompletes(t *testing.T) {
 	}
 	if len(final.ResultMetadata) != 0 {
 		t.Fatalf("a store without the capability must not record metadata: %+v", final.ResultMetadata)
+	}
+}
+
+// Every wall-ceiling key must be an operation type the consumer can actually
+// claim, because the ceiling is looked up as `WallTimeouts[op.OperationType]`. A
+// key that names something else is dead weight that reads as a ceiling: the
+// reference keys its ceilings by task type for this reason, and a refresh - one
+// reflect plus its write - shares reflect's budget so that a wedged refresh
+// cannot hold its worker slot until restart.
+func TestWallCeilingsAreKeyedByClaimableOperationTypes(t *testing.T) {
+	cfg := config.FromEnv(func(string) (string, bool) { return "", false })
+	claimable := map[string]bool{
+		storage.OperationTypeConsolidate:        true,
+		storage.OperationTypeRefreshMentalModel: true,
+		storage.OperationTypeRetain:             true,
+		storage.OperationTypeWebhookDelivery:    true,
+		storage.OperationTypeDocumentExport:     true,
+		storage.OperationTypeDocumentImport:     true,
+		storage.OperationTypeTransferExport:     true,
+		storage.OperationTypeTransferImport:     true,
+		storage.OperationTypeClone:              true,
+	}
+	for key := range cfg.Worker.WallTimeouts {
+		if !claimable[key] {
+			t.Errorf("wall ceiling %q is not an operation type the consumer claims, so it bounds nothing", key)
+		}
+	}
+	// The refresh ceiling is the one this guards: it used to be keyed "reflect".
+	if cfg.Worker.WallTimeouts[storage.OperationTypeRefreshMentalModel] <= 0 {
+		t.Error("a refresh must carry a wall ceiling, or a wedged one holds its slot")
+	}
+	// And the reference key that sets it must resolve through the same entry.
+	resolved := config.FromEnv(func(key string) (string, bool) {
+		if key == config.EnvReflectWallTimeout {
+			return "120", true
+		}
+		return "", false
+	})
+	if got := resolved.Worker.WallTimeouts[storage.OperationTypeRefreshMentalModel]; got != 120*time.Second {
+		t.Errorf("HINDSIGHT_API_REFLECT_WALL_TIMEOUT set the refresh ceiling to %v, want 2m", got)
 	}
 }

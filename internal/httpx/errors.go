@@ -84,6 +84,12 @@ type ErrorEnvelope struct {
 	Detail string `json:"detail"`
 }
 
+// PayloadEnvelope is ErrorEnvelope for a detail that is not a string, which the
+// reference's envelope allows.
+type PayloadEnvelope struct {
+	Detail any `json:"detail"`
+}
+
 // Error kinds routable through the shared envelope writer.
 const (
 	KindBadRequest    = http.StatusBadRequest
@@ -101,7 +107,14 @@ const (
 type HTTPError struct {
 	Status int
 	Detail string
-	Header http.Header
+	// Payload, when non-nil, is written as the `detail` value instead of Detail's
+	// string. The reference's envelope is {"detail": <any>}: most of its errors
+	// carry a sentence there, but a few carry an object - the Memory Defense
+	// all-blocked 422 reports a `violations` list - so the envelope has to be able
+	// to express one. Detail is still set alongside it, because an error's text is
+	// what logging and Go callers read.
+	Payload any
+	Header  http.Header
 }
 
 func (e *HTTPError) Error() string { return e.Detail }

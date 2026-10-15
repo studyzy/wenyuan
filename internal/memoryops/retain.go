@@ -253,6 +253,22 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
+	// Memory Defense screens the items as the caller submitted them, before the
+	// write is converted or folded: the reference decides "every item was blocked"
+	// against the submitted count and reports each violation by its position in
+	// that list, so screening a folded list would move those positions and let one
+	// blocked item take a clean neighbour down with it.
+	bankConfig, err := h.resolveBankConfig(r.Context(), httpx.TenantOverridesFrom(r), bankID)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+		return
+	}
+	screened, err := h.applyMemoryDefense(r.Context(), bankID, bankConfig, req.Items)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+		return
+	}
+	req.Items = screened
 	write := toStorageRetainItems(bankID, req, !req.Async)
 	// A write may not carry a tag the caller cannot write, so a scoped caller
 	// cannot reach another scope's tags through a retain.
@@ -465,7 +481,9 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 	if applyStoreDocumentText(&write, bank, h.DiscardDocumentText) {
 		return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutStoredText
 	}
-	h.applyMemoryDefense(ctx, bankID, bank, &write)
+	// Memory Defense has already screened the caller's items (see Retain): it runs
+	// on the submitted list, not here, so the violation positions and the
+	// all-blocked decision describe what was sent.
 	write.Extraction = h.Extraction
 	write.Embeddings = h.Embeddings
 	return write, bank, nil
@@ -726,6 +744,17 @@ func (h *Handlers) mapWriteError(err error) error {
 			WithHeader(httpx.HeaderRetryAfter, itoa(h.DefaultRetryAfterSeconds))
 	case errors.Is(err, errAppendWithoutStoredText):
 		return httpx.NewHTTPError(httpx.KindBadRequest, errAppendWithoutStoredText.Error())
+	case errors.As(err, new(*MemoryDefenseAllBlockedError)):
+		// Every item was blocked, so nothing was written. The reference answers 422
+		// with the violations under `detail`, which is an object rather than the
+		// usual sentence; a caller needs to know which item matched what.
+		var blocked *MemoryDefenseAllBlockedError
+		_ = errors.As(err, &blocked)
+		return &httpx.HTTPError{
+			Status:  httpx.KindUnprocessable,
+			Detail:  blocked.Error(),
+			Payload: map[string]any{"violations": blocked.Violations},
+		}
 	case errors.Is(err, errBankConfigRead):
 		// The write was refused because the bank's configuration could not be
 		// read; it is retryable, and the caller learns it was not written

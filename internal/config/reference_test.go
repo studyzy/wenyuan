@@ -126,13 +126,22 @@ func expectedDefault(k referenceKey, got any) (any, bool) {
 }
 
 // TestReferenceRuntimeKeyContract is the table-driven contract for every
-// reference runtime key. For each key it asserts exactly one of the two
-// allowed outcomes:
+// reference runtime key. For each key it asserts exactly one of the allowed
+// outcomes:
 //
 //   - a resolved key changes the resolved configuration for some non-default
 //     value, proving the build acts on it; or
 //   - a refused key fails startup with an error that names it, proving a
-//     copied reference .env is rejected rather than silently ignored.
+//     copied reference .env is rejected rather than silently ignored; or
+//   - a key with UnsupportedWhen is refused for the values it cannot honour and
+//     resolved for the values it can, which is the shape a *partially*
+//     implemented key needs: the reference switches behaviour on the value, so
+//     refusing every setting would reject the value this build implements and
+//     honouring every setting would serve behaviour the operator did not ask
+//     for.
+//
+// A partially supported key must also name the value it does implement, so the
+// refusal is actionable rather than merely negative.
 func TestReferenceRuntimeKeyContract(t *testing.T) {
 	base := FromEnv(envLookup(nil))
 	if err := base.ValidateSupported(); err != nil {
@@ -144,6 +153,15 @@ func TestReferenceRuntimeKeyContract(t *testing.T) {
 			if k.Resolve == nil {
 				cfg := FromEnv(envLookup(map[string]string{k.Name: "probe"}))
 				err := cfg.ValidateUnsupported()
+				if k.UnsupportedWhen != nil && !k.UnsupportedWhen(k.Default) {
+					// The key is refused rather than resolved, but only for the
+					// values it cannot honour: setting it to its default must be
+					// accepted, or the key would be unusable.
+					values := envLookup(map[string]string{k.Name: k.Default})
+					if err := FromEnv(values).ValidateUnsupported(); err != nil {
+						t.Fatalf("%s refuses its own default (%q): %v", k.Name, k.Default, err)
+					}
+				}
 				if k.Delegated != "" {
 					// A key another package resolves must not be refused.
 					if err != nil {
@@ -167,6 +185,43 @@ func TestReferenceRuntimeKeyContract(t *testing.T) {
 						k.Name, baseValue, k.Default, want)
 				}
 			}
+			if k.UnsupportedWhen != nil {
+				// A partially supported key is its own outcome class: the value it
+				// honours is the default, so "acts on a non-default value" cannot be
+				// demonstrated. What must hold is that a value it cannot honour is
+				// refused by name, the value it does honour is accepted, and the
+				// predicate is not simply "always true" (which would mean nothing is
+				// implemented and the key should be refused outright instead).
+				if k.UnsupportedWhen(k.Default) {
+					t.Fatalf("%s refuses its own default (%q), so no configuration can use it", k.Name, k.Default)
+				}
+				refusedAny := false
+				for _, probe := range probeValues {
+					values := map[string]string{k.Name: probe}
+					for companionKey, companionValue := range probeCompanions[k.Name] {
+						values[companionKey] = companionValue
+					}
+					with := FromEnv(envLookup(values))
+					err := with.ValidateSupported()
+					if k.UnsupportedWhen(probe) {
+						refusedAny = true
+						if err == nil {
+							t.Fatalf("%s=%q must be refused", k.Name, probe)
+						}
+						if !strings.Contains(err.Error(), k.Name) {
+							t.Fatalf("refusal error does not name %s: %v", k.Name, err)
+						}
+						continue
+					}
+					if err != nil {
+						t.Fatalf("%s=%q is honoured but was refused: %v", k.Name, probe, err)
+					}
+				}
+				if !refusedAny {
+					t.Fatalf("%s declares a value-conditional refusal but no probe triggers it", k.Name)
+				}
+				return
+			}
 			for _, probe := range probeValues {
 				values := map[string]string{k.Name: probe}
 				for companionKey, companionValue := range probeCompanions[k.Name] {
@@ -182,27 +237,5 @@ func TestReferenceRuntimeKeyContract(t *testing.T) {
 			}
 			t.Fatalf("%s never changed the resolved configuration for any probe value", k.Name)
 		})
-	}
-}
-
-// The extraction mode the deployment selects must be one the extractor
-// implements: the reference refuses any other value at startup rather than
-// silently extracting in a different shape.
-func TestRetainExtractionModeValidation(t *testing.T) {
-	for _, mode := range []string{"concise", "verbose", "custom", "verbatim", "chunks", "CONCISE"} {
-		if !ValidRetainExtractionMode(mode) {
-			t.Fatalf("%q must be accepted", mode)
-		}
-	}
-	for _, mode := range []string{"", "concise-ish", "structured"} {
-		if ValidRetainExtractionMode(mode) {
-			t.Fatalf("%q must be refused", mode)
-		}
-	}
-	if got := FromEnv(envMap(nil)).RetainExtractionMode; got != DefaultRetainExtractionMode {
-		t.Fatalf("default mode = %q", got)
-	}
-	if got := FromEnv(envMap(map[string]string{EnvRetainExtractionMode: "verbose"})).RetainExtractionMode; got != "verbose" {
-		t.Fatalf("resolved mode = %q", got)
 	}
 }

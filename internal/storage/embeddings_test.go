@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubEmbedder returns a fixed-width vector per input, so the retain write
@@ -370,5 +371,67 @@ func TestMemoryMaintenanceQueuesAreEmpty(t *testing.T) {
 	entities, err := store.DrainEntityMaintenance(ctx, 10)
 	if err != nil || len(entities) != 0 {
 		t.Fatalf("entity drain = %v (err %v)", entities, err)
+	}
+}
+
+// The indexed text is the reference's augmentation, field for field. Each case
+// here is a way the augmentation is a *retrieval* signal rather than cosmetic:
+// the date a fact names has to be the date embedded, a span has to be reachable
+// from either end, and a fact with no date must not claim one.
+func TestIndexedEmbeddingTextMatchesTheReferenceAugmentation(t *testing.T) {
+	jan := time.Date(2021, 1, 4, 0, 0, 0, 0, time.UTC)
+	mar := time.Date(2021, 3, 9, 0, 0, 0, 0, time.UTC)
+	entities := []RetainEntity{{Text: "Alice"}, {Text: "Berlin"}}
+
+	cases := []struct {
+		name string
+		unit MemoryUnit
+		want string
+	}{
+		{
+			name: "a point in time names the month it happened",
+			unit: MemoryUnit{Text: "Alice moved to Berlin", OccurredStart: &jan},
+			want: "Alice moved to Berlin (happened in January 2021)",
+		},
+		{
+			name: "a span reads as a range",
+			unit: MemoryUnit{Text: "Alice lived in Berlin", OccurredStart: &jan, OccurredEnd: &mar},
+			want: "Alice lived in Berlin (happened from January 2021 to March 2021)",
+		},
+		{
+			name: "a span whose end equals its start is a point",
+			unit: MemoryUnit{Text: "Alice visited", OccurredStart: &jan, OccurredEnd: &jan},
+			want: "Alice visited (happened in January 2021)",
+		},
+		{
+			name: "no occurred start falls back to the mention time, never the clock",
+			unit: MemoryUnit{Text: "Alice moved", MentionedAt: &mar},
+			want: "Alice moved (happened in March 2021)",
+		},
+		{
+			name: "no date at all leaves the text unaugmented",
+			unit: MemoryUnit{Text: "Alice likes cellos"},
+			want: "Alice likes cellos",
+		},
+		{
+			name: "an end without a start still reads as a range",
+			unit: MemoryUnit{Text: "Alice stayed", MentionedAt: &jan, OccurredEnd: &mar},
+			want: "Alice stayed (happened from January 2021 to March 2021)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := indexedEmbeddingText(tc.unit, nil); got != tc.want {
+				t.Fatalf("indexedEmbeddingText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Entity names are a bracketed, comma-joined field: they are how a label like
+	// "kind:rule" reaches the index without being read as part of the sentence.
+	got := indexedEmbeddingText(MemoryUnit{Text: "Alice moved to Berlin", OccurredStart: &jan}, entities)
+	want := "Alice moved to Berlin (happened in January 2021) [Alice, Berlin]"
+	if got != want {
+		t.Fatalf("indexedEmbeddingText with entities = %q, want %q", got, want)
 	}
 }

@@ -30,3 +30,8 @@ vendor/
 .clean-room/
 .codebuddy/
 graphify-out/
+
+# The scripts/ helpers are Python; running them leaves bytecode beside the
+# sources, which is a byproduct rather than something to commit.
+__pycache__/
+*.pyc

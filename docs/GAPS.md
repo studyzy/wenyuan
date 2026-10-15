@@ -172,8 +172,8 @@ read_mental_models → expand → done`）；`internal/reflect/runner.go` 实现
 
 **现状**：`cmd/worker` 存在；`internal/worker/` 实现 claim → process →
 complete/retry 循环；`internal/app/worker.go` 的 `archiveProcessor`
-按 `OperationType` 分派（transfer-import / document-import /
-transfer-export / document-export / clone / consolidate）。
+按 `OperationType` 分派（export_bank / import_bank /
+export_documents / import_documents / clone_bank / consolidation）。
 
 - 证据：`cmd/worker/`、`internal/worker/`、`internal/app/worker.go:30-45`。
 - Docker 镜像含 server / worker / bankctl 三个入口（见 D4）。

@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // This file records the reference service's runtime (non-provider) environment
 // keys and what this build does with each one.
 //
@@ -31,6 +33,12 @@ type referenceKey struct {
 	// Reason is a short note for a refused key, naming the subsystem it belongs
 	// to so the operator knows what they asked for.
 	Reason string
+	// UnsupportedWhen refuses the key for the values it accepts rather than for
+	// being set at all. It is for a key this build honours *partially*: the
+	// reference switches behaviour on the value, so refusing every setting would
+	// reject the value this build does implement, and honouring every setting
+	// would serve behaviour the operator did not ask for.
+	UnsupportedWhen func(value string) bool
 	// Divergent, when non-empty, explains why this build's resolved default
 	// intentionally differs from the reference's Default. It is the only way a
 	// resolved key may skip the table test's default check, and it must say why.
@@ -194,9 +202,12 @@ var referenceRuntimeKeys = []referenceKey{
 	{Name: EnvConsolidationRecallBudget, Default: "low", Reason: "the consolidation recall budget is not implemented"},
 	{Name: EnvConsolidationMaxAttempts, Default: "3", Reason: "the consolidation attempt budget is not implemented"},
 	{Name: EnvConsolidationStrategies, Default: "", Reason: "named consolidation strategies are not implemented"},
-	{Name: EnvConsolidationWallTimeout, Default: "7200", Resolve: func(c Config) any { return c.Worker.WallTimeouts["consolidate"] }},
+	{Name: EnvConsolidationWallTimeout, Default: "7200", Resolve: func(c Config) any { return c.Worker.WallTimeouts["consolidation"] }},
 	{Name: EnvRetainWallTimeout, Default: "3600", Resolve: func(c Config) any { return c.Worker.WallTimeouts["retain"] }},
-	{Name: EnvReflectWallTimeout, Default: "300", Resolve: func(c Config) any { return c.Worker.WallTimeouts["reflect"] }},
+	// The reference key names the *budget*, and the ceiling it sets belongs to the
+	// operation that spends it: a refresh is one reflect plus its write, so the
+	// map is keyed by the operation type and this key resolves through it.
+	{Name: EnvReflectWallTimeout, Default: "300", Resolve: func(c Config) any { return c.Worker.WallTimeouts["refresh_mental_model"] }},
 
 	// --- Maintenance cadences ---
 	{Name: EnvRetentionSweepIntervalSeconds, Default: "3600", Resolve: func(c Config) any { return c.Maintenance.RetentionSweepInterval }},
@@ -219,8 +230,28 @@ var referenceRuntimeKeys = []referenceKey{
 	{Name: EnvANNMaxScanTuples, Default: "4000", Reason: "the ANN scan-tuple cap is not implemented"},
 
 	// --- Text search ---
-	{Name: EnvTextSearchExtension, Default: "native", Resolve: func(c Config) any { return c.TextSearchExtension }},
-	{Name: EnvTextSearchExtensionNativeLanguage, Default: "english", Reason: "the native text-search dictionary is not implemented"},
+	{Name: EnvTextSearchExtension, Default: "native",
+		Resolve: func(c Config) any { return c.TextSearchExtension },
+		// The reference switches its whole text-search implementation on this
+		// key (native tsvector, vchord, ParadeDB pg_search, pgroonga,
+		// pg_textsearch) and rebuilds the vectors and their indexes accordingly.
+		// This build serves the native backend only, so any other value would be
+		// accepted and then ignored - the one outcome the unsupported-key
+		// mechanism exists to prevent.
+		UnsupportedWhen: func(value string) bool {
+			return !strings.EqualFold(strings.TrimSpace(value), DefaultTextSearchExtension)
+		},
+		Reason: "only the native tsvector backend is implemented"},
+	{Name: EnvTextSearchExtensionNativeLanguage, Default: "english",
+		// The dictionary is embedded in the vector expression this build writes
+		// and in every query it makes, and the reference's generated columns
+		// carry it too, so a dictionary is a schema-level choice rather than a
+		// query-level one. Only the default is honoured; naming it explicitly is
+		// not a divergence and is therefore accepted.
+		UnsupportedWhen: func(value string) bool {
+			return !strings.EqualFold(strings.TrimSpace(value), "english")
+		},
+		Reason: "only the english text-search dictionary is implemented"},
 	{Name: EnvTextSearchPGFunctionSchema, Default: "paradedb", Reason: "the ParadeDB pg_search schema is not implemented"},
 	{Name: EnvTextSearchPGTokenizer, Default: "", Reason: "the ParadeDB pg_search tokenizer is not implemented"},
 	{Name: EnvTokenizerEncoding, Default: DefaultTokenizerEncoding, Resolve: func(c Config) any { return c.TokenizerEncoding }},
@@ -247,7 +278,7 @@ var referenceRuntimeKeys = []referenceKey{
 	{Name: EnvWorkerPollIntervalMS, Default: "500", Resolve: func(c Config) any { return c.Worker.PollInterval }},
 	{Name: EnvWorkerTaskRetryBackoffSecs, Default: "60", Resolve: func(c Config) any { return c.Worker.InitialBackoff }},
 	{Name: EnvWorkerHTTPPort, Default: "8889", Resolve: func(c Config) any { return c.Worker.HTTPPort }},
-	{Name: EnvWorkerConsolidationReservedSlots, Default: "2", Resolve: func(c Config) any { return c.Worker.ReservedSlots["consolidate"] }},
+	{Name: EnvWorkerConsolidationReservedSlots, Default: "2", Resolve: func(c Config) any { return c.Worker.ReservedSlots["consolidation"] }},
 	{Name: EnvWorkerConsolidationBankPriority, Default: "", Reason: "consolidation bank priority is not implemented"},
 	{Name: EnvWorkerRetainReservedSlots, Default: "0", Reason: "per-type worker slot reservations beyond consolidation are not implemented"},
 	{Name: EnvWorkerFileConvertRetainReservedSlots, Default: "0", Reason: "per-type worker slot reservations beyond consolidation are not implemented"},

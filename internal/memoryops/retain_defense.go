@@ -3,6 +3,7 @@ package memoryops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -401,29 +402,64 @@ func fingerprintValue(value string) string {
 // A blocked item is dropped from the write. There is no existing response
 // field that reports the drop, so the caller is not told through the response;
 // the decision is recorded in the queued memory_defense.triggered delivery.
-func (h *Handlers) applyMemoryDefense(ctx context.Context, bankID string, bank storage.Bank, write *storage.RetainRequest) {
+func (h *Handlers) applyMemoryDefense(ctx context.Context, bankID string, bank storage.Bank, items []RetainItem) ([]RetainItem, error) {
 	policy, err := ParseDefensePolicy(bank.Config["memory_defense"])
 	if err != nil || !policy.Enabled {
-		return
+		return items, nil
 	}
 	rule, ok := policy.sensitiveDataRule()
 	if !ok || rule.Action == DefenseActionAllow {
-		return
+		return items, nil
 	}
-	kept := make([]storage.RetainItem, 0, len(write.Items))
-	for _, item := range write.Items {
-		decision := screenContent(policy, item.Content)
+	// The items screened are the ones the caller submitted, before any folding:
+	// the reference decides "every item was blocked" against the submitted count
+	// and reports each violation by its position in that list.
+	submitted := len(items)
+	kept := make([]RetainItem, 0, submitted)
+	violations := make([]MemoryDefenseViolation, 0)
+	for index, item := range items {
+		decision := screenContent(policy, item.Content.Flatten())
 		switch decision.Action {
 		case DefenseActionRedact:
-			item.Content = decision.RedactedContent
+			item.Content = Content{Text: decision.RedactedContent}
 			h.notifyMemoryDefense(ctx, bankID, item.DocumentID, decision)
 		case DefenseActionBlock:
 			h.notifyMemoryDefense(ctx, bankID, item.DocumentID, decision)
+			violations = append(violations, MemoryDefenseViolation{
+				Index: index, Detector: decision.Detector, Message: decision.Message,
+			})
 			continue
 		}
 		kept = append(kept, item)
 	}
-	write.Items = kept
+	// A batch the policy blocked in full is refused rather than accepted as an
+	// empty write: the caller asked for something to be remembered and nothing
+	// was, which is a client error about their content, not a successful no-op.
+	// A partial block proceeds with the survivors, which the caller sees as a
+	// smaller result.
+	if len(violations) == submitted {
+		return nil, &MemoryDefenseAllBlockedError{Violations: violations}
+	}
+	return kept, nil
+}
+
+// MemoryDefenseViolation is one item a Memory Defense rule blocked, in the
+// shape the reference reports it in: the item's position in the submitted
+// batch, the detector that matched, and its message.
+type MemoryDefenseViolation struct {
+	Index    int    `json:"index"`
+	Detector string `json:"detector"`
+	Message  string `json:"message"`
+}
+
+// MemoryDefenseAllBlockedError reports that every item in a batch was blocked.
+// It is a client error (the reference answers 422 with these violations).
+type MemoryDefenseAllBlockedError struct {
+	Violations []MemoryDefenseViolation
+}
+
+func (e *MemoryDefenseAllBlockedError) Error() string {
+	return fmt.Sprintf("all %d items blocked by Memory Defense policy", len(e.Violations))
 }
 
 // notifyMemoryDefense enqueues one memory_defense.triggered delivery. The

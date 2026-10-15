@@ -56,17 +56,24 @@ type WorkerConfig struct {
 // The reference name is read first and the earlier name is honoured as a
 // fallback, so an environment written either way resolves the same ceiling.
 func resolveWallTimeouts(lookup func(string) (string, bool)) map[string]time.Duration {
+	// The map is keyed by *operation type*, because that is what the consumer
+	// looks up (`WallTimeouts[op.OperationType]`). A refresh is one reflect plus
+	// its write, so it shares reflect's budget and the ceiling is keyed by the
+	// operation a refresh actually claims - the reference records the same
+	// reasoning, and without it a wedged refresh held its worker slot until
+	// restart (#4581). Keying it "reflect" meant no claimed operation ever
+	// matched, so refreshes ran unbounded.
 	out := map[string]time.Duration{
 		// The reference's per-operation ceilings, applied when neither the
 		// reference key nor the legacy alias is set.
-		"retain":      DefaultRetainWallTimeoutS * time.Second,
-		"consolidate": DefaultConsolidationWallTimeoutS * time.Second,
-		"reflect":     DefaultReflectWallTimeoutS * time.Second,
+		"retain":               DefaultRetainWallTimeoutS * time.Second,
+		"consolidation":        DefaultConsolidationWallTimeoutS * time.Second,
+		"refresh_mental_model": DefaultReflectWallTimeoutS * time.Second,
 	}
 	for _, spec := range []struct{ ref, legacy, opType string }{
 		{EnvRetainWallTimeout, EnvWorkerRetainWallSeconds, "retain"},
-		{EnvConsolidationWallTimeout, EnvWorkerConsolidationWallSeconds, "consolidate"},
-		{EnvReflectWallTimeout, EnvWorkerReflectWallSeconds, "reflect"},
+		{EnvConsolidationWallTimeout, EnvWorkerConsolidationWallSeconds, "consolidation"},
+		{EnvReflectWallTimeout, EnvWorkerReflectWallSeconds, "refresh_mental_model"},
 	} {
 		key := spec.ref
 		if _, ok := lookup(key); !ok {
@@ -92,10 +99,10 @@ const (
 // floor defaults to two, matching the reference, so a bank mid-bulk-ingest does
 // not starve observation folding.
 func resolveReservedSlots(lookup func(string) (string, bool)) map[string]int {
-	out := map[string]int{"consolidate": 2}
+	out := map[string]int{"consolidation": 2}
 	if value, ok := lookup(EnvWorkerConsolidationReservedSlots); ok {
 		if slots := intFromString(value); slots >= 0 {
-			out["consolidate"] = slots
+			out["consolidation"] = slots
 		}
 	}
 	return out
