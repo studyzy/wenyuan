@@ -5,13 +5,12 @@ import { describe, expect, it } from "vitest";
 /**
  * UI primitive coverage.
  *
- * The primitives are client components built on React, Radix, cmdk and Recharts.
- * To keep this suite runnable offline (no DOM runtime required) it verifies the
+ * The primitives are client components built on React, Radix and cmdk. To keep
+ * this suite runnable offline (no DOM runtime required) it verifies the
  * primitive surface structurally rather than rendering it. Rendering coverage
  * belongs to a browser-level stage.
  */
 const UI_DIR = join(process.cwd(), "components/ui");
-const CHARTS_DIR = join(process.cwd(), "components/charts");
 
 describe("shared UI primitives", () => {
   it("declares the primitive modules", () => {
@@ -94,14 +93,5 @@ describe("shared UI primitives", () => {
   it("ships the command palette on cmdk and the toasts on sonner", () => {
     expect(readFileSync(join(UI_DIR, "command.tsx"), "utf8")).toContain("cmdk");
     expect(readFileSync(join(UI_DIR, "sonner.tsx"), "utf8")).toContain("sonner");
-  });
-});
-
-describe("chart wrappers", () => {
-  it("declares Recharts-based chart wrappers", () => {
-    for (const file of ["memories-timeseries.tsx", "counts-bar.tsx", "index.ts"]) {
-      expect(existsSync(join(CHARTS_DIR, file)), file).toBe(true);
-    }
-    expect(readFileSync(join(CHARTS_DIR, "memories-timeseries.tsx"), "utf8")).toContain("recharts");
   });
 });
