@@ -1,8 +1,8 @@
 package cli
 
-// The `ui` command launches the web console (the console/ Next.js app) from
+// The `ui` command launches the web frontend (the frontend/ Next.js app) from
 // the repository tree and points it at the configured API URL. It is pure
-// process orchestration: the console is a separate npm package that the Go
+// process orchestration: the frontend is a separate npm package that the Go
 // module never builds or imports. Process primitives sit behind injectable
 // hooks so tests can verify wiring without spawning npm.
 
@@ -18,17 +18,17 @@ import (
 	"syscall"
 )
 
-// Environment variables the console reads; the CLI fills both from its own
-// configuration so the console talks to the same API as every other command.
+// Environment variables the frontend reads; the CLI fills both from its own
+// configuration so the frontend talks to the same API as every other command.
 const (
-	consoleURLEnv = "HINDSIGHT_CP_DATAPLANE_API_URL"
-	consoleKeyEnv = "HINDSIGHT_CP_DATAPLANE_API_KEY"
+	frontendURLEnv = "HINDSIGHT_CP_DATAPLANE_API_URL"
+	frontendKeyEnv = "HINDSIGHT_CP_DATAPLANE_API_KEY"
 )
 
 // uiHooks bundles the process primitives; tests replace the variable.
 var uiHooks = uiHooksType{
 	lookPath: exec.LookPath,
-	run:      runConsoleProcess,
+	run:      runFrontendProcess,
 }
 
 type uiHooksType struct {
@@ -39,9 +39,9 @@ type uiHooksType struct {
 	run func(ctx context.Context, dir, exe string, env []string, stdin io.Reader, stdout, stderr *os.File) (int, error)
 }
 
-// runConsoleProcess is the default run hook: exec npm, forward termination
+// runFrontendProcess is the default run hook: exec npm, forward termination
 // signals, and propagate the child's exit status.
-func runConsoleProcess(ctx context.Context, dir, exe string, env []string, stdin io.Reader, stdout, stderr *os.File) (int, error) {
+func runFrontendProcess(ctx context.Context, dir, exe string, env []string, stdin io.Reader, stdout, stderr *os.File) (int, error) {
 	cmd := exec.Command(exe, "run", "dev")
 	cmd.Dir = dir
 	cmd.Env = env
@@ -75,10 +75,10 @@ func runConsoleProcess(ctx context.Context, dir, exe string, env []string, stdin
 
 // RegisterUICommand wires the top-level `ui` command.
 func RegisterUICommand(r *Registry) {
-	cmd := r.Sub("ui", "Launch the web console UI")
-	cmd.Flags().String("dir", "", "path to the console directory (default: ./console or ../console)")
+	cmd := r.Sub("ui", "Launch the web frontend")
+	cmd.Flags().String("dir", "", "path to the frontend directory (default: ./frontend or ../frontend)")
 	cmd.Action(func(ctx context.Context, d *Deps) error {
-		dir, err := uiConsoleDir(d)
+		dir, err := uiFrontendDir(d)
 		if err != nil {
 			return err
 		}
@@ -86,18 +86,18 @@ func RegisterUICommand(r *Registry) {
 	})
 }
 
-// uiConsoleDir resolves the console directory: the --dir flag when given,
-// otherwise ./console then ../console relative to the working directory.
-func uiConsoleDir(d *Deps) (string, error) {
+// uiFrontendDir resolves the frontend directory: the --dir flag when given,
+// otherwise ./frontend then ../frontend relative to the working directory.
+func uiFrontendDir(d *Deps) (string, error) {
 	if f := d.Flags.Lookup("dir"); f != nil && f.Value.String() != "" {
 		dir := f.Value.String()
-		if !uiIsConsole(dir) {
-			return "", fmt.Errorf("no console package (package.json) found at %s", dir)
+		if !uiIsFrontend(dir) {
+			return "", fmt.Errorf("no frontend package (package.json) found at %s", dir)
 		}
 		return dir, nil
 	}
-	for _, candidate := range []string{"console", filepath.Join("..", "console")} {
-		if uiIsConsole(candidate) {
+	for _, candidate := range []string{"frontend", filepath.Join("..", "frontend")} {
+		if uiIsFrontend(candidate) {
 			abs, err := filepath.Abs(candidate)
 			if err != nil {
 				return candidate, nil
@@ -105,36 +105,38 @@ func uiConsoleDir(d *Deps) (string, error) {
 			return abs, nil
 		}
 	}
-	return "", errors.New("console directory not found: run from the repository root or pass --dir")
+	return "", errors.New("frontend directory not found: run from the repository root or pass --dir")
 }
 
-// uiIsConsole reports whether dir looks like the console npm package.
-func uiIsConsole(dir string) bool {
+// uiIsFrontend reports whether dir looks like the frontend npm package.
+func uiIsFrontend(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, "package.json"))
 	return err == nil && !info.IsDir()
 }
 
-// uiLaunch starts the console dev server with the API URL and key exported
+// uiLaunch starts the frontend dev server with the API URL and key exported
 // into its environment, streaming its output to the CLI's own streams.
 func uiLaunch(ctx context.Context, d *Deps, dir string) error {
 	npm, err := uiHooks.lookPath("npm")
 	if err != nil {
-		return errors.New("npm is required to run the console but was not found on PATH")
+		return errors.New("npm is required to run the frontend but was not found on PATH")
 	}
 	env := append(os.Environ(),
-		consoleURLEnv+"="+d.Config.APIURL,
+		frontendURLEnv+"="+d.Config.APIURL,
 	)
 	if d.Config.APIKey != "" {
-		env = append(env, consoleKeyEnv+"="+d.Config.APIKey)
+		env = append(env, frontendKeyEnv+"="+d.Config.APIKey)
 	}
-	d.UI.Plain("Starting console from %s (API: %s, port 9999)...", dir, d.Config.APIURL)
+	// The port is the `-p` in frontend/package.json's `dev` script; the message
+	// restates it so the operator knows where the frontend will listen.
+	d.UI.Plain("Starting frontend from %s (API: %s, port 19999)...", dir, d.Config.APIURL)
 	d.UI.Plain("Press Ctrl+C to stop.")
 	code, err := uiHooks.run(ctx, dir, npm, env, d.Stdin, stdoutFile(d), stderrFile(d))
 	if err != nil {
 		return err
 	}
 	if code != 0 {
-		return fmt.Errorf("console exited with status %d", code)
+		return fmt.Errorf("frontend exited with status %d", code)
 	}
 	return nil
 }

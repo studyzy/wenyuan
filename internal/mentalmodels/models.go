@@ -19,7 +19,7 @@ type Model struct {
 	Description string `json:"description"`
 	SourceQuery string `json:"source_query,omitempty"`
 	// Content is always present, as the empty string before a refresh has
-	// written anything: the console's detail pane reads its length and a client
+	// written anything: the frontend's detail pane reads its length and a client
 	// that has to treat an absent key as empty would be one more place to guess.
 	Content   string   `json:"content"`
 	Tags      []string `json:"tags"`

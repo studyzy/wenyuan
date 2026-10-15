@@ -1,8 +1,8 @@
 package cli
 
-// Tests for the `ui` command wiring: console directory resolution, environment
+// Tests for the `ui` command wiring: frontend directory resolution, environment
 // construction, and exit-code propagation. The process hooks are replaced, so
-// no npm or console tree is needed.
+// no npm or frontend tree is needed.
 
 import (
 	"bytes"
@@ -24,16 +24,16 @@ type uiCapture struct {
 	code   int
 }
 
-func TestUILaunchesConsoleWithAPIEnv(t *testing.T) {
+func TestUILaunchesFrontendWithAPIEnv(t *testing.T) {
 	root := t.TempDir()
-	consoleDir := filepath.Join(root, "console")
-	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+	frontendDir := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"name":"console"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "package.json"), []byte(`{"name":"frontend"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Work relative to root so the default ./console resolution hits.
+	// Work relative to root so the default ./frontend resolution hits.
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -77,27 +77,27 @@ func TestUILaunchesConsoleWithAPIEnv(t *testing.T) {
 	if err := cmd.Execute(deps.Ctx, deps); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if captured.dir != consoleDir {
-		t.Errorf("dir = %q, want %q", captured.dir, consoleDir)
+	if captured.dir != frontendDir {
+		t.Errorf("dir = %q, want %q", captured.dir, frontendDir)
 	}
 	if filepath.Base(captured.exe) != "npm" {
 		t.Errorf("exe = %q, want npm", captured.exe)
 	}
-	if !uiEnvHas(captured.env, consoleURLEnv+"=http://api.local:8888") {
-		t.Errorf("env missing %s, got %v", consoleURLEnv, captured.env)
+	if !uiEnvHas(captured.env, frontendURLEnv+"=http://api.local:8888") {
+		t.Errorf("env missing %s, got %v", frontendURLEnv, captured.env)
 	}
-	if !uiEnvHas(captured.env, consoleKeyEnv+"=sekrit") {
-		t.Errorf("env missing %s, got %v", consoleKeyEnv, captured.env)
+	if !uiEnvHas(captured.env, frontendKeyEnv+"=sekrit") {
+		t.Errorf("env missing %s, got %v", frontendKeyEnv, captured.env)
 	}
 }
 
 func TestUIWithoutKeyOmitsKeyEnv(t *testing.T) {
 	root := t.TempDir()
-	consoleDir := filepath.Join(root, "console")
-	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+	frontendDir := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "package.json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	previous, _ := os.Getwd()
@@ -140,13 +140,13 @@ func TestUIWithoutKeyOmitsKeyEnv(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	for _, entry := range captured.env {
-		if strings.HasPrefix(entry, consoleKeyEnv+"=") {
+		if strings.HasPrefix(entry, frontendKeyEnv+"=") {
 			t.Errorf("key env set without a configured key: %s", entry)
 		}
 	}
 }
 
-func TestUIMissingConsoleDir(t *testing.T) {
+func TestUIMissingFrontendDir(t *testing.T) {
 	root := t.TempDir()
 	previous, _ := os.Getwd()
 	if err := os.Chdir(root); err != nil {
@@ -184,18 +184,18 @@ func TestUIMissingConsoleDir(t *testing.T) {
 		UI:     NewUI(io.Discard, io.Discard, ColorEnv{}),
 	}
 	err = cmd.Execute(deps.Ctx, deps)
-	if err == nil || !strings.Contains(err.Error(), "console directory not found") {
-		t.Fatalf("err = %v, want console directory not found", err)
+	if err == nil || !strings.Contains(err.Error(), "frontend directory not found") {
+		t.Fatalf("err = %v, want frontend directory not found", err)
 	}
 }
 
 func TestUIExitCodePropagation(t *testing.T) {
 	root := t.TempDir()
-	consoleDir := filepath.Join(root, "console")
-	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+	frontendDir := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "package.json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	previous, _ := os.Getwd()
@@ -240,11 +240,11 @@ func TestUIExitCodePropagation(t *testing.T) {
 
 func TestUIMissingNPM(t *testing.T) {
 	root := t.TempDir()
-	consoleDir := filepath.Join(root, "console")
-	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+	frontendDir := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "package.json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	previous, _ := os.Getwd()

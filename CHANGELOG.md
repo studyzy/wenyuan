@@ -7,17 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The control-plane console is now the reference frontend, copied rather than
-  reconstructed: `console/components/*` (the views, modals and editors),
+- The control-plane frontend is copied from the reference rather than
+  reconstructed: `frontend/components/*` (the views, modals and editors),
   `app/[locale]/**` with the reference's `localePrefix: "never"` routing (clean
   URLs, the locale never a path segment), its `tests/**` suite (43 files, run
   beside ours), the 14 lib modules the views need, and the merged message
   catalogs (2446 keys per locale, up from 471, with a coverage test that fails if
   a used key is missing). Product-visible strings stay ours; the deployment
   contract — `HINDSIGHT_CP_*`, the session cookie names, the health route's
-  `SERVICE_NAME` — is byte-identical. `scripts/console_integration.sh` is the new
+  `SERVICE_NAME` — is byte-identical. `scripts/frontend_integration.sh` is the new
   cross-stack gate: it starts this service on a private database, builds and
-  serves the console against it, and proves the access gate, the BFF read and
+  serves the frontend against it, and proves the access gate, the BFF read and
   write paths, and server-side page rendering.
 
 
@@ -343,7 +343,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Async operation types carry the reference's names: `consolidation`,
   `export_documents`, `import_documents`, `export_bank`, `import_bank`,
-  `clone_bank`. They are a public field on the operations API and the console
+  `clone_bank`. They are a public field on the operations API and the frontend
   filters and labels on them, so the six values this service had invented
   (`consolidate`, `document_export`, `document_import`, `transfer_export`,
   `transfer_import`, `clone`) were a wire divergence — the copied operations view
@@ -366,7 +366,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than answered 200 having written nothing. The screen runs on the items
   the caller submitted, before folding, so a blocked item no longer takes a clean
   neighbour with it and the reported positions are the caller's.
-- The console's `useAsyncData` keyed its requests by the identity of a caller's
+- The frontend's `useAsyncData` keyed its requests by the identity of a caller's
   inline dependency array, so every panel refetched on every render (211 requests
   in 3s); it is value-keyed now, with a regression test.
 

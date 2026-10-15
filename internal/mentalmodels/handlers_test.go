@@ -147,7 +147,7 @@ func TestMentalModelLifecycle(t *testing.T) {
 	}
 
 	// A model no refresh has written to yet still carries `content`, as the empty
-	// string. The console's detail pane counts its characters, so a response that
+	// string. The frontend's detail pane counts its characters, so a response that
 	// omits the key crashes the pane instead of showing an empty one.
 	fresh := send(mux, http.MethodPost, base, `{"name":"untouched","source_query":"nothing yet"}`)
 	var freshResp CreateResponse

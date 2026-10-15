@@ -112,7 +112,7 @@ func TestPostgresParityRetainRecallReflect(t *testing.T) {
 		t.Fatalf("retain = %d, body %s", rec.Code, rec.Body.String())
 	}
 
-	// The read routes the console depends on.
+	// The read routes the frontend depends on.
 	for _, path := range []string{
 		"/v1/default/banks/" + bank + "/documents",
 		"/v1/default/banks/" + bank + "/entities",
@@ -182,7 +182,7 @@ func TestPostgresParityRetainRecallReflect(t *testing.T) {
 // a scan of an in-process map.
 //
 // The tree is served through the composed handler, so this covers the whole
-// path a console takes: parse the compound filter, read the bank's vocabulary,
+// path a frontend takes: parse the compound filter, read the bank's vocabulary,
 // resolve the token against it, and match the resolved tags against each page.
 func TestPostgresKnowledgeFuzzyTagGroups(t *testing.T) {
 	a := postgresParityApp(t)

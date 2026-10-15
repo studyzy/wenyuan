@@ -104,7 +104,7 @@ wenyuan-admin memory recall BANK_ID "query"
 wenyuan-admin knowledge-base tree BANK_ID
 wenyuan-admin fs mount BANK_ID /path/to/folder   # live markdown mirror
 wenyuan-admin explore                            # interactive TUI
-wenyuan-admin ui                                 # launch the web console
+wenyuan-admin ui                                 # launch the web frontend
 ```
 
 Output is `pretty` by default; `-o json` / `-o yaml` switch to machine

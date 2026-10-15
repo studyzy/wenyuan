@@ -10,7 +10,7 @@ import (
 // consumer can tell which kind of work it is claiming.
 //
 // The string is the wire contract: it is what `operation_type` carries in the
-// operations API, what the console filters and labels on, and what the
+// operations API, what the frontend filters and labels on, and what the
 // service's own queries match against. The Go identifier is free to differ.
 const (
 	OperationTypeDocumentExport = "export_documents"
@@ -36,7 +36,7 @@ const (
 	// its own — an upload is converted at ingress and queued as a retain, and
 	// graph and vector-index upkeep runs as a periodic maintenance job rather
 	// than an operation — so nothing here enqueues them. They are declared so
-	// the operation-type vocabulary this service serves, and the console that
+	// the operation-type vocabulary this service serves, and the frontend that
 	// filters on it, stays in step with the reference.
 	OperationTypeFileConvertRetain      = "file_convert_retain"
 	OperationTypeGraphMaintenance       = "graph_maintenance"
