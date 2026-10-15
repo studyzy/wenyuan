@@ -7,6 +7,13 @@
 #
 # Every probe asserts an observable wire fact: status code, header, or JSON
 # body. It writes nothing outside a temp dir.
+#
+# **Give it a database nothing else has used.** Two probes depend on the bank
+# being empty (a timeseries bucket counts the one memory this run writes, and a
+# knowledge page is created for the first time), so re-running against the same
+# database reports those two as failures that are state, not regressions. Point
+# HINDSIGHT_API_DATABASE_URL at a fresh database (or one you have just dropped and
+# recreated) and pass a binary built with -tags pgx.
 set -u
 
 BIN=${1:?usage: contract_smoke.sh <server-binary>}
