@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -176,7 +177,8 @@ func (s *Server) reflect(ctx context.Context, args map[string]any) (any, error) 
 	return map[string]any{"bank_id": bankID, "answer": outcome.Answer}, nil
 }
 
-// listBanks lists the server's banks.
+// listBanks lists the server's banks. The rows are the same public list shape
+// the HTTP collection route serves, so a client reads one contract.
 func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error) {
 	page, err := s.store.ListBanks(ctx, storage.BankQuery{
 		Search: stringArgument(args, "query"),
@@ -186,11 +188,41 @@ func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
-	banks := make([]map[string]any, 0, len(page.Banks))
+	rows := make([]bankapi.BankListRow, 0, len(page.Banks))
 	for _, bank := range page.Banks {
-		banks = append(banks, map[string]any{"id": bank.BankID, "name": bank.Name, "mission": bank.Mission})
+		rows = append(rows, bankapi.ToListRow(bank, s.primaryAlias(ctx, bank.BankID), page.MatchedAliases[bank.BankID]))
 	}
-	return map[string]any{"banks": banks, "total": page.Total}, nil
+	return map[string]any{"banks": rows, "total": page.Total, "limit": page.Limit, "offset": page.Offset}, nil
+}
+
+// primaryAlias names the bank's promoted alias, or nil when it is presented
+// under its own id. It is the request-free form of the HTTP list handler's
+// displayAlias.
+func (s *Server) primaryAlias(ctx context.Context, bankID string) *string {
+	aliases, err := s.store.ListAliases(ctx, bankID)
+	if err != nil {
+		return nil
+	}
+	for _, alias := range aliases {
+		if alias.Primary {
+			value := alias.Alias
+			return &value
+		}
+	}
+	return nil
+}
+
+// bankProfile is the profile shape the reference's bank MCP tools return: the
+// identity, the display name, the graded traits and the mission. The traits are
+// normalized so a bank stored without them reads as the defaults, matching the
+// HTTP profile.
+func bankProfile(bank storage.Bank) map[string]any {
+	return map[string]any{
+		"bank_id":     bank.BankID,
+		"name":        bank.Name,
+		"disposition": bank.NormalizedDisposition(),
+		"mission":     bank.Mission,
+	}
 }
 
 // createBank creates a bank.
@@ -207,7 +239,7 @@ func (s *Server) createBank(ctx context.Context, args map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"bank_id": bank.BankID, "name": bank.Name}, nil
+	return bankProfile(bank), nil
 }
 
 // getBank reads one bank.
@@ -220,7 +252,7 @@ func (s *Server) getBank(ctx context.Context, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"bank_id": bank.BankID, "name": bank.Name, "mission": bank.Mission, "disposition": bank.Disposition}, nil
+	return bankProfile(bank), nil
 }
 
 // updateBank applies a partial bank update.
@@ -243,7 +275,7 @@ func (s *Server) updateBank(ctx context.Context, args map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"bank_id": bank.BankID, "name": bank.Name}, nil
+	return bankProfile(bank), nil
 }
 
 // deleteBank removes a bank and its data.
