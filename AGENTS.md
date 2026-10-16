@@ -107,6 +107,8 @@ internal/hindsightarchive/   Hindsight export format parsing (zip)
 internal/migration/hindsight/  import an exported archive into this storage
 internal/bankadmin/    bank admin operations shared by CLI
 internal/cli/          wenyuan-admin implementation (API client only)
+frontend/              control-plane frontend (Next.js, dev on port 19999;
+                       talks to the API through BFF routes under app/api/)
 migrations/            numbered SQL migrations — authoritative but NOT what runs
 docs/                  ROADMAP, GAPS/FUNCTIONAL-GAPS, CONTRACT-AUDIT,
                        PARITY-PLAN/PARITY-SUITE, SCHEMA-ALIGNMENT, MIGRATION,
