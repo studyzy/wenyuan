@@ -8,7 +8,7 @@
 # the tag produces a server that cannot select the postgres backend, which is
 # why the tag is set here rather than left to the caller.
 
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
@@ -29,6 +29,12 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/server /usr/local/bin/server
 COPY --from=builder /out/worker /usr/local/bin/worker
 COPY --from=builder /out/bankctl /usr/local/bin/bankctl
+
+# The conventional configuration file path is etc/wenyuan.yaml relative to the
+# working directory, which is / here, so the shipped template lands where a
+# ConfigMap or a bind mount is expected to replace it. The template is checked
+# in as .yaml.example; the real file is a deployment's own and stays local.
+COPY --from=builder /src/etc/example.wenyuan.yaml /etc/wenyuan.yaml
 
 # The distroless nonroot user is uid 65532.
 USER 65532:65532

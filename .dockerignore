@@ -1,0 +1,27 @@
+# The image builds the Go server, worker and bankctl only. Everything else —
+# the Node frontend, the local deployment state, VCS metadata — stays out of
+# the build context.
+
+# VCS and editor state
+.git
+.idea
+.vscode
+
+# The Node frontend has its own build; it is not part of this image.
+frontend
+node_modules
+
+# Local deployment state and secrets: never bake a real configuration or a
+# key into an image layer.
+.env
+.env.*
+/etc/wenyuan.yaml
+
+# Repository material the Go build does not read.
+bin
+docs
+scripts
+tests
+*.md
+*.log
+*.sql.gz

@@ -1,10 +1,17 @@
-# Single-service deployment form: the API server and its queue consumer over a
-# pgvector PostgreSQL holding the schema.
+# Dependency services for a host-run wenyuan: the server, worker and bankctl
+# binaries run directly on the host (etc/wenyuan.yaml points at these ports),
+# while everything stateful or model-shaped stays in a container.
 #
-# The image is shared; the worker is the same image with a different command,
-# so both roles run identical code and configuration resolution. The database
-# is pinned to the pgvector image because the schema stores embeddings as a
-# native vector column.
+#   postgres       pgvector PostgreSQL, published on 15432 (+10000 over the
+#                  reference's own 5432, so the two can run side by side)
+#   tei-embedding  HuggingFace Text Embeddings Inference serving
+#                  intfloat/multilingual-e5-small (384 dimensions) on 18080
+#   tei-reranker   the same TEI image serving BAAI/bge-reranker-base on 18081
+#
+# First boot downloads the models into the wenyuan-tei-* volumes; subsequent
+# boots reuse them. The api service is deliberately absent: the backend is a
+# host binary, not an image — point etc/wenyuan.yaml at these ports and run
+# `go build -tags pgx ./cmd/server`.
 
 services:
   postgres:
@@ -19,29 +26,70 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - wenyuan-data:/var/lib/postgresql/data
-
-  api:
-    build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      HINDSIGHT_API_HOST: 0.0.0.0
-      HINDSIGHT_API_PORT: "8080"
-      HINDSIGHT_API_DATABASE_URL: postgresql://wenyuan:wenyuan@postgres:5432/wenyuan
-      HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP: "true"
+      # PG 18+ images manage a versioned data subdirectory, so the mount goes
+      # at /var/lib/postgresql, not .../data (see docker-library/postgres#37).
+      - wenyuan-pg18:/var/lib/postgresql
     ports:
-      - "8080:8080"
+      - "15432:5432"
 
-  worker:
-    build: .
-    command: ["/usr/local/bin/worker"]
-    depends_on:
-      postgres:
-        condition: service_healthy
+  tei-embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
+    container_name: wenyuan-tei-embedding
+    # Prod-like tuning: high request concurrency with bounded batch sizes.
+    command:
+      [
+        "--model-id", "intfloat/multilingual-e5-small",
+        "--max-concurrent-requests", "512",
+        "--max-batch-tokens", "16384",
+        "--max-client-batch-size", "32",
+        "--auto-truncate",
+      ]
     environment:
-      HINDSIGHT_API_DATABASE_URL: postgresql://wenyuan:wenyuan@postgres:5432/wenyuan
+      # TEI listens on port 80 inside the container by default.
+      PORT: "80"
+    ports:
+      # Smoke it directly:
+      #   curl 127.0.0.1:18080/embed -H 'content-type: application/json' \
+      #        -d '{"inputs":"hello world"}'
+      - "18080:80"
+    volumes:
+      - wenyuan-tei-embedding-cache:/data
+    healthcheck:
+      # The TEI image ships curl; hit its /health endpoint so dependants only
+      # start once the model is loaded and serving.
+      test: ["CMD", "curl", "-fsS", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
+    container_name: wenyuan-tei-reranker
+    # Reranking batches are larger than embedding batches (rerank inputs are
+    # query+document pairs scored in bulk during recall).
+    command:
+      [
+        "--model-id", "BAAI/bge-reranker-base",
+        "--max-concurrent-requests", "512",
+        "--max-batch-tokens", "32768",
+        "--max-client-batch-size", "128",
+        "--auto-truncate",
+      ]
+    environment:
+      PORT: "80"
+    ports:
+      - "18081:80"
+    volumes:
+      - wenyuan-tei-reranker-cache:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
 
 volumes:
-  wenyuan-data:
+  wenyuan-pg18:
+  wenyuan-tei-embedding-cache:
+  wenyuan-tei-reranker-cache:

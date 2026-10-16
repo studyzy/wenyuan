@@ -28,7 +28,7 @@ COVERAGE_MIN ?= 56
 # COVERAGE_MIN_PG is the floor for the PostgreSQL-backed suite.
 COVERAGE_MIN_PG ?= 66
 
-.PHONY: all build test vet pgx lint check fmt tidy clean run install help \
+.PHONY: all build test vet pgx lint check fmt tidy clean run db-up db-down install help \
         bench test-pg cover cover-check cover-check-pg parity
 
 all: check
@@ -111,6 +111,14 @@ tidy:
 ## run: run the API server
 run:
 	$(GO) run $(CMD) $(ARGS)
+
+## db-up: start this project's own PostgreSQL via docker compose (host port 15432)
+db-up:
+	docker compose up -d postgres
+
+## db-down: stop the compose stack; data persists in the named volume
+db-down:
+	docker compose down
 
 ## install: build the server, admin and client CLI binaries into ./bin
 install:
