@@ -20,6 +20,7 @@ import json
 import math
 import os
 import random
+import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -51,21 +52,34 @@ from wenyuan_client_api.exceptions import ApiException
 from wenyuan_client_api.models.bank_config_update import BankConfigUpdate
 from wenyuan_client_api.models.bank_list_response import BankListResponse
 from wenyuan_client_api.models.bank_profile_response import BankProfileResponse
+from wenyuan_client_api.models.chunk_include_options import ChunkIncludeOptions
 from wenyuan_client_api.models.content import Content
 from wenyuan_client_api.models.create_bank_request import CreateBankRequest
 from wenyuan_client_api.models.create_directive_request import CreateDirectiveRequest
 from wenyuan_client_api.models.create_folder_request import CreateFolderRequest
 from wenyuan_client_api.models.create_mental_model_request import CreateMentalModelRequest
 from wenyuan_client_api.models.create_page_request import CreatePageRequest
+from wenyuan_client_api.models.entity_include_options import EntityIncludeOptions
+from wenyuan_client_api.models.entity_input import EntityInput
 from wenyuan_client_api.models.file_retain_response import FileRetainResponse
+from wenyuan_client_api.models.include_options import IncludeOptions
 from wenyuan_client_api.models.list_memory_units_response import ListMemoryUnitsResponse
 from wenyuan_client_api.models.memory_item import MemoryItem
+from wenyuan_client_api.models.min_scores import MinScores
+from wenyuan_client_api.models.mental_model_trigger_input_tag_groups_inner import (
+    MentalModelTriggerInputTagGroupsInner,
+)
+from wenyuan_client_api.models.observation_scopes import ObservationScopes
 from wenyuan_client_api.models.recall_request import RecallRequest
 from wenyuan_client_api.models.recall_response import RecallResponse
+from wenyuan_client_api.models.reflect_include_options import ReflectIncludeOptions
 from wenyuan_client_api.models.reflect_request import ReflectRequest
 from wenyuan_client_api.models.reflect_response import ReflectResponse
 from wenyuan_client_api.models.retain_request import RetainRequest
 from wenyuan_client_api.models.retain_response import RetainResponse
+from wenyuan_client_api.models.source_facts_include_options import SourceFactsIncludeOptions
+from wenyuan_client_api.models.timestamp import Timestamp
+from wenyuan_client_api.models.tool_calls_include_options import ToolCallsIncludeOptions
 from wenyuan_client_api.models.update_directive_request import UpdateDirectiveRequest
 from wenyuan_client_api.models.update_mental_model_request import UpdateMentalModelRequest
 from wenyuan_client_api.models.update_node_request import UpdateNodeRequest
@@ -222,19 +236,150 @@ def _content(value: ContentInput) -> Content:
     return Content(value)
 
 
-def _memory_item(item: Union[MemoryItem, Dict[str, Any]]) -> MemoryItem:
+def _memory_item(item: Union[MemoryItem, Dict[str, Any]], document_id: Optional[str] = None) -> MemoryItem:
+    """Build a ``MemoryItem`` from a caller's dict, wrapping the union fields.
+
+    ``content``, ``timestamp``, ``observation_scopes`` and ``entities`` are
+    generated *union* (``anyOf``) models, and their validators accept only a
+    model instance — a plain string, ISO timestamp or ``{"text", "type"}`` dict
+    is rejected, even though the contract spells them exactly that way. Each one
+    is therefore wrapped here, the way the request schema means it.
+
+    ``document_id`` is the batch-level fallback: an item that names its own
+    keeps it.
+    """
     if isinstance(item, MemoryItem):
+        if document_id and not item.document_id:
+            item.document_id = document_id
         return item
+
     payload = dict(item)
+    _reject_unknown("retain item", payload, _MEMORY_ITEM_FIELDS)
     if "content" in payload and not isinstance(payload["content"], Content):
         payload["content"] = _content(payload["content"])
+    timestamp = payload.get("timestamp")
+    if timestamp is not None and not isinstance(timestamp, Timestamp):
+        payload["timestamp"] = Timestamp(actual_instance=timestamp)
+    scopes = payload.get("observation_scopes")
+    if scopes is not None and not isinstance(scopes, ObservationScopes):
+        payload["observation_scopes"] = ObservationScopes(actual_instance=scopes)
+    entities = payload.get("entities")
+    if entities is not None:
+        payload["entities"] = [_entity_input(entity) for entity in entities]
+    if document_id and not payload.get("document_id"):
+        payload["document_id"] = document_id
     return MemoryItem(**payload)
+
+
+def _entity_input(entity: Union[str, EntityInput, Dict[str, Any]]) -> EntityInput:
+    """Accept an entity as a bare name or as ``{"text": ..., "type": ...}``."""
+    if isinstance(entity, EntityInput):
+        return entity
+    if isinstance(entity, str):
+        return EntityInput(text=entity)
+    return EntityInput(text=entity["text"], type=entity.get("type"))
 
 
 def _bank_id(bank_id: str) -> str:
     if not isinstance(bank_id, str) or not bank_id:
         raise ValueError("bank_id must be a non-empty string")
     return bank_id
+
+
+#: Stages a ``min_scores`` mapping may put a floor on.
+_MIN_SCORE_STAGES = frozenset({"semantic", "keyword", "reranker", "final"})
+
+#: Fields the generated request models accept; anything else is a typo, and the
+#: models would otherwise drop it without a word.
+_MEMORY_ITEM_FIELDS = frozenset(MemoryItem.model_fields)
+_RECALL_FIELDS = frozenset(RecallRequest.model_fields) - {"query"}
+_REFLECT_FIELDS = frozenset(ReflectRequest.model_fields) - {"query"}
+
+
+def _warn_if_operation_id_dropped(retain_async: bool, operation_id: Optional[str]) -> None:
+    """Warn when a caller-supplied ``operation_id`` will not be sent.
+
+    The field only makes an *asynchronous* retain idempotent; a synchronous
+    request has nothing for the server to deduplicate against, so it is left off
+    and the likely mistake is surfaced instead of dropped in silence.
+    """
+    if operation_id is not None and not retain_async:
+        warnings.warn(
+            "operation_id is ignored for synchronous retain; "
+            "pass retain_async=True to enable idempotent retries.",
+            stacklevel=3,
+        )
+
+
+def _reject_unknown(call: str, given: Dict[str, Any], allowed: frozenset) -> None:
+    """Fail loudly on an option the generated request model would ignore.
+
+    Those models are built to drop unknown fields, which turns a misspelled
+    option into a request that quietly omits it — a filter the caller believes
+    is active and the server never sees.
+    """
+    unknown = sorted(set(given) - allowed)
+    if unknown:
+        raise TypeError(
+            f"{call} got unexpected keyword argument(s): {', '.join(unknown)}; "
+            f"accepted: {', '.join(sorted(allowed))}"
+        )
+
+
+def _tag_groups(values: List[Any]) -> List[Any]:
+    """Build the tag-group union models from the dicts a caller writes.
+
+    The rule tree is a union of single-object models, and the generated wrapper
+    turns a plain dict into an empty member — which serialises as ``null`` and
+    silently drops the whole filter — so each node goes through ``from_dict``.
+    """
+    return [MentalModelTriggerInputTagGroupsInner.from_dict(value) for value in values]
+
+
+def _min_scores(value: Dict[str, float]) -> MinScores:
+    """Validate and convert a per-stage score floor mapping.
+
+    An unknown stage is refused rather than dropped: a misspelled floor would
+    otherwise leave the caller believing it is filtering.
+    """
+    unknown = sorted(set(value) - _MIN_SCORE_STAGES)
+    if unknown:
+        raise ValueError(
+            f"unknown min_scores keys: {unknown}; allowed keys: {sorted(_MIN_SCORE_STAGES)}"
+        )
+    return MinScores.from_dict(value)
+
+
+def _include_options(
+    include_entities: bool,
+    max_entity_tokens: int,
+    include_chunks: bool,
+    max_chunk_tokens: int,
+    include_source_facts: bool,
+    max_source_facts_tokens: int,
+) -> Optional[IncludeOptions]:
+    """Fold the per-kind include flags into the single ``include`` object."""
+    if not (include_entities or include_chunks or include_source_facts):
+        return None
+    return IncludeOptions(
+        entities=EntityIncludeOptions(max_tokens=max_entity_tokens) if include_entities else None,
+        chunks=ChunkIncludeOptions(max_tokens=max_chunk_tokens) if include_chunks else None,
+        source_facts=SourceFactsIncludeOptions(max_tokens=max_source_facts_tokens)
+        if include_source_facts
+        else None,
+    )
+
+
+def _reflect_include(
+    include_facts: bool, include_tool_calls: bool, include_tool_call_output: bool
+) -> Optional[ReflectIncludeOptions]:
+    """Fold the reflect include flags into the single ``include`` object."""
+    if not (include_facts or include_tool_calls):
+        return None
+    return ReflectIncludeOptions(
+        facts={} if include_facts else None,
+        tool_calls=ToolCallsIncludeOptions(output=include_tool_call_output) if include_tool_calls else None,
+    )
 
 
 #: Sentinel for "argument not provided", for the cases where ``None`` is itself a
@@ -487,25 +632,48 @@ class WenYuan:
         self,
         bank_id: str,
         content: ContentInput,
-        *,
+        timestamp: Optional[Any] = None,
         context: Optional[str] = None,
-        metadata: Optional[Dict[str, str]] = None,
         document_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        entities: Optional[List[Any]] = None,
+        resolve_entities: Optional[bool] = None,
+        tags: Optional[List[str]] = None,
+        update_mode: Optional[str] = None,
         retain_async: bool = False,
-        document_tags: Optional[List[str]] = None,
         operation_id: Optional[str] = None,
+        observation_scopes: Optional[Any] = None,
+        strategy: Optional[str] = None,
+        document_tags: Optional[List[str]] = None,
     ) -> RetainResponse:
-        """Retain one piece of content into a bank."""
+        """Retain one piece of content into a bank.
+
+        ``timestamp`` takes an ISO-8601 string, a ``datetime`` or the literal
+        ``"unset"`` for timeless content; ``observation_scopes`` takes a scope
+        mode name (``"per_tag"``, ``"combined"``, ``"all_combinations"``,
+        ``"shared"``) or explicit groups of tag lists; ``entities`` takes names
+        or ``{"text": ..., "type": ...}`` dicts. Those three fields are union
+        models in the contract, so the plain values are wrapped for the request
+        rather than handed over raw. ``operation_id`` applies to an asynchronous
+        retain only.
+        """
         return _run_async(
             self.aretain(
                 bank_id,
                 content,
+                timestamp=timestamp,
                 context=context,
-                metadata=metadata,
                 document_id=document_id,
+                metadata=metadata,
+                entities=entities,
+                resolve_entities=resolve_entities,
+                tags=tags,
+                update_mode=update_mode,
                 retain_async=retain_async,
-                document_tags=document_tags,
                 operation_id=operation_id,
+                observation_scopes=observation_scopes,
+                strategy=strategy,
+                document_tags=document_tags,
             )
         )
 
@@ -513,23 +681,41 @@ class WenYuan:
         self,
         bank_id: str,
         content: ContentInput,
-        *,
+        timestamp: Optional[Any] = None,
+        context: Optional[str] = None,
+        document_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        entities: Optional[List[Any]] = None,
+        resolve_entities: Optional[bool] = None,
+        tags: Optional[List[str]] = None,
+        update_mode: Optional[str] = None,
         retain_async: bool = False,
-        document_tags: Optional[List[str]] = None,
         operation_id: Optional[str] = None,
-        **item_fields: Any,
+        observation_scopes: Optional[Any] = None,
+        strategy: Optional[str] = None,
+        document_tags: Optional[List[str]] = None,
     ) -> RetainResponse:
-        """Awaitable :meth:`retain`.
-
-        Extra keyword arguments (``context``, ``metadata``, ``document_id``,
-        ``timestamp`` ...) are placed on the generated ``MemoryItem``, which
-        validates them.
-        """
+        """Awaitable :meth:`retain`."""
+        item: Dict[str, Any] = {"content": content}
+        for name, value in (
+            ("timestamp", timestamp),
+            ("context", context),
+            ("metadata", metadata),
+            ("entities", entities),
+            ("resolve_entities", resolve_entities),
+            ("tags", tags),
+            ("update_mode", update_mode),
+            ("observation_scopes", observation_scopes),
+            ("strategy", strategy),
+        ):
+            if value is not None:
+                item[name] = value
         return await self.aretain_batch(
             bank_id,
-            [{"content": content, **item_fields}],
-            retain_async=retain_async,
+            [item],
+            document_id=document_id,
             document_tags=document_tags,
+            retain_async=retain_async,
             operation_id=operation_id,
         )
 
@@ -537,18 +723,23 @@ class WenYuan:
         self,
         bank_id: str,
         items: List[Union[MemoryItem, Dict[str, Any]]],
-        *,
-        retain_async: bool = False,
+        document_id: Optional[str] = None,
         document_tags: Optional[List[str]] = None,
+        retain_async: bool = False,
         operation_id: Optional[str] = None,
     ) -> RetainResponse:
-        """Retain several items in one request."""
+        """Retain several items in one request.
+
+        ``document_id`` groups the items that do not carry one of their own;
+        ``document_tags`` is applied to every item in the batch.
+        """
         return _run_async(
             self.aretain_batch(
                 bank_id,
                 items,
-                retain_async=retain_async,
+                document_id=document_id,
                 document_tags=document_tags,
+                retain_async=retain_async,
                 operation_id=operation_id,
             )
         )
@@ -557,20 +748,21 @@ class WenYuan:
         self,
         bank_id: str,
         items: List[Union[MemoryItem, Dict[str, Any]]],
-        *,
-        retain_async: bool = False,
+        document_id: Optional[str] = None,
         document_tags: Optional[List[str]] = None,
+        retain_async: bool = False,
         operation_id: Optional[str] = None,
     ) -> RetainResponse:
         """Awaitable :meth:`retain_batch`."""
         if self._retain_suspended.get():
             return RetainResponse(success=True, bank_id=bank_id, items_count=0, var_async=False)
 
+        _warn_if_operation_id_dropped(retain_async, operation_id)
         request = RetainRequest(
-            items=[_memory_item(item) for item in items],
+            items=[_memory_item(item, document_id) for item in items],
             var_async=retain_async,
             document_tags=document_tags,
-            operation_id=operation_id,
+            operation_id=operation_id if retain_async else None,
         )
         return await self.memory.retain_memories(
             _bank_id(bank_id), retain_request=request, _request_timeout=self._timeout
@@ -637,12 +829,25 @@ class WenYuan:
         budget: Optional[Any] = None,
         max_tokens: Optional[int] = None,
         trace: bool = False,
+        include_entities: bool = False,
+        max_entity_tokens: int = 500,
+        include_chunks: bool = False,
+        max_chunk_tokens: int = 8192,
+        include_source_facts: bool = False,
+        max_source_facts_tokens: int = 4096,
+        tag_groups: Optional[List[Any]] = None,
+        min_scores: Optional[Dict[str, float]] = None,
         **options: Any,
     ) -> RecallResponse:
         """Retrieve memories relevant to ``query``.
 
-        Extra keyword arguments are passed straight to the generated
-        ``RecallRequest``, which validates them.
+        ``include_entities`` / ``include_chunks`` / ``include_source_facts``
+        attach that kind of evidence to the response, each bounded by its
+        ``max_*_tokens``. ``tag_groups`` takes boolean tag-rule trees and
+        ``min_scores`` per-stage score floors. Any further keyword argument is
+        placed on the generated ``RecallRequest`` — the whole request surface is
+        reachable under its own field names — and a name that model does not
+        know is refused rather than dropped.
         """
         return _run_async(
             self.arecall(
@@ -652,16 +857,67 @@ class WenYuan:
                 budget=budget,
                 max_tokens=max_tokens,
                 trace=trace,
+                include_entities=include_entities,
+                max_entity_tokens=max_entity_tokens,
+                include_chunks=include_chunks,
+                max_chunk_tokens=max_chunk_tokens,
+                include_source_facts=include_source_facts,
+                max_source_facts_tokens=max_source_facts_tokens,
+                tag_groups=tag_groups,
+                min_scores=min_scores,
                 **options,
             )
         )
 
-    async def arecall(self, bank_id: str, query: str, **kwargs: Any) -> RecallResponse:
+    async def arecall(
+        self,
+        bank_id: str,
+        query: str,
+        *,
+        types: Optional[List[str]] = None,
+        budget: Optional[Any] = None,
+        max_tokens: Optional[int] = None,
+        trace: bool = False,
+        include_entities: bool = False,
+        max_entity_tokens: int = 500,
+        include_chunks: bool = False,
+        max_chunk_tokens: int = 8192,
+        include_source_facts: bool = False,
+        max_source_facts_tokens: int = 4096,
+        tag_groups: Optional[List[Any]] = None,
+        min_scores: Optional[Dict[str, float]] = None,
+        **options: Any,
+    ) -> RecallResponse:
         """Awaitable :meth:`recall`.
 
         A read, so it is retried while the server reports it is at capacity.
         """
-        request = RecallRequest(query=query, **kwargs)
+        _reject_unknown("recall()", options, _RECALL_FIELDS)
+        include = _include_options(
+            include_entities,
+            max_entity_tokens,
+            include_chunks,
+            max_chunk_tokens,
+            include_source_facts,
+            max_source_facts_tokens,
+        )
+        if include is not None:
+            if options.get("include") is not None:
+                raise ValueError("pass either include= or the include_* flags, not both")
+            options["include"] = include
+        if tag_groups is not None:
+            options["tag_groups"] = _tag_groups(tag_groups)
+        if min_scores is not None:
+            options["min_scores"] = _min_scores(min_scores)
+
+        request = RecallRequest(
+            query=query,
+            types=types,
+            budget=budget,
+            max_tokens=max_tokens,
+            trace=trace,
+            **options,
+        )
         bank = _bank_id(bank_id)
         return await _retry_on_capacity(
             lambda: self.memory.recall_memories(bank, recall_request=request, _request_timeout=self._timeout),
@@ -679,19 +935,117 @@ class WenYuan:
         budget: Optional[Any] = None,
         context: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        response_schema: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        tags_match: Optional[str] = None,
+        include_facts: bool = False,
+        include_tool_calls: bool = False,
+        include_tool_call_output: bool = True,
+        tag_groups: Optional[List[Any]] = None,
+        apply_all_directives: bool = False,
+        fact_types: Optional[List[str]] = None,
+        exclude_mental_models: bool = False,
+        exclude_mental_model_ids: Optional[List[str]] = None,
+        reflect_search_observations_max_tokens: Optional[int] = None,
+        reflect_search_observations_include_entities: Optional[bool] = None,
         **options: Any,
     ) -> ReflectResponse:
-        """Synthesise an answer from the bank's memories."""
+        """Synthesise an answer from the bank's memories.
+
+        ``include_facts`` adds the memories the answer was built from and
+        ``include_tool_calls`` the tool/LLM trace (with ``include_tool_call_output``
+        deciding whether that trace carries outputs). ``response_schema`` asks for
+        structured output; ``tag_groups`` takes boolean tag-rule trees. Any
+        further keyword argument is placed on the generated ``ReflectRequest``,
+        and a name that model does not know is refused rather than dropped.
+        """
         return _run_async(
-            self.areflect(bank_id, query, budget=budget, context=context, max_tokens=max_tokens, **options)
+            self.areflect(
+                bank_id,
+                query,
+                budget=budget,
+                context=context,
+                max_tokens=max_tokens,
+                response_schema=response_schema,
+                tags=tags,
+                tags_match=tags_match,
+                include_facts=include_facts,
+                include_tool_calls=include_tool_calls,
+                include_tool_call_output=include_tool_call_output,
+                tag_groups=tag_groups,
+                apply_all_directives=apply_all_directives,
+                fact_types=fact_types,
+                exclude_mental_models=exclude_mental_models,
+                exclude_mental_model_ids=exclude_mental_model_ids,
+                reflect_search_observations_max_tokens=reflect_search_observations_max_tokens,
+                reflect_search_observations_include_entities=reflect_search_observations_include_entities,
+                **options,
+            )
         )
 
-    async def areflect(self, bank_id: str, query: str, **kwargs: Any) -> ReflectResponse:
+    async def areflect(
+        self,
+        bank_id: str,
+        query: str,
+        *,
+        budget: Optional[Any] = None,
+        context: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        response_schema: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        tags_match: Optional[str] = None,
+        include_facts: bool = False,
+        include_tool_calls: bool = False,
+        include_tool_call_output: bool = True,
+        tag_groups: Optional[List[Any]] = None,
+        apply_all_directives: bool = False,
+        fact_types: Optional[List[str]] = None,
+        exclude_mental_models: bool = False,
+        exclude_mental_model_ids: Optional[List[str]] = None,
+        reflect_search_observations_max_tokens: Optional[int] = None,
+        reflect_search_observations_include_entities: Optional[bool] = None,
+        **options: Any,
+    ) -> ReflectResponse:
         """Awaitable :meth:`reflect`.
 
         A read, so it is retried while the server reports it is at capacity.
         """
-        request = ReflectRequest(query=query, **kwargs)
+        _reject_unknown("reflect()", options, _REFLECT_FIELDS)
+        include = _reflect_include(include_facts, include_tool_calls, include_tool_call_output)
+        if include is not None:
+            if options.get("include") is not None:
+                raise ValueError("pass either include= or the include_* flags, not both")
+            options["include"] = include
+        if tag_groups is not None:
+            options["tag_groups"] = _tag_groups(tag_groups)
+
+        request = ReflectRequest(
+            query=query,
+            **{
+                name: value
+                for name, value in (
+                    ("budget", budget),
+                    ("context", context),
+                    ("max_tokens", max_tokens),
+                    ("response_schema", response_schema),
+                    ("tags", tags),
+                    ("tags_match", tags_match),
+                    ("fact_types", fact_types),
+                    ("exclude_mental_model_ids", exclude_mental_model_ids),
+                    ("reflect_search_observations_max_tokens", reflect_search_observations_max_tokens),
+                    (
+                        "reflect_search_observations_include_entities",
+                        reflect_search_observations_include_entities,
+                    ),
+                    # Falsy means "leave it to the server", so the flag is only
+                    # named when the caller asked for it.
+                    ("apply_all_directives", apply_all_directives or None),
+                    ("exclude_mental_models", exclude_mental_models or None),
+                )
+                if value is not None
+            },
+            **options,
+        )
         bank = _bank_id(bank_id)
         return await _retry_on_capacity(
             lambda: self.memory.reflect(bank, reflect_request=request, _request_timeout=self._timeout),

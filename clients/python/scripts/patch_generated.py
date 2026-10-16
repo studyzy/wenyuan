@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-apply the two hand patches to the freshly generated Python client.
+"""Re-apply the hand patches to the freshly generated Python client.
 
 The generator (openapi-generator ``python``/``asyncio``, see
 ``clients/python/openapi-generator-config.yaml``) emits two things the SDK
@@ -23,6 +23,16 @@ place those edits live. It is idempotent: an already-patched file is left alone.
    ``to_dict`` when it has one (blocks built as generated models), while a list
    of plain dicts — what the wrapper's ``Content(value)`` positional form
    stores — still passes through unchanged.
+
+3. ``wenyuan_client_api/models/content_any_of_inner.py`` is the ``oneOf`` union
+   of the three content-block models. The generated ``__init__`` hands whatever
+   it is given straight to ``actual_instance``, and its validator accepts only a
+   block *instance*, so a plain ``{"type": "text", "text": ...}`` dict — the form
+   the contract itself uses, and the form a caller of ``Content.from_dict`` or
+   ``MemoryItem.from_dict`` supplies — is turned into an empty member and
+   serialises as ``null``. The patch dispatches a dict on its ``type`` to the
+   matching block model first, so ``from_dict`` round-trips the block instead of
+   dropping it.
 
 Usage:
     python3 clients/python/scripts/patch_generated.py
@@ -187,6 +197,54 @@ CONTENT_PATCHED = '''        if hasattr(self.actual_instance, "to_dict") and cal
 '''
 
 
+# --------------------------------------------------------------------------
+# 3. content_any_of_inner.py: dispatch a plain block dict to its model.
+# --------------------------------------------------------------------------
+
+CONTENT_BLOCK_STOCK = '''    def __init__(self, *args, **kwargs) -> None:
+        if args:
+            if len(args) > 1:
+                raise ValueError("If a position argument is used, only 1 is allowed to set `actual_instance`")
+            if kwargs:
+                raise ValueError("If a position argument is used, keyword arguments cannot be used.")
+            super().__init__(actual_instance=args[0])
+        else:
+            super().__init__(**kwargs)
+'''
+
+CONTENT_BLOCK_PATCHED = '''    def __init__(self, *args, **kwargs) -> None:
+        if args:
+            if len(args) > 1:
+                raise ValueError("If a position argument is used, only 1 is allowed to set `actual_instance`")
+            if kwargs:
+                raise ValueError("If a position argument is used, keyword arguments cannot be used.")
+            value = args[0]
+        elif "actual_instance" in kwargs:
+            super().__init__(**kwargs)
+            return
+        elif kwargs:
+            value = kwargs
+        else:
+            super().__init__()
+            return
+
+        if isinstance(value, dict):
+            # The contract spells a content block as a plain object
+            # (``{"type": "text", "text": ...}``), which is also what the
+            # ``from_dict`` path hands over. Build the matching block model so
+            # the member carries the block instead of serialising as null.
+            block_class = {
+                "text": TextContentBlock,
+                "image": ImageContentBlock,
+                "file": FileContentBlock,
+            }.get(value.get("type"))
+            if block_class is None:
+                raise ValueError(f"Unknown content block type: {value.get('type')!r}")
+            value = block_class.from_dict(value)
+        super().__init__(actual_instance=value)
+'''
+
+
 def patch(path: pathlib.Path, stock: str, patched: str) -> str:
     text = path.read_text()
     if patched in text:
@@ -203,6 +261,9 @@ def main() -> int:
     results = {
         "rest.py": patch(PACKAGE / "rest.py", REST_STOCK, REST_PATCHED),
         "models/content.py": patch(PACKAGE / "models" / "content.py", CONTENT_STOCK, CONTENT_PATCHED),
+        "models/content_any_of_inner.py": patch(
+            PACKAGE / "models" / "content_any_of_inner.py", CONTENT_BLOCK_STOCK, CONTENT_BLOCK_PATCHED
+        ),
     }
     for name, state in results.items():
         print(f"{name}: {state}")

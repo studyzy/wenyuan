@@ -77,6 +77,35 @@ with WenYuan() as client:  # HINDSIGHT_API_URL, else http://localhost:18888
         print(bank.bank_id, bank.fact_count)
 ```
 
+### Retain options
+
+`retain` names the fields a retained item carries. The three the contract spells
+as unions are written the way the contract writes them and wrapped for the
+request model, so the plain value is accepted:
+
+```python
+client.retain(
+    "ops",
+    "the rollback window closed on Friday",
+    timestamp="2024-01-15T10:30:00",         # ISO-8601 string, datetime, or "unset"
+    context="release review",
+    document_id="release-2024-01-15",        # groups items; batch-wide on retain_batch
+    metadata={"source": "postmortem"},
+    entities=[{"text": "release-2.3", "type": "release"}],  # or bare names
+    resolve_entities=False,
+    tags=["release"],
+    update_mode="append",                    # "replace" or "append"
+    observation_scopes="per_tag",            # mode name, or [[tag, ...], ...]
+    strategy="named-strategy",
+)
+```
+
+`operation_id` makes an **asynchronous** retain idempotent
+(`retain_async=True`); on a synchronous request it is dropped with a warning
+rather than sent, since there is nothing for the server to deduplicate against.
+On `retain_batch`, `document_id` fills in for the items that do not name their
+own, and `document_tags` applies to the whole batch.
+
 ### Async
 
 Every operation has an awaitable counterpart — `aretain`, `arecall`,
@@ -259,15 +288,47 @@ The generated API objects are exposed unchanged as properties, one per area:
 
 Every method on those objects is async.
 
+### Request options
+
+`recall` and `reflect` name the options a caller reaches for, and every
+remaining field of the generated request model stays reachable under its own
+name. Response types are re-exported from the package root — `RecallResponse`,
+`RetainResponse`, `ReflectResponse`, `ReflectFact`, `DispositionTraits`, and the
+`*ListResponse`/`VersionResponse` models:
+
 ```python
-from wenyuan_client import RecallResponse, RetainResponse, ReflectResponse
+# evidence attached to the response, bounded by its own token budget
+hits = client.recall("ops", "when do we deploy?", include_entities=True, max_entity_tokens=200)
+
+# boolean tag-rule trees and per-stage score floors
+hits = client.recall(
+    "ops",
+    "when do we deploy?",
+    tag_groups=[{"tags": ["customer"], "match": "all"}, {"not": {"tags": ["internal"]}}],
+    min_scores={"semantic": 0.2, "final": 0.5},
+)
+
+# the memories the answer was built from, and the tool/LLM trace
+answer = client.reflect("ops", "summarise the deploy policy", include_facts=True)
+answer = client.reflect("ops", "summarise the deploy policy", include_tool_calls=True)
 ```
 
-`recall`, `reflect` and `aretain` accept extra keyword arguments that are passed
-straight to the generated request model (`RecallRequest`, `ReflectRequest`,
-`MemoryItem`), so the whole request surface is reachable without waiting for the
-façade to grow a parameter. `create_bank` names its arguments; any further
-keyword argument is still placed on the generated `CreateBankRequest`.
+The include flags are shorthand for the `include` object the request carries, so
+the two spellings are alternatives — passing both raises `ValueError`:
+
+```python
+from wenyuan_client_api.models.chunk_include_options import ChunkIncludeOptions
+from wenyuan_client_api.models.include_options import IncludeOptions
+
+hits = client.recall("ops", "when do we deploy?", include=IncludeOptions(chunks=ChunkIncludeOptions()))
+```
+
+Two kinds of mistake are refused instead of silently sent, because the generated
+models drop a field they do not recognise: an option name the request model does
+not have (`TypeError`), an unknown `min_scores` stage or item key (`ValueError`,
+`TypeError`). `create_bank` names its arguments too; any further keyword argument
+is still placed on the generated `CreateBankRequest`. `aretain` and `arecall`
+carry the same options as their synchronous forms.
 
 ### Recall-response helpers
 
@@ -294,11 +355,13 @@ The same capability is available as module-level functions —
 `result_at(response, index)` — for callers that prefer not to rely on patched
 methods.
 
-The generated package is never edited, so these attributes are attached by the
-wrapper at import time: a caller that imports only `wenyuan_client_api` sees the
-bare models, and importing `wenyuan_client` is what opts into the helpers. That
-is the one deliberate difference from a client whose generated module carries
-them directly.
+The generated package is never edited by hand: the recall attributes are
+attached by the wrapper at import time, so a caller that imports only
+`wenyuan_client_api` sees the bare models and importing `wenyuan_client` is what
+opts into the helpers. The handful of edits the generated code itself needs (the
+lazily built HTTP session, the two `anyOf` serialisation fixes) live in
+`scripts/patch_generated.py`, which re-applies them after every regeneration and
+is the place to look for what differs and why.
 
 ## Tests
 

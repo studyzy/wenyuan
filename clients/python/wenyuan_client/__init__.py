@@ -22,9 +22,11 @@ transfer families) and the generated sub-clients are reachable as properties:
 
 from wenyuan_client_api.models.bank_list_response import BankListResponse
 from wenyuan_client_api.models.bank_profile_response import BankProfileResponse
+from wenyuan_client_api.models.disposition_traits import DispositionTraits
 from wenyuan_client_api.models.list_memory_units_response import ListMemoryUnitsResponse
 from wenyuan_client_api.models.recall_response import RecallResponse
 from wenyuan_client_api.models.recall_result import RecallResult
+from wenyuan_client_api.models.reflect_fact import ReflectFact
 from wenyuan_client_api.models.reflect_response import ReflectResponse
 from wenyuan_client_api.models.retain_response import RetainResponse
 from wenyuan_client_api.models.version_response import VersionResponse
@@ -58,9 +60,11 @@ __all__ = [
     "ContentInput",
     "BankListResponse",
     "BankProfileResponse",
+    "DispositionTraits",
     "ListMemoryUnitsResponse",
     "RecallResponse",
     "RecallResult",
+    "ReflectFact",
     "ReflectResponse",
     "RetainResponse",
     "VersionResponse",
