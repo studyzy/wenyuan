@@ -365,4 +365,26 @@ mod tests {
         client_with_user_agent("http://example.test:18888", "my-agent/2.1.0")
             .expect("the client with a caller UA builds");
     }
+
+    /// Same-titled inline enums used to collapse into one generated type (see
+    /// `disambiguate_same_titled_inline_enums` in build.rs), so these
+    /// schema-valid values failed to decode.
+    #[test]
+    fn same_titled_enums_keep_their_own_values() {
+        let details: types::RefreshMentalModelOperationDetails = serde_json::from_value(
+            serde_json::json!({
+                "operation_type": "refresh_mental_model",
+                "outcome": "refresh_failed_error",
+                "failure_reason": "unexpected_error",
+            }),
+        )
+        .expect("refresh_failed_error is a documented outcome");
+        assert_eq!(details.outcome.to_string(), "refresh_failed_error");
+
+        let block: types::PromptBlockModel = serde_json::from_value(serde_json::json!({
+            "text": "t", "source": "config", "kind": "text",
+        }))
+        .expect("text is a documented prompt block kind");
+        assert_eq!(block.kind.to_string(), "text");
+    }
 }

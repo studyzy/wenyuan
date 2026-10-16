@@ -11,7 +11,7 @@ import (
 )
 
 // serverVersion is the reference release reported in serverInfo.
-const serverVersion = "0.10.3"
+const serverVersion = "1.0.0"
 
 // tool is one entry of the tools/list response.
 type tool struct {

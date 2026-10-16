@@ -10,7 +10,7 @@ import (
 // surface this service serves. It is what the version endpoint reports,
 // because a client that gates behavior on the version expects the version of
 // the API it is speaking to, not the version of this build.
-const ReferenceAPIVersion = "0.10.3"
+const ReferenceAPIVersion = "1.0.0"
 
 // The descriptor surface the reference serves by virtue of being a FastAPI
 // application, none of which is declared with a route decorator:

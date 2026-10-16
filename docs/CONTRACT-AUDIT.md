@@ -2,7 +2,8 @@
 
 > 复核对象：`wenyuan`（Go）对上游 `hindsight-api-slim/hindsight_api`（Python）HTTP 服务的复刻程度。
 > 复核方：11 个独立审计切片，全部以**上游 OpenAPI 文档**为契约基准
-> （`hindsight-docs/static/openapi.json`，99 个操作 / 195 个 schema，版本 0.10.3；
+> （`hindsight-docs/static/openapi.json`，99 个操作 / 195 个 schema，复核时版本 0.10.3，
+> 2026-10-16 已随参考 v1.0.0 发布重新捕获为 1.0.0——路径与 schema 未变；
 > 已用脚本与上游 pydantic 模型逐类核对，133 个可比类中 130 个完全一致，其余 3 个为
 > `async_`/`async` 别名与继承字段，故该文档可用作契约真值）。
 >
@@ -25,7 +26,7 @@
 |---|---|---|
 | 描述面缺失 | 上游作为 FastAPI 应用**默认**提供 `GET /openapi.json`、`/docs`、`/docs/oauth2-redirect`、`/redoc`（上游自带测试 `tests/test_base_path.py` 断言），wenyuan 此前全部 404 | `internal/httpx/openapi.go`：契约文档取自参考（`scripts/reference_openapi.py` 生成，嵌入 `internal/httpx/openapi.json`），文档页取自上游 FastAPI 生成结果，二者皆按 base path 改写 URL |
 | base path | `HINDSIGHT_API_BASE_PATH`（上游 `root_path`）此前完全不支持 | `internal/config`（解析 + 归一化）与 `internal/httpx.BasePathMiddleware`：带前缀与不带前缀**都**可路由（与上游 `get_route_path` 的剥离语义一致）；文档 `servers` 仅在配置前缀时注入 |
-| `/version` 版本号 | 报 `1.0.0`（wenyuan 自己的版本）；上游报自身发布版本 | `httpx.APIVersion = ReferenceAPIVersion = "0.10.3"`，并由测试钉住与所服务契约文档 `info.version` 一致 |
+| `/version` 版本号 | 报 `1.0.0`（wenyuan 自己的版本）；上游报自身发布版本 | `httpx.APIVersion = ReferenceAPIVersion = "1.0.0"`（随参考 v1.0.0 发布同步），并由测试钉住与所服务契约文档 `info.version` 一致 |
 | 特性开关默认值 | MCP/银行配置 API/文档导入/文档导出默认 false（上游 true）、audit_log 硬编码 true（上游 false）、llm_trace 默认 false（上游 true）、observations/store_document_text 硬编码 | `internal/config`：默认值对齐上游，新增 `HINDSIGHT_API_ENABLE_OBSERVATIONS`/`_AUDIT_LOG_ENABLED`/`_STORE_DOCUMENT_TEXT`，`FeatureMap` 改为字段驱动 |
 | 空值策略 | `HINDSIGHT_API_DROP_NULL_FIELDS` 默认 **false**，导致上游会省略的 null 字段被输出 | 默认改为 true（上游 `ExcludeNoneRoute` 的规则）；保留 null 的模型由 `httpx.WriteJSONOpenRow` 逐响应覆盖 |
 | 未匹配路由响应 | 未命中路由/方法返回 Go 的纯文本 `404 page not found`/`405`；上游返回 JSON `{"detail":"Not Found"}`/`{"detail":"Method Not Allowed"}`（405 保留 `Allow` 头） | `internal/httpx/fallback.go`（仅改写路由器自身的拒绝，处理器自己写的 404/405 原样通过） |
