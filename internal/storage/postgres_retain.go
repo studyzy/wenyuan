@@ -572,11 +572,11 @@ func (s *PostgresStore) ResolveRetainEntity(ctx context.Context, bankID string, 
 
 // resolveEntityWithKind finds or creates the entity named by a normalized name.
 //
-// Resolution on treats the name as a guess: an existing entity whose name
-// scores at or above the similarity threshold is reused, with the trigram
-// similarity ordered by score so the closest match wins. Resolution off takes
-// the name literally and reuses an entity only on a case-insensitive exact
-// match.
+// Resolution on treats the name as a guess: the exact case-insensitive match
+// the unique index enforces is tried first, then an existing entity whose name
+// scores at or above the similarity threshold, with the trigram similarity
+// ordered by score so the closest match wins. Resolution off takes the name
+// literally and reuses an entity only on a case-insensitive exact match.
 func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
 	if name == "" {
 		return Entity{}, nil
@@ -601,8 +601,16 @@ func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name 
 		// can create the same entity — the table holds one row per bank and
 		// lower-cased name — between them. Losing that race is not a failure of
 		// this write, so the winner's row is read back and used instead.
+		//
+		// The read-back is the exact case-insensitive lookup the index enforces,
+		// never the fuzzy path: the fuzzy probe is a trigram similarity that
+		// scores zero for symbol- or punctuation-only names, so a name that
+		// collided on lower() after a fuzzy miss would miss again and turn a lost
+		// race into a failed write. PostgreSQL's LOWER() and Go's case folding
+		// also disagree on some code points, so the comparison lower-cases both
+		// sides in the database rather than binding a Go-lowercased value.
 		if isUniqueViolation(err) {
-			if existing, found, findErr := s.findEntity(ctx, bankID, name, resolve); findErr != nil {
+			if existing, found, findErr := s.findEntityByExactName(ctx, bankID, name); findErr != nil {
 				return Entity{}, findErr
 			} else if found {
 				return existing, nil
@@ -616,11 +624,19 @@ func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name 
 // findEntity locates an existing entity for a name, either exactly or by
 // similarity depending on the resolution switch.
 func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, resolve bool) (Entity, bool, error) {
-	table := quoteIdent(s.schema) + `.entities`
 	if !resolve {
-		query := `SELECT ` + entityColumns + ` FROM ` + table +
-			` WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
-		return s.scanEntity(ctx, query, bankID, name)
+		return s.findEntityByExactName(ctx, bankID, name)
+	}
+	// The exact case-insensitive match the unique index enforces is tried first,
+	// matching the reference's resolution order: a name that lower-cases onto an
+	// existing row is that row, whatever its similarity score. This also keeps
+	// the resolve path from missing its own just-inserted row when the fuzzy
+	// probe scores the name below the pool floor, which is every name made only
+	// of symbols or punctuation (the trigram probe returns nothing for them).
+	if existing, found, err := s.findEntityByExactName(ctx, bankID, name); err != nil {
+		return Entity{}, false, err
+	} else if found {
+		return existing, true, nil
 	}
 	// The trigram probe narrows the pool; the similarity score then decides the
 	// merge. The two are separate stages on purpose, because trigram ranks
@@ -628,14 +644,23 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 	// candidate that passes the pool filter may still be rejected.
 	candidates, err := s.entityCandidates(ctx, bankID, name)
 	if err != nil {
-		// The trigram extension may be unavailable. Falling back to an exact
-		// match keeps the write working rather than failing it, because
-		// failing to fuzzy-resolve is far less costly than refusing a memory.
-		fallback := `SELECT ` + entityColumns + ` FROM ` + table +
-			` WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
-		return s.scanEntity(ctx, fallback, bankID, name)
+		// The trigram extension may be unavailable. An exact match was already
+		// ruled out above, so a missing extension leaves nothing to match on and
+		// the caller creates the entity.
+		return Entity{}, false, nil
 	}
 	return bestEntityCandidate(candidates, name, s.mergeMinSimilarity())
+}
+
+// findEntityByExactName reuses an entity only when its name lower-cases to the
+// same string, which is the predicate of the unique (bank_id,
+// lower(canonical_name)) index. Both sides are lower-cased in the database:
+// PostgreSQL's LOWER() and Go's case folding disagree on some code points, so
+// binding a Go-lowercased value could miss the row the index would collide on.
+func (s *PostgresStore) findEntityByExactName(ctx context.Context, bankID, name string) (Entity, bool, error) {
+	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
+	          WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
+	return s.scanEntity(ctx, query, bankID, name)
 }
 
 // mergeMinSimilarity is the reference's second trigram gate, falling back to

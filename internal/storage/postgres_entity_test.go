@@ -58,6 +58,28 @@ func TestPostgresExactEntityMatchUnderBothModes(t *testing.T) {
 	}
 }
 
+// A name made only of symbols or punctuation has no word trigrams, so the
+// trigram probe scores it zero and returns no candidates. Resolving it with
+// resolution on must still reuse the row the unique (bank_id,
+// lower(canonical_name)) index would collide with, or the second mention of the
+// same symbol name fails the write on the index rather than reusing the entity.
+func TestPostgresResolvesSymbolEntityNamesExactly(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+
+	first, err := store.ResolveEntity(ctx, "vec-bank", "§㉘", EntityKindRegular, true)
+	if err != nil {
+		t.Fatalf("resolve first symbol name: %v", err)
+	}
+	second, err := store.ResolveEntity(ctx, "vec-bank", "§㉘", EntityKindRegular, true)
+	if err != nil {
+		t.Fatalf("resolve repeated symbol name: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("a repeated symbol name must reuse the entity: %+v vs %+v", second, first)
+	}
+}
+
 // A retain item's entities are resolved and linked to the units the write
 // stored, so the graph connects the fact to the caller's entities.
 func TestPostgresRetainLinksSuppliedEntities(t *testing.T) {
