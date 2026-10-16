@@ -190,6 +190,31 @@ func (s *PostgresStore) getOperation(ctx context.Context, opID string) (Operatio
 	return op, err
 }
 
+// OperationAlive reports whether the identified operation exists, scoped to the
+// bank, and is not cancelled. A missing row reads as not alive rather than
+// faulting — a bank delete removes the row by foreign-key cascade, and the
+// running task is what notices.
+//
+// It reads on the primary for the same reason the state transitions do: a
+// replica lagging behind a cancel or a bank delete would report the work alive
+// when it is not.
+func (s *PostgresStore) OperationAlive(ctx context.Context, bankID, opID string) (bool, error) {
+	query := `SELECT bank_id, status FROM ` + quoteIdent(s.schema) + `.async_operations
+	          WHERE operation_id = $1`
+	var scannedBank, status string
+	err := s.db.QueryRowContext(ctx, query, opID).Scan(&scannedBank, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if bankID != "" && scannedBank != bankID {
+		return false, nil
+	}
+	return status != string(StatusCancelled), nil
+}
+
 // GetOperationChildren returns the child operations of a parent batch, ordered
 // by sub-batch index.
 func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {

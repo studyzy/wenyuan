@@ -257,6 +257,15 @@ func (s *MemoryStore) DeleteBank(ctx context.Context, bankID string) (int, error
 			delete(s.attachments, key)
 		}
 	}
+	// The bank's queued work goes with it, as PostgreSQL gets from the
+	// async_operations foreign-key cascade. Leaving the rows behind would let a
+	// worker pick up an operation whose bank is gone and resurrect it, because
+	// the write path lazily creates a bank it cannot find.
+	for id, op := range s.operations {
+		if op.BankID == bankID {
+			delete(s.operations, id)
+		}
+	}
 	s.invalidateBankLocked(bankID)
 	// The reported count is the backend's: memory units, entities and
 	// documents, matching the reference's delete envelope.

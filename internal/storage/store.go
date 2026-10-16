@@ -48,6 +48,12 @@ var ErrOperationNotFound = errors.New("operation not found")
 // are removable.
 var ErrOperationNotTerminal = errors.New("operation is not in a terminal state")
 
+// ErrOperationAborted is returned by long-running work when the operation it is
+// running stops existing — its bank was deleted — or was cancelled. It is the
+// signal that the work must end without settling the operation: there is no row
+// left to settle, or the row is already terminal.
+var ErrOperationAborted = errors.New("operation was cancelled or removed")
+
 // ErrDocumentConflict is returned when an append-mode write observes that the
 // stored document moved since the request read it; the request is retryable
 // rather than overwriting content it never saw.

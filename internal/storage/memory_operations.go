@@ -52,6 +52,29 @@ func (s *MemoryStore) getOperation(ctx context.Context, opID string) (Operation,
 	return op, nil
 }
 
+// OperationAlive reports whether the identified operation exists, scoped to the
+// bank, and is not cancelled. A missing row reads as not alive rather than
+// faulting, which is what the consumer's execution-start guard needs: a bank
+// deleted mid-flight takes its queued operations with it.
+func (s *MemoryStore) OperationAlive(ctx context.Context, bankID, opID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.operationAliveLocked(bankID, opID), nil
+}
+
+// operationAliveLocked is OperationAlive's body for callers that already hold
+// the lock, notably the retain write's item-boundary checkpoint.
+func (s *MemoryStore) operationAliveLocked(bankID, opID string) bool {
+	op, ok := s.operations[opID]
+	if !ok || (bankID != "" && op.BankID != bankID) {
+		return false
+	}
+	return op.Status != StatusCancelled
+}
+
 // GetOperationChildren returns the child operations of a parent batch, ordered
 // by sub-batch index.
 func (s *MemoryStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {

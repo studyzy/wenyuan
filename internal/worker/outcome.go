@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -53,7 +54,7 @@ func ReportOutcome(ctx context.Context, metadata map[string]any) {
 // reported.
 func (c *Consumer) complete(ctx context.Context, op storage.Operation, metadata map[string]any) {
 	if _, err := c.settle(ctx, op.OperationID, storage.StatusCompleted, "", metadata); err != nil {
-		c.cfg.Logger.Error("complete failed", "operation_id", op.OperationID, "error", err)
+		c.reportSettleLapse(op, "mark-completed", err)
 		return
 	}
 	c.cfg.Logger.Info("operation completed", "operation_id", op.OperationID, "bank_id", op.BankID)
@@ -64,11 +65,37 @@ func (c *Consumer) complete(ctx context.Context, op storage.Operation, metadata 
 // processor reported alongside the prose detail.
 func (c *Consumer) fail(ctx context.Context, op storage.Operation, detail string, metadata map[string]any) {
 	if _, err := c.settle(ctx, op.OperationID, storage.StatusFailed, detail, metadata); err != nil {
-		c.cfg.Logger.Error("fail failed", "operation_id", op.OperationID, "error", err)
+		c.reportSettleLapse(op, "mark-failed", err)
 		return
 	}
 	c.cfg.Logger.Warn("operation failed permanently", "operation_id", op.OperationID, "detail", detail)
 	c.promoteParent(ctx, op)
+}
+
+// settleLapsed reports whether a terminal or retry write did not apply because
+// the operation's row is gone — its bank was deleted — or no longer accepts the
+// transition.
+//
+// It is the reference's terminal-write behaviour: each of its mark-completed,
+// mark-failed, schedule-retry and defer writes is an UPDATE filtered on the
+// running status, so a row deleted with its bank (or advanced under the writer)
+// makes the statement affect zero rows without raising. The worker mirrors that
+// by treating such a write as a no-op rather than a failure.
+func settleLapsed(err error) bool {
+	return errors.Is(err, storage.ErrOperationNotFound) || errors.Is(err, storage.ErrOperationConflict)
+}
+
+// reportSettleLapse records a settle that did not apply: a no-op is reported at
+// info when the row it targeted is gone or already settled, and as a failure
+// otherwise. A lapsed settle is never an error, and because the caller returns
+// on it the parent-batch rollup the settle would have driven does not run.
+func (c *Consumer) reportSettleLapse(op storage.Operation, action string, err error) {
+	if settleLapsed(err) {
+		c.cfg.Logger.Info("operation row is gone or already settled; "+action+" is a no-op",
+			"operation_id", op.OperationID, "bank_id", op.BankID)
+		return
+	}
+	c.cfg.Logger.Error(action+" failed", "operation_id", op.OperationID, "error", err)
 }
 
 // promoteParent rolls a batch up when the operation that just reached a

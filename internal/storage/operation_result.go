@@ -76,3 +76,28 @@ var (
 	_ OperationDeferrer = (*MemoryStore)(nil)
 	_ OperationDeferrer = (*PostgresStore)(nil)
 )
+
+// OperationLiveness is the capability a backend implements so a consumer can
+// ask whether the operation it is about to run — or is running — still exists
+// and has not been cancelled.
+//
+// It is the reference's operation liveness read: the API's cancel path only
+// flips a status, and a bank delete removes the operation row (PostgreSQL does
+// so by foreign-key cascade; the memory backend purges the queue itself), so the
+// running task is the one that notices. A consumer checks it at execution start
+// so it does not run work whose bank is gone — which would resurrect the bank
+// through the write path's lazy create — and a long-running write checks it at
+// its item boundaries so a cancelled or deleted operation stops early.
+type OperationLiveness interface {
+	// OperationAlive reports whether the identified operation exists, scoped to
+	// the given bank, and is not cancelled. A missing row reads as not alive; it
+	// does not fault.
+	OperationAlive(ctx context.Context, bankID, opID string) (bool, error)
+}
+
+// Both backends carry the capability; one that did not would be treated as
+// always alive by the consumer, which is the pre-check behaviour.
+var (
+	_ OperationLiveness = (*MemoryStore)(nil)
+	_ OperationLiveness = (*PostgresStore)(nil)
+)

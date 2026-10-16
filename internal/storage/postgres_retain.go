@@ -40,6 +40,16 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 	now := time.Now().UTC()
 	grouped := make([][]string, 0, len(req.Items))
 	for index, item := range req.Items {
+		// Checkpoint: a queued write aborts between items if its operation was
+		// cancelled or its bank (and so its operation row, by the
+		// async_operations cascade) was deleted, mirroring the reference's
+		// per-document check. A failed liveness read is treated as alive, so a
+		// transient database error does not abort work that is still valid.
+		if req.SkipOperationRecord && req.OperationID != "" {
+			if alive, err := s.OperationAlive(ctx, req.BankID, req.OperationID); err == nil && !alive {
+				return RetainOutcome{}, ErrOperationAborted
+			}
+		}
 		units, err := s.writeItemWithAppendRetry(ctx, req, item, extracted[index], now)
 		if err != nil {
 			return RetainOutcome{}, err

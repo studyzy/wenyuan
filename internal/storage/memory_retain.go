@@ -43,13 +43,26 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 	opID := req.OperationID
 	if opID == "" {
 		opID = newUUID()
-	} else if _, exists := s.operations[opID]; exists {
-		return RetainOutcome{}, ErrOperationConflict
+	} else if !req.SkipOperationRecord {
+		// An operation identifier is refused only when this write owns the
+		// record it would create. A queued write's worker already owns the
+		// child's operation row, so finding that row in the queue is this write
+		// finding itself, not a reused identifier.
+		if _, exists := s.operations[opID]; exists {
+			return RetainOutcome{}, ErrOperationConflict
+		}
 	}
 	now := time.Now().UTC()
 
 	grouped := make([][]string, 0, len(req.Items))
 	for index, item := range req.Items {
+		// Checkpoint: a queued write aborts between items if its operation was
+		// cancelled or its bank (and so its operation row) was deleted. Without
+		// it the write would keep recreating the deleted bank through the lazy
+		// create above.
+		if req.SkipOperationRecord && opID != "" && !s.operationAliveLocked(req.BankID, opID) {
+			return RetainOutcome{}, ErrOperationAborted
+		}
 		units, err := s.writeItemLocked(ctx, req, item, extracted[index], now)
 		if err != nil {
 			return RetainOutcome{}, err

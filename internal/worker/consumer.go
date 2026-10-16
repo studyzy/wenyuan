@@ -451,6 +451,17 @@ func (c *Consumer) trackInflight(opType string, delta int) {
 
 // handle runs one claimed operation and settles its outcome.
 func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
+	// Execution-start guard: re-read the operation and abort when it is gone or
+	// cancelled before any work runs. A bank deleted after the claim takes its
+	// queued operations with it, and running one of them would resurrect the
+	// bank through the write path's lazy create. This is the reference's
+	// _check_op_alive at task dispatch; a store that cannot answer is treated as
+	// alive, so the guard never blocks a live operation.
+	if !c.operationAlive(ctx, op) {
+		c.cfg.Logger.Info("operation is gone or cancelled, skipping",
+			"operation_id", op.OperationID, "bank_id", op.BankID, "type", op.OperationType)
+		return
+	}
 	// The operation continues under a background context so a shutdown drains
 	// it rather than leaving it half-applied. It is bounded by the lease, and
 	// more tightly by a per-type wall ceiling when one is configured: a wedged
@@ -498,6 +509,13 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		c.complete(ctx, op, sink.metadata)
 		return
 	}
+	if errors.Is(err, storage.ErrOperationAborted) {
+		// The operation was cancelled or removed mid-run: there is no row to
+		// settle, so this is a clean stop rather than a failure to record.
+		c.cfg.Logger.Info("operation stopped: its record is gone or cancelled",
+			"operation_id", op.OperationID, "bank_id", op.BankID)
+		return
+	}
 	if IsPermanent(err) {
 		// A permanent failure is terminal on the first try; it must not consume
 		// the retry budget.
@@ -524,6 +542,23 @@ func isBackpressure(err error) bool {
 	return errors.Is(err, storage.ErrWritesUnavailable) || errors.Is(err, storage.ErrReadShed)
 }
 
+// operationAlive reports whether a claimed operation is still worth running. A
+// store that cannot answer the question — one without the liveness capability —
+// is treated as alive, so the guard is never the reason live work stops. A read
+// error is likewise treated as alive, matching the reference's "assume alive to
+// avoid false-positive aborts".
+func (c *Consumer) operationAlive(ctx context.Context, op storage.Operation) bool {
+	checker, ok := c.store.(storage.OperationLiveness)
+	if !ok {
+		return true
+	}
+	alive, err := checker.OperationAlive(ctx, op.BankID, op.OperationID)
+	if err != nil {
+		return true
+	}
+	return alive
+}
+
 // deferOperation reschedules an operation without consuming its retry budget,
 // so backpressure does not walk work toward the permanent-failure cliff.
 //
@@ -546,29 +581,25 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 		delay = explicit
 	}
 	next := c.cfg.Now().Add(delay)
-	// The refusal reason belongs in the log, not in the error column: a
-	// deferral is backpressure rather than a failure, and a caller that waits
-	// for a bank to settle reads a pending operation carrying an error as
-	// already lost.
-	c.cfg.Logger.Info("operation deferred under backpressure",
-		"operation_id", op.OperationID, "next_retry_at", next, "reason", cause.Error())
 	// A store that can reschedule without recording a failure takes that path;
 	// one that cannot falls back to the retry write, which keeps the deferral
 	// scheduled at the cost of a message on the record.
 	if deferrer, ok := c.store.(storage.OperationDeferrer); ok {
 		if err := deferrer.DeferOperation(ctx, op.OperationID, next, metadata); err != nil {
-			c.cfg.Logger.Error("defer scheduling failed", "operation_id", op.OperationID, "error", err)
+			c.reportSettleLapse(op, "defer", err)
+			return
 		}
+	} else if err := c.scheduleRetry(ctx, op, op.RetryCount, next, cause.Error(), metadata); err != nil {
+		c.reportSettleLapse(op, "defer", err)
 		return
 	}
-	if err := c.scheduleRetry(ctx, op, op.RetryCount, next, cause.Error(), metadata); err != nil {
-		c.cfg.Logger.Error("defer scheduling failed", "operation_id", op.OperationID, "error", err)
-		return
-	}
-	if err := c.store.ReleaseOperationClaim(ctx, op.OperationID, c.workerID()); err != nil {
-		c.cfg.Logger.Error("claim release failed", "operation_id", op.OperationID, "error", err)
-		return
-	}
+	// The refusal reason belongs in the log, not in the error column: a
+	// deferral is backpressure rather than a failure, and a caller that waits
+	// for a bank to settle reads a pending operation carrying an error as
+	// already lost. It is logged only once the reschedule has applied, so a
+	// deferral whose row is gone does not claim to have been scheduled.
+	c.cfg.Logger.Info("operation deferred under backpressure",
+		"operation_id", op.OperationID, "next_retry_at", next, "reason", cause.Error())
 }
 
 // retry schedules another attempt, or fails the operation once the attempt
@@ -581,15 +612,13 @@ func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error,
 	}
 
 	// Record the failed attempt and the next attempt time, then return the
-	// operation to the claimable pool. The claim is released so another
-	// consumer may take it when the gate passes.
+	// operation to the claimable pool. The schedule write itself releases the
+	// claim: ScheduleOperationRetry clears its holder and flips it back to
+	// pending, so a second release would find no claim to release and fail with
+	// a conflict — noise on the log, and it would mask the recorded cause.
 	next := c.cfg.Now().Add(c.BackoffFor(attempt))
 	if err := c.store.ScheduleOperationRetry(ctx, op.OperationID, op.RetryCount+1, next, cause.Error()); err != nil {
-		c.cfg.Logger.Error("retry scheduling failed", "operation_id", op.OperationID, "error", err)
-		return
-	}
-	if err := c.store.ReleaseOperationClaim(ctx, op.OperationID, c.workerID()); err != nil {
-		c.cfg.Logger.Error("claim release failed", "operation_id", op.OperationID, "error", err)
+		c.reportSettleLapse(op, "schedule-retry", err)
 		return
 	}
 	c.cfg.Logger.Info("operation scheduled for retry",

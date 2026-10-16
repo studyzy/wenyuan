@@ -543,6 +543,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A queued retain no longer runs after its bank is deleted, and a worker that
+  outlived its bank no longer reports a failure. Three defects met in one
+  place. A queued child's own operation id was compared against the operation
+  table before the write path's "the operation record is already mine" flag was
+  honoured, so the child failed with `operation id already used` and retried
+  forever. The in-memory `DeleteBank` left the bank's queued operations behind
+  (PostgreSQL gets this from `fk_async_operations_bank_id ... ON DELETE
+  CASCADE`, so the two backends disagreed about whether a deleted bank can be
+  written back to life). And the worker released a claim that scheduling a
+  retry had already released, which logged `claim release failed` on every
+  attempt and overwrote the operation's recorded error with that bookkeeping
+  line, hiding the real cause. Now: deleting a bank removes its queued
+  operations on both backends; a claimed operation whose row is gone or
+  cancelled aborts without executing — the reference's `_check_op_alive` guard,
+  checked at execution start and at the retain item boundaries — and the
+  worker's settle writes (complete, fail, schedule-retry, defer) are no-ops
+  when the operation row is gone, the way the reference's zero-row UPDATEs are,
+  instead of logging `complete failed ... operation not found`.
 - `DELETE /v1/default/banks/{bank_id}` deletes the bank's content, not merely its
   row. The memory domain carries no foreign key to `banks` — `memory_units`,
   `documents` and `entities` reference each other, and only the async queue,
