@@ -119,6 +119,30 @@ func TestProviderSettingsMapFromConfig(t *testing.T) {
 	}
 }
 
+// The shared batch key belongs to the OpenAI family. A non-OpenAI provider
+// carries its own batch setting, so the OpenAI seed must not leak into it: TEI
+// validates its own --max-client-batch-size as a hard cap and rejects a larger
+// batch, rather than clamping it.
+func TestEmbeddingBatchDoesNotLeakAcrossProviderFamilies(t *testing.T) {
+	resolve := func(provider string) config.EmbeddingConfig {
+		return config.FromEnv(func(key string) (string, bool) {
+			values := map[string]string{config.EnvEmbeddingsProvider: provider}
+			v, ok := values[key]
+			return v, ok
+		}).Provider.Embeddings
+	}
+
+	openai := embeddingConfigFor(resolve("openai"))
+	if openai.BatchSize != config.DefaultEmbeddingsBatch {
+		t.Fatalf("openai batch = %d, want %d", openai.BatchSize, config.DefaultEmbeddingsBatch)
+	}
+
+	tei := embeddingConfigFor(resolve("tei"))
+	if tei.BatchSize != config.DefaultEmbeddingsTEIBatchSize {
+		t.Fatalf("tei batch = %d, want %d", tei.BatchSize, config.DefaultEmbeddingsTEIBatchSize)
+	}
+}
+
 // stubProvider is a minimal provider for composition tests.
 type stubProvider struct{ name string }
 

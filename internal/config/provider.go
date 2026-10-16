@@ -78,8 +78,13 @@ const (
 	DefaultLLMTraceMaxChars     = 50000
 	DefaultLLMTraceRetentionDay = 1
 	DefaultEmbeddingsBatch      = 100
-	DefaultEmbeddingsConcur     = 8
-	DefaultEmbeddingsMaxRetries = 4
+	// DefaultEmbeddingsTEIBatchSize is the texts per TEI /embed request. TEI
+	// validates this as a hard cap (its own --max-client-batch-size, 32), so a
+	// larger value fails the request rather than being clamped, and it is not
+	// shared with the OpenAI default.
+	DefaultEmbeddingsTEIBatchSize = 32
+	DefaultEmbeddingsConcur       = 8
+	DefaultEmbeddingsMaxRetries   = 4
 	// DefaultEmbeddingsInitialBackoff, DefaultEmbeddingsMaxBackoff and
 	// DefaultEmbeddingsRetryBudget are the contract's retry envelope for the
 	// embedding scope.
@@ -608,7 +613,7 @@ func resolveEmbeddings(lookup func(string) (string, bool), base EmbeddingConfig)
 	c.CohereOutputDimensions = intFromEnv(lookup, EnvEmbeddingsCohereOutputDimensions, 0)
 
 	c.TEIURL = str(EnvEmbeddingsTeiURL)
-	c.TEIBatchSize = intFromEnv(lookup, EnvEmbeddingsTeiBatchSize, 0)
+	c.TEIBatchSize = intFromEnv(lookup, EnvEmbeddingsTeiBatchSize, DefaultEmbeddingsTEIBatchSize)
 
 	c.GeminiAPIKey = str(EnvEmbeddingsGeminiAPIKey)
 	c.GeminiModel = str(EnvEmbeddingsGeminiModel)

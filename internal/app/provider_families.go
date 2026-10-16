@@ -120,7 +120,6 @@ func rerankMember(m config.RerankerMember) rerank.Member {
 func embeddingConfigFor(e config.EmbeddingConfig) embed.Config {
 	out := embed.Config{
 		Provider:       e.Provider,
-		BatchSize:      e.OpenAIBatchSize,
 		Dimensions:     e.Dimensions,
 		MaxInputTokens: e.MaxInputTokens,
 		PassagePrefix:  e.PassagePrefix,
@@ -135,6 +134,11 @@ func embeddingConfigFor(e config.EmbeddingConfig) embed.Config {
 	}
 	switch strings.ToLower(strings.TrimSpace(e.Provider)) {
 	case "", "openai":
+		// The shared batch key is the OpenAI family's; every other provider
+		// carries its own batch setting and its adapter's own default, which
+		// differ from OpenAI's (TEI caps at 32 and validates the cap), so the
+		// seed must not leak across the family boundary.
+		out.BatchSize = e.OpenAIBatchSize
 		out.APIKey, out.BaseURL, out.Model = e.OpenAIAPIKey, e.OpenAIBaseURL, e.OpenAIModel
 		if e.OpenAIDimensions > 0 {
 			out.Dimensions = e.OpenAIDimensions
