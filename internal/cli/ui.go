@@ -75,7 +75,7 @@ func runFrontendProcess(ctx context.Context, dir, exe string, env []string, stdi
 
 // RegisterUICommand wires the top-level `ui` command.
 func RegisterUICommand(r *Registry) {
-	cmd := r.Sub("ui", "Launch the web frontend")
+	cmd := r.Sub("ui", "Launch the web frontend").NoSpinner()
 	cmd.Flags().String("dir", "", "path to the frontend directory (default: ./frontend or ../frontend)")
 	cmd.Action(func(ctx context.Context, d *Deps) error {
 		dir, err := uiFrontendDir(d)

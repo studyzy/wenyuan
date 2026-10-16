@@ -147,6 +147,29 @@ fn answer(request: &Seen) -> (u16, String) {
             "text": ANSWER,
             "usage": { "input_tokens": 12, "output_tokens": 5 },
         }),
+        // The refresh details' own `outcome`: a value the first model that
+        // claims the `outcome` title does not list.
+        ("GET", p) if p.starts_with(&format!("/v1/default/banks/{BANK}/operations/op-1")) => {
+            json!({
+                "operation_id": "op-1",
+                "status": "completed",
+                "operation_type": "refresh_mental_model",
+                "details": {
+                    "operation_type": "refresh_mental_model",
+                    "outcome": "refresh_failed_error",
+                    "failure_reason": "empty_candidate",
+                },
+            })
+        }
+        // The prompt block's own `kind`, likewise absent from the first model
+        // that claims the `kind` title.
+        ("POST", p) if p == format!("/v1/default/banks/{BANK}/prompts/preview") => json!({
+            "messages": [{
+                "role": "user",
+                "blocks": [{ "kind": "text", "source": "config", "text": "" }],
+            }],
+            "run_settings": [{ "field": "chunk_size", "kind": "choice" }],
+        }),
         _ => return (404, json!({ "detail": "not found" }).to_string()),
     };
     (200, body.to_string())
@@ -360,4 +383,44 @@ async fn a_status_the_document_does_not_declare_reaches_the_caller() {
         }
         other => panic!("expected an undeclared-status error, got {other}"),
     }
+}
+
+/// Two inline enums that share a `title` but not their values must keep their
+/// own value sets. The spec rewrite in `build.rs` disambiguates their titles
+/// for that reason: without it the generator names both after the shared title,
+/// the second collapses into the first, and the second then rejects values its
+/// own schema allows. Seen through the API, that loss is a documented `outcome`
+/// and a documented `kind` failing to decode.
+#[tokio::test]
+async fn same_titled_inline_enums_keep_their_own_values() {
+    let stub = Stub::start().await;
+    let client = Wenyuan::with_base_url(&stub.base_url).expect("the base URL is usable");
+
+    // `refresh_failed_error` belongs to the refresh details' `outcome`; the
+    // other model titled `outcome` does not list it.
+    let operation = client
+        .client()
+        .get_operation_status(BANK, "op-1", None, None)
+        .await
+        .expect("the operation status decodes")
+        .into_inner();
+    let details = operation
+        .details
+        .expect("the stub reports the operation's typed details");
+    assert_eq!(details.outcome.to_string(), "refresh_failed_error");
+    assert_eq!(
+        serde_json::to_value(&details).expect("the details serialize")["outcome"],
+        json!("refresh_failed_error"),
+    );
+
+    // `text` and `choice` belong to the prompt block's and run setting's own
+    // `kind`; the other model titled `kind` lists neither.
+    let preview = client
+        .client()
+        .preview_prompt(BANK, None, &types::PromptPreviewRequest::default())
+        .await
+        .expect("the prompt preview decodes")
+        .into_inner();
+    assert_eq!(preview.messages[0].blocks[0].kind.to_string(), "text",);
+    assert_eq!(preview.run_settings[0].kind.to_string(), "choice",);
 }

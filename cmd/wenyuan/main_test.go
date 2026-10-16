@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/studyzy/wenyuan/internal/cli"
 )
 
 func runForTest(args []string, stdin string) (int, string, string) {
@@ -426,5 +429,145 @@ func TestGroupHelpListsSubcommands(t *testing.T) {
 	code, _, errOut = runForTest([]string{"bank", "bogus", "--help"}, "")
 	if code != 2 || !strings.Contains(errOut, "unknown command") {
 		t.Fatalf("code = %d, stderr = %q", code, errOut)
+	}
+}
+
+// withDecorations drives the pretty-mode decoration policy (wordmark and
+// progress line) from a fixed environment for the duration of a test. The
+// pretty flag is still taken from the run so json/yaml stays suppressed.
+func withDecorations(t *testing.T, env cli.TTYEnv) {
+	t.Helper()
+	old := decorationsForOS
+	decorationsForOS = func(pretty bool) cli.TTYEnv {
+		env.Pretty = pretty
+		return env
+	}
+	t.Cleanup(func() { decorationsForOS = old })
+}
+
+// TestHelpShowsWordmarkInPrettyMode checks the ASCII wordmark leads the help
+// output on a styled terminal.
+func TestHelpShowsWordmarkInPrettyMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
+
+	code, out, errOut := runForTest([]string{"--help"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errOut)
+	}
+	if !strings.HasPrefix(out, cli.Wordmark) {
+		t.Fatalf("wordmark not ahead of help:\n%s", out)
+	}
+	if !strings.Contains(out, "Usage: wenyuan-admin") {
+		t.Fatalf("help body missing:\n%s", out)
+	}
+
+	// Subcommand help carries it too.
+	code, out, errOut = runForTest([]string{"bank", "--help"}, "")
+	if code != 0 || !strings.HasPrefix(out, cli.Wordmark) {
+		t.Fatalf("group help code = %d, stderr = %q:\n%s", code, errOut, out)
+	}
+}
+
+// TestHelpHidesWordmarkInMachineOrPlainOutput checks the wordmark is dropped
+// in json mode and on a non-terminal.
+func TestHelpHidesWordmarkInMachineOrPlainOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
+	code, out, _ := runForTest([]string{"-o", "json", "--help"}, "")
+	if code != 0 || strings.Contains(out, cli.Wordmark) {
+		t.Fatalf("json help code = %d, wordmark leaked:\n%s", code, out)
+	}
+
+	withDecorations(t, cli.TTYEnv{IsTTY: false, Term: "xterm"})
+	code, out, _ = runForTest([]string{"--help"}, "")
+	if code != 0 || strings.Contains(out, cli.Wordmark) {
+		t.Fatalf("non-tty help code = %d, wordmark leaked:\n%s", code, out)
+	}
+
+	// Usage printed for a missing command is not help: no wordmark either.
+	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
+	_, _, errOut := runForTest(nil, "")
+	if strings.Contains(errOut, cli.Wordmark) {
+		t.Fatalf("usage error should not carry the wordmark:\n%s", errOut)
+	}
+}
+
+// TestFSRunHiddenButDispatchable checks the internal daemon entrypoint is
+// absent from the fs listing yet still resolves.
+func TestFSRunHiddenButDispatchable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code, out, errOut := runForTest([]string{"fs", "--help"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errOut)
+	}
+	sawMount := false
+	for _, line := range strings.Split(out, "\n") {
+		switch fields := strings.Fields(line); {
+		case len(fields) > 0 && fields[0] == "run":
+			t.Fatalf("hidden command listed under fs:\n%s", out)
+		case len(fields) > 0 && fields[0] == "mount":
+			sawMount = true
+		}
+	}
+	if !sawMount {
+		t.Fatalf("fs listing looks wrong:\n%s", out)
+	}
+
+	if cmd, _, err := newRegistry().Resolve([]string{"fs", "run"}); err != nil || cmd.Name() != "run" {
+		t.Fatalf("fs run not dispatchable: cmd=%v err=%v", cmd, err)
+	}
+}
+
+// TestSpinnerCoversAPICommandOnTTY checks the progress line is written to
+// stderr, erased, and never touches the result on stdout.
+func TestSpinnerCoversAPICommandOnTTY(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * 80 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"status":"healthy","database":"connected"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
+
+	code, out, errOut := runForTest([]string{"health"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errOut)
+	}
+	if strings.Contains(out, "\r") {
+		t.Fatalf("spinner leaked onto stdout: %q", out)
+	}
+	if !strings.Contains(errOut, "Loading...") {
+		t.Fatalf("no spinner on stderr: %q", errOut)
+	}
+	cleared := "\r" + strings.Repeat(" ", len("Loading...")+2) + "\r"
+	if !strings.HasSuffix(errOut, cleared) {
+		t.Fatalf("result not preceded by an erased line: %q", errOut)
+	}
+}
+
+// TestSpinnerStopsBeforeErrorOutput checks a failing API command still clears
+// the line and prints its error after it.
+func TestSpinnerStopsBeforeErrorOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HINDSIGHT_API_URL", url)
+	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
+
+	code, _, errOut := runForTest([]string{"health"}, "")
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q", code, errOut)
+	}
+	if !strings.Contains(errOut, "Loading...") {
+		t.Fatalf("no spinner on stderr: %q", errOut)
+	}
+	cleared := "\r" + strings.Repeat(" ", len("Loading...")+2) + "\r"
+	if idx := strings.Index(errOut, cleared); idx < 0 {
+		t.Fatalf("line not erased on failure: %q", errOut)
+	} else if !strings.Contains(errOut[idx+len(cleared):], "Cannot connect") {
+		t.Fatalf("error not printed after the erase: %q", errOut)
 	}
 }

@@ -62,3 +62,61 @@ func TestRegistryUnknownAliasStaysUnknown(t *testing.T) {
 		t.Fatalf("err = %v, want a usage error", err)
 	}
 }
+
+// TestHiddenCommandStaysDispatchable checks that hiding a command only keeps
+// it out of listings and usage hints: resolving it still walks to it.
+func TestHiddenCommandStaysDispatchable(t *testing.T) {
+	r := NewRegistry()
+	parent := r.Sub("fs", "mirror")
+	parent.Sub("mount", "mount it")
+	run := parent.Sub("run", "run the loop").Hide()
+
+	if !run.Hidden() {
+		t.Fatal("run should be hidden")
+	}
+	var listed []string
+	for _, c := range parent.Listed() {
+		listed = append(listed, c.Name())
+	}
+	if strings.Join(listed, ",") != "mount" {
+		t.Fatalf("hidden command leaked into the listing: %v", listed)
+	}
+
+	cmd, rest, err := r.Resolve([]string{"fs", "run"})
+	if err != nil {
+		t.Fatalf("resolve hidden command: %v", err)
+	}
+	if cmd != run || len(rest) != 0 {
+		t.Fatalf("resolved %q rest=%v", cmd.Name(), rest)
+	}
+}
+
+// TestHiddenCommandsOmittedFromUsageHints checks the "one of: ..." error
+// stays free of hidden commands.
+func TestHiddenCommandsOmittedFromUsageHints(t *testing.T) {
+	r := NewRegistry()
+	parent := r.Sub("fs", "mirror")
+	parent.Sub("mount", "mount it").Hide()
+	parent.Sub("stop", "stop it")
+
+	_, _, err := r.Resolve([]string{"fs", "bogus"})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), "mount") {
+		t.Fatalf("hidden command leaked into the hint: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stop") {
+		t.Fatalf("visible command missing from the hint: %v", err)
+	}
+}
+
+// TestNoSpinnerMarker records the long-running opt-out.
+func TestNoSpinnerMarker(t *testing.T) {
+	r := NewRegistry()
+	plain := r.Sub("health", "check health")
+	loop := r.Sub("mount", "run forever").NoSpinner()
+	if !plain.UsesSpinner() || loop.UsesSpinner() {
+		t.Fatalf("UsesSpinner: plain=%v loop=%v", plain.UsesSpinner(), loop.UsesSpinner())
+	}
+}

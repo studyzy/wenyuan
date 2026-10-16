@@ -21,7 +21,7 @@ import (
 // the daemon entrypoint and is deliberately not advertised anywhere.
 func RegisterFSCommands(r *Registry) {
 	fs := r.Sub("fs", "mirror a bank's knowledge base to a local folder")
-	registerFSMount(fs.Sub("mount", "start mirroring a bank's knowledge base to a folder"))
+	registerFSMount(fs.Sub("mount", "start mirroring a bank's knowledge base to a folder").NoSpinner())
 	registerFSStart(fs.Sub("start", "start the mirror daemon in the background"))
 	registerFSStop(fs.Sub("stop", "stop the mirror daemon"))
 	registerFSRestart(fs.Sub("restart", "restart the mirror daemon"))
@@ -30,7 +30,7 @@ func RegisterFSCommands(r *Registry) {
 	registerFSList(fs.Sub("list", "print the planned mirror layout without writing"))
 	registerFSLogs(fs.Sub("logs", "show the daemon log's last lines"))
 	registerFSUnmount(fs.Sub("unmount", "stop the daemon and remove the mirror"))
-	registerFSRun(fs.Sub("run", "run the mirror loop in the foreground"))
+	registerFSRun(fs.Sub("run", "run the mirror loop in the foreground").Hide().NoSpinner())
 }
 
 // fsCommon carries the flag variables every fs subcommand accepts.

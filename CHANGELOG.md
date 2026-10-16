@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The client SDKs' hand-written convenience layers are complete. TypeScript
+  gains the `WenYuanClient` class (44 methods: version, memories, banks and bank
+  config, mission, directives, mental models with the partial-patch trigger
+  mapping, knowledge base with the tag-query mapping, documents, and the
+  transfer flows — submit → poll → download with a signed URL fetched without
+  credentials), with the camelCase option names mapped onto the request fields;
+  the free helper functions stay and are documented as the other style.
+  Python gains the equivalents one family at a time (version, memories, bank
+  lifecycle and config, mental models, knowledge base, directives, transfers),
+  each with an async twin and the reference's mapping semantics, and the recall
+  helpers. Both now cover the transfer orchestration neither had. Rust gains the
+  test pinning that two same-titled inline enums keep their own values after the
+  build script's rewrite — the case where a fused enum would silently reject a
+  documented variant. See `clients/README.md` for what each layer adds.
+- `wenyuan-admin` shows progress the way the reference CLI does: a spinner while
+  an API command is in flight (pretty mode only, TTY only, `NO_COLOR`/`TERM=dumb`
+  respected, written to stderr and erased before the result, never in json/yaml
+  mode), and the wordmark ahead of the help output under the same gate. The
+  internal `fs run` daemon entrypoint is hidden from `fs --help` and from the
+  subcommand hints while staying dispatchable.
 - The four client SDKs under `clients/` — Go, Python, TypeScript and Rust —
   generated from this service's own contract instead of written by hand. The
   generator input is `clients/openapi.json`, a derived copy of the document

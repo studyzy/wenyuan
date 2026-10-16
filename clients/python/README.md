@@ -133,6 +133,107 @@ clients does not come back in lockstep and rebuild the spike. The final failure
 surfaces the original error unchanged. Writes are never retried — a duplicated
 retain is worse than a refused one.
 
+### Reading and configuring a bank
+
+```python
+version = client.get_version()                        # api_version + feature flags
+
+client.create_bank(
+    "ops",
+    name="Operations",
+    disposition={"skepticism": 4, "literalism": 2, "empathy": 3},  # the legacy mapping
+    retain_extraction_mode="verbose",
+    enable_reranking=False,                           # omitted settings keep the server default
+)
+
+page = client.list_memories("ops", time_field="mentioned_at", limit=50)
+config = client.get_bank_config("ops")                # plain dict: bank_id, config, overrides
+client.update_bank_config("ops", enable_text_search=False)   # only the named settings are sent
+client.reset_bank_config("ops")
+client.delete_bank("ops")
+```
+
+`create_bank` takes the bank's configuration as named arguments: `name`,
+`mission`, `reflect_mission`, `background`, the three `disposition_*` fields (or
+the legacy `disposition` mapping, whose `skepticism`/`literalism`/`empathy` keys
+are expanded into them — an individual field wins over the mapping), and the
+retain / observation / recall toggles. Only the arguments you name are sent, so
+an omitted field keeps the server's default. `set_mission` and
+`set_reflect_mission` remain as the deprecated aliases of `create_bank(mission=...)`.
+`update_bank_config` follows the same rule: only the settings you name reach the
+request body.
+
+`list_memories` enumerates its filters rather than passing a dict through, so a
+filter a caller names always reaches the query: `search_query` (the `q`
+parameter), `entity_id`, `document_id`, `state`, `consolidation_state`, the tag
+filter, and the time window (`time_field` with `start_date`/`end_date`, a
+half-open range that both filters and orders). Leaving the window unset keeps
+the endpoint's own ordering and drops nothing.
+
+### Mental models, knowledge base and directives
+
+```python
+model = client.create_mental_model("ops", name="Housing", source_query="Where does Alice live?")
+client.update_mental_model("ops", model.mental_model_id, trigger={"mode": "delta"})
+client.aget_mental_model_history  # (await) the change history, most recent first
+client.delete_mental_model("ops", model.mental_model_id)
+
+folder = client.create_knowledge_folder("ops", "Operations")
+page = client.create_knowledge_page("ops", name="Deploying", source_query="How is it deployed?")
+client.update_knowledge_node("ops", page.page_id, name="Deployment")   # partial patch
+client.search_knowledge_base("ops", "deployment")
+client.export_knowledge_base("ops")
+
+directive = client.create_directive("ops", name="Tone", content="Be terse")
+client.list_directives("ops")
+client.update_directive("ops", directive.id, content="Be concise")
+client.delete_directive("ops", directive.id)
+```
+
+Every family is present under the same names in both forms — `a`-prefixed for
+async — and a sync/async pair always takes the same arguments.
+
+A supplied `trigger` (mental models, knowledge pages and `update_knowledge_node`)
+is a **patch**: the wrapper sends only the keys you named, so the settings you
+left out keep their server-side default or stored value rather than being reset
+to the model's default. Passing a nullable field explicitly (`{"refresh_cron":
+None}`) still clears it. Likewise `update_knowledge_node` only sends the fields
+you pass, so `parent_id=None` moves a node to the root while omitting it leaves
+the parent alone.
+
+### Bank transfer
+
+Transfers run server-side as background operations. The wrapper submits, polls
+the operation to a terminal state, and downloads the resulting archive:
+
+```python
+archive = client.export_bank("ops")                    # whole bank → bytes
+archive = client.export_bank("ops", include_history=True, poll_interval=0.5, timeout=120)
+archive = client.export_documents("ops", document_ids=["doc-1"])   # → bytes
+
+operation_id = client.import_bank("ops", archive, target_bank_id="ops-copy")
+operation_id = client.clone_bank("ops", "ops-clone")   # copy without an archive on the wire
+```
+
+An export raises `TimeoutError` if the operation does not finish within
+`timeout` (the deadline bounds both the status request and the poll sleep), and
+`RuntimeError` if it fails, is cancelled, or completes without naming an archive.
+The archive is then fetched from the location the operation names: a signed
+object-store URL is fetched directly, preserving its query string and sending no
+API credentials; a server-relative URL goes through the client, keeping the
+client's headers.
+
+### Bank routes and path encoding
+
+The bank and configuration routes are not hand-written here — they call the
+generated client, which substitutes a bank id as a path parameter with no safe
+characters (`quote(..., safe="")`). A bank id holding `?`, `#`, `/`, `+` or a
+space therefore stays one path component: it cannot truncate the path or start a
+query string. `tests/test_bank_routes.py` pins that round-trip (create, read
+config, delete) together with the client identity reaching those routes. Setting
+`api_key` attaches `Authorization: Bearer <key>` to every request, including the
+routes whose generated definition declares no security scheme.
+
 ### Anything the façade does not cover
 
 The generated API objects are exposed unchanged as properties, one per area:
@@ -162,11 +263,11 @@ Every method on those objects is async.
 from wenyuan_client import RecallResponse, RetainResponse, ReflectResponse
 ```
 
-`recall`, `reflect`, `create_bank` and `aretain` accept extra keyword arguments
-that are passed straight to the generated request model
-(`RecallRequest`, `ReflectRequest`, `CreateBankRequest`, `MemoryItem`), so the
-whole request surface is reachable without waiting for the façade to grow a
-parameter.
+`recall`, `reflect` and `aretain` accept extra keyword arguments that are passed
+straight to the generated request model (`RecallRequest`, `ReflectRequest`,
+`MemoryItem`), so the whole request surface is reachable without waiting for the
+façade to grow a parameter. `create_bank` names its arguments; any further
+keyword argument is still placed on the generated `CreateBankRequest`.
 
 ### Recall-response helpers
 
@@ -202,8 +303,14 @@ them directly.
 ## Tests
 
 Two suites run under one command. The offline one uses no network — it drives the
-wrapper against a loopback `http.server` stub, a mocked API object, and pure
-model round-trips.
+wrapper against loopback stub servers, mocked API objects, and pure model
+round-trips. Alongside the retain/recall/reflect, retry, suspension and
+sub-client tests, it covers the convenience families (`get_version`,
+`list_memories`, bank create/config/delete, mental models, knowledge base,
+directives), the sync/async pairing of every convenience method, the transfer
+orchestration (submit → poll → download, timeout bounds, failure paths, and the
+credential boundary between signed and server-relative downloads), and the
+bank-route path encoding.
 
 ```
 cd clients/python
@@ -215,7 +322,10 @@ those tests skip (so the command above stays green with no server); set, they
 run against a real service — bank lifecycle, retain then document/chunk reads, a
 tagged write selected back by its own tag and skipped by an unwritten one, an
 async retain naming a queued operation, recall, reflect, entity/graph agreement,
-and the retired profile route answering `410`.
+the retired profile route answering `410`, the version and bank-config
+conveniences, the mental-model / knowledge-base / directive families, and the
+transfer flows (whole-bank export then import of the archive, document export,
+and clone).
 
 ```
 HINDSIGHT_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests -v

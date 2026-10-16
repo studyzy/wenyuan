@@ -69,6 +69,8 @@ type SubCmd struct {
 	summary    string
 	aliases    []string
 	skipConfig bool
+	hidden     bool
+	noSpinner  bool
 	flags      *flag.FlagSet
 	action     func(context.Context, *Deps) error
 	children   []*SubCmd
@@ -116,6 +118,29 @@ func (s *SubCmd) SkipConfig() *SubCmd {
 	s.skipConfig = true
 	return s
 }
+
+// Hide marks the command as unlisted: it stays dispatchable by name but is
+// omitted from help listings and from the "one of: ..." hints in usage
+// errors. It is for internal entrypoints that are deliberately not
+// advertised.
+func (s *SubCmd) Hide() *SubCmd {
+	s.hidden = true
+	return s
+}
+
+// Hidden reports whether the command is hidden from listings.
+func (s *SubCmd) Hidden() bool { return s.hidden }
+
+// NoSpinner marks a long-running interactive or streaming command (a
+// full-screen TUI, a daemon loop, a dev server) that must not show the
+// progress line, and returns the command for chaining.
+func (s *SubCmd) NoSpinner() *SubCmd {
+	s.noSpinner = true
+	return s
+}
+
+// UsesSpinner reports whether the command may show the progress line.
+func (s *SubCmd) UsesSpinner() bool { return !s.noSpinner }
 
 // Sub creates a child command under this one, for grouped surfaces such as
 // `wenyuan-admin profile create`.
@@ -191,6 +216,12 @@ func (r *Registry) Commands() []*SubCmd {
 	return append([]*SubCmd(nil), r.roots...)
 }
 
+// Listed lists the top-level commands a help listing shows: everything but
+// the hidden ones, in registration order.
+func (r *Registry) Listed() []*SubCmd {
+	return listedCommands(r.roots)
+}
+
 // Resolve walks positional names from the roots down through groups and
 // returns the deepest command plus the remaining arguments.
 func (r *Registry) Resolve(args []string) (*SubCmd, []string, error) {
@@ -226,6 +257,23 @@ func (s *SubCmd) Commands() []*SubCmd {
 	return append([]*SubCmd(nil), s.children...)
 }
 
+// Listed lists the direct children a help listing shows: everything but the
+// hidden ones, in registration order.
+func (s *SubCmd) Listed() []*SubCmd {
+	return listedCommands(s.children)
+}
+
+// listedCommands filters out hidden commands, preserving order.
+func listedCommands(cmds []*SubCmd) []*SubCmd {
+	listed := make([]*SubCmd, 0, len(cmds))
+	for _, cmd := range cmds {
+		if !cmd.hidden {
+			listed = append(listed, cmd)
+		}
+	}
+	return listed
+}
+
 // lookupChild finds a direct child by name or alias.
 func (s *SubCmd) lookupChild(name string) (*SubCmd, bool) {
 	if child, ok := s.index[name]; ok {
@@ -250,9 +298,12 @@ func (s *SubCmd) matchesAlias(name string) bool {
 }
 
 func joinNames(cmds []*SubCmd) string {
-	names := make([]string, len(cmds))
-	for i, cmd := range cmds {
-		names[i] = cmd.name
+	names := make([]string, 0, len(cmds))
+	for _, cmd := range cmds {
+		if cmd.hidden {
+			continue
+		}
+		names = append(names, cmd.name)
 	}
 	return strings.Join(names, ", ")
 }

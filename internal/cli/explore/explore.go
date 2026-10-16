@@ -19,7 +19,7 @@ import (
 // no arguments: the API base URL and optional bearer key come from the
 // shared configuration. `tui` is an accepted spelling of the command.
 func Register(r *cli.Registry) {
-	r.Sub("explore", "open the interactive explorer").Alias("tui").Action(run)
+	r.Sub("explore", "open the interactive explorer").Alias("tui").NoSpinner().Action(run)
 }
 
 // run builds the data layer over the shared client, performs the first bank

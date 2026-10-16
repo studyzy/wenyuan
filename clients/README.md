@@ -73,6 +73,22 @@ import and `transfer/import` — are dropped from the generated client by
 `build.rs` (the download side of `document-transfer` stays). Their absence is
 listed in `clients/rust/README.md`; a caller that needs them uses another SDK.
 
+## What the hand-written layer adds
+
+Above the generated methods, each SDK carries the convenience a caller would
+otherwise write: one call per multi-step flow, the request shapes the contract's
+own option names imply, and the response helpers the reference's clients offer.
+
+| SDK | Shape of the convenience layer |
+|---|---|
+| Go | `Client` embeds the generated `*APIClient` (every service reachable) and adds `NewClient*`, `TextContent`, and `Retain`/`Recall`/`Reflect`/`CreateBank`/`GetBankConfig` with the response body closed for you |
+| Python | the `WenYuan` façade: one method per operation family (version, memories, banks and bank config, mental models, knowledge base, directives, transfers) each with an `a…` async twin, the sub-clients for everything else, `max_attempts` retry for the idempotent calls, `suspend_retains()`, and the recall helpers |
+| TypeScript | the `WenYuanClient` class mirroring the same method families, including the transfer flows (submit → poll → download, with a signed URL fetched without credentials), plus the free helper functions (`retain`, `retainBatch`, `retainFiles`, `recall`, `reflect`, `recallResponseToPromptString`, retry helpers) over the same core |
+| Rust | the `Wenyuan` handle over the generated client, plus the user-agent constructors; `INTEGRATION.md` and `examples/` show how a synchronous CLI drives it |
+
+The per-language README states which option spelling a given entry point takes
+where the two styles differ.
+
 ## Tests
 
 Each SDK ships two suites: an offline one (stub/httptest servers only, no

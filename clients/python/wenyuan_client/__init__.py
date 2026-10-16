@@ -10,21 +10,24 @@ A thin, pythonic layer over the generated ``wenyuan_client_api`` package::
         answer = client.reflect("my-bank", "summarise the deploy policy")
 
 Every operation has an awaitable counterpart (``aretain``, ``arecall``,
-``areflect``, ``acreate_bank``, ``alist_banks``) and the generated sub-clients
-are reachable as properties: ``client.memory``, ``client.banks``,
-``client.documents``, ``client.entities``, ``client.mental_models``,
-``client.knowledge_base``, ``client.directives``, ``client.operations``,
-``client.webhooks``, ``client.files``, ``client.monitoring``,
-``client.document_transfer``, ``client.bank_transfer`` (plus the ``audit``,
-``bank_templates`` and ``llm_traces`` areas).
+``areflect``, ``aget_version``, ``alist_memories``, ``acreate_bank``,
+``alist_banks``, the bank-config, mental-model, knowledge-base, directive and
+transfer families) and the generated sub-clients are reachable as properties:
+``client.memory``, ``client.banks``, ``client.documents``, ``client.entities``,
+``client.mental_models``, ``client.knowledge_base``, ``client.directives``,
+``client.operations``, ``client.webhooks``, ``client.files``,
+``client.monitoring``, ``client.document_transfer``, ``client.bank_transfer``
+(plus the ``audit``, ``bank_templates`` and ``llm_traces`` areas).
 """
 
 from wenyuan_client_api.models.bank_list_response import BankListResponse
 from wenyuan_client_api.models.bank_profile_response import BankProfileResponse
+from wenyuan_client_api.models.list_memory_units_response import ListMemoryUnitsResponse
 from wenyuan_client_api.models.recall_response import RecallResponse
 from wenyuan_client_api.models.recall_result import RecallResult
 from wenyuan_client_api.models.reflect_response import ReflectResponse
 from wenyuan_client_api.models.retain_response import RetainResponse
+from wenyuan_client_api.models.version_response import VersionResponse
 
 from . import recall
 from .client import (
@@ -55,10 +58,12 @@ __all__ = [
     "ContentInput",
     "BankListResponse",
     "BankProfileResponse",
+    "ListMemoryUnitsResponse",
     "RecallResponse",
     "RecallResult",
     "ReflectResponse",
     "RetainResponse",
+    "VersionResponse",
     # Recall conveniences (also installed as methods on RecallResponse).
     "iter_results",
     "result_at",

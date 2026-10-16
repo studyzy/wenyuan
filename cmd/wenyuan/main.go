@@ -20,6 +20,11 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Stdin))
 }
 
+// decorationsForOS resolves the pretty-mode decoration policy (help wordmark
+// and progress line) for the current run. Tests replace it to drive the
+// policy without depending on the harness's terminal.
+var decorationsForOS = cli.TTYEnvForOS
+
 // globals holds the flags accepted before or after any subcommand, at any
 // depth.
 type globals struct {
@@ -145,9 +150,12 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 			return 2
 		}
 	}
+	ttyEnv := decorationsForOS(format == cli.FormatPretty)
+	decoration := ttyEnv.DecorationsEnabled()
 
 	if len(rest) == 0 {
 		if g.help {
+			printWordmark(stdout, decoration)
 			printUsage(stdout, registry)
 			printAfterHelp(stdout)
 			return 0
@@ -157,6 +165,7 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 
 	if g.help {
+		printWordmark(stdout, decoration)
 		return printHelp(stdout, stderr, registry, rest)
 	}
 
@@ -202,7 +211,19 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		deps.Client = client
 	}
 
-	if err := cmd.Execute(deps.Ctx, deps); err != nil {
+	// The progress line covers an API command while it is in flight: pretty
+	// mode on a terminal only, on stderr so the result on stdout stays
+	// clean. Long-running/TUI commands opt out, and the line is erased
+	// before the result prints.
+	exec := func() error { return cmd.Execute(deps.Ctx, deps) }
+	var execErr error
+	if cmd.NeedsConfig() && cmd.UsesSpinner() {
+		execErr = cli.WithSpinner(stderr, ttyEnv, "Loading...", exec)
+	} else {
+		execErr = exec()
+	}
+
+	if err := execErr; err != nil {
 		var usage *cli.UsageError
 		var command *cli.CommandError
 		var classified *cli.ClassifiedError
@@ -357,7 +378,7 @@ func printHelp(stdout, stderr io.Writer, registry *cli.Registry, path []string) 
 
 	name := strings.Join(resolved, " ")
 	_, _ = fmt.Fprintf(stdout, "Usage: wenyuan-admin %s [OPTIONS]\n\n%s\n", name, node.Summary())
-	children := node.Commands()
+	children := node.Listed()
 	if len(children) == 0 {
 		if flags := node.Flags(); flags != nil {
 			flags.SetOutput(stdout)
@@ -373,6 +394,16 @@ func printHelp(stdout, stderr io.Writer, registry *cli.Registry, path []string) 
 	return 0
 }
 
+// printWordmark writes the ASCII wordmark ahead of help output when pretty
+// decoration is allowed; machine formats and non-terminals get nothing.
+func printWordmark(w io.Writer, decoration bool) {
+	if !decoration {
+		return
+	}
+	_, _ = fmt.Fprintln(w, cli.Wordmark)
+	_, _ = fmt.Fprintln(w)
+}
+
 func printUsage(w io.Writer, r *cli.Registry) {
 	_, _ = fmt.Fprint(w, `wenyuan-admin is the command-line client for the wenyuan memory API.
 
@@ -380,7 +411,7 @@ Usage: wenyuan-admin [OPTIONS] <COMMAND>
 
 Commands:
 `)
-	for _, cmd := range r.Commands() {
+	for _, cmd := range r.Listed() {
 		_, _ = fmt.Fprintf(w, "  %-16s %s\n", cmd.Name(), cmd.Summary())
 	}
 	_, _ = fmt.Fprint(w, `

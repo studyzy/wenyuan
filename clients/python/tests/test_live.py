@@ -14,6 +14,7 @@ about extracted facts or synthesised prose, which need a retention model.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import sys
@@ -200,6 +201,175 @@ class MonitoringTest(LiveServerTestCase):
     async def test_version_is_served(self):
         version = await self.client.monitoring.get_version()
         self.assertTrue(version)
+
+
+class WrapperConvenienceTest(LiveServerTestCase):
+    async def test_version_convenience(self):
+        version = await self.client.aget_version()
+        self.assertTrue(version.api_version)
+
+    async def test_list_memories_carries_the_write(self):
+        await self.retain("Alice reviews the schema before every release.")
+
+        page = await self.client.alist_memories(self.bank_id)
+
+        self.assertGreaterEqual(page.total, 1)
+        self.assertTrue(page.items)
+
+    async def test_bank_config_round_trip(self):
+        config = await self.client.aget_bank_config(self.bank_id)
+        self.assertEqual(config["bank_id"], self.bank_id)
+
+        updated = await self.client.aupdate_bank_config(self.bank_id, retain_extraction_mode="verbose")
+        self.assertEqual(updated["overrides"].get("retain_extraction_mode"), "verbose")
+
+        reset = await self.client.areset_bank_config(self.bank_id)
+        self.assertNotEqual(reset["config"].get("retain_extraction_mode"), "verbose")
+
+    async def test_set_mission_writes_the_mission(self):
+        profile = await self.client.aset_mission(self.bank_id, "serve the live suite")
+        self.assertEqual(profile.mission, "serve the live suite")
+
+
+class MentalModelLiveTest(LiveServerTestCase):
+    async def test_create_list_and_delete(self):
+        created = await self.client.acreate_mental_model(
+            self.bank_id, name="Housing", source_query="Where does Alice live?"
+        )
+        self.assertTrue(created.mental_model_id)
+        self.assertTrue(created.operation_id)
+
+        page = await self.client.alist_mental_models(self.bank_id)
+        listed = [item.id for item in page.items]
+        self.assertIn(created.mental_model_id, listed)
+
+        model = await self.client.aget_mental_model(self.bank_id, created.mental_model_id)
+        self.assertEqual(model.id, created.mental_model_id)
+
+        await self.client.adelete_mental_model(self.bank_id, created.mental_model_id)
+        after = await self.client.alist_mental_models(self.bank_id)
+        self.assertNotIn(created.mental_model_id, [item.id for item in after.items])
+
+    async def test_trigger_patch_round_trips_and_history_is_queryable(self):
+        created = await self.client.acreate_mental_model(
+            self.bank_id, name="Delta", source_query="What changed?"
+        )
+
+        updated = await self.client.aupdate_mental_model(
+            self.bank_id, created.mental_model_id, trigger={"mode": "delta"}
+        )
+        self.assertEqual(updated.trigger.mode, "delta")
+
+        history = await self.client.aget_mental_model_history(self.bank_id, created.mental_model_id)
+        self.assertIsInstance(list(history), list)
+
+
+class KnowledgeBaseLiveTest(LiveServerTestCase):
+    async def test_folder_and_page_round_trip(self):
+        folder = await self.client.acreate_knowledge_folder(self.bank_id, "Operations")
+        self.assertTrue(folder.id)
+
+        tree = await self.client.aget_knowledge_base_tree(self.bank_id)
+        self.assertIn(folder.id, [node.id for node in tree.roots])
+
+        page = await self.client.acreate_knowledge_page(
+            self.bank_id, name="Deploying", source_query="How is the service deployed?", parent_id=folder.id
+        )
+        self.assertTrue(page.page_id)
+
+        fetched = await self.client.aget_knowledge_page(self.bank_id, page.page_id)
+        self.assertEqual(fetched.id, page.page_id)
+
+        renamed = await self.client.aupdate_knowledge_node(self.bank_id, page.page_id, name="Deployment")
+        self.assertEqual(renamed.name, "Deployment")
+
+        await self.client.adelete_knowledge_node(self.bank_id, page.page_id)
+        await self.client.adelete_knowledge_node(self.bank_id, folder.id)
+        after = await self.client.aget_knowledge_base_tree(self.bank_id)
+        self.assertNotIn(folder.id, [node.id for node in after.roots])
+
+    async def test_export_returns_a_bundle(self):
+        await self.client.acreate_knowledge_folder(self.bank_id, "Bundle")
+
+        bundle = await self.client.aexport_knowledge_base(self.bank_id)
+
+        self.assertTrue(bundle.files)
+
+
+class DirectiveLiveTest(LiveServerTestCase):
+    async def test_create_list_update_delete(self):
+        created = await self.client.acreate_directive(self.bank_id, name="Tone", content="Be terse")
+        self.assertTrue(created.id)
+
+        page = await self.client.alist_directives(self.bank_id)
+        # ListDirectivesResponse carries a list, not a page: unwrap either shape.
+        items = page.items if hasattr(page, "items") else page.directives
+        self.assertIn(created.id, [item.id for item in items])
+
+        fetched = await self.client.aget_directive(self.bank_id, created.id)
+        self.assertEqual(fetched.name, "Tone")
+
+        updated = await self.client.aupdate_directive(self.bank_id, created.id, content="Be concise")
+        self.assertEqual(updated.content, "Be concise")
+
+        await self.client.adelete_directive(self.bank_id, created.id)
+        after = await self.client.alist_directives(self.bank_id)
+        rest = after.items if hasattr(after, "items") else after.directives
+        self.assertNotIn(created.id, [item.id for item in rest])
+
+
+class TransferLiveTest(LiveServerTestCase):
+    async def _await_operation(self, operation_id: str) -> None:
+        for _ in range(300):
+            status = await self.client.operations.get_operation_status(self.bank_id, operation_id)
+            if status.status in ("completed", "failed", "cancelled"):
+                self.assertEqual(status.status, "completed", status.error_message)
+                return
+            await asyncio.sleep(0.1)
+        self.fail(f"operation {operation_id} did not reach a terminal state")
+
+    async def _delete_bank(self, bank_id: str) -> None:
+        try:
+            await self.client.adelete_bank(bank_id)
+        except ApiException:
+            pass
+
+    async def test_export_then_import_restores_the_memories(self):
+        await self.retain("Alice reviews the schema before every release.")
+
+        archive = await self.client.aexport_bank(self.bank_id, poll_interval=0.2, timeout=60)
+        self.assertTrue(archive.startswith(b"PK"))
+
+        target = f"{self.bank_id}-restored"
+        try:
+            operation_id = await self.client.aimport_bank(self.bank_id, archive, target_bank_id=target)
+            self.assertTrue(operation_id)
+            await self._await_operation(operation_id)
+
+            restored = await self.client.alist_memories(target)
+            self.assertGreaterEqual(restored.total, 1)
+        finally:
+            await self._delete_bank(target)
+
+    async def test_export_documents_returns_an_archive(self):
+        await self.retain("A note for the document export flow.")
+
+        archive = await self.client.aexport_documents(self.bank_id, poll_interval=0.2, timeout=60)
+
+        self.assertTrue(archive.startswith(b"PK"))
+
+    async def test_clone_bank_creates_an_independent_bank(self):
+        await self.retain("Alice owns the release checklist.")
+
+        target = f"{self.bank_id}-clone"
+        try:
+            operation_id = await self.client.aclone_bank(self.bank_id, target)
+            await self._await_operation(operation_id)
+
+            cloned = await self.client.alist_memories(target)
+            self.assertGreaterEqual(cloned.total, 1)
+        finally:
+            await self._delete_bank(target)
 
 
 if __name__ == "__main__":
