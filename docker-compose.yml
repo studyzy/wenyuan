@@ -8,8 +8,10 @@
 #                  intfloat/multilingual-e5-small (384 dimensions) on 18080
 #   tei-reranker   the same TEI image serving BAAI/bge-reranker-base on 18081
 #
-# First boot downloads the models into the wenyuan-tei-* volumes; subsequent
-# boots reuse them. The api service is deliberately absent: the backend is a
+# The TEI services sit behind the `tei` profile: `docker compose up -d` (or
+# `make db-up`) starts PostgreSQL alone; `docker compose --profile tei up -d`
+# (or `make tei-up`) adds the model sidecars, whose first boot downloads the
+# models into the wenyuan-tei-* volumes. The api service is deliberately absent: the backend is a
 # host binary, not an image — point etc/wenyuan.yaml at these ports and run
 # `go build -tags pgx ./cmd/server`.
 
@@ -35,6 +37,7 @@ services:
   tei-embedding:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
     container_name: wenyuan-tei-embedding
+    profiles: ["tei"]
     # Prod-like tuning: high request concurrency with bounded batch sizes.
     command:
       [
@@ -66,6 +69,7 @@ services:
   tei-reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
     container_name: wenyuan-tei-reranker
+    profiles: ["tei"]
     # Reranking batches are larger than embedding batches (rerank inputs are
     # query+document pairs scored in bulk during recall).
     command:

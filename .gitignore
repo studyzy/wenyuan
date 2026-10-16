@@ -39,3 +39,6 @@ graphify-out/
 # sources, which is a byproduct rather than something to commit.
 __pycache__/
 *.pyc
+
+# playwright-cli's browser-acceptance workspace (snapshots, console logs).
+.playwright-cli/

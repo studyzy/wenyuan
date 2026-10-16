@@ -76,7 +76,7 @@ make test      # go test -count=1 ./...
 make vet       # go vet ./...
 make pgx       # go build -tags pgx ./...   (compiles the PostgreSQL driver path)
 make check     # all of the above + lint
-make install   # build server, bankctl and wenyuan-admin into bin/
+make install   # build server, worker, bankctl and wenyuan-admin into bin/ (pgx-enabled)
 ```
 
 The default build is standard-library-only and performs no network access. The
@@ -91,16 +91,37 @@ system-test stories against this build.
 ```sh
 make db-up                              # this project's own PostgreSQL on 127.0.0.1:15432
 export HINDSIGHT_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
-go run ./cmd/server                     # serves on the configured address
-go run ./cmd/server --host 0.0.0.0 --port 18888
-go run ./cmd/worker                     # async operation consumer
+go run -tags pgx ./cmd/server           # serves on the configured address
+go run -tags pgx ./cmd/server --host 0.0.0.0 --port 18888
+go run -tags pgx ./cmd/worker           # async operation consumer
 ```
 
-Or with Docker (PostgreSQL + API + worker in one compose project):
+The `pgx` tag matters whenever a `database_url` is configured: without it the
+binary has no PostgreSQL driver and refuses to start.
+
+Or with Docker for the dependency services only — PostgreSQL plus the two TEI
+model sidecars; the server, worker and bankctl run on the host:
 
 ```sh
-docker compose up --build
+make db-up                              # PostgreSQL on 127.0.0.1:15432
+make tei-up                             # TEI embedding (18080) and reranker (18081)
 ```
+
+The TEI first boot downloads the models into the compose volumes; later boots
+reuse them.
+
+### Control-plane frontend
+
+```sh
+make frontend-build                     # production build of frontend/
+make frontend-run                       # serves on 19999 (Next.js production mode)
+```
+
+The frontend talks to the API through its BFF routes, which read
+`HINDSIGHT_CP_DATAPLANE_API_URL` (default `http://127.0.0.1:8000`; point it at
+the wenyuan API, e.g. `http://127.0.0.1:18888`). Run the production build:
+dev-mode HMR hangs Origin-bearing WebSocket upgrades in this environment and
+the dashboard never finishes loading.
 
 ### Server flags
 
@@ -132,6 +153,7 @@ bankctl bank repair-bank (--bank ID | --all) [--dry-run]
 bankctl bank worker-status
 bankctl bank decommission-worker [--worker] ID [--yes]
 bankctl bank decommission-workers [--yes]
+bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
 ```
 
 Every database command takes `--schema/-s` to point at a schema other than the
@@ -293,7 +315,7 @@ See `AGENTS.md` for the full package map and the architectural boundaries.
 | `CONTRIBUTING.md` | How to propose changes |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
 | `SECURITY.md` | How to report a vulnerability privately |
-| `Dockerfile`, `docker-compose.yml` | Server + worker image; compose project with pgvector |
+| `Dockerfile`, `docker-compose.yml` | Server + worker image; compose dependency services (pgvector, TEI model sidecars) |
 | `.github/workflows/ci.yml` | Build, test, vet, gofmt on every push and PR |
 | `.github/ISSUE_TEMPLATE/` | Bug report and feature request forms |
 | `docs/ROADMAP.md` | Outstanding work and known limitations (handover) |

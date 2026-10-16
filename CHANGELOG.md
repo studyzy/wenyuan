@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Make targets for the deployment surface: `make tei-up` starts the compose
+  `tei` profile (the TEI embedding and reranker sidecars now sit behind that
+  profile, so a plain `docker compose up -d` starts PostgreSQL alone), and
+  `make frontend-build` / `make frontend-run` build and serve the control-plane
+  frontend in production mode (dev-mode HMR hangs Origin-bearing WebSocket
+  upgrades in this environment, so dev is not usable against the dashboard).
 - A YAML configuration file answers any key the environment answers. It is read
   through Viper from `etc/wenyuan.yaml` relative to the working directory (also
   `/etc/wenyuan.yaml`, where the image puts the shipped template), or from the
@@ -864,6 +870,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `make install` builds all four binaries with the `pgx` tag and adds
+  `bin/worker` to the set. The previous untagged build produced a server and a
+  bankctl without a PostgreSQL driver, which refuse to start against a
+  configured `database_url`; `make run` now carries the tag for the same
+  reason. The compose stack is dependency services only, so the README no
+  longer describes `docker compose up --build` as API + worker.
 - Recall scoring matches the reference after reranking: the normalized
   cross-encoder score is the base with RRF dropped from it, the combined boost
   multiplies the base, and the strategy boost is an absolute add. Reranker

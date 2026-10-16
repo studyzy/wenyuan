@@ -11,10 +11,14 @@ PKGS      ?= ./...
 BINARY    ?= bin/wenyuan
 BANKCTL   ?= bin/bankctl
 WENYUANCLI ?= bin/wenyuan-admin
+WORKER    ?= bin/worker
 CMD       ?= ./cmd/server
 CMDCTL    ?= ./cmd/bankctl
 CMDCLI    ?= ./cmd/wenyuan
+CMDWORKER ?= ./cmd/worker
 GOLANGCI_LINT ?= golangci-lint
+# The frontend's BFF proxies to the API on this URL (frontend/lib/server/config.ts).
+HINDSIGHT_CP_DATAPLANE_API_URL ?= http://127.0.0.1:18888
 
 # The PostgreSQL-backed suite needs a live instance and is therefore opt-in:
 # the default gate stays offline. Point WENYUAN_TEST_DATABASE_URL at a database
@@ -28,7 +32,8 @@ COVERAGE_MIN ?= 56
 # COVERAGE_MIN_PG is the floor for the PostgreSQL-backed suite.
 COVERAGE_MIN_PG ?= 66
 
-.PHONY: all build test vet pgx lint check fmt tidy clean run db-up db-down install help \
+.PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
+        frontend-build frontend-run help \
         bench test-pg cover cover-check cover-check-pg parity
 
 all: check
@@ -108,23 +113,40 @@ fmt:
 tidy:
 	$(GO) mod tidy
 
-## run: run the API server
+## run: run the API server (with the pgx driver, so a configured database_url works)
 run:
-	$(GO) run $(CMD) $(ARGS)
+	$(GO) run -tags pgx $(CMD) $(ARGS)
 
 ## db-up: start this project's own PostgreSQL via docker compose (host port 15432)
 db-up:
 	docker compose up -d postgres
 
+## tei-up: start the TEI embedding/reranker sidecars from the compose tei profile
+tei-up:
+	docker compose --profile tei up -d tei-embedding tei-reranker
+
 ## db-down: stop the compose stack; data persists in the named volume
 db-down:
 	docker compose down
 
-## install: build the server, admin and client CLI binaries into ./bin
+## install: build the deployment binaries into ./bin with the pgx tag, so the
+## server, worker and bankctl reach PostgreSQL (wenyuan-admin is an API client
+## and unaffected by the tag)
 install:
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BINARY) $(CMD)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BANKCTL) $(CMDCTL)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(WENYUANCLI) $(CMDCLI)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags pgx -o $(BINARY) $(CMD)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags pgx -o $(WORKER) $(CMDWORKER)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags pgx -o $(BANKCTL) $(CMDCTL)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags pgx -o $(WENYUANCLI) $(CMDCLI)
+
+## frontend-build: production build of the control-plane frontend (frontend/)
+frontend-build:
+	cd frontend && npm run build
+
+## frontend-run: serve the frontend in production mode on port 19999.
+## dev mode (`npm run dev`) hangs Origin-bearing HMR WebSocket upgrades in this
+## environment, which leaves the dashboard reloading forever on an empty list.
+frontend-run:
+	cd frontend && HINDSIGHT_CP_DATAPLANE_API_URL=$(HINDSIGHT_CP_DATAPLANE_API_URL) npm run start
 
 ## clean: remove build output
 clean:

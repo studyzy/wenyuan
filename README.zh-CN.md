@@ -59,7 +59,7 @@ make test      # go test -count=1 ./...
 make vet       # go vet ./...
 make pgx       # go build -tags pgx ./...   （编译 PostgreSQL 驱动路径）
 make check     # 以上全部 + lint
-make install   # 构建 server、bankctl 与 wenyuan-admin 到 bin/
+make install   # 构建 server、worker、bankctl 与 wenyuan-admin 到 bin/（带 pgx tag）
 ```
 
 默认构建仅依赖标准库、不访问网络。PostgreSQL 驱动（`pgx`）隔离在 `pgx` 构建标签之后，
@@ -72,16 +72,35 @@ make install   # 构建 server、bankctl 与 wenyuan-admin 到 bin/
 ```sh
 make db-up                              # 本项目专用的 PostgreSQL，127.0.0.1:15432
 export HINDSIGHT_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
-go run ./cmd/server                     # 使用配置的监听地址启动
-go run ./cmd/server --host 0.0.0.0 --port 18888
-go run ./cmd/worker                     # 异步操作消费者
+go run -tags pgx ./cmd/server           # 使用配置的监听地址启动
+go run -tags pgx ./cmd/server --host 0.0.0.0 --port 18888
+go run -tags pgx ./cmd/worker           # 异步操作消费者
 ```
 
-或使用 Docker（PostgreSQL + API + worker 一个 compose 项目）：
+配置了 `database_url` 时 `pgx` tag 是必需的：不带 tag 的二进制没有
+PostgreSQL 驱动，会拒绝启动。
+
+或使用 Docker 只跑依赖服务 —— PostgreSQL 与两个 TEI 模型 sidecar；
+server、worker 与 bankctl 跑在宿主机：
 
 ```sh
-docker compose up --build
+make db-up                              # PostgreSQL，127.0.0.1:15432
+make tei-up                             # TEI 向量（18080）与重排（18081）
 ```
+
+TEI 首次启动会把模型下载进 compose 卷，之后复用。
+
+### 控制台前端
+
+```sh
+make frontend-build                     # frontend/ 的生产构建
+make frontend-run                       # 19999 端口（Next.js 生产模式）
+```
+
+前端通过 BFF 路由访问 API，BFF 读取 `HINDSIGHT_CP_DATAPLANE_API_URL`
+（默认 `http://127.0.0.1:8000`；请指向 wenyuan API，例如
+`http://127.0.0.1:18888`）。请使用生产构建：本环境下 dev 模式的 HMR
+会挂起带 Origin 的 WebSocket 升级，dashboard 会一直加载不出数据。
 
 ### 服务端参数
 
@@ -112,6 +131,7 @@ bankctl bank repair-bank (--bank ID | --all) [--dry-run]
 bankctl bank worker-status
 bankctl bank decommission-worker [--worker] ID [--yes]
 bankctl bank decommission-workers [--yes]
+bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
 ```
 
 所有数据库命令都可用 `--schema/-s` 指向配置之外的 schema；不带 `--schema` 的迁移
@@ -238,7 +258,7 @@ migrations         PostgreSQL schema 迁移
 | `CONTRIBUTING.md` | 如何提交改动 |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
 | `SECURITY.md` | 如何私密报告安全问题 |
-| `Dockerfile`、`docker-compose.yml` | server + worker 镜像；带 pgvector 的 compose 项目 |
+| `Dockerfile`、`docker-compose.yml` | server + worker 镜像；compose 依赖服务（pgvector、TEI 模型 sidecar） |
 | `.github/workflows/ci.yml` | 每次 push / PR 的构建、测试、vet、gofmt |
 | `.github/ISSUE_TEMPLATE/` | Bug 与功能需求表单 |
 | `docs/ROADMAP.md` | 未完成工作与已知局限（交接文档） |
