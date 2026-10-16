@@ -1,0 +1,16 @@
+{
+  // Declaration output only, and only for the library entry point: the
+  // runnable entry points are produced by the bundler, which cannot emit
+  // declarations, and nothing else in the package is consumed as a library.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    // Declarations go to their own subtree so the staged runtime directory
+    // holds bundles and nothing else.
+    "outDir": "dist/types"
+  },
+  "include": ["src/index.ts"]
+}

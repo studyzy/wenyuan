@@ -107,3 +107,55 @@ jobs:
         env:
           PG_TEST_URL: postgresql://wenyuan:wenyuan@127.0.0.1:5432/wenyuan_test
         run: make cover-check-pg
+
+  coding-agents:
+    name: coding-agents package
+    runs-on: ubuntu-latest
+    steps:
+      # The subtree gate below diffs the changed paths against the base
+      # revision, so the checkout needs history rather than a single commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A workflow-level path filter would restrict the Go jobs above as well,
+      # so this job gates itself: it runs by default whenever the base revision
+      # cannot be resolved, and otherwise only when the package changed.
+      - name: Decide whether the package changed
+        id: gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || ! git rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" HEAD -- integrations/coding-agents | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.changed == 'true'
+        with:
+          # Pinned to the package's declared engines floor.
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: integrations/coding-agents/package-lock.json
+
+      - name: Install from the lock file
+        if: steps.gate.outputs.changed == 'true'
+        run: npm --prefix integrations/coding-agents ci
+
+      - name: Type-check
+        if: steps.gate.outputs.changed == 'true'
+        run: npm --prefix integrations/coding-agents run typecheck
+
+      - name: Build
+        if: steps.gate.outputs.changed == 'true'
+        run: npm --prefix integrations/coding-agents run build
+
+      - name: Unit suite
+        if: steps.gate.outputs.changed == 'true'
+        run: npm --prefix integrations/coding-agents test

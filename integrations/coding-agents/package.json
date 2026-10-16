@@ -1,0 +1,37 @@
+{
+  "name": "wenyuan-coding-agents",
+  "version": "0.1.0",
+  "description": "Installs the WenYuan memory service into coding-agent hosts: lifecycle hooks, an MCP server entry and a companion skill",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/types/index.d.ts",
+  "bin": {
+    "wenyuan-agents": "dist/cli/main.mjs",
+    "wenyuan-agents-session-start": "dist/runtime/hooks/session-start.mjs",
+    "wenyuan-agents-pre-prompt": "dist/runtime/hooks/pre-prompt.mjs",
+    "wenyuan-agents-stop": "dist/runtime/hooks/stop.mjs"
+  },
+  "files": [
+    "dist",
+    "skill",
+    "hooks",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json && node build.config.mjs",
+    "test": "vitest run tests/unit",
+    "test:e2e": "npm run build && vitest run tests/e2e"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.0"
+  }
+}

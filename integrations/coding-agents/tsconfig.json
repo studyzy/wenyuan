@@ -1,0 +1,24 @@
+{
+  // Strict type-check for the whole package: the sources, the packaged hook
+  // entry points and the test suites. Nothing is emitted here; the build
+  // configuration owns emission.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": false,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "hooks/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

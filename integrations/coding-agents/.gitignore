@@ -1,0 +1,7 @@
+# Build output: one bundled entry point per entry point, plus the declarations
+# emitted for the library entry point.
+dist/
+
+# Installed dependencies. The repository's root ignore file covers the same
+# directory name; this file is what keeps the package standalone.
+node_modules/

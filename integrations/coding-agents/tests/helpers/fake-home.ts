@@ -1,0 +1,242 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+/**
+ * The shared test fixture: a temporary fake home.
+ *
+ * Per-user location resolution is redirected purely through the environment
+ * variables the installer already reads, so no new public name is introduced
+ * and no installer code path knows it is under test. Nothing here mocks an
+ * installer module: the helper drives the real built entry point in-process.
+ */
+
+export const DEPLOYMENT_ENV_VARS = [
+  "HINDSIGHT_CONFIG",
+  "HINDSIGHT_API_URL",
+  "HINDSIGHT_API_TOKEN",
+  "HINDSIGHT_BANK_ID",
+  "HINDSIGHT_API_PORT",
+] as const;
+
+export interface FakeHomeOptions {
+  /** Files to seed, keyed by their path relative to the home directory. */
+  files?: Record<string, string>;
+  /** Extra environment for the run, merged over the redirected home. */
+  environment?: Record<string, string>;
+}
+
+/** A parsed host config: the shape every suite reads them back into. */
+export type JsonDocument = Record<string, unknown>;
+
+export interface FakeHome {
+  readonly home: string;
+  readonly packageRoot: string;
+  /** A fresh environment pointing every per-user location at the fake home. */
+  env(): NodeJS.ProcessEnv;
+  /** Applies that environment and returns the function that restores it. */
+  apply(): () => void;
+  path(...segments: string[]): string;
+  write(relativePath: string, content: string): Promise<void>;
+  read(relativePath: string): Promise<string>;
+  /** Reads a plain-JSON host config; a file that permits comments is read as text. */
+  readJson(relativePath: string): Promise<JsonDocument>;
+  exists(relativePath: string): Promise<boolean>;
+  isFile(relativePath: string): Promise<boolean>;
+  list(relativePath?: string): Promise<string[]>;
+  /** Every file below a directory, not the directories themselves. */
+  listFiles(relativePath?: string): Promise<string[]>;
+  cleanup(): Promise<void>;
+}
+
+/** The package root the real installer is invoked from. */
+export function packageRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+export async function createFakeHome(options: FakeHomeOptions = {}): Promise<FakeHome> {
+  const home: string = await mkdtemp(join(tmpdir(), "wenyuan-fake-home-"));
+  const root: string = packageRoot();
+
+  const fixture: FakeHome = {
+    home,
+    packageRoot: root,
+    env(): NodeJS.ProcessEnv {
+      const environment: NodeJS.ProcessEnv = { ...process.env };
+      environment.HOME = home;
+      environment.USERPROFILE = home;
+      for (const name of DEPLOYMENT_ENV_VARS) {
+        delete environment[name];
+      }
+      return Object.assign(environment, options.environment ?? {});
+    },
+    apply(): () => void {
+      const saved: NodeJS.ProcessEnv = { ...process.env };
+      const applied: NodeJS.ProcessEnv = fixture.env();
+      for (const name of Object.keys(process.env)) {
+        if (!(name in applied)) {
+          delete process.env[name];
+        }
+      }
+      Object.assign(process.env, applied);
+      return () => {
+        for (const name of Object.keys(process.env)) {
+          if (!(name in saved)) {
+            delete process.env[name];
+          }
+        }
+        Object.assign(process.env, saved);
+      };
+    },
+    path(...segments: string[]): string {
+      return join(home, ...segments);
+    },
+    async write(relativePath: string, content: string): Promise<void> {
+      const target: string = join(home, relativePath);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content, "utf8");
+    },
+    async read(relativePath: string): Promise<string> {
+      return readFile(join(home, relativePath), "utf8");
+    },
+    async readJson(relativePath: string): Promise<JsonDocument> {
+      const source: string = await readFile(join(home, relativePath), "utf8");
+      const parsed: unknown = JSON.parse(source);
+      return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as JsonDocument)
+        : {};
+    },
+    async exists(relativePath: string): Promise<boolean> {
+      try {
+        await stat(join(home, relativePath));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async isFile(relativePath: string): Promise<boolean> {
+      try {
+        return (await stat(join(home, relativePath))).isFile();
+      } catch {
+        return false;
+      }
+    },
+    async list(relativePath = "."): Promise<string[]> {
+      const base: string = join(home, relativePath);
+      const found: string[] = [];
+      async function walk(current: string, prefix: string): Promise<void> {
+        let entries: { name: string; isDirectory(): boolean }[];
+        try {
+          entries = await readdir(current, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const name: string = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+          found.push(name);
+          if (entry.isDirectory()) {
+            await walk(join(current, entry.name), name);
+          }
+        }
+      }
+      await walk(base, "");
+      return found.sort();
+    },
+    async listFiles(relativePath = "."): Promise<string[]> {
+      const prefix: string = relativePath === "." ? "" : `${relativePath}/`;
+      const files: string[] = [];
+      for (const entry of await fixture.list(relativePath)) {
+        if (await fixture.isFile(`${prefix}${entry}`)) {
+          files.push(`${prefix}${entry}`);
+        }
+      }
+      return files;
+    },
+    async cleanup(): Promise<void> {
+      await rm(home, { recursive: true, force: true });
+    },
+  };
+
+  for (const [relativePath, content] of Object.entries(options.files ?? {})) {
+    await fixture.write(relativePath, content);
+  }
+  return fixture;
+}
+
+/** Creates a fake home, hands it to the suite and cleans it up afterwards. */
+export async function withFakeHome<T>(
+  options: FakeHomeOptions,
+  body: (home: FakeHome) => Promise<T>,
+): Promise<T> {
+  const fake: FakeHome = await createFakeHome(options);
+  const restore: () => void = fake.apply();
+  try {
+    return await body(fake);
+  } finally {
+    restore();
+    await fake.cleanup();
+  }
+}
+
+export interface InstallerRun {
+  status: number;
+  stdout: string;
+  stderr: string;
+  /** Both channels in the order they were written, for assertions that do not care. */
+  combined(): string;
+}
+
+export interface RunInstallerOptions {
+  /** The package location to run from; defaults to this package's own build. */
+  packageRoot?: string;
+  environment?: Record<string, string>;
+}
+
+/**
+ * Drives the real installer entry point in-process and captures its exit
+ * status and output.
+ *
+ * Contract for the entry point: `dist/cli/main.mjs` exports
+ * `run(argv: string[]): Promise<number>`. The build has to have run, which the
+ * end-to-end script does before it invokes any suite.
+ */
+export async function runInstaller(
+  argv: readonly string[],
+  options: RunInstallerOptions = {},
+): Promise<InstallerRun> {
+  const root: string = options.packageRoot ?? packageRoot();
+  const entry: string = join(root, "dist", "cli", "main.mjs");
+  const module: unknown = await import(pathToFileURL(entry).href);
+  const run = (module as { run?: (args: string[]) => Promise<number> | number }).run;
+  if (typeof run !== "function") {
+    throw new Error(`${entry} does not export run(argv): the installer entry point is missing`);
+  }
+  return captureOutput(async () => run([...argv]));
+}
+
+/**
+ * Runs a body with both output channels captured, and returns what it printed
+ * together with the status it returned.
+ */
+export async function captureOutput(body: () => Promise<number>): Promise<InstallerRun> {
+  let stdout = "";
+  let stderr = "";
+  const originalOut = process.stdout.write.bind(process.stdout);
+  const originalErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    stdout += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const status: number = await body();
+    return { status, stdout, stderr, combined: () => `${stdout}${stderr}` };
+  } finally {
+    process.stdout.write = originalOut;
+    process.stderr.write = originalErr;
+  }
+}
