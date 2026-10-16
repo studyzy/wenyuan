@@ -36,7 +36,7 @@ COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
         frontend-build frontend-run clients clients-check \
-        test-sdk-go test-sdk-go-integration help \
+        test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration help \
         bench test-pg cover cover-check cover-check-pg parity
 
 all: check
@@ -174,6 +174,22 @@ test-sdk-go:
 ##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
 test-sdk-go-integration:
 	cd clients/go && HINDSIGHT_API_URL="$(SDK_API_URL)" $(GO) test -tags integration -count=1 $(GOFLAGS) ./...
+
+## test-sdk: run every client SDK's offline suite (no server, no network)
+test-sdk: test-sdk-go
+	cd clients/python && python3 -m unittest discover -s tests
+	cd clients/typescript && npx tsc --noEmit && npm test
+	cd clients/rust && cargo test
+
+## test-sdk-integration: run every client SDK's live suite against a running
+## server (SDK_API_URL, default http://127.0.0.1:18888). Each language's live
+## tests are gated on HINDSIGHT_API_URL, so a suite that finds no server is
+## skipped rather than failed — start one with
+##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
+test-sdk-integration: test-sdk-go-integration
+	cd clients/python && HINDSIGHT_API_URL="$(SDK_API_URL)" python3 -m unittest discover -s tests
+	cd clients/typescript && HINDSIGHT_API_URL="$(SDK_API_URL)" npm test
+	cd clients/rust && HINDSIGHT_API_URL="$(SDK_API_URL)" cargo test
 
 ## help: list targets
 help:

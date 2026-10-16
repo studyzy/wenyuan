@@ -33,6 +33,16 @@ pip install clients/python
 A trailing slash is tolerated. `api_key` is sent as a bearer token on every
 request.
 
+`WenYuan(...)` also takes:
+
+| argument | default | meaning |
+| --- | --- | --- |
+| `base_url` | `HINDSIGHT_API_URL`, else `http://localhost:18888` | Server root. |
+| `api_key` | `None` | Bearer token sent with every request. |
+| `timeout` | `300.0` | Per-request timeout in seconds. |
+| `user_agent` | `None` | Extra product token placed in front of this client's own in `User-Agent`. |
+| `max_attempts` | `3` | Total attempts an idempotent call (recall, reflect) makes when the server is at capacity. |
+
 ## Use
 
 ```python
@@ -93,16 +103,60 @@ asyncio.run(main())
 Calling a synchronous method from inside a running event loop raises
 `RuntimeError` rather than deadlocking; use the `a`-prefixed method there.
 
-### Anything the façade does not cover
+### Suspending retains
 
-The generated API objects are exposed unchanged, together with the response
-models:
+`suspend_retains()` suppresses writes for the current flow or task, so a session
+can read a bank without adding to it (evaluating against a populated bank,
+replaying a transcript, and so on). Recall and reflect are unaffected, while
+`retain`, `retain_batch` and `retain_files` (and their awaitable forms) send no
+request and report an empty result — `items_count=0`, no operation ids:
 
 ```python
-client.memory        # generated MemoryApi
-client.banks         # generated BanksApi
-client.monitoring    # generated MonitoringApi
+with client.suspend_retains():
+    client.retain("ops", "not stored")          # items_count == 0
+    hits = client.recall("ops", "still works")  # unaffected
 ```
+
+Scopes may be nested and are restored on exit, including after an exception.
+The suspension is local to the current execution context, so concurrent users of
+the same client are unaffected. Only the convenience methods are guarded; the
+low-level accessors (`client.memory`, `client.files`) call the generated API
+directly.
+
+### Retry on capacity
+
+`recall` and `reflect` are reads, so when the server reports it is at capacity
+(`429`/`503`) they retry up to `max_attempts` times (default 3; `1` disables
+retrying). The wait honours the server's `Retry-After` when it sends one, and is
+otherwise a backoff starting at 0.5s; either way it is jittered, so a burst of
+clients does not come back in lockstep and rebuild the spike. The final failure
+surfaces the original error unchanged. Writes are never retried — a duplicated
+retain is worse than a refused one.
+
+### Anything the façade does not cover
+
+The generated API objects are exposed unchanged as properties, one per area:
+
+| property | area |
+| --- | --- |
+| `client.memory` | retain, recall, reflect, memories, tags, graph |
+| `client.banks` | bank lifecycle, stats, consolidation, config |
+| `client.documents` | documents and chunks |
+| `client.entities` | entities, observations, entity graph |
+| `client.mental_models` | mental-model CRUD, refresh, history |
+| `client.knowledge_base` | folder/page tree, page CRUD, search, export |
+| `client.directives` | directive CRUD |
+| `client.operations` | async operation status, list, cancel, retry |
+| `client.webhooks` | webhooks and deliveries |
+| `client.files` | file upload and retain |
+| `client.monitoring` | health, liveness, readiness, version, metrics |
+| `client.document_transfer` | document export/import, file download |
+| `client.bank_transfer` | whole-bank export/import, clone |
+| `client.audit` | audit log entries and stats |
+| `client.bank_templates` | template export/import, schema |
+| `client.llm_traces` | LLM request traces and stats |
+
+Every method on those objects is async.
 
 ```python
 from wenyuan_client import RecallResponse, RetainResponse, ReflectResponse
@@ -114,17 +168,64 @@ that are passed straight to the generated request model
 whole request surface is reachable without waiting for the façade to grow a
 parameter.
 
+### Recall-response helpers
+
+A recall response carries the matched facts, the chunks they came from and the
+entity summaries, but as a bare generated model reaching into it means walking
+`results` by hand every time. The wrapper adds the projection, so a caller can
+go straight to a prompt:
+
+```python
+from wenyuan_client_api.models.chunk_include_options import ChunkIncludeOptions
+from wenyuan_client_api.models.include_options import IncludeOptions
+
+hits = client.recall("ops", "when do we deploy?", include=IncludeOptions(chunks=ChunkIncludeOptions()))
+print(hits.to_prompt_string())   # "FACTS:" as JSON (+ source chunks), then "ENTITIES:"
+for hit in hits:                 # iterate
+    print(hit)
+len(hits)                        # number of results
+hits[0]                          # index into them
+repr(hits), repr(hits[0])        # short previews
+```
+
+The same capability is available as module-level functions —
+`to_prompt_string(response)`, `iter_results(response)`, `result_count(response)`,
+`result_at(response, index)` — for callers that prefer not to rely on patched
+methods.
+
+The generated package is never edited, so these attributes are attached by the
+wrapper at import time: a caller that imports only `wenyuan_client_api` sees the
+bare models, and importing `wenyuan_client` is what opts into the helpers. That
+is the one deliberate difference from a client whose generated module carries
+them directly.
+
 ## Tests
 
-No network is used: the suite runs the wrapper against a loopback `http.server`
-stub and checks both directions of the decode path.
+Two suites run under one command. The offline one uses no network — it drives the
+wrapper against a loopback `http.server` stub, a mocked API object, and pure
+model round-trips.
 
 ```
 cd clients/python
 python3 -m unittest discover -s tests -v
 ```
 
-(`pytest` also collects the same file if it is installed.)
+The live suite in `tests/test_live.py` is gated on `HINDSIGHT_API_URL`: unset,
+those tests skip (so the command above stays green with no server); set, they
+run against a real service — bank lifecycle, retain then document/chunk reads, a
+tagged write selected back by its own tag and skipped by an unwritten one, an
+async retain naming a queued operation, recall, reflect, entity/graph agreement,
+and the retired profile route answering `410`.
+
+```
+HINDSIGHT_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests -v
+```
+
+A server started with `HINDSIGHT_API_DATABASE_URL=memory` is enough: with no
+model provider the assertions are structural, not about extracted facts or
+synthesised prose.
+
+(`pytest` also collects the same files if it is installed.)
 
 ## Regeneration
 

@@ -15,15 +15,40 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import json
+import math
 import os
-from typing import Any, Dict, List, Optional, Union
+import random
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
+from typing import Any, Callable, Awaitable, Dict, Iterator, List, Optional, Union
 
 import wenyuan_client_api
-from wenyuan_client_api.api import banks_api, memory_api, monitoring_api
+from wenyuan_client_api.api import (
+    audit_api,
+    bank_templates_api,
+    bank_transfer_api,
+    banks_api,
+    directives_api,
+    document_transfer_api,
+    documents_api,
+    entities_api,
+    files_api,
+    knowledge_base_api,
+    llm_traces_api,
+    memory_api,
+    mental_models_api,
+    monitoring_api,
+    operations_api,
+    webhooks_api,
+)
+from wenyuan_client_api.exceptions import ApiException
 from wenyuan_client_api.models.bank_list_response import BankListResponse
 from wenyuan_client_api.models.bank_profile_response import BankProfileResponse
 from wenyuan_client_api.models.content import Content
 from wenyuan_client_api.models.create_bank_request import CreateBankRequest
+from wenyuan_client_api.models.file_retain_response import FileRetainResponse
 from wenyuan_client_api.models.memory_item import MemoryItem
 from wenyuan_client_api.models.recall_request import RecallRequest
 from wenyuan_client_api.models.recall_response import RecallResponse
@@ -56,6 +81,77 @@ except Exception:  # noqa: BLE001 - not installed as a distribution during tests
     _VERSION = _VERSION_FALLBACK
 
 DEFAULT_USER_AGENT = f"wenyuan-client-python/{_VERSION}"
+
+#: Attempts a retryable call makes in total, including the first.
+DEFAULT_MAX_ATTEMPTS = 3
+
+#: Fallback backoff when the server reports it is at capacity without a usable
+#: ``Retry-After``.
+_FALLBACK_BACKOFF_SECONDS = 0.5
+
+
+def _retry_after_seconds(exception: ApiException) -> Optional[float]:
+    """Parse ``Retry-After`` (delta-seconds form) from an error, if present.
+
+    The generated client attaches the response headers to the exception when it
+    has them; they arrive either as a case-insensitive mapping or as a sequence
+    of pairs, so both shapes are read. The HTTP-date form is legal but rarer,
+    and the caller's own backoff is a better answer than parsing dates.
+    """
+    headers = getattr(exception, "headers", None)
+    if not headers:
+        return None
+    raw = None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        raw = getter("Retry-After") or getter("retry-after")
+    else:
+        for name, value in headers:
+            if str(name).lower() == "retry-after":
+                raw = value
+                break
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
+
+
+async def _retry_on_capacity(
+    call: "Callable[[], Awaitable[Any]]",
+    max_attempts: int,
+    rng: random.Random,
+) -> Any:
+    """Run ``call``, retrying while the server reports it is at capacity.
+
+    Only for **idempotent** operations. Recall and reflect are reads, so a repeat
+    is free; a synchronous retain is not — its ``operation_id`` is ignored — and
+    is deliberately left out, because a retry there could duplicate a write.
+
+    Two things matter more than the retry itself. ``Retry-After`` is honoured:
+    the server sends it precisely because it knows how long its queue is, so
+    retrying sooner just earns another refusal. The wait is **jittered**: a burst
+    of clients that all obey ``Retry-After: 1`` exactly would come back together
+    and rebuild the spike that caused the rejection.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await call()
+        except ApiException as exception:
+            at_capacity = exception.status in (429, 503)
+            if not at_capacity or attempt == max_attempts:
+                raise
+            wait = _retry_after_seconds(exception)
+            if wait is None:
+                wait = _FALLBACK_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            # Full jitter: sleep somewhere in [0, wait], so a synchronised burst
+            # spreads out instead of returning together.
+            await asyncio.sleep(rng.uniform(0, wait))
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 #: Event loop the synchronous methods drive. It is created once and kept open:
@@ -138,6 +234,10 @@ class WenYuan:
         timeout: Per-request timeout in seconds.
         user_agent: Extra product token placed in front of this client's own in
             the ``User-Agent`` header, so an integration can identify itself.
+        max_attempts: Total attempts an *idempotent* call (recall, reflect) makes
+            when the server reports it is at capacity (429/503). ``1`` disables
+            retrying. Waits honour ``Retry-After`` and are jittered; writes are
+            never retried here.
     """
 
     def __init__(
@@ -146,6 +246,7 @@ class WenYuan:
         api_key: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
         user_agent: Optional[str] = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> None:
         if base_url is None:
             base_url = os.environ.get(BASE_URL_ENV_VAR) or DEFAULT_BASE_URL
@@ -155,14 +256,151 @@ class WenYuan:
         self._api_client = wenyuan_client_api.ApiClient(configuration)
         self._api_client.user_agent = f"{user_agent} {DEFAULT_USER_AGENT}" if user_agent else DEFAULT_USER_AGENT
         self._timeout = timeout
+        self._max_attempts = max(1, max_attempts)
+        # A per-client RNG keeps the jitter independent of any seeding the
+        # calling application does to the global ``random`` module.
+        self._retry_rng = random.Random()
+        # Task/thread-local, so suspending retains in one scope never silences
+        # another concurrent user of the same client.
+        self._retain_suspended: ContextVar[bool] = ContextVar("retain_suspended", default=False)
 
         self.base_url = base_url
 
-        # Generated API objects, exposed so callers can reach endpoints the
-        # façade does not name.
-        self.memory = memory_api.MemoryApi(self._api_client)
-        self.banks = banks_api.BanksApi(self._api_client)
-        self.monitoring = monitoring_api.MonitoringApi(self._api_client)
+        # Generated API objects, exposed as properties so callers can reach the
+        # endpoints the façade does not name.
+        self._memory_api = memory_api.MemoryApi(self._api_client)
+        self._banks_api = banks_api.BanksApi(self._api_client)
+        self._documents_api = documents_api.DocumentsApi(self._api_client)
+        self._entities_api = entities_api.EntitiesApi(self._api_client)
+        self._mental_models_api = mental_models_api.MentalModelsApi(self._api_client)
+        self._knowledge_base_api = knowledge_base_api.KnowledgeBaseApi(self._api_client)
+        self._directives_api = directives_api.DirectivesApi(self._api_client)
+        self._operations_api = operations_api.OperationsApi(self._api_client)
+        self._webhooks_api = webhooks_api.WebhooksApi(self._api_client)
+        self._files_api = files_api.FilesApi(self._api_client)
+        self._monitoring_api = monitoring_api.MonitoringApi(self._api_client)
+        self._document_transfer_api = document_transfer_api.DocumentTransferApi(self._api_client)
+        self._bank_transfer_api = bank_transfer_api.BankTransferApi(self._api_client)
+        self._audit_api = audit_api.AuditApi(self._api_client)
+        self._bank_templates_api = bank_templates_api.BankTemplatesApi(self._api_client)
+        self._llm_traces_api = llm_traces_api.LLMTracesApi(self._api_client)
+
+    # -- low-level API accessors --------------------------------------------
+    # These expose the full generated surface for the areas the façade does not
+    # wrap. Every method on them is async.
+
+    @property
+    def memory(self) -> memory_api.MemoryApi:
+        """Low-level Memory API — retain, recall, reflect, memories, tags, graph."""
+        return self._memory_api
+
+    @property
+    def banks(self) -> banks_api.BanksApi:
+        """Low-level Banks API — create, update, delete banks; stats; config."""
+        return self._banks_api
+
+    @property
+    def documents(self) -> documents_api.DocumentsApi:
+        """Low-level Documents API — list, get, update, delete documents and chunks."""
+        return self._documents_api
+
+    @property
+    def entities(self) -> entities_api.EntitiesApi:
+        """Low-level Entities API — list, get, and regenerate entity observations."""
+        return self._entities_api
+
+    @property
+    def mental_models(self) -> mental_models_api.MentalModelsApi:
+        """Low-level Mental Models API — create, list, get, update, refresh, delete, history."""
+        return self._mental_models_api
+
+    @property
+    def knowledge_base(self) -> knowledge_base_api.KnowledgeBaseApi:
+        """Low-level Knowledge Base API — folder/page tree, page CRUD, search, export."""
+        return self._knowledge_base_api
+
+    @property
+    def directives(self) -> directives_api.DirectivesApi:
+        """Low-level Directives API — create, list, get, update, delete."""
+        return self._directives_api
+
+    @property
+    def operations(self) -> operations_api.OperationsApi:
+        """Low-level Operations API — status, list, cancel, retry async operations."""
+        return self._operations_api
+
+    @property
+    def webhooks(self) -> webhooks_api.WebhooksApi:
+        """Low-level Webhooks API — create, list, update, delete webhooks and deliveries."""
+        return self._webhooks_api
+
+    @property
+    def files(self) -> files_api.FilesApi:
+        """Low-level Files API — upload and retain files."""
+        return self._files_api
+
+    @property
+    def monitoring(self) -> monitoring_api.MonitoringApi:
+        """Low-level Monitoring API — health, liveness, readiness, version, metrics."""
+        return self._monitoring_api
+
+    @property
+    def document_transfer(self) -> document_transfer_api.DocumentTransferApi:
+        """Low-level Document Transfer API — export/import documents, download files."""
+        return self._document_transfer_api
+
+    @property
+    def bank_transfer(self) -> bank_transfer_api.BankTransferApi:
+        """Low-level Bank Transfer API — export/import/clone a whole bank."""
+        return self._bank_transfer_api
+
+    @property
+    def audit(self) -> audit_api.AuditApi:
+        """Low-level Audit API — audit log entries and stats."""
+        return self._audit_api
+
+    @property
+    def bank_templates(self) -> bank_templates_api.BankTemplatesApi:
+        """Low-level Bank Templates API — export/import templates, schema."""
+        return self._bank_templates_api
+
+    @property
+    def llm_traces(self) -> llm_traces_api.LLMTracesApi:
+        """Low-level LLM Traces API — request traces and stats."""
+        return self._llm_traces_api
+
+    # -- retain suspension --------------------------------------------------
+
+    @contextmanager
+    def suspend_retains(self) -> Iterator[None]:
+        """Temporarily suppress retains in the current execution context.
+
+        Recall and reflect are unaffected, while :meth:`retain`,
+        :meth:`retain_batch` and :meth:`retain_files` (and their awaitable
+        counterparts) send no request and report an empty result —
+        ``items_count=0`` and no operation ids. Useful for evaluation runs or
+        replaying a transcript against a populated bank: read a bank without
+        adding to it.
+
+        The suspension is local to the current synchronous flow or async task, so
+        concurrent users of the same client are unaffected. Scopes may be nested
+        and are restored when the scope exits, including after an exception.
+
+        The convenience methods are guarded; the low-level accessors
+        (:attr:`memory`, :attr:`files`) call the generated API directly and are
+        deliberately not intercepted.
+
+        ::
+
+            with client.suspend_retains():
+                client.retain(bank_id, "not stored")   # items_count == 0
+                client.recall(bank_id, "still works")  # unaffected
+        """
+        token = self._retain_suspended.set(True)
+        try:
+            yield
+        finally:
+            self._retain_suspended.reset(token)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -271,6 +509,9 @@ class WenYuan:
         operation_id: Optional[str] = None,
     ) -> RetainResponse:
         """Awaitable :meth:`retain_batch`."""
+        if self._retain_suspended.get():
+            return RetainResponse(success=True, bank_id=bank_id, items_count=0, var_async=False)
+
         request = RetainRequest(
             items=[_memory_item(item) for item in items],
             var_async=retain_async,
@@ -279,6 +520,56 @@ class WenYuan:
         )
         return await self.memory.retain_memories(
             _bank_id(bank_id), retain_request=request, _request_timeout=self._timeout
+        )
+
+    # -- retain files -------------------------------------------------------
+
+    def retain_files(
+        self,
+        bank_id: str,
+        files: List[Union[str, Path]],
+        *,
+        context: Optional[str] = None,
+        files_metadata: Optional[List[Dict[str, Any]]] = None,
+    ) -> FileRetainResponse:
+        """Upload files and retain their contents (sync wrapper)."""
+        return _run_async(
+            self.aretain_files(bank_id, files, context=context, files_metadata=files_metadata)
+        )
+
+    async def aretain_files(
+        self,
+        bank_id: str,
+        files: List[Union[str, Path]],
+        *,
+        context: Optional[str] = None,
+        files_metadata: Optional[List[Dict[str, Any]]] = None,
+    ) -> FileRetainResponse:
+        """Upload files and retain their contents as memories.
+
+        Files are converted to text server-side (PDF, DOCX, images via OCR, audio
+        via transcription, and more) and ingested. Processing is always
+        asynchronous: use the returned operation ids to track progress.
+
+        ``files_metadata``, when given, must match ``files`` in length; each
+        entry may carry ``context``, ``document_id``, ``tags`` and ``metadata``.
+        """
+        if self._retain_suspended.get():
+            return FileRetainResponse(operation_ids=[])
+
+        file_data: List[tuple] = []
+        for file_path in files:
+            path = Path(file_path)
+            file_data.append((path.name, await asyncio.to_thread(path.read_bytes)))
+
+        meta = files_metadata or [{"context": context} if context else {} for _ in files]
+        request_body = json.dumps({"files_metadata": meta})
+
+        return await self.files.file_retain(
+            _bank_id(bank_id),
+            files=file_data,
+            request=request_body,
+            _request_timeout=self._timeout,
         )
 
     # -- recall -------------------------------------------------------------
@@ -312,10 +603,16 @@ class WenYuan:
         )
 
     async def arecall(self, bank_id: str, query: str, **kwargs: Any) -> RecallResponse:
-        """Awaitable :meth:`recall`."""
+        """Awaitable :meth:`recall`.
+
+        A read, so it is retried while the server reports it is at capacity.
+        """
         request = RecallRequest(query=query, **kwargs)
-        return await self.memory.recall_memories(
-            _bank_id(bank_id), recall_request=request, _request_timeout=self._timeout
+        bank = _bank_id(bank_id)
+        return await _retry_on_capacity(
+            lambda: self.memory.recall_memories(bank, recall_request=request, _request_timeout=self._timeout),
+            self._max_attempts,
+            self._retry_rng,
         )
 
     # -- reflect ------------------------------------------------------------
@@ -336,10 +633,16 @@ class WenYuan:
         )
 
     async def areflect(self, bank_id: str, query: str, **kwargs: Any) -> ReflectResponse:
-        """Awaitable :meth:`reflect`."""
+        """Awaitable :meth:`reflect`.
+
+        A read, so it is retried while the server reports it is at capacity.
+        """
         request = ReflectRequest(query=query, **kwargs)
-        return await self.memory.reflect(
-            _bank_id(bank_id), reflect_request=request, _request_timeout=self._timeout
+        bank = _bank_id(bank_id)
+        return await _retry_on_capacity(
+            lambda: self.memory.reflect(bank, reflect_request=request, _request_timeout=self._timeout),
+            self._max_attempts,
+            self._retry_rng,
         )
 
     # -- banks --------------------------------------------------------------

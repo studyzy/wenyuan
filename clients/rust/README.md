@@ -50,6 +50,19 @@ so it keeps that name. The other constructors are:
 | `.with_api_key(key)` | send `Authorization: <key>` on every request |
 | `.client()` | the generated client, for operations without a convenience method |
 
+Driving the generated client directly, without the handle:
+
+| Call | Use |
+| --- | --- |
+| `default_client(base_url)` | a generated `Client` with this crate's `User-Agent` |
+| `client_with_user_agent(base_url, ua)` | as above, with your identifier in the header too |
+| `reqwest_client_with_user_agent(ua)` | just the `reqwest::Client`, to pass to `Client::new_with_client` |
+
+The `User-Agent` a caller supplies is followed by the client's own
+(`my-agent/2.1.0 wenyuan-client-rust/0.1.0`), so a deployment behind a
+`User-Agent` filter accepts the traffic and the server still learns the client
+version. Neither the handle nor the generated client retries a request.
+
 ## Example
 
 ```rust
@@ -204,3 +217,25 @@ bound to a loopback port, so it needs no network and no running service. It
 checks that each core call goes out on the documented route with the credential
 the handle holds, that the request body carries what the request type says, and
 that the documented responses decode.
+
+A second suite exercises the client against a real deployment:
+
+```sh
+HINDSIGHT_API_URL=http://127.0.0.1:18888 cargo test --test live
+```
+
+It covers the bank lifecycle, a retain followed by a recall that finds it,
+reflect, a tagged write whose tag selects it back out (and an unwritten tag that
+selects nothing), an async retain whose operation appears in the bank's queue,
+and the `410` the retired profile route answers. It skips, with a printed
+notice, unless `HINDSIGHT_API_URL` is set, so `cargo test` stays offline. A
+server started with `HINDSIGHT_API_DATABASE_URL=memory` is enough: without a
+model provider the assertions are structural (an operation succeeded, an id
+round-tripped), never about extracted facts or synthesized prose.
+
+## Integrating into a program
+
+Bridging this async client onto a synchronous command-line tool — either with a
+`tokio` runtime wrapper or by going async end to end — is covered in
+[`INTEGRATION.md`](INTEGRATION.md), with compiling examples in `examples/`
+(`cargo build --examples`).

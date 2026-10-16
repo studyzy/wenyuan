@@ -101,6 +101,15 @@
 //!
 //! Every generated method remains reachable through [`Wenyuan::client`], for
 //! the operations the four convenience methods do not cover.
+//!
+//! For callers that drive the generated client directly rather than through
+//! the handle, [`default_client`] and
+//! [`client_with_user_agent`] construct one with the `User-Agent` this crate
+//! wants deployments to see. Requests are sent once: neither the handle nor
+//! the generated client retries or backs off, and a failure reaches the caller
+//! unchanged. Bridging this async client onto a synchronous program is
+//! described in `INTEGRATION.md` and demonstrated by the `sync_cli` and
+//! `async_cli` examples.
 
 include!(concat!(env!("OUT_DIR"), "/wenyuan_client_generated.rs"));
 
@@ -109,6 +118,49 @@ pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `User-Agent` sent on every request unless the caller supplies their own.
 pub const DEFAULT_USER_AGENT: &str = concat!("wenyuan-client-rust/", env!("CARGO_PKG_VERSION"));
+
+/// Build a [`reqwest::Client`] whose `User-Agent` is `user_agent` followed by
+/// [`DEFAULT_USER_AGENT`], e.g. `"my-agent/2.1.0 wenyuan-client-rust/0.1.0"`.
+///
+/// Embeddings should use this so a deployment behind a `User-Agent` filter
+/// (Cloudflare and friends) accepts the traffic and the server still learns
+/// which client version produced a request. Pass the result to
+/// [`Client::new_with_client`].
+pub fn reqwest_client_with_user_agent(
+    user_agent: impl Into<String>,
+) -> Result<reqwest::Client, reqwest::Error> {
+    build_reqwest_client(prefixed_user_agent(&user_agent.into()))
+}
+
+/// Construct the generated [`Client`] with a caller `User-Agent`, prefixed as
+/// in [`reqwest_client_with_user_agent`].
+pub fn client_with_user_agent(
+    base_url: &str,
+    user_agent: impl Into<String>,
+) -> Result<Client, reqwest::Error> {
+    let http = reqwest_client_with_user_agent(user_agent)?;
+    Ok(Client::new_with_client(base_url, http))
+}
+
+/// Construct the generated [`Client`] with the default `User-Agent`
+/// ([`DEFAULT_USER_AGENT`]).
+///
+/// Prefer this over `Client::new`, whose `User-Agent` is `reqwest`'s default
+/// and is rejected by some reverse proxies.
+pub fn default_client(base_url: &str) -> Result<Client, reqwest::Error> {
+    let http = build_reqwest_client(DEFAULT_USER_AGENT.to_owned())?;
+    Ok(Client::new_with_client(base_url, http))
+}
+
+fn build_reqwest_client(user_agent: String) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder().user_agent(user_agent).build()
+}
+
+/// [`DEFAULT_USER_AGENT`] appended to a caller's own product identifier, so
+/// both survive in the header the server sees.
+fn prefixed_user_agent(user_agent: &str) -> String {
+    format!("{user_agent} {DEFAULT_USER_AGENT}")
+}
 
 /// Environment variable naming the base URL of the deployment to talk to.
 ///
@@ -145,26 +197,27 @@ impl Wenyuan {
     /// Connect to `base_url`, identifying the client as
     /// [`DEFAULT_USER_AGENT`].
     pub fn with_base_url(base_url: impl Into<String>) -> Result<Self, reqwest::Error> {
-        Self::with_base_url_and_user_agent(base_url, DEFAULT_USER_AGENT)
+        let base_url = normalize_base_url(base_url);
+        Ok(Self {
+            client: default_client(&base_url)?,
+            base_url,
+            api_key: None,
+        })
     }
 
     /// Connect to `base_url` behind a caller-supplied `User-Agent`.
     ///
     /// Pass a product identifier here when embedding this client in a larger
     /// program (for example `"my-agent/2.1.0"`), so the server's logs can tell
-    /// which caller produced a request.
+    /// which caller produced a request. The header sent is that identifier
+    /// followed by [`DEFAULT_USER_AGENT`], so the client version is not lost.
     pub fn with_base_url_and_user_agent(
         base_url: impl Into<String>,
         user_agent: impl Into<String>,
     ) -> Result<Self, reqwest::Error> {
-        // A trailing slash would be doubled by the generated URL construction,
-        // which appends "/v1/..." to the base.
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let http = reqwest::Client::builder()
-            .user_agent(user_agent.into())
-            .build()?;
+        let base_url = normalize_base_url(base_url);
         Ok(Self {
-            client: Client::new_with_client(&base_url, http),
+            client: client_with_user_agent(&base_url, user_agent)?,
             base_url,
             api_key: None,
         })
@@ -254,6 +307,12 @@ impl Default for Wenyuan {
     }
 }
 
+/// Drop a trailing slash from a base URL: the generated URL construction
+/// appends `/v1/...` to the base, so keeping it would double the separator.
+fn normalize_base_url(base_url: impl Into<String>) -> String {
+    base_url.into().trim_end_matches('/').to_owned()
+}
+
 /// The base URL to connect to: [`ENV_BASE_URL`] when it holds a non-empty
 /// value, [`DEFAULT_BASE_URL`] otherwise.
 pub fn base_url_from_env() -> String {
@@ -290,5 +349,20 @@ mod tests {
     fn user_agent_identifies_this_client() {
         assert!(DEFAULT_USER_AGENT.starts_with("wenyuan-client-rust/"));
         assert!(DEFAULT_USER_AGENT.ends_with(CLIENT_VERSION));
+    }
+
+    #[test]
+    fn a_caller_user_agent_keeps_the_client_version() {
+        assert_eq!(
+            prefixed_user_agent("my-agent/2.1.0"),
+            format!("my-agent/2.1.0 {DEFAULT_USER_AGENT}")
+        );
+    }
+
+    #[test]
+    fn the_client_constructors_build() {
+        default_client("http://example.test:18888").expect("the default client builds");
+        client_with_user_agent("http://example.test:18888", "my-agent/2.1.0")
+            .expect("the client with a caller UA builds");
     }
 }

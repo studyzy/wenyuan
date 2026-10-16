@@ -21,16 +21,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata, thin wrapper and tests outside the generator's ownership. The Go
   SDK is a module of its own (`github.com/studyzy/wenyuan/clients/go`), so the
   service module and its gates are untouched by it. See `clients/README.md`.
-  The Go SDK also carries the client-side behaviour the generated code does not
-  state: a live end-to-end suite behind the `integration` build tag (retain,
-  recall, reflect, bank lifecycle and configuration, documents and chunks, the
-  async queue, entities and graph, the per-bank audit switch, the retired
-  profile route's 410, and a tag filter that has to select its own write back
-  out), plus offline tests pinning the two generator quirks the build patches.
-  `make test-sdk-go` runs the offline suite, `make test-sdk-go-integration`
-  the live one against `SDK_API_URL` (default `http://127.0.0.1:18888`); a
-  memory-backed server is enough, since the assertions are structural rather
-  than about extracted facts.
+  Each SDK carries the client-side behaviour the generated code does not state.
+  Go: an offline suite pinning the two generator quirks the build patches, a
+  live suite behind the `integration` tag, and the convenience layer
+  (`NewClient*`, `TextContent`, the core-operation methods). Python: the
+  thirteen sub-clients, `max_attempts` retry for the idempotent calls with the
+  reference's capacity and `Retry-After` semantics, `suspend_retains()`, and the
+  recall helpers (`to_prompt_string`, iteration/len/index and reprs) installed
+  from the wrapper rather than by editing generated code. TypeScript:
+  `retryAfterMs`/`retryOnCapacity` wired to recall and reflect, `retainBatch`,
+  `retainFiles`, `recallResponseToPromptString` and the
+  `{baseUrl, apiKey, userAgent, headers, maxAttempts}` client options.
+  Rust: the user-agent constructors, `INTEGRATION.md` plus compiling
+  `examples/` for bridging a synchronous CLI onto the async client, and the
+  no-retry contract stated where a caller looks for it.
+  Every SDK ships two suites: an offline one (stubs only) and a live one gated
+  on `HINDSIGHT_API_URL` that skips itself when unset, so the offline gate stays
+  usable without a server. `make test-sdk` runs all four offline suites,
+  `make test-sdk-integration` runs all four live ones against `SDK_API_URL`
+  (default `http://127.0.0.1:18888`); a memory-backed server is enough, since
+  the assertions are structural (an operation succeeded, an id round-tripped, a
+  list carries what was written, the retired profile route answers 410, a tag
+  filter selects its own write back out) rather than about extracted facts or
+  synthesized prose. The SDKs are source in this repository: no npm/PyPI/
+  crates.io publication, no release pipeline.
 - Make targets for the deployment surface: `make tei-up` starts the compose
   `tei` profile (the TEI embedding and reranker sidecars now sit behind that
   profile, so a plain `docker compose up -d` starts PostgreSQL alone), and

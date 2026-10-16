@@ -75,11 +75,32 @@ listed in `clients/rust/README.md`; a caller that needs them uses another SDK.
 
 ## Tests
 
-Each SDK keeps its own tests beside its code. The Go one ships two suites: an
-offline unit suite (`make test-sdk-go`) and a live end-to-end suite behind the
-`integration` build tag (`make test-sdk-go-integration`, pointed at a running
-server with `SDK_API_URL`). See `clients/go/README.md` for what the live suite
-asserts and why it needs no model provider.
+Each SDK ships two suites: an offline one (stub/httptest servers only, no
+network) and a live one that talks to a running service.
+
+| SDK | Offline | Live |
+|---|---|---|
+| Go | `make test-sdk-go` | `make test-sdk-go-integration` |
+| Python | `cd clients/python && python3 -m unittest discover -s tests` | same, with `HINDSIGHT_API_URL` set |
+| TypeScript | `cd clients/typescript && npx tsc --noEmit && npm test` | same, with `HINDSIGHT_API_URL` set |
+| Rust | `cd clients/rust && cargo test` | same, with `HINDSIGHT_API_URL` set |
+
+`make test-sdk` runs every offline suite; `make test-sdk-integration` runs every
+live suite against `SDK_API_URL` (default `http://127.0.0.1:18888`). A live
+suite that finds `HINDSIGHT_API_URL` unset skips itself rather than failing, so
+the offline gate stays usable on a machine with no server. A server started with
+`HINDSIGHT_API_DATABASE_URL=memory` is enough for all of them: the assertions are
+structural (an operation succeeded, an id round-tripped, a list carries what was
+written, a retired route answers 410, a tag filter selects its own write back
+out) rather than about extracted facts or synthesized prose, which need a
+retention model.
+
+## Delivery
+
+The SDKs ship as source in this repository. They are **not published** to npm,
+PyPI or crates.io: there is no release pipeline, no registry scope and no
+version bump automation, so the manifests carry the package names a consumer
+would use if this repository were vendored or a `go get` target, nothing more.
 
 ## Versioning
 
