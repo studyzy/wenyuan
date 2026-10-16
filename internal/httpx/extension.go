@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -72,6 +73,11 @@ type ExtensionHost struct {
 	extensions []Extension
 	feature    map[string]bool
 	validator  OperationValidator
+	// passthrough is the operator's allowlist of request headers copied into
+	// the extension context, lower-cased. Empty forwards nothing, which is the
+	// reference's default and keeps a header out of extension code unless an
+	// operator opted in.
+	passthrough []string
 }
 
 // NewExtensionHost builds an empty extension host.
@@ -125,6 +131,108 @@ func (h *ExtensionHost) FeatureEnabled(name string) bool {
 	return h.feature[name]
 }
 
+// SetPassthroughHeaders names the request headers copied into the extension
+// context. The reference lower-cases its allowlist at configuration load; the
+// normalisation is repeated here so matching stays case-insensitive for a
+// caller that hands over the raw environment value. An empty list (the
+// reference's default) forwards nothing.
+func (h *ExtensionHost) SetPassthroughHeaders(headers []string) {
+	if h == nil {
+		return
+	}
+	normalized := make([]string, 0, len(headers))
+	for _, name := range headers {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
+			normalized = append(normalized, name)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.passthrough = normalized
+}
+
+// passthroughHeaders returns the configured allowlist, or nil when unset.
+func (h *ExtensionHost) passthroughHeaders() []string {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.passthrough
+}
+
+// extraHeadersKey is the request-context key holding the forwarded headers.
+type extraHeadersKey struct{}
+
+// ExtraHeadersFrom returns the allowlisted request headers an extension may
+// read, keyed by the lower-cased name, or nil when the deployment forwards
+// none. The map is shared read-only across the request, so extension code must
+// not mutate it.
+func ExtraHeadersFrom(r *http.Request) map[string]string {
+	headers, _ := r.Context().Value(extraHeadersKey{}).(map[string]string)
+	return headers
+}
+
+// withExtraHeaders records the forwarded headers for this request. An empty
+// result is left unrecorded so a request with no allowlisted header carries no
+// context entry at all.
+func withExtraHeaders(r *http.Request, headers map[string]string) *http.Request {
+	if len(headers) == 0 {
+		return r
+	}
+	return r.WithContext(contextWithValue(r.Context(), extraHeadersKey{}, headers))
+}
+
+// CollectPassthroughHeaders picks the allowlisted headers out of a request,
+// keyed by the lower-cased name. An empty allowlist (the default) collects
+// nothing, so extensions only ever see a header an operator opted into.
+//
+// A header sent more than once is dropped rather than resolved: these headers
+// carry identity for the deployments that enable this, and there is no safe
+// universal rule for choosing between copies (a proxy may append its trusted
+// value before or after a client-supplied one). Dropping makes a duplicate a
+// loud failure in the extension, which sees no header, instead of a silent
+// choice between a real and a spoofed value.
+func CollectPassthroughHeaders(header http.Header, allowlist []string) map[string]string {
+	if len(allowlist) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(allowlist))
+	for _, name := range allowlist {
+		wanted[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	found := map[string][]string{}
+	for name, values := range header {
+		lower := strings.ToLower(name)
+		if !wanted[lower] {
+			continue
+		}
+		found[lower] = append(found[lower], values...)
+	}
+	collected := map[string]string{}
+	for name, values := range found {
+		if len(values) != 1 {
+			continue
+		}
+		collected[name] = values[0]
+	}
+	if len(collected) == 0 {
+		return nil
+	}
+	return collected
+}
+
+// PassthroughHeadersMiddleware records the allowlisted headers on the request
+// context for downstream extension handlers. An empty allowlist leaves the
+// request untouched, so behaviour is unchanged when the deployment opts out.
+func PassthroughHeadersMiddleware(allowlist []string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, withExtraHeaders(r, CollectPassthroughHeaders(r.Header, allowlist)))
+		})
+	}
+}
+
 // MountAll registers every collected extension on the given registrar.
 func (h *ExtensionHost) MountAll(r RouteRegistrar) {
 	h.mu.Lock()
@@ -143,7 +251,11 @@ func MountExtensions(root *http.ServeMux, host *ExtensionHost, chain Middleware)
 	registrar := &muxRegistrar{mux: extMux}
 	host.MountAll(registrar)
 	stripped := http.StripPrefix(NamespaceExt, extMux)
-	root.Handle(NamespaceExt+"/", chain(stripped))
+	// The allowlisted headers are collected per request and placed on the
+	// extension handler's context, which is where an extension reads them; the
+	// reference does the same at its request-context boundary.
+	mounted := chain(PassthroughHeadersMiddleware(host.passthroughHeaders())(stripped))
+	root.Handle(NamespaceExt+"/", mounted)
 }
 
 type muxRegistrar struct {

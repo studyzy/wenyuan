@@ -115,6 +115,12 @@ func TestReflectCancellationPropagates(t *testing.T) {
 // context budget rather than exhausting the iteration bound.
 func TestLoopStopsEarlyOnBudget(t *testing.T) {
 	store := reflectTestStore(t)
+	// The early-stop path is driven by the context budget, and the reference's
+	// default budget is large: configuring a small one here exercises the path
+	// without pinning the default.
+	tuning := DefaultTuning()
+	tuning.ReflectContextBudget = 4000
+	store.SetTuning(tuning)
 	long := strings.Repeat("word ", 1500)
 	for i := 0; i < 5; i++ {
 		store.SeedMemory("b1", RecallMatch{ID: "f" + itoaSmall(i), Text: long, Type: "world"})
@@ -132,7 +138,7 @@ func TestLoopStopsEarlyOnBudget(t *testing.T) {
 			maxIteration = call.Iteration
 		}
 	}
-	if maxIteration >= reflectMaxIterations {
+	if maxIteration >= tuning.ReflectMaxIterations {
 		t.Fatalf("the loop must stop early once evidence crosses the budget: %+v", outcome.Trace.ToolCalls)
 	}
 }

@@ -11,32 +11,60 @@ import (
 // keywordArmLimit bounds how many lexical neighbours one arm considers.
 const keywordArmLimit = 400
 
+// RecallQueryTokenLimit reports the process-level cap on a recall query's
+// length in tokens, so the HTTP ingress can bound the query before it reaches
+// the embedder. A non-positive value means the cap is off.
+func (s *PostgresStore) RecallQueryTokenLimit() int { return s.tuning.MaxQueryTokens }
+
 // Recall runs recall against the database-backed store with the same multi-arm
 // pipeline the in-process store uses: a semantic arm, a BM25 keyword arm and a
 // graph-expansion arm, fused by reciprocal rank fusion and then scored. It
 // threads the caller's tag scoping, temporal window, strategy boosts, score
 // floors and reranker through the shared scoring path.
 func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, error) {
+	// Recalls are bounded at the engine level, separately from admission
+	// control: more than the configured number in flight wait for a permit
+	// rather than all running at once.
+	release, ok := s.acquireRecall(ctx)
+	if !ok {
+		return RecallResult{}, ctx.Err()
+	}
+	defer release()
+	// The diagnostic accounting measures this recall's phases unless the
+	// process turned it off or the sampling rate passed this recall over.
+	phases := s.beginRecallPhases(q.BankID)
+	defer phases.finish()
+	stop := phases.measure("bank_lookup", false)
 	if _, err := s.GetBank(ctx, q.BankID); err != nil {
+		stop()
 		return RecallResult{}, err
 	}
+	stop()
+	q = s.tuning.withDefaultFloors(q)
+	// The query is bounded at ingress, before any arm reads it: a degenerate
+	// query would otherwise fan out into an unbounded OR tsquery. Truncation,
+	// not rejection, so an over-long query still answers.
+	q.Query = TruncateQueryToTokens(q.Query, s.tuning.MaxQueryTokens)
 	types := resolvedTypes(q.Types)
 	arms := activeArms(q)
 	term := strings.TrimSpace(q.Query)
 	limit := q.Limit
 	if limit <= 0 {
-		limit = BudgetLimit(q.Budget)
+		limit = s.tuning.BudgetLimitForQuery(q)
 	}
 	// Fuzzy resolution folds a request's tags against the bank's own vocabulary,
 	// so an over-large vocabulary (or a request whose fuzzy leaves multiply past
 	// the cap) is refused before any retrieval runs. Only a request that
 	// resolves fuzzily pays for the vocabulary read.
 	if usesFuzzyTagResolution(q.TagGroups) {
+		stop = phases.measure("fuzzy_tags", false)
 		vocabulary, err := s.tagVocabulary(ctx, q.BankID)
 		if err != nil {
+			stop()
 			return RecallResult{}, err
 		}
 		resolved, err := ResolveRecallTagScope(q, vocabulary)
+		stop()
 		if err != nil {
 			return RecallResult{}, err
 		}
@@ -45,45 +73,80 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 
 	candidates := map[string]*recallCandidate{}
 	armTraces := make([]recallArmTrace, 0, 3)
-	semanticArmHits, err := s.semanticArm(ctx, q, types, term)
+	// The arms are one phase as a whole, and each arm's own time is a subset of
+	// it. Each arm measures itself, and the arms of one wave overlap: the
+	// per-arm timings are subsets of the fan-out rather than terms that add up
+	// to it, which is how the reference reports them too.
+	stop = phases.measure("parallel_retrieval", false)
+	fanOutStop := stop
+	armFanOut := newRecallArmFanOut(s.tuning.ConnectionBudget)
+	// The dense and lexical arms read the bank independently, so they share one
+	// wave: the recall then pays the slower of the two rather than their sum,
+	// with the budget bounding how many of them hold a connection at once.
+	denseAndLexical := []recallArmJob{
+		{name: ArmSemantic, run: func(ctx context.Context) ([]recallHit, error) {
+			return s.semanticArm(ctx, q, types, term)
+		}},
+		{name: ArmKeyword, run: func(ctx context.Context) ([]recallHit, error) {
+			return s.keywordArm(ctx, q, term)
+		}},
+	}
+	armOutcomes, err := runRecallArms(ctx, armFanOut, phases, denseAndLexical)
 	if err != nil {
+		fanOutStop()
 		return RecallResult{}, err
 	}
-	semanticHits := prepareArm(q, ArmSemantic, semanticArmHits)
+	semanticHits := prepareArm(q, ArmSemantic, armOutcomes[0].hits)
 	recordArm(candidates, ArmSemantic, semanticHits)
 	armTraces = append(armTraces, recallArmTrace{arm: ArmSemantic, hits: semanticHits})
-	keywordArmHits, err := s.keywordArm(ctx, q, types, term)
-	if err != nil {
-		return RecallResult{}, err
-	}
-	keywordHits := prepareArm(q, ArmKeyword, keywordArmHits)
+	keywordHits := prepareArm(q, ArmKeyword, armOutcomes[1].hits)
 	recordArm(candidates, ArmKeyword, keywordHits)
 	armTraces = append(armTraces, recallArmTrace{arm: ArmKeyword, hits: keywordHits})
-	if containsArm(arms, ArmGraph) {
-		graphArmHits, err := s.graphArm(ctx, q, types, candidates)
+	// The graph arm walks out from the hits above, so it is its own wave: its
+	// entry points are the dense and lexical results, exactly as the reference
+	// derives them. A query that names no words and carries no vector still
+	// recalls — an empty query returns the bank's newest units — and that list
+	// arm shares the wave, because a graph arm with an empty candidate set has
+	// no seeds to walk from and cannot answer it.
+	graphEnabled := containsArm(arms, ArmGraph)
+	listArmNeeded := len(candidates) == 0 && term == "" && len(q.QueryEmbedding) == 0
+	secondWave := make([]recallArmJob, 0, 2)
+	if graphEnabled {
+		secondWave = append(secondWave, recallArmJob{name: ArmGraph, run: func(ctx context.Context) ([]recallHit, error) {
+			return s.graphArm(ctx, q, types, candidates)
+		}})
+	}
+	if listArmNeeded {
+		secondWave = append(secondWave, recallArmJob{name: "list", run: func(ctx context.Context) ([]recallHit, error) {
+			return s.listArm(ctx, q, types, limit)
+		}})
+	}
+	if len(secondWave) > 0 {
+		armOutcomes, err = runRecallArms(ctx, armFanOut, phases, secondWave)
 		if err != nil {
+			fanOutStop()
 			return RecallResult{}, err
 		}
-		graphHits := prepareArm(q, ArmGraph, graphArmHits)
+	}
+	waveIndex := 0
+	if graphEnabled {
+		graphHits := prepareArm(q, ArmGraph, armOutcomes[waveIndex].hits)
 		recordArm(candidates, ArmGraph, graphHits)
 		armTraces = append(armTraces, recallArmTrace{arm: ArmGraph, hits: graphHits})
+		waveIndex++
 	}
-	// A query that names no words and carries no vector still recalls: an empty
-	// query returns the bank's newest units, which is what the in-process store
-	// does.
-	if len(candidates) == 0 && term == "" && len(q.QueryEmbedding) == 0 {
-		listHits, err := s.listArm(ctx, q, types, limit)
-		if err != nil {
-			return RecallResult{}, err
-		}
-		recordArm(candidates, ArmKeyword, prepareArm(q, ArmKeyword, listHits))
+	if listArmNeeded {
+		recordArm(candidates, ArmKeyword, prepareArm(q, ArmKeyword, armOutcomes[waveIndex].hits))
 	}
+	fanOutStop()
 
+	stop = phases.measure("score", false)
 	ranked := scoreCandidates(ctx, candidates, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
 	ranked = preferObservations(ranked, q)
 	ranked = capCandidates(ranked, limit)
+	stop()
 
 	result := RecallResult{Matches: make([]RecallMatch, 0, len(ranked))}
 	for _, cand := range ranked {
@@ -92,11 +155,25 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	// The chunk and source-fact channels are assembled before the trace so a
 	// caller that asked for source text gets it, capped independently of the
 	// fact budget. Attachments are resolved on the ranked matches either way.
-	if err := s.attachRecallSideChannels(ctx, q, &result); err != nil {
+	stop = phases.measure("side_channels", false)
+	err = s.attachRecallSideChannels(ctx, q, &result)
+	stop()
+	if err != nil {
 		return RecallResult{}, err
 	}
+	stop = phases.measure("hydrate_results", false)
 	s.enrichRecallAttachments(ctx, q.BankID, result.Matches)
+	stop()
+	// The budgets are applied after the channels are assembled, so a channel is
+	// capped by its own budget rather than by the fact budget. A zero budget is
+	// unbounded, which is what a caller that names none gets.
+	stop = phases.measure("token_filter", false)
+	result.Matches = capMatchesToTokens(result.Matches, q.MaxTokens)
+	result.ChunkEntries = capChunksToTokens(result.ChunkEntries, q.MaxChunkTokens)
+	stop()
+	stop = phases.measure("trace", false)
 	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
+	stop()
 	return result, nil
 }
 
@@ -285,19 +362,24 @@ func (s *PostgresStore) semanticArm(ctx context.Context, q RecallQuery, types []
 
 // keywordArm ranks stored memories by BM25 over the maintained search vector.
 //
-// The query text is bounded before it is bound: a long query is reduced to its
-// most selective terms, so a broad query cannot ask the ranker to score the
-// whole bank (see boundedBM25Text). The terms are OR-joined, so any term can
-// match a memory rather than requiring every term to appear.
-func (s *PostgresStore) keywordArm(ctx context.Context, q RecallQuery, types []string, term string) ([]recallHit, error) {
+// The native backend has no IDF and ranks every match, so the query text is
+// first reduced to its most selective terms and OR-joined into one tsquery (see
+// boundedBM25Text), which bounds both the match set and the per-row rank cost.
+// A backend with its own query parser — ParadeDB's pg_search — is handed the
+// raw text: it tokenizes the query itself, and re-joining it would reintroduce
+// the whitespace terms its tokenizer discards.
+func (s *PostgresStore) keywordArm(ctx context.Context, q RecallQuery, term string) ([]recallHit, error) {
 	if containsArm(q.DisabledArms, ArmKeyword) || term == "" {
 		return nil, nil
 	}
-	bm25Text := s.boundedBM25Text(ctx, term)
-	if bm25Text == "" {
-		return nil, nil
+	bound := term
+	if s.textSearchExtension != TextSearchPGSearch {
+		bound = s.boundedBM25Text(ctx, term)
+		if bound == "" {
+			return nil, nil
+		}
 	}
-	return s.keywordHits(ctx, q, types, bm25Text, keywordArmLimit)
+	return s.keywordHits(ctx, q, bound, keywordArmLimit)
 }
 
 // listArm returns the bank's newest units of the requested types, for a query
@@ -315,9 +397,9 @@ func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []stri
 	return s.scanArm(ctx, q, query, args)
 }
 
-// keywordHits runs the BM25 arm over the search vector with a server-side
-// statement timeout, so one broad query cannot hold the connection for the
-// multi-second rank scan the term selection could not prevent.
+// keywordHits runs the BM25 arm with a server-side statement timeout, so one
+// broad query cannot hold the connection for the multi-second rank scan the
+// term selection could not prevent.
 //
 // Rows whose rank ties are ordered by physical position, which is what the
 // reference gets: its arm orders by the rank alone and lets PostgreSQL break
@@ -326,29 +408,25 @@ func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []stri
 // is a fact about the pipeline rather than about the plan the planner chose that
 // day. A uuid would be the wrong stand-in - it is assigned before the insert and
 // says nothing about which fact was written first.
-func (s *PostgresStore) keywordHits(ctx context.Context, q RecallQuery, types []string, term string, limit int) ([]recallHit, error) {
-	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
-	                 COALESCE(source_memory_ids, '{}'::uuid[])::text,
-	                 ts_rank_cd(search_vector, to_tsquery('english', $3)) AS score
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
-	          WHERE bank_id = $1 AND fact_type = ANY($2) AND ` + recallPredicates(q) + `
-	            AND search_vector @@ to_tsquery('english', $3)
-	          ORDER BY score DESC, ctid ASC LIMIT $4`
-	args := append(armArgs(q), term, limit)
-	return s.queryWithStatementTimeout(ctx, query, args)
+//
+// The statement itself comes from bm25ArmQuery, which renders the native
+// tsvector form or the configured pg_search form.
+func (s *PostgresStore) keywordHits(ctx context.Context, q RecallQuery, term string, limit int) ([]recallHit, error) {
+	query, args := s.bm25ArmQuery(q, term, limit)
+	return s.queryWithStatementTimeout(ctx, query, args, bm25StatementTimeout)
 }
 
 // queryWithStatementTimeout runs one arm statement inside a transaction that
 // first sets a local statement timeout. SET LOCAL requires a transaction, and
 // the timeout is the server-side backstop the connection pool cannot express
 // per statement through database/sql.
-func (s *PostgresStore) queryWithStatementTimeout(ctx context.Context, query string, args []any) ([]recallHit, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *PostgresStore) queryWithStatementTimeout(ctx context.Context, query string, args []any, timeout string) ([]recallHit, error) {
+	tx, err := s.reader().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = "+sqlTextLiteral(bm25StatementTimeout)); err != nil {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = "+sqlTextLiteral(timeout)); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -374,17 +452,32 @@ func (s *PostgresStore) queryWithStatementTimeout(ctx context.Context, query str
 // weight. The entity arm is weighted tanh(shared_entities * 0.5), the upstream
 // saturation curve.
 func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []string, candidates map[string]*recallCandidate) ([]recallHit, error) {
-	if containsArm(q.DisabledArms, ArmGraph) || !graphSeedsAllowed(q) {
+	if containsArm(q.DisabledArms, ArmGraph) || !graphSeedsAllowed(q, s.tuning.GraphSeedMinSimilarity) {
 		return nil, nil
 	}
 	seeds := graphSeedIDs(candidates)
 	if len(seeds) == 0 {
 		return nil, nil
 	}
+	// The entity branch takes at most perEntityLimit targets per seed entity
+	// before it is weighted, which is the reference's per-entity cap: without it
+	// one ubiquitous entity drags in the whole bank.
 	query := `WITH seed_entities AS (
 	              SELECT DISTINCT ue.entity_id
 	              FROM ` + quoteIdent(s.schema) + `.unit_entities ue
 	              WHERE ue.unit_id::text = ANY($3::text[])
+	          ),
+	          entity_targets AS (
+	              SELECT se.entity_id, target.unit_id
+	              FROM seed_entities se
+	              JOIN LATERAL (
+	                  SELECT ue_target.unit_id
+	                  FROM ` + quoteIdent(s.schema) + `.unit_entities ue_target
+	                  WHERE ue_target.entity_id = se.entity_id
+	                    AND ue_target.unit_id::text <> ALL($3::text[])
+	                  ORDER BY ue_target.unit_id
+	                  LIMIT $5
+	              ) target ON true
 	          ),
 	          expanded AS (
 	              SELECT l.to_unit_id AS unit_id, l.weight AS contrib
@@ -392,12 +485,10 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	              WHERE l.bank_id = $1 AND l.from_unit_id::text = ANY($3::text[])
 	                AND l.to_unit_id::text <> ALL($3::text[])
 	              UNION ALL
-	              SELECT ue_target.unit_id,
-	                     tanh(COUNT(DISTINCT ue_target.entity_id)::float8 * 0.5) AS contrib
-	              FROM ` + quoteIdent(s.schema) + `.unit_entities ue_target
-	              JOIN seed_entities se ON se.entity_id = ue_target.entity_id
-	              WHERE ue_target.unit_id::text <> ALL($3::text[])
-	              GROUP BY ue_target.unit_id
+	              SELECT entity_targets.unit_id,
+	                     tanh(COUNT(DISTINCT entity_targets.entity_id)::float8 * 0.5) AS contrib
+	              FROM entity_targets
+	              GROUP BY entity_targets.unit_id
 	          )
 	          SELECT u.id::text, u.text, u.fact_type, u.occurred_start, u.occurred_end, u.mentioned_at,
 	                 u.chunk_id, u.document_id, u.context, u.metadata, u.tags,
@@ -407,8 +498,33 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	          WHERE u.fact_type = ANY($2) AND ` + recallPredicates(q) + `
 	          GROUP BY u.id, u.text, u.fact_type, u.occurred_start, u.occurred_end, u.mentioned_at, u.chunk_id, u.document_id, u.context, u.metadata, u.tags, u.source_memory_ids
 	          ORDER BY weight DESC, u.ctid ASC LIMIT $4`
-	args := append(armArgs(q), seeds, graphArmLimit)
-	return s.scanArm(ctx, q, query, args)
+	args := append(armArgs(q), seeds, graphArmLimit, s.perEntityLimit())
+	return s.scanArmWithTimeout(ctx, q, query, args, s.tuning.LinkExpansionTimeout)
+}
+
+// perEntityLimit is how many targets one seed entity contributes to the graph
+// expansion: the resolved tuning when it was configured, and the reference's
+// default when it was not.
+func (s *PostgresStore) perEntityLimit() int {
+	if s.tuning.LinkExpansionPerEntityLimit > 0 {
+		return s.tuning.LinkExpansionPerEntityLimit
+	}
+	return DefaultLinkExpansionPerEntityLimit
+}
+
+// scanArmWithTimeout runs an arm query inside a transaction that first sets a
+// local statement timeout, so one pathological expansion cannot hold the
+// connection. A zero timeout runs the statement unbounded, which is what a
+// deployment that configured none asks for.
+func (s *PostgresStore) scanArmWithTimeout(ctx context.Context, q RecallQuery, query string, args []any, timeout time.Duration) ([]recallHit, error) {
+	if timeout <= 0 {
+		return s.scanArm(ctx, q, query, args)
+	}
+	hits, err := s.queryWithStatementTimeout(ctx, query, args, formatPostgresMilliseconds(timeout))
+	if err != nil {
+		return nil, err
+	}
+	return hits, nil
 }
 
 // graphArmLimit bounds the graph arm's fan-out.
@@ -460,7 +576,7 @@ func candidateSimilarity(cand *recallCandidate) float64 {
 
 // scanArm runs an arm query and reads its hits.
 func (s *PostgresStore) scanArm(ctx context.Context, q RecallQuery, query string, args []any) ([]recallHit, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -523,7 +639,7 @@ func (s *PostgresStore) tagVocabulary(ctx context.Context, bankID string) ([]str
 	query := `SELECT DISTINCT tag
 	          FROM ` + quoteIdent(s.schema) + `.memory_units, unnest(tags) AS tag
 	          WHERE bank_id = $1`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}

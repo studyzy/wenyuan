@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/provider/cacheaffinity"
 )
 
 // Name reports the registered provider name. It is the name the operator
@@ -87,6 +88,12 @@ func register(reg *provider.Registry, name, defaultBaseURL string, cloud bool) {
 				settings.BaseURL = defaultBaseURL
 			}
 			settings.Provider = name
+			// A typo in the cache-affinity mode fails at construction, where the
+			// operator sees it, rather than silently disabling a hint whose
+			// effect is invisible in the response.
+			if _, err := cacheaffinity.Parse(settings.CacheAffinity); err != nil {
+				return nil, err
+			}
 			return NewClient(settings, nil), nil
 		},
 	})

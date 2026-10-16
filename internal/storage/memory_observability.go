@@ -11,6 +11,13 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 	if err := ctx.Err(); err != nil {
 		return BankStats{}, err
 	}
+	// The summary is approximate and expensive to derive, so a fresh cached one
+	// is served rather than recomputed on every poll. The cache is per-process
+	// and bounded, so a deployment that reads many banks cannot hold every
+	// summary it has ever computed.
+	if cached, ok := s.statsCache.get(s.schema, bankID); ok {
+		return cached, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.readErr != nil {
@@ -75,6 +82,7 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 			stats.TotalObservations++
 		}
 	}
+	s.statsCache.put(s.schema, bankID, stats)
 	return stats, nil
 }
 

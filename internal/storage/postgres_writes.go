@@ -82,7 +82,7 @@ func (s *PostgresStore) Search(ctx context.Context, req RecallRequest) (RecallRe
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, query, req.BankID, req.Query, limit)
+	rows, err := s.reader().QueryContext(ctx, query, req.BankID, req.Query, limit)
 	if err != nil {
 		return RecallResult{}, err
 	}
@@ -175,6 +175,10 @@ func (s *PostgresStore) GetOperation(ctx context.Context, bankID, opID string) (
 
 // getOperation returns one operation by identifier alone, for internal callers
 // that already hold a bank-scoped reference.
+//
+// It reads on the primary: every caller is a state transition that reads the
+// current status and then writes the next one, and a replica that lags by even
+// one commit would let a terminal operation be advanced a second time.
 func (s *PostgresStore) getOperation(ctx context.Context, opID string) (Operation, error) {
 	query := `SELECT ` + operationColumns + `
 	          FROM ` + quoteIdent(s.schema) + `.async_operations WHERE operation_id = $1`
@@ -195,7 +199,7 @@ func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID s
 	          FROM ` + quoteIdent(s.schema) + `.async_operations
 	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2
 	          ORDER BY COALESCE((result_metadata->>'sub_batch_index')::int, 0) ASC, operation_id ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, opID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, opID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +235,7 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	countFilter := filter + ` AND ` + fmt.Sprintf(parentPredicate, 5)
 	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations WHERE ` + countFilter
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID,
+	if err := s.reader().QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID,
 		query.ExcludeParents).Scan(&total); err != nil {
 		return OperationPage{}, err
 	}
@@ -240,7 +244,7 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	              FROM ` + quoteIdent(s.schema) + `.async_operations
 	              WHERE ` + listFilter + `
 	              ORDER BY created_at DESC, operation_id ASC LIMIT $5 OFFSET $6`
-	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset, query.ExcludeParents)
+	rows, err := s.reader().QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset, query.ExcludeParents)
 	if err != nil {
 		return OperationPage{}, err
 	}

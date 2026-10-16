@@ -256,3 +256,21 @@ func TestPostgresContractReadScopeTagGroups(t *testing.T) {
 		t.Fatalf("scoped graph = %+v, want only dan-doc", graph)
 	}
 }
+
+// A configured migration database is the handle the series runs over, and the
+// serving handle stays untouched by it.
+func TestMigrationRunsOverItsOwnHandle(t *testing.T) {
+	serving := &recordingDB{}
+	migration := &recordingDB{}
+	store := NewPostgresStore(serving, "public")
+	store.migrationDB = migration
+
+	if target := store.migrateTarget(); target.db != DB(migration) {
+		t.Fatalf("the series would run over the serving handle: %T", target.db)
+	}
+	// Without one the store migrates over its own handle.
+	plain := NewPostgresStore(serving, "public")
+	if target := plain.migrateTarget(); target.db != DB(serving) {
+		t.Fatal("a store with no migration database did not use its own handle")
+	}
+}

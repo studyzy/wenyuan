@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -104,7 +106,14 @@ var errOperationNotFoundSentinel = errors.New("no claimable operation")
 
 // claimOnce runs one claim attempt.
 func (s *PostgresStore) claimOnce(ctx context.Context, query, workerID string, leaseSeconds float64, types []string) (Operation, error) {
-	rows, err := s.db.QueryContext(ctx, query, workerID, leaseSeconds, nullableTagArray(types))
+	return s.claimRow(ctx, query, workerID, leaseSeconds, nullableTagArray(types))
+}
+
+// claimRow runs one claim statement and scans its single row. An empty result
+// and a lost serialization race both report errOperationNotFoundSentinel, which
+// the caller retries or maps to ErrOperationNotFound.
+func (s *PostgresStore) claimRow(ctx context.Context, query string, args ...any) (Operation, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return Operation{}, err
 	}
@@ -146,4 +155,127 @@ func (s *PostgresStore) ReleaseOperationClaim(ctx context.Context, opID, workerI
 		return ErrOperationConflict
 	}
 	return nil
+}
+
+// ConsolidationPriorityClaimer is the optional capability a backend implements
+// when it can order consolidation claims by bank priority.
+//
+// It exists because one bank's backlog should not starve another's observation
+// folding: an operator names the banks whose consolidation matters most, and
+// the claim prefers them. A backend that cannot order this way is simply not
+// asked; the consumer falls back to a plain consolidation claim, so the
+// capability only ever adds a preference.
+type ConsolidationPriorityClaimer interface {
+	// ClaimConsolidationByPriority claims the oldest claimable consolidation
+	// operation, preferring banks whose identifier matches a higher-priority
+	// pattern. An empty priority map means "no preference configured".
+	ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error)
+}
+
+// Both backends carry the capability; a store without it would fall back to the
+// plain consolidation claim in the consumer.
+var (
+	_ ConsolidationPriorityClaimer = (*MemoryStore)(nil)
+	_ ConsolidationPriorityClaimer = (*PostgresStore)(nil)
+)
+
+// ClaimConsolidationByPriority claims the oldest claimable consolidation
+// operation, preferring banks whose identifier matches a higher-priority
+// pattern.
+//
+// When a priority map is configured the claim runs as one statement: an
+// expression ranks each candidate bank by the highest-priority specific pattern
+// it matches (falling back to the catch-all, then to the reference's implicit
+// tier of one), and the candidate with the highest rank and then the oldest
+// work is taken. Every ordering the reference builds as separate tiered queries
+// folds into that single expression, so a claim stays one round trip.
+func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error) {
+	if len(priority) == 0 {
+		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate})
+	}
+	if workerID == "" {
+		return Operation{}, ErrInvalidOperationID
+	}
+	leaseSeconds := lease.Seconds()
+	qualified := quoteIdent(s.schema)
+	rank := consolidationPriorityRank(priority)
+
+	query := `WITH candidate AS (
+	            SELECT operation_id FROM ` + qualified + `.async_operations
+	            WHERE ((status = 'pending'
+	                    AND (next_retry_at IS NULL OR next_retry_at <= now()))
+	                OR (status = 'processing'
+	                    AND ($2 <= 0
+	                         OR claimed_at IS NULL
+	                         OR claimed_at <= now() - make_interval(secs => $2))))
+	              AND operation_type = ` + quoteLiteral(OperationTypeConsolidate) + `
+	              AND (serialization_key IS NULL
+	                   OR NOT EXISTS (
+	                        SELECT 1 FROM ` + qualified + `.async_operations held
+	                        WHERE held.serialization_key = ` + qualified + `.async_operations.serialization_key
+	                          AND held.status = 'processing'
+	                          AND held.operation_id <> ` + qualified + `.async_operations.operation_id
+	                          AND ($2 <= 0
+	                               OR held.claimed_at IS NULL
+	                               OR held.claimed_at > now() - make_interval(secs => $2))))
+	            -- The configured bank priority ranks first, highest tier first;
+	            -- within a tier the oldest work goes first, matching the
+	            -- reference's per-tier created_at ordering.
+	            ORDER BY ` + rank + ` DESC, created_at ASC, operation_id ASC
+	            FOR UPDATE SKIP LOCKED
+	            LIMIT 1
+	          )
+	          UPDATE ` + qualified + `.async_operations AS o
+	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now()
+	          FROM candidate
+	          WHERE o.operation_id = candidate.operation_id
+	          RETURNING o.operation_id, o.bank_id, COALESCE(o.operation_type,''), o.status,
+	                    COALESCE(o.error_message,''), o.created_at, o.updated_at,
+	                    o.completed_at, COALESCE(o.retry_count,0), o.next_retry_at,
+	                    o.result_metadata, COALESCE(o.worker_id,''), o.claimed_at,
+	                    COALESCE(o.task_payload, 'null'::jsonb), COALESCE(o.serialization_key,'')`
+	for attempt := 0; ; attempt++ {
+		op, err := s.claimRow(ctx, query, workerID, leaseSeconds)
+		if err == nil {
+			return op, nil
+		}
+		if !errors.Is(err, errOperationNotFoundSentinel) {
+			return Operation{}, err
+		}
+		if attempt >= claimSerializationAttempts {
+			return Operation{}, ErrOperationNotFound
+		}
+	}
+}
+
+// consolidationPriorityRank renders the SQL expression that ranks a candidate
+// row's bank. A specific pattern (any key but "*") always outranks the
+// catch-all, so a bank matching one takes that pattern's priority even when the
+// catch-all is higher; a bank matching no specific pattern takes the catch-all,
+// and one with nothing configured takes the reference's implicit tier of one.
+//
+// The patterns carry no bind parameters because the value is a small operator
+// setting and the expression is built once per claim; each is rendered through
+// quoteLiteral, so a pattern holding a quote is escaped rather than breaking the
+// statement. "*" becomes SQL's "%", exactly as the reference converts it.
+func consolidationPriorityRank(priority map[string]int) string {
+	specific := make([]string, 0, len(priority))
+	catchAll := 0
+	hasCatchAll := false
+	for pattern, value := range priority {
+		if pattern == "*" {
+			catchAll = value
+			hasCatchAll = true
+			continue
+		}
+		specific = append(specific, "("+quoteLiteral(strings.ReplaceAll(pattern, "*", "%"))+"::text, "+strconv.Itoa(value)+")")
+	}
+	fallback := "1"
+	if hasCatchAll {
+		fallback = strconv.Itoa(catchAll)
+	}
+	if len(specific) == 0 {
+		return fallback
+	}
+	return "COALESCE((SELECT MAX(pri.pri) FROM (VALUES " + strings.Join(specific, ", ") + ") AS pri(pat, pri) WHERE bank_id LIKE pri.pat), " + fallback + ")"
 }

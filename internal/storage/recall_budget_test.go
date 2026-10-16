@@ -22,7 +22,7 @@ func TestBudgetLimit(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := BudgetLimit(test.budget); got != test.want {
+			if got := DefaultTuning().BudgetLimit(test.budget); got != test.want {
 				t.Fatalf("BudgetLimit(%q) = %d, want %d", test.budget, got, test.want)
 			}
 		})

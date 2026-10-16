@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // ErrNoModel reports a consolidation pass attempted with no model configured.
@@ -70,6 +71,11 @@ type Observation struct {
 	// the untagged (default) scope. Only observations of the pass's scope are
 	// offered as merge candidates.
 	Scope []string
+	// Embedding is the observation's stored vector, when the store supplies one,
+	// so the pass can decide near-duplicates by cosine similarity against the
+	// configured dedup threshold. Empty when the deployment has no embedding
+	// model, which leaves the pass on its token-similarity floor.
+	Embedding []float32
 }
 
 // Create is a new observation the model decided to record.
@@ -155,6 +161,14 @@ type Store interface {
 	BankConfig(ctx context.Context, bankID string) (map[string]any, error)
 }
 
+// TuningStore is the optional capability a store implements when it carries the
+// deployment's consolidation tuning. A store without it leaves the pass on the
+// reference's shipped defaults, so the capability only ever moves a deployment's
+// configured values into the pass.
+type TuningStore interface {
+	ConsolidationTuning() storage.ConsolidationTuning
+}
+
 // DefaultRelatedObservations bounds the near-duplicate lookup added to the
 // merge-candidate pool.
 const DefaultRelatedObservations = 10
@@ -206,21 +220,33 @@ type Consolidator struct {
 	maxFacts        int
 	maxObservations int
 	scope           string
+	// tuning carries the deployment's consolidation knobs — the load batch
+	// size, the model-call budget and the per-operation attempt budget. It
+	// defaults to the reference's shipped values, so a deployment that set
+	// nothing runs as before.
+	tuning storage.ConsolidationTuning
 	// settings are the bank-wide defaults a pass starts from; Run overrides
 	// them with the bank's own configuration.
 	settings Settings
 }
 
-// New builds a consolidator over the provider and store.
+// New builds a consolidator over the provider and store. When the store carries
+// the deployment's consolidation tuning, the pass adopts it; otherwise it runs
+// with the reference's defaults.
 func New(p provider.Provider, store Store) *Consolidator {
-	return &Consolidator{
+	c := &Consolidator{
 		provider:        p,
 		store:           store,
 		maxFacts:        DefaultMaxFacts,
 		maxObservations: DefaultMaxObservations,
 		scope:           provider.ScopeConsolidation,
+		tuning:          storage.DefaultConsolidationTuning(),
 		settings:        DefaultSettings(),
 	}
+	if tuned, ok := store.(TuningStore); ok {
+		c.tuning = tuned.ConsolidationTuning()
+	}
+	return c
 }
 
 // Available reports whether a model is configured.
@@ -254,8 +280,13 @@ func (c *Consolidator) Run(ctx context.Context, bankID string) (Result, error) {
 	}
 	// A round cap bounds how many facts one pass folds, so one bank cannot hold
 	// a worker slot indefinitely; 0 means unlimited and falls back to the read
-	// bound.
+	// bound. The load batch size then bounds how many memories one load carries,
+	// so a pass reads the bank in the reference's batches rather than pulling
+	// the whole backlog into memory at once.
 	limit := c.maxFacts
+	if c.tuning.MemoryBatchSize > 0 && c.tuning.MemoryBatchSize < limit {
+		limit = c.tuning.MemoryBatchSize
+	}
 	if settings.MaxMemoriesPerRound > 0 && settings.MaxMemoriesPerRound < limit {
 		limit = settings.MaxMemoriesPerRound
 	}
@@ -373,14 +404,36 @@ func (c *Consolidator) runScope(ctx context.Context, bankID string, scope []stri
 // runBatch folds one model call's worth of facts against the shared observation
 // pool and applies the decision it returns.
 func (c *Consolidator) runBatch(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, settings Settings, remaining int) (Result, error) {
-	response, err := c.provider.Complete(ctx, provider.CompletionRequest{
+	request := provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: buildInput(facts, observations, settings, remaining)},
 		},
 		ResponseSchema: decisionSchema(),
 		Scope:          c.scope,
-	})
+	}
+	// The completion cap only ever narrows the model's own default: unset (zero)
+	// leaves the parameter off, which is the reference's behaviour too.
+	if c.tuning.MaxCompletionTokens > 0 {
+		request.MaxTokens = c.tuning.MaxCompletionTokens
+	}
+	attempts := c.tuning.MaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var response provider.CompletionResult
+	var err error
+	for range attempts {
+		response, err = c.provider.Complete(ctx, request)
+		if err == nil {
+			break
+		}
+		// A cancelled or expired context will not clear on a retry, so it stops
+		// the attempt loop rather than burning the budget on a dead call.
+		if ctx.Err() != nil {
+			break
+		}
+	}
 	if err != nil {
 		return Result{}, &llmFailure{factIDs: factIDsOf(facts), err: fmt.Errorf("consolidation call failed: %w", err)}
 	}
@@ -448,7 +501,25 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			continue
 		}
 		key := normalizeObservationText(create.Text)
-		if existingTexts[key] || nearDuplicate(key, createdKeys) {
+		// An exact restatement is never written twice, whatever the embedding
+		// path does: the reference folds it too, and equality needs no model.
+		if existingTexts[key] {
+			result.Skipped++
+			continue
+		}
+		// A near-duplicate is decided by the reference's mechanism when the
+		// deployment can embed — the cosine of the two observation embeddings
+		// against the configured threshold — and by the token-similarity floor
+		// when it cannot. A twin found by the embedding probe is folded: the new
+		// evidence is attached to it rather than written as a second row.
+		if twin, duplicate := c.duplicateObservation(ctx, bankID, scope, create.Text, key, createdKeys); duplicate {
+			if twin.ID != "" && twin.Text != "" {
+				sources := validSourceIDs(create.SourceIDs, factIDs)
+				if err := c.store.UpdateObservation(ctx, bankID, twin.ID, twin.Text, sources); err != nil {
+					return result, fmt.Errorf("fold duplicate observation: %w", err)
+				}
+				markTouched(touched, sources)
+			}
 			result.Skipped++
 			continue
 		}
@@ -529,12 +600,18 @@ func normalizeObservationText(text string) string {
 	return strings.Join(strings.Fields(strings.ToLower(text)), " ")
 }
 
-// observationSimilarityFloor is the token Jaccard floor above which two
-// observation texts are treated as the same conclusion.
+// observationSimilarityFloor is the token-Jaccard floor above which two
+// observation texts are treated as the same conclusion. It is the fallback the
+// pass uses only when the deployment cannot embed: the reference's mechanism is
+// the cosine similarity of the two observation embeddings against the
+// consolidation dedup threshold (see duplicateObservation), and Jaccard lives on
+// a different scale, so it decides nothing when embeddings are available.
 const observationSimilarityFloor = 0.7
 
 // nearDuplicate reports whether a normalized text is nearly identical to any
 // candidate, so a restated conclusion does not accumulate as a separate twin.
+// It is the no-embedding fallback: when the deployment can embed, the cosine
+// threshold decides instead and this floor is not consulted.
 func nearDuplicate(text string, candidates []string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false

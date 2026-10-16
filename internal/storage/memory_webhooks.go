@@ -215,6 +215,11 @@ func deliveryFromOperation(op Operation) WebhookDelivery {
 			intCode := int(code)
 			delivery.LastResponseStatus = &intCode
 		}
+		// The response body is recorded only when the deployment exposed it, so
+		// a stored value is one the API may return; an absent key stays nil.
+		if body, ok := op.ResultMetadata["last_response_body"].(string); ok {
+			delivery.LastResponseBody = &body
+		}
 	}
 	return delivery
 }

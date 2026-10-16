@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -21,6 +22,40 @@ const defaultReflectSearchObservationsMaxTokens = 0
 // defaultReflectSearchObservationsIncludeEntities is the shipped per-bank
 // default for entity attachment on observation evidence.
 const defaultReflectSearchObservationsIncludeEntities = false
+
+// ReflectDefaultOptions is the deployment's process-level default for a bank's
+// reflect_default_options object: the reflect options applied wherever neither
+// the request nor the bank's own value sets the matching field, e.g.
+// {"reflect_search_observations_max_tokens": 3000}. The composition root wires
+// it from HINDSIGHT_API_REFLECT_DEFAULT_OPTIONS; nil means the deployment set
+// nothing, so every option keeps its shipped default. The bank's own
+// reflect_default_options always wins over it.
+var ReflectDefaultOptions map[string]any
+
+// reflectDefaultOptionInt reads an integer option out of ReflectDefaultOptions,
+// accepting the int and float64 a JSON object decodes to. A missing key or a
+// value of the wrong shape reports not-set, so a malformed entry cannot take
+// the place of the shipped default.
+func reflectDefaultOptionInt(key string) (int, bool) {
+	switch value := ReflectDefaultOptions[key].(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	default:
+		return 0, false
+	}
+}
+
+// reflectDefaultOptionBool reads a boolean option out of
+// ReflectDefaultOptions. A missing key or a value of the wrong shape reports
+// not-set.
+func reflectDefaultOptionBool(key string) (bool, bool) {
+	value, ok := ReflectDefaultOptions[key].(bool)
+	return value, ok
+}
 
 // Synthesis produces reflection text from retrieval context. The foundation
 // unit fixes the response contract; synthesis quality is delegated.
@@ -45,6 +80,10 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 	query := h.buildReflectQuery(bankID, req)
 	ctx, cancel := reflectTimeoutContext(r, h.ReflectTimeout)
 	defer cancel()
+	// Every model call the reflection makes is recorded under this bank and
+	// operation, so a trace listing shows the run rather than only the calls
+	// that happened to be attributed by their caller.
+	ctx = provider.WithTraceContext(ctx, provider.TraceContext{BankID: bankID, Operation: "reflect"})
 	outcome, err := h.Store.Reflect(ctx, query)
 	if err != nil {
 		// A wall-clock budget that elapsed is a gateway timeout; a client
@@ -122,7 +161,8 @@ func resolveReflectBudget(request string, bank *BankReflectDefaults) string {
 }
 
 // resolveObservationsMaxTokens resolves the observation-search token budget as
-// explicit-request over bank default over shipped default.
+// explicit-request over bank default over the deployment's reflect-default
+// options over shipped default.
 func resolveObservationsMaxTokens(req ReflectRequest, bank *BankReflectDefaults) int {
 	if req.ReflectSearchObservationsMaxTokens != nil {
 		return *req.ReflectSearchObservationsMaxTokens
@@ -130,17 +170,24 @@ func resolveObservationsMaxTokens(req ReflectRequest, bank *BankReflectDefaults)
 	if bank != nil && bank.SearchObservationsMaxTokens != nil {
 		return *bank.SearchObservationsMaxTokens
 	}
+	if value, ok := reflectDefaultOptionInt("reflect_search_observations_max_tokens"); ok {
+		return value
+	}
 	return defaultReflectSearchObservationsMaxTokens
 }
 
 // resolveObservationsIncludeEntities resolves the entity-attachment flag as
-// explicit-request over bank default over shipped default.
+// explicit-request over bank default over the deployment's reflect-default
+// options over shipped default.
 func resolveObservationsIncludeEntities(req ReflectRequest, bank *BankReflectDefaults) bool {
 	if req.ReflectSearchObservationsIncludeEntities != nil {
 		return *req.ReflectSearchObservationsIncludeEntities
 	}
 	if bank != nil && bank.SearchObservationsIncludeEntities != nil {
 		return *bank.SearchObservationsIncludeEntities
+	}
+	if value, ok := reflectDefaultOptionBool("reflect_search_observations_include_entities"); ok {
+		return value
 	}
 	return defaultReflectSearchObservationsIncludeEntities
 }

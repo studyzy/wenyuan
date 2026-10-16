@@ -23,7 +23,7 @@ func clampLimit(limit, fallback int) int {
 
 // DocumentFactCounts returns the document's memory units grouped by fact type.
 func (s *PostgresStore) DocumentFactCounts(ctx context.Context, bankID, docID string) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(fact_type,''), COUNT(*) FROM `+quoteIdent(s.schema)+`.memory_units
 		 WHERE bank_id = $1 AND document_id = $2 GROUP BY fact_type`, bankID, docID)
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *PostgresStore) EntityMentions(ctx context.Context, bankID, entityID str
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(u.text,''), u.mentioned_at
 		 FROM `+quoteIdent(s.schema)+`.unit_entities ue
 		 JOIN `+quoteIdent(s.schema)+`.memory_units u ON u.id = ue.unit_id
@@ -78,7 +78,7 @@ func (s *PostgresStore) UnitEntities(ctx context.Context, bankID, unitID string)
 	          JOIN ` + quoteIdent(s.schema) + `.entities e ON e.id = ue.entity_id
 	          WHERE ue.unit_id = $1::uuid AND e.bank_id = $2
 	          ORDER BY e.canonical_name ASC`
-	rows, err := s.db.QueryContext(ctx, query, unitID, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, unitID, bankID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +127,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	offsetParam := "$" + itoa(len(args)+2)
 	var total int
 	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.documents WHERE ` + filter
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return DocumentPage{}, err
 	}
 	listQuery := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
@@ -139,7 +139,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	              WHERE ` + filter + `
 	              ORDER BY created_at DESC, id ASC LIMIT ` + limitParam + ` OFFSET ` + offsetParam
 	listArgs := append(append([]any{}, args...), limit, query.Offset)
-	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
+	rows, err := s.reader().QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return DocumentPage{}, err
 	}
@@ -160,7 +160,7 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 	limit := clampLimit(query.Limit, 100)
 	filter := `bank_id = $1 AND ($2 = '' OR document_id = $2)`
 	var total int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+quoteIdent(s.schema)+`.chunks WHERE `+filter,
 		query.BankID, query.DocumentID).Scan(&total); err != nil {
 		return ChunkPage{}, err
@@ -170,7 +170,7 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 	              FROM ` + quoteIdent(s.schema) + `.chunks
 	              WHERE ` + filter + `
 	              ORDER BY document_id ASC, chunk_index ASC LIMIT $3 OFFSET $4`
-	rows, err := s.db.QueryContext(ctx, listQuery, query.BankID, query.DocumentID, limit, query.Offset)
+	rows, err := s.reader().QueryContext(ctx, listQuery, query.BankID, query.DocumentID, limit, query.Offset)
 	if err != nil {
 		return ChunkPage{}, err
 	}
@@ -191,7 +191,7 @@ func (s *PostgresStore) GetChunk(ctx context.Context, bankID, chunkID string) (C
 	query := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                 COALESCE(content_hash,''), created_at
 	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE bank_id = $1 AND chunk_id = $2`
-	chunk, err := scanChunkRow(s.db.QueryRowContext(ctx, query, bankID, chunkID))
+	chunk, err := scanChunkRow(s.reader().QueryRowContext(ctx, query, bankID, chunkID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Chunk{}, ErrChunkNotFound
@@ -209,7 +209,7 @@ func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount
 	              WHERE bank_id = $1 AND tags IS NOT NULL AND tags != '{}'
 	          ) AS expanded
 	          GROUP BY tag ORDER BY COUNT(*) DESC, tag ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 		where += fmt.Sprintf(" AND e.id = $%d::uuid", len(args))
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+from+` `+where, args...).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+from+` `+where, args...).Scan(&total); err != nil {
 		return EntityPage{}, err
 	}
 	pageArgs := append(append([]any{}, args...), limit, query.Offset)
@@ -280,7 +280,7 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 	                   COALESCE(e.metadata, '{}'::jsonb), e.first_seen, e.last_seen, ` + mentionExpr + `
 	            FROM ` + from + ` ` + where + `
 	            ORDER BY ` + orderExpr + ` LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
-	rows, err := s.db.QueryContext(ctx, listSQL, pageArgs...)
+	rows, err := s.reader().QueryContext(ctx, listSQL, pageArgs...)
 	if err != nil {
 		return EntityPage{}, err
 	}
@@ -348,7 +348,7 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	where := "WHERE " + strings.Join(conds, " AND ")
 
 	var total int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+qualified+`.memory_units `+where, args...).Scan(&total); err != nil {
 		return GraphData{}, err
 	}
@@ -358,7 +358,7 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	                     COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}')
 	              FROM ` + qualified + `.memory_units ` + where + `
 	              ORDER BY mentioned_at DESC NULLS LAST, id ASC LIMIT $` + itoa(len(args)+1)
-	rows, err := s.db.QueryContext(ctx, unitQuery, pageArgs...)
+	rows, err := s.reader().QueryContext(ctx, unitQuery, pageArgs...)
 	if err != nil {
 		return GraphData{}, err
 	}
@@ -394,10 +394,29 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 		return GraphData{}, err
 	}
 
+	// Entities are postings rather than columns, so the page's entities are
+	// fetched in one lookup instead of one query per node.
+	unitIDs := make([]string, 0, len(tableRows))
+	for _, row := range tableRows {
+		unitIDs = append(unitIDs, row.ID)
+	}
+	entityNames, err := s.UnitEntityNames(ctx, query.BankID, unitIDs)
+	if err != nil {
+		return GraphData{}, err
+	}
+	for i := range tableRows {
+		names, ok := entityNames[tableRows[i].ID]
+		if !ok {
+			continue
+		}
+		tableRows[i].Entities = strings.Join(names, ", ")
+		nodes[i].Entities = names
+	}
+
 	// An edge is kept only when both endpoints are inside the bounded node set.
 	edgeQuery := `SELECT bank_id, from_unit_id::text, to_unit_id::text, COALESCE(link_type,'')
 	              FROM ` + qualified + `.memory_links WHERE bank_id = $1`
-	edgeRows, err := s.db.QueryContext(ctx, edgeQuery, query.BankID)
+	edgeRows, err := s.reader().QueryContext(ctx, edgeQuery, query.BankID)
 	if err != nil {
 		return GraphData{}, err
 	}
@@ -473,7 +492,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 		WHERE e1.bank_id = $1 AND e2.bank_id = $1
 		ORDER BY p.w DESC, p.id1 ASC, p.id2 ASC
 		LIMIT $` + limitParam
-		rows, err = s.db.QueryContext(ctx, edgeQuery, args...)
+		rows, err = s.reader().QueryContext(ctx, edgeQuery, args...)
 	} else {
 		edgeQuery := `SELECT ec.entity_id_1::text, ec.entity_id_2::text, COALESCE(ec.cooccurrence_count,0),
 		                     e1.canonical_name, COALESCE(e1.mention_count,0),
@@ -484,7 +503,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 		              WHERE e1.bank_id = $1 AND e2.bank_id = $1 AND ec.cooccurrence_count >= $2
 		              ORDER BY ec.cooccurrence_count DESC, ec.entity_id_1 ASC, ec.entity_id_2 ASC
 		              LIMIT $3`
-		rows, err = s.db.QueryContext(ctx, edgeQuery, bankID, minCount, limit)
+		rows, err = s.reader().QueryContext(ctx, edgeQuery, bankID, minCount, limit)
 	}
 	if err != nil {
 		return EntityGraph{}, err

@@ -16,8 +16,13 @@ import (
 // identifiers grouped per item in item order.
 func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (RetainOutcome, error) {
 	// Extraction calls a model, so it runs before the write lock is taken: a
-	// slow model call must not block every other write to the store.
-	extracted, err := extractForItems(ctx, req)
+	// slow model call must not block every other write to the store. The
+	// causal-links switch is read under the lock first, so a concurrent
+	// SetTuning cannot race this read.
+	s.mu.RLock()
+	extractCausalLinks := s.tuning.ExtractCausalLinks
+	s.mu.RUnlock()
+	extracted, err := extractForItems(ctx, req, extractCausalLinks)
 	if err != nil {
 		return RetainOutcome{}, err
 	}
@@ -146,6 +151,10 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
 		return nil, err
 	}
+	// The item's mentions are clustered once, before any is scored, so two
+	// spellings of one name that appear in this same document become one entity
+	// rather than two. The tuning is already read under the write lock.
+	canonicalNames := intrabatchCanonicalNames(itemEntityMentions(contents), item.ResolveEntities, s.intrabatchMergeSimilarityLocked())
 	units := make([]string, 0, len(contents))
 	for _, content := range contents {
 		unit := content.unit
@@ -154,7 +163,7 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 		mentioned := make([]string, 0, len(content.entities))
 		seen := map[string]bool{}
 		for _, entity := range content.entities {
-			resolved := s.resolveEntityLocked(req.BankID, entity, item.ResolveEntities)
+			resolved := s.resolveEntityLocked(req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities)
 			if resolved.ID == "" {
 				continue
 			}
@@ -218,7 +227,7 @@ func (s *MemoryStore) semanticLinksLocked(bankID string, unitIDs []string) []Mem
 		candidates = append(candidates, unit)
 		added++
 	}
-	return semanticLinksFor(bankID, candidates)
+	return semanticLinksFor(bankID, candidates, s.tuning.SemanticLinkMinSimilarity)
 }
 
 // semanticNeighbourWindow bounds how many existing units a write compares
@@ -482,14 +491,33 @@ func (s *MemoryStore) exactEntityMatchLocked(bankID, name string) (Entity, bool)
 	return Entity{}, false
 }
 
+// intrabatchMergeSimilarityLocked is the pg_trgm similarity at or above which
+// two names in one extraction batch are merged before either is scored. It
+// reads the tuning, so the caller must hold the store lock.
+func (s *MemoryStore) intrabatchMergeSimilarityLocked() float64 {
+	if s.tuning.EntityIntrabatchMerge > 0 {
+		return s.tuning.EntityIntrabatchMerge
+	}
+	return DefaultEntityIntrabatchMergeSimilarity
+}
+
 // bestEntityMatchLocked finds the stored entity most similar to name, provided
 // it scores at or above the threshold. Ties break on the identifier so the
 // resolution is deterministic across runs.
 func (s *MemoryStore) bestEntityMatchLocked(bankID, name string) (Entity, bool) {
 	best := Entity{}
 	bestScore := 0.0
+	mergeFloor := s.tuning.EntityMergeMinSimilarity
+	if mergeFloor <= 0 {
+		mergeFloor = DefaultEntityMergeMinSimilarity
+	}
 	for id, stored := range s.entities {
 		if stored.BankID != bankID {
+			continue
+		}
+		// The merge floor is the reference's second trigram gate: a candidate
+		// sharing too few trigrams is dropped before it is scored.
+		if !entityMergeFloorPasses(name, stored.CanonicalName, mergeFloor) {
 			continue
 		}
 		score := entitySimilarity(stored.CanonicalName, name)

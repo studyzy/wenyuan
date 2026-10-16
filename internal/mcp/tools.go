@@ -39,6 +39,24 @@ var singleBankOmitted = map[string]bool{
 	"get_bank_stats": true,
 }
 
+// withInstructions appends the deployment's extra instructions to the retain
+// and recall descriptions, which is where the reference puts them: the two
+// tools whose behaviour the operator is steering.
+func withInstructions(defs []tool, instructions string) []tool {
+	if instructions == "" {
+		return defs
+	}
+	suffix := "\n\nAdditional instructions: " + instructions
+	out := make([]tool, 0, len(defs))
+	for _, def := range defs {
+		if def.Name == "retain" || def.Name == "recall" {
+			def.Description += suffix
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 // toolDefinitions is the roster the server advertises. A multi-bank server
 // exposes every tool with an optional bank_id argument; a single-bank server
 // (the reference's /mcp/{bank_id}) drops the bank-management tools and the

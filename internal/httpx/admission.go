@@ -20,6 +20,11 @@ type AdmissionRule struct {
 	Lane string
 	// Limit is how many requests under that suffix may be in flight together.
 	Limit int
+	// MaxWait is how long a request for this lane may wait for a slot before it
+	// is shed. Zero takes AdmissionConfig.MaxWait, which is what a lane with no
+	// configured wait uses; the reference sets a different wait per lane
+	// because a recall and a retain are not equally worth queuing for.
+	MaxWait time.Duration
 }
 
 // AdmissionConfig bounds the concurrency of the expensive operations, so a
@@ -63,7 +68,11 @@ func AdmissionMiddleware(cfg AdmissionConfig) Middleware {
 				if !hasSuffix(r.URL.Path, lane.rule.Suffix) {
 					continue
 				}
-				if !admit(w, r, lane, cfg.MaxWait, retryAfter) {
+				wait := lane.rule.MaxWait
+				if wait <= 0 {
+					wait = cfg.MaxWait
+				}
+				if !admit(w, r, lane, wait, retryAfter) {
 					return
 				}
 				defer func() { <-lane.slot }()

@@ -38,7 +38,7 @@ func (s *PostgresStore) cachedBankStats(ctx context.Context, bankID string) (Ban
 	query := `SELECT payload FROM ` + quoteIdent(s.schema) + `.bank_stats_cache
 	          WHERE bank_id = $1 AND computed_at > now() - make_interval(secs => $2::double precision)`
 	var payload []byte
-	if err := s.db.QueryRowContext(ctx, query, bankID, s.bankStatsCacheTTL.Seconds()).Scan(&payload); err != nil {
+	if err := s.reader().QueryRowContext(ctx, query, bankID, s.bankStatsCacheTTL.Seconds()).Scan(&payload); err != nil {
 		return BankStats{}, false
 	}
 	var stats BankStats
@@ -99,7 +99,7 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 	// crosses that with the link type.
 	stats.LinksByFactType = map[string]int{}
 	stats.LinksBreakdown = map[string]map[string]int{}
-	breakdownRows, err := s.db.QueryContext(ctx,
+	breakdownRows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(u.fact_type,''), COALESCE(l.link_type,''), COUNT(*)
 		 FROM `+qualified+`.memory_links l
 		 JOIN `+qualified+`.memory_units u ON u.id = l.from_unit_id
@@ -139,14 +139,14 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 		return BankStats{}, err
 	}
 	var lastWrite sql.NullTime
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT MAX(updated_at) FROM `+qualified+`.async_operations WHERE bank_id = $1`, bankID).Scan(&lastWrite); err != nil {
 		return BankStats{}, err
 	}
 	stats.LastMemoryWriteAt = nullTimePtr(lastWrite)
 
 	var lastConsolidated sql.NullTime
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT MAX(completed_at) FROM `+qualified+`.async_operations WHERE bank_id = $1 AND operation_type = $2 AND status = 'completed'`,
 		bankID, OperationTypeConsolidate).Scan(&lastConsolidated); err != nil {
 		return BankStats{}, err
@@ -172,7 +172,7 @@ func (s *PostgresStore) consolidationBacklog(ctx context.Context, bankID string)
 	              )
 	          FROM ` + quoteIdent(s.schema) + `.memory_units WHERE bank_id = $1`
 	var pending, failed int
-	if err := s.db.QueryRowContext(ctx, query, bankID).Scan(&pending, &failed); err != nil {
+	if err := s.reader().QueryRowContext(ctx, query, bankID).Scan(&pending, &failed); err != nil {
 		return 0, 0, err
 	}
 	return pending, failed, nil
@@ -198,7 +198,7 @@ func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, 
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1 AND ` + column + ` IS NOT NULL AND ` + column + ` >= $2
 	          GROUP BY bucket ORDER BY bucket ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, since)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, since)
 	if err != nil {
 		return Timeseries{}, err
 	}
@@ -267,13 +267,13 @@ func (s *PostgresStore) ListAuditLog(ctx context.Context, query AuditQuery) (Aud
 	args := []any{query.BankID, query.Action, query.Transport, query.StartDate, query.EndDate}
 	qualified := quoteIdent(s.schema)
 	var total int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+qualified+`.audit_log WHERE `+filter,
 		args...).Scan(&total); err != nil {
 		return AuditPage{}, err
 	}
 	limit := clampLimit(query.Limit, 50)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT id, action, transport, COALESCE(bank_id,''), started_at, ended_at,
 		        COALESCE(request, 'null'::jsonb), COALESCE(response, 'null'::jsonb),
 		        COALESCE(metadata, '{}'::jsonb)
@@ -308,7 +308,7 @@ func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, actio
 	qualified := quoteIdent(s.schema)
 	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR action = $2)`
 	var start sql.NullTime
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT MIN(started_at) FROM `+qualified+`.audit_log WHERE `+where,
 		bankID, action).Scan(&start); err != nil {
 		return AuditStats{}, err
@@ -316,7 +316,7 @@ func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, actio
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, action, COUNT(*)
 	          FROM ` + qualified + `.audit_log WHERE ` + where + `
 	          GROUP BY bucket, action ORDER BY bucket ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, action)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, action)
 	if err != nil {
 		return AuditStats{}, err
 	}
@@ -397,7 +397,7 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 	limit := clampLimit(query.Limit, 50)
 
 	var total int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+qualified+`.llm_requests WHERE `+where,
 		args...).Scan(&total); err != nil {
 		return LLMRequestPage{}, err
@@ -408,7 +408,7 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 		// counts and returns whole runs, most-recently-active first.
 		runKey := `COALESCE(trace_id, 'single:' || id::text)`
 		var runTotal int
-		if err := s.db.QueryRowContext(ctx,
+		if err := s.reader().QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM (SELECT 1 FROM `+qualified+`.llm_requests WHERE `+where+
 				` GROUP BY `+runKey+`) q`, args...).Scan(&runTotal); err != nil {
 			return LLMRequestPage{}, err
@@ -418,7 +418,7 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 		             GROUP BY ` + runKey + `
 		             ORDER BY run_end DESC, run_key ASC
 		             LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
-		keyRows, err := s.db.QueryContext(ctx, keyQuery, append(append([]any{}, args...), limit, query.Offset)...)
+		keyRows, err := s.reader().QueryContext(ctx, keyQuery, append(append([]any{}, args...), limit, query.Offset)...)
 		if err != nil {
 			return LLMRequestPage{}, err
 		}
@@ -442,7 +442,7 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 			rowQuery := `SELECT ` + llmRequestSelect + ` FROM ` + qualified + `.llm_requests
 			             WHERE ` + where + ` AND ` + runKey + ` = ANY($` + strconv.Itoa(len(args)+1) + `::text[])
 			             ORDER BY started_at DESC, id ASC`
-			rows, err := s.db.QueryContext(ctx, rowQuery, append(append([]any{}, args...), runKeys)...)
+			rows, err := s.reader().QueryContext(ctx, rowQuery, append(append([]any{}, args...), runKeys)...)
 			if err != nil {
 				return LLMRequestPage{}, err
 			}
@@ -461,7 +461,7 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 		return LLMRequestPage{Requests: requests, Total: runTotal, Limit: query.Limit, Offset: query.Offset}, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT `+llmRequestSelect+`
+	rows, err := s.reader().QueryContext(ctx, `SELECT `+llmRequestSelect+`
 		 FROM `+qualified+`.llm_requests WHERE `+where+`
 		 ORDER BY started_at DESC, id ASC LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2),
 		append(append([]any{}, args...), limit, query.Offset)...)
@@ -547,7 +547,7 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 	qualified := quoteIdent(s.schema)
 	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR operation = $2)`
 	var start sql.NullTime
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT MIN(started_at) FROM `+qualified+`.llm_requests WHERE `+where,
 		bankID, operation).Scan(&start); err != nil {
 		return LLMRequestStats{}, err
@@ -558,7 +558,7 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 	                 COALESCE(SUM(total_tokens),0)
 	          FROM ` + qualified + `.llm_requests WHERE ` + where + `
 	          GROUP BY bucket, status ORDER BY bucket ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, operation)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, operation)
 	if err != nil {
 		return LLMRequestStats{}, err
 	}
@@ -618,7 +618,7 @@ func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string
 	          FROM ` + qualified + `.memory_units
 	          WHERE bank_id = $1 AND fact_type = 'observation'
 	          GROUP BY scope ORDER BY scope ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return ObservationScopePage{}, err
 	}
@@ -675,7 +675,7 @@ func scanLLMRequest(row rowScanner) (LLMRequest, error) {
 // scalarInt runs a count query.
 func (s *PostgresStore) scalarInt(ctx context.Context, query string, args ...any) (int, error) {
 	var value int
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&value); err != nil {
+	if err := s.reader().QueryRowContext(ctx, query, args...).Scan(&value); err != nil {
 		return 0, err
 	}
 	return value, nil
@@ -683,7 +683,7 @@ func (s *PostgresStore) scalarInt(ctx context.Context, query string, args ...any
 
 // groupedInts runs a group-and-count query into a map.
 func (s *PostgresStore) groupedInts(ctx context.Context, query string, args ...any) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

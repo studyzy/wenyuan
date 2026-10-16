@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/provider/cacheaffinity"
 )
 
 // NameAnthropic is the provider name that selects this adapter.
@@ -96,18 +97,43 @@ func (c *Client) VerifyConnection(ctx context.Context) error {
 type messagesRequest struct {
 	Model       string          `json:"model"`
 	Messages    []messagesWire  `json:"messages"`
-	System      string          `json:"system,omitempty"`
+	System      []systemBlock   `json:"system,omitempty"`
 	MaxTokens   int             `json:"max_tokens"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	Tools       []toolWire      `json:"tools,omitempty"`
 	ToolChoice  *toolChoiceWire `json:"tool_choice,omitempty"`
 }
 
-// messagesWire is one conversation turn in the Messages API shape.
+// messagesWire is one conversation turn in the Messages API shape. Content is
+// the turn's plain text, or a block list when the turn carries the multi-turn
+// cache breakpoint.
 type messagesWire struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
+
+// systemBlock is one block of the top-level system prompt.
+type systemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+// contentBlock is one content block of a message.
+type contentBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+// cacheControl marks where a cacheable prefix ends.
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
+// ephemeralCacheControl returns the breakpoint marker this API accepts. A fresh
+// value is returned per marker so no request can mutate another's.
+func ephemeralCacheControl() *cacheControl { return &cacheControl{Type: "ephemeral"} }
 
 // toolWire declares one tool. For a structured-output call its input schema is
 // the caller's response schema.
@@ -150,9 +176,17 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 	body := messagesRequest{
 		Model:       c.Settings.Model,
 		Messages:    turns,
-		System:      system,
 		MaxTokens:   maxTokensFor(req.MaxTokens),
 		Temperature: req.Temperature,
+	}
+	if system != "" {
+		// Anthropic's prompt cache is a prefix match, so the one system block
+		// carries the marker that caches the tools and the system prompt
+		// together: both are stable per scope, and the reference reuses that
+		// prefix across every chunk of a retain and across reflect turns. A
+		// prefix below the model's minimum cacheable length is not cached and
+		// pays no write premium, so the marker is sent unconditionally.
+		body.System = cachedSystemBlocks(system)
 	}
 	// A structured-output call forces a single tool whose schema is the caller's
 	// response schema, which is how this API does constrained decoding.
@@ -170,8 +204,38 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 		// the model answering from its own knowledge with no evidence.
 		body.Tools = toWireTools(req.Tools)
 		body.ToolChoice = toWireToolChoice(req.ToolChoice)
+		// The tool loop resends the whole growing conversation each iteration,
+		// so this request's end marker becomes the next iteration's cache read
+		// point while the system marker above covers the stable prefix.
+		markLastMessageForCaching(body.Messages)
 	}
-	return c.call(ctx, body, req.ResponseSchema != nil)
+	// An OpenCode Go endpoint rejects a request that omits its session header,
+	// so the header rides every call that targets one, regardless of any cache
+	// mode. The id is derived from the caller's request, so it is the same id
+	// the request would carry through any other adapter.
+	return c.call(ctx, body, req.ResponseSchema != nil, cacheaffinity.OpenCodeSession(c.Settings.BaseURL, req.Messages))
+}
+
+// cachedSystemBlocks renders the system prompt as the single block this API
+// accepts, carrying the ephemeral cache breakpoint.
+func cachedSystemBlocks(system string) []systemBlock {
+	return []systemBlock{{Type: "text", Text: system, CacheControl: ephemeralCacheControl()}}
+}
+
+// markLastMessageForCaching adds a cache breakpoint to the conversation's final
+// content block, in place. A plain-text turn becomes a one-block list because
+// that is where the marker lives; an empty turn keeps its string form, since
+// this API rejects empty text blocks.
+func markLastMessageForCaching(messages []messagesWire) {
+	if len(messages) == 0 {
+		return
+	}
+	last := &messages[len(messages)-1]
+	text, ok := last.Content.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return
+	}
+	last.Content = []contentBlock{{Type: "text", Text: text, CacheControl: ephemeralCacheControl()}}
 }
 
 // toWireTools maps the boundary's tool definitions onto the Messages API
@@ -204,8 +268,10 @@ func toWireToolChoice(policy *provider.ToolSelectionPolicy) *toolChoiceWire {
 	}
 }
 
-// call sends one request, retrying transient failures with capped backoff.
-func (c *Client) call(ctx context.Context, body messagesRequest, structured bool) (provider.CompletionResult, error) {
+// call sends one request, retrying transient failures with capped backoff. The
+// per-request headers ride every attempt, so a retried call carries the same
+// session id as the first.
+func (c *Client) call(ctx context.Context, body messagesRequest, structured bool, headers map[string]string) (provider.CompletionResult, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return provider.CompletionResult{}, &provider.MalformedResponseError{Detail: "cannot encode request", Cause: err}
@@ -213,7 +279,7 @@ func (c *Client) call(ctx context.Context, body messagesRequest, structured bool
 	pol := c.Settings.Retry.Normalize()
 	var last error
 	for attempt := 0; ; attempt++ {
-		raw, err := c.attempt(ctx, encoded)
+		raw, err := c.attempt(ctx, encoded, headers)
 		if err == nil {
 			return decodeResult(raw, structured)
 		}

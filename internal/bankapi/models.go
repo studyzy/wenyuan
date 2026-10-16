@@ -204,17 +204,25 @@ func ToResponse(bank storage.Bank) BankResponse {
 	}
 }
 
-// ToListRow converts a stored bank into a list row, attaching the alias display
-// information resolved by the handler.
+// ToListRow converts a stored bank into a list row with the bank's stored
+// disposition and mission. A caller that resolved the bank's configuration
+// overlays it with ToListRowWithDisposition instead.
 func ToListRow(bank storage.Bank, displayAlias *string, matched []string) BankListRow {
+	disposition, mission := overlayDispositionMission(nil, bank)
+	return ToListRowWithDisposition(bank, displayAlias, matched, disposition, mission)
+}
+
+// ToListRowWithDisposition converts a stored bank into a list row with an
+// already-resolved disposition and mission.
+func ToListRowWithDisposition(bank storage.Bank, displayAlias *string, matched []string, disposition map[string]int, mission string) BankListRow {
 	if matched == nil {
 		matched = []string{}
 	}
 	return BankListRow{
 		BankID:         bank.BankID,
 		Name:           bank.Name,
-		Disposition:    dispositionOf(bank),
-		Mission:        bank.Mission,
+		Disposition:    dispositionFromMap(disposition),
+		Mission:        mission,
 		CreatedAt:      bank.CreatedAt,
 		UpdatedAt:      bank.UpdatedAt,
 		FactCount:      bank.FactCount,
@@ -226,7 +234,11 @@ func ToListRow(bank storage.Bank, displayAlias *string, matched []string) BankLi
 }
 
 func dispositionOf(bank storage.Bank) Disposition {
-	disposition := bank.NormalizedDisposition()
+	return dispositionFromMap(bank.NormalizedDisposition())
+}
+
+// dispositionFromMap renders a trait map as the public disposition.
+func dispositionFromMap(disposition map[string]int) Disposition {
 	return Disposition{
 		Skepticism: disposition[storage.DispositionKeySkepticism],
 		Literalism: disposition[storage.DispositionKeyLiteralism],

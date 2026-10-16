@@ -165,3 +165,58 @@ func TestReflectCitedEvidenceGate(t *testing.T) {
 		t.Fatal("the facts gate must populate cited facts")
 	}
 }
+
+// The internal recall the reflection loop reads through honours the
+// deployment's recall tuning: the fact-channel budget falls back to the
+// process default when the caller names none, and an explicit caller budget
+// wins over it.
+func TestReflectRetrievalHonoursInternalRecallTuning(t *testing.T) {
+	store := reflectTestStore(t)
+	tuning := DefaultTuning()
+	tuning.InternalRecallMaxFactTokens = 1
+	store.SetTuning(tuning)
+	store.SeedUnit(MemoryUnit{ID: "m1", BankID: "b1", Text: "a reasonably long fact", FactType: TypeWorld})
+
+	ctx := context.Background()
+	got, err := store.ReflectMemories(ctx, "b1", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a caller that names no budget must get the tuning budget, which caps this fact; got %d citations", len(got))
+	}
+
+	got, err = store.ReflectMemories(ctx, "b1", "", 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("an explicit caller budget must win over the tuning value; got %d citations", len(got))
+	}
+}
+
+// The store hands the model-driven runner the deployment's reflect
+// completion-token cap from its tuning, and leaves it at zero when unset.
+func TestReflectForwardsMaxCompletionTokens(t *testing.T) {
+	store := reflectTestStore(t)
+	tuning := DefaultTuning()
+	tuning.ReflectMaxCompletionTokens = 4096
+	store.SetTuning(tuning)
+	runner := &capturingReflectRunner{outcome: ReflectOutcome{Answer: "a"}}
+	if _, err := store.Reflect(context.Background(), ReflectQuery{BankID: "b1", Query: "q", Reflection: runner}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 || runner.req.MaxCompletionTokens != 4096 {
+		t.Fatalf("runner got %+v, want MaxCompletionTokens=4096", runner.req)
+	}
+
+	tuning.ReflectMaxCompletionTokens = 0
+	store.SetTuning(tuning)
+	unset := &capturingReflectRunner{outcome: ReflectOutcome{Answer: "a"}}
+	if _, err := store.Reflect(context.Background(), ReflectQuery{BankID: "b1", Query: "q", Reflection: unset}); err != nil {
+		t.Fatal(err)
+	}
+	if unset.req.MaxCompletionTokens != 0 {
+		t.Fatalf("an unset cap must leave the request at zero, got %d", unset.req.MaxCompletionTokens)
+	}
+}

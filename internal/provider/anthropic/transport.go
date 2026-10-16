@@ -19,7 +19,7 @@ const maxResponseBytes = 8 << 20 // 8 MiB
 
 // attempt issues one request and returns its body, mapping a non-success
 // status onto the boundary's failure class.
-func (c *Client) attempt(ctx context.Context, body []byte) ([]byte, error) {
+func (c *Client) attempt(ctx context.Context, body []byte, headers map[string]string) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
@@ -36,6 +36,13 @@ func (c *Client) attempt(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	for name, value := range c.Settings.Headers {
 		req.Header.Set(name, value)
+	}
+	// A per-request header is set only when the name is still unclaimed, so a
+	// value the operator configured always wins over a derived hint.
+	for name, value := range headers {
+		if req.Header.Get(name) == "" {
+			req.Header.Set(name, value)
+		}
 	}
 	resp, err := c.doer().Do(req)
 	if err != nil {

@@ -3,6 +3,8 @@ package fileparse
 import (
 	"path"
 	"strings"
+
+	"github.com/studyzy/wenyuan/internal/provider/vlm"
 )
 
 // extOf is the lowercased extension of a filename including its leading dot, or
@@ -54,23 +56,78 @@ var markitdownLocalExtensions = map[string]struct{}{
 // markitdownParser is the built-in local parser. It carries the reference's
 // "markitdown" name and role — the default member of the parser chain — but
 // reads the supported formats with standard-library code instead of the
-// markitdown Python package, which the Go build does not depend on.
-type markitdownParser struct{}
+// markitdown Python package, which the Go build does not depend on. When OCR is
+// configured it also transcribes the images a document embeds.
+type markitdownParser struct {
+	// ocr transcribes a document's images; nil when OCR is disabled.
+	ocr imageTranscriber
+}
 
-// NewMarkitdownParser returns the built-in local parser. It always succeeds:
-// the formats it cannot read are reported per file at convert time.
+// NewMarkitdownParser returns the built-in local parser with OCR disabled. It
+// always succeeds: the formats it cannot read are reported per file at convert
+// time.
 func NewMarkitdownParser() Parser { return markitdownParser{} }
+
+// newMarkitdownParser builds the parser, attaching the vision endpoint when OCR
+// is enabled. A configuration that cannot work fails here, at construction, so
+// a misconfigured OCR deployment refuses to start rather than parsing without
+// OCR.
+func newMarkitdownParser(cfg vlm.Config, enabled bool) (Parser, error) {
+	if !enabled {
+		return markitdownParser{}, nil
+	}
+	transcriber, err := vlm.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return markitdownParser{ocr: transcriber}, nil
+}
 
 func (markitdownParser) Name() string { return "markitdown" }
 
-func (markitdownParser) Supports(filename, _ string) bool {
-	_, ok := markitdownLocalExtensions[extOf(filename)]
-	return ok
+func (p markitdownParser) Supports(filename, _ string) bool {
+	ext := extOf(filename)
+	if _, ok := markitdownLocalExtensions[ext]; ok {
+		return true
+	}
+	if p.ocr != nil {
+		_, ok := ocrImageMediaTypes[ext]
+		return ok
+	}
+	return false
 }
 
 // Convert dispatches on the file extension to the standard-library converter
-// for that format.
+// for that format. With OCR configured it also transcribes the document's
+// embedded images — or, for an image file, the image itself — and appends the
+// transcription to the parsed markdown.
 func (p markitdownParser) Convert(data []byte, filename string) (string, error) {
+	ext := extOf(filename)
+	if mediaType, ok := ocrImageMediaTypes[ext]; ok {
+		if p.ocr == nil {
+			return "", unsupported(p.Name(), filename,
+				"image OCR is disabled; enable "+vlm.EnvOCREnabled+" and configure an OCR/vision endpoint, or choose an OCR-capable parser")
+		}
+		return p.transcribeImages([]vlm.Image{{Data: data, MediaType: mediaType}})
+	}
+	markdown, err := convertLocal(data, filename)
+	if err != nil {
+		return "", err
+	}
+	if p.ocr != nil {
+		if images := embeddedImages(ext, data); len(images) > 0 {
+			text, err := p.transcribeImages(images)
+			if err != nil {
+				return "", err
+			}
+			markdown = appendTranscription(markdown, text)
+		}
+	}
+	return markdown, nil
+}
+
+// convertLocal runs the standard-library converter for a document format.
+func convertLocal(data []byte, filename string) (string, error) {
 	switch extOf(filename) {
 	case ".pdf":
 		return pdfToMarkdown(data, filename)
@@ -91,7 +148,7 @@ func (p markitdownParser) Convert(data []byte, filename string) (string, error) 
 	case ".txt", ".text", ".md", ".markdown":
 		return string(data), nil
 	default:
-		return "", unsupported(p.Name(), filename,
+		return "", unsupported("markitdown", filename,
 			"the "+formatNameOf(filename)+" format needs a file parser this build does not ship")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +85,44 @@ func TestTenantAPIKeyAbsentLeavesRoutesOpen(t *testing.T) {
 	router.Service().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// The legacy MCP token replaces tenant auth for the MCP namespace, with the
+// reference's two refusals: a missing header and a wrong token are different
+// sentences.
+func TestMCPAuthTokenReplacesTenantAuthForMCP(t *testing.T) {
+	handler := TenantAuthMiddleware("tenant-key", false, "mcp-token")(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	missing := httptest.NewRecorder()
+	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	if missing.Code != http.StatusUnauthorized || !strings.Contains(missing.Body.String(), "Authorization header required") {
+		t.Fatalf("missing header: %d %s", missing.Code, missing.Body.String())
+	}
+
+	wrong := httptest.NewRecorder()
+	wrongReq := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	wrongReq.Header.Set("Authorization", "Bearer tenant-key")
+	handler.ServeHTTP(wrong, wrongReq)
+	if wrong.Code != http.StatusUnauthorized || !strings.Contains(wrong.Body.String(), "Invalid authentication token") {
+		t.Fatalf("wrong token: %d %s", wrong.Code, wrong.Body.String())
+	}
+
+	ok := httptest.NewRecorder()
+	okReq := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	okReq.Header.Set("Authorization", "Bearer mcp-token")
+	handler.ServeHTTP(ok, okReq)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("the legacy token was rejected: %d", ok.Code)
+	}
+
+	// The engine routes keep the tenant key: the legacy token covers MCP only.
+	engine := httptest.NewRecorder()
+	engineReq := httptest.NewRequest(http.MethodGet, PrefixDefaultV1+"/banks", nil)
+	engineReq.Header.Set("Authorization", "Bearer mcp-token")
+	handler.ServeHTTP(engine, engineReq)
+	if engine.Code != http.StatusUnauthorized {
+		t.Fatalf("the legacy token opened an engine route: %d", engine.Code)
 	}
 }

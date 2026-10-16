@@ -11,12 +11,23 @@ import (
 // exceed the model context budget, and forces a final synthesis at the
 // iteration bound.
 
-// reflectMaxIterations bounds the retrieval loop turns.
-const reflectMaxIterations = 4
+// reflectIterations is the loop's turn bound, and reflectContextBudget the
+// accumulated-evidence budget after which it synthesises. A store built without
+// tuning keeps the reference's defaults.
+func (t Tuning) reflectIterations() int {
+	if t.ReflectMaxIterations > 0 {
+		return t.ReflectMaxIterations
+	}
+	return DefaultReflectMaxIterations
+}
 
-// reflectContextBudget approximates the model context budget in tokens; once
-// accumulated evidence would cross it the loop forces synthesis.
-const reflectContextBudget = 4000
+// reflectContextBudget reads the loop's evidence budget.
+func (t Tuning) reflectContextBudget() int {
+	if t.ReflectContextBudget > 0 {
+		return t.ReflectContextBudget
+	}
+	return DefaultReflectContextBudget
+}
 
 // reflectAllToolNames lists every retrieval tool in stable order. A filter or
 // exclusion removes the matching entry so it is never invoked.
@@ -61,24 +72,25 @@ func (s *MemoryStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectO
 			}
 		}
 		return query.Reflection.Run(ctx, AgenticReflectRequest{
-			BankID:           query.BankID,
-			Question:         query.Query,
-			MaxTokens:        query.MaxTokens,
-			MaxIterations:    query.MaxIterations,
-			Budget:           query.Budget,
-			Retrieval:        s,
-			Directives:       directives,
-			ResponseSchema:   query.ResponseSchema,
-			BankName:         bankName,
-			Mission:          mission,
-			Disposition:      disposition,
-			AnswerAsDocument: query.AnswerAsDocument,
-			Tags:             query.Tags,
-			TagsMatch:        query.TagsMatch,
-			TagGroups:        query.TagGroups,
+			BankID:              query.BankID,
+			Question:            query.Query,
+			MaxTokens:           query.MaxTokens,
+			MaxCompletionTokens: s.tuning.ReflectMaxCompletionTokens,
+			MaxIterations:       query.MaxIterations,
+			Budget:              query.Budget,
+			Retrieval:           s,
+			Directives:          directives,
+			ResponseSchema:      query.ResponseSchema,
+			BankName:            bankName,
+			Mission:             mission,
+			Disposition:         disposition,
+			AnswerAsDocument:    query.AnswerAsDocument,
+			Tags:                query.Tags,
+			TagsMatch:           query.TagsMatch,
+			TagGroups:           query.TagGroups,
 		})
 	}
-	loop := newReflectLoop(query, s.rawFacts(query.BankID))
+	loop := newReflectLoop(query, s.rawFacts(query.BankID), s.tuning)
 	return loop.run(ctx)
 }
 
@@ -149,12 +161,16 @@ type reflectLoop struct {
 	callIDs      map[string]int
 	iteration    int
 	evidenceCost int
+	// iterations and contextBudget are the loop's bounds, resolved from the
+	// store's tuning when the loop was built.
+	iterations    int
+	contextBudget int
 }
 
 // newReflectLoop builds the loop state, applying the tool removals a filter or
 // exclusion imposes and resolving the directives that apply.
-func newReflectLoop(query ReflectQuery, facts []ReflectCitation) *reflectLoop {
-	loop := &reflectLoop{query: query, facts: facts}
+func newReflectLoop(query ReflectQuery, facts []ReflectCitation, tuning Tuning) *reflectLoop {
+	loop := &reflectLoop{query: query, facts: facts, iterations: tuning.reflectIterations(), contextBudget: tuning.reflectContextBudget()}
 	loop.available = availableReflectTools(query)
 	loop.models = selectMentalModels(query)
 	loop.directives = selectDirectives(query)
@@ -258,11 +274,11 @@ func directiveApplies(d ReflectDirective, requestTags map[string]bool, applyAll 
 
 // run executes the bounded loop and returns the outcome.
 func (l *reflectLoop) run(ctx context.Context) (ReflectOutcome, error) {
-	for l.iteration = 1; l.iteration <= reflectMaxIterations; l.iteration++ {
+	for l.iteration = 1; l.iteration <= l.iterations; l.iteration++ {
 		if err := ctx.Err(); err != nil {
 			return ReflectOutcome{}, err
 		}
-		if l.evidenceCost >= reflectContextBudget {
+		if l.evidenceCost >= l.contextBudget {
 			break
 		}
 		l.runTurn()

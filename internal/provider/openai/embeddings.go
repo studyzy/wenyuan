@@ -98,7 +98,7 @@ func (c *Client) embedBatch(ctx context.Context, texts []string, retry *provider
 		return nil, &provider.MalformedResponseError{Detail: "cannot encode embedding request", Cause: err}
 	}
 	policy := retryPolicyFor(retry, c.embeddingRetryPolicy())
-	raw, err := c.sendWithRetry(ctx, "embeddings", body, policy, provider.ScopeChat)
+	raw, err := c.sendWithRetry(ctx, "embeddings", body, policy, provider.ScopeChat, nil)
 	if err != nil {
 		return nil, err
 	}

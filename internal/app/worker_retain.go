@@ -36,7 +36,7 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	// the payload, so a model change reaches queued work without a schema
 	// change — and so a queued write extracts the same way the synchronous one
 	// would today.
-	req.Extraction = newFactExtractor(p.provider, p.correctionRetries)
+	req.Extraction = newFactExtractor(p.provider, p.extraction)
 	req.Embeddings = p.embeddings
 	outcome, err := p.store.RetainWrite(ctx, req)
 	if err != nil {

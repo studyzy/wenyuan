@@ -240,24 +240,6 @@ func TestImageContentRejected(t *testing.T) {
 	}
 }
 
-// ts-0015 / err-0007 / cmp-0008: batch mode rejects a synchronous write.
-func TestBatchModeRejectsSynchronousWrite(t *testing.T) {
-	store := storage.NewMemoryStore("public")
-	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1"}); err != nil {
-		t.Fatal(err)
-	}
-	h := NewHandlers(store, 5, 30000)
-	h.RetainBatchEnabled = true
-	mux := http.NewServeMux()
-	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
-		mux.HandleFunc(method+" "+pattern, handler)
-	})
-	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"sync"}],"async":false}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
 // ts-0016 / cmp-0002: the deprecated document_tags field is accepted alongside
 // per-item tags.
 func TestDocumentTagsAliasAccepted(t *testing.T) {

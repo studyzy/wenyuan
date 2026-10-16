@@ -82,3 +82,71 @@ func TestConsolidationRoundTrip(t *testing.T) {
 		t.Fatalf("observations after delete = %d, want 0", len(observations))
 	}
 }
+
+// The near-duplicate probe embeds the candidate text and returns the in-scope
+// observations carrying a stored vector, nearest first: the vector index's
+// cosine distance decides which twin a create is checked against.
+func TestPostgresObservationDuplicatesFindsNearestTwin(t *testing.T) {
+	store := postgresVectorStore(t)
+	pg, ok := store.(*PostgresStore)
+	if !ok {
+		t.Fatalf("expected a PostgresStore, got %T", store)
+	}
+	pg.SetObservationEmbedder(&mappingEmbedder{byText: map[string][]float32{
+		"alpha": unitVector(0),
+		"beta":  unitVector(1),
+	}})
+	ctx := context.Background()
+
+	alphaID, err := pg.CreateObservation(ctx, "vec-bank", "alpha", nil)
+	if err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+	if _, err := pg.CreateObservation(ctx, "vec-bank", "beta", nil); err != nil {
+		t.Fatalf("create beta: %v", err)
+	}
+
+	probe, candidates, embedded, err := pg.ObservationDuplicates(ctx, "vec-bank", nil, "alpha", 5)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !embedded {
+		t.Fatal("a store with an embedder must report embeddings available")
+	}
+	if len(probe) != EmbeddingDimensions || probe[0] != 1 {
+		t.Fatalf("probe = %v, want the embedding of the candidate text", probe)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %d, want both observations", len(candidates))
+	}
+	if candidates[0].ID != alphaID {
+		t.Fatalf("nearest = %q, want the identical twin %q", candidates[0].ID, alphaID)
+	}
+	if len(candidates[0].Embedding) != EmbeddingDimensions || candidates[0].Embedding[0] != 1 {
+		t.Fatalf("candidate embedding = %v, want the stored vector", candidates[0].Embedding)
+	}
+}
+
+// A store with no embedding model reports embeddings unavailable, so the caller
+// falls back to its text-similarity floor rather than losing dedup.
+func TestPostgresObservationDuplicatesWithoutEmbedder(t *testing.T) {
+	store := postgresVectorStore(t)
+	pg, ok := store.(*PostgresStore)
+	if !ok {
+		t.Fatalf("expected a PostgresStore, got %T", store)
+	}
+	ctx := context.Background()
+	if _, err := pg.CreateObservation(ctx, "vec-bank", "alpha", nil); err != nil {
+		t.Fatalf("create observation: %v", err)
+	}
+	_, candidates, embedded, err := pg.ObservationDuplicates(ctx, "vec-bank", nil, "alpha", 5)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if embedded {
+		t.Fatal("a store with no embedder must report embeddings unavailable")
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %+v, want none", candidates)
+	}
+}

@@ -9,25 +9,53 @@ import (
 	"time"
 )
 
+// RecallQueryTokenLimit reports the process-level cap on a recall query's
+// length in tokens, so the HTTP ingress can bound the query before it reaches
+// the embedder. A non-positive value means the cap is off.
+func (s *MemoryStore) RecallQueryTokenLimit() int { return s.tuning.MaxQueryTokens }
+
 // Recall runs the multi-arm retrieval and ranking pipeline for the in-process
 // store. It returns a single ranked list whose order is descending by combined
 // relevance, plus any requested side channels.
 func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, error) {
+	// Recalls are bounded at the engine level, separately from admission
+	// control: more than the configured number in flight wait for a permit
+	// rather than all running at once.
+	release, ok := s.acquireRecall(ctx)
+	if !ok {
+		return RecallResult{}, ctx.Err()
+	}
+	defer release()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.readErr != nil {
 		return RecallResult{}, s.readErr
 	}
+	q = s.tuning.withDefaultFloors(q)
+	// The query is bounded at ingress, before any arm reads it: a degenerate
+	// query would otherwise fan out into an unbounded OR tsquery. Truncation,
+	// not rejection, so an over-long query still answers.
+	q.Query = TruncateQueryToTokens(q.Query, s.tuning.MaxQueryTokens)
+	// The diagnostic accounting is off by default in a store built without the
+	// resolved tuning, and skipped for every recall a sampling rate passes
+	// over: an unsampled recall measures nothing.
+	phases := s.beginRecallPhases(q.BankID)
+	defer phases.finish()
+	stop := phases.measure("bank_lookup", false)
 	if _, ok := s.banks[q.BankID]; !ok {
+		stop()
 		return RecallResult{}, ErrBankNotFound
 	}
+	stop()
 	// Fuzzy tag leaves resolve against the bank's own vocabulary once, here,
 	// before any arm runs: every arm then filters on literal tags, so no caller
 	// can reach a divergent per-row reading by choosing an arm. The resolution
 	// caps are enforced during resolution, so an over-large scope fails fast
 	// with an error the caller maps to a 422 rather than grinding.
 	if usesFuzzyTagResolution(q.TagGroups) {
+		stop = phases.measure("fuzzy_tags", false)
 		resolved, err := ResolveRecallTagScope(q, s.tagVocabulary(q.BankID))
+		stop()
 		if err != nil {
 			return RecallResult{}, err
 		}
@@ -40,13 +68,28 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	// candidates survive ranking unless the caller named an explicit limit.
 	limit := q.Limit
 	if limit <= 0 {
-		limit = BudgetLimit(q.Budget)
+		limit = s.tuning.BudgetLimitForQuery(q)
 	}
 
-	// Per-arm best-first candidate lists.
-	armHits := map[string][]recallHit{}
+	// Per-arm best-first candidate lists. The arms are independent, so they run
+	// concurrently, bounded by the recall's connection budget; their results are
+	// then merged in arm order, so the fused pool does not depend on which arm
+	// finished first.
+	stop = phases.measure("parallel_retrieval", false)
+	armJobs := make([]recallArmJob, 0, len(arms))
 	for _, arm := range arms {
-		armHits[arm] = s.runArm(arm, q, types, term)
+		armJobs = append(armJobs, recallArmJob{name: arm, run: func(context.Context) ([]recallHit, error) {
+			return s.runArm(arm, q, types, term), nil
+		}})
+	}
+	armOutcomes, err := runRecallArms(ctx, newRecallArmFanOut(s.tuning.ConnectionBudget), phases, armJobs)
+	stop()
+	if err != nil {
+		return RecallResult{}, err
+	}
+	armHits := make(map[string][]recallHit, len(arms))
+	for index, arm := range arms {
+		armHits[arm] = armOutcomes[index].hits
 	}
 
 	armTraces := make([]recallArmTrace, 0, len(arms))
@@ -78,19 +121,35 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	}
 
 	// Fusion ordering (reciprocal rank fusion) then combined scoring.
+	stop = phases.measure("score", false)
 	ranked := scoreCandidates(ctx, candidates, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
 	ranked = preferObservations(ranked, q)
 	ranked = capCandidates(ranked, limit)
+	stop()
 
 	result := RecallResult{Matches: make([]RecallMatch, 0, len(ranked))}
 	for _, cand := range ranked {
 		result.Matches = append(result.Matches, cand.toMatch())
 	}
+	stop = phases.measure("hydrate_results", false)
 	s.enrichRecallAttachments(q.BankID, result.Matches)
+	stop()
+	stop = phases.measure("side_channels", false)
 	s.attachSideChannels(&result, q, types)
+	stop()
+	// The budgets are applied after the channels are derived, so a channel is
+	// capped by its own budget rather than by the fact budget. The caller-set
+	// values only ever narrow: zero means unbounded, which is what every caller
+	// that names no budget gets.
+	stop = phases.measure("token_filter", false)
+	result.Matches = capMatchesToTokens(result.Matches, q.MaxTokens)
+	result.ChunkEntries = capChunksToTokens(result.ChunkEntries, q.MaxChunkTokens)
+	stop()
+	stop = phases.measure("trace", false)
 	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
+	stop()
 	return result, nil
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/extraction"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
@@ -51,12 +52,33 @@ type factExtractor struct {
 // selection, yields a nil adapter, which storage reads as "store text
 // verbatim". correctionRetries bounds how many times a response whose facts came
 // back in a foreign shape is re-asked with the extractor's key correction.
-func newFactExtractor(p provider.Provider, correctionRetries int) storage.FactExtraction {
+// ExtractionSettings are the deployment's extraction knobs. They travel as one
+// value so the synchronous path, the queued path and the worker entrypoint
+// cannot drift apart.
+type ExtractionSettings struct {
+	// CorrectionRetries bounds how many times a response in a foreign shape is
+	// re-asked with the drift correction.
+	CorrectionRetries int
+	// MaxCompletionTokens caps the extraction call's generated tokens; zero
+	// leaves the parameter unset.
+	MaxCompletionTokens int
+}
+
+// ExtractionSettingsFrom resolves the settings a configuration carries.
+func ExtractionSettingsFrom(cfg config.Config) ExtractionSettings {
+	return ExtractionSettings{
+		CorrectionRetries:   cfg.Provider.RetainMaxRetries,
+		MaxCompletionTokens: cfg.RetainTuning.MaxCompletionTokens,
+	}
+}
+
+func newFactExtractor(p provider.Provider, settings ExtractionSettings) storage.FactExtraction {
 	extractor := extraction.New(p)
 	if !extractor.Available() {
 		return nil
 	}
-	extractor.MaxCorrectionRetries = correctionRetries
+	extractor.MaxCorrectionRetries = settings.CorrectionRetries
+	extractor.MaxCompletionTokens = settings.MaxCompletionTokens
 	return factExtractor{extractor: extractor}
 }
 
@@ -119,6 +141,7 @@ func extractionOptions(opts storage.FactExtractionOptions) extraction.Options {
 		OptionalFactDimensions: opts.OptionalFactDimensions,
 		Vocabulary:             opts.Vocabulary,
 		Attachments:            attachments,
+		ExtractCausalLinks:     opts.ExtractCausalLinks,
 	}
 }
 

@@ -77,6 +77,44 @@ func (s *stubRetrieval) ReflectExpand(_ context.Context, ids []string, _ string)
 }
 func (s *stubRetrieval) Directives(context.Context) []string { return s.directives }
 
+// ctxRecordingRetrieval records the context each Directives read was given, so
+// a test can prove the loop's request context reaches the directive reads.
+type ctxRecordingRetrieval struct {
+	*stubRetrieval
+	got []context.Context
+}
+
+func (c *ctxRecordingRetrieval) Directives(ctx context.Context) []string {
+	c.got = append(c.got, ctx)
+	return c.directives
+}
+
+// test-directive-reads-carry-the-loop-context: the loop serves a request, so
+// the directive reads inside message building and composition must run on the
+// loop's context — a client disconnect or read timeout has to cancel them too.
+func TestDirectiveReadsCarryLoopContext(t *testing.T) {
+	p := &scriptedProvider{name: "openai", script: turnScript(
+		toolCall(ToolRecall, map[string]any{"query": "anything"}),
+		toolCall(ToolDone, nil),
+	)}
+	retrieval := &ctxRecordingRetrieval{stubRetrieval: &stubRetrieval{
+		facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(retrieval.got) < 2 {
+		t.Fatalf("Directives called %d times, want at least 2 (prompt build and compose)", len(retrieval.got))
+	}
+	for i, got := range retrieval.got {
+		if got != ctx {
+			t.Fatalf("Directives call %d did not receive the loop's context", i)
+		}
+	}
+}
+
 // toolCall builds a scripted tool call.
 func toolCall(name string, args map[string]any) provider.ToolCall {
 	raw, _ := json.Marshal(args)
@@ -357,5 +395,48 @@ func TestToolSchemasMatchReference(t *testing.T) {
 	expand := string(toolParameters(ToolExpand))
 	if !strings.Contains(expand, "depth") {
 		t.Fatalf("expand schema must carry depth: %s", expand)
+	}
+}
+
+// The final synthesis completion carries the deployment's reflect
+// completion-token cap as its transport MaxTokens when one is set; with none
+// set it keeps the caller's visible-length target, which is what the loop sent
+// before the cap existed.
+func TestSynthesisCarriesReflectMaxCompletionTokens(t *testing.T) {
+	cases := []struct {
+		name    string
+		cap     int
+		maxTok  int
+		wantCap int
+	}{
+		{name: "cap set wins", cap: 512, maxTok: 128, wantCap: 512},
+		{name: "unset keeps visible-length target", cap: 0, maxTok: 128, wantCap: 128},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &scriptedProvider{name: "openai", script: turnScript(
+				toolCall(ToolRecall, map[string]any{"query": "q"}),
+			)}
+			retrieval := &stubRetrieval{facts: []Evidence{{Kind: "memory", ID: "m1", Text: "gathered"}}}
+			_, err := NewLoop(p, retrieval, Config{
+				Question:            "q",
+				MaxTokens:           tc.maxTok,
+				MaxCompletionTokens: tc.cap,
+			}).Run(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The synthesis call is the tool-less reflect-scope completion; the
+			// reasoning turns carry a tool list.
+			synthesis := -1
+			for _, req := range p.requests {
+				if req.Scope == "reflect" && len(req.Tools) == 0 {
+					synthesis = req.MaxTokens
+				}
+			}
+			if synthesis != tc.wantCap {
+				t.Fatalf("synthesis MaxTokens = %d, want %d", synthesis, tc.wantCap)
+			}
+		})
 	}
 }

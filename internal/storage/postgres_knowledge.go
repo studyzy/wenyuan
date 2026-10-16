@@ -31,7 +31,7 @@ func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) (
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1
 	          ORDER BY kp.parent_id NULLS FIRST, kp.sort_order, kp.name, kp.id`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) (
 func (s *PostgresStore) GetKnowledgeNode(ctx context.Context, bankID, nodeID string) (KnowledgeNode, error) {
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1 AND kp.id = $2`
-	node, err := scanKnowledgeNode(s.db.QueryRowContext(ctx, query, bankID, nodeID))
+	node, err := scanKnowledgeNode(s.reader().QueryRowContext(ctx, query, bankID, nodeID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return KnowledgeNode{}, ErrKnowledgeNodeNotFound
@@ -369,7 +369,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		            LIMIT $3`
 		args = []any{query.BankID, bm25Text, limit}
 	}
-	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	rows, err := s.reader().QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, err
 	}

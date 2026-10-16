@@ -70,7 +70,7 @@ func (s *PostgresStore) batchChildren(ctx context.Context, bankID, parentID stri
 	                 COALESCE(result_metadata,'{}'::jsonb)::text
 	          FROM ` + quoteIdent(s.schema) + `.async_operations
 	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2`
-	rows, err := s.db.QueryContext(ctx, query, bankID, parentID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, parentID)
 	if err != nil {
 		return nil, err
 	}

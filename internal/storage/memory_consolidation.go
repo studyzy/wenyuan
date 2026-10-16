@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// ConsolidationTuning reports the deployment's consolidation knobs, so the pass
+// reads the configured batch size and model-call budget off the store rather
+// than the package defaults.
+func (s *MemoryStore) ConsolidationTuning() ConsolidationTuning {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tuning.Consolidation
+}
+
 // ConsolidationFacts returns the newest raw facts of a bank that have not yet
 // been folded into an observation.
 func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, limit int) ([]ConsolidationFact, error) {
@@ -98,6 +107,68 @@ func sortNewestFirst[T any](entries []T, at func(T) *time.Time, tieBreak func(a,
 	})
 }
 
+// ObservationDuplicates embeds an observation text and returns that embedding
+// together with the in-scope observations that carry a stored embedding,
+// nearest first. It reports embedded=false when the deployment has no embedding
+// model, or when the text produced no vector, so the caller falls back to its
+// text-similarity floor rather than losing dedup.
+func (s *MemoryStore) ObservationDuplicates(ctx context.Context, bankID string, scope []string, text string, limit int) ([]float32, []ConsolidationObservation, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	probe := embedObservation(ctx, s.observationEmbedderRef(), text)
+	if len(probe) == 0 {
+		return nil, nil, false, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	scope = canonicalScope(scope)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.readErr != nil {
+		return nil, nil, false, s.readErr
+	}
+	type scored struct {
+		observation ConsolidationObservation
+		similarity  float64
+	}
+	var matches []scored
+	for _, unit := range s.units {
+		if unit.BankID != bankID || unit.FactType != TypeObservation || len(unit.Embedding) == 0 {
+			continue
+		}
+		if !sameScope(canonicalScope(unit.Tags), scope) {
+			continue
+		}
+		sources := append([]string(nil), s.observationSources[unit.ID]...)
+		matches = append(matches, scored{
+			observation: ConsolidationObservation{
+				ID: unit.ID, Text: unit.Text, SourceIDs: sources,
+				SourceTexts: s.sourceTextsLocked(sources),
+				ProofCount:  len(sources), MentionedAt: unit.MentionedAt,
+				Scope:     canonicalScope(unit.Tags),
+				Embedding: append([]float32(nil), unit.Embedding...),
+			},
+			similarity: cosineBetween(probe, unit.Embedding),
+		})
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].similarity != matches[j].similarity {
+			return matches[i].similarity > matches[j].similarity
+		}
+		return matches[i].observation.ID < matches[j].observation.ID
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	observations := make([]ConsolidationObservation, 0, len(matches))
+	for _, match := range matches {
+		observations = append(observations, match.observation)
+	}
+	return probe, observations, true, nil
+}
+
 // CreateObservation records a new observation resting on the given facts.
 func (s *MemoryStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -137,7 +208,9 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 	// said before it was reinforced stays readable. The tail is bounded so a
 	// frequently-reinforced observation does not grow forever.
 	if unit.Text != text {
-		s.recordObservationHistoryLocked(observationID, unit.Text)
+		if s.tuning.ObservationHistory {
+			s.recordObservationHistoryLocked(observationID, unit.Text)
+		}
 	}
 	unit.Text = text
 	now := time.Now().UTC()
@@ -162,8 +235,12 @@ func (s *MemoryStore) recordObservationHistoryLocked(observationID, text string)
 		Reason:    "consolidated",
 		Text:      text,
 	})
-	if len(s.memoryHistory[observationID]) > ObservationHistoryMaxEntries {
-		s.memoryHistory[observationID] = s.memoryHistory[observationID][len(s.memoryHistory[observationID])-ObservationHistoryMaxEntries:]
+	bound := s.tuning.ObservationHistoryMax
+	if bound <= 0 {
+		bound = ObservationHistoryMaxEntries
+	}
+	if len(s.memoryHistory[observationID]) > bound {
+		s.memoryHistory[observationID] = s.memoryHistory[observationID][len(s.memoryHistory[observationID])-bound:]
 	}
 }
 

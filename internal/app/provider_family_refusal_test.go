@@ -18,7 +18,6 @@ func TestProviderFamilyKeysRefusedAtStartup(t *testing.T) {
 		{config.EnvEmbeddingsLocalModel: "BAAI/bge-small-en-v1.5"},
 		{config.EnvLitellmAPIKey: "litellm-key"},
 		{config.EnvLLMGeminiServiceTier: "flex"},
-		{config.EnvSkipLLMVerification: "true"},
 	}
 	for _, env := range cases {
 		cfg := config.FromEnv(func(key string) (string, bool) {

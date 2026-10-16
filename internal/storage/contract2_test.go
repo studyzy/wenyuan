@@ -355,3 +355,61 @@ func TestCurationReplacesUnitEntities(t *testing.T) {
 		t.Fatalf("entities after clearing = %v, want none", got)
 	}
 }
+
+// A listing reports each unit's entities, and an observation that owns no
+// postings reports the entities of the memories it was consolidated from. The
+// data view renders both, so a listing that returned nothing for either would
+// show entity chips for some rows and not others.
+func TestUnitEntityNamesIncludesObservations(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+	outcome, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: bank,
+		Items: []RetainItem{{
+			Content:  "Ada Lovelace and Charles Babbage corresponded.",
+			Entities: []RetainEntity{{Text: "Ada Lovelace"}, {Text: "Charles Babbage"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := outcome.ItemUnitIDs[0][0]
+
+	// An observation built from that memory, with no postings of its own.
+	observation := MemoryUnit{
+		ID: newID(), BankID: bank, Text: "They worked together.",
+		FactType: TypeObservation, SourceMemoryIDs: []string{sourceID},
+	}
+	if _, err := store.UpsertUnit(ctx, observation); err != nil {
+		t.Fatalf("upsert observation: %v", err)
+	}
+
+	names, err := store.UnitEntityNames(ctx, bank, []string{sourceID, observation.ID, "unknown-unit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names[sourceID], []string{"Ada Lovelace", "Charles Babbage"}) {
+		t.Fatalf("source entities = %v", names[sourceID])
+	}
+	if !slices.Equal(names[observation.ID], []string{"Ada Lovelace", "Charles Babbage"}) {
+		t.Fatalf("inherited entities = %v, want the source memory's", names[observation.ID])
+	}
+	if _, present := names["unknown-unit"]; present {
+		t.Fatalf("an unknown unit must be absent from the map: %v", names)
+	}
+
+	// A unit that owns postings keeps them rather than inheriting.
+	if names[observation.ID][0] != "Ada Lovelace" {
+		t.Fatalf("inherited entities = %v", names[observation.ID])
+	}
+	if err := store.SetUnitEntities(ctx, bank, observation.ID, []string{"NASA"}, true); err != nil {
+		t.Fatalf("set observation entities: %v", err)
+	}
+	names, err = store.UnitEntityNames(ctx, bank, []string{observation.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names[observation.ID], []string{"NASA"}) {
+		t.Fatalf("observation entities after its own set = %v, want NASA only", names[observation.ID])
+	}
+}

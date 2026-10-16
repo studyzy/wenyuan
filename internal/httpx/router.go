@@ -21,9 +21,16 @@ type RouterOptions struct {
 	TenantAPIKey string
 	// TenantMCPAuthDisabled exempts the MCP namespace from authentication.
 	TenantMCPAuthDisabled bool
+	// MCPAuthToken is the legacy MCP credential. When set, the MCP namespace is
+	// authenticated with it instead of the tenant key, as the reference does.
+	MCPAuthToken string
 	// AccessLog writes one line per request when set. A nil writer leaves the
 	// access log off, which is the reference's default.
 	AccessLog io.Writer
+	// TrustedProxies makes the forwarded client headers believed, but only from
+	// these peers. It is empty unless the operator asked for proxy headers, and
+	// an empty list believes no caller.
+	TrustedProxies []string
 	// GzipMinSize is the compression floor; negative disables compression.
 	GzipMinSize int
 	// Metrics receives request counters when non-nil.
@@ -90,8 +97,9 @@ func (r *Router) Service() http.Handler {
 	resolveEndpoint := newEndpointResolver(r.routePatterns)
 	chain := Chain(
 		r.mux,
+		ProxyHeadersMiddleware(r.options.TrustedProxies),
 		BasePathMiddleware(r.options.BasePath),
-		TenantAPIKeyMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled),
+		TenantAuthMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled, r.options.MCPAuthToken),
 		AccessLogMiddleware(r.options.AccessLog),
 		RouteFallbackMiddleware(),
 		DisconnectCancelMiddleware(),

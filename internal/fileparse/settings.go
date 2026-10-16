@@ -1,16 +1,26 @@
 package fileparse
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/studyzy/wenyuan/internal/provider/vlm"
 )
 
 // The environment keys this subsystem reads. They are the reference's own
 // names, spelled identically so a copied deployment configuration is honoured.
+// The OCR keys are owned by the vision adapter that consumes them, so the
+// setting a validation error names is the key the adapter resolves.
 const (
 	EnvFileParser                     = "HINDSIGHT_API_FILE_PARSER"
 	EnvFileParserAllowlist            = "HINDSIGHT_API_FILE_PARSER_ALLOWLIST"
-	EnvFileParserMarkitdownOCREnabled = "HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_ENABLED"
+	EnvFileParserMarkitdownOCREnabled = vlm.EnvOCREnabled
+	EnvFileParserMarkitdownOCRAPIKey  = vlm.EnvOCRAPIKey
+	EnvFileParserMarkitdownOCRBaseURL = vlm.EnvOCRBaseURL
+	EnvFileParserMarkitdownOCRModel   = vlm.EnvOCRModel
+	EnvFileParserMarkitdownOCRPrompt  = vlm.EnvOCRPrompt
+	EnvFileParserMarkitdownOCRHeaders = vlm.EnvOCRHeaders
 	EnvFileParserIrisToken            = "HINDSIGHT_API_FILE_PARSER_IRIS_TOKEN"
 	EnvFileParserIrisOrgID            = "HINDSIGHT_API_FILE_PARSER_IRIS_ORG_ID"
 	EnvFileParserLlamaParseAPIKey     = "HINDSIGHT_API_FILE_PARSER_LLAMA_PARSE_API_KEY"
@@ -47,10 +57,21 @@ type Settings struct {
 	// DeleteAfterRetain drops an upload's stored bytes once it has been
 	// converted and retained, keeping only the retained text.
 	DeleteAfterRetain bool
-	// OCREnabled records the reference's markitdown OCR toggle. This build has
-	// no image OCR, so the value is carried but the capability is absent; an
-	// image upload is handled as an attachment by the file route instead.
+	// OCREnabled turns on the markitdown parser's image transcription: with it
+	// on, a document's embedded images are handed to the vision endpoint and
+	// their transcription joins the parsed markdown, and an image file is
+	// transcribed in place of being refused.
 	OCREnabled bool
+	// OCRAPIKey, OCRBaseURL and OCRModel configure the OpenAI-compatible vision
+	// endpoint. All three are required when OCR is enabled.
+	OCRAPIKey  string
+	OCRBaseURL string
+	OCRModel   string
+	// OCRPrompt is the transcription instruction; empty applies the adapter's
+	// default prompt.
+	OCRPrompt string
+	// OCRHeaders are extra request headers sent to the vision endpoint.
+	OCRHeaders map[string]string
 }
 
 // FromEnv resolves the settings from the environment, using the supplied lookup
@@ -66,6 +87,11 @@ func FromEnv(lookup func(string) string) Settings {
 		MaxBatchBytes:     int64(intFromEnv(lookup, EnvFileConversionMaxBatchSizeMB, defaultMaxBatchSizeMB)) << 20,
 		DeleteAfterRetain: boolFromEnv(lookup, EnvFileDeleteAfterRetain, defaultDeleteAfterRetain),
 		OCREnabled:        boolFromEnv(lookup, EnvFileParserMarkitdownOCREnabled, defaultMarkitdownOCREnabled),
+		OCRAPIKey:         strings.TrimSpace(lookup(EnvFileParserMarkitdownOCRAPIKey)),
+		OCRBaseURL:        strings.TrimSpace(lookup(EnvFileParserMarkitdownOCRBaseURL)),
+		OCRModel:          strings.TrimSpace(lookup(EnvFileParserMarkitdownOCRModel)),
+		OCRPrompt:         lookup(EnvFileParserMarkitdownOCRPrompt),
+		OCRHeaders:        parseHeaderMap(lookup(EnvFileParserMarkitdownOCRHeaders)),
 	}
 	if len(settings.Chain) == 0 {
 		settings.Chain = []string{defaultParserChain}
@@ -74,17 +100,54 @@ func FromEnv(lookup func(string) string) Settings {
 }
 
 // Registry builds the parser registry for these settings: the local parser
-// always, and each remote parser whose credentials are present.
-func (s Settings) Registry() *Registry {
+// always, and each remote parser whose credentials are present. A configured
+// OCR endpoint that cannot work (enabled without a base URL, key or model)
+// fails construction here, at startup, rather than at the first image a user
+// uploads.
+func (s Settings) Registry() (*Registry, error) {
 	registry := NewRegistry()
-	registry.Register(NewMarkitdownParser())
+	parser, err := newMarkitdownParser(vlm.Config{
+		BaseURL: s.OCRBaseURL,
+		APIKey:  s.OCRAPIKey,
+		Model:   s.OCRModel,
+		Prompt:  s.OCRPrompt,
+		Headers: s.OCRHeaders,
+	}, s.OCREnabled)
+	if err != nil {
+		return nil, err
+	}
+	registry.Register(parser)
 	if s.IrisToken != "" && s.IrisOrgID != "" {
 		registry.Register(NewIrisParser(s.IrisToken, s.IrisOrgID))
 	}
 	if s.LlamaParseAPIKey != "" {
 		registry.Register(NewLlamaParseParser(s.LlamaParseAPIKey))
 	}
-	return registry
+	return registry, nil
+}
+
+// parseHeaderMap reads a JSON object of string headers, which is how the
+// reference carries the OCR default-headers setting through the environment. A
+// value that is not a JSON object resolves to no headers, matching the
+// reference's fallback.
+func parseHeaderMap(raw string) map[string]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || parsed == nil {
+		return nil
+	}
+	out := make(map[string]string, len(parsed))
+	for name, value := range parsed {
+		if text, ok := value.(string); ok {
+			out[name] = text
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // parseList splits a comma-separated setting into its non-empty trimmed tokens.

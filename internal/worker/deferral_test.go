@@ -106,3 +106,120 @@ func TestStoreWithoutRetryResultCapabilityStillDefers(t *testing.T) {
 		t.Fatalf("a store without the capability must not record metadata: %+v", after.ResultMetadata)
 	}
 }
+
+// test-backpressure-defer-seconds: a task the store shed under backpressure is
+// held for the configured deferral interval, not for the retry backoff — the
+// delay is how long the store needs, not how many attempts the work has spent.
+func TestBackpressureDeferralUsesConfiguredDelay(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return storage.ErrWritesUnavailable
+	}), Config{Logger: quietLogger(), Lease: time.Hour, BackpressureDefer: 90 * time.Second})
+	before := time.Now().UTC()
+	consumer.handle(ctx, op)
+
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != storage.StatusPending || after.NextRetryAt == nil {
+		t.Fatalf("a shed task must be rescheduled: %+v", after)
+	}
+	if delay := after.NextRetryAt.Sub(before); delay < 85*time.Second || delay > 95*time.Second {
+		t.Fatalf("backpressure deferral = %v, want the configured 90s", delay)
+	}
+}
+
+// An unset deferral interval falls back to the reference's default, so a shed
+// task is not retried on the failure ladder's cadence.
+func TestBackpressureDeferralDefaultsToReferenceInterval(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return storage.ErrWritesUnavailable
+	}), Config{Logger: quietLogger(), Lease: time.Hour})
+	before := time.Now().UTC()
+	consumer.handle(ctx, op)
+
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NextRetryAt == nil {
+		t.Fatalf("a shed task must be rescheduled: %+v", after)
+	}
+	if delay := after.NextRetryAt.Sub(before); delay < DefaultBackpressureDefer-time.Second || delay > DefaultBackpressureDefer+time.Second {
+		t.Fatalf("default backpressure deferral = %v, want %v", delay, DefaultBackpressureDefer)
+	}
+}
+
+// A deferral that named its own delay keeps it: a webhook's backoff ladder is
+// not overridden by the backpressure interval.
+func TestExplicitDeferralDelayWinsOverBackpressureInterval(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return DeferAt(5*time.Second, errors.New("try later"))
+	}), Config{Logger: quietLogger(), Lease: time.Hour, BackpressureDefer: 90 * time.Second})
+	before := time.Now().UTC()
+	consumer.handle(ctx, op)
+
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NextRetryAt == nil {
+		t.Fatalf("the deferral must still be scheduled: %+v", after)
+	}
+	if delay := after.NextRetryAt.Sub(before); delay < 4*time.Second || delay > 6*time.Second {
+		t.Fatalf("explicit deferral = %v, want the named 5s", delay)
+	}
+}
+
+// A deferral that is not backpressure — a provider rate limit, say — keeps the
+// ordinary backoff: the configured interval is specific to a store that shed
+// load.
+func TestNonBackpressureDeferralKeepsBackoff(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return Defer(errors.New("provider rate limited"))
+	}), Config{
+		Logger: quietLogger(), Lease: time.Hour, BackpressureDefer: 90 * time.Second,
+		InitialBackoff: 3 * time.Second, MaxBackoff: time.Minute,
+	})
+	before := time.Now().UTC()
+	consumer.handle(ctx, op)
+
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NextRetryAt == nil {
+		t.Fatalf("the deferral must still be scheduled: %+v", after)
+	}
+	if delay := after.NextRetryAt.Sub(before); delay < 2*time.Second || delay > 4*time.Second {
+		t.Fatalf("non-backpressure deferral = %v, want the 3s backoff", delay)
+	}
+}

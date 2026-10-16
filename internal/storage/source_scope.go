@@ -47,7 +47,7 @@ func (s *PostgresStore) visibleDocumentIDs(ctx context.Context, bankID string, d
 		}
 		return visible, nil
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT id, COALESCE(tags, '{}') FROM `+quoteIdent(s.schema)+`.documents
 		 WHERE bank_id = $1 AND id = ANY($2::text[])`, bankID, wanted)
 	if err != nil {

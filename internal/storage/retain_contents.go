@@ -6,7 +6,376 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
+
+// maxIntrabatchNames bounds how many distinct names one item's in-batch merge
+// compares. Past it the quadratic comparison is skipped entirely rather than
+// truncated, because a half-merged batch is a worse answer than a document
+// whose same-batch variants simply stay separate — the reference makes the same
+// call at the same cap.
+const maxIntrabatchNames = 250
+
+// minTokenSimilarity is the near-miss ratio at or above which two words of a
+// multi-word name are considered the same word. It is the reference's bar for
+// its token gate.
+const minTokenSimilarity = 0.6
+
+// itemEntityMentions returns every entity the item's units mention, in unit
+// order. That set is the "batch" the in-batch merge clusters: one extraction
+// pass over one document, which is the granularity the reference merges at, so
+// two spellings of one name that appear in the same document collapse before
+// either is scored against the stored registry.
+func itemEntityMentions(contents []itemContent) []RetainEntity {
+	mentions := make([]RetainEntity, 0)
+	for _, content := range contents {
+		mentions = append(mentions, content.entities...)
+	}
+	return mentions
+}
+
+// intrabatchCanonicalNames maps each of the batch's entity names onto the
+// spelling its in-batch cluster shares.
+//
+// Two names whose pg_trgm similarity meets the threshold — and which agree word
+// by word — are merged before either is scored against the stored registry, so
+// a document that names "McDonald's" and "McDonalds" creates one entity rather
+// than two. The key is the lowercased match key (whitespace collapsed), the
+// value a representative original-case spelling, so the caller can look a
+// mention up uniformly.
+//
+// Names the caller wrote literally (resolution off) are excluded, matching the
+// reference: a caller who listed two names as two gets two entities. The
+// reference also excludes label entities, which this build does not distinguish
+// — a label is stored through the same path as a named entity, so it can take
+// part in the merge here.
+//
+// A threshold at or below zero disables the pass, and so does a batch of fewer
+// than two names or more than maxIntrabatchNames of them. The canonical pick
+// mirrors the reference: most mentions, then shortest spelling, then
+// lexicographically smallest, which prefers the plainest form deterministically.
+func intrabatchCanonicalNames(entities []RetainEntity, resolve bool, threshold float64) map[string]string {
+	if !resolve || threshold <= 0 {
+		return nil
+	}
+	// repByKey is the first spelling seen for a lowercased key; countByKey is
+	// how many mentions carry it, which the canonical pick weighs.
+	repByKey := map[string]string{}
+	countByKey := map[string]int{}
+	order := make([]string, 0, len(entities))
+	for _, entity := range entities {
+		key := entityMatchKey(entity.Text)
+		if key == "" {
+			continue
+		}
+		lower := strings.ToLower(key)
+		if _, seen := repByKey[lower]; !seen {
+			repByKey[lower] = key
+			order = append(order, lower)
+		}
+		countByKey[lower]++
+	}
+	if len(order) < 2 || len(order) > maxIntrabatchNames {
+		return nil
+	}
+
+	parent := make(map[string]string, len(order))
+	for _, key := range order {
+		parent[key] = key
+	}
+	find := func(key string) string {
+		for parent[key] != key {
+			parent[key] = parent[parent[key]]
+			key = parent[key]
+		}
+		return key
+	}
+	union := func(a, b string) {
+		if ra, rb := find(a), find(b); ra != rb {
+			parent[ra] = rb
+		}
+	}
+	for i := range order {
+		for j := i + 1; j < len(order); j++ {
+			a, b := repByKey[order[i]], repByKey[order[j]]
+			if entityNameTrigramSimilarity(a, b) < threshold {
+				continue
+			}
+			// Trigram similarity alone lets one long shared word drown out a
+			// completely different short one, so a similar pair must also agree
+			// word by word.
+			if !entityTokensAreCompatible(a, b) {
+				continue
+			}
+			union(order[i], order[j])
+		}
+	}
+
+	clusters := map[string][]string{}
+	for _, key := range order {
+		root := find(key)
+		clusters[root] = append(clusters[root], key)
+	}
+	canonical := make(map[string]string, len(order))
+	for _, members := range clusters {
+		chosen := members[0]
+		for _, member := range members[1:] {
+			if betterIntrabatchCanonical(member, chosen, repByKey, countByKey) {
+				chosen = member
+			}
+		}
+		for _, member := range members {
+			canonical[member] = repByKey[chosen]
+		}
+	}
+	return canonical
+}
+
+// betterIntrabatchCanonical reports whether candidate should be the cluster's
+// canonical spelling rather than current: more mentions wins, then the shorter
+// spelling, then the lexicographically smaller one.
+func betterIntrabatchCanonical(candidate, current string, repByKey map[string]string, countByKey map[string]int) bool {
+	if countByKey[candidate] != countByKey[current] {
+		return countByKey[candidate] > countByKey[current]
+	}
+	if len(repByKey[candidate]) != len(repByKey[current]) {
+		return len(repByKey[candidate]) < len(repByKey[current])
+	}
+	return repByKey[candidate] < repByKey[current]
+}
+
+// applyIntrabatchCanonical rewrites an entity's name to its cluster's canonical
+// spelling when the batch merged it with a near-identical name, and leaves it
+// alone otherwise.
+func applyIntrabatchCanonical(entity RetainEntity, canonical map[string]string) RetainEntity {
+	if len(canonical) == 0 {
+		return entity
+	}
+	key := entityMatchKey(entity.Text)
+	if key == "" {
+		return entity
+	}
+	if name, ok := canonical[strings.ToLower(key)]; ok {
+		entity.Text = name
+	}
+	return entity
+}
+
+// entityNameTrigramSimilarity is the Jaccard index of two names' pg_trgm
+// trigram sets.
+//
+// Distinct from the package's whole-string trigramJaccard: pg_trgm builds a
+// name's trigrams per word (each word padded with two leading and one trailing
+// blank), so "McDonald's" and "McDonalds" share nearly every gram, while the
+// whole-string measure spends its grams on the spaces between words. The merge
+// cutoff the reference calibrates is expressed against pg_trgm, so this measure
+// is the one that transfers it.
+func entityNameTrigramSimilarity(a, b string) float64 {
+	setA, setB := entityNameTrigrams(a), entityNameTrigrams(b)
+	if len(setA) == 0 || len(setB) == 0 {
+		return 0
+	}
+	intersection := 0
+	for gram := range setA {
+		if setB[gram] {
+			intersection++
+		}
+	}
+	union := len(setA) + len(setB) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// entityNameTrigrams returns the trigram set of a name the way PostgreSQL
+// pg_trgm generates it: every alphanumeric word lowercased and padded with two
+// leading and one trailing blank, then every three-character window.
+func entityNameTrigrams(name string) map[string]bool {
+	out := map[string]bool{}
+	for _, word := range entityNameWords(name) {
+		padded := []rune("  " + word + " ")
+		for i := range len(padded) - 2 {
+			out[string(padded[i:i+3])] = true
+		}
+	}
+	return out
+}
+
+// entityNameWords returns the maximal runs of letters and digits in a name,
+// lowercased. That is pg_trgm's word definition, where underscore and every
+// other non-alphanumeric is a separator.
+func entityNameWords(name string) []string {
+	words := make([]string, 0)
+	var current []rune
+	flush := func() {
+		if len(current) > 0 {
+			words = append(words, string(current))
+			current = current[:0]
+		}
+	}
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return words
+}
+
+// entityNumbers returns the numeric runs a name carries, normalized the way the
+// reference does: a leading zero run is stripped from the integer part and an
+// all-zero fractional part is dropped, so "01" and "1" are one number while
+// "3.10" stays distinct from "3.1".
+func entityNumbers(name string) map[string]bool {
+	out := map[string]bool{}
+	for _, run := range digitRuns(name) {
+		out[normalizeNumber(run)] = true
+	}
+	return out
+}
+
+// digitRuns returns the maximal runs of digits, optionally with dotted groups,
+// in a name ("UA0123" yields "0123", "4.0" yields "4.0").
+func digitRuns(name string) []string {
+	runs := make([]string, 0)
+	runes := []rune(name)
+	for i := 0; i < len(runes); {
+		if !unicode.IsDigit(runes[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(runes) && unicode.IsDigit(runes[i]) {
+			i++
+		}
+		for i+1 < len(runes) && runes[i] == '.' && unicode.IsDigit(runes[i+1]) {
+			i++
+			for i < len(runes) && unicode.IsDigit(runes[i]) {
+				i++
+			}
+		}
+		runs = append(runs, string(runes[start:i]))
+	}
+	return runs
+}
+
+// normalizeNumber strips a leading zero run from a number's integer part and
+// drops a trailing all-zero fractional part.
+func normalizeNumber(run string) string {
+	parts := strings.Split(run, ".")
+	parts[0] = strings.TrimLeft(parts[0], "0")
+	if parts[0] == "" {
+		parts[0] = "0"
+	}
+	if len(parts) == 2 && strings.Trim(parts[1], "0") == "" {
+		parts = parts[:1]
+	}
+	return strings.Join(parts, ".")
+}
+
+// entityTokensAreCompatible reports whether two multi-word names agree word by
+// word.
+//
+// Whole-name similarity lets one long shared word drown out a completely
+// different short one, and "Dr John Richardson"/"Dr Jane Richardson" clears the
+// in-batch trigram bar. Every word of the shorter name has to find a counterpart
+// in the longer one. Single-word names are exempt, because with one token the
+// whole-name check is the token check. Two names that each carry a number the
+// other lacks are two different things even so, which is what keeps "Room 101"
+// and "Room 102" apart; a subset number ("Boeing 737 MAX" / "Boeing 737 MAX 8")
+// is not such a mismatch.
+func entityTokensAreCompatible(a, b string) bool {
+	numbersA, numbersB := entityNumbers(a), entityNumbers(b)
+	if hasNumberOutside(numbersA, numbersB) && hasNumberOutside(numbersB, numbersA) {
+		return false
+	}
+	wordsA, wordsB := entityNameWords(a), entityNameWords(b)
+	if len(wordsA) < 2 && len(wordsB) < 2 {
+		return true
+	}
+	short, rest := wordsA, wordsB
+	if len(wordsA) > len(wordsB) {
+		short, rest = wordsB, wordsA
+	}
+	for _, word := range short {
+		matched := false
+		for _, other := range rest {
+			if entityTokensMatch(word, other) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// hasNumberOutside reports whether any of the first set's numbers is absent from
+// the second.
+func hasNumberOutside(numbers, other map[string]bool) bool {
+	for number := range numbers {
+		if !other[number] {
+			return true
+		}
+	}
+	return false
+}
+
+// entityTokensMatch reports whether two words are plausibly the same word:
+// equal, one an abbreviation of the other, or a near-miss.
+func entityTokensMatch(a, b string) bool {
+	if a == b || strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
+		return true
+	}
+	return entitySequenceRatio(a, b) >= minTokenSimilarity
+}
+
+// entitySequenceRatio is the Ratcliff-Obershelp similarity the reference's
+// token gate uses: twice the matched characters over the two lengths, where the
+// match is found by repeatedly taking the longest common contiguous block.
+func entitySequenceRatio(a, b string) float64 {
+	runesA, runesB := []rune(a), []rune(b)
+	total := len(runesA) + len(runesB)
+	if total == 0 {
+		return 1
+	}
+	return 2 * float64(entityMatchingChars(runesA, runesB)) / float64(total)
+}
+
+// entityMatchingChars counts the characters Ratcliff-Obershelp pairs between
+// two rune slices: the longest common contiguous block, plus the same recursion
+// on the parts before and after it.
+func entityMatchingChars(a, b []rune) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	bestLength, bestI, bestJ := 0, 0, 0
+	previous := make([]int, len(b)+1)
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		for j := 1; j <= len(b); j++ {
+			if a[i-1] != b[j-1] {
+				continue
+			}
+			current[j] = previous[j-1] + 1
+			if current[j] > bestLength {
+				bestLength, bestI, bestJ = current[j], i-current[j], j-current[j]
+			}
+		}
+		previous = current
+	}
+	if bestLength == 0 {
+		return 0
+	}
+	return bestLength +
+		entityMatchingChars(a[:bestI], b[:bestJ]) +
+		entityMatchingChars(a[bestI+bestLength:], b[bestJ+bestLength:])
+}
 
 // joinDocumentParts is the one definition of how a document's content parts
 // become its stored body: two JSON arrays merge element-wise, so a conversation
@@ -401,15 +770,10 @@ func linkTuplesFor(bankID string, unitIDs []string) []MemoryLink {
 	return links
 }
 
-// SemanticLinkMinSimilarity is the cosine floor above which two units are
-// linked as semantically related. It mirrors the reference's semantic link
-// threshold.
-const SemanticLinkMinSimilarity = 0.75
-
 // semanticLinksFor returns the semantic links joining each unit to the units
 // whose embedding is within the similarity floor, capped at semanticLinkFanOut
 // per unit.
-func semanticLinksFor(bankID string, units []MemoryUnit) []MemoryLink {
+func semanticLinksFor(bankID string, units []MemoryUnit, minSimilarity float64) []MemoryLink {
 	const fanOut = 5
 	links := make([]MemoryLink, 0)
 	for i := range units {
@@ -426,7 +790,7 @@ func semanticLinksFor(bankID string, units []MemoryUnit) []MemoryLink {
 				continue
 			}
 			similarity := cosineBetween(units[i].Embedding, units[j].Embedding)
-			if similarity >= SemanticLinkMinSimilarity {
+			if similarity >= minSimilarity {
 				neighbours = append(neighbours, scored{id: units[j].ID, similarity: similarity})
 			}
 		}

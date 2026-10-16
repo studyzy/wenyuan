@@ -132,7 +132,7 @@ func TestExtractLabelsDropsOutOfVocabularyValues(t *testing.T) {
 			},
 		},
 	}}
-	facts, err := parseFacts(structured, vocab)
+	facts, err := parseFacts(structured, Options{Vocabulary: vocab})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestExtractLabelsIgnoredWithoutVocabulary(t *testing.T) {
 	structured := map[string]any{"facts": []any{
 		map[string]any{"text": "A fact.", "labels": map[string]any{"pedagogy": "scaffolding"}},
 	}}
-	facts, err := parseFacts(structured, nil)
+	facts, err := parseFacts(structured, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestMapGroupSchemaAndLabels(t *testing.T) {
 			},
 		},
 	}}
-	facts, err := parseFacts(structured, vocab)
+	facts, err := parseFacts(structured, Options{Vocabulary: vocab})
 	if err != nil {
 		t.Fatal(err)
 	}

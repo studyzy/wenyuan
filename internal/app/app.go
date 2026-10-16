@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -106,6 +107,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 			return nil, fmt.Errorf("migrations failed: %w", err)
 		}
 	}
+	// The alias-resolution cache is process-wide, so it is installed once, here,
+	// rather than per store handle.
+	storage.SetBankAliasCache(cfg.BankAliasCacheTTL, cfg.BankAliasCacheMaxEntries)
 
 	activeProvider := deps.Provider
 	if activeProvider == nil {
@@ -114,6 +118,13 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 			return nil, err
 		}
 		activeProvider = selected
+	}
+	// Probe the configured model provider before serving, so an unreachable
+	// endpoint fails startup rather than the first model-dependent request. The
+	// probe is skipped when HINDSIGHT_API_SKIP_LLM_VERIFICATION is set, and for
+	// the no-model selection there is nothing to reach.
+	if err := VerifyModelProvider(ctx, cfg, activeProvider); err != nil {
+		return nil, err
 	}
 	// The embedding backend and the reranker are configured independently of
 	// the chat model, so they are built here, once, and a configuration this
@@ -160,21 +171,28 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 
 	metrics := &httpx.MetricsRecorder{}
 	extensions := httpx.NewExtensionHost()
+	// The deployment's allowlist of request headers an extension may read.
+	extensions.SetPassthroughHeaders(cfg.ExtensionPassThroughHeaders)
 	auditLogger := NewAuditLogger(cfg, store)
 	router := httpx.NewRouter(httpx.RouterOptions{
 		NullDropFields:        cfg.NullDropFields,
 		BasePath:              cfg.BasePath,
 		TenantAPIKey:          tenantAuth.APIKey,
 		TenantMCPAuthDisabled: tenantAuth.MCPAuthDisabled,
+		MCPAuthToken:          cfg.MCPAuthToken,
 		AccessLog:             accessLogWriter(cfg),
+		TrustedProxies:        trustedProxies(cfg),
 		GzipMinSize:           cfg.GzipMinSize,
 		Metrics:               metrics,
 		EnabledBankConfigAPI:  cfg.EnableBankConfigAPI,
 		EnabledMCP:            cfg.MCPEnabled,
-		MCPHandler:            mcp.New(store, auditLogger),
-		Extensions:            extensions,
-		Authenticator:         authenticatorFrom(cfg),
-		ResolveBankAlias:      store.ResolveBankID,
+		MCPHandler: mcp.New(store, auditLogger).WithOptions(mcp.Options{
+			EnabledTools: cfg.MCPEnabledTools,
+			Instructions: cfg.MCPInstructions,
+		}),
+		Extensions:       extensions,
+		Authenticator:    authenticatorFrom(cfg),
+		ResolveBankAlias: store.ResolveBankID,
 		Audit: &httpx.AuditOptions{
 			Action: httpAuditAction,
 			Hook:   auditLogger,
@@ -186,9 +204,12 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 			// method: DELETE .../memories clears a bank and must not consume the
 			// retain lane, and the reference admits only the POST routes.
 			Rules: []httpx.AdmissionRule{
-				{Method: http.MethodPost, Suffix: httpx.SuffixRecall, Lane: "recall", Limit: cfg.AdmissionRecallLimit},
-				{Method: http.MethodPost, Suffix: httpx.SuffixMemories, Lane: "retain", Limit: cfg.AdmissionRetainLimit},
-				{Method: http.MethodPost, Suffix: httpx.SuffixReflect, Lane: "reflect", Limit: cfg.AdmissionReflectLimit},
+				{Method: http.MethodPost, Suffix: httpx.SuffixRecall, Lane: "recall", Limit: cfg.AdmissionRecallLimit,
+					MaxWait: cfg.AdmissionRecallMaxWait},
+				{Method: http.MethodPost, Suffix: httpx.SuffixMemories, Lane: "retain", Limit: cfg.AdmissionRetainLimit,
+					MaxWait: cfg.AdmissionRetainMaxWait},
+				{Method: http.MethodPost, Suffix: httpx.SuffixReflect, Lane: "reflect", Limit: cfg.AdmissionReflectLimit,
+					MaxWait: cfg.AdmissionReflectMaxWait},
 			},
 		},
 	})
@@ -200,7 +221,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	if err := registerConfiguredValidator(extensions, cfg); err != nil {
 		return nil, err
 	}
-	app.mount(router)
+	if err := app.mount(router); err != nil {
+		return nil, err
+	}
 	app.Handler = router.Service()
 	return app, nil
 }
@@ -212,6 +235,16 @@ func (a *App) Close() {
 		return
 	}
 	a.Tracer.Close()
+}
+
+// backendName resolves the backend a deployment asked for: an explicitly
+// configured dialect wins, and otherwise the database URL decides (an in-memory
+// URL selects the in-memory backend).
+func backendName(cfg config.Config, inMemory bool) string {
+	if configured := strings.TrimSpace(cfg.DatabaseBackend); configured != "" && !strings.EqualFold(configured, config.DefaultDatabaseBackend) {
+		return configured
+	}
+	return backendNameFor(inMemory)
 }
 
 func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (storage.Store, error) {
@@ -227,22 +260,32 @@ func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (st
 	}
 	backend := deps.Backend
 	if backend == nil {
-		selected, err := storage.SelectBackend(backendNameFor(inMemory))
+		selected, err := storage.SelectBackend(backendName(cfg, inMemory))
 		if err != nil {
 			return nil, err
 		}
 		backend = selected
 	}
 	store, err := backend.Open(ctx, storage.BackendConfig{
-		DatabaseURL:         url,
-		Schema:              cfg.DatabaseSchema,
-		VectorExtension:     cfg.VectorExtension,
-		MaxOpenConns:        cfg.DBPoolMaxSize,
-		MaxIdleConns:        cfg.DBPoolMinSize,
-		TextSearchExtension: cfg.TextSearchExtension,
-		RunMigrations:       cfg.RunMigrationsOnStartup,
-		BankInfoCacheTTL:    cfg.BankInfoCacheTTL,
-		BankStatsCacheTTL:   cfg.BankStatsCacheTTL,
+		DatabaseURL:              url,
+		Schema:                   cfg.DatabaseSchema,
+		VectorExtension:          cfg.VectorExtension,
+		MaxOpenConns:             cfg.DBPoolMaxSize,
+		MaxIdleConns:             cfg.DBPoolMinSize,
+		AcquireTimeout:           cfg.DBTuning.AcquireTimeout,
+		PoolSlowAcquireThreshold: cfg.DBTuning.PoolSlowAcquireThreshold,
+		AcquireWarnThreshold:     cfg.DBTuning.AcquireWarnThreshold,
+		TextSearchExtension:      cfg.TextSearchExtension,
+		RunMigrations:            cfg.RunMigrationsOnStartup,
+		BankInfoCacheTTL:         cfg.BankInfoCacheTTL,
+		BankInfoCacheMaxEntries:  cfg.ConsolidationTuning.BankInfoCacheMaxEntries,
+		BankStatsCacheTTL:        cfg.BankStatsCacheTTL,
+		BankStatsCacheMaxEntries: cfg.ConsolidationTuning.BankStatsCacheMaxEntries,
+		Session: storage.SessionSettings{
+			StatementTimeout:         cfg.DBTuning.StatementTimeout,
+			MaxParallelWorkersGather: cfg.DBTuning.MaxParallelWorkersGather,
+			TrgmSimilarityThreshold:  cfg.EntityTuning.TRGMSimilarityThreshold,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -299,7 +342,7 @@ func isAddressInUse(err error) bool {
 	return false
 }
 
-func (a *App) mount(router *httpx.Router) {
+func (a *App) mount(router *httpx.Router) error {
 	handle := router.Handle
 
 	health := &monitoring.HealthHandler{DB: storePinger{a.Store}, Version: httpx.APIVersion, Started: time.Now()}
@@ -311,7 +354,7 @@ func (a *App) mount(router *httpx.Router) {
 	}
 	monitoring.BindVersionRoutes(version, handle)
 
-	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: operationMetrics(a.Store)}
+	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: operationMetrics(a.Store, a.Config.MetricsTuning), Histograms: loopLagHistograms(a.Config.MetricsTuning), Tenant: metricsTenant(a.Config)}
 	monitoring.BindMetricsRoutes(a.MetricsH, handle)
 	if a.Config.PprofEnabled {
 		monitoring.BindProfileRoutes(handle)
@@ -320,10 +363,10 @@ func (a *App) mount(router *httpx.Router) {
 	banks := bankapi.NewHandlers(a.Store)
 	banks.WithConfigAPI(a.Config.EnableBankConfigAPI)
 	banks.WithConfigDefaults(bankapi.PublicConfigDefaults(a.Config))
+	banks.WithDefaultBankTemplate(a.Config.DefaultBankTemplate)
 	banks.BindRoutes(handle)
 
 	memops := memoryops.NewHandlers(a.Store, int(a.Config.RetryAfter.Seconds()), int(a.Config.ReadTimeout.Milliseconds()))
-	memops.RetainBatchEnabled = a.Config.RetainBatchEnabled
 	memops.RecallStrategyBoosts = a.Config.RecallStrategyBoosts
 	memops.MaxAttachmentBytes = int64(a.Config.RetainAttachmentMaxSizeMB) << 20
 	memops.MaxAttachments = a.Config.RetainAttachmentMaxCount
@@ -340,8 +383,18 @@ func (a *App) mount(router *httpx.Router) {
 		MaxBatchCount:     a.Config.FileConversionMaxBatchSize,
 		MaxBatchBytes:     int64(a.Config.FileConversionMaxBatchSizeMB) << 20,
 		DeleteAfterRetain: a.Config.FileDeleteAfterRetain,
+		OCREnabled:        a.Config.FileParserOCREnabled,
+		OCRAPIKey:         a.Config.FileParserOCRAPIKey,
+		OCRBaseURL:        a.Config.FileParserOCRBaseURL,
+		OCRModel:          a.Config.FileParserOCRModel,
+		OCRPrompt:         a.Config.FileParserOCRPrompt,
+		OCRHeaders:        a.Config.FileParserOCRHeaders,
 	}
-	memops.Parsers = fileParsers.Registry()
+	parsers, err := fileParsers.Registry()
+	if err != nil {
+		return err
+	}
+	memops.Parsers = parsers
 	memops.ParserChain = fileParsers.Chain
 	memops.ParserAllowlist = fileParsers.Allowlist
 	memops.MaxFileBatchCount = fileParsers.MaxBatchCount
@@ -355,17 +408,25 @@ func (a *App) mount(router *httpx.Router) {
 	// The extractor is wired from the provider boundary: with a model
 	// configured a write stores extracted facts, without one it stores the
 	// text verbatim.
-	memops.Extraction = newFactExtractor(a.Provider, a.Config.Provider.RetainMaxRetries)
+	memops.Extraction = newFactExtractor(a.Provider, ExtractionSettingsFrom(a.Config))
 	// With an embedding model configured the write path embeds each unit and
 	// the read path embeds the query, so the vector recall arm has vectors to
 	// rank; without one both stay on their non-vector paths.
 	memops.Embeddings = embeddingGeneratorFrom(a.Embedder)
 	setObservationEmbedder(a.Store, embeddingGeneratorFrom(a.Embedder))
+	// The retrieval, write and reflection tuning the deployment resolved reaches
+	// the pipeline the same way: a store that carries it is given it once.
+	setStoreTuning(a.Store, a.Config)
+	memops.RetainSubBatchTokens = a.Config.RetainTuning.SubBatchTokens
 	memops.FileUploadDisabled = !a.Config.EnableFileUploadAPI
 	memops.ObservationsEnabled = a.Config.EnableObservations
 	memops.AutoConsolidationEnabled = a.Config.EnableAutoConsolidation
 	memops.DiscardDocumentText = !a.Config.StoreDocumentText
 	memops.DefaultExtractionMode = a.Config.RetainExtractionMode
+	if strategy := a.Config.ProcessDefaults.RetainDefaultStrategy; strategy != nil {
+		memops.DefaultRetainStrategy = *strategy
+	}
+	memoryops.ReflectDefaultOptions = a.Config.ProcessDefaults.ReflectDefaultOptions
 	memops.DefaultOptionalFactDimensions = a.Config.RetainOptionalFactDimensions
 	// The model-driven reflection loop replaces the deterministic one when a
 	// model is configured.
@@ -385,7 +446,7 @@ func (a *App) mount(router *httpx.Router) {
 	// Memory Defense decisions enqueue their webhook through the worker's one
 	// enqueue path; a deployment with no webhooks still gets the notifier, but
 	// it finds no subscriber and queues nothing.
-	memops.Webhooks = webhookNotifier{store: a.Store}
+	memops.Webhooks = webhookNotifier{store: a.Store, guard: a.webhookGuard()}
 	memops.BindRoutes(handle)
 
 	retired := &bankapi.RetiredHandler{}
@@ -397,6 +458,7 @@ func (a *App) mount(router *httpx.Router) {
 	a.mountReadSurface(handle, memops)
 	a.mountReporting(handle)
 	a.mountWebhooks(handle)
+	return nil
 }
 
 // accessLogWriter is where the router writes its access lines: the process log
@@ -406,6 +468,16 @@ func accessLogWriter(cfg config.Config) io.Writer {
 		return nil
 	}
 	return monitoring.LogSink
+}
+
+// trustedProxies is the peer list whose forwarded headers may be believed:
+// nothing unless the operator asked for proxy headers, and otherwise the
+// resolved allow list.
+func trustedProxies(cfg config.Config) []string {
+	if !cfg.ProxyHeaders {
+		return nil
+	}
+	return cfg.ForwardedAllowIPs
 }
 
 // storePinger adapts the store readiness probe to the monitoring dependency.

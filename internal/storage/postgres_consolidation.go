@@ -7,6 +7,13 @@ import (
 	"errors"
 )
 
+// ConsolidationTuning reports the deployment's consolidation knobs, so the pass
+// reads the configured batch size and model-call budget off the store rather
+// than the package defaults.
+func (s *PostgresStore) ConsolidationTuning() ConsolidationTuning {
+	return s.tuning.Consolidation
+}
+
 // ConsolidationFacts returns the newest raw facts of a bank that have not yet
 // been folded into an observation. A fact is "folded" once its consolidation
 // timestamp is set, which MarkConsolidated does.
@@ -89,6 +96,74 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 	return observations, rows.Err()
 }
 
+// ObservationDuplicates embeds an observation text and returns that embedding
+// together with the in-scope observations that carry a stored embedding,
+// nearest first. It reports embedded=false when the deployment has no embedding
+// model, or when the text produced no vector, so the caller falls back to its
+// text-similarity floor rather than losing dedup.
+//
+// The nearest candidates are found by the vector index's cosine distance, so a
+// near-identical twin that sits far down a recency-ordered pool is still the
+// first thing returned.
+func (s *PostgresStore) ObservationDuplicates(ctx context.Context, bankID string, scope []string, text string, limit int) ([]float32, []ConsolidationObservation, bool, error) {
+	probe := embedObservation(ctx, s.observationEmbedder, text)
+	if len(probe) == 0 {
+		return nil, nil, false, nil
+	}
+	if err := ValidateEmbedding(probe); err != nil {
+		return nil, nil, false, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	scope = canonicalScope(scope)
+	// An empty scope must reach the driver as an empty array, not NULL, so the
+	// containment test below matches untagged rows rather than no row at all.
+	scopeArg := scope
+	if scopeArg == nil {
+		scopeArg = []string{}
+	}
+	query := `SELECT u.id, u.text, u.mentioned_at,
+	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
+	                 COALESCE(u.tags, '{}'::text[])::text,
+	                 u.embedding::text
+	          FROM ` + quoteIdent(s.schema) + `.memory_units u
+	          WHERE u.bank_id = $1 AND u.fact_type = $2
+	            AND u.embedding IS NOT NULL
+	            AND cardinality(COALESCE(u.tags, '{}'::text[])) = $3
+	            AND COALESCE(u.tags, '{}'::text[])::text[] @> $4::text[]
+	          ORDER BY u.embedding <=> $5::vector
+	          LIMIT $6`
+	rows, err := s.db.QueryContext(ctx, query, bankID, string(TypeObservation), len(scope), scopeArg, EncodeEmbedding(probe), limit)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	observations := []ConsolidationObservation{}
+	for rows.Next() {
+		var observation ConsolidationObservation
+		var mentioned sql.NullTime
+		var sources, tags, embedding string
+		if err := rows.Scan(&observation.ID, &observation.Text, &mentioned, &sources, &tags, &embedding); err != nil {
+			return nil, nil, false, err
+		}
+		observation.MentionedAt = nullTimePtr(mentioned)
+		observation.SourceIDs = decodeTextArray(sources)
+		observation.ProofCount = len(observation.SourceIDs)
+		observation.Scope = canonicalScope(decodeTextArray(tags))
+		decoded, err := DecodeEmbedding(embedding)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		observation.Embedding = decoded
+		observations = append(observations, observation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	return probe, observations, true, nil
+}
+
 // CreateObservation records a new observation resting on the given facts.
 func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
 	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
@@ -111,8 +186,10 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 // history is bounded per observation so a frequently-reinforced observation does
 // not grow without bound.
 func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error {
-	if err := s.appendObservationHistory(ctx, bankID, observationID); err != nil {
-		return err
+	if s.tuning.ObservationHistory {
+		if err := s.appendObservationHistory(ctx, bankID, observationID); err != nil {
+			return err
+		}
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
 	          SET text = $3, search_vector = ` + searchVectorExpr("$3", "''", "''") + `, mentioned_at = now()
@@ -129,7 +206,8 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 
 // ObservationHistoryMaxEntries bounds one observation's stored history, so a
 // frequently-reinforced conclusion keeps a useful tail without growing forever.
-const ObservationHistoryMaxEntries = 20
+// It is the reference's default for a store built without tuning.
+const ObservationHistoryMaxEntries = DefaultHistoryMaxEntries
 
 // appendObservationHistory records the observation's current text as a history
 // entry, then drops the entries beyond the retention bound.
@@ -164,8 +242,18 @@ func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, ob
 	                ORDER BY changed_at DESC, id DESC
 	                LIMIT $2
 	            )`
-	_, err = s.db.ExecContext(ctx, prune, observationID, ObservationHistoryMaxEntries)
+	_, err = s.db.ExecContext(ctx, prune, observationID, s.observationHistoryBound())
 	return err
+}
+
+// observationHistoryBound is how many entries one observation's history keeps:
+// the resolved tuning when it was configured, and the reference's default when
+// it was not.
+func (s *PostgresStore) observationHistoryBound() int {
+	if s.tuning.ObservationHistoryMax > 0 {
+		return s.tuning.ObservationHistoryMax
+	}
+	return ObservationHistoryMaxEntries
 }
 
 // observationText returns one observation's text, or "" when it is gone.

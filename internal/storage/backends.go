@@ -39,13 +39,28 @@ type MemoryBackend struct{}
 func (b *MemoryBackend) Open(ctx context.Context, cfg BackendConfig) (Store, error) {
 	store := NewMemoryStore(cfg.Schema)
 	store.setBankCacheTTL(cfg.BankInfoCacheTTL)
+	store.setBankCacheBound(cfg.BankInfoCacheMaxEntries)
+	store.setBankStatsCache(cfg.BankStatsCacheTTL, cfg.BankStatsCacheMaxEntries)
 	return store, nil
 }
 
 // setBankCacheTTL rebinds the per-process bank cache to the configured
 // lifetime. A zero lifetime disables the cache, so every lookup reads the map.
 func (s *MemoryStore) setBankCacheTTL(ttl time.Duration) {
-	s.cache = newBankCache(ttl)
+	s.cache = newBankCacheWithBound(ttl, s.cache.maxEntries)
+}
+
+// setBankCacheBound bounds the per-process bank cache. A zero bound leaves it
+// unbounded, which is the reference's own default only when nothing is set.
+func (s *MemoryStore) setBankCacheBound(maxEntries int) {
+	s.cache = newBankCacheWithBound(s.cache.ttl, maxEntries)
+}
+
+// setBankStatsCache rebinds the per-process bank-statistics cache to the
+// configured lifetime and bound. A non-positive lifetime disables it, so every
+// summary is computed on demand; a zero bound leaves it unbounded.
+func (s *MemoryStore) setBankStatsCache(ttl time.Duration, maxEntries int) {
+	s.statsCache = newBankStatsCache(ttl, maxEntries)
 }
 
 // MemoryStore is a mutex-guarded in-process implementation of Store. It is the
@@ -65,10 +80,14 @@ type MemoryStore struct {
 	aliasesByBank map[string][]BankAlias
 	aliasOwners   map[string]string
 	cache         *bankCache
-	operations    map[string]Operation
-	writes        map[string]WriteResult
-	memories      map[string][]RecallMatch
-	mentalModels  map[string][]ReflectMentalModel
+	// statsCache holds the per-process bank-statistics summaries. It is nil
+	// when no lifetime is configured, which leaves every summary computed on
+	// demand.
+	statsCache   *bankStatsCache
+	operations   map[string]Operation
+	writes       map[string]WriteResult
+	memories     map[string][]RecallMatch
+	mentalModels map[string][]ReflectMentalModel
 	// retentionRows is the in-memory stand-in for the retention tables, so the
 	// sweep jobs are exercised on the default offline path.
 	retentionRows map[string][]retentionRow
@@ -107,6 +126,18 @@ type MemoryStore struct {
 	// observationEmbedder, when set, embeds the text of an observation the
 	// consolidation pass writes, so the vector recall arm can rank it.
 	observationEmbedder EmbeddingGenerator
+	// tuning carries the resolved retrieval, write and reflection knobs. It is
+	// a value so both backends are constructed with the same numbers.
+	tuning Tuning
+	// bankCreateHook, when set, runs once after a bank row is newly created.
+	bankCreateHook BankCreateHook
+	// recallGate bounds concurrent recalls at the engine level, separately from
+	// admission control. A nil gate is unbounded.
+	recallGate chan struct{}
+	// phaseObserver, when set, receives one observation per phase of a recall
+	// the diagnostic accounting sampled, and phaseSampler draws those samples.
+	phaseObserver RecallPhaseObserver
+	phaseSampler  phaseSampler
 }
 
 // SetObservationEmbedder gives the store the generator the consolidation write
@@ -126,10 +157,36 @@ func (s *MemoryStore) observationEmbedderRef() EmbeddingGenerator {
 	return s.observationEmbedder
 }
 
+// SetTuning installs the resolved tuning. The composition root calls it once at
+// startup; a store built without it keeps the reference's defaults.
+func (s *MemoryStore) SetTuning(tuning Tuning) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tuning = tuning
+	s.recallGate = newRecallGate(tuning.MaxConcurrent)
+}
+
+// SetRecallPhaseObserver installs the receiver of the per-phase recall
+// observations. A nil observer leaves the accounting to the log line alone.
+func (s *MemoryStore) SetRecallPhaseObserver(observer RecallPhaseObserver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phaseObserver = observer
+}
+
+// beginRecallPhases starts this recall's diagnostic accounting, resolving the
+// sample draw from the store's own counter. The caller holds the store's read
+// lock, which is what makes the tuning and the observer it reads stable.
+func (s *MemoryStore) beginRecallPhases(bankID string) *recallPhases {
+	return beginRecallPhases(s.tuning, &s.phaseSampler, s.phaseObserver, bankID)
+}
+
 // NewMemoryStore builds an empty in-process store bound to a schema name.
 func NewMemoryStore(schema string) *MemoryStore {
 	return &MemoryStore{
 		schema:             schema,
+		tuning:             DefaultTuning(),
+		recallGate:         newRecallGate(DefaultTuning().MaxConcurrent),
 		banks:              map[string]Bank{},
 		aliasesByBank:      map[string][]BankAlias{},
 		aliasOwners:        map[string]string{},

@@ -35,6 +35,11 @@ type Handlers struct {
 	// BankLLMHealthEnabled gates the per-bank /health/llm route. When false the
 	// route reports not-found, matching the reference gate.
 	BankLLMHealthEnabled bool
+	// DryRunExtractDisabled turns the dry-run extraction route off, which the
+	// reference spells HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=false: the route
+	// answers 404 and its sentence. It is the negative form so a handler set
+	// built without wiring keeps the feature on, as the reference defaults it.
+	DryRunExtractDisabled bool
 	// Prober, when non-nil, is probed by the LLM health route. A nil prober
 	// reports every operation as not configured.
 	Prober LLMProber
@@ -47,6 +52,15 @@ type Handlers struct {
 	// knowledge search on its text arm alone, which is what a deployment with
 	// no embedding model gets.
 	Embeddings storage.EmbeddingGenerator
+	// RetainExtractCausalLinks is the deployment's causal-extraction switch for
+	// the retention previews. Nil means the reference's default, which extracts
+	// causal relations.
+	RetainExtractCausalLinks *bool
+	// ProcessDefaults is the process layer of a bank's configuration, used where
+	// this area resolves a value the same way the bank-config read does (the
+	// knowledge-page default trigger). Nil means the reference's shipped
+	// defaults.
+	ProcessDefaults map[string]any
 }
 
 // NewHandlers builds the handlers over the store.

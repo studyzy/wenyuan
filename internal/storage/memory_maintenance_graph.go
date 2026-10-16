@@ -35,7 +35,7 @@ func (s *MemoryStore) RelinkUnit(ctx context.Context, bankID, unitID string) err
 		candidates = append(candidates, other)
 		added++
 	}
-	s.links = append(s.links, semanticLinksFor(bankID, candidates)...)
+	s.links = append(s.links, semanticLinksFor(bankID, candidates, s.tuning.SemanticLinkMinSimilarity)...)
 	return nil
 }
 

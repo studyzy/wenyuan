@@ -709,3 +709,89 @@ func TestWallCeilingsAreKeyedByClaimableOperationTypes(t *testing.T) {
 		t.Errorf("HINDSIGHT_API_REFLECT_WALL_TIMEOUT set the refresh ceiling to %v, want 2m", got)
 	}
 }
+
+// test-worker-consolidation-bank-priority: with a priority list configured the
+// consumer takes consolidation from its own pool, preferring the bank whose
+// pattern carries the higher priority over older work elsewhere.
+func TestConsumerClaimsConsolidationByConfiguredBankPriority(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if _, err := store.PutOperation(ctx, storage.Operation{
+		OperationID: "op-a", BankID: "bank-a", OperationType: storage.OperationTypeConsolidate, Status: storage.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutOperation(ctx, storage.Operation{
+		OperationID: "op-b", BankID: "bank-b", OperationType: storage.OperationTypeConsolidate, Status: storage.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error { return nil }), Config{
+		WorkerID: "worker-1", Lease: time.Hour, Logger: quietLogger(),
+		ReservedSlots:       map[string]int{storage.OperationTypeConsolidate: 1},
+		ConsolidationByBank: "bank-b:10,*:1",
+	})
+	op, err := consumer.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.BankID != "bank-b" {
+		t.Fatalf("claimed %s, want the higher-priority bank", op.BankID)
+	}
+}
+
+// With no priority configured the consumer claims the oldest consolidation, so
+// an unset key leaves the scheduling as it was.
+func TestConsumerWithoutPriorityClaimsOldestConsolidation(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if _, err := store.PutOperation(ctx, storage.Operation{
+		OperationID: "op-a", BankID: "bank-a", OperationType: storage.OperationTypeConsolidate, Status: storage.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutOperation(ctx, storage.Operation{
+		OperationID: "op-b", BankID: "bank-b", OperationType: storage.OperationTypeConsolidate, Status: storage.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error { return nil }), Config{
+		WorkerID: "worker-1", Lease: time.Hour, Logger: quietLogger(),
+		ReservedSlots: map[string]int{storage.OperationTypeConsolidate: 1},
+	})
+	op, err := consumer.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.OperationID != "op-a" {
+		t.Fatalf("claimed %s, want the oldest consolidation", op.OperationID)
+	}
+}
+
+// ParseBankPriority reads the reference's list, keeping a wildcard key and
+// dropping a malformed entry rather than failing the consumer.
+func TestParseBankPriority(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want map[string]int
+	}{
+		{"blank", "", nil},
+		{"single", "billing:5", map[string]int{"billing": 5}},
+		{"pattern and catch-all", "shadow-*:9,*:2", map[string]int{"shadow-*": 9, "*": 2}},
+		{"spaces and colons in the pattern", " tenant:a:3 ", map[string]int{"tenant:a": 3}},
+		{"drops a malformed entry", "good:4,broken,empty:,zero:0", map[string]int{"good": 4}},
+	}
+	for _, tc := range cases {
+		got := ParseBankPriority(tc.raw)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for pattern, want := range tc.want {
+			if got[pattern] != want {
+				t.Errorf("%s: pattern %q = %d, want %d", tc.name, pattern, got[pattern], want)
+			}
+		}
+	}
+}

@@ -3,12 +3,112 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"strconv"
+	"strings"
 )
 
 // semanticArmLimit bounds how many vector neighbours the semantic arm
 // considers. The bound is applied in the database rather than after the fact so
 // the HNSW index does the narrowing.
 const semanticArmLimit = 200
+
+// annRows runs the semantic arm with the deployment's ANN tuning applied
+// transaction-locally, the way the reference tunes its high-recall profile:
+// `hnsw.iterative_scan` lets a scan resume in rounds until the arm's LIMIT is
+// met rather than stopping when the first list drains, and
+// `hnsw.max_scan_tuples` bounds how far it may go.
+//
+// A server that rejects a setting (pgvector older than 0.8 has no
+// `hnsw.iterative_scan`) is remembered as rejecting it, and that setting is
+// skipped from then on: applying it inside the arm's transaction would abort
+// the query rather than merely fail to take effect. A deployment on another
+// vector backend gets no ANN tuning at all, because the settings are pgvector's
+// own.
+// The returned function closes the rows and, when the query ran in a
+// transaction, ends it: the caller reads the rows first and calls it after.
+func (s *PostgresStore) annRows(ctx context.Context, query string, args []any) (*sql.Rows, func(), error) {
+	settings := s.annSettings()
+	if len(settings) == 0 {
+		rows, err := s.reader().QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rows, func() { _ = rows.Close() }, nil
+	}
+	tx, err := s.reader().BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, setting := range settings {
+		if s.annSettingRejected(setting.name) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "SET LOCAL "+setting.name+" = "+sqlTextLiteral(setting.value)); err != nil {
+			// A server that predates the setting is not asked again: applying
+			// it inside this transaction would abort the query rather than
+			// merely fail to take effect.
+			s.rememberAnnSettingRejected(setting.name)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, nil, err
+	}
+	return rows, func() {
+		_ = rows.Close()
+		_ = tx.Commit()
+	}, nil
+}
+
+// annSetting is one pgvector setting the semantic arm applies.
+type annSetting struct {
+	name  string
+	value string
+}
+
+// annSettings is the tuning the semantic arm applies, or none when the
+// deployment runs another vector backend.
+func (s *PostgresStore) annSettings() []annSetting {
+	// An unset extension is the pgvector default, the same reading the index
+	// access method uses: only a deployment that named another backend gets no
+	// pgvector tuning.
+	switch strings.ToLower(strings.TrimSpace(s.vectorExtension)) {
+	case "", "pgvector":
+	default:
+		return nil
+	}
+	settings := make([]annSetting, 0, 3)
+	// The recall profile the reference runs: a deeper search than the index's
+	// default, resumed in rounds.
+	settings = append(settings, annSetting{name: "hnsw.ef_search", value: "200"})
+	if s.tuning.ANNIterativeScan {
+		settings = append(settings, annSetting{name: "hnsw.iterative_scan", value: "strict_order"})
+	} else {
+		settings = append(settings, annSetting{name: "hnsw.iterative_scan", value: "off"})
+	}
+	if s.tuning.ANNMaxScanTuples > 0 {
+		settings = append(settings, annSetting{name: "hnsw.max_scan_tuples", value: strconv.Itoa(s.tuning.ANNMaxScanTuples)})
+	}
+	return settings
+}
+
+// annSettingRejected reports whether the server has already refused a setting.
+func (s *PostgresStore) annSettingRejected(name string) bool {
+	s.annRejectedMu.Lock()
+	defer s.annRejectedMu.Unlock()
+	return s.annRejected[name]
+}
+
+// rememberAnnSettingRejected records a refusal so later queries skip it.
+func (s *PostgresStore) rememberAnnSettingRejected(name string) {
+	s.annRejectedMu.Lock()
+	defer s.annRejectedMu.Unlock()
+	if s.annRejected == nil {
+		s.annRejected = map[string]bool{}
+	}
+	s.annRejected[name] = true
+}
 
 // semanticHits ranks stored memories by cosine similarity to the query vector.
 //
@@ -38,11 +138,11 @@ func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types [
 	          LIMIT $4`
 	vector := EncodeEmbedding(q.QueryEmbedding)
 	args := append(armArgs(q), vector, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, done, err := s.annRows(ctx, query, args)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer done()
 
 	hits := make([]recallHit, 0)
 	for rows.Next() {

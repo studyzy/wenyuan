@@ -3,6 +3,7 @@ package extraction
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -261,7 +262,7 @@ func TestParseFactsFiltersDegenerateAndKeepsType(t *testing.T) {
 		map[string]any{"text": "Alice moved to Berlin.", "where": "Berlin", "fact_kind": "event", "fact_type": "experience"},
 		map[string]any{"text": "I checked the deployment log.", "fact_type": "assistant"},
 	}}
-	facts, err := parseFacts(structured, nil)
+	facts, err := parseFacts(structured, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,5 +310,74 @@ func TestExtractRepairsMalformedResponse(t *testing.T) {
 	}
 	if len(result.Facts) != 1 || provider.calls != 2 {
 		t.Fatalf("repair did not recover facts: %+v (calls %d)", result, provider.calls)
+	}
+}
+
+// causalAnswer is a model answer whose second fact declares a causal edge, used
+// to observe whether the causal switch asks for and parses relations.
+func causalAnswer() map[string]any {
+	return map[string]any{"facts": []any{
+		map[string]any{"text": "could not pay rent"},
+		map[string]any{"text": "moved apartment", "causal_relations": []any{
+			map[string]any{"target_index": float64(0), "relation_type": "caused_by"},
+		}},
+	}}
+}
+
+// causalFactSchema returns the fact object schema the last request carried, or
+// nil when the request asked for no schema.
+func causalFactSchema(req provider.CompletionRequest) *provider.Schema {
+	if req.ResponseSchema == nil || req.ResponseSchema.Properties["facts"] == nil {
+		return nil
+	}
+	return req.ResponseSchema.Properties["facts"].Items
+}
+
+// By default the extraction asks the model for causal relations, declares the
+// field in the schema, and parses the relations it returns.
+func TestCausalExtractionOnByDefault(t *testing.T) {
+	stub := &stubProvider{name: "openai", structured: causalAnswer()}
+	result, err := New(stub).Extract(context.Background(), "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stub.lastReq.Messages[0].Content, "CAUSAL RELATIONSHIPS") {
+		t.Fatal("the default prompt must ask for causal relations")
+	}
+	fact := causalFactSchema(stub.lastReq)
+	if fact == nil || fact.Properties["causal_relations"] == nil {
+		t.Fatal("the default schema must declare causal_relations")
+	}
+	if len(result.Facts) != 2 || len(result.Facts[1].CausalRelations) != 1 {
+		t.Fatalf("the default must parse causal relations: %+v", result.Facts)
+	}
+}
+
+// With the switch off the extraction neither asks for causal relations nor
+// parses them: the prompt carries no causal section, the schema declares no
+// causal_relations field, and a model that answers with relations anyway yields
+// facts with none.
+func TestCausalExtractionDisabledDropsAskAndParse(t *testing.T) {
+	off := false
+	stub := &stubProvider{name: "openai", structured: causalAnswer()}
+	result, err := New(stub).ExtractWith(context.Background(), "text", Options{ExtractCausalLinks: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stub.lastReq.Messages[0].Content, "CAUSAL RELATIONSHIPS") {
+		t.Fatal("a disabled switch must not ask for causal relations")
+	}
+	fact := causalFactSchema(stub.lastReq)
+	if fact == nil {
+		t.Fatal("the response schema is still sent")
+	}
+	if fact.Properties["causal_relations"] != nil {
+		t.Fatal("a disabled switch must not declare causal_relations")
+	}
+	if len(result.Facts) != 2 {
+		t.Fatalf("facts = %d, want 2", len(result.Facts))
+	}
+	if result.Facts[1].CausalRelations != nil {
+		t.Fatalf("a disabled switch must not parse causal relations: %+v", result.Facts[1].CausalRelations)
 	}
 }

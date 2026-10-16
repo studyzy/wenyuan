@@ -35,21 +35,22 @@ func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (Reflec
 			bankName, mission, disposition = ReflectProfile(bank)
 		}
 		return query.Reflection.Run(ctx, AgenticReflectRequest{
-			BankID:           query.BankID,
-			Question:         query.Query,
-			MaxTokens:        query.MaxTokens,
-			MaxIterations:    query.MaxIterations,
-			Budget:           query.Budget,
-			Retrieval:        s,
-			Directives:       directives,
-			ResponseSchema:   query.ResponseSchema,
-			BankName:         bankName,
-			Mission:          mission,
-			Disposition:      disposition,
-			AnswerAsDocument: query.AnswerAsDocument,
-			Tags:             query.Tags,
-			TagsMatch:        query.TagsMatch,
-			TagGroups:        query.TagGroups,
+			BankID:              query.BankID,
+			Question:            query.Query,
+			MaxTokens:           query.MaxTokens,
+			MaxCompletionTokens: s.tuning.ReflectMaxCompletionTokens,
+			MaxIterations:       query.MaxIterations,
+			Budget:              query.Budget,
+			Retrieval:           s,
+			Directives:          directives,
+			ResponseSchema:      query.ResponseSchema,
+			BankName:            bankName,
+			Mission:             mission,
+			Disposition:         disposition,
+			AnswerAsDocument:    query.AnswerAsDocument,
+			Tags:                query.Tags,
+			TagsMatch:           query.TagsMatch,
+			TagGroups:           query.TagGroups,
 		})
 	}
 	if _, err := s.GetBank(ctx, query.BankID); err != nil {
@@ -80,7 +81,7 @@ func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (Reflec
 			Attachments:   m.Attachments,
 		})
 	}
-	loop := newReflectLoop(query, facts)
+	loop := newReflectLoop(query, facts, s.tuning)
 	return loop.run(ctx)
 }
 

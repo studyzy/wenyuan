@@ -98,6 +98,21 @@ func entitySimilarity(left, right string) float64 {
 	return jaroWinkler([]rune(a), []rune(b))
 }
 
+// entityMergeFloorPasses applies the reference's second trigram gate: a
+// candidate whose name shares too few trigrams with the supplied name is
+// dropped before it is scored, even when the probe admitted it.
+//
+// It is distinct from the candidate-fetch floor: that floor decides which
+// stored names are worth scoring, while this one is the reference's own
+// merge_min_similarity, applied at the point the candidate is about to be
+// scored. The two measures disagree most on short names, where a coincidental
+// shared run inflates one and not the other, so this gate keeps a name that is
+// only coincidentally close from being merged onto. Names are compared
+// case-insensitively. A zero floor admits every candidate.
+func entityMergeFloorPasses(name, candidate string, floor float64) bool {
+	return trigramJaccard(strings.ToLower(name), strings.ToLower(candidate)) >= floor
+}
+
 // jaroWinkler computes the Jaro similarity and applies the prefix bonus.
 func jaroWinkler(left, right []rune) float64 {
 	matches, transpositions := jaroMatches(left, right)

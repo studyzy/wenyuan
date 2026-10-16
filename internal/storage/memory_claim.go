@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -84,13 +85,124 @@ func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, l
 		return candidates[i] < candidates[j]
 	})
 
-	claimed := s.operations[candidates[0]]
+	return s.claimLocked(candidates[0], workerID, now), nil
+}
+
+// claimLocked marks a chosen candidate as claimed by workerID. The caller holds
+// the lock and has already checked the operation is claimable.
+func (s *MemoryStore) claimLocked(opID, workerID string, now time.Time) Operation {
+	claimed := s.operations[opID]
 	claimed.Status = StatusProcessing
 	claimed.WorkerID = workerID
 	claimed.ClaimedAt = &now
 	claimed.UpdatedAt = now
-	s.operations[claimed.OperationID] = claimed
-	return claimed, nil
+	s.operations[opID] = claimed
+	return claimed
+}
+
+// ClaimConsolidationByPriority claims the oldest claimable consolidation
+// operation, preferring the banks whose identifier matches a higher-priority
+// pattern. It is the in-memory counterpart of the reference's tiered
+// consolidation claim: a specific pattern always outranks the catch-all, and
+// within a tier the oldest work goes first.
+//
+// An empty priority map is the reference's "no priority configured" case and
+// falls back to a plain consolidation claim.
+func (s *MemoryStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error) {
+	if len(priority) == 0 {
+		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate})
+	}
+	if err := ctx.Err(); err != nil {
+		return Operation{}, err
+	}
+	if workerID == "" {
+		return Operation{}, ErrInvalidOperationID
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return Operation{}, s.writeErr
+	}
+
+	now := time.Now().UTC()
+	candidates := make([]string, 0)
+	for id, op := range s.operations {
+		if op.OperationType != OperationTypeConsolidate {
+			continue
+		}
+		if !claimable(op, now, lease) {
+			continue
+		}
+		if s.serializationHeldLocked(op, now, lease) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	if len(candidates) == 0 {
+		return Operation{}, ErrOperationNotFound
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := s.operations[candidates[i]], s.operations[candidates[j]]
+		leftRank := bankPriority(priority, left.BankID)
+		rightRank := bankPriority(priority, right.BankID)
+		if leftRank != rightRank {
+			return leftRank > rightRank
+		}
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.Before(right.CreatedAt)
+		}
+		return candidates[i] < candidates[j]
+	})
+	return s.claimLocked(candidates[0], workerID, now), nil
+}
+
+// bankPriority returns the tier of one bank: the highest priority among the
+// specific patterns it matches, or the catch-all ("*") priority when it matches
+// no specific pattern, or the reference's implicit tier of one when neither is
+// configured. A specific pattern always takes precedence over the catch-all,
+// even when the catch-all carries the higher number.
+func bankPriority(priority map[string]int, bankID string) int {
+	best := 0
+	matched := false
+	for pattern, value := range priority {
+		if pattern == "*" {
+			continue
+		}
+		if likeMatch(pattern, bankID) && (!matched || value > best) {
+			best = value
+			matched = true
+		}
+	}
+	if matched {
+		return best
+	}
+	if value, ok := priority["*"]; ok {
+		return value
+	}
+	return 1
+}
+
+// likeMatch reports whether a bank identifier matches a priority pattern, where
+// "*" stands for any run of characters. It is the in-memory form of the SQL
+// LIKE the reference converts the pattern to ("*" becomes "%"), anchored at
+// both ends.
+func likeMatch(pattern, value string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == value
+	}
+	if !strings.HasPrefix(value, parts[0]) {
+		return false
+	}
+	value = value[len(parts[0]):]
+	for _, part := range parts[1 : len(parts)-1] {
+		index := strings.Index(value, part)
+		if index < 0 {
+			return false
+		}
+		value = value[index+len(part):]
+	}
+	return strings.HasSuffix(value, parts[len(parts)-1])
 }
 
 // ReleaseOperationClaim returns a claimed operation to the claimable pool. It

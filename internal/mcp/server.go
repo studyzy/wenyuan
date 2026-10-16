@@ -60,6 +60,14 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]struct{}
+
+	// enabledTools, when non-nil, is the server-level tool allowlist: every
+	// tool outside it is hidden from tools/list and refused if called. Nil
+	// means every tool, which is the reference's default.
+	enabledTools map[string]bool
+	// instructions is appended to the retain and recall tool descriptions, the
+	// reference's HINDSIGHT_API_MCP_INSTRUCTIONS.
+	instructions string
 }
 
 // Auditor decides and records MCP audit entries. It is satisfied by
@@ -73,6 +81,52 @@ type Auditor interface {
 // New builds an MCP server over the store. A nil auditor disables auditing.
 func New(store storage.Store, auditor Auditor) *Server {
 	return &Server{store: store, auditor: auditor, sessions: make(map[string]struct{})}
+}
+
+// Options configure the advertised tool surface, so a deployment can narrow the
+// roster and steer the two memory tools without changing the protocol layer.
+type Options struct {
+	// EnabledTools is the server-level allowlist. Empty means every tool.
+	EnabledTools []string
+	// Instructions is appended to the retain and recall descriptions.
+	Instructions string
+}
+
+// WithOptions returns the server with its advertised surface configured.
+func (s *Server) WithOptions(options Options) *Server {
+	if len(options.EnabledTools) > 0 {
+		allowed := make(map[string]bool, len(options.EnabledTools))
+		for _, name := range options.EnabledTools {
+			allowed[name] = true
+		}
+		s.enabledTools = allowed
+	}
+	s.instructions = options.Instructions
+	return s
+}
+
+// advertisedTools is the roster this server presents: the reference roster,
+// narrowed to the configured allowlist when there is one.
+func (s *Server) advertisedTools(multiBank bool) []tool {
+	defs := toolDefinitions(multiBank)
+	if s.enabledTools == nil {
+		return defs
+	}
+	filtered := make([]tool, 0, len(defs))
+	for _, def := range defs {
+		if s.enabledTools[def.Name] {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+// toolAllowed reports whether a tool name is inside the configured allowlist. A
+// server with no allowlist allows every name; a tool outside it is answered the
+// way an unknown tool is, because the reference removes it from the surface
+// entirely.
+func (s *Server) toolAllowed(name string) bool {
+	return s.enabledTools == nil || s.enabledTools[name]
 }
 
 // mcpSessionHeader is the header that carries the session a client establishes
@@ -350,7 +404,7 @@ func (s *Server) dispatch(ctx context.Context, call request) (any, *rpcError) {
 	case "initialize":
 		return s.initialize(call.Params), nil
 	case "tools/list":
-		return map[string]any{"tools": toolDefinitions(defaultBank(ctx) == "")}, nil
+		return map[string]any{"tools": withInstructions(s.advertisedTools(defaultBank(ctx) == ""), s.instructions)}, nil
 	case "tools/call":
 		return s.callTool(ctx, call.Params)
 	case "ping":
@@ -388,6 +442,11 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "tools/call requires a name and arguments"}
+	}
+	if !s.toolAllowed(params.Name) {
+		// The reference removes a disallowed tool from the surface, so calling
+		// it is the same as calling something that does not exist.
+		return toolError("unknown tool: " + params.Name), nil
 	}
 	payload, err := s.invokeAudited(ctx, params.Name, params.Arguments)
 	if err != nil {

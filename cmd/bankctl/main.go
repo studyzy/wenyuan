@@ -55,6 +55,9 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		return errors.New(usage)
 	}
 	ctx := context.Background()
+	if err := config.LoadDotenvForEntrypoint(); err != nil {
+		return err
+	}
 	schema, args, err := splitSchemaOption(args)
 	if err != nil {
 		return err

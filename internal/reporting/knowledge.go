@@ -236,7 +236,7 @@ func (h *Handlers) createKnowledgeNode(w http.ResponseWriter, r *http.Request, k
 func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Request, bankID, parentID, name string, body CreateKnowledgeNodeRequest) {
 	ctx := r.Context()
 	text := body.pageText()
-	trigger, failure := h.knowledgePageTrigger(ctx, bankID, body.Trigger)
+	trigger, failure := h.knowledgePageTrigger(ctx, r, bankID, body.Trigger)
 	if failure != nil {
 		httpx.WriteValidationFor(w, r, failure)
 		return
@@ -281,19 +281,34 @@ func knowledgePageMaxTokens(requested int) int {
 }
 
 // knowledgePageTrigger resolves the refresh policy a new page is created with:
-// the built-in page default, overridden by the bank's
-// `knowledge_page_default_trigger`, overridden by whatever the request named.
-func (h *Handlers) knowledgePageTrigger(ctx context.Context, bankID string, supplied map[string]any) (map[string]any, *httpx.ValidationFailure) {
+// the built-in page default, overridden by the process, tenant and bank layers
+// of `knowledge_page_default_trigger`, overridden by whatever the request named.
+func (h *Handlers) knowledgePageTrigger(ctx context.Context, r *http.Request, bankID string, supplied map[string]any) (map[string]any, *httpx.ValidationFailure) {
 	if failure := mentalmodels.ValidateTriggerObject(supplied); failure != nil {
 		return nil, failure
 	}
+	// The layers, deepest first: the engine's built-in page default, the process
+	// default, the caller's tenant override, the bank's own override, and
+	// finally what the request named — the reference's own order.
 	base := mentalmodels.KnowledgePageDefaultTrigger
+	base = overlayTrigger(base, h.ProcessDefaults[bankConfigKnowledgePageTrigger])
+	base = overlayTrigger(base, httpx.TenantOverridesFrom(r)[bankConfigKnowledgePageTrigger])
 	if config, err := h.Store.BankConfig(ctx, bankID); err == nil {
-		if raw, ok := config[bankConfigKnowledgePageTrigger].(map[string]any); ok && raw != nil {
-			base = mentalmodels.MergeTrigger(raw, mentalmodels.KnowledgePageDefaultTrigger)
-		}
+		base = overlayTrigger(base, config[bankConfigKnowledgePageTrigger])
 	}
 	return mentalmodels.MergeTrigger(supplied, base), nil
+}
+
+// overlayTrigger layers one `knowledge_page_default_trigger` value over a base.
+// A layer that names nothing, or that is not an object, leaves the base alone:
+// the value is validated on write, so a stored shape this layer cannot read is
+// the bank's business rather than a reason to fail the create.
+func overlayTrigger(base map[string]any, raw any) map[string]any {
+	trigger, ok := raw.(map[string]any)
+	if !ok || trigger == nil {
+		return base
+	}
+	return mentalmodels.MergeTrigger(trigger, base)
 }
 
 // pageEmbedding embeds a page's searchable text — its name and content, the

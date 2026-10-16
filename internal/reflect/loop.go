@@ -120,6 +120,13 @@ type Config struct {
 	Question string
 	// MaxTokens caps the answer length.
 	MaxTokens int
+	// MaxCompletionTokens is the transport-level output cap for the final
+	// synthesis call. It is decoupled from MaxTokens (a visible-length target
+	// enforced by prompt and post-hoc rewrite): a zero value leaves the shipped
+	// behaviour where MaxTokens is the call's cap, and a positive value makes
+	// this the provider cap so a thinking model cannot truncate the page
+	// mid-word while an operator still gets a hard cost ceiling.
+	MaxCompletionTokens int
 	// Budget is the caller's effort level, one of storage.ReflectBudget*.
 	// The fresh-page short-circuit does not apply at the high level, where the
 	// full descent is wanted regardless of how fresh a page looks.
@@ -303,7 +310,7 @@ func choiceLabel(choice *provider.ToolSelectionPolicy) string {
 func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	turn := Turn{Iteration: iteration}
 	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
-		Messages:   l.messages(),
+		Messages:   l.messages(ctx),
 		Tools:      l.offeredTools(),
 		ToolChoice: l.toolChoice(),
 		Scope:      "reflect",
@@ -569,9 +576,11 @@ func markSearchSnippets(batch []Evidence) {
 	}
 }
 
-// messages builds the conversation the model sees this turn.
-func (l *Loop) messages() []provider.Message {
-	directives := l.retrieval.Directives(context.Background())
+// messages builds the conversation the model sees this turn. The loop serves a
+// request, so the directive reads run on its context: a client disconnect or
+// read timeout cancels them like any other storage call.
+func (l *Loop) messages(ctx context.Context) []provider.Message {
+	directives := l.retrieval.Directives(ctx)
 	messages := []provider.Message{{Role: provider.RoleSystem, Content: buildSystemPromptForTools(systemPromptOptions{
 		Budget:              l.cfg.Budget,
 		Directives:          directives,
@@ -701,13 +710,13 @@ func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 	// The compliance gate: the reminder goes last, after the question and the
 	// evidence, so it is not out-ranked by the turns that follow the section at
 	// the top of the conversation.
-	if reminder := directivesReminder(l.retrieval.Directives(context.Background())); reminder != "" {
+	if reminder := directivesReminder(l.retrieval.Directives(ctx)); reminder != "" {
 		messages = append(messages, provider.Message{Role: provider.RoleSystem, Content: reminder})
 	}
 	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
 		Messages:  messages,
 		Scope:     "reflect",
-		MaxTokens: l.cfg.MaxTokens,
+		MaxTokens: l.synthesisMaxTokens(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("reflection answer failed: %w", err)
@@ -728,6 +737,16 @@ func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 		return "", err
 	}
 	return answer, nil
+}
+
+// synthesisMaxTokens is the transport cap for the final synthesis call: the
+// deployment's reflect cap when one is set, else the caller's visible-length
+// target, which is what the loop sent before the cap existed.
+func (l *Loop) synthesisMaxTokens() int {
+	if l.cfg.MaxCompletionTokens > 0 {
+		return l.cfg.MaxCompletionTokens
+	}
+	return l.cfg.MaxTokens
 }
 
 // extractStructured runs the second call that reshapes the prose answer into

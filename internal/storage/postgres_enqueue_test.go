@@ -159,3 +159,53 @@ func TestPostgresClaimRespectsSerializationKey(t *testing.T) {
 		t.Fatalf("after release the key is free: %v", err)
 	}
 }
+
+// The priority claim orders consolidation work by the configured bank patterns:
+// a bank matching a higher-priority pattern is served before an older one that
+// matches only the catch-all.
+func TestPostgresConsolidationClaimPrefersHigherPriorityBank(t *testing.T) {
+	url := os.Getenv("WENYUAN_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("WENYUAN_TEST_DATABASE_URL is not set; the priority claim test was not run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	schema := fmt.Sprintf("claim_priority_%d", time.Now().UnixNano())
+	backend := &PostgresBackend{}
+	store, err := backend.Open(ctx, BackendConfig{DatabaseURL: url, Schema: schema})
+	if err != nil {
+		t.Fatalf("open postgres backend: %v", err)
+	}
+	pg := store.(*PostgresStore)
+	defer func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	}()
+	if err := pg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	base := time.Now().UTC()
+	for _, bank := range []string{"plain", "billing"} {
+		if _, err := pg.CreateBank(ctx, Bank{BankID: bank, Name: bank}); err != nil {
+			t.Fatalf("create bank: %v", err)
+		}
+	}
+	for _, op := range []Operation{
+		{OperationID: "11111111-1111-1111-1111-111111111111", BankID: "plain", OperationType: OperationTypeConsolidate, Status: StatusPending, CreatedAt: base, UpdatedAt: base},
+		{OperationID: "22222222-2222-2222-2222-222222222222", BankID: "billing", OperationType: OperationTypeConsolidate, Status: StatusPending, CreatedAt: base.Add(time.Minute), UpdatedAt: base.Add(time.Minute)},
+	} {
+		if _, err := pg.PutOperation(ctx, op); err != nil {
+			t.Fatalf("put operation: %v", err)
+		}
+	}
+
+	claimed, err := pg.ClaimConsolidationByPriority(ctx, "w1", time.Hour, map[string]int{"billing": 7, "*": 1})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claimed.BankID != "billing" {
+		t.Fatalf("claimed bank %s, want the higher-priority bank", claimed.BankID)
+	}
+}

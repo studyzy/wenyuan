@@ -48,6 +48,9 @@ func run(args []string) error {
 		return err
 	}
 
+	if err := config.LoadDotenvForEntrypoint(); err != nil {
+		return err
+	}
 	cfg := config.FromEnvironment()
 	slog.SetDefault(slog.New(monitoring.NewLogHandler(cfg)))
 	cfg = config.ApplyFlags(cfg, config.FlagValues{LogLevel: optionalString(flags, "log-level", logLevel)})
@@ -109,7 +112,7 @@ func run(args []string) error {
 			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
 	}
 
-	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, app.NewWebhookGuard(cfg), cfg.Provider.RetainMaxRetries).
+	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg)).
 		WithAuditor(app.NewAuditLogger(cfg, store))
 	startWorkerHTTP(ctx, cfg, store)
 	return runBoth(ctx, consumer, loop)

@@ -20,6 +20,9 @@ type chatRequest struct {
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	Tools          []toolSpec      `json:"tools,omitempty"`
 	ToolChoice     any             `json:"tool_choice,omitempty"`
+	// PromptCacheKey pins this conversation to one cache on backends that route
+	// by it; omitted when the resolved affinity asks for no such hint.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 type chatMessage struct {
@@ -94,7 +97,8 @@ type chatResponse struct {
 // Complete runs one text completion, free-form or structured, applying the
 // adapter's retry, timeout, and concurrency semantics.
 func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
-	body, err := c.buildChatRequest(req)
+	hint := c.cacheAffinityHint(req.Messages)
+	body, err := c.buildChatRequest(req, hint)
 	if err != nil {
 		return provider.CompletionResult{}, err
 	}
@@ -106,7 +110,7 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 	defer release()
 
 	started := c.now()
-	raw, err := c.sendWithRetry(ctx, "chat/completions", body, policy, req.Scope)
+	raw, err := c.sendWithRetry(ctx, "chat/completions", body, policy, req.Scope, hint.headers)
 	latency := c.now().Sub(started)
 	if err != nil {
 		return provider.CompletionResult{}, err
@@ -115,16 +119,17 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 }
 
 // buildChatRequest turns a boundary request into the wire body, attaching a
-// JSON-schema response format for structured calls and routing through a
-// forced function tool when configured.
-func (c *Client) buildChatRequest(req provider.CompletionRequest) ([]byte, error) {
+// JSON-schema response format for structured calls, routing through a forced
+// function tool when configured, and carrying this call's cache-affinity hint.
+func (c *Client) buildChatRequest(req provider.CompletionRequest, hint affinityHint) ([]byte, error) {
 	wire := chatRequest{
-		Model:        c.Settings.Model,
-		Messages:     toWireMessages(req.Messages),
-		MaxTokens:    req.MaxTokens,
-		Temperature:  req.Temperature,
-		ReasoningEff: c.Settings.ReasoningEffort,
-		ServiceTier:  c.Settings.ServiceTier,
+		Model:          c.Settings.Model,
+		Messages:       toWireMessages(req.Messages),
+		MaxTokens:      req.MaxTokens,
+		Temperature:    req.Temperature,
+		ReasoningEff:   c.Settings.ReasoningEffort,
+		ServiceTier:    c.Settings.ServiceTier,
+		PromptCacheKey: hint.promptCacheKey,
 	}
 	if req.ResponseSchema != nil {
 		format, err := c.buildResponseFormat(req)

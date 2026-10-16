@@ -82,8 +82,10 @@ func (c *Client) operationSemaphore(limit int) semaphore {
 }
 
 // send issues one HTTP request against the endpoint, applying extra headers,
-// the credential, and the per-attempt wall-clock bound.
-func (c *Client) send(ctx context.Context, path string, body []byte) (*http.Response, error) {
+// the credential, and the per-attempt wall-clock bound. The per-request headers
+// are set only when the name is still unclaimed, so a value the operator
+// configured always wins over a derived hint.
+func (c *Client) send(ctx context.Context, path string, body []byte, headers map[string]string) (*http.Response, error) {
 	url := c.BaseURL() + "/" + strings.TrimPrefix(path, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -95,6 +97,11 @@ func (c *Client) send(ctx context.Context, path string, body []byte) (*http.Resp
 	}
 	for name, value := range c.Settings.Headers {
 		req.Header.Set(name, value)
+	}
+	for name, value := range headers {
+		if req.Header.Get(name) == "" {
+			req.Header.Set(name, value)
+		}
 	}
 	return c.doer().Do(req)
 }

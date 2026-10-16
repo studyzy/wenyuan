@@ -17,10 +17,6 @@ import (
 // terms, and a statement timeout as the backstop for the residual case term
 // selection cannot catch (a term rare tenant-wide but hot in one bank).
 
-// bm25MaxQueryTerms bounds how many query terms one BM25 tsquery carries. It
-// matches the reference's default (HINDSIGHT_API_BM25_MAX_QUERY_TERMS = 16).
-const bm25MaxQueryTerms = 16
-
 // bm25StatementTimeout bounds the BM25 statement's server-side runtime. It is
 // the backstop: term selection caps how much of the bank the query matches, but
 // the corpus statistics it reads are tenant-global, so a term rare across the
@@ -124,7 +120,7 @@ func (s *PostgresStore) bm25TokenDocumentFrequencies(ctx context.Context, tokens
 	          LEFT JOIN stats ON stats.lexeme = lex.lexeme
 	          GROUP BY lex.ord
 	          ORDER BY lex.ord`
-	rows, err := s.db.QueryContext(ctx, query, tokens, s.schema, "memory_units")
+	rows, err := s.reader().QueryContext(ctx, query, tokens, s.schema, "memory_units")
 	if err != nil {
 		return nil, err
 	}
@@ -155,17 +151,28 @@ func (s *PostgresStore) bm25TokenDocumentFrequencies(ctx context.Context, tokens
 // like "where does Alice live?" still finds "Alice moved to Berlin".
 //
 // A query longer than the term cap is first reduced to its most selective
-// terms, so a broad query cannot ask the ranker to score the whole bank. Term
-// selection that cannot read the statistics falls back to a positional cap. An
-// empty result means no term to search for.
+// terms, so a broad query cannot ask the ranker to score the whole bank. A
+// deployment may turn that selection off, in which case the cap keeps the
+// query's first terms by position instead; term selection that cannot read the
+// statistics falls back to the same positional cap. An empty result means no
+// term to search for.
 func (s *PostgresStore) boundedBM25Text(ctx context.Context, term string) string {
 	tokens := tokenizeQuery(term)
-	if len(tokens) > bm25MaxQueryTerms {
-		stats, err := s.bm25TokenDocumentFrequencies(ctx, tokens)
-		if err != nil {
-			tokens = tokens[:bm25MaxQueryTerms]
+	maxTerms := s.tuning.BM25MaxQueryTerms
+	if maxTerms <= 0 {
+		maxTerms = DefaultBM25MaxQueryTerms
+	}
+	if len(tokens) > maxTerms {
+		// The deployment may opt out of the document-frequency selection and
+		// take the positional first-N cap instead: the cap alone bounds the
+		// tsquery, it just keeps whichever terms the query happened to start
+		// with rather than the most selective ones.
+		if !s.tuning.BM25SelectiveTerms {
+			tokens = tokens[:maxTerms]
+		} else if stats, err := s.bm25TokenDocumentFrequencies(ctx, tokens); err != nil {
+			tokens = tokens[:maxTerms]
 		} else {
-			tokens = selectSelectiveTerms(tokens, stats, bm25MaxQueryTerms)
+			tokens = selectSelectiveTerms(tokens, stats, maxTerms)
 		}
 	}
 	return joinBM25Terms(tokens)

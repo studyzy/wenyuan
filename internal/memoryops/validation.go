@@ -20,17 +20,13 @@ const DefaultOperationLimit = 50
 // ValidateRetain checks the retain request fields, including the batch gate,
 // duplicate document identifiers, multi-strategy plus an operation identifier,
 // and identifier shape.
-func ValidateRetain(req RetainRequest, batchEnabled bool) *httpx.ValidationFailure {
+func ValidateRetain(req RetainRequest) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
 	if req.Items == nil {
 		items = append(items, httpx.Missing([]string{"body", "items"}, map[string]any{}))
 	} else if len(req.Items) < MinWriteItemsCount {
 		items = append(items, httpx.ValueError([]string{"body", "items"}, []any{},
 			"items must contain at least one entry"))
-	}
-	if batchEnabled && !req.Async {
-		items = append(items, httpx.ValueError([]string{"body", "async"}, req.Async,
-			"batch write mode requires asynchronous processing; set async to true"))
 	}
 	for index, item := range req.Items {
 		if item.Content.Flatten() == "" && !item.Content.HasImage() {

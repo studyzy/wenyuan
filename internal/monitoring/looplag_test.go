@@ -46,3 +46,22 @@ func TestLoopLagProbeDisabled(t *testing.T) {
 		t.Fatal("a disabled probe must return immediately")
 	}
 }
+
+// The accumulator keeps cumulative bucket counts, a running sum and a count, and
+// snapshots them as a renderable family.
+func TestLagHistogramAccumulates(t *testing.T) {
+	h := NewLagHistogram()
+	h.Observe(0.0005) // <= 0.001
+	h.Observe(0.003)  // <= 0.005
+	h.Observe(9.0)    // only +Inf
+	snap := h.Snapshot()
+	if snap.Name != LoopLagMetricName || snap.Count != 3 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.Counts[0] != 1 || snap.Counts[2] != 2 || snap.Counts[len(snap.Counts)-1] != 2 {
+		t.Fatalf("cumulative counts = %v", snap.Counts)
+	}
+	if snap.Sum < 9.0034 || snap.Sum > 9.0036 {
+		t.Fatalf("sum = %v", snap.Sum)
+	}
+}

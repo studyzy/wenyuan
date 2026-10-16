@@ -206,10 +206,10 @@ func TestConfigHelpBlock(t *testing.T) {
 	for _, want := range []string{
 		"Configuration:",
 		"  wenyuan-admin configure",
-		"  wenyuan-admin configure --api-url http://your-api:8888",
+		"  wenyuan-admin configure --api-url http://your-api:18888",
 		"    1. Environment variable (HINDSIGHT_API_URL) - highest priority",
 		"    2. Config file (~/.wenyuan/config)",
-		"    3. Default (http://localhost:8888)",
+		"    3. Default (http://localhost:18888)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help block missing %q:\n%s", want, got)

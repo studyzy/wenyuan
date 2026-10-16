@@ -60,7 +60,7 @@ func (s *PostgresStore) recallChunkEntries(ctx context.Context, q RecallQuery, m
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT chunk_id, COALESCE(document_id, ''), COALESCE(chunk_index, 0), COALESCE(chunk_text, '')
 		 FROM `+quoteIdent(s.schema)+`.chunks
 		 WHERE bank_id = $1 AND chunk_id = ANY($2::text[])`, q.BankID, ordered)
@@ -121,7 +121,7 @@ func (s *PostgresStore) recallSourceFacts(ctx context.Context, q RecallQuery, ma
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT id::text, COALESCE(text, ''), COALESCE(fact_type, ''), COALESCE(document_id, ''),
 		        COALESCE(chunk_id, ''), occurred_start, occurred_end, mentioned_at,
 		        COALESCE(metadata, '{}'::jsonb), COALESCE(tags, '{}')

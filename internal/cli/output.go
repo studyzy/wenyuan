@@ -294,10 +294,10 @@ func ConfigHelpBlock(w io.Writer, color bool) {
 	_, _ = fmt.Fprintln(w, "  wenyuan-admin configure")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "  Or set it directly:")
-	_, _ = fmt.Fprintln(w, "  wenyuan-admin configure --api-url http://your-api:8888")
+	_, _ = fmt.Fprintln(w, "  wenyuan-admin configure --api-url http://your-api:18888")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "  Configuration priority:")
 	_, _ = fmt.Fprintln(w, "    1. Environment variable (HINDSIGHT_API_URL) - highest priority")
 	_, _ = fmt.Fprintln(w, "    2. Config file (~/.wenyuan/config)")
-	_, _ = fmt.Fprintln(w, "    3. Default (http://localhost:8888)")
+	_, _ = fmt.Fprintln(w, "    3. Default (http://localhost:18888)")
 }

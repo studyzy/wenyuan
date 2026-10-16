@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/studyzy/wenyuan/internal/provider/vlm"
 )
 
 // PDF text extraction.
@@ -391,4 +393,45 @@ func skipTo(content []byte, start int, marker string) int {
 		return len(content)
 	}
 	return start + idx + len(marker)
+}
+
+// pdfImages returns the images a PDF embeds that this build can hand to a
+// vision model. Only DCTDecode (JPEG) image XObjects are returned: their stream
+// payload is a self-contained JPEG file. An image stored as raw samples
+// (FlateDecode) or in a codec this build has no decoder for (JPXDecode, JBIG2)
+// is skipped rather than sent to the model as a mislabelled blob.
+func pdfImages(data []byte) []vlm.Image {
+	var out []vlm.Image
+	for _, stream := range pdfStreams(data) {
+		if !isJPEGImageXObject(data, stream) {
+			continue
+		}
+		raw := data[stream.dataStart:stream.dataEnd]
+		if len(raw) < 2 || raw[0] != 0xFF || raw[1] != 0xD8 {
+			continue
+		}
+		out = append(out, vlm.Image{Data: raw, MediaType: "image/jpeg"})
+	}
+	return out
+}
+
+// isJPEGImageXObject reports whether a stream's dictionary describes a JPEG
+// image XObject. The dictionary sits immediately before the `stream` keyword,
+// so the last `<<` in the bytes preceding it opens it; requiring the /Subtype,
+// /Image and /DCTDecode names together keeps a preceding object's dictionary
+// from being mistaken for this stream's.
+func isJPEGImageXObject(file []byte, stream pdfStream) bool {
+	start := stream.dataStart - 2048
+	if start < 0 {
+		start = 0
+	}
+	before := file[start:stream.dataStart]
+	open := bytes.LastIndex(before, []byte("<<"))
+	if open < 0 {
+		return false
+	}
+	dict := before[open:]
+	return bytes.Contains(dict, []byte("/Subtype")) &&
+		bytes.Contains(dict, []byte("/Image")) &&
+		bytes.Contains(dict, []byte("/DCTDecode"))
 }

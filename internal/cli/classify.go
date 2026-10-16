@@ -231,7 +231,7 @@ func (e *ClassifiedError) appendSections(b *strings.Builder) {
 	case KindInvalidURL:
 		b.WriteString("\nThe API URL format is invalid.\n")
 		b.WriteString("Ensure it starts with http:// or https://\n")
-		block(b, "Example:", "export HINDSIGHT_API_URL=http://localhost:8888")
+		block(b, "Example:", "export HINDSIGHT_API_URL=http://localhost:18888")
 	case KindDecode:
 		e.appendDecode(b)
 	default:

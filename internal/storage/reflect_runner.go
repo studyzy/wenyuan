@@ -21,6 +21,10 @@ type AgenticReflectRequest struct {
 	Question string
 	// MaxTokens caps the answer length; zero means the runner's default.
 	MaxTokens int
+	// MaxCompletionTokens is the transport-level output cap for the final
+	// synthesis call from the deployment's reflect tuning; zero leaves the
+	// visible-length target as the cap.
+	MaxCompletionTokens int
 	// MaxIterations bounds the retrieval turns; zero means the runner's
 	// default.
 	MaxIterations int

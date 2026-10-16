@@ -21,6 +21,12 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 	if retainExtractionMode == "" {
 		retainExtractionMode = config.DefaultRetainExtractionMode
 	}
+	// Every value below is the process layer of a bank's configuration: a bank
+	// that overrides nothing reads the deployment's resolved value, which is
+	// what the reference does with a copied .env. The pointer-typed entries stay
+	// null when the deployment set nothing, because null is a distinct answer
+	// from the empty string.
+	p := cfg.ProcessDefaults
 	return map[string]any{
 		// MCP and audit.
 		"mcp_enabled_tools": nil,
@@ -28,53 +34,70 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 		// Persisting raw source text.
 		"store_document_text": cfg.StoreDocumentText,
 		// Retention and extraction.
-		"retain_chunk_size":                                     3000,
-		"retain_structured_chunk_size":                          nil,
+		"retain_chunk_size":                                     p.RetainChunkSize,
+		"retain_structured_chunk_size":                          optionalInt(p.RetainStructuredChunkSize),
 		"retain_extraction_mode":                                retainExtractionMode,
-		"retain_mission":                                        nil,
-		"retain_custom_instructions":                            nil,
-		"retain_default_strategy":                               nil,
-		"retain_strategies":                                     nil,
-		"retain_chunk_batch_size":                               100,
-		"retain_max_attachments_per_chunk":                      8,
+		"retain_mission":                                        optionalString(p.RetainMission),
+		"retain_custom_instructions":                            optionalString(p.RetainCustomInstructions),
+		"retain_default_strategy":                               optionalString(p.RetainDefaultStrategy),
+		"retain_strategies":                                     optionalString(p.RetainStrategies),
+		"retain_chunk_batch_size":                               p.RetainChunkBatchSize,
+		"retain_max_attachments_per_chunk":                      p.RetainMaxAttachments,
 		"entity_labels":                                         nil,
 		"entities_allow_free_form":                              true,
-		"enable_text_search":                                    true,
-		"enable_temporal_retrieval":                             true,
-		"enable_graph_retrieval":                                true,
-		"enable_reranking":                                      true,
+		"enable_text_search":                                    p.EnableTextSearch,
+		"enable_temporal_retrieval":                             p.EnableTemporalRetrieval,
+		"enable_graph_retrieval":                                p.EnableGraphRetrieval,
+		"enable_reranking":                                      p.EnableReranking,
 		"enable_observations":                                   cfg.EnableObservations,
 		"enable_auto_consolidation":                             cfg.EnableAutoConsolidation,
-		"consolidation_llm_batch_size":                          8,
-		"consolidation_llm_parallelism":                         4,
-		"consolidation_max_memories_per_round":                  100,
-		"consolidation_source_facts_max_tokens":                 4096,
-		"consolidation_source_facts_max_tokens_per_observation": 256,
-		"observations_mission":                                  nil,
-		"max_observations_per_scope":                            -1,
-		"observation_scope_limits":                              nil,
-		"consolidation_strategies":                              nil,
-		"mental_model_min_refresh_interval_seconds":             0,
-		"knowledge_page_default_trigger":                        nil,
-		"reflect_mission":                                       nil,
-		"reflect_source_facts_max_tokens":                       -1,
-		"reflect_default_options":                               nil,
-		"recall_include_chunks":                                 true,
-		"recall_max_tokens":                                     2048,
-		"recall_chunks_max_tokens":                              1000,
-		"recall_budget_function":                                "fixed",
-		"recall_budget_fixed_low":                               100,
-		"recall_budget_fixed_mid":                               300,
-		"recall_budget_fixed_high":                              1000,
-		"recall_budget_adaptive_low":                            0.025,
-		"recall_budget_adaptive_mid":                            0.075,
-		"recall_budget_adaptive_high":                           0.25,
-		"recall_budget_min":                                     20,
-		"recall_budget_max":                                     2000,
-		"disposition_skepticism":                                nil,
-		"disposition_literalism":                                nil,
-		"disposition_empathy":                                   nil,
+		"consolidation_llm_batch_size":                          p.ConsolidationLLMBatchSize,
+		"consolidation_llm_parallelism":                         p.ConsolidationLLMParallelism,
+		"consolidation_max_memories_per_round":                  p.ConsolidationMaxPerRound,
+		"consolidation_source_facts_max_tokens":                 p.ConsolidationSourceFactTokens,
+		"consolidation_source_facts_max_tokens_per_observation": p.ConsolidationSourceFactTokensPerObservation,
+		"observations_mission":                                  optionalString(p.ObservationsMission),
+		"max_observations_per_scope":                            p.MaxObservationsPerScope,
+		"observation_scope_limits":                              optionalString(p.ObservationScopeLimits),
+		"consolidation_strategies":                              optionalString(p.ConsolidationStrategies),
+		"mental_model_min_refresh_interval_seconds":             p.MentalModelMinRefreshSeconds,
+		"knowledge_page_default_trigger":                        p.KnowledgePageDefaultTrigger,
+		"reflect_mission":                                       optionalString(p.ReflectMission),
+		"reflect_source_facts_max_tokens":                       p.ReflectSourceFactsMaxTokens,
+		"reflect_default_options":                               p.ReflectDefaultOptions,
+		"recall_include_chunks":                                 p.RecallIncludeChunks,
+		"recall_max_tokens":                                     p.RecallMaxTokens,
+		"recall_chunks_max_tokens":                              p.RecallChunksMaxTokens,
+		"recall_budget_function":                                p.RecallBudgetFunction,
+		"recall_budget_fixed_low":                               p.RecallBudgetFixedLow,
+		"recall_budget_fixed_mid":                               p.RecallBudgetFixedMid,
+		"recall_budget_fixed_high":                              p.RecallBudgetFixedHigh,
+		"recall_budget_adaptive_low":                            p.RecallBudgetAdaptiveLow,
+		"recall_budget_adaptive_mid":                            p.RecallBudgetAdaptiveMid,
+		"recall_budget_adaptive_high":                           p.RecallBudgetAdaptiveHigh,
+		"recall_budget_min":                                     p.RecallBudgetMin,
+		"recall_budget_max":                                     p.RecallBudgetMax,
+		"disposition_skepticism":                                optionalInt(p.DispositionSkepticism),
+		"disposition_literalism":                                optionalInt(p.DispositionLiteralism),
+		"disposition_empathy":                                   optionalInt(p.DispositionEmpathy),
 		"llm_gemini_safety_settings":                            nil,
 		"memory_defense":                                        nil,
 	}
+}
+
+// optionalString renders a nullable string the way a bank's configuration read
+// reports it: the value when the deployment set one, and null when it did not.
+func optionalString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+// optionalInt renders a nullable integer the same way.
+func optionalInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

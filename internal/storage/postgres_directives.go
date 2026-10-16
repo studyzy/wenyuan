@@ -17,7 +17,7 @@ func (s *PostgresStore) ListDirectives(ctx context.Context, bankID string) ([]Di
 	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(s.schema) + `.directives
 	          WHERE bank_id = $1
 	          ORDER BY priority DESC, created_at DESC, id ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (s *PostgresStore) ListDirectives(ctx context.Context, bankID string) ([]Di
 func (s *PostgresStore) GetDirective(ctx context.Context, bankID, id string) (Directive, error) {
 	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(s.schema) + `.directives
 	          WHERE bank_id = $1 AND id = $2`
-	directive, err := scanDirective(s.db.QueryRowContext(ctx, query, bankID, id))
+	directive, err := scanDirective(s.reader().QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Directive{}, ErrDirectiveNotFound

@@ -74,7 +74,7 @@ const (
 // query — that is the point, since a fact linked to a relevant one is often
 // relevant itself without sharing its wording.
 func (s *MemoryStore) runGraphArm(q RecallQuery, types []string, term string) []recallHit {
-	if term == "" || !graphSeedsAllowed(q) {
+	if term == "" || !graphSeedsAllowed(q, s.tuning.GraphSeedMinSimilarity) {
 		return nil
 	}
 	seeds := s.graphSeeds(q, types, term)

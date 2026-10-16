@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
@@ -27,8 +28,16 @@ func (a *App) mountReporting(handle func(method, pattern string, handler http.Ha
 	handlers.APIVersion = httpx.APIVersion
 	handlers.Features = a.Config.FeatureMap()
 	handlers.BankLLMHealthEnabled = a.Config.EnableBankLLMHealth
-	handlers.Extraction = newFactExtractor(a.Provider, a.Config.Provider.RetainMaxRetries)
+	handlers.DryRunExtractDisabled = !a.Config.EnableDryRunExtract
+	handlers.Extraction = newFactExtractor(a.Provider, ExtractionSettingsFrom(a.Config))
 	handlers.Embeddings = embeddingGeneratorFrom(a.Embedder)
+	handlers.ProcessDefaults = bankapi.PublicConfigDefaults(a.Config)
+	// The switch is passed only when it is off: an unconfigured deployment keeps
+	// the reference's default, which extracts causal relations.
+	if !a.Config.RetainTuning.ExtractCausalLinks {
+		disabled := false
+		handlers.RetainExtractCausalLinks = &disabled
+	}
 	if a.Provider != nil && a.Provider.Name() != none.NameNone {
 		handlers.Prober = llmProber{provider: a.Provider}
 	}

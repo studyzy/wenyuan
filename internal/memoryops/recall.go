@@ -58,6 +58,12 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	// enhancement surface and the non-vector arms still answer.
 	if h.Embeddings != nil {
 		if text := strings.TrimSpace(req.Query); text != "" {
+			// The query is bounded before it reaches the embedder, one of the
+			// sinks a degenerate query used to crash. The store bounds it again
+			// before retrieval; doing it here keeps the two agreed.
+			if limiter, ok := h.Store.(interface{ RecallQueryTokenLimit() int }); ok {
+				text = storage.TruncateQueryToTokens(text, limiter.RecallQueryTokenLimit())
+			}
 			if vector, err := h.Embeddings.EmbedQuery(r.Context(), text); err == nil {
 				query.QueryEmbedding = vector
 			}

@@ -73,11 +73,12 @@ func (s *MemoryStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
 		return Bank{}, ErrInvalidBankID
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, exists := s.banks[bank.BankID]; exists {
+		s.mu.Unlock()
 		return Bank{}, ErrOperationConflict
 	}
 	if _, ok := s.aliasBankLocked(bank.BankID); ok {
+		s.mu.Unlock()
 		return Bank{}, ErrAliasConflict
 	}
 	now := time.Now().UTC()
@@ -87,6 +88,11 @@ func (s *MemoryStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
 	s.banks[bank.BankID] = bank
 	s.order = append(s.order, bank.BankID)
 	s.invalidateBankLocked(bank.BankID)
+	hook := s.bankCreateHook
+	// The hook runs without the lock: it provisions the bank through the same
+	// store, so holding the write lock here would deadlock.
+	s.mu.Unlock()
+	runBankCreateHook(ctx, hook, bank.BankID)
 	return bank, nil
 }
 
@@ -97,14 +103,16 @@ func (s *MemoryStore) EnsureBank(ctx context.Context, bankID string) error {
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.banks[bankID]; ok {
+		s.mu.Unlock()
 		return nil
 	}
 	if !ValidBankID(bankID) {
+		s.mu.Unlock()
 		return ErrInvalidBankID
 	}
 	if _, ok := s.aliasBankLocked(bankID); ok {
+		s.mu.Unlock()
 		return ErrAliasConflict
 	}
 	now := time.Now().UTC()
@@ -113,6 +121,9 @@ func (s *MemoryStore) EnsureBank(ctx context.Context, bankID string) error {
 	s.banks[bankID] = bank
 	s.order = append(s.order, bankID)
 	s.invalidateBankLocked(bankID)
+	hook := s.bankCreateHook
+	s.mu.Unlock()
+	runBankCreateHook(ctx, hook, bankID)
 	return nil
 }
 
@@ -194,11 +205,20 @@ func (s *MemoryStore) ResolveBankID(ctx context.Context, name string) (string, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if _, ok := s.banks[name]; ok {
+		// A real bank always wins, so it is never shadowed by an alias of the
+		// same text and never needs a cache entry of its own.
 		return name, nil
 	}
+	cache := aliasCacheRef()
+	if cached, ok := cache.get(s.schema, name); ok {
+		return cached, nil
+	}
 	if owner, ok := s.aliasBankLocked(name); ok {
+		cache.put(s.schema, name, owner)
 		return owner, nil
 	}
+	// A miss is worth caching too: the next lookup of this name skips the store.
+	cache.put(s.schema, name, name)
 	return name, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 )
@@ -28,7 +29,7 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 	}
 	// Extraction calls a model, so it runs before any write begins: a slow
 	// model call must not hold a database transaction open.
-	extracted, err := extractForItems(ctx, req)
+	extracted, err := extractForItems(ctx, req, s.tuning.ExtractCausalLinks)
 	if err != nil {
 		return RetainOutcome{}, err
 	}
@@ -193,6 +194,10 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
 		return nil, err
 	}
+	// The item's mentions are clustered once, before any is scored, so two
+	// spellings of one name that appear in this same document become one entity
+	// rather than two.
+	canonicalNames := intrabatchCanonicalNames(itemEntityMentions(contents), item.ResolveEntities, s.intrabatchMergeSimilarity())
 	units := make([]string, 0, len(contents))
 	for _, content := range contents {
 		stored, err := s.UpsertUnit(ctx, content.unit)
@@ -204,7 +209,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 		mentioned := make([]string, 0, len(content.entities))
 		seen := map[string]bool{}
 		for _, entity := range content.entities {
-			resolved, err := s.ResolveRetainEntity(ctx, req.BankID, entity, item.ResolveEntities)
+			resolved, err := s.ResolveRetainEntity(ctx, req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities)
 			if err != nil {
 				return nil, err
 			}
@@ -433,7 +438,7 @@ func (s *PostgresStore) GetDocument(ctx context.Context, bankID, docID string) (
 	          FROM ` + quoteIdent(s.schema) + `.documents WHERE id=$1 AND bank_id=$2`
 	var doc Document
 	var paramsRaw, tagsRaw []byte
-	err := s.db.QueryRowContext(ctx, query, docID, bankID).Scan(&doc.ID, &doc.BankID, &doc.OriginalText,
+	err := s.reader().QueryRowContext(ctx, query, docID, bankID).Scan(&doc.ID, &doc.BankID, &doc.OriginalText,
 		&doc.ContentHash, &doc.CreatedAt, &doc.UpdatedAt, &paramsRaw, &tagsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrDocumentNotFound
@@ -630,7 +635,26 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 			` WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
 		return s.scanEntity(ctx, fallback, bankID, name)
 	}
-	return bestEntityCandidate(candidates, name)
+	return bestEntityCandidate(candidates, name, s.mergeMinSimilarity())
+}
+
+// mergeMinSimilarity is the reference's second trigram gate, falling back to
+// the shipped default when the tuning was not set.
+func (s *PostgresStore) mergeMinSimilarity() float64 {
+	if s.tuning.EntityMergeMinSimilarity > 0 {
+		return s.tuning.EntityMergeMinSimilarity
+	}
+	return DefaultEntityMergeMinSimilarity
+}
+
+// intrabatchMergeSimilarity is the pg_trgm similarity at or above which two
+// names in one extraction batch are merged before either is scored, falling
+// back to the shipped default when the tuning was not set.
+func (s *PostgresStore) intrabatchMergeSimilarity() float64 {
+	if s.tuning.EntityIntrabatchMerge > 0 {
+		return s.tuning.EntityIntrabatchMerge
+	}
+	return DefaultEntityIntrabatchMergeSimilarity
 }
 
 // entityCandidates returns the stored entities whose names are close enough to
@@ -667,10 +691,19 @@ func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name strin
 // bestEntityCandidate picks the candidate the similarity score accepts,
 // preferring the highest score and breaking ties on the identifier so the
 // resolution is deterministic.
-func bestEntityCandidate(candidates []Entity, name string) (Entity, bool, error) {
+//
+// A candidate must clear the merge floor (the reference's second trigram gate)
+// before it is scored: the probe admits candidates far looser than the merge
+// threshold, and the score alone can reach it on signals other than the name,
+// so the floor keeps a name that is only coincidentally close from being merged
+// onto.
+func bestEntityCandidate(candidates []Entity, name string, mergeFloor float64) (Entity, bool, error) {
 	best := Entity{}
 	bestScore := 0.0
 	for _, candidate := range candidates {
+		if !entityMergeFloorPasses(name, candidate.CanonicalName, mergeFloor) {
+			continue
+		}
 		score := entitySimilarity(candidate.CanonicalName, name)
 		if score < EntitySimilarityThreshold {
 			continue
@@ -847,6 +880,55 @@ func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID stri
 		}
 	}
 	return nil
+}
+
+// UnitEntityNames returns the entities each unit mentions, keyed by unit id.
+//
+// Direct postings answer for most units. An observation rarely has postings of
+// its own: its entities live transitively through the memories it was
+// consolidated from, so it inherits theirs when it has none — which is what the
+// unit's own detail read reports, and a listing that disagreed with it would be
+// showing the same memory two ways.
+func (s *PostgresStore) UnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	if len(unitIDs) == 0 {
+		return map[string][]string{}, nil
+	}
+	qualified := quoteIdent(s.schema)
+	query := `
+		SELECT ue.unit_id::text, e.canonical_name
+		FROM ` + qualified + `.unit_entities ue
+		JOIN ` + qualified + `.entities e ON e.id = ue.entity_id
+		WHERE ue.unit_id = ANY($1::uuid[]) AND e.bank_id = $2
+		UNION
+		SELECT obs.id::text, e.canonical_name
+		FROM ` + qualified + `.memory_units obs
+		CROSS JOIN LATERAL unnest(obs.source_memory_ids) AS src_id
+		JOIN ` + qualified + `.unit_entities src_ue ON src_ue.unit_id = src_id
+		JOIN ` + qualified + `.entities e ON e.id = src_ue.entity_id
+		WHERE obs.id = ANY($1::uuid[]) AND obs.fact_type = 'observation'
+		  AND obs.source_memory_ids IS NOT NULL
+		  AND e.bank_id = $2
+		  AND NOT EXISTS (SELECT 1 FROM ` + qualified + `.unit_entities d WHERE d.unit_id = obs.id)
+		ORDER BY 2`
+	rows, err := s.db.QueryContext(ctx, query, unitIDs, bankID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byUnit := map[string][]string{}
+	for rows.Next() {
+		var unitID, name string
+		if err := rows.Scan(&unitID, &name); err != nil {
+			return nil, err
+		}
+		// UNION removes duplicate rows, but a unit can reach one entity through
+		// several source memories, so the names are deduped per unit as well.
+		if slices.Contains(byUnit[unitID], name) {
+			continue
+		}
+		byUnit[unitID] = append(byUnit[unitID], name)
+	}
+	return byUnit, rows.Err()
 }
 
 // UpsertEntityCooccurrence records that two entities co-occur in a bank.

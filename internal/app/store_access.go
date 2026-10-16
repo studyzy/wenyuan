@@ -21,5 +21,9 @@ func OpenStore(ctx context.Context, cfg config.Config, deps Dependencies) (stora
 			return nil, err
 		}
 	}
+	// The tuning the deployment resolved reaches this store too: a process that
+	// owns a queue but serves no HTTP surface (the standalone worker) runs the
+	// same retrieval, write and reflection knobs as the server.
+	setStoreTuning(store, cfg)
 	return store, nil
 }

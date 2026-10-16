@@ -87,6 +87,10 @@ type Extractor struct {
 	// foreign shape is re-asked with the drift correction. Zero (the default)
 	// leaves such a response as "no facts found".
 	MaxCorrectionRetries int
+	// MaxCompletionTokens caps the extraction call's generated tokens. Zero
+	// leaves the parameter unset, which is what a deployment that configured no
+	// cap asks for.
+	MaxCompletionTokens int
 }
 
 // New builds an extractor over the provider boundary. The scope labels the
@@ -151,7 +155,7 @@ func (e *Extractor) repair(ctx context.Context, text, previous string, opts Opti
 	if err != nil {
 		return nil, fmt.Errorf("fact extraction repair call failed: %w", err)
 	}
-	return parseForMode(resolveMode(opts.Mode), response.Structured, opts.Vocabulary)
+	return parseForMode(resolveMode(opts.Mode), response.Structured, opts)
 }
 
 // driftCorrection is the user turn appended when the model answered with facts
@@ -181,7 +185,7 @@ func driftWarranted(structured any) bool {
 // the response they came from, so usage reflects the call that actually
 // answered. A budget of zero leaves the drifted response alone.
 func (e *Extractor) correctDrift(ctx context.Context, text string, response provider.CompletionResult, opts Options) ([]Fact, provider.CompletionResult, error) {
-	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts.Vocabulary)
+	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts)
 	for range e.MaxCorrectionRetries {
 		if parseErr == nil && (len(facts) > 0 || !driftWarranted(response.Structured)) {
 			break
@@ -192,7 +196,7 @@ func (e *Extractor) correctDrift(ctx context.Context, text string, response prov
 			return nil, response, fmt.Errorf("fact extraction correction call failed: %w", err)
 		}
 		response = corrected
-		facts, parseErr = parseForMode(resolveMode(opts.Mode), response.Structured, opts.Vocabulary)
+		facts, parseErr = parseForMode(resolveMode(opts.Mode), response.Structured, opts)
 	}
 	if parseErr != nil {
 		return nil, response, parseErr
@@ -204,11 +208,11 @@ func (e *Extractor) correctDrift(ctx context.Context, text string, response prov
 // needs: verbatim entries carry no text and take the metadata-only reader,
 // every other mode reads the dimensions (or the concise "text") and collapses
 // them.
-func parseForMode(mode string, structured any, vocab *entitylabels.Vocabulary) ([]Fact, error) {
+func parseForMode(mode string, structured any, opts Options) ([]Fact, error) {
 	if mode == ModeVerbatim {
-		return parseVerbatimFacts(structured, vocab)
+		return parseVerbatimFacts(structured, opts.Vocabulary)
 	}
-	return parseFacts(structured, vocab)
+	return parseFacts(structured, opts)
 }
 
 // factExtractionPrompt and the mode schemas live in modes.go; this file owns
@@ -217,7 +221,7 @@ func parseForMode(mode string, structured any, vocab *entitylabels.Vocabulary) (
 // parseFacts reads the model's structured value, falling back to parsing its
 // text when no structured value was produced. The vocabulary, when present,
 // turns each fact's 'labels' object into canonical key:value selections.
-func parseFacts(structured any, vocab *entitylabels.Vocabulary) ([]Fact, error) {
+func parseFacts(structured any, opts Options) ([]Fact, error) {
 	root, ok := structured.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("extraction response was not an object")
@@ -270,12 +274,15 @@ func parseFacts(structured any, vocab *entitylabels.Vocabulary) ([]Fact, error) 
 			Kind:            stringValue(entry["fact_kind"]),
 			Type:            factType,
 			FromAttachments: attachmentNumbers(entry["from_attachments"]),
-			Labels:          extractLabels(entry, vocab),
+			Labels:          extractLabels(entry, opts.Vocabulary),
 		}
 		// Relations are resolved against the index this fact will have, so a
 		// forward or out-of-range reference is dropped rather than kept as a
-		// dangling edge.
-		fact.CausalRelations = causalRelations(entry["causal_relations"], len(facts))
+		// dangling edge. A disabled causal switch never reads the field, so a
+		// model that answers with relations anyway yields none.
+		if causalLinksEnabled(opts) {
+			fact.CausalRelations = causalRelations(entry["causal_relations"], len(facts))
+		}
 		facts = append(facts, fact)
 		if len(facts) >= maxFactsPerItem {
 			break

@@ -289,7 +289,7 @@ func TestClassifyInvariants(t *testing.T) {
 			name:     "invalid url shape",
 			err:      errors.New(`invalid URL: parse "http://": missing protocol scheme`),
 			wantKind: KindInvalidURL, wantTitle: "Invalid API URL",
-			contains: []string{"export HINDSIGHT_API_URL=http://localhost:8888"},
+			contains: []string{"export HINDSIGHT_API_URL=http://localhost:18888"},
 		},
 		{
 			name:     "parenthetical with a non-digit status is not split",

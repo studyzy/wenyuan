@@ -69,6 +69,71 @@ func EmbeddingGeneratorFrom(embedder embed.Embedder) storage.EmbeddingGenerator 
 	return embeddingGeneratorFrom(embedder)
 }
 
+// derefIntOrZero reads an optional integer as a plain one, where zero means
+// "unset" for the consumer.
+func derefIntOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+// setStoreTuning installs the resolved tuning on a store that carries it, so a
+// deployment's retrieval, write and reflection knobs reach the pipeline instead
+// of the package defaults. A store without the capability is left as it is.
+func setStoreTuning(store storage.Store, cfg config.Config) {
+	setter, ok := store.(interface{ SetTuning(storage.Tuning) })
+	if !ok {
+		return
+	}
+	setter.SetTuning(storage.Tuning{
+		GraphSeedMinSimilarity:       cfg.RecallTuning.GraphSeedMinSimilarity,
+		SemanticLinkMinSimilarity:    cfg.RecallTuning.SemanticLinkMinSimilarity,
+		BM25MaxQueryTerms:            cfg.RecallTuning.BM25MaxQueryTerms,
+		RecallBudgetLow:              cfg.ProcessDefaults.RecallBudgetFixedLow,
+		RecallBudgetMid:              cfg.ProcessDefaults.RecallBudgetFixedMid,
+		RecallBudgetHigh:             cfg.ProcessDefaults.RecallBudgetFixedHigh,
+		ReflectMaxIterations:         cfg.ReflectTuning.MaxIterations,
+		ReflectContextBudget:         cfg.ReflectTuning.MaxContextTokens,
+		EntityMergeMinSimilarity:     cfg.EntityTuning.MergeMinSimilarity,
+		MaxQueryTokens:               cfg.RecallTuning.MaxQueryTokens,
+		MaxConcurrent:                cfg.RecallTuning.MaxConcurrent,
+		ConnectionBudget:             cfg.RecallTuning.ConnectionBudget,
+		BM25SelectiveTerms:           cfg.RecallTuning.BM25SelectiveTerms,
+		InternalRecallIncludeChunks:  cfg.ProcessDefaults.RecallIncludeChunks,
+		InternalRecallMaxFactTokens:  cfg.ProcessDefaults.RecallMaxTokens,
+		InternalRecallMaxChunkTokens: cfg.ProcessDefaults.RecallChunksMaxTokens,
+		ExtractCausalLinks:           cfg.RetainTuning.ExtractCausalLinks,
+		EntityIntrabatchMerge:        cfg.EntityTuning.IntrabatchMerge,
+		ReflectPromptCacheEnabled:    cfg.ReflectTuning.PromptCacheEnabled,
+		ReflectMaxCompletionTokens:   derefIntOrZero(cfg.ReflectTuning.MaxCompletionTokens),
+		RecallBudgetFunction:         cfg.ProcessDefaults.RecallBudgetFunction,
+		RecallBudgetAdaptiveLow:      cfg.ProcessDefaults.RecallBudgetAdaptiveLow,
+		RecallBudgetAdaptiveMid:      cfg.ProcessDefaults.RecallBudgetAdaptiveMid,
+		RecallBudgetAdaptiveHigh:     cfg.ProcessDefaults.RecallBudgetAdaptiveHigh,
+		RecallBudgetMin:              cfg.ProcessDefaults.RecallBudgetMin,
+		RecallBudgetMax:              cfg.ProcessDefaults.RecallBudgetMax,
+		DiagnosticPhases:             cfg.RecallTuning.DiagnosticPhases,
+		PhaseSampleEvery:             cfg.RecallTuning.PhaseSampleEvery,
+		Consolidation: storage.ConsolidationTuning{
+			MemoryBatchSize:     cfg.ConsolidationTuning.MemoryBatchSize,
+			DedupThreshold:      cfg.ConsolidationTuning.DedupThreshold,
+			MaxAttempts:         cfg.ConsolidationTuning.MaxAttempts,
+			MaxTokens:           cfg.ConsolidationTuning.MaxTokens,
+			RecallBudget:        cfg.ConsolidationTuning.RecallBudget,
+			MaxCompletionTokens: derefIntOrZero(cfg.ConsolidationTuning.MaxCompletionTokens),
+		},
+		ANNIterativeScan:           cfg.DBTuning.ANNIterativeScan,
+		ANNMaxScanTuples:           cfg.DBTuning.ANNMaxScanTuples,
+		EntityCandidateSimilarity:  cfg.EntityTuning.TRGMSimilarityThreshold,
+		EntityResolutionCandidates: cfg.RetainTuning.EntityResolutionCandidates,
+		ObservationHistory:         cfg.EnableObservationHistory,
+		MentalModelHistory:         cfg.EnableMentalModelHistory,
+		ObservationHistoryMax:      cfg.ConsolidationTuning.HistoryMaxEntries,
+		MentalModelHistoryMax:      cfg.ConsolidationTuning.MentalModelHistoryEntries,
+	})
+}
+
 // setObservationEmbedder gives the store the generator the consolidation write
 // path embeds observation texts with, so an observation lands with a vector and
 // the vector recall arm can rank it rather than reaching the synthesis only by

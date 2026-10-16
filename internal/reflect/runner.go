@@ -38,15 +38,16 @@ func (r *Runner) Run(ctx context.Context, req storage.AgenticReflectRequest) (st
 		inner: req.Retrieval, bankID: req.BankID, directives: req.Directives,
 		tags: req.Tags, tagsMatch: req.TagsMatch, tagGroups: req.TagGroups,
 	}, Config{
-		MaxIterations:    req.MaxIterations,
-		Question:         req.Question,
-		MaxTokens:        req.MaxTokens,
-		Budget:           req.Budget,
-		ResponseSchema:   req.ResponseSchema,
-		BankName:         req.BankName,
-		Mission:          req.Mission,
-		Disposition:      req.Disposition,
-		AnswerAsDocument: req.AnswerAsDocument,
+		MaxIterations:       req.MaxIterations,
+		Question:            req.Question,
+		MaxTokens:           req.MaxTokens,
+		MaxCompletionTokens: req.MaxCompletionTokens,
+		Budget:              req.Budget,
+		ResponseSchema:      req.ResponseSchema,
+		BankName:            req.BankName,
+		Mission:             req.Mission,
+		Disposition:         req.Disposition,
+		AnswerAsDocument:    req.AnswerAsDocument,
 	})
 	outcome, err := loop.Run(ctx)
 	if err != nil {

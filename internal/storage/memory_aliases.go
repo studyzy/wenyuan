@@ -50,6 +50,9 @@ func (s *MemoryStore) AddAlias(ctx context.Context, bankID, alias string, primar
 		s.demoteOthersLocked(bankID, alias)
 	}
 	s.invalidateBankLocked(bankID)
+	// The negative an earlier resolution cached for this name would otherwise
+	// keep the new alias invisible on this process for the whole TTL.
+	aliasCacheRef().invalidate(s.schema, alias)
 	return s.aliasesForLocked(bankID), nil
 }
 
@@ -103,6 +106,9 @@ func (s *MemoryStore) RemoveAlias(ctx context.Context, bankID, alias string) ([]
 		delete(s.aliasesByBank, bankID)
 	}
 	s.invalidateBankLocked(bankID)
+	// A cached resolution for the detached name would otherwise keep routing to
+	// the bank on this process for the whole TTL.
+	aliasCacheRef().invalidate(s.schema, alias)
 	return s.aliasesForLocked(bankID), nil
 }
 

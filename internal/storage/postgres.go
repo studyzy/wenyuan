@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,10 +31,71 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 	// the reference's own configuration (SQLAlchemy scheme, `ssl=` parameter)
 	// connects rather than failing on a scheme the driver does not know.
 	db, err := openDB(NormalizeDatabaseURL(cfg.DatabaseURL), PoolBudget{
-		MaxOpenConns: cfg.MaxOpenConns,
-		MaxIdleConns: cfg.MaxIdleConns,
+		MaxOpenConns:             cfg.MaxOpenConns,
+		MaxIdleConns:             cfg.MaxIdleConns,
+		Session:                  cfg.Session,
+		AcquireTimeout:           cfg.AcquireTimeout,
+		PoolSlowAcquireThreshold: cfg.PoolSlowAcquireThreshold,
+		AcquireWarnThreshold:     cfg.AcquireWarnThreshold,
 	})
 	if err != nil {
+		return nil, err
+	}
+	// A deployment can point the migration series at a role that may run DDL
+	// while serving over a role that may not: the series then runs over its own
+	// handle, and the serving pool never holds a connection that issued DDL.
+	var migrationDB DB
+	if strings.TrimSpace(cfg.MigrationDatabaseURL) != "" {
+		migrationDB, err = openDB(NormalizeDatabaseURL(cfg.MigrationDatabaseURL), PoolBudget{
+			MaxOpenConns: 2,
+			MaxIdleConns: 1,
+		})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("opening the migration database: %w", err)
+		}
+	}
+	// A separate read handle is the reference's read pool: reads that tolerate a
+	// replica run there, so the primary's connections are left for writes. Its
+	// session settings are the primary's — a replica that takes a statement
+	// timeout has to be told the same one.
+	var readDB DB
+	if strings.TrimSpace(cfg.ReadDatabaseURL) != "" {
+		readDB, err = openDB(NormalizeDatabaseURL(cfg.ReadDatabaseURL), PoolBudget{
+			MaxOpenConns:             cfg.ReadPoolMax,
+			MaxIdleConns:             cfg.ReadPoolMin,
+			Session:                  cfg.Session,
+			AcquireTimeout:           cfg.AcquireTimeout,
+			PoolSlowAcquireThreshold: cfg.PoolSlowAcquireThreshold,
+			AcquireWarnThreshold:     cfg.AcquireWarnThreshold,
+		})
+		if err != nil {
+			_ = db.Close()
+			if migrationDB != nil {
+				_ = migrationDB.Close()
+			}
+			return nil, fmt.Errorf("opening the read database: %w", err)
+		}
+		if err := readDB.Ping(ctx); err != nil {
+			_ = db.Close()
+			if migrationDB != nil {
+				_ = migrationDB.Close()
+			}
+			return nil, err
+		}
+	}
+	// The text-search backend is validated here rather than trusted: the
+	// pg_search arm embeds its function schema and tokenizer directly into SQL,
+	// so both have to be known-safe before any statement is built.
+	textSearch, err := resolveTextSearchBackend(cfg)
+	if err != nil {
+		_ = db.Close()
+		if migrationDB != nil {
+			_ = migrationDB.Close()
+		}
+		if readDB != nil {
+			_ = readDB.Close()
+		}
 		return nil, err
 	}
 	if err := db.Ping(ctx); err != nil {
@@ -54,7 +116,12 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 	if strings.TrimSpace(schema) == "" {
 		schema = "public"
 	}
-	return &PostgresStore{db: db, schema: schema, vectorExtension: cfg.VectorExtension, bankStatsCacheTTL: cfg.BankStatsCacheTTL}, nil
+	return &PostgresStore{
+		db: db, schema: schema, vectorExtension: cfg.VectorExtension,
+		bankStatsCacheTTL: cfg.BankStatsCacheTTL, migrationDB: migrationDB, readDB: readDB,
+		textSearchExtension: textSearch.extension, pgFunctionSchema: textSearch.functionSchema,
+		pgTokenizer: textSearch.tokenizer, tuning: DefaultTuning(),
+	}, nil
 }
 
 // PostgresStore is the database-backed Store. It is the sole owner of the
@@ -78,6 +145,44 @@ type PostgresStore struct {
 	// and the vector recall arm cannot rank it, so recall would reach the
 	// synthesis only by keyword.
 	observationEmbedder EmbeddingGenerator
+	// tuning carries the resolved retrieval, write and reflection knobs, so a
+	// deployment's configuration reaches the pipeline.
+	tuning Tuning
+	// migrationDB, when set, is the handle the migration series runs over
+	// instead of the serving handle. Same database, different credentials.
+	migrationDB DB
+	// readDB, when set, is the read-only handle the store's read paths run
+	// over: a replica the deployment pointed ReadDatabaseURL at. Nil means every
+	// statement — read and write — runs on the primary.
+	readDB DB
+	// textSearchExtension names the BM25 backend: "native" (tsvector, the
+	// default) or "pg_search" (ParadeDB). pgFunctionSchema and pgTokenizer are
+	// pg_search's function schema and tokenizer, embedded into the keyword arm's
+	// SQL.
+	textSearchExtension string
+	pgFunctionSchema    string
+	pgTokenizer         string
+	// recallGate bounds concurrent recalls at the engine level, separately from
+	// admission control. A nil gate is unbounded.
+	recallGate chan struct{}
+	// annRejected remembers the pgvector settings this server refused, so a
+	// server that predates one is not asked again on every query.
+	annRejectedMu sync.Mutex
+	annRejected   map[string]bool
+	// bankCreateHook, when set, runs once after a bank row is newly created.
+	bankCreateHook BankCreateHook
+	// phaseObserver, when set, receives one observation per phase of a recall
+	// the diagnostic accounting sampled, and phaseSampler draws those samples.
+	phaseObserver RecallPhaseObserver
+	phaseSampler  phaseSampler
+}
+
+// SetTuning installs the resolved retrieval, write and reflection tuning. The
+// composition root calls it once at startup; a store built without it keeps the
+// reference's defaults.
+func (s *PostgresStore) SetTuning(tuning Tuning) {
+	s.tuning = tuning
+	s.recallGate = newRecallGate(tuning.MaxConcurrent)
 }
 
 // SetObservationEmbedder gives the store the generator the consolidation write
@@ -87,6 +192,20 @@ type PostgresStore struct {
 // configured.
 func (s *PostgresStore) SetObservationEmbedder(generator EmbeddingGenerator) {
 	s.observationEmbedder = generator
+}
+
+// SetRecallPhaseObserver installs the receiver of the per-phase recall
+// observations. The composition root calls it once at startup; a deployment
+// with no metrics registry passes nil and the accounting still logs its
+// `[phases]` line.
+func (s *PostgresStore) SetRecallPhaseObserver(observer RecallPhaseObserver) {
+	s.phaseObserver = observer
+}
+
+// beginRecallPhases starts this recall's diagnostic accounting, resolving the
+// sample draw from the store's own counter.
+func (s *PostgresStore) beginRecallPhases(bankID string) *recallPhases {
+	return beginRecallPhases(s.tuning, &s.phaseSampler, s.phaseObserver, bankID)
 }
 
 // ObjectStore persists opaque payloads outside the database.
@@ -119,8 +238,46 @@ func (s *PostgresStore) UsesObjectStore() bool { return s.objectStore != nil }
 // Schema returns the configured schema target.
 func (s *PostgresStore) Schema() string { return s.schema }
 
-// Close releases the database handle.
-func (s *PostgresStore) Close() error { return s.db.Close() }
+// reader is the handle read-only statements run over: the configured read
+// replica when one is set, otherwise the primary.
+//
+// It is never used for a write. The reference keeps its read backend on a pool
+// a deployment may point at a read-only role, so a write issued there would be
+// refused by the server rather than merely slower; the split is what keeps that
+// from happening.
+//
+// It is used by the paths whose answer is a read of committed state: recall
+// (every arm and its hydration), the read surface (documents, chunks, tags,
+// entities, graphs), the observability reads, and the list/get reads of banks,
+// memories, mental models, knowledge, directives, webhooks, attachments,
+// aliases, archived memories, operations and reflect retrieval.
+//
+// Three kinds of statement stay on the primary, because a replica's lag would
+// change the outcome rather than the latency:
+//   - writes, migrations and advisory-locked worker and maintenance work;
+//   - a read that gates a write (an operation's status before its transition,
+//     an alias before it is added, a name before it is resolved);
+//   - a read of a row this process wrote moments ago (a stored payload).
+func (s *PostgresStore) reader() DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
+
+// Close releases the database handles.
+func (s *PostgresStore) Close() error {
+	if s.migrationDB != nil {
+		// The migration handle is this store's own, so closing the store closes
+		// both pools rather than leaking the second one.
+		_ = s.migrationDB.Close()
+	}
+	if s.readDB != nil {
+		// The read handle is this store's own too, so it is closed with it.
+		_ = s.readDB.Close()
+	}
+	return s.db.Close()
+}
 
 // Ready reports database reachability for readiness probing.
 func (s *PostgresStore) Ready(ctx context.Context) error {
@@ -151,7 +308,21 @@ func (s *PostgresStore) Ping(ctx context.Context) error { return s.Ready(ctx) }
 // series creates, and a database already carrying all of them is adopted: its
 // migrations are recorded and no object is created.
 func (s *PostgresStore) Migrate(ctx context.Context) error {
-	return s.migrate(ctx, migrateOptions{})
+	return s.migrateTarget().migrate(ctx, migrateOptions{})
+}
+
+// migrateTarget is the store whose handle runs the migration series: this store,
+// or a sibling bound to the configured migration database.
+//
+// The sibling is constructed rather than copied: PostgresStore carries a mutex
+// and two stores must not share one, so a struct copy is both a `go vet`
+// violation and shared state. It carries exactly what the migration path reads
+// — the handle, the schema and the vector backend its reconciliation names.
+func (s *PostgresStore) migrateTarget() *PostgresStore {
+	if s.migrationDB == nil {
+		return s
+	}
+	return &PostgresStore{db: s.migrationDB, schema: s.schema, vectorExtension: s.vectorExtension}
 }
 
 // MigrateWithoutExtensions runs the series without installing or reconciling the
@@ -161,7 +332,7 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 // needs it, naming the type it could not resolve — which is the actionable
 // error an operator who asked to skip the step wants.
 func (s *PostgresStore) MigrateWithoutExtensions(ctx context.Context) error {
-	return s.migrate(ctx, migrateOptions{skipExtensions: true})
+	return s.migrateTarget().migrate(ctx, migrateOptions{skipExtensions: true})
 }
 
 // migrateOptions tunes one migration run.

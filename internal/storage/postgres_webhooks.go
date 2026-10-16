@@ -17,7 +17,7 @@ const webhookSelect = `id::text, bank_id, url, COALESCE(secret,''), COALESCE(eve
 func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webhook, error) {
 	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
 	          WHERE bank_id = $1 ORDER BY created_at DESC, id ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webh
 func (s *PostgresStore) GetWebhook(ctx context.Context, bankID, webhookID string) (Webhook, error) {
 	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
 	          WHERE bank_id = $1 AND id::text = $2`
-	webhook, err := scanWebhook(s.db.QueryRowContext(ctx, query, bankID, webhookID))
+	webhook, err := scanWebhook(s.reader().QueryRowContext(ctx, query, bankID, webhookID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Webhook{}, ErrWebhookNotFound
@@ -137,7 +137,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 	args = append(args, limit+1) // one extra row tells the caller a page follows
 	limitClause := "$" + itoa(len(args))
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT operation_id::text,
 		        COALESCE(task_payload->>'webhook_id', ''),
 		        bank_id,
@@ -148,6 +148,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 		        next_retry_at,
 		        COALESCE(error_message, ''),
 		        (result_metadata->>'last_status_code')::int,
+		        result_metadata->>'last_response_body',
 		        created_at,
 		        updated_at
 		 FROM `+qualified+`.async_operations WHERE `+filter+`
@@ -161,13 +162,20 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 	for rows.Next() {
 		var delivery WebhookDelivery
 		var statusCode sql.NullInt64
+		var responseBody sql.NullString
 		var nextRetryAt sql.NullTime
 		if err := rows.Scan(&delivery.ID, &delivery.WebhookID, &delivery.BankID, &delivery.URL,
 			&delivery.EventType, &delivery.Status, &delivery.Attempts, &nextRetryAt,
-			&delivery.LastError, &statusCode, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
+			&delivery.LastError, &statusCode, &responseBody, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
 			return WebhookDeliveryPage{}, err
 		}
 		delivery.LastResponseStatus = nullIntPtr(statusCode)
+		// The body is stored only when the deployment exposes it, so a
+		// non-null value is one the API is allowed to return.
+		if responseBody.Valid {
+			value := responseBody.String
+			delivery.LastResponseBody = &value
+		}
 		if nextRetryAt.Valid {
 			value := nextRetryAt.Time
 			delivery.NextRetryAt = &value

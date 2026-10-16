@@ -100,12 +100,95 @@ func TestMetricsEndpointLabelEndToEnd(t *testing.T) {
 }
 
 func TestMetricsExtraSamplesAreSorted(t *testing.T) {
-	h := &MetricsHandler{Extra: func() map[string]float64 {
-		return map[string]float64{"wenyuan_z_gauge": 1, "wenyuan_a_gauge": 2}
+	h := &MetricsHandler{Extra: func() []Metric {
+		return []Metric{{Name: "wenyuan_z_gauge", Value: 1}, {Name: "wenyuan_a_gauge", Value: 2}}
 	}}
 	rec := serveMetrics(h)
 	body := rec.Body.String()
 	if strings.Index(body, "wenyuan_a_gauge") > strings.Index(body, "wenyuan_z_gauge") {
 		t.Fatalf("extra metrics must be emitted in deterministic sorted order: %s", body)
+	}
+}
+
+// A deployment scoped to a tenant labels every rendered series with it, so the
+// HTTP instruments and the extra samples carry the same tenant value.
+func TestMetricsTenantLabel(t *testing.T) {
+	recorder := &httpx.MetricsRecorder{}
+	recorder.Observe(http.MethodGet, "/v1/x", http.StatusOK, 0)
+	h := &MetricsHandler{
+		Recorder: recorder,
+		Tenant:   "tenant_a",
+		Extra: func() []Metric {
+			return []Metric{{Name: "wenyuan_gauge", Value: 1}}
+		},
+	}
+	body := serveMetrics(h).Body.String()
+	for _, want := range []string{
+		`hindsight_http_requests_total{endpoint="/v1/x",method="GET",status_class="2xx",status_code="200",tenant="tenant_a"} 1`,
+		`wenyuan_gauge{tenant="tenant_a"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
+// Without a tenant configured no tenant label appears, so an unset key leaves
+// the exposition unchanged.
+func TestMetricsWithoutTenantHasNoTenantLabel(t *testing.T) {
+	recorder := &httpx.MetricsRecorder{}
+	recorder.Observe(http.MethodGet, "/v1/x", http.StatusOK, 0)
+	body := serveMetrics(&MetricsHandler{Recorder: recorder}).Body.String()
+	if strings.Contains(body, "tenant=") {
+		t.Fatalf("unexpected tenant label:\n%s", body)
+	}
+}
+
+// Per-bank samples share a name and are separated by their bank_id label, with
+// the HELP/TYPE header emitted once for the name.
+func TestMetricsLabelledSamples(t *testing.T) {
+	h := &MetricsHandler{Extra: func() []Metric {
+		return []Metric{
+			{Name: "hindsight_async_operations_pending", Help: "queued", Value: 2, Labels: map[string]string{"bank_id": "b1"}},
+			{Name: "hindsight_async_operations_pending", Help: "queued", Value: 5, Labels: map[string]string{"bank_id": "b2"}},
+		}
+	}}
+	body := serveMetrics(h).Body.String()
+	for _, want := range []string{
+		`hindsight_async_operations_pending{bank_id="b1"} 2`,
+		`hindsight_async_operations_pending{bank_id="b2"} 5`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in body:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, "# HELP hindsight_async_operations_pending"); got != 1 {
+		t.Fatalf("HELP emitted %d times, want 1:\n%s", got, body)
+	}
+}
+
+// A histogram family renders its buckets (including +Inf), sum and count.
+func TestMetricsHistogramFamily(t *testing.T) {
+	h := &MetricsHandler{Histograms: func() []Histogram {
+		return []Histogram{{
+			Name:    "hindsight_event_loop_lag",
+			Buckets: []float64{0.001, 0.005},
+			Counts:  []uint64{1, 2},
+			Sum:     0.01,
+			Count:   2,
+		}}
+	}}
+	body := serveMetrics(h).Body.String()
+	for _, want := range []string{
+		"# TYPE hindsight_event_loop_lag histogram",
+		`hindsight_event_loop_lag_bucket{le="0.001"} 1`,
+		`hindsight_event_loop_lag_bucket{le="0.005"} 2`,
+		`hindsight_event_loop_lag_bucket{le="+Inf"} 2`,
+		"hindsight_event_loop_lag_sum 0.01",
+		"hindsight_event_loop_lag_count 2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in body:\n%s", want, body)
+		}
 	}
 }

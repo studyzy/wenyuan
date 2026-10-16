@@ -3,6 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
 )
 
 // DB is the narrow database contract the PostgreSQL store depends on. Keeping
@@ -54,7 +59,150 @@ type PoolBudget struct {
 	// MaxIdleConns bounds connections kept open when unused. Zero leaves the
 	// driver's own default.
 	MaxIdleConns int
+	// Session holds the settings every connection of this pool carries.
+	Session SessionSettings
+	// AcquireTimeout bounds how long a statement waits for a pooled connection
+	// before failing, so a saturated pool surfaces as an error instead of a
+	// request that hangs. Zero leaves the wait unbounded, which is the driver's
+	// own behaviour.
+	AcquireTimeout time.Duration
+	// PoolSlowAcquireThreshold, when above zero, declares a connection acquire
+	// slow once it waits longer than it. Zero disables this warning.
+	PoolSlowAcquireThreshold time.Duration
+	// AcquireWarnThreshold, when above zero, warns once an acquire waits at least
+	// this long, logging the pool's utilization so a saturated pool is visible
+	// rather than only slow. Zero disables it.
+	AcquireWarnThreshold time.Duration
 }
+
+// acquireObserver measures and bounds how long a statement waits for a pooled
+// connection, and reports a wait that is long enough to mean the pool is
+// saturated.
+//
+// database/sql exposes neither the pool's current waiter count nor a hook on a
+// plain statement call, but it does let a caller take a connection explicitly:
+// db.Conn blocks until one is free, so timing that call measures the wait while
+// a deadline on its context bounds it. The observed wait is what the reference's
+// pool-instrumentation module records.
+type acquireObserver struct {
+	// timeout bounds the wait for a connection. Zero leaves it unbounded.
+	timeout time.Duration
+	// slow and warn are the two thresholds at which a wait is reported; each is
+	// disabled when zero. slow is the reference's pool-slow warning and warn its
+	// acquire-warn warning; both mean "the pool made this statement wait".
+	slow time.Duration
+	warn time.Duration
+	// now reads the clock; nil means time.Now.
+	now func() time.Time
+	// emit receives a reported acquire with the pool's utilization. Nil uses the
+	// package logger.
+	emit func(wait time.Duration, stats PoolStats)
+	// stats reports the pool's utilization for the warning. Nil reports zeros.
+	stats func() PoolStats
+}
+
+// acquire takes a connection through open, bounded by the acquire timeout, and
+// reports the wait when it is slow. A failure to obtain a connection within the
+// timeout is returned to the caller rather than waited out.
+func (o acquireObserver) acquire(ctx context.Context, open func(context.Context) (connHandle, error)) (connHandle, error) {
+	start := o.clock()
+	acquireCtx := ctx
+	if o.timeout > 0 {
+		var cancel context.CancelFunc
+		acquireCtx, cancel = context.WithTimeout(ctx, o.timeout)
+		// The connection is already taken once open returns; releasing the
+		// deadline's timer here does not take the connection back.
+		defer cancel()
+	}
+	conn, err := open(acquireCtx)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for a database connection: %w", err)
+	}
+	o.observe(o.clock().Sub(start))
+	return conn, nil
+}
+
+// observe reports a completed acquire when it waited at least one of the
+// configured thresholds.
+func (o acquireObserver) observe(wait time.Duration) {
+	if !o.slowEnough(wait) {
+		return
+	}
+	var stats PoolStats
+	if o.stats != nil {
+		stats = o.stats()
+	}
+	if o.emit != nil {
+		o.emit(wait, stats)
+		return
+	}
+	slog.Default().Warn("slow DB pool acquire: waited for a connection",
+		"waited_seconds", wait.Seconds(),
+		"in_use", stats.InUse, "max", stats.Max, "idle", stats.Idle)
+}
+
+func (o acquireObserver) slowEnough(wait time.Duration) bool {
+	if o.slow > 0 && wait > o.slow {
+		return true
+	}
+	return o.warn > 0 && wait >= o.warn
+}
+
+func (o acquireObserver) clock() time.Time {
+	if o.now != nil {
+		return o.now()
+	}
+	return time.Now()
+}
+
+// connHandle is the connection-scoped half of database/sql that a statement
+// runs on once a connection has been acquired. *sql.Conn satisfies it; keeping
+// it an interface lets the acquire instrumentation be exercised without a live
+// database.
+type connHandle interface {
+	Close() error
+	PingContext(ctx context.Context) error
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+// errorRow returns a row whose Scan reports err, so a QueryRowContext that
+// failed before a statement ran surfaces that failure where the caller already
+// reads it. database/sql exposes no way to build one, so it comes from a query
+// against a handle whose connector refuses the connection: the error then
+// travels the ordinary query path and is returned verbatim by Scan.
+func errorRow(ctx context.Context, err error) *sql.Row {
+	handle := sql.OpenDB(errorRowConnector{})
+	row := handle.QueryRowContext(context.WithValue(ctx, errorRowKey{}, err), "")
+	_ = handle.Close()
+	return row
+}
+
+type errorRowKey struct{}
+
+// errorRowConnector is a driver.Connector whose Connect always fails with the
+// error carried on the context, so a database handle built from it yields
+// exactly that error from any query.
+type errorRowConnector struct{}
+
+func (errorRowConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err, ok := ctx.Value(errorRowKey{}).(error); ok {
+		return nil, err
+	}
+	return nil, errNoRowError
+}
+
+func (errorRowConnector) Driver() driver.Driver { return errorRowDriver{} }
+
+// errorRowDriver is the connector's driver; Open is never reached because
+// Connect fails first.
+type errorRowDriver struct{}
+
+func (errorRowDriver) Open(string) (driver.Conn, error) { return nil, errNoRowError }
+
+var errNoRowError = errors.New("no error row")
 
 // OpenDBFunc constructs a DB from a data source URL and pool budget. The
 // pgx-backed implementation is registered here by a driver-specific file so
@@ -91,5 +239,5 @@ func OpenDatabaseWithBudget(url string, budget PoolBudget) (DB, error) {
 
 // NewPostgresStore wraps an already-constructed DB in the PostgreSQL store.
 func NewPostgresStore(db DB, schema string) *PostgresStore {
-	return &PostgresStore{db: db, schema: schema}
+	return &PostgresStore{db: db, schema: schema, tuning: DefaultTuning(), recallGate: newRecallGate(DefaultTuning().MaxConcurrent)}
 }

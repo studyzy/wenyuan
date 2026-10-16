@@ -59,7 +59,12 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 	rows := make([]BankListRow, 0, len(page.Banks))
 	for _, bank := range page.Banks {
 		display := h.displayAlias(r, bank.BankID)
-		rows = append(rows, ToListRow(bank, display, page.MatchedAliases[bank.BankID]))
+		// The row reports the bank's resolved disposition and mission, which is
+		// what the reference's list serves: a bank whose configuration names a
+		// trait reports it rather than the column it was created with.
+		resolved := resolvedConfig(bankOverrides(bank), r, h.ConfigDefaults)
+		disposition, mission := overlayDispositionMission(resolved, bank)
+		rows = append(rows, ToListRowWithDisposition(bank, display, page.MatchedAliases[bank.BankID], disposition, mission))
 	}
 	httpx.WriteJSONFor(w, r, http.StatusOK, BankListResponse{
 		Banks:  rows,

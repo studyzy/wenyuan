@@ -504,8 +504,8 @@ func requiredDimensions(optional bool) []string {
 // (concise) and ExtractedFactVerbose (verbose) — same fields, a longer
 // description in verbose. A vocabulary adds the same 'labels' object every
 // mode's schema carries.
-func dimensionResponseSchema(vocab *entitylabels.Vocabulary, optional bool) *provider.Schema {
-	fact := dimensionFactSchema(vocab, optional)
+func dimensionResponseSchema(vocab *entitylabels.Vocabulary, optional, causal bool) *provider.Schema {
+	fact := dimensionFactSchema(vocab, optional, causal)
 	required := append(requiredDimensions(optional), "fact_type")
 	if !vocab.Empty() {
 		fact.Properties["labels"] = labelsSchema(vocab)
@@ -519,7 +519,7 @@ func dimensionResponseSchema(vocab *entitylabels.Vocabulary, optional bool) *pro
 // dimensions and the metadata the reference's ExtractedFactVerbose declares.
 // Its required list is filled by the caller so verbatim (which drops "what")
 // can share the metadata fields.
-func dimensionFactSchema(vocab *entitylabels.Vocabulary, optional bool) *provider.Schema {
+func dimensionFactSchema(vocab *entitylabels.Vocabulary, optional, causal bool) *provider.Schema {
 	properties := map[string]*provider.Schema{}
 	for _, name := range dimensionNames {
 		properties[name] = dimensionProperty(optional)
@@ -529,7 +529,12 @@ func dimensionFactSchema(vocab *entitylabels.Vocabulary, optional bool) *provide
 	properties["occurred_end"] = &provider.Schema{Type: "string"}
 	properties["fact_type"] = &provider.Schema{Type: "string", Enum: []string{"world", "assistant"}}
 	properties["entities"] = &provider.Schema{Type: "array", Items: &provider.Schema{Type: "string"}}
-	properties["causal_relations"] = causalRelationsSchema()
+	// The causal-relations field is only declared when the extraction asks for
+	// it: a disabled switch produces the reference's NoCausal schema, which has
+	// no causal_relations property at all.
+	if causal {
+		properties["causal_relations"] = causalRelationsSchema()
+	}
 	properties["from_attachments"] = &provider.Schema{Type: "array", Items: &provider.Schema{Type: "string"}}
 	return &provider.Schema{Type: "object", Properties: properties}
 }
@@ -595,5 +600,5 @@ func schemaFor(opts Options) *provider.Schema {
 	if resolveMode(opts.Mode) == ModeVerbatim {
 		return verbatimFactSchema(opts.Vocabulary, opts.OptionalFactDimensions)
 	}
-	return dimensionResponseSchema(opts.Vocabulary, opts.OptionalFactDimensions)
+	return dimensionResponseSchema(opts.Vocabulary, opts.OptionalFactDimensions, causalLinksEnabled(opts))
 }

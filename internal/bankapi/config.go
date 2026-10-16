@@ -160,6 +160,45 @@ func bankOverrides(bank storage.Bank) map[string]any {
 	return overrides
 }
 
+// overlayDispositionMission resolves the disposition and mission a bank reports:
+// the bank's own resolved configuration when it names a trait or a mission, and
+// the bank's stored columns otherwise.
+//
+// The reference overlays its resolved config on the legacy columns for exactly
+// this pair (“_overlay_bank_config_disposition_mission“), and shares the
+// helper between the single-bank and list paths so both answer identically.
+func overlayDispositionMission(resolved map[string]any, bank storage.Bank) (map[string]int, string) {
+	disposition := bank.NormalizedDisposition()
+	for field, trait := range dispositionFieldKeys {
+		value, ok := resolved[field]
+		if !ok || value == nil {
+			continue
+		}
+		if level, ok := intish(value); ok {
+			disposition[trait] = level
+		}
+	}
+	mission := bank.Mission
+	if value, ok := resolved["reflect_mission"].(string); ok && value != "" {
+		mission = value
+	}
+	return disposition, mission
+}
+
+// intish reads a configuration number, which arrives as a JSON number through
+// the bank's stored config and as an int through the resolved defaults.
+func intish(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	}
+	return 0, false
+}
+
 // resolvedConfig layers the bank's overrides over the caller's tenant overrides
 // and the process defaults, using the same resolver the write paths use. The
 // result is the fully resolved configuration, not a fixed set of keys, so every

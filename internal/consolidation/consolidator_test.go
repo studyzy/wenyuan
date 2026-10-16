@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // stubProvider returns a scripted completion so the pass can be exercised
@@ -56,9 +57,15 @@ type stubStore struct {
 	failed        []string
 	config        map[string]any
 	poolLimit     int
+	// factsLimit records the load bound the pass asked for, so a test can
+	// assert the batch size the deployment configured.
+	factsLimit int
 }
 
-func (s *stubStore) ConsolidationFacts(context.Context, string, int) ([]Fact, error) {
+func (s *stubStore) ConsolidationFacts(_ context.Context, _ string, limit int) ([]Fact, error) {
+	s.mu.Lock()
+	s.factsLimit = limit
+	s.mu.Unlock()
 	return s.facts, nil
 }
 func (s *stubStore) ConsolidationObservations(_ context.Context, _ string, scope []string, limit int) ([]Observation, error) {
@@ -291,5 +298,125 @@ func TestConsolidatorWidensPoolWithRelatedObservations(t *testing.T) {
 	}
 	if strings.Count(user, "unrelated conclusion") != 1 {
 		t.Fatalf("a pooled observation must not be duplicated: %s", user)
+	}
+}
+
+// tuningStore is a stub store that also carries a deployment's consolidation
+// tuning, so a test can assert how the pass reads it.
+type tuningStore struct {
+	*stubStore
+	tuning storage.ConsolidationTuning
+}
+
+func (s *tuningStore) ConsolidationTuning() storage.ConsolidationTuning { return s.tuning }
+
+// flakyProvider fails the first failures calls, then answers, so a test can
+// assert the attempt budget without a live model.
+type flakyProvider struct {
+	stubProvider
+	failures int
+	calls    int
+}
+
+func (p *flakyProvider) Complete(ctx context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
+	p.calls++
+	if p.calls <= p.failures {
+		return provider.CompletionResult{}, errors.New("model unavailable")
+	}
+	return p.stubProvider.Complete(ctx, req)
+}
+
+// test-consolidation-load-batch-size: the batch size the deployment configured
+// bounds how many memories one load carries, so the pass reads the bank in that
+// size rather than pulling the whole backlog at once.
+func TestConsolidatorLoadBatchSizeFollowsTuning(t *testing.T) {
+	store := &tuningStore{
+		stubStore: &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}},
+		tuning:    storage.ConsolidationTuning{MemoryBatchSize: 7, MaxAttempts: 1},
+	}
+	model := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if store.factsLimit != 7 {
+		t.Fatalf("load batch = %d, want the configured 7", store.factsLimit)
+	}
+}
+
+// test-consolidation-load-batch-size-default: an unset batch size keeps the
+// reference's default rather than an unbounded load.
+func TestConsolidatorLoadBatchSizeDefaultsToReference(t *testing.T) {
+	store := &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}}
+	model := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if store.factsLimit != storage.DefaultConsolidationMemoryBatchSize {
+		t.Fatalf("load batch = %d, want the default %d", store.factsLimit, storage.DefaultConsolidationMemoryBatchSize)
+	}
+}
+
+// test-consolidation-max-completion-tokens: the configured cap reaches the
+// model call; an unset cap leaves the parameter off.
+func TestConsolidatorModelCallUsesCompletionCap(t *testing.T) {
+	store := &tuningStore{
+		stubStore: &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}},
+		tuning:    storage.ConsolidationTuning{MaxCompletionTokens: 128, MaxAttempts: 1},
+	}
+	model := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := model.lastRequest().MaxTokens; got != 128 {
+		t.Fatalf("max tokens = %d, want the configured 128", got)
+	}
+
+	unset := &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}}
+	uncapped := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(uncapped, unset).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := uncapped.lastRequest().MaxTokens; got != 0 {
+		t.Fatalf("max tokens = %d, want the parameter left unset", got)
+	}
+}
+
+// test-consolidation-max-attempts: a transient model failure is retried up to
+// the configured attempt budget and then succeeds.
+func TestConsolidatorRetriesModelCallWithinAttemptBudget(t *testing.T) {
+	store := &tuningStore{
+		stubStore: &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}},
+		tuning:    storage.ConsolidationTuning{MaxAttempts: 3},
+	}
+	model := &flakyProvider{failures: 1, stubProvider: stubProvider{
+		name:     "openai",
+		response: provider.CompletionResult{Structured: map[string]any{}},
+	}}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if model.calls != 2 {
+		t.Fatalf("model calls = %d, want a retry then a success", model.calls)
+	}
+}
+
+// test-consolidation-max-attempts-exhausted: a model that never answers is
+// asked exactly the configured number of times, and the batch is then failed.
+func TestConsolidatorStopsAtAttemptBudget(t *testing.T) {
+	store := &tuningStore{
+		stubStore: &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}},
+		tuning:    storage.ConsolidationTuning{MaxAttempts: 3},
+	}
+	model := &flakyProvider{failures: 10}
+	model.name = "openai"
+	result, err := New(model, store).Run(context.Background(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.calls != 3 {
+		t.Fatalf("model calls = %d, want the configured budget of 3", model.calls)
+	}
+	if result.Failed != 1 {
+		t.Fatalf("failed = %d, want the batch recorded as failed", result.Failed)
 	}
 }

@@ -34,10 +34,9 @@ import (
 type archiveProcessor struct {
 	store    storage.Store
 	provider provider.Provider
-	// correctionRetries bounds how many times a queued retain's extraction is
-	// re-asked when the model returns facts in a foreign shape. It is the same
-	// server-level budget the synchronous retain path uses.
-	correctionRetries int
+	// extraction carries the deployment's extraction knobs, so a queued write
+	// extracts exactly as the synchronous one does.
+	extraction ExtractionSettings
 	// recallPerSourceCap bounds each retrieval arm of the consolidation
 	// near-duplicate lookup; zero leaves it bound only by the pool budget.
 	recallPerSourceCap int
@@ -48,7 +47,8 @@ type archiveProcessor struct {
 	// webhookGuard re-validates a delivery target and vets the address it
 	// dials. It is the same guard the registration route enforces, so a URL
 	// that was acceptable when stored is checked again against the policy in
-	// force at delivery time.
+	// force at delivery time. It also carries the deployment-level target, so
+	// the delivery path and the enqueue path read one copy of it.
 	webhookGuard *webhooks.Guard
 	// embeddings is the deployment's embedding model. The archive import
 	// replays facts through the write path's embedding boundary, so an imported
@@ -67,6 +67,14 @@ func (p archiveProcessor) guard() *webhooks.Guard {
 	return p.webhookGuard
 }
 
+// exposesWebhookResponseBody reports whether a delivery records the receiver's
+// response body. It is a deployment-wide switch read from the global target, so
+// it applies to a bank's own deliveries exactly as it does to the global
+// receiver's.
+func (p archiveProcessor) exposesWebhookResponseBody() bool {
+	return p.guard().Global().ExposesResponseBody()
+}
+
 // logger returns the worker log sink.
 func (p archiveProcessor) logger() *slog.Logger { return slog.Default() }
 
@@ -83,6 +91,12 @@ func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) err
 
 // dispatch routes one operation to its handler.
 func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) error {
+	// Every model call an operation's handler makes is recorded under that bank
+	// and operation, so a trace listing shows the whole run rather than only the
+	// calls whose own caller happened to attribute them.
+	if operation, ok := traceOperationFor(op.OperationType); ok {
+		ctx = provider.WithTraceContext(ctx, provider.TraceContext{BankID: op.BankID, Operation: operation})
+	}
 	switch op.OperationType {
 	case storage.OperationTypeTransferImport, storage.OperationTypeDocumentImport:
 		return p.applyImport(ctx, op)
@@ -112,19 +126,36 @@ func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) er
 	}
 }
 
+// traceOperationFor names the trace operation one operation type records under.
+// Types whose handler never calls a model have none, so their runs add no rows.
+func traceOperationFor(operationType string) (string, bool) {
+	switch operationType {
+	case storage.OperationTypeRetain:
+		return "retain", true
+	case storage.OperationTypeConsolidate:
+		return "consolidation", true
+	case storage.OperationTypeRefreshMentalModel:
+		return "refresh_mental_model", true
+	default:
+		return "", false
+	}
+}
+
 // applyWebhookDelivery delivers one queued webhook event.
 //
-// The webhook's registration is read at delivery time, so an edit or a delete
-// takes effect on the next attempt rather than on the next event. A 4xx
-// response is permanent (the receiver rejects the shape); a transport failure
-// or a 5xx is retried, and a since-deleted webhook is a permanent no-op.
+// A bank webhook's registration is read at delivery time, so an edit or a
+// delete takes effect on the next attempt rather than on the next event. The
+// deployment-level target has no registration to read: its URL and secret are
+// carried on the queued delivery, because there is no row to look them up in.
+// A 4xx response is permanent (the receiver rejects the shape); a transport
+// failure or a 5xx is retried, and a since-deleted webhook is a permanent
+// no-op.
 func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.Operation) error {
-	webhookID, _ := op.Payload["webhook_id"].(string)
 	eventType, _ := op.Payload["event_type"].(string)
-	if webhookID == "" || eventType == "" {
-		return worker.Permanent(errors.New("webhook delivery carries no webhook or event type"))
+	if eventType == "" {
+		return worker.Permanent(errors.New("webhook delivery carries no event type"))
 	}
-	webhook, err := p.store.GetWebhook(ctx, op.BankID, webhookID)
+	webhook, err := p.deliveryTarget(ctx, op)
 	if err != nil {
 		if errors.Is(err, storage.ErrWebhookNotFound) {
 			return nil
@@ -144,7 +175,8 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		}
 		bodyBytes = rendered
 	}
-	status, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes)
+	expose := p.exposesWebhookResponseBody()
+	status, responseBody, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes, expose)
 	if err != nil {
 		// A target the guard refuses at delivery time, or a receiver that
 		// answers with a redirect, is a permanent failure: the same
@@ -152,18 +184,18 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		// spends the attempt budget. The receiver's status is recorded when it
 		// answered, so an operator can see what was refused.
 		if errors.Is(err, storage.ErrWebhookURLNotAllowed) || errors.Is(err, errWebhookRedirectRefused) {
-			worker.ReportOutcome(ctx, map[string]any{"last_status_code": nullableStatus(status)})
+			worker.ReportOutcome(ctx, webhookOutcome(status, responseBody, expose))
 			return worker.Permanent(err)
 		}
 		// A transport failure is retried on the reference's backoff ladder, and
 		// reported with no status because the receiver never answered.
-		worker.ReportOutcome(ctx, map[string]any{"last_status_code": nil})
+		worker.ReportOutcome(ctx, webhookOutcome(0, "", expose))
 		return worker.DeferAt(webhookRetryDelay(op.RetryCount), err)
 	}
 	// The receiver's status is recorded on the delivery either way: it is what
 	// an operator reads to tell "the endpoint is refusing us" from "we never
 	// reached it".
-	worker.ReportOutcome(ctx, map[string]any{"last_status_code": status})
+	worker.ReportOutcome(ctx, webhookOutcome(status, responseBody, expose))
 	if status == 429 || status >= 500 {
 		return worker.DeferAt(webhookRetryDelay(op.RetryCount),
 			fmt.Errorf("webhook receiver failed with status %d", status))
@@ -172,6 +204,38 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		return worker.Permanent(fmt.Errorf("webhook receiver rejected the delivery with status %d", status))
 	}
 	return nil
+}
+
+// deliveryTarget resolves the receiver one queued delivery addresses. A
+// bank webhook is read from its live registration so an edit or a delete is
+// honoured at delivery time; a global delivery carries its endpoint because it
+// has no registration to read.
+func (p archiveProcessor) deliveryTarget(ctx context.Context, op storage.Operation) (storage.Webhook, error) {
+	if isGlobal, _ := op.Payload["global"].(bool); isGlobal {
+		url, _ := op.Payload["url"].(string)
+		if url == "" {
+			return storage.Webhook{}, worker.Permanent(errors.New("global webhook delivery carries no url"))
+		}
+		secret, _ := op.Payload["secret"].(string)
+		return storage.Webhook{URL: url, Secret: secret}, nil
+	}
+	webhookID, _ := op.Payload["webhook_id"].(string)
+	if webhookID == "" {
+		return storage.Webhook{}, worker.Permanent(errors.New("webhook delivery carries no webhook"))
+	}
+	return p.store.GetWebhook(ctx, op.BankID, webhookID)
+}
+
+// webhookOutcome renders the metadata recorded on one delivery attempt. The
+// status is always recorded; the receiver's response body is recorded only when
+// the deployment exposes it and the receiver actually answered, which is the
+// same gate the reference applies because a body can carry data.
+func webhookOutcome(status int, responseBody string, expose bool) map[string]any {
+	outcome := map[string]any{"last_status_code": nullableStatus(status)}
+	if expose && status != 0 {
+		outcome["last_response_body"] = responseBody
+	}
+	return outcome
 }
 
 // webhookRetryDelays is the delivery backoff ladder, matching the reference.
@@ -205,24 +269,30 @@ func nullableStatus(status int) any {
 	return status
 }
 
-// deliverWebhook posts one signed delivery and returns the receiver's status.
-// The signature is HMAC-SHA256 over "<timestamp>.<body>", keyed by the
-// webhook's secret, carried in the reference's header shapes.
+// webhookResponseBodyLimit bounds the receiver response body a delivery records,
+// matching the reference's truncation.
+const webhookResponseBodyLimit = 2048
+
+// deliverWebhook posts one signed delivery and returns the receiver's status and
+// response body. The body is captured only when the deployment exposes it;
+// otherwise it is drained and discarded. The signature is HMAC-SHA256 over
+// "<timestamp>.<body>", keyed by the webhook's secret, carried in the
+// reference's header shapes.
 //
 // The target is re-validated immediately before the request and the resolved
 // address is vetted again at connect time, because a name can resolve
 // differently at delivery than it did at registration. A redirect is refused
 // rather than followed: it would move the request to a target the guard never
 // checked.
-func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte) (int, error) {
+func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte, expose bool) (int, string, error) {
 	guard := p.guard()
 	if err := guard.Validate(webhook.URL); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, bytes.NewReader(body))
 	if err != nil {
-		return 0, worker.Permanent(err)
+		return 0, "", worker.Permanent(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Hindsight-Event", eventType)
@@ -254,16 +324,29 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 	response, err := client.Do(request)
 	if err != nil {
 		if response != nil {
+			captured := readWebhookBody(response, expose)
 			_ = response.Body.Close()
+			if errors.Is(err, errWebhookRedirectRefused) {
+				return response.StatusCode, captured, errWebhookRedirectRefused
+			}
 		}
-		if errors.Is(err, errWebhookRedirectRefused) && response != nil {
-			return response.StatusCode, errWebhookRedirectRefused
-		}
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, response.Body)
-	return response.StatusCode, nil
+	return response.StatusCode, readWebhookBody(response, expose), nil
+}
+
+// readWebhookBody drains the response body so the connection can be reused,
+// capturing it (bounded as the reference bounds it) only when the deployment
+// exposes it. A body is never buffered when it is not going to be recorded, so
+// the common case allocates nothing.
+func readWebhookBody(response *http.Response, expose bool) string {
+	if !expose {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return ""
+	}
+	captured, _ := io.ReadAll(io.LimitReader(response.Body, webhookResponseBodyLimit))
+	return string(captured)
 }
 
 // webhookTransport dials through the guard's address check. The dialer's
@@ -453,10 +536,11 @@ func refreshPaused(model storage.MentalModel) bool {
 }
 
 // enqueueWebhookEvent queues a delivery for every enabled webhook of the bank
-// that subscribes to the event. A registration is read at delivery time, so the
-// queued work carries only the identity and the event.
+// that subscribes to the event, plus the deployment-level target when it
+// subscribes. A registration is read at delivery time, so the queued work
+// carries only the identity and the event.
 func (p archiveProcessor) enqueueWebhookEvent(ctx context.Context, bankID, eventType string, data map[string]any) {
-	enqueueWebhookEvent(ctx, p.store, bankID, eventType, data)
+	enqueueWebhookEvent(ctx, p.store, p.guard().Global(), bankID, eventType, data)
 }
 
 // enqueueWebhookEvent is the one place a webhook delivery is created: both the
@@ -468,7 +552,12 @@ func (p archiveProcessor) enqueueWebhookEvent(ctx context.Context, bankID, event
 // exact bytes that go on the wire, not a re-serialization at delivery time.
 // Two reserved keys steer the envelope — `operation_id` and `status` — and are
 // taken out of the event data so they do not also appear inside it.
-func enqueueWebhookEvent(ctx context.Context, store storage.Store, bankID, eventType string, data map[string]any) {
+//
+// The deployment-level target is delivered alongside the bank's own webhooks
+// and independent of them: it is one static receiver named by the deployment,
+// so it has no row to read and its endpoint and secret are carried on the
+// queued delivery.
+func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webhooks.GlobalTarget, bankID, eventType string, data map[string]any) {
 	webhooks, err := store.ListWebhooks(ctx, bankID)
 	if err != nil {
 		slog.Default().Warn("could not read webhooks for an event", "bank_id", bankID, "error", err)
@@ -489,6 +578,27 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, bankID, event
 	if err != nil {
 		slog.Default().Warn("could not render a webhook event", "bank_id", bankID, "event_type", eventType, "error", err)
 		return
+	}
+	if global.Enabled() && global.Subscribes(eventType) {
+		_, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
+			Operation: storage.Operation{
+				BankID:        bankID,
+				OperationType: storage.OperationTypeWebhookDelivery,
+				Payload: map[string]any{
+					"global":     true,
+					"event_type": eventType,
+					"url":        global.URL,
+					"secret":     global.Secret,
+					"body":       string(body),
+					"data":       payloadData,
+				},
+				SerializationKey: "webhook:global:" + bankID,
+			},
+		})
+		if err != nil {
+			slog.Default().Warn("could not enqueue a global webhook delivery",
+				"bank_id", bankID, "error", err)
+		}
 	}
 	for _, webhook := range webhooks {
 		if !webhook.Enabled || !subscribesTo(webhook.EventTypes, eventType) {
@@ -554,11 +664,18 @@ func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.
 // webhookNotifier adapts the worker's enqueue path to the capability interface
 // the memoryops handlers hold, so an event raised on a request path creates a
 // delivery exactly the way every other event does.
-type webhookNotifier struct{ store storage.Store }
+type webhookNotifier struct {
+	store storage.Store
+	// guard carries the deployment-level target delivered alongside each
+	// bank's own registrations. A nil guard (or one with no global target)
+	// means the feature is off.
+	guard *webhooks.Guard
+}
 
-// EnqueueWebhookEvent queues one delivery per subscribed webhook of the bank.
+// EnqueueWebhookEvent queues one delivery per subscribed webhook of the bank,
+// plus the deployment-level target when it subscribes.
 func (n webhookNotifier) EnqueueWebhookEvent(ctx context.Context, bankID, eventType string, data map[string]any) {
-	enqueueWebhookEvent(ctx, n.store, bankID, eventType, data)
+	enqueueWebhookEvent(ctx, n.store, n.guard.Global(), bankID, eventType, data)
 }
 
 // subscribesTo reports whether an event type is in a webhook's subscription.
@@ -636,6 +753,7 @@ func mapObservations(records []storage.ConsolidationObservation) []consolidation
 			SourceIDs: record.SourceIDs, SourceTexts: record.SourceTexts,
 			MentionedAt: formatOptionalTime(record.MentionedAt),
 			Scope:       record.Scope,
+			Embedding:   record.Embedding,
 		})
 	}
 	return observations
@@ -693,6 +811,38 @@ func (a consolidationStore) BankConfig(ctx context.Context, bankID string) (map[
 	return a.store.BankConfig(ctx, bankID)
 }
 
+// ConsolidationTuning reports the deployment's consolidation knobs, so the pass
+// runs with the configured load batch size, model-call budget and attempt
+// budget instead of the package defaults. A store that does not carry them
+// leaves the pass on the reference's shipped values.
+func (a consolidationStore) ConsolidationTuning() storage.ConsolidationTuning {
+	if tuned, ok := a.store.(interface {
+		ConsolidationTuning() storage.ConsolidationTuning
+	}); ok {
+		return tuned.ConsolidationTuning()
+	}
+	return storage.DefaultConsolidationTuning()
+}
+
+// ObservationDuplicates embeds a candidate observation text and returns that
+// embedding together with the in-scope observations carrying a stored vector,
+// so the consolidation pass can decide near-duplicates by cosine similarity.
+// It reports embedded=false when the store cannot probe — a deployment with no
+// embedding model — which leaves the pass on its text-similarity floor.
+func (a consolidationStore) ObservationDuplicates(ctx context.Context, bankID string, scope []string, text string, limit int) ([]float32, []consolidation.Observation, bool, error) {
+	prober, ok := a.store.(interface {
+		ObservationDuplicates(ctx context.Context, bankID string, scope []string, text string, limit int) ([]float32, []storage.ConsolidationObservation, bool, error)
+	})
+	if !ok {
+		return nil, nil, false, nil
+	}
+	probe, records, embedded, err := prober.ObservationDuplicates(ctx, bankID, scope, text, limit)
+	if err != nil {
+		return nil, nil, embedded, err
+	}
+	return probe, mapObservations(records), embedded, nil
+}
+
 // RelatedObservations looks up the observations that resemble the facts being
 // folded, one recall per fact text.
 //
@@ -702,6 +852,11 @@ func (a consolidationStore) BankConfig(ctx context.Context, bankID string) (map[
 // Only the observation type is retrieved, and the results are de-duplicated
 // across the lookups.
 func (a consolidationStore) RelatedObservations(ctx context.Context, bankID string, scope []string, texts []string, limit int) ([]consolidation.Observation, error) {
+	tuning := a.ConsolidationTuning()
+	budget := tuning.RecallBudget
+	if budget == "" {
+		budget = storage.DefaultConsolidationRecallBudget
+	}
 	perQuery := limit
 	if perQuery <= 0 {
 		perQuery = 5
@@ -730,7 +885,8 @@ func (a consolidationStore) RelatedObservations(ctx context.Context, bankID stri
 			Fusion:       storage.FusionInterleave,
 			PerSourceCap: a.perSourceCap,
 			Limit:        perQuery,
-			Budget:       "low",
+			Budget:       budget,
+			MaxTokens:    tuning.MaxTokens,
 			Tags:         tags,
 			TagsMatch:    tagsMatch,
 		})
@@ -774,24 +930,26 @@ func formatOptionalTime(value *time.Time) string {
 // only when a target was registered. The embeddings generator is the model an
 // archive import re-embeds with, exactly as the retain write path does.
 func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
-	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, guard *webhooks.Guard,
-	correctionRetries int) *worker.Consumer {
+	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, tuning config.WorkerTuning,
+	guard *webhooks.Guard, extraction ExtractionSettings) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
 		recallPerSourceCap: cfg.RecallMaxCandidatesPerSource,
 		webhookGuard:       guard,
 		embeddings:         embeddings,
-		correctionRetries:  correctionRetries,
+		extraction:         extraction,
 	}, worker.Config{
-		WorkerID:       cfg.ID,
-		MaxRetries:     cfg.MaxRetries,
-		InitialBackoff: cfg.InitialBackoff,
-		MaxBackoff:     cfg.MaxBackoff,
-		Lease:          cfg.Lease,
-		Concurrency:    cfg.Concurrency,
-		PollInterval:   cfg.PollInterval,
-		WallTimeouts:   cfg.WallTimeouts,
-		ReservedSlots:  cfg.ReservedSlots,
+		WorkerID:            cfg.ID,
+		MaxRetries:          cfg.MaxRetries,
+		InitialBackoff:      cfg.InitialBackoff,
+		MaxBackoff:          cfg.MaxBackoff,
+		Lease:               cfg.Lease,
+		Concurrency:         cfg.Concurrency,
+		PollInterval:        cfg.PollInterval,
+		WallTimeouts:        cfg.WallTimeouts,
+		ReservedSlots:       cfg.ReservedSlots,
+		BackpressureDefer:   tuning.BackpressureDefer,
+		ConsolidationByBank: tuning.ConsolidationByBank,
 	})
 }
 

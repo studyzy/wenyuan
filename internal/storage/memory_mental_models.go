@@ -169,6 +169,11 @@ func (s *MemoryStore) MentalModelHistory(ctx context.Context, bankID, id string)
 
 // RecordMentalModelHistory appends one refresh to a mental model's history.
 func (s *MemoryStore) RecordMentalModelHistory(ctx context.Context, bankID, id string, entry MentalModelHistoryEntry) error {
+	if !s.tuning.MentalModelHistory {
+		// The reference's switch for the record: a deployment that turned it off
+		// keeps no history, and the read routes answer with none.
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

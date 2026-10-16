@@ -66,6 +66,7 @@ func (e *Extractor) complete(ctx context.Context, text string, opts Options, pre
 	return e.Provider.Complete(ctx, provider.CompletionRequest{
 		Messages:       messages,
 		ResponseSchema: schemaFor(opts),
+		MaxTokens:      e.MaxCompletionTokens,
 		Scope:          e.Scope,
 		Strict:         true,
 	})
@@ -89,7 +90,7 @@ func (e *Extractor) extractModel(ctx context.Context, text string, opts Options,
 			return Result{}, fmt.Errorf("fact extraction call failed: %w", err)
 		}
 	}
-	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts.Vocabulary)
+	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts)
 	if parseErr != nil {
 		facts, parseErr = e.repair(ctx, text, response.Content, opts)
 		if parseErr != nil {

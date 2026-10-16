@@ -18,24 +18,10 @@ const (
 // surface: a low-budget query that returned as much as a high-budget one would
 // make the level meaningless.
 const (
-	BudgetLowLimit  = 100
-	BudgetMidLimit  = 300
-	BudgetHighLimit = 1000
+	BudgetLowLimit  = DefaultRecallBudgetLow
+	BudgetMidLimit  = DefaultRecallBudgetMid
+	BudgetHighLimit = DefaultRecallBudgetHigh
 )
-
-// BudgetLimit maps a budget level to the candidate bound it allows. An absent
-// or unrecognised level falls back to the middle level, which is what an
-// omitted budget means.
-func BudgetLimit(budget string) int {
-	switch budget {
-	case BudgetLow:
-		return BudgetLowLimit
-	case BudgetHigh:
-		return BudgetHighLimit
-	default:
-		return BudgetMidLimit
-	}
-}
 
 // RecallBudgetLevels returns the accepted budget levels in stable order.
 func RecallBudgetLevels() []string { return []string{BudgetLow, BudgetMid, BudgetHigh} }
@@ -89,11 +75,6 @@ func RecallArms() []string {
 	return []string{ArmSemantic, ArmKeyword, ArmGraph, ArmTemporal, ArmEntity}
 }
 
-// graphSeedMinSimilarity is the dense-similarity floor at which a semantic hit
-// becomes an entry point for the graph walk. It mirrors the reference's
-// graph_seed_min_similarity default.
-const graphSeedMinSimilarity = 0.3
-
 // graphSeedsAllowed reports whether the graph arm may run for this query.
 //
 // The reference derives the graph arm's entry points from the semantic arm's
@@ -103,9 +84,9 @@ const graphSeedMinSimilarity = 0.3
 // fact the caller floored out of the semantic arm from being resurrected
 // through a link from a survivor — which is the only way retrieval-level floors
 // remove a fact, and the behaviour the min_scores contract pins.
-func graphSeedsAllowed(q RecallQuery) bool {
+func graphSeedsAllowed(q RecallQuery, seedFloor float64) bool {
 	floor, ok := q.MinScores[ArmSemantic]
-	return !ok || floor <= graphSeedMinSimilarity
+	return !ok || floor <= seedFloor
 }
 
 // TemporalWindow is a caller-supplied inclusive window used for temporal
@@ -156,10 +137,17 @@ type RecallQuery struct {
 	PreferObservations bool
 	// Budget is the retrieval work bound (low, mid, high).
 	Budget string
-	// MaxTokens bounds the returned fact text; the storage layer reports the
-	// ranked matches and the handler applies the cap, but the cap is threaded
-	// through so arms can bound work.
+	// MaxTokens bounds the returned fact text in tokens; the store keeps the
+	// best-ranked matches that fit and skips any that would cross the budget.
+	// Zero means unbounded. The REST route applies the same budget again when
+	// it builds its response envelope, and the internal recall relies on it:
+	// recall is the one place the budget is enforced for every caller.
 	MaxTokens int
+	// MaxChunkTokens bounds the chunk side channel in tokens, clipping the
+	// last chunk that fits and dropping those beyond it. Zero means unbounded.
+	// It mirrors the reference's max_chunk_tokens and only applies when
+	// IncludeChunks asks for the channel.
+	MaxChunkTokens int
 	// MinScores holds per-stage score floors.
 	MinScores map[string]float64
 	// Tags and TagsMatch express flat tag scoping.
@@ -393,4 +381,83 @@ type ChunkEntry struct {
 	Text      string
 	Index     int
 	Truncated bool
+}
+
+// TruncateQueryToTokens bounds a recall query's text to maxTokens tokens; a
+// non-positive cap disables the bound.
+//
+// It is the engine ingress's bound on query length, applied before retrieval
+// for every caller — the REST route, consolidation's per-fact lookups, the
+// reflection tools. Truncation rather than rejection: a caller that cut its
+// query by characters cannot be expected to count tokens, so an over-long
+// query degrades to a shorter one instead of failing the read. A degenerate
+// query (a very long text with few distinct words) would otherwise expand into
+// a huge OR tsquery and wedge the bank's retrieval.
+//
+// It is exported so the HTTP ingress can bound the query before it reaches the
+// embedder, which is one of the sinks the reference's own truncation protects.
+//
+// A token is never shorter than one character, so a query no longer than the
+// cap in characters cannot exceed it in tokens and skips the tokenizer.
+func TruncateQueryToTokens(query string, maxTokens int) string {
+	if maxTokens <= 0 || len(query) <= maxTokens {
+		return query
+	}
+	return truncateToTokens(query, maxTokens)
+}
+
+// recallTokenCost is the token cost the recall budgets are measured in. An
+// empty text still costs one token, so it is never free against a budget.
+func recallTokenCost(text string) int {
+	if n := CountTokens(text); n > 0 {
+		return n
+	}
+	return 1
+}
+
+// capMatchesToTokens bounds a ranked match list by the fact token budget,
+// keeping the best-ranked matches that fit and skipping any that would cross
+// it. The list arrives in descending relevance, so a skipped match is a lower
+// one the budget cannot afford. A non-positive budget is unbounded.
+func capMatchesToTokens(matches []RecallMatch, maxTokens int) []RecallMatch {
+	if maxTokens <= 0 || len(matches) == 0 {
+		return matches
+	}
+	selected := make([]RecallMatch, 0, len(matches))
+	spent := 0
+	for _, match := range matches {
+		cost := recallTokenCost(match.Text)
+		if spent+cost > maxTokens {
+			continue
+		}
+		selected = append(selected, match)
+		spent += cost
+	}
+	return selected
+}
+
+// capChunksToTokens bounds the chunk side channel by its token budget: the
+// last chunk that fits is clipped and marked truncated, and the chunks beyond
+// it are dropped. A non-positive budget is unbounded.
+func capChunksToTokens(chunks []ChunkEntry, maxTokens int) []ChunkEntry {
+	if maxTokens <= 0 || len(chunks) == 0 {
+		return chunks
+	}
+	remaining := maxTokens
+	out := make([]ChunkEntry, 0, len(chunks))
+	for _, chunk := range chunks {
+		cost := recallTokenCost(chunk.Text)
+		if cost > remaining {
+			if remaining <= 0 {
+				continue
+			}
+			chunk.Text = truncateToTokens(chunk.Text, remaining)
+			chunk.Truncated = true
+			remaining = 0
+		} else {
+			remaining -= cost
+		}
+		out = append(out, chunk)
+	}
+	return out
 }

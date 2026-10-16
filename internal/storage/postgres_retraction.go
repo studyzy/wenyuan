@@ -11,7 +11,7 @@ func (s *PostgresStore) LiveMemoryIDs(ctx context.Context, bankID string, ids []
 	}
 	query := `SELECT id::text FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1 AND id::text = ANY($2)`
-	rows, err := s.db.QueryContext(ctx, query, bankID, ids)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
 		return nil, err
 	}

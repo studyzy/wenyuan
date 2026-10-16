@@ -22,6 +22,12 @@ type GuardConfig struct {
 	AllowPrivateHosts bool
 	// AllowedHosts, when non-empty, is the only host set a delivery may reach.
 	AllowedHosts []string
+	// Global is the deployment-level webhook target delivered alongside every
+	// bank's own registrations. Nil (or an empty URL) means the feature is off.
+	// It rides with the guard so the one policy object both the registration
+	// route and the delivery worker already share also carries the deployment's
+	// own receiver and its response-body setting.
+	Global *GlobalTarget
 }
 
 // Guard validates a webhook target URL.
@@ -35,6 +41,16 @@ type Guard struct{ cfg GuardConfig }
 
 // NewGuard builds a guard from the configuration.
 func NewGuard(cfg GuardConfig) *Guard { return &Guard{cfg: cfg} }
+
+// Global returns the deployment-level webhook target the guard carries, or nil
+// when none is configured. It is nil-safe, so a caller never needs to check the
+// guard itself before asking.
+func (g *Guard) Global() *GlobalTarget {
+	if g == nil {
+		return nil
+	}
+	return g.cfg.Global
+}
 
 // Validate reports whether a URL may be stored as a webhook target.
 func (g *Guard) Validate(raw string) error {

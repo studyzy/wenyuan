@@ -11,8 +11,9 @@ import (
 // sendWithRetry performs one logical call, retrying transient failures with
 // capped exponential backoff. The per-attempt wall-clock bound is applied via
 // the request context so a stalled response fails rather than pinning the
-// caller. Permits are not held while sleeping.
-func (c *Client) sendWithRetry(ctx context.Context, path string, body []byte, policy provider.RetryPolicy, scope string) ([]byte, error) {
+// caller. Permits are not held while sleeping. Per-request headers ride every
+// attempt, so a retried call carries the same cache-affinity hint as the first.
+func (c *Client) sendWithRetry(ctx context.Context, path string, body []byte, policy provider.RetryPolicy, scope string, headers map[string]string) ([]byte, error) {
 	policy = policy.Normalize()
 	deadline := time.Time{}
 	if policy.Budget > 0 {
@@ -23,7 +24,7 @@ func (c *Client) sendWithRetry(ctx context.Context, path string, body []byte, po
 		if !deadline.IsZero() && c.now().After(deadline) {
 			return nil, exhausted(last, "retry budget elapsed")
 		}
-		raw, err := c.attempt(ctx, path, body)
+		raw, err := c.attempt(ctx, path, body, headers)
 		if err == nil {
 			return raw, nil
 		}
@@ -49,11 +50,11 @@ func (c *Client) sendWithRetry(ctx context.Context, path string, body []byte, po
 }
 
 // attempt performs a single HTTP attempt with its own wall-clock bound.
-func (c *Client) attempt(ctx context.Context, path string, body []byte) ([]byte, error) {
+func (c *Client) attempt(ctx context.Context, path string, body []byte, headers map[string]string) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, c.TimeoutFor(0))
 	defer cancel()
 
-	resp, err := c.send(attemptCtx, path, body)
+	resp, err := c.send(attemptCtx, path, body, headers)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

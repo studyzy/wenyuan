@@ -10,6 +10,13 @@ import (
 // the reference's AuthenticationError renders it.
 const DetailAuthenticationFailed = "Authentication failed: Invalid API key"
 
+// The legacy MCP token's refusals, word for word as the reference sends them
+// when HINDSIGHT_API_MCP_AUTH_TOKEN is configured.
+const (
+	DetailMCPAuthorizationRequired = "Authorization header required"
+	DetailMCPInvalidToken          = "Invalid authentication token"
+)
+
 // ProtectedPrefixes are the namespaces the reference authenticates: every route
 // answered by the memory engine, and the MCP namespace. The monitoring and
 // descriptor routes are deliberately not among them, because the reference
@@ -30,11 +37,35 @@ var UnprotectedExactPaths = []string{
 // A deployment that configures no key is not authenticated at all, which is the
 // reference's single-tenant default.
 func TenantAPIKeyMiddleware(apiKey string, mcpAuthDisabled bool) Middleware {
-	if apiKey == "" {
+	return TenantAuthMiddleware(apiKey, mcpAuthDisabled, "")
+}
+
+// TenantAuthMiddleware authenticates protected requests, and the MCP namespace
+// against the legacy MCP token when one is configured.
+//
+// The reference checks the legacy token *instead of* the tenant extension for
+// MCP: a deployment that sets it authenticates MCP callers with that token
+// alone, which is why the two credentials never apply to the same request.
+func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken string) Middleware {
+	if apiKey == "" && mcpAuthToken == "" {
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			isMCP := pathInNamespace(r.URL.Path, NamespaceMCP)
+			if isMCP && mcpAuthToken != "" {
+				if !mcpTokenMatches(r, mcpAuthToken) {
+					detail := DetailMCPInvalidToken
+					if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+						detail = DetailMCPAuthorizationRequired
+					}
+					WriteJSON(w, http.StatusUnauthorized,
+						ErrorEnvelope{Detail: detail}, EncodeOptionsFor(r))
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
 			if !requiresAuthentication(r.URL.Path, mcpAuthDisabled) {
 				next.ServeHTTP(w, r)
 				return
@@ -47,6 +78,24 @@ func TenantAPIKeyMiddleware(apiKey string, mcpAuthDisabled bool) Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// pathInNamespace reports whether a request path is inside a namespace.
+func pathInNamespace(path, namespace string) bool {
+	return path == namespace || strings.HasPrefix(path, namespace+"/")
+}
+
+// mcpTokenMatches compares the request's bearer token with the legacy MCP
+// token. The reference reads the token from the Authorization header's bearer
+// scheme only, so a bare key is not accepted here.
+func mcpTokenMatches(r *http.Request, token string) bool {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	const scheme = "Bearer "
+	if !strings.HasPrefix(header, scheme) {
+		return false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(header, scheme))
+	return subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
 }
 
 // requiresAuthentication reports whether the path is one the reference

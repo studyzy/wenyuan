@@ -530,3 +530,69 @@ func TestMemoryListHonorsTagScope(t *testing.T) {
 		t.Fatalf("dan total = %d, items = %d; they must agree", dan.Total, len(dan.Items))
 	}
 }
+
+// The reference keeps the dry-run route registered and answers 404 with its own
+// sentence when the feature is switched off, so a client that probes the route
+// learns which key turns it back on.
+func TestDryRunExtractDisabledAnswersTheReferenceNotFound(t *testing.T) {
+	// The route table is built here with the gate flipped: the reference keeps
+	// the route registered and refuses it, rather than unregistering it.
+	gated := http.NewServeMux()
+	handlers := NewHandlers(storage.NewMemoryStore("public"))
+	handlers.DryRunExtractDisabled = true
+	handlers.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		if !strings.Contains(pattern, "{bank_id}") {
+			gated.HandleFunc(method+" "+pattern, handler)
+			return
+		}
+		gated.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("bank_id", bank)
+			handler(w, r)
+		})
+	})
+
+	rec := send(gated, http.MethodPost, "/v1/default/banks/"+bank+"/memories/dry-run-extract", `{"content":"Alice moved"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=true") {
+		t.Fatalf("the refusal does not name the key that re-enables it: %s", rec.Body.String())
+	}
+}
+
+// The knowledge-page default trigger layers the deployment's process default,
+// the tenant override and the bank's own config, in that order, under whatever
+// the create request named.
+func TestKnowledgePageTriggerLayersProcessTenantAndBank(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	handlers := NewHandlers(store)
+	handlers.ProcessDefaults = map[string]any{
+		"knowledge_page_default_trigger": map[string]any{"refresh_cron": "0 * * * *"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/"+bank+"/knowledge-base/pages", nil)
+
+	trigger, failure := handlers.knowledgePageTrigger(context.Background(), req, bank, nil)
+	if failure != nil {
+		t.Fatalf("resolution failed: %+v", failure)
+	}
+	if trigger["refresh_cron"] != "0 * * * *" {
+		t.Fatalf("process default not applied: %+v", trigger)
+	}
+	// The built-in default's members survive underneath it.
+	if trigger["mode"] != "delta" {
+		t.Fatalf("the built-in page default was lost: %+v", trigger)
+	}
+
+	// The request's own trigger wins over every layer.
+	request, failure := handlers.knowledgePageTrigger(context.Background(), req, bank,
+		map[string]any{"refresh_cron": "*/5 * * * *"})
+	if failure != nil {
+		t.Fatalf("resolution failed: %+v", failure)
+	}
+	if request["refresh_cron"] != "*/5 * * * *" {
+		t.Fatalf("the request's trigger did not win: %+v", request)
+	}
+}

@@ -80,7 +80,7 @@ func (s *PostgresStore) AttachmentsByShortIDs(ctx context.Context, bankID string
 	          FROM ` + quoteIdent(s.schema) + `.attachments
 	          WHERE bank_id = $1 AND short_id = ANY($2::text[])
 	          ORDER BY short_id, created_at, attachment_hash`
-	rows, err := s.db.QueryContext(ctx, query, bankID, ids)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (s *PostgresStore) enrichRecallAttachments(ctx context.Context, bankID stri
 	          FROM effective e
 	          LEFT JOIN ` + quoteIdent(s.schema) + `.attachments a
 	            ON a.bank_id = $1 AND a.short_id = e.short_id`
-	rows, err := s.db.QueryContext(ctx, query, bankID, ids)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
 		return
 	}
@@ -211,7 +211,7 @@ func (s *PostgresStore) ListAttachments(ctx context.Context, bankID, documentID 
 	          FROM ` + quoteIdent(s.schema) + `.attachments
 	          WHERE bank_id = $1 AND document_id = $2
 	          ORDER BY created_at, attachment_hash`
-	rows, err := s.db.QueryContext(ctx, query, bankID, documentID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, documentID)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func (s *PostgresStore) ChunkAttachments(ctx context.Context, bankID, documentID
 	           AND a.short_id = ANY(u.attachment_ids)
 	          WHERE u.bank_id = $1 AND u.document_id = $2 AND u.chunk_id IS NOT NULL
 	          ORDER BY u.chunk_id, a.attachment_hash`
-	rows, err := s.db.QueryContext(ctx, query, bankID, documentID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, documentID)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +275,7 @@ func (s *PostgresStore) GetAttachment(ctx context.Context, bankID, attachmentID 
 	          WHERE bank_id = $1 AND short_id = $2`
 	var attachment Attachment
 	var filename sql.NullString
-	err := s.db.QueryRowContext(ctx, query, bankID, attachmentID).Scan(&attachment.BankID, &attachment.DocumentID,
+	err := s.reader().QueryRowContext(ctx, query, bankID, attachmentID).Scan(&attachment.BankID, &attachment.DocumentID,
 		&attachment.AttachmentHash, &attachment.ShortID, &attachment.MediaType, &attachment.ByteSize,
 		&attachment.StorageKey, &attachment.Kind, &filename)
 	if errors.Is(err, sql.ErrNoRows) {

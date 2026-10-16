@@ -191,6 +191,12 @@ type Store interface {
 	// already linked keeps its link, so a rewrite of the set is not a second
 	// mention for the entities the caller left in place.
 	SetUnitEntities(ctx context.Context, bankID, unitID string, names []string, resolve bool) error
+	// UnitEntityNames returns the canonical names of the entities each unit
+	// mentions, keyed by unit id. An observation that carries no postings of its
+	// own inherits the entities of the memories it was consolidated from, so a
+	// listing shows what a reader would get from the unit's detail. Units with no
+	// entities are absent from the map rather than mapped to an empty slice.
+	UnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error)
 	// UpsertEntityCooccurrence records that two entities co-occur in a bank.
 	// The reference orders the pair by identifier, so the caller supplies the
 	// lower identifier first.
@@ -514,6 +520,27 @@ type BackendConfig struct {
 	VectorExtension     string
 	TextSearchExtension string
 	RunMigrations       bool
+	// MigrationDatabaseURL, when set, is the connection the migration series
+	// runs over: a deployment whose serving role cannot run DDL points this at a
+	// role that can, and the server itself keeps using DatabaseURL.
+	MigrationDatabaseURL string
+	// ReadDatabaseURL, when set, is a read-only connection — a replica or a
+	// read-only role — that the store's read paths run over. Writes, migrations
+	// and advisory-locked work always stay on DatabaseURL. Empty (the zero
+	// value) means every statement runs on the primary, which is the reference's
+	// own behaviour when no read database is configured.
+	ReadDatabaseURL string
+	// ReadPoolMin and ReadPoolMax bound the read pool, the way MaxIdleConns and
+	// MaxOpenConns bound the primary one. Zero leaves the driver's default.
+	ReadPoolMin int
+	ReadPoolMax int
+	// PGFunctionSchema and PGTokenizer configure the ParadeDB pg_search BM25
+	// backend (the reference's HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*):
+	// the schema its score/match functions live in and the tokenizer its index
+	// is built with. They are read only when TextSearchExtension selects
+	// pg_search.
+	PGFunctionSchema string
+	PGTokenizer      string
 	// MaxOpenConns and MaxIdleConns bound the connection pool. Zero leaves the
 	// driver's own default, which is unbounded for open connections.
 	MaxOpenConns int
@@ -524,8 +551,21 @@ type BackendConfig struct {
 	// "0 disables" convention.
 	BankInfoCacheTTL  time.Duration
 	BankStatsCacheTTL time.Duration
+	// BankInfoCacheMaxEntries bounds how many bank rows one process caches.
+	// Zero leaves it unbounded.
+	BankInfoCacheMaxEntries int
+	// BankStatsCacheMaxEntries bounds how many bank-statistics summaries one
+	// process caches. Zero leaves it unbounded.
+	BankStatsCacheMaxEntries int
 	// Session holds the settings every connection of the pool carries. The
 	// reference applies them per connection, so a deployment's statement
 	// timeout and planner limits reach every statement rather than one.
 	Session SessionSettings
+	// AcquireTimeout bounds how long a statement waits for a pooled connection
+	// before failing. Zero leaves the wait unbounded.
+	AcquireTimeout time.Duration
+	// PoolSlowAcquireThreshold and AcquireWarnThreshold are the waits at which a
+	// connection acquire is reported as slow; each is disabled when zero.
+	PoolSlowAcquireThreshold time.Duration
+	AcquireWarnThreshold     time.Duration
 }

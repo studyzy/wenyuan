@@ -666,3 +666,45 @@ func initializeSession(t *testing.T, server *Server) string {
 	}
 	return session
 }
+
+// The server-level allowlist hides every tool outside it, and a call to a
+// hidden tool is answered the way an unknown tool is.
+func TestEnabledToolsNarrowTheRoster(t *testing.T) {
+	server := newServer(t).WithOptions(Options{EnabledTools: []string{"recall"}})
+	defs := server.advertisedTools(true)
+	if len(defs) != 1 || defs[0].Name != "recall" {
+		t.Fatalf("advertised tools = %+v, want only recall", defs)
+	}
+	if server.toolAllowed("retain") {
+		t.Fatal("a tool outside the allowlist is still callable")
+	}
+	if !server.toolAllowed("recall") {
+		t.Fatal("an allowlisted tool is not callable")
+	}
+	// A server without an allowlist advertises the whole reference roster.
+	if got := newServer(t).advertisedTools(true); len(got) != len(toolDefinitions(true)) {
+		t.Fatalf("an unconfigured server advertises %d tools, want %d", len(got), len(toolDefinitions(true)))
+	}
+}
+
+// The deployment's extra instructions ride on the two memory tools, verbatim
+// and with the reference's separator.
+func TestInstructionsAppendToRetainAndRecall(t *testing.T) {
+	defs := withInstructions(toolDefinitions(true), "Prefer British spellings.")
+	var sawRetain, sawRecall bool
+	for _, def := range defs {
+		switch def.Name {
+		case "retain":
+			sawRetain = strings.Contains(def.Description, "\n\nAdditional instructions: Prefer British spellings.")
+		case "recall":
+			sawRecall = strings.Contains(def.Description, "\n\nAdditional instructions: Prefer British spellings.")
+		case "list_banks":
+			if strings.Contains(def.Description, "Additional instructions") {
+				t.Fatal("the instructions were appended to an unrelated tool")
+			}
+		}
+	}
+	if !sawRetain || !sawRecall {
+		t.Fatalf("instructions missing: retain=%v recall=%v", sawRetain, sawRecall)
+	}
+}

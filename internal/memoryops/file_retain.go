@@ -99,9 +99,9 @@ func fileParserDefaults() fileparse.Settings {
 }
 
 // parserRegistry is the registry the file route converts with.
-func (h *Handlers) parserRegistry() *fileparse.Registry {
+func (h *Handlers) parserRegistry() (*fileparse.Registry, error) {
 	if h.Parsers != nil {
-		return h.Parsers
+		return h.Parsers, nil
 	}
 	return fileParserDefaults().Registry()
 }
@@ -115,12 +115,18 @@ func (h *Handlers) effectiveParserChain() []string {
 }
 
 // parserAllowlist returns the parser names a client may request. An empty
-// configured allowlist means every registered parser, as in the reference.
+// configured allowlist means every registered parser, as in the reference. A
+// registry that cannot be built leaves no parser requestable, which the route
+// reports as a refusal rather than converting with a parser it cannot name.
 func (h *Handlers) parserAllowlist() []string {
 	if len(h.ParserAllowlist) > 0 {
 		return h.ParserAllowlist
 	}
-	return h.parserRegistry().List()
+	registry, err := h.parserRegistry()
+	if err != nil {
+		return nil
+	}
+	return registry.List()
 }
 
 // allowedParser reports whether a requested parser name is in the allowlist.
@@ -452,7 +458,11 @@ func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, he
 	if image {
 		text = AttachmentPlaceholder(shortID)
 	} else {
-		result, err := h.parserRegistry().ConvertWithFallback(parserChain, data, header.Filename, contentType)
+		registry, err := h.parserRegistry()
+		if err != nil {
+			return RetainItem{}, err
+		}
+		result, err := registry.ConvertWithFallback(parserChain, data, header.Filename, contentType)
 		if err != nil {
 			return RetainItem{}, unsupportedUploadError{
 				filename: header.Filename,

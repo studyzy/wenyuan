@@ -17,7 +17,7 @@ import (
 func (s *PostgresStore) BankConfig(ctx context.Context, bankID string) (map[string]any, error) {
 	query := `SELECT COALESCE(config, '{}'::jsonb) FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
 	var raw []byte
-	err := s.db.QueryRowContext(ctx, query, bankID).Scan(&raw)
+	err := s.reader().QueryRowContext(ctx, query, bankID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrBankNotFound
 	}

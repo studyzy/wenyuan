@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,10 @@ const (
 	DefaultLease          = 5 * time.Minute
 	DefaultConcurrency    = 4
 	DefaultPollInterval   = time.Second
+	// DefaultBackpressureDefer is how long a task the store shed under
+	// backpressure is held before its next attempt, matching the reference's
+	// DEFAULT_BACKPRESSURE_DEFER_SECONDS.
+	DefaultBackpressureDefer = 120 * time.Second
 )
 
 // Config tunes the consumer.
@@ -59,6 +65,15 @@ type Config struct {
 	// ReservedSlots reserves a floor of the consumer's concurrency for a given
 	// operation type, so a bank mid-bulk-ingest cannot starve it.
 	ReservedSlots map[string]int
+	// BackpressureDefer is how long a task the store shed under backpressure is
+	// held before its next attempt. It applies only where a deferral already
+	// happens: an operation whose processor named an explicit delay keeps that
+	// delay.
+	BackpressureDefer time.Duration
+	// ConsolidationByBank is the reference's bank-priority list, spelled
+	// "bank-pattern:priority,...". When set, a consolidation claim prefers the
+	// banks matching a higher-priority pattern.
+	ConsolidationByBank string
 }
 
 // Processor performs the work of one operation. It is supplied by the caller so
@@ -180,6 +195,9 @@ type Consumer struct {
 
 	inflightMu sync.Mutex
 	inflight   map[string]int
+	// consolidationPriority is the parsed ConsolidationByBank list, applied to
+	// consolidation claims. It is empty when the deployment configured none.
+	consolidationPriority map[string]int
 }
 
 // Auditor decides and records system-transport audit entries. It is satisfied
@@ -220,6 +238,9 @@ func New(store storage.Store, processor Processor, cfg Config) *Consumer {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = DefaultPollInterval
 	}
+	if cfg.BackpressureDefer <= 0 {
+		cfg.BackpressureDefer = DefaultBackpressureDefer
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -229,7 +250,45 @@ func New(store storage.Store, processor Processor, cfg Config) *Consumer {
 	if cfg.Sleep == nil {
 		cfg.Sleep = time.Sleep
 	}
-	return &Consumer{store: store, processor: processor, cfg: cfg, stopCh: make(chan struct{})}
+	return &Consumer{
+		store: store, processor: processor, cfg: cfg,
+		consolidationPriority: ParseBankPriority(cfg.ConsolidationByBank),
+		stopCh:                make(chan struct{}),
+	}
+}
+
+// ParseBankPriority reads the reference's "bank-pattern:priority,..." list into
+// a pattern-to-priority map. "*" in a pattern is kept as-is; the claim layers
+// translate it to their own wildcard. A blank entry, an entry with no colon, an
+// empty pattern or an unparseable or non-positive priority is dropped rather
+// than failing the consumer, matching the defensive reading the rest of the
+// configuration surface applies to a value carried as a plain string.
+func ParseBankPriority(raw string) map[string]int {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	priority := map[string]int{}
+	for _, entry := range strings.Split(trimmed, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		colon := strings.LastIndex(entry, ":")
+		if colon < 0 {
+			continue
+		}
+		pattern := strings.TrimSpace(entry[:colon])
+		value, err := strconv.Atoi(strings.TrimSpace(entry[colon+1:]))
+		if pattern == "" || err != nil || value < 1 {
+			continue
+		}
+		priority[pattern] = value
+	}
+	if len(priority) == 0 {
+		return nil
+	}
+	return priority
 }
 
 // BackoffFor returns the delay before the given retry attempt, counted from
@@ -316,7 +375,7 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 // for it is below the reservation, and any work is claimed otherwise.
 func (c *Consumer) claim(ctx context.Context) (storage.Operation, error) {
 	if preferred := c.preferredTypes(); len(preferred) > 0 {
-		op, err := c.store.ClaimNextOperationForTypes(ctx, c.workerID(), c.cfg.Lease, preferred)
+		op, err := c.claimPreferred(ctx, preferred)
 		if err == nil {
 			c.trackInflight(op.OperationType, 1)
 			return op, nil
@@ -330,6 +389,36 @@ func (c *Consumer) claim(ctx context.Context) (storage.Operation, error) {
 		c.trackInflight(op.OperationType, 1)
 	}
 	return op, err
+}
+
+// claimPreferred claims from the reserved types, and — when a bank priority is
+// configured — takes the consolidation pool first, ordered by that priority. It
+// is the reference's tiered consolidation claim: consolidation is claimed from
+// its own pool, ahead of the shared types, so a busy bank's priority governs
+// which consolidation runs next.
+func (c *Consumer) claimPreferred(ctx context.Context, preferred []string) (storage.Operation, error) {
+	if len(c.consolidationPriority) > 0 && containsType(preferred, storage.OperationTypeConsolidate) {
+		if claimer, ok := c.store.(storage.ConsolidationPriorityClaimer); ok {
+			op, err := claimer.ClaimConsolidationByPriority(ctx, c.workerID(), c.cfg.Lease, c.consolidationPriority)
+			if err == nil {
+				return op, nil
+			}
+			if !errors.Is(err, storage.ErrOperationNotFound) {
+				return storage.Operation{}, err
+			}
+		}
+	}
+	return c.store.ClaimNextOperationForTypes(ctx, c.workerID(), c.cfg.Lease, preferred)
+}
+
+// containsType reports whether a slice names an operation type.
+func containsType(types []string, want string) bool {
+	for _, opType := range types {
+		if opType == want {
+			return true
+		}
+	}
+	return false
 }
 
 // preferredTypes lists the reserved types whose floor is not yet met by the
@@ -443,7 +532,16 @@ func isBackpressure(err error) bool {
 // tell "the endpoint is refusing us" from "we never reached it". A processor
 // that reported nothing takes the plain scheduling path unchanged.
 func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cause error, metadata map[string]any) {
+	// A deferral under backpressure is held for the configured interval: the
+	// delay is how long the store needs to catch up, not how many attempts the
+	// work has already spent, so it does not walk a retry ladder tuned for a
+	// failure. A processor that named its own delay — a webhook's backoff ladder,
+	// a provider's rate-limit reset — keeps it, and any other deferral keeps the
+	// ordinary backoff.
 	delay := c.BackoffFor(op.RetryCount + 1)
+	if isBackpressure(cause) {
+		delay = c.cfg.BackpressureDefer
+	}
 	if explicit, ok := deferralDelay(cause); ok && explicit > 0 {
 		delay = explicit
 	}

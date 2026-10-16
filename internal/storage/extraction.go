@@ -46,6 +46,10 @@ type FactExtractionOptions struct {
 	// the extractor put each image into the prompt where its placeholder stands,
 	// so a fact is read off the picture rather than its caption alone.
 	Attachments []RetainAttachment
+	// ExtractCausalLinks turns causal-relation extraction on or off. A nil
+	// value keeps the reference's shipped default (on); storage sets it from
+	// the deployment tuning, so an unset key changes nothing.
+	ExtractCausalLinks *bool
 }
 
 // ContextualFactExtraction is the optional capability an extractor implements
@@ -139,17 +143,27 @@ func modelExtractionEnabled(req RetainRequest) bool {
 // extractForItems runs the configured extractor for every item, one entry per
 // item in item order. A nil entry means the item's text is stored verbatim.
 //
-// The whole batch fails if any item's extraction fails, because a partially
-// extracted write would leave the caller unable to tell which items were
-// processed a second way.
-func extractForItems(ctx context.Context, req RetainRequest) ([][]ExtractedFact, error) {
+// failOnExtractionErrors selects what a failed extraction means. When it is
+// set, the first item whose extraction failed fails the whole write: the caller
+// learns the write did not happen rather than discovering later that it was
+// stored a second way. When it is off — the reference's shipped default — the
+// failed item yields no facts, so its document text and chunks are still
+// stored while it contributes no memory unit, and the write proceeds over the
+// items that extracted. That is the reference's own rule: a chunk whose
+// extraction failed loses its facts, not the rest of the retain.
+func extractForItems(ctx context.Context, req RetainRequest, extractCausalLinks bool) ([][]ExtractedFact, error) {
 	extracted := make([][]ExtractedFact, len(req.Items))
 	if req.Extraction == nil {
 		return extracted, nil
 	}
 	for index, item := range req.Items {
-		facts, err := extractItemFacts(ctx, req.Extraction, item, req)
+		facts, err := extractItemFacts(ctx, req.Extraction, item, req, extractCausalLinks)
 		if err != nil {
+			// A failed extraction fails the write. The reference's
+			// HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API*
+			// extraction errors, where a single request cannot be re-asked; this
+			// build has no batch path, and the streaming path it does have
+			// surfaces the failure here so the operation records it.
 			return nil, err
 		}
 		extracted[index] = facts
@@ -159,7 +173,7 @@ func extractForItems(ctx context.Context, req RetainRequest) ([][]ExtractedFact,
 
 // extractItemFacts runs one item's extraction and drops facts that carry no
 // text, because a fact with nothing to store cannot become a unit.
-func extractItemFacts(ctx context.Context, extractor FactExtraction, item RetainItem, req RetainRequest) ([]ExtractedFact, error) {
+func extractItemFacts(ctx context.Context, extractor FactExtraction, item RetainItem, req RetainRequest, extractCausalLinks bool) ([]ExtractedFact, error) {
 	// Chunks mode stores each segment as its own memory and asks the model
 	// nothing, so the extractor is never called: leaving the item's facts empty
 	// makes the caller store its segments verbatim, one unit per chunk.
@@ -174,6 +188,14 @@ func extractItemFacts(ctx context.Context, extractor FactExtraction, item Retain
 		OptionalFactDimensions: req.OptionalFactDimensions,
 		Vocabulary:             req.Vocabulary,
 		Attachments:            item.Attachments,
+	}
+	// The causal-links switch is carried only when it is off: a nil option is
+	// the reference's default (on), so a request that configures nothing keeps
+	// taking the plain call and only a disabled deployment hands the extractor
+	// the richer one.
+	if !extractCausalLinks {
+		disabled := false
+		opts.ExtractCausalLinks = &disabled
 	}
 	if item.Timestamp != nil {
 		opts.ReferenceTime = *item.Timestamp
@@ -245,5 +267,6 @@ func extractItemFacts(ctx context.Context, extractor FactExtraction, item Retain
 func (o FactExtractionOptions) empty() bool {
 	return o.Mission == "" && o.Instructions == "" && o.Strategy == "" &&
 		o.Mode == "" && !o.OptionalFactDimensions &&
-		o.ReferenceTime.IsZero() && o.Vocabulary.Empty() && len(o.Attachments) == 0
+		o.ReferenceTime.IsZero() && o.Vocabulary.Empty() && len(o.Attachments) == 0 &&
+		o.ExtractCausalLinks == nil
 }

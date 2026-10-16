@@ -46,6 +46,18 @@ type Options struct {
 	// interleaved back into the user message where their placeholders stand, so
 	// the model reads an image in the position the caller wrote it.
 	Attachments []Attachment
+	// ExtractCausalLinks turns causal-relation extraction on or off. A nil
+	// value keeps the reference's shipped default (on): the prompt asks for
+	// causal_relations, the schema declares the field, and the model's answer
+	// is parsed. False drops the ask and the parse, so a disabled switch yields
+	// no causal relations at all, exactly as the reference threads the option.
+	ExtractCausalLinks *bool
+}
+
+// causalLinksEnabled reports whether the extraction should ask for and parse
+// causal relations. An unset option is the reference's default (on).
+func causalLinksEnabled(opts Options) bool {
+	return opts.ExtractCausalLinks == nil || *opts.ExtractCausalLinks
 }
 
 // Attachment is one inline attachment carried into an extraction call: the
@@ -131,6 +143,14 @@ func composeExtractionPrompt(opts Options) string {
 		if instructions := strings.TrimSpace(opts.Instructions); instructions != "" {
 			prompt = customFactExtractionPrompt(instructions)
 		}
+	}
+	// Every non-verbatim prompt ends with the causal-relationships section, so a
+	// disabled switch drops exactly that tail: the reference appends the section
+	// to the base prompt only when causal extraction is on, which is the same
+	// string a suffix trim produces. Verbatim never carries the section, so the
+	// trim is a no-op there.
+	if !causalLinksEnabled(opts) {
+		prompt = strings.TrimSuffix(prompt, causalRelationshipsSection)
 	}
 	var builder strings.Builder
 	builder.WriteString(prompt)

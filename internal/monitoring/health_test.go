@@ -231,8 +231,8 @@ func TestWorkerLivenessFields(t *testing.T) {
 
 // The metrics endpoint includes deployment-provided gauges.
 func TestMetricsExtraSeries(t *testing.T) {
-	handler := &MetricsHandler{Extra: func() map[string]float64 {
-		return map[string]float64{"wenyuan_async_operations_pending": 3}
+	handler := &MetricsHandler{Extra: func() []Metric {
+		return []Metric{{Name: "wenyuan_async_operations_pending", Value: 3}}
 	}}
 	mux := http.NewServeMux()
 	BindMetricsRoutes(handler, func(method, pattern string, h http.HandlerFunc) {

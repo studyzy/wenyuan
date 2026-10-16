@@ -104,7 +104,7 @@ func (s *MemoryStore) ReflectObservations(ctx context.Context, bankID, query str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]ReflectCitation, 0)
-	budget := maxTokens
+	budget := s.tuning.internalRecallFactTokens(maxTokens)
 	for _, unit := range s.units {
 		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
@@ -133,7 +133,7 @@ func (s *MemoryStore) ReflectMemories(ctx context.Context, bankID, query string,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]ReflectCitation, 0)
-	budget := maxTokens
+	budget := s.tuning.internalRecallFactTokens(maxTokens)
 	for _, unit := range s.units {
 		if unit.BankID != bankID || unit.FactType == TypeObservation {
 			continue
@@ -296,6 +296,18 @@ func (s *PostgresStore) ReflectMemories(ctx context.Context, bankID, query strin
 	return s.reflectRecall(ctx, bankID, query, maxTokens, types)
 }
 
+// internalRecallFactTokens resolves the internal recall's fact-channel budget:
+// the caller's budget when it set one, else the deployment's process default,
+// and zero (unbounded) when neither is set. The chunk channel's budget and the
+// include-chunks switch are read straight from the tuning, because the caller
+// names no chunk budget of its own.
+func (t Tuning) internalRecallFactTokens(caller int) int {
+	if caller > 0 {
+		return caller
+	}
+	return t.InternalRecallMaxFactTokens
+}
+
 // reflectRecall runs the shared recall pipeline for one reflection layer. It
 // reuses recall's arms and the bank's disabled-arm configuration instead of
 // re-implementing retrieval, then applies the reflection token budget to the
@@ -314,10 +326,13 @@ func (s *PostgresStore) reflectRecall(ctx context.Context, bankID, query string,
 		return nil, err
 	}
 	result, err := s.Recall(ctx, RecallQuery{
-		BankID:       bankID,
-		Query:        query,
-		Types:        types,
-		DisabledArms: bank.RecallDisabledArms(),
+		BankID:         bankID,
+		Query:          query,
+		Types:          types,
+		DisabledArms:   bank.RecallDisabledArms(),
+		IncludeChunks:  s.tuning.InternalRecallIncludeChunks,
+		MaxTokens:      s.tuning.internalRecallFactTokens(maxTokens),
+		MaxChunkTokens: s.tuning.InternalRecallMaxChunkTokens,
 	})
 	if err != nil {
 		return nil, err
@@ -363,7 +378,7 @@ func (s *PostgresStore) ReflectReadModels(ctx context.Context, bankID string, id
 	// arm queries do, rather than depending on how the driver renders a uuid.
 	query := `SELECT id::text, COALESCE(content, '') FROM ` + quoteIdent(s.schema) + `.mental_models
 	          WHERE bank_id = $1 AND id::text = ANY($2::text[])`
-	rows, err := s.db.QueryContext(ctx, query, bankID, ids)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -413,7 +428,7 @@ func (s *PostgresStore) ReflectExpand(ctx context.Context, req ReflectExpandRequ
 	          LEFT JOIN ` + quoteIdent(s.schema) + `.chunks c
 	                 ON c.chunk_id = u.chunk_id AND c.bank_id = u.bank_id
 	          WHERE u.bank_id = $1 AND u.id::text = ANY($2::text[])`
-	rows, err := s.db.QueryContext(ctx, query, req.BankID, req.IDs)
+	rows, err := s.reader().QueryContext(ctx, query, req.BankID, req.IDs)
 	if err != nil {
 		return nil, err
 	}

@@ -160,8 +160,11 @@ func TestRetainStoresNoUnitWhenExtractionFindsNothing(t *testing.T) {
 	}
 }
 
-// A failed extraction fails the write, so the caller learns the write did not
-// happen rather than discovering later that it was stored a second way.
+// A failed extraction fails the write, which is what makes the failure visible
+// on the operation record. (The reference's
+// HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API* extraction
+// errors; this build has no batch path, so the streaming path's failure is the
+// one that reaches the operation.)
 func TestRetainFailsWhenExtractionFails(t *testing.T) {
 	store := NewMemoryStore("public")
 	extractor := &stubExtraction{err: errors.New("model unavailable")}
@@ -505,5 +508,44 @@ func TestChunksModeStoresOneUnitPerChunkWithoutCallingTheModel(t *testing.T) {
 	}
 	if units := store.UnitsForTest("b1"); len(units) != want {
 		t.Fatalf("stored units = %d, want %d", len(units), want)
+	}
+}
+
+// The deployment's causal-links switch reaches the extractor through the write:
+// a store tuned with the switch off hands the extractor an explicitly disabled
+// option, and a store on the default leaves the option unset so the reference
+// default applies (and an unconfigured request keeps taking the plain call).
+func TestRetainPassesCausalLinksSwitch(t *testing.T) {
+	ctx := context.Background()
+
+	off := NewMemoryStore("public")
+	off.SetTuning(Tuning{ExtractCausalLinks: false})
+	disabled := &contextualExtraction{}
+	if _, err := off.RetainWrite(ctx, RetainRequest{
+		BankID:     "b1",
+		Extraction: disabled,
+		Items:      []RetainItem{{Content: "Alice moved.", DocumentID: "doc-1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(disabled.options) != 1 {
+		t.Fatalf("contextual calls = %d, want one", len(disabled.options))
+	}
+	if opt := disabled.options[0].ExtractCausalLinks; opt == nil || *opt {
+		t.Fatalf("causal option = %v, want explicitly disabled", opt)
+	}
+
+	on := NewMemoryStore("public")
+	defaulted := &contextualExtraction{}
+	if _, err := on.RetainWrite(ctx, RetainRequest{
+		BankID:     "b1",
+		Extraction: defaulted,
+		Items:      []RetainItem{{Content: "Alice moved.", DocumentID: "doc-1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(defaulted.options) != 0 || len(defaulted.calls) != 1 {
+		t.Fatalf("a default store must keep the plain call: options=%d calls=%d",
+			len(defaulted.options), len(defaulted.calls))
 	}
 }

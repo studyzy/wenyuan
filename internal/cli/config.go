@@ -19,7 +19,7 @@ const (
 )
 
 // DefaultAPIURL is applied when no level of the priority chain resolves one.
-const DefaultAPIURL = "http://localhost:8888"
+const DefaultAPIURL = "http://localhost:18888"
 
 // Paths under the home directory.
 const (

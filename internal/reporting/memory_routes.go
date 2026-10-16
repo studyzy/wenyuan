@@ -96,9 +96,24 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
+	unitIDs := make([]string, 0, len(page.Memories))
+	for _, unit := range page.Memories {
+		unitIDs = append(unitIDs, unit.ID)
+	}
+	// Entities are postings rather than a column on the unit, so one lookup
+	// answers for the whole page.
+	entityNames, err := h.Store.UnitEntityNames(r.Context(), bankID, unitIDs)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
 	items := make([]MemoryItem, 0, len(page.Memories))
 	for _, unit := range page.Memories {
-		items = append(items, toMemoryItem(unit))
+		item := toMemoryItem(unit)
+		if names, ok := entityNames[unit.ID]; ok {
+			item.Entities = strings.Join(names, ", ")
+		}
+		items = append(items, item)
 	}
 	httpx.WriteJSONOpenRow(w, r, http.StatusOK, MemoryListResponse{
 		Items: items, Total: page.Total, Limit: limit, Offset: offset,
@@ -444,6 +459,13 @@ type dryRunExtractRequest struct {
 
 // DryRunExtract reports what a retain would extract, without storing anything.
 func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
+	if h.DryRunExtractDisabled {
+		// The reference keeps the route registered and answers 404, naming the
+		// key that re-enables it.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
+			"Dry-run extraction is disabled. Set HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=true to re-enable."))
+		return
+	}
 	if _, ok := h.requireBank(w, r); !ok {
 		return
 	}
@@ -472,6 +494,11 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Strategy != nil {
 		options.Strategy = *body.Strategy
+	}
+	if body.RetainExtractCausalLinks != nil {
+		options.ExtractCausalLinks = body.RetainExtractCausalLinks
+	} else if h.RetainExtractCausalLinks != nil {
+		options.ExtractCausalLinks = h.RetainExtractCausalLinks
 	}
 	if body.Timestamp != nil {
 		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*body.Timestamp)); err == nil {
@@ -678,6 +705,10 @@ func (h *Handlers) retainPreviewOptions(ctx context.Context, bankID string) extr
 		Mission:                configString(config, "retain_mission"),
 		Instructions:           configString(config, "retain_custom_instructions"),
 		OptionalFactDimensions: configBool(config, "retain_optional_fact_dimensions"),
+		// The previewed prompt is the one a retain would send, so the causal
+		// switch is part of it: the bank's own value first, then the
+		// deployment's.
+		ExtractCausalLinks: configBoolPtr(config, "retain_extract_causal_links", h.RetainExtractCausalLinks),
 	}
 }
 
@@ -685,6 +716,15 @@ func (h *Handlers) retainPreviewOptions(ctx context.Context, bankID string) extr
 func configString(config map[string]any, key string) string {
 	value, _ := config[key].(string)
 	return value
+}
+
+// configBoolPtr reads a boolean override, falling back to the deployment's
+// value (which may itself be unset, meaning the reference's default).
+func configBoolPtr(config map[string]any, key string, fallback *bool) *bool {
+	if value, ok := config[key].(bool); ok {
+		return &value
+	}
+	return fallback
 }
 
 // configBool reads a boolean override, defaulting to false.

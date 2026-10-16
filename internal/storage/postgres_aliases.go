@@ -18,13 +18,25 @@ func (s *PostgresStore) ResolveBankID(ctx context.Context, name string) (string,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return name, err
 	}
+	cache := aliasCacheRef()
+	if cached, ok := cache.get(s.schema, name); ok {
+		return cached, nil
+	}
 	var owner string
 	err = s.db.QueryRowContext(ctx,
 		`SELECT bank_id FROM `+quoteIdent(s.schema)+`.bank_aliases WHERE alias = $1`, name).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
+		// A miss is worth caching too: nearly every request names a real bank,
+		// and without a negative entry each one would pay a read that can only
+		// answer "not an alias".
+		cache.put(s.schema, name, name)
 		return name, nil
 	}
-	return owner, err
+	if err != nil {
+		return name, err
+	}
+	cache.put(s.schema, name, owner)
+	return owner, nil
 }
 
 // ListAliases returns a bank's aliases displayed first then oldest first.
@@ -68,6 +80,9 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 		alias, bankID, primary); err != nil {
 		return nil, err
 	}
+	// The negative the conflict check above cached for this name would
+	// otherwise keep the new alias invisible on this process for the whole TTL.
+	aliasCacheRef().invalidate(s.schema, alias)
 	return s.listAliases(ctx, bankID)
 }
 
@@ -121,6 +136,9 @@ func (s *PostgresStore) RemoveAlias(ctx context.Context, bankID, alias string) (
 		bankID, alias); err != nil {
 		return nil, err
 	}
+	// A cached resolution for the detached name would otherwise keep routing to
+	// the bank on this process for the whole TTL.
+	aliasCacheRef().invalidate(s.schema, alias)
 	return s.listAliases(ctx, bankID)
 }
 
@@ -128,7 +146,7 @@ func (s *PostgresStore) listAliases(ctx context.Context, bankID string) ([]BankA
 	query := `SELECT alias, bank_id, is_primary, created_at
 	          FROM ` + quoteIdent(s.schema) + `.bank_aliases
 	          WHERE bank_id = $1 ORDER BY is_primary DESC, created_at ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}

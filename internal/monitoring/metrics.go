@@ -13,12 +13,59 @@ import (
 // PrometheusContentType is the text exposition content type scrapers expect.
 const PrometheusContentType = "text/plain; version=0.0.4; charset=utf-8"
 
+// Metric is one additional gauge or counter sample beyond the HTTP instruments.
+// It is not necessarily unique by name: per-bank series share a name and differ
+// in their Labels.
+type Metric struct {
+	// Name is the exposition metric name.
+	Name string
+	// Help is the HELP text; a blank value falls back to a generic one.
+	Help string
+	// Type is the exposition type, "gauge" or "counter"; blank means gauge.
+	Type string
+	// Value is the sample value.
+	Value float64
+	// Labels is the sample's label set; nil means none.
+	Labels map[string]string
+}
+
+// Histogram is one additional histogram family: the bucket boundaries with their
+// cumulative counts, plus the sum and count of every observation.
+type Histogram struct {
+	// Name is the exposition metric name. The buckets, sum and count render as
+	// Name_bucket, Name_sum and Name_count.
+	Name string
+	// Help is the HELP text; a blank value falls back to a generic one.
+	Help string
+	// Buckets are the upper bounds in seconds, ascending.
+	Buckets []float64
+	// Counts are the cumulative counts, one per boundary. The +Inf bucket is
+	// not listed here; it renders from Count.
+	Counts []uint64
+	// Sum is the sum of the observed values.
+	Sum float64
+	// Count is the number of observations.
+	Count uint64
+	// Labels is the family's label set; nil means none.
+	Labels map[string]string
+}
+
 // MetricsHandler serves the Prometheus text exposition endpoint.
 type MetricsHandler struct {
 	// Recorder supplies the labelled HTTP request series; it may be nil.
 	Recorder *httpx.MetricsRecorder
-	// Extra supplies additional gauge-style samples by name.
-	Extra func() map[string]float64
+	// Extra supplies additional gauge/counter samples; it may be nil.
+	Extra func() []Metric
+	// Histograms supplies additional histogram families; it may be nil.
+	Histograms func() []Histogram
+	// Tenant, when non-empty, is added to every rendered series as a `tenant`
+	// label. A deployment sets it to the database schema it is scoped to.
+	Tenant string
+	// Workers, when non-nil, makes one scrape cover every worker of a
+	// multi-process server: the response is this process's own series read live
+	// plus every live peer's latest snapshot, each series labelled with the
+	// worker it came from. A nil value is the plain single-process exposition.
+	Workers *WorkerMetrics
 }
 
 // Serve writes the metrics body in text exposition format.
@@ -26,6 +73,17 @@ func (h *MetricsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", PrometheusContentType)
 	w.WriteHeader(http.StatusOK)
 
+	if h.Workers != nil {
+		_, _ = w.Write(h.Workers.Render())
+		return
+	}
+	_, _ = w.Write(h.Exposition())
+}
+
+// Exposition renders this process's own metrics body in text exposition
+// format. It is the registry a multi-process deployment publishes as this
+// worker's snapshot, and the whole body when no worker label is configured.
+func (h *MetricsHandler) Exposition() []byte {
 	var b strings.Builder
 	var snap httpx.MetricsSnapshot
 	if h.Recorder != nil {
@@ -33,19 +91,14 @@ func (h *MetricsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// The HTTP instruments are declared at start-up, so their HELP/TYPE lines
 	// are always present even before the first request lands.
-	writeHTTPRequests(&b, snap)
+	writeHTTPRequests(&b, snap, h.Tenant)
 	if h.Extra != nil {
-		extra := h.Extra()
-		names := make([]string, 0, len(extra))
-		for name := range extra {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			writeGauge(&b, name, "Deployment-provided metric.", extra[name], nil)
-		}
+		writeSamples(&b, sortMetrics(h.Extra()), h.Tenant)
 	}
-	_, _ = w.Write([]byte(b.String()))
+	if h.Histograms != nil {
+		writeHistogramFamilies(&b, h.Histograms(), h.Tenant)
+	}
+	return []byte(b.String())
 }
 
 // BindMetricsRoutes registers the metrics route.
@@ -55,54 +108,106 @@ func BindMetricsRoutes(h *MetricsHandler, handle func(method, pattern string, ha
 
 // writeHTTPRequests renders the request total, in-progress and duration series
 // under the reference's instrument names.
-func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot) {
+func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant string) {
 	writeHelpType(b, "hindsight_http_requests_total", "Total number of HTTP requests", "counter")
 	for _, series := range snap.Requests {
-		labels := requestLabels(series, true)
+		labels := requestLabels(series, true, tenant)
 		fmt.Fprintf(b, "hindsight_http_requests_total%s %s\n", labels, formatValue(series.Count))
 	}
 
 	writeHelpType(b, "hindsight_http_requests_in_progress", "Number of HTTP requests in progress", "gauge")
 	for _, series := range snap.InProgress {
-		labels := methodEndpointLabels(series.Method, series.Endpoint)
+		labels := methodEndpointLabels(series.Method, series.Endpoint, tenant)
 		fmt.Fprintf(b, "hindsight_http_requests_in_progress%s %d\n", labels, series.Count)
 	}
 
 	writeHelpType(b, "hindsight_http_duration_seconds", "Duration of HTTP requests in seconds", "histogram")
 	for _, series := range snap.Requests {
-		labels := requestLabels(series, true)
+		labels := requestLabels(series, true, tenant)
 		for i, boundary := range httpx.HTTPDurationBuckets {
 			count := float64(0)
 			if i < len(series.Buckets) {
 				count = series.Buckets[i]
 			}
 			fmt.Fprintf(b, "hindsight_http_duration_seconds_bucket%s %s\n",
-				requestLabelsWithLe(series, formatBoundary(boundary)), formatValue(count))
+				requestLabelsWithLe(series, formatBoundary(boundary), tenant), formatValue(count))
 		}
 		fmt.Fprintf(b, "hindsight_http_duration_seconds_bucket%s %s\n",
-			requestLabelsWithLe(series, "+Inf"), formatValue(float64(series.DurationCount)))
+			requestLabelsWithLe(series, "+Inf", tenant), formatValue(float64(series.DurationCount)))
 		fmt.Fprintf(b, "hindsight_http_duration_seconds_sum%s %s\n", labels, formatValue(series.DurationSum))
 		fmt.Fprintf(b, "hindsight_http_duration_seconds_count%s %s\n", labels, formatValue(float64(series.DurationCount)))
 	}
 }
 
+// writeSamples renders gauge/counter samples, emitting the HELP/TYPE header once
+// per metric name. Samples must be pre-sorted by name.
+func writeSamples(b *strings.Builder, samples []Metric, tenant string) {
+	last := ""
+	for _, sample := range samples {
+		if sample.Name != last {
+			kind := sample.Type
+			if kind == "" {
+				kind = "gauge"
+			}
+			writeHelpType(b, sample.Name, helpOr(sample.Help), kind)
+			last = sample.Name
+		}
+		fmt.Fprintf(b, "%s%s %s\n", sample.Name,
+			requestLabelStringMap(mergeTenant(sample.Labels, tenant)), formatValue(sample.Value))
+	}
+}
+
+// writeHistogramFamilies renders each family's buckets, sum and count.
+func writeHistogramFamilies(b *strings.Builder, families []Histogram, tenant string) {
+	for _, family := range families {
+		writeHelpType(b, family.Name, helpOr(family.Help), "histogram")
+		labels := mergeTenant(family.Labels, tenant)
+		for i, boundary := range family.Buckets {
+			var count uint64
+			if i < len(family.Counts) {
+				count = family.Counts[i]
+			}
+			fmt.Fprintf(b, "%s_bucket%s %d\n", family.Name,
+				requestLabelStringMap(withLabel(labels, "le", formatBoundary(boundary))), count)
+		}
+		fmt.Fprintf(b, "%s_bucket%s %d\n", family.Name,
+			requestLabelStringMap(withLabel(labels, "le", "+Inf")), family.Count)
+		fmt.Fprintf(b, "%s_sum%s %s\n", family.Name, requestLabelStringMap(labels), formatValue(family.Sum))
+		fmt.Fprintf(b, "%s_count%s %d\n", family.Name, requestLabelStringMap(labels), family.Count)
+	}
+}
+
+// sortMetrics orders samples deterministically, by name then rendered label set,
+// so a scrape of per-bank series is stable. The input is left untouched.
+func sortMetrics(samples []Metric) []Metric {
+	sorted := make([]Metric, len(samples))
+	copy(sorted, samples)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Name != sorted[j].Name {
+			return sorted[i].Name < sorted[j].Name
+		}
+		return requestLabelStringMap(sorted[i].Labels) < requestLabelStringMap(sorted[j].Labels)
+	})
+	return sorted
+}
+
 // requestLabels renders the four request labels, optionally including the
 // status code and class.
-func requestLabels(series httpx.HTTPRequestSeries, withStatus bool) string {
-	return requestLabelString(series.Method, series.Endpoint, series.StatusCode, series.StatusClass, "", withStatus)
+func requestLabels(series httpx.HTTPRequestSeries, withStatus bool, tenant string) string {
+	return requestLabelString(series.Method, series.Endpoint, series.StatusCode, series.StatusClass, "", withStatus, tenant)
 }
 
 // requestLabelsWithLe renders the request labels plus the histogram's le bound.
-func requestLabelsWithLe(series httpx.HTTPRequestSeries, le string) string {
-	return requestLabelString(series.Method, series.Endpoint, series.StatusCode, series.StatusClass, le, true)
+func requestLabelsWithLe(series httpx.HTTPRequestSeries, le string, tenant string) string {
+	return requestLabelString(series.Method, series.Endpoint, series.StatusCode, series.StatusClass, le, true, tenant)
 }
 
 // methodEndpointLabels renders the two labels the in-progress counter carries.
-func methodEndpointLabels(method, endpoint string) string {
-	return requestLabelString(method, endpoint, "", "", "", false)
+func methodEndpointLabels(method, endpoint, tenant string) string {
+	return requestLabelString(method, endpoint, "", "", "", false, tenant)
 }
 
-func requestLabelString(method, endpoint, statusCode, statusClass, le string, withStatus bool) string {
+func requestLabelString(method, endpoint, statusCode, statusClass, le string, withStatus bool, tenant string) string {
 	labels := map[string]string{
 		"method":   method,
 		"endpoint": endpoint,
@@ -114,24 +219,31 @@ func requestLabelString(method, endpoint, statusCode, statusClass, le string, wi
 	if le != "" {
 		labels["le"] = le
 	}
-	names := make([]string, 0, len(labels))
-	for name := range labels {
-		names = append(names, name)
+	return requestLabelStringMap(mergeTenant(labels, tenant))
+}
+
+// mergeTenant returns the labels with a tenant label added when one is set. It
+// never mutates the input.
+func mergeTenant(labels map[string]string, tenant string) map[string]string {
+	if tenant == "" {
+		return labels
 	}
-	sort.Strings(names)
-	var b strings.Builder
-	b.WriteByte('{')
-	for i, name := range names {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(name)
-		b.WriteString(`="`)
-		b.WriteString(escapeLabelValue(labels[name]))
-		b.WriteByte('"')
+	out := make(map[string]string, len(labels)+1)
+	for name, value := range labels {
+		out[name] = value
 	}
-	b.WriteByte('}')
-	return b.String()
+	out["tenant"] = tenant
+	return out
+}
+
+// withLabel returns the labels with one label added, never mutating the input.
+func withLabel(labels map[string]string, name, value string) map[string]string {
+	out := make(map[string]string, len(labels)+1)
+	for k, v := range labels {
+		out[k] = v
+	}
+	out[name] = value
+	return out
 }
 
 // escapeLabelValue escapes a Prometheus label value.
@@ -159,9 +271,12 @@ func writeHelpType(b *strings.Builder, name, help, kind string) {
 	fmt.Fprintf(b, "# TYPE %s %s\n", name, kind)
 }
 
-func writeGauge(b *strings.Builder, name, help string, value float64, extraLabels map[string]string) {
-	writeHelpType(b, name, help, "gauge")
-	fmt.Fprintf(b, "%s%s %s\n", name, requestLabelStringMap(extraLabels), formatValue(value))
+// helpOr substitutes a generic HELP when a producer leaves it blank.
+func helpOr(help string) string {
+	if help == "" {
+		return "Deployment-provided metric."
+	}
+	return help
 }
 
 // requestLabelStringMap renders a label set, or nothing when empty.

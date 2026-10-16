@@ -29,7 +29,7 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 
 	var total int
 	countSQL := `SELECT count(*) FROM ` + qualified + `.banks b` + where
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return BankPage{}, err
 	}
 
@@ -54,7 +54,7 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 		listSQL += fmt.Sprintf(" OFFSET %d", maxInt(query.Offset, 0))
 	}
 
-	rows, err := s.db.QueryContext(ctx, listSQL, args...)
+	rows, err := s.reader().QueryContext(ctx, listSQL, args...)
 	if err != nil {
 		return BankPage{}, err
 	}
@@ -90,7 +90,14 @@ func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error)
 	          VALUES ($1,$2,$3,$4,$5::jsonb)
 	          RETURNING ` + bankSelectColumns
 	row := s.db.QueryRowContext(ctx, query, bank.BankID, bank.Name, disposition, bank.Mission, config)
-	return scanBank(row)
+	stored, err := scanBank(row)
+	if err != nil {
+		return Bank{}, err
+	}
+	// The insert has autocommitted, so a hook that opens its own statements
+	// sees the row rather than racing a transaction it is not part of.
+	runBankCreateHook(ctx, s.bankCreateHookRef(), stored.BankID)
+	return stored, nil
 }
 
 // ensureBankExists lazily creates the bank row if it is absent, returning
@@ -102,10 +109,9 @@ func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error)
 // violation. The insert is idempotent: concurrent callers race benignly, one
 // inserts and the rest observe the row the winner wrote.
 //
-// A deployment-configured default bank template is not applied here: the key
-// that would name it is refused by configuration rather than honoured, so
-// there is no template to apply and inventing one would be a second, silently
-// different bank-creation path.
+// A deployment-configured default bank template is applied by the store's
+// bank-create hook, which the composition root installs; it runs after this
+// insert commits, so the freshly-created bank is the hook's to provision.
 func (s *PostgresStore) ensureBankExists(ctx context.Context, bankID string) (bool, error) {
 	if !ValidBankID(bankID) {
 		return false, ErrInvalidBankID
@@ -132,6 +138,9 @@ func (s *PostgresStore) ensureBankExists(ctx context.Context, bankID string) (bo
 	if err != nil {
 		return false, nil
 	}
+	if affected > 0 {
+		runBankCreateHook(ctx, s.bankCreateHookRef(), bankID)
+	}
 	return affected > 0, nil
 }
 
@@ -147,7 +156,7 @@ func (s *PostgresStore) EnsureBank(ctx context.Context, bankID string) error {
 func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error) {
 	query := `SELECT ` + bankSelectColumns + `
 	          FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
-	row := s.db.QueryRowContext(ctx, query, bankID)
+	row := s.reader().QueryRowContext(ctx, query, bankID)
 	bank, err := scanBank(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bank{}, ErrBankNotFound

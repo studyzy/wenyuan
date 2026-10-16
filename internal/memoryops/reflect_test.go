@@ -480,3 +480,58 @@ func TestReflectIdentifierResolution(t *testing.T) {
 		t.Fatalf("real identifier must be kept: %q", got)
 	}
 }
+
+// Key 3: the deployment's reflect_default_options apply wherever the request
+// and the bank leave a field unset, and an explicit request or bank value
+// always wins.
+func TestReflectDefaultOptionsLayering(t *testing.T) {
+	prev := ReflectDefaultOptions
+	t.Cleanup(func() { ReflectDefaultOptions = prev })
+
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+
+	// Unset: nothing changes, the shipped defaults stand.
+	ReflectDefaultOptions = nil
+	if query := h.buildReflectQuery("b1", ReflectRequest{Query: "q"}); query.SearchObservationsMaxTokens != defaultReflectSearchObservationsMaxTokens ||
+		query.SearchObservationsIncludeEntities != defaultReflectSearchObservationsIncludeEntities {
+		t.Fatalf("an unset deployment default must change nothing: %+v", query)
+	}
+
+	// Set: a request that specifies nothing gets the deployment defaults.
+	ReflectDefaultOptions = map[string]any{
+		"reflect_search_observations_max_tokens":       3000,
+		"reflect_search_observations_include_entities": true,
+	}
+	query := h.buildReflectQuery("b1", ReflectRequest{Query: "q"})
+	if query.SearchObservationsMaxTokens != 3000 || !query.SearchObservationsIncludeEntities {
+		t.Fatalf("deployment defaults not applied: %+v", query)
+	}
+
+	// An explicit request value wins over the deployment default.
+	overrideTokens := 7
+	overrideEntities := false
+	query = h.buildReflectQuery("b1", ReflectRequest{
+		Query:                                    "q",
+		ReflectSearchObservationsMaxTokens:       &overrideTokens,
+		ReflectSearchObservationsIncludeEntities: &overrideEntities,
+	})
+	if query.SearchObservationsMaxTokens != overrideTokens || query.SearchObservationsIncludeEntities {
+		t.Fatalf("explicit request must win over the deployment default: %+v", query)
+	}
+
+	// The bank's own value wins over the deployment default too.
+	bankTokens := 128
+	bankEntities := false
+	h.BankReflectDefaults = &BankReflectDefaults{
+		SearchObservationsMaxTokens:       &bankTokens,
+		SearchObservationsIncludeEntities: &bankEntities,
+	}
+	query = h.buildReflectQuery("b1", ReflectRequest{Query: "q"})
+	if query.SearchObservationsMaxTokens != bankTokens || query.SearchObservationsIncludeEntities {
+		t.Fatalf("the bank value must win over the deployment default: %+v", query)
+	}
+}

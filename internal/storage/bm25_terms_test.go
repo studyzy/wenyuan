@@ -79,7 +79,7 @@ func TestKeywordStatementSetsStatementTimeout(t *testing.T) {
 	// The stub database does not answer a SELECT, and the assertion below is
 	// about the statement the helper issued rather than the rows, so the error
 	// is deliberately discarded.
-	_, _ = store.queryWithStatementTimeout(context.Background(), "SELECT 1", nil)
+	_, _ = store.queryWithStatementTimeout(context.Background(), "SELECT 1", nil, bm25StatementTimeout)
 	var sawTimeout bool
 	for _, exec := range stub.tx.execs {
 		if strings.Contains(exec, "statement_timeout") && strings.Contains(exec, bm25StatementTimeout) {
@@ -121,8 +121,8 @@ func TestBoundedBM25TextBoundsBroadQuery(t *testing.T) {
 			terms++
 		}
 	}
-	if terms > bm25MaxQueryTerms {
-		t.Fatalf("broad query kept %d terms, want at most %d", terms, bm25MaxQueryTerms)
+	if terms > DefaultBM25MaxQueryTerms {
+		t.Fatalf("broad query kept %d terms, want at most %d", terms, DefaultBM25MaxQueryTerms)
 	}
 }
 

@@ -23,7 +23,7 @@ func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, sub
 	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
 	          WHERE bank_id = $1 AND ($2 = '' OR subtype = $2)
 	          ORDER BY created_at DESC, id ASC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, string(subtype))
+	rows, err := s.reader().QueryContext(ctx, query, bankID, string(subtype))
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, sub
 func (s *PostgresStore) GetMentalModel(ctx context.Context, bankID, id string) (MentalModel, error) {
 	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
 	          WHERE bank_id = $1 AND id = $2`
-	model, err := scanMentalModel(s.db.QueryRowContext(ctx, query, bankID, id))
+	model, err := scanMentalModel(s.reader().QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return MentalModel{}, ErrMentalModelNotFound
@@ -185,7 +185,7 @@ func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id strin
 	query := `SELECT content, changed_at FROM ` + quoteIdent(s.schema) + `.mental_model_history
 	          WHERE bank_id = $1 AND mental_model_id = $2
 	          ORDER BY changed_at DESC, id DESC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, id)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +205,11 @@ func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id strin
 // RecordMentalModelHistory appends one refresh to a mental model's history.
 // The identity is left to the column's default, as the reference leaves it.
 func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id string, entry MentalModelHistoryEntry) error {
+	if !s.tuning.MentalModelHistory {
+		// The reference's switch for the record: a deployment that turned it off
+		// keeps no history, and the read routes answer with none.
+		return nil
+	}
 	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
 		return err
 	}

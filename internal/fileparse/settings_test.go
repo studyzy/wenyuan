@@ -34,7 +34,10 @@ func TestSettingsFromEnv(t *testing.T) {
 		t.Fatal("delete_after_retain should be false")
 	}
 	// Every remote parser with credentials is registered alongside the local one.
-	registry := settings.Registry()
+	registry, err := settings.Registry()
+	if err != nil {
+		t.Fatalf("Registry: %v", err)
+	}
 	names := registry.List()
 	for _, want := range []string{"markitdown", "iris", "llama_parse"} {
 		if !containsString(names, want) {
@@ -59,7 +62,11 @@ func TestSettingsDefaults(t *testing.T) {
 	if !settings.DeleteAfterRetain {
 		t.Fatal("delete_after_retain defaults to true")
 	}
-	if got := settings.Registry().List(); !reflect.DeepEqual(got, []string{"markitdown"}) {
+	registry, err := settings.Registry()
+	if err != nil {
+		t.Fatalf("Registry: %v", err)
+	}
+	if got := registry.List(); !reflect.DeepEqual(got, []string{"markitdown"}) {
 		t.Fatalf("default registry = %v", got)
 	}
 }

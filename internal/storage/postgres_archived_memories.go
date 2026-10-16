@@ -20,7 +20,7 @@ func (s *PostgresStore) ListArchivedMemories(ctx context.Context, bankID string)
 	            WHERE bank_id = $1
 	            ORDER BY invalidated_at, id
 	          ) mu`
-	rows, err := s.db.QueryContext(ctx, query, bankID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
 	}

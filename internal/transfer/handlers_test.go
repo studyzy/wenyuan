@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/banktemplate"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -57,12 +58,12 @@ func TestExportReturnsTemplateManifest(t *testing.T) {
 	if got := rec.Header().Get("Content-Disposition"); got != "" {
 		t.Fatalf("a template export is not a download attachment, got %q", got)
 	}
-	var manifest templateManifest
+	var manifest banktemplate.Manifest
 	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != currentTemplateVersion {
-		t.Fatalf("manifest version = %q, want %q", manifest.Version, currentTemplateVersion)
+	if manifest.Version != banktemplate.CurrentTemplateVersion {
+		t.Fatalf("manifest version = %q, want %q", manifest.Version, banktemplate.CurrentTemplateVersion)
 	}
 	if len(manifest.MentalModels) != 1 || manifest.MentalModels[0].ID != "goals" {
 		t.Fatalf("manifest models = %+v", manifest.MentalModels)

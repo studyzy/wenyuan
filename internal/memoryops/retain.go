@@ -26,9 +26,6 @@ type Handlers struct {
 	DefaultRetryAfterSeconds int
 	// ReadTimeout is the budget after which a read reports a gateway timeout.
 	ReadTimeoutMillis int
-	// RetainBatchEnabled forces asynchronous writes and rejects synchronous
-	// requests when set by configuration.
-	RetainBatchEnabled bool
 	// RetainSubBatchTokens bounds one queued child operation's token budget on
 	// the asynchronous path: a larger submission is split across several
 	// children, each of which a worker runs on its own. Zero uses the shipped
@@ -80,6 +77,10 @@ type Handlers struct {
 	// same way.
 	DefaultExtractionMode         string
 	DefaultOptionalFactDimensions bool
+	// DefaultRetainStrategy is the deployment's retain strategy, applied when a
+	// write's items name none. Empty leaves the bank's own settings in force,
+	// which is the reference's shipped default (no strategy override).
+	DefaultRetainStrategy string
 	// DiscardDocumentText is the deployment-level opt-out from persisting raw
 	// source text: when true, a retain keeps neither the document's
 	// original_text nor its chunks' text, unless a bank's own
@@ -237,7 +238,7 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, body))
 		return
 	}
-	if failure := ValidateRetain(req, h.RetainBatchEnabled); failure != nil {
+	if failure := ValidateRetain(req); failure != nil {
 		httpx.WriteValidationFor(w, r, failure)
 		return
 	}
@@ -477,6 +478,7 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 	applyExtractionConfig(&write, bank, extractionDefaults{
 		mode:               h.DefaultExtractionMode,
 		optionalDimensions: h.DefaultOptionalFactDimensions,
+		strategy:           h.DefaultRetainStrategy,
 	})
 	if applyStoreDocumentText(&write, bank, h.DiscardDocumentText) {
 		return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutStoredText
@@ -552,6 +554,9 @@ func stringFromParams(params map[string]any, key string) string {
 type extractionDefaults struct {
 	mode               string
 	optionalDimensions bool
+	// strategy is the deployment's retain_default_strategy, applied when the
+	// write's items name none.
+	strategy string
 }
 
 // applyExtractionConfig copies the bank's retain configuration onto the write.
@@ -561,8 +566,10 @@ func applyExtractionConfig(write *storage.RetainRequest, bank storage.Bank, defa
 	// A named strategy layers its overrides on top of the bank's own settings,
 	// so a write that names one extracts under that strategy's prompt and
 	// chunking rather than the bank default. The items agree on a name in every
-	// practical request; the first name wins when they do not.
-	config := strategyConfigOverlay(bank.Config, writeStrategyName(write.Items))
+	// practical request; the first name wins when they do not. An item that
+	// names none falls back to the deployment's retain_default_strategy, which
+	// is the reference's `strategy or resolved_config.retain_default_strategy`.
+	config := strategyConfigOverlay(bank.Config, writeStrategyName(write.Items, defaults.strategy))
 	write.ExtractionMission = bankConfigString(config, "retain_mission")
 	write.ExtractionMode = bankConfigString(config, "retain_extraction_mode")
 	if write.ExtractionMode == "" {
@@ -590,15 +597,16 @@ func applyExtractionConfig(write *storage.RetainRequest, bank storage.Bank, defa
 }
 
 // writeStrategyName returns the retain strategy the write runs under: the first
-// name its items carry. An unnamed write leaves this empty, so the bank's own
-// settings apply unchanged.
-func writeStrategyName(items []storage.RetainItem) string {
+// name its items carry, else the deployment's default strategy. An unnamed write
+// with no deployment default leaves this empty, so the bank's own settings
+// apply unchanged.
+func writeStrategyName(items []storage.RetainItem, fallback string) string {
 	for _, item := range items {
 		if item.Strategy != "" {
 			return item.Strategy
 		}
 	}
-	return ""
+	return fallback
 }
 
 // strategyConfigOverlay layers a named retain strategy's overrides on top of the

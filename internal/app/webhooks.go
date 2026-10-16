@@ -23,11 +23,25 @@ func (a *App) webhookGuard() *webhooks.Guard {
 
 // NewWebhookGuard builds the webhook URL guard from the resolved configuration,
 // so the API's registration route and a standalone worker process's delivery
-// path enforce one policy.
+// path enforce one policy and carry one deployment-level target between them.
 func NewWebhookGuard(cfg config.Config) *webhooks.Guard {
 	return webhooks.NewGuard(webhooks.GuardConfig{
 		AllowInsecure:     cfg.WebhookAllowInsecure,
 		AllowPrivateHosts: cfg.WebhookAllowPrivateHosts,
 		AllowedHosts:      cfg.WebhookAllowedHosts,
+		Global:            NewGlobalTarget(cfg.WebhookGlobal),
 	})
+}
+
+// NewGlobalTarget builds the server-level webhook target from the resolved
+// configuration. The target is delivered alongside every bank's own
+// registrations; an unset URL disables it. It is always non-nil so the
+// response-body setting survives even when the URL is empty.
+func NewGlobalTarget(cfg config.WebhookGlobal) *webhooks.GlobalTarget {
+	return &webhooks.GlobalTarget{
+		URL:                cfg.URL,
+		Secret:             cfg.Secret,
+		EventTypes:         cfg.EventTypes,
+		ExposeResponseBody: cfg.ExposeResponseBody,
+	}
 }

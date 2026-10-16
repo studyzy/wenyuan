@@ -53,7 +53,7 @@ func (c *Client) Rerank(ctx context.Context, req provider.RerankRequest) (provid
 		return provider.RerankResult{}, &provider.MalformedResponseError{Detail: "cannot encode rerank request", Cause: err}
 	}
 	policy := c.rerankRetryPolicy()
-	raw, err := c.sendWithRetry(ctx, "rerank", body, policy, provider.ScopeChat)
+	raw, err := c.sendWithRetry(ctx, "rerank", body, policy, provider.ScopeChat, nil)
 	if err != nil {
 		return provider.RerankResult{}, err
 	}

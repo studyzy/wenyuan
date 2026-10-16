@@ -53,11 +53,11 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 	offsetParam := "$" + itoa(len(args)+2)
 	limit := clampLimit(query.Limit, 50)
 	var total int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+table+` mu WHERE `+filter, args...).Scan(&total); err != nil {
 		return MemoryPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT mu.id, mu.bank_id, COALESCE(mu.text,''), COALESCE(mu.fact_type,''), COALESCE(mu.context,''),
 		        mu.occurred_start, mu.occurred_end, mu.mentioned_at, mu.event_date,
 		        COALESCE(mu.document_id,''), COALESCE(mu.chunk_id,''), COALESCE(mu.tags, '{}'),
@@ -124,7 +124,7 @@ func (s *PostgresStore) GetMemory(ctx context.Context, bankID, memoryID string) 
 	                 COALESCE(proof_count, 1), COALESCE(source_memory_ids, '{}'::uuid[])::text,
 	                 consolidated_at, consolidation_failed_at,
 	                 COALESCE(observation_scopes, 'null'::jsonb)::text`
-	unit, err := scanMemoryUnitRow(s.db.QueryRowContext(ctx,
+	unit, err := scanMemoryUnitRow(s.reader().QueryRowContext(ctx,
 		`SELECT `+cols+`, NULL::timestamptz, NULL::text
 		 FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = $2`, bankID, memoryID))
 	if err == nil {
@@ -133,7 +133,7 @@ func (s *PostgresStore) GetMemory(ctx context.Context, bankID, memoryID string) 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return MemoryUnit{}, err
 	}
-	unit, err = scanMemoryUnitRow(s.db.QueryRowContext(ctx,
+	unit, err = scanMemoryUnitRow(s.reader().QueryRowContext(ctx,
 		`SELECT `+cols+`, invalidated_at, invalidation_reason
 		 FROM `+qualified+`.invalidated_memory_units WHERE bank_id = $1 AND id = $2`, bankID, memoryID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -279,7 +279,7 @@ func (s *PostgresStore) MemoryHistory(ctx context.Context, bankID, memoryID stri
 		return nil, err
 	}
 	qualified := quoteIdent(s.schema)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader().QueryContext(ctx,
 		`SELECT started_at, COALESCE(metadata, '{}'::jsonb), COALESCE(request, 'null'::jsonb)
 		 FROM `+qualified+`.audit_log
 		 WHERE bank_id = $1 AND action = 'memory_update' AND request->>'memory_id' = $2
@@ -322,7 +322,7 @@ func (s *PostgresStore) observationHistoryEntries(ctx context.Context, bankID, m
 	          FROM ` + quoteIdent(s.schema) + `.observation_history
 	          WHERE bank_id = $1 AND observation_id = $2
 	          ORDER BY changed_at DESC, id DESC`
-	rows, err := s.db.QueryContext(ctx, query, bankID, memoryID)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, memoryID)
 	if err != nil {
 		return nil, err
 	}

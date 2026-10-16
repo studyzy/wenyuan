@@ -146,3 +146,63 @@ func TestApplyExtractionConfigIgnoresUnknownStrategy(t *testing.T) {
 		t.Fatalf("mode = %q, want the bank's own custom mode", write.ExtractionMode)
 	}
 }
+
+// A write whose items name no strategy extracts under the deployment's
+// retain_default_strategy, which the reference resolves as
+// `strategy or resolved_config.retain_default_strategy`.
+func TestApplyExtractionConfigAppliesDefaultStrategy(t *testing.T) {
+	write := storage.RetainRequest{}
+	bank := storage.Bank{Config: map[string]any{
+		"retain_extraction_mode": "standard",
+		"retain_strategies": map[string]any{
+			"conversation": map[string]any{
+				"retain_extraction_mode":     "custom",
+				"retain_custom_instructions": "record what was said",
+				"retain_chunk_size":          float64(700),
+			},
+		},
+	}}
+	applyExtractionConfig(&write, bank, extractionDefaults{
+		mode:     config.DefaultRetainExtractionMode,
+		strategy: "conversation",
+	})
+	if write.ExtractionMode != "custom" {
+		t.Fatalf("mode = %q, want the default strategy's custom mode", write.ExtractionMode)
+	}
+	if write.ExtractionInstructions != "record what was said" {
+		t.Fatalf("instructions = %q, want the default strategy's instructions", write.ExtractionInstructions)
+	}
+	if write.ChunkSize != 700 {
+		t.Fatalf("chunk size = %d, want the default strategy's 700", write.ChunkSize)
+	}
+}
+
+// An item that names a strategy wins over the deployment default, which is what
+// the reference's `strategy or ...` short-circuit means.
+func TestApplyExtractionConfigItemStrategyBeatsDefault(t *testing.T) {
+	write := storage.RetainRequest{Items: []storage.RetainItem{{Strategy: "per_item"}}}
+	bank := storage.Bank{Config: map[string]any{
+		"retain_strategies": map[string]any{
+			"conversation": map[string]any{"retain_chunk_size": float64(700)},
+			"per_item":     map[string]any{"retain_chunk_size": float64(900)},
+		},
+	}}
+	applyExtractionConfig(&write, bank, extractionDefaults{strategy: "conversation"})
+	if write.ChunkSize != 900 {
+		t.Fatalf("chunk size = %d, want the item's per_item 900", write.ChunkSize)
+	}
+}
+
+// An unset deployment default leaves an unnamed write on the bank settings, so
+// the shipped behaviour is unchanged when the key is unset.
+func TestApplyExtractionConfigNoStrategyKeepsBankSettings(t *testing.T) {
+	write := storage.RetainRequest{}
+	bank := storage.Bank{Config: map[string]any{
+		"retain_extraction_mode": "custom",
+		"retain_strategies":      map[string]any{"conversation": map[string]any{"retain_extraction_mode": "standard"}},
+	}}
+	applyExtractionConfig(&write, bank, extractionDefaults{})
+	if write.ExtractionMode != "custom" {
+		t.Fatalf("mode = %q, want the bank's own custom mode", write.ExtractionMode)
+	}
+}

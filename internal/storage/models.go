@@ -552,6 +552,10 @@ type ConsolidationObservation struct {
 	// Scope is the observation's tag scope, the canonical tag set it was
 	// written at. An empty slice is the untagged (default) scope.
 	Scope []string
+	// Embedding is the observation's stored vector, when it has one, carried so
+	// a consolidation pass can score a near-duplicate by cosine similarity.
+	// Empty when the observation was written without an embedding model.
+	Embedding []float32
 }
 
 // MemoryLink is one directed link between two memory units.

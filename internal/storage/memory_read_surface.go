@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -503,6 +504,59 @@ func (s *MemoryStore) countUnitsForDocumentLocked(bankID, documentID string) int
 		}
 	}
 	return count
+}
+
+// UnitEntityNames returns the entities each unit mentions, keyed by unit id.
+//
+// An observation with no postings of its own inherits the entities of the
+// memories it was consolidated from, which is the set the unit's own detail
+// read reports.
+func (s *MemoryStore) UnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	byUnit := make(map[string][]string, len(unitIDs))
+	for _, unitID := range unitIDs {
+		unit, ok := s.units[unitID]
+		if !ok {
+			unit, ok = s.invalidated[unitID]
+		}
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		names := s.entityNamesForUnitLocked(unitID)
+		if len(names) == 0 && unit.FactType == TypeObservation && len(unit.SourceMemoryIDs) > 0 {
+			names = s.inheritedEntityNamesLocked(unit, bankID)
+		}
+		if len(names) > 0 {
+			byUnit[unitID] = names
+		}
+	}
+	return byUnit, nil
+}
+
+// inheritedEntityNamesLocked collects the entities of a unit's source memories,
+// deduped and ordered, for an observation that has none of its own.
+func (s *MemoryStore) inheritedEntityNamesLocked(unit MemoryUnit, bankID string) []string {
+	inherited := make([]string, 0)
+	for _, sourceID := range unit.SourceMemoryIDs {
+		source, ok := s.units[sourceID]
+		if !ok || source.BankID != bankID {
+			continue
+		}
+		for _, name := range s.entityNamesForUnitLocked(sourceID) {
+			if !slices.Contains(inherited, name) {
+				inherited = append(inherited, name)
+			}
+		}
+	}
+	sort.Strings(inherited)
+	return inherited
 }
 
 // entityNamesForUnitLocked returns the names of the entities one unit mentions.

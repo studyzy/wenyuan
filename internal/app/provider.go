@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -86,6 +88,53 @@ func ResolveProvider(cfg config.Config) (provider.Provider, error) {
 		return nil, err
 	}
 	return routing.New(members, strategy)
+}
+
+// VerifyModelProvider probes the configured model provider once at startup, so
+// an unreachable endpoint fails composition instead of surfacing on the first
+// request. The provider's own VerifyConnection is the probe: it already issues
+// the vendor-correct minimal request, so startup adds a deadline around it
+// rather than a second, parallel smoke test.
+//
+// The probe is bounded by the model-init timeout, which defaults to the
+// reference's 300s; a non-positive value leaves the probe unbounded rather than
+// expiring it immediately. HINDSIGHT_API_SKIP_LLM_VERIFICATION turns the probe
+// off entirely — an operator running against a provider that is temporarily
+// down can still start the server and let it recover — and a skipped probe
+// reports no failure.
+//
+// The no-model and mock selections are deliberately not probed: their
+// VerifyConnection is a no-op success, and treating "no model configured" as a
+// connectivity failure would refuse the one deployment shape that has nothing
+// to connect to.
+func VerifyModelProvider(ctx context.Context, cfg config.Config, p provider.Provider) error {
+	if cfg.SkipLLMVerification {
+		return nil
+	}
+	if p == nil || !probeableProvider(p.Name()) {
+		return nil
+	}
+	probeCtx := ctx
+	if cfg.ModelInitTimeout > 0 {
+		var cancel context.CancelFunc
+		probeCtx, cancel = context.WithTimeout(ctx, cfg.ModelInitTimeout)
+		defer cancel()
+	}
+	if err := p.VerifyConnection(probeCtx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("model provider %q did not verify within %s (%s): %w",
+				p.Name(), cfg.ModelInitTimeout, config.EnvModelInitTimeout, err)
+		}
+		return fmt.Errorf("model provider %q failed startup verification: %w", p.Name(), err)
+	}
+	return nil
+}
+
+// probeableProvider reports whether a provider selection is worth probing. The
+// no-model and mock selections are valid composition states with nothing to
+// reach, so they are the two names startup does not probe.
+func probeableProvider(name string) bool {
+	return name != none.NameNone && name != mock.NameMock
 }
 
 // SupportsVision resolves whether the configured write model can read inline
