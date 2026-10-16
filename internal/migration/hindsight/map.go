@@ -1,6 +1,7 @@
-// Package hindsight maps a Hindsight export archive onto a Wenyuan store.
+// Package hindsight maps the reference implementation's export archive onto a
+// Wenyuan store.
 //
-// It is the data-migration vehicle for replacing a Hindsight server with
+// It is the data-migration vehicle for replacing the reference server with
 // Wenyuan while keeping an existing bank's memories: the archive is the
 // official, versioned export format, and its facts carry no embedding, which
 // matches a Wenyuan bank that has none.
@@ -145,18 +146,15 @@ func isUUID(value string) bool {
 	return true
 }
 
-// archiveScopes encodes the archive's scope list into the JSON value the
-// storage column holds. The archive carries the explicit-group form only, so
-// an empty list means the fact was retained unscoped and yields no value.
-func archiveScopes(scopes []string) json.RawMessage {
+// archiveScopes returns the archive's scoping verbatim for the storage
+// column. The archive and the column share the same union shape (a mode name
+// string or a list of tag groups), so the raw JSON is reused. An absent value
+// means the fact was retained unscoped and stays absent.
+func archiveScopes(scopes json.RawMessage) json.RawMessage {
 	if len(scopes) == 0 {
 		return nil
 	}
-	encoded, err := json.Marshal(scopes)
-	if err != nil {
-		return nil
-	}
-	return encoded
+	return scopes
 }
 
 // unmappedFields reports the archive fields that have no Wenyuan column. The

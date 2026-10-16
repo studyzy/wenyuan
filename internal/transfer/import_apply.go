@@ -341,6 +341,10 @@ func (a ImportApplier) writeDocument(ctx context.Context, target, documentID str
 	if err := a.embedUnits(ctx, units); err != nil {
 		return err
 	}
+	// Every unit lands before any link is written: a causal edge may name a
+	// fact that follows its source in the document, so a single pass that
+	// linked as it went would violate the link's foreign key on the forward
+	// edges the producer emits.
 	for index, unit := range units {
 		fact := document.Facts[index]
 		if _, err := a.Store.UpsertUnit(ctx, unit); err != nil {
@@ -355,7 +359,9 @@ func (a ImportApplier) writeDocument(ctx context.Context, target, documentID str
 				return fmt.Errorf("link unit %s to entity %s: %w", unit.ID, entity.ID, err)
 			}
 		}
-		for _, relation := range fact.CausalRelations {
+	}
+	for index, unit := range units {
+		for _, relation := range document.Facts[index].CausalRelations {
 			if relation.TargetFactIndex < 0 || relation.TargetFactIndex >= len(document.Facts) {
 				continue
 			}
@@ -823,34 +829,32 @@ func (a ImportApplier) applyBankConfig(ctx context.Context, req ImportRequest, t
 	return nil
 }
 
-// embedUnits fills every unit's embedding in batches, so a large import does
-// not send one unbounded request to the embedding provider. A deployment with
-// no embedding model leaves every unit unembedded, exactly as a write does.
+// embedUnits fills every unit's embedding. The embedding generator already
+// splits its input into provider-sized requests and fans them out
+// concurrently, and its batch size is a property of the configured provider
+// (TEI validates its own as a hard cap), so the whole set is handed over at
+// once rather than pre-chunked here — a chunk boundary chosen at this layer
+// would be an arbitrary cap that a provider's own limit cannot see. A
+// deployment with no embedding model leaves every unit unembedded, exactly as
+// a write does.
 func (a ImportApplier) embedUnits(ctx context.Context, units []storage.MemoryUnit) error {
 	if a.Embeddings == nil || len(units) == 0 {
 		return nil
 	}
-	const batch = 64
-	for start := 0; start < len(units); start += batch {
-		end := start + batch
-		if end > len(units) {
-			end = len(units)
-		}
-		texts := make([]string, 0, end-start)
-		for _, unit := range units[start:end] {
-			texts = append(texts, truncateForEmbedding(unit.Text))
-		}
-		vectors, err := a.Embeddings.EmbedPassages(ctx, texts)
-		if err != nil {
-			return err
-		}
-		if len(vectors) != len(texts) {
-			return fmt.Errorf("embedding generator returned %d vectors for %d texts", len(vectors), len(texts))
-		}
-		for i := range units[start:end] {
-			if len(vectors[i]) > 0 {
-				units[start+i].Embedding = vectors[i]
-			}
+	texts := make([]string, len(units))
+	for i, unit := range units {
+		texts[i] = truncateForEmbedding(unit.Text)
+	}
+	vectors, err := a.Embeddings.EmbedPassages(ctx, texts)
+	if err != nil {
+		return err
+	}
+	if len(vectors) != len(texts) {
+		return fmt.Errorf("embedding generator returned %d vectors for %d texts", len(vectors), len(texts))
+	}
+	for i := range units {
+		if len(vectors[i]) > 0 {
+			units[i].Embedding = vectors[i]
 		}
 	}
 	return nil
@@ -938,18 +942,15 @@ func proofCount(recorded, sources int) int {
 	return 1
 }
 
-// factObservationScopes renders a fact's stored scoping for the archive's list
-// form. An unparseable or empty value yields no scopes, which is what an
-// unscoped fact carries.
+// factObservationScopes returns a fact's stored scoping verbatim. The archive
+// carries the producer's own JSON (a scope enum string or a list of tag
+// lists), and the column stores that same JSON, so nothing is re-encoded. An
+// absent value stays absent, which is what an unscoped fact carries.
 func factObservationScopes(fact hindsightarchive.Fact) json.RawMessage {
 	if len(fact.ObservationScopes) == 0 {
 		return nil
 	}
-	encoded, err := json.Marshal(fact.ObservationScopes)
-	if err != nil {
-		return nil
-	}
-	return encoded
+	return fact.ObservationScopes
 }
 
 // orderKnowledgePages sorts a tree's nodes so every parent precedes its

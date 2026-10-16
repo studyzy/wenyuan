@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -701,5 +702,130 @@ func TestInvalidatedMemoryCountsOnlyWhatLanded(t *testing.T) {
 	}
 	if second.InvalidatedMemories != 0 {
 		t.Fatalf("second report = %+v, want no new archived memories", second)
+	}
+}
+
+// A fact's observation scoping is the reference's union type: a mode-name
+// string or an explicit list of tag groups. Both shapes must survive an
+// archive written by the reference, which is what an archive produced with
+// scoped consolidation carries.
+func TestFactObservationScopesRoundTripBothShapes(t *testing.T) {
+	for name, stored := range map[string]string{
+		"scope enum": `"shared"`,
+		"tag groups": `[["alice","berlin"],["lease"]]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive := &hindsightarchive.Archive{
+				Manifest: hindsightarchive.Manifest{
+					SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+					SourceBankID:  "src", ArchiveType: "bank",
+					DocumentCount: 1, FactCount: 1,
+				},
+				Documents: []hindsightarchive.Document{{
+					ID: "d1", OriginalText: "Alice moved to Berlin.",
+					Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved to Berlin."}},
+					Facts: []hindsightarchive.Fact{{
+						Text: "Alice moved to Berlin", FactType: "world",
+						ObservationScopes: json.RawMessage(stored),
+					}},
+				}},
+			}
+			// The reference's own reader must accept this archive: the field
+			// was historically a []string, which refused the enum shape.
+			data, err := hindsightarchive.Write(archive)
+			if err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			reparsed, err := ParseArchive(data)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := string(reparsed.Documents[0].Facts[0].ObservationScopes); got != stored {
+				t.Fatalf("parse re-encoded the scoping: got %s, want %s", got, stored)
+			}
+
+			store := storage.NewMemoryStore("public")
+			embedder := &fixedEmbeddings{}
+			if _, err := (ImportApplier{Store: store, Embeddings: embedder}).Apply(context.Background(), ImportRequest{
+				Archive:      reparsed,
+				BankID:       "src",
+				TargetBankID: "dst",
+				Mode:         ImportRestore,
+				Scope:        DefaultExportScope(),
+			}); err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			page, err := store.ListMemories(context.Background(), storage.MemoryQuery{BankID: "dst", Limit: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Memories) != 1 {
+				t.Fatalf("memories = %d, want 1", len(page.Memories))
+			}
+			if got := string(page.Memories[0].ObservationScopes); got != stored {
+				t.Fatalf("import rewrote the scoping: got %s, want %s", got, stored)
+			}
+		})
+	}
+}
+
+// orderRecordingStore records whether each link is written only after every
+// unit has landed, which is the order the link's foreign key requires. The
+// in-memory store is permissive, so the ordering has to be asserted here
+// rather than by a rejected write.
+type orderRecordingStore struct {
+	*storage.MemoryStore
+	units      int
+	links      int
+	violations int
+}
+
+func (s *orderRecordingStore) UpsertUnit(ctx context.Context, unit storage.MemoryUnit) (storage.MemoryUnit, error) {
+	s.units++
+	return s.MemoryStore.UpsertUnit(ctx, unit)
+}
+
+func (s *orderRecordingStore) UpsertLink(ctx context.Context, link storage.MemoryLink) error {
+	s.links++
+	if s.units < 3 {
+		s.violations++
+	}
+	return s.MemoryStore.UpsertLink(ctx, link)
+}
+
+// A causal edge may name a fact that follows its source in the document, which
+// is what the upstream producer emits. Every fact must land before any edge is
+// written, or the forward edge violates the link's foreign key.
+func TestCausalEdgesMayPointForward(t *testing.T) {
+	archive := &hindsightarchive.Archive{
+		Manifest: hindsightarchive.Manifest{
+			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			SourceBankID:  "src", ArchiveType: "bank",
+			DocumentCount: 1, FactCount: 3,
+		},
+		Documents: []hindsightarchive.Document{{
+			ID: "d1", OriginalText: "Alice moved. Then Alice renewed. So the lease held.",
+			Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved. Then Alice renewed. So the lease held."}},
+			Facts: []hindsightarchive.Fact{
+				{Text: "Alice moved", FactType: "world",
+					CausalRelations: []hindsightarchive.CausalRelation{{RelationType: "causes", TargetFactIndex: 2}}},
+				{Text: "Alice renewed", FactType: "world"},
+				{Text: "the lease held", FactType: "world",
+					CausalRelations: []hindsightarchive.CausalRelation{{RelationType: "caused_by", TargetFactIndex: 1}}},
+			},
+		}},
+	}
+	store := &orderRecordingStore{MemoryStore: storage.NewMemoryStore("public")}
+	if _, err := (ImportApplier{Store: store, Embeddings: &fixedEmbeddings{}}).Apply(context.Background(), ImportRequest{
+		Archive: archive, BankID: "src", TargetBankID: "dst",
+		Mode: ImportRestore, Scope: DefaultExportScope(),
+	}); err != nil {
+		t.Fatalf("import with a forward causal edge: %v", err)
+	}
+	if store.violations != 0 {
+		t.Fatalf("link written before every unit landed %d times; links must follow all units", store.violations)
+	}
+	if store.links != 2 {
+		t.Fatalf("links = %d, want 2", store.links)
 	}
 }

@@ -1,6 +1,7 @@
-// Package hindsightarchive reads a Hindsight whole-bank export archive.
+// Package hindsightarchive reads the reference implementation's whole-bank
+// export archive.
 //
-// The archive is a ZIP produced by a Hindsight server's
+// The archive is a ZIP produced by the reference's
 // POST /v1/default/banks/{bank_id}/export endpoint:
 //
 //	manifest.json          -- Manifest
@@ -95,17 +96,21 @@ type Chunk struct {
 
 // Fact is one extracted memory unit, without its embedding or database id.
 type Fact struct {
-	Text                  string           `json:"text"`
-	SourceID              string           `json:"source_id"`
-	FactType              string           `json:"fact_type"`
-	Context               string           `json:"context"`
-	EventDate             *time.Time       `json:"event_date"`
-	OccurredStart         *time.Time       `json:"occurred_start"`
-	OccurredEnd           *time.Time       `json:"occurred_end"`
-	MentionedAt           *time.Time       `json:"mentioned_at"`
-	Metadata              map[string]any   `json:"metadata"`
-	Tags                  []string         `json:"tags"`
-	ObservationScopes     []string         `json:"observation_scopes"`
+	Text          string         `json:"text"`
+	SourceID      string         `json:"source_id"`
+	FactType      string         `json:"fact_type"`
+	Context       string         `json:"context"`
+	EventDate     *time.Time     `json:"event_date"`
+	OccurredStart *time.Time     `json:"occurred_start"`
+	OccurredEnd   *time.Time     `json:"occurred_end"`
+	MentionedAt   *time.Time     `json:"mentioned_at"`
+	Metadata      map[string]any `json:"metadata"`
+	Tags          []string       `json:"tags"`
+	// ObservationScopes is the fact's consolidation scoping kept as raw JSON.
+	// The producer emits a string enum ("per_tag", "combined",
+	// "all_combinations", "shared") or a list of tag lists, and the value is
+	// stored back verbatim, so it is not decoded into a single Go type.
+	ObservationScopes     json.RawMessage  `json:"observation_scopes"`
 	ChunkIndex            *int             `json:"chunk_index"`
 	Entities              []string         `json:"entities"`
 	CausalRelations       []CausalRelation `json:"causal_relations"`
@@ -114,9 +119,10 @@ type Fact struct {
 	ConsolidationFailedAt *time.Time       `json:"consolidation_failed_at"`
 }
 
-// CausalRelation is a causal edge from a fact to an earlier fact in the same
+// CausalRelation is a causal edge from a fact to another fact in the same
 // document. TargetFactIndex is the ordinal of the target within the document's
-// facts list, not a database id.
+// facts list, not a database id, and it may name a fact that follows the
+// source in the list, so a consumer must write every fact before any edge.
 type CausalRelation struct {
 	RelationType    string `json:"relation_type"`
 	TargetFactIndex int    `json:"target_fact_index"`

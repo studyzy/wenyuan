@@ -811,19 +811,15 @@ func dispositionJSON(disposition map[string]int) map[string]int {
 	return disposition
 }
 
-// archiveScopeList narrows a stored observation scope onto the archive's list
-// form. The stored column accepts a mode name as well as an explicit group
-// list, and only the explicit list is carried, because the archive's schema is
-// a list.
-func archiveScopeList(raw json.RawMessage) []string {
+// archiveScopeList carries a stored observation scope onto the archive
+// verbatim. The stored column and the archive's schema are the same union: a
+// mode name string or an explicit list of tag groups, so the raw JSON is
+// reused rather than narrowed onto one of the two shapes.
+func archiveScopeList(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return nil
 	}
-	var explicit []string
-	if err := json.Unmarshal(raw, &explicit); err == nil {
-		return explicit
-	}
-	return nil
+	return raw
 }
 
 // mapMetadata copies a unit's metadata into a plain map for encoding. The list
