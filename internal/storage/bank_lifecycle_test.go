@@ -198,7 +198,9 @@ func TestMemoryDeleteNeverCreatedIsNoOp(t *testing.T) {
 	}
 }
 
-// st-0003 / inv-0006: deleting a bank removes its alias rows.
+// st-0003 / inv-0006: deleting a bank removes its alias rows. The reported
+// count is content-based (units + entities + documents), so a bank that only
+// carries an alias row reports zero.
 func TestMemoryDeleteRemovesAliases(t *testing.T) {
 	store := NewMemoryStore("public")
 	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
@@ -207,11 +209,50 @@ func TestMemoryDeleteRemovesAliases(t *testing.T) {
 	if _, err := store.AddAlias(context.TODO(), "b", "nick", true); err != nil {
 		t.Fatal(err)
 	}
-	if deleted, err := store.DeleteBank(context.TODO(), "b"); err != nil || deleted != 1 {
+	if deleted, err := store.DeleteBank(context.TODO(), "b"); err != nil || deleted != 0 {
 		t.Fatalf("delete = %d, err = %v", deleted, err)
 	}
 	if resolved, _ := store.ResolveBankID(context.TODO(), "nick"); resolved != "nick" {
 		t.Fatalf("an alias must not outlive its bank: %q", resolved)
+	}
+}
+
+// st-0003 / inv-0006: the delete count is the bank's content, and the content
+// is actually gone afterwards — memory_units and documents carry no foreign key
+// to banks, so a cascade alone would orphan them.
+func TestMemoryDeletePurgesContent(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutDocument(context.TODO(), "b", "doc-1", Document{OriginalText: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(context.TODO(), MemoryUnit{ID: "unit-1", BankID: "b", FactType: TypeWorld, Text: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(context.TODO(), MemoryUnit{ID: "unit-2", BankID: "b", FactType: TypeWorld, Text: "two"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveEntity(context.TODO(), "b", "Widget", EntityKindRegular, true); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.DeleteBank(context.TODO(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4 (2 units + 1 entity + 1 document)", deleted)
+	}
+	stats, err := store.BankStats(context.TODO(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalNodes != 0 {
+		t.Fatalf("a deleted bank must leave no memory units behind, got %d", stats.TotalNodes)
+	}
+	if _, err := store.GetBank(context.TODO(), "b"); err != ErrBankNotFound {
+		t.Fatalf("GetBank after delete err = %v, want ErrBankNotFound", err)
 	}
 }
 

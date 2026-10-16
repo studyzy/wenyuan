@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -173,8 +174,10 @@ func (s *MemoryStore) UpdateBank(ctx context.Context, bankID string, patch BankP
 	return bank, nil
 }
 
-// DeleteBank removes a bank and its owned rows, returning the number of bank
-// rows removed. Deleting a bank that never existed is a zero-item no-op.
+// DeleteBank removes a bank and its content — memory units, documents,
+// entities, links and the rows that hang off them — returning the number of
+// units, entities and documents removed. Deleting a bank that never existed is
+// a zero-item no-op.
 func (s *MemoryStore) DeleteBank(ctx context.Context, bankID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,8 +198,69 @@ func (s *MemoryStore) DeleteBank(ctx context.Context, bankID string) (int, error
 			break
 		}
 	}
+	// The bank's content is purged with it. Neither backend cascades from the
+	// bank row, so an explicit purge is what keeps a deleted bank from leaving
+	// its units, documents and entities behind.
+	units := 0
+	for id, unit := range s.units {
+		if unit.BankID != bankID {
+			continue
+		}
+		delete(s.units, id)
+		delete(s.unitEntities, id)
+		delete(s.observationSources, id)
+		delete(s.memoryHistory, id)
+		units++
+	}
+	for id, unit := range s.invalidated {
+		if unit.BankID == bankID {
+			delete(s.invalidated, id)
+		}
+	}
+	documents := 0
+	for id, document := range s.documents {
+		if document.BankID == bankID {
+			delete(s.documents, id)
+			documents++
+		}
+	}
+	entities := 0
+	for id, entity := range s.entities {
+		if entity.BankID == bankID {
+			delete(s.entities, id)
+			entities++
+		}
+	}
+	chunks := s.chunks[:0]
+	for _, chunk := range s.chunks {
+		if chunk.BankID == bankID {
+			continue
+		}
+		chunks = append(chunks, chunk)
+	}
+	s.chunks = chunks
+	links := s.links[:0]
+	for _, link := range s.links {
+		if link.BankID == bankID {
+			continue
+		}
+		links = append(links, link)
+	}
+	s.links = links
+	for key := range s.cooccurrences {
+		if strings.HasPrefix(key, bankID+"\x00") {
+			delete(s.cooccurrences, key)
+		}
+	}
+	for key, attachment := range s.attachments {
+		if attachment.BankID == bankID {
+			delete(s.attachments, key)
+		}
+	}
 	s.invalidateBankLocked(bankID)
-	return 1, nil
+	// The reported count is the backend's: memory units, entities and
+	// documents, matching the reference's delete envelope.
+	return units + entities + documents, nil
 }
 
 // ResolveBankID maps an alias to its canonical bank identifier. A name that is

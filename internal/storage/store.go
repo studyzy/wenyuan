@@ -126,8 +126,10 @@ type Store interface {
 	ReplaceBank(ctx context.Context, bank Bank) (Bank, error)
 	// UpdateBank applies a partial bank update.
 	UpdateBank(ctx context.Context, bankID string, patch BankPatch) (Bank, error)
-	// DeleteBank removes a bank and its owned rows, returning how many bank
-	// rows were removed (0 for a bank that never existed).
+	// DeleteBank removes a bank together with its content — memory units,
+	// documents, entities and the rows that hang off them — returning the
+	// number of units, entities and documents removed (0 for a bank that never
+	// existed).
 	DeleteBank(ctx context.Context, bankID string) (int, error)
 	// RenameBank moves every bank-scoped row from source to target in one
 	// operation, so a rename preserves the bank's data rather than recreating

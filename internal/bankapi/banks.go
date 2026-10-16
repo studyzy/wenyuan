@@ -175,13 +175,11 @@ func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
-	message := "bank and its content deleted"
-	if deleted == 0 {
-		message = "no bank matched; nothing was deleted"
-	}
+	// The reference answers one message for every outcome, including a bank
+	// that never existed; the count is what varies.
 	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteResponse{
 		Success:      true,
-		Message:      message,
+		Message:      "Bank '" + bankID + "' and all associated data deleted successfully",
 		DeletedCount: deleted,
 	})
 }

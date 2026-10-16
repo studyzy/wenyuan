@@ -208,13 +208,50 @@ func (s *PostgresStore) DeleteBank(ctx context.Context, bankID string) (int, err
 	if err := s.dropBankVectorIndexes(ctx, bankID); err != nil {
 		return 0, fmt.Errorf("drop vector indexes for bank %s: %w", bankID, err)
 	}
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
-	res, err := s.db.ExecContext(ctx, query, bankID)
+	qualified := quoteIdent(s.schema)
+	// The bank's content is purged explicitly, not left to cascade: the memory
+	// domain hangs off `documents` and `entities`, neither of which references
+	// `banks`, so deleting the bank row alone would orphan the whole domain.
+	// The order is the reference's: documents first (they cascade to chunks,
+	// memory_units, invalidated_memory_units, memory_links and unit_entities),
+	// then the rows no cascade reaches, and the bank row last.
+	counts := map[string]int{}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// A bank that never existed counts zero and deletes nothing; the reference
+	// answers zero for it rather than faulting.
+	for _, table := range []string{"memory_units", "entities", "documents"} {
+		var value int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM `+qualified+`.`+table+` WHERE bank_id = $1`, bankID).Scan(&value); err != nil {
+			return 0, err
+		}
+		counts[table] = value
+	}
+	for _, statement := range []string{
+		`DELETE FROM ` + qualified + `.documents WHERE bank_id = $1`,
+		`DELETE FROM ` + qualified + `.attachments WHERE bank_id = $1`,
+		`DELETE FROM ` + qualified + `.memory_units WHERE bank_id = $1`,
+		`DELETE FROM ` + qualified + `.observation_history WHERE bank_id = $1`,
+		`DELETE FROM ` + qualified + `.invalidated_memory_units WHERE bank_id = $1`,
+		`DELETE FROM ` + qualified + `.entities WHERE bank_id = $1`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, bankID); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM `+qualified+`.banks WHERE bank_id = $1`, bankID)
 	if err != nil {
 		return 0, err
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	// Reclaim the bank's external payloads. A bank that never existed has no
@@ -230,7 +267,9 @@ func (s *PostgresStore) DeleteBank(ctx context.Context, bankID string) (int, err
 			}
 		}
 	}
-	return int(affected), nil
+	// The reported count is the reference's sum: memory units, entities and
+	// documents. It is zero for a bank that was never created.
+	return counts["memory_units"] + counts["entities"] + counts["documents"], nil
 }
 
 // prefixDeleter is the optional object-store capability a bank teardown uses to

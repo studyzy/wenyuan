@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -305,8 +306,9 @@ func TestDeleteEnvelope(t *testing.T) {
 			t.Fatalf("delete envelope missing %q: %s", field, rec.Body.String())
 		}
 	}
-	if envelope["deleted_count"].(float64) != 1 {
-		t.Fatalf("deleted_count = %v, want 1", envelope["deleted_count"])
+	// The reference counts content, not bank rows: an empty bank reports zero.
+	if envelope["deleted_count"].(float64) != 0 {
+		t.Fatalf("deleted_count = %v, want 0 for an empty bank", envelope["deleted_count"])
 	}
 
 	rec = doJSON(t, mux, http.MethodDelete, "/v1/default/banks/never", "")
@@ -318,6 +320,59 @@ func TestDeleteEnvelope(t *testing.T) {
 	}
 	if envelope["deleted_count"].(float64) != 0 {
 		t.Fatalf("deleted_count = %v, want 0", envelope["deleted_count"])
+	}
+}
+
+// ts-0010: deleting a bank removes its content — the count is the sum of memory
+// units, entities and documents, and a read afterwards finds nothing.
+func TestDeleteBankRemovesContent(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "del-content", Name: "Content"})
+	ctx := context.TODO()
+	if _, err := store.PutDocument(ctx, "del-content", "doc-1", storage.Document{
+		OriginalText: "body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"unit-1", "unit-2"} {
+		stamp := time.Now().UTC().Add(time.Duration(i) * time.Second)
+		if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+			ID: id, BankID: "del-content", DocumentID: "doc-1", Text: "fact",
+			FactType: storage.TypeWorld, CreatedAt: &stamp,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entity, err := store.ResolveEntity(ctx, "del-content", "Widget", storage.EntityKindRegular, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUnitEntity(ctx, "unit-1", entity.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doJSON(t, mux, http.MethodDelete, "/v1/default/banks/del-content", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	// 2 units + 1 entity + 1 document.
+	if envelope["deleted_count"].(float64) != 4 {
+		t.Fatalf("deleted_count = %v, want 4", envelope["deleted_count"])
+	}
+	if got, _ := envelope["message"].(string); !strings.Contains(got, "del-content") {
+		t.Fatalf("message = %q, want it to name the bank", got)
+	}
+
+	// The content is gone, and so is the bank.
+	if stats, err := store.BankStats(ctx, "del-content"); err == nil && stats.TotalNodes != 0 {
+		t.Fatalf("TotalNodes = %d after delete, want 0", stats.TotalNodes)
+	}
+	if _, err := store.GetBank(ctx, "del-content"); err == nil {
+		t.Fatal("the bank must be gone after delete")
 	}
 }
 
