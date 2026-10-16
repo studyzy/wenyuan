@@ -308,6 +308,22 @@ sed -n '23,30p' internal/httpx/errors.go
 
 ## 8. 进度日志（实现记录）
 
+### 2026-10-16 — 银行删除契约（`DELETE /v1/default/banks/{id}`）
+
+- **契约行为修复**：`DeleteBank` 现在**真正清除银行内容**。记忆域没有指向 `banks` 的外键——
+  `memory_units`/`documents`/`entities` 只相互引用，级联只覆盖 async 队列、attachments、aliases、
+  directives、knowledge pages、mental models、webhooks——旧的 `DELETE FROM banks` 会把该银行
+  全部记忆**孤立**下来并仍可读。两后端现在按上游顺序（documents → 无级联可达的行 → banks 行）
+  在**同一事务**内清理，bank id 可立即复用。
+- **响应契约对齐**：`deleted_count = memory_units + entities + documents`（旧值为「命中的银行行数」），
+  `message` 对所有结果用**同一句**上游文案，包括**从未存在过的银行**（报 0，不报错）。
+- 新增测试：`TestMemoryDeletePurgesContent`、`TestPostgresDeleteBankPurgesContent`（`pgx`，
+  含邻行不受影响、三表零残留）、`TestPostgresDeleteNeverCreatedBankIsZero`、
+  `TestDeleteBankRemovesContent`（HTTP 路由端到端）；均验证「去掉修复即失败」。
+  `TestDeleteEnvelope` / `TestMemoryDeleteRemovesAliases` 的期望值随之从 1 改为 0。
+- 根因发现于生产迁移：4 个银行首轮导入失败后 delete+重导，残留行未被清除，计数偏少。
+- 验证：`make check` 全绿。
+
 ### 2026-10-15 — C7 文档解析链（`internal/fileparse`）
 
 - 新增 `internal/fileparse`：解析器接口 `Convert(data, filename) (markdown, error)` /

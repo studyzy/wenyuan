@@ -35,7 +35,7 @@ var ErrNoFreeWorkerSlot = errors.New("no free worker slot")
 // the supervisor (the workers' parent), so two servers on one host, or a
 // restarted server, never read each other's snapshots.
 func SharedWorkerDir() string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("hindsight-metrics-%d", os.Getppid()))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("wenyuan-metrics-%d", os.Getppid()))
 }
 
 // ClaimWorkerSlot claims the lowest free slot in 0..slots-1 and returns it with

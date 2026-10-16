@@ -188,8 +188,9 @@ var redactionCatalog = []redactionPattern{
 	{"google_oauth_token", regexp.MustCompile(asciiToken(`ya29\.[0-9A-Za-z_-]{20,}`))},
 	{"xai_key", regexp.MustCompile(asciiToken(`xai-[A-Za-z0-9]{40,}`))},
 	{"groq_key", regexp.MustCompile(asciiToken(`gsk_[A-Za-z0-9]{20,}`))},
-	// Hindsight's own API keys: hsk_<32 hex>, optionally _<hex signature>;
-	// hsk_sys_ marks a system key, anchored on the 32 hex characters.
+	// The reference implementation's own API keys: hsk_<32 hex>, optionally
+	// _<hex signature>; hsk_sys_ marks a system key, anchored on the 32 hex
+	// characters.
 	{"hindsight_key", regexp.MustCompile(asciiToken(`hsk_(?:sys_)?[0-9a-f]{32}(?:_[0-9a-f]{8,})?`))},
 	{"huggingface_token", regexp.MustCompile(asciiToken(`hf_[A-Za-z0-9]{30,}`))},
 	{"replicate_token", regexp.MustCompile(asciiToken(`r8_[A-Za-z0-9]{30,}`))},

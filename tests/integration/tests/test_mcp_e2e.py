@@ -1,11 +1,11 @@
 """
 E2E tests for the MCP (Model Context Protocol) server.
 
-Tests MCP endpoints by connecting to a running FastAPI server with MCP enabled.
+Tests MCP endpoints by connecting to a running server with MCP enabled.
 
 Requires:
 - HINDSIGHT_API_URL environment variable (e.g., http://localhost:8888)
-- A running Hindsight API server with MCP enabled
+- A running wenyuan API server with MCP enabled
 """
 
 import asyncio

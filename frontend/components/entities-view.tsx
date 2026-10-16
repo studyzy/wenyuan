@@ -24,7 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Constellation } from "./constellation";
-import { convertHindsightGraphData, GraphNode } from "./graph-data";
+import { convertGraphPayload, GraphNode } from "./graph-data";
 import { TimelineView } from "./data-view";
 import { MemoryDetailModal } from "./memory-detail-modal";
 import { TagFilterInput } from "./tag-filter-input";
@@ -186,7 +186,7 @@ export function EntitiesView() {
 
   const constellationData = useMemo(() => {
     if (!graphData) return { nodes: [], links: [] };
-    return convertHindsightGraphData(graphData);
+    return convertGraphPayload(graphData);
   }, [graphData]);
 
   // Sum co-occurrence counts (edge weights) per entity, then map to a dot

@@ -1,7 +1,7 @@
 # wenyuan (文渊)
 
-A Go implementation of the Hindsight agent-memory HTTP API and its PostgreSQL
-storage layer.
+A Go implementation of the reference implementation's agent-memory HTTP API
+and its PostgreSQL storage layer.
 
 > 文渊 (wényuān) — "the deep repository of writing", a classical name for a
 > place where knowledge is gathered and preserved. The name reflects what the
@@ -10,11 +10,11 @@ storage layer.
 
 [中文文档](README.zh-CN.md)
 
-This project implements an **API-compatible** version of the Hindsight
-agent-memory API: existing clients integrate without modification because the
-public HTTP surface (routes, JSON field names, status codes, headers) and the
-PostgreSQL schema (tables, columns, enums) are preserved. It is written in Go
-using the standard library first.
+This project implements an **API-compatible** version of the reference
+implementation's agent-memory API: clients written against the reference
+integrate without modification because the public HTTP surface (routes, JSON
+field names, status codes, headers) and the PostgreSQL schema (tables, columns,
+enums) are preserved. It is written in Go using the standard library first.
 
 ## What is implemented
 
@@ -280,7 +280,8 @@ the reference database's own catalogue — five files, `0001_extensions` through
 `0005_reference_functions` — and matches the upstream schema object for
 object: 24 tables, 234 columns, 75 indexes, 191 constraints, 236 functions
 (`docs/SCHEMA-ALIGNMENT.md` is the standing comparison and reports zero
-differences). Existing Hindsight databases can be served directly.
+differences). Existing databases created by the reference implementation can be
+served directly.
 
 ## Layout
 
@@ -322,7 +323,7 @@ See `AGENTS.md` for the full package map and the architectural boundaries.
 | `docs/GAPS.md`, `docs/FUNCTIONAL-GAPS.md` | Functional/contract gap ledgers with evidence |
 | `docs/PARITY-PLAN.md`, `docs/PARITY-SUITE.md` | Parity strategy and the executable suite |
 | `docs/SCHEMA-ALIGNMENT.md` | Standing schema comparison against the reference (must stay empty) |
-| `docs/MIGRATION.md` | Migrating an existing Hindsight bank into Wenyuan |
+| `docs/MIGRATION.md` | Migrating an existing bank from the reference implementation into Wenyuan |
 | `docs/ARCHITECTURE-REVIEW.md` | Architecture review: layering, coupling, findings |
 
 ## Contributing

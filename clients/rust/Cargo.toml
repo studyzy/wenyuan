@@ -1,0 +1,42 @@
+[package]
+name = "wenyuan-client"
+version = "0.1.0"
+edition = "2021"
+description = "Rust client library for the WenYuan agent-memory HTTP API"
+license = "MIT"
+keywords = ["api", "client", "memory", "agents"]
+categories = ["api-bindings"]
+# The crate is generated from ../openapi.json at build time, so the build
+# directory carries no source of its own to publish.
+exclude = ["target/**"]
+
+[features]
+default = []
+# reqwest is built without a TLS backend by default: the API is normally
+# reached over plain HTTP inside a deployment, and pulling in a TLS stack
+# should be the caller's choice. Enable this feature for https base URLs.
+rustls-tls = ["reqwest/rustls-tls"]
+
+[dependencies]
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+http = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+# Runtime support for the generated methods (builders, ResponseValue, Error).
+progenitor-client = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+url = "2.5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[build-dependencies]
+# The generator that turns the OpenAPI document into Rust source tree (see
+# build.rs); it is pinned to the series this crate's build.rs is written for.
+openapiv3 = "2.2"
+prettyplease = "0.2"
+progenitor = "0.11"
+serde_json = "1"
+syn = "2"

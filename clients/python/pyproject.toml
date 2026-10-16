@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wenyuan-client"
+version = "0.1.0"
+description = "Python client for WenYuan - agent memory over the HTTP API"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["wenyuan", "agent-memory", "retain", "recall", "reflect"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+# Only what the generated package and the thin wrapper actually import.
+dependencies = [
+    "aiohttp>=3.8.4",
+    "aiohttp-retry>=2.8.3",
+    "pydantic>=2",
+    "python-dateutil>=2.8.2",
+    "typing-extensions>=4.7.1",
+    "urllib3>=2.1.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0.0", "pytest-asyncio>=0.21.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["wenyuan_client", "wenyuan_client_api"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/wenyuan_client",
+    "/wenyuan_client_api",
+    "/tests",
+    "/openapi-generator-config.yaml",
+    "/scripts",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

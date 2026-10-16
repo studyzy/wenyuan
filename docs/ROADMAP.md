@@ -23,7 +23,7 @@
 
 ## 0. The one-sentence status
 
-Wenyuan is a Go service that is **a drop-in replacement for Hindsight**:
+Wenyuan is a Go service that is **a drop-in replacement for the reference implementation**:
 **the public HTTP contract surface matches upstream's OpenAPI document
 operation for operation** (`docs/CONTRACT-AUDIT.md`), and **the storage layer
 is the reference schema, object for object** (`docs/SCHEMA-ALIGNMENT.md` is
@@ -31,7 +31,7 @@ empty — you can point Wenyuan at a database built by the same schema).
 
 So "drop-in replacement" means:
 - ✅ Clients integrate without changing any code.
-- ✅ Existing Hindsight memories can be imported via `bankctl bank migrate`.
+- ✅ Existing memories from the reference implementation can be imported via `bankctl bank migrate`.
 - ✅ The served schema is identical to the reference's.
 
 ---
@@ -55,7 +55,7 @@ Each is pinned by the parity suites; the implementation record lives in
 
 ## 2. Storage layer: the schema is the reference's
 
-**Conclusion: the schema is upstream Hindsight's schema. A database built by
+**Conclusion: the schema is the reference implementation's schema. A database built by
 Wenyuan's migration series is indistinguishable from one built by the reference,
 object for object.**
 
@@ -83,8 +83,8 @@ does not have.
 ### 2.1 Migration tooling (already implemented) — how to use it
 
 ```sh
-# 1) Export the whole database from Hindsight
-curl -X POST http://<hindsight>:8888/v1/default/banks/<bank_id>/export -o bank.zip
+# 1) Export the whole database from the reference implementation
+curl -X POST http://<reference-host>:8888/v1/default/banks/<bank_id>/export -o bank.zip
 
 # 2) Import into Wenyuan
 bankctl bank migrate --archive bank.zip --replace          # idempotent rebuild (default)
@@ -100,7 +100,7 @@ Code locations:
 
 ### 2.2 Known limitations of the migration tooling — Priority: medium
 
-1. **Depends on the upstream export format**: migration reads a ZIP at Hindsight
+1. **Depends on the upstream export format**: migration reads a ZIP at the reference implementation's
    `SCHEMA_VERSION = 1`. If upstream bumps the format version,
    `SupportedSchemaVersion` at `internal/hindsightarchive/archive.go:24` must be
    updated in step, along with the types.
@@ -197,7 +197,7 @@ internal/cli           client CLI: registry, HTTP client, error classifier,
                        resource commands, fs mirror engine, explore TUI
 internal/config        flags > environment variables > defaults
 internal/httpx        router, middleware, JSON/error envelope, ignored-param reporting
-internal/hindsightarchive  Hindsight export ZIP parsing (§2.1)
+internal/hindsightarchive  reference export ZIP parsing (§2.1)
 internal/memoryops    retain / recall / reflect handlers and request/response models
 internal/migration/hindsight  export → Wenyuan mapping and import (§2.1)
 internal/monitoring   health / live / ready / version / metrics

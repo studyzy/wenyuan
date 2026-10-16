@@ -35,7 +35,7 @@
 | retired 文案 | 三条 retired 路由共用一句文案；上游 profile 与 background 是两句不同文案 | `httpx.DetailRetiredProfile` / `DetailRetiredBackground`（逐字对齐上游） |
 | 准入（admission）语义 | 保留车道按「后缀」匹配、**不看方法**，`DELETE /memories`（清空）会占用 retain 车道；上游只对 `POST` 三个写路由设限，且被拒文案不同 | `httpx.AdmissionRule` 增加 `Method`/`Lane`，文案改为上游的 `Server is at capacity for '<lane>' (N concurrent); try again shortly.`，499 文案改为 `client disconnected while queued` |
 | 文档成员路由 | `{document_id:path}` 允许文档 id 含 `/`；wenyuan 用单段 `{document_id}`，含斜杠的 id 直接 404 | 改为子树注册 + 手动切分（`SuffixDocumentMember = "/documents/"`），处理器仍读 `path value` |
-| 指标名 | 导出 `wenyuan_*`；上游为 `hindsight_*` | `internal/monitoring`、`internal/app` 改名 |
+| 指标名 | **已闭合（本非分歧）**：导出 `hindsight_*`，与上游一致，无需改名 | `internal/monitoring/metrics.go:112` 直接导出 `hindsight_http_requests_total`（及 `hindsight_http_requests_in_progress`、`hindsight_http_duration_seconds`），正是上游 `hindsight_api/metrics.py:527` 的 OTel 名 `hindsight.http.requests.total` 在 Prometheus 下的渲染形式（`.` → `_`）；两侧同名同标签 |
 | 画像日志 | `HINDSIGHT_API_PROFILE` 被当作 bool 开关 pprof 端点；上游是 JSON（`{"every":60,"top":20}`），启动即校验并周期输出 `[profile]` 日志 | `internal/config.ResolveProfile`（同上游的校验与报错）+ `monitoring.ProfileEmitter`（`/proc` 逐线程 CPU + Go 运行时摘要）；Go 的 pprof 端点移到独立的 `HINDSIGHT_API_PPROF_ENABLED` |
 
 ## 2. 本轮已修复（按包并行实施）

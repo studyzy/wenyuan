@@ -38,8 +38,9 @@ func recordImportOperation(t *testing.T, store *storage.MemoryStore, archive []b
 	return op
 }
 
-// buildImportArchive builds a minimal hindsight-format zip archive on disk and
-// returns its bytes, which is what an import operation consumes.
+// buildImportArchive builds a minimal zip archive in the reference's export
+// format on disk and returns its bytes, which is what an import operation
+// consumes.
 func buildImportArchive(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer

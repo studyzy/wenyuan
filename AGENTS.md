@@ -4,16 +4,41 @@ Guidance for AI coding agents working in this repository.
 
 ## What this project is
 
-`wenyuan` (文渊) is a Go implementation of the **Hindsight agent-memory HTTP API**
-and its PostgreSQL storage layer.
+`wenyuan` (文渊) is a Go implementation of the **reference implementation's
+agent-memory HTTP API** and its PostgreSQL storage layer: a drop-in replacement
+that a deployment can put where the reference service was.
 
-The point of the project is **API compatibility**: existing Hindsight clients
-integrate without modification because the public HTTP surface and the
-PostgreSQL schema are preserved. Compatibility is the contract — treat it as
-more important than internal elegance.
+The point of the project is **API compatibility**: existing clients integrate
+without modification because the public HTTP surface and the PostgreSQL schema
+are preserved. Compatibility is the contract — treat it as more important than
+internal elegance.
 
-Where the two disagree, the upstream Hindsight behavior wins, and the
+Where the two disagree, the reference implementation's behavior wins, and the
 disagreement is a bug.
+
+### Naming — what still says `HINDSIGHT`, and why
+
+Everything this repository calls its own is `wenyuan` / `WenYuan`, and the
+service it replaces is "the reference implementation" (「参考实现」/「上游」 in the
+Chinese docs). A handful of strings still carry the old name on purpose, each
+because it is a contract or a pointer at the counterpart rather than branding:
+
+| String | Why it stays |
+|---|---|
+| `HINDSIGHT_API_*`, `HINDSIGHT_CP_*`, `HINDSIGHT_PROFILE`, `HINDSIGHT_BANK_ID`, `HINDSIGHT_FS_*` | environment-variable and cookie names are the deployment contract (the key list is `internal/config/reference.go`); renaming them breaks every existing `.env`, compose file and chart that already sets them |
+| the document served at `/openapi.json`, `info.title` included | that document *is* the reference contract; `scripts/reference_openapi.py --check` compares it byte for byte |
+| `hindsight_http_requests_total`, `hindsight_event_loop_lag`, … | the Prometheus rendering of the reference's OTel metric names; dashboards and the parity comparison read them |
+| `X-Hindsight-Event` / `-Signature` / `-Signature-V2` / `-Bank-Id` | the webhook wire contract: a receiver verifying a signature reads these header names |
+| the MCP `serverInfo.name`, the OTEL default service name, the daemon log default `~/.hindsight/daemon.log` | observable values a client or a log pipeline reads |
+| `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` | a value deployments pass in `HINDSIGHT_API_TENANT_EXTENSION` |
+| redaction labels naming the counterpart's credential formats (`hindsight_key` for its `hsk_…` keys) | the label says whose key the pattern catches; the reference's list carries the same name |
+| `internal/hindsightarchive`, `internal/migration/hindsight`, `bankctl … --from-hindsight` | named after what they handle: the reference's export format, and the direction of the import |
+| citations such as `engine/audit.py:1-5`, `hindsight_api/…`, `hindsight-docs/static/openapi.json` | evidence — a citation that cannot be followed is not evidence |
+| `tests/system/**` | the reference's own black-box suite, vendored verbatim |
+
+Adding a new identifier, log line, metric, header or document of our own must
+not use the old name; if something has to keep it, add it to this table with
+the reason.
 
 ## Ground rules
 
@@ -103,12 +128,17 @@ internal/oteltrace/    OTel tracing support
 internal/audit/        audit trail (fire-and-forget)
 internal/tenant/       tenant / extension schema abstraction
 internal/monitoring/   health / metrics / version endpoints
-internal/hindsightarchive/   Hindsight export format parsing (zip)
-internal/migration/hindsight/  import an exported archive into this storage
+internal/hindsightarchive/   the reference's whole-bank export format (zip)
+internal/migration/hindsight/  import the reference's exported archive into
+                               this storage (named after what it imports)
 internal/bankadmin/    bank admin operations shared by CLI
 internal/cli/          wenyuan-admin implementation (API client only)
 frontend/              control-plane frontend (Next.js, dev on port 19999;
                        talks to the API through BFF routes under app/api/)
+clients/               generated client SDKs (Go, Python, TypeScript, Rust) built
+                       from clients/openapi.json, a derived copy of the served
+                       document — see clients/README.md; the Go SDK is a nested
+                       module, so the service module and its gates never see it
 migrations/            numbered SQL migrations — authoritative but NOT what runs
 docs/                  ROADMAP, GAPS/FUNCTIONAL-GAPS, CONTRACT-AUDIT,
                        PARITY-PLAN/PARITY-SUITE, SCHEMA-ALIGNMENT, MIGRATION,
@@ -163,7 +193,7 @@ prefix convention when adding a file.
 ### Migrations — read this before touching SQL
 
 **The migration series is generated, not written.** The PostgreSQL schema this
-project serves *is* the upstream Hindsight schema, so the series is emitted from
+project serves *is* the reference schema, so the series is emitted from
 the reference database's own catalogue:
 
 ```sh
@@ -227,7 +257,7 @@ detailed ledger with evidence; keep them in sync when you close or open a gap.
 - **Default listen ports are offset from the reference on purpose.** wenyuan
   defaults to API `18888`, worker HTTP `18889`, and frontend `19999` —
   upstream's 8888/8889 plus 10000 (the upstream Control Plane UI is 9999) —
-  so upstream Hindsight and wenyuan can run side by side for comparison. The
+  so the reference service and wenyuan can run side by side for comparison. The
   compose stack's own PostgreSQL publishes host port `15432` (5432 + 10000)
   and never touches the reference's instance on 5432. The
   env var names (`HINDSIGHT_API_PORT`,

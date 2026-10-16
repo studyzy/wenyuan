@@ -73,29 +73,29 @@ func TestDescriptorSurface(t *testing.T) {
 // A configured base path serves every route under the prefix as well as at the
 // root, and the document reports the prefix as its server.
 func TestBasePathServesBothSpellings(t *testing.T) {
-	router := NewRouter(RouterOptions{BasePath: "/hindsight"})
+	router := NewRouter(RouterOptions{BasePath: "/wenyuan"})
 	router.Handle(http.MethodGet, "/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	service := router.Service()
 
-	for _, path := range []string{"/health", "/hindsight/health", "/hindsight/openapi.json"} {
+	for _, path := range []string{"/health", "/wenyuan/health", "/wenyuan/openapi.json"} {
 		rec := httptest.NewRecorder()
 		service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s: status = %d, want 200", path, rec.Code)
 		}
 	}
-	document := OpenAPIDocument("/hindsight")
-	if !strings.Contains(document, `"servers":[{"url":"/hindsight"}]`) {
+	document := OpenAPIDocument("/wenyuan")
+	if !strings.Contains(document, `"servers":[{"url":"/wenyuan"}]`) {
 		t.Fatal("the document must name the base path as its server")
 	}
 	if !json.Valid([]byte(document)) {
 		t.Fatal("the document with a server injected is not valid JSON")
 	}
 	rec := httptest.NewRecorder()
-	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hindsight/docs", nil))
-	if !strings.Contains(rec.Body.String(), `url: '/hindsight/openapi.json'`) {
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wenyuan/docs", nil))
+	if !strings.Contains(rec.Body.String(), `url: '/wenyuan/openapi.json'`) {
 		t.Fatalf("the page must read the contract under the base path: %s", rec.Body.String())
 	}
 }

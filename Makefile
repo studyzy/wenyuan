@@ -19,6 +19,8 @@ CMDWORKER ?= ./cmd/worker
 GOLANGCI_LINT ?= golangci-lint
 # The frontend's BFF proxies to the API on this URL (frontend/lib/server/config.ts).
 HINDSIGHT_CP_DATAPLANE_API_URL ?= http://127.0.0.1:18888
+# The Go client SDK's live suite talks to a server on this URL.
+SDK_API_URL ?= http://127.0.0.1:18888
 
 # The PostgreSQL-backed suite needs a live instance and is therefore opt-in:
 # the default gate stays offline. Point WENYUAN_TEST_DATABASE_URL at a database
@@ -33,7 +35,8 @@ COVERAGE_MIN ?= 56
 COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
-        frontend-build frontend-run help \
+        frontend-build frontend-run clients clients-check \
+        test-sdk-go test-sdk-go-integration help \
         bench test-pg cover cover-check cover-check-pg parity
 
 all: check
@@ -151,6 +154,26 @@ frontend-run:
 ## clean: remove build output
 clean:
 	rm -rf bin
+
+## clients: regenerate every client SDK under clients/ from the served contract
+## (needs docker, node and cargo; each generator is pinned)
+clients:
+	scripts/generate_clients.sh
+
+## clients-check: fail when clients/openapi.json no longer matches the served
+## document's derived form
+clients-check:
+	python3 scripts/derive_client_spec.py --check
+
+## test-sdk-go: run the Go client SDK's tests (offline: httptest servers only)
+test-sdk-go:
+	cd clients/go && $(GO) test -count=1 $(GOFLAGS) ./...
+
+## test-sdk-go-integration: run the Go client SDK's live suite against a
+## running server. Point SDK_API_URL at it; a memory-backed one is enough:
+##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
+test-sdk-go-integration:
+	cd clients/go && HINDSIGHT_API_URL="$(SDK_API_URL)" $(GO) test -tags integration -count=1 $(GOFLAGS) ./...
 
 ## help: list targets
 help:

@@ -12,9 +12,10 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// MigrateFlags is the parsed Hindsight-migration command surface.
+// MigrateFlags is the parsed reference-migration command surface.
 type MigrateFlags struct {
-	// Archive is the path to a Hindsight whole-bank export (.zip).
+	// Archive is the path to a whole-bank export archive (.zip) written by the
+	// reference implementation.
 	Archive string
 	// SourceURL is a database URL of a reference-shaped instance to read the
 	// bank straight out of, as an alternative to an exported archive.
@@ -41,8 +42,8 @@ func ParseMigrate(args []string) (MigrateFlags, error) {
 	fs := flag.NewFlagSet("bank migrate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var flags MigrateFlags
-	fs.StringVar(&flags.Archive, "archive", "", "Hindsight export archive (.zip)")
-	fs.StringVar(&flags.Archive, "a", "", "Hindsight export archive (.zip) (short)")
+	fs.StringVar(&flags.Archive, "archive", "", "reference export archive (.zip)")
+	fs.StringVar(&flags.Archive, "a", "", "reference export archive (.zip) (short)")
 	fs.StringVar(&flags.SourceURL, "source-url", "", "database URL of a reference-shaped instance to read directly")
 	fs.StringVar(&flags.SourceBank, "source-bank", "", "bank to read when --source-url is set")
 	fs.StringVar(&flags.BankID, "bank-id", "", "target bank identifier")
@@ -97,7 +98,7 @@ func readDirectBank(ctx context.Context, flags MigrateFlags) (*hindsightarchive.
 	return archive, func() { _ = db.Close() }, nil
 }
 
-// RunMigrate reads a Hindsight bank — from an export archive or straight out of
+// RunMigrate reads a reference bank — from an export archive or straight out of
 // a reference-shaped database — and writes it into the store.
 func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, out io.Writer) (hindsight.Report, error) {
 	var (

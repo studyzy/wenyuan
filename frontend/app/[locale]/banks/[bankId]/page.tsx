@@ -316,8 +316,8 @@ export default function BankPage() {
             {/* Content width staircase. Without a cap the views ran the full
                 width of the window, which on a 16" display left body text and
                 table rows spanning ~1700px. The Kit specifies a flat 1024px;
-                the steps at xl/2xl are a Hindsight extension so large displays
-                don't pay ~350px gutters for that cap. One wrapper covers
+                the steps at xl/2xl are an extension the reference adds so large
+                displays don't pay ~350px gutters for that cap. One wrapper covers
                 every view because they all sit under this container. */}
             <div className="max-w-[1024px] xl:max-w-[1280px] 2xl:max-w-[1440px] mx-auto w-full">
               {/* Bank Configuration Tab */}

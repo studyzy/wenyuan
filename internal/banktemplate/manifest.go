@@ -123,7 +123,7 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 		structural = append(structural, "version: version must be >= 1")
 	case parsed > atoiVersion(CurrentTemplateVersion):
 		structural = append(structural, fmt.Sprintf(
-			"version '%s' is not supported by this server (max supported: %s). Please upgrade Hindsight.",
+			"version '%s' is not supported by this server (max supported: %s). Please upgrade Wenyuan.",
 			version, CurrentTemplateVersion))
 	}
 

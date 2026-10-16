@@ -15,7 +15,7 @@
 > 本文档是**实现清单**，供后续净室重写 AI 逐项实现。
 > 只覆盖**服务后端**；前端 / Control Plane（9999）不在范围内。
 >
-> 参照基线：Hindsight 服务端 `hindsight-api-slim/hindsight_api/`，
+> 参照基线：上游服务端 `hindsight-api-slim/hindsight_api/`，
 > 公开 HTTP 路由 **99 条 + MCP 命名空间**。
 > Wenyuan 当前实际挂载 **99 条路由**（含 3 条 retired 返回 410）。
 >
@@ -311,7 +311,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 | C1 | `documents.metadata` / `retain_params` 从未写入 | **已修复**：`PutDocument` 的 INSERT 现含 `metadata` / `retain_params` / `tags` 三列（`postgres_retain.go` 的 `PutDocument`） | `PutDocument` 全量字段 |
 | C2 | 迁移丢失字段 | **已修复**：`unmappedFields()`（`migration/hindsight/map.go`）现返回 `nil`——每个归档字段都有目标列；迁移 0016 补齐了缺失列 | 需先加列 |
 | C3 | 索引 / 约束不足 | **已修复**：迁移 0013 建核心索引、0019 建按类型的部分索引、0020 建 trigram GIN（`entities name_trgm`）；`migrations/` 现共 **49** 个 `CREATE INDEX`（含 vector HNSW、trigram GIN、jsonb GIN） | `alembic/` |
-| C4 | 无法直连 Hindsight 库 | **已实现**：`storage.NewDirectSource` 直连参照形态库（`fact_type` / `canonical_name` / `bank_id` 命名差异在读取器内翻译），渲染成归档再走标准导入；CLI：`bankctl bank migrate --source-url URL --source-bank ID` |
+| C4 | 无法直连上游库 | **已实现**：`storage.NewDirectSource` 直连参照形态库（`fact_type` / `canonical_name` / `bank_id` 命名差异在读取器内翻译），渲染成归档再走标准导入；CLI：`bankctl bank migrate --source-url URL --source-bank ID` |
 | C5 | 无版本表 | **已实现**：`schema_migrations` 表记录已应用迁移，启动时只跑未应用的 |
 | C6 | 跨进程缓存失效 | **已实现**：`bank_stats_cache` 表（迁移 0018）让一个 worker 的统计摘要被其它 worker 读取；`BankStatsCacheTTL` 控制有效期。bank 行缓存仍是进程内 TTL |
 | C7 | 实体 ID 派生 | **已解决**：实体按归一化名称解析；`resolve=true` 现走 Jaro-Winkler 模糊匹配（阈值 0.84），PG 后端先用 `pg_trgm`（阈值 0.3）筛候选再打分（`internal/storage/entity_match.go`、`postgres_retain.go`） |

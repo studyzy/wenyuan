@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The four client SDKs under `clients/` — Go, Python, TypeScript and Rust —
+  generated from this service's own contract instead of written by hand. The
+  generator input is `clients/openapi.json`, a derived copy of the document
+  served at `/openapi.json`: the served document keeps the reference's branding
+  because it *is* the contract, while the derived copy names this project (the
+  `HINDSIGHT_API_*` environment names are preserved there, since they are the
+  deployment contract a client must name). `scripts/derive_client_spec.py`
+  produces the copy (`make clients-check` fails when it goes stale), `make
+  clients` regenerates every SDK with its pinned generator — openapi-generator
+  v7.10.0 in docker for Go and Python, `@hey-api/openapi-ts` for TypeScript,
+  `progenitor` in `build.rs` for Rust — and each SDK keeps its packaging
+  metadata, thin wrapper and tests outside the generator's ownership. The Go
+  SDK is a module of its own (`github.com/studyzy/wenyuan/clients/go`), so the
+  service module and its gates are untouched by it. See `clients/README.md`.
+  The Go SDK also carries the client-side behaviour the generated code does not
+  state: a live end-to-end suite behind the `integration` build tag (retain,
+  recall, reflect, bank lifecycle and configuration, documents and chunks, the
+  async queue, entities and graph, the per-bank audit switch, the retired
+  profile route's 410, and a tag filter that has to select its own write back
+  out), plus offline tests pinning the two generator quirks the build patches.
+  `make test-sdk-go` runs the offline suite, `make test-sdk-go-integration`
+  the live one against `SDK_API_URL` (default `http://127.0.0.1:18888`); a
+  memory-backed server is enough, since the assertions are structural rather
+  than about extracted facts.
 - Make targets for the deployment surface: `make tei-up` starts the compose
   `tei` profile (the TEI embedding and reranker sidecars now sit behind that
   profile, so a plain `docker compose up -d` starts PostgreSQL alone), and
@@ -505,6 +529,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DELETE /v1/default/banks/{bank_id}` deletes the bank's content, not merely its
+  row. The memory domain carries no foreign key to `banks` — `memory_units`,
+  `documents` and `entities` reference each other, and only the async queue,
+  attachments, aliases, directives, knowledge pages, mental models and webhooks
+  cascade — so the previous `DELETE FROM banks` orphaned every memory the bank
+  owned and left it readable. Both backends now purge the domain in the
+  reference's order (documents, then the rows no cascade reaches, then the bank
+  row) inside one transaction, and a bank id can be reused immediately. The
+  envelope is the reference's too: `deleted_count` is
+  `memory_units + entities + documents` (it was the count of banks matched), and
+  `message` is one string for every outcome, including a bank that never existed
+  — which reports zero rather than faulting.
 - Async operation types carry the reference's names: `consolidation`,
   `export_documents`, `import_documents`, `export_bank`, `import_bank`,
   `clone_bank`. They are a public field on the operations API and the frontend
@@ -870,6 +906,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The repository's own identity copy now says `wenyuan` everywhere: the LICENSE
+  copyright holder is `wenyuan-go contributors`, and the docs, comments, log
+  messages, `--help` text and page titles refer to "the reference
+  implementation" (「参考实现」/「上游」 in Chinese) where they used to name the
+  product this service replaces. Client-visible strings that changed with it:
+  `bankctl`'s `--archive` usage text, the Swagger/ReDoc page titles, the bank
+  template version error (`Please upgrade Wenyuan.`), and the worker metrics
+  snapshot directory (`$TMPDIR/wenyuan-metrics-<pid>`); the graph helper
+  `convertHindsightGraphData` became `convertGraphPayload`. Strings that stay as
+  they were are listed with their reasons in `AGENTS.md` under *Naming*:
+  environment-variable and cookie names, the document served at
+  `/openapi.json`, Prometheus metric names, the `X-Hindsight-*` webhook headers,
+  the MCP `serverInfo.name`, the OTEL default service name, the daemon log
+  default, the extension class value, our packages named after the reference's
+  export format (`internal/hindsightarchive`, `internal/migration/hindsight`,
+  `bankctl --from-hindsight`), citations of the reference's own paths, and the
+  vendored parity suite.
 - `make install` builds all four binaries with the `pgx` tag and adds
   `bin/worker` to the set. The previous untagged build produced a server and a
   bankctl without a PostgreSQL driver, which refuse to start against a

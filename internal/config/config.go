@@ -251,8 +251,8 @@ func forwardedAllowIPsFromEnv(lookup func(string) (string, bool)) []string {
 const (
 	DefaultHost = "0.0.0.0"
 	// DefaultPort is the API listen port. It is the reference's 8888 offset by
-	// 10000 on purpose: upstream Hindsight and wenyuan must be able to run
-	// side by side for comparison, so the out-of-the-box ports must not
+	// 10000 on purpose: the reference implementation and wenyuan must be able
+	// to run side by side for comparison, so the out-of-the-box ports must not
 	// collide. HINDSIGHT_API_PORT still overrides, and every other default
 	// keeps matching the reference.
 	DefaultPort = 18888

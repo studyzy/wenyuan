@@ -1,11 +1,11 @@
 # wenyuan（文渊）
 
-Hindsight 智能体记忆 HTTP API 及其 PostgreSQL 存储层的 Go 实现。
+参考实现的智能体记忆 HTTP API 及其 PostgreSQL 存储层的 Go 实现。
 
 > **文渊** —— 取「文之渊薮」之意，指汇聚、保存典籍学问之处。名字正对应本服务的职责：
 > 一处智能体可以写入、也能从中唤回记忆的持久记忆库。
 
-本项目实现的是 **兼容 Hindsight API** 的版本：公开 HTTP 表面（路由、JSON 字段名、状态码、
+本项目实现的是 **兼容参考实现 API** 的版本：公开 HTTP 表面（路由、JSON 字段名、状态码、
 请求头）与 PostgreSQL schema（表、列、枚举）逐项保留，因此现有客户端无需修改即可对接。
 实现语言为 Go，优先使用标准库。
 
@@ -173,7 +173,7 @@ HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # 指定文件，必�
 | `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | 反思观察默认值 |
 | `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | 反思观察 token 默认值 |
 
-> 环境变量名保持不变，属于 Hindsight API 的**公开兼容面**。
+> 环境变量名保持不变，属于参考实现 API 的**公开兼容面**。
 
 ### 模型提供方
 
@@ -223,7 +223,7 @@ PostgreSQL schema 位于 `migrations/`（同一批文件在 `internal/storage/em
 `go:embed` 内嵌）。迁移序列是**生成**的——从参考数据库自身目录导出，共五个文件，
 `0001_extensions` 到 `0005_reference_functions`——与上游 schema 逐对象一致：
 24 张表、234 列、75 个索引、191 个约束、236 个函数（`docs/SCHEMA-ALIGNMENT.md`
-是常备比对，差异为零）。可以直接对接已有的 Hindsight 数据库。
+是常备比对，差异为零）。可以直接对接参考实现已有的数据库。
 
 ## 目录结构
 
@@ -265,7 +265,7 @@ migrations         PostgreSQL schema 迁移
 | `docs/GAPS.md`、`docs/FUNCTIONAL-GAPS.md` | 功能 / 契约缺口台账（带证据） |
 | `docs/PARITY-PLAN.md`、`docs/PARITY-SUITE.md` | parity 策略与可执行套件 |
 | `docs/SCHEMA-ALIGNMENT.md` | 与参考实现的常备 schema 比对（必须保持为零差异） |
-| `docs/MIGRATION.md` | 从 Hindsight 迁移已有记忆到 Wenyuan |
+| `docs/MIGRATION.md` | 从参考实现迁移已有记忆到 Wenyuan |
 | `docs/ARCHITECTURE-REVIEW.md` | 架构评审：分层、耦合、发现项 |
 
 ## 参与贡献

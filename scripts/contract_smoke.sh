@@ -71,11 +71,11 @@ check "audit log flag default off" False "$(curl -sS "${BASE}/v1/version" | pyth
 stop
 
 # --- base path serves both spellings and names itself in the document --------
-start env HINDSIGHT_API_BASE_PATH=/hindsight
-check "prefixed route" 200 "$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/hindsight/health/live")"
+start env HINDSIGHT_API_BASE_PATH=/wenyuan
+check "prefixed route" 200 "$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/wenyuan/health/live")"
 check "root route beside the prefix" 200 "$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/health/live")"
-check "document names the base path" '/hindsight' "$(curl -sS "${BASE}/hindsight/openapi.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servers"][0]["url"])')"
-check "docs page reads the contract under the prefix" True "$(curl -sS "${BASE}/hindsight/docs" | grep -q "'/hindsight/openapi.json'" && echo True || echo False)"
+check "document names the base path" '/wenyuan' "$(curl -sS "${BASE}/wenyuan/openapi.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servers"][0]["url"])')"
+check "docs page reads the contract under the prefix" True "$(curl -sS "${BASE}/wenyuan/docs" | grep -q "'/wenyuan/openapi.json'" && echo True || echo False)"
 stop
 
 # --- tenant authentication, when configured ---------------------------------

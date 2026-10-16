@@ -1,4 +1,4 @@
-# 功能面复核与剩余清单（2026-10-15）
+# 功能面复核与剩余清单（2026-10-16）
 
 这份文件回答的问题是「上游的服务到底有没有 100% 复刻过来」。HTTP 契约面（路由/参数/字段/空值/
 状态码/头/错误信封）记在 `docs/CONTRACT-AUDIT.md`；**行为面**记在这里。
@@ -15,7 +15,7 @@
 | **上游自己的系统测试套件**（`hindsight-system-tests`，77 个 story 文件 / 345 用例，只用上游已发布的 Python 客户端驱动真实服务，模型/embedding/reranker 指向进程内桩） | **287 passed / 47 failed / 10 errors / 1 skipped（≈83%）**，基线是同一套件的 **136 passed / 161 failed / 43 errors**。唯一 skip 由上游环境门槛决定（`test_76_onnx_embeddings.py` 需要本地 E5 ONNX 模型）。harness 自身修好并自证（启动标记 + 启动函数确实被调用）；每个 agent 用自己的私有库，避免两个服务共用一个库时互相认领队列 |
 提示词、多模态、observation 嵌入、异步 retain 管线等专项见下方各节。 |
 | HTTP 契约面（99 操作 / 195 schema 逐项对照） | 见 `docs/CONTRACT-AUDIT.md`：路由 99/99；字段/状态码/头层面的偏差已批量修复，余项在该文件 §3 |
-| 非 HTTP 功能面（子系统、CLI/进程、扩展体系） | 见下方三节，按严重度列出**仍缺的能力**与可行性判断 |
+| 非 HTTP 功能面（子系统、CLI/进程、扩展体系） | 见下方三节：§1 与 §3 已按 2026-10-16 的代码现状改写为**逐项结论**（闭合/部分/仍开，各附证据路径），§2 保留运维面复核记录 |
 
 2026-10-15 同日已完成（详见「进度」一节与 `CHANGELOG.md`）：审计流水线（40 个动作 × HTTP/MCP/worker），
 抽取模式（concise/verbose/custom/verbatim/chunks 各自的提示词与 schema），多路 LLM 路由与
@@ -25,31 +25,68 @@ PDF/DOCX/XLSX/PPTX/HTML/CSV/JSON + llama_parse/iris），GCS/Azure 对象存储�
 BM25 词项选择与语句超时，**参考库直接接管**（指向参考服务自己迁移过的库可以直接启动服务），
 以及参考 schema 的向量宽度修正（1024 → 384）。
 
-一句话：**服务行为（公开 API 能观察到的部分）已与上游等价**；仍缺的是「可替换后端的广度」
-（provider 家族、对象存储、文件解析、多路 LLM 路由）、**审计与部分引擎设置真正生效**、
-以及**插件体系与运维/进程面**。其中一部分在纯 Go 二进制里结构上不可实现（见 §4）。
+一句话（2026-10-16 复核后）：**服务行为（公开 API 能观察到的部分）已与上游等价**；§1 的引擎子系统
+23 项里 **15 项已闭合**（逐项结论与证据见 §1）、**1 项部分**（扩展框架，按插槽判定见 §3）、
+**5 项仍开**（loop 停顿栈转储、审计写入批处理、reflect 分段合成、扩展声明的 bank 级表参与备份、
+协作式取消边界检查）、**2 项明确范围外**（`pg0://` 内嵌 PG、Oracle 后端）。
+结构性不可复刻项见 §4。陈旧的 MED 段落已按代码现状改写——原文提到的 provider 家族、对象存储、
+文件解析链、多路 LLM 路由、审计流水线、tokenizer 词表、中文时间解析、实体批内归并都已落地。
 
 ## 1. 引擎子系统（23 项，来自子系统清单复核）
 
-严重度 HIGH：
+**2026-10-16 收口：本节由「缺口清单」改写为逐项结论。** 每项给出判定与代码证据。仍开着的只剩
+§1.3 的 5 项、§3 的语言边界（Python 类插槽），以及 §1.1#5 点名的按名拒绝项。
 
-| # | 缺口 | 上游 | 现状 | 修复方向 |
-|---|---|---|---|---|
-| 1 | **审计流水线只有一条动作**：只有 curation 写 `memory_update` 一行；retain/recall/reflect/bank CRUD 全无记录，租户的 `/audit-logs` 实质为空 | `engine/audit.py:1-5,137-170,240-266` | `internal/storage/postgres_memories.go:171-176` | 在中间件（HTTP）+ MCP + worker 分发处挂 `audit_context` 等价物，写 `action/transport/started/ended/request/response`，按配置与 bank 覆盖开关 |
-| 2 | **`retain_extraction_mode` 是空转**：`concise/verbose/custom/verbatim/chunks` 上游对应不同提示词**和不同 schema**（`what/when/where/who/why`）；这里只有一套 | `engine/retain/fact_extraction.py:1571-1622,266,3539,3644` | `internal/extraction/extractor.go:112-199` | 把解析出的模式 + `retain_custom_instructions`/`retain_strategies` 传进 `extraction.Options`，按模式选提示词/schema，补逐 chunk 与 verbatim 折叠路径 |
-| 3 | **多路 LLM 路由缺失**（failover / round_robin / weighted / metadata 路由），配置即启动失败 | `engine/multi_llm.py:1-42` | `internal/app/provider.go:128-141` | 实现成员感知的 provider：按策略选成员、逐成员重试/退避 |
-| 4 | **知识库搜索是 `ILIKE` 子串**，分数是编造的 1.0/0.5；服务端 OpenAPI 却宣传 hybrid BM25+vector | `engine/sql/postgresql.py:75-187` | `internal/storage/postgres_knowledge.go:226-234` | 在 `mental_models.search_vector` 上建 BM25 臂 + 向量臂，RRF 融合并归一到 [0,1] |
-| 5 | **embedding 后端与宽度**：只支持 OpenAI 兼容；本地模型被拒；宽度是编译期常量且列固定；上游按模型自动探测并**调整 schema** | `engine/embeddings.py:290-546`、`config.py:2100-2130` | `internal/app/embeddings.go:56-62`、`internal/provider/dimension.go` | 补齐 HTTP provider 家族（cohere/gemini/vertex/tei/zeroentropy/openrouter/requesty/litellm）；启动时按探测到的宽度对齐列宽（上游行为） |
+### 银行删除的行为缺口（2026-10-16 迁移实测发现，已修）
 
-严重度 MED：文本检索（BM25 词项选择 / pg_search / statement_timeout 兜底）、tokenizer 词表
-（上游默认 `o200k_base`，此处硬编码 `cl100k_base`，导致所有 token 计数不同）、文件解析链、
-对象存储 GCS/Azure 与预签名下载、扩展框架、中文/英文时间解析（缺中文数词）、实体解析（缺批内归并）、
-巩固设置空转（`observations_mission`/`consolidation_strategies`/预算/批次与并行度）。
+`DELETE /v1/default/banks/{id}` 此前只删 `banks` 行并依赖级联，而**记忆域没有指向 `banks` 的外键**——
+`memory_units`/`documents`/`entities` 只相互引用（级联覆盖的是 async 队列、attachments、aliases、
+directives、knowledge pages、mental models、webhooks）。后果是每次删银行都把该银行**全部记忆孤立**
+下来：行还在、仍可读、且因 bank id 可再次创建而被新数据"叠加"，计数与真实内容对不上。两后端
+（memory/postgres）现在按上游顺序在同一事务内清理，`deleted_count` 改为
+`memory_units + entities + documents`，`message` 统一为上游那一句（从未存在过的银行报 0）。
+发现过程、根因与回归测试见 `docs/PARITY-PLAN.md` §8 的 2026-10-16 条目。
 
-严重度 LOW：loop 停顿栈转储、DB 池等待计数与慢获取告警、`--daemon` 语义、`pg0://`、
-多 worker 指标标签、审计/追踪写入批处理、reflect 大证据集的 split synthesis、
-扩展声明的 bank 级表参与备份/清理、协作式取消的边界检查。**Oracle 后端**明确不在范围内
-（PG 之外仅此一种方言）。
+### 1.1 HIGH（5 项，全部闭合）
+
+| # | 原判断 | 结论与证据 |
+|---|---|---|
+| 1 | 审计流水线只有一条动作 | **闭合**。`internal/audit/audit.go` 定义 60 个动作名（retain/file_retain/recall/reflect/bank CRUD/mental model/directive/document/operation/import/clone/clear/webhook/memory_defense …，即上游装饰器的同一套词表），记录与否按「进程开关 → 动作白名单 → bank 覆盖」三级判定；三条传输都接线：HTTP 走 `internal/app/audit.go` 的路由→action 映射（`@audited` 等价物），MCP 走 `internal/mcp/tools_dispatch.go:53`（`TransportMCP`），worker 走 `internal/app/app.go:198` 的 `Hook: auditLogger` |
+| 2 | `retain_extraction_mode` 空转 | **闭合**。`internal/extraction/options.go:18-20` 声明 concise/verbose/custom/verbatim/chunks 各自选提示词与响应 schema；verbatim 走 metadata-only 读取与折叠（`internal/extraction/extractor.go:208-335`）；bank 配置经 `memoryops/retain.go` 传入 `extraction.Options`；`modes_test.go` 钉住「verbose 与 concise 不得共用提示词」等 |
+| 3 | 多路 LLM 路由缺失 | **闭合**。`internal/provider/routing/`：failover / round-robin / metadata 三种模式（`routing.go`）+ smooth weighted round-robin（`swrr.go`），按策略选成员并逐成员重试/退避；embedding 明确委派 primary（`routing.go:125`）；不可达成员不阻断启动（`routing.go:135`），有 `routing_test.go` |
+| 4 | 知识库搜索是 ILIKE | **闭合**。`internal/storage/postgres_knowledge.go:269+`：`ts_rank_cd` 文本臂（`search_vector` = name + content）+ 向量臂，RRF 融合并归一到 [0,1]；无 embedding 的页只由文本臂命中 |
+| 5 | embedding 后端与宽度 | **闭合（余按名拒绝项）**。家族 accept：`openai/openrouter/requesty/litellm/cohere/tei/zeroentropy/gemini`（`internal/provider/embed/embed.go:77-82`）；refuse-by-name：`onnx/local/openai-codex/litellm-sdk/google`（同文件 `:84-92`）与 `HINDSIGHT_API_LLM_VERTEXAI`（`internal/config/provider_contract.go:375`）。宽度：`internal/provider/dimension.go` 声明 384，`internal/storage/embedding_dimension.go` 在迁移事务内按部署宽度对齐（相同即 no-op；已有向量而宽度不符则报错并点名两个宽度与行数；空表则丢索引→改列→按捕获定义重建） |
+
+### 1.2 MED（8 项）
+
+| 原判断 | 结论与证据 |
+|---|---|
+| 文本检索（BM25 词项选择 / pg_search / statement_timeout 兜底） | **闭合**：`internal/storage/bm25_terms.go`（词项选择，`BM25_MAX_QUERY_TERMS`）、`postgres_bm25_pgsearch.go`（ParadeDB `paradedb.score` + tokenizer 白名单）、`session.go`（`DB_STATEMENT_TIMEOUT` 走连接参数） |
+| tokenizer 词表硬编码 `cl100k_base` | **闭合**：`internal/storage/tokens.go` 默认 `o200k_base`，`cl100k_base` 仍可选 |
+| 文件解析链 | **闭合**：`internal/fileparse/`（PDF/DOCX/XLSX/PPTX/HTML/CSV/JSON/文本 + 内嵌图转写），远程 parser `remote.go`（llama_parse/iris） |
+| 对象存储 GCS/Azure 与预签名下载 | **闭合**：`internal/objectstore/{backend,gcs,azure,s3,s3_presign,signing}.go`，由 `HINDSIGHT_API_FILE_STORAGE_TYPE` 选后端 |
+| 中文/英文时间解析（原写「缺中文数词」） | **闭合**：`internal/memoryops/query_time.go:170-237`（数词、上/中/下旬与月初月底、半、模糊「前几天」、假阳性守卫） |
+| 实体解析（原写「缺批内归并」） | **闭合**：`ENTITY_INTRABATCH_MERGE_SIMILARITY` → `internal/storage/{postgres_retain,retain_contents}.go` |
+| 巩固设置空转 | **闭合**：`internal/consolidation/settings.go`（mission / strategies / 预算 / 批次 / 并行度） |
+| 扩展框架 | **部分**：按 6 个插槽逐项判定见 §3 |
+
+### 1.3 LOW
+
+**已闭合**：`--daemon` 语义（§2.3）、多 worker 指标标签（`internal/app/metrics_workers.go`，`METRICS_WORKER_LABEL`）、
+DB 池等待计数与慢获取告警（`internal/storage/driver_pgx.go:99`、`postgres.go:38`）、事件循环停顿探针
+（`internal/monitoring/looplag.go`，`LOOP_WATCHDOG_*`）。
+
+**仍开 5 项**：
+
+| 项 | 现状 |
+|---|---|
+| loop 停顿时的**栈转储** | `internal/monitoring/looplag.go` 只报延迟与指标，无 `runtime.Stack` 转储 |
+| 审计/追踪写入的**批处理** | `internal/audit/audit.go` 每条一次 fire-and-forget 单写 |
+| `reflect` 大证据集的 **split synthesis** | `internal/reflect/` 只有单次合成 + 预算截断，无分段合成路径 |
+| 扩展声明的 **bank 级表参与备份/清理** | `internal/transfer/` 只覆盖参考自己的表；上游 `extensions/bank_tables.py` 与扩展自带的 alembic `version_locations` 无对应 |
+| **协作式取消的边界检查** | Go 侧用 `context`；无上游 `cancellation.py` 那种阶段边界 token 检查 |
+
+**明确范围外**：`pg0://` 内嵌 PG（有意分歧，§2.2）、Oracle 后端（§4）。
 
 ## 2. 运维 / 进程入口（来自 CLI 与运行面复核）
 
@@ -58,7 +95,7 @@ BM25 词项选择与语句超时，**参考库直接接管**（指向参考服�
 
 | # | 缺口 | 影响 | 状态 |
 |---|---|---|---|
-| 1 | 默认绑定与端口 | 容器端口映射、健康检查、客户端默认 URL | **已闭合**：默认 `0.0.0.0:18888`（`internal/config/config.go` `DefaultHost`/`DefaultPort`；端口为**有意分歧**——上游 8888 加 10000 偏移，使 wenyuan 与上游 Hindsight 可并行启动对比，env 名与其余默认值不变） |
+| 1 | 默认绑定与端口 | 容器端口映射、健康检查、客户端默认 URL | **已闭合**：默认 `0.0.0.0:18888`（`internal/config/config.go` `DefaultHost`/`DefaultPort`；端口为**有意分歧**——上游 8888 加 10000 偏移，使 wenyuan 与上游可并行启动对比，env 名与其余默认值不变） |
 | 2 | 未配置数据库时上游用内嵌 PG（持久），此处退化为内存后端 | 重启即丢数据 | **有意分歧**：此处**拒绝启动**并点名 `HINDSIGHT_API_DATABASE_URL`，或显式设 `memory` 才用内存后端（比"静默丢失"更安全，已写入 `reference.go` 的 `Divergent`） |
 | 3 | `--workers N` / `HINDSIGHT_API_WORKERS` 被解析后从未使用 | 请求 N 个 worker 只得到 1 个 | **已闭合**：`internal/app/process.go` 的 `Supervise`——父进程绑定一次监听 socket，通过 `ExtraFiles` 继承给 N 个子进程（与 uvicorn 的 supervisor/worker 同构：`ss` 中 N+1 个进程共享同一 socket inode），子进程 `HINDSIGHT_API_WORKERS=N`；任一 worker 退出即停掉整组；`SIGTERM` 向整组转发（实测 4 个进程共享 inode `210875770`，`kill -TERM` 后全部退出） |
 | 4 | `--daemon` 除改默认 host 外无行为 | 期望后台化的启动器仍被阻塞 | **已闭合**：`app.Daemonize` 复刻上游语义——先在前台父进程做端口预检（占用则报 `cannot bind host:port` 并以 1 退出），剥离 `--daemon` 后 `setsid` 重执行子进程，stdio 追加到 `HINDSIGHT_API_DAEMON_LOG`（默认 `~/.hindsight/daemon.log`），父进程 exit 0；daemon 的 host 默认 `127.0.0.1`（除非显式配置），port 默认 `18888`（**忽略** `HINDSIGHT_API_PORT` 的机制与上游 `resolve_daemon_host_port` 一致；数值为上述有意偏移） |
@@ -150,12 +187,24 @@ CONSOLIDATION_LLM_BATCH_SIZE=16` 启动后，`GET /v1/default/banks/<id>/config`
 
 ## 3. 扩展体系（来自扩展面复核）
 
-上游有一个通用的、由环境变量驱动的扩展加载器，6 个插槽：`TENANT`、`MEMORIES`、
-`OPERATION_VALIDATOR`、`MEMORY_DEFENSE`、`HTTP`、`MCP`，每个按
-`HINDSIGHT_API_<PREFIX>_EXTENSION=<module:Class>` 选择实现、并按 `HINDSIGHT_API_<PREFIX>_*`
-收集配置。此处：只有 tenant 插槽被读取，且只接受内置类的那一个字符串——其余取值启动即失败；
-操作校验器只能编译期注册、只覆盖 retain/file-retain/recall、没有 pre-body `precheck`；
-记忆防御是硬编码正则而非插槽；bank 级扩展表不存在。
+**2026-10-16 收口：按上游的 6 个插槽逐项判定。** 上游的加载器把
+`HINDSIGHT_API_<PREFIX>_EXTENSION=<module:Class>` 当作类路径导入，并按 `HINDSIGHT_API_<PREFIX>_*`
+收集该扩展的配置键（`extensions/loader.py` 的 `EXTENSION_KINDS`：`TENANT`、`MEMORIES`、
+`OPERATION_VALIDATOR`、`MEMORY_DEFENSE`、`HTTP`、`MCP`）。
+
+| 插槽 | 现状 | 证据 |
+|---|---|---|
+| `TENANT` | 接受键，只认内置类路径，其余取值启动即拒 | `internal/config/config.go:170`（键）、`:1329` `ResolveTenantAuth`（只放行 `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension`，需 `HINDSIGHT_API_TENANT_API_KEY`） |
+| `OPERATION_VALIDATOR` | 接受键，按类名匹配原生实现，其余按名拒绝 | `internal/app/validation.go`（只放行 `UserTagScope`，即上游系统套件配置的 tag-scope 校验器）；接口 `httpx.OperationValidator`（`ValidateOperation` + `ResolveTagScope`），闸门在 body 解析之前（`internal/httpx/operation.go:15`），门住 retain(memories+file_retain)/recall/reflect，外加所有 bank 写路径（`BankWriteGate`，`bankscope.go`）与读侧 tag scope 解析；上游那种带体积提示的 `precheck` 钩子无对应 |
+| `MEMORY_DEFENSE` | 语义原生实现，但由 bank/tenant **配置**驱动而非类插槽 | `internal/memoryops/retain_defense.go`（`DefensePolicy`/`PolicyRule`/`ParseDefensePolicy`/`screenContent`/`applyRedaction`，与上游同名 API 同义），配置校验在 `internal/bankapi/config_keys.go:195`，动作进审计（`audit.ActionMemoryDefense`） |
+| `HTTP` | 编译期注册：`httpx.ExtensionHost.Register` + `MountExtensions` 挂到固定前缀，无 env 类路径 | `internal/httpx/extension.go:84-249` |
+| `MEMORIES` | 无 | 无该插槽键 |
+| `MCP` | 无 | 无该插槽键 |
+| bank 级扩展表 + 扩展自带的迁移版本 | 无 | 上游 `extensions/bank_tables.py` 与 `collect_alembic_version_locations` 无对应；`internal/transfer/` 只迁移参考自己的表 |
+
+另有开关与透传头两个横切断面已实现：`EnableFeature`/`FeatureEnabled`（功能标志）与
+`HINDSIGHT_API_EXTENSION_PASSTHROUGH_HEADERS` 允许列表（`internal/httpx/extension.go`、
+`internal/config/reference.go:83`）。
 
 **结构性限制**：Go 二进制无法 `import` 一个 Python 类。可复刻的是**契约**（同名环境变量、
 同样的配置收集规则、同样的拒绝语义），实现方式只能是 Go 侧注册表 + 明确拒绝 Python 路径。

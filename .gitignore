@@ -42,3 +42,10 @@ __pycache__/
 
 # playwright-cli's browser-acceptance workspace (snapshots, console logs).
 .playwright-cli/
+
+# The client SDKs under clients/ each carry their own toolchain's build output:
+# the npm install for the TypeScript generator, the Rust target directory, and
+# Python's bytecode (covered above).
+node_modules/
+clients/rust/target/
+clients/python/.venv/

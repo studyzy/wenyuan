@@ -300,7 +300,7 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		// The primary signature is over the raw body, `sha256=<hex>`, the
 		// same construction GitHub uses. The conventional header name carries
 		// the byte-identical value so a stock receiver verifies without a
-		// Hindsight-specific shim, and a timestamped variant lets a receiver
+		// reference-specific shim, and a timestamped variant lets a receiver
 		// that checks freshness reject a replayed delivery.
 		mac := hmac.New(sha256.New, []byte(webhook.Secret))
 		mac.Write(body)

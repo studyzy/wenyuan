@@ -1,1 +1,1 @@
-# Integration tests for Hindsight API
+# Integration tests for the wenyuan API

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { convertHindsightGraphData } from "../components/graph/graph-data";
+import { convertGraphPayload } from "../components/graph/graph-data";
 
 /**
  * The graph layer is a canvas renderer, so its drawing cannot be asserted
@@ -13,7 +13,7 @@ const GRAPH_DIR = join(process.cwd(), "components/graph");
 
 describe("graph data conversion", () => {
   it("labels a node from its own label, its memory text, or a short id", () => {
-    const converted = convertHindsightGraphData({
+    const converted = convertGraphPayload({
       nodes: [
         { data: { id: "a", label: "explicit" } },
         { data: { id: "b" } },
@@ -29,7 +29,7 @@ describe("graph data conversion", () => {
 
   it("elides a long memory text used as a label", () => {
     const long = "x".repeat(80);
-    const converted = convertHindsightGraphData({
+    const converted = convertGraphPayload({
       nodes: [{ data: { id: "a" } }],
       table_rows: [{ id: "a", text: long }],
     });
@@ -38,7 +38,7 @@ describe("graph data conversion", () => {
   });
 
   it("classifies an edge from its link type, falling back to its line style", () => {
-    const converted = convertHindsightGraphData({
+    const converted = convertGraphPayload({
       nodes: [
         { data: { id: "a" } },
         { data: { id: "b" } },
@@ -58,7 +58,7 @@ describe("graph data conversion", () => {
   });
 
   it("prefers an explicit weight over similarity", () => {
-    const converted = convertHindsightGraphData({
+    const converted = convertGraphPayload({
       nodes: [{ data: { id: "a" } }, { data: { id: "b" } }],
       edges: [
         { data: { source: "a", target: "b", weight: 3, similarity: 0.4 } },
@@ -70,7 +70,7 @@ describe("graph data conversion", () => {
   });
 
   it("tolerates a payload with no nodes or edges at all", () => {
-    expect(convertHindsightGraphData({})).toEqual({ nodes: [], links: [] });
+    expect(convertGraphPayload({})).toEqual({ nodes: [], links: [] });
   });
 });
 

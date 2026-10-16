@@ -54,9 +54,9 @@ export interface UpstreamGraphPayload {
 // Utility Functions
 // ============================================================================
 
-export function convertHindsightGraphData(hindsightData: UpstreamGraphPayload): GraphData {
-  const nodes: GraphNode[] = (hindsightData.nodes || []).map((n) => {
-    const tableRow = hindsightData.table_rows?.find((r) => r.id === n.data.id);
+export function convertGraphPayload(payload: UpstreamGraphPayload): GraphData {
+  const nodes: GraphNode[] = (payload.nodes || []).map((n) => {
+    const tableRow = payload.table_rows?.find((r) => r.id === n.data.id);
     // Use memory text as label, truncated to ~40 chars
     let label = n.data.label;
     if (!label && tableRow?.text) {
@@ -73,7 +73,7 @@ export function convertHindsightGraphData(hindsightData: UpstreamGraphPayload): 
     };
   });
 
-  const links: GraphLink[] = (hindsightData.edges || []).map((e) => ({
+  const links: GraphLink[] = (payload.edges || []).map((e) => ({
     source: e.data.source,
     target: e.data.target,
     color: e.data.color,

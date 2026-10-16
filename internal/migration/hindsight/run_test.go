@@ -11,7 +11,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// fixtureArchive builds a Hindsight export archive with two documents.
+// fixtureArchive builds a reference export archive with two documents.
 func fixtureArchive(t *testing.T) *hindsightarchive.Archive {
 	t.Helper()
 	dir := t.TempDir()

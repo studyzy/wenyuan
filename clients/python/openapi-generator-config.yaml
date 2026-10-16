@@ -1,0 +1,15 @@
+# openapi-generator invocation for the Python SDK (see scripts/generate_clients.sh).
+#
+# Only the client package is generated; the distribution metadata (pyproject.toml),
+# the wrapper package (wenyuan_client/) and the tests are maintained by hand.
+packageName: wenyuan_client_api
+projectName: wenyuan-client
+packageVersion: 0.1.0
+library: asyncio
+generateSourceCodeOnly: true
+# The generator's own docs and tests are not kept: this project maintains both.
+globalProperties:
+  apiTests: false
+  modelTests: false
+  apiDocs: false
+  modelDocs: false

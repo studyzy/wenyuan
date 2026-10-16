@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// writeFixture builds a minimal Hindsight export archive on disk.
+// writeFixture builds a minimal reference export archive on disk.
 func writeFixture(t *testing.T, manifest string, documents map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
