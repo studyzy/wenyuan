@@ -123,6 +123,8 @@ const (
 	EnvConsolidationRecallBudget                       = "HINDSIGHT_API_CONSOLIDATION_RECALL_BUDGET"
 	EnvConsolidationMaxAttempts                        = "HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS"
 	EnvConsolidationStrategies                         = "HINDSIGHT_API_CONSOLIDATION_STRATEGIES"
+	EnvConsolidationLLMBatchSize                       = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
+	EnvConsolidationLLMParallelism                     = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
 
 	// Per-type wall ceilings, the reference's spelling.
 	EnvRetainWallTimeout        = "HINDSIGHT_API_RETAIN_WALL_TIMEOUT"

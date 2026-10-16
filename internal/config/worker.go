@@ -16,7 +16,10 @@ const (
 	DefaultWorkerPollInterval    = 500 * time.Millisecond
 	DefaultWorkerInitialBackoffS = 60
 	DefaultWorkerMaxBackoffS     = 60
-	DefaultWorkerHTTPPort        = 8889
+	// DefaultWorkerHTTPPort is the reference's 8889 offset by 10000, matching
+	// the API port offset: the worker health/metrics surface must not collide
+	// with an upstream worker running beside it.
+	DefaultWorkerHTTPPort = 18889
 )
 
 // WorkerConfig tunes the background queue consumer.
@@ -105,7 +108,33 @@ func resolveReservedSlots(lookup func(string) (string, bool)) map[string]int {
 			out["consolidation"] = slots
 		}
 	}
+	// The reference reserves a floor per operation type, under one key per type.
+	// A type whose floor is zero reserves nothing, which is the same as leaving
+	// the entry out: the consumer only prefers a type whose floor is unmet.
+	for key, opType := range reservedSlotKeys {
+		if value, ok := lookup(key); ok {
+			if slots := intFromString(value); slots > 0 {
+				out[opType] = slots
+			}
+		}
+	}
 	return out
+}
+
+// reservedSlotKeys maps each per-type reservation key to the operation type it
+// reserves capacity for. The type names are the storage layer's own operation
+// type strings, so the reservation lands on the work the operator meant.
+var reservedSlotKeys = map[string]string{
+	EnvWorkerRetainReservedSlots:             "retain",
+	EnvWorkerFileConvertRetainReservedSlots:  "file_convert_retain",
+	EnvWorkerRefreshMentalModelReservedSlots: "refresh_mental_model",
+	EnvWorkerGraphMaintenanceReservedSlots:   "graph_maintenance",
+	EnvWorkerVectorIndexMaintReservedSlots:   "vector_index_maintenance",
+	EnvWorkerImportDocumentsReservedSlots:    "import_documents",
+	EnvWorkerExportDocumentsReservedSlots:    "export_documents",
+	EnvWorkerImportBankReservedSlots:         "import_bank",
+	EnvWorkerExportBankReservedSlots:         "export_bank",
+	EnvWorkerCloneBankReservedSlots:          "clone_bank",
 }
 
 // resolveWorker reads the worker tuning through the shared resolution rules: a

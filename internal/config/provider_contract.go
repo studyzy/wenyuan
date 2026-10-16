@@ -44,6 +44,9 @@ func ProviderFamilyKeys() map[string][]string {
 // configuration that changes behaviour. Everything else in the families is
 // accepted only to be refused by name when it is set.
 var resolvedProviderKeys = map[string]bool{
+	// The startup model verification is read into the resolved configuration, so
+	// the switch that turns it off is honoured rather than refused.
+	EnvSkipLLMVerification: true,
 	// Chat scope.
 	EnvLLMProvider:             true,
 	EnvLLMAPIKey:               true,
@@ -371,7 +374,6 @@ var providerRefusalReasons = []struct {
 	{"HINDSIGHT_API_LLM_CODEX_HOME", "the Codex CLI provider is not implemented"},
 	{"HINDSIGHT_API_LLM_VERTEXAI", "the Vertex AI provider is not implemented"},
 	{"HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS", "the Gemini safety-settings override is not implemented"},
-	{"HINDSIGHT_API_SKIP_LLM_VERIFICATION", "skipping the model connection check is not implemented"},
 	{"HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
 	{"HINDSIGHT_API_RETAIN_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
 	{"HINDSIGHT_API_REFLECT_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},

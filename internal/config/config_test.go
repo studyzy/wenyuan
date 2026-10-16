@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func envMap(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) {
@@ -232,5 +235,83 @@ func TestWorkerReferenceKeyAliases(t *testing.T) {
 	}
 	if cfg.Worker.InitialBackoff.Seconds() != 7 {
 		t.Fatalf("initial backoff = %v, want 7s", cfg.Worker.InitialBackoff)
+	}
+}
+
+// The reference reserves a floor of the consumer's concurrency per operation
+// type, one key per type. Each key must land on the type it names, or the
+// reservation would protect the wrong work.
+func TestPerTypeReservedSlotsResolveToTheirOperationType(t *testing.T) {
+	cfg := FromEnv(envMap(map[string]string{
+		EnvWorkerRetainReservedSlots:             "3",
+		EnvWorkerGraphMaintenanceReservedSlots:   "1",
+		EnvWorkerVectorIndexMaintReservedSlots:   "2",
+		EnvWorkerImportBankReservedSlots:         "5",
+		EnvWorkerRefreshMentalModelReservedSlots: "4",
+		EnvWorkerFileConvertRetainReservedSlots:  "6",
+		EnvWorkerImportDocumentsReservedSlots:    "7",
+		EnvWorkerExportDocumentsReservedSlots:    "8",
+		EnvWorkerExportBankReservedSlots:         "9",
+		EnvWorkerCloneBankReservedSlots:          "10",
+	}))
+	want := map[string]int{
+		"consolidation": 2, "retain": 3, "file_convert_retain": 6,
+		"refresh_mental_model": 4, "graph_maintenance": 1, "vector_index_maintenance": 2,
+		"import_documents": 7, "export_documents": 8, "import_bank": 5,
+		"export_bank": 9, "clone_bank": 10,
+	}
+	if len(cfg.Worker.ReservedSlots) != len(want) {
+		t.Fatalf("reserved slots = %v, want %v", cfg.Worker.ReservedSlots, want)
+	}
+	for opType, slots := range want {
+		if cfg.Worker.ReservedSlots[opType] != slots {
+			t.Errorf("%s reserved = %d, want %d", opType, cfg.Worker.ReservedSlots[opType], slots)
+		}
+	}
+}
+
+// A type the deployment did not reserve has no entry, so the consumer's
+// preference list is exactly what the operator asked for.
+func TestUnsetReservedSlotsStayAbsent(t *testing.T) {
+	cfg := FromEnv(envMap(nil))
+	if _, ok := cfg.Worker.ReservedSlots["retain"]; ok {
+		t.Fatalf("an unset reservation produced an entry: %v", cfg.Worker.ReservedSlots)
+	}
+	if cfg.Worker.ReservedSlots["consolidation"] != 2 {
+		t.Fatalf("consolidation floor = %d, want the reference default 2", cfg.Worker.ReservedSlots["consolidation"])
+	}
+}
+
+// The reference's watchdog defaults on and its poll interval is the probe's
+// cadence; the lag reporter's own (second-valued) keys override it when set.
+func TestLoopWatchdogKeysDriveTheProbe(t *testing.T) {
+	base := FromEnv(envMap(nil))
+	if !base.MetricsTuning.LoopWatchdog {
+		t.Fatal("the watchdog is off by default, but the reference starts it")
+	}
+	if base.LoopWatchdogInterval != DefaultLoopWatchdogPoll {
+		t.Fatalf("probe interval = %s, want the watchdog poll %s", base.LoopWatchdogInterval, DefaultLoopWatchdogPoll)
+	}
+	if base.LoopWatchdogStall != DefaultLoopWatchdogStall {
+		t.Fatalf("stall threshold = %s, want %s", base.LoopWatchdogStall, DefaultLoopWatchdogStall)
+	}
+
+	tuned := FromEnv(envMap(map[string]string{
+		EnvLoopWatchdogPollIntervalMS:   "500",
+		EnvLoopWatchdogStallThresholdMS: "2000",
+	}))
+	if tuned.LoopWatchdogInterval != 500*time.Millisecond || tuned.LoopWatchdogStall != 2*time.Second {
+		t.Fatalf("watchdog tuning ignored: interval=%s stall=%s", tuned.LoopWatchdogInterval, tuned.LoopWatchdogStall)
+	}
+
+	// The reporter's key keeps its own meaning: setting it moves the cadence.
+	reporter := FromEnv(envMap(map[string]string{EnvLoopLagReportSeconds: "30"}))
+	if reporter.LoopWatchdogInterval != 30*time.Second {
+		t.Fatalf("lag reporter interval ignored: %s", reporter.LoopWatchdogInterval)
+	}
+	// Disabling the watchdog stops the probe even with an interval configured.
+	off := FromEnv(envMap(map[string]string{EnvLoopWatchdogEnabled: "false", EnvLoopLagReportSeconds: "30"}))
+	if off.MetricsTuning.LoopWatchdog {
+		t.Fatal("HINDSIGHT_API_LOOP_WATCHDOG_ENABLED=false did not disable the probe")
 	}
 }

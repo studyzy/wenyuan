@@ -212,6 +212,7 @@ func providerProbeValue(key string) string {
 		"FP16", "PRUNE_CANDIDATES", "SEND_BANK_AS_HEADER", "SEND_BANK_AS_USER",
 		"SUPPORTS_MAX_ITEMS", "SUPPORTS_STRING_PATTERN", "FORCED_TOOL", "VISION",
 		"DEBUG_DUMP_4XX", "STRICT_SCHEMA", "JSON_MODE", "FORCE_IPV4", "MEM_ARENA",
+		"SKIP",
 	} {
 		if strings.Contains(key, token) {
 			return "true"

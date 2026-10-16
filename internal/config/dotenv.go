@@ -7,9 +7,11 @@ import (
 )
 
 // LoadDotenvFile reads a dotenv file and applies its key/value pairs to the
-// process environment without overwriting variables that are already set. A
-// missing file is not an error so callers can always attempt to load the
-// conventional default path.
+// process environment. A discovered .env is authoritative over values the
+// caller already exported, which is the reference's own entrypoint rule, so a
+// later export cannot quietly undo the file a deployment shipped. A missing
+// file is not an error so callers can always attempt to load the conventional
+// default path.
 func LoadDotenvFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -26,14 +28,23 @@ func LoadDotenvFile(path string) error {
 		if !ok {
 			continue
 		}
-		if _, present := os.LookupEnv(key); present {
-			continue
-		}
 		if err := os.Setenv(key, value); err != nil {
 			return err
 		}
 	}
 	return scanner.Err()
+}
+
+// LoadDotenvForEntrypoint assembles the environment behind a wenyuan
+// entrypoint: the conventional .env file is applied over the process
+// environment, then the YAML configuration file is read behind both. Every
+// entrypoint loads both files through this one call, so a deployment
+// configures the server, the worker and bankctl identically.
+func LoadDotenvForEntrypoint() error {
+	if err := LoadDotenvFile(".env"); err != nil {
+		return err
+	}
+	return LoadConfigFile()
 }
 
 // parseDotenvLine turns one dotenv line into a key/value pair. Blank lines and

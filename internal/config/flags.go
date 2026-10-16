@@ -5,7 +5,15 @@ import (
 	"strings"
 )
 
-func lookupEnv(key string) (string, bool) { return os.LookupEnv(key) }
+// lookupEnv resolves one configuration key: the process environment first —
+// which the .env file leads, because loading it sets the process environment —
+// and the YAML configuration file behind both.
+func lookupEnv(key string) (string, bool) {
+	if value, ok := lookupConfigFile(key); ok {
+		return value, true
+	}
+	return os.LookupEnv(key)
+}
 
 // EntrypointName is the stable process entrypoint name recorded in the
 // approved compatibility surface. It is descriptive metadata; the actual
@@ -23,6 +31,9 @@ type FlagValues struct {
 	Workers                *int
 	AccessLog              *bool
 	ProxyHeaders           *bool
+	ForwardedAllowIPs      *string
+	Reload                 *bool
+	IdleTimeout            *int
 	SSLKeyFile             *string
 	SSLCertFile            *string
 	Daemon                 *bool
@@ -48,10 +59,31 @@ func ApplyFlags(base Config, flags FlagValues) Config {
 	if flags.Daemon != nil {
 		cfg.Daemon = *flags.Daemon
 	}
-	// In daemon mode the bind address defaults to loopback unless the
-	// operator explicitly supplied a non-default host.
-	if cfg.Daemon && (flags.Host == nil || strings.TrimSpace(*flags.Host) == "") {
-		cfg.Host = applyDaemonHost(cfg.Host)
+	if flags.Reload != nil {
+		cfg.Reload = *flags.Reload
+	}
+	if flags.IdleTimeout != nil {
+		cfg.IdleTimeout = *flags.IdleTimeout
+	}
+	if flags.ForwardedAllowIPs != nil {
+		if list := splitAllowList(*flags.ForwardedAllowIPs); len(list) > 0 {
+			cfg.ForwardedAllowIPs = list
+		}
+	}
+	// Daemon mode resolves its own bind address, the way the reference does: the
+	// loopback default applies unless a host was configured explicitly (the flag
+	// here, or HINDSIGHT_API_HOST in the environment), and the daemon port
+	// applies unless --port was passed — a port exported for foreground runs
+	// does not move the daemon.
+	if cfg.Daemon {
+		_, configuredHost := base.rawEnv[EnvHost]
+		explicitHost := flags.Host != nil && strings.TrimSpace(*flags.Host) != ""
+		if !explicitHost && !configuredHost {
+			cfg.Host = DefaultDaemonHost
+		}
+		if flags.Port == nil || *flags.Port <= 0 {
+			cfg.Port = DefaultDaemonPort
+		}
 	}
 	if flags.LogLevel != nil && *flags.LogLevel != "" {
 		cfg.LogLevel = *flags.LogLevel
@@ -92,11 +124,14 @@ func ApplyFlags(base Config, flags FlagValues) Config {
 	return cfg
 }
 
-// applyDaemonHost defaults the bind address to loopback in daemon mode unless
-// the operator explicitly supplied a non-default host.
-func applyDaemonHost(host string) string {
-	if strings.TrimSpace(host) == "" || host == DefaultHost {
-		return DefaultHost
+// splitAllowList splits a comma-separated trusted-proxy list, dropping blank
+// entries. A value of "*" is kept as-is: it means "trust every peer".
+func splitAllowList(value string) []string {
+	out := make([]string, 0, 2)
+	for _, entry := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
-	return host
+	return out
 }

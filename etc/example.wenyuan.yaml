@@ -1,0 +1,557 @@
+# Example configuration file for the wenyuan server, its worker and bankctl.
+#
+# The processes read etc/wenyuan.yaml from the working directory (inside the
+# container image that is /etc/wenyuan.yaml); that file carries a deployment's
+# real values and is deliberately not checked in. Copy this example there and
+# uncomment what the deployment needs. Point the process elsewhere with
+# HINDSIGHT_API_CONFIG_FILE=/path/to/file.yaml, which must exist.
+#
+# Precedence, highest first:
+#
+#   1. command-line flags
+#   2. the .env file (a discovered .env is authoritative over the environment,
+#      the reference's own entrypoint rule)
+#   3. the rest of the process environment
+#   4. this file
+#   5. the built-in defaults
+#
+# A key is the environment variable's name without the HINDSIGHT_API_ prefix:
+# HINDSIGHT_API_PORT is `port` here. A first word that carries several settings
+# becomes a group — worker: {max_retries: 3} answers worker_max_retries — while
+# a single-setting name stays flat (access_log). Either spelling answers the
+# same key; if both appear with different values, startup names the
+# disagreement. A list value is refused: an environment value cannot carry
+# one, so a setting whose value is a mapping or a list must be spelled as a
+# quoted JSON string.
+#
+# Quote a value that must stay a string: `api_key: "00123"` keeps its leading
+# zeroes, while the bare 00123 would be read as the number 123. A key the server
+# does not read is ignored, exactly as an unknown environment variable is.
+#
+# Every line below is commented out, so this example changes nothing as
+# shipped. docs/CONFIGURATION.md is the generated reference: every key with
+# its reference default, and why a refused one is refused.
+
+# host: "0.0.0.0"
+# port: "18888"
+# log:
+  # level: "info"
+  # format: "text"
+  # json_fields: ""
+# access_log: "false"
+# workers: "1"
+# base_path: ""
+# gzip_min_size: "1024"
+# profile: ""
+# run_migrations_on_startup: "true"
+# store_document_text: "true"
+# daemon_log: ""
+# mcp:
+  # auth_token: ""
+  # stateless: "false"  # value-dependent, honoured as shown: the stateful streamable-HTTP transport is the only one implemented
+  # enabled_tools: "all"
+  # instructions: ""
+  # enabled: "true"
+# enable:
+  # dry_run_extract: "true"
+  # bank_config_api: "true"
+  # bank_llm_health: "false"
+  # file_upload_api: "true"
+  # document_export_api: "true"
+  # document_import_api: "true"
+  # observations: "true"
+  # auto_consolidation: "true"
+  # observation_history: "true"
+  # mental_model_history: "true"
+  # text_search: "true"
+  # temporal_retrieval: "true"
+  # graph_retrieval: "true"
+  # reranking: "true"
+# default_bank_template: ""  # value-dependent, honoured as shown: the value must be a JSON object
+# extension_passthrough_headers: ""
+# database:
+  # url: "pg0"  # the reference's default is an embedded pg0 instance this build cannot manage; an unset URL refuses startup instead
+  # schema: "public"
+  # backend: "postgresql"  # value-dependent, honoured as shown: only the PostgreSQL backend (and this build's in-memory one) is implemented; the reference's Oracle dialect is not
+# db:
+  # pool_min_size: "5"
+  # pool_max_size: "100"
+  # command_timeout: "60"  # refused by this build: the per-command database timeout is not implemented
+  # acquire_timeout: "30"  # refused by this build: the connection-acquire timeout is not implemented
+  # pool_slow_acquire_threshold_seconds: "0.05"  # refused by this build: the slow-acquire warning threshold is not implemented
+  # statement_timeout: "600"
+  # max_parallel_workers_per_gather: ""
+  # session_setup_on_acquire: "true"  # value-dependent, honoured as shown: this build applies the session settings to every connection; turning per-acquire setup off is not implemented
+  # acquire_warn_threshold_ms: "1000"  # refused by this build: the pool-acquire warning threshold is not implemented
+# read:
+  # database_url: ""
+  # db_pool_min_size: "5"
+  # db_pool_max_size: "100"
+# migration:
+  # database_url: ""
+  # isolation: "false"  # value-dependent, honoured as shown: this build migrates in-process; the reference's subprocess isolation is not implemented
+  # concurrency: "1"  # value-dependent, honoured as shown: this build migrates one schema at a time; the reference's concurrent tenant sweep is not implemented
+# graph:
+  # retriever: "link_expansion"  # value-dependent, honoured as shown: only the link_expansion graph retriever is implemented
+  # seed_min_similarity: "0.3"
+# semantic:
+  # min_similarity: "0.3"
+  # link_min_similarity: "0.7"
+# temporal_semantic_min_similarity: "0.1"
+# bm25:
+  # min_score: "0.0"
+  # max_query_terms: "16"
+  # selective_terms: "true"
+# link:
+  # expansion_per_entity_limit: "200"
+  # expansion_timeout: "10"
+# recall:
+  # connection_budget: "4"  # refused by this build: the per-recall connection budget is not implemented
+  # max_query_tokens: "500"
+  # diagnostic_phases: "true"  # refused by this build: recall phase diagnostics are not implemented
+  # phase_sample_every: "1"  # refused by this build: recall phase sampling is not implemented
+  # max_concurrent: "32"
+  # include_chunks: "true"
+  # max_tokens: ""
+  # chunks_max_tokens: ""
+  # budget_function: "fixed"  # value-dependent, honoured as shown: only the fixed budget function is implemented; the adaptive one is not
+  # budget_fixed_low: "100"
+  # budget_fixed_mid: "300"
+  # budget_fixed_high: "1000"
+  # budget_adaptive_low: ""  # refused by this build: recall budget tuning is not implemented
+  # budget_adaptive_mid: ""  # refused by this build: recall budget tuning is not implemented
+  # budget_adaptive_high: ""  # refused by this build: recall budget tuning is not implemented
+  # budget_min: ""  # refused by this build: recall budget tuning is not implemented
+  # budget_max: ""  # refused by this build: recall budget tuning is not implemented
+  # strategy_boosts: ""
+  # max_candidates_per_source: "0"
+# backpressure_defer_seconds: ""
+# recency:
+  # decay_function: "linear"
+  # decay_linear_window_days: "365"
+  # decay_halflife_days: "90"
+# retain:
+  # attachment_max_size_mb: "20"
+  # attachment_max_count: "50"
+  # batch_enabled: "false"
+  # max_completion_tokens: "64000"
+  # chunk_size: "3000"
+  # structured_chunk_size: ""
+  # extract_causal_links: "true"
+  # optional_fact_dimensions: "false"
+  # extraction_mode: "concise"
+  # mission: ""
+  # custom_instructions: ""
+  # default_strategy: ""
+  # batch_tokens: "10000"
+  # entity_lookup: "trigram"  # value-dependent, honoured as shown: only the trigram entity-lookup mode is implemented
+  # entity_resolution_batch_size: "100"  # refused by this build: entity-resolution tuning is not implemented
+  # entity_resolution_max_candidates: "200"
+  # batch_poll_interval_seconds: "60"  # refused by this build: the LLM Batch API poll interval is not implemented
+  # chunk_batch_size: "100"
+  # memory_budget_mb: "128"  # refused by this build: the retain memory budget is not implemented
+  # max_attachments_per_chunk: "8"
+  # batch_document_writes: "false"  # refused by this build: batched document writes are not implemented
+  # max_concurrent: "4"  # refused by this build: the retain concurrency cap is not implemented
+  # subbatch_concurrency: "1"  # refused by this build: retain sub-batch concurrency is not implemented
+  # store_max_concurrent: ""  # refused by this build: the retain store concurrency cap is not implemented
+  # wall_timeout: "3600"
+  # llm_api_key: ""  # refused by this build
+  # llm_base_url: ""  # refused by this build
+  # llm_cache_affinity: ""  # refused by this build
+  # llm_extra_body: ""  # refused by this build
+  # llm_initial_backoff: ""  # refused by this build
+  # llm_litellmrouter_config: ""  # refused by this build
+  # llm_max_backoff: ""  # refused by this build
+  # llm_max_concurrent: ""  # refused by this build
+  # llm_max_retries: ""  # refused by this build
+  # llm_model: ""  # refused by this build
+  # llm_provider: ""  # refused by this build
+  # llm_reasoning_effort: ""  # refused by this build
+  # llm_strategy: ""  # refused by this build
+  # llm_timeout: ""  # refused by this build
+# fail_on_extraction_errors: "false"  # refused by this build: failing retain on extraction errors is not implemented
+# reflect:
+  # max_iterations: "10"
+  # prompt_cache_enabled: ""  # refused by this build: the reference's incremental prompt cache is not implemented: it is a per-provider cache session with its own lifecycle, and this build's provider boundary has no equivalent
+  # max_context_tokens: "100000"
+  # mission: ""
+  # source_facts_max_tokens: "-1"
+  # default_options: ""  # value-dependent, honoured as shown: the value must be a JSON object
+  # max_completion_tokens: ""
+  # wall_timeout: "300"
+  # llm_api_key: ""  # refused by this build
+  # llm_base_url: ""  # refused by this build
+  # llm_cache_affinity: ""  # refused by this build
+  # llm_extra_body: ""  # refused by this build
+  # llm_initial_backoff: ""  # refused by this build
+  # llm_litellmrouter_config: ""  # refused by this build
+  # llm_max_backoff: ""  # refused by this build
+  # llm_max_concurrent: ""  # refused by this build
+  # llm_max_retries: ""  # refused by this build
+  # llm_model: ""  # refused by this build
+  # llm_provider: ""  # refused by this build
+  # llm_reasoning_effort: ""  # refused by this build
+  # llm_strategy: ""  # refused by this build
+  # llm_timeout: ""  # refused by this build
+# max_observations_per_scope: "-1"
+# observation:
+  # scope_limits: ""
+  # history_max_entries: "50"
+# observations_mission: ""
+# consolidation:
+  # batch_size: "50"
+  # max_memories_per_round: "100"
+  # dedup_threshold: "0.97"  # refused by this build: the consolidation dedup threshold is not implemented
+  # max_tokens: "512"
+  # max_completion_tokens: ""
+  # source_facts_max_tokens: "4096"
+  # source_facts_max_tokens_per_observation: "256"
+  # recall_budget: "low"
+  # max_attempts: "3"
+  # strategies: ""
+  # llm_batch_size: "8"
+  # llm_parallelism: "4"
+  # wall_timeout: "7200"
+  # reconcile_interval_seconds: "300"
+  # llm_api_key: ""  # refused by this build
+  # llm_base_url: ""  # refused by this build
+  # llm_cache_affinity: ""  # refused by this build
+  # llm_extra_body: ""  # refused by this build
+  # llm_initial_backoff: ""  # refused by this build
+  # llm_litellmrouter_config: ""  # refused by this build
+  # llm_max_backoff: ""  # refused by this build
+  # llm_max_concurrent: ""  # refused by this build
+  # llm_max_retries: ""  # refused by this build
+  # llm_model: ""  # refused by this build
+  # llm_provider: ""  # refused by this build
+  # llm_reasoning_effort: ""  # refused by this build
+  # llm_strategy: ""  # refused by this build
+  # llm_timeout: ""  # refused by this build
+# retention_sweep_interval_seconds: "3600"
+# operation:
+  # cleanup_interval_seconds: "900"
+  # cleanup_batch_size: "1000"
+  # retention_days: "0"
+# mental:
+  # model_refresh_tick_seconds: "300"
+  # model_history_max_entries: "50"
+  # model_min_refresh_interval_seconds: "0"
+  # model_refresh_llm_api_key: ""  # refused by this build
+  # model_refresh_llm_base_url: ""  # refused by this build
+  # model_refresh_llm_cache_affinity: ""  # refused by this build
+  # model_refresh_llm_extra_body: ""  # refused by this build
+  # model_refresh_llm_initial_backoff: ""  # refused by this build
+  # model_refresh_llm_litellmrouter_config: ""  # refused by this build
+  # model_refresh_llm_max_backoff: ""  # refused by this build
+  # model_refresh_llm_max_concurrent: ""  # refused by this build
+  # model_refresh_llm_max_retries: ""  # refused by this build
+  # model_refresh_llm_model: ""  # refused by this build
+  # model_refresh_llm_provider: ""  # refused by this build
+  # model_refresh_llm_reasoning_effort: ""  # refused by this build
+  # model_refresh_llm_strategy: ""  # refused by this build
+  # model_refresh_llm_timeout: ""  # refused by this build
+# maintenance_start_jitter_seconds: "60"
+# knowledge_page_default_trigger: ""  # value-dependent, honoured as shown: the value must be a JSON object
+# vector:
+  # index_min_rows: "0"
+  # index_maintenance_min_interval_seconds: "900"
+  # extension: "pgvector"
+# ann:
+  # iterative_scan: "true"
+  # max_scan_tuples: "4000"
+# text:
+  # search_extension: "native"  # value-dependent, honoured as shown: only the native tsvector backend is implemented
+  # search_extension_native_language: "english"  # value-dependent, honoured as shown: only the english text-search dictionary is implemented
+  # search_extension_pg_search_function_schema: "paradedb"
+  # search_extension_pg_search_tokenizer: ""
+# tokenizer_encoding: "o200k_base"
+# query_analyzer_languages: ""  # refused by this build: dateparser language restriction is not implemented
+# bank:
+  # info_cache_ttl_seconds: "30"
+  # info_cache_max_entries: "2048"
+  # alias_cache_ttl_seconds: "10"  # refused by this build: the bank-alias cache is not implemented
+  # alias_cache_max_entries: "2048"  # refused by this build: the bank-alias cache is not implemented
+  # stats_cache_ttl_seconds: "60"
+  # stats_cache_max_entries: "1024"
+# entity:
+  # trgm_similarity_threshold: "0.3"
+  # intrabatch_merge_similarity: "0.5"  # refused by this build: intra-batch entity merging is not implemented
+  # merge_min_similarity: "0.3"
+# worker:
+  # enabled: "true"
+  # id: ""
+  # max_retries: "3"
+  # max_slots: "10"
+  # poll_interval_ms: "500"
+  # task_retry_backoff_seconds: "60"
+  # http_port: "18889"
+  # consolidation_reserved_slots: "2"
+  # consolidation_bank_priority: ""
+  # retain_reserved_slots: "0"
+  # file_convert_retain_reserved_slots: "0"
+  # refresh_mental_model_reserved_slots: "0"
+  # graph_maintenance_reserved_slots: "0"
+  # vector_index_maintenance_reserved_slots: "0"
+  # import_documents_reserved_slots: "0"
+  # export_documents_reserved_slots: "0"
+  # import_bank_reserved_slots: "0"
+  # export_bank_reserved_slots: "0"
+  # clone_bank_reserved_slots: "0"
+# admission:
+  # recall_max_in_flight: "0"  # the reference derives the ceiling from the core count; this build has no per-core formula and keeps a fixed default
+  # reflect_max_in_flight: "0"  # the reference derives the ceiling from the core count; this build has no per-core formula and keeps a fixed default
+  # retain_max_in_flight: "0"  # the reference derives the ceiling from the core count; this build has no per-core formula and keeps a fixed default
+  # recall_max_wait_ms: "30000"
+  # reflect_max_wait_ms: "5000"
+  # retain_max_wait_ms: "2000"
+# audit:
+  # log_enabled: "false"
+  # log_retention_days: "-1"
+  # log_actions: ""
+# otel:
+  # traces_enabled: "false"
+  # exporter_otlp_endpoint: ""
+  # exporter_otlp_headers: ""
+  # service_name: "hindsight-api"
+  # deployment_environment: "development"
+# metrics:
+  # include_bank_id: "false"
+  # backlog_enabled: "false"
+  # include_tenant: "false"
+  # worker_label: "false"
+# loop:
+  # lag_metric: "false"
+  # lag_report_seconds: "0"
+  # watchdog_enabled: "true"
+  # watchdog_stall_threshold_ms: "1000"
+  # watchdog_poll_interval_ms: "250"
+# file:
+  # storage_type: "native"  # this build names its in-database backend postgresql; native and postgresql both select it
+  # storage_s3_bucket: ""
+  # storage_s3_region: ""
+  # storage_s3_endpoint: ""
+  # storage_s3_access_key_id: ""
+  # storage_s3_secret_access_key: ""
+  # storage_extension: ""  # refused by this build: external file-storage extensions are not implemented
+  # storage_gcs_bucket: ""
+  # storage_gcs_service_account_key: ""
+  # storage_azure_container: ""
+  # storage_azure_account_name: ""
+  # storage_azure_account_key: ""
+  # parser: "markitdown"  # resolved by resolved by internal/fileparse
+  # parser_allowlist: ""  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_enabled: "false"  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_api_key: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_base_url: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_model: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_prompt: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_default_headers: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_iris_token: ""  # resolved by resolved by internal/fileparse
+  # parser_iris_org_id: ""  # resolved by resolved by internal/fileparse
+  # parser_llama_parse_api_key: ""  # resolved by resolved by internal/fileparse
+  # conversion_max_batch_size_mb: "100"  # resolved by resolved by internal/fileparse
+  # conversion_max_batch_size: "10"  # resolved by resolved by internal/fileparse
+  # delete_after_retain: "true"  # resolved by resolved by internal/fileparse
+# webhook:
+  # allowed_hosts: ""
+  # url: ""
+  # secret: ""
+  # event_types: "consolidation.completed"
+  # expose_response_body: "false"
+# model_init_timeout: "300"
+# disposition:
+  # skepticism: ""
+  # literalism: ""
+  # empathy: ""
+# embeddings:
+  # cohere_api_key: ""
+  # cohere_base_url: ""
+  # cohere_model: ""
+  # cohere_output_dimensions: ""
+  # gemini_api_key: ""
+  # gemini_batch_size: ""
+  # gemini_force_ipv4: ""
+  # gemini_model: ""
+  # gemini_output_dimensionality: ""
+  # initial_backoff: ""
+  # litellm_api_base: ""
+  # litellm_api_key: ""
+  # litellm_dimensions: ""
+  # litellm_model: ""
+  # litellm_sdk_api_base: ""
+  # litellm_sdk_api_key: ""
+  # litellm_sdk_encoding_format: ""
+  # litellm_sdk_max_input_tokens: ""
+  # litellm_sdk_model: ""
+  # litellm_sdk_model_id: ""
+  # litellm_sdk_output_dimensions: ""
+  # max_backoff: ""
+  # max_concurrent_requests: ""
+  # max_input_tokens: ""
+  # max_retries: ""
+  # openai_api_key: ""
+  # openai_base_url: ""
+  # openai_batch_size: ""
+  # openai_dimensions: ""
+  # openai_model: ""
+  # openrouter_api_key: ""
+  # openrouter_model: ""
+  # passage_prefix: ""
+  # provider: ""
+  # query_prefix: ""
+  # requesty_api_key: ""
+  # requesty_model: ""
+  # retry_budget: ""
+  # tei_batch_size: ""
+  # tei_url: ""
+  # vertexai_project_id: ""
+  # vertexai_region: ""
+  # vertexai_service_account_key: ""
+  # zeroentropy_api_key: ""
+  # zeroentropy_base_url: ""
+  # zeroentropy_batch_size: ""
+  # zeroentropy_dimensions: ""
+  # zeroentropy_encoding_format: ""
+  # zeroentropy_latency: ""
+  # zeroentropy_model: ""
+  # local_force_cpu: ""  # refused by this build
+  # local_model: ""  # refused by this build
+  # local_trust_remote_code: ""  # refused by this build
+  # onnx_batch_size: ""  # refused by this build
+  # onnx_cpu_mem_arena: ""  # refused by this build
+  # onnx_cuda_device_id: ""  # refused by this build
+  # onnx_device: ""  # refused by this build
+  # onnx_dimensions: ""  # refused by this build
+  # onnx_file: ""  # refused by this build
+  # onnx_max_tokens: ""  # refused by this build
+  # onnx_model_id: ""  # refused by this build
+  # onnx_model_path: ""  # refused by this build
+  # onnx_normalize: ""  # refused by this build
+  # onnx_output_name: ""  # refused by this build
+  # onnx_passage_prefix: ""  # refused by this build
+  # onnx_pooling: ""  # refused by this build
+  # onnx_query_prefix: ""  # refused by this build
+  # onnx_tokenizer_name_or_path: ""  # refused by this build
+# embedding_dimension: ""
+# litellm:
+  # api_base: ""  # refused by this build
+  # api_key: ""  # refused by this build
+# llm:
+  # api_key: ""
+  # base_url: ""
+  # cache_affinity: ""
+  # connect_timeout: ""
+  # debug_dump_4xx: ""
+  # default_headers: ""
+  # extra_body: ""
+  # http_log_level: ""
+  # initial_backoff: ""
+  # max_backoff: ""
+  # max_concurrent: ""
+  # max_retries: ""
+  # model: ""
+  # openai_compatible_json_mode: ""
+  # openai_service_tier: ""
+  # output_language: ""
+  # prompt_cache_enabled: ""
+  # provider: ""
+  # reasoning_effort: ""
+  # send_bank_as_user: ""
+  # strategy: ""
+  # strict_schema: ""
+  # strict_schema_consolidation: ""
+  # strict_schema_reflect: ""
+  # strict_schema_retain: ""
+  # structured_output_forced_tool: ""
+  # supports_max_items: ""
+  # supports_string_pattern: ""
+  # temperature: ""
+  # temperature_consolidation: ""
+  # temperature_reflect: ""
+  # temperature_retain: ""
+  # temperature_verification: ""
+  # timeout: ""
+  # trace_enabled: ""
+  # trace_max_chars: ""
+  # trace_retention_days: ""
+  # trace_scopes: ""
+  # vision: ""
+  # bedrock_service_tier: ""  # refused by this build
+  # codex_home: ""  # refused by this build
+  # gemini_safety_settings: ""  # refused by this build
+  # gemini_service_tier: ""  # refused by this build
+  # groq_service_tier: ""  # refused by this build
+  # litellmrouter_config: ""  # refused by this build
+  # ollama_num_ctx: ""  # refused by this build
+  # vertexai_project_id: ""  # refused by this build
+  # vertexai_region: ""  # refused by this build
+  # vertexai_service_account_key: ""  # refused by this build
+# skip:
+  # llm_verification: ""
+# reranker:
+  # alibaba_api_key: ""
+  # alibaba_model: ""
+  # alibaba_timeout: ""
+  # cohere_api_key: ""
+  # cohere_base_url: ""
+  # cohere_model: ""
+  # cohere_timeout: ""
+  # flashrank_batch_size: ""
+  # flashrank_cache_dir: ""
+  # flashrank_cpu_mem_arena: ""
+  # flashrank_model: ""
+  # google_model: ""
+  # google_project_id: ""
+  # google_service_account_key: ""
+  # google_timeout: ""
+  # initial_backoff: ""
+  # litellm_api_base: ""
+  # litellm_api_key: ""
+  # litellm_max_tokens_per_doc: ""
+  # litellm_model: ""
+  # litellm_sdk_api_base: ""
+  # litellm_sdk_api_key: ""
+  # litellm_sdk_model: ""
+  # litellm_sdk_timeout: ""
+  # litellm_timeout: ""
+  # local_batch_size: ""
+  # local_bucket_batching: ""
+  # local_force_cpu: ""
+  # local_fp16: ""
+  # local_max_concurrent: ""
+  # local_model: ""
+  # local_timeout: ""
+  # local_trust_remote_code: ""
+  # max_backoff: ""
+  # max_candidates: ""
+  # max_candidates_high: ""
+  # max_candidates_low: ""
+  # max_candidates_mid: ""
+  # max_retries: ""
+  # max_tokens_per_candidate: ""
+  # openrouter_api_key: ""
+  # openrouter_base_url: ""
+  # openrouter_model: ""
+  # openrouter_timeout: ""
+  # provider: ""
+  # retry_budget: ""
+  # send_bank_as_header: ""
+  # siliconflow_api_key: ""
+  # siliconflow_base_url: ""
+  # siliconflow_model: ""
+  # siliconflow_timeout: ""
+  # tei_batch_size: ""
+  # tei_http_timeout: ""
+  # tei_max_concurrent: ""
+  # tei_url: ""
+  # typesafe_api_key: ""
+  # typesafe_base_url: ""
+  # typesafe_max_concurrent: ""
+  # typesafe_model: ""
+  # typesafe_prune_candidates: ""
+  # typesafe_timeout: ""
+  # zeroentropy_api_key: ""
+  # zeroentropy_base_url: ""
+  # zeroentropy_model: ""
+  # zeroentropy_timeout: ""

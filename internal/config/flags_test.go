@@ -37,8 +37,33 @@ func TestAbsentFlagsFallBackToDefault(t *testing.T) {
 // sec-0001: daemon mode defaults the bind address to loopback.
 func TestDaemonDefaultsToLoopback(t *testing.T) {
 	cfg := ApplyFlags(FromEnv(envMap(nil)), FlagValues{Daemon: boolPtr(true)})
-	if cfg.Host != DefaultHost {
+	if cfg.Host != DefaultDaemonHost {
 		t.Fatalf("daemon host = %q, want loopback default", cfg.Host)
+	}
+	if cfg.Port != DefaultDaemonPort {
+		t.Fatalf("daemon port = %d, want %d", cfg.Port, DefaultDaemonPort)
+	}
+}
+
+// A port exported for foreground runs does not move the daemon: the reference
+// resolves the daemon's port from its own default unless --port was passed.
+func TestDaemonIgnoresConfiguredPort(t *testing.T) {
+	base := FromEnv(envMap(map[string]string{EnvPort: "9999"}))
+	cfg := ApplyFlags(base, FlagValues{Daemon: boolPtr(true)})
+	if cfg.Port != DefaultDaemonPort {
+		t.Fatalf("daemon port = %d, want %d despite %s", cfg.Port, DefaultDaemonPort, EnvPort)
+	}
+	// A host configured in the environment is explicit, so it survives.
+	if cfg.Host != DefaultDaemonHost {
+		t.Fatalf("daemon host = %q, want %q", cfg.Host, DefaultDaemonHost)
+	}
+	explicit := ApplyFlags(base, FlagValues{Daemon: boolPtr(true), Host: strPtr("0.0.0.0")})
+	if explicit.Host != "0.0.0.0" {
+		t.Fatalf("explicit daemon host ignored: %q", explicit.Host)
+	}
+	explicitPort := ApplyFlags(base, FlagValues{Daemon: boolPtr(true), Port: intPtr(9999)})
+	if explicitPort.Port != 9999 {
+		t.Fatalf("explicit daemon port ignored: %d", explicitPort.Port)
 	}
 }
 
@@ -111,7 +136,10 @@ func TestLoadDotenvMissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestLoadDotenvDoesNotOverwriteExisting(t *testing.T) {
+// The reference's own entrypoints treat a discovered .env as authoritative over
+// the ambient process environment, so a later export cannot quietly undo the
+// file a deployment shipped.
+func TestLoadDotenvOverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	if err := os.WriteFile(path, []byte(EnvPort+"=4444\n"), 0o600); err != nil {
@@ -132,7 +160,55 @@ func TestLoadDotenvDoesNotOverwriteExisting(t *testing.T) {
 	if err := LoadDotenvFile(path); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv(key); got != "5555" {
-		t.Fatalf("existing env must not be overwritten, got %q", got)
+	if got := os.Getenv(key); got != "4444" {
+		t.Fatalf("the dotenv value must win over the exported one, got %q", got)
+	}
+}
+
+// Every entrypoint assembles its environment through LoadDotenvForEntrypoint:
+// the conventional .env applies over the exported environment, and the YAML
+// configuration file sits behind both.
+func TestLoadDotenvForEntrypoint(t *testing.T) {
+	unloadConfigFile(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(DefaultConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dotenv := "# only the worker knob\n" + EnvWorkerMaxRetries + "=9\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotenv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := "port: 18901\n"
+	if err := os.WriteFile(DefaultConfigPath(), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvConfigFile, "")
+
+	key := EnvWorkerMaxRetries
+	old, had := os.LookupEnv(key)
+	if err := os.Setenv(key, "3"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, old)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+
+	if err := LoadDotenvForEntrypoint(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := FromEnvironment()
+	if cfg.Worker.MaxRetries != 9 {
+		t.Fatalf("the .env value must win over the exported %s, got %d", key, cfg.Worker.MaxRetries)
+	}
+	if cfg.Port != 18901 {
+		t.Fatalf("the configuration file must answer behind the environment: %d", cfg.Port)
+	}
+	if got := LoadedConfigPath(); got != DefaultConfigPath() {
+		t.Fatalf("LoadedConfigPath = %q, want %q", got, DefaultConfigPath())
 	}
 }

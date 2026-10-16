@@ -218,16 +218,61 @@ const (
 	// approved public environment-variable allowlist; see the implementation
 	// report assumption A-null-drop.
 	EnvNullDropFields = "HINDSIGHT_API_DROP_NULL_FIELDS"
+
+	// EnvForwardedAllowIPs is the reference HTTP server's own variable for the
+	// peers whose X-Forwarded-* headers are trusted. It is deliberately not a
+	// HINDSIGHT_API_ key: it is resolved by the server, not by the application
+	// configuration, and it is read here for the same reason.
+	EnvForwardedAllowIPs = "FORWARDED_ALLOW_IPS"
 )
+
+// forwardedAllowIPsFromEnv resolves the trusted-proxy allow list the way the
+// reference's server does: the entries of FORWARDED_ALLOW_IPS, comma separated,
+// defaulting to loopback only.
+func forwardedAllowIPsFromEnv(lookup func(string) (string, bool)) []string {
+	raw, ok := lookup(EnvForwardedAllowIPs)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return []string{DefaultForwardedAllowIPs}
+	}
+	out := make([]string, 0, 2)
+	for _, entry := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return []string{DefaultForwardedAllowIPs}
+	}
+	return out
+}
 
 // Default values used when neither a flag nor an environment variable supplies
 // a value.
 const (
 	DefaultHost = "0.0.0.0"
-	// DefaultPort is the reference's API port.
-	DefaultPort            = 8888
-	DefaultDatabaseSchema  = "public"
-	DefaultVectorExtension = "pgvector"
+	// DefaultPort is the API listen port. It is the reference's 8888 offset by
+	// 10000 on purpose: upstream Hindsight and wenyuan must be able to run
+	// side by side for comparison, so the out-of-the-box ports must not
+	// collide. HINDSIGHT_API_PORT still overrides, and every other default
+	// keeps matching the reference.
+	DefaultPort = 18888
+	// DefaultDaemonPort is the port daemon mode binds unless the operator passed
+	// --port explicitly: the reference resolves daemon mode from its own default
+	// rather than from a configured HINDSIGHT_API_PORT, so a launcher that
+	// exports a port for foreground runs does not move the daemon.
+	DefaultDaemonPort = 18888
+	// DefaultDaemonHost is the address daemon mode binds unless the operator
+	// explicitly configured a host (--host or HINDSIGHT_API_HOST).
+	DefaultDaemonHost = "127.0.0.1"
+	// DefaultDaemonLogName is the file daemon mode appends its output to, under
+	// the operator's home directory, when HINDSIGHT_API_DAEMON_LOG is unset.
+	DefaultDaemonLogName = ".hindsight/daemon.log"
+	// DefaultForwardedAllowIPs is the peer the proxy headers are trusted from
+	// when neither --forwarded-allow-ips nor FORWARDED_ALLOW_IPS names one. It
+	// is the reference's own default: only a loopback proxy is trusted.
+	DefaultForwardedAllowIPs = "127.0.0.1"
+	DefaultDatabaseSchema    = "public"
+	DefaultVectorExtension   = "pgvector"
 	// DefaultDBPoolMaxSize bounds simultaneous database connections, matching
 	// the reference's default. An unbounded pool grows until the database
 	// refuses connections, turning a load spike into an outage for every other
@@ -268,6 +313,106 @@ const (
 	DefaultLoopLagReportS         = 0
 	DefaultLoopLagStallS          = 1
 	DefaultMigrationGraceWindow   = 5 * time.Second
+	// DefaultReadPoolMinSize and DefaultReadPoolMaxSize are the reference's own
+	// bounds for the replica pool.
+	DefaultReadPoolMinSize = 5
+	DefaultReadPoolMaxSize = 100
+)
+
+// Defaults for the reference's tuning keys. They are the reference's own
+// shipped defaults, so an environment that sets none of them resolves to the
+// same behaviour on both sides.
+const (
+	DefaultChunkSize                    = 3000
+	DefaultRetainChunkBatchSize         = 100
+	DefaultRetainMaxAttachmentsPerChunk = 8
+	DefaultConsolidationLLMBatchSize    = 8
+	// DefaultConsolidationLLMParallelism is the reference's parallelism for
+	// consolidation model calls.
+	DefaultConsolidationLLMParallelism                     = 4
+	DefaultConsolidationMaxMemoriesPerRound                = 100
+	DefaultConsolidationSourceFactsMaxTokens               = 4096
+	DefaultConsolidationSourceFactsMaxTokensPerObservation = 256
+	DefaultConsolidationMemoryBatchSize                    = 50
+	DefaultConsolidationDedupThreshold                     = 0.97
+	DefaultConsolidationMaxTokens                          = 512
+	DefaultConsolidationMaxAttempts                        = 3
+	DefaultReflectSourceFactsMaxTokens                     = -1
+	DefaultReflectMaxIterations                            = 10
+	DefaultReflectMaxContextTokens                         = 100000
+	DefaultRecallMaxTokens                                 = 2048
+	DefaultRecallChunksMaxTokens                           = 1000
+	DefaultRecallBudgetFunction                            = "fixed"
+	DefaultRecallBudgetFixedLow                            = 100
+	DefaultRecallBudgetFixedMid                            = 300
+	DefaultRecallBudgetFixedHigh                           = 1000
+	DefaultRecallBudgetAdaptiveLow                         = 0.025
+	DefaultRecallBudgetAdaptiveMid                         = 0.075
+	DefaultRecallBudgetAdaptiveHigh                        = 0.25
+	DefaultRecallBudgetMin                                 = 20
+	DefaultRecallBudgetMax                                 = 2000
+	DefaultGraphRetriever                                  = "link_expansion"
+	DefaultGraphSeedMinSimilarity                          = 0.3
+	DefaultSemanticMinSimilarity                           = 0.3
+	DefaultTemporalSemanticMinSimilarity                   = 0.1
+	DefaultSemanticLinkMinSimilarity                       = 0.7
+	DefaultBM25MinScore                                    = 0.0
+	DefaultBM25MaxQueryTerms                               = 16
+	DefaultLinkExpansionPerEntityLimit                     = 200
+	DefaultLinkExpansionTimeoutS                           = 10 * time.Second
+	DefaultRecallMaxQueryTokens                            = 500
+	// DefaultRecallConnectionBudget bounds the connections one recall's arms may
+	// hold at once.
+	DefaultRecallConnectionBudget        = 4
+	DefaultRecallMaxConcurrent           = 32
+	DefaultRetainMaxCompletionTokens     = 64000
+	DefaultRetainSubBatchTokens          = 10000
+	DefaultEntityResolutionBatchSize     = 100
+	DefaultEntityResolutionMaxCandidates = 200
+	DefaultHistoryMaxEntries             = 50
+	// DefaultBankAliasCacheTTLSeconds and DefaultBankAliasCacheMaxEntries are the
+	// reference's alias-cache defaults.
+	DefaultBankAliasCacheTTLSeconds = 10
+	DefaultBankAliasCacheMaxEntries = 2048
+	// DefaultBankInfoCacheMaxEntries bounds the per-process bank-row cache, and
+	// DefaultBankStatsCacheMaxEntries the stored bank-statistics summaries.
+	DefaultBankInfoCacheMaxEntries         = 2048
+	DefaultBankStatsCacheMaxEntries        = 1024
+	DefaultBackpressureDeferS              = 120
+	DefaultDBStatementTimeoutS             = 600 * time.Second
+	DefaultDBCommandTimeoutS               = 60 * time.Second
+	DefaultANNMaxScanTuples                = 4000
+	DefaultEntityTRGMSimilarityThreshold   = 0.3
+	DefaultEntityIntrabatchMergeSimilarity = 0.5
+	DefaultEntityMergeMinSimilarity        = 0.3
+	DefaultModelInitTimeoutS               = 300 * time.Second
+	// DefaultRetainMaxConcurrent, DefaultRetainSubBatchConcurrency and
+	// DefaultRetainStoreMaxConcurrent are the reference's write-side concurrency
+	// bounds; DefaultRetainMemoryBudgetMB caps the unwritten state.
+	DefaultRetainMaxConcurrent       = 4
+	DefaultRetainSubBatchConcurrency = 1
+	DefaultRetainStoreMaxConcurrent  = 16
+	DefaultRetainMemoryBudgetMB      = 128
+	// DefaultDBAcquireTimeoutS, DefaultDBPoolSlowAcquireS and
+	// DefaultDBAcquireWarn are the reference's pool-acquire defaults.
+	DefaultDBAcquireTimeoutS  = 30 * time.Second
+	DefaultDBPoolSlowAcquireS = 50 * time.Millisecond
+	DefaultDBAcquireWarn      = 1000 * time.Millisecond
+	// DefaultLoopWatchdogPoll and DefaultLoopWatchdogStall are the
+	// reference watchdog's own intervals.
+	DefaultLoopWatchdogPoll  = 250 * time.Millisecond
+	DefaultLoopWatchdogStall = 1000 * time.Millisecond
+	DefaultWebhookEventTypes = "consolidation.completed"
+	// DefaultDatabaseBackend is the reference's own backend selection.
+	DefaultDatabaseBackend = "postgresql"
+	// DefaultTextSearchPGFunctionSchema is the ParadeDB function schema's own
+	// name, which is the reference's default for that key.
+	DefaultTextSearchPGFunctionSchema = "paradedb"
+	// DefaultRetainEntityLookup is the reference's entity-lookup mode.
+	DefaultRetainEntityLookup = "trigram"
+	// DefaultConsolidationRecallBudget is the reference's recall budget level
+	// for the consolidation pass.
+	DefaultConsolidationRecallBudget = "low"
 )
 
 // Config is the resolved, typed process configuration. It is built once at
@@ -290,6 +435,20 @@ type Config struct {
 	EnableDocumentExportAPI bool
 	// EnableDocumentImportAPI gates the document import routes.
 	EnableDocumentImportAPI bool
+	// EnableDryRunExtract gates the dry-run extraction route: when off it
+	// answers the reference's 404 rather than extracting.
+	EnableDryRunExtract bool
+	// MCPAuthToken is the legacy MCP credential; MCPInstructions are appended to
+	// the retain and recall tool descriptions; MCPEnabledTools is the
+	// server-level tool allowlist (nil means every tool).
+	MCPAuthToken    string
+	MCPInstructions string
+	MCPEnabledTools []string
+	// EnableObservationHistory and EnableMentalModelHistory gate the two
+	// history records; with one off, its read routes answer with no entries
+	// because none are written.
+	EnableObservationHistory bool
+	EnableMentalModelHistory bool
 	// Worker tunes the background queue consumer.
 	Worker WorkerConfig
 	// WorkerEnabled runs the queue consumer and the maintenance loop inside the
@@ -308,10 +467,16 @@ type Config struct {
 	GzipMinSize         int
 	NullDropFields      bool
 	// Admission bounds the concurrency of the expensive operations.
-	AdmissionMaxWait      time.Duration
-	AdmissionRecallLimit  int
-	AdmissionRetainLimit  int
-	AdmissionReflectLimit int
+	AdmissionMaxWait time.Duration
+	// AdmissionRecallMaxWait, AdmissionReflectMaxWait and AdmissionRetainMaxWait
+	// are the per-lane queue deadlines. A zero value falls back to
+	// AdmissionMaxWait, which is what a lane with no configured wait uses.
+	AdmissionRecallMaxWait  time.Duration
+	AdmissionReflectMaxWait time.Duration
+	AdmissionRetainMaxWait  time.Duration
+	AdmissionRecallLimit    int
+	AdmissionRetainLimit    int
+	AdmissionReflectLimit   int
 	// BasePath serves the whole surface under a prefix when set, in addition
 	// to the root paths.
 	BasePath string
@@ -371,9 +536,14 @@ type Config struct {
 	OperationValidatorExtension string
 	// LoopLagReport is the loop-lag probe interval; LoopLagStall is the delay
 	// above which a stall is reported. A zero interval disables the probe.
-	LoopLagReport      time.Duration
-	LoopLagStall       time.Duration
-	RetainBatchEnabled bool
+	LoopLagReport time.Duration
+	LoopLagStall  time.Duration
+	// LoopWatchdogInterval and LoopWatchdogStall are the resolved probe cadence
+	// and stall threshold: the watchdog keys, with the lag-reporter keys
+	// overriding them when a deployment set those.
+	LoopWatchdogInterval time.Duration
+	LoopWatchdogStall    time.Duration
+	RetainBatchEnabled   bool
 	// RecallStrategyBoosts maps a retrieval arm identifier to a boost level
 	// (low, medium, high). Empty leaves every arm unboosted.
 	RecallStrategyBoosts map[string]string
@@ -431,6 +601,19 @@ type Config struct {
 	SSLKeyFile   string
 	SSLCertFile  string
 	Daemon       bool
+	// Reload is the reference's development auto-reload. A compiled binary has
+	// no reloader, so the flag is accepted and reported rather than silently
+	// honoured: see ReloadWarning.
+	Reload bool
+	// IdleTimeout is the reference's retired daemon idle exit, still accepted so
+	// existing launchers start. It is inert in both implementations.
+	IdleTimeout int
+	// DaemonLog is where daemon mode appends its output.
+	DaemonLog string
+	// ForwardedAllowIPs are the peers whose X-Forwarded-* headers are trusted.
+	// It is resolved from --forwarded-allow-ips, then the reference's
+	// FORWARDED_ALLOW_IPS, then the loopback default.
+	ForwardedAllowIPs []string
 
 	// Internal tuning derived from defaults or flags.
 	ReadTimeout  time.Duration
@@ -444,12 +627,283 @@ type Config struct {
 	// matching the reference's "0 disables" convention.
 	BankInfoCacheTTL  time.Duration
 	BankStatsCacheTTL time.Duration
+	// BankAliasCacheTTL and BankAliasCacheMaxEntries bound the per-process
+	// alias-resolution cache. A zero TTL disables it.
+	BankAliasCacheTTL        time.Duration
+	BankAliasCacheMaxEntries int
+
+	// ProcessDefaults holds the reference's per-bank configurable fields as
+	// resolved from the environment. A bank's configuration read layers its own
+	// overrides over these, so a deployment that sets one of the keys below
+	// changes the effective value of every bank that did not override it — see
+	// bankapi.PublicConfigDefaults.
+	ProcessDefaults ProcessDefaults
+
+	// RecallTuning holds the reference's retrieval knobs. Each one is the
+	// process-level value a bank's configuration read reports and the value the
+	// engine uses when a caller does not override it per request.
+	RecallTuning RecallTuning
+
+	// RetainTuning holds the reference's write-path knobs.
+	RetainTuning RetainTuning
+
+	// ReflectTuning holds the reference's reflection-loop knobs.
+	ReflectTuning ReflectTuning
+
+	// ConsolidationTuning holds the reference's consolidation knobs that are
+	// process-level rather than per-bank.
+	ConsolidationTuning ConsolidationTuning
+
+	// WorkerTuning holds the reference's queue-scheduling knobs.
+	WorkerTuning WorkerTuning
+
+	// DBTuning holds the reference's database session and scanning knobs.
+	DBTuning DBTuning
+
+	// MetricsTuning holds the reference's observability knobs.
+	MetricsTuning MetricsTuning
+
+	// EntityTuning holds the reference's entity-resolution knobs.
+	EntityTuning EntityTuning
+
+	// WebhookGlobal is the server-level webhook target every bank's events are
+	// also delivered to, independent of the per-bank registrations.
+	WebhookGlobal WebhookGlobal
+
+	// ExtensionPassThroughHeaders are the request headers copied into the
+	// extension context, so an extension can read a deployment's own header
+	// (a tenant hint, a trace id) without the HTTP layer knowing its meaning.
+	ExtensionPassThroughHeaders []string
+
+	// DefaultBankTemplate is the manifest applied to every newly-created bank.
+	DefaultBankTemplate map[string]any
+
+	// DatabaseBackend names the storage dialect: the reference's own selection,
+	// whose only value this build implements is PostgreSQL (with `memory` as the
+	// non-persistent backend this build adds for tests and local runs).
+	DatabaseBackend string
+
+	// ReadReplica is the optional read-only pool: reads that tolerate a replica
+	// go to it while writes stay on the primary.
+	ReadReplica ReadReplicaConfig
+
+	// The OCR chain: when enabled, a document's embedded images are transcribed
+	// by the configured vision model and the transcription joins the parsed
+	// text, which is what the reference's markitdown OCR does.
+	FileParserOCREnabled bool
+	FileParserOCRAPIKey  string
+	FileParserOCRBaseURL string
+	FileParserOCRModel   string
+	FileParserOCRPrompt  string
+	FileParserOCRHeaders map[string]string
+
+	// ModelInitTimeout bounds the startup probe of the configured model
+	// providers, so an unreachable endpoint fails startup instead of hanging it,
+	// and SkipLLMVerification turns that probe off entirely.
+	ModelInitTimeout    time.Duration
+	SkipLLMVerification bool
 
 	// Unsupported collects the reference environment keys that were set but
 	// that this build cannot act on. A non-empty set refuses startup, so a
 	// copied reference .env is never silently half-honoured.
 	Unsupported *Unsupported
 }
+
+// WebhookGlobal is the deployment-level webhook target.
+type WebhookGlobal struct {
+	// URL is the receiver. Empty disables the global webhook.
+	URL string
+	// Secret signs the deliveries.
+	Secret string
+	// EventTypes is the event filter; empty means the reference's default set.
+	EventTypes []string
+	// ExposeResponseBody includes the receiver's response body in the delivery
+	// record, which is what a deployment debugging a receiver wants and what a
+	// deployment holding other people's data usually does not.
+	ExposeResponseBody bool
+}
+
+// ReadReplicaConfig is the optional read-only database pool.
+type ReadReplicaConfig struct {
+	// URL is the replica's connection string. Empty disables the replica.
+	URL string
+	// PoolMin and PoolMax bound the replica pool, the same two bounds the
+	// primary pool uses.
+	PoolMin int
+	PoolMax int
+}
+
+// ProcessDefaults is the reference's per-bank configurable surface as resolved
+// from the process environment. Pointer-typed fields mirror the reference's own
+// nullability: a field whose process value is null stays null in a bank's read,
+// which is what distinguishes "the deployment set nothing" from "the deployment
+// set the empty string".
+type ProcessDefaults struct {
+	MCPEnabledTools                             *string
+	EnableTextSearch                            bool
+	EnableTemporalRetrieval                     bool
+	EnableGraphRetrieval                        bool
+	EnableReranking                             bool
+	RetainChunkSize                             int
+	RetainStructuredChunkSize                   *int
+	RetainMission                               *string
+	RetainCustomInstructions                    *string
+	RetainDefaultStrategy                       *string
+	RetainStrategies                            *string
+	RetainChunkBatchSize                        int
+	RetainMaxAttachments                        int
+	ConsolidationLLMBatchSize                   int
+	ConsolidationLLMParallelism                 int
+	ConsolidationMaxPerRound                    int
+	ConsolidationSourceFactTokens               int
+	ConsolidationSourceFactTokensPerObservation int
+	ObservationsMission                         *string
+	MaxObservationsPerScope                     int
+	ObservationScopeLimits                      *string
+	ConsolidationStrategies                     *string
+	MentalModelMinRefreshSeconds                int
+	KnowledgePageDefaultTrigger                 *string
+	ReflectMission                              *string
+	ReflectSourceFactsMaxTokens                 int
+	ReflectDefaultOptions                       map[string]any
+	RecallIncludeChunks                         bool
+	RecallMaxTokens                             int
+	RecallChunksMaxTokens                       int
+	RecallBudgetFunction                        string
+	RecallBudgetFixedLow                        int
+	RecallBudgetFixedMid                        int
+	RecallBudgetFixedHigh                       int
+	RecallBudgetAdaptiveLow                     float64
+	RecallBudgetAdaptiveMid                     float64
+	RecallBudgetAdaptiveHigh                    float64
+	RecallBudgetMin                             int
+	RecallBudgetMax                             int
+	DispositionSkepticism                       *int
+	DispositionLiteralism                       *int
+	DispositionEmpathy                          *int
+}
+
+// RecallTuning is the retrieval pipeline's process-level tuning.
+type RecallTuning struct {
+	GraphRetriever                string
+	GraphSeedMinSimilarity        float64
+	SemanticMinSimilarity         float64
+	TemporalSemanticMinSimilarity float64
+	SemanticLinkMinSimilarity     float64
+	BM25MinScore                  float64
+	BM25MaxQueryTerms             int
+	BM25SelectiveTerms            bool
+	LinkExpansionPerEntityLimit   int
+	LinkExpansionTimeout          time.Duration
+	MaxQueryTokens                int
+	MaxConcurrent                 int
+	// ConnectionBudget bounds the connections one recall's arms hold at once.
+	ConnectionBudget int
+	// DiagnosticPhases and PhaseSampleEvery drive the per-phase recall metrics.
+	DiagnosticPhases bool
+	PhaseSampleEvery int
+}
+
+// RetainTuning is the write path's process-level tuning.
+type RetainTuning struct {
+	MaxCompletionTokens        int
+	ExtractCausalLinks         bool
+	SubBatchTokens             int
+	EntityLookup               string
+	EntityResolutionBatchSize  int
+	EntityResolutionCandidates int
+	// MaxConcurrent bounds concurrent retain DB phases; SubBatchConcurrency
+	// bounds the sub-batches of one document in flight; StoreMaxConcurrent
+	// bounds the store-owned write phase; MemoryBudgetMB caps the unwritten
+	// state a write may hold; BatchDocumentWrites writes documents as it goes.
+	MaxConcurrent       int
+	SubBatchConcurrency int
+	StoreMaxConcurrent  int
+	MemoryBudgetMB      int
+	BatchDocumentWrites bool
+	// FailOnExtractionErrors fails a retain on the first chunk whose extraction
+	// failed, instead of storing the chunks that succeeded.
+	FailOnExtractionErrors bool
+}
+
+// ReflectTuning is the reflection loop's process-level tuning.
+type ReflectTuning struct {
+	MaxIterations       int
+	PromptCacheEnabled  bool
+	MaxContextTokens    int
+	MaxCompletionTokens *int
+}
+
+// ConsolidationTuning is the consolidation subsystem's process-level tuning.
+type ConsolidationTuning struct {
+	MemoryBatchSize           int
+	MaxCompletionTokens       *int
+	DedupThreshold            float64
+	MaxAttempts               int
+	MaxTokens                 int
+	RecallBudget              string
+	HistoryMaxEntries         int
+	MentalModelHistoryEntries int
+	// BankInfoCacheMaxEntries bounds the per-process bank-row cache, and
+	// BankStatsCacheMaxEntries the stored bank-statistics summaries.
+	BankInfoCacheMaxEntries  int
+	BankStatsCacheMaxEntries int
+}
+
+// WorkerTuning is the queue scheduler's process-level tuning. The per-type
+// reserved slots live on WorkerConfig.ReservedSlots, where the consumer reads
+// them.
+type WorkerTuning struct {
+	ConsolidationByBank string
+	BackpressureDefer   time.Duration
+}
+
+// DBTuning is the database session's process-level tuning.
+type DBTuning struct {
+	StatementTimeout         time.Duration
+	CommandTimeout           time.Duration
+	MaxParallelWorkersGather *int
+	SessionSetupOnAcquire    bool
+	MigrationDatabaseURL     string
+	AcquireTimeout           time.Duration
+	PoolSlowAcquireThreshold time.Duration
+	AcquireWarnThreshold     time.Duration
+	ANNIterativeScan         bool
+	ANNMaxScanTuples         int
+	// PGFunctionSchema and PGTokenizer are the ParadeDB pg_search backend's
+	// function schema and tokenizer.
+	PGFunctionSchema string
+	PGTokenizer      string
+}
+
+// MetricsTuning is the metrics and health-probe surface's process-level tuning.
+type MetricsTuning struct {
+	IncludeBankID  bool
+	BacklogEnabled bool
+	IncludeTenant  bool
+	WorkerLabel    bool
+	LoopLagMetric  bool
+	// LoopWatchdog starts the stall probe; the two durations below are the
+	// reference watchdog's poll interval and stall threshold.
+	LoopWatchdog      bool
+	LoopWatchdogStall time.Duration
+	LoopWatchdogPoll  time.Duration
+}
+
+// EntityTuning is the entity resolver's process-level tuning.
+type EntityTuning struct {
+	TRGMSimilarityThreshold float64
+	IntrabatchMerge         float64
+	MergeMinSimilarity      float64
+}
+
+// Admission tuning: the per-lane queue deadlines (see DefaultAdmissionMaxWaitS
+// for the single-lane fallback the reference keeps for a lane with no key).
+const (
+	DefaultAdmissionRecallMaxWaitMS  = 30000
+	DefaultAdmissionReflectMaxWaitMS = 5000
+	DefaultAdmissionRetainMaxWaitMS  = 2000
+)
 
 // FeatureMap returns the version endpoint's feature map. Keys gate client
 // behavior and reflect effective process configuration.
@@ -559,6 +1013,18 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.EnableBankLLMHealth = boolFromEnv(lookup, EnvEnableBankLLMHealth, false)
 	cfg.EnableFileUploadAPI = boolFromEnv(lookup, EnvEnableFileUploadAPI, true)
 	cfg.EnableObservations = boolFromEnv(lookup, EnvEnableObservations, true)
+	cfg.DatabaseBackend = databaseBackend(lookup)
+	cfg.WebhookGlobal = resolveWebhookGlobal(lookup)
+	cfg.ExtensionPassThroughHeaders = stringListFromEnv(lookup, EnvExtensionPassThroughHdr)
+	cfg.DefaultBankTemplate = jsonObjectFromEnv(lookup, EnvDefaultBankTemplate)
+	cfg.ReadReplica = ReadReplicaConfig{
+		URL:     strings.TrimSpace(stringFromEnv(lookup, EnvReadDatabaseURL)),
+		PoolMin: intFromEnv(lookup, EnvReadDBPoolMinSize, DefaultReadPoolMinSize),
+		PoolMax: intFromEnv(lookup, EnvReadDBPoolMaxSize, DefaultReadPoolMaxSize),
+	}
+	cfg.MCPAuthToken = strings.TrimSpace(stringFromEnv(lookup, EnvMCPAuthToken))
+	cfg.MCPInstructions = stringFromEnv(lookup, EnvMCPInstructions)
+	cfg.MCPEnabledTools = mcpEnabledToolsFromEnv(lookup)
 	cfg.EnableAutoConsolidation = boolFromEnv(lookup, EnvEnableAutoConsolidation, true)
 	cfg.AuditLogEnabled = boolFromEnv(lookup, EnvAuditLogEnabled, false)
 	cfg.AuditLogActions = stringListFromEnv(lookup, EnvAuditLogActions)
@@ -585,6 +1051,12 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.FileParserIrisToken = stringFromEnv(lookup, EnvFileParserIrisToken)
 	cfg.FileParserIrisOrgID = stringFromEnv(lookup, EnvFileParserIrisOrgID)
 	cfg.FileParserLlamaParseAPIKey = stringFromEnv(lookup, EnvFileParserLlamaParseAPIKey)
+	cfg.FileParserOCREnabled = boolFromEnv(lookup, EnvFileParserMarkitdownOCREnabled, false)
+	cfg.FileParserOCRAPIKey = stringFromEnv(lookup, EnvFileParserMarkitdownOCRAPIKey)
+	cfg.FileParserOCRBaseURL = stringFromEnv(lookup, EnvFileParserMarkitdownOCRBaseURL)
+	cfg.FileParserOCRModel = stringFromEnv(lookup, EnvFileParserMarkitdownOCRModel)
+	cfg.FileParserOCRPrompt = stringFromEnv(lookup, EnvFileParserMarkitdownOCRPrompt)
+	cfg.FileParserOCRHeaders = stringMapFromEnv(lookup, EnvFileParserMarkitdownOCRHeaders)
 	cfg.FileConversionMaxBatchSize = intFromEnv(lookup, EnvFileConversionMaxBatchSize, DefaultFileConversionMaxBatchSize)
 	cfg.FileConversionMaxBatchSizeMB = intFromEnv(lookup, EnvFileConversionMaxBatchSizeMB, DefaultFileConversionMaxBatchSizeMB)
 	cfg.FileDeleteAfterRetain = boolFromEnv(lookup, EnvFileDeleteAfterRetain, DefaultFileDeleteAfterRetain)
@@ -598,10 +1070,48 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.TenantMCPAuthDisabled = boolFromEnv(lookup, EnvTenantMCPAuthDisabled, false)
 	cfg.OperationValidatorExtension = stringFromEnv(lookup, EnvOperationValidatorExtension)
 	cfg.PprofEnabled = boolFromEnv(lookup, EnvPprofEnabled, false)
+	// The worker count and daemon log are the reference's own keys: a launcher
+	// that exports HINDSIGHT_API_WORKERS, or HINDSIGHT_API_DAEMON_LOG so the
+	// detach writes somewhere it can read, gets the same resolution here.
+	cfg.Workers = intFromEnv(lookup, EnvWorkers, DefaultWorkers)
+	cfg.DaemonLog = strings.TrimSpace(stringFromEnv(lookup, EnvDaemonLog))
+	// FORWARDED_ALLOW_IPS is the reference's server's own variable (not a
+	// HINDSIGHT_API_ key): the trusted-proxy allow list is resolved there, in
+	// the HTTP server, and this build reads it from the same place.
+	cfg.ForwardedAllowIPs = forwardedAllowIPsFromEnv(lookup)
+	// The reference's tuning surface: each group is resolved here so a
+	// deployment that exported its reference .env runs with the same knobs.
+	cfg.ProcessDefaults = resolveProcessDefaults(lookup)
+	cfg.RecallTuning = resolveRecallTuning(lookup)
+	cfg.RetainTuning = resolveRetainTuning(lookup)
+	cfg.ReflectTuning = resolveReflectTuning(lookup)
+	cfg.ConsolidationTuning = resolveConsolidationTuning(lookup)
+	cfg.WorkerTuning = resolveWorkerTuning(lookup)
+	cfg.DBTuning = resolveDBTuning(lookup)
+	cfg.MetricsTuning = resolveMetricsTuning(lookup)
+	cfg.EntityTuning = resolveEntityTuning(lookup)
+	cfg.ModelInitTimeout = secondsDurationFromEnv(lookup, EnvModelInitTimeout, DefaultModelInitTimeoutS)
+	cfg.SkipLLMVerification = boolFromEnv(lookup, EnvSkipLLMVerification, false)
 	cfg.BasePath = normalizeBasePath(stringFromEnv(lookup, EnvBasePath))
+	// The stall probe has two spellings in the reference: the watchdog's own
+	// millisecond keys, which default on, and the lag reporter's second-valued
+	// keys, which default off. The reporter's interval overrides the watchdog's
+	// poll cadence when it was set; otherwise the watchdog's own interval is
+	// used, which is what makes the probe run by default.
 	cfg.LoopLagReport = secondsFromEnv(lookup, EnvLoopLagReportSeconds, DefaultLoopLagReportS*time.Second)
 	cfg.LoopLagStall = secondsFromEnv(lookup, EnvLoopLagStallSeconds, DefaultLoopLagStallS*time.Second)
+	cfg.LoopWatchdogInterval = cfg.MetricsTuning.LoopWatchdogPoll
+	if cfg.LoopLagReport > 0 {
+		cfg.LoopWatchdogInterval = cfg.LoopLagReport
+	}
+	cfg.LoopWatchdogStall = cfg.MetricsTuning.LoopWatchdogStall
+	if cfg.LoopLagStall > 0 && cfg.LoopLagStall != DefaultLoopLagStallS*time.Second {
+		cfg.LoopWatchdogStall = cfg.LoopLagStall
+	}
 	cfg.AdmissionMaxWait = secondsFromEnv(lookup, EnvAdmissionMaxWaitSeconds, DefaultAdmissionMaxWaitS*time.Second)
+	cfg.AdmissionRecallMaxWait = millisFromEnv(lookup, EnvAdmissionRecallMaxWaitMS, DefaultAdmissionRecallMaxWaitMS*time.Millisecond)
+	cfg.AdmissionReflectMaxWait = millisFromEnv(lookup, EnvAdmissionReflectMaxWaitMS, DefaultAdmissionReflectMaxWaitMS*time.Millisecond)
+	cfg.AdmissionRetainMaxWait = millisFromEnv(lookup, EnvAdmissionRetainMaxWaitMS, DefaultAdmissionRetainMaxWaitMS*time.Millisecond)
 	cfg.AdmissionRecallLimit = intFromEnv(lookup, EnvAdmissionRecallLimit, DefaultAdmissionLimit)
 	cfg.AdmissionRetainLimit = intFromEnv(lookup, EnvAdmissionRetainLimit, DefaultAdmissionLimit)
 	cfg.AdmissionReflectLimit = intFromEnv(lookup, EnvAdmissionReflectLimit, DefaultAdmissionLimit)
@@ -619,6 +1129,9 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 		cfg.AdmissionRetainLimit = n
 	}
 	cfg.EnableDocumentExportAPI = boolFromEnv(lookup, EnvEnableDocumentExportAPI, true)
+	cfg.EnableDryRunExtract = boolFromEnv(lookup, EnvEnableDryRunExtract, true)
+	cfg.EnableObservationHistory = boolFromEnv(lookup, EnvEnableObservationHistory, true)
+	cfg.EnableMentalModelHistory = boolFromEnv(lookup, EnvEnableMentalModelHistory, true)
 	cfg.EnableDocumentImportAPI = boolFromEnv(lookup, EnvEnableDocumentImportAPI, true)
 	cfg.Worker = resolveWorker(lookup)
 	cfg.Tracing = resolveTracing(lookup)
@@ -628,6 +1141,8 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.DBPoolMaxSize = intFromEnv(lookup, EnvDBPoolMaxSize, DefaultDBPoolMaxSize)
 	cfg.DBPoolMinSize = intFromEnv(lookup, EnvDBPoolMinSize, DefaultDBPoolMinSize)
 	cfg.BankInfoCacheTTL = cacheTTLFromEnv(lookup, EnvBankInfoCacheTTLSeconds, DefaultBankInfoCacheTTLSeconds*time.Second)
+	cfg.BankAliasCacheTTL = cacheTTLFromEnv(lookup, EnvBankAliasCacheTTLSeconds, DefaultBankAliasCacheTTLSeconds*time.Second)
+	cfg.BankAliasCacheMaxEntries = intFromEnv(lookup, EnvBankAliasCacheMaxEntries, DefaultBankAliasCacheMaxEntries)
 	cfg.BankStatsCacheTTL = cacheTTLFromEnv(lookup, EnvBankStatsCacheTTLSeconds, DefaultBankStatsCacheTTLSeconds*time.Second)
 	cfg.WorkerEnabled = boolFromEnv(lookup, EnvWorkerEnabled, DefaultWorkerEnabled)
 	cfg.Maintenance = resolveMaintenance(lookup)
