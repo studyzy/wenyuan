@@ -543,6 +543,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The bank collection reports each bank's `fact_count` again. The PostgreSQL
+  backend's `ListBanks` never computed it, so every row of
+  `GET /v1/default/banks` carried `fact_count: 0` while `GET
+  /v1/default/banks/{id}/stats` reported the real number — a control plane
+  showing a list of empty banks over a non-empty deployment. The field is the
+  bank's `memory_units` row count, every fact type included, computed for the
+  returned page rather than the whole table (the reference's own fix for a
+  listing that degraded with bank count).
+
 - A queued retain no longer runs after its bank is deleted, and a worker that
   outlived its bank no longer reports a failure. Three defects met in one
   place. A queued child's own operation id was compared against the operation

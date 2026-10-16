@@ -67,7 +67,54 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 		}
 		banks = append(banks, bank)
 	}
-	return BankPage{Banks: banks, Total: total, Limit: query.Limit, Offset: query.Offset}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return BankPage{}, err
+	}
+	if err := s.fillFactCounts(ctx, banks); err != nil {
+		return BankPage{}, err
+	}
+	return BankPage{Banks: banks, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
+}
+
+// fillFactCounts sets each returned bank's FactCount from its memory_units rows.
+//
+// The count is scoped to the page rather than aggregated over the whole table,
+// which is the reference's own fix for a listing that got slower the more banks
+// a deployment had: the page is a bounded index range per bank. A bank with no
+// units keeps its zero.
+func (s *PostgresStore) fillFactCounts(ctx context.Context, banks []Bank) error {
+	if len(banks) == 0 {
+		return nil
+	}
+	ids := make([]string, len(banks))
+	for i := range banks {
+		ids[i] = banks[i].BankID
+	}
+	qualified := quoteIdent(s.schema)
+	rows, err := s.reader().QueryContext(ctx, `SELECT bank_id, COUNT(*)
+	    FROM `+qualified+`.memory_units
+	    WHERE bank_id = ANY($1)
+	    GROUP BY bank_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	counts := make(map[string]int, len(banks))
+	for rows.Next() {
+		var bankID string
+		var count int
+		if err := rows.Scan(&bankID, &count); err != nil {
+			return err
+		}
+		counts[bankID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range banks {
+		banks[i].FactCount = counts[banks[i].BankID]
+	}
+	return nil
 }
 
 func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {

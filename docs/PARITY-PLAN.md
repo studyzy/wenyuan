@@ -308,6 +308,22 @@ sed -n '23,30p' internal/httpx/errors.go
 
 ## 8. 进度日志（实现记录）
 
+### 2026-10-16 — 银行列表 `fact_count`（`GET /v1/default/banks`）
+
+- **契约行为修复**：PostgreSQL 后端的 `ListBanks` 从未计算 `fact_count`，列表里**每个银行
+  都是 0**，而 `GET /banks/{id}/stats` 报的是真实值——控制台记忆库列表因此显示一列空值
+  （「记忆量」列空白），表现为空库。
+- **取值语义**：`fact_count` = 该银行的 `memory_units` 行数，**含全部 fact_type**
+  （`world`/`experience`/`observation`），与上游 `bank_fact_counts`
+  （`SELECT bank_id, COUNT(*) FROM memory_units WHERE bank_id = ANY($1) GROUP BY bank_id`）一致，
+  也与 `/stats` 的 `total_nodes` 同源。
+- **页面范围**：只统计**本页返回的银行**（`WHERE bank_id = ANY($1)`），不整表聚合——上游为
+  银行数量增长导致的列表退化做过同样收敛。空银行保持 0。
+- 内存后端本就正确（`memory_banks.go` 从 `s.memories` 取长度），无需改动。
+- 新增测试：`TestPostgresListBanksFillsFactCount`（`pgx`，覆盖三种 fact_type 计数、空银行为 0、
+  窄页不统计未返回的银行）；已验证「去掉修复即失败」（`fact_count = 0, want 3`）。
+- 验证：`make check` 全绿。
+
 ### 2026-10-16 — 银行删除契约（`DELETE /v1/default/banks/{id}`）
 
 - **契约行为修复**：`DeleteBank` 现在**真正清除银行内容**。记忆域没有指向 `banks` 的外键——
