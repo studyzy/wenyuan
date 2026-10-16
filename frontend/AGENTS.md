@@ -16,7 +16,7 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # eslint . (ESLint 9 flat config)
 npm run test         # vitest run
 npm run build        # next build
-npm run dev          # next dev on port 9999
+npm run dev          # next dev on port 19999
 ```
 
 `npm run test` must pass offline. There is no shared make target for the

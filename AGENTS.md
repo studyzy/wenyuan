@@ -69,22 +69,49 @@ Any new import used only under the tag still needs to be in `go.mod`.
 
 ```
 cmd/server/            API server entrypoint
-cmd/bankctl/           admin CLI (bank operations, migration)
+cmd/worker/            async operation worker entrypoint
+cmd/bankctl/           admin CLI (bank operations, migration, backup/restore)
 cmd/wenyuan/           client CLI (wenyuan-admin binary) — API client, never
                        imports server packages; lives in internal/cli/
+cmd/schematool/        schema dump helper for the migration generator
 internal/app/          composition root: wires config, storage, routes
 internal/bankapi/      bank lifecycle HTTP handlers + route table
 internal/memoryops/    retain / recall / reflect HTTP handlers + route table
-internal/httpx/        router, JSON helpers, error envelope, middleware
+internal/httpx/        router, JSON helpers, error envelope, middleware,
+                       OpenAPI surface, extension host
 internal/config/       config resolution: flags, env, .env, defaults
 internal/storage/      storage interfaces + memory + postgres backends
 internal/storage/embedded/  embedded copy of the SQL migrations (see below)
+internal/provider/     model-provider port + adapters (openai, anthropic,
+                       embed, rerank, none, mock) — see "Provider boundary"
+internal/reflect/      bounded retrieval-and-synthesis reflection loop
+internal/consolidation/  observation consolidation engine
+internal/extraction/   memory extraction pipeline
+internal/entitylabels/ entity label resolution
+internal/fileparse/    file/document parsing for file retain
+internal/mentalmodels/ mental model domain logic (triggers, patches)
+internal/directives/   directive HTTP handlers
+internal/readsurface/  documents / chunks / entities / graph read handlers
+internal/reporting/    reporting & observability read handlers
+internal/webhooks/     webhook HTTP handlers + delivery guard
+internal/worker/       operation queue consumer (lease, backoff, retry)
+internal/maintenance/  background maintenance loop
+internal/mcp/          MCP endpoint handlers
+internal/transfer/     archive export / import HTTP routes + apply logic
+internal/objectstore/  S3-compatible object storage backend
+internal/oteltrace/    OTel tracing support
+internal/audit/        audit trail (fire-and-forget)
+internal/tenant/       tenant / extension schema abstraction
 internal/monitoring/   health / metrics / version endpoints
 internal/hindsightarchive/   Hindsight export format parsing (zip)
 internal/migration/hindsight/  import an exported archive into this storage
 internal/bankadmin/    bank admin operations shared by CLI
+internal/cli/          wenyuan-admin implementation (API client only)
 migrations/            numbered SQL migrations — authoritative but NOT what runs
-docs/                  ROADMAP.md (handover) and MIGRATION.md
+docs/                  ROADMAP, GAPS/FUNCTIONAL-GAPS, CONTRACT-AUDIT,
+                       PARITY-PLAN/PARITY-SUITE, SCHEMA-ALIGNMENT, MIGRATION,
+                       ARCHITECTURE-REVIEW, CONFIGURATION (generated reference —
+                       regenerate with scripts/render_config_reference.py)
 ```
 
 Tests live next to the code as `*_test.go`.
@@ -125,13 +152,11 @@ The storage package has two backends behind one interface (`internal/storage/sto
 - **postgres** — the real backend, compiled under the `pgx` tag
 
 Any new storage method must be implemented in **both** backends, or the
-interface will not compile. Files are split by area:
-
-- `memory_banks.go` / `postgres_banks.go` — bank lifecycle
-- `memory_retain.go` / `postgres_retain.go` — writes
-- `memory_recall.go` / `postgres_recall.go` — retrieval
-- `memory_reflect.go` / `postgres_reflect.go` — reflection
-- `memory_operations.go` / `postgres.go` — async operations
+interface will not compile. Files are split by area with parallel prefixes:
+`memory_<area>.go` for the in-memory backend, `postgres_<area>.go` for the
+PostgreSQL backend — banks, retain, recall, reflect, operations, webhooks,
+mental models, knowledge, attachments, maintenance, and the rest. Follow the
+prefix convention when adding a file.
 
 ### Migrations — read this before touching SQL
 
@@ -171,26 +196,50 @@ reference, produced by `scripts/schema_diff.sql` and
 differing. `internal/storage/schema.go` declares the expected table set;
 `schema_test.go` cross-checks the declarations against the series.
 
-## Known gaps — do not assume these work
+## Known gaps and open divergences — check before building on these
 
-These are real, documented limitations. Check `docs/ROADMAP.md` for the full
-list with file:line evidence before building on any of this.
+The big parity gaps are closed: semantic (vector) search, the async retain
+pipeline with a real worker (`cmd/worker`), export/import HTTP routes
+(`internal/transfer`), LLM/provider integration (`internal/provider`), and the
+PostgreSQL schema all match the reference — the served route surface and the
+schema alignment are pinned by tests and parity suites. What remains is the
+short list below. `docs/FUNCTIONAL-GAPS.md` and `docs/GAPS.md` carry the
+detailed ledger with evidence; keep them in sync when you close or open a gap.
 
-- **Semantic search is a placeholder.** `internal/storage/memory_recall_arms.go`
-  computes `semanticScore` / `keywordScore` deterministically; there is no
-  embedding column and no vector similarity. Adding real vectors needs a new
-  migration, the `vector` extension, an embedding provider, and a change to the
-  semantic arm in `postgres_recall.go`.
-- **Async is not actually async.** `async=true` on a memory write returns an
-  operation record, but there is no worker consuming the queue and no
-  `cmd/worker`. Writes complete synchronously.
-- **No export / import HTTP endpoints.** The archive parsing (`hindsightarchive`)
-  and import (`migration/hindsight`) exist and are exercised by `bankctl`; the
-  HTTP routes do not.
-- **Storage is not wire-compatible with upstream Hindsight.** Moving existing
-  data requires `bankctl bank migrate` via the official export format. You
-  cannot point this server at an existing Hindsight database.
-- **No LLM / provider integration anywhere** in the project.
+- **Mental-model history content shape diverges from upstream.** The
+  `mental_model_history.content` jsonb stores this service's own keys rather
+  than the reference's `previous_content` shape; aligning it is a pending
+  API-layer decision, not a schema change.
+- **Mental-model patch cannot clear fields.** The CLI sends explicit `null` to
+  clear a field (cron, tags-match, ...), but the backend's
+  `nonNullMembers` (`internal/mentalmodels/trigger.go`) drops explicit-null
+  members, so the clear never lands. Known CLI↔backend contract divergence,
+  to be fixed on the backend side.
+- **Transfer archives carry fewer history segments than the reference.**
+  Full-bank export/import moves documents, chunks, facts, observations,
+  attachments, bank config, mental models, knowledge pages, directives and
+  webhooks, but the `audit_log` / `llm_requests` history segments and the
+  raw invalidated-memory / operation-queue data segments are not carried yet.
+- **Intentionally out of scope:** OAuth provider integration and GCS / Azure
+  object stores (the S3-compatible backend covers object storage).
+- **Default listen ports are offset from the reference on purpose.** wenyuan
+  defaults to API `18888`, worker HTTP `18889`, and frontend `19999` —
+  upstream's 8888/8889 plus 10000 (the upstream Control Plane UI is 9999) —
+  so upstream Hindsight and wenyuan can run side by side for comparison. The
+  compose stack's own PostgreSQL publishes host port `15432` (5432 + 10000)
+  and never touches the reference's instance on 5432. The
+  env var names (`HINDSIGHT_API_PORT`,
+  `HINDSIGHT_API_WORKER_HTTP_PORT`) and every other default still match; do
+  not "fix" the port defaults back to 8888.
+
+## Provider boundary
+
+Model access goes through the port in `internal/provider` (`Provider`,
+`Embedder`, `Reranker`). Vendor adapters under `internal/provider/{openai,
+anthropic,embed,rerank}` depend only on the port; handlers and engines never
+import a vendor package. `none` is the deterministic no-model selection used
+when nothing is configured. Add a new vendor as another adapter registered in
+the provider registry — not as a new import edge in a handler package.
 
 ## Testing notes
 
@@ -219,11 +268,20 @@ See `CONTRIBUTING.md` for the human-facing version of these rules.
 ## Conventions quick reference
 
 - Module path: `github.com/studyzy/wenyuan`
-- Go version: `1.24` (see `go.mod`)
+- Go version: `1.25` (see `go.mod`)
 - Indent: tabs in Go, 2 spaces elsewhere (`.editorconfig`)
 - Line endings: LF, final newline required
 - Linters: `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`, `gofmt`,
   `goimports`, `misspell`, `unconvert`, `bodyclose` (`.golangci.yml`)
 - `goimports` groups this module under `local-prefixes: github.com/studyzy/wenyuan`
 - Config resolution precedence lives in `internal/config/` — check it before
-  adding a new config key
+  adding a new config key. The order is flags, then the `.env` file (a
+  discovered `.env` is authoritative over the process environment, the
+  reference's own entrypoint rule), then the rest of the process environment,
+  then the YAML configuration file
+  (`etc/wenyuan.yaml`, or `HINDSIGHT_API_CONFIG_FILE`), then
+  the built-in defaults. The file is read through Viper in
+  `internal/config/configfile.go` and answers a key as the environment name
+  lowercased without the `HINDSIGHT_API_` prefix (`llm_provider`); a nested
+  key spelling is flattened to that flat form, and a list value is refused at
+  load rather than ignored.

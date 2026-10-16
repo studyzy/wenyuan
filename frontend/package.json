@@ -4,7 +4,7 @@
   "private": true,
   "license": "ISC",
   "scripts": {
-    "dev": "next dev -p 9999",
+    "dev": "next dev -p 19999",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

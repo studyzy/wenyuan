@@ -1057,3 +1057,77 @@ print(len(set((m.group(1).upper(),m.group(2)) for m in
 EOF
 # 只读对比：按族抽查 upstream 的 pydantic 模型字段 vs wenyuan 的 json tag
 ```
+## 10. 参考配置键面：剩余 59 个拒绝键（2026-10-15 三次复核）
+
+`internal/config/reference.go` 的 `referenceRuntimeKeys` 是参考实现运行时环境键的清单，共 243 键
+（其中 231 键已解析或委派、12 键仍**拒绝启动**）。拒绝本身是有意策略（"宁可失败，也不静默 no-op"），但对
+"直接平替"的部署方而言，把参考 `.env` 整份搬过来就会启动失败——这是本轮复核出的最大剩余面。
+
+四路只读审计（按域切分：召回/写入/反思/巩固、数据库与 PG、worker/指标/进程形状、MCP/文件/扩展/webhook）
+给出逐键分类与 Go 侧证据。分类口径：
+
+- **WIRING**：行为已存在，键只是没接到位（加 `Resolve:` + 把值传进既有代码路径）。
+- **SMALL**：需要一小段真实实现（几十行量级）。
+- **ABSENT / 结构**：Go 侧没有对应机制，或纯 Go 二进制无法实现。
+
+### 已闭合（本轮批次，按批次记）
+
+**第一轮（进程/引擎）**：4 个召回臂开关、retain 分块/上限/mission/指令、巩固 mission/轮数上限/源事实预算/策略/作用域上限/LLM 批与并行、
+反思 mission 与源事实预算、默认下限（graph seed、语义链接、每臂 floor、BM25 词数）、固定召回预算档、反思迭代与上下文、
+两个历史开关与条数、每通道准入等待、DB statement_timeout / max_parallel_workers / session setup、worker 每类型槽位保留、
+事件循环看门狗、dry-run 开关、MCP 三键、实体候选门与上界、抽取补全上限、子批预算、link expansion 上限/超时、银行行缓存上界、
+`WORKERS` / `DAEMON_LOG`。
+
+**第二轮**：`DISPOSITION_*`（列表行改报解析值）、`ANN_{ITERATIVE_SCAN,MAX_SCAN_TUPLES}`、`MIGRATION_DATABASE_URL`、
+`KNOWLEDGE_PAGE_DEFAULT_TRIGGER`。
+
+**第三轮（并行）**：全局 webhook 四键、指标四键（backlog/bank-id/tenant/lag 直方图）、扩展透传头、
+`DEFAULT_BANK_TEMPLATE`（存储层建行钩子，覆盖所有建行路径）、读副本三键、pg_search 两键。
+
+**第四轮（并行）**：`DATABASE_BACKEND`；召回入口三键（query 截断、引擎级并发 permits、BM25 词项选择）+
+内部召回三键；反思补全上限与默认 options 两键；写入/实体三键（因果链开关、银行默认策略、实体第二道合并门）；
+worker/巩固八键（背压推迟、巩固按银行分级认领、巩固批次/重试/预算/补全、统计缓存上界）。
+
+### 仍拒绝的 12 键（第六轮后的现状）
+
+**需要新的外部能力**
+
+- `FILE_STORAGE_EXTENSION`：Python 类加载式的外部存储后端；本仓库只有内置的 S3/GCS/Azure，没有可加载的 Go 后端注册。
+- `REFLECT_PROMPT_CACHE_ENABLED`：上游的增量提示缓存是"provider 能力 + 每次运行的 cache session 创建/回收"（`supports_incremental_prompt_cache()`，只有其 Gemini provider 实现），本实现的 provider 边界没有该能力，开关无处可挂；本轮已把另一件真实差异补上（见下"默认发出的提示缓存标记"）。
+- `QUERY_ANALYZER_LANGUAGES`：上游限制 dateparser 的语言集；本实现是自写时间解析，没有对应开关。
+
+**本实现的流水线里没有可生效的位置**
+
+- `RETAIN_{MAX_CONCURRENT,SUBBATCH_CONCURRENCY,STORE_MAX_CONCURRENT,MEMORY_BUDGET_MB,BATCH_DOCUMENT_WRITES}`（5）：写入各阶段的并发/内存上界与分批落盘；本实现是顺序流水线（每个文档一次写入），这些上界没有可绑定的位置。
+- `RETAIN_BATCH_POLL_INTERVAL_SECONDS`：LLM Batch API 轮询间隔（无 Batch API 客户端）。
+- `RETAIN_ENTITY_RESOLUTION_BATCH_SIZE`：本实现每次只查一个名字的候选，没有批量查询可调。
+- `FAIL_ON_EXTRACTION_ERRORS`：参考用它把**批处理**抽取错误升级为失败；本实现的流式路径本来就让抽取失败失败整个操作（上游 `test_62` 钉的就是这条），因此无处可绑。
+
+**`database/sql` 的限制**
+
+- `DB_COMMAND_TIMEOUT`：客户端逐命令超时。忠实实现必须在语句的 `*sql.Rows` 关闭时取消，而 `DB`/`Tx` 返回 `database/sql` 的 opaque 行类型；唯一不改接口的绕法要改 ~287 个调用点。
+
+### 本轮额外补上的"非键"行为
+
+- **提示缓存标记**：Anthropic 的 system 块带 `cache_control: {"type":"ephemeral"}`（工具循环里最后一轮也带），OpenAI 兼容侧按 host 发 `prompt_cache_key`（首条消息的指纹）/`x-grok-conv-id`/`x-opencode-session`，全部按上游默认，运营商配置的头与 extra body 优先。
+- **`RETAIN_BATCH_ENABLED` 语义修正**（见 `docs/FUNCTIONAL-GAPS.md` §2.3）。
+
+### 运行配置包测试的注意事项（2026-10-16）
+
+`go test ./internal/config/` 目前会挂在另一个编辑者留下的临时探针文件 `zz_inventory_probe_test.go` 上（它给**任何**以 `_PROVIDER` 结尾的键都回 `openai`，于是参考实现本身就无上限的索引成员扫描永不终止）。绕开它即可跑完整套件，这是键表契约的真实验证：
+
+```sh
+go test -count=1 -skip TestDumpKeyInventory ./internal/config/   # 243 行键表 + provider 家族契约全绿
+go test -count=1 -skip TestDumpKeyInventory ./...                # 全模块
+```
+
+该套件在 2026-10-16 抓出三处真缺陷（均已修）：`DB_POOL_SLOW_ACQUIRE_THRESHOLD_SECONDS` 的参考默认是**小数秒** 0.05（按整数解析会退回 0）、`SKIP_LLM_VERIFICATION` 的探针值选到非布尔字串导致"解析键未改变配置"、以及该键加入 `resolvedProviderKeys` 后在家族契约里缺一个可证明的取值。
+
+### 验收方式（每个键落地的标准）
+
+1. 该键设为非默认值后，`FromEnv(...)` 解析出的值随之改变（`reference_test.go` 的表驱动契约测试已强制
+   这一点：解析键必须在探针值下改变解析结果，否则测试失败）。
+2. 行为类键必须能观察：能走 HTTP/MCP 的用 `scripts/run_parity_suite.sh` 的 story 或新 story 覆盖，
+   进程/运维类的用真实启动观察（如本轮的 `--workers` 用 `ss` 看共享 socket inode、`--daemon` 看父进程
+   退出码与日志落盘）。
+3. 默认值必须与参考一致，避免"接线即改行为"。

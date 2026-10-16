@@ -129,10 +129,10 @@ bankctl bank migrate --archive hindsight-<bank_id>.zip --bank-id <new-id>
 
 ```sh
 # 起 Wenyuan（或指向目标 PG 并用 API）
-./bin/wenyuan --port 8888
+./bin/wenyuan --port 18888
 
 # 抽查一条记忆能否 recall
-curl -X POST "http://127.0.0.1:8888/v1/default/banks/<bank_id>/memories/recall" \
+curl -X POST "http://127.0.0.1:18888/v1/default/banks/<bank_id>/memories/recall" \
   -H "Content-Type: application/json" \
   -d '{"query":"<一个已知出现在记忆里的关键词>"}'
 ```
@@ -191,7 +191,7 @@ curl -X POST "http://127.0.0.1:8888/v1/default/banks/<bank_id>/memories/recall" 
 Wenyuan 侧若需撤销某个 bank 的导入：
 ```sh
 # 删除该 bank 及其全部内容
-curl -X DELETE "http://<wenyuan>:8888/v1/default/banks/<bank_id>" \
+curl -X DELETE "http://<wenyuan>:18888/v1/default/banks/<bank_id>" \
   -H "Authorization: Bearer <token>"
 ```
 

@@ -7,6 +7,164 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A YAML configuration file answers any key the environment answers. It is read
+  through Viper from `etc/wenyuan.yaml` relative to the working directory (also
+  `/etc/wenyuan.yaml`, where the image puts the shipped template), or from the
+  path `HINDSIGHT_API_CONFIG_FILE` names, which must exist. Keys are the
+  environment names without the `HINDSIGHT_API_` prefix, lowercased; a nested
+  spelling is accepted and flattened to the same key, both spellings of one key
+  must agree, and a list value is refused at startup naming the key rather than
+  silently
+  ignored. Precedence is now complete: flags, then the `.env` file, then the
+  rest of the process environment, then this file, then the built-in defaults —
+  so an existing deployment that never
+  wrote a file resolves byte-for-byte as before.
+- The `.env` file is now loaded by every entrypoint — server, worker and
+  bankctl — and a discovered `.env` is authoritative over the ambient process
+  environment, which is the rule the reference's own entrypoints keep; the
+  worker and bankctl previously read neither. The shared loader is
+  `config.LoadDotenvForEntrypoint`. A shipped `.env.example` documents the
+  whole surface in dotenv form, `etc/example.wenyuan.yaml` is the commented
+  YAML template (copy it to `etc/wenyuan.yaml` — the real file stays local and
+  is not checked in), and `docs/CONFIGURATION.md` is the generated
+  full key table (key, default, resolved/refused and why) behind the templates
+  and this changelog; regenerate them with
+  `scripts/render_config_reference.py`.
+- The process entrypoint is a drop-in for the reference's launcher. `--daemon`
+  now actually detaches: the foreground parent preflights the port (an occupied
+  port fails in the terminal, not in a log), strips the flag, re-execs itself in
+  a new session with stdio appended to `HINDSIGHT_API_DAEMON_LOG` (default
+  `~/.hindsight/daemon.log`), and exits 0; the daemon binds loopback unless a
+  host was configured and port 8888 unless `--port` was passed, which is the
+  reference's own resolution rule. `--workers N` (or `HINDSIGHT_API_WORKERS`)
+  runs N worker processes instead of being parsed and ignored: the supervisor
+  binds once and hands the socket to every worker, so the whole set shares one
+  listening socket the way uvicorn's supervisor does, the first worker to stop
+  stops the rest, and `SIGTERM` reaches them all. The reference's remaining
+  flags are accepted too — `--reload` (reported as unsupported rather than
+  silently ignored), `--no-access-log` (last of the pair wins, as in the
+  reference's parser), `--forwarded-allow-ips`, and `--idle-timeout` (inert in
+  both implementations, with the reference's sentence). `--ssl-keyfile` and
+  `--ssl-certfile` now serve HTTPS; a solo value is a configuration error.
+- `--proxy-headers` and `--forwarded-allow-ips` are honoured. A request's
+  forwarded scheme and client address are believed only when the immediate peer
+  is trusted (`127.0.0.1` by default, `*` for any peer, CIDR networks and
+  literals accepted; the reference's `FORWARDED_ALLOW_IPS` variable is read the
+  same way), so the access log names the real client behind a load balancer
+  without letting an untrusted caller name itself.
+- The reference's tuning keys whose behaviour already existed are now resolved
+  instead of refused: the four retrieval-arm switches, the retain chunk sizes,
+  limits, mission and custom instructions, the consolidation mission, round
+  cap, source-fact budgets, strategies, scope limits and LLM batch size and
+  parallelism, the reflect mission and source-fact budget, the bank-config
+  process defaults those fields feed, the per-operation-type worker slot
+  reservations (`HINDSIGHT_API_WORKER_*_RESERVED_SLOTS`, each landing on the
+  operation type it names), the event-loop watchdog
+  (`HINDSIGHT_API_LOOP_WATCHDOG_ENABLED` and its poll and stall intervals,
+  which turn the stall probe on by default as the reference does), the dry-run
+  extraction switch (off answers the reference's 404 and its sentence),
+  `HINDSIGHT_API_WORKERS` and `HINDSIGHT_API_DAEMON_LOG`. A copied reference
+  `.env` now starts the service where it used to refuse startup. The retrieval,
+  write and reflection tuning follows: `HINDSIGHT_API_GRAPH_SEED_MIN_SIMILARITY`,
+  `HINDSIGHT_API_SEMANTIC_LINK_MIN_SIMILARITY`, `HINDSIGHT_API_BM25_MAX_QUERY_TERMS`,
+  the fixed recall budget levels, the per-arm score floors
+  (`HINDSIGHT_API_SEMANTIC_MIN_SIMILARITY`,
+  `HINDSIGHT_API_TEMPORAL_SEMANTIC_MIN_SIMILARITY`,
+  `HINDSIGHT_API_BM25_MIN_SCORE`), `HINDSIGHT_API_REFLECT_MAX_ITERATIONS` and
+  `HINDSIGHT_API_REFLECT_MAX_CONTEXT_TOKENS` now reach a shared `storage.Tuning`
+  both backends read (which also corrected two drifted defaults: semantic links
+  0.75 → 0.7, the reflection loop's 4 iterations / 4000 tokens → 10 / 100000),
+  the two history records honour their switches and entry bounds, admission
+  waits are per lane, the retain path honours its completion-token cap,
+  sub-batch budget, entity-lookup mode and candidate bound, and the database
+  session carries `HINDSIGHT_API_DB_STATEMENT_TIMEOUT`,
+  `HINDSIGHT_API_DB_MAX_PARALLEL_WORKERS_PER_GATHER`,
+  `HINDSIGHT_API_DB_SESSION_SETUP_ON_ACQUIRE` and
+  `HINDSIGHT_API_ENTITY_TRGM_SIMILARITY_THRESHOLD` as connection parameters, the
+  way the reference's per-connection callback does. The graph expansion honours
+  its per-entity target cap and its own statement timeout
+  (`HINDSIGHT_API_LINK_EXPANSION_PER_ENTITY_LIMIT`,
+  `HINDSIGHT_API_LINK_EXPANSION_TIMEOUT`), and the per-process bank-row cache
+  honours `HINDSIGHT_API_BANK_INFO_CACHE_MAX_ENTRIES` by dropping expired
+  entries before a live one. The MCP surface honours
+  `HINDSIGHT_API_MCP_AUTH_TOKEN` (a legacy bearer that replaces tenant auth for
+  the MCP namespace, with the reference's two 401 sentences),
+  `HINDSIGHT_API_MCP_ENABLED_TOOLS` (a server-level allowlist that hides tools
+  from `tools/list` and refuses their invocation) and
+  `HINDSIGHT_API_MCP_INSTRUCTIONS` (appended to the retain and recall tool
+  descriptions). The vector arm applies the deployment's pgvector tuning
+  (`HINDSIGHT_API_ANN_ITERATIVE_SCAN`, `HINDSIGHT_API_ANN_MAX_SCAN_TUPLES`)
+  transaction-locally and remembers the settings a server refuses; the migration
+  series can run over its own connection
+  (`HINDSIGHT_API_MIGRATION_DATABASE_URL`); a bank's list row reports its
+  resolved disposition and mission
+  (`HINDSIGHT_API_DISPOSITION_{SKEPTICISM,LITERALISM,EMPATHY}`, the reference's
+  overlay of configuration on the stored columns); and a new knowledge page's
+  refresh policy layers the process, tenant and bank values of
+  `HINDSIGHT_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER` under the request's own.
+  The deployment's server-level webhook
+  (`HINDSIGHT_API_WEBHOOK_URL` and its secret, event filter and
+  response-body switch) now delivers alongside each bank's own registrations,
+  the metrics surface honours its backlog, bank-id, tenant and event-loop-lag
+  switches (the lag histogram carries the reference's buckets), extensions
+  receive the allowlisted request headers
+  (`HINDSIGHT_API_EXTENSION_PASSTHROUGH_HEADERS`), a configured default bank
+  template is applied from the single bank-creation hook on every path that
+  creates a bank (with the create request's own fields winning), reads that
+  tolerate a replica can run on one
+  (`HINDSIGHT_API_READ_DATABASE_URL` and its pool bounds), and the keyword arm
+  can run on ParadeDB pg_search
+  (`HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*`). Refusing keys went from
+  A second parallel pass closed the recall ingress and internal-recall knobs
+  (`HINDSIGHT_API_RECALL_MAX_QUERY_TOKENS`, `_MAX_CONCURRENT`, and the chunk and
+  token budgets of the internal recall), the reflection completion cap and its
+  default options, the write side's causal-extraction switch, its default retain
+  strategy and the entity resolver's second trigram gate, and the worker /
+  consolidation family (`HINDSIGHT_API_BACKPRESSURE_DEFER_SECONDS`, the
+  `bank-pattern:priority` consolidation claim order, the consolidation batch,
+  attempt, budget and completion settings, and the stats-cache bound).
+  `HINDSIGHT_API_DATABASE_BACKEND` accepts the dialects this build implements and
+  names the one it does not. A fifth parallel pass closed the multi-worker
+  metrics label (`HINDSIGHT_API_METRICS_WORKER_LABEL`: slot claim, snapshots,
+  per-worker series), the adaptive recall budget function and its ratio and clamp
+  keys, the recall phase diagnostics,
+  `HINDSIGHT_API_ENTITY_INTRABATCH_MERGE_SIMILARITY`, the startup model
+  verification with `HINDSIGHT_API_MODEL_INIT_TIMEOUT` and
+  `HINDSIGHT_API_SKIP_LLM_VERIFICATION`, and the pool-acquire timeout and
+  slow-acquire warnings. Four keys became partial support: the value this build
+  implements is accepted and the rest are refused by name
+  (`GRAPH_RETRIEVER=link_expansion`, `MIGRATION_ISOLATION=false`,
+  `MIGRATION_CONCURRENCY=1`, `MCP_STATELESS=false`). Refusing keys went from 150
+  to 12. Running the configuration package's own contract suite again (it had
+  been skipped while another editor's throwaway probe file hung the package)
+  immediately found three real defects, all fixed: the pool slow-acquire
+  threshold's reference default is a *fractional* second (0.05) and was being
+  parsed as an integer, `HINDSIGHT_API_SKIP_LLM_VERIFICATION` had no probe value
+  that proved it is read, and that key needed a resolvable value in the provider
+  family contract. A sixth parallel pass closed the document-parser OCR chain
+  (`HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_*`: embedded images are transcribed
+  through a new vision adapter and the transcription joins the parsed text, with
+  the reference's construction-time validation), the alias-resolution cache
+  (`HINDSIGHT_API_BANK_ALIAS_CACHE_TTL_SECONDS` / `_MAX_ENTRIES`), the
+  consolidation near-duplicate threshold (`HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD`
+  now decides by cosine similarity, with a documented no-embedding fallback) and
+  the recall connection budget (`HINDSIGHT_API_RECALL_CONNECTION_BUDGET`: the
+  retrieval arms now run concurrently under that budget, with identical ordering,
+  ranks and phase accounting). The same pass fixed two semantic problems:
+  `HINDSIGHT_API_RETAIN_BATCH_ENABLED` meant "force async" here where the
+  reference routes extraction through the LLM Batch API (the invented rule is
+  gone, the key now accepts `false` and refuses `true` with the reason), and the
+  provider adapters now request prompt caching the way the reference does by
+  default (Anthropic's system block carries `cache_control: ephemeral`; the
+  OpenAI-compatible side sends `prompt_cache_key` and the host-specific session
+  headers). An earlier attempt to wire
+  `HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS` was
+  reverted it: the reference escalates *batch-API* extraction errors and this
+  build has no batch path, so the key has no seam and stays refused rather than
+  becoming a silent no-op), and
+  `docs/PARITY-PLAN.md` §10 lists every key that remains refused with its class
+  (wiring, small feature, or structural) so the choice stays visible.
+
 - The control-plane frontend is copied from the reference rather than
   reconstructed: `frontend/components/*` (the views, modals and editors),
   `app/[locale]/**` with the reference's `localePrefix: "never"` routing (clean

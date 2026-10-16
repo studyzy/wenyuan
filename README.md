@@ -16,25 +16,55 @@ public HTTP surface (routes, JSON field names, status codes, headers) and the
 PostgreSQL schema (tables, columns, enums) are preserved. It is written in Go
 using the standard library first.
 
-## Scope
-
-Implemented in this slice:
+## What is implemented
 
 - **Bank lifecycle** — create/list/replace/update/delete, aliases (list/add/
   promote/remove), per-bank configuration, retired-route responses.
-- **Retain** — memory writes (sync and async), file uploads, chunk/entity/
-  memory persistence, async operation tracking (list/fetch/cancel/retry).
-- **Recall** — multi-arm retrieval, fused re-ranking, token-budget selection,
-  tag filters, temporal windows, side channels.
-- **Reflect** — synthesized answers with cited evidence, execution traces,
-  structured output, directives, tool-loop error taxonomy.
+- **Retain** — memory writes (sync and async), file uploads with attachments,
+  chunk/entity/memory persistence, async operation tracking (list/fetch/cancel/
+  retry) with a real queue consumer (`cmd/worker`: leases, backoff, retries).
+- **Recall** — multi-arm retrieval with real vector search (pgvector), fusion
+  re-ranking with an optional cross-encoder reranker, token-budget selection,
+  tag filters and scopes, temporal windows parsed from the query.
+- **Reflect** — a bounded retrieval-and-synthesis tool loop with cited
+  evidence, execution traces, structured output, directives.
+- **Memory sub-surface** — list/get/patch memories, per-memory history and
+  observations, dry-run extraction, prompt preview.
+- **Mental models** — CRUD, refresh triggers (cron, tags-match, manual),
+  scheduled and on-write refresh through the worker, refresh history,
+  dry-run refresh.
+- **Knowledge base** — folders/pages tree, hybrid text + vector search,
+  export.
+- **Directives** — CRUD, surfaced into the reflection loop.
+- **Read surface** — documents, chunks, tags, entities and both memory and
+  entity graphs.
+- **Observations & consolidation** — consolidation passes, strategy preview,
+  recovery, stale-observation cleanup.
+- **Observability** — bank stats, memories timeseries, audit trail,
+  model-request trace, OTel tracing, Prometheus-style metrics.
+- **Webhooks** — registration CRUD plus delivery with retries and delivery
+  records.
+- **Transfer** — bank export/import over HTTP and via `bankctl`, document
+  transfer, whole-bank clone, attachment round-trip.
+- **MCP** — JSON-RPC endpoint under `/mcp` (feature-gated).
+- **Model providers** — chat/embedding/reranker ports with adapters for
+  OpenAI-compatible endpoints, Anthropic, Cohere/Gemini/TEI embeddings and
+  more; a deterministic no-model selection when nothing is configured.
+- **Background maintenance** — retention sweeps, stranded-work recovery,
+  scheduled mental-model refreshes; tenant/extension schema support.
+- **Object storage** — S3-compatible backend for stored files.
+- **Frontend** — a Next.js web UI under `frontend/` (the served API and
+  `wenyuan-admin ui` drive it).
+- **CLIs** — `bankctl` (admin: migrations, backup/restore, export/import,
+  repair) and `wenyuan-admin` (client: every API family, filesystem mirror,
+  explore TUI).
 
-Non-goals for this slice: worker/queue consumer, control-plane UI, deployment
-packaging, endpoints outside the first slice, and new performance features.
+**Intentionally out of scope:** OAuth provider integration and GCS / Azure
+object stores (the S3-compatible backend covers object storage).
 
 ## Requirements
 
-- Go 1.24 or newer
+- Go 1.25 or newer
 - PostgreSQL with `pgvector` and a full-text search extension (only when using
   the PostgreSQL store; the default in-memory store runs offline)
 
@@ -45,18 +75,31 @@ make build     # go build ./...
 make test      # go test -count=1 ./...
 make vet       # go vet ./...
 make pgx       # go build -tags pgx ./...   (compiles the PostgreSQL driver path)
-make check     # all of the above
+make check     # all of the above + lint
+make install   # build server, bankctl and wenyuan-admin into bin/
 ```
 
 The default build is standard-library-only and performs no network access. The
 PostgreSQL driver (`pgx`) is isolated behind the `pgx` build tag so that the
-default build stays dependency-light and offline.
+default build stays dependency-light and offline. `make check` is the same
+gate CI runs; `make test-pg` runs the PostgreSQL-backed suite against a live
+database (`WENYUAN_TEST_DATABASE_URL`), and `make parity` runs the upstream
+system-test stories against this build.
 
 ## Running the server
 
 ```sh
+make db-up                              # this project's own PostgreSQL on 127.0.0.1:15432
+export HINDSIGHT_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
 go run ./cmd/server                     # serves on the configured address
-go run ./cmd/server --host 0.0.0.0 --port 8888
+go run ./cmd/server --host 0.0.0.0 --port 18888
+go run ./cmd/worker                     # async operation consumer
+```
+
+Or with Docker (PostgreSQL + API + worker in one compose project):
+
+```sh
+docker compose up --build
 ```
 
 ### Server flags
@@ -66,11 +109,15 @@ go run ./cmd/server --host 0.0.0.0 --port 8888
 | `--host` | Listen host |
 | `--port` | Listen port |
 | `--workers` | Worker parallelism |
-| `--access-log` | Enable request access logging |
+| `--access-log` / `--no-access-log` | Enable/disable request access logging |
 | `--proxy-headers` | Honor forwarded/proxy headers |
+| `--forwarded-allow-ips` | Comma-separated IPs trusted with proxy headers |
 | `--daemon` | Run in daemon mode |
 | `--log-level` | Log verbosity |
 | `--ssl-certfile`, `--ssl-keyfile` | TLS certificate and key |
+
+`--reload` and `--idle-timeout` are accepted for compatibility and are no-ops
+in this build.
 
 ### Admin CLI
 
@@ -97,7 +144,7 @@ schema the tenant extension reports.
 built from `cmd/wenyuan` into `bin/` by `make install`.
 
 ```sh
-wenyuan-admin configure --api-url http://localhost:8888 [--api-key KEY]
+wenyuan-admin configure --api-url http://localhost:18888 [--api-key KEY]
 wenyuan-admin bank list
 wenyuan-admin memory retain BANK_ID "text"
 wenyuan-admin memory recall BANK_ID "query"
@@ -114,11 +161,31 @@ override both.
 
 ## Configuration
 
-Flags take precedence over environment variables, which take precedence over
+Precedence, highest first: flags, then the `.env` file (a discovered `.env` is
+authoritative over the environment, the reference's own entrypoint rule), then
+the rest of the process environment, then the configuration file, then the
 defaults.
+
+```sh
+wenyuan                                  # reads ./.env, then ./etc/wenyuan.yaml
+HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # named file, must exist
+```
+
+The configuration file is YAML, read from `etc/wenyuan.yaml` relative to the
+working directory — `/etc/wenyuan.yaml` inside the container image. It answers
+any key the environment answers, spelled without the `HINDSIGHT_API_` prefix and
+lowercased; a nested spelling is accepted and flattened to the same key (`llm:
+{provider: openai}` *is* `llm_provider: openai`), both spellings must agree if
+both appear, and a list value is refused because an environment value cannot
+carry one. The checked-in template is `etc/example.wenyuan.yaml`: copy it to
+`etc/wenyuan.yaml` and uncomment what the deployment needs — the real file
+carries real values and is not checked in. A file named by
+`HINDSIGHT_API_CONFIG_FILE` must exist and parse; an absent `etc/wenyuan.yaml`
+changes nothing.
 
 | Variable | Purpose |
 | --- | --- |
+| `HINDSIGHT_API_CONFIG_FILE` | Path of the YAML configuration file (default `etc/wenyuan.yaml`) |
 | `HINDSIGHT_API_HOST` | Listen host |
 | `HINDSIGHT_API_PORT` | Listen port |
 | `HINDSIGHT_API_DATABASE_URL` | PostgreSQL connection string |
@@ -135,92 +202,106 @@ defaults.
 | `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | Reflect observation default |
 | `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | Reflect observation token default |
 
+### Model providers
+
+Model access is configured per scope with environment variables that follow
+the reference's naming, so upstream documentation applies unchanged:
+
+- Chat: `HINDSIGHT_API_RETAIN_LLM_*`, `HINDSIGHT_API_REFLECT_LLM_*`,
+  `HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_*` (`_PROVIDER`, `_API_KEY`,
+  `_MODEL`, `_BASE_URL`, retry/backoff knobs, ...).
+- Embeddings: `HINDSIGHT_API_EMBEDDINGS_<VENDOR>_*` (openai, cohere, gemini,
+  tei, onnx, ...).
+- Reranking: `HINDSIGHT_API_RERANKER_*` (cohere, openrouter, ...).
+
+Unset means the deterministic no-model selection is used, which keeps memory
+writes and reflection working offline. `docs/CONFIGURATION.md` is the
+generated full key table — every environment variable with its file spelling,
+reference default and status — and `.env.example` ships the same surface in
+dotenv form; regenerate both with `scripts/render_config_reference.py`.
+
 ## HTTP API
 
 All bank-scoped routes are under `/v1/default/banks`. An alias may be used
 anywhere a bank id is accepted; responses always report the canonical bank id.
+The served surface is pinned by tests (`internal/app/route_coverage_test.go`)
+and matches the reference 100/100; the machine-readable contract is
+`internal/httpx/openapi.json`.
 
-### Monitoring
-
-| Method | Path |
+| Family | Routes (representative) |
 | --- | --- |
-| GET | `/health` |
-| GET | `/health/live` |
-| GET | `/health/ready` |
-| GET | `/version` |
-| GET | `/metrics` |
+| Monitoring | `GET /health`, `/health/live`, `/health/ready`, `/version`, `/metrics` |
+| Banks | `GET/POST /v1/default/banks`, `GET/PUT/PATCH/DELETE .../{bank_id}`, aliases, config (`GET/PATCH/DELETE`) |
+| Memory operations | `POST .../memories`, `DELETE .../memories` (clear), `POST .../files/retain`, `POST .../memories/recall`, `POST .../reflect` |
+| Memory sub-surface | `GET .../memories/list`, `GET/PATCH .../memories/{id}`, `.../history`, `DELETE .../memories/{id}/observations`, `POST .../memories/dry-run-extract`, `POST .../prompts/preview` |
+| Async operations | `GET .../operations`, `GET/DELETE .../operations/{id}`, `DELETE .../operations/{id}/delete`, `POST .../operations/{id}/retry` |
+| Mental models | `GET/POST .../mental-models`, `GET/PATCH/DELETE .../mental-models/{id}`, `.../history`, `.../refresh`, `.../dry-run-refresh`, `.../clear` |
+| Knowledge base | `GET .../knowledge-base/tree`, `POST .../folders`, `POST .../pages`, `GET .../export`, `GET .../search`, `GET/PATCH/DELETE` nodes |
+| Directives | `GET/POST .../directives`, `GET/PATCH/DELETE .../directives/{id}` |
+| Read surface | `GET/PATCH/DELETE .../documents/{id}`, `GET .../documents/{id}/chunks`, `POST .../documents/{id}/reprocess`, `GET .../tags`, `GET .../graph`, `GET .../entities`, `GET .../entities/graph`, `POST .../entities/{id}/regenerate`, `GET /v1/default/chunks/{id}` |
+| Observations & consolidation | `DELETE .../observations`, `GET .../observations/scopes`, `POST .../consolidate`, `POST .../consolidation/recover`, `POST .../consolidation-strategies/preview` |
+| Reporting | `GET .../stats`, `GET .../stats/memories-timeseries`, `POST .../health/llm`, `GET .../audit-logs` (+`/stats`), `GET .../llm-requests` (+`/stats`) |
+| Webhooks | `GET/POST .../webhooks`, `GET/PATCH/DELETE .../webhooks/{id}`, `GET .../webhooks/{id}/deliveries` |
+| Transfer | `POST .../import`, `GET .../export`, `POST .../transfer/export`, `POST .../transfer/import`, `POST .../document-transfer` (+`/export`), `POST .../clone`, `GET .../attachments/{id}`, `GET /v1/default/files/download/{...}` |
+| MCP | `POST /mcp` (JSON-RPC, gated by `HINDSIGHT_API_MCP_ENABLED`) |
+| Contract | `GET /v1/bank-template-schema`, `GET /v1/version` |
 
-### Banks
-
-| Method | Path |
-| --- | --- |
-| GET | `/v1/default/banks` |
-| POST | `/v1/default/banks` |
-| PUT | `/v1/default/banks/{bank_id}` |
-| PATCH | `/v1/default/banks/{bank_id}` |
-| DELETE | `/v1/default/banks/{bank_id}` |
-| GET | `/v1/default/banks/{bank_id}/aliases` |
-| POST | `/v1/default/banks/{bank_id}/aliases` |
-| PATCH | `/v1/default/banks/{bank_id}/aliases/{alias}` |
-| DELETE | `/v1/default/banks/{bank_id}/aliases/{alias}` |
-| GET | `/v1/default/banks/{bank_id}/config` |
-| PATCH | `/v1/default/banks/{bank_id}/config` |
-
-The `GET/PUT /v1/default/banks/{bank_id}/profile` and
-`POST /v1/default/banks/{bank_id}/background` routes are retired and answer
+`GET/PUT /v1/default/banks/{bank_id}/profile` and
+`POST /v1/default/banks/{bank_id}/background` are retired and answer
 `410 Gone`, naming the config read/write routes as the replacement.
-
-### Memory operations
-
-| Method | Path |
-| --- | --- |
-| POST | `/v1/default/banks/{bank_id}/memories` |
-| POST | `/v1/default/banks/{bank_id}/files/retain` |
-| POST | `/v1/default/banks/{bank_id}/memories/recall` |
-| POST | `/v1/default/banks/{bank_id}/reflect` |
-| GET | `/v1/default/banks/{bank_id}/operations` |
-| GET | `/v1/default/banks/{bank_id}/operations/{operation_id}` |
-| DELETE | `/v1/default/banks/{bank_id}/operations/{operation_id}` |
-| POST | `/v1/default/banks/{bank_id}/operations/{operation_id}/retry` |
 
 ## Storage
 
-The PostgreSQL schema lives in `migrations/`; the same files are embedded under
-`internal/storage/embedded/` for `go:embed`. Tables: `banks`, `bank_aliases`,
-`documents`, `chunks`, `memory_units`, `entities`, `unit_entities`,
-`memory_links`, `entity_cooccurrences`, `async_operations`.
+The PostgreSQL schema lives in `migrations/` (embedded under
+`internal/storage/embedded/` for `go:embed`). The series is **generated** from
+the reference database's own catalogue — five files, `0001_extensions` through
+`0005_reference_functions` — and matches the upstream schema object for
+object: 24 tables, 234 columns, 75 indexes, 191 constraints, 236 functions
+(`docs/SCHEMA-ALIGNMENT.md` is the standing comparison and reports zero
+differences). Existing Hindsight databases can be served directly.
 
 ## Layout
 
 ```
 cmd/server        process entrypoint (HTTP API)
+cmd/worker        async operation consumer entrypoint
 cmd/bankctl       administrative bank command surface
 cmd/wenyuan       client CLI entrypoint (wenyuan-admin binary)
-internal/app      application composition and middleware
+cmd/schematool    schema dump helper for the migration generator
+internal/app      application composition, worker processors, e2e parity tests
 internal/bankapi  bank lifecycle handlers and routes
-internal/bankadmin bank rename / archive commands
+internal/bankadmin bank rename / archive commands shared by bankctl
 internal/cli      client CLI implementation (registry, HTTP client, commands)
 internal/config   flag > environment > default resolution
-internal/httpx    router, middleware, JSON and error envelopes
+internal/httpx    router, middleware, JSON and error envelopes, OpenAPI
 internal/memoryops retain / recall / reflect handlers and models
 internal/monitoring health, readiness, version, metrics
+internal/provider model-provider port + vendor adapters (openai, anthropic,
+                  embed, rerank, none, mock)
 internal/storage  storage interface, in-memory and PostgreSQL stores
 migrations        PostgreSQL schema migrations
 ```
+
+See `AGENTS.md` for the full package map and the architectural boundaries.
 
 ## Project files
 
 | File | Purpose |
 | --- | --- |
-| `Makefile` | Build, test, vet, and pgx-build targets |
+| `Makefile` | Build, test, vet, pgx-build, lint and parity targets |
 | `CHANGELOG.md` | Notable changes per release (Keep a Changelog) |
 | `CONTRIBUTING.md` | How to propose changes |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
 | `SECURITY.md` | How to report a vulnerability privately |
+| `Dockerfile`, `docker-compose.yml` | Server + worker image; compose project with pgvector |
 | `.github/workflows/ci.yml` | Build, test, vet, gofmt on every push and PR |
 | `.github/ISSUE_TEMPLATE/` | Bug report and feature request forms |
 | `docs/ROADMAP.md` | Outstanding work and known limitations (handover) |
+| `docs/GAPS.md`, `docs/FUNCTIONAL-GAPS.md` | Functional/contract gap ledgers with evidence |
+| `docs/PARITY-PLAN.md`, `docs/PARITY-SUITE.md` | Parity strategy and the executable suite |
+| `docs/SCHEMA-ALIGNMENT.md` | Standing schema comparison against the reference (must stay empty) |
 | `docs/MIGRATION.md` | Migrating an existing Hindsight bank into Wenyuan |
+| `docs/ARCHITECTURE-REVIEW.md` | Architecture review: layering, coupling, findings |
 
 ## Contributing
 
