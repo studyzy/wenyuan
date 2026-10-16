@@ -33,7 +33,7 @@ def _client() -> WenYuan:
 
 def _version_response() -> VersionResponse:
     features = FeaturesInfo(**dict.fromkeys(FeaturesInfo.model_fields, False))
-    return VersionResponse(api_version="0.10.3", features=features)
+    return VersionResponse(api_version="0.8.2", features=features)
 
 
 class _RecordingClientTestCase(unittest.TestCase):
@@ -79,7 +79,7 @@ class VersionTest(unittest.TestCase):
 
         version = self.client.get_version()
 
-        self.assertEqual(version.api_version, "0.10.3")
+        self.assertEqual(version.api_version, "0.8.2")
         self.client._monitoring_api.get_version.assert_called_once()
 
 
@@ -95,7 +95,7 @@ class AsyncVersionTest(unittest.IsolatedAsyncioTestCase):
 
         version = await self.client.aget_version()
 
-        self.assertEqual(version.api_version, "0.10.3")
+        self.assertEqual(version.api_version, "0.8.2")
         self.client._monitoring_api.get_version.assert_awaited_once()
 
 

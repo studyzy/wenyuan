@@ -282,7 +282,7 @@ func TestVersionFlagPrintsCLIVersion(t *testing.T) {
 // status/database/version lines the reference prints.
 func TestHealthPrettyMatchesReferenceLayout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"healthy","database":"connected","version":"0.10.3"}`))
+		_, _ = w.Write([]byte(`{"status":"healthy","database":"connected","version":"0.8.2"}`))
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
@@ -292,7 +292,7 @@ func TestHealthPrettyMatchesReferenceLayout(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, errOut)
 	}
-	for _, want := range []string{"Health Check", "Status: healthy", "Database: connected", "Version: 0.10.3"} {
+	for _, want := range []string{"Health Check", "Status: healthy", "Database: connected", "Version: 0.8.2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("health output missing %q:\n%s", want, out)
 		}
@@ -302,7 +302,7 @@ func TestHealthPrettyMatchesReferenceLayout(t *testing.T) {
 // TestVersionPrettyShowsFeatures pins the ordered feature block.
 func TestVersionPrettyShowsFeatures(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"api_version":"0.10.3","features":{"mcp":true,"observations":false,"worker":true}}`))
+		_, _ = w.Write([]byte(`{"api_version":"0.8.2","features":{"mcp":true,"observations":false,"worker":true}}`))
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
@@ -312,7 +312,7 @@ func TestVersionPrettyShowsFeatures(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, errOut)
 	}
-	for _, want := range []string{"API Version", "Version: 0.10.3", "Features:", "MCP Server: enabled", "Observations: disabled", "Background Worker: enabled"} {
+	for _, want := range []string{"API Version", "Version: 0.8.2", "Features:", "MCP Server: enabled", "Observations: disabled", "Background Worker: enabled"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("version output missing %q:\n%s", want, out)
 		}
