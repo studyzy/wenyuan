@@ -101,19 +101,19 @@ export function OptionCards<T extends string>({
             title={option.hint}
             onClick={() => onChange(option.value)}
             className={cn(
-              "flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
+              "flex flex-col items-start gap-1 rounded-[12px] border border-solid p-3 text-left transition-[background-color,border-color,box-shadow] duration-200 ease-[var(--ease-out-quint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
               active
-                ? "border-primary bg-primary/5 ring-1 ring-primary/40"
+                ? "border-primary/45 bg-primary/[0.06] shadow-[inset_0_1px_0_0_color-mix(in_oklab,var(--primary)_14%,transparent)]"
                 : "border-border hover:bg-muted/50"
             )}
           >
-            <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <span className="flex items-center gap-2 text-[13px] font-medium text-foreground">
               <option.icon
                 className={cn("h-4 w-4", active ? "text-primary" : "text-muted-foreground")}
               />
               {option.label}
             </span>
-            <span className="text-xs leading-snug text-muted-foreground">{option.description}</span>
+            <span className="text-[11.5px] leading-snug text-muted-foreground">{option.description}</span>
           </button>
         );
       })}
@@ -137,7 +137,7 @@ export function Segmented<T extends string>({
     <div
       role="radiogroup"
       aria-label={ariaLabel}
-      className="inline-flex rounded-md bg-muted/50 p-0.5"
+      className="inline-flex rounded-[10px] border border-border border-solid bg-muted/70 p-0.5"
     >
       {options.map((option) => {
         const active = option.value === value;
@@ -149,9 +149,9 @@ export function Segmented<T extends string>({
             aria-checked={active}
             onClick={() => onChange(option.value)}
             className={cn(
-              "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+              "rounded-[7px] px-2.5 py-1 text-[11.5px] font-medium tracking-[-0.005em] transition-[background-color,color,box-shadow] duration-200 ease-[var(--ease-out-quint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
               active
-                ? "bg-background text-foreground shadow-sm"
+                ? "bg-card text-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),var(--shadow-2xs)] dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),var(--shadow-2xs)]"
                 : "text-muted-foreground hover:text-foreground"
             )}
           >

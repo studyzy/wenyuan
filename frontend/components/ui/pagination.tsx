@@ -26,8 +26,8 @@ export function Pagination({ page, pageSize, total, disabled, onPageChange }: Pa
   const offset = (page - 1) * pageSize;
 
   return (
-    <div className="flex items-center justify-between mt-3 pt-3 border-t">
-      <div className="text-xs text-muted-foreground">
+    <div className="mt-3 flex items-center justify-between border-t border-border pt-3">
+      <div className="font-mono text-[11px] tabular-nums text-muted-foreground">
         {offset + 1}-{Math.min(offset + pageSize, total)} of {total}
       </div>
       <div className="flex items-center gap-1">
@@ -49,7 +49,7 @@ export function Pagination({ page, pageSize, total, disabled, onPageChange }: Pa
         >
           <ChevronLeft className="h-3 w-3" />
         </Button>
-        <span className="text-xs px-2">
+        <span className="px-2 font-mono text-[11px] tabular-nums text-muted-foreground">
           {page} / {pageCount}
         </span>
         <Button

@@ -11,6 +11,13 @@ export const PUBLIC_PATH_PREFIXES: readonly string[] = [
   "/api/version",
   "/logo.svg",
   "/favicon.ico",
+  // The web app manifest and the touch icons it points at have to be reachable
+  // before authentication: the browser fetches them to install or pin the app,
+  // and a redirect to /login makes the manifest unparseable.
+  "/manifest.webmanifest",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
   "/_next",
   "/static",
 ];

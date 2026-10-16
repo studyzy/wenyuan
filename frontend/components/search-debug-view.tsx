@@ -776,7 +776,7 @@ export function SearchDebugView() {
                                     </div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="text-2xl font-bold text-foreground">
+                                    <div className="font-mono text-[22px] font-semibold tabular-nums tracking-tight text-foreground">
                                       {totalResults}
                                     </div>
                                     <div className="text-[10px] text-muted-foreground">
@@ -853,7 +853,7 @@ export function SearchDebugView() {
                                                 )}
                                               </div>
                                               <div className="flex items-end justify-between">
-                                                <div className="text-2xl font-bold text-foreground">
+                                                <div className="font-mono text-[22px] font-semibold tabular-nums tracking-tight text-foreground">
                                                   {methodResults.length}
                                                 </div>
                                                 <div className="text-[10px] text-muted-foreground">
@@ -989,7 +989,7 @@ export function SearchDebugView() {
                                 {t("rrfDescription")}
                               </div>
                             </div>
-                            <div className="text-2xl font-bold text-foreground">
+                            <div className="font-mono text-[22px] font-semibold tabular-nums tracking-tight text-foreground">
                               {trace.rrf_merged.length}
                             </div>
                             {isExpanded ? (
@@ -1096,7 +1096,7 @@ export function SearchDebugView() {
                                 </span>
                               </div>
                             </div>
-                            <div className="text-2xl font-bold text-foreground">
+                            <div className="font-mono text-[22px] font-semibold tabular-nums tracking-tight text-foreground">
                               {trace.reranked.length}
                             </div>
                             {isExpanded ? (
@@ -1234,7 +1234,7 @@ export function SearchDebugView() {
                         {t("finalResultsDescription")}
                       </div>
                     </div>
-                    <div className="text-2xl font-bold text-primary">{results?.length || 0}</div>
+                    <div className="font-mono text-[22px] font-semibold tabular-nums tracking-tight text-primary">{results?.length || 0}</div>
                   </div>
                 </CardContent>
               </Card>

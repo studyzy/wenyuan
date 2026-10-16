@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/ui/pagination";
+import { PageHeader, Eyebrow } from "@/components/ui/page-header";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
@@ -226,13 +227,18 @@ export function BanksOverview() {
   // A search that matches nothing still shows the table UI, so the query can be edited.
   if (!loading && total === 0 && !search) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-80px)] bg-muted/20">
-        <div className="max-w-md rounded-lg border-2 border-border bg-card p-10 text-center shadow-lg">
+      <div className="texture-grid-fine flex h-[calc(100vh-80px)] items-center justify-center">
+        <div className="animate-rise-in panel-edge max-w-md rounded-[18px] border border-border bg-card p-10 text-center">
           {/* Tumbling WenYuan mascot — loops forever as a friendly greeting. */}
-          <Spinner size="xl" variant="jump" className="mx-auto mb-4" />
-          <h3 className="mb-3 text-2xl font-bold text-card-foreground">{t("welcomeTitle")}</h3>
-          <p className="mb-6 text-muted-foreground">{t("welcomeBody")}</p>
-          <Button onClick={() => window.dispatchEvent(new CustomEvent("wenyuan:create-bank"))}>
+          <Spinner size="xl" variant="jump" className="mx-auto mb-5" />
+          <h3 className="font-heading mb-2.5 text-[22px] font-semibold tracking-[-0.02em] text-card-foreground">
+            {t("welcomeTitle")}
+          </h3>
+          <p className="mb-7 text-sm leading-relaxed text-muted-foreground">{t("welcomeBody")}</p>
+          <Button
+            variant="gradient"
+            onClick={() => window.dispatchEvent(new CustomEvent("wenyuan:create-bank"))}
+          >
             <Plus className="mr-1.5 h-4 w-4" />
             {tNavBank("create")}
           </Button>
@@ -243,22 +249,23 @@ export function BanksOverview() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">{t("title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t("subtitle")}</p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          // The create dialog (with its template import) lives in the header selector;
-          // this asks that component to open it rather than shipping a second copy.
-          onClick={() => window.dispatchEvent(new CustomEvent("wenyuan:create-bank"))}
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          {tNavBank("create")}
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow={<Eyebrow>memory banks</Eyebrow>}
+        title={t("title")}
+        description={t("subtitle")}
+        actions={
+          <Button
+            variant="gradient"
+            size="sm"
+            // The create dialog (with its template import) lives in the header selector;
+            // this asks that component to open it rather than shipping a second copy.
+            onClick={() => window.dispatchEvent(new CustomEvent("wenyuan:create-bank"))}
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            {tNavBank("create")}
+          </Button>
+        }
+      />
 
       <div className="mb-4 flex items-center gap-3">
         <div className="relative flex-1">
@@ -302,7 +309,7 @@ export function BanksOverview() {
           <span>{tCommon("loading")}</span>
         </div>
       ) : banks.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card py-16 text-center text-muted-foreground">
+        <div className="rounded-[13px] border border-border bg-card py-16 text-center text-sm text-muted-foreground">
           {t("noSearchResults")}
         </div>
       ) : (
@@ -359,11 +366,11 @@ export function BanksOverview() {
                         <div className="flex items-center gap-2">
                           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
                             <div
-                              className="h-full rounded-full bg-primary/60"
+                              className="h-full rounded-full bg-primary-gradient"
                               style={{ width: `${barPct}%` }}
                             />
                           </div>
-                          <span className="tabular-nums text-xs text-muted-foreground">
+                          <span className="font-mono text-[11px] text-muted-foreground">
                             {formatCompact(bank.fact_count)}
                           </span>
                         </div>

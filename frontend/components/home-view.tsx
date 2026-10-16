@@ -10,22 +10,25 @@ import type { GraphData, GraphNode, GraphLink } from "./graph-data";
 import { Button } from "@/components/ui/button";
 import { Network, FileText, Layers, FilePlus, ArrowRight } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+import { PageHeader, Eyebrow } from "@/components/ui/page-header";
 import { formatRelativeTime, formatAbsoluteDateTime } from "@/lib/relative-time";
 import { MemoryStoreCard, MemoriesActivityChart, type BankStats } from "./bank-stats-view";
 import { TreeRow } from "./knowledge-base-view";
 import { useFeatures } from "@/lib/features-context";
 
-const FALLBACK_COLOR = "#0074d9";
+const FALLBACK_COLOR = "var(--hs-brand-blue)";
 // The dashboard constellation is a glanceable memory map, not the full graph
 // explorer. Edge count grows super-linearly with nodes (≈1k nodes → ~67k edges,
 // ~22MB), so cap nodes here — the Memories view has the uncapped graph.
 const GRAPH_NODE_CAP = 200;
 // Cluster the memory constellation by fact type, matching the memories charts.
+// The graph component resolves a `var(...)` cluster color against the live
+// theme, so these stay in step with the chart palette rather than drifting.
 const TYPE_COLORS: Record<string, string> = {
   world: "#8b5cf6",
   experience: "#ec4899",
   observation: "#6366f1",
-  entity: "#0ea5e9",
+  entity: "var(--hs-chart-semantic)",
 };
 
 // Documents have no standard name field (metadata is free-form and varies by
@@ -182,24 +185,32 @@ export function HomeView({
 
   return (
     <div>
-      <h1 className="text-3xl font-bold mb-2 text-foreground">{t("title")}</h1>
-      <p className="text-muted-foreground mb-6">
-        {t("subtitle")} <span className="font-mono text-foreground">{bankId}</span>
-      </p>
+      <PageHeader
+        eyebrow={<Eyebrow>bank overview</Eyebrow>}
+        title={t("title")}
+        description={
+          <>
+            {t("subtitle")}{" "}
+            <span className="font-mono text-[12.5px] text-foreground">{bankId}</span>
+          </>
+        }
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[520px]">
+      <div className="grid grid-cols-1 gap-4 lg:h-[520px] lg:grid-cols-3">
         {/* Memory constellation — fills the row height so it never leaves a gap. */}
-        <div className="lg:col-span-2 bg-card border border-border border-solid rounded-[16px] overflow-hidden flex flex-col lg:h-full">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+        <div className="animate-rise-in panel-edge flex flex-col overflow-hidden rounded-[14px] border border-border border-solid bg-card lg:col-span-2 lg:h-full">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
-              <Network className="w-4 h-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold text-foreground">{t("constellationTitle")}</h2>
+              <Network className="h-4 w-4 text-primary" />
+              <h2 className="font-heading text-[13.5px] font-semibold text-foreground">
+                {t("constellationTitle")}
+              </h2>
             </div>
             <button
               onClick={() => onNavigate("data")}
-              className="text-xs text-primary hover:underline flex items-center gap-1"
+              className="flex cursor-pointer items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary-soft"
             >
-              {t("viewAll")} <ArrowRight className="w-3 h-3" />
+              {t("viewAll")} <ArrowRight className="h-3 w-3" />
             </button>
           </div>
           {constellationData.nodes.length > 0 ? (
@@ -224,16 +235,21 @@ export function HomeView({
         </div>
 
         {/* Right column: knowledge pages + recent documents (share the row height). */}
-        <div className="flex flex-col gap-4 lg:h-full min-h-0">
-          <div className="bg-card border border-border border-solid rounded-[16px] flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-              <h2 className="text-sm font-semibold text-foreground">{t("pagesTitle")}</h2>
+        <div className="flex min-h-0 flex-col gap-4 lg:h-full">
+          <div
+            className="animate-rise-in panel-edge flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-border border-solid bg-card"
+            style={{ "--enter-delay": "60ms" } as React.CSSProperties}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="font-heading text-[13.5px] font-semibold text-foreground">
+                {t("pagesTitle")}
+              </h2>
               {pages.length > 0 && (
                 <button
                   onClick={() => onNavigate("knowledge")}
-                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                  className="flex cursor-pointer items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary-soft"
                 >
-                  {t("viewAll")} <ArrowRight className="w-3 h-3" />
+                  {t("viewAll")} <ArrowRight className="h-3 w-3" />
                 </button>
               )}
             </div>
@@ -271,15 +287,20 @@ export function HomeView({
             )}
           </div>
 
-          <div className="bg-card border border-border border-solid rounded-[16px] flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-              <h2 className="text-sm font-semibold text-foreground">{t("recentDocsTitle")}</h2>
+          <div
+            className="animate-rise-in panel-edge flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-border border-solid bg-card"
+            style={{ "--enter-delay": "120ms" } as React.CSSProperties}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="font-heading text-[13.5px] font-semibold text-foreground">
+                {t("recentDocsTitle")}
+              </h2>
               {docs.length > 0 && (
                 <button
                   onClick={() => onNavigate("documents")}
-                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                  className="flex cursor-pointer items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary-soft"
                 >
-                  {t("viewAll")} <ArrowRight className="w-3 h-3" />
+                  {t("viewAll")} <ArrowRight className="h-3 w-3" />
                 </button>
               )}
             </div>
@@ -289,17 +310,17 @@ export function HomeView({
                   <li key={`${d.id}-${i}`}>
                     <button
                       onClick={() => onNavigate("documents")}
-                      className="w-full flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-muted text-left"
+                      className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-[7px] px-2 py-1.5 text-left transition-colors hover:bg-accent"
                     >
-                      <span className="inline-flex items-center gap-1.5 min-w-0">
-                        <FileText className="w-3 h-3 text-muted-foreground flex-shrink-0" />
-                        <span className="text-xs font-mono truncate" title={d.id}>
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <FileText className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                        <span className="truncate font-mono text-[11.5px] text-foreground" title={d.id}>
                           {d.id}
                         </span>
                       </span>
                       {d.created_at && (
                         <span
-                          className="text-[11px] text-muted-foreground flex-shrink-0"
+                          className="flex-shrink-0 font-mono text-[10.5px] text-muted-foreground"
                           title={formatAbsoluteDateTime(d.created_at)}
                         >
                           {formatRelativeTime(d.created_at)}

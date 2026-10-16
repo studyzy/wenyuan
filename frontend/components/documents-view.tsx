@@ -1361,7 +1361,7 @@ export function DocumentsView() {
           Export/Import Actions menu on the same row (right-aligned). */}
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2 text-foreground">{tBank("documents")}</h1>
+          <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{tBank("documents")}</h1>
           <p className="text-muted-foreground">{tBank("documentsDescription")}</p>
         </div>
         {(canExport || canImport) && (

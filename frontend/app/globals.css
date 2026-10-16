@@ -15,52 +15,61 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Design tokens. Values are plain colors rather than channel triplets so the
- * `@theme inline` map below can forward them into generated utilities
- * unchanged, arbitrary-value syntax included.
+ * Design tokens — "precision instrument" palette.
+ *
+ * #0052D9 is the single locked brand accent. It is a deep, saturated signal
+ * blue that reads as engineering rather than decoration; a lighter sibling
+ * (`--primary-soft`) carries the accent in dark mode and in hairline glow
+ * work, where the full-strength blue would sink into the surface.
+ *
+ * Light surfaces are cool blue-slate rather than pure grey, so the accent sits
+ * on the page as a continuation of the surface rather than a sticker on it.
+ * Values are plain colors rather than channel triplets so the `@theme inline`
+ * map below can forward them into generated utilities unchanged.
  */
 :root {
-  --background: #F3F5F9;
-  --foreground: #0D1117;
+  --background: #F4F6FB;
+  --foreground: #0B1220;
   --card: #FFFFFF;
-  --card-foreground: #0D1117;
+  --card-foreground: #0B1220;
   --popover: #FFFFFF;
-  --popover-foreground: #0D1117;
-  --primary: #0074D9;
+  --popover-foreground: #0B1220;
+  --primary: #0052D9;
+  --primary-soft: #2B7BEF;
   --primary-foreground: #FFFFFF;
-  --primary-gradient: linear-gradient(135deg, #0074d9 0%, #009296 100%);
-  --secondary: #EDF0F6;
-  --secondary-foreground: #0D1117;
-  --muted: #EDF0F6;
-  --muted-foreground: #525866;
-  --accent: #EDF0F6;
-  --accent-foreground: #0D1117;
-  --destructive: #D4183D;
+  --primary-gradient: linear-gradient(135deg, #0052D9 0%, #1B6DE0 52%, #2E8FEA 100%);
+  --secondary: #E8EDF7;
+  --secondary-foreground: #0B1220;
+  --muted: #E8EDF7;
+  --muted-foreground: #4A5670;
+  --accent: #E8EDF7;
+  --accent-foreground: #0B1220;
+  --destructive: #C8264F;
   --destructive-foreground: #FFFFFF;
-  --border: rgba(0, 0, 0, 0.08);
-  --input: rgba(0, 0, 0, 0.08);
-  --ring: #0074D9;
-  --chart-1: #2C82F5;
-  --chart-2: #10B981;
-  --chart-3: #8B5CF6;
-  --chart-4: #F59E0B;
-  --chart-5: #EC4899;
-  --chip-tag: #e7edf5;
-  --chip-tag-border: #d3dfec;
-  --chip-entity: #eaeaf7;
-  --chip-entity-border: #dcdcf1;
-  --chip-meta: #f4f6f8;
-  --chip-meta-border: #e7ebef;
-  --chip-fg: #55677d;
-  --chip-accent: #0e7f8c;
+  --border: rgba(11, 24, 52, 0.10);
+  --input: rgba(11, 24, 52, 0.12);
+  --ring: #0052D9;
+  --chart-1: #0052D9;
+  --chart-2: #00A97F;
+  --chart-3: #7C5CF0;
+  --chart-4: #E8912A;
+  --chart-5: #E0447C;
+  --chip-tag: #E7EEFA;
+  --chip-tag-border: #CFDDF4;
+  --chip-entity: #E8E9F8;
+  --chip-entity-border: #D6D9F2;
+  --chip-meta: #EFF2F8;
+  --chip-meta-border: #E0E5EF;
+  --chip-fg: #4D5F7A;
+  --chip-accent: #0B5FB0;
   --sidebar: #FFFFFF;
-  --sidebar-foreground: #6C7586;
-  --sidebar-primary: #0074D9;
+  --sidebar-foreground: #64708A;
+  --sidebar-primary: #0052D9;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #EDF0F6;
-  --sidebar-accent-foreground: #0D1117;
-  --sidebar-border: rgba(0, 0, 0, 0.05);
-  --sidebar-ring: #0074D9;
+  --sidebar-accent: #E8EDF7;
+  --sidebar-accent-foreground: #0B1220;
+  --sidebar-border: rgba(11, 24, 52, 0.06);
+  --sidebar-ring: #0052D9;
   --font-fallback: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --radius: 0.5rem;
   --shadow-x: 0px;
@@ -69,98 +78,112 @@
   --shadow-spread: 0px;
   --shadow-opacity: 0.17;
   --shadow-color: #000000;
-  --shadow-2xs: 0px 1px 3px 0px hsl(0 0% 0% / 0.09);
-  --shadow-xs: 0px 1px 3px 0px hsl(0 0% 0% / 0.09);
-  --shadow-sm: 0px 1px 3px 0px hsl(0 0% 0% / 0.17), 0px 1px 2px -1px hsl(0 0% 0% / 0.17);
-  --shadow: 0px 1px 3px 0px hsl(0 0% 0% / 0.17), 0px 1px 2px -1px hsl(0 0% 0% / 0.17);
-  --shadow-md: 0px 1px 3px 0px hsl(0 0% 0% / 0.17), 0px 2px 4px -1px hsl(0 0% 0% / 0.17);
-  --shadow-lg: 0px 1px 3px 0px hsl(0 0% 0% / 0.17), 0px 4px 6px -1px hsl(0 0% 0% / 0.17);
-  --shadow-xl: 0px 1px 3px 0px hsl(0 0% 0% / 0.17), 0px 8px 10px -1px hsl(0 0% 0% / 0.17);
-  --shadow-2xl: 0px 1px 3px 0px hsl(0 0% 0% / 0.43);
+  --shadow-2xs: 0px 1px 2px 0px hsl(222 45% 12% / 0.05);
+  --shadow-xs: 0px 1px 2px 0px hsl(222 45% 12% / 0.06);
+  --shadow-sm: 0px 1px 2px 0px hsl(222 45% 12% / 0.06), 0px 1px 3px -1px hsl(222 45% 12% / 0.08);
+  --shadow: 0px 1px 3px 0px hsl(222 45% 12% / 0.08), 0px 2px 4px -2px hsl(222 45% 12% / 0.06);
+  --shadow-md: 0px 2px 4px -1px hsl(222 45% 12% / 0.08), 0px 6px 12px -4px hsl(222 45% 12% / 0.08);
+  --shadow-lg: 0px 4px 8px -2px hsl(222 45% 12% / 0.08), 0px 12px 24px -8px hsl(222 45% 12% / 0.10);
+  --shadow-xl: 0px 8px 16px -4px hsl(222 45% 12% / 0.08), 0px 20px 40px -12px hsl(222 45% 12% / 0.12);
+  --shadow-2xl: 0px 24px 56px -16px hsl(222 45% 12% / 0.22);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
-  --hs-surface-page: #F3F5F9;
+  --hs-surface-page: #F4F6FB;
   --hs-surface-card: #FFFFFF;
   --hs-surface-sidebar: #FFFFFF;
-  --hs-surface-hover: #EDF0F6;
-  --hs-surface-muted: #EDF0F6;
-  --hs-fg-primary: #0D1117;
-  --hs-fg-muted: #6C7586;
+  --hs-surface-hover: #E8EDF7;
+  --hs-surface-muted: #E8EDF7;
+  --hs-fg-primary: #0B1220;
+  --hs-fg-muted: #64708A;
   --hs-fg-on-accent: #FFFFFF;
-  --hs-border-default: rgba(0, 0, 0, 0.08);
-  --hs-border-subtle: rgba(0, 0, 0, 0.05);
-  --hs-success: #00BC7D;
-  --hs-warning: #F59E0B;
-  --hs-danger: #D4183D;
-  --hs-info: #0074D9;
-  --hs-neutral: #6C7586;
-  --hs-brand-blue: #0074D9;
-  --hs-brand-teal: #009296;
-  --hs-chart-world: #2C82F5;
-  --hs-chart-experience: #10B981;
-  --hs-chart-observations: #8B5CF6;
-  --hs-chart-temporal: #F59E0B;
-  --hs-chart-semantic: #009296;
-  --hs-chart-entity: #EC4899;
+  --hs-border-default: rgba(11, 24, 52, 0.10);
+  --hs-border-subtle: rgba(11, 24, 52, 0.06);
+  --hs-success: #00A97F;
+  --hs-warning: #E8912A;
+  --hs-danger: #C8264F;
+  --hs-info: #0052D9;
+  --hs-neutral: #64708A;
+  --hs-brand-blue: #0052D9;
+  --hs-brand-teal: #0E7C9B;
+  --hs-chart-world: #0052D9;
+  --hs-chart-experience: #00A97F;
+  --hs-chart-observations: #7C5CF0;
+  --hs-chart-temporal: #E8912A;
+  --hs-chart-semantic: #0E7C9B;
+  --hs-chart-entity: #E0447C;
 }
 
+/*
+ * Dark mode is the instrument panel: a near-black blue hull (#070B16) with
+ * raised panels a shade above it, so depth comes from luminance steps rather
+ * than from drop shadows that a dark surface cannot cast.
+ */
 .dark {
-  --background: #080C17;
-  --foreground: #DCE8FF;
-  --card: #0F1724;
-  --card-foreground: #DCE8FF;
-  --popover: #0F1724;
-  --popover-foreground: #DCE8FF;
-  --primary: #5BB0FF;
-  --primary-foreground: #080C17;
-  --primary-gradient: linear-gradient(135deg, #0074d9 0%, #009296 100%);
-  --secondary: #172036;
-  --secondary-foreground: #DCE8FF;
-  --muted: #172036;
-  --muted-foreground: #94A8C9;
-  --accent: #172036;
-  --accent-foreground: #DCE8FF;
-  --destructive: #C0183A;
+  --background: #070B16;
+  --foreground: #D9E4F8;
+  --card: #0D1424;
+  --card-foreground: #D9E4F8;
+  --popover: #0D1424;
+  --popover-foreground: #D9E4F8;
+  --primary: #3D82F5;
+  --primary-soft: #6BA5FF;
+  --primary-foreground: #04101F;
+  --primary-gradient: linear-gradient(135deg, #1F6BE8 0%, #2E8FEA 100%);
+  --secondary: #162037;
+  --secondary-foreground: #D9E4F8;
+  --muted: #162037;
+  --muted-foreground: #8DA0C4;
+  --accent: #162037;
+  --accent-foreground: #D9E4F8;
+  --destructive: #D93A5E;
   --destructive-foreground: #FFFFFF;
-  --border: rgba(100, 160, 255, 0.10);
-  --input: rgba(100, 160, 255, 0.10);
-  --ring: #5BB0FF;
-  --chart-1: #2C82F5;
-  --chart-2: #10B981;
-  --chart-3: #8B5CF6;
-  --chart-4: #F59E0B;
-  --chart-5: #EC4899;
-  --chip-tag: #1c2836;
-  --chip-tag-border: #2e4056;
-  --chip-entity: #272f45;
-  --chip-entity-border: #3b4463;
-  --chip-meta: #141b24;
-  --chip-meta-border: #232d3a;
-  --chip-fg: #94a8bc;
-  --chip-accent: #4dd8e6;
-  --sidebar: #0A1020;
-  --sidebar-foreground: #6E8AAF;
-  --sidebar-primary: #5BB0FF;
-  --sidebar-primary-foreground: #080C17;
-  --sidebar-accent: #172036;
-  --sidebar-accent-foreground: #DCE8FF;
-  --sidebar-border: rgba(100, 160, 255, 0.07);
-  --sidebar-ring: #5BB0FF;
-  --hs-surface-page: #080C17;
-  --hs-surface-card: #0F1724;
-  --hs-surface-sidebar: #0A1020;
-  --hs-surface-hover: #172036;
-  --hs-surface-muted: #172036;
-  --hs-fg-primary: #DCE8FF;
-  --hs-fg-muted: #94A8C9;
-  --hs-fg-on-accent: #FFFFFF;
-  --hs-border-default: rgba(100, 160, 255, 0.10);
-  --hs-border-subtle: rgba(100, 160, 255, 0.07);
-  --hs-success: #00D492;
-  --hs-warning: #FBB040;
-  --hs-danger: #C0183A;
-  --hs-info: #5BB0FF;
-  --hs-neutral: #6E8AAF;
+  --border: rgba(110, 160, 255, 0.13);
+  --input: rgba(110, 160, 255, 0.16);
+  --ring: #3D82F5;
+  --chart-1: #3D82F5;
+  --chart-2: #2BD9A8;
+  --chart-3: #A88BFF;
+  --chart-4: #F5B04D;
+  --chart-5: #F5679B;
+  --chip-tag: #16233A;
+  --chip-tag-border: #26385A;
+  --chip-entity: #212A45;
+  --chip-entity-border: #354065;
+  --chip-meta: #101827;
+  --chip-meta-border: #1F2B40;
+  --chip-fg: #93A6C4;
+  --chip-accent: #5CC8E8;
+  --sidebar: #080D1B;
+  --sidebar-foreground: #7488AD;
+  --sidebar-primary: #3D82F5;
+  --sidebar-primary-foreground: #04101F;
+  --sidebar-accent: #162037;
+  --sidebar-accent-foreground: #D9E4F8;
+  --sidebar-border: rgba(110, 160, 255, 0.09);
+  --sidebar-ring: #3D82F5;
+  --hs-surface-page: #070B16;
+  --hs-surface-card: #0D1424;
+  --hs-surface-sidebar: #080D1B;
+  --hs-surface-hover: #162037;
+  --hs-surface-muted: #162037;
+  --hs-fg-primary: #D9E4F8;
+  --hs-fg-muted: #8DA0C4;
+  --hs-fg-on-accent: #04101F;
+  --hs-border-default: rgba(110, 160, 255, 0.13);
+  --hs-border-subtle: rgba(110, 160, 255, 0.09);
+  --hs-success: #2BD9A8;
+  --hs-warning: #F5B04D;
+  --hs-danger: #D93A5E;
+  --hs-info: #3D82F5;
+  --hs-neutral: #7488AD;
+  --hs-brand-blue: #3D82F5;
+  --hs-brand-teal: #35A8C4;
+  --hs-chart-world: #3D82F5;
+  --hs-chart-experience: #2BD9A8;
+  --hs-chart-observations: #A88BFF;
+  --hs-chart-temporal: #F5B04D;
+  --hs-chart-semantic: #35A8C4;
+  --hs-chart-entity: #F5679B;
 }
 
 /*
@@ -179,6 +202,7 @@
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -215,12 +239,14 @@
 
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-display);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-panel: calc(var(--radius) + 12px);
 
   --shadow-2xs: var(--shadow-2xs);
   --shadow-xs: var(--shadow-xs);
@@ -266,13 +292,15 @@
   --color-chart-temporal: var(--hs-chart-temporal);
   --color-chart-semantic: var(--hs-chart-semantic);
   --color-chart-entity: var(--hs-chart-entity);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Form controls do not inherit the document font on their own, so name them
    explicitly or they fall back to the browser default and look mismatched. */
 html, body, button, input, select, textarea, optgroup {
-  font-family: var(--font-sans), 'Inter', -apple-system, BlinkMacSystemFont,
-    system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--font-sans), var(--font-fallback);
 }
 
 body {
@@ -281,18 +309,45 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* The reset makes headings inherit weight; restore a heading default so any
-   heading without an explicit weight utility still reads as a heading. */
+/* Display typography: headings and any element that opts into the heading
+   voice carry Sora, tightened. Applied at the element level so a heading
+   survives without a per-heading utility, and exposed as `font-heading` for
+   the cases where a non-heading element should adopt it. */
 h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display), var(--font-sans), var(--font-fallback);
   font-weight: 600;
+  letter-spacing: -0.018em;
 }
 
-code, pre {
+.font-heading {
+  font-family: var(--font-display), var(--font-sans), var(--font-fallback);
+}
+
+code, pre, kbd, samp {
   font-family: var(--font-mono);
+  font-feature-settings: "calt" 1, "liga" 1;
+}
+
+/* Tabular figures wherever the monospace voice is used for data, so columns of
+   counts line up instead of rippling. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 26%, transparent);
+  color: var(--foreground);
 }
 
 .bg-primary-gradient {
   background: var(--primary-gradient);
+}
+
+.text-brand-gradient {
+  background: var(--primary-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 /* The custom gradient class above is not a generated utility, so Radix state
@@ -301,10 +356,10 @@ code, pre {
   background: var(--primary-gradient) !important;
 }
 [data-slot="hs-switch"][data-state="unchecked"] {
-  background-color: #c3cad6;
+  background-color: #c3ccdb;
 }
 .dark [data-slot="hs-switch"][data-state="unchecked"] {
-  background-color: #475569;
+  background-color: #2b3a55;
 }
 
 .border-primary-gradient {
@@ -333,6 +388,105 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 
 .reflect-answer > :where(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6) {
   max-width: 70ch;
+}
+
+/*
+ * Atmosphere. Two textures carry the "instrument surface" feel without adding
+ * an image: a 1px blueprint grid, and a soft radial bloom that places the
+ * brand accent behind the top of a page as if it were a light source.
+ *
+ * Both are pure background layers, so a panel can opt in with a single class
+ * and every themed surface below it stays opaque and readable.
+ */
+.texture-grid {
+  background-image:
+    linear-gradient(to right, var(--hs-border-subtle) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hs-border-subtle) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.texture-grid-fine {
+  background-image:
+    linear-gradient(to right, var(--hs-border-subtle) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hs-border-subtle) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.texture-aurora {
+  background-image:
+    radial-gradient(60rem 32rem at 12% -12%, color-mix(in oklab, var(--primary) 16%, transparent), transparent 62%),
+    radial-gradient(48rem 28rem at 88% -6%, color-mix(in oklab, var(--hs-chart-semantic) 12%, transparent), transparent 60%);
+}
+
+.dark .texture-aurora {
+  background-image:
+    radial-gradient(60rem 32rem at 12% -12%, color-mix(in oklab, var(--primary) 26%, transparent), transparent 62%),
+    radial-gradient(48rem 28rem at 88% -6%, color-mix(in oklab, var(--hs-chart-semantic) 20%, transparent), transparent 60%);
+}
+
+/* Hairline separators and top-lit edges for panels: a 1px inset highlight is
+   read as a light source above the panel, which is what gives a flat surface a
+   sense of thickness. */
+.panel-edge {
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--foreground) 4%, transparent),
+    var(--shadow-sm);
+}
+
+.dark .panel-edge {
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, #ffffff 5%, transparent),
+    0 1px 0 0 color-mix(in oklab, #000000 40%, transparent);
+}
+
+/* A hairline that fades at both ends — the rule under a section head. */
+.rule-fade {
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--hs-border-default) 12%, var(--hs-border-default) 88%, transparent);
+}
+
+/*
+ * Section tab: a text button on a hairline rail whose active state is a lit
+ * indicator under the label. Defined here rather than repeated inline because
+ * the bank page carries eleven of them and the indicator has to be identical
+ * across all eleven.
+ */
+.tab-rail {
+  position: relative;
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color 0.2s var(--ease-out-quint);
+}
+.tab-rail:hover {
+  color: var(--foreground);
+}
+.tab-rail[data-active="true"] {
+  color: var(--primary);
+}
+.tab-rail[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 9999px;
+  background: var(--primary-gradient);
+  box-shadow: 0 0 10px 0 color-mix(in oklab, var(--primary) 60%, transparent);
+}
+
+/* Focus treatment shared by interactive panels that are not native controls. */
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 62%, transparent);
+  outline-offset: 2px;
 }
 
 /* Brand spinner: a squash-and-stretch tumble driven entirely by 2D transforms
@@ -375,6 +529,34 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   100% { opacity: 1; }
 }
 
+/* Rise-and-focus entrance for a view's first paint: the content settles into
+   place from slightly below and slightly out of scale, which reads as a lens
+   coming into focus rather than a slide. */
+@keyframes rise-in {
+  0% { opacity: 0; transform: translateY(14px) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* A sweep of light travelling across a surface — used on indeterminate edges
+   and on the active rail marker. */
+@keyframes sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+
+/* The slow drift of the ambient background bloom, so the page is never
+   perfectly static even at rest. */
+@keyframes aurora-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -1.5%, 0) scale(1.04); }
+}
+
+/* A fine pulse for live indicators (streaming, retrying). */
+@keyframes indicator-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
 .animate-logo-tumble {
   animation: logo-tumble 1.6s cubic-bezier(0.34, 1.2, 0.64, 1) infinite;
 }
@@ -399,16 +581,44 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   animation: soft-fade-in 0.4s ease-out both;
 }
 
+/* Entrance utilities take a delay from a CSS variable so a list can stagger
+   itself by setting `--enter-delay` inline without generating a class per row. */
+.animate-rise-in {
+  animation: rise-in 0.5s var(--ease-out-expo) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+.animate-sweep {
+  animation: sweep 2.4s var(--ease-out-quint) infinite;
+}
+
+.animate-aurora-drift {
+  animation: aurora-drift 22s ease-in-out infinite;
+}
+
+.animate-indicator-pulse {
+  animation: indicator-pulse 1.8s ease-in-out infinite;
+}
+
 /* Respect a reduced-motion preference: keep the element visible, drop the
-   looping motion. */
+   looping motion. Entrance animations collapse to their end state so nothing
+   ever stays invisible. */
 @media (prefers-reduced-motion: reduce) {
   .animate-logo-tumble,
   .animate-logo-flip,
   .animate-logo-tumble-pulse,
   .animate-logo-wiggle,
   .animate-list-row-enter,
-  .animate-soft-fade-in {
+  .animate-soft-fade-in,
+  .animate-rise-in,
+  .animate-sweep,
+  .animate-aurora-drift,
+  .animate-indicator-pulse {
     animation: none;
+  }
+  .animate-rise-in {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -441,43 +651,4 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 
 *::-webkit-scrollbar-corner {
   background: transparent;
-}
-
-/*
- * Transitional bridge. The four primitives and page shells written before the
- * design-token layer landed still reference these; both are removed once those
- * files are replaced by the ported ones.
- */
-:root {
-  --console-background: 0 0% 100%;
-  --console-foreground: 222 47% 11%;
-  --console-muted: 210 40% 96%;
-  --console-border: 214 32% 91%;
-}
-
-.dark {
-  --console-background: 222 47% 11%;
-  --console-foreground: 210 40% 98%;
-  --console-muted: 217 33% 17%;
-  --console-border: 217 33% 24%;
-}
-
-html,
-body {
-  margin: 0;
-  padding: 0;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-.console-surface {
-  border: 1px solid hsl(var(--console-border));
-  border-radius: 0.5rem;
-  background: hsl(var(--console-background));
-}
-
-.console-muted {
-  background: hsl(var(--console-muted));
 }

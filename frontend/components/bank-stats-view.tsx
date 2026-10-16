@@ -121,16 +121,17 @@ type FactKey = "world" | "experience" | "observation";
 // so the two distributions read as different dimensions.
 const CHART_COLORS = {
   primary: "var(--primary)",
-  // Memory composition — modern violet / pink / indigo palette.
-  // Picked to stay distinct from the link-type hues (teal/blue/amber).
+  // Memory composition — violet / magenta / indigo, deliberately clear of the
+  // brand blue so a composition slice never reads as "the accent".
   world: "#8b5cf6", // violet-500
   experience: "#ec4899", // pink-500
   observation: "#6366f1", // indigo-500
-  // Link types — match the graph view exactly (data-view.tsx:215)
-  temporal: "#009296", // brand teal
-  semantic: "#0074d9", // brand blue
-  entity: "#f59e0b", // brand amber
-  causal: "#8b5cf6", // violet-500, matching the graph view
+  // Link types — kept in step with the graph view's own palette so the legend
+  // and the constellation agree on what each relationship looks like.
+  temporal: "var(--hs-brand-teal)",
+  semantic: "var(--hs-brand-blue)",
+  entity: "var(--hs-chart-temporal)",
+  causal: "var(--hs-chart-observations)",
   // Status
   success: "var(--chart-5)",
   warning: "var(--chart-4)",

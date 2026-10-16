@@ -1,4 +1,4 @@
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono, Manrope, Sora } from "next/font/google";
 import { NextIntlClientProvider, hasLocale } from "next-intl";
 import { setRequestLocale } from "next-intl/server";
 import { notFound } from "next/navigation";
@@ -9,11 +9,20 @@ import { ThemeProvider } from "@/lib/theme-context";
 import { Toaster } from "@/components/ui/sonner";
 import { themeBootstrapScript } from "@/app/providers/theme-bootstrap";
 
-// Inter preloaded server-side so every weight (400/500/600/700) is ready
-// before paint. The Google Fonts @import this replaces loaded weights lazily,
-// which made semibold headings render in the system fallback until the weight
-// arrived. --font-sans / --font-mono are consumed by globals.css.
-const inter = Inter({
+// Sora carries display and heading copy: a geometric, slightly cut-corner
+// sans that reads as engineered rather than friendly. Manrope carries the UI
+// voice — an open grotesque whose flat terminals stay legible at 13px, where
+// Sora's tighter forms would not. Both preload server-side so every weight is
+// ready before paint. --font-display / --font-sans / --font-mono are consumed
+// by globals.css.
+const sora = Sora({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-display",
+  display: "swap",
+});
+
+const manrope = Manrope({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-sans",
@@ -56,10 +65,10 @@ export default async function LocaleLayout({
   return (
     <html
       lang={locale}
-      className={`${inter.variable} ${jetbrainsMono.variable}`}
+      className={`${sora.variable} ${manrope.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
-      <body className="bg-background text-foreground">
+      <body className="bg-background text-foreground antialiased">
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <ThemeProvider>
           <FeaturesProvider>

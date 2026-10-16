@@ -3,16 +3,17 @@ import * as React from "react";
 import { cn } from "../../lib/utils";
 
 /**
- * Standard panel chrome: a flat card with a hairline border and no drop shadow.
- * The border token already carries the mode-appropriate tint, so adding a ring
- * or shadow would read one layer higher than the surrounding inline panels.
+ * Standard panel chrome: a flat card with a hairline border and a single
+ * top-lit inset edge. The highlight is what gives the panel thickness — a
+ * drop shadow on a dark surface would only grey it out, so the depth cue is a
+ * 1px light line along the top edge plus a whisper of shadow in light mode.
  */
 const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        "bg-card text-card-foreground border border-border border-solid rounded-[16px]",
+        "panel-edge bg-card text-card-foreground border border-border border-solid rounded-[14px]",
         className,
       )}
       {...props}
@@ -32,7 +33,10 @@ const CardTitle = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivE
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn("text-2xl font-semibold leading-none tracking-tight", className)}
+      className={cn(
+        "font-heading text-[17px] font-semibold leading-tight tracking-[-0.016em]",
+        className,
+      )}
       {...props}
     />
   ),

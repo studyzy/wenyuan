@@ -555,8 +555,19 @@ function BankSelectorInner() {
   };
 
   return (
-    <div className="bg-card text-card-foreground px-5 py-3 border-b-4 border-primary-gradient">
-      <div className="flex items-center gap-4 text-sm">
+    <div className="relative border-b border-border bg-card px-5 py-3 text-card-foreground">
+      {/* A 1px gradient rule under the header, with a soft bloom beneath it, is
+          the whole brand statement of the chrome — a 4px stripe read as a
+          banner rather than an edge. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -bottom-px h-px bg-primary-gradient"
+      />
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -bottom-1 h-3 bg-primary/12 blur-[6px]"
+      />
+      <div className="relative flex items-center gap-4 text-sm">
         {/* Logo: the mark spins on navigation while the wordmark stays put. The
             mark is the standalone favicon so it can rotate freely; the wordmark is
             set as text rather than cropped out of a lockup image, because the
@@ -571,12 +582,14 @@ function BankSelectorInner() {
           onClick={() => router.push("/dashboard")}
         >
           <img
-            src={withBasePath("/favicon.png")}
+            src={withBasePath("/logo-512.png")}
             alt=""
             className={cn("h-10 w-auto", logoSpinning && "animate-logo-wiggle")}
             onAnimationEnd={() => setLogoSpinning(false)}
           />
-          <span className="ml-2 text-lg font-semibold tracking-tight">WenYuan</span>
+          <span className="font-heading ml-2 text-[17px] font-semibold tracking-[-0.025em] text-foreground">
+            WenYuan
+          </span>
         </button>
 
         {/* Separator */}
@@ -815,11 +828,11 @@ function BankSelectorInner() {
           href="https://github.com/studyzy/wenyuan"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          className="flex items-center gap-2 rounded-[9px] px-3 py-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           title={tNav("viewOnGitHub")}
         >
-          <GitBranch className="h-5 w-5" />
-          <span className="text-sm font-medium">GitHub</span>
+          <GitBranch className="h-[18px] w-[18px]" />
+          <span className="text-[13px] font-medium">GitHub</span>
         </a>
 
         {/* Separator */}
@@ -1566,20 +1579,23 @@ function BankSelectorInner() {
 }
 
 export function BankSelector() {
+  // Skeleton header. Kept structurally identical to the real one above — same
+  // surface, padding, control sizes and brand rule — so the swap when the
+  // suspense boundary resolves does not shift the chrome.
   return (
     <Suspense
       fallback={
-        <div className="bg-card text-card-foreground px-5 py-3 border-b-4 border-primary-gradient">
-          <div className="flex items-center gap-4 text-sm">
-            <img
-              src={withBasePath("/favicon.png")}
-              alt="WenYuan"
-              className="h-10 w-auto"
-            />
+        <div className="relative border-b border-border bg-card px-5 py-3 text-card-foreground">
+          <span
+            aria-hidden
+            className="absolute inset-x-0 -bottom-px h-px bg-[image:var(--primary-gradient)] opacity-60"
+          />
+          <div className="flex items-center gap-4">
+            <img src={withBasePath("/favicon.png")} alt="" className="h-10 w-auto" />
             <div className="h-8 w-px bg-border" />
             <Button
               variant="outline"
-              className="w-[250px] justify-between font-bold border-2 border-primary"
+              className="w-[250px] justify-between border-2 border-primary text-[13px]"
               disabled
             >
               Loading...
@@ -1590,10 +1606,10 @@ export function BankSelector() {
               href="https://github.com/studyzy/wenyuan"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-muted-foreground"
+              className="flex items-center gap-2 rounded-[9px] px-3 py-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              <GitBranch className="h-5 w-5" />
-              <span className="text-sm font-medium">GitHub</span>
+              <GitBranch className="h-[18px] w-[18px]" />
+              <span className="text-[13px] font-medium">GitHub</span>
             </a>
             <div className="h-8 w-px bg-border" />
             <Button variant="ghost" size="icon" className="h-9 w-9" disabled>

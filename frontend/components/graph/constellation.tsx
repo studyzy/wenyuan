@@ -116,6 +116,16 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+/**
+ * A caller may hand the graph a `var(--token)` color (that is how the cluster
+ * palette stays themed). Canvas cannot paint a variable reference, so resolve
+ * it against the document before painting. A literal color passes through.
+ */
+function resolveColor(color: string): string {
+  if (!color.startsWith("var(")) return color;
+  return readToken(color.slice(4, -1), "#0052d9");
+}
+
 // Monotone-chain convex hull. Returns the hull vertices (CCW) for a set of 2D
 // points; used to wrap a cluster's nodes in a translucent blob. Fewer than 3
 // points have no polygon — the caller draws a circle instead.
@@ -210,26 +220,55 @@ function useIsDarkMode() {
 // Constants
 // ============================================================================
 
-const FONT_SMALL = '11px Inter, -apple-system, "Segoe UI", sans-serif';
-const FONT_BOLD = '600 10px Inter, -apple-system, "Segoe UI", sans-serif';
-const MONO = '11px "SF Mono", "Fira Code", Consolas, monospace';
+const FONT_SMALL = '11px var(--font-sans), -apple-system, "Segoe UI", sans-serif';
+const FONT_BOLD = '600 10px var(--font-sans), -apple-system, "Segoe UI", sans-serif';
+const MONO = '11px var(--font-mono), "SF Mono", Consolas, monospace';
+
+/*
+ * Canvas and SVG painting cannot resolve Tailwind utilities, but it can read
+ * the same custom properties the stylesheet declares. `readToken` pulls a
+ * design token off the document element at paint time, so the graph follows
+ * the theme instead of freezing a hex picked for one of them.
+ *
+ * The fallback is the value the token holds in :root, used before hydration
+ * and in tests where no stylesheet is attached.
+ */
+function readToken(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
 
 const LINK_TYPE_COLORS: Record<string, string> = {
-  semantic: "#0074d9",
-  temporal: "#009296",
-  entity: "#f59e0b",
-  causal: "#8b5cf6",
+  semantic: "var(--hs-brand-blue)",
+  temporal: "var(--hs-brand-teal)",
+  entity: "var(--hs-chart-temporal)",
+  causal: "var(--hs-chart-observations)",
 };
 
-const DEFAULT_NODE_COLOR = "#0074d9";
+const LINK_TYPE_FALLBACKS: Record<string, string> = {
+  semantic: "#0052d9",
+  temporal: "#0e7c9b",
+  entity: "#e8912a",
+  causal: "#7c5cf0",
+};
+
+/** Resolve a link type to a concrete color string for canvas painting. */
+function linkTypeColor(type: string): string {
+  const token = LINK_TYPE_COLORS[type];
+  if (!token) return readToken("--primary", "#0052D9");
+  return readToken(token.slice(4, -1), LINK_TYPE_FALLBACKS[type] ?? "#0052d9");
+}
+
+const DEFAULT_NODE_COLOR = "#0052d9";
 
 function toolbarBtnStyle(isDark: boolean): CSSProperties {
   return {
     padding: "6px 10px",
-    borderRadius: 6,
-    border: `1px solid ${isDark ? "#27272a" : "#e4e4e7"}`,
-    background: isDark ? "#18181b" : "#ffffff",
-    color: isDark ? "#a1a1aa" : "#71717a",
+    borderRadius: 8,
+    border: `1px solid ${readToken("--hs-border-default", isDark ? "#3A4A6B" : "#E4E8F1")}`,
+    background: readToken("--hs-surface-card", isDark ? "#0D1424" : "#FFFFFF"),
+    color: readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A"),
     fontSize: 12,
     cursor: "pointer",
     display: "flex",
@@ -404,14 +443,16 @@ export function Constellation({
       const text = node.label || node.id.substring(0, 12);
       const ck = clusterKeys ? clusterKeys[i] : null;
       const nodeGroupList = nodeGroups ? nodeGroups[i] : [];
-      const color = vennActive
-        ? nodeGroupList.length > 1
-          ? "#94a3b8"
-          : groupColorFn?.(nodeGroupList[0]) || DEFAULT_NODE_COLOR
-        : (ck != null && clusterColorFn?.(ck)) ||
-          nodeColorFn?.(node) ||
-          node.color ||
-          DEFAULT_NODE_COLOR;
+      const color = resolveColor(
+        vennActive
+          ? nodeGroupList.length > 1
+            ? "#94a3b8"
+            : groupColorFn?.(nodeGroupList[0]) || DEFAULT_NODE_COLOR
+          : (ck != null && clusterColorFn?.(ck)) ||
+            nodeColorFn?.(node) ||
+            node.color ||
+            DEFAULT_NODE_COLOR
+      );
       const lc = linkCounts.get(node.id) || 0;
       // Use sqrt for a less aggressive curve — avoids everything being red
       const heat = nodeHeatFn
@@ -515,11 +556,12 @@ export function Constellation({
       const bi = nodeIndexMap.get(link.target);
       if (ai === undefined || bi === undefined) continue;
 
-      const color =
+      const color = resolveColor(
         linkColorFn?.(link) ||
-        link.color ||
-        LINK_TYPE_COLORS[link.type || "semantic"] ||
-        DEFAULT_NODE_COLOR;
+          link.color ||
+          linkTypeColor(link.type || "semantic") ||
+          DEFAULT_NODE_COLOR
+      );
 
       const idx = linksIdx.length;
       linksIdx.push({ a: ai, b: bi, color, type: link.type || "semantic" });
@@ -572,9 +614,28 @@ export function Constellation({
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    const bg = isDark ? "#09090b" : "#ffffff";
+    const bg = readToken("--hs-surface-card", isDark ? "#0D1424" : "#FFFFFF");
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
+
+    // Blueprint grid: a 32px cell drawn at the border token's alpha over the
+    // surface. It gives the canvas the same measured feel as the page texture
+    // and, more usefully, makes drift and zoom legible — a flat fill hides
+    // motion, a grid shows it.
+    const gridSize = 32;
+    const gridColor = readToken("--hs-border-subtle", isDark ? "#1B2A45" : "#EFF2F9");
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += gridSize) {
+      ctx.moveTo(Math.floor(x) + 0.5, 0);
+      ctx.lineTo(Math.floor(x) + 0.5, H);
+    }
+    for (let y = 0; y <= H; y += gridSize) {
+      ctx.moveTo(0, Math.floor(y) + 0.5);
+      ctx.lineTo(W, Math.floor(y) + 0.5);
+    }
+    ctx.stroke();
 
     // Ambient-motion clock (seconds). Advances only while motion is enabled, so
     // pausing holds every drift/pulse/shimmer exactly where it is.
@@ -748,8 +809,9 @@ export function Constellation({
 
         const pad = 26;
         let rad = pad;
-        ctx.fillStyle = hexToRgba(cluster.color, isDark ? 0.1 : 0.08);
-        ctx.strokeStyle = hexToRgba(cluster.color, 0.35);
+        const clusterHex = resolveColor(cluster.color);
+        ctx.fillStyle = hexToRgba(clusterHex, isDark ? 0.1 : 0.08);
+        ctx.strokeStyle = hexToRgba(clusterHex, 0.35);
         ctx.lineWidth = 1.25;
         ctx.beginPath();
         if (pts.length < 3 || nodeGroupsFn) {
@@ -786,7 +848,7 @@ export function Constellation({
           for (const [, y] of pts) topY = Math.min(topY, y);
           const ly = (nodeGroupsFn ? my - rad : topY - pad) - 12;
           const pw = tw + padX * 2;
-          ctx.fillStyle = cluster.color;
+          ctx.fillStyle = clusterHex;
           ctx.beginPath();
           if (typeof ctx.roundRect === "function") {
             ctx.roundRect(mx - pw / 2, ly - pillH / 2, pw, pillH, 9.5);
@@ -929,7 +991,7 @@ export function Constellation({
 
     // HUD
     ctx.font = MONO;
-    ctx.fillStyle = isDark ? "#71717a" : "#71717a";
+    ctx.fillStyle = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
     ctx.textAlign = "left";
     ctx.fillText(
       t("hudStats", {
@@ -953,10 +1015,11 @@ export function Constellation({
       entity: t("linkTypeEntity"),
       causal: t("linkTypeCausal"),
     };
-    for (const [type, color] of Object.entries(LINK_TYPE_COLORS).reverse()) {
+    for (const type of Object.keys(LINK_TYPE_COLORS).reverse()) {
+      const color = linkTypeColor(type);
       const label = linkTypeLabel[type] ?? type;
       const tw = ctx.measureText(label).width;
-      ctx.fillStyle = isDark ? "#a1a1aa" : "#52525b";
+      ctx.fillStyle = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
       ctx.fillText(label, legendX, H - 12);
       legendX -= tw + 4;
       ctx.fillStyle = color;
@@ -971,7 +1034,7 @@ export function Constellation({
     if (clusters.length === 0) {
       ctx.textAlign = "left";
       ctx.font = FONT_BOLD;
-      ctx.fillStyle = isDark ? "#a1a1aa" : "#52525b";
+      ctx.fillStyle = readToken("--hs-fg-primary", isDark ? "#D9E4F8" : "#0B1220");
       ctx.fillText((heatLegendLabel || t("legendLinks")).toUpperCase(), 12, 36);
       const [heatLo, heatHi] = heatLegendEndpoints || [t("legendFew"), t("legendMany")];
       // Size the bar so both endpoint labels fit without overlap (e.g. ISO dates
@@ -984,7 +1047,7 @@ export function Constellation({
         ctx.fillStyle = heatColor(gx / gradW);
         ctx.fillRect(12 + gx, 42, 1, 6);
       }
-      ctx.fillStyle = isDark ? "#a1a1aa" : "#71717a";
+      ctx.fillStyle = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
       ctx.fillText(heatLo, 12, 60);
       ctx.textAlign = "right";
       ctx.fillText(heatHi, 12 + gradW, 60);
@@ -995,17 +1058,17 @@ export function Constellation({
     if (sizeLegendLabel) {
       ctx.textAlign = "left";
       ctx.font = FONT_BOLD;
-      ctx.fillStyle = isDark ? "#a1a1aa" : "#52525b";
+      ctx.fillStyle = readToken("--hs-fg-primary", isDark ? "#D9E4F8" : "#0B1220");
       ctx.fillText(sizeLegendLabel.toUpperCase(), 12, 82);
       ctx.font = MONO;
-      const labelColor = isDark ? "#a1a1aa" : "#71717a";
+      const labelColor = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
       ctx.fillStyle = labelColor;
       const sizeFew = t("legendFew");
       const sizeMany = t("legendMany");
       ctx.fillText(sizeFew, 12, 98);
       const fewW = ctx.measureText(sizeFew).width;
       const dotsStart = 12 + fewW + 8;
-      const dotColor = isDark ? "#a1a1aa" : "#52525b";
+      const dotColor = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
       ctx.fillStyle = dotColor;
       ctx.beginPath();
       ctx.arc(dotsStart + 2, 94, 2, 0, Math.PI * 2);
@@ -1023,7 +1086,7 @@ export function Constellation({
     // Instructions
     ctx.textAlign = "left";
     ctx.font = MONO;
-    ctx.fillStyle = isDark ? "#52525b" : "#a1a1aa";
+    ctx.fillStyle = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
     ctx.fillText(t("instructions"), 12, 16);
 
     ctx.restore();
@@ -1063,18 +1126,15 @@ export function Constellation({
       const cardX = sx - cardW / 2;
       const cardY = sy + r + 4;
 
-      ctx.fillStyle = isHovered
-        ? dark
-          ? "#1c1c1e"
-          : "#f4f4f5"
-        : dark
-          ? "rgba(9,9,11,0.92)"
-          : "rgba(255,255,255,0.92)";
+      const cardFill = readToken("--hs-surface-card", dark ? "#0D1424" : "#FFFFFF");
+      ctx.fillStyle = isHovered ? cardFill : hexToRgba(cardFill, 0.92);
       ctx.beginPath();
       ctx.roundRect(cardX, cardY, cardW, cardH, 6);
       ctx.fill();
 
-      ctx.strokeStyle = isHovered ? n.color : dark ? "rgba(63,63,70,0.5)" : "rgba(212,212,216,0.6)";
+      ctx.strokeStyle = isHovered
+        ? n.color
+        : hexToRgba(readToken("--hs-border-default", dark ? "#3A4A6B" : "#E4E8F1"), 0.6);
       ctx.lineWidth = isHovered ? 1.5 : 0.5;
       ctx.beginPath();
       ctx.roundRect(cardX, cardY, cardW, cardH, 6);
@@ -1090,7 +1150,9 @@ export function Constellation({
       }
 
       ctx.font = FONT_SMALL;
-      ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#71717a" : "#71717a";
+      ctx.fillStyle = isHovered
+        ? readToken("--hs-fg-primary", dark ? "#D9E4F8" : "#0B1220")
+        : readToken("--hs-fg-muted", dark ? "#8DA0C4" : "#64708A");
       ctx.textAlign = "left";
       for (let j = 0; j < maxLines; j++) {
         ctx.fillText(lines[j].text, cardX + 8, cardY + 8 + j * 15 + 11);
@@ -1098,7 +1160,9 @@ export function Constellation({
     } else {
       // Inline label
       ctx.font = FONT_SMALL;
-      ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#52525b" : "#a1a1aa";
+      ctx.fillStyle = isHovered
+        ? readToken("--hs-fg-primary", dark ? "#D9E4F8" : "#0B1220")
+        : readToken("--hs-fg-muted", dark ? "#8DA0C4" : "#64708A");
       ctx.globalAlpha = isHovered ? 1 : force ? 0.85 : Math.min(1, (zoom - 0.3) * 2.5);
       ctx.textAlign = "left";
       const text = n.node.label || n.node.id.substring(0, 12);
@@ -1197,10 +1261,10 @@ export function Constellation({
         const proofCount = meta?.proof_count || null;
         const documentId = meta?.document_id || null;
 
-        const muted = isDark ? "#a1a1aa" : "#71717a";
-        const dimmed = isDark ? "#71717a" : "#a1a1aa";
+        const muted = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
+        const dimmed = readToken("--hs-fg-muted", isDark ? "#8DA0C4" : "#64708A");
         const labelStyle = `font-size:10px;color:${dimmed};text-transform:uppercase;letter-spacing:0.04em;font-weight:500`;
-        const valStyle = `font-size:12px;color:${isDark ? "#e4e4e7" : "#18181b"}`;
+        const valStyle = `font-size:12px;color:${readToken("--hs-fg-primary", isDark ? "#D9E4F8" : "#0B1220")}`;
         const rowStyle = `display:flex;justify-content:space-between;align-items:baseline;gap:12px`;
 
         // Type badge + link count
@@ -1213,7 +1277,7 @@ export function Constellation({
         html += `<div style="font-size:12px;line-height:1.6;margin-bottom:8px">${fullText}</div>`;
 
         // Metadata grid
-        html += `<div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid ${isDark ? "#27272a" : "#e4e4e7"};padding-top:8px">`;
+        html += `<div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid ${readToken("--hs-border-default", isDark ? "#3A4A6B" : "#E4E8F1")};padding-top:8px">`;
 
         if (context) {
           html += `<div style="${rowStyle}"><span style="${labelStyle}">Context</span><span style="${valStyle}">${context}</span></div>`;
@@ -1248,7 +1312,7 @@ export function Constellation({
         if (entities.length > 0 && !(entities.length === 1 && entities[0] === "None")) {
           html += `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">`;
           for (const ent of entities) {
-            html += `<span style="font-size:10px;background:${isDark ? "#27272a" : "#f4f4f5"};color:${isDark ? "#d4d4d8" : "#3f3f46"};padding:2px 7px;border-radius:4px">${ent}</span>`;
+            html += `<span style="font-size:10px;background:${readToken("--hs-surface-muted", isDark ? "#162037" : "#E8EDF7")};color:${readToken("--hs-fg-primary", isDark ? "#D9E4F8" : "#0B1220")};padding:2px 7px;border-radius:4px">${ent}</span>`;
           }
           html += `</div>`;
         }
@@ -1526,15 +1590,25 @@ export function Constellation({
       parts.push(`<g>${haloParts.join("")}</g>`);
       parts.push(`<g>${nodeParts.join("")}</g>`);
 
-      // --- Edge vignette to sink the corners, then the product mark. The box
-      // only reserves space: `meet` fits the mark's own aspect inside it, so a
-      // mark that is not this box's shape is never stretched. ---
+      // --- Edge vignette to sink the corners, then the product mark. The mark
+      // is square (1:1), so the reserved box is square too: a wider box would
+      // make `meet` render the art at the box's height and leave the rest of
+      // the width empty, visually shrinking the logo. `meet` still fits the
+      // mark's own aspect inside the box, so a differently-shaped mark is never
+      // stretched. ---
       parts.push(`<rect width="${W}" height="${H}" fill="url(#hs-vignette)"/>`);
       if (logoDataUrl) {
-        const logoW = 190;
-        const logoH = 50;
+        const logoSize = 56;
+        const logoX = 48;
+        const logoY = 42;
         parts.push(
-          `<image x="48" y="46" width="${logoW}" height="${logoH}" href="${logoDataUrl}" preserveAspectRatio="xMinYMid meet"/>`
+          `<image x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" href="${logoDataUrl}" preserveAspectRatio="xMidYMid meet"/>`
+        );
+        // The mark alone does not say which product this poster came from, so
+        // the wordmark is set as text next to it rather than cropped from a
+        // lockup image.
+        parts.push(
+          `<text x="${logoX + logoSize + 14}" y="${logoY + logoSize / 2 + 7}" font-family="Sora, Manrope, system-ui, sans-serif" font-size="26" font-weight="600" letter-spacing="-0.6" fill="#d9e4f8">WenYuan</text>`
         );
       }
 
@@ -1575,7 +1649,7 @@ export function Constellation({
               position: "fixed",
               inset: 0,
               zIndex: 50,
-              background: isDark ? "#09090b" : "#ffffff",
+              background: readToken("--hs-surface-card", isDark ? "#0D1424" : "#FFFFFF"),
             }
           : { position: "relative", width: "100%", height: `${height}px` }
       }
@@ -1724,13 +1798,13 @@ export function Constellation({
           zIndex: 22,
           maxWidth: 360,
           padding: "10px 14px",
-          borderRadius: 8,
+          borderRadius: 11,
           fontSize: 12,
           lineHeight: 1.5,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
-          border: `1px solid ${isDark ? "#27272a" : "#e4e4e7"}`,
-          background: isDark ? "#18181b" : "#ffffff",
-          color: isDark ? "#e4e4e7" : "#18181b",
+          boxShadow: "var(--shadow-lg)",
+          border: `1px solid ${readToken("--hs-border-default", isDark ? "#3A4A6B" : "#E4E8F1")}`,
+          background: readToken("--hs-surface-card", isDark ? "#0D1424" : "#FFFFFF"),
+          color: readToken("--hs-fg-primary", isDark ? "#D9E4F8" : "#0B1220"),
         }}
       />
     </div>

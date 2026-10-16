@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { evaluateGate } from "../lib/middleware/gate";
-import { isPublicPath, PUBLIC_PATH_PREFIXES } from "../lib/middleware/whitelist";
+import { isPublicPath, isApiPath, PUBLIC_PATH_PREFIXES } from "../lib/middleware/whitelist";
 import { LOCALE_PREFIX_POLICY, resolveLocale, rewriteForLocale } from "../lib/middleware/locale";
-import { MIDDLEWARE_MATCHER, shouldProcess } from "../lib/middleware/matcher";
+import { isStaticAssetPath, MIDDLEWARE_MATCHER, shouldProcess } from "../lib/middleware/matcher";
 import { createSessionToken } from "../lib/server/session";
 
 const NOW = 1_700_000_000_000;
@@ -135,10 +135,31 @@ describe("locale policy — never a path segment", () => {
 
   it("resolves the locale without adding a path segment", async () => {
     expect(resolveLocale({ cookieHeader: "NEXT_LOCALE=ja" }).locale).toBe("ja");
-    const rewritten = rewriteForLocale("/dashboard");
-    expect(rewritten.pathname).toBe("/dashboard");
-    expect(rewritten.addedLocaleSegment).toBe(false);
-    expect(rewritten.pathname).not.toMatch(/^\/(en|ja|zh-CN)\b/);
+    const rewritten = rewriteForLocale("/dashboard", "ja");
+    // The rewrite target carries the segment; the address bar never does.
+    expect(rewritten.pathname).toBe("/ja/dashboard");
+    expect(rewritten.addedLocaleSegment).toBe(true);
+  });
+
+  it("does not prefix a path that already carries a locale segment", () => {
+    // The middleware re-enters on its own rewrite output, so prefixing again
+    // would produce /en/en/dashboard; and a genuine /[locale]/... request must
+    // be left for the router to match.
+    for (const locale of ["en", "ja", "zh-CN", "yue-Hant"] as const) {
+      expect(rewriteForLocale(`/${locale}/dashboard`, locale)).toEqual({
+        pathname: `/${locale}/dashboard`,
+        addedLocaleSegment: false,
+      });
+    }
+  });
+
+  it("treats a locale-shaped but unsupported first segment as a normal path", () => {
+    // `/xx/dashboard` is a path, not a locale; it must still be rewritten to
+    // the negotiated locale or it would 404.
+    expect(rewriteForLocale("/xx/dashboard", "en")).toEqual({
+      pathname: "/en/xx/dashboard",
+      addedLocaleSegment: true,
+    });
   });
 });
 
@@ -214,6 +235,31 @@ describe("middleware matcher", () => {
   it("processes dotted dynamic segments that are not static assets", () => {
     expect(shouldProcess("/banks/acme.corp")).toBe(true);
     expect(shouldProcess("/api/banks/team%3Aalpha")).toBe(true);
+  });
+
+  it("excludes the web app manifest from locale rewriting", () => {
+    // next-intl rewrites anything it does not recognize as a static asset into
+    // the `[locale]` segment; with no locale prefix in `routing` that rewrite
+    // resolves back to `/en/manifest.webmanifest`, which is not a route, so the
+    // browser installing the app follows a redirect loop instead of reading the
+    // manifest. The extension allowlist has to carry `.webmanifest`.
+    expect(isStaticAssetPath("/manifest.webmanifest")).toBe(true);
+    expect(MIDDLEWARE_MATCHER).toContain("webmanifest");
+  });
+
+  it("leaves the BFF API namespace out of the locale rewrite", () => {
+    // The route handlers live at `app/api/`, outside `app/[locale]/`, so
+    // rewriting them to `/en/api/health` makes every BFF call 404 — and the
+    // dashboard renders an error state on its first fetch. The middleware has to
+    // return before the rewrite for these.
+    const source = readFileSync(join(process.cwd(), "middleware.ts"), "utf8");
+    expect(isApiPath("/api/health")).toBe(true);
+    expect(isApiPath("/api")).toBe(true);
+    expect(source).toContain("isApiPath(pathname)");
+    // And the API branch must come before the rewrite, or it is dead.
+    expect(source.indexOf("isApiPath(pathname)")).toBeLessThan(
+      source.indexOf("rewriteForLocale(pathname"),
+    );
   });
 });
 describe("auth and locale contract", () => {

@@ -27,7 +27,7 @@ export type ChipSize = "xs" | "sm" | "md";
 const SIZE_CLASS: Record<ChipSize, string> = {
   xs: "text-[11px] px-2 py-[3px] gap-0.5",
   sm: "text-[13px] px-2.5 py-1 gap-1",
-  md: "text-sm px-3 py-1.5 gap-1",
+  md: "text-[13px] px-3 py-1.5 gap-1",
 };
 
 /** Pills for the name-like facets, a squared badge for metadata. */
@@ -226,7 +226,7 @@ export function TagList({
   return (
     <div>
       {showLabel && (
-        <div className="text-xs font-bold text-muted-foreground uppercase mb-2 flex items-center gap-1">
+        <div className="mb-2 flex items-center gap-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.11em] text-muted-foreground">
           <TagIcon className="w-3 h-3" />
           Tags
         </div>

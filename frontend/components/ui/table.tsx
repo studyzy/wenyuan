@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 
 const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
   ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-auto rounded-xl ring-1 ring-border/60 bg-card">
+    <div className="relative w-full overflow-auto rounded-[13px] ring-1 ring-border bg-card">
       <table
         ref={ref}
         className={cn("w-full caption-bottom text-sm border-separate border-spacing-0", className)}
@@ -19,7 +19,7 @@ const TableHeader = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
-  <thead ref={ref} className={cn("bg-muted/40", className)} {...props} />
+  <thead ref={ref} className={cn("bg-muted/50", className)} {...props} />
 ));
 TableHeader.displayName = "TableHeader";
 
@@ -44,7 +44,7 @@ const TableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttributes<HTML
     <tr
       ref={ref}
       className={cn(
-        "transition-colors hover:bg-muted/40 data-[state=selected]:bg-muted/60",
+        "relative transition-colors duration-150 hover:bg-muted/45 data-[state=selected]:bg-primary/[0.07]",
         className
       )}
       {...props}
@@ -60,7 +60,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-9 px-4 text-left align-middle text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/60 [&:has([role=checkbox])]:pr-0",
+      "h-9 px-4 text-left align-middle font-mono text-[10.5px] font-medium uppercase tracking-[0.11em] text-muted-foreground border-b border-border [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}
@@ -75,7 +75,7 @@ const TableCell = React.forwardRef<
   <td
     ref={ref}
     className={cn(
-      "px-4 py-3 align-middle border-b border-border/40 [&:has([role=checkbox])]:pr-0",
+      "px-4 py-3 align-middle border-b border-border/45 [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}

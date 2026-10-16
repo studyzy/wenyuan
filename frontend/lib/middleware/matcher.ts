@@ -30,6 +30,7 @@ export const STATIC_ASSET_EXTENSIONS: readonly string[] = [
   ".txt",
   ".json",
   ".xml",
+  ".webmanifest",
 ];
 
 export function isStaticAssetPath(pathname: string): boolean {
@@ -52,4 +53,4 @@ export function shouldProcess(pathname: string): boolean {
 
 /** The matcher pattern exported to the framework. */
 export const MIDDLEWARE_MATCHER =
-  "/((?!_next|_vercel|.*\\.(?:png|jpe?g|gif|svg|webp|ico|css|js|map|woff2?|ttf|eot|txt|xml|json)$).*)";
+  "/((?!_next|_vercel|.*\\.(?:png|jpe?g|gif|svg|webp|ico|css|js|map|woff2?|ttf|eot|txt|xml|json|webmanifest)$).*)";

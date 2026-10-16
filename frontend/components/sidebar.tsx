@@ -87,12 +87,12 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
       aria-label={isCollapsed ? t("expandSidebar") : t("collapseSidebar")}
       aria-expanded={!isCollapsed}
       className={cn(
-        "bg-card border-r border-border flex flex-col h-full transition-all duration-300 cursor-pointer select-none",
+        "bg-sidebar border-r border-sidebar-border flex flex-col h-full transition-[width] duration-300 ease-[var(--ease-out-quint)] cursor-pointer select-none",
         isCollapsed ? "w-16" : "w-64"
       )}
     >
       <nav className="flex-1 p-3 pt-4">
-        <ul className="space-y-1">
+        <ul className="space-y-0.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentTab === item.id;
@@ -117,16 +117,33 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
                     // Middle-click or Ctrl/Cmd+click will naturally open in new tab
                   }}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all cursor-pointer",
+                    "group relative w-full flex items-center gap-3 rounded-[10px] px-3.5 py-2.5 text-[13px] font-medium tracking-[-0.006em] transition-colors duration-200 cursor-pointer",
                     isActive
-                      ? "bg-primary-gradient text-white shadow-sm"
+                      ? "bg-primary/[0.09] text-primary dark:bg-primary/[0.14]"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                     isCollapsed && "justify-center px-0"
                   )}
                   title={isCollapsed ? item.label : undefined}
                 >
-                  <Icon className="w-5 h-5 flex-shrink-0" />
-                  {!isCollapsed && <span>{item.label}</span>}
+                  {/* The active marker is a lit rail segment rather than a
+                      filled pill: it reads as the current position on a
+                      track, which is what the nav is. */}
+                  {isActive && (
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "absolute left-0 top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-full bg-primary shadow-[0_0_10px_0_color-mix(in_oklab,var(--primary)_70%,transparent)]",
+                        isCollapsed && "left-[3px]"
+                      )}
+                    />
+                  )}
+                  <Icon
+                    className={cn(
+                      "h-[18px] w-[18px] flex-shrink-0 transition-colors",
+                      isActive ? "text-primary" : "text-muted-foreground/80 group-hover:text-foreground"
+                    )}
+                  />
+                  {!isCollapsed && <span className="truncate">{item.label}</span>}
                 </Link>
               </li>
             );
@@ -136,15 +153,19 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
 
       {/* Collapse/Expand button at bottom — kept as an explicit affordance
           alongside the ambient click-to-toggle on the aside chrome. */}
-      <div className="p-3 border-t border-border">
+      <div className="border-t border-border p-3">
         {apiVersion && (
           <div
             className={cn(
-              "mb-2 text-xs text-muted-foreground/60 text-center select-none",
+              "mb-2 flex items-center justify-center gap-1.5 text-center font-mono text-[10.5px] tracking-[0.02em] text-muted-foreground/70 select-none",
               isCollapsed ? "px-0" : "px-1"
             )}
             title={`WenYuan API v${apiVersion}`}
           >
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 shrink-0 rounded-full bg-success shadow-[0_0_6px_0_color-mix(in_oklab,var(--hs-success)_80%,transparent)]"
+            />
             {isCollapsed ? `v${apiVersion}` : `WenYuan v${apiVersion}`}
           </div>
         )}
@@ -155,16 +176,16 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
             toggleCollapsed();
           }}
           className={cn(
-            "w-full flex items-center gap-3 px-4 py-2 rounded-lg text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors cursor-pointer",
+            "flex w-full items-center gap-3 rounded-[10px] px-3.5 py-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground cursor-pointer",
             isCollapsed && "justify-center px-0"
           )}
           title={isCollapsed ? t("expandSidebar") : t("collapseSidebar")}
         >
           {isCollapsed ? (
-            <ChevronRight className="w-5 h-5" />
+            <ChevronRight className="h-[18px] w-[18px]" />
           ) : (
             <>
-              <ChevronLeft className="w-5 h-5" />
+              <ChevronLeft className="h-[18px] w-[18px]" />
               <span>{t("collapse")}</span>
             </>
           )}

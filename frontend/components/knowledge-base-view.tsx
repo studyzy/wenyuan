@@ -665,7 +665,7 @@ export function KnowledgeBaseView() {
           ) : selected ? (
             <div className="p-8 max-w-3xl mx-auto">
               <div className="flex items-start justify-between gap-3">
-                <h1 className="text-2xl font-bold text-foreground">{selected.name}</h1>
+                <h1 className="font-heading text-[22px] font-semibold tracking-[-0.02em] text-foreground">{selected.name}</h1>
                 <Button variant="outline" size="sm" onClick={openEdit} className="shrink-0">
                   <Pencil className="w-3.5 h-3.5 mr-1.5" />
                   {t("editButton")}

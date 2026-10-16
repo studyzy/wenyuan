@@ -303,15 +303,21 @@ export default function BankPage() {
     // Pinned to the viewport (h-screen, not min-h-screen) so `main` below is
     // the only scroll container: with min-h-screen the page itself grew past
     // the viewport and scrolled the header and sidebar out of view.
-    <div className="h-screen overflow-hidden bg-background flex flex-col">
-      <div className="shrink-0">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
+      {/* Ambient bloom sits behind the header and is inert: fixed, no pointer
+          events, and it never scrolls with the main pane. */}
+      <div
+        aria-hidden
+        className="texture-aurora animate-aurora-drift pointer-events-none fixed inset-x-0 top-0 h-[380px] opacity-60"
+      />
+      <div className="relative shrink-0">
         <BankSelector />
       </div>
 
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar currentTab={view} onTabChange={handleTabChange} />
 
-        <main className="flex-1 min-w-0 overflow-y-auto">
+        <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="p-6">
             {/* Content width staircase. Without a cap the views ran the full
                 width of the window, which on a 16" display left body text and
@@ -325,7 +331,7 @@ export default function BankPage() {
                 <div>
                   <div className="flex justify-between items-start mb-6">
                     <div>
-                      <h1 className="text-3xl font-bold mb-2 text-foreground">
+                      <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">
                         {t("bankConfiguration")}
                       </h1>
                       <p className="text-muted-foreground">{t("bankConfigurationDescription")}</p>
@@ -460,67 +466,40 @@ export default function BankPage() {
                     <div className="flex gap-1">
                       <button
                         onClick={() => handleBankConfigTabChange("general")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          bankConfigTab === "general"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={bankConfigTab === "general"}
+                        className="tab-rail"
                       >
                         {t("general")}
-                        {bankConfigTab === "general" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       {bankConfigEnabled && (
                         <button
                           onClick={() => handleBankConfigTabChange("memory-defense")}
-                          className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                            bankConfigTab === "memory-defense"
-                              ? "text-primary"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
+                          data-active={bankConfigTab === "memory-defense"}
+                        className="tab-rail"
                         >
                           {t("memoryDefense")}
-                          {bankConfigTab === "memory-defense" && (
-                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                          )}
                         </button>
                       )}
                       {bankConfigEnabled && (
                         <button
                           onClick={() => handleBankConfigTabChange("configuration")}
-                          className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                            bankConfigTab === "configuration"
-                              ? "text-primary"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
+                          data-active={bankConfigTab === "configuration"}
+                        className="tab-rail"
                         >
                           {t("configuration")}
-                          {bankConfigTab === "configuration" && (
-                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                          )}
                         </button>
                       )}
                       <button
                         onClick={() => handleBankConfigTabChange("webhooks")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          bankConfigTab === "webhooks"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={bankConfigTab === "webhooks"}
+                        className="tab-rail"
                       >
                         {t("webhooks")}
-                        {bankConfigTab === "webhooks" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       <button
                         onClick={() => handleBankConfigTabChange("audit-logs")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          bankConfigTab === "audit-logs"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={bankConfigTab === "audit-logs"}
+                        className="tab-rail"
                       >
                         {t("auditLogs")}
                         {!auditLogEnabled && (
@@ -528,26 +507,17 @@ export default function BankPage() {
                             Off
                           </span>
                         )}
-                        {bankConfigTab === "audit-logs" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       <button
                         onClick={() => handleBankConfigTabChange("llm-requests")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          bankConfigTab === "llm-requests"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={bankConfigTab === "llm-requests"}
+                        className="tab-rail"
                       >
                         {t("llmRequests")}
                         {!llmTraceEnabled && (
                           <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                             Off
                           </span>
-                        )}
-                        {bankConfigTab === "llm-requests" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
                         )}
                       </button>
                     </div>
@@ -632,7 +602,7 @@ export default function BankPage() {
               {/* Recall Tab */}
               {view === "recall" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("recallAnalyzer")}</h1>
+                  <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{t("recallAnalyzer")}</h1>
                   <p className="text-muted-foreground mb-6">{t("recallAnalyzerDescription")}</p>
                   <SearchDebugView />
                 </div>
@@ -641,7 +611,7 @@ export default function BankPage() {
               {/* Reflect Tab */}
               {view === "reflect" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("reflect")}</h1>
+                  <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{t("reflect")}</h1>
                   <p className="text-muted-foreground mb-6">{t("reflectDescription")}</p>
                   <ThinkView />
                 </div>
@@ -650,53 +620,35 @@ export default function BankPage() {
               {/* Data/Memories Tab */}
               {view === "data" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("memories")}</h1>
+                  <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{t("memories")}</h1>
                   <p className="text-muted-foreground mb-6">{t("memoriesDescription")}</p>
 
                   <div className="mb-6 border-b border-border">
                     <div className="flex gap-1">
                       <button
                         onClick={() => handleDataSubTabChange("world")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          subTab === "world"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={subTab === "world"}
+                        className="tab-rail"
                       >
                         {t("worldFacts")}
-                        {subTab === "world" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       <button
                         onClick={() => handleDataSubTabChange("experience")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          subTab === "experience"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={subTab === "experience"}
+                        className="tab-rail"
                       >
                         {t("experience")}
-                        {subTab === "experience" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       <button
                         onClick={() => handleDataSubTabChange("observations")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          subTab === "observations"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={subTab === "observations"}
+                        className="tab-rail"
                       >
                         {t("observations")}
                         {!observationsEnabled && (
                           <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                             Off
                           </span>
-                        )}
-                        {subTab === "observations" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
                         )}
                       </button>
                     </div>
@@ -754,7 +706,7 @@ export default function BankPage() {
               {/* Entities Tab */}
               {view === "entities" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("entities")}</h1>
+                  <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{t("entities")}</h1>
                   <p className="text-muted-foreground mb-6">{t("entitiesDescription")}</p>
                   <EntitiesView />
                 </div>
@@ -763,36 +715,24 @@ export default function BankPage() {
               {/* Knowledge Tab — Pages (knowledge base) + Mental Models sub-tabs. */}
               {view === "knowledge" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("knowledge")}</h1>
+                  <h1 className="font-heading mb-2 text-[26px] leading-tight font-semibold tracking-[-0.02em] text-foreground">{t("knowledge")}</h1>
                   <p className="text-muted-foreground mb-4">{t("knowledgeDescription")}</p>
 
                   <div className="mb-4 border-b border-border">
                     <div className="flex gap-1">
                       <button
                         onClick={() => handleKnowledgeTabChange("pages")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          knowledgeTab === "pages"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={knowledgeTab === "pages"}
+                        className="tab-rail"
                       >
                         {t("pages")}
-                        {knowledgeTab === "pages" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                       <button
                         onClick={() => handleKnowledgeTabChange("models")}
-                        className={`px-6 py-3 font-semibold text-sm transition-all relative ${
-                          knowledgeTab === "models"
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                        data-active={knowledgeTab === "models"}
+                        className="tab-rail"
                       >
                         {t("mentalModels")}
-                        {knowledgeTab === "models" && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                        )}
                       </button>
                     </div>
                   </div>

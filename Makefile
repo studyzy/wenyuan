@@ -35,7 +35,7 @@ COVERAGE_MIN ?= 56
 COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
-        frontend-build frontend-run clients clients-check \
+        frontend-build frontend-run frontend-standalone clients clients-check \
         test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration help \
         bench test-pg cover cover-check cover-check-pg parity
 
@@ -146,10 +146,35 @@ frontend-build:
 	cd frontend && npm run build
 
 ## frontend-run: serve the frontend in production mode on port 19999.
+##
+## Run the standalone output, not `next start`: next.config.mjs sets
+## `output: "standalone"`, and `next start` refuses that configuration — it
+## prints a warning and exits without ever listening. The standalone server is
+## also the only thing that runs what a deployment runs.
+##
+## The standalone tree is not self-contained: `next build` does not copy
+## `public/` or `.next/static` into it, so both are staged in first. Without
+## them the app boots and serves HTML but every asset 404s.
+##
+## HOSTNAME is pinned to the IPv4 loopback: the standalone server resolves its
+## own hostname when HOSTNAME is unset, and here that produced an IPv6-only
+## `[::1]` bind, so `http://127.0.0.1:19999` — the URL the BFF and the docs use —
+## was unreachable.
+##
 ## dev mode (`npm run dev`) hangs Origin-bearing HMR WebSocket upgrades in this
 ## environment, which leaves the dashboard reloading forever on an empty list.
-frontend-run:
-	cd frontend && HINDSIGHT_CP_DATAPLANE_API_URL=$(HINDSIGHT_CP_DATAPLANE_API_URL) npm run start
+frontend-run: frontend-standalone
+	cd frontend/.next/standalone && PORT=19999 HOSTNAME=127.0.0.1 \
+		HINDSIGHT_CP_DATAPLANE_API_URL=$(HINDSIGHT_CP_DATAPLANE_API_URL) \
+		node server.js
+
+## frontend-standalone: stage the standalone output for `frontend-run` —
+## production build, then graft `public/` and `.next/static` into the tree.
+frontend-standalone:
+	cd frontend && npm run build
+	rm -rf frontend/.next/standalone/.next/static frontend/.next/standalone/public
+	cp -r frontend/.next/static frontend/.next/standalone/.next/static
+	cp -r frontend/public frontend/.next/standalone/public
 
 ## clean: remove build output
 clean:

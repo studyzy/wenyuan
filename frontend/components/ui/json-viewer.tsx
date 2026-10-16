@@ -59,11 +59,13 @@ export function JsonViewer({ value, className = "bg-muted" }: JsonViewerProps) {
         onClick={handleCopy}
         title={copied ? t("copied") : t("copy")}
         aria-label={copied ? t("copied") : t("copy")}
-        className="absolute top-1.5 right-1.5 p-1.5 rounded-md border border-border bg-background/70 text-muted-foreground opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-foreground hover:bg-muted transition-all"
+        className="absolute top-1.5 right-1.5 rounded-[8px] border border-border border-solid bg-card/80 p-1.5 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
       >
         {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
       </button>
-      <pre className={`p-3 pr-10 rounded-md text-xs whitespace-pre-wrap break-words ${className}`}>
+      <pre
+        className={`rounded-[11px] border border-border border-solid p-3 pr-10 font-mono text-[11.5px] leading-[18px] whitespace-pre-wrap break-words ${className}`}
+      >
         {text}
       </pre>
     </div>

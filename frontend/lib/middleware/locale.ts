@@ -1,5 +1,5 @@
 import { negotiateLocale } from "../../i18n/negotiate";
-import type { Locale } from "../../i18n/locales";
+import { isSupportedLocale, type Locale } from "../../i18n/locales";
 
 /**
  * Locale policy for middleware.
@@ -27,9 +27,28 @@ export function resolveLocale(input: {
 
 /**
  * Apply the locale policy to a pathname. Under the never-prefix policy the
- * locale is attached as a request header for downstream rendering while the URL
- * path is returned unchanged, so no locale segment ever appears.
+ * locale never appears in the address bar, so the URL is left alone — but the
+ * app tree is mounted under `app/[locale]/`, so the request has to reach that
+ * segment by *internal rewrite*. The returned pathname is what the router is
+ * rewritten to; the caller keeps the original for the user's URL.
+ *
+ * A path that already carries a locale segment is returned unchanged: it is
+ * either this function's own earlier output (a rewrite is re-entered by the
+ * middleware rather than short-circuited) or a genuine `/[locale]/...` request,
+ * and prefixing it again would produce `/en/en/...`.
  */
-export function rewriteForLocale(pathname: string): { pathname: string; addedLocaleSegment: boolean } {
-  return { pathname, addedLocaleSegment: false };
+export function rewriteForLocale(
+  pathname: string,
+  locale: Locale,
+): { pathname: string; addedLocaleSegment: boolean } {
+  if (hasLocaleSegment(pathname)) {
+    return { pathname, addedLocaleSegment: false };
+  }
+  return { pathname: `/${locale}${pathname}`, addedLocaleSegment: true };
+}
+
+/** Whether the path's first segment is a supported locale. */
+export function hasLocaleSegment(pathname: string): boolean {
+  const [, first] = pathname.split("/");
+  return first !== undefined && first !== "" && isSupportedLocale(first);
 }
