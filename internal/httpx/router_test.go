@@ -12,7 +12,7 @@ type staticExtension struct{ mounted bool }
 func (s *staticExtension) Mount(r RouteRegistrar) {
 	s.mounted = true
 	r.Handle(http.MethodGet, "/ping", func(w http.ResponseWriter, req *http.Request) {
-		WriteJSONFor(w, req, http.StatusOK, map[string]string{"pong": "ok"})
+		WriteJSON(w, http.StatusOK, map[string]string{"pong": "ok"})
 	})
 }
 
@@ -78,7 +78,7 @@ type declaredExtension struct{}
 
 func (d *declaredExtension) Mount(r RouteRegistrar) {
 	r.Handle(http.MethodGet, "/declared", QueryParams(func(w http.ResponseWriter, req *http.Request) {
-		WriteJSONFor(w, req, http.StatusOK, map[string]string{"ok": "1"})
+		WriteJSON(w, http.StatusOK, map[string]string{"ok": "1"})
 	}, "limit"))
 }
 

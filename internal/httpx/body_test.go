@@ -61,6 +61,65 @@ func TestDecodeBodyRejections(t *testing.T) {
 	}
 }
 
+// DecodeStructFields reports every field of one object the reference's model
+// rejects, in the struct's field-declaration order, and keeps the lax coercion
+// a single field would get from the body decoder.
+func TestDecodeStructFieldsReportsEveryBadField(t *testing.T) {
+	type twoInts struct {
+		MaxTokens               int `json:"max_tokens"`
+		MaxTokensPerObservation int `json:"max_tokens_per_observation"`
+	}
+	type intAndBool struct {
+		MaxTokens int  `json:"max_tokens"`
+		Output    bool `json:"output"`
+	}
+	render := func(errs []error) []ValidationError { return NestedFailureItems(errs) }
+
+	// Two bad integers in one member: both items, in declaration order, even
+	// though the JSON keys are reversed.
+	var ints twoInts
+	items := render(DecodeStructFields([]byte(`{"max_tokens_per_observation":"b","max_tokens":"a"}`), &ints, []string{"include", "source_facts"}))
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2: %+v", len(items), items)
+	}
+	for i, want := range []struct {
+		kind string
+		loc  string
+	}{
+		{"int_parsing", "body.include.source_facts.max_tokens"},
+		{"int_parsing", "body.include.source_facts.max_tokens_per_observation"},
+	} {
+		if items[i].Type != want.kind || strings.Join(items[i].Loc, ".") != want.loc {
+			t.Fatalf("item %d = %+v, want %s at %s", i, items[i], want.kind, want.loc)
+		}
+	}
+
+	// A bad integer and a bad boolean in one member: one item each, in field
+	// order. No reference include member carries both today, so this pins the
+	// generic mechanism the per-field decode relies on.
+	var mixed intAndBool
+	items = render(DecodeStructFields([]byte(`{"output":"maybe","max_tokens":"a"}`), &mixed, []string{"include", "member"}))
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2: %+v", len(items), items)
+	}
+	if items[0].Type != "int_parsing" || strings.Join(items[0].Loc, ".") != "body.include.member.max_tokens" {
+		t.Fatalf("item 0 = %+v", items[0])
+	}
+	if items[1].Type != "bool_parsing" || strings.Join(items[1].Loc, ".") != "body.include.member.output" {
+		t.Fatalf("item 1 = %+v", items[1])
+	}
+
+	// A numeric string is the lax coercion the reference accepts, so the field
+	// is stored rather than reported.
+	var lax twoInts
+	if errs := DecodeStructFields([]byte(`{"max_tokens":"5","max_tokens_per_observation":"7"}`), &lax, []string{"include", "source_facts"}); len(errs) != 0 {
+		t.Fatalf("lax errors = %+v", render(errs))
+	}
+	if lax.MaxTokens != 5 || lax.MaxTokensPerObservation != 7 {
+		t.Fatalf("decoded %+v", lax)
+	}
+}
+
 // A list position in loc is a number in the framework's shape, not a string.
 func TestValidationLocPositionsAreNumbers(t *testing.T) {
 	failure := &ValidationFailure{Errors: []ValidationError{{

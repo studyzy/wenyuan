@@ -60,11 +60,20 @@ func (e ValidationError) MarshalJSON() ([]byte, error) {
 // uses one key for both request validation and non-validation failures.
 type ValidationFailure struct {
 	Errors []ValidationError
+	// Status and Detail carry a failure the request layer raises before
+	// validation (a body that is not text). Such a request is refused with a
+	// plain detail and its own status instead of the item list, but it travels
+	// the same path as a rejected body because every caller already reports one.
+	Status int
+	Detail string
 }
 
 // MarshalJSON emits the shared envelope so a validation failure is wire
 // compatible with the reference's {"detail":[...]} shape.
 func (v ValidationFailure) MarshalJSON() ([]byte, error) {
+	if v.Detail != "" {
+		return json.Marshal(ErrorEnvelope{Detail: v.Detail})
+	}
 	return json.Marshal(struct {
 		Detail []ValidationError `json:"detail"`
 	}{Detail: v.Errors})
@@ -160,4 +169,38 @@ const (
 // way the reference names it.
 func BankNotFoundDetail(bankID string) string {
 	return "Bank '" + bankID + "' not found"
+}
+
+// OperationValidationError is a validator's refusal — a missing bank, a tag
+// scope violation, a rejected operation — carrying the reason and the status
+// the route is expected to answer with.
+//
+// The reference decides the response by whether the route CATCHES the error:
+// a route with an `except OperationValidationError` clause answers the reason
+// as `detail` under the carried status, while a route that swallows it into the
+// generic `except Exception` handler answers 500 with `str(exc)`. The two are
+// therefore different responses for the same failure, and both are contract.
+type OperationValidationError struct {
+	// Reason is the client-facing detail a catching route returns.
+	Reason string
+	// Status is the status a catching route returns alongside the reason.
+	Status int
+}
+
+// Error is the wrapped text an UNCAUGHT validator failure surfaces with through
+// the generic handler: the reference's `str(OperationValidationError)`.
+func (e *OperationValidationError) Error() string {
+	return "Operation validation failed: " + e.Reason
+}
+
+// Caught maps the failure onto what a route that catches it returns: the reason
+// as detail, the validator's status alongside it.
+func (e *OperationValidationError) Caught() *HTTPError {
+	return NewHTTPError(e.Status, e.Reason)
+}
+
+// Uncaught maps the failure onto the generic 500 an uncaught validator failure
+// produces, carrying the wrapped text as detail.
+func (e *OperationValidationError) Uncaught() *HTTPError {
+	return NewHTTPError(http.StatusInternalServerError, e.Error())
 }

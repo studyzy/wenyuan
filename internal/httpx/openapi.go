@@ -2,6 +2,7 @@ package httpx
 
 import (
 	_ "embed"
+	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -49,6 +50,22 @@ var redocPage string
 //go:embed docs/oauth2-redirect.html
 var oauth2RedirectPage string
 
+// documentTitle is the served contract's info.title. The documentation pages
+// take their title from it, as the reference's FastAPI does — a page whose
+// title named this build rather than the API it documents would contradict the
+// document a client generates from.
+var documentTitle = func() string {
+	var document struct {
+		Info struct {
+			Title string `json:"title"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal([]byte(openAPIDocument), &document); err != nil || document.Info.Title == "" {
+		return "Hindsight HTTP API"
+	}
+	return document.Info.Title
+}()
+
 // OpenAPIDocument returns the contract document as served at a base path.
 //
 // The reference adds a `servers` entry per response when its root path is
@@ -63,9 +80,11 @@ func OpenAPIDocument(basePath string) string {
 }
 
 // docsPage rewrites the two URLs a documentation page carries so they point at
-// the configured base path. The alternative, templating the pages, would keep a
-// second copy of the reference's markup in the source.
-func docsPage(page, basePath string) string {
+// the configured base path, and titles the page after the served document's
+// info.title. The alternative, templating the pages, would keep a second copy
+// of the reference's markup in the source.
+func docsPage(page, basePath, title string) string {
+	page = withTitle(page, title)
 	if basePath == "" {
 		return page
 	}
@@ -73,6 +92,23 @@ func docsPage(page, basePath string) string {
 	page = strings.ReplaceAll(page, `'/openapi.json'`, `'`+basePath+`/openapi.json'`)
 	page = strings.ReplaceAll(page, `'/docs/oauth2-redirect'`, `'`+basePath+`/docs/oauth2-redirect'`)
 	return page
+}
+
+// withTitle replaces the document's <title> element with the given text. The
+// reference renders each page's title from the application title, so the pages
+// must carry the same title the served document reports.
+func withTitle(page, title string) string {
+	const open, close = "<title>", "</title>"
+	start := strings.Index(page, open)
+	if start < 0 {
+		return page
+	}
+	start += len(open)
+	end := strings.Index(page[start:], close)
+	if end < 0 {
+		return page
+	}
+	return page[:start] + title + page[start+end:]
 }
 
 // mountDescriptorNamespace registers the descriptor surface. The reference
@@ -84,26 +120,42 @@ func (r *Router) mountDescriptorNamespace() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(body))
 	}
-	r.Handle(http.MethodGet, PathOpenAPI, func(w http.ResponseWriter, _ *http.Request) {
+	r.handleDescriptor(PathOpenAPI, suppressIgnored(func(w http.ResponseWriter, _ *http.Request) {
 		writeBody(w, contentTypeJSON, OpenAPIDocument(basePath))
-	})
-	r.Handle(http.MethodGet, PathDocs, func(w http.ResponseWriter, _ *http.Request) {
-		writeBody(w, contentTypeHTML, docsPage(swaggerPage, basePath))
-	})
-	r.Handle(http.MethodGet, PathDocsOAuth, func(w http.ResponseWriter, _ *http.Request) {
+	}))
+	r.handleDescriptor(PathDocs, suppressIgnored(func(w http.ResponseWriter, _ *http.Request) {
+		writeBody(w, contentTypeHTML, docsPage(swaggerPage, basePath, documentTitle+" - Swagger UI"))
+	}))
+	r.handleDescriptor(PathDocsOAuth, suppressIgnored(func(w http.ResponseWriter, _ *http.Request) {
 		writeBody(w, contentTypeHTML, oauth2RedirectPage)
-	})
-	r.Handle(http.MethodGet, PathRedoc, func(w http.ResponseWriter, _ *http.Request) {
-		writeBody(w, contentTypeHTML, docsPage(redocPage, basePath))
-	})
-	// The reference's router answers the trailing-slash spelling of a page with
-	// a redirect to the page itself, because the page is not a subtree.
-	for _, page := range []string{PathDocs, PathRedoc} {
-		target := basePath + page
-		r.Handle(http.MethodGet, page+"/", func(w http.ResponseWriter, req *http.Request) {
-			http.Redirect(w, req, target, http.StatusTemporaryRedirect)
-		})
+	}))
+	r.handleDescriptor(PathRedoc, suppressIgnored(func(w http.ResponseWriter, _ *http.Request) {
+		writeBody(w, contentTypeHTML, docsPage(redocPage, basePath, documentTitle+" - ReDoc"))
+	}))
+	// The trailing-slash spelling of any route is answered by the router's
+	// redirect (see methodSemantics), not by a registered route: the reference's
+	// router strips the slash and redirects to the route it finds.
+}
+
+// suppressIgnored wraps a descriptor handler so it never reports ignored
+// parameters, matching the reference's plain descriptor routes.
+func suppressIgnored(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		SuppressIgnoredParams(req)
+		handler(w, req)
 	}
+}
+
+// redirect answers a request with the reference's redirect: a 307 to the
+// absolute URL built from the request's scheme and host, an empty body, and the
+// target's query string preserved.
+func redirect(w http.ResponseWriter, req *http.Request, target string) {
+	scheme := "http"
+	if req.TLS != nil {
+		scheme = "https"
+	}
+	w.Header().Set("Location", scheme+"://"+req.Host+target)
+	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
 // BasePathMiddleware serves the whole surface under a configured prefix, in

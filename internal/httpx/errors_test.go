@@ -10,7 +10,7 @@ import (
 
 func TestWriteErrorEnvelopeUsesDetailField(t *testing.T) {
 	rec := httptest.NewRecorder()
-	WriteError(rec, NewHTTPError(KindNotFound, DetailMissingBank), EncodeOptions{})
+	WriteError(rec, NewHTTPError(KindNotFound, DetailMissingBank))
 	if rec.Code != KindNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -26,7 +26,7 @@ func TestWriteErrorEnvelopeUsesDetailField(t *testing.T) {
 func TestWriteErrorCarriesRetryAfterHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := NewHTTPError(KindUnavailable, DetailWritesDown).WithHeader(HeaderRetryAfter, "5")
-	WriteError(rec, err, EncodeOptions{})
+	WriteError(rec, err)
 	if rec.Code != KindUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -43,7 +43,7 @@ func TestWriteValidationFailureShape(t *testing.T) {
 		Type:  "value_error",
 		Input: 9,
 	}}}
-	WriteValidationFailure(rec, failure, EncodeOptions{})
+	WriteValidationFailure(rec, failure)
 	if rec.Code != KindUnprocessable {
 		t.Fatalf("status = %d, want 422", rec.Code)
 	}
@@ -62,20 +62,20 @@ func TestWriteValidationFailureShape(t *testing.T) {
 	}
 }
 
-// ts-0020: with dropping enabled the null object field is absent; with it
-// disabled the field is present with a null value.
-func TestNullFieldDroppingModes(t *testing.T) {
+// Explicit null object fields stay on the wire: the reference's route class
+// never applies exclude_none, so nothing drops them.
+func TestNullFieldsAreKept(t *testing.T) {
 	payload := map[string]any{
 		"document_id": "doc-1",
 		"metadata":    nil,
 		"tags":        []string{"a", "b"},
 	}
-	kept, err := encodeJSON(payload, EncodeOptions{DropNullFields: false})
+	kept, err := encodeJSON(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(kept), `"metadata":null`) {
-		t.Fatalf("without dropping the null field must be present: %s", kept)
+		t.Fatalf("null field must be present: %s", kept)
 	}
 	// Map key order is not stable; compare decoded maps instead.
 	var decodedKept map[string]any
@@ -83,31 +83,19 @@ func TestNullFieldDroppingModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, present := decodedKept["metadata"]; !present {
-		t.Fatalf("metadata must be present when dropping is disabled: %s", kept)
+		t.Fatalf("metadata must be present: %s", kept)
 	}
-
-	dropped, err := encodeJSON(payload, EncodeOptions{DropNullFields: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decodedDropped map[string]any
-	if err := json.Unmarshal(dropped, &decodedDropped); err != nil {
-		t.Fatal(err)
-	}
-	if _, present := decodedDropped["metadata"]; present {
-		t.Fatalf("metadata must be absent when dropping is enabled: %s", dropped)
-	}
-	if _, present := decodedDropped["document_id"]; !present {
-		t.Fatalf("non-null field must survive dropping: %s", dropped)
+	if _, present := decodedKept["document_id"]; !present {
+		t.Fatalf("non-null field must survive: %s", kept)
 	}
 }
 
-func TestWriteJSONUsesRequestOptionsInHandler(t *testing.T) {
+func TestWriteJSONKeepsNullsInHandler(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /thing", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"document_id": "d", "metadata": nil})
+		WriteJSON(w, http.StatusOK, map[string]any{"document_id": "d", "metadata": nil})
 	})
-	handler := Chain(mux, NullDropMiddleware(true))
+	handler := Chain(mux, DisconnectCancelMiddleware())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/thing", nil))
@@ -118,7 +106,7 @@ func TestWriteJSONUsesRequestOptionsInHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := body["metadata"]; present {
-		t.Fatalf("metadata should have been dropped: %s", rec.Body.String())
+	if _, present := body["metadata"]; !present {
+		t.Fatalf("metadata must stay on the wire: %s", rec.Body.String())
 	}
 }

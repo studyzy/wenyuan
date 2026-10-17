@@ -16,12 +16,20 @@ import (
 // Hook, or a nil Action disables HTTP auditing entirely.
 type AuditOptions struct {
 	// Action maps a matched route (HTTP method + path template) to its audit
-	// action and whether the request body is recorded. ok=false means the route
-	// is not audited.
-	Action func(method, pattern string) (action string, captureRequest, ok bool)
+	// action, whether the request body is recorded, and the declared request
+	// model the body is dumped through when it is. ok=false means the route is
+	// not audited.
+	Action func(method, pattern string) (action string, captureRequest bool, sample BodySample, ok bool)
 	// Hook makes the record/no-record decision and writes the entry.
 	Hook AuditHook
 }
+
+// BodySample returns a fresh request model for a route, with the reference's
+// declared field defaults already applied. The audit trail records the model's
+// JSON dump, not the bytes as sent: every declared field is present (an omitted
+// one carrying its default, i.e. null for a nullable field) and a field the
+// model does not declare is dropped.
+type BodySample func() any
 
 // AuditHook is the audit surface the middleware depends on. It is satisfied by
 // *audit.Logger; the interface keeps the router free of the audit package's
@@ -48,7 +56,7 @@ func auditMiddleware(opts *AuditOptions, resolveEndpoint func(*http.Request) str
 				next.ServeHTTP(w, r)
 				return
 			}
-			action, captureRequest, ok := opts.Action(r.Method, resolveEndpoint(r))
+			action, captureRequest, sample, ok := opts.Action(r.Method, resolveEndpoint(r))
 			if !ok {
 				next.ServeHTTP(w, r)
 				return
@@ -62,7 +70,7 @@ func auditMiddleware(opts *AuditOptions, resolveEndpoint func(*http.Request) str
 			started := time.Now().UTC()
 			var request map[string]any
 			if captureRequest {
-				request = captureRequestBody(r)
+				request = captureBody(r, sample)
 			}
 
 			recorder := &auditResponseWriter{ResponseWriter: w}
@@ -90,10 +98,11 @@ func auditMiddleware(opts *AuditOptions, resolveEndpoint func(*http.Request) str
 	}
 }
 
-// captureRequestBody reads the whole request body into a JSON object and
-// restores it, so the handler sees the same bytes the auditor recorded. A body
-// that is not a JSON object, or is too large, is recorded as absent.
-func captureRequestBody(r *http.Request) map[string]any {
+// captureBody reads the whole request body, restores it so the handler sees
+// the same bytes, and returns the audit record's request object: the declared
+// model's dump of that body. A body that is too large, or that the model cannot
+// decode, is recorded as absent.
+func captureBody(r *http.Request, sample BodySample) map[string]any {
 	if r.Body == nil {
 		return nil
 	}
@@ -106,8 +115,27 @@ func captureRequestBody(r *http.Request) map[string]any {
 	if len(body) > auditBodyLimit {
 		return nil
 	}
+	return declaredModel(body, sample)
+}
+
+// declaredModel decodes a captured body through its route's declared request
+// model and returns the model's JSON dump. The decoded sample carries the
+// reference's defaults, so a field left out of the body is present as its
+// default and a field the model does not declare is dropped.
+func declaredModel(body []byte, sample BodySample) map[string]any {
+	if sample == nil {
+		return nil
+	}
+	model := sample()
+	if err := json.Unmarshal(body, model); err != nil {
+		return nil
+	}
+	encoded, err := json.Marshal(model)
+	if err != nil {
+		return nil
+	}
 	var object map[string]any
-	if err := json.Unmarshal(body, &object); err != nil {
+	if err := json.Unmarshal(encoded, &object); err != nil {
 		return nil
 	}
 	return object

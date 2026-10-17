@@ -37,7 +37,7 @@ var UnprotectedExactPaths = []string{
 // A deployment that configures no key is not authenticated at all, which is the
 // reference's single-tenant default.
 func TenantAPIKeyMiddleware(apiKey string, mcpAuthDisabled bool) Middleware {
-	return TenantAuthMiddleware(apiKey, mcpAuthDisabled, "")
+	return TenantAuthMiddleware(apiKey, mcpAuthDisabled, "", nil)
 }
 
 // TenantAuthMiddleware authenticates protected requests, and the MCP namespace
@@ -46,7 +46,15 @@ func TenantAPIKeyMiddleware(apiKey string, mcpAuthDisabled bool) Middleware {
 // The reference checks the legacy token *instead of* the tenant extension for
 // MCP: a deployment that sets it authenticates MCP callers with that token
 // alone, which is why the two credentials never apply to the same request.
-func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken string) Middleware {
+//
+// routeAllowed, when non-nil, reports whether the request is dispatched to a
+// route at all. The reference authenticates inside the engine, after routing,
+// so a request the router rejects (unmatched path, method mismatch) is answered
+// 404 or 405 without a credential; a request the router would reject is
+// therefore left unauthenticated for the router's own rejection to stand. The
+// MCP namespace is exempt, because the reference authenticates it in a wrapping
+// middleware that runs before routing.
+func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken string, routeAllowed func(*http.Request) bool) Middleware {
 	if apiKey == "" && mcpAuthToken == "" {
 		return func(next http.Handler) http.Handler { return next }
 	}
@@ -60,7 +68,7 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 						detail = DetailMCPAuthorizationRequired
 					}
 					WriteJSON(w, http.StatusUnauthorized,
-						ErrorEnvelope{Detail: detail}, EncodeOptionsFor(r))
+						ErrorEnvelope{Detail: detail})
 					return
 				}
 				next.ServeHTTP(w, r)
@@ -70,9 +78,15 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 				next.ServeHTTP(w, r)
 				return
 			}
+			// A path that reaches no route is answered by the router, not the
+			// engine, so the credential is never examined for it.
+			if !isMCP && routeAllowed != nil && !routeAllowed(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if !credentialMatches(r, apiKey) {
 				WriteJSON(w, http.StatusUnauthorized,
-					ErrorEnvelope{Detail: DetailAuthenticationFailed}, EncodeOptionsFor(r))
+					ErrorEnvelope{Detail: DetailAuthenticationFailed})
 				return
 			}
 			next.ServeHTTP(w, r)

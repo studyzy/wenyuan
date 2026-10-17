@@ -36,21 +36,21 @@ func operationServer() (*http.ServeMux, *bool) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/default/banks/{bank_id}/memories", func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /v1/default/banks/{bank_id}/memories/recall", func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /v1/default/banks/{bank_id}/files/retain", func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	return mux, &called
 }
 
 func operationHandler(host *ExtensionHost, mux *http.ServeMux) http.Handler {
-	return Chain(mux, NullDropMiddleware(false), OperationValidationMiddleware(host))
+	return Chain(mux, OperationValidationMiddleware(host))
 }
 
 // A denied retain is answered with the validator's status and reason, and the
@@ -148,7 +148,7 @@ func TestTagScopeCarriedForReads(t *testing.T) {
 		var seen []TagGroup
 		mux.HandleFunc(method+" /v1/default/banks/{bank_id}/", func(w http.ResponseWriter, r *http.Request) {
 			seen = TagScopeFrom(r)
-			WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+			WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 		})
 		rec := httptest.NewRecorder()
 		operationHandler(host, mux).ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(`{}`)))
@@ -187,7 +187,7 @@ func TestNoValidatorLeavesResponseUnchanged(t *testing.T) {
 	host := NewExtensionHost() // registers nothing
 
 	plain := httptest.NewRecorder()
-	Chain(mux, NullDropMiddleware(false)).ServeHTTP(plain,
+	Chain(mux).ServeHTTP(plain,
 		httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories/recall", strings.NewReader(`{}`)))
 
 	wrapped := httptest.NewRecorder()
@@ -205,7 +205,7 @@ func TestNoValidatorLeavesResponseUnchanged(t *testing.T) {
 func TestNilHostPassesThrough(t *testing.T) {
 	mux, called := operationServer()
 	rec := httptest.NewRecorder()
-	Chain(mux, NullDropMiddleware(false), OperationValidationMiddleware(nil)).ServeHTTP(rec,
+	Chain(mux, OperationValidationMiddleware(nil)).ServeHTTP(rec,
 		httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories", strings.NewReader(`{}`)))
 	if rec.Code != http.StatusOK || !*called {
 		t.Fatalf("nil host changed behaviour: status = %d called = %v", rec.Code, *called)

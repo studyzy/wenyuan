@@ -107,7 +107,7 @@ func admit(w http.ResponseWriter, r *http.Request, lane struct {
 		return false
 	case <-timer.C:
 		WriteError(w, NewHTTPError(KindUnavailable, shedDetail(lane.rule, lane.rule.Limit)).
-			WithHeader(HeaderRetryAfter, itoa(retryAfter)), EncodeOptions{})
+			WithHeader(HeaderRetryAfter, itoa(retryAfter)))
 		return false
 	}
 }

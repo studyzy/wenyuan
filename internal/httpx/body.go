@@ -1,15 +1,38 @@
 package httpx
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
+
+// detailBodyNotText is the fixed detail the reference's request layer returns
+// when the body cannot be decoded as text, which happens before any handler or
+// validation rule runs.
+const detailBodyNotText = "There was an error parsing the body"
+
+// utf8BOM is the byte-order mark the reference's parser accepts at the start of
+// a body and the bytes it counts positions from (it strips the mark first).
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// checkBodyText prepares a request body the way the reference's request layer
+// does: a leading UTF-8 byte-order mark is dropped, and a body that is not valid
+// UTF-8 is refused with the layer's own bad-request detail rather than becoming a
+// validation item (the request never reaches the handler in that case).
+func checkBodyText(body []byte) ([]byte, error) {
+	body = bytes.TrimPrefix(body, utf8BOM)
+	if !utf8.Valid(body) {
+		return nil, NewHTTPError(KindBadRequest, detailBodyNotText)
+	}
+	return body, nil
+}
 
 // ErrEmptyBody reports a request that carried no body at all. The framework
 // answers such a request with the item for a missing required field, so the
@@ -32,12 +55,21 @@ func DecodeBody(r *http.Request, target any) error {
 				map[string]any{"error": err.Error()}),
 		}}
 	}
+	var textErr error
+	if body, textErr = checkBodyText(body); textErr != nil {
+		return textErr
+	}
 	RecordUnknownBodyFields(r, body, target)
-	if len(strings.TrimSpace(string(body))) == 0 {
+	if len(body) == 0 {
 		return BodyDecodeFailure(ErrEmptyBody, body)
 	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return BodyDecodeFailure(err, body)
+	// The reference's framework coerces values between compatible JSON kinds
+	// before validating them, so a body Go's decoder refuses may still be one
+	// the reference accepts (and one it rejects keeps the item the decoder
+	// machinery builds for its original text).
+	decoded, err := decodeLaxSchema(body, target, schemaForRequest(r, target))
+	if err != nil {
+		return BodyDecodeFailure(err, decoded)
 	}
 	return nil
 }
@@ -47,36 +79,219 @@ func DecodeBody(r *http.Request, target any) error {
 // report the fields it does not know, for instance — reports a rejected body the
 // same way the shared decoder does.
 func BodyDecodeFailure(err error, body []byte) *ValidationFailure {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		// A failure the request layer itself raised (a body that is not text)
+		// keeps its own status and detail instead of becoming an item list.
+		return &ValidationFailure{Status: httpErr.Status, Detail: httpErr.Detail}
+	}
 	return bodyFailure(err, body)
+}
+
+// NestedDecodeError is a decode failure a type that decodes itself localized.
+// Such a type hands a member to a second decoder over a sub-slice, so the
+// *json.UnmarshalTypeError it gets back has an Offset relative to that sub-slice
+// and a Field missing the enclosing path. This error carries the JSON path from
+// the body root and the sub-slice the offset indexes, so the shared builder
+// reports the same item the framework does for a nested member.
+type NestedDecodeError struct {
+	Err  *json.UnmarshalTypeError
+	Path []string // below the body root, e.g. include, entities, max_tokens
+	Body []byte   // the sub-slice Err.Offset indexes
+}
+
+// Error renders the underlying decoder failure.
+func (e *NestedDecodeError) Error() string { return e.Err.Error() }
+
+// Unwrap exposes the decoder failure, so a caller that only knows the standard
+// error types still recognizes it.
+func (e *NestedDecodeError) Unwrap() error { return e.Err }
+
+// LocalizeNestedDecodeError rebases the error a self-decoding type's member
+// decode returned onto the request body. prefix is the JSON path from the body
+// root to the object the type decodes (e.g. ["include"]), member is the failed
+// member's name, and data is the sub-slice that member's decode read. An error
+// that is not a decoder type failure is returned unchanged, so an unrelated
+// failure keeps its own rendering.
+func LocalizeNestedDecodeError(prefix []string, member string, data []byte, err error) error {
+	var already *NestedDecodeError
+	if errors.As(err, &already) {
+		// The member type localized its own failure, so its path continues from
+		// this member rather than restarting at the body root.
+		path := append(append(append([]string(nil), prefix...), member), already.Path...)
+		return &NestedDecodeError{Err: already.Err, Path: path, Body: already.Body}
+	}
+	var typeError *json.UnmarshalTypeError
+	if !errors.As(err, &typeError) {
+		return err
+	}
+	path := append(append([]string(nil), prefix...), member)
+	if typeError.Field != "" {
+		path = append(path, strings.Split(typeError.Field, ".")...)
+	}
+	return &NestedDecodeError{Err: typeError, Path: path, Body: data}
+}
+
+// DecodeStructFields decodes the JSON object in data into the struct target one
+// declared field at a time, so every field the reference's model rejects is
+// reported rather than only the first the shared decoder stops on. Each field
+// is decoded with the same lax coercion the body decoder applies, so a value the
+// reference accepts for it (a numeric string for an integer field, a boolean
+// word for a boolean field) is still accepted and stored in target.
+//
+// prefix is the JSON path from the body root to the object (e.g.
+// ["include","source_facts"]); each failure is localized to prefix plus the
+// field's JSON name, with the value read from the bytes that field was decoded
+// from. The failures are returned in the struct's field-declaration order,
+// which is the order the reference reports them, so a caller accumulates them
+// in that order no matter how the request ordered the keys.
+func DecodeStructFields(data []byte, target any, prefix []string) []error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		// A caller hands this only an object it has already accepted as one, so
+		// a failure here is a malformed value rather than a member's own field;
+		// report it against the object itself.
+		last := len(prefix) - 1
+		return []error{LocalizeNestedDecodeError(prefix[:last], prefix[last], data, err)}
+	}
+	typ := reflect.TypeOf(target).Elem()
+	dest := reflect.ValueOf(target).Elem()
+	var errs []error
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported: not a wire field
+		}
+		name := jsonFieldName(field)
+		if name == "" {
+			continue
+		}
+		raw, present := members[name]
+		if !present {
+			continue
+		}
+		holder := reflect.New(field.Type)
+		// The member's own decode is read as a sub-slice, and the body-wide
+		// null pass already reports every null rejection from the request root;
+		// running it here too would report the same value twice.
+		body, err := decodeLaxSchema(raw, holder.Interface(), nil)
+		if err != nil {
+			errs = append(errs, LocalizeNestedDecodeError(prefix, name, body, err))
+			continue
+		}
+		dest.Field(i).Set(holder.Elem())
+	}
+	return errs
+}
+
+// jsonFieldName returns the name a struct field decodes from: the name part of
+// its json tag, or the Go field name when the tag carries none. A field the tag
+// marks "-" is not a wire field and yields the empty name.
+func jsonFieldName(field reflect.StructField) string {
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+	if name == "-" {
+		return ""
+	}
+	if name == "" {
+		return field.Name
+	}
+	return name
+}
+
+// NestedFailureItems renders a sequence of localized nested decode errors as the
+// framework's structured items, in the order given. The reference reports every
+// invalid member of one request in a single failure, so a type that decodes its
+// members one at a time records each member's failure and needs them all in one
+// failure; this helper applies the same rendering bodyFailure gives a single
+// localized error. Each item's loc carries the full path from the body root and
+// its input is read from the sub-slice the inner offset indexes.
+func NestedFailureItems(errs []error) []ValidationError {
+	items := make([]ValidationError, 0, len(errs))
+	for _, err := range errs {
+		var nested *NestedDecodeError
+		if errors.As(err, &nested) {
+			loc := append([]string{"body"}, nested.Path...)
+			input := scalarInput(nested.Body, nested.Err)
+			kind, msg := typeVocabulary(nested.Err, input)
+			items = append(items, ValidationItem(kind, loc, msg, input, nil))
+			continue
+		}
+		// A failure that is not a localized decoder type failure still names one
+		// item, so an unexpected member failure is reported rather than dropped.
+		items = append(items, ValidationItem("json_invalid", []string{"body"}, "JSON decode error", nil,
+			map[string]any{"error": err.Error()}))
+	}
+	return items
 }
 
 // bodyFailure renders a decode error as the framework's structured item.
 func bodyFailure(err error, body []byte) *ValidationFailure {
-	if errors.Is(err, ErrEmptyBody) {
+	var failure *ValidationFailure
+	if errors.As(err, &failure) {
+		// A failure the decode path already built (the null pass reports its
+		// items as one structured failure) keeps its own item list.
+		return failure
+	}
+	if errors.Is(err, ErrEmptyBody) && len(body) == 0 {
 		// An absent body is a missing required field whose input is null: there
 		// is no object for the field to be missing from.
 		return &ValidationFailure{Errors: []ValidationError{Missing([]string{"body"}, nil)}}
 	}
+	if len(body) > 0 && !json.Valid(body) {
+		// The framework's parser runs before its model, so a body its parser
+		// rejects is the json_invalid item — never a type failure the Go decoder
+		// happened to report first (a scalar with trailing text decodes far
+		// enough for the decoder to name the model before it notices). A body
+		// that is only whitespace reaches here too and is rejected like any
+		// other malformed text.
+		if failure, ok := pythonJSONFailure(body); ok {
+			return failure
+		}
+	}
 	var syntaxError *json.SyntaxError
 	if errors.As(err, &syntaxError) {
+		if failure, ok := pythonJSONFailure(body); ok {
+			return failure
+		}
+		// A body the Go decoder rejects but CPython accepts (its NaN and
+		// Infinity literals): keep the decoder's own rendering rather than
+		// inventing a position the reference never reports.
 		loc := []string{"body"}
 		if syntaxError.Offset > 0 {
-			loc = append(loc, fmt.Sprintf("%d", syntaxError.Offset))
+			loc = append(loc, strconv.Itoa(int(syntaxError.Offset)))
 		}
 		return &ValidationFailure{Errors: []ValidationError{
 			ValidationItem("json_invalid", loc, "JSON decode error", map[string]any{},
-				map[string]any{"error": syntaxError.Error()}),
+				map[string]any{"error": err.Error()}),
 		}}
+	}
+	var nested *NestedDecodeError
+	if errors.As(err, &nested) {
+		return &ValidationFailure{Errors: NestedFailureItems([]error{err})}
 	}
 	var typeError *json.UnmarshalTypeError
 	if errors.As(err, &typeError) {
+		if typeError.Field == "" && isModelType(typeError.Type) {
+			// The whole body was sent for a model: the framework reports its
+			// model_attributes_type item, whose input is the value itself.
+			return &ValidationFailure{Errors: []ValidationError{modelAttributesType(body)}}
+		}
 		loc := []string{"body"}
 		if typeError.Field != "" {
-			loc = append(loc, strings.Split(typeError.Field, ".")...)
+			// The framework's loc carries an index for every list level; the Go
+			// decoder's field path has none, so the raw body is walked to
+			// recover them (falling back to the plain path when the scan
+			// cannot confirm it).
+			if scanned, ok := locForOffset(body, typeError.Field, typeError.Offset); ok {
+				loc = append(loc, scanned...)
+			} else {
+				loc = append(loc, strings.Split(typeError.Field, ".")...)
+			}
 		}
-		kind, msg := typeVocabulary(typeError)
+		input := scalarInput(body, typeError)
+		kind, msg := typeVocabulary(typeError, input)
 		return &ValidationFailure{Errors: []ValidationError{
-			ValidationItem(kind, loc, msg, scalarInput(body, typeError.Offset), nil),
+			ValidationItem(kind, loc, msg, input, nil),
 		}}
 	}
 	return &ValidationFailure{Errors: []ValidationError{
@@ -85,18 +300,67 @@ func bodyFailure(err error, body []byte) *ValidationFailure {
 	}}
 }
 
+// pythonJSONFailure renders body as the item the reference's framework emits for
+// a body its parser rejects: the item's loc carries CPython's 0-based character
+// position of the failure and its ctx the bare message CPython reports. The last
+// result is false when the scan finds no failure, so a caller that reached here
+// through the Go decoder keeps its own rendering.
+func pythonJSONFailure(body []byte) (*ValidationFailure, bool) {
+	pos, msg, ok := pythonJSONError(body)
+	if !ok {
+		return nil, false
+	}
+	return &ValidationFailure{Errors: []ValidationError{
+		ValidationItem("json_invalid", []string{"body", strconv.Itoa(pos)}, "JSON decode error", map[string]any{},
+			map[string]any{"error": msg}),
+	}}, true
+}
+
+// modelAttributesType builds the item the framework emits when a whole body
+// carries a value a model cannot extract fields from. input is the value the
+// caller sent, read back from the body so it names what arrived.
+func modelAttributesType(body []byte) ValidationError {
+	input := any(nil)
+	if len(body) > 0 {
+		var value any
+		if err := json.Unmarshal(body, &value); err == nil {
+			input = value
+		}
+	}
+	return ValidationItem("model_attributes_type", []string{"body"},
+		"Input should be a valid dictionary or object to extract fields from", input, nil)
+}
+
+// isModelType reports whether a decode target names a model: a struct, possibly
+// behind pointers. The framework keys its whole-body item on the declared model,
+// so only a struct target gets it; a map target keeps the generic dict item.
+func isModelType(t reflect.Type) bool {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t != nil && t.Kind() == reflect.Struct
+}
+
 // typeVocabulary names a wrong-typed value the way the framework names it for
 // the same failure. The framework keys the item on the declared type and on the
 // JSON kind that was sent: a string that will not convert to the type is a
 // `<type>_parsing` failure, any other kind a `<type>_type` one, and a number
 // carrying a fraction sent for an integer has a name of its own.
-func typeVocabulary(err *json.UnmarshalTypeError) (string, string) {
+func typeVocabulary(err *json.UnmarshalTypeError, input any) (string, string) {
 	parsing := err.Value == "string"
 	switch err.Type.Kind() {
 	case reflect.String:
 		return typed("string_type")
 	case reflect.Bool:
+		// A boolean the framework cannot interpret is a parsing failure: that
+		// covers every string (including its accepted spellings' near misses) and
+		// a whole number other than 0 or 1. A fractional number, a container or
+		// null is the wrong type outright.
 		if parsing {
+			return typed("bool_parsing")
+		}
+		if number, ok := input.(float64); ok && number == math.Trunc(number) {
+			// A whole number other than 0 or 1: the framework cannot interpret it.
 			return typed("bool_parsing")
 		}
 		return typed("bool_type")
@@ -133,9 +397,22 @@ func typed(kind string) (string, string) {
 // scalarInput reads the input the decoded value failed on, so the item names
 // what the caller actually sent. An offset the decoder did not report yields an
 // empty input rather than a guess.
-func scalarInput(body []byte, offset int64) any {
+//
+// A container sent for a scalar lands the decoder's offset just past the
+// opening bracket, so the value is read from there: the delimiter scan below
+// would stop at the container's first element and report a fragment.
+func scalarInput(body []byte, typeError *json.UnmarshalTypeError) any {
+	offset := typeError.Offset
 	if offset <= 0 || offset > int64(len(body)) {
 		return nil
+	}
+	if typeError.Value == "array" || typeError.Value == "object" {
+		if start := offset - 1; body[start] == '[' || body[start] == '{' {
+			var value any
+			if err := json.NewDecoder(bytes.NewReader(body[start:])).Decode(&value); err == nil {
+				return value
+			}
+		}
 	}
 	raw := strings.TrimSpace(string(body[:offset]))
 	if raw == "" {

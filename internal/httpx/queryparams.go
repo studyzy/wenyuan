@@ -32,6 +32,13 @@ type ignoredCollector struct {
 	reads      []string
 	readSeen   map[string]struct{}
 	undeclared []string
+
+	// noReport suppresses the ignored-parameter report for the request. The
+	// reference's descriptor routes (/openapi.json, /docs, /docs/oauth2-redirect,
+	// /redoc) are plain routes, not the route class that reports ignored
+	// parameters, so they never carry the header however many unknown query
+	// names they are given.
+	noReport bool
 }
 
 func newIgnoredCollector() *ignoredCollector {
@@ -239,10 +246,10 @@ func (c *ignoredCollector) ignoredQuery(r *http.Request) []string {
 // recorded, without duplication. That ordering matches the reference, which
 // collects the query names before the body keys.
 func (c *ignoredCollector) ignoredFor(r *http.Request) []string {
-	out := c.ignoredQuery(r)
-	if c == nil {
-		return out
+	if c == nil || c.noReport {
+		return nil
 	}
+	out := c.ignoredQuery(r)
 	seen := make(map[string]struct{}, len(out))
 	for _, name := range out {
 		seen[name] = struct{}{}
@@ -255,6 +262,16 @@ func (c *ignoredCollector) ignoredFor(r *http.Request) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// SuppressIgnoredParams marks the current request as one that never reports
+// ignored parameters, whatever query names it carries. The reference's
+// descriptor routes are the only such routes: they are plain routes, not the
+// route class that reports unknown parameters.
+func SuppressIgnoredParams(r *http.Request) {
+	if c := collectorFrom(r.Context()); c != nil {
+		c.noReport = true
+	}
 }
 
 // RecordIgnoredParams annotates the request with unknown parameter names so the
@@ -375,5 +392,23 @@ func RecordUnknownBodyFields(r *http.Request, body []byte, sample any) {
 }
 
 func formatIgnoredParams(names []string) string {
-	return strings.Join(names, ", ")
+	return headerSafe(strings.Join(names, ", "))
+}
+
+// headerSafe renders a header value the way the reference's _header_safe does:
+// every printable ASCII character is kept and everything else, including a
+// non-ASCII or control byte, becomes '?'. A decoded query-parameter name can
+// carry either, and a raw non-ASCII byte in a header is not what the reference
+// sends.
+func headerSafe(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if r >= ' ' && r <= '~' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
 }

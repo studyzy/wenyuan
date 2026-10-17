@@ -119,10 +119,14 @@ func TypeMessage(kind string) string {
 		return "Input should be a valid boolean"
 	case "string_type":
 		return "Input should be a valid string"
+	case "model_attributes_type":
+		return modelShapeMessage
+	case "datetime_type":
+		return "Input should be a valid datetime"
 	case "list_type":
-		return "Input should be a valid array"
+		return "Input should be a valid list"
 	case "dict_type":
-		return "Input should be an object"
+		return "Input should be a valid dictionary"
 	}
 	return "Input should be a valid value"
 }

@@ -112,7 +112,7 @@ func (w *fallbackWriter) finish() {
 		if w.status == http.StatusMethodNotAllowed {
 			detail = DetailMethodNotAllowed
 		}
-		body, err := encodeJSON(ErrorEnvelope{Detail: detail}, EncodeOptions{})
+		body, err := encodeJSON(ErrorEnvelope{Detail: detail})
 		if err == nil {
 			w.ResponseWriter.WriteHeader(w.status)
 			_, _ = w.ResponseWriter.Write(body)

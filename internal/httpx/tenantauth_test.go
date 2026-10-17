@@ -92,7 +92,7 @@ func TestTenantAPIKeyAbsentLeavesRoutesOpen(t *testing.T) {
 // reference's two refusals: a missing header and a wrong token are different
 // sentences.
 func TestMCPAuthTokenReplacesTenantAuthForMCP(t *testing.T) {
-	handler := TenantAuthMiddleware("tenant-key", false, "mcp-token")(
+	handler := TenantAuthMiddleware("tenant-key", false, "mcp-token", nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	missing := httptest.NewRecorder()

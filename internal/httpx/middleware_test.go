@@ -15,7 +15,7 @@ import (
 func TestIgnoredParamsHeaderOnUnknownParameter(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
+		WriteJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
 	}, "limit"))
 	handler := Chain(mux, IgnoredParamsMiddleware())
 
@@ -32,7 +32,7 @@ func TestIgnoredParamsHeaderOnUnknownParameter(t *testing.T) {
 func TestKnownParametersAreNotReported(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}, "limit", "tags"))
 	handler := Chain(mux, IgnoredParamsMiddleware())
 
@@ -48,10 +48,10 @@ func TestKnownParametersAreNotReported(t *testing.T) {
 func TestParameterAcceptedElsewhereIsReportedHere(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /accepted", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}, "tag"))
 	mux.HandleFunc("GET /other", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}))
 	handler := Chain(mux, IgnoredParamsMiddleware())
 
@@ -72,7 +72,7 @@ func TestParameterAcceptedElsewhereIsReportedHere(t *testing.T) {
 func TestPathParameterNamedQueryParameterIsNotReported(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/default/banks/{bank_id}", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
+		WriteJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("bank_id")})
 	}))
 	handler := Chain(mux, IgnoredParamsMiddleware())
 
@@ -86,7 +86,7 @@ func TestPathParameterNamedQueryParameterIsNotReported(t *testing.T) {
 func TestIgnoredParamsPreserveEncounterOrder(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /x", QueryParams(func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}, "limit"))
 	handler := Chain(mux, IgnoredParamsMiddleware())
 
@@ -236,14 +236,14 @@ func TestAllowedBodyFieldsFromModel(t *testing.T) {
 	}
 }
 
-// An open-row response keeps explicit null fields even when null-dropping is
-// enabled for the request.
+// A response with an explicit null object field keeps it: nothing on the wire
+// drops nulls.
 func TestOpenRowKeepsNulls(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /graph", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONOpenRow(w, r, http.StatusOK, map[string]any{"date": nil, "id": "n1"})
+		WriteJSON(w, http.StatusOK, map[string]any{"date": nil, "id": "n1"})
 	})
-	handler := Chain(mux, NullDropMiddleware(true))
+	handler := Chain(mux)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/graph", nil))
 	if !strings.Contains(rec.Body.String(), `"date":null`) {

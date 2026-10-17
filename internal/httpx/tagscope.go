@@ -166,3 +166,23 @@ func bankScopedBank(r *http.Request) (string, bool) {
 	}
 	return bankID, true
 }
+
+// RefuseBankWideIfScoped writes the reference's refusal for a caller confined to
+// a tag scope attempting an operation that reaches the whole bank.
+//
+// Export, clone, import, bank-wide clears, deleting the bank, changing its
+// config or aliases, and reads answered for the whole bank (statistics, the
+// operations list, webhooks, the audit and LLM-request logs) reach every memory
+// regardless of tags, so they cannot be narrowed to a scope and a confined
+// caller may not run them at all. It reports whether it wrote a refusal; a
+// request with neither a read nor a write scope is untouched, which is every
+// request in a deployment with no scope validator.
+func RefuseBankWideIfScoped(w http.ResponseWriter, r *http.Request, what string) bool {
+	if len(TagScopeFrom(r)) == 0 {
+		if _, confined := WriteTagScopeFrom(r); !confined {
+			return false
+		}
+	}
+	WriteErrorFor(w, r, NewHTTPError(KindForbidden, "A tag-scoped caller can't "+what))
+	return true
+}

@@ -30,13 +30,13 @@ func (validationVocabArea) Mount(r RouteRegistrar) {
 	r.Handle(http.MethodPost, "/decode", decodeVocabBody)
 	r.Handle(http.MethodPost, "/validate", validateVocabBody)
 	r.Handle(http.MethodPost, "/bound", func(w http.ResponseWriter, req *http.Request) {
-		WriteValidationFor(w, req, &ValidationFailure{Errors: []ValidationError{
+		WriteValidationFailure(w, &ValidationFailure{Errors: []ValidationError{
 			GreaterThanEqual([]string{"body", "limit"}, 0, 1),
 			LessThanEqual([]string{"body", "limit"}, 5000, 1000),
 		}})
 	})
 	r.Handle(http.MethodPost, "/enum", func(w http.ResponseWriter, req *http.Request) {
-		WriteValidationFor(w, req, &ValidationFailure{Errors: []ValidationError{
+		WriteValidationFailure(w, &ValidationFailure{Errors: []ValidationError{
 			Enum([]string{"body", "budget"}, "bogus", []string{"low", "mid", "high"}),
 			Literal([]string{"body", "tags_match"}, "bogus", []string{"any", "all"}),
 			ValueError([]string{"body", "query"}, "   ", "query must contain at least one word character"),
@@ -52,7 +52,7 @@ func decodeVocabBody(w http.ResponseWriter, req *http.Request) {
 		WriteErrorFor(w, req, err)
 		return
 	}
-	WriteJSONFor(w, req, http.StatusOK, map[string]any{"ok": true})
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // validateVocabBody reports the failures a handler derives after decoding: a
@@ -64,7 +64,7 @@ func validateVocabBody(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
-		WriteValidationFor(w, req, &ValidationFailure{Errors: []ValidationError{
+		WriteValidationFailure(w, &ValidationFailure{Errors: []ValidationError{
 			Missing([]string{"body"}, nil),
 		}})
 		return
@@ -75,12 +75,12 @@ func validateVocabBody(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if _, ok := present["name"]; !ok {
-		WriteValidationFor(w, req, &ValidationFailure{Errors: []ValidationError{
+		WriteValidationFailure(w, &ValidationFailure{Errors: []ValidationError{
 			Missing([]string{"body", "name"}, present),
 		}})
 		return
 	}
-	WriteJSONFor(w, req, http.StatusOK, map[string]any{"ok": true})
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // vocabServed builds the served router the vocabulary table is asserted
@@ -173,6 +173,33 @@ func TestServedValidationVocabulary(t *testing.T) {
 			},
 		},
 		{
+			name:  "whole number for a boolean is bool_parsing",
+			route: "/decode",
+			body:  `{"flag":2}`,
+			want: map[string]any{
+				"type": "bool_parsing", "loc": []any{"body", "flag"},
+				"msg": "Input should be a valid boolean, unable to interpret input", "input": 2,
+			},
+		},
+		{
+			name:  "whole float for a boolean is bool_parsing",
+			route: "/decode",
+			body:  `{"flag":2.0}`,
+			want: map[string]any{
+				"type": "bool_parsing", "loc": []any{"body", "flag"},
+				"msg": "Input should be a valid boolean, unable to interpret input", "input": 2.0,
+			},
+		},
+		{
+			name:  "fractional number for a boolean is bool_type",
+			route: "/decode",
+			body:  `{"flag":1.5}`,
+			want: map[string]any{
+				"type": "bool_type", "loc": []any{"body", "flag"},
+				"msg": "Input should be a valid boolean", "input": 1.5,
+			},
+		},
+		{
 			name:  "array for a boolean is bool_type",
 			route: "/decode",
 			body:  `{"flag":[]}`,
@@ -214,7 +241,7 @@ func TestServedValidationVocabulary(t *testing.T) {
 			body:  `{"list":"x"}`,
 			want: map[string]any{
 				"type": "list_type", "loc": []any{"body", "list"},
-				"msg": "Input should be a valid array", "input": "x",
+				"msg": "Input should be a valid list", "input": "x",
 			},
 		},
 		{
@@ -223,7 +250,7 @@ func TestServedValidationVocabulary(t *testing.T) {
 			body:  `{"dict":1}`,
 			want: map[string]any{
 				"type": "dict_type", "loc": []any{"body", "dict"},
-				"msg": "Input should be an object", "input": float64(1),
+				"msg": "Input should be a valid dictionary", "input": float64(1),
 			},
 		},
 		{

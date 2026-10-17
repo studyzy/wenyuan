@@ -25,7 +25,7 @@ func overridesHandler(seen *map[string]any) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/default/banks/{bank_id}/memories/recall", func(w http.ResponseWriter, r *http.Request) {
 		*seen = TenantOverridesFrom(r)
-		WriteJSONFor(w, r, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	return mux
 }
@@ -34,7 +34,7 @@ func overridesHandler(seen *map[string]any) http.Handler {
 // context for a downstream handler to read.
 func TestTenantOverridesMiddlewareRecordsCapableAuthenticator(t *testing.T) {
 	var seen map[string]any
-	handler := Chain(overridesHandler(&seen), NullDropMiddleware(false),
+	handler := Chain(overridesHandler(&seen),
 		TenantOverridesMiddleware(capableAuth{overrides: map[string]any{"enable_text_search": false}}))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories/recall", nil))
@@ -48,7 +48,7 @@ func TestTenantOverridesMiddlewareRecordsCapableAuthenticator(t *testing.T) {
 // middleware is a pass-through and the handler sees no overrides.
 func TestTenantOverridesMiddlewarePassesThroughWithoutCapability(t *testing.T) {
 	var seen map[string]any
-	handler := Chain(overridesHandler(&seen), NullDropMiddleware(false),
+	handler := Chain(overridesHandler(&seen),
 		TenantOverridesMiddleware(plainAuth{}))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories/recall", nil))
@@ -65,7 +65,7 @@ func TestTenantOverridesMiddlewarePassesThroughWithoutCapability(t *testing.T) {
 // keeps working.
 func TestTenantOverridesMiddlewareNilAuthenticatorPassesThrough(t *testing.T) {
 	var seen map[string]any
-	handler := Chain(overridesHandler(&seen), NullDropMiddleware(false), TenantOverridesMiddleware(nil))
+	handler := Chain(overridesHandler(&seen), TenantOverridesMiddleware(nil))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories/recall", nil))
 	if rec.Code != http.StatusOK || seen != nil {

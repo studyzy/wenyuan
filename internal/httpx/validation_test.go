@@ -155,8 +155,8 @@ func TestTypeMessageVocabulary(t *testing.T) {
 		"bool_parsing":   "Input should be a valid boolean, unable to interpret input",
 		"bool_type":      "Input should be a valid boolean",
 		"string_type":    "Input should be a valid string",
-		"list_type":      "Input should be a valid array",
-		"dict_type":      "Input should be an object",
+		"list_type":      "Input should be a valid list",
+		"dict_type":      "Input should be a valid dictionary",
 	}
 	for kind, want := range cases {
 		if got := TypeMessage(kind); got != want {

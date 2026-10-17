@@ -61,12 +61,152 @@ func TestDescriptorSurface(t *testing.T) {
 	if strings.Contains(OpenAPIDocument(""), `"servers"`) {
 		t.Fatal("the document must not carry a servers entry without a base path")
 	}
-	// The pages answer their trailing-slash spelling with a redirect, as the
-	// reference's router does.
+	// The pages answer their trailing-slash spelling with a redirect to the
+	// page itself, as the reference's router does: 307, an absolute Location,
+	// and the query preserved.
 	rec := httptest.NewRecorder()
-	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs/", nil))
-	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "/docs" {
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs/?limit=1", nil))
+	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "http://example.com/docs?limit=1" {
 		t.Fatalf("GET /docs/ = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	for _, page := range []string{"/openapi.json", "/docs/oauth2-redirect", "/redoc"} {
+		rec = httptest.NewRecorder()
+		service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, page+"/", nil))
+		if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "http://example.com"+page {
+			t.Fatalf("GET %s/ = %d %q", page, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	// The redirect answers any method, as the reference's does.
+	rec = httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/docs/", nil))
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("PUT /docs/ = %d, want 307", rec.Code)
+	}
+}
+
+// The documentation pages take their title from the served document's
+// info.title, exactly as the reference's FastAPI renders it.
+func TestDescriptorPageTitles(t *testing.T) {
+	var document struct {
+		Info struct {
+			Title string `json:"title"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal([]byte(openAPIDocument), &document); err != nil {
+		t.Fatalf("the embedded contract document does not parse: %v", err)
+	}
+	service := NewRouter(RouterOptions{}).Service()
+	cases := map[string]string{
+		"/docs":  document.Info.Title + " - Swagger UI",
+		"/redoc": document.Info.Title + " - ReDoc",
+	}
+	for path, want := range cases {
+		rec := httptest.NewRecorder()
+		service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if want := "<title>" + want + "</title>"; !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("GET %s: body does not contain %q", path, want)
+		}
+	}
+}
+
+// A descriptor route admits HEAD, because it is a plain route whose GET implies
+// it, and reports `Allow: HEAD, GET` for a method it does not take — unlike an
+// API route. An API route rejects HEAD and reports only its decorated method.
+func TestDescriptorMethodSemantics(t *testing.T) {
+	router := NewRouter(RouterOptions{})
+	router.Handle(http.MethodGet, "/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	service := router.Service()
+
+	for _, path := range []string{"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"} {
+		rec := httptest.NewRecorder()
+		service.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("HEAD %s = %d, want 200", path, rec.Code)
+		}
+		rec = httptest.NewRecorder()
+		service.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "HEAD, GET" {
+			t.Fatalf("POST %s = %d allow=%q, want 405 allow=HEAD, GET", path, rec.Code, rec.Header().Get("Allow"))
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET" {
+		t.Fatalf("POST /health = %d allow=%q, want 405 allow=GET", rec.Code, rec.Header().Get("Allow"))
+	}
+	rec = httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, "/health", nil))
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET" {
+		t.Fatalf("HEAD /health = %d allow=%q, want 405 allow=GET", rec.Code, rec.Header().Get("Allow"))
+	}
+}
+
+// A descriptor route never reports ignored parameters, because the reference
+// serves it from a plain route rather than the reporting route class.
+func TestDescriptorRouteReportsNoIgnoredParams(t *testing.T) {
+	service := NewRouter(RouterOptions{}).Service()
+	for _, path := range []string{"/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"} {
+		rec := httptest.NewRecorder()
+		service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path+"?foo=1", nil))
+		if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+			t.Fatalf("GET %s?foo=1: ignored header = %q, want none", path, got)
+		}
+	}
+}
+
+// A request that reaches no route is answered by the router, so a configured
+// credential never gates it: an unmatched path is 404 and a method mismatch is
+// 405, neither of which is a 401.
+func TestAuthFollowsRouting(t *testing.T) {
+	router := NewRouter(RouterOptions{TenantAPIKey: "s3cret"})
+	router.Handle(http.MethodGet, "/v1/default/banks", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	service := router.Service()
+
+	rec := httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/does-not-exist", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown path = %d, want 404", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method mismatch = %d, want 405", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("dispatched route without a key = %d, want 401", rec.Code)
+	}
+}
+
+// The ignored-parameter header keeps only printable ASCII, replacing anything
+// else with '?', as the reference's _header_safe does.
+func TestIgnoredParamsHeaderSanitized(t *testing.T) {
+	if got := formatIgnoredParams([]string{"naïve", "a\tb"}); got != "na?ve, a?b" {
+		t.Fatalf("formatIgnoredParams = %q, want %q", got, "na?ve, a?b")
+	}
+}
+
+// A path declared for two methods reports only the first-declared one in Allow,
+// because the reference's router answers with the Allow header of the first
+// route that partially matched.
+func TestAllowReportsFirstDeclaredMethod(t *testing.T) {
+	router := NewRouter(RouterOptions{})
+	router.Handle(http.MethodPost, "/v1/default/banks/{bank_id}/memories", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	router.Handle(http.MethodDelete, "/v1/default/banks/{bank_id}/memories", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	rec := httptest.NewRecorder()
+	router.Service().ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/default/banks/b1/memories", nil))
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST" {
+		t.Fatalf("PUT = %d allow=%q, want 405 allow=POST", rec.Code, rec.Header().Get("Allow"))
 	}
 }
 

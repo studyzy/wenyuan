@@ -14,9 +14,6 @@ type MiddlewareConfig struct {
 	// GzipMinSize is the compression size floor in bytes. A negative value
 	// disables the compression middleware entirely.
 	GzipMinSize int
-	// DropNullFields enables null-field dropping for responses produced under
-	// this middleware chain.
-	DropNullFields bool
 	// Metrics receives request and compression counters when non-nil.
 	Metrics *MetricsRecorder
 }
@@ -211,26 +208,6 @@ func DisconnectCancelMiddleware() Middleware {
 	}
 }
 
-// NullDropMiddleware injects the response shaping option into the request
-// context so handlers encode consistently.
-type encodeOptionsKey struct{}
-
-// WithEncodeOptions records the response shaping options for this request.
-func WithEncodeOptions(r *http.Request, opts EncodeOptions) *http.Request {
-	return r.WithContext(contextWithValue(r.Context(), encodeOptionsKey{}, opts))
-}
-
-// EncodeOptionsFor returns the shaping options recorded for this request.
-func EncodeOptionsFor(r *http.Request) EncodeOptions {
-	opts, _ := r.Context().Value(encodeOptionsKey{}).(EncodeOptions)
-	return opts
-}
-
-// WriteJSONFor writes a JSON response using the request's shaping options.
-func WriteJSONFor(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	WriteJSON(w, status, payload, EncodeOptionsFor(r))
-}
-
 // nameMissingBank replaces the missing-bank marker with the reference's message,
 // which names the bank. The mapper that produced the error has no bank id; the
 // request does, so the substitution happens here.
@@ -248,21 +225,8 @@ func nameMissingBank(r *http.Request, err error) error {
 	return &named
 }
 
-// WriteJSONOpenRow writes a response whose object rows must keep explicit null
-// fields. The reference keeps nulls for open-row payloads such as graph nodes,
-// so this overrides the request's null-dropping option for those responses.
-func WriteJSONOpenRow(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	WriteJSON(w, status, payload, EncodeOptions{DropNullFields: false})
-}
-
-// WriteErrorFor writes a shared error envelope using the request's shaping
-// options.
+// WriteErrorFor writes a shared error envelope, naming the bank the way the
+// reference does when the mapper's error carries no bank id.
 func WriteErrorFor(w http.ResponseWriter, r *http.Request, err error) {
-	WriteError(w, nameMissingBank(r, err), EncodeOptionsFor(r))
-}
-
-// WriteValidationFor writes a validation failure body using the request's
-// shaping options.
-func WriteValidationFor(w http.ResponseWriter, r *http.Request, failure *ValidationFailure) {
-	WriteValidationFailure(w, failure, EncodeOptionsFor(r))
+	WriteError(w, nameMissingBank(r, err))
 }
