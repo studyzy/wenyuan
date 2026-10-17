@@ -1,10 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  inspectMcpServer,
-  registerMcpServer,
-  removeMcpServer,
-} from "../mcp/register";
+import { registerMcpServer, removeMcpServer } from "../mcp/register";
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
 import { backupExistingFile } from "../write/backup";
 import { upsertJsoncMember } from "../write/jsonc-edit";
@@ -14,8 +10,6 @@ import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
   hostConfigPath,
   hostConfigPaths,
-  hostMcpConfigPath,
-  hostMcpConfigPaths,
   hostSkillsPath,
   type HostContribution,
   type HostEnvironment,
@@ -24,12 +18,16 @@ import {
 } from "./types";
 
 /**
- * Claude Code: a settings file that permits comments, a user-scope MCP config
- * beside the home directory, and a skills directory of its own.
+ * Claude Code: a settings file that permits comments, a user-scope MCP
+ * registration through its own command interface, and a skills directory of
+ * its own.
  *
- * The host's global workspace-MCP setting is machine-wide, so it is only
- * flipped when the operator authorizes it; without that, the manual step is
- * reported and the setting is left exactly as it is.
+ * Its MCP server lives in the host's own store rather than a config file of
+ * ours, so the adapter writes no MCP config: the declared command-line
+ * mechanism registers through the host's executable and reports the manual line
+ * on fallback. The host's global workspace-MCP setting is machine-wide, so it
+ * is only flipped when the operator authorizes it; without that, the manual
+ * step is reported and the setting is left exactly as it is.
  */
 
 const host: HostContribution = {
@@ -39,7 +37,7 @@ const host: HostContribution = {
   locations: {
     configFiles: [".claude/settings.json"],
     configFormat: "jsonc",
-    mcpConfigFiles: [".claude.json"],
+    mcpConfigFiles: [],
     mcpFormat: "json",
     skillsDirectory: ".claude/skills",
   },
@@ -47,21 +45,6 @@ const host: HostContribution = {
 
   async install(env: HostEnvironment, options: HostInstallOptions): Promise<HostOperationResult> {
     const configPath: string = hostConfigPath(host, env.home);
-    const mcpPath: string = hostMcpConfigPath(host, env.home);
-    const ownership = await inspectMcpServer({
-      configPath: mcpPath,
-      format: host.locations.mcpFormat,
-      hostId: host.id,
-    });
-    if (ownership === "foreign") {
-      return {
-        hostId: host.id,
-        ok: false,
-        messages: [
-          `a different MCP server is already registered under this package's name in ${mcpPath}, so ${host.displayName} was not wired.`,
-        ],
-      };
-    }
 
     const hooks = await installLifecycleHooks({
       hostId: host.id,
@@ -77,13 +60,17 @@ const host: HostContribution = {
     messages.push(...(await applyWorkspaceMcpSetting(configPath, options)));
 
     const mcp = await registerMcpServer({
-      configPath: mcpPath,
-      format: host.locations.mcpFormat,
       hostId: host.id,
+      home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
       environment: options.environment,
     });
     messages.push(...mcp.messages);
+    if (!mcp.ok) {
+      // A refused registration leaves the host unwired, so the companion skill
+      // is not installed either.
+      return { hostId: host.id, ok: false, messages };
+    }
 
     const skill = await copyPackagedSkill(hostSkillsPath(host, env.home), host.id);
     messages.push(...skill.messages);
@@ -103,15 +90,13 @@ const host: HostContribution = {
       ok = ok && result.ok;
       messages.push(...result.messages);
     }
-    for (const mcpPath of hostMcpConfigPaths(host, env.home)) {
-      const result = await removeMcpServer({
-        configPath: mcpPath,
-        format: host.locations.mcpFormat,
-        hostId: host.id,
-      });
-      ok = ok && result.ok;
-      messages.push(...result.messages);
-    }
+    const mcp = await removeMcpServer({
+      hostId: host.id,
+      home: env.home,
+      serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
+    });
+    ok = ok && mcp.ok;
+    messages.push(...mcp.messages);
     const skill = await removeInstalledSkill(hostSkillsPath(host, env.home), host.id);
     messages.push(...skill.messages);
     return { hostId: host.id, ok: ok && skill.ok, messages };

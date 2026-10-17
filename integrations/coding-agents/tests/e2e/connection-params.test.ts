@@ -13,12 +13,10 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
 
 const STORED = ".wenyuan/config.json";
 const CONFIG = ".claude/settings.json";
-const MCP = ".claude.json";
 
 async function nothingWasWritten(home: FakeHome): Promise<void> {
   expect(await home.exists(STORED)).toBe(false);
   expect(await home.exists(CONFIG)).toBe(false);
-  expect(await home.exists(MCP)).toBe(false);
 }
 
 describe("the self-hosted mode without a service address", () => {
@@ -76,7 +74,6 @@ describe("a stored configuration that already names a mode and an address", () =
       expect(result.status).toBe(0);
       expect(await home.read(STORED)).toBe(stored);
       expect(await home.isFile(CONFIG)).toBe(true);
-      expect(await home.isFile(MCP)).toBe(true);
       expect(result.combined()).not.toContain("[y/N]");
     });
   });

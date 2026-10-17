@@ -1,36 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { HOSTS } from "../../src/hosts/registry";
 import type { HostContribution } from "../../src/hosts/types";
-import { MCP_SERVERS_KEY } from "../../src/mcp/register";
+import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventCommands, HOOKS_CONTAINER_KEY, ownEntryCount } from "../helpers/hooks";
 import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
 
 /**
- * Where each host's three declared locations actually are.
+ * Where each host's declared locations actually are.
  *
  * The paths are spelled out here rather than read back out of the registry, so
  * a host module that moves its config, MCP or skills location fails this suite
- * instead of silently redefining what the installer writes.
+ * instead of silently redefining what the installer writes. The command-line
+ * host keeps its MCP registration in its own store and declares no MCP config
+ * file of ours, so its entry is asserted through its own suite instead.
  */
 
 interface ExpectedLocations {
   id: string;
   config: string;
-  mcp: string;
   skills: string;
 }
 
 const LOCATIONS: ExpectedLocations[] = [
-  { id: "claude-code", config: ".claude/settings.json", mcp: ".claude.json", skills: ".claude/skills" },
-  { id: "codex", config: ".codex/settings.json", mcp: ".codex/mcp.json", skills: ".codex/skills" },
-  {
-    id: "codebuddy",
-    config: ".codebuddy/settings.json",
-    mcp: ".codebuddy/mcp.json",
-    skills: ".codebuddy/skills",
-  },
+  { id: "claude-code", config: ".claude/settings.json", skills: ".claude/skills" },
+  { id: "codex", config: ".codex/settings.json", skills: ".codex/skills" },
+  { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
 ];
 
 function locationsFor(hostId: string): ExpectedLocations {
@@ -62,12 +58,31 @@ describe("installing into a home where the host has no config at all", () => {
         expect(commands[0]).toContain(staged);
       }
 
-      const mcp: JsonDocument = await home.readJson(expected.mcp);
+      expect(await home.isFile(`${expected.skills}/${OWNERSHIP_MARKER}/${hostId}/SKILL.md`)).toBe(true);
+    });
+  });
+
+  it("registers the JSON host's entry under the server-map key", async () => {
+    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
+      const mcp: JsonDocument = await home.readJson(".codebuddy/.mcp.json");
       const servers: unknown = mcp[MCP_SERVERS_KEY];
       expect(servers !== null && typeof servers === "object").toBe(true);
-      expect(Object.keys(servers as JsonDocument)).toEqual([OWNERSHIP_MARKER]);
+      expect(Object.keys(servers as JsonDocument)).toEqual([MCP_SERVER_NAME]);
+    });
+  });
 
-      expect(await home.isFile(`${expected.skills}/${OWNERSHIP_MARKER}/${hostId}/SKILL.md`)).toBe(true);
+  it("registers the TOML host's entry under the server-container key", async () => {
+    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      expect((await runInstaller(["install", "codex"])).status).toBe(0);
+      expect(await home.read(".codex/config.toml")).toContain(`[mcp_servers.${MCP_SERVER_NAME}]`);
+    });
+  });
+
+  it("writes no MCP config file for the command-line host", async () => {
+    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
+      expect(await home.exists(".claude.json")).toBe(false);
     });
   });
 

@@ -33,11 +33,16 @@ describe("the registry", () => {
     expect(isHostId(name)).toBe(false);
   });
 
-  it("gives every host three declared locations", () => {
+  it("gives every host a config file and a skills directory", () => {
     for (const host of HOSTS) {
       expect(host.locations.configFiles.length).toBeGreaterThan(0);
-      expect(host.locations.mcpConfigFiles.length).toBeGreaterThan(0);
       expect(host.locations.skillsDirectory.length).toBeGreaterThan(0);
+      // The command-line host keeps its MCP registration in the host's own
+      // store and declares no MCP config file of ours; the file hosts each
+      // declare at least one location.
+      if (host.id !== "claude-code") {
+        expect(host.locations.mcpConfigFiles.length).toBeGreaterThan(0);
+      }
     }
   });
 });

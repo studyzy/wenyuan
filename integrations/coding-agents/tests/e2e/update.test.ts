@@ -97,7 +97,6 @@ describe("updating a home where nothing was ever installed", () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       expect((await runInstaller(["update", "claude-code"])).status).toBe(0);
       expect(await home.exists(".claude")).toBe(false);
-      expect(await home.exists(".claude.json")).toBe(false);
     });
   });
 });

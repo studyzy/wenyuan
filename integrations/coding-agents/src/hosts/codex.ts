@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { inspectMcpServer, registerMcpServer, removeMcpServer } from "../mcp/register";
+import { registerMcpServer, removeMcpServer } from "../mcp/register";
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
 import { installLifecycleHooks } from "./hooks";
 import { removeLifecycleHooks } from "./hooks-remove";
@@ -7,8 +7,6 @@ import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
   hostConfigPath,
   hostConfigPaths,
-  hostMcpConfigPath,
-  hostMcpConfigPaths,
   hostSkillsPath,
   type HostContribution,
   type HostEnvironment,
@@ -17,8 +15,12 @@ import {
 } from "./types";
 
 /**
- * Codex: its own config location for the lifecycle hooks, a separate MCP
- * config location, and its own skills directory.
+ * Codex: its own config location for the lifecycle hooks, a TOML config file
+ * for the MCP registration, and its own skills directory.
+ *
+ * The MCP entry is a TOML table named after this package's server under the
+ * host's server-container key, so the adapter writes no entry inline: the
+ * declared TOML-table mechanism reads, strips and rewrites the block.
  */
 
 const host: HostContribution = {
@@ -28,28 +30,13 @@ const host: HostContribution = {
   locations: {
     configFiles: [".codex/settings.json"],
     configFormat: "json",
-    mcpConfigFiles: [".codex/mcp.json", ".codex/settings.json"],
+    mcpConfigFiles: [".codex/config.toml"],
     mcpFormat: "json",
     skillsDirectory: ".codex/skills",
   },
 
   async install(env: HostEnvironment, options: HostInstallOptions): Promise<HostOperationResult> {
     const configPath: string = hostConfigPath(host, env.home);
-    const mcpPath: string = hostMcpConfigPath(host, env.home);
-    const ownership = await inspectMcpServer({
-      configPath: mcpPath,
-      format: host.locations.mcpFormat,
-      hostId: host.id,
-    });
-    if (ownership === "foreign") {
-      return {
-        hostId: host.id,
-        ok: false,
-        messages: [
-          `a different MCP server is already registered under this package's name in ${mcpPath}, so ${host.displayName} was not wired.`,
-        ],
-      };
-    }
 
     const hooks = await installLifecycleHooks({
       hostId: host.id,
@@ -62,12 +49,16 @@ const host: HostContribution = {
     }
 
     const mcp = await registerMcpServer({
-      configPath: mcpPath,
-      format: host.locations.mcpFormat,
       hostId: host.id,
+      home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
       environment: options.environment,
     });
+    if (!mcp.ok) {
+      // A refused registration leaves the host unwired, so the companion skill
+      // is not installed either.
+      return { hostId: host.id, ok: false, messages: [...hooks.messages, ...mcp.messages] };
+    }
 
     const skill = await copyPackagedSkill(hostSkillsPath(host, env.home), host.id);
     const messages: string[] = [...hooks.messages, ...mcp.messages, ...skill.messages];
@@ -86,15 +77,13 @@ const host: HostContribution = {
       ok = ok && result.ok;
       messages.push(...result.messages);
     }
-    for (const mcpPath of hostMcpConfigPaths(host, env.home)) {
-      const result = await removeMcpServer({
-        configPath: mcpPath,
-        format: host.locations.mcpFormat,
-        hostId: host.id,
-      });
-      ok = ok && result.ok;
-      messages.push(...result.messages);
-    }
+    const mcp = await removeMcpServer({
+      hostId: host.id,
+      home: env.home,
+      serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
+    });
+    ok = ok && mcp.ok;
+    messages.push(...mcp.messages);
     const skill = await removeInstalledSkill(hostSkillsPath(host, env.home), host.id);
     messages.push(...skill.messages);
     return { hostId: host.id, ok: ok && skill.ok, messages };

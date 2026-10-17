@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HOOK_SCRIPT_FILES } from "../../src/hosts/lifecycle";
-import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/register";
+import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { HOOKS_SUBDIRECTORY, PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME, runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventCommands } from "../helpers/hooks";
@@ -16,14 +16,14 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
  */
 
 const CONFIG = ".claude/settings.json";
-const MCP = ".claude.json";
+const JSON_MCP = ".codebuddy/.mcp.json";
 
 function commandsIn(config: JsonDocument, hostId: string): string[] {
   return declaredEvents(hostId).flatMap((event) => eventCommands(config, event));
 }
 
 describe("installing from a transient package location", () => {
-  it("points every command path at the stable runtime directory", async () => {
+  it("points every hook command path at the stable runtime directory", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
 
@@ -37,8 +37,15 @@ describe("installing from a transient package location", () => {
         expect(command).toContain(staged);
         expect(command).not.toContain(home.packageRoot);
       }
+    });
+  });
 
-      const servers: JsonDocument = (await home.readJson(MCP))[MCP_SERVERS_KEY] as JsonDocument;
+  it("points the JSON host's server entry at the stable runtime directory", async () => {
+    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
+
+      const staged: string = runtimeDirectory();
+      const servers: JsonDocument = (await home.readJson(JSON_MCP))[MCP_SERVERS_KEY] as JsonDocument;
       const args: unknown = (servers[MCP_SERVER_NAME] as JsonDocument)["args"];
       expect(Array.isArray(args)).toBe(true);
       for (const argument of args as string[]) {
@@ -62,10 +69,10 @@ describe("installing from a transient package location", () => {
 
   it("leaves entries a later uninstall still recognizes", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
-      expect((await runInstaller(["uninstall", "claude-code"])).status).toBe(0);
-      expect(await home.exists(CONFIG)).toBe(false);
-      expect(await home.exists(MCP)).toBe(false);
+      expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
+      expect((await runInstaller(["uninstall", "codebuddy"])).status).toBe(0);
+      expect(await home.exists(".codebuddy/settings.json")).toBe(false);
+      expect(await home.exists(JSON_MCP)).toBe(false);
     });
   });
 });

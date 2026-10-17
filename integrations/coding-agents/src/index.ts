@@ -84,10 +84,45 @@ export type {
 export {
   MCP_HARNESS_ENV,
   MCP_SERVER_NAME,
-  inspectMcpServer,
-  registerMcpServer,
-  removeMcpServer,
-} from "./mcp/register";
+  MCP_LAUNCHER_COMMAND,
+  MCP_SERVERS_KEY,
+  MCP_TOML_CONTAINER_KEY,
+  MCP_ENTRY_MEMBERS,
+  MECHANISMS,
+  JSON_HOST_CANDIDATES,
+  TOML_HOST_PATH,
+  mechanismFor,
+  mechanismKindFor,
+  locationResolutionFor,
+  containerKeyFor,
+  declaredMechanismHosts,
+} from "./mcp/mechanisms";
+export type {
+  MechanismKind,
+  EntryMemberNames,
+  LocationResolution,
+  McpMechanismDeclaration,
+} from "./mcp/mechanisms-types";
+export {
+  classifyEntry,
+  entryIsOwned,
+  manualRegistrationLine,
+} from "./mcp/ownership";
+export type { McpEntryInput, McpOwnership, McpResult, McpServerEntry } from "./mcp/ownership";
+export { inspectMcpServer, registerMcpServer, removeMcpServer } from "./mcp/register";
+export {
+  registerJsonServerMap,
+  removeJsonServerMap,
+  candidatePaths,
+  resolveCandidate,
+} from "./mcp/json-server-map";
+export { registerTomlTable, removeTomlTable, applyTomlEdit, stripOurTable } from "./mcp/toml-table";
+export {
+  registerCommandLine,
+  removeCommandLine,
+  addArguments,
+  removeArguments,
+} from "./mcp/command-line";
 export { copyPackagedSkill, removeInstalledSkill, installedSkillDirectory } from "./hosts/skills";
 
 export { HOSTS, HOST_IDS, hostNames, findHost, detectHosts, hostIsDetected } from "./hosts/registry";

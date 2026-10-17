@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HOST_LIFECYCLES, orderedRegistrations } from "../../src/hosts/lifecycle";
-import { MCP_SERVERS_KEY } from "../../src/mcp/register";
+import { MCP_SERVERS_KEY } from "../../src/mcp/mechanisms";
 import { BACKUP_SUFFIX } from "../../src/write/backup";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventValue, ownEntryCount } from "../helpers/hooks";
@@ -9,6 +9,9 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
 /**
  * Merging rather than replacing: foreign entries and unrelated keys survive,
  * a second run stacks no duplicates, and a pre-existing file is backed up once.
+ *
+ * The JSON host carries the server-map shape; the TOML host's table merge is
+ * covered by the per-host suite.
  */
 
 interface HostFixture {
@@ -18,8 +21,7 @@ interface HostFixture {
 }
 
 const HOSTS: HostFixture[] = [
-  { id: "claude-code", config: ".claude/settings.json", mcp: ".claude.json" },
-  { id: "codex", config: ".codex/settings.json", mcp: ".codex/mcp.json" },
+  { id: "codebuddy", config: ".codebuddy/settings.json", mcp: ".codebuddy/.mcp.json" },
 ];
 
 /** The stage-one event spelling each host declares, holding the foreign entry. */

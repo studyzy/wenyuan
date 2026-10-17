@@ -1,186 +1,148 @@
 import { describe, expect, it } from "vitest";
 import {
-  MCP_HARNESS_ENV,
-  MCP_SERVER_NAME,
-  MCP_SERVERS_KEY,
   inspectMcpServer,
   mcpServerEntry,
   registerMcpServer,
   removeMcpServer,
 } from "../../src/mcp/register";
+import {
+  MCP_HARNESS_ENV,
+  MCP_SERVER_NAME,
+  MCP_SERVERS_KEY,
+} from "../../src/mcp/mechanisms";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
-import { withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
 
 /**
- * MCP registration: the entry's shape, the caller-identifying variable, and
- * the ownership guard over a same-named entry this package did not create.
+ * The dispatch router: it selects the declared mechanism per host, keeps one
+ * ownership/backup/idempotency policy across every mechanism, and preserves the
+ * foundation's uniform JSON server-map as the JSON host's behavior.
  */
 
-const hostId = "claude-code";
-const stagedServer = `/home/tester/.wenyuan/${OWNERSHIP_MARKER}/mcp-server.mjs`;
-const configPath = (home: FakeHome): string => home.path(".claude.json");
+const staged = `/home/tester/.wenyuan/${OWNERSHIP_MARKER}/mcp-server.mjs`;
+const JSON_HOST = "codebuddy";
+const TOML_HOST = "codex";
+const CLI_HOST = "claude-code";
+const JSON_PATH = ".codebuddy/.mcp.json";
 
-const target = (home: FakeHome) => ({
-  configPath: configPath(home),
-  format: "json" as const,
-  hostId,
-});
+function serversOf(document: JsonDocument): JsonDocument {
+  const servers: unknown = document[MCP_SERVERS_KEY];
+  return servers !== null && typeof servers === "object" && !Array.isArray(servers)
+    ? (servers as JsonDocument)
+    : {};
+}
 
-describe("the registration's shape", () => {
-  it("names the calling host through the caller-identifying variable", () => {
-    const entry = mcpServerEntry(stagedServer, hostId);
-    expect(entry.env?.[MCP_HARNESS_ENV]).toBe(hostId);
-    expect(entry.args).toContain(stagedServer);
-  });
-
-  it("carries the marker in the command path it points at", () => {
-    const entry = mcpServerEntry(stagedServer, hostId);
+describe("the shared entry shape", () => {
+  it("names the calling host and points at the staged server", () => {
+    const entry = mcpServerEntry({ serverPath: staged, hostId: JSON_HOST });
+    expect(entry.env?.[MCP_HARNESS_ENV]).toBe(JSON_HOST);
+    expect(entry.args).toContain(staged);
     expect(JSON.stringify(entry)).toContain(OWNERSHIP_MARKER);
   });
 });
 
-describe("installing into a host's MCP config", () => {
-  it("creates the file with one server entry when there is none", async () => {
-    await withFakeHome({}, async (home) => {
-      const result = await registerMcpServer({ ...target(home), serverPath: stagedServer });
+describe("dispatching to the declared mechanism", () => {
+  it("routes the JSON host to the server-map mechanism", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      const result = await registerMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
       expect(result.ok).toBe(true);
-      expect(result.written).toBe(true);
-      const document = JSON.parse(await home.read(".claude.json")) as {
-        mcpServers: Record<string, { env?: Record<string, string> }>;
-      };
-      expect(Object.keys(document[MCP_SERVERS_KEY])).toEqual([MCP_SERVER_NAME]);
-      expect(document.mcpServers[MCP_SERVER_NAME]?.env?.[MCP_HARNESS_ENV]).toBe(hostId);
+      const document = await home.readJson(JSON_PATH);
+      expect(Object.keys(serversOf(document))).toEqual([MCP_SERVER_NAME]);
     });
   });
 
-  it("is idempotent: a second run leaves exactly one entry", async () => {
-    await withFakeHome({}, async (home) => {
-      await registerMcpServer({ ...target(home), serverPath: stagedServer });
-      const after: string = await home.read(".claude.json");
-      await registerMcpServer({ ...target(home), serverPath: stagedServer });
-      expect(await home.read(".claude.json")).toBe(after);
-      expect(await inspectMcpServer(target(home))).toBe("owned");
-    });
-  });
-
-  it("keeps foreign servers alongside its own", async () => {
-    await withFakeHome({}, async (home) => {
-      await home.write(
-        ".claude.json",
-        '{\n  "mcpServers": {\n    "other-a": { "command": "a" },\n    "other-b": { "command": "b" }\n  }\n}\n',
-      );
-      const result = await registerMcpServer({ ...target(home), serverPath: stagedServer });
+  it("routes the TOML host to the table mechanism", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      const result = await registerMcpServer({ hostId: TOML_HOST, home: home.home, serverPath: staged });
       expect(result.ok).toBe(true);
-      const document = JSON.parse(await home.read(".claude.json")) as {
-        mcpServers: Record<string, unknown>;
-      };
-      expect(Object.keys(document.mcpServers)).toContain(MCP_SERVER_NAME);
-      expect(Object.keys(document.mcpServers).sort()).toEqual([
-        "other-a",
-        "other-b",
-        "wenyuan-memory",
-      ]);
+      expect(await home.read(".codex/config.toml")).toContain("[mcp_servers.");
     });
   });
 
-  it("reports a conflict and writes nothing when the name is taken by a foreign entry", async () => {
-    await withFakeHome({}, async (home) => {
-      const before: string =
-        '{\n  "mcpServers": {\n    "wenyuan-memory": { "command": "someone-elses" }\n  }\n}\n';
-      await home.write(".claude.json", before);
-      const result = await registerMcpServer({ ...target(home), serverPath: stagedServer });
+  it("routes the command-line host with no config file of ours", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      const result = await registerMcpServer({
+        hostId: CLI_HOST,
+        home: home.home,
+        serverPath: staged,
+        executable: `${home.home}/bin/does-not-exist`,
+      });
+      // The interface is unusable, so the manual line is reported and no
+      // config file is written.
+      expect(result.ok).toBe(true);
+      expect(await home.isFile(".claude.json")).toBe(false);
+      expect(result.messages.join("\n")).toContain(staged);
+    });
+  });
+
+  it("refuses an unapproved host", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      const result = await registerMcpServer({ hostId: "nope", home: home.home, serverPath: staged });
+      expect(result.ok).toBe(false);
+    });
+  });
+});
+
+describe("the ownership guard on the JSON host", () => {
+  it("reports a conflict and writes nothing when the name is foreign", async () => {
+    const before = `${JSON.stringify({ [MCP_SERVERS_KEY]: { [MCP_SERVER_NAME]: { command: "someone" } } }, null, 2)}\n`;
+    await withFakeHome({ files: { [JSON_PATH]: before } }, async (home: FakeHome) => {
+      const result = await registerMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
       expect(result.ok).toBe(false);
       expect(result.written).toBe(false);
-      expect(result.messages.join(" ")).toContain("wenyuan-memory");
-      expect(await home.read(".claude.json")).toBe(before);
-      expect(await inspectMcpServer(target(home))).toBe("foreign");
+      expect(result.messages.join(" ")).toContain(MCP_SERVER_NAME);
+      expect(await home.read(JSON_PATH)).toBe(before);
+      expect(await inspectMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged })).toBe(
+        "foreign",
+      );
+    });
+  });
+
+  it("recognizes its own entry by shape and reports it owned", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      await registerMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
+      expect(await inspectMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged })).toBe(
+        "owned",
+      );
+    });
+  });
+
+  it("reports absent for the command-line host, whose store it does not read", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      expect(await inspectMcpServer({ hostId: CLI_HOST, home: home.home, serverPath: staged })).toBe(
+        "absent",
+      );
     });
   });
 });
 
-describe("removing the registration", () => {
-  it("removes its own entry and leaves a foreign one in place", async () => {
-    await withFakeHome({}, async (home) => {
-      await home.write(
-        ".claude.json",
-        '{\n  "mcpServers": {\n    "other-a": { "command": "a" }\n  }\n}\n',
-      );
-      await registerMcpServer({ ...target(home), serverPath: stagedServer });
-      const result = await removeMcpServer(target(home));
+describe("removal across mechanisms", () => {
+  it("deletes a JSON file the removal emptied rather than leaving a husk", async () => {
+    await withFakeHome({}, async (home: FakeHome) => {
+      await registerMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
+      expect(await home.isFile(JSON_PATH)).toBe(true);
+      await removeMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
+      expect(await home.exists(JSON_PATH)).toBe(false);
+    });
+  });
+
+  it("leaves a foreign same-named JSON entry untouched", async () => {
+    const before = `${JSON.stringify({ [MCP_SERVERS_KEY]: { [MCP_SERVER_NAME]: { command: "someone" } } }, null, 2)}\n`;
+    await withFakeHome({ files: { [JSON_PATH]: before } }, async (home: FakeHome) => {
+      const result = await removeMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
       expect(result.ok).toBe(true);
-      const document = JSON.parse(await home.read(".claude.json")) as {
-        mcpServers: Record<string, unknown>;
-      };
-      expect(Object.keys(document.mcpServers)).toEqual(["other-a"]);
+      expect(await home.read(JSON_PATH)).toBe(before);
     });
   });
 
-  it("deletes the file the removal emptied rather than leaving a husk", async () => {
-    await withFakeHome({}, async (home) => {
-      await registerMcpServer({ ...target(home), serverPath: stagedServer });
-      expect(await home.exists(".claude.json")).toBe(true);
-      await removeMcpServer(target(home));
-      expect(await home.exists(".claude.json")).toBe(false);
-    });
-  });
-
-  it("leaves a foreign same-named entry untouched", async () => {
-    await withFakeHome({}, async (home) => {
-      const before: string =
-        '{\n  "mcpServers": {\n    "wenyuan-memory": { "command": "someone-elses" }\n  }\n}\n';
-      await home.write(".claude.json", before);
-      const result = await removeMcpServer(target(home));
-      expect(result.ok).toBe(true);
-      expect(await home.read(".claude.json")).toBe(before);
-    });
-  });
-
-  it("writes a backup of a pre-existing file before the first change", async () => {
-    await withFakeHome({}, async (home) => {
-      await home.write(".claude.json", '{\n  "theme": "dark"\n}\n');
-      await registerMcpServer({ ...target(home), serverPath: stagedServer });
-      const backup: string = `${configPath(home)}.${OWNERSHIP_MARKER}.bak`;
-      const { readFile } = await import("node:fs/promises");
-      expect(await readFile(backup, "utf8")).toBe('{\n  "theme": "dark"\n}\n');
-    });
-  });
-});
-
-describe("a host config that permits comments", () => {
-  const jsoncTarget = (home: FakeHome) => ({
-    configPath: home.path(".codebuddy", "mcp.json"),
-    format: "jsonc" as const,
-    hostId: "codebuddy",
-  });
-
-  it("adds the entry and keeps the comments", async () => {
-    await withFakeHome({}, async (home) => {
-      await home.write(
-        ".codebuddy/mcp.json",
-        '{\n  // my servers\n  "mcpServers": {\n    "other-a": { "command": "a" }\n  }\n}\n',
-      );
-      const result = await registerMcpServer({ ...jsoncTarget(home), serverPath: stagedServer });
-      expect(result.ok).toBe(true);
-      const text: string = await home.read(".codebuddy/mcp.json");
-      expect(text).toContain("// my servers");
-      expect(text).toContain(MCP_HARNESS_ENV);
-      expect(text).toContain("codebuddy");
-      expect(text).toContain("other-a");
-    });
-  });
-
-  it("removes only its own entry and leaves the comments behind", async () => {
-    await withFakeHome({}, async (home) => {
-      await home.write(
-        ".codebuddy/mcp.json",
-        '{\n  // my servers\n  "mcpServers": {\n    "other-a": { "command": "a" }\n  }\n}\n',
-      );
-      await registerMcpServer({ ...jsoncTarget(home), serverPath: stagedServer });
-      await removeMcpServer(jsoncTarget(home));
-      const text: string = await home.read(".codebuddy/mcp.json");
-      expect(text).toContain("// my servers");
-      expect(text).toContain("other-a");
-      expect(text).not.toContain(OWNERSHIP_MARKER);
-    });
+  it("removes its own JSON entry and keeps a foreign one beside it", async () => {
+    await withFakeHome(
+      { files: { [JSON_PATH]: `${JSON.stringify({ [MCP_SERVERS_KEY]: { other: { command: "x" } } }, null, 2)}\n` } },
+      async (home: FakeHome) => {
+        await registerMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
+        await removeMcpServer({ hostId: JSON_HOST, home: home.home, serverPath: staged });
+        expect(Object.keys(serversOf(await home.readJson(JSON_PATH)))).toEqual(["other"]);
+      },
+    );
   });
 });

@@ -40,9 +40,13 @@ export async function runPreflight(
   if (configReason !== null) {
     return { host, reason: configReason };
   }
-  const mcpReason: string | null = await locationReason(hostMcpConfigPath(host, env.home));
-  if (mcpReason !== null) {
-    return { host, reason: mcpReason };
+  // A host whose registration lives in its own store (the command-line host)
+  // declares no MCP config location and has nothing to check here.
+  if (host.locations.mcpConfigFiles.length > 0) {
+    const mcpReason: string | null = await locationReason(hostMcpConfigPath(host, env.home));
+    if (mcpReason !== null) {
+      return { host, reason: mcpReason };
+    }
   }
   const hostReason: string | null | undefined = await host.preflight?.(env);
   return { host, reason: hostReason ?? null };

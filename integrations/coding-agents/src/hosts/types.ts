@@ -92,6 +92,11 @@ export function hostMcpConfigPaths(host: HostContribution, home: string): string
   return host.locations.mcpConfigFiles.map((candidate) => join(home, candidate));
 }
 
+/** True when the host keeps its MCP registration in a config file of ours. */
+export function hostHasMcpConfigFile(host: HostContribution): boolean {
+  return host.locations.mcpConfigFiles.length > 0;
+}
+
 /** This package's own skill directory inside the host's skills root. */
 export function hostSkillsPath(host: HostContribution, home: string): string {
   return join(home, host.locations.skillsDirectory);
