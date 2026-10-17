@@ -90,11 +90,13 @@ func TestVectorSimilarityRanksByDistance(t *testing.T) {
 		}
 	}
 
-	// A query vector closest to position 9, then 8, then 7.
+	// A query vector closest to position 9, then 8, then 7. The three
+	// similarities it produces sit above the default semantic floor (0.3), so
+	// distance is the only thing that can order or drop them.
 	query := make([]float32, EmbeddingDimensions)
-	query[9] = 0.9
+	query[9] = 0.6
 	query[8] = 0.5
-	query[7] = 0.1
+	query[7] = 0.4
 
 	result, err := store.Recall(ctx, RecallQuery{
 		BankID:         "vec-bank",
