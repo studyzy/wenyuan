@@ -1,12 +1,12 @@
 {
   "name": "wenyuan-frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "license": "ISC",
   "scripts": {
     "dev": "next dev -p 19999",
     "build": "next build",
-    "start": "next start -p 19999",
+    "start": "node .next/standalone/server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

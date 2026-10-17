@@ -36,7 +36,8 @@ COVERAGE_MIN_PG ?= 66
 
 .PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
         frontend-build frontend-run frontend-standalone clients clients-check \
-        test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration help \
+        test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration \
+        test-sdk-python test-sdk-typescript test-sdk-rust help \
         bench test-pg cover cover-check cover-check-pg parity
 
 all: check
@@ -190,10 +191,6 @@ clients:
 clients-check:
 	python3 scripts/derive_client_spec.py --check
 
-## test-sdk-go: run the Go client SDK's tests (offline: httptest servers only)
-test-sdk-go:
-	cd clients/go && $(GO) test -count=1 $(GOFLAGS) ./...
-
 ## test-sdk-go-integration: run the Go client SDK's live suite against a
 ## running server. Point SDK_API_URL at it; a memory-backed one is enough:
 ##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
@@ -201,9 +198,22 @@ test-sdk-go-integration:
 	cd clients/go && HINDSIGHT_API_URL="$(SDK_API_URL)" $(GO) test -tags integration -count=1 $(GOFLAGS) ./...
 
 ## test-sdk: run every client SDK's offline suite (no server, no network)
-test-sdk: test-sdk-go
+test-sdk: test-sdk-go test-sdk-python test-sdk-typescript test-sdk-rust
+
+## test-sdk-go: the Go SDK's offline suite (httptest servers only)
+test-sdk-go:
+	cd clients/go && $(GO) test -count=1 $(GOFLAGS) ./...
+
+## test-sdk-python: the Python SDK's offline suite (stub servers only)
+test-sdk-python:
 	cd clients/python && python3 -m unittest discover -s tests
+
+## test-sdk-typescript: the TypeScript SDK's type-check and offline suite
+test-sdk-typescript:
 	cd clients/typescript && npx tsc --noEmit && npm test
+
+## test-sdk-rust: the Rust SDK's offline suite (stub servers only)
+test-sdk-rust:
 	cd clients/rust && cargo test
 
 ## test-sdk-integration: run every client SDK's live suite against a running

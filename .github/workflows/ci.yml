@@ -108,6 +108,80 @@ jobs:
           PG_TEST_URL: postgresql://wenyuan:wenyuan@127.0.0.1:5432/wenyuan_test
         run: make cover-check-pg
 
+  clients:
+    name: client SDKs
+    runs-on: ubuntu-latest
+    steps:
+      # The subtree gate below diffs the changed paths against the base
+      # revision, so the checkout needs history rather than a single commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # clients/go is a nested module, so the root module's `go test ./...`
+      # never reaches it: without this job the SDKs' suites run nowhere in CI
+      # and only a developer running `make test-sdk` exercises them. As with
+      # the coding-agents job below, the gate is applied here rather than as a
+      # workflow-level path filter, which would restrict the Go jobs above too.
+      - name: Decide whether the clients changed
+        id: gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || ! git rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" HEAD -- clients scripts/derive_client_spec.py | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The derived document must match the served one; the SDKs are generated
+      # from it, so stale drift here means every client is generated from a
+      # contract the service no longer serves.
+      - name: Verify the derived spec matches the served document
+        if: steps.gate.outputs.changed == 'true'
+        run: make clients-check
+
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.changed == 'true'
+        with:
+          # The nested clients/go module declares go 1.25.
+          go-version: "1.25"
+
+      - name: Python SDK suite
+        if: steps.gate.outputs.changed == 'true'
+        run: |
+          python3 -m pip install --quiet -e clients/python pytest pytest-asyncio
+          make test-sdk-python
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.changed == 'true'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+
+      # The suite type-checks and runs vitest against src/, both of which need
+      # the installed toolchain; the target alone assumes node_modules exists.
+      - name: Install from the lock file
+        if: steps.gate.outputs.changed == 'true'
+        run: npm --prefix clients/typescript ci
+
+      - name: TypeScript SDK suite
+        if: steps.gate.outputs.changed == 'true'
+        run: make test-sdk-typescript
+
+      - name: Rust SDK suite
+        if: steps.gate.outputs.changed == 'true'
+        run: make test-sdk-rust
+
+      - name: Go SDK suite
+        if: steps.gate.outputs.changed == 'true'
+        run: make test-sdk-go
+
   coding-agents:
     name: coding-agents package
     runs-on: ubuntu-latest

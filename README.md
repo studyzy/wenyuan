@@ -218,7 +218,6 @@ changes nothing.
 | `HINDSIGHT_API_MCP_ENABLED` | Enable the MCP namespace |
 | `HINDSIGHT_API_ENABLE_BANK_CONFIG_API` | Serve the bank-config write route |
 | `HINDSIGHT_API_GZIP_MIN_SIZE` | Response-body gzip size floor (negative disables) |
-| `HINDSIGHT_API_DROP_NULL_FIELDS` | Omit null JSON fields in responses |
 | `HINDSIGHT_API_RETAIN_BATCH_ENABLED` | Enables the batch retain gate |
 | `HINDSIGHT_API_RECALL_STRATEGY_BOOSTS` | Per-arm recall strategy boosts |
 | `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | Reflect observation default |
