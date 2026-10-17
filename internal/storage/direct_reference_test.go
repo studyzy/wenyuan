@@ -63,7 +63,11 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	if url == "" {
 		t.Skip("WENYUAN_TEST_DATABASE_URL is not set; the direct-read test was not run")
 	}
-	db, err := OpenDatabase(url)
+	// The test scopes itself with a session-level `search_path` below, so the
+	// pool is pinned to a single connection: a second one would not carry the
+	// setting, and the unqualified reads would resolve against whatever schema
+	// that connection defaults to.
+	db, err := OpenDatabaseWithBudget(url, PoolBudget{MaxOpenConns: 1, MaxIdleConns: 1})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
