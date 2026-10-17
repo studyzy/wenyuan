@@ -53,7 +53,9 @@ def main() -> int:
     # configured, so the captured document never carries one; strip it if a
     # published copy happens to include it.
     document.pop("servers", None)
-    rendered = json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n"
+    # The reference's response carries no trailing newline, so neither does the
+    # captured copy: /openapi.json is byte-identical to the live document.
+    rendered = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
 
     if args.check:
         with open(TARGET, "r", encoding="utf-8") as handle:

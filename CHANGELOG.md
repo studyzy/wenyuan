@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/metrics` reports the reference's per-workload families, recorded at the site
+  each one measures. **Operation** duration and count come from the worker's
+  terminal settle (`hindsight_operation_duration_seconds`,
+  `hindsight_operation_operations_total`, labelled operation/source/budget/
+  max_tokens/success, with the retain-shaped types collapsed to `retain`).
+  **LLM** duration, call count and token classes (input, output, cached input,
+  thoughts) come from the provider boundary, so every completion is counted with
+  its provider/model/scope/success and a bounded `token_bucket` on each token
+  counter. **Retain documents** counts each retained document by extraction
+  outcome (`facts`/`no_facts`) on both the synchronous and queued write paths.
+  **Pool acquire wait** times the readiness probe's connection acquisition.
+  **Recall phases** come from the store's phase observer, labelled by phase and
+  the diagnostic split. **Consolidation batch failures** are counted on the
+  failed model call. **Event-loop stalls** are counted and timed when the
+  lag probe sees a lag past the stall threshold. Every family is absent until it
+  has an observation, and each carries the reference's instrument name, unit,
+  description and label set.
+
+### Changed
+
+- A deployment with no LLM provider now refuses reflect and mental-model
+  refresh instead of synthesizing a deterministic answer, matching the
+  reference for `HINDSIGHT_API_LLM_PROVIDER=none`. `POST .../reflect` answers
+  400 with the reference's message rather than falling back to the in-process
+  deterministic loop, and a mental-model refresh is rejected with 400 **before
+  any lookup**, so an unknown model is the same refusal rather than a 404. The
+  deterministic reflection stays reachable at the store level; only the served
+  routes are armed to refuse.
+
+### Fixed
+
+- Reflect renders directives the way the reference does. Each rule carries the
+  directive's **name** bolded ahead of its content (bare content when the bank
+  set none), and the numbered `## REMINDER: MANDATORY DIRECTIVES` section now
+  rides at the end of the system prompt — for the reasoning loop and the
+  answering call alike — instead of being a separate trailing message, so the
+  composed prompt is byte-identical to the reference template (trailing newline
+  after the section, leading newline before the reminder). The name is carried
+  from both storage backends through `AgenticReflectRequest` into the shared
+  reflect package, and the prompt-preview route renders from the same builder.
+- `entities.mention_count` no longer drifts upward. The denormalised counter was
+  increment-only, so every document replace or delete, memory clear, memory
+  delete/invalidation and entity-set edit left it counting mentions whose
+  postings were gone. Each unlink path now gives the count back — decremented by
+  the postings actually being removed, floored at zero — through one shared
+  storage helper, in both the memory and PostgreSQL backends, mirroring the
+  reference's single unlink choke point.
+- Member routes answer the resource's own 404 on an unknown bank. A document,
+  entity or knowledge-page/node read no longer pre-checks the bank, so it
+  reports `Document not found` / `Entity <id> not found` / `Knowledge page|node
+  '<id>' not found` exactly as the reference does; the bank-existence check
+  stays on the collection routes. `GET /v1/default/chunks/{chunk_id:path}` no
+  longer trims slashes off the identifier, so a trailing slash resolves to no
+  chunk. A document read counts its memory units in the same statement that
+  resolves the row (no longer dependent on a listing window), an entity read
+  serves the stored `mention_count`/`first_seen`/`last_seen` when no tag filter
+  is active and recomputes only when one is, and a document retag re-appends
+  each unit's `entity_labels`-derived tags instead of replacing them wholesale.
+- `GET /v1/default/banks/{bank_id}/config` matches the reference key by key.
+  The `overrides` map is now exactly the bank's stored `config` column — the
+  legacy `disposition` and `mission` columns are no longer folded in (the
+  reference reads its config column only, and its profile/list paths are what
+  overlay the columns), and the config write that feeds it stores disposition
+  traits and the reflect mission in that column rather than the legacy columns.
+  `mcp_enabled_tools`, `llm_gemini_safety_settings`, `observation_scope_limits`,
+  `consolidation_strategies` and `knowledge_page_default_trigger` are now parsed
+  from their environment values (a list / parsed JSON) instead of being nulled
+  or returned as the raw string, and a resolved configuration that violates the
+  retain chunking invariant fails the read with the reference's 500 detail
+  rather than serving an unusable config.
+
+### Added
+
 - The client SDKs' hand-written convenience layers are complete. TypeScript
   gains the `WenYuanClient` class (44 methods: version, memories, banks and bank
   config, mission, directives, mental models with the partial-patch trigger

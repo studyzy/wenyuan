@@ -12,6 +12,15 @@
 > `docs/PARITY-PLAN.md`**；本文状态栏凡与之一致性存疑者，以 `PARITY-PLAN.md`
 > 与代码为准。
 
+
+> **2026-10-16/17 轮次指引**：一轮以**每条路由的后端逻辑**为对象的复核已完成（100 条装饰器路由 +
+> 4 个非装饰器面全部挂载）。该轮修掉了全部系统性差异（空值策略——上游其实**保留** null、
+> `ExcludeNoneRoute` 从未生效；时间戳统一 `isoformat()`；未识别错误一律 500；JSON 不再 HTML 转义；
+> 校验信封文案；请求体校验词表与请求层文本规则）与各路由族的主要 high/med/low 项；逐条残留见
+> `docs/CONTRACT-AUDIT.md` §5。两个先于该轮即失败的 PG 用例（`TestDirectReadRendersArchive`、
+> `TestVectorSimilarityRanksByDistance`）在 pristine HEAD 上同样失败，属测试自身在连接池上
+> `SET search_path` 的问题。
+>
 > 本文档是**实现清单**，供后续净室重写 AI 逐项实现。
 > 只覆盖**服务后端**；前端 / Control Plane（9999）不在范围内。
 >
@@ -152,8 +161,12 @@ PG 套件另跑 `make test-pg`（需 `WENYUAN_TEST_DATABASE_URL`）。
 （≤10 轮，工具 `search_mental_models → search_observations → recall →
 read_mental_models → expand → done`）；`internal/reflect/runner.go` 实现
 `storage.ReflectRunner` 并把 `storage.ReflectionRetrieval` 适配到
-`reflect.Retrieval`；`internal/app/app.go:191` 注入，无模型时回落到
-确定性 synthesis。
+`reflect.Retrieval`；`internal/app/app.go:191` 注入。**无模型时不再回落到
+确定性 synthesis**：参考实现在 provider 为 `none` 时直接以 400 拒绝 reflect
+（detail 与参考一致），`internal/memoryops/reflect.go` 与
+`internal/mentalmodels/handlers.go` 现在按同一信号拒绝 reflect 与
+mental-model refresh；确定性循环仅保留为 store 层的回退（不经过被武装的
+路由时不触发）。
 
 - 证据：`internal/reflect/loop.go`、`internal/reflect/runner.go`、
   `internal/storage/reflect_runner.go`（边界声明）、

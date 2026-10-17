@@ -14,6 +14,7 @@
 | **契约面复核收口（2026-10-15）** | `docs/CONTRACT-AUDIT.md` §3 由"未闭合清单"改写为**逐项结论**：13 项中多数已闭合（附上游 file:line 证据），4 项的前提**本身是反的**（校验条目 `url`、银行 id 形状、`/health` 池统计、指标"聚合计数"）——照单直改会改坏已经正确的东西。真实修复：校验条目按目标类型分派 `type` 并去掉上游从不发的 `url`；内存后端 retain 接受被拒 bank id（200→400）；`PATCH /config` 吞错（404→400）；`DELETE /config` 对不存在 bank（404→200，不创建行）；指标 `endpoint` 标签剥离 Go 通配符；知识库与 **recall** 的 fuzzy 标签改为对银行词表解析后精确匹配（含两个上限与上游 422 原文）；MCP `Accept` 改写语义（不再错拒 `application/json`/`*/*`）与 GET SSE 帧；`STORE_DOCUMENT_TEXT=false` 存 NULL、文案逐字、修掉可空列扫进 string 的读取崩溃。另把 CI 门禁拉回绿：13 个累积的 lint 问题清零（含一处保真与 ST1005 冲突→保留上游原文并标注理由） |
 | **上游自己的系统测试套件**（`hindsight-system-tests`，77 个 story 文件 / 345 用例，只用上游已发布的 Python 客户端驱动真实服务，模型/embedding/reranker 指向进程内桩） | **287 passed / 47 failed / 10 errors / 1 skipped（≈83%）**，基线是同一套件的 **136 passed / 161 failed / 43 errors**。唯一 skip 由上游环境门槛决定（`test_76_onnx_embeddings.py` 需要本地 E5 ONNX 模型）。harness 自身修好并自证（启动标记 + 启动函数确实被调用）；每个 agent 用自己的私有库，避免两个服务共用一个库时互相认领队列 |
 提示词、多模态、observation 嵌入、异步 retain 管线等专项见下方各节。 |
+| **请求体校验词表与请求层（2026-10-17 收口）** | 以同一批畸形/边界请求逐字节比较两侧 422/400：缺失必填项是 `missing`、显式 `null` 对非可选字段是 `<类型>_type`、`include` 成员类型错是 `model_attributes_type`（逐成员/逐字段各一条 item、按声明顺序）、畸形 body 的 `json_invalid` 用 **CPython 的 0 基字符下标与裸消息**、非对象 body 对模型目标是 `model_attributes_type`、body 非 UTF-8 在路由前 400 且带 BOM 先剥——全部落地并有 Go 测试钉住；粗粒度的 pydantic 宽松强制（数字字符串→int、整数↔布尔、`"yes"/"on"` 布尔词）由 `httpx.DecodeLax` 补齐。逐项见 `docs/CONTRACT-AUDIT.md` §5 与 `docs/PARITY-PLAN.md` 的 2026-10-17 条目；差分探针 `scripts/parity_probe.py` 终态 **199 项：188 一致 / 0 差异 / 11 已知（各带理由）** |
 | HTTP 契约面（99 操作 / 195 schema 逐项对照） | 见 `docs/CONTRACT-AUDIT.md`：路由 99/99；字段/状态码/头层面的偏差已批量修复，余项在该文件 §3 |
 | 非 HTTP 功能面（子系统、CLI/进程、扩展体系） | 见下方三节：§1 与 §3 已按 2026-10-16 的代码现状改写为**逐项结论**（闭合/部分/仍开，各附证据路径），§2 保留运维面复核记录 |
 
@@ -237,3 +238,21 @@ make check                       # build + test + vet + pgx + lint + gofmt
 不在本任务范围内。本仓库的验证只看服务端：`go test ./internal/... ./cmd/server/... ./cmd/worker/... ./cmd/bankctl/...`
 与 `scripts/run_parity_suite.sh`（它构建的是 `./cmd/server`）。
 `make check` 会连带编译客户端，因此客户端在编辑中途时门禁可能因它而红——那不是服务端的回归。
+
+## 7. 逐 URL 后端逻辑对照轮（2026-10-16/17）
+
+一轮以**每条路由的后端逻辑**为对象的复核已完成（100 条装饰器路由 + 4 个非装饰器面全部挂载，
+逐条残留见 `docs/CONTRACT-AUDIT.md` §5；该轮的工作 ledger 已删除，已闭合内容在 `CHANGELOG.md`）。
+结论：路由面全挂载、契约文档除 `info.version` 外逐字节同上游；逻辑面约 600 条具体 divergence，
+本轮已修完全部**系统性**差异（空值策略、时间戳、未识别错误的状态码、JSON 转义、校验信封文案）与
+各路由族的主要 high/med 项；仍未闭合的项（tag-scope 对调用方的拒绝、`GET .../stats` 的计数与链接类别口径、
+observation history 快照、dry-run 的 `based_on`/outcome、config 的 env 取值型键、MCP 有状态会话、
+描述符路由细节等）在该 README 的「仍未闭合」里逐条列出并带证据。
+
+其中一条此前的结论被**线上实测推翻并已在文档里更正**：上游并不丢弃 null 字段
+（`ExcludeNoneRoute` 被 `UnknownParamsRoute` 覆盖而失效），因此 `CONTRACT-AUDIT.md` §1 的空值策略行、
+本片的空值描述都已改写；wenyuan 的剪 null 机制已整体删除。
+
+`make test-pg` 有两个**先于本轮改动即失败**的用例（`TestDirectReadRendersArchive`、
+`TestVectorSimilarityRanksByDistance`），已在 pristine HEAD 工作树上复现同样失败：原因是测试自身
+在连接池上 `SET search_path`（会话级设置不随池连接传播）。与本次对照工作无关，单独记录。

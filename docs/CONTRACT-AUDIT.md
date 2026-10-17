@@ -28,7 +28,7 @@
 | base path | `HINDSIGHT_API_BASE_PATH`（上游 `root_path`）此前完全不支持 | `internal/config`（解析 + 归一化）与 `internal/httpx.BasePathMiddleware`：带前缀与不带前缀**都**可路由（与上游 `get_route_path` 的剥离语义一致）；文档 `servers` 仅在配置前缀时注入 |
 | `/version` 版本号 | 报 `1.0.0`（wenyuan 自己的版本）；上游报自身发布版本 | `httpx.APIVersion = ReferenceAPIVersion = "1.0.0"`（随参考 v1.0.0 发布同步），并由测试钉住与所服务契约文档 `info.version` 一致 |
 | 特性开关默认值 | MCP/银行配置 API/文档导入/文档导出默认 false（上游 true）、audit_log 硬编码 true（上游 false）、llm_trace 默认 false（上游 true）、observations/store_document_text 硬编码 | `internal/config`：默认值对齐上游，新增 `HINDSIGHT_API_ENABLE_OBSERVATIONS`/`_AUDIT_LOG_ENABLED`/`_STORE_DOCUMENT_TEXT`，`FeatureMap` 改为字段驱动 |
-| 空值策略 | `HINDSIGHT_API_DROP_NULL_FIELDS` 默认 **false**，导致上游会省略的 null 字段被输出 | 默认改为 true（上游 `ExcludeNoneRoute` 的规则）；保留 null 的模型由 `httpx.WriteJSONOpenRow` 逐响应覆盖 |
+| 空值策略 | 曾以为上游按 `ExcludeNoneRoute` 分组丢弃 null 字段，遂引入 `HINDSIGHT_API_DROP_NULL_FIELDS` 开关 | 复核上游后确认该路由类被 `UnknownParamsRoute` 覆盖而失效，上游始终保留显式 null；开关与全部丢弃逻辑已移除，响应一律保留 null |
 | 未匹配路由响应 | 未命中路由/方法返回 Go 的纯文本 `404 page not found`/`405`；上游返回 JSON `{"detail":"Not Found"}`/`{"detail":"Method Not Allowed"}`（405 保留 `Allow` 头） | `internal/httpx/fallback.go`（仅改写路由器自身的拒绝，处理器自己写的 404/405 原样通过） |
 | 认证缺失 | 上游可经 `HINDSIGHT_API_TENANT_EXTENSION`+`_TENANT_API_KEY` 对**所有**引擎路由强制 API key（401 `{"detail":"Authentication failed: Invalid API key"}`）；wenyuan 此前只在 3 条 retired 路由上做「Authorization 头是否存在」的假校验 | `internal/config.ResolveTenantAuth`（仅支持内置 `ApiKeyTenantExtension`，其它选择启动即失败而不是静默无认证）+ `httpx.TenantAPIKeyMiddleware`（保护 `/v1/default/*` 与 `/mcp`，豁免 retired 路径） |
 | 请求体校验状态码 | 非法/类型错误的 JSON 体返回 400 单句；上游是 422 结构化条目（`json_invalid`/`int_parsing`/`string_type`…） | `httpx.DecodeBody` 生成上游词汇表的 422 条目；`httpx.WriteError`/`WriteValidationFor` 直接渲染 `*ValidationFailure` |
@@ -107,3 +107,89 @@ HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true \
 # 全量验证门
 make check        # build + test + vet + pgx 构建 + lint + gofmt
 ```
+
+## 5. 逐 URL 逻辑对照轮（2026-10-16/17）
+
+本次不再以「契约文档」而是以**每条路由的后端逻辑**为对象，逐条比对并修正：参考的 100 条
+`@app.{get,post,put,patch,delete}` 装饰器路由 + 4 个非装饰器面（MCP、`/ext`、描述符路由、worker HTTP）
+全部已挂载，`internal/httpx/openapi.json` 与参考的 `hindsight-docs/static/openapi.json` 除
+`info.version` 外逐字节相同。该轮共五批（逐路由 ledger → high 回放 → … → med/low 清扫），
+逐条结论与 open 项按下文保留。
+
+对照方式升级了一件关键的事：**引入线上参考服务作为真值**（`127.0.0.1:8888`，以及本服务在 scratch 库上的
+同构实例），用同一组请求打两边比较状态码与解析后的 JSON。这直接推翻了若干**纯静态复核得出的错误结论**：
+
+- 静态阅读曾判定 `GET .../directives/{id}` 对非 UUID id 会回 404「Directive 'x' not found」；
+  实测参考回 **500**（id 直接进 uuid 列，驱动报错）。
+- 静态阅读曾判定 `ExcludeNoneRoute` 生效、参考丢弃 null；实测参考**保留** null（路由类被覆盖，见 §0 与 §1）。
+- 静态阅读曾把 audit-logs 的时间戳归到 Postgres `::text` 形式；实测是 `isoformat()`，`::text` 只属 webhook 家族。
+
+本轮修掉的系统性差异（每条都带线上证据）：
+
+| 项 | 修正 |
+|---|---|
+| 空值 | 删除 `HINDSIGHT_API_DROP_NULL_FIELDS` 与整套剪 null 机制，响应一律保留显式 null |
+| 时间戳 | 统一 `isoformat()`（`+00:00`、微秒非零才带小数）；webhook 家族保留 `created_at::text` 形式；新增 `internal/timefmt` |
+| 未预期错误 | 未识别异常一律 500 `detail=str(exc)`（原为 400），存储不可写 503 |
+| JSON 转义 | 不再 HTML 转义 `<`/`>`/`&` |
+| 校验信封 | `list_type`/`dict_type` 文案按 pydantic 原文；query 参数的 `input` 用原始字符串 |
+
+### 逐条对照轮的残留（逐条列出，不再指向已删除的工作 ledger）
+
+原工作目录 `docs/api-parity/`（104 份逐路由 ledger + `MAP.tsv` + 四份汇总）已在收口后删除：其中
+「已闭合」的内容在 `CHANGELOG.md` 与本文其余小节，残留项在此完整保留。
+
+1. **`/prompts/preview` 的 retain `response_schema` 形状**：参考给 pydantic 的 JSON schema
+   （`$defs`/`anyOf`/`title`/`default`），wenyuan 给 Go 结构体——需要 pydantic 兼容的 schema 发射器。
+   这是该路由唯一剩下的差异。
+2. **`/metrics` 的次要族**：`retain.phase.*`（wenyuan 没有 retain 阶段核算）、`validator.phase.*`
+   （校验器是单一前置门，无前/后分段）；`event_loop.stalls` 与 `consolidation.batch_failures`
+   已实现但只在被触发时输出（无观测时不输出，不伪造）。
+3. **扩展面（可部署配置下不可观察）**：`_operation_validator` 预检（未知 bank 上
+   `/prompts/preview` 参考报 500、wenyuan 报 404）、任意 Python 扩展加载（不可移植，按启动即失败处理）。
+4. **子系统面（需要新的写入器/服务，非机械改）**：重命名/清空 mental model 时重建
+   `mental_models.embedding`；reflect 回答按 `max_tokens` 长度重写第二遍；knowledge 页重命名的重嵌入；
+   reprocess 回放全部 `retain_params`。
+5. **并发细节**：编辑路径尚未把「行更新 + 链路删除」包成单个事务（参考是）；单线程可观察行为一致。
+6. **已接受（不再修）**：`uptime_seconds` 的 JSON 文本 `812` vs `812.0`（数值相同）；audit `request` 的
+   「声明键补 null」形状（仅在开启审计时可观察，线上无法验证）；驱动错误文案（asyncpg vs pgx，状态码已
+   一致）；错误串里的品牌词；Go 与 Python 的 JSON 解析错误文本；`70 D5` 的 500 响应体文本；
+   两处 Go 无法复刻的诊断项（`db_pool_waiting`、驱动文案）。
+
+### 请求体校验词表轮（2026-10-17）
+
+以同一批畸形/边界请求打两条服务，把 422 的**逐字节**响应作为验收对象，修掉五类系统性差异（均由
+`scripts/parity_probe.py` 发现，每条都先在上游复现）：
+
+| 项 | 上游（pydantic 宽松模式） | 修正 |
+|---|---|---|
+| 必填字段缺失 | `missing`（`input` 是 body 对象本身），显式 `null` 是 `string_type`，空白字符串才走 `value_error` | recall/reflect 三者分开，不再把缺失报成「query 必须含词字符」 |
+| `include` 成员类型错 | `model_attributes_type`，loc 落在**成员**上；同一成员对象的多个坏字段各出一条 item，成员之间、字段之间按**声明顺序**插排 | 逐成员、逐字段累积（`httpx.NestedFailureItems` + `DecodeStructFields`），不再是「首错即返回」 |
+| 嵌套拒绝项的 loc/input | 完整路径 + 出错值本身 | 自定义 `UnmarshalJSON` 的相对偏移由 `httpx.NestedDecodeError` 记录（路径 + 出错子切片），builder 据此渲染 |
+| 布尔词表 | 整数（`2`、`2.0`）是 `bool_parsing`（无法解释），小数（`1.5`）、容器、`null` 才是 `bool_type` | Go 的 `UnmarshalTypeError.Value` 对 bool 目标只有 `"number"` 没有字面量，故改从 body 偏移取原始值判定 |
+| 标量宽松强制 | 数字字符串→int/float、整数与布尔互转、`"yes"/"on"/"n"` 等布尔词 | `httpx.DecodeLax`：**先严格解码**，失败才按目标字段类型反射引导重写；只改上游会接受的值，拒绝值保留原文 `input` |
+
+同轮修的契约项：`DELETE /banks/{id}/memories/{mid}/observations` 对未知银行是 200
+`{"deleted_count":0}`（原 404）；`reflect` 的 `facts` 成员在上游**没有任何字段**（传值被忽略，200），
+故删除了 `ReflectFactsInclude.MaxTokens`。
+
+### 请求层与 pydantic 语义轮（2026-10-17 第二轮）
+
+| 项 | 上游 | 修正 |
+|---|---|---|
+| `null` 语义 | 非可选字段收到 `null` 一律 `<类型>_type`（`input:null`），可选字段照收 | `internal/httpx/nullschema.go` 按**服务端契约文档**（`openapi.json` 的请求 schema）判定可空性、词表与字段顺序，仅在 body 含 `null` 时才走；无需给任何 Go 模型加指针 |
+| 宽松强制 | `"5"`→int、`true`→1、`"yes"/"on"/"n"`→bool 等 | `httpx.DecodeLax`：严格解码通过即零成本返回；失败才按目标字段类型反射重写，拒绝值保留原文 |
+| `json_invalid` | loc 是 **0 基字符下标（JSON 数字）**，`ctx.error` 是 CPython 的裸消息 | `httpx/jsonsyntax.go`：CPython `json` 扫描器的无依赖移植（`Expecting value`、`Extra data`、unicode 转义与多字节偏移等） |
+| 非对象 body | 目标是模型 → `model_attributes_type`（`input` 是该值），不是 `dict_type` | 顶层 `json.UnmarshalTypeError` 对结构体目标改判 |
+| body 文本 | 非 UTF-8 → 路由前 400 `{"detail":"There was an error parsing the body"}`；带 BOM → **剥 BOM 后解析** | `httpx.checkBodyText`：`DecodeBody`/`DecodeLax` 共用；该失败借 `ValidationFailure` 的 `Status`/`Detail` 走同一条写出路径（调用方无需改签名） |
+| 多错累积 | 一个 body 里多个坏成员/坏字段各出一条 item，按**声明顺序**插排 | `httpx.NestedFailureItems` + `DecodeStructFields`（逐字段解码）+ `OrderItemsByDeclaration` |
+
+仍未闭合（本轮换为 live 探针的 `KNOWN_DIFFERENCES`，每条带理由）：`/health` 的
+`db_pool_waiting`（`database/sql` 无等待者计数）、directives 三个 404 的驱动文案、知识库
+`tree` 分组报错的 pydantic 多行文案、config 写入报错里的「可配置字段」样例列表、reflect
+提示词预览（线上构建比 checkout 旧，配置写入在两侧落点不同）、`dry-run`/`reflect` 的
+**模型输出文本**（两个部署跑不同的 chat 模型）、bank 列表的 `total`（两侧银行数本就不同）。
+参考实现自身的异常（不复刻、已记录）：`NaN`/`Infinity` 触发 500、约 2000 层嵌套触发
+`RecursionError` 500。
+
+

@@ -308,6 +308,65 @@ sed -n '23,30p' internal/httpx/errors.go
 
 ## 8. 进度日志（实现记录）
 
+### 2026-10-17 — 逐路由契约差分扫描（`scripts/parity_probe.py`）
+
+- **做法**：新增 `scripts/parity_probe.py`，把两条服务（上游 `:8888`、wenyuan `:18100`）在
+  **同一批请求**上的「状态码 + 响应体」做逐字节比较。它按银行族发请求（先建两个自己的银行
+  与一个幽灵 id，避免动线上数据），对响应做规范化：`timestamp`/`*_at`、`id`/`*_id`、
+  `token`/`secret`、`operation_id`、`uptime_seconds` 等**非契约值**（随机 id、时钟、
+  计数）折叠为占位符，`request_id` 等 header/请求 id 在比较前删除；再按检查项打印差异。
+- **覆盖面**：bank 生命周期与别名、config（读/写/重置）、retain（同步/异步/文件）、
+  recall（含 include 通道、tag/include 校验）、reflect、操作队列、文档/分块/实体/知识库/
+  心智模型/directives/webhooks/统计/审计/LLM 请求、监控与 health、MCP 等约 200 项检查。
+- **本次扫描修掉的真实差异**（每项都先在上游复现、改后逐字节一致）：
+  1. `DELETE /banks/{id}/memories/{mid}/observations`（银行不存在）——上游 200
+     `{"deleted_count":0}`，wenyuan 曾 404；现只保留 tag-scope 门禁。
+  2. `recall`/`reflect` 空体（`{}`）——上游是框架的「缺少必填字段」项
+     （`{"type":"missing","loc":["body","query"],...}`），wenyuan 曾报
+     `value_error`「query must contain at least one word character」；现在缺失/显式 `null`/
+     传了字符串才走的空白规则三者分开。
+  3. `include` 成员类型错——上游是 `model_attributes_type`（loc 落在**成员**上、input 是该成员的
+     值），wenyuan 曾报在 `include` 上且 input 串成了别的字段的值；现逐成员、逐字段报，
+     一个成员对象里多个坏字段会出**多条** item，与上游同序。
+  4. 成员拒绝项的 `loc` 少一层（`include.entities.max_tokens` 曾报成
+     `include.max_tokens`）——自定义 `UnmarshalJSON` 的相对偏移所致，现由
+     `httpx.NestedDecodeError` 记录完整路径与出错子切片。
+  5. 布尔字段的词表：整数值（`2`、`2.0`）上游报 `bool_parsing`（「无法解释」），
+     只有小数（`1.5`）、容器与 `null` 才是 `bool_type`；wenyuan 曾把整数也报成
+     `bool_type`。
+  6. 标量字段的宽松强制转换：上游是 pydantic 宽松模式，接受数字字符串（`"5"`）、
+     整数与布尔互转（`true`→1）、`"yes"/"on"/"n"` 这类布尔词；wenyuan 的 Go 解码曾一律 422。
+     现由 `httpx.DecodeLax` 在**严格解码失败之后**按目标字段类型做一次反射引导的重写，
+     只改上游会接受的值，拒绝的值仍逐步走过原有词表（错误项里的 `input` 保持原文）。
+  7. `null` 传给非可选字段：上游 422（`int_type`/`bool_type`/…，`input: null`），
+     Go 解码曾静默写零值。
+- **同轮继续修掉的项（同日第二轮）**：③ 校验词表的**宽松强制**与 `null` 语义：上游 pydantic
+  宽松模式接受数字字符串（`"5"`→5）、整数与布尔互转（`true`→1）、`"yes"/"on"/"n"` 等布尔词，
+  而 `null` 传给非可选字段一律 422（`int_type`/`bool_type`/…，`input:null`）——Go 解码既不强制
+  也静默接受 `null`；现由 `httpx.DecodeLax`（严格解码失败后按目标类型反射重写）与
+  `httpx/nullschema.go`（按服务端契约文档判定可空性，只在 body 含 `null` 时走）两段补齐，
+  拒绝值仍保留原文 `input`。④ 畸形 body 的 `json_invalid` 项：位置是 CPython 的**0 基字符
+  下标**（JSON 数字，非字符串）且文案是 CPython 的裸消息（`Expecting value`、
+  `Expecting property name enclosed in double quotes`、`Extra data`），此前是 Go 的 1 基字节
+  偏移与 Go 文案；现由 `httpx/jsonsyntax.go`（CPython 扫描器的移植）给出。⑤ 非对象 body
+  （数组/标量）对**模型**目标是 `model_attributes_type`（不是 `dict_type`）。⑥ 请求层文本
+  规则：body 不是合法 UTF-8 时上游在路由前就 400 `{"detail":"There was an error parsing the
+  body"}`（不产生校验项、也不看银行是否存在），带 UTF-8 BOM 的 body 上游**先剥 BOM 再解析**。
+- **已知差异（不修，已记录理由）**：`/health`、`/health/ready` 的 `db_pool_waiting`
+  （`database/sql` 不暴露等待者计数）；directives 三个 404 的驱动报错文案（asyncpg vs pgx）；
+  知识库 `tree` 非法分组的 pydantic 多行文案；config 写入报错里「可配置字段」样例列表
+  （线上部署跑的构建与 checkout 的源码不同，wenyuan 与 checkout 源码逐字一致）。
+- **扫描器的规范化（必须诚实，否则会把非契约差异报成差异）**：`*_tokens` 计数与
+  `db_acquire_ms`/`uptime_seconds` 这类**测量值**折叠为占位符（两个部署跑不同模型、不同启动时间）；
+  bank 列表只比较信封键与条目**键集**（`total` 与具体银行两侧本就不同）；不修的差异进
+  `KNOWN_DIFFERENCES` 并**打印理由**，不算失败。终态：199 项检查 188 identical / 0 differing /
+  11 known。
+- **扫描器的坑（已写入脚本注释）**：`DELETE /banks/{id}/memories/{mid}`（删记忆）与
+  `DELETE /banks/{id}/memories/{mid}/observations` 曾混淆；`GET` 与 `DELETE` 的
+  `bank_id` 解析路径不同（前者 `bank_id` 小写化、后者原样），比较前必须用同一个规范化。
+
+### 2026-10-16 — 银行列表 `fact_count`（`GET /v1/default/banks`）
+
 ### 2026-10-16 — 银行列表 `fact_count`（`GET /v1/default/banks`）
 
 - **契约行为修复**：PostgreSQL 后端的 `ListBanks` 从未计算 `fact_count`，列表里**每个银行
