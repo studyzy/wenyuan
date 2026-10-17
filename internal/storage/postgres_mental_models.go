@@ -22,7 +22,7 @@ const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''),
 func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, subtype MentalModelSubtype) ([]MentalModel, error) {
 	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
 	          WHERE bank_id = $1 AND ($2 = '' OR subtype = $2)
-	          ORDER BY created_at DESC, id ASC`
+	          ORDER BY last_refreshed_at DESC, id DESC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, string(subtype))
 	if err != nil {
 		return nil, err
@@ -58,8 +58,20 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	if err := validateMentalModel(model); err != nil {
 		return MentalModel{}, err
 	}
+	// The reference embeds a mental model from its own text on every write
+	// (`_generate_mental_model_embedding(name, content)`, so a create embeds the
+	// name and a rename or content change re-embeds), which is what makes a page
+	// reachable through the vector arm of knowledge search. A configured
+	// embedder therefore owns the column; a caller-supplied vector is kept only
+	// when no embedder is configured (an offline or vectored deployment).
 	embedding := any(nil)
-	if len(model.Embedding) > 0 {
+	if s.observationEmbedder != nil {
+		arg, err := mentalModelEmbeddingArg(ctx, s.observationEmbedder, model.Name, model.Content)
+		if err != nil {
+			return MentalModel{}, err
+		}
+		embedding = arg
+	} else if len(model.Embedding) > 0 {
 		if err := ValidateEmbedding(model.Embedding); err != nil {
 			return MentalModel{}, err
 		}
@@ -156,21 +168,28 @@ func (s *PostgresStore) DeleteMentalModel(ctx context.Context, bankID, id string
 // ClearMentalModel empties a mental model's content and history while keeping
 // the record.
 func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string) (MentalModel, error) {
+	current, err := s.GetMentalModel(ctx, bankID, id)
+	if err != nil {
+		return MentalModel{}, err
+	}
+	// The reference's clear resets exactly content, structured_content,
+	// last_refreshed_source_query and last_refresh_failed_at, and rebuilds the
+	// dense vector from the name alone: leaving the one built from the discarded
+	// content behind would keep the cleared page ranking in semantic recall on a
+	// body it no longer has. A deployment with no embedding model writes NULL,
+	// which is what the reference's rebuild stores when it has no vector.
+	embedding, err := mentalModelEmbeddingArg(ctx, s.observationEmbedder, current.Name, "")
+	if err != nil {
+		return MentalModel{}, err
+	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
-	          SET content = '', structured_content = NULL, reflect_response = NULL,
-	              observations = '{"observations": []}'::jsonb,
-	              last_updated = now(), last_refreshed_at = now()
+	          SET content = '', structured_content = NULL,
+	              last_refreshed_source_query = NULL, last_refresh_failed_at = NULL,
+	              embedding = $3::vector
 	          WHERE bank_id = $1 AND id = $2`
-	result, err := s.db.ExecContext(ctx, query, bankID, id)
+	_, err = s.db.ExecContext(ctx, query, bankID, id, embedding)
 	if err != nil {
 		return MentalModel{}, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return MentalModel{}, err
-	}
-	if affected == 0 {
-		return MentalModel{}, ErrMentalModelNotFound
 	}
 	return s.GetMentalModel(ctx, bankID, id)
 }

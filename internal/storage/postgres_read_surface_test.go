@@ -238,3 +238,81 @@ func TestPostgresEntityListingAndChunkNotFound(t *testing.T) {
 		t.Fatalf("unknown chunk = %v, want ErrChunkNotFound", err)
 	}
 }
+
+// The unfiltered entity read serves the stored mention_count rather than
+// recomputing it: the reference reads the entities row, and that row lists an
+// entity even when its count has fallen to zero. The count itself is kept in
+// step with the postings — dropping the link gives the mention back, so the
+// stored value tracks the live set — while a tag filter is what recomputes,
+// over the matching memories only.
+func TestPostgresEntityReadServesStoredCountWithoutTagFilter(t *testing.T) {
+	store := postgresReadStore(t)
+	ctx := context.Background()
+
+	if _, err := store.PutDocument(ctx, "read-bank", "doc-1", Document{OriginalText: "a fact"}); err != nil {
+		t.Fatal(err)
+	}
+	unitID := pgUUID("unit-1")
+	if _, err := store.UpsertUnit(ctx, MemoryUnit{
+		ID: unitID, BankID: "read-bank", Text: "a fact", DocumentID: "doc-1",
+		FactType: TypeWorld, Tags: []string{"ops"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entity, err := store.ResolveEntity(ctx, "read-bank", "Tuesday", EntityKindRegular, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUnitEntity(ctx, unitID, entity.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Dropping the link (the shape a re-extraction leaves) gives the mention
+	// back, so the stored count lands at zero; the entity row itself stays, so
+	// the unfiltered read still lists it, unlike the filter below.
+	if err := store.SetUnitEntities(ctx, "read-bank", unitID, nil, false); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := store.ListEntities(ctx, EntityQuery{BankID: "read-bank", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.Entities[0].MentionCount != 0 {
+		t.Fatalf("stored read = %d entities, mention_count %+v", page.Total, page.Entities)
+	}
+
+	// The same read under a tag filter recomputes: no live memory mentions the
+	// entity, so it is not listed at all.
+	page, err = store.ListEntities(ctx, EntityQuery{BankID: "read-bank", Tags: []string{"ops"}, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 || len(page.Entities) != 0 {
+		t.Fatalf("filtered read = %d of %d, want none", len(page.Entities), page.Total)
+	}
+}
+
+// The document read counts its units in the same statement, so the count does
+// not depend on the document appearing in a listing window.
+func TestPostgresGetDocumentCountsUnits(t *testing.T) {
+	store := postgresReadStore(t)
+	ctx := context.Background()
+
+	if _, err := store.PutDocument(ctx, "read-bank", "doc-1", Document{OriginalText: "text"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"unit-1", "unit-2"} {
+		if _, err := store.UpsertUnit(ctx, MemoryUnit{
+			ID: pgUUID(id), BankID: "read-bank", Text: "a fact", DocumentID: "doc-1", FactType: TypeWorld,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc, err := store.GetDocument(ctx, "read-bank", "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.MemoryUnitCount != 2 {
+		t.Fatalf("memory_unit_count = %d, want 2", doc.MemoryUnitCount)
+	}
+}

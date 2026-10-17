@@ -36,8 +36,15 @@ type AgenticReflectRequest struct {
 	ResponseSchema map[string]any
 	// Retrieval reads the bank's memories, observations and perspectives.
 	Retrieval ReflectionRetrieval
+	// SearchObservationsMaxTokens is the resolved per-bank budget the
+	// search_observations tool uses when the model omits a max_tokens argument.
+	// A zero value keeps the shipped default.
+	SearchObservationsMaxTokens int
+	// SearchObservationsIncludeEntities attaches resolved entity names to each
+	// observation a search returns, which the reference does by default.
+	SearchObservationsIncludeEntities bool
 	// Directives are the standing instructions that apply.
-	Directives []string
+	Directives []ReflectDirective
 	// BankName, Mission and Disposition are the bank's profile: the name and
 	// mission as the prompt writes them, and the graded traits. Mission is the
 	// resolved reflect mission (a config override beats the bank column).

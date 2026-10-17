@@ -107,6 +107,27 @@ type SchemaMigrator interface {
 	MigrateWithoutExtensions(ctx context.Context) error
 }
 
+// SourceMemoryRow is one source fact of an observation, as the memory-detail
+// read reports it: the raw live-table columns, so an unset text or context stays
+// null rather than being flattened to an empty string.
+type SourceMemoryRow struct {
+	ID            string
+	Text          *string
+	FactType      string
+	Context       *string
+	OccurredStart *time.Time
+	MentionedAt   *time.Time
+}
+
+// SourceMemoryReader is the optional capability of reading an observation's
+// source facts straight from the live memory_units table. A source that exists
+// only in the invalidation archive is therefore dropped, exactly as the
+// reference's memory_units-only query drops it, and a NULL text or context is
+// reported as null.
+type SourceMemoryReader interface {
+	SourceMemories(ctx context.Context, bankID string, ids []string) ([]SourceMemoryRow, error)
+}
+
 // Store is the single public Go API through which every other area reaches
 // memory-domain storage. No area outside this package may address the
 // memory-domain tables directly.
@@ -185,7 +206,13 @@ type Store interface {
 	// the observation scopes frozen on them, then rebuilds the observations built
 	// over them and returns how many were deleted. oldTags is the document's tag
 	// set before the retag, newTags the one being written.
-	RetagDocumentMemories(ctx context.Context, bankID, docID string, oldTags, newTags []string) (int, error)
+	//
+	// A retag replaces only the DOCUMENT-derived tags on each unit. The tag
+	// column also carries the projection of the bank's `entity_labels` groups
+	// flagged tag:true, derived per memory from that memory's own entities at
+	// extraction; labelKeys names those groups' keys, so each unit keeps the
+	// label tags it already carries even as the document's tags are replaced.
+	RetagDocumentMemories(ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool) (int, error)
 	// ResolveEntity resolves an entity name against the bank, honoring the
 	// resolution switch, and returns the canonical stored identity.
 	ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error)
@@ -282,6 +309,16 @@ type Store interface {
 	// whether this call is the one that promoted it; a parent still waiting on
 	// a child, or already terminal, is returned unchanged with promoted false.
 	FinalizeBatchParent(ctx context.Context, bankID, parentID string) (Operation, bool, error)
+	// RepairPendingBatchParent records the corrected terminal status of a
+	// parent batch operation a read found out of sync: the row is still
+	// "pending" though every child has finished. The write is guarded on the
+	// stored status still being "pending", so a concurrent child promotion
+	// wins and this becomes a no-op rather than re-terminalising the row. It
+	// is separate from FinalizeBatchParent because the read-path repair
+	// promotes only a pending row, never touches the outcome metadata, and
+	// leaves a cancelled child out of the roll-up — the reference applies a
+	// narrower rule on read than on the worker path.
+	RepairPendingBatchParent(ctx context.Context, bankID, parentID string, status OperationStatus) error
 	// SubmitAsyncRetain queues an asynchronous write: one parent batch
 	// operation that aggregates the submission and carries no work a worker
 	// runs, plus one child operation per token-bounded sub-batch, each holding
@@ -361,8 +398,18 @@ type Store interface {
 	// non-empty only the observations derived from that memory go.
 	DeleteObservations(ctx context.Context, bankID, memoryID string) (int, error)
 	// EnqueueConsolidation records a consolidation pass for a bank, reporting
-	// whether an equivalent pending operation already existed.
-	EnqueueConsolidation(ctx context.Context, bankID string) (Operation, bool, error)
+	// whether an equivalent pending operation already existed. When one or more
+	// tag scopes are supplied the pass is scoped to those scopes: a scoped
+	// submit never deduplicates against a pending full-bank pass, matching the
+	// reference.
+	EnqueueConsolidation(ctx context.Context, bankID string, observationScopes ...[]string) (Operation, bool, error)
+	// EnqueueGraphMaintenance records a graph-maintenance pass for a bank: the
+	// sweep that relinks the units a curation left behind and prunes the
+	// entities it orphaned. It deduplicates against a pass already pending or
+	// running for the bank, because a sweep drains the queues to empty and so a
+	// running one already covers work queued after it started. It reports
+	// whether an equivalent operation already existed.
+	EnqueueGraphMaintenance(ctx context.Context, bankID string) (Operation, bool, error)
 	// RecoverConsolidations retries a bank's failed consolidations.
 	RecoverConsolidations(ctx context.Context, bankID string) (int, error)
 
@@ -471,6 +518,10 @@ type Store interface {
 	// GetStoredFile returns one stored payload by key. It returns
 	// ErrStoredFileNotFound when the key is unknown.
 	GetStoredFile(ctx context.Context, key string) (StoredFile, error)
+	// DeleteStoredFile removes the payload a key addresses. A key that names
+	// no payload is a no-op rather than an error, so removing an export
+	// operation's archive cannot fail on a blob that is already gone.
+	DeleteStoredFile(ctx context.Context, key string) error
 
 	// PutAttachment records one document's copy of an attachment. The write is
 	// idempotent on (bank, document, content hash) so re-retaining an

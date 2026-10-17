@@ -47,6 +47,13 @@ type PoolStats struct {
 	Idle  int
 }
 
+// PoolStatter is the optional capability a store implements when it can report
+// its connection-pool utilization. A store with no pool does not implement it,
+// and its consumers then omit the pool keys rather than report zeros.
+type PoolStatter interface {
+	PoolStats() (PoolStats, bool)
+}
+
 // PoolBudget bounds the connection pool one store opens.
 //
 // An unbounded pool grows until the database refuses connections, which turns
@@ -118,7 +125,12 @@ func (o acquireObserver) acquire(ctx context.Context, open func(context.Context)
 	if err != nil {
 		return nil, fmt.Errorf("waiting for a database connection: %w", err)
 	}
-	o.observe(o.clock().Sub(start))
+	wait := o.clock().Sub(start)
+	o.observe(wait)
+	// The wait is also attributed to the retain in scope, if there is one, so a
+	// pool wait appears in that retain's own breakdown beside its other phases
+	// rather than only as a fleet-wide histogram. A no-op outside a retain.
+	recordRetainAcquireWait(ctx, wait)
 	return conn, nil
 }
 

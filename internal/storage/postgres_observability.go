@@ -17,7 +17,14 @@ import (
 // than failing the endpoint, because a stale-free answer is never worth an
 // error here.
 func (s *PostgresStore) BankStats(ctx context.Context, bankID string) (BankStats, error) {
-	if s.bankStatsCacheTTL > 0 {
+	return s.BankStatsRefreshing(ctx, bankID, false)
+}
+
+// BankStatsRefreshing serves a bank summary, recomputing and refreshing the
+// cached row when forceRefresh is set — the reference's refresh=true query
+// parameter, which bypasses the cached value and stores the fresh result.
+func (s *PostgresStore) BankStatsRefreshing(ctx context.Context, bankID string, forceRefresh bool) (BankStats, error) {
+	if !forceRefresh && s.bankStatsCacheTTL > 0 {
 		if cached, ok := s.cachedBankStats(ctx, bankID); ok {
 			return cached, nil
 		}
@@ -30,6 +37,23 @@ func (s *PostgresStore) BankStats(ctx context.Context, bankID string) (BankStats
 		s.storeBankStats(ctx, bankID, stats)
 	}
 	return stats, nil
+}
+
+// entityLinkTotal derives the bank's entity-link total from unit_entities
+// membership: for each entity, LEAST(n-1, maxLinksPerEntity) over the n units
+// that mention it, summed — the same derivation the reference's link_counts
+// uses now that entity links are no longer stored as rows.
+func (s *PostgresStore) entityLinkTotal(ctx context.Context, bankID string) (int, error) {
+	qualified := quoteIdent(s.schema)
+	query := `WITH per_entity AS (
+	              SELECT ue.entity_id, COUNT(*) AS n
+	              FROM ` + qualified + `.unit_entities ue
+	              JOIN ` + qualified + `.memory_units mu ON mu.id = ue.unit_id
+	              WHERE mu.bank_id = $1
+	              GROUP BY ue.entity_id
+	          )
+	          SELECT COALESCE(SUM(LEAST(n - 1, $2)), 0) FROM per_entity`
+	return s.scalarInt(ctx, query, bankID, maxLinksPerEntity)
 }
 
 // cachedBankStats reads a fresh cached summary. A miss, an unreadable row or an
@@ -67,6 +91,8 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 		BankID:             bankID,
 		NodesByFactType:    map[string]int{},
 		LinksByLinkType:    map[string]int{},
+		LinksByFactType:    map[string]int{},
+		LinksBreakdown:     map[string]map[string]int{},
 		OperationsByStatus: map[string]int{},
 	}
 	qualified := quoteIdent(s.schema)
@@ -78,9 +104,6 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 		return BankStats{}, err
 	}
 	if stats.TotalDocuments, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.documents WHERE bank_id = $1`, bankID); err != nil {
-		return BankStats{}, err
-	}
-	if stats.TotalLinks, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.memory_links WHERE bank_id = $1`, bankID); err != nil {
 		return BankStats{}, err
 	}
 	if stats.TotalObservations, err = s.scalarInt(ctx, `SELECT COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 AND fact_type = 'observation'`, bankID); err != nil {
@@ -95,41 +118,29 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 		`SELECT COALESCE(link_type,''), COUNT(*) FROM `+qualified+`.memory_links WHERE bank_id = $1 GROUP BY link_type`, bankID); err != nil {
 		return BankStats{}, err
 	}
-	// Links are attributed to their source unit's fact type, and the breakdown
-	// crosses that with the link type.
-	stats.LinksByFactType = map[string]int{}
-	stats.LinksBreakdown = map[string]map[string]int{}
-	breakdownRows, err := s.reader().QueryContext(ctx,
-		`SELECT COALESCE(u.fact_type,''), COALESCE(l.link_type,''), COUNT(*)
-		 FROM `+qualified+`.memory_links l
-		 JOIN `+qualified+`.memory_units u ON u.id = l.from_unit_id
-		 WHERE l.bank_id = $1 GROUP BY u.fact_type, l.link_type`, bankID)
+	// Entity links are not stored in memory_links; they are derived on demand
+	// from unit_entities membership, replicating the writer's cap of
+	// maxLinksPerEntity bidirectional edges per shared entity, and exposed as a
+	// single "entity" scalar.
+	entityLinks, err := s.entityLinkTotal(ctx, bankID)
 	if err != nil {
 		return BankStats{}, err
 	}
-	for breakdownRows.Next() {
-		var factType, linkType string
-		var count int
-		if err := breakdownRows.Scan(&factType, &linkType, &count); err != nil {
-			_ = breakdownRows.Close()
-			return BankStats{}, err
-		}
-		stats.LinksByFactType[factType] += count
-		if stats.LinksBreakdown[factType] == nil {
-			stats.LinksBreakdown[factType] = map[string]int{}
-		}
-		stats.LinksBreakdown[factType][linkType] = count
+	if entityLinks > 0 {
+		stats.LinksByLinkType[string(LinkEntity)] = entityLinks
 	}
-	if err := breakdownRows.Err(); err != nil {
-		_ = breakdownRows.Close()
-		return BankStats{}, err
+	// total_links sums the per-type counts, so the derived entity category is
+	// included. link_counts_by_fact_type and link_breakdown are retained in the
+	// response shape but deliberately left empty, as the reference does.
+	stats.TotalLinks = 0
+	for _, count := range stats.LinksByLinkType {
+		stats.TotalLinks += count
 	}
-	_ = breakdownRows.Close()
 	if stats.OperationsByStatus, err = s.groupedInts(ctx,
 		`SELECT COALESCE(status,''), COUNT(*) FROM `+qualified+`.async_operations WHERE bank_id = $1 GROUP BY status`, bankID); err != nil {
 		return BankStats{}, err
 	}
-	stats.PendingOperations = stats.OperationsByStatus[string(StatusPending)] + stats.OperationsByStatus[string(StatusProcessing)]
+	stats.PendingOperations = stats.OperationsByStatus[string(StatusPending)]
 	stats.FailedOperations = stats.OperationsByStatus[string(StatusFailed)]
 	// pending and failed are the consolidator's own backlog gauges, not operation
 	// counters: pending is the source facts still eligible for a pass, failed the
@@ -138,19 +149,17 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 	if stats.PendingConsolidation, stats.FailedConsolidation, err = s.consolidationBacklog(ctx, bankID); err != nil {
 		return BankStats{}, err
 	}
-	var lastWrite sql.NullTime
+	// The write watermark is the newest memory_units row change, and the last
+	// consolidation is the newest consolidation stamp on a unit — both read off
+	// the unit table, as the reference's consolidation_freshness aggregate does,
+	// not off the async-operation log (a different table and clock).
+	var lastWrite, lastConsolidated sql.NullTime
 	if err := s.reader().QueryRowContext(ctx,
-		`SELECT MAX(updated_at) FROM `+qualified+`.async_operations WHERE bank_id = $1`, bankID).Scan(&lastWrite); err != nil {
+		`SELECT MAX(updated_at), MAX(consolidated_at) FROM `+qualified+`.memory_units WHERE bank_id = $1`, bankID).
+		Scan(&lastWrite, &lastConsolidated); err != nil {
 		return BankStats{}, err
 	}
 	stats.LastMemoryWriteAt = nullTimePtr(lastWrite)
-
-	var lastConsolidated sql.NullTime
-	if err := s.reader().QueryRowContext(ctx,
-		`SELECT MAX(completed_at) FROM `+qualified+`.async_operations WHERE bank_id = $1 AND operation_type = $2 AND status = 'completed'`,
-		bankID, OperationTypeConsolidate).Scan(&lastConsolidated); err != nil {
-		return BankStats{}, err
-	}
 	stats.LastConsolidatedAt = nullTimePtr(lastConsolidated)
 	return stats, nil
 }
@@ -189,7 +198,7 @@ func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, 
 	if column != "created_at" {
 		column = "COALESCE(" + column + ", created_at)"
 	}
-	bucket := `date_trunc('` + window.Trunc + `', ` + column + `)`
+	bucket := `date_trunc('` + window.Trunc + `', ` + column + ` AT TIME ZONE 'UTC')`
 	since := time.Now().UTC().Add(-window.Step * time.Duration(window.Count))
 	query := `SELECT ` + bucket + ` AS bucket, COUNT(*),
 	                 COUNT(*) FILTER (WHERE fact_type = 'world') AS world,
@@ -304,19 +313,13 @@ func (s *PostgresStore) ListAuditLog(ctx context.Context, query AuditQuery) (Aud
 
 // AuditLogStats buckets the audit trail over a period.
 func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error) {
-	period, trunc := normalizePeriod(period)
+	trunc, start := chartWindow(period, time.Now().UTC())
 	qualified := quoteIdent(s.schema)
-	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR action = $2)`
-	var start sql.NullTime
-	if err := s.reader().QueryRowContext(ctx,
-		`SELECT MIN(started_at) FROM `+qualified+`.audit_log WHERE `+where,
-		bankID, action).Scan(&start); err != nil {
-		return AuditStats{}, err
-	}
+	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR action = $2) AND started_at >= $3`
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, action, COUNT(*)
 	          FROM ` + qualified + `.audit_log WHERE ` + where + `
 	          GROUP BY bucket, action ORDER BY bucket ASC`
-	rows, err := s.reader().QueryContext(ctx, query, bankID, action)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, action, start)
 	if err != nil {
 		return AuditStats{}, err
 	}
@@ -347,11 +350,7 @@ func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, actio
 		}
 		buckets = append(buckets, AuditBucket{Time: stamp, Actions: grouped[stamp], Total: total})
 	}
-	stats := AuditStats{BankID: bankID, Period: period, Trunc: trunc, Bucket: buckets}
-	if start.Valid {
-		stats.Start = start.Time
-	}
-	return stats, nil
+	return AuditStats{BankID: bankID, Period: period, Trunc: trunc, Start: start, Bucket: buckets}, nil
 }
 
 // ListLLMRequests returns one page of the model-request trace.
@@ -372,12 +371,12 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 		args = append(args, exact.value)
 		clauses = append(clauses, exact.column+" = $"+strconv.Itoa(len(args)))
 	}
-	if query.DocumentID != "" {
+	if query.DocumentIDSet {
 		// The document is carried in per-call metadata, not a column.
 		args = append(args, query.DocumentID)
 		clauses = append(clauses, "metadata->>'document_id' = $"+strconv.Itoa(len(args)))
 	}
-	if query.MemoryID != "" {
+	if query.MemoryIDSet {
 		// Match the run that produced the unit (metadata.memory_ids) or consumed
 		// it as a consolidation source (metadata.source_memory_ids).
 		args = append(args, query.MemoryID)
@@ -543,22 +542,16 @@ func marshalNullableJSON(value any) ([]byte, error) {
 
 // LLMRequestStats buckets the model-request trace over a period.
 func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error) {
-	period, trunc := normalizePeriod(period)
+	trunc, start := chartWindow(period, time.Now().UTC())
 	qualified := quoteIdent(s.schema)
-	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR operation = $2)`
-	var start sql.NullTime
-	if err := s.reader().QueryRowContext(ctx,
-		`SELECT MIN(started_at) FROM `+qualified+`.llm_requests WHERE `+where,
-		bankID, operation).Scan(&start); err != nil {
-		return LLMRequestStats{}, err
-	}
+	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR operation = $2) AND started_at >= $3`
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, status, COUNT(*),
 	                 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 	                 COALESCE(SUM(cached_tokens),0), COALESCE(SUM(thoughts_tokens),0),
 	                 COALESCE(SUM(total_tokens),0)
 	          FROM ` + qualified + `.llm_requests WHERE ` + where + `
 	          GROUP BY bucket, status ORDER BY bucket ASC`
-	rows, err := s.reader().QueryContext(ctx, query, bankID, operation)
+	rows, err := s.reader().QueryContext(ctx, query, bankID, operation, start)
 	if err != nil {
 		return LLMRequestStats{}, err
 	}
@@ -602,22 +595,25 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 			Time: stamp, Statuses: acc.statuses, Total: total, Tokens: acc.tokens,
 		})
 	}
-	stats := LLMRequestStats{BankID: bankID, Period: period, Trunc: trunc, Bucket: buckets}
-	if start.Valid {
-		stats.Start = start.Time
-	}
+	stats := LLMRequestStats{BankID: bankID, Period: period, Trunc: trunc, Start: start, Bucket: buckets}
 	return stats, nil
 }
 
 // ListObservationScopes returns the distinct observation scopes of a bank.
 func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error) {
 	qualified := quoteIdent(s.schema)
-	// An observation's scope lives in its metadata, so the distinct values are
-	// read from there rather than from a dedicated column.
-	query := `SELECT COALESCE(NULLIF(metadata->>'scope',''), 'default') AS scope, COUNT(*)
-	          FROM ` + qualified + `.memory_units
-	          WHERE bank_id = $1 AND fact_type = 'observation'
-	          GROUP BY scope ORDER BY scope ASC`
+	// An observation's scope is the exact set of tags it was consolidated with,
+	// normalized by sorting so [a,b] and [b,a] collapse; the empty list is the
+	// global/untagged scope. Grouping and ordering therefore run on the tag
+	// array itself, most populous scope first.
+	query := `WITH scopes AS (
+	              SELECT COALESCE(ARRAY(SELECT unnest(tags) ORDER BY 1), '{}'::text[]) AS scope
+	              FROM ` + qualified + `.memory_units
+	              WHERE bank_id = $1 AND fact_type = 'observation'
+	          )
+	          SELECT scope::text, COUNT(*)
+	          FROM scopes GROUP BY scope
+	          ORDER BY COUNT(*) DESC, scope`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return ObservationScopePage{}, err
@@ -626,9 +622,11 @@ func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string
 	all := make([]ObservationScope, 0)
 	for rows.Next() {
 		var entry ObservationScope
-		if err := rows.Scan(&entry.Scope, &entry.Count); err != nil {
+		var encoded string
+		if err := rows.Scan(&encoded, &entry.Count); err != nil {
 			return ObservationScopePage{}, err
 		}
+		entry.Tags = decodeTextArray(encoded)
 		all = append(all, entry)
 	}
 	if err := rows.Err(); err != nil {
@@ -699,6 +697,49 @@ func (s *PostgresStore) groupedInts(ctx context.Context, query string, args ...a
 			key = "unknown"
 		}
 		out[key] = count
+	}
+	return out, rows.Err()
+}
+
+// CountAsyncOperations groups this schema's non-terminal operations by type and
+// status, the shape the async-operations backlog gauge reports. Terminal states
+// are excluded on purpose: a gauge of finished work grows without bound and says
+// nothing about current load. A null operation type reads as "unknown", as the
+// reference maps it, and bank_id is grouped only when perBank is set.
+func (s *PostgresStore) CountAsyncOperations(ctx context.Context, perBank bool) ([]AsyncOperationGroup, error) {
+	qualified := quoteIdent(s.schema)
+	bankSelect, bankGroup := "", ""
+	if perBank {
+		bankSelect = "bank_id, "
+		bankGroup = ", bank_id"
+	}
+	query := `SELECT COALESCE(operation_type,''), COALESCE(status,''), ` + bankSelect + `COUNT(*) ` +
+		`FROM ` + qualified + `.async_operations ` +
+		`WHERE status IN ('pending', 'processing', 'failed') ` +
+		`GROUP BY operation_type, status` + bankGroup
+	rows, err := s.reader().QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AsyncOperationGroup
+	for rows.Next() {
+		var group AsyncOperationGroup
+		var count int
+		if perBank {
+			if err := rows.Scan(&group.OperationType, &group.Status, &group.BankID, &count); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := rows.Scan(&group.OperationType, &group.Status, &count); err != nil {
+				return nil, err
+			}
+		}
+		if group.OperationType == "" {
+			group.OperationType = "unknown"
+		}
+		group.Count = count
+		out = append(out, group)
 	}
 	return out, rows.Err()
 }

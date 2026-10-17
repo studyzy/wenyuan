@@ -232,35 +232,80 @@ func (s *PostgresStore) ListAttachments(ctx context.Context, bankID, documentID 
 }
 
 // ChunkAttachments returns each chunk's attachments, keyed by chunk id: the
-// attachments of the units that were drawn from that chunk.
+// attachments the chunk's own text references, in first-appearance order.
+//
+// Provenance is the chunk text, not the units drawn from it: a chunk's text is
+// where the inline placeholder stands, so an attachment is listed on the chunk
+// that carries it whether or not any fact was extracted from that part of the
+// text (and never on a sibling chunk that does not).
 func (s *PostgresStore) ChunkAttachments(ctx context.Context, bankID, documentID string) (map[string][]Attachment, error) {
-	query := `SELECT DISTINCT u.chunk_id, a.bank_id, a.document_id, a.attachment_hash, a.short_id,
-	                 a.media_type, a.byte_size, a.storage_key, a.kind, a.filename
-	          FROM ` + quoteIdent(s.schema) + `.memory_units u
-	          JOIN ` + quoteIdent(s.schema) + `.attachments a
-	            ON a.bank_id = u.bank_id AND a.document_id = u.document_id
-	           AND a.short_id = ANY(u.attachment_ids)
-	          WHERE u.bank_id = $1 AND u.document_id = $2 AND u.chunk_id IS NOT NULL
-	          ORDER BY u.chunk_id, a.attachment_hash`
+	rows, err := s.reader().QueryContext(ctx,
+		`SELECT chunk_id, COALESCE(chunk_text,'') FROM `+quoteIdent(s.schema)+`.chunks
+		 WHERE bank_id = $1 AND document_id = $2 ORDER BY chunk_index ASC`, bankID, documentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type chunkText struct {
+		id   string
+		text string
+	}
+	chunks := make([]chunkText, 0)
+	for rows.Next() {
+		var chunk chunkText
+		if err := rows.Scan(&chunk.id, &chunk.text); err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	byShortID, err := s.attachmentsByShortIDsInDocument(ctx, bankID, documentID)
+	if err != nil {
+		return nil, err
+	}
+	byChunk := map[string][]Attachment{}
+	for _, chunk := range chunks {
+		seen := map[string]bool{}
+		for _, shortID := range referencedAttachmentIDs(chunk.text) {
+			if seen[shortID] {
+				continue
+			}
+			seen[shortID] = true
+			if attachment, ok := byShortID[shortID]; ok {
+				byChunk[chunk.id] = append(byChunk[chunk.id], attachment)
+			}
+		}
+	}
+	return byChunk, nil
+}
+
+// attachmentsByShortIDsInDocument resolves a document's attachment rows, keyed
+// by short id, so a chunk's placeholders map to that document's own rows.
+func (s *PostgresStore) attachmentsByShortIDsInDocument(ctx context.Context, bankID, documentID string) (map[string]Attachment, error) {
+	query := `SELECT bank_id, document_id, attachment_hash, short_id, media_type, byte_size,
+	                 storage_key, kind, filename
+	          FROM ` + quoteIdent(s.schema) + `.attachments
+	          WHERE bank_id = $1 AND document_id = $2`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, documentID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	byChunk := map[string][]Attachment{}
+	resolved := map[string]Attachment{}
 	for rows.Next() {
-		var chunkID string
 		var attachment Attachment
 		var filename sql.NullString
-		if err := rows.Scan(&chunkID, &attachment.BankID, &attachment.DocumentID, &attachment.AttachmentHash,
+		if err := rows.Scan(&attachment.BankID, &attachment.DocumentID, &attachment.AttachmentHash,
 			&attachment.ShortID, &attachment.MediaType, &attachment.ByteSize, &attachment.StorageKey,
 			&attachment.Kind, &filename); err != nil {
 			return nil, err
 		}
 		attachment.Filename = filename.String
-		byChunk[chunkID] = append(byChunk[chunkID], attachment)
+		resolved[attachment.ShortID] = attachment
 	}
-	return byChunk, rows.Err()
+	return resolved, rows.Err()
 }
 
 // GetAttachment returns one attachment by its short id.

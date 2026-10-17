@@ -88,18 +88,44 @@ func (s *MemoryStore) GetOperationChildren(ctx context.Context, bankID, opID str
 		children = append(children, ChildOperation{
 			OperationID:   op.OperationID,
 			Status:        op.Status,
-			SubBatchIndex: intFromMetadata(op.ResultMetadata, "sub_batch_index"),
-			ItemsCount:    intFromMetadata(op.ResultMetadata, "items_count"),
-			ErrorMessage:  op.Error,
+			SubBatchIndex: optionalIntFromMetadata(op.ResultMetadata, "sub_batch_index"),
+			ItemsCount:    optionalIntFromMetadata(op.ResultMetadata, "items_count"),
+			ErrorMessage:  optionalStringFromMetadata(op.Error),
 		})
 	}
 	sort.SliceStable(children, func(i, j int) bool {
-		if children[i].SubBatchIndex != children[j].SubBatchIndex {
-			return children[i].SubBatchIndex < children[j].SubBatchIndex
+		left, right := children[i].SubBatchIndex, children[j].SubBatchIndex
+		switch {
+		case left == nil && right == nil:
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		case *left != *right:
+			return *left < *right
 		}
 		return children[i].OperationID < children[j].OperationID
 	})
 	return children, nil
+}
+
+// optionalIntFromMetadata reads an integer-valued metadata key, distinguishing
+// an absent key from a stored zero so the read can emit an explicit null.
+func optionalIntFromMetadata(metadata map[string]any, key string) *int {
+	if _, present := metadata[key]; !present {
+		return nil
+	}
+	value := intFromMetadata(metadata, key)
+	return &value
+}
+
+// optionalStringFromMetadata returns a pointer to a non-empty value, and nil for
+// an unset one so the field is emitted as null.
+func optionalStringFromMetadata(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // AdvanceOperation moves an operation forward in its lifecycle, rejecting
@@ -178,7 +204,7 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (
 	if !ok || (bankID != "" && op.BankID != bankID) {
 		return Operation{}, ErrOperationNotFound
 	}
-	if op.Status != StatusFailed {
+	if op.Status != StatusFailed && op.Status != StatusCancelled {
 		return op, ErrOperationConflict
 	}
 	if op.OperationType == AsyncRetainType {
@@ -187,7 +213,11 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (
 	op.Status = StatusPending
 	op.Error = ""
 	op.Run++
-	op.RetryCount++
+	op.RetryCount = 0
+	op.CompletedAt = nil
+	op.NextRetryAt = nil
+	op.WorkerID = ""
+	op.ClaimedAt = nil
 	op.UpdatedAt = time.Now().UTC()
 	s.operations[opID] = op
 	return op, nil
@@ -294,10 +324,10 @@ func (s *MemoryStore) CancelOperation(ctx context.Context, bankID, opID string) 
 	if op.Status.Terminal() {
 		return op, ErrOperationConflict
 	}
-	now := time.Now().UTC()
+	// Only the status and updated_at move: the reference leaves completed_at
+	// null for a cancelled operation.
 	op.Status = StatusCancelled
-	op.UpdatedAt = now
-	op.CompletedAt = &now
+	op.UpdatedAt = time.Now().UTC()
 	s.operations[opID] = op
 	return op, nil
 }
@@ -316,5 +346,37 @@ func (s *MemoryStore) DeleteOperation(ctx context.Context, bankID, opID string) 
 		return op, ErrOperationNotTerminal
 	}
 	delete(s.operations, opID)
+	// An export operation owns a stored archive keyed in its result_metadata;
+	// it must go with the row or the blob outlives its only handle. The
+	// in-memory backend holds the payloads in the same store, so the removal is
+	// local. Best-effort, matching the reference: the row is already gone.
+	if key, _ := op.ResultMetadata[OperationPayloadKeyStoredFile].(string); key != "" {
+		delete(s.storedFiles, key)
+	}
 	return op, nil
+}
+
+// RepairPendingBatchParent records the corrected terminal status of a parent
+// batch operation a read found out of sync. The postgres backend documents the
+// semantics; this is the same guarded rule applied to the in-memory operation
+// table.
+func (s *MemoryStore) RepairPendingBatchParent(ctx context.Context, bankID, parentID string, status OperationStatus) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	op, ok := s.operations[parentID]
+	if !ok || (bankID != "" && op.BankID != bankID) || op.Status != StatusPending {
+		return nil
+	}
+	now := time.Now().UTC()
+	op.Status = status
+	op.UpdatedAt = now
+	op.CompletedAt = &now
+	s.operations[parentID] = op
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -218,12 +219,12 @@ func (s *PostgresStore) OperationAlive(ctx context.Context, bankID, opID string)
 // GetOperationChildren returns the child operations of a parent batch, ordered
 // by sub-batch index.
 func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {
-	query := `SELECT operation_id::text, status, COALESCE(error_message,''),
-	                 COALESCE((result_metadata->>'sub_batch_index')::int, 0),
-	                 COALESCE((result_metadata->>'items_count')::int, 0)
+	query := `SELECT operation_id::text, status, error_message,
+	                 (result_metadata->>'sub_batch_index')::int,
+	                 (result_metadata->>'items_count')::int
 	          FROM ` + quoteIdent(s.schema) + `.async_operations
 	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2
-	          ORDER BY COALESCE((result_metadata->>'sub_batch_index')::int, 0) ASC, operation_id ASC`
+	          ORDER BY (result_metadata->>'sub_batch_index')::int ASC, operation_id ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, opID)
 	if err != nil {
 		return nil, err
@@ -233,10 +234,24 @@ func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID s
 	for rows.Next() {
 		var child ChildOperation
 		var status string
-		if err := rows.Scan(&child.OperationID, &status, &child.ErrorMessage, &child.SubBatchIndex, &child.ItemsCount); err != nil {
+		var subBatchIndex, itemsCount sql.NullInt64
+		var errorMessage sql.NullString
+		if err := rows.Scan(&child.OperationID, &status, &errorMessage, &subBatchIndex, &itemsCount); err != nil {
 			return nil, err
 		}
 		child.Status = OperationStatus(status)
+		if subBatchIndex.Valid {
+			value := int(subBatchIndex.Int64)
+			child.SubBatchIndex = &value
+		}
+		if itemsCount.Valid {
+			value := int(itemsCount.Int64)
+			child.ItemsCount = &value
+		}
+		if errorMessage.Valid && errorMessage.String != "" {
+			value := errorMessage.String
+			child.ErrorMessage = &value
+		}
 		children = append(children, child)
 	}
 	return children, rows.Err()
@@ -301,10 +316,26 @@ func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string
 	if current.Status.Terminal() {
 		return current, ErrOperationConflict
 	}
+	// The reference's cancel stamps the status and updated_at only: completed_at
+	// stays null for a cancelled operation, so the read model reports the status
+	// change without inventing a completion time.
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
-	          SET status=$2, completed_at=now(), updated_at=now() WHERE operation_id=$1
+	          SET status=$2, updated_at=now()
+	          WHERE operation_id=$1 AND status IN ('pending','processing')
 	          RETURNING ` + operationColumns
-	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(StatusCancelled)))
+	cancelled, err := scanOperation(s.db.QueryRowContext(ctx, query, opID, string(StatusCancelled)))
+	if errors.Is(err, sql.ErrNoRows) {
+		// The row reached a terminal state between the read above and this
+		// write: the concurrent terminal write wins the race, and the caller is
+		// told the operation could not be cancelled rather than being handed a
+		// cancellation that never happened.
+		current, getErr := s.getOperation(ctx, opID)
+		if getErr != nil {
+			return Operation{}, getErr
+		}
+		return current, ErrOperationConflict
+	}
+	return cancelled, err
 }
 
 func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next OperationStatus, errMsg string) (Operation, error) {
@@ -375,14 +406,15 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string)
 	if current.BankID != bankID {
 		return Operation{}, ErrOperationNotFound
 	}
-	if current.Status != StatusFailed {
+	if current.Status != StatusFailed && current.Status != StatusCancelled {
 		return current, ErrOperationConflict
 	}
 	if current.OperationType == AsyncRetainType {
 		return s.retryBatchParent(ctx, current)
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
-	          SET status=$2, error_message='', retry_count=COALESCE(retry_count,0)+1, updated_at=now() WHERE operation_id=$1
+	          SET status=$2, error_message=NULL, completed_at=NULL, next_retry_at=NULL,
+	              worker_id=NULL, claimed_at=NULL, retry_count=0, updated_at=now() WHERE operation_id=$1
 	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(StatusPending)))
 }
@@ -449,6 +481,7 @@ func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string
 	          RETURNING ` + operationColumns
 	deleted, err := scanOperation(s.db.QueryRowContext(ctx, query, opID, bankID))
 	if err == nil {
+		s.deleteOperationExportArchive(ctx, deleted.ResultMetadata)
 		return deleted, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -461,6 +494,41 @@ func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string
 		return Operation{}, ErrOperationNotFound
 	}
 	return current, ErrOperationNotTerminal
+}
+
+// RepairPendingBatchParent persists the corrected terminal status a read
+// computed for a parent batch operation left "pending" though every child has
+// finished. The correction is the reference's lazy read-path repair: it writes
+// status, updated_at and completed_at and nothing else — no outcome counters, no
+// error message. The write is guarded on the stored status still being
+// "pending", so a concurrent child promotion wins the race and this becomes a
+// no-op rather than re-terminalising the row.
+func (s *PostgresStore) RepairPendingBatchParent(ctx context.Context, bankID, parentID string, status OperationStatus) error {
+	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	          SET status=$3, updated_at=now(), completed_at=now()
+	          WHERE operation_id=$1 AND bank_id=$2 AND status='pending'`
+	_, err := s.db.ExecContext(ctx, query, parentID, bankID, string(status))
+	return err
+}
+
+// deleteOperationExportArchive removes the stored archive an export operation
+// owns. The archive's only handle is the row's result_metadata.storage_key, so
+// it must be removed with the row or it outlives its only reference. A
+// non-export operation carries no key and nothing happens. Best-effort: a
+// failure to delete the blob is logged, not returned, so cleanup never turns a
+// standing delete into an error, and the row is already gone either way.
+//
+// The metadata is taken directly rather than the whole operation because the
+// retention prune reads only result_metadata from the rows it is about to
+// remove, and both callers share this one delete.
+func (s *PostgresStore) deleteOperationExportArchive(ctx context.Context, metadata map[string]any) {
+	key, _ := metadata[OperationPayloadKeyStoredFile].(string)
+	if key == "" {
+		return
+	}
+	if err := s.DeleteStoredFile(ctx, key); err != nil {
+		slog.Default().Warn("failed to delete export archive", "storage_key", key, "error", err)
+	}
 }
 
 func scanOperation(row rowScanner) (Operation, error) {

@@ -104,3 +104,76 @@ func TestRetainWithoutVocabularyLeavesTagsAlone(t *testing.T) {
 		t.Fatalf("tags = %v, want only the caller's", unit.Tags)
 	}
 }
+
+// A retag replaces only the document-derived tags: the label-derived tag a unit
+// carries (from its own entities, at extraction) is re-appended, so a document
+// tag rename neither drops it nor duplicates it.
+func TestRetagKeepsLabelDerivedTags(t *testing.T) {
+	store := NewMemoryStore("public")
+	vocab := labelVocabulary(t)
+	outcome, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID:     "b1",
+		Vocabulary: vocab,
+		Extraction: stubLabelExtractor{facts: []ExtractedFact{{
+			Text:   "Alice studies algorithms on a given day.",
+			Labels: []string{"topic:algorithms"},
+		}}},
+		Items: []RetainItem{{Content: "ignored", DocumentID: "doc-1", Tags: []string{"work"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitID := outcome.ItemUnitIDs[0][0]
+
+	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1",
+		[]string{"work"}, []string{"team-a"}, map[string]bool{"topic": true}); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := store.GetMemory(context.TODO(), "b1", unitID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unit.Tags) != 2 || unit.Tags[0] != "team-a" || unit.Tags[1] != "topic:algorithms" {
+		t.Fatalf("tags after retag = %v, want [team-a topic:algorithms]", unit.Tags)
+	}
+
+	// With no label keys the retag replaces every tag, the pre-existing shape.
+	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1",
+		[]string{"team-a"}, []string{"work"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	unit, err = store.GetMemory(context.TODO(), "b1", unitID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unit.Tags) != 1 || unit.Tags[0] != "work" {
+		t.Fatalf("tags without label keys = %v, want [work]", unit.Tags)
+	}
+}
+
+// The document read counts the units written from it, straight off the mirror
+// rather than a listing window.
+func TestGetDocumentCountsItsUnits(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutDocument(ctx, "b1", "doc-1", Document{OriginalText: "text"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u1", "u2"} {
+		if _, err := store.UpsertUnit(ctx, MemoryUnit{
+			ID: id, BankID: "b1", Text: "a fact", DocumentID: "doc-1", FactType: TypeWorld,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc, err := store.GetDocument(ctx, "b1", "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.MemoryUnitCount != 2 {
+		t.Fatalf("memory_unit_count = %d, want 2", doc.MemoryUnitCount)
+	}
+}

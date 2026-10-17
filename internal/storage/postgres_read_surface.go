@@ -22,9 +22,13 @@ func clampLimit(limit, fallback int) int {
 }
 
 // DocumentFactCounts returns the document's memory units grouped by fact type.
+// Observations carry no document id of their own, so they are counted through
+// the units the document owns: an observation belongs to the document when one
+// of the document's units is among its sources.
 func (s *PostgresStore) DocumentFactCounts(ctx context.Context, bankID, docID string) (map[string]int, error) {
+	qualified := quoteIdent(s.schema)
 	rows, err := s.reader().QueryContext(ctx,
-		`SELECT COALESCE(fact_type,''), COUNT(*) FROM `+quoteIdent(s.schema)+`.memory_units
+		`SELECT COALESCE(fact_type,''), COUNT(*) FROM `+qualified+`.memory_units
 		 WHERE bank_id = $1 AND document_id = $2 GROUP BY fact_type`, bankID, docID)
 	if err != nil {
 		return nil, err
@@ -39,7 +43,20 @@ func (s *PostgresStore) DocumentFactCounts(ctx context.Context, bankID, docID st
 		}
 		counts[factType] = count
 	}
-	return counts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var observations int
+	if err := s.reader().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM `+qualified+`.memory_units
+		 WHERE bank_id = $1 AND fact_type = 'observation'
+		   AND source_memory_ids && (SELECT array_agg(id) FROM `+qualified+`.memory_units
+		                             WHERE bank_id = $1 AND document_id = $2)`,
+		bankID, docID).Scan(&observations); err != nil {
+		return nil, err
+	}
+	counts["observation"] = observations
+	return counts, nil
 }
 
 // EntityMentions returns the memory texts that mention an entity.
@@ -96,48 +113,69 @@ func (s *PostgresStore) UnitEntities(ctx context.Context, bankID, unitID string)
 
 // ListDocuments returns one page of a bank's documents plus the total.
 func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) (DocumentPage, error) {
-	limit := clampLimit(query.Limit, 100)
-	tagExpr := `tags::text[] && $3`
-	switch query.TagsMatch {
-	case TagsMatchAll, TagsMatchAllStrict:
-		tagExpr = `tags::text[] @> $3`
-	case TagsMatchExact:
-		tagExpr = `(tags::text[] <@ $3 AND tags::text[] @> $3)`
+	limit := query.Limit
+	if limit < 0 {
+		limit = 100
 	}
-	timeColumn := "created_at"
-	if query.TimeField == "updated_at" {
-		timeColumn = "updated_at"
+	mode := query.TagsMatch
+	if mode == "" {
+		mode = TagsMatchAnyStrict
 	}
-	args := []any{query.BankID, strings.TrimSpace(query.Query), nullableTagArray(query.Tags),
-		query.TimeStart, query.TimeEnd}
-	filter := `bank_id = $1
-	           AND ($2 = '' OR id ILIKE '%' || $2 || '%')
-	           AND ($3::text[] IS NULL OR ` + tagExpr + `)
-	           AND ($4::timestamptz IS NULL OR ` + timeColumn + ` >= $4)
-	           AND ($5::timestamptz IS NULL OR ` + timeColumn + ` <= $5)`
-	// A compound filter — the caller's resolved read scope — is AND-ed in as an
-	// extra predicate, so a scoped reader narrows the listing without replacing
-	// the request's own tag filter. The placeholders continue past the fixed
-	// ones, so LIMIT/OFFSET are addressed after whatever it added.
-	if groupClause, groupArgs := renderTagGroups(query.TagGroups, len(args)); groupClause != "" {
-		filter += ` AND (` + groupClause + `)`
-		args = append(args, groupArgs...)
+	qualified := quoteIdent(s.schema)
+	args := []any{query.BankID}
+	conds := []string{"bank_id = $1"}
+	if term := strings.TrimSpace(query.Query); term != "" {
+		args = append(args, "%"+term+"%")
+		conds = append(conds, fmt.Sprintf("id ILIKE $%d", len(args)))
 	}
+	// The tag filter is appended as a literal clause, the way the graph read
+	// builds it: the include-untagged modes need a disjunction a bound array
+	// alone cannot express.
+	if tagFilterActive(query.Tags, mode, query.TagGroups) {
+		if len(query.TagGroups) > 0 {
+			if clause, groupArgs := renderTagGroups(query.TagGroups, len(args)); clause != "" {
+				args = append(args, groupArgs...)
+				conds = append(conds, "("+clause+")")
+			}
+		} else {
+			conds = append(conds, flatTagClause(query.Tags, mode))
+		}
+	}
+	// The time window's axis drives both the filter and the ordering, and rows
+	// with no value on that axis are excluded once any bound or axis is given.
+	orderBy := "updated_at DESC, created_at DESC, id ASC"
+	if query.TimeField != "" || query.TimeStart != nil || query.TimeEnd != nil {
+		column := "updated_at"
+		if query.TimeField == "created_at" {
+			column = "created_at"
+		}
+		conds = append(conds, column+" IS NOT NULL")
+		if query.TimeStart != nil {
+			args = append(args, *query.TimeStart)
+			conds = append(conds, fmt.Sprintf("%s >= $%d", column, len(args)))
+		}
+		if query.TimeEnd != nil {
+			args = append(args, *query.TimeEnd)
+			conds = append(conds, fmt.Sprintf("%s < $%d", column, len(args)))
+		}
+		orderBy = column + " DESC, id ASC"
+	}
+	filter := strings.Join(conds, " AND ")
 	limitParam := "$" + itoa(len(args)+1)
 	offsetParam := "$" + itoa(len(args)+2)
 	var total int
-	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.documents WHERE ` + filter
+	countQuery := `SELECT COUNT(*) FROM ` + qualified + `.documents WHERE ` + filter
 	if err := s.reader().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return DocumentPage{}, err
 	}
 	listQuery := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
 	                     COALESCE(retain_params, '{}'::jsonb),
 	                     COALESCE(tags, '{}'), created_at, updated_at,
-	                     (SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.memory_units u
+	                     (SELECT COUNT(*) FROM ` + qualified + `.memory_units u
 	                      WHERE u.bank_id = d.bank_id AND u.document_id = d.id)
-	              FROM ` + quoteIdent(s.schema) + `.documents d
+	              FROM ` + qualified + `.documents d
 	              WHERE ` + filter + `
-	              ORDER BY created_at DESC, id ASC LIMIT ` + limitParam + ` OFFSET ` + offsetParam
+	              ORDER BY ` + orderBy + ` LIMIT ` + limitParam + ` OFFSET ` + offsetParam
 	listArgs := append(append([]any{}, args...), limit, query.Offset)
 	rows, err := s.reader().QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
@@ -227,7 +265,8 @@ func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount
 
 // ListEntities returns one page of a bank's entities plus the total. A tag
 // filter restricts the listing to entities a matching memory mentions and
-// recomputes each entity's mention count and dates over those memories only.
+// recomputes each entity's mention count and dates over those memories only;
+// without one the stored entity columns are served as they stand.
 func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error) {
 	limit := clampLimit(query.Limit, 100)
 	mode := query.TagsMatch
@@ -236,48 +275,46 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 	}
 	qualified := quoteIdent(s.schema)
 	args := []any{query.BankID}
-	// The mention count is the number of memories that name the entity NOW, so
-	// it is counted live from unit_entities rather than read from the cached
-	// column: a replaced or deleted document's mentions must not keep counting.
-	// The entity's own first_seen/last_seen stamps are still the entity's.
-	tagSQL := "TRUE"
-	filtered := tagFilterActive(query.Tags, mode, query.TagGroups)
-	if filtered {
+	// Without a tag filter the entity's stored columns ARE the answer: the
+	// reference serves `entities.mention_count / first_seen / last_seen` as they
+	// stand (list_entities and get_entity_detail both read the row), and those
+	// stamps cover every memory that ever named the entity, so they can exceed
+	// the live mentioning set. A tag filter is what forces a recomputation: the
+	// counts and dates must cover only the memories the caller's scope admits,
+	// and an entity no matching memory mentions has no row at all.
+	mentionExpr, firstExpr, lastExpr := "COALESCE(e.mention_count,0)", "e.first_seen", "e.last_seen"
+	from := qualified + `.entities e`
+	if tagFilterActive(query.Tags, mode, query.TagGroups) {
 		rendered, tagArgs := entityTagPredicate(query.Tags, mode, query.TagGroups, len(args))
 		args = append(args, tagArgs...)
-		tagSQL = rendered
+		mentionExpr, firstExpr, lastExpr = "s.mention_count", "s.first_seen", "s.last_seen"
+		from = qualified + `.entities e JOIN (
+	    SELECT ue.entity_id,
+	           COUNT(*) AS mention_count,
+	           MIN(vu.seen_at) AS first_seen,
+	           MAX(vu.seen_at) AS last_seen
+	    FROM ` + qualified + `.unit_entities ue
+	    JOIN (
+	        SELECT id, COALESCE(occurred_start, mentioned_at, event_date) AS seen_at
+	        FROM ` + qualified + `.memory_units
+	        WHERE bank_id = $1 AND (` + rendered + `)
+	    ) vu ON vu.id = ue.unit_id
+	    GROUP BY ue.entity_id
+	) s ON s.entity_id = e.id`
 	}
-	// Without a filter this is a LEFT JOIN, so an entity whose mentions have all
-	// gone still appears — with a count of zero, which is what "mentions it now"
-	// means — rather than vanishing the moment its last document is replaced.
-	// Under a tag filter it is an inner join: a scoped reader must not learn that
-	// an entity only another scope names exists, so an entity with no in-scope
-	// mention is not listed at all (and reads as not-found by id).
-	join := "LEFT JOIN"
-	if filtered {
-		join = "JOIN"
-	}
-	from := qualified + `.entities e ` + join + ` (
-		    SELECT ue.entity_id, COUNT(*) AS mention_count
-		    FROM ` + qualified + `.unit_entities ue
-		    JOIN ` + qualified + `.memory_units mu ON mu.id = ue.unit_id
-		    WHERE mu.bank_id = $1 AND (` + tagSQL + `)
-		    GROUP BY ue.entity_id
-		) st ON st.entity_id = e.id`
-	mentionExpr := `COALESCE(st.mention_count, 0)`
-	orderExpr := `COALESCE(st.mention_count, 0) DESC, e.id ASC`
 	where := `WHERE e.bank_id = $1`
 	if query.ID != "" {
 		args = append(args, query.ID)
 		where += fmt.Sprintf(" AND e.id = $%d::uuid", len(args))
 	}
+	orderExpr := mentionExpr + ` DESC, ` + lastExpr + ` DESC, e.id ASC`
 	var total int
 	if err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+from+` `+where, args...).Scan(&total); err != nil {
 		return EntityPage{}, err
 	}
 	pageArgs := append(append([]any{}, args...), limit, query.Offset)
 	listSQL := `SELECT e.id, e.bank_id, COALESCE(e.canonical_name,''), COALESCE(e.entity_kind,''),
-	                   COALESCE(e.metadata, '{}'::jsonb), e.first_seen, e.last_seen, ` + mentionExpr + `
+	                   COALESCE(e.metadata, '{}'::jsonb), ` + firstExpr + `, ` + lastExpr + `, ` + mentionExpr + `
 	            FROM ` + from + ` ` + where + `
 	            ORDER BY ` + orderExpr + ` LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 	rows, err := s.reader().QueryContext(ctx, listSQL, pageArgs...)
@@ -334,11 +371,17 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	}
 	if query.DocumentID != "" {
 		args = append(args, query.DocumentID)
-		conds = append(conds, fmt.Sprintf("document_id = $%d", len(args)))
+		conds = append(conds, fmt.Sprintf(
+			"(document_id = $%d OR (fact_type = 'observation' AND source_memory_ids && "+
+				"(SELECT array_agg(id) FROM %s WHERE bank_id = $1 AND document_id = $%d)))",
+			len(args), qualified+".memory_units", len(args)))
 	}
 	if query.ChunkID != "" {
 		args = append(args, query.ChunkID)
-		conds = append(conds, fmt.Sprintf("chunk_id = $%d", len(args)))
+		conds = append(conds, fmt.Sprintf(
+			"(chunk_id = $%d OR (fact_type = 'observation' AND source_memory_ids && "+
+				"(SELECT array_agg(id) FROM %s WHERE bank_id = $1 AND chunk_id = $%d)))",
+			len(args), qualified+".memory_units", len(args)))
 	}
 	if tagFilterActive(query.Tags, mode, query.TagGroups) {
 		tagSQL, tagArgs := entityTagPredicate(query.Tags, mode, query.TagGroups, len(args))
@@ -355,9 +398,10 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	pageArgs := append(append([]any{}, args...), limit)
 	unitQuery := `SELECT id::text, COALESCE(text,''), COALESCE(fact_type,''), COALESCE(context,''),
 	                     occurred_start, occurred_end, mentioned_at, event_date,
-	                     COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}')
+	                     COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}'),
+	                     created_at, COALESCE(proof_count, 0), COALESCE(source_memory_ids, '{}')
 	              FROM ` + qualified + `.memory_units ` + where + `
-	              ORDER BY mentioned_at DESC NULLS LAST, id ASC LIMIT $` + itoa(len(args)+1)
+	              ORDER BY mentioned_at DESC NULLS LAST, event_date DESC, id ASC LIMIT $` + itoa(len(args)+1)
 	rows, err := s.reader().QueryContext(ctx, unitQuery, pageArgs...)
 	if err != nil {
 		return GraphData{}, err
@@ -366,28 +410,28 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 
 	nodes := make([]GraphNodeData, 0)
 	tableRows := make([]GraphTableRow, 0)
-	kept := map[string]bool{}
 	for rows.Next() {
 		var row GraphTableRow
-		var occurredStart, occurredEnd, mentionedAt, eventDate sql.NullTime
-		var tagsRaw []byte
+		var occurredStart, occurredEnd, mentionedAt, eventDate, createdAt sql.NullTime
+		var tagsRaw, sourcesRaw []byte
 		if err := rows.Scan(&row.ID, &row.Text, &row.FactType, &row.Context,
 			&occurredStart, &occurredEnd, &mentionedAt, &eventDate,
-			&row.DocumentID, &row.ChunkID, &tagsRaw); err != nil {
+			&row.DocumentID, &row.ChunkID, &tagsRaw,
+			&createdAt, &row.ProofCount, &sourcesRaw); err != nil {
 			return GraphData{}, err
 		}
 		row.OccurredStart = nullTimePtr(occurredStart)
 		row.OccurredEnd = nullTimePtr(occurredEnd)
 		row.MentionedAt = nullTimePtr(mentionedAt)
 		row.Date = nullTimePtr(eventDate)
+		row.CreatedAt = nullTimePtr(createdAt)
 		row.Tags = decodePostgresTextArray(tagsRaw)
-		row.ProofCount = 1
-		kept[row.ID] = true
 		tableRows = append(tableRows, row)
 		nodes = append(nodes, GraphNodeData{
 			ID: row.ID, Text: row.Text, Context: row.Context, FactType: row.FactType,
 			DocumentID: row.DocumentID, ChunkID: row.ChunkID, Tags: row.Tags,
-			Mentioned: row.MentionedAt, Date: row.Date,
+			Mentioned: row.MentionedAt, Date: row.Date, CreatedAt: row.CreatedAt,
+			SourceMemoryIDs: decodePostgresTextArray(sourcesRaw),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -395,7 +439,8 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	}
 
 	// Entities are postings rather than columns, so the page's entities are
-	// fetched in one lookup instead of one query per node.
+	// fetched in one lookup instead of one query per node. The lookup also
+	// inherits an observation's entities from its source memories.
 	unitIDs := make([]string, 0, len(tableRows))
 	for _, row := range tableRows {
 		unitIDs = append(unitIDs, row.ID)
@@ -405,36 +450,43 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 		return GraphData{}, err
 	}
 	for i := range tableRows {
-		names, ok := entityNames[tableRows[i].ID]
-		if !ok {
-			continue
-		}
+		names := entityNames[tableRows[i].ID]
 		tableRows[i].Entities = strings.Join(names, ", ")
 		nodes[i].Entities = names
 	}
 
-	// An edge is kept only when both endpoints are inside the bounded node set.
-	edgeQuery := `SELECT bank_id, from_unit_id::text, to_unit_id::text, COALESCE(link_type,'')
-	              FROM ` + qualified + `.memory_links WHERE bank_id = $1`
-	edgeRows, err := s.reader().QueryContext(ctx, edgeQuery, query.BankID)
-	if err != nil {
-		return GraphData{}, err
+	// The links of the visible units and of the source memories they inherit
+	// from, strongest first and bounded, so the derived edges can be built from
+	// one read.
+	linkIDs := make([]string, 0, len(unitIDs))
+	linkIDs = append(linkIDs, unitIDs...)
+	for _, node := range nodes {
+		linkIDs = append(linkIDs, node.SourceMemoryIDs...)
 	}
-	defer func() { _ = edgeRows.Close() }()
-	edges := make([]GraphEdgeData, 0)
-	for edgeRows.Next() {
-		var edge GraphEdgeData
-		var edgeBank string
-		if err := edgeRows.Scan(&edgeBank, &edge.From, &edge.To, &edge.Type); err != nil {
+	links := make([]GraphEdgeData, 0)
+	if len(linkIDs) > 0 {
+		edgeQuery := `SELECT from_unit_id::text, to_unit_id::text, COALESCE(link_type,''), COALESCE(weight, 0)
+		              FROM ` + qualified + `.memory_links
+		              WHERE from_unit_id = ANY($1::uuid[]) AND to_unit_id = ANY($1::uuid[])
+		              ORDER BY weight DESC NULLS LAST LIMIT $2`
+		edgeRows, err := s.reader().QueryContext(ctx, edgeQuery, linkIDs, graphEdgeCap)
+		if err != nil {
 			return GraphData{}, err
 		}
-		if !kept[edge.From] || !kept[edge.To] {
-			continue
+		defer func() { _ = edgeRows.Close() }()
+		for edgeRows.Next() {
+			var edge GraphEdgeData
+			if err := edgeRows.Scan(&edge.From, &edge.To, &edge.Type, &edge.Weight); err != nil {
+				return GraphData{}, err
+			}
+			links = append(links, edge)
 		}
-		edge.ID = edge.From + "->" + edge.To
-		edges = append(edges, edge)
+		if err := edgeRows.Err(); err != nil {
+			return GraphData{}, err
+		}
 	}
-	return GraphData{Nodes: nodes, Edges: edges, TableRows: tableRows, Total: total, Limit: limit}, edgeRows.Err()
+	edges := deriveGraphEdges(nodes, entityNames, links)
+	return GraphData{Nodes: nodes, Edges: edges, TableRows: tableRows, Total: total, Limit: limit}, nil
 }
 
 // EntityGraph returns the bank's entity co-occurrence graph. Nodes are the
@@ -446,9 +498,6 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 		limit = 1000
 	}
 	minCount := query.MinCount
-	if minCount < 1 {
-		minCount = 1
-	}
 	mode := query.TagsMatch
 	if mode == "" {
 		mode = TagsMatchAny
@@ -459,6 +508,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 	type edgeScan struct {
 		from, to, name1, name2 string
 		weight, mc1, mc2       int
+		lastCooccurred         sql.NullTime
 	}
 	var (
 		rows *sql.Rows
@@ -471,37 +521,37 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 		minParam := itoa(len(args) - 1)
 		limitParam := itoa(len(args))
 		edgeQuery := `WITH ve AS (
-		    SELECT ue.unit_id, ue.entity_id
+		    SELECT ue.unit_id, ue.entity_id, COALESCE(mu.occurred_start, mu.mentioned_at, mu.event_date) AS seen_at
 		    FROM ` + qualified + `.unit_entities ue
 		    JOIN ` + qualified + `.memory_units mu ON mu.id = ue.unit_id
 		    WHERE mu.bank_id = $1 AND (` + tagSQL + `)
 		), pairs AS (
-		    SELECT a.entity_id AS id1, b.entity_id AS id2, COUNT(*) AS w
+		    SELECT a.entity_id AS id1, b.entity_id AS id2, COUNT(*) AS w, MAX(a.seen_at) AS last_cooccurred
 		    FROM ve a JOIN ve b ON b.unit_id = a.unit_id AND a.entity_id < b.entity_id
 		    GROUP BY a.entity_id, b.entity_id
 		    HAVING COUNT(*) >= $` + minParam + `
 		), stats AS (
 		    SELECT entity_id, COUNT(*) AS mc FROM ve GROUP BY entity_id
 		)
-		SELECT p.id1::text, p.id2::text, p.w, e1.canonical_name, s1.mc, e2.canonical_name, s2.mc
+		SELECT p.id1::text, p.id2::text, p.w, e1.canonical_name, s1.mc, e2.canonical_name, s2.mc, p.last_cooccurred
 		FROM pairs p
 		JOIN ` + qualified + `.entities e1 ON e1.id = p.id1
 		JOIN ` + qualified + `.entities e2 ON e2.id = p.id2
 		JOIN stats s1 ON s1.entity_id = p.id1
 		JOIN stats s2 ON s2.entity_id = p.id2
 		WHERE e1.bank_id = $1 AND e2.bank_id = $1
-		ORDER BY p.w DESC, p.id1 ASC, p.id2 ASC
+		ORDER BY p.w DESC, p.last_cooccurred DESC, p.id1, p.id2
 		LIMIT $` + limitParam
 		rows, err = s.reader().QueryContext(ctx, edgeQuery, args...)
 	} else {
 		edgeQuery := `SELECT ec.entity_id_1::text, ec.entity_id_2::text, COALESCE(ec.cooccurrence_count,0),
 		                     e1.canonical_name, COALESCE(e1.mention_count,0),
-		                     e2.canonical_name, COALESCE(e2.mention_count,0)
+		                     e2.canonical_name, COALESCE(e2.mention_count,0), ec.last_cooccurred
 		              FROM ` + qualified + `.entity_cooccurrences ec
 		              JOIN ` + qualified + `.entities e1 ON e1.id = ec.entity_id_1
 		              JOIN ` + qualified + `.entities e2 ON e2.id = ec.entity_id_2
 		              WHERE e1.bank_id = $1 AND e2.bank_id = $1 AND ec.cooccurrence_count >= $2
-		              ORDER BY ec.cooccurrence_count DESC, ec.entity_id_1 ASC, ec.entity_id_2 ASC
+		              ORDER BY ec.cooccurrence_count DESC, ec.last_cooccurred DESC, ec.entity_id_1, ec.entity_id_2
 		              LIMIT $3`
 		rows, err = s.reader().QueryContext(ctx, edgeQuery, bankID, minCount, limit)
 	}
@@ -512,7 +562,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 	scans := make([]edgeScan, 0)
 	for rows.Next() {
 		var sc edgeScan
-		if err := rows.Scan(&sc.from, &sc.to, &sc.weight, &sc.name1, &sc.mc1, &sc.name2, &sc.mc2); err != nil {
+		if err := rows.Scan(&sc.from, &sc.to, &sc.weight, &sc.name1, &sc.mc1, &sc.name2, &sc.mc2, &sc.lastCooccurred); err != nil {
 			return EntityGraph{}, err
 		}
 		scans = append(scans, sc)
@@ -533,7 +583,10 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 	for _, sc := range scans {
 		addNode(sc.from, sc.name1, sc.mc1)
 		addNode(sc.to, sc.name2, sc.mc2)
-		edges = append(edges, EntityGraphEdge{ID: sc.from + "->" + sc.to, Source: sc.from, Target: sc.to, Weight: sc.weight})
+		edges = append(edges, EntityGraphEdge{
+			ID: sc.from + "->" + sc.to, Source: sc.from, Target: sc.to, Weight: sc.weight,
+			LastCooccurred: nullTimePtr(sc.lastCooccurred),
+		})
 	}
 	return EntityGraph{Nodes: nodes, Edges: edges, TotalEntities: len(nodes),
 		TotalEdges: len(edges), Limit: limit}, nil

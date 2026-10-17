@@ -24,10 +24,10 @@ func (s *MemoryStore) ListMentalModels(ctx context.Context, bankID string, subty
 		out = append(out, cloneMentalModel(model))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.After(out[j].CreatedAt)
+		if !out[i].LastRefreshedAt.Equal(out[j].LastRefreshedAt) {
+			return out[i].LastRefreshedAt.After(out[j].LastRefreshedAt)
 		}
-		return out[i].ID < out[j].ID
+		return out[i].ID > out[j].ID
 	})
 	return out, nil
 }
@@ -61,6 +61,18 @@ func (s *MemoryStore) PutMentalModel(ctx context.Context, model MentalModel) (Me
 	}
 	if s.mentalModelRecords == nil {
 		s.mentalModelRecords = map[string]MentalModel{}
+	}
+	// The reference embeds a mental model from its own text on every write, so a
+	// rename or content change re-embeds and a create is reachable through the
+	// vector arm of knowledge search. A configured embedder owns the field; a
+	// caller-supplied vector is kept only when none is configured.
+	if generator := s.observationEmbedder; generator != nil {
+		if vector := embedMentalModelText(ctx, generator, model.Name, model.Content); len(vector) > 0 {
+			if err := ValidateEmbedding(vector); err != nil {
+				return MentalModel{}, err
+			}
+			model.Embedding = vector
+		}
 	}
 	now := time.Now().UTC()
 	if existing, ok := s.mentalModelRecords[mentalModelKey(model.BankID, model.ID)]; ok {
@@ -97,6 +109,16 @@ func (s *MemoryStore) UpdateMentalModel(ctx context.Context, bankID, id string, 
 		return MentalModel{}, ErrMentalModelNotFound
 	}
 	applyMentalModelPatch(&model, patch)
+	// The reference's update re-embeds from the new name and the stored content,
+	// so a rename or content change moves the page's vector too.
+	if generator := s.observationEmbedder; generator != nil {
+		if vector := embedMentalModelText(ctx, generator, model.Name, model.Content); len(vector) > 0 {
+			if err := ValidateEmbedding(vector); err != nil {
+				return MentalModel{}, err
+			}
+			model.Embedding = vector
+		}
+	}
 	model.LastUpdated = time.Now().UTC()
 	s.mentalModelRecords[key] = cloneMentalModel(model)
 	return cloneMentalModel(model), nil
@@ -137,15 +159,17 @@ func (s *MemoryStore) ClearMentalModel(ctx context.Context, bankID, id string) (
 	if !ok {
 		return MentalModel{}, ErrMentalModelNotFound
 	}
+	// The reference's clear resets exactly content, structured_content,
+	// last_refreshed_source_query and last_refresh_failed_at; the reflect payload,
+	// observations, timestamps and history all survive. The dense vector is
+	// rebuilt from the name alone, so the cleared page stops ranking on content it
+	// no longer has and stays findable by title.
 	model.Content = ""
 	model.Structured = nil
-	model.ReflectResult = nil
-	model.Observations = map[string]any{"observations": []any{}}
-	now := time.Now().UTC()
-	model.LastUpdated = now
-	model.LastRefreshedAt = now
+	model.LastRefreshedSourceQuery = ""
+	model.LastRefreshFailedAt = nil
+	model.Embedding = embedMentalModelText(ctx, s.observationEmbedder, model.Name, "")
 	s.mentalModelRecords[key] = cloneMentalModel(model)
-	delete(s.mentalModelHistory, key)
 	return cloneMentalModel(model), nil
 }
 

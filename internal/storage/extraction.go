@@ -50,6 +50,14 @@ type FactExtractionOptions struct {
 	// value keeps the reference's shipped default (on); storage sets it from
 	// the deployment tuning, so an unset key changes nothing.
 	ExtractCausalLinks *bool
+	// AllowFreeFormEntities lets regular named entities ride alongside the
+	// controlled label vocabulary. A nil value keeps the reference's default
+	// (on); it only matters when Vocabulary is set.
+	AllowFreeFormEntities *bool
+	// OutputLanguage forces the generated facts' language, replacing the
+	// prompt's preserve-the-source-language rule. Empty leaves that rule, which
+	// is what a deployment that configured no language sends.
+	OutputLanguage string
 }
 
 // ContextualFactExtraction is the optional capability an extractor implements
@@ -268,5 +276,5 @@ func (o FactExtractionOptions) empty() bool {
 	return o.Mission == "" && o.Instructions == "" && o.Strategy == "" &&
 		o.Mode == "" && !o.OptionalFactDimensions &&
 		o.ReferenceTime.IsZero() && o.Vocabulary.Empty() && len(o.Attachments) == 0 &&
-		o.ExtractCausalLinks == nil
+		o.ExtractCausalLinks == nil && o.AllowFreeFormEntities == nil && o.OutputLanguage == ""
 }

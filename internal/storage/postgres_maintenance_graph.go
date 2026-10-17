@@ -78,18 +78,92 @@ func (s *PostgresStore) RequeueEntityMaintenance(ctx context.Context, targets []
 	return err
 }
 
-// RelinkUnit recomputes one unit's semantic links from its embedding: the
-// existing semantic edges touching it are dropped and rebuilt from the vector
-// neighbours above the similarity floor.
+// RelinkUnit re-derives the derived links one unit lost, from the same sources
+// retain derives them from: its temporal edges are topped up from the units
+// whose dates fall inside the window, and its semantic edges from the vector
+// neighbours above the similarity floor. It only ever adds an edge, mirroring
+// the reference's relink pass: deleting one here would destroy the incoming
+// derived edges of a unit that was never told to relink.
 func (s *PostgresStore) RelinkUnit(ctx context.Context, bankID, unitID string) error {
-	qualified := quoteIdent(s.schema)
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.memory_links
-		 WHERE bank_id = $1 AND link_type = 'semantic' AND (from_unit_id = $2::uuid OR to_unit_id = $2::uuid)`,
-		bankID, unitID); err != nil {
+	if err := s.topUpTemporalLinks(ctx, bankID, unitID); err != nil {
 		return err
 	}
 	return s.createSemanticLinks(ctx, bankID, []string{unitID})
+}
+
+// topUpTemporalLinks adds the temporal edges one unit is missing within the
+// window, mirroring the reference's relink top-up: it only runs for dated
+// experience/world units still below the per-unit cap, takes the nearest
+// same-kind units in both directions inside the 24h window, and leaves any edge
+// that is already there alone.
+func (s *PostgresStore) topUpTemporalLinks(ctx context.Context, bankID, unitID string) error {
+	qualified := quoteIdent(s.schema)
+	_, err := s.db.ExecContext(ctx,
+		`WITH victim AS (
+		     SELECT mu.id, mu.event_date, mu.fact_type
+		     FROM `+qualified+`.memory_units mu
+		     WHERE mu.bank_id = $1 AND mu.id = $2::uuid
+		       AND mu.fact_type IN ('experience', 'world')
+		       AND mu.event_date IS NOT NULL
+		       AND (SELECT count(*) FROM `+qualified+`.memory_links ml
+		            WHERE ml.bank_id = $1 AND ml.from_unit_id = mu.id
+		              AND ml.link_type = 'temporal') < $3
+		 ), ranked AS (
+		     SELECT victim.id AS from_id, near.id AS to_id,
+		            ABS(EXTRACT(EPOCH FROM near.event_date - victim.event_date)) / 3600.0 AS diff_hours,
+		            ROW_NUMBER() OVER (
+		                PARTITION BY victim.id
+		                ORDER BY ABS(EXTRACT(EPOCH FROM near.event_date - victim.event_date)), near.id
+		            ) AS rn
+		     FROM victim
+		     CROSS JOIN LATERAL (
+		         (SELECT mu.id, mu.event_date FROM `+qualified+`.memory_units mu
+		          WHERE mu.bank_id = $1 AND mu.fact_type = victim.fact_type
+		            AND mu.event_date <= victim.event_date AND mu.id <> victim.id
+		          ORDER BY mu.event_date DESC, mu.id LIMIT $3)
+		         UNION ALL
+		         (SELECT mu.id, mu.event_date FROM `+qualified+`.memory_units mu
+		          WHERE mu.bank_id = $1 AND mu.fact_type = victim.fact_type
+		            AND mu.event_date > victim.event_date AND mu.id <> victim.id
+		          ORDER BY mu.event_date ASC, mu.id LIMIT $3)
+		     ) near
+		 )
+		 INSERT INTO `+qualified+`.memory_links (bank_id, from_unit_id, to_unit_id, link_type, weight)
+		 SELECT $1, from_id, to_id, 'temporal', GREATEST(0.3, 1.0 - diff_hours / $4)
+		 FROM ranked WHERE rn <= $3 AND diff_hours <= $4
+		 ON CONFLICT DO NOTHING`,
+		bankID, unitID, maxTemporalLinksPerUnit, temporalLinkWindowHours)
+	return err
+}
+
+// enqueueRelinkVictims queues, for a later top-up, the units whose outgoing
+// temporal or semantic links point at any of unitIDs — together with unitIDs
+// themselves when includeAffected is set, since an edit leaves the edited unit
+// live while stripping its own derived adjacency.
+//
+// It mirrors the reference's enqueue_relink_victims, including its ordering
+// rule: it must run before the links are deleted, because once the rows are
+// gone the join that finds the survivors returns nothing.
+func (s *PostgresStore) enqueueRelinkVictims(ctx context.Context, exec stmtExecer, bankID string, unitIDs []string, includeAffected bool) error {
+	if len(unitIDs) == 0 {
+		return nil
+	}
+	qualified := quoteIdent(s.schema)
+	_, err := exec.ExecContext(ctx,
+		`INSERT INTO `+qualified+`.graph_maintenance_queue (bank_id, unit_id)
+		 SELECT $1, victim FROM (
+		     SELECT DISTINCT ml.from_unit_id AS victim
+		     FROM `+qualified+`.memory_links ml
+		     WHERE ml.bank_id = $1 AND ml.to_unit_id = ANY($2::uuid[])
+		       AND ml.link_type IN ('temporal', 'semantic')
+		       AND NOT (ml.from_unit_id = ANY($2::uuid[]))
+		     UNION
+		     SELECT id FROM unnest($2::uuid[]) AS affected(id)
+		     WHERE $3
+		 ) victims
+		 ON CONFLICT (bank_id, unit_id) DO NOTHING`,
+		bankID, unitIDs, includeAffected)
+	return err
 }
 
 // DrainEntityMaintenance claims up to limit queued entity-prune targets and

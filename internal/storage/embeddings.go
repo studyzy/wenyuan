@@ -115,6 +115,12 @@ func embedContents(ctx context.Context, generator EmbeddingGenerator, contents [
 	if generator == nil || len(contents) == 0 {
 		return nil
 	}
+	// Attribute the embedder's time to the retain in scope, if there is one. A
+	// no-op outside a retain and a phase that is never recorded when no
+	// generator runs, so a deployment with no embedder reports no embed phase
+	// rather than a zero-second one.
+	stop := measureRetainPhase(ctx, "embed")
+	defer stop()
 	texts := make([]string, 0, len(contents))
 	for _, content := range contents {
 		texts = append(texts, truncateForEmbedding(indexedEmbeddingText(content.unit, content.entities)))
@@ -132,6 +138,63 @@ func embedContents(ctx context.Context, generator EmbeddingGenerator, contents [
 		}
 	}
 	return nil
+}
+
+// embedUnitText recomputes one memory unit's embedding the way retain does:
+// the same date+entity augmentation (indexedEmbeddingText) over the unit's own
+// text, so an edited fact embeds exactly as a freshly-retained one would. It is
+// the editing counterpart of embedContents, which the retain path uses.
+//
+// A nil generator, a provider error, or an empty result yields nil, which
+// leaves the unit's existing vector in place rather than clearing it: a failed
+// re-embed must not silently drop a unit out of the vector arm.
+func embedUnitText(ctx context.Context, generator EmbeddingGenerator, unit MemoryUnit, entityNames []string) []float32 {
+	if generator == nil {
+		return nil
+	}
+	entities := make([]RetainEntity, 0, len(entityNames))
+	for _, name := range entityNames {
+		if name != "" {
+			entities = append(entities, RetainEntity{Text: name})
+		}
+	}
+	texts := []string{truncateForEmbedding(indexedEmbeddingText(unit, entities))}
+	vectors, err := generator.EmbedPassages(ctx, texts)
+	if err != nil || len(vectors) != 1 || len(vectors[0]) == 0 {
+		return nil
+	}
+	return vectors[0]
+}
+
+// embedMentalModelText returns the vector for a mental model's searchable
+// document — its name and content, the exact text the reference embeds for a
+// model (f"{name} {content}"). A nil generator or a failed call yields nil, so a
+// caller rebuilding the column writes SQL NULL, which is what the reference
+// stores when it has no vector.
+func embedMentalModelText(ctx context.Context, generator EmbeddingGenerator, name, content string) []float32 {
+	if generator == nil {
+		return nil
+	}
+	vectors, err := generator.EmbedPassages(ctx, []string{truncateForEmbedding(name + " " + content)})
+	if err != nil || len(vectors) != 1 || len(vectors[0]) == 0 {
+		return nil
+	}
+	return vectors[0]
+}
+
+// mentalModelEmbeddingArg embeds a model's document and returns the value to
+// bind to the vector column, or nil for SQL NULL. A configured embedder whose
+// vector does not match the deployment's dimension is an error rather than a
+// silent NULL: the same guard PutMentalModel applies to a caller-supplied vector.
+func mentalModelEmbeddingArg(ctx context.Context, generator EmbeddingGenerator, name, content string) (any, error) {
+	vec := embedMentalModelText(ctx, generator, name, content)
+	if len(vec) == 0 {
+		return nil, nil
+	}
+	if err := ValidateEmbedding(vec); err != nil {
+		return nil, err
+	}
+	return NullableEmbedding(vec), nil
 }
 
 // embedObservation returns the vector for an observation's text, or nil when no

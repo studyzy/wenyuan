@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -21,7 +22,7 @@ func (s *MemoryStore) ListWebhooks(ctx context.Context, bankID string) ([]Webhoo
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.After(out[j].CreatedAt)
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
 		}
 		return out[i].ID < out[j].ID
 	})
@@ -91,6 +92,8 @@ func (s *MemoryStore) UpdateWebhook(ctx context.Context, bankID, webhookID strin
 	}
 	if patch.Secret != nil {
 		webhook.Secret = *patch.Secret
+	} else if patch.ClearSecret {
+		webhook.Secret = ""
 	}
 	if patch.EventTypes != nil {
 		webhook.EventTypes = append([]string(nil), (*patch.EventTypes)...)
@@ -157,15 +160,17 @@ func (s *MemoryStore) ListWebhookDeliveries(ctx context.Context, bankID, webhook
 		return matched[i].ID < matched[j].ID
 	})
 	if cursor != "" {
-		if after, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
-			filtered := matched[:0]
-			for _, delivery := range matched {
-				if delivery.CreatedAt.Before(after) {
-					filtered = append(filtered, delivery)
-				}
-			}
-			matched = filtered
+		after, err := parseDeliveryCursor(cursor)
+		if err != nil {
+			return WebhookDeliveryPage{}, errInvalidDeliveryCursor(cursor)
 		}
+		filtered := matched[:0]
+		for _, delivery := range matched {
+			if delivery.CreatedAt.Before(after) {
+				filtered = append(filtered, delivery)
+			}
+		}
+		matched = filtered
 	}
 	if limit <= 0 {
 		limit = 50
@@ -175,6 +180,39 @@ func (s *MemoryStore) ListWebhookDeliveries(ctx context.Context, bankID, webhook
 		matched = matched[:limit]
 	}
 	return WebhookDeliveryPage{Deliveries: matched, HasMore: hasMore}, nil
+}
+
+// errInvalidDeliveryCursor is the error a malformed delivery cursor produces.
+//
+// The reference does not pre-validate the cursor: it hands the value to the
+// driver, which rejects a non-datetime and surfaces a 500 whose detail is the
+// driver's own message. Both backends raise this same text so the delivery
+// route answers a malformed cursor identically whichever store is behind it.
+func errInvalidDeliveryCursor(cursor string) error {
+	return fmt.Errorf(
+		"invalid input for query argument $3: '%s' (expected a datetime.date or datetime.datetime instance, got 'str')",
+		cursor)
+}
+
+// parseDeliveryCursor reads a delivery pagination cursor. The cursor is the
+// created_at of the last row of the previous page, emitted in the reference's
+// PostgreSQL text form ("2006-01-02 15:04:05.999999+00"); RFC 3339 is also
+// accepted so a cursor minted by an older build keeps working.
+func parseDeliveryCursor(cursor string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999-07",
+		"2006-01-02 15:04:05-07",
+	}
+	var err error
+	for _, layout := range layouts {
+		var parsed time.Time
+		if parsed, err = time.Parse(layout, cursor); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, err
 }
 
 // cloneWebhook copies the mutable fields.
@@ -219,6 +257,11 @@ func deliveryFromOperation(op Operation) WebhookDelivery {
 		// a stored value is one the API may return; an absent key stays nil.
 		if body, ok := op.ResultMetadata["last_response_body"].(string); ok {
 			delivery.LastResponseBody = &body
+		}
+		if attempt, ok := op.ResultMetadata["last_attempt_at"].(string); ok {
+			if parsed, err := parseDeliveryCursor(attempt); err == nil {
+				delivery.LastAttemptAt = &parsed
+			}
 		}
 	}
 	return delivery

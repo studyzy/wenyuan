@@ -58,6 +58,32 @@ func (s *PostgresStore) GetStoredFile(ctx context.Context, key string) (StoredFi
 	return StoredFile{Key: storedKey, Data: data, ContentType: contentTypeForKey(storedKey)}, nil
 }
 
+// DeleteStoredFile removes a payload. With an object store configured the blob
+// is dropped there; otherwise the stored-file row is deleted. A key that names
+// no payload, or one that is not a well-formed key, is a no-op: cleanup never
+// fails on a blob that is already gone.
+func (s *PostgresStore) DeleteStoredFile(ctx context.Context, key string) error {
+	if err := ValidateStoredFileKey(key); err != nil {
+		return nil
+	}
+	if s.objectStore != nil {
+		if deleter, ok := s.objectStore.(objectDeleter); ok {
+			return deleter.Delete(ctx, key)
+		}
+		return nil
+	}
+	query := `DELETE FROM ` + quoteIdent(s.schema) + `.file_storage WHERE storage_key = $1`
+	_, err := s.db.ExecContext(ctx, query, key)
+	return err
+}
+
+// objectDeleter is the optional object-store capability a stored-file removal
+// uses. It is declared here, like prefixDeleter, so the storage area owns the
+// shape it needs while the object-store package owns the protocol.
+type objectDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
 // OpenStoredFile opens a payload for streaming read. With an object store that
 // can stream, the object body is handed straight to the caller so the first
 // byte is written without the object being buffered. Otherwise — the row

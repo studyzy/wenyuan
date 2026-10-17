@@ -75,13 +75,16 @@ type Operation struct {
 	IsParent bool
 }
 
-// ChildOperation is one child of a parent batch operation.
+// ChildOperation is one child of a parent batch operation. The per-child
+// subject fields are optional: the reference projects them out of the child's
+// result_metadata and emits an explicit null for a key the child never wrote, so
+// absence is carried as a nil pointer rather than collapsed to a zero value.
 type ChildOperation struct {
 	OperationID   string
 	Status        OperationStatus
-	SubBatchIndex int
-	ItemsCount    int
-	ErrorMessage  string
+	SubBatchIndex *int
+	ItemsCount    *int
+	ErrorMessage  *string
 }
 
 // operationIsParent reports whether a stored result metadata marks the

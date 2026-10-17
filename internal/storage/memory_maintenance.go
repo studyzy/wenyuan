@@ -155,6 +155,10 @@ func (s *MemoryStore) PruneTerminalOperations(ctx context.Context, schema string
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
+	// Sweep the stored archives of expired export operations with their rows,
+	// like the postgres backend and the reference: the row is the blob's only
+	// handle, so it must not outlive it.
+	s.purgeExpiredExportArchivesLocked(cutoff, batchSize)
 	candidates := make([]string, 0)
 	for id, op := range s.operations {
 		if !op.Status.Terminal() || !op.UpdatedAt.Before(cutoff) {
@@ -176,4 +180,42 @@ func (s *MemoryStore) PruneTerminalOperations(ctx context.Context, schema string
 		delete(s.operations, id)
 	}
 	return len(candidates), nil
+}
+
+// purgeExpiredExportArchivesLocked deletes the stored archives of the export
+// operations retention is about to prune. The caller holds s.mu.
+//
+// Mirrors the postgres backend and the reference: same predicate (terminal
+// status + updated_at < cutoff), ordering and batch bound, so a blob is removed
+// in step with its row rather than orphaned when the row goes. The bound keeps
+// the sweep proportionate — storage_key stays in result_metadata until the row
+// itself is pruned, so an unbounded purge would re-delete every expired
+// export's blob on every run.
+func (s *MemoryStore) purgeExpiredExportArchivesLocked(cutoff time.Time, batchSize int) {
+	exportTypes := make(map[string]bool, len(ExportOperationTypes))
+	for _, name := range ExportOperationTypes {
+		exportTypes[name] = true
+	}
+	candidates := make([]string, 0)
+	for id, op := range s.operations {
+		if !exportTypes[op.OperationType] || !op.Status.Terminal() || !op.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := s.operations[candidates[i]], s.operations[candidates[j]]
+		if !left.UpdatedAt.Equal(right.UpdatedAt) {
+			return left.UpdatedAt.Before(right.UpdatedAt)
+		}
+		return candidates[i] < candidates[j]
+	})
+	if len(candidates) > batchSize {
+		candidates = candidates[:batchSize]
+	}
+	for _, id := range candidates {
+		if key, _ := s.operations[id].ResultMetadata[OperationPayloadKeyStoredFile].(string); key != "" {
+			delete(s.storedFiles, key)
+		}
+	}
 }

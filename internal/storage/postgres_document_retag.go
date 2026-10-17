@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 // RetagDocumentMemories carries a document's renamed tags onto its units, then
@@ -21,7 +22,7 @@ import (
 // a unit whose tags and scopes disagree. Returns how many observations were
 // deleted, which is what tells the caller a re-consolidation pass is warranted.
 func (s *PostgresStore) RetagDocumentMemories(
-	ctx context.Context, bankID, docID string, oldTags, newTags []string,
+	ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool,
 ) (int, error) {
 	qualified := quoteIdent(s.schema)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -40,6 +41,7 @@ func (s *PostgresStore) RetagDocumentMemories(
 	}
 	type unitRow struct {
 		id       string
+		tags     []string
 		factType string
 		scopes   []byte
 	}
@@ -55,7 +57,9 @@ func (s *PostgresStore) RetagDocumentMemories(
 		if scopes.Valid && scopes.String != "" {
 			rawScopes = []byte(scopes.String)
 		}
-		units = append(units, unitRow{id: id, factType: factType, scopes: rawScopes})
+		units = append(units, unitRow{
+			id: id, tags: decodePostgresTextArray([]byte(tags)), factType: factType, scopes: rawScopes,
+		})
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
@@ -88,6 +92,38 @@ func (s *PostgresStore) RetagDocumentMemories(
 		  WHERE document_id = $2 AND bank_id = $3`,
 		unitTags, docID, bankID); err != nil {
 		return 0, err
+	}
+
+	// The blanket write also replaced the label-derived tags each unit carried
+	// (the projection of the bank's `entity_labels` groups flagged tag:true,
+	// derived from that unit's own entities at extraction). This PATCH extracts
+	// nothing, so it restores them, grouped by the final array so identical tag
+	// lists travel one statement.
+	type finalTags struct {
+		tags []string
+		ids  []string
+	}
+	byFinal := map[string]*finalTags{}
+	for _, unit := range units {
+		final := appendTagLabels(unitTags, labelDerivedTags(unit.tags, labelKeys))
+		if sameTagSet(final, unitTags) {
+			continue
+		}
+		key := strings.Join(final, "\x00")
+		group, ok := byFinal[key]
+		if !ok {
+			group = &finalTags{tags: final}
+			byFinal[key] = group
+		}
+		group.ids = append(group.ids, unit.id)
+	}
+	for _, group := range byFinal {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE `+qualified+`.memory_units SET tags = $1, updated_at = now()
+			  WHERE document_id = $2 AND bank_id = $3 AND id = ANY($4::uuid[])`,
+			group.tags, docID, bankID, group.ids); err != nil {
+			return 0, err
+		}
 	}
 
 	srcIDs := make([]string, 0, len(units))

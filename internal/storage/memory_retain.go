@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/timefmt"
 )
 
 // RetainWrite persists an ordered-item memory write in the in-process store. It
@@ -15,6 +17,8 @@ import (
 // into chunks, persists units, resolves entities, and returns created unit
 // identifiers grouped per item in item order.
 func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (RetainOutcome, error) {
+	ctx, phases := beginRetainPhases(ctx, memoryStorePhaseLabel)
+	defer phases.finish()
 	// Extraction calls a model, so it runs before the write lock is taken: a
 	// slow model call must not block every other write to the store. The
 	// causal-links switch is read under the lock first, so a concurrent
@@ -183,12 +187,7 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 			s.unitEntities[unit.ID] = append(s.unitEntities[unit.ID], resolved.ID)
 			// A mention moves the entity's stats: the count is per mention, not
 			// per entity, and the last mention stamps last_seen.
-			if stored, ok := s.entities[resolved.ID]; ok {
-				stored.MentionCount++
-				stamp := now
-				stored.LastSeen = &stamp
-				s.entities[resolved.ID] = stored
-			}
+			s.incrementEntityMentionLocked(resolved.ID, now)
 			if !seen[resolved.ID] {
 				seen[resolved.ID] = true
 				mentioned = append(mentioned, resolved.ID)
@@ -274,11 +273,15 @@ func (s *MemoryStore) clearDocumentUnitsLocked(bankID, docID string) []string {
 			for _, entityID := range s.unitEntities[id] {
 				candidates[entityID] = true
 			}
+			s.releaseUnitPostingsLocked(id)
 			delete(s.units, id)
 			delete(s.unitEntities, id)
 			removed[id] = true
 		}
 	}
+	// The survivors that pointed at these units lose their outgoing edges with
+	// them, so they are queued for a relink while the links are still readable.
+	s.enqueueRelinkVictimsLocked(bankID, keysOf(removed), false)
 	chunks := s.chunks[:0]
 	for _, chunk := range s.chunks {
 		if chunk.BankID == bankID && chunk.DocumentID == docID {
@@ -300,6 +303,49 @@ func (s *MemoryStore) clearDocumentUnitsLocked(bankID, docID string) []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// releaseUnitPostingsLocked gives back the mention count each entity a unit
+// names contributed, one decrement per posting, floored at zero. It is the
+// memory backend's counterpart to the postgres give-back and must run before
+// the unit's postings are dropped, because afterwards the entity ids are gone.
+// Expects s.mu held.
+func (s *MemoryStore) releaseUnitPostingsLocked(unitID string) {
+	seen := make(map[string]struct{}, len(s.unitEntities[unitID]))
+	for _, entityID := range s.unitEntities[unitID] {
+		if _, dup := seen[entityID]; dup {
+			continue
+		}
+		seen[entityID] = struct{}{}
+		s.decrementEntityMentionLocked(entityID)
+	}
+}
+
+// decrementEntityMentionLocked gives back one mention from an entity, floored
+// at zero. Expects s.mu held.
+func (s *MemoryStore) decrementEntityMentionLocked(entityID string) {
+	entity, ok := s.entities[entityID]
+	if !ok {
+		return
+	}
+	if entity.MentionCount > 0 {
+		entity.MentionCount--
+	}
+	s.entities[entityID] = entity
+}
+
+// incrementEntityMentionLocked records one new mention on an entity and stamps
+// last_seen, the counterpart to the postgres UpsertUnitEntity update. Expects
+// s.mu held.
+func (s *MemoryStore) incrementEntityMentionLocked(entityID string, now time.Time) {
+	entity, ok := s.entities[entityID]
+	if !ok {
+		return
+	}
+	entity.MentionCount++
+	stamp := now
+	entity.LastSeen = &stamp
+	s.entities[entityID] = entity
 }
 
 // pruneEntitiesIfOrphanedLocked deletes the named entities that no surviving
@@ -367,17 +413,30 @@ func (s *MemoryStore) documentChunkStateLocked(bankID, docID string) (int, map[s
 }
 
 // retainParamsFor assembles the retain parameters persisted on a document: the
-// strategy and update mode plus the item context, event date, observation
-// scopes and metadata, so a document read reports what the write was given.
+// replayable settings the write was given, and nothing else, so a document read
+// reports the set a reprocess replays. The set matches the reference's, which
+// records every content-dict key except its own not-replayed five and any key
+// whose value is absent.
 func retainParamsFor(item RetainItem) map[string]any {
-	params := map[string]any{"strategy": item.Strategy, "update_mode": item.UpdateMode}
+	// Only the values the caller actually supplied are replayable, and only the
+	// replayable ones are recorded. The reference omits a key whose value is
+	// absent (None) and never records `update_mode` at all — it is in its own
+	// not-replayed set — so an item that names no strategy keeps retain_params
+	// without a `strategy` key, and the empty case is an empty object.
+	params := map[string]any{}
+	if item.Strategy != "" {
+		params["strategy"] = item.Strategy
+	}
 	if item.Context != "" {
 		params["context"] = item.Context
 	}
 	if item.Timestamp != nil {
-		params["event_date"] = item.Timestamp.Format(time.RFC3339)
+		// The reference stores the instant in Python's isoformat form, and a
+		// document's retain_params are echoed back verbatim on the read surface,
+		// so the persisted text is part of the contract.
+		params["event_date"] = timefmt.FormatTimestamp(*item.Timestamp)
 	}
-	if len(item.Metadata) > 0 {
+	if item.Metadata != nil {
 		params["metadata"] = item.Metadata
 	}
 	if len(item.ObservationScopes) > 0 {
@@ -385,6 +444,18 @@ func retainParamsFor(item RetainItem) map[string]any {
 		if err := json.Unmarshal(item.ObservationScopes, &scopes); err == nil {
 			params["observation_scopes"] = scopes
 		}
+	}
+	// The reference records the supplied entities and the resolution switch
+	// together, and only when entities were supplied: a document retained with
+	// no explicit entities carries neither key, so its reprocess falls back to
+	// the bank default rather than to a stale list.
+	if len(item.Entities) > 0 {
+		entities := make([]map[string]any, 0, len(item.Entities))
+		for _, entity := range item.Entities {
+			entities = append(entities, map[string]any{"text": entity.Text, "type": entity.Kind})
+		}
+		params["entities"] = entities
+		params["resolve_entities"] = item.ResolveEntities
 	}
 	return params
 }
@@ -569,13 +640,20 @@ func mergeTags(itemTags, documentTags []string) []string {
 	return out
 }
 
-// GetDocument returns one stored document by identifier.
+// GetDocument returns one stored document by identifier, with the count of the
+// memory units written from it (the units whose document_id names it; an
+// observation carries no document id) already filled in.
 func (s *MemoryStore) GetDocument(ctx context.Context, bankID, docID string) (Document, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	doc, ok := s.documents[docID]
 	if !ok || doc.BankID != bankID {
 		return Document{}, ErrDocumentNotFound
+	}
+	for _, unit := range s.units {
+		if unit.BankID == bankID && unit.DocumentID == docID {
+			doc.MemoryUnitCount++
+		}
 	}
 	return doc, nil
 }
@@ -619,7 +697,7 @@ func (s *MemoryStore) AppendDocument(ctx context.Context, bankID, docID, text, e
 // store: the units' tags and scopes move together and the stale-observation
 // sweep that follows requeues the surviving co-sources.
 func (s *MemoryStore) RetagDocumentMemories(
-	ctx context.Context, bankID, docID string, oldTags, newTags []string,
+	ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool,
 ) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -629,6 +707,7 @@ func (s *MemoryStore) RetagDocumentMemories(
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
+	unitTags := normalizeTags(newTags)
 	srcIDs := make([]string, 0)
 	for id, unit := range s.units {
 		if unit.BankID != bankID || unit.DocumentID != docID {
@@ -637,7 +716,9 @@ func (s *MemoryStore) RetagDocumentMemories(
 		if rewritten := renamedScopes(unit.ObservationScopes, oldTags, newTags); rewritten != nil {
 			unit.ObservationScopes = rewritten
 		}
-		unit.Tags = append([]string(nil), normalizeTags(newTags)...)
+		// The retag replaces only the document-derived tags; the label-derived
+		// ones this unit carries (from its own entities) are re-appended.
+		unit.Tags = appendTagLabels(unitTags, labelDerivedTags(unit.Tags, labelKeys))
 		s.units[id] = unit
 		if unit.FactType == TypeWorld || unit.FactType == TypeExperience {
 			srcIDs = append(srcIDs, id)

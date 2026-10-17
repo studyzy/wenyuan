@@ -117,7 +117,7 @@ func (s *MemoryStore) ReflectObservations(ctx context.Context, bankID, query str
 			break
 		}
 		budget -= cost
-		out = append(out, ReflectCitation{ID: unit.ID, Text: unit.Text})
+		out = append(out, ReflectCitation{ID: unit.ID, Text: unit.Text, Entities: s.entityNamesForUnitLocked(unit.ID)})
 		if budget <= 0 {
 			break
 		}
@@ -146,7 +146,7 @@ func (s *MemoryStore) ReflectMemories(ctx context.Context, bankID, query string,
 			break
 		}
 		budget -= cost
-		out = append(out, ReflectCitation{ID: unit.ID, Text: unit.Text})
+		out = append(out, ReflectCitation{ID: unit.ID, Text: unit.Text, Entities: s.entityNamesForUnitLocked(unit.ID)})
 		if budget <= 0 {
 			break
 		}
@@ -357,6 +357,7 @@ func (s *PostgresStore) reflectRecall(ctx context.Context, bankID, query string,
 			ChunkID:       match.ChunkID,
 			Metadata:      match.Metadata,
 			Tags:          match.Tags,
+			Entities:      match.Entities,
 			Attachments:   match.Attachments,
 		})
 		if budget <= 0 {

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -96,9 +97,17 @@ type LLMRequestQuery struct {
 	// DocumentID matches the trace's recorded document, carried in the row's
 	// metadata.
 	DocumentID string
+	// DocumentIDSet reports whether the caller supplied document_id at all. The
+	// reference filters on `document_id is not None`, so an explicitly empty
+	// value is a real filter — a row whose recorded document id is empty matches
+	// it — rather than an absent one.
+	DocumentIDSet bool
 	// MemoryID matches a trace that produced the unit (metadata.memory_ids) or
 	// consumed it as a consolidation source (metadata.source_memory_ids).
 	MemoryID string
+	// MemoryIDSet reports whether the caller supplied memory_id, so an empty
+	// value is a real filter for the same reason as DocumentIDSet.
+	MemoryIDSet bool
 	// Group paginates by operation run (all calls sharing a trace_id) rather
 	// than by call, so every returned run is whole. Limit, offset and total
 	// then count runs.
@@ -145,6 +154,40 @@ type LLMRequestStats struct {
 	Bucket []LLMRequestBucket
 }
 
+// maxLinksPerEntity is the historical writer cap on how many bidirectional
+// entity edges one shared entity contributes to a bank's link total: for an
+// entity shared by n units, LEAST(n-1, maxLinksPerEntity). Entity links are no
+// longer stored, so the stats surface derives their total from unit/entity
+// membership under this same cap.
+const maxLinksPerEntity = 10
+
+// BankStatsRefresher is the optional capability a store implements when it can
+// recompute a bank summary bypassing its cache, as the reference's force_refresh
+// does (the freshly computed value also refreshes the cache for later callers).
+// The reporting handler asks for it when a request carries refresh=true; a store
+// that does not implement it serves the cached summary unchanged.
+type BankStatsRefresher interface {
+	BankStatsRefreshing(ctx context.Context, bankID string, forceRefresh bool) (BankStats, error)
+}
+
+// AsyncOperationGroup is one bucket of the async-operation queue: how many
+// non-terminal operations of one type and status a deployment holds. BankID is
+// set only when the caller asked for a per-bank breakdown.
+type AsyncOperationGroup struct {
+	OperationType string
+	Status        string
+	BankID        string
+	Count         int
+}
+
+// AsyncOperationCounter is the optional capability a store implements to group
+// its non-terminal async operations by type and status, the shape the reference
+// renders as its hindsight_async_operations gauge. A store that does not
+// implement it reports no async-operation series.
+type AsyncOperationCounter interface {
+	CountAsyncOperations(ctx context.Context, perBank bool) ([]AsyncOperationGroup, error)
+}
+
 // BankStats is the per-bank operational summary.
 type BankStats struct {
 	BankID               string
@@ -185,9 +228,21 @@ type Timeseries struct {
 	Buckets   []TimeseriesBucket
 }
 
-// ObservationScope is one distinct observation scope recorded for a bank.
+// MemoryAttachmentStore is the optional capability a store implements when it
+// can resolve the attachments a memory's evidence came from. It is a narrow
+// capability interface rather than part of Store so a store that does not carry
+// attachments (and every test fake) is unaffected.
+type MemoryAttachmentStore interface {
+	// MemoryAttachments returns each unit's attachments, keyed by unit id. An
+	// observation reports the attachments of the facts it was consolidated from.
+	MemoryAttachments(ctx context.Context, bankID string, unitIDs []string) (map[string][]Attachment, error)
+}
+
+// ObservationScope is one distinct observation scope recorded for a bank. The
+// scope is the exact set of tags its observations were consolidated with, tag
+// order normalized; the empty list is the global/untagged scope.
 type ObservationScope struct {
-	Scope string
+	Tags  []string
 	Count int
 }
 
@@ -258,6 +313,18 @@ type KnowledgeSearchQuery struct {
 	Query     string
 	Embedding []float32
 	Limit     int
+	// DisableTextArm drops the keyword arm, for a bank whose resolved config has
+	// `enable_text_search` off: the vector arm then answers alone, and with no
+	// query embedding either the search has no arm left and returns nothing
+	// rather than a degraded ranking off an index the bank switched off.
+	DisableTextArm bool
+	// Tags/TagsMatch/TagGroups carry the caller's tag filter into the arms, so a
+	// page filter is applied before ranking rather than after: the returned
+	// `limit` hits are always the top-ranked matching pages, never a short set
+	// left by pages that ranked above the window. An empty filter applies none.
+	Tags      []string
+	TagsMatch string
+	TagGroups []TagGroup
 }
 
 // KnowledgeHit is one knowledge search result.
@@ -317,7 +384,12 @@ type MemoryPatch struct {
 	Context       *string
 	OccurredStart *string
 	OccurredEnd   *string
-	FactType      *string
+	// ClearOccurredStart / ClearOccurredEnd clear the corresponding date to
+	// NULL, which an explicit JSON null requests and which a nil pointer cannot
+	// express on its own (nil also means "leave unchanged").
+	ClearOccurredStart bool
+	ClearOccurredEnd   bool
+	FactType           *string
 	// Entities replaces the unit's entity set; ResolveEntities selects whether
 	// the names are resolved against the bank or taken literally.
 	Entities        *[]string
@@ -327,20 +399,19 @@ type MemoryPatch struct {
 	Reason *string
 }
 
-// MemoryHistoryEntry is one recorded change to a memory unit.
+// MemoryHistoryEntry is one recorded change to an observation: the snapshot a
+// consolidation rewrite left in the reference's observation_history table.
 type MemoryHistoryEntry struct {
 	ChangedAt time.Time
-	Reason    string
-	Text      string
-	Tags      []string
-	// PreviousText, PreviousTags and the previous timestamps describe the unit
-	// before the change.
+	// PreviousText, PreviousTags and the previous timestamps describe the
+	// observation before the change. The timestamps keep the snapshot's own
+	// ISO-8601 spelling, because the reference emits them verbatim.
 	PreviousText          *string
 	PreviousTags          []string
-	PreviousOccurredStart *time.Time
-	PreviousOccurredEnd   *time.Time
-	PreviousMentionedAt   *time.Time
-	// NewSourceMemoryIDs are the source memories the entry folded in.
+	PreviousOccurredStart *string
+	PreviousOccurredEnd   *string
+	PreviousMentionedAt   *string
+	// NewSourceMemoryIDs are the source memories this change folded in.
 	NewSourceMemoryIDs []string
 }
 
@@ -363,13 +434,16 @@ type Webhook struct {
 	UpdatedAt  time.Time
 }
 
-// WebhookPatch carries a partial webhook update.
+// WebhookPatch carries a partial webhook update. A nil pointer means the field
+// was not sent and is left unchanged; ClearSecret reports an explicit null
+// secret, which the reference treats as a clear rather than as "unchanged".
 type WebhookPatch struct {
-	URL        *string
-	Secret     *string
-	EventTypes *[]string
-	Enabled    *bool
-	HTTPConfig *map[string]any
+	URL         *string
+	Secret      *string
+	ClearSecret bool
+	EventTypes  *[]string
+	Enabled     *bool
+	HTTPConfig  *map[string]any
 }
 
 // WebhookDelivery is one recorded delivery attempt, read from the delivery

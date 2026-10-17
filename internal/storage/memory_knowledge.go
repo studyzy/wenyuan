@@ -8,8 +8,9 @@ import (
 	"unicode"
 )
 
-// ListKnowledgeNodes returns every knowledge node of one bank, oldest first so
-// a tree rebuilds in creation order.
+// ListKnowledgeNodes returns every knowledge node of one bank, ordered the way
+// the reference orders the flat tree: by sort_order then name, so siblings
+// appear in display order and the nest needs no second sort.
 func (s *MemoryStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -26,8 +27,11 @@ func (s *MemoryStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		if out[i].Title != out[j].Title {
+			return out[i].Title < out[j].Title
 		}
 		return out[i].ID < out[j].ID
 	})
@@ -109,7 +113,33 @@ func (s *MemoryStore) UpdateKnowledgeNode(ctx context.Context, bankID, nodeID st
 	}
 	node.UpdatedAt = time.Now().UTC()
 	s.knowledgeNodes[key] = cloneKnowledgeNode(node)
+	// A page's searchable document lives on its backing model, so a rename has to
+	// reach the model and rebuild its vector from the new name: without it the
+	// stored embedding keeps describing the old title and search matches on text
+	// the page no longer has. Mirrors the postgres write, which carries the node's
+	// name onto the model in PutKnowledgeNode.
+	s.syncKnowledgePageModel(ctx, node)
 	return cloneKnowledgeNode(node), nil
+}
+
+// syncKnowledgePageModel renames a page's backing mental model to match its node
+// and rebuilds the model's vector from the new name and its own content. Called
+// with s.mu held; a folder, or a page with no model, is left alone. The model's
+// content and tags are not taken from the node — a read overlays the model onto
+// the node, not the reverse — so only the name and its vector change here.
+func (s *MemoryStore) syncKnowledgePageModel(ctx context.Context, node KnowledgeNode) {
+	if node.Kind != KnowledgeKindPage || node.MentalModelID == "" {
+		return
+	}
+	key := mentalModelKey(node.BankID, node.MentalModelID)
+	model, ok := s.mentalModelRecords[key]
+	if !ok || model.Name == node.Title {
+		return
+	}
+	model.Name = node.Title
+	model.Embedding = embedMentalModelText(ctx, s.observationEmbedder, model.Name, model.Content)
+	model.LastUpdated = time.Now().UTC()
+	s.mentalModelRecords[key] = cloneMentalModel(model)
 }
 
 // DeleteKnowledgeNode removes a node and its descendants.
@@ -176,6 +206,12 @@ func (s *MemoryStore) SearchKnowledgeNodes(ctx context.Context, query KnowledgeS
 	if len(terms) == 0 {
 		return []KnowledgeHit{}, nil
 	}
+	// A bank with the keyword arm switched off has no arm left here: this
+	// backend keeps no page embeddings, so there is no vector arm to fall back
+	// on and the answer is nothing rather than a ranking off a disabled index.
+	if query.DisableTextArm {
+		return []KnowledgeHit{}, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	type scored struct {
@@ -185,6 +221,12 @@ func (s *MemoryStore) SearchKnowledgeNodes(ctx context.Context, query KnowledgeS
 	matches := make([]scored, 0)
 	for _, node := range s.knowledgeNodes {
 		if node.BankID != query.BankID || node.Kind != KnowledgeKindPage {
+			continue
+		}
+		// The caller's tag filter is applied here, before ranking, so the top
+		// `limit` hits are always the highest-ranked matching pages rather than
+		// a short set left by pages that ranked above them.
+		if !knowledgeTagsMatch(node.Tags, query.Tags, query.TagsMatch, query.TagGroups) {
 			continue
 		}
 		raw := knowledgeTermFrequency(node, terms)
@@ -213,6 +255,22 @@ func (s *MemoryStore) SearchKnowledgeNodes(ctx context.Context, query KnowledgeS
 		})
 	}
 	return hits, nil
+}
+
+// knowledgeTagsMatch applies a knowledge search's tag filter to one page's
+// tags, the memory-backend counterpart of knowledgeTagClause. A flat tag set
+// filters only when it is non-empty or the mode is `exact`; compound groups are
+// AND-ed on top, matching the reference's KnowledgeTagFilter.clause.
+func knowledgeTagsMatch(present, tags []string, mode string, groups []TagGroup) bool {
+	if len(tags) > 0 || mode == TagsMatchExact {
+		if !matchFlatTags(present, tags, mode) {
+			return false
+		}
+	}
+	if len(groups) > 0 && !matchTagGroups(present, groups) {
+		return false
+	}
+	return true
 }
 
 // knowledgeQueryTerms splits a query into the lowercase terms the text arm

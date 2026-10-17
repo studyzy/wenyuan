@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -55,6 +56,15 @@ func (s *MemoryStore) PutDirective(ctx context.Context, directive Directive) (Di
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
 		return Directive{}, s.writeErr
+	}
+	// The reference schema has a foreign key from a directive's bank to the banks
+	// table, so an insert against an unknown bank fails with a constraint error
+	// rather than creating an orphan row. The in-memory backend has no such key,
+	// so the same failure is raised here to keep the two backends observably
+	// identical.
+	if _, ok := s.banks[directive.BankID]; !ok {
+		return Directive{}, fmt.Errorf(
+			"insert or update on table \"directives\" violates foreign key constraint \"fk_directives_bank_id\"")
 	}
 	if s.directiveRecords == nil {
 		s.directiveRecords = map[string]Directive{}

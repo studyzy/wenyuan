@@ -69,3 +69,11 @@ func MentalModelSerializationKey(modelID string) string {
 func ConsolidationSerializationKey(bankID string) string {
 	return "consolidate:" + bankID
 }
+
+// GraphMaintenanceSerializationKey is the key that keeps two graph-maintenance
+// sweeps over one bank from running at the same time. A sweep drains the bank's
+// relink and entity-prune queues to empty, so two concurrent sweeps would each
+// claim part of the same queue and race on the same links.
+func GraphMaintenanceSerializationKey(bankID string) string {
+	return "graph_maintenance:" + bankID
+}

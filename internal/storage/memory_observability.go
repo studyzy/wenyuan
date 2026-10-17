@@ -3,20 +3,74 @@ package storage
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
+// CountAsyncOperations groups the store's non-terminal operations by type and
+// status, the shape the async-operations backlog gauge reports. A null operation
+// type reads as "unknown", as the reference maps it, and the bank identifier is
+// carried through only when perBank is set.
+func (s *MemoryStore) CountAsyncOperations(ctx context.Context, perBank bool) ([]AsyncOperationGroup, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	type key struct{ operationType, status, bankID string }
+	counts := map[key]int{}
+	for _, op := range s.operations {
+		switch op.Status {
+		case StatusPending, StatusProcessing, StatusFailed:
+		default:
+			continue
+		}
+		operationType := op.OperationType
+		if operationType == "" {
+			operationType = "unknown"
+		}
+		k := key{operationType: operationType, status: string(op.Status)}
+		if perBank {
+			k.bankID = op.BankID
+		}
+		counts[k]++
+	}
+	out := make([]AsyncOperationGroup, 0, len(counts))
+	for k, count := range counts {
+		out = append(out, AsyncOperationGroup{OperationType: k.operationType, Status: k.status, BankID: k.bankID, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OperationType != out[j].OperationType {
+			return out[i].OperationType < out[j].OperationType
+		}
+		if out[i].Status != out[j].Status {
+			return out[i].Status < out[j].Status
+		}
+		return out[i].BankID < out[j].BankID
+	})
+	return out, nil
+}
+
 // BankStats summarises one bank's operational state.
 func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, error) {
+	return s.BankStatsRefreshing(ctx, bankID, false)
+}
+
+// BankStatsRefreshing serves a bank summary, recomputing and refreshing the
+// cached entry when forceRefresh is set — the reference's refresh=true query
+// parameter, which bypasses the cached value.
+func (s *MemoryStore) BankStatsRefreshing(ctx context.Context, bankID string, forceRefresh bool) (BankStats, error) {
 	if err := ctx.Err(); err != nil {
 		return BankStats{}, err
 	}
 	// The summary is approximate and expensive to derive, so a fresh cached one
-	// is served rather than recomputed on every poll. The cache is per-process
-	// and bounded, so a deployment that reads many banks cannot hold every
-	// summary it has ever computed.
-	if cached, ok := s.statsCache.get(s.schema, bankID); ok {
-		return cached, nil
+	// is served rather than recomputed on every poll, unless the caller asks for
+	// a forced recompute. The cache is per-process and bounded, so a deployment
+	// that reads many banks cannot hold every summary it has ever computed.
+	if !forceRefresh {
+		if cached, ok := s.statsCache.get(s.schema, bankID); ok {
+			return cached, nil
+		}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -38,21 +92,64 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 		}
 		stats.TotalNodes++
 		stats.NodesByFactType[string(unit.FactType)]++
+		if unit.FactType == TypeObservation {
+			stats.TotalObservations++
+		}
+		// pending and failed consolidation are the consolidator's own backlog
+		// gauges on the source units (world/experience), not operation counters:
+		// pending is the facts still eligible for a pass, failed the ones the
+		// model gave up on. They are disjoint.
+		if unit.FactType == TypeExperience || unit.FactType == TypeWorld {
+			if unit.ConsolidationFailedAt != nil {
+				stats.FailedConsolidation++
+			} else if unit.ConsolidatedAt == nil {
+				stats.PendingConsolidation++
+			}
+		}
+		if unit.UpdatedAt != nil && (stats.LastMemoryWriteAt == nil || unit.UpdatedAt.After(*stats.LastMemoryWriteAt)) {
+			stats.LastMemoryWriteAt = unit.UpdatedAt
+		}
+		if unit.ConsolidatedAt != nil && (stats.LastConsolidatedAt == nil || unit.ConsolidatedAt.After(*stats.LastConsolidatedAt)) {
+			stats.LastConsolidatedAt = unit.ConsolidatedAt
+		}
 	}
 	for _, link := range s.links {
 		if link.BankID != bankID {
 			continue
 		}
-		stats.TotalLinks++
 		stats.LinksByLinkType[string(link.LinkType)]++
-		// The link is attributed to its source unit's fact type, so
-		// links_by_fact_type and links_breakdown describe where links come from.
-		factType := string(s.units[link.FromUnitID].FactType)
-		stats.LinksByFactType[factType]++
-		if stats.LinksBreakdown[factType] == nil {
-			stats.LinksBreakdown[factType] = map[string]int{}
+	}
+	// Entity links are not stored as rows; derive the total from the unit/entity
+	// membership under the writer's per-entity cap and expose it as the "entity"
+	// category, as the reference does.
+	entityUnits := map[string]int{}
+	for unitID, entityIDs := range s.unitEntities {
+		unit, ok := s.units[unitID]
+		if !ok || unit.BankID != bankID {
+			continue
 		}
-		stats.LinksBreakdown[factType][string(link.LinkType)]++
+		for _, entityID := range entityIDs {
+			entityUnits[entityID]++
+		}
+	}
+	entityLinks := 0
+	for _, n := range entityUnits {
+		if n-1 > maxLinksPerEntity {
+			entityLinks += maxLinksPerEntity
+		} else if n > 0 {
+			entityLinks += n - 1
+		}
+	}
+	if entityLinks > 0 {
+		stats.LinksByLinkType[string(LinkEntity)] = entityLinks
+	}
+	// total_links sums the per-type counts, so the derived entity category is
+	// included. links_by_fact_type and links_breakdown are retained in the
+	// response shape but deliberately left empty, as the reference does; the
+	// maps stay non-nil so they serialize as {} rather than null.
+	stats.TotalLinks = 0
+	for _, count := range stats.LinksByLinkType {
+		stats.TotalLinks += count
 	}
 	for _, doc := range s.documents {
 		if doc.BankID == bankID {
@@ -65,21 +162,10 @@ func (s *MemoryStore) BankStats(ctx context.Context, bankID string) (BankStats, 
 		}
 		stats.OperationsByStatus[string(op.Status)]++
 		switch op.Status {
-		case StatusPending, StatusProcessing:
+		case StatusPending:
 			stats.PendingOperations++
-			if op.OperationType == OperationTypeConsolidate {
-				stats.PendingConsolidation++
-			}
 		case StatusFailed:
 			stats.FailedOperations++
-			if op.OperationType == OperationTypeConsolidate {
-				stats.FailedConsolidation++
-			}
-		}
-	}
-	for _, unit := range s.units {
-		if unit.BankID == bankID && unit.FactType == TypeObservation {
-			stats.TotalObservations++
 		}
 	}
 	s.statsCache.put(s.schema, bankID, stats)
@@ -232,13 +318,16 @@ func (s *MemoryStore) AuditLogStats(ctx context.Context, bankID, period, action 
 	}
 	s.diagMu.Lock()
 	defer s.diagMu.Unlock()
-	period, trunc := normalizePeriod(period)
+	trunc, start := chartWindow(period, time.Now().UTC())
 	buckets := map[time.Time]map[string]int{}
 	for _, entry := range s.auditEntries {
 		if bankID != "" && entry.BankID != bankID {
 			continue
 		}
 		if action != "" && entry.Action != action {
+			continue
+		}
+		if entry.StartedAt.Before(start) {
 			continue
 		}
 		bucket := truncate(entry.StartedAt, trunc)
@@ -256,7 +345,7 @@ func (s *MemoryStore) AuditLogStats(ctx context.Context, bankID, period, action 
 		out = append(out, AuditBucket{Time: stamp, Actions: actions, Total: total})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
-	return AuditStats{BankID: bankID, Period: period, Trunc: trunc, Bucket: out}, nil
+	return AuditStats{BankID: bankID, Period: period, Trunc: trunc, Start: start, Bucket: out}, nil
 }
 
 // ListLLMRequests returns one page of the model-request trace.
@@ -310,10 +399,10 @@ func matchesLLMRequest(request LLMRequest, query LLMRequestQuery) bool {
 	if query.TraceID != "" && request.TraceID != query.TraceID {
 		return false
 	}
-	if query.DocumentID != "" && metadataString(request.Metadata, "document_id") != query.DocumentID {
+	if query.DocumentIDSet && !metadataHasString(request.Metadata, "document_id", query.DocumentID) {
 		return false
 	}
-	if query.MemoryID != "" && !metadataHoldsID(request.Metadata, "memory_ids", query.MemoryID) &&
+	if query.MemoryIDSet && !metadataHoldsID(request.Metadata, "memory_ids", query.MemoryID) &&
 		!metadataHoldsID(request.Metadata, "source_memory_ids", query.MemoryID) {
 		return false
 	}
@@ -374,13 +463,12 @@ func groupLLMRuns(matched []LLMRequest, query LLMRequestQuery) LLMRequestPage {
 	return LLMRequestPage{Requests: requests, Total: total, Limit: query.Limit, Offset: query.Offset}
 }
 
-// metadataString reads a string value from a row's metadata, empty when absent.
-func metadataString(metadata map[string]any, key string) string {
+// metadataHasString reports whether a row's metadata holds key with exactly the
+// given string value. An absent key is not a match, mirroring the reference,
+// whose SQL compares `metadata->>'key'` and so never matches a missing key.
+func metadataHasString(metadata map[string]any, key, want string) bool {
 	value, ok := metadata[key].(string)
-	if !ok {
-		return ""
-	}
-	return value
+	return ok && value == want
 }
 
 // metadataHoldsID reports whether a metadata array holds the identifier.
@@ -421,7 +509,7 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, opera
 	}
 	s.diagMu.Lock()
 	defer s.diagMu.Unlock()
-	period, trunc := normalizePeriod(period)
+	trunc, start := chartWindow(period, time.Now().UTC())
 	type accumulator struct {
 		statuses map[string]int
 		tokens   LLMTokenSums
@@ -432,6 +520,9 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, opera
 			continue
 		}
 		if operation != "" && request.Operation != operation {
+			continue
+		}
+		if request.StartedAt.Before(start) {
 			continue
 		}
 		bucket := truncate(request.StartedAt, trunc)
@@ -459,7 +550,7 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, opera
 		out = append(out, LLMRequestBucket{Time: stamp, Statuses: acc.statuses, Total: total, Tokens: acc.tokens})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
-	return LLMRequestStats{BankID: bankID, Period: period, Trunc: trunc, Bucket: out}, nil
+	return LLMRequestStats{BankID: bankID, Period: period, Trunc: trunc, Start: start, Bucket: out}, nil
 }
 
 // ListObservationScopes returns the distinct observation scopes of a bank.
@@ -470,46 +561,60 @@ func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	counts := map[string]int{}
+	byKey := map[string][]string{}
 	for _, unit := range s.units {
 		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
-		scope := "default"
-		if raw, ok := unit.Metadata["scope"].(string); ok && raw != "" {
-			scope = raw
-		}
-		counts[scope]++
+		// The scope is the exact set of tags the observation carries, normalized
+		// by sorting; the empty list is the global/untagged scope.
+		tags := append([]string(nil), unit.Tags...)
+		sort.Strings(tags)
+		key := strings.Join(tags, "\x00")
+		counts[key]++
+		byKey[key] = tags
 	}
 	out := make([]ObservationScope, 0, len(counts))
-	for scope, count := range counts {
-		out = append(out, ObservationScope{Scope: scope, Count: count})
+	for key, count := range counts {
+		out = append(out, ObservationScope{Tags: byKey[key], Count: count})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Scope < out[j].Scope })
+	// Most populous scope first, then by the scope's tag order.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return slicesLess(out[i].Tags, out[j].Tags)
+	})
 	total := len(out)
 	start, end := pageBounds(total, offset, limit)
 	return ObservationScopePage{Scopes: out[start:end], Total: total, Limit: limit, Offset: offset}, nil
 }
 
-// normalizePeriod maps a period name to its bucket width, defaulting to a day.
-//
-// The chart endpoints accept the reference's day-scale periods ("1d", "7d",
-// "30d", "90d", default "7d") and always bucket by day — the period only picks
-// the window, never the width. Those names are echoed back as the period but
-// truncate by day, so date_trunc receives a unit PostgreSQL knows rather than
-// the literal "1d".
-func normalizePeriod(period string) (string, string) {
+// chartWindow maps a chart period onto its bucket width and window start. The
+// audit- and LLM-request histograms bucket by day for every period — the period
+// selects the window (1d / 7d / 30d), never the width — and the window start is
+// returned as-is so the response echoes the resolved instant.
+func chartWindow(period string, now time.Time) (string, time.Time) {
 	switch period {
-	case "hour":
-		return "hour", "hour"
-	case "week":
-		return "week", "week"
-	case "month":
-		return "month", "month"
-	case "day", "":
-		return "day", "day"
-	default:
-		return period, "day"
+	case "1d":
+		return "day", now.AddDate(0, 0, -1)
+	case "30d":
+		return "day", now.AddDate(0, 0, -30)
+	default: // 7d default
+		return "day", now.AddDate(0, 0, -7)
 	}
+}
+
+// slicesLess orders two string slices lexicographically, the comparator the
+// observation-scope listing uses to order equally-populous scopes the way the
+// reference's `ORDER BY scope` does over the tag array.
+func slicesLess(left, right []string) bool {
+	for i := 0; i < len(left) && i < len(right); i++ {
+		if left[i] != right[i] {
+			return left[i] < right[i]
+		}
+	}
+	return len(left) < len(right)
 }
 
 // truncate floors a timestamp to the bucket width.

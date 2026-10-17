@@ -20,9 +20,9 @@ func (r *capturingReflectRunner) Run(_ context.Context, req AgenticReflectReques
 }
 
 // The store must hand a supplied runner the caller's bank, question, budget and
-// bounds, expose itself as the retrieval surface, forward the applicable
-// directive contents, and surface the runner's answer. The runner is invoked
-// before any database access, so this runs with no database at all.
+// bounds, expose itself as the retrieval surface, forward the candidate
+// directives with their names, and surface the runner's answer. The runner is
+// invoked before any database access, so this runs with no database at all.
 func TestPostgresReflectDispatchesToSuppliedRunner(t *testing.T) {
 	store := &PostgresStore{}
 	runner := &capturingReflectRunner{outcome: ReflectOutcome{Answer: "the model's answer"}}
@@ -60,8 +60,10 @@ func TestPostgresReflectDispatchesToSuppliedRunner(t *testing.T) {
 	if runner.req.Retrieval != ReflectionRetrieval(store) {
 		t.Errorf("retrieval = %T, want the store itself", runner.req.Retrieval)
 	}
-	if len(runner.req.Directives) != 1 || runner.req.Directives[0] != "Be terse." {
-		t.Errorf("directives = %q, want only the non-empty content", runner.req.Directives)
+	if len(runner.req.Directives) != 2 ||
+		runner.req.Directives[0].Name != "Terse" || runner.req.Directives[0].Content != "Be terse." ||
+		runner.req.Directives[1].Name != "Empty" || runner.req.Directives[1].Content != "" {
+		t.Errorf("directives = %+v, want the candidate directives with their names", runner.req.Directives)
 	}
 	if outcome.Answer != "the model's answer" {
 		t.Errorf("answer = %q, want the runner's answer", outcome.Answer)

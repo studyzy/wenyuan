@@ -91,14 +91,18 @@ func TestContractConsolidation(t *testing.T) {
 	if err := store.UpdateObservation(ctx, bank, observationID, "a revised conclusion", []string{"f1"}); err != nil {
 		t.Fatalf("update observation: %v", err)
 	}
-	// The rewrite is recorded, so what the conclusion said before it was
-	// reinforced stays readable.
+	// The rewrite is recorded as the observation's pre-update state, so what the
+	// conclusion said before it was reinforced and which sources it folded in
+	// stay readable.
 	history, err := store.MemoryHistory(ctx, bank, observationID)
 	if err != nil {
 		t.Fatalf("observation history: %v", err)
 	}
-	if len(history) == 0 || history[0].Reason != "consolidated" || history[0].Text != "a conclusion" {
+	if len(history) != 1 || history[0].PreviousText == nil || *history[0].PreviousText != "a conclusion" {
 		t.Fatalf("history = %+v, want the pre-update snapshot", history)
+	}
+	if len(history[0].NewSourceMemoryIDs) != 1 || history[0].NewSourceMemoryIDs[0] != "f1" {
+		t.Fatalf("history[0].NewSourceMemoryIDs = %v, want the folded-in source", history[0].NewSourceMemoryIDs)
 	}
 	if err := store.UpdateObservation(ctx, bank, "missing", "x", nil); !errors.Is(err, ErrMemoryNotFound) {
 		t.Fatalf("updating an unknown observation = %v, want ErrMemoryNotFound", err)
@@ -174,6 +178,17 @@ func TestContractDirectives(t *testing.T) {
 	}
 	if created.ID != "d1" {
 		t.Fatalf("created = %+v", created)
+	}
+	// Tags are stored verbatim: no trimming, no dropping of empty entries.
+	if created, err := store.PutDirective(ctx, Directive{
+		ID: "d-tags", BankID: bank, Name: "n", Content: "c", Tags: []string{" a ", "", "b"},
+	}); err != nil {
+		t.Fatalf("put tagged directive: %v", err)
+	} else if len(created.Tags) != 3 || created.Tags[0] != " a " || created.Tags[1] != "" || created.Tags[2] != "b" {
+		t.Fatalf("stored tags = %#v, want the caller's list verbatim", created.Tags)
+	}
+	if err := store.DeleteDirective(ctx, bank, "d-tags"); err != nil {
+		t.Fatalf("delete tagged directive: %v", err)
 	}
 	priority := 9
 	content := "very terse"
@@ -320,8 +335,10 @@ func TestContractReadErrorAndReadiness(t *testing.T) {
 	}
 }
 
-// A rewrite of the same text is not a change, so it records no history entry.
-func TestObservationHistoryIgnoresUnchangedRewrite(t *testing.T) {
+// A rewrite records the observation's pre-update state whether or not the new
+// text differs, as the reference's update path does: the history is a record of
+// the changes made, not of the text changing.
+func TestObservationHistoryRecordsUnchangedRewrite(t *testing.T) {
 	store := NewMemoryStore("public")
 	ctx := context.Background()
 	if _, err := store.CreateBank(ctx, Bank{BankID: "h-bank", Name: "b"}); err != nil {
@@ -338,8 +355,11 @@ func TestObservationHistoryIgnoresUnchangedRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 0 {
-		t.Fatalf("history = %+v, want none for an unchanged rewrite", history)
+	if len(history) != 1 || history[0].PreviousText == nil || *history[0].PreviousText != "steady conclusion" {
+		t.Fatalf("history = %+v, want one pre-update snapshot", history)
+	}
+	if len(history[0].NewSourceMemoryIDs) != 1 || history[0].NewSourceMemoryIDs[0] != "f2" {
+		t.Fatalf("NewSourceMemoryIDs = %v, want the folded-in source", history[0].NewSourceMemoryIDs)
 	}
 	// The evidence still grew.
 	observations, err := store.ConsolidationObservations(ctx, "h-bank", 10)

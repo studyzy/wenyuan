@@ -25,12 +25,13 @@ func (s *PostgresStore) knowledgeFrom() string {
 	               ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id`
 }
 
-// ListKnowledgeNodes returns every knowledge node of one bank, ordered so the
-// tree can be nested without re-sorting: siblings in display order.
+// ListKnowledgeNodes returns every knowledge node of one bank, ordered the way
+// the reference orders the flat tree: by sort_order then name, so siblings
+// appear in display order and the nest needs no second sort.
 func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1
-	          ORDER BY kp.parent_id NULLS FIRST, kp.sort_order, kp.name, kp.id`
+	          ORDER BY kp.sort_order, kp.name, kp.id`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
@@ -123,12 +124,34 @@ func (s *PostgresStore) insertKnowledgePageModel(ctx context.Context, tx Tx, nod
 
 // updateKnowledgePageModel carries a page's text and tags onto its model, so
 // the page and the content it shows cannot disagree.
+//
+// The model's searchable document is its name and content, so a rename — or any
+// write that moves either half — has to rebuild the vector too. Without it the
+// stored embedding keeps describing the old title and the hybrid search's
+// vector arm matches on text the page no longer has. The rebuild is skipped when
+// neither half moved, so creating a page (already embedded at insert) and a
+// no-op write do not pay for a second embedding call.
 func (s *PostgresStore) updateKnowledgePageModel(ctx context.Context, tx Tx, node KnowledgeNode, modelID string) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
-	          SET name = $3, content = $4, tags = $5, last_updated = now()
-	          WHERE bank_id = $1 AND id = $2`
-	_, err := tx.ExecContext(ctx, query, node.BankID, modelID,
-		node.Title, node.Text, normalizeTags(node.Tags))
+	qualified := quoteIdent(s.schema)
+	var oldName, oldContent string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(name, ''), COALESCE(content, '') FROM `+qualified+`.mental_models
+		 WHERE bank_id = $1 AND id = $2`, node.BankID, modelID).Scan(&oldName, &oldContent); err != nil {
+		return err
+	}
+	query := `UPDATE ` + qualified + `.mental_models
+	          SET name = $3, content = $4, tags = $5, last_updated = now()`
+	args := []any{node.BankID, modelID, node.Title, node.Text, normalizeTags(node.Tags)}
+	if node.Title != oldName || node.Text != oldContent {
+		embedding, err := mentalModelEmbeddingArg(ctx, s.observationEmbedder, node.Title, node.Text)
+		if err != nil {
+			return err
+		}
+		query += `, embedding = $6::vector`
+		args = append(args, embedding)
+	}
+	query += ` WHERE bank_id = $1 AND id = $2`
+	_, err := tx.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -166,14 +189,19 @@ func (s *PostgresStore) DeleteKnowledgeNode(ctx context.Context, bankID, nodeID 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The walk is bounded by a path of already-seen ids: a parent cycle (a tree
+	// corrupted before the bank lock existed, or restored from such an export) is
+	// not forbidden by the foreign key, and an unguarded recursion would spin
+	// until the statement budget was exhausted.
 	subtree := `WITH RECURSIVE doomed AS (
-	                 SELECT id, mental_model_id FROM ` + qualified + `.knowledge_pages
+	                 SELECT id, mental_model_id, ARRAY[id::text] AS path
+	                 FROM ` + qualified + `.knowledge_pages
 	                 WHERE bank_id = $1 AND id = $2
 	                 UNION ALL
-	                 SELECT child.id, child.mental_model_id
+	                 SELECT child.id, child.mental_model_id, parent.path || child.id::text
 	                 FROM ` + qualified + `.knowledge_pages child
 	                 JOIN doomed parent ON child.parent_id = parent.id
-	                 WHERE child.bank_id = $1
+	                 WHERE child.bank_id = $1 AND NOT child.id = ANY(parent.path)
 	             )`
 	rows, err := tx.QueryContext(ctx,
 		subtree+` SELECT id, mental_model_id FROM doomed`, bankID, nodeID)
@@ -279,6 +307,9 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		return []KnowledgeHit{}, nil
 	}
 	bm25Text := knowledgeBM25Query(term)
+	if query.DisableTextArm {
+		bm25Text = ""
+	}
 	embedding := query.Embedding
 	if len(embedding) > 0 {
 		if err := ValidateEmbedding(embedding); err != nil {
@@ -311,11 +342,14 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		// Two arms, each ranked independently, then fused (k=60) in SQL. The
 		// vector arm ranks by cosine distance; the text arm by ts_rank_cd over
 		// the generated search_vector, which is built from name and content.
+		// The tag predicate is bound into both arms' WHERE, so the filter is
+		// applied before ranking (the five binds of the fused query precede it).
+		tagPred, tagArgs := knowledgeTagClause(query.Tags, query.TagsMatch, query.TagGroups, 5)
 		sqlQuery = `WITH vec AS (
 		                SELECT kp.id AS page_id,
 		                       ROW_NUMBER() OVER (ORDER BY mm.embedding <=> $1::vector, kp.id) AS rnk
 		                FROM ` + s.knowledgeFrom() + `
-		                WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL
+		                WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL ` + tagPred + `
 		                ORDER BY mm.embedding <=> $1::vector, kp.id
 		                LIMIT $3
 		            ),
@@ -324,7 +358,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		                       ROW_NUMBER() OVER (ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id) AS rnk
 		                FROM ` + s.knowledgeFrom() + `
 		                WHERE kp.bank_id = $2 AND kp.kind = 'page'
-		                      AND mm.search_vector @@ to_tsquery('english', $4)
+		                      AND mm.search_vector @@ to_tsquery('english', $4) ` + tagPred + `
 		                ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id
 		                LIMIT $3
 		            ),
@@ -342,32 +376,34 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		                   ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id
 		            ORDER BY f.score DESC, kp.id ASC
 		            LIMIT $5`
-		args = []any{EncodeEmbedding(embedding), query.BankID, fetch, bm25Text, limit}
+		args = append([]any{EncodeEmbedding(embedding), query.BankID, fetch, bm25Text, limit}, tagArgs...)
 	case len(embedding) > 0:
 		// Vector-only: the query carried nothing to match on, so rank straight
 		// off the ANN scan. One arm at rank 1 reports the 1.0 ceiling.
+		tagPred, tagArgs := knowledgeTagClause(query.Tags, query.TagsMatch, query.TagGroups, 3)
 		sqlQuery = `SELECT ` + knowledgeSelect + `,
 		                   ` + norm + `.0 / (` + rrfK + ` + ROW_NUMBER() OVER (
 		                         ORDER BY mm.embedding <=> $1::vector, kp.id)) AS score
 		            FROM ` + s.knowledgeFrom() + `
-		            WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL
+		            WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL ` + tagPred + `
 		            ORDER BY mm.embedding <=> $1::vector, kp.id ASC
 		            LIMIT $3`
-		args = []any{EncodeEmbedding(embedding), query.BankID, limit}
+		args = append([]any{EncodeEmbedding(embedding), query.BankID, limit}, tagArgs...)
 	default:
 		// Text-only: no arm to fuse with, so rank straight off ts_rank_cd and
 		// apply the same normalised RRF curve so the score means the same thing
 		// it does on the fused path — a top text hit reports 1.0.
+		tagPred, tagArgs := knowledgeTagClause(query.Tags, query.TagsMatch, query.TagGroups, 3)
 		sqlQuery = `SELECT ` + knowledgeSelect + `,
 		                   ` + norm + `.0
 		                   / (` + rrfK + ` + ROW_NUMBER() OVER (
 		                         ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id)) AS score
 		            FROM ` + s.knowledgeFrom() + `
 		            WHERE kp.bank_id = $1 AND kp.kind = 'page'
-		                  AND mm.search_vector @@ to_tsquery('english', $2)
+		                  AND mm.search_vector @@ to_tsquery('english', $2) ` + tagPred + `
 		            ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id ASC
 		            LIMIT $3`
-		args = []any{query.BankID, bm25Text, limit}
+		args = append([]any{query.BankID, bm25Text, limit}, tagArgs...)
 	}
 	rows, err := s.reader().QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
@@ -384,6 +420,54 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		hits = append(hits, KnowledgeHit{Node: node, Score: score})
 	}
 	return hits, rows.Err()
+}
+
+// knowledgeTagClause renders the tag predicate a knowledge search binds into
+// each arm's WHERE, so the filter is applied before ranking (the reference
+// builds the same clause from its KnowledgeTagFilter). The column is left
+// unqualified: knowledge_pages carries no tags column, so `tags` can only be
+// the mental model's, and the bare form is what the dialect rewriters expect.
+// `used` is the number of parameters already bound; the predicate's
+// placeholders continue from there.
+func knowledgeTagClause(tags []string, mode string, groups []TagGroup, used int) (string, []any) {
+	flat, flatArgs := knowledgeFlatTagClause(tags, mode, used)
+	groupClause, groupArgs := renderTagGroups(groups, used+len(flatArgs))
+	switch {
+	case flat == "" && groupClause == "":
+		return "", nil
+	case flat == "":
+		return " AND " + groupClause, groupArgs
+	case groupClause == "":
+		return " AND " + flat, flatArgs
+	default:
+		return " AND " + flat + " AND " + groupClause, append(flatArgs, groupArgs...)
+	}
+}
+
+// knowledgeFlatTagClause is listTagClause over the knowledge join's `tags`
+// column (the mental model's), with the same mode semantics: an empty tag set
+// filters nothing except under `exact`, which selects the untagged scope;
+// `any`/`all` admit untagged rows and the `_strict` modes exclude them.
+func knowledgeFlatTagClause(tags []string, mode string, used int) (string, []any) {
+	if len(tags) == 0 {
+		if mode == TagsMatchExact {
+			return "(tags IS NULL OR tags = '{}')", nil
+		}
+		return "", nil
+	}
+	placeholder := "$" + itoa(used+1)
+	switch mode {
+	case TagsMatchExact:
+		return "(tags @> " + placeholder + " AND tags <@ " + placeholder + ")", []any{tags}
+	case TagsMatchAll:
+		return "(tags IS NULL OR tags = '{}' OR tags @> " + placeholder + ")", []any{tags}
+	case TagsMatchAllStrict:
+		return "(tags IS NOT NULL AND tags != '{}' AND tags @> " + placeholder + ")", []any{tags}
+	case TagsMatchAnyStrict:
+		return "(tags IS NOT NULL AND tags != '{}' AND tags && " + placeholder + ")", []any{tags}
+	default: // any
+		return "(tags IS NULL OR tags = '{}' OR tags && " + placeholder + ")", []any{tags}
+	}
 }
 
 // scanKnowledgeNode reads the shared projection.

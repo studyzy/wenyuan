@@ -3,13 +3,17 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 )
 
 // directiveSelect is the shared projection so every read returns the same
-// column order the scanner expects.
+// column order the scanner expects. The tags column is rendered as a JSON array
+// rather than the array's text form: the shared text decoder drops empty
+// elements, but the reference stores the caller's tag list byte-for-byte, empty
+// strings included.
 const directiveSelect = `id, bank_id, name, content, COALESCE(priority,0), COALESCE(is_active,true),
-       COALESCE(tags, '{}')::text, created_at, updated_at`
+       array_to_json(COALESCE(tags, '{}'::text[]))::text, created_at, updated_at`
 
 // ListDirectives returns the directives of one bank, highest priority first so
 // the order a reflection would follow them is the order they are returned in.
@@ -59,7 +63,7 @@ func (s *PostgresStore) PutDirective(ctx context.Context, directive Directive) (
 	              name = EXCLUDED.name, content = EXCLUDED.content, priority = EXCLUDED.priority,
 	              is_active = EXCLUDED.is_active, tags = EXCLUDED.tags, updated_at = now()`
 	if _, err := s.db.ExecContext(ctx, query, directive.ID, directive.BankID, directive.Name,
-		directive.Content, directive.Priority, directive.IsActive, normalizeTags(directive.Tags)); err != nil {
+		directive.Content, directive.Priority, directive.IsActive, directive.Tags); err != nil {
 		return Directive{}, err
 	}
 	return s.GetDirective(ctx, directive.BankID, directive.ID)
@@ -114,6 +118,15 @@ func scanDirective(row rowScanner) (Directive, error) {
 		&directive.Priority, &directive.IsActive, &tags, &directive.CreatedAt, &directive.UpdatedAt); err != nil {
 		return Directive{}, err
 	}
-	directive.Tags = decodeTextArray(tags)
+	if tags == "" {
+		directive.Tags = []string{}
+		return directive, nil
+	}
+	if err := json.Unmarshal([]byte(tags), &directive.Tags); err != nil {
+		return Directive{}, err
+	}
+	if directive.Tags == nil {
+		directive.Tags = []string{}
+	}
 	return directive, nil
 }

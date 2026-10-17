@@ -49,8 +49,20 @@ func (s *PostgresStore) DeleteDocument(ctx context.Context, bankID, docID string
 	unitsAffected := 0
 	unitsStatement := `DELETE FROM ` + qualified + `.memory_units WHERE bank_id = $1 AND document_id = $2`
 	documentStatement := `DELETE FROM ` + qualified + `.documents WHERE bank_id = $1 AND id = $2`
+	// The postings this document's units carry are about to go, so give back
+	// their mention counts first, while the rows are still readable.
+	if err := releaseEntityPostings(ctx, tx, qualified,
+		`ue.unit_id IN (SELECT id FROM `+qualified+`.memory_units WHERE bank_id = $1 AND document_id = $2)`,
+		bankID, docID); err != nil {
+		return 0, err
+	}
 	// Links that reference a removed unit go first, because they hold the
-	// foreign keys.
+	// foreign keys. The survivors that pointed at these units lose their
+	// outgoing edges when that happens, so they are queued for a relink while
+	// the rows are still readable.
+	if err := s.enqueueRelinkVictims(ctx, tx, bankID, unitIDs, false); err != nil {
+		return 0, err
+	}
 	for _, statement := range []string{
 		`DELETE FROM ` + qualified + `.memory_links
 		 WHERE from_unit_id IN (SELECT id FROM ` + qualified + `.memory_units WHERE bank_id = $1 AND document_id = $2)

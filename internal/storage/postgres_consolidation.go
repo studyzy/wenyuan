@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
+
+	"github.com/studyzy/wenyuan/internal/timefmt"
 )
 
 // ConsolidationTuning reports the deployment's consolidation knobs, so the pass
@@ -187,7 +190,7 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 // not grow without bound.
 func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error {
 	if s.tuning.ObservationHistory {
-		if err := s.appendObservationHistory(ctx, bankID, observationID); err != nil {
+		if err := s.appendObservationHistory(ctx, bankID, observationID, sourceIDs); err != nil {
 			return err
 		}
 	}
@@ -209,35 +212,52 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 // It is the reference's default for a store built without tuning.
 const ObservationHistoryMaxEntries = DefaultHistoryMaxEntries
 
-// appendObservationHistory records the observation's current text as a history
+// observationHistorySnapshot is the pre-update state of an observation. It is
+// persisted as the `content` JSON blob of one observation_history row, with the
+// reference's own key names so a row written by either implementation reads the
+// same.
+type observationHistorySnapshot struct {
+	PreviousText          *string  `json:"previous_text"`
+	PreviousTags          []string `json:"previous_tags"`
+	PreviousOccurredStart *string  `json:"previous_occurred_start"`
+	PreviousOccurredEnd   *string  `json:"previous_occurred_end"`
+	PreviousMentionedAt   *string  `json:"previous_mentioned_at"`
+	NewSourceMemoryIDs    []string `json:"new_source_memory_ids"`
+}
+
+// appendObservationHistory records the observation's current state as a history
 // entry, then drops the entries beyond the retention bound.
 //
-// The snapshot is one JSONB row rather than a copy of every column, because the
-// history answers "what did this conclusion say before" and nothing else. An
-// observation that does not exist yet (or was removed by a concurrent pass) has
-// nothing to snapshot, which is not an error.
-func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, observationID string) error {
-	qualified := quoteIdent(s.schema)
-	current, err := s.observationText(ctx, bankID, observationID)
+// The snapshot carries the observation's pre-update text, tags and timestamps
+// plus the source memories this change folds in, which is what the history view
+// rebuilds "what sources did this conclusion rest on before this change" from.
+// An observation that does not exist yet (or was removed by a concurrent pass)
+// has nothing to snapshot, which is not an error.
+func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, observationID string, sourceIDs []string) error {
+	current, err := s.observationSnapshot(ctx, bankID, observationID)
 	if err != nil {
 		return err
 	}
-	if current == "" {
+	if current == nil {
 		return nil
 	}
-	snapshot, err := jsonColumn(map[string]any{"text": current})
+	current.NewSourceMemoryIDs = sourceIDs
+	if current.NewSourceMemoryIDs == nil {
+		current.NewSourceMemoryIDs = []string{}
+	}
+	snapshot, err := json.Marshal(current)
 	if err != nil {
 		return err
 	}
-	insert := `INSERT INTO ` + qualified + `.observation_history (observation_id, bank_id, content, changed_at)
+	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.observation_history (observation_id, bank_id, content, changed_at)
 	          VALUES ($1, $2, $3::jsonb, now())`
 	if _, err := s.db.ExecContext(ctx, insert, observationID, bankID, snapshot); err != nil {
 		return err
 	}
-	prune := `DELETE FROM ` + qualified + `.observation_history
+	prune := `DELETE FROM ` + quoteIdent(s.schema) + `.observation_history
 	          WHERE observation_id = $1
 	            AND id NOT IN (
-	                SELECT id FROM ` + qualified + `.observation_history
+	                SELECT id FROM ` + quoteIdent(s.schema) + `.observation_history
 	                WHERE observation_id = $1
 	                ORDER BY changed_at DESC, id DESC
 	                LIMIT $2
@@ -256,19 +276,35 @@ func (s *PostgresStore) observationHistoryBound() int {
 	return ObservationHistoryMaxEntries
 }
 
-// observationText returns one observation's text, or "" when it is gone.
-func (s *PostgresStore) observationText(ctx context.Context, bankID, observationID string) (string, error) {
-	query := `SELECT text FROM ` + quoteIdent(s.schema) + `.memory_units
+// observationSnapshot reads one observation's pre-update state, or nil when it
+// is gone.
+func (s *PostgresStore) observationSnapshot(ctx context.Context, bankID, observationID string) (*observationHistorySnapshot, error) {
+	query := `SELECT COALESCE(text,''), COALESCE(tags, '{}'::text[])::text, occurred_start, occurred_end, mentioned_at
+	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $3`
-	var text string
-	err := s.db.QueryRowContext(ctx, query, bankID, observationID, string(TypeObservation)).Scan(&text)
+	var (
+		text, tagsRaw                           string
+		occurredStart, occurredEnd, mentionedAt *time.Time
+	)
+	err := s.db.QueryRowContext(ctx, query, bankID, observationID, string(TypeObservation)).
+		Scan(&text, &tagsRaw, &occurredStart, &occurredEnd, &mentionedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return text, nil
+	tags := decodePostgresTextArray([]byte(tagsRaw))
+	if tags == nil {
+		tags = []string{}
+	}
+	return &observationHistorySnapshot{
+		PreviousText:          &text,
+		PreviousTags:          tags,
+		PreviousOccurredStart: timefmt.FormatTimestampPtr(occurredStart),
+		PreviousOccurredEnd:   timefmt.FormatTimestampPtr(occurredEnd),
+		PreviousMentionedAt:   timefmt.FormatTimestampPtr(mentionedAt),
+	}, nil
 }
 
 // DeleteObservation removes one observation. Its evidence is an array on the
@@ -413,7 +449,7 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 		// nothing about them changed, so only the scheduler marker is cleared.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
-			 WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+			 WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
 			bankID, remaining); err != nil {
 			return 0, err
 		}

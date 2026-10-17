@@ -53,7 +53,12 @@ func (s *MemoryStore) ListAttachments(ctx context.Context, bankID, documentID st
 }
 
 // ChunkAttachments returns each chunk's attachments, keyed by chunk id: the
-// attachments of the units that were drawn from that chunk.
+// attachments the chunk's own text references, in first-appearance order.
+//
+// Provenance is the chunk text, not the units drawn from it: a chunk's text is
+// where the inline placeholder stands, so an attachment is listed on the chunk
+// that carries it whether or not any fact was extracted from that part of the
+// text (and never on a sibling chunk that does not).
 func (s *MemoryStore) ChunkAttachments(ctx context.Context, bankID, documentID string) (map[string][]Attachment, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -69,31 +74,27 @@ func (s *MemoryStore) ChunkAttachments(ctx context.Context, bankID, documentID s
 			byShortID[attachment.ShortID] = attachment
 		}
 	}
-	byChunk := map[string][]Attachment{}
-	seen := map[string]map[string]bool{}
-	for _, unit := range s.units {
-		if unit.BankID != bankID || unit.DocumentID != documentID || unit.ChunkID == "" {
-			continue
-		}
-		for _, shortID := range unit.AttachmentIDs {
-			attachment, ok := byShortID[shortID]
-			if !ok {
-				continue
-			}
-			if seen[unit.ChunkID] == nil {
-				seen[unit.ChunkID] = map[string]bool{}
-			}
-			if seen[unit.ChunkID][shortID] {
-				continue
-			}
-			seen[unit.ChunkID][shortID] = true
-			byChunk[unit.ChunkID] = append(byChunk[unit.ChunkID], attachment)
+	chunks := make([]Chunk, 0)
+	for _, chunk := range s.chunks {
+		if chunk.BankID == bankID && chunk.DocumentID == documentID {
+			chunks = append(chunks, chunk)
 		}
 	}
-	for chunkID := range byChunk {
-		sort.Slice(byChunk[chunkID], func(i, j int) bool {
-			return byChunk[chunkID][i].AttachmentHash < byChunk[chunkID][j].AttachmentHash
-		})
+	sort.SliceStable(chunks, func(i, j int) bool {
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+	})
+	byChunk := map[string][]Attachment{}
+	for _, chunk := range chunks {
+		seen := map[string]bool{}
+		for _, shortID := range referencedAttachmentIDs(chunk.ChunkText) {
+			if seen[shortID] {
+				continue
+			}
+			seen[shortID] = true
+			if attachment, ok := byShortID[shortID]; ok {
+				byChunk[chunk.ChunkID] = append(byChunk[chunk.ChunkID], attachment)
+			}
+		}
 	}
 	return byChunk, nil
 }

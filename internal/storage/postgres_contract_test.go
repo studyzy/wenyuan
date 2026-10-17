@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,6 +45,56 @@ func TestPostgresContractAliasesAndBanks(t *testing.T) {
 	}
 	if _, err := store.ListBanks(ctx, BankQuery{Limit: 10}); err != nil {
 		t.Fatalf("list banks: %v", err)
+	}
+}
+
+// A duplicate alias the pre-check cannot see — because the name was resolved as
+// absent before the conflicting row appeared — is caught by the primary key and
+// reported as the reference's conflict rather than a raw write error.
+func TestPostgresContractAliasInsertRace(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	pg, ok := store.(*PostgresStore)
+	if !ok {
+		t.Fatalf("store = %T, want *PostgresStore", store)
+	}
+
+	// Prime the cache with a negative resolution so the pre-check believes the
+	// name is free while the row below already occupies it.
+	if _, err := store.ResolveBankID(ctx, "dup-alias"); err != nil {
+		t.Fatalf("prime negative resolve: %v", err)
+	}
+	if _, err := pg.db.ExecContext(ctx,
+		`INSERT INTO `+quoteIdent(pg.schema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ('dup-alias','vec-bank',false)`); err != nil {
+		t.Fatalf("seed alias row: %v", err)
+	}
+	if _, err := store.AddAlias(ctx, "vec-bank", "dup-alias", false); !errors.Is(err, ErrAliasConflict) {
+		t.Fatalf("racing alias insert = %v, want ErrAliasConflict", err)
+	}
+}
+
+// The directive tags are stored byte-for-byte: the reference writes the
+// caller's list straight into the text[] column, with no trimming or dropping.
+func TestPostgresContractDirectiveTagsVerbatim(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+
+	created, err := store.PutDirective(ctx, Directive{
+		ID: "11111111-1111-1111-1111-111111111111", BankID: "vec-bank", Name: "n", Content: "c",
+		Tags: []string{" a ", "", "b"},
+	})
+	if err != nil {
+		t.Fatalf("put directive: %v", err)
+	}
+	if len(created.Tags) != 3 || created.Tags[0] != " a " || created.Tags[1] != "" || created.Tags[2] != "b" {
+		t.Fatalf("stored tags = %#v, want the caller's list verbatim", created.Tags)
+	}
+	readBack, err := store.GetDirective(ctx, "vec-bank", "11111111-1111-1111-1111-111111111111")
+	if err != nil {
+		t.Fatalf("get directive: %v", err)
+	}
+	if len(readBack.Tags) != 3 || readBack.Tags[0] != " a " || readBack.Tags[1] != "" || readBack.Tags[2] != "b" {
+		t.Fatalf("read-back tags = %#v, want the caller's list verbatim", readBack.Tags)
 	}
 }
 
@@ -116,11 +167,19 @@ func TestPostgresContractWebhooks(t *testing.T) {
 	} else if deliveries.Deliveries == nil {
 		t.Fatal("deliveries must be an array, not nil")
 	}
+	if _, err := store.ListWebhookDeliveries(ctx, "vec-bank", webhook.ID, 10, "not-a-timestamp"); err == nil ||
+		!strings.Contains(err.Error(), "invalid input for query argument $3: 'not-a-timestamp'") {
+		t.Fatalf("malformed cursor = %v, want the reference's adapter error", err)
+	}
 	if err := store.DeleteWebhook(ctx, "vec-bank", webhook.ID); err != nil {
 		t.Fatalf("delete webhook: %v", err)
 	}
 	if _, err := store.GetWebhook(ctx, "vec-bank", webhook.ID); !errors.Is(err, ErrWebhookNotFound) {
 		t.Fatalf("get after delete = %v", err)
+	}
+	// A deleted webhook's delivery rows are historical facts and are retained.
+	if _, err := store.ListWebhookDeliveries(ctx, "vec-bank", webhook.ID, 10, ""); err != nil {
+		t.Fatalf("list deliveries after delete: %v", err)
 	}
 }
 

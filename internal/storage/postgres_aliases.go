@@ -78,6 +78,12 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+quoteIdent(s.schema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ($1,$2,$3)`,
 		alias, bankID, primary); err != nil {
+		// A concurrent create of the same alias loses the unique constraint the
+		// read-then-write check above cannot close; report the reference's
+		// conflict rather than the raw write error.
+		if isUniqueViolation(err) {
+			return nil, ErrAliasConflict
+		}
 		return nil, err
 	}
 	// The negative the conflict check above cached for this name would

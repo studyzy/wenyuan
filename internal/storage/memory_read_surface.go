@@ -5,9 +5,13 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DocumentFactCounts returns the document's memory units grouped by fact type.
+// Observations carry no document id of their own, so they are counted through
+// the units the document owns: an observation belongs to the document when one
+// of the document's units is among its sources.
 func (s *MemoryStore) DocumentFactCounts(ctx context.Context, bankID, docID string) (map[string]int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -18,11 +22,26 @@ func (s *MemoryStore) DocumentFactCounts(ctx context.Context, bankID, docID stri
 		return nil, s.readErr
 	}
 	counts := map[string]int{}
+	documentUnits := map[string]bool{}
 	for _, unit := range s.units {
 		if unit.BankID == bankID && unit.DocumentID == docID {
 			counts[string(unit.FactType)]++
+			documentUnits[unit.ID] = true
 		}
 	}
+	observations := 0
+	for _, unit := range s.units {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
+			continue
+		}
+		for _, source := range unit.SourceMemoryIDs {
+			if documentUnits[source] {
+				observations++
+				break
+			}
+		}
+	}
+	counts[string(TypeObservation)] = observations
 	return counts, nil
 }
 
@@ -87,12 +106,7 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 		if doc.BankID != query.BankID {
 			continue
 		}
-		if len(query.Tags) > 0 && !matchFlatTags(doc.Tags, query.Tags, mode) {
-			continue
-		}
-		// A compound filter — the caller's resolved read scope — must also
-		// admit the document, so a scoped reader sees only its own documents.
-		if len(query.TagGroups) > 0 && !matchesTagFilter(doc.Tags, query.Tags, mode, query.TagGroups) {
+		if !documentsTagFilter(doc.Tags, query.Tags, mode, query.TagGroups) {
 			continue
 		}
 		if !documentWithinWindow(doc, query) {
@@ -104,12 +118,7 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 		}
 		matched = append(matched, doc)
 	}
-	sort.SliceStable(matched, func(i, j int) bool {
-		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
-			return matched[i].CreatedAt.After(matched[j].CreatedAt)
-		}
-		return matched[i].ID < matched[j].ID
-	})
+	sortDocuments(matched, query)
 	total := len(matched)
 	start, end := pageBounds(total, query.Offset, query.Limit)
 	page := matched[start:end]
@@ -210,7 +219,7 @@ func (s *MemoryStore) ListEntities(ctx context.Context, query EntityQuery) (Enti
 		return EntityPage{}, s.readErr
 	}
 	matched := make([]Entity, 0, len(s.entities))
-	counts := s.entityMentionCountsLocked(query)
+	stats := s.entityStatsLocked(query)
 	for _, entity := range s.entities {
 		if entity.BankID != query.BankID {
 			continue
@@ -218,18 +227,32 @@ func (s *MemoryStore) ListEntities(ctx context.Context, query EntityQuery) (Enti
 		if query.ID != "" && entity.ID != query.ID {
 			continue
 		}
-		if counts != nil {
-			count, ok := counts[entity.ID]
+		if stats != nil {
+			stat, ok := stats[entity.ID]
 			if !ok {
 				continue
 			}
-			entity.MentionCount = count
+			entity.MentionCount = stat.mentions
+			entity.FirstSeen = stat.first
+			entity.LastSeen = stat.last
 		}
 		matched = append(matched, entity)
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
 		if matched[i].MentionCount != matched[j].MentionCount {
 			return matched[i].MentionCount > matched[j].MentionCount
+		}
+		// last_seen DESC, with a missing stamp ordered first the way PostgreSQL
+		// orders NULLs under a descending sort.
+		left, right := matched[i].LastSeen, matched[j].LastSeen
+		switch {
+		case left == nil && right == nil:
+		case left == nil:
+			return true
+		case right == nil:
+			return false
+		case !left.Equal(*right):
+			return left.After(*right)
 		}
 		return matched[i].ID < matched[j].ID
 	})
@@ -238,10 +261,18 @@ func (s *MemoryStore) ListEntities(ctx context.Context, query EntityQuery) (Enti
 	return EntityPage{Entities: matched[start:end], Total: total, Limit: query.Limit, Offset: query.Offset}, nil
 }
 
-// entityMentionCountsLocked returns per-entity mention counts over the units a
-// query's tag predicate admits, or nil when no tag filter is active, so the
-// caller keeps the stored counts.
-func (s *MemoryStore) entityMentionCountsLocked(query EntityQuery) map[string]int {
+// entityStat is one entity's mention count and date span over a tag filter's
+// matching memories.
+type entityStat struct {
+	mentions int
+	first    *time.Time
+	last     *time.Time
+}
+
+// entityStatsLocked returns each entity's mention count and date span over the
+// units a query's tag predicate admits, or nil when no tag filter is active, so
+// the caller keeps the stored columns.
+func (s *MemoryStore) entityStatsLocked(query EntityQuery) map[string]*entityStat {
 	mode := query.TagsMatch
 	if mode == "" {
 		mode = TagsMatchAny
@@ -249,16 +280,41 @@ func (s *MemoryStore) entityMentionCountsLocked(query EntityQuery) map[string]in
 	if !tagFilterActive(query.Tags, mode, query.TagGroups) {
 		return nil
 	}
-	counts := map[string]int{}
+	stats := map[string]*entityStat{}
 	for _, unit := range s.units {
 		if unit.BankID != query.BankID || !matchesTagFilter(unit.Tags, query.Tags, mode, query.TagGroups) {
 			continue
 		}
+		seen := unitSeenAt(unit)
 		for _, id := range s.unitEntities[unit.ID] {
-			counts[id]++
+			stat, ok := stats[id]
+			if !ok {
+				stat = &entityStat{}
+				stats[id] = stat
+			}
+			stat.mentions++
+			if stat.first == nil || seen.Before(*stat.first) {
+				stat.first = seen
+			}
+			if stat.last == nil || seen.After(*stat.last) {
+				stat.last = seen
+			}
 		}
 	}
-	return counts
+	return stats
+}
+
+// unitSeenAt is the per-memory date retain stamps on an entity: the occurrence
+// start, falling back to when it was mentioned, with the event date last (it is
+// never absent).
+func unitSeenAt(unit MemoryUnit) *time.Time {
+	if unit.OccurredStart != nil {
+		return unit.OccurredStart
+	}
+	if unit.MentionedAt != nil {
+		return unit.MentionedAt
+	}
+	return unit.EventDate
 }
 
 // Graph returns the bank's memory graph for the query's filtered unit set. The
@@ -297,10 +353,10 @@ func (s *MemoryStore) Graph(ctx context.Context, query GraphQuery) (GraphData, e
 			!strings.Contains(strings.ToLower(unit.Context), term) {
 			continue
 		}
-		if query.DocumentID != "" && unit.DocumentID != query.DocumentID {
+		if query.DocumentID != "" && !s.unitMatchesSourceFieldLocked(unit, "document_id", query.DocumentID) {
 			continue
 		}
-		if query.ChunkID != "" && unit.ChunkID != query.ChunkID {
+		if query.ChunkID != "" && !s.unitMatchesSourceFieldLocked(unit, "chunk_id", query.ChunkID) {
 			continue
 		}
 		if !matchesTagFilter(unit.Tags, query.Tags, mode, query.TagGroups) {
@@ -312,52 +368,90 @@ func (s *MemoryStore) Graph(ctx context.Context, query GraphQuery) (GraphData, e
 		left, right := units[i].MentionedAt, units[j].MentionedAt
 		switch {
 		case left == nil && right == nil:
-			return units[i].ID < units[j].ID
+			// Fall through to the event-date tiebreak.
 		case left == nil:
-			return false
+			return false // NULLS LAST under a descending sort.
 		case right == nil:
 			return true
-		default:
+		case !left.Equal(*right):
 			return left.After(*right)
 		}
+		// event_date DESC; PostgreSQL orders NULLs first under a descending sort.
+		leftDate, rightDate := units[i].EventDate, units[j].EventDate
+		switch {
+		case leftDate == nil && rightDate == nil:
+			return false
+		case leftDate == nil:
+			return true
+		case rightDate == nil:
+			return false
+		}
+		if !leftDate.Equal(*rightDate) {
+			return leftDate.After(*rightDate)
+		}
+		// The two leading keys tie, which PostgreSQL leaves unordered; break the
+		// tie on the identifier so the node list — and the derived edge
+		// direction that follows it — is the same on every render.
+		return units[i].ID < units[j].ID
 	})
 	total := len(units)
 	if len(units) > limit {
 		units = units[:limit]
 	}
 
-	kept := map[string]bool{}
 	nodes := make([]GraphNodeData, 0, len(units))
 	rows := make([]GraphTableRow, 0, len(units))
 	for _, unit := range units {
-		kept[unit.ID] = true
 		entities := s.entityNamesForUnitLocked(unit.ID)
+		if len(entities) == 0 && unit.FactType == TypeObservation {
+			entities = s.inheritedEntityNamesLocked(unit, query.BankID)
+		}
 		nodes = append(nodes, GraphNodeData{
 			ID: unit.ID, Text: unit.Text, Context: unit.Context, FactType: string(unit.FactType),
 			Entities: entities, DocumentID: unit.DocumentID, ChunkID: unit.ChunkID,
 			Tags: unit.Tags, Mentioned: unit.MentionedAt, Date: unit.EventDate,
+			CreatedAt: unit.CreatedAt, SourceMemoryIDs: unit.SourceMemoryIDs,
 		})
 		rows = append(rows, GraphTableRow{
 			ID: unit.ID, Text: unit.Text, Context: unit.Context,
 			OccurredStart: unit.OccurredStart, OccurredEnd: unit.OccurredEnd,
-			MentionedAt: unit.MentionedAt, Date: unit.EventDate,
-			Entities:   strings.Join(entities, ","),
+			MentionedAt: unit.MentionedAt, Date: unit.EventDate, CreatedAt: unit.CreatedAt,
+			Entities:   strings.Join(entities, ", "),
 			DocumentID: unit.DocumentID, ChunkID: unit.ChunkID, FactType: string(unit.FactType),
-			Tags: unit.Tags, ProofCount: 1,
+			Tags: unit.Tags, ProofCount: unit.ProofCount,
 		})
 	}
 
-	// An edge is kept only when both of its endpoints are in the bounded node
-	// set, so the client never receives a dangling reference.
-	edges := make([]GraphEdgeData, 0)
+	// The stored links among the visible units and the source memories they
+	// inherit from, strongest first and bounded, so the derived edges can be
+	// built from one pass. An entity edge is derived, not stored.
+	linkIDs := make(map[string]bool, len(units))
+	for _, unit := range units {
+		linkIDs[unit.ID] = true
+		for _, source := range unit.SourceMemoryIDs {
+			linkIDs[source] = true
+		}
+	}
+	links := make([]GraphEdgeData, 0)
 	for _, link := range s.links {
-		if link.BankID != query.BankID || !kept[link.FromUnitID] || !kept[link.ToUnitID] {
+		if link.BankID != query.BankID || !linkIDs[link.FromUnitID] || !linkIDs[link.ToUnitID] {
 			continue
 		}
-		edges = append(edges, GraphEdgeData{
-			ID: link.FromUnitID + "->" + link.ToUnitID, From: link.FromUnitID, To: link.ToUnitID, Type: string(link.LinkType),
+		links = append(links, GraphEdgeData{
+			From: link.FromUnitID, To: link.ToUnitID, Type: string(link.LinkType), Weight: link.Weight,
 		})
 	}
+	sort.SliceStable(links, func(i, j int) bool { return links[i].Weight > links[j].Weight })
+	if len(links) > graphEdgeCap {
+		links = links[:graphEdgeCap]
+	}
+	entityNames := make(map[string][]string, len(nodes))
+	for _, node := range nodes {
+		if len(node.Entities) > 0 {
+			entityNames[node.ID] = node.Entities
+		}
+	}
+	edges := deriveGraphEdges(nodes, entityNames, links)
 	return GraphData{Nodes: nodes, Edges: edges, TableRows: rows, Total: total, Limit: limit}, nil
 }
 
@@ -373,9 +467,6 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 		limit = 1000
 	}
 	minCount := query.MinCount
-	if minCount < 1 {
-		minCount = 1
-	}
 	mode := query.TagsMatch
 	if mode == "" {
 		mode = TagsMatchAny
@@ -389,27 +480,17 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 
 	mentions := map[string]int{}
 	weights := map[string]int{}
-	if tagFilterActive(query.Tags, mode, query.TagGroups) {
+	seen := map[string]time.Time{}
+	// The tag-filtered path recomputes everything from the matching memories; the
+	// unfiltered path keeps the stored counters but still derives when each pair
+	// was last seen together from the units that name it.
+	filtered := tagFilterActive(query.Tags, mode, query.TagGroups)
+	if filtered {
 		for _, unit := range s.units {
 			if unit.BankID != bankID || !matchesTagFilter(unit.Tags, query.Tags, mode, query.TagGroups) {
 				continue
 			}
-			ids := s.unitEntities[unit.ID]
-			for _, id := range ids {
-				mentions[id]++
-			}
-			for i := range ids {
-				for j := i + 1; j < len(ids); j++ {
-					a, b := ids[i], ids[j]
-					if a == b {
-						continue
-					}
-					if a > b {
-						a, b = b, a
-					}
-					weights[a+"\x00"+b]++
-				}
-			}
+			recordEntityCooccurrence(unit, s.unitEntities[unit.ID], mentions, weights, seen)
 		}
 	} else {
 		for _, entity := range s.entities {
@@ -424,11 +505,18 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 			}
 			weights[parts[1]+"\x00"+parts[2]] = count
 		}
+		for _, unit := range s.units {
+			if unit.BankID != bankID {
+				continue
+			}
+			recordEntityCooccurrence(unit, s.unitEntities[unit.ID], nil, nil, seen)
+		}
 	}
 
 	type pair struct {
 		from, to string
 		weight   int
+		seen     *time.Time
 	}
 	pairs := make([]pair, 0, len(weights))
 	for key, count := range weights {
@@ -439,29 +527,45 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 		if len(parts) != 2 {
 			continue
 		}
-		pairs = append(pairs, pair{from: parts[0], to: parts[1], weight: count})
+		var lastSeen *time.Time
+		if stamp, ok := seen[key]; ok {
+			value := stamp
+			lastSeen = &value
+		}
+		pairs = append(pairs, pair{from: parts[0], to: parts[1], weight: count, seen: lastSeen})
 	}
 	sort.SliceStable(pairs, func(i, j int) bool {
 		if pairs[i].weight != pairs[j].weight {
 			return pairs[i].weight > pairs[j].weight
 		}
-		if pairs[i].from != pairs[j].from {
-			return pairs[i].from < pairs[j].from
+		// last_cooccurred DESC, most recent first.
+		left, right := pairs[i].seen, pairs[j].seen
+		switch {
+		case left == nil && right == nil:
+			return false
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		default:
+			return left.After(*right)
 		}
-		return pairs[i].to < pairs[j].to
 	})
 	if len(pairs) > limit {
 		pairs = pairs[:limit]
 	}
-	seen := map[string]bool{}
+	nodeSet := map[string]bool{}
 	edges := make([]EntityGraphEdge, 0, len(pairs))
 	for _, p := range pairs {
-		seen[p.from] = true
-		seen[p.to] = true
-		edges = append(edges, EntityGraphEdge{ID: p.from + "->" + p.to, Source: p.from, Target: p.to, Weight: p.weight})
+		nodeSet[p.from] = true
+		nodeSet[p.to] = true
+		edges = append(edges, EntityGraphEdge{
+			ID: p.from + "->" + p.to, Source: p.from, Target: p.to, Weight: p.weight,
+			LastCooccurred: p.seen,
+		})
 	}
-	nodes := make([]EntityGraphNode, 0, len(seen))
-	for id := range seen {
+	nodes := make([]EntityGraphNode, 0, len(nodeSet))
+	for id := range nodeSet {
 		entity, ok := s.entities[id]
 		if !ok {
 			continue
@@ -478,18 +582,146 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 		TotalEdges: len(edges), Limit: limit}, nil
 }
 
-// documentWithinWindow reports whether a document's selected timestamp falls
-// inside the query's optional bounds. An absent bound is unbounded on that
-// side.
-func documentWithinWindow(doc Document, query DocumentQuery) bool {
-	instant := doc.CreatedAt
-	if query.TimeField == "updated_at" {
-		instant = doc.UpdatedAt
+// recordEntityCooccurrence folds one memory's entities into the graph's running
+// counts, optionally accumulating how recently each pair was seen. A nil
+// weights map means the caller keeps its stored counts and only wants the
+// timestamps.
+func recordEntityCooccurrence(unit MemoryUnit, entityIDs []string, mentions, weights map[string]int, seen map[string]time.Time) {
+	stamp := unitSeenAt(unit)
+	for _, id := range entityIDs {
+		if mentions != nil {
+			mentions[id]++
+		}
 	}
+	for i := range entityIDs {
+		for j := i + 1; j < len(entityIDs); j++ {
+			a, b := entityIDs[i], entityIDs[j]
+			if a == b {
+				continue
+			}
+			if a > b {
+				a, b = b, a
+			}
+			key := a + "\x00" + b
+			if weights != nil {
+				weights[key]++
+			}
+			if stamp != nil {
+				if current, ok := seen[key]; !ok || stamp.After(current) {
+					seen[key] = *stamp
+				}
+			}
+		}
+	}
+}
+
+// documentsTagFilter applies the reference's document tag predicate. Unlike the
+// shared unit predicate, the plain any/all modes admit an untagged document:
+// their clause is a disjunction over the row's own tags, not a requirement that
+// the row carry any.
+func documentsTagFilter(present, tags []string, mode string, groups []TagGroup) bool {
+	if len(groups) > 0 {
+		return matchTagGroups(present, groups)
+	}
+	switch mode {
+	case TagsMatchAny, TagsMatchAll:
+		if len(present) == 0 {
+			return true
+		}
+	}
+	if len(tags) == 0 && mode != TagsMatchExact {
+		return true
+	}
+	return matchFlatTags(present, tags, mode)
+}
+
+// sortDocuments orders a document page the way the reference does: by the
+// window axis descending when a window is asked for, and by last write first
+// (updated_at, then created_at, then id) otherwise.
+func sortDocuments(docs []Document, query DocumentQuery) {
+	if axis, windowed := windowAxis(query); windowed {
+		sort.SliceStable(docs, func(i, j int) bool {
+			left, right := documentAxis(docs[i], axis), documentAxis(docs[j], axis)
+			if !left.Equal(right) {
+				return left.After(right)
+			}
+			return docs[i].ID < docs[j].ID
+		})
+		return
+	}
+	sort.SliceStable(docs, func(i, j int) bool {
+		if !docs[i].UpdatedAt.Equal(docs[j].UpdatedAt) {
+			return docs[i].UpdatedAt.After(docs[j].UpdatedAt)
+		}
+		if !docs[i].CreatedAt.Equal(docs[j].CreatedAt) {
+			return docs[i].CreatedAt.After(docs[j].CreatedAt)
+		}
+		return docs[i].ID < docs[j].ID
+	})
+}
+
+// unitMatchesSourceFieldLocked reports whether a unit is selected by a
+// document_id/chunk_id filter: directly, or — the way the reference matches an
+// observation — through one of the memories it was consolidated from.
+func (s *MemoryStore) unitMatchesSourceFieldLocked(unit MemoryUnit, field, value string) bool {
+	if field == "document_id" && unit.DocumentID == value {
+		return true
+	}
+	if field == "chunk_id" && unit.ChunkID == value {
+		return true
+	}
+	if unit.FactType != TypeObservation {
+		return false
+	}
+	for _, sourceID := range unit.SourceMemoryIDs {
+		source, ok := s.units[sourceID]
+		if !ok {
+			continue
+		}
+		if field == "document_id" && source.DocumentID == value {
+			return true
+		}
+		if field == "chunk_id" && source.ChunkID == value {
+			return true
+		}
+	}
+	return false
+}
+
+// documentAxis reads the timestamp a windowed document query filters on.
+func documentAxis(doc Document, axis string) time.Time {
+	if axis == "created_at" {
+		return doc.CreatedAt
+	}
+	return doc.UpdatedAt
+}
+
+// windowAxis reports the column a document query's window filters and orders
+// by, and whether a window was requested at all.
+func windowAxis(query DocumentQuery) (string, bool) {
+	if query.TimeField == "" && query.TimeStart == nil && query.TimeEnd == nil {
+		return "", false
+	}
+	if query.TimeField == "created_at" {
+		return "created_at", true
+	}
+	return "updated_at", true
+}
+
+// documentWithinWindow reports whether a document's selected timestamp falls
+// inside the query's optional bounds. A window orders and filters on one axis;
+// rows with no value on that axis are excluded, and the window is half-open
+// [start, end).
+func documentWithinWindow(doc Document, query DocumentQuery) bool {
+	axis, windowed := windowAxis(query)
+	if !windowed {
+		return true
+	}
+	instant := documentAxis(doc, axis)
 	if query.TimeStart != nil && instant.Before(*query.TimeStart) {
 		return false
 	}
-	if query.TimeEnd != nil && instant.After(*query.TimeEnd) {
+	if query.TimeEnd != nil && !instant.Before(*query.TimeEnd) {
 		return false
 	}
 	return true

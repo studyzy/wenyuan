@@ -290,3 +290,55 @@ func TestCancelOperationLifecycle(t *testing.T) {
 		t.Fatalf("cancel of a terminal operation err = %v, want conflict", err)
 	}
 }
+
+// ts-0048: the persisted retain parameters carry every replayable setting the
+// write was given, including the supplied entities and their resolution switch,
+// which a reprocess replays. A document with no explicit entities carries
+// neither key, so its reprocess falls back to the bank default rather than to a
+// stale list.
+func TestRetainParamsCarryEntitiesAndResolution(t *testing.T) {
+	store := NewMemoryStore("public")
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID: "b1",
+		Items: []RetainItem{{
+			Content:         "Alice met Bob.",
+			DocumentID:      "d1",
+			Context:         "ctx",
+			Strategy:        "strategy",
+			Entities:        []RetainEntity{{Text: "Alice", Kind: "PERSON"}},
+			ResolveEntities: false,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.GetDocument(context.TODO(), "b1", "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entities, ok := doc.RetainParams["entities"].([]map[string]any)
+	if !ok || len(entities) != 1 {
+		t.Fatalf("retain_params[entities] = %#v, want one entity", doc.RetainParams["entities"])
+	}
+	if entities[0]["text"] != "Alice" || entities[0]["type"] != "PERSON" {
+		t.Fatalf("stored entity = %#v", entities[0])
+	}
+	if resolve, ok := doc.RetainParams["resolve_entities"].(bool); !ok || resolve {
+		t.Fatalf("retain_params[resolve_entities] = %#v, want false", doc.RetainParams["resolve_entities"])
+	}
+
+	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
+		BankID: "b1", Items: []RetainItem{{Content: "plain", DocumentID: "d2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := store.GetDocument(context.TODO(), "b1", "d2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := plain.RetainParams["entities"]; present {
+		t.Fatalf("plain document carry entities: %#v", plain.RetainParams)
+	}
+	if _, present := plain.RetainParams["resolve_entities"]; present {
+		t.Fatalf("plain document carry resolve_entities: %#v", plain.RetainParams)
+	}
+}

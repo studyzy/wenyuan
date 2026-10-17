@@ -97,10 +97,15 @@ type MemoryStore struct {
 	units         map[string]MemoryUnit
 	// invalidated holds units moved out of the live view by a curation
 	// invalidation, so recall/consolidation need no state predicate.
-	invalidated   map[string]MemoryUnit
-	entities      map[string]Entity
-	unitEntities  map[string][]string
-	links         []MemoryLink
+	invalidated  map[string]MemoryUnit
+	entities     map[string]Entity
+	unitEntities map[string][]string
+	links        []MemoryLink
+	// relinkQueue holds the units graph maintenance must re-derive links for,
+	// in enqueue order: the in-process stand-in for the reference's
+	// graph_maintenance_queue, whose rows are claimed by the graph-maintenance
+	// job.
+	relinkQueue   []MaintenanceTarget
 	cooccurrences map[string]int
 	storedFiles   map[string]StoredFile
 	// attachments holds one document's copy of an inline retain attachment,
@@ -126,6 +131,10 @@ type MemoryStore struct {
 	// observationEmbedder, when set, embeds the text of an observation the
 	// consolidation pass writes, so the vector recall arm can rank it.
 	observationEmbedder EmbeddingGenerator
+	// autoConsolidation is the deployment default for whether a curation edit
+	// submits the follow-up consolidation pass; a bank's own
+	// enable_auto_consolidation override wins over it.
+	autoConsolidation bool
 	// tuning carries the resolved retrieval, write and reflection knobs. It is
 	// a value so both backends are constructed with the same numbers.
 	tuning Tuning
@@ -147,6 +156,15 @@ func (s *MemoryStore) SetObservationEmbedder(generator EmbeddingGenerator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observationEmbedder = generator
+}
+
+// SetAutoConsolidation installs the deployment default for whether a curation
+// edit submits the follow-up consolidation pass. A bank's own
+// enable_auto_consolidation override still wins over it.
+func (s *MemoryStore) SetAutoConsolidation(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoConsolidation = enabled
 }
 
 // observationEmbedderRef reads the configured observation embedder under the

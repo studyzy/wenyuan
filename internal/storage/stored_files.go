@@ -43,10 +43,18 @@ const (
 	OperationTypeVectorIndexMaintenance = "vector_index_maintenance"
 )
 
+// ExportOperationTypes are the operation types that own a stored archive,
+// named in result_metadata.storage_key. The retention prune removes those
+// archives with their rows so a blob never outlives its only handle; the
+// operation is the archive's sole reference, so no key in this list means no
+// blob to sweep.
+var ExportOperationTypes = []string{OperationTypeDocumentExport, OperationTypeTransferExport}
+
 // OperationPayloadKeyStoredFile is the operation payload field carrying the
 // storage key of a stashed upload. Only the key travels in the queue; the
-// payload itself lives in stored-file storage.
-const OperationPayloadKeyStoredFile = "stored_file_key"
+// payload itself lives in stored-file storage. The name is the reference's own
+// task-payload member, so a restored operation row reads the same on both.
+const OperationPayloadKeyStoredFile = "storage_key"
 
 // StoredFile is an opaque byte payload addressed by a caller-supplied key. The
 // transfer family uses it to stash an uploaded archive so the queued operation
@@ -85,12 +93,27 @@ func AttachmentStorageKey(bankID, documentID, attachmentHash string) string {
 // BankIDFromStoredFileKey recovers the owning bank identifier from a storage
 // key. It reports false when the key is not in the bank-scoped layout, so a
 // caller can answer not-found rather than guessing.
+//
+// Two layouts carry the bank identifier: the tenant-prefixed
+// "tenants/{schema}/banks/{bank_id}/..." form and the
+// "banks/{bank_id}/..." form written before keys carried the tenant. Both are
+// resolved here so a caller replaying the reference's keys still authorizes.
 func BankIDFromStoredFileKey(key string) (string, bool) {
 	segments := strings.Split(key, "/")
-	if len(segments) < 3 || segments[0] != "banks" {
+	switch {
+	case len(segments) > 4 && segments[0] == "tenants" && segments[2] == "banks" && segments[3] != "":
+		return decodeBankSegment(segments[3])
+	case len(segments) > 2 && segments[0] == "banks" && segments[1] != "":
+		return decodeBankSegment(segments[1])
+	default:
 		return "", false
 	}
-	bankID, err := decodeSegment(segments[1])
+}
+
+// decodeBankSegment percent-decodes a bank segment and reports whether it
+// names a bank.
+func decodeBankSegment(segment string) (string, bool) {
+	bankID, err := decodeSegment(segment)
 	if err != nil || bankID == "" {
 		return "", false
 	}

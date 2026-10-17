@@ -106,7 +106,7 @@ func TestVectorSimilarityRanksByDistance(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	if len(result.Matches) != 3 {
-		t.Fatalf("recall returned %d matches, want 3", len(result.Matches))
+		t.Fatalf("recall returned %d matches, want 3 (ids %v)", len(result.Matches), idsOf(result.Matches))
 	}
 	if result.Matches[0].ID != pgUUID("unit-far") {
 		t.Fatalf("closest match = %s, want unit-far (ordered %v)",

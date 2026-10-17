@@ -35,22 +35,24 @@ func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (Reflec
 			bankName, mission, disposition = ReflectProfile(bank)
 		}
 		return query.Reflection.Run(ctx, AgenticReflectRequest{
-			BankID:              query.BankID,
-			Question:            query.Query,
-			MaxTokens:           query.MaxTokens,
-			MaxCompletionTokens: s.tuning.ReflectMaxCompletionTokens,
-			MaxIterations:       query.MaxIterations,
-			Budget:              query.Budget,
-			Retrieval:           s,
-			Directives:          directives,
-			ResponseSchema:      query.ResponseSchema,
-			BankName:            bankName,
-			Mission:             mission,
-			Disposition:         disposition,
-			AnswerAsDocument:    query.AnswerAsDocument,
-			Tags:                query.Tags,
-			TagsMatch:           query.TagsMatch,
-			TagGroups:           query.TagGroups,
+			BankID:                            query.BankID,
+			Question:                          query.Query,
+			MaxTokens:                         query.MaxTokens,
+			MaxCompletionTokens:               s.tuning.ReflectMaxCompletionTokens,
+			MaxIterations:                     resolvedIterations(s.tuning, query),
+			Budget:                            query.Budget,
+			Retrieval:                         s,
+			Directives:                        directives,
+			SearchObservationsMaxTokens:       query.SearchObservationsMaxTokens,
+			SearchObservationsIncludeEntities: query.SearchObservationsIncludeEntities,
+			ResponseSchema:                    query.ResponseSchema,
+			BankName:                          bankName,
+			Mission:                           mission,
+			Disposition:                       disposition,
+			AnswerAsDocument:                  query.AnswerAsDocument,
+			Tags:                              query.Tags,
+			TagsMatch:                         query.TagsMatch,
+			TagGroups:                         query.TagGroups,
 		})
 	}
 	if _, err := s.GetBank(ctx, query.BankID); err != nil {
@@ -85,14 +87,14 @@ func (s *PostgresStore) Reflect(ctx context.Context, query ReflectQuery) (Reflec
 	return loop.run(ctx)
 }
 
-// reflectDirectives resolves the directive contents the agentic loop follows.
+// reflectDirectives resolves the directive candidates the agentic loop follows.
 //
 // The caller usually supplies the bank's directives on the query. When it does
 // not — the PostgreSQL deployment has no seeded perspective/directive catalogue
 // — they are read from the bank's own table, mirroring how the in-memory store
 // defaults them from its seeded catalogue. An empty directive contributes
 // nothing, exactly as on the in-memory path.
-func (s *PostgresStore) reflectDirectives(ctx context.Context, query ReflectQuery) ([]string, error) {
+func (s *PostgresStore) reflectDirectives(ctx context.Context, query ReflectQuery) ([]ReflectDirective, error) {
 	directives := query.Directives
 	if directives == nil {
 		stored, err := s.ListDirectives(ctx, query.BankID)
@@ -110,11 +112,5 @@ func (s *PostgresStore) reflectDirectives(ctx context.Context, query ReflectQuer
 			})
 		}
 	}
-	out := make([]string, 0, len(directives))
-	for _, directive := range directives {
-		if directive.Content != "" {
-			out = append(out, directive.Content)
-		}
-	}
-	return out, nil
+	return directives, nil
 }

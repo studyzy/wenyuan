@@ -119,10 +119,15 @@ func TestPostgresLLMRequestFilters(t *testing.T) {
 		{"scope", 1, func() int { return count(LLMRequestQuery{BankID: "b1", Scope: "synthesis", Limit: 50}) }},
 		{"provider", 1, func() int { return count(LLMRequestQuery{BankID: "b1", Provider: "anthropic", Limit: 50}) }},
 		{"trace", 2, func() int { return count(LLMRequestQuery{BankID: "b1", TraceID: "T1", Limit: 50}) }},
-		{"document", 1, func() int { return count(LLMRequestQuery{BankID: "b1", DocumentID: "doc-2", Limit: 50}) }},
-		{"produced memory", 1, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m1", Limit: 50}) }},
-		{"consumed memory", 1, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m2", Limit: 50}) }},
-		{"absent memory", 0, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m9", Limit: 50}) }},
+		{"document", 1, func() int {
+			return count(LLMRequestQuery{BankID: "b1", DocumentID: "doc-2", DocumentIDSet: true, Limit: 50})
+		}},
+		{"empty document", 0, func() int {
+			return count(LLMRequestQuery{BankID: "b1", DocumentID: "", DocumentIDSet: true, Limit: 50})
+		}},
+		{"produced memory", 1, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m1", MemoryIDSet: true, Limit: 50}) }},
+		{"consumed memory", 1, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m2", MemoryIDSet: true, Limit: 50}) }},
+		{"absent memory", 0, func() int { return count(LLMRequestQuery{BankID: "b1", MemoryID: "m9", MemoryIDSet: true, Limit: 50}) }},
 		{"unknown status", 0, func() int { return count(LLMRequestQuery{BankID: "b1", Status: "weird", Limit: 50}) }},
 		{"unknown operation", 0, func() int { return count(LLMRequestQuery{BankID: "b1", Operation: "frobnicate", Limit: 50}) }},
 	}
@@ -215,5 +220,149 @@ func TestPostgresObservabilityStatsFilters(t *testing.T) {
 	}
 	if len(unknownRequests.Bucket) != 0 {
 		t.Fatalf("unknown llm operation buckets = %+v", unknownRequests.Bucket)
+	}
+}
+
+// The postgres bank summary derives entity links from unit_entities membership
+// (capped per entity), sums total_links over every category, leaves the
+// breakdown fields as non-nil empty objects, and reads the write/consolidation
+// watermarks off memory_units rather than the operation log.
+func TestPostgresBankStatsLinksAndWatermarks(t *testing.T) {
+	pg, schema := newClearMemoriesStore(t, "stats_links")
+	ctx := context.Background()
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	q := quoteIdent(schema)
+	write := time.Date(2026, 1, 3, 3, 4, 5, 0, time.UTC)
+	consolidated := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	entity := newID()
+	if _, err := pg.db.ExecContext(ctx,
+		`INSERT INTO `+q+`.entities (id, bank_id, canonical_name) VALUES ($1, 'b1', 'E1')`, entity); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{newID(), newID(), newID()}
+	for i, id := range ids {
+		var consolidatedAt any
+		if i == 0 {
+			consolidatedAt = consolidated
+		}
+		if _, err := pg.db.ExecContext(ctx,
+			`INSERT INTO `+q+`.memory_units (id, bank_id, text, fact_type, updated_at, consolidated_at)
+			 VALUES ($1, 'b1', 'fact', 'world', $2, $3)`, id, write, consolidatedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pg.db.ExecContext(ctx,
+			`INSERT INTO `+q+`.unit_entities (unit_id, entity_id) VALUES ($1, $2)`, id, entity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An observation unit, outside the consolidator's candidate set.
+	if _, err := pg.db.ExecContext(ctx,
+		`INSERT INTO `+q+`.memory_units (id, bank_id, text, fact_type, updated_at)
+		 VALUES ($1, 'b1', 'fact', 'observation', $2)`, newID(), write); err != nil {
+		t.Fatal(err)
+	}
+	// One semantic link, so total_links = semantic 1 + entity LEAST(3-1,10) 2.
+	if _, err := pg.db.ExecContext(ctx,
+		`INSERT INTO `+q+`.memory_links (bank_id, from_unit_id, to_unit_id, link_type)
+		 VALUES ('b1', $1, $2, 'semantic')`, ids[0], ids[1]); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := pg.BankStatsRefreshing(ctx, "b1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stats.LinksByLinkType[string(LinkEntity)]; got != 2 {
+		t.Errorf("entity links = %d, want 2", got)
+	}
+	if got := stats.LinksByLinkType[string(LinkSemantic)]; got != 1 {
+		t.Errorf("semantic links = %d, want 1", got)
+	}
+	if stats.TotalLinks != 3 {
+		t.Errorf("total links = %d, want 3", stats.TotalLinks)
+	}
+	if stats.LinksByFactType == nil || len(stats.LinksByFactType) != 0 {
+		t.Errorf("links_by_fact_type must be a non-nil empty map, got %v", stats.LinksByFactType)
+	}
+	if stats.LinksBreakdown == nil || len(stats.LinksBreakdown) != 0 {
+		t.Errorf("links_breakdown must be a non-nil empty map, got %v", stats.LinksBreakdown)
+	}
+	// Two of the three world facts are unconsolidated.
+	if stats.PendingConsolidation != 2 {
+		t.Errorf("pending consolidation = %d, want 2", stats.PendingConsolidation)
+	}
+	if stats.FailedConsolidation != 0 {
+		t.Errorf("failed consolidation = %d, want 0", stats.FailedConsolidation)
+	}
+	if stats.LastMemoryWriteAt == nil || !stats.LastMemoryWriteAt.UTC().Equal(write) {
+		t.Errorf("last memory write = %v, want %v", stats.LastMemoryWriteAt, write)
+	}
+	if stats.LastConsolidatedAt == nil || !stats.LastConsolidatedAt.UTC().Equal(consolidated) {
+		t.Errorf("last consolidated = %v, want %v", stats.LastConsolidatedAt, consolidated)
+	}
+	if stats.TotalObservations != 1 {
+		t.Errorf("total observations = %d, want 1", stats.TotalObservations)
+	}
+}
+
+// The PostgreSQL backend groups non-terminal operations by type and status the
+// same way the in-memory backend does, excluding terminal states and carrying
+// bank_id only for a per-bank breakdown.
+func TestPostgresCountAsyncOperations(t *testing.T) {
+	pg, _ := newClearMemoriesStore(t, "obs_async_ops")
+	ctx := context.Background()
+	for _, bank := range []string{"b1", "b2"} {
+		if _, err := pg.CreateBank(ctx, Bank{BankID: bank, Name: bank}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := []Operation{
+		{OperationID: newID(), BankID: "b1", OperationType: "retain", Status: StatusPending},
+		{OperationID: newID(), BankID: "b1", OperationType: "retain", Status: StatusPending},
+		{OperationID: newID(), BankID: "b1", OperationType: "consolidate", Status: StatusProcessing},
+		{OperationID: newID(), BankID: "b2", OperationType: "retain", Status: StatusFailed},
+		{OperationID: newID(), BankID: "b1", OperationType: "retain", Status: StatusCompleted},
+	}
+	for _, op := range seed {
+		if _, err := pg.PutOperation(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	groups, err := pg.CountAsyncOperations(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate := map[[2]string]int{}
+	for _, group := range groups {
+		if group.BankID != "" {
+			t.Fatalf("aggregate grouping carried a bank: %+v", group)
+		}
+		aggregate[[2]string{group.OperationType, group.Status}] = group.Count
+	}
+	want := map[[2]string]int{
+		{"retain", "pending"}:         2,
+		{"consolidate", "processing"}: 1,
+		{"retain", "failed"}:          1,
+	}
+	for key, value := range want {
+		if aggregate[key] != value {
+			t.Fatalf("group %v = %d, want %d (all: %+v)", key, aggregate[key], value, aggregate)
+		}
+	}
+	if len(aggregate) != len(want) {
+		t.Fatalf("groups = %d, want %d: %+v", len(aggregate), len(want), aggregate)
+	}
+
+	perBank, err := pg.CountAsyncOperations(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range perBank {
+		if group.BankID == "" {
+			t.Fatalf("per-bank grouping lost the bank: %+v", group)
+		}
 	}
 }

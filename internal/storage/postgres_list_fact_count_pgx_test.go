@@ -57,3 +57,33 @@ func TestPostgresListBanksFillsFactCount(t *testing.T) {
 		t.Fatalf("narrowed page = %+v, want only the empty bank at 0", narrow.Banks)
 	}
 }
+
+// The collection row carries the bank's config column, because the listing
+// overlays that configuration on the legacy disposition and mission columns. A
+// list row without it would report the columns the bank was created with rather
+// than the traits its configuration names.
+func TestPostgresListBanksCarriesConfig(t *testing.T) {
+	ctx := context.Background()
+	pg, _ := newClearMemoriesStore(t, "list_config")
+	if _, err := pg.CreateBank(ctx, Bank{
+		BankID: "configured",
+		Name:   "configured",
+		Config: map[string]any{"disposition_skepticism": 5, "reflect_mission": "help"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := pg.ListBanks(ctx, BankQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Banks) != 1 {
+		t.Fatalf("page = %+v, want the one bank", page.Banks)
+	}
+	if got := page.Banks[0].Config["disposition_skepticism"]; got != float64(5) {
+		t.Fatalf("list config disposition_skepticism = %#v, want 5", got)
+	}
+	if got := page.Banks[0].Config["reflect_mission"]; got != "help" {
+		t.Fatalf("list config reflect_mission = %#v, want help", got)
+	}
+}

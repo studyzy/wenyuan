@@ -52,19 +52,19 @@ func TestConsolidationScopeIsolation(t *testing.T) {
 		t.Fatalf("swapped scope = %+v (err %v)", swapped, err)
 	}
 
-	// The observation-scope listing reports the observation's metadata scope.
+	// The observation-scope listing reports the observation's tag set.
 	page, err := store.ListObservationScopes(ctx, "b1", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
 	for _, scope := range page.Scopes {
-		if scope.Scope == "a" {
+		if len(scope.Tags) == 1 && scope.Tags[0] == "a" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("scopes = %+v, want a", page.Scopes)
+		t.Fatalf("scopes = %+v, want [a]", page.Scopes)
 	}
 }
 

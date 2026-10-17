@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
+	"github.com/studyzy/wenyuan/internal/timefmt"
 )
 
 // DirectSource reads a bank's rows straight out of a reference-shaped database
@@ -181,13 +182,13 @@ func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*h
 	return rows.Err()
 }
 
-// nullTime converts an optional timestamp to a pointer.
-func nullTime(value sql.NullTime) *time.Time {
+// nullTime renders a nullable timestamp column in the archive's
+// pydantic-serialized form, or nil when the column is NULL.
+func nullTime(value sql.NullTime) *string {
 	if !value.Valid {
 		return nil
 	}
-	at := value.Time
-	return &at
+	return timefmt.FormatZuluTimestampPtr(&value.Time)
 }
 
 // decodeObject parses a JSON object column. An unreadable or absent value
@@ -218,7 +219,7 @@ func decodeStrings(data []byte) []string {
 // exportTime is the moment an archive rendered now was exported. The manifest
 // carries it as an optional field, so a renderer that has no clock to read
 // leaves it absent rather than inventing one.
-func exportTime() *time.Time {
-	now := time.Now().UTC()
+func exportTime() *string {
+	now := timefmt.FormatZuluTimestamp(time.Now().UTC())
 	return &now
 }

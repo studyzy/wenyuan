@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -150,10 +151,14 @@ func (s *PostgresStore) MentalModelsWithSchedule(ctx context.Context, schema str
 // work removes nothing. The batch is claimed oldest-first under SKIP LOCKED for
 // the same reason the retention sweep is: every process runs this and they must
 // take disjoint work rather than collide.
+//
+// Before the rows go, the stored archives they own are swept the same way, so
+// an export operation's blob does not outlive the row that was its only handle.
 func (s *PostgresStore) PruneTerminalOperations(ctx context.Context, schema string, cutoff time.Time, batchSize int) (int, error) {
 	if batchSize <= 0 {
 		return 0, nil
 	}
+	s.purgeExpiredExportArchives(ctx, schema, cutoff, batchSize)
 	query := `WITH expired AS (
 	            SELECT operation_id FROM ` + quoteIdent(schema) + `.async_operations
 	            WHERE status = ANY($1::text[])
@@ -174,6 +179,49 @@ func (s *PostgresStore) PruneTerminalOperations(ctx context.Context, schema stri
 		return 0, err
 	}
 	return removed, nil
+}
+
+// purgeExpiredExportArchives deletes the stored archives of the export
+// operations a prune is about to remove.
+//
+// It mirrors PruneTerminalOperations' predicate (terminal status + updated_at <
+// cutoff), ordering and batch bound, so an export's archive is removed in step
+// with its row instead of being orphaned in file storage. The bound matters: an
+// unbounded purge would re-select every expired export on every run and reissue
+// a file-storage delete for each, because storage_key stays in result_metadata
+// until the row itself is gone. Sharing the prune's ordered window makes the
+// two advance together. Best-effort throughout — a blob that cannot be deleted
+// is logged, never returned, so archive cleanup cannot block the row prune.
+func (s *PostgresStore) purgeExpiredExportArchives(ctx context.Context, schema string, cutoff time.Time, batchSize int) {
+	query := `SELECT result_metadata FROM ` + quoteIdent(schema) + `.async_operations
+	          WHERE operation_type = ANY($1::text[])
+	            AND status = ANY($2::text[])
+	            AND updated_at < $3
+	          ORDER BY updated_at, operation_id
+	          LIMIT $4`
+	rows, err := s.db.QueryContext(ctx, query, ExportOperationTypes, TerminalOperationStatuses, cutoff, batchSize)
+	if err != nil {
+		if !isUndefinedTable(err) {
+			slog.Default().Warn("failed to select expired export archives", "schema", schema, "error", err)
+		}
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			slog.Default().Warn("failed to read expired export archive metadata", "schema", schema, "error", err)
+			return
+		}
+		metadata, err := unmarshalResultMetadata(raw)
+		if err != nil {
+			continue
+		}
+		s.deleteOperationExportArchive(ctx, metadata)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Default().Warn("failed to scan expired export archives", "schema", schema, "error", err)
+	}
 }
 
 // scanStrings reads a single text column from every row.

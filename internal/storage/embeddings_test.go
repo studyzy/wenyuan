@@ -360,7 +360,9 @@ func TestPruneEntity(t *testing.T) {
 	}
 }
 
-// The in-process store has no relink/prune queues, so draining is a no-op.
+// A fresh in-process store has queued nothing, so draining is a no-op until an
+// edit or a delete enqueues a victim. Its entity-prune queue is never populated
+// at all.
 func TestMemoryMaintenanceQueuesAreEmpty(t *testing.T) {
 	store := NewMemoryStore("public")
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ListBanks returns one page of banks ordered most-recently-written first together
@@ -34,7 +35,7 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 	}
 
 	listSQL := `SELECT b.bank_id, COALESCE(b.name,''), COALESCE(b.disposition, '{}'::jsonb),
-	                   COALESCE(b.mission,''), b.created_at, b.updated_at,
+	                   COALESCE(b.mission,''), COALESCE(b.config, '{}'::jsonb), b.created_at, b.updated_at,
 	                   d.last_document_at, GREATEST(d.last_document_write_at, f.last_fact_at)
 	            FROM ` + qualified + `.banks b
 	            LEFT JOIN (
@@ -73,7 +74,52 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 	if err := s.fillFactCounts(ctx, banks); err != nil {
 		return BankPage{}, err
 	}
-	return BankPage{Banks: banks, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
+	matchedAliases, err := s.matchedAliases(ctx, banks, query.Search)
+	if err != nil {
+		return BankPage{}, err
+	}
+	return BankPage{Banks: banks, Total: total, Limit: query.Limit, Offset: query.Offset, MatchedAliases: matchedAliases}, nil
+}
+
+// matchedAliases reports, per returned bank, the aliases that explain the hit:
+// only when the search text is not already in the bank's own id or name, and
+// only for the page's banks. It is the reference's _aliases_explaining.
+func (s *PostgresStore) matchedAliases(ctx context.Context, banks []Bank, search string) (map[string][]string, error) {
+	if search == "" || len(banks) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(banks))
+	byID := make(map[string]Bank, len(banks))
+	for i := range banks {
+		ids[i] = banks[i].BankID
+		byID[banks[i].BankID] = banks[i]
+	}
+	qualified := quoteIdent(s.schema)
+	rows, err := s.reader().QueryContext(ctx, `SELECT bank_id, alias
+	    FROM `+qualified+`.bank_aliases
+	    WHERE bank_id = ANY($1) AND UPPER(alias) LIKE UPPER($2)
+	    ORDER BY alias`, ids, "%"+search+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	needle := strings.ToUpper(search)
+	matched := map[string][]string{}
+	for rows.Next() {
+		var bankID, alias string
+		if err := rows.Scan(&bankID, &alias); err != nil {
+			return nil, err
+		}
+		bank := byID[bankID]
+		if strings.Contains(strings.ToUpper(bank.BankID), needle) || strings.Contains(strings.ToUpper(bank.Name), needle) {
+			continue
+		}
+		matched[bankID] = append(matched[bankID], alias)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return matched, nil
 }
 
 // fillFactCounts sets each returned bank's FactCount from its memory_units rows.
@@ -212,7 +258,9 @@ func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error
 }
 
 func (s *PostgresStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) {
-	storeBankDefaults(&bank)
+	// A replace writes exactly what it is given: the name defaulting belongs to
+	// the create paths, so a partial update that clears the name keeps it empty
+	// rather than silently restoring the identifier.
 	disposition, err := marshalMetadata(dispositionAsAny(bank.Disposition))
 	if err != nil {
 		return Bank{}, err
@@ -359,14 +407,17 @@ func scanBank(row rowScanner) (Bank, error) {
 // neither.
 func scanBankListRow(row rowScanner) (Bank, error) {
 	var bank Bank
-	var disposition []byte
+	var disposition, config []byte
 	var lastDocument, lastWrite sql.NullTime
 	if err := row.Scan(&bank.BankID, &bank.Name, &disposition,
-		&bank.Mission, &bank.CreatedAt, &bank.UpdatedAt,
+		&bank.Mission, &config, &bank.CreatedAt, &bank.UpdatedAt,
 		&lastDocument, &lastWrite); err != nil {
 		return Bank{}, err
 	}
 	bank.Disposition = decodeDisposition(disposition)
+	// The listing overlays the bank's configuration on the legacy disposition
+	// and mission columns, so the config column has to travel with the row.
+	bank.Config = decodeJSONMap(config)
 	bank.LastDocumentAt = nullTimePtr(lastDocument)
 	bank.LastWriteAt = nullTimePtr(lastWrite)
 	return bank, nil

@@ -68,7 +68,10 @@ func TestCancelAndRetryReturnAFullOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if retried.OperationID != retryID || retried.Status != StatusPending || retried.RetryCount != 1 {
+	// The reference's retry is a single conditional UPDATE that clears the
+	// failure state: error, completion, retry bookkeeping and the claim are all
+	// reset, and the attempt counter goes back to zero rather than incrementing.
+	if retried.OperationID != retryID || retried.Status != StatusPending || retried.RetryCount != 0 {
 		t.Fatalf("retried = %+v", retried)
 	}
 }

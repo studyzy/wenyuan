@@ -47,6 +47,22 @@ func (s *MemoryStore) GetStoredFile(ctx context.Context, key string) (StoredFile
 	return copied, nil
 }
 
+// DeleteStoredFile removes a payload from the in-memory backend. A key that
+// names no payload is a no-op, so removing an export operation's archive never
+// fails on a blob that is already gone.
+func (s *MemoryStore) DeleteStoredFile(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	delete(s.storedFiles, key)
+	return nil
+}
+
 // OpenStoredFile opens a payload from the in-memory backend for streaming
 // read. The bytes already live in memory, so the reader simply wraps them; the
 // gain is that the caller stops needing a separate whole-payload handle.

@@ -42,12 +42,16 @@ func (s *MemoryStore) DeleteDocument(ctx context.Context, bankID, docID string) 
 	removed := map[string]bool{}
 	for id, unit := range s.units {
 		if unit.BankID == bankID && unit.DocumentID == docID {
+			s.releaseUnitPostingsLocked(id)
 			delete(s.units, id)
 			delete(s.unitEntities, id)
 			removed[id] = true
 		}
 	}
-	// Chunks and links that point at the removed units go with them.
+	// Chunks and links that point at the removed units go with them. The
+	// survivors that pointed here lose their outgoing edges with them, so they
+	// are queued for a relink while the links are still readable.
+	s.enqueueRelinkVictimsLocked(bankID, doomed, false)
 	chunks := s.chunks[:0]
 	for _, chunk := range s.chunks {
 		if chunk.BankID == bankID && chunk.DocumentID == docID {

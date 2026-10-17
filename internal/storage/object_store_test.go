@@ -13,6 +13,7 @@ type recordingObjectStore struct {
 	types   map[string]string
 	puts    int
 	gets    int
+	deletes int
 }
 
 func newRecordingObjectStore() *recordingObjectStore {
@@ -33,6 +34,40 @@ func (r *recordingObjectStore) Get(_ context.Context, key string) ([]byte, strin
 		return nil, "", ErrObjectNotFound
 	}
 	return data, r.types[key], nil
+}
+
+func (r *recordingObjectStore) Delete(_ context.Context, key string) error {
+	r.deletes++
+	delete(r.objects, key)
+	delete(r.types, key)
+	return nil
+}
+
+// A stored-file removal routes to the object store when one is attached, so an
+// export operation's archive is dropped from the blob backend rather than
+// orphaned there.
+func TestObjectStoreDeleteRoutesThroughObjectStore(t *testing.T) {
+	objectStore := newRecordingObjectStore()
+	store := (&PostgresStore{}).WithObjectStore(objectStore)
+	ctx := context.Background()
+	key := StoredFileKeyForBank("b1", "exports.zip")
+	if err := store.PutStoredFile(ctx, StoredFile{Key: key, Data: []byte("bytes")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteStoredFile(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if objectStore.deletes != 1 {
+		t.Fatalf("object store deletes = %d, want the removal routed to it", objectStore.deletes)
+	}
+	if _, err := store.GetStoredFile(ctx, key); !errors.Is(err, ErrStoredFileNotFound) {
+		t.Fatalf("payload survived the delete: err = %v", err)
+	}
+	// A key that names nothing is a no-op rather than a failure, so cleanup
+	// never blocks on an already-gone blob.
+	if err := store.DeleteStoredFile(ctx, key); err != nil {
+		t.Fatalf("repeat delete = %v, want no error", err)
+	}
 }
 
 // With an object store attached, a payload round-trips through it rather than

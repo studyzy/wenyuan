@@ -21,6 +21,38 @@ func (t Tuning) reflectIterations() int {
 	return DefaultReflectMaxIterations
 }
 
+// reflectBudgetIterations scales the loop's turn bound by the requested effort
+// level the way the reference does: low 0.5x, mid 1x, high 2x of the configured
+// bound, never below a single turn. An unset budget is the reference's low
+// default.
+func (t Tuning) reflectBudgetIterations(budget string) int {
+	effective := budget
+	if effective == "" {
+		effective = ReflectBudgetLow
+	}
+	multiplier := 1.0
+	switch effective {
+	case ReflectBudgetLow:
+		multiplier = 0.5
+	case ReflectBudgetHigh:
+		multiplier = 2.0
+	}
+	iterations := int(float64(t.reflectIterations()) * multiplier)
+	if iterations < 1 {
+		iterations = 1
+	}
+	return iterations
+}
+
+// resolvedIterations is the model loop's turn bound: an explicit query override
+// wins, otherwise the configured bound scaled by the effort level.
+func resolvedIterations(tuning Tuning, query ReflectQuery) int {
+	if query.MaxIterations > 0 {
+		return query.MaxIterations
+	}
+	return tuning.reflectBudgetIterations(query.Budget)
+}
+
 // reflectContextBudget reads the loop's evidence budget.
 func (t Tuning) reflectContextBudget() int {
 	if t.ReflectContextBudget > 0 {
@@ -65,29 +97,25 @@ func (s *MemoryStore) Reflect(ctx context.Context, query ReflectQuery) (ReflectO
 	// deterministic in-process loop is the fallback for a deployment with no
 	// model configured.
 	if query.Reflection != nil {
-		directives := make([]string, 0, len(query.Directives))
-		for _, directive := range query.Directives {
-			if directive.Content != "" {
-				directives = append(directives, directive.Content)
-			}
-		}
 		return query.Reflection.Run(ctx, AgenticReflectRequest{
-			BankID:              query.BankID,
-			Question:            query.Query,
-			MaxTokens:           query.MaxTokens,
-			MaxCompletionTokens: s.tuning.ReflectMaxCompletionTokens,
-			MaxIterations:       query.MaxIterations,
-			Budget:              query.Budget,
-			Retrieval:           s,
-			Directives:          directives,
-			ResponseSchema:      query.ResponseSchema,
-			BankName:            bankName,
-			Mission:             mission,
-			Disposition:         disposition,
-			AnswerAsDocument:    query.AnswerAsDocument,
-			Tags:                query.Tags,
-			TagsMatch:           query.TagsMatch,
-			TagGroups:           query.TagGroups,
+			BankID:                            query.BankID,
+			Question:                          query.Query,
+			MaxTokens:                         query.MaxTokens,
+			MaxCompletionTokens:               s.tuning.ReflectMaxCompletionTokens,
+			MaxIterations:                     resolvedIterations(s.tuning, query),
+			Budget:                            query.Budget,
+			Retrieval:                         s,
+			Directives:                        query.Directives,
+			SearchObservationsMaxTokens:       query.SearchObservationsMaxTokens,
+			SearchObservationsIncludeEntities: query.SearchObservationsIncludeEntities,
+			ResponseSchema:                    query.ResponseSchema,
+			BankName:                          bankName,
+			Mission:                           mission,
+			Disposition:                       disposition,
+			AnswerAsDocument:                  query.AnswerAsDocument,
+			Tags:                              query.Tags,
+			TagsMatch:                         query.TagsMatch,
+			TagGroups:                         query.TagGroups,
 		})
 	}
 	loop := newReflectLoop(query, s.rawFacts(query.BankID), s.tuning)

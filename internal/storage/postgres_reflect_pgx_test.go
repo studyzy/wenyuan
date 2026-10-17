@@ -118,8 +118,9 @@ func TestPostgresReflectLoadsBankDirectives(t *testing.T) {
 	if _, err := pg.Reflect(ctx, ReflectQuery{BankID: "vec-bank", Query: "q", Reflection: runner}); err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
-	if !reflect.DeepEqual(runner.req.Directives, []string{"Always be terse."}) {
-		t.Errorf("directives = %q, want the stored directive", runner.req.Directives)
+	if len(runner.req.Directives) != 1 || runner.req.Directives[0].Name != "Terse" ||
+		runner.req.Directives[0].Content != "Always be terse." {
+		t.Errorf("directives = %+v, want the stored directive with its name", runner.req.Directives)
 	}
 }
 

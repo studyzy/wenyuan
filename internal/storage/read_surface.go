@@ -123,17 +123,19 @@ type GraphNodeData struct {
 	Mentioned  *time.Time
 	Date       *time.Time
 	CreatedAt  *time.Time
+	// SourceMemoryIDs are the memories an observation was consolidated from, so
+	// the graph can inherit its links and entities from them.
+	SourceMemoryIDs []string
 }
 
 // GraphEdgeData is the payload of a memory-graph edge.
 type GraphEdgeData struct {
-	ID       string
-	From     string
-	To       string
-	Type     string
-	Entity   string
-	Weight   float64
-	LineType string
+	ID     string
+	From   string
+	To     string
+	Type   string
+	Entity string
+	Weight float64
 }
 
 // GraphTableRow is one memory rendered as a flat row, so a client can present
@@ -214,6 +216,9 @@ type EntityGraphEdge struct {
 	Target string
 	Weight int
 	Color  string
+	// LastCooccurred is when the two entities were last seen together, or nil
+	// when the row carries no stamp.
+	LastCooccurred *time.Time
 }
 
 // EntityGraph is the entity graph of one bank.

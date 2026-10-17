@@ -13,10 +13,10 @@ import (
 const webhookSelect = `id::text, bank_id, url, COALESCE(secret,''), COALESCE(event_types, '{}')::text,
        COALESCE(enabled, true), COALESCE(http_config, '{}'::jsonb), created_at, updated_at`
 
-// ListWebhooks returns a bank's webhook registrations, newest first.
+// ListWebhooks returns a bank's webhook registrations, oldest first.
 func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webhook, error) {
 	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
-	          WHERE bank_id = $1 ORDER BY created_at DESC, id ASC`
+	          WHERE bank_id = $1 ORDER BY created_at ASC, id ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
@@ -81,6 +81,8 @@ func (s *PostgresStore) UpdateWebhook(ctx context.Context, bankID, webhookID str
 	}
 	if patch.Secret != nil {
 		current.Secret = *patch.Secret
+	} else if patch.ClearSecret {
+		current.Secret = ""
 	}
 	if patch.EventTypes != nil {
 		current.EventTypes = append([]string(nil), (*patch.EventTypes)...)
@@ -94,19 +96,12 @@ func (s *PostgresStore) UpdateWebhook(ctx context.Context, bankID, webhookID str
 	return s.PutWebhook(ctx, current)
 }
 
-// DeleteWebhook removes a webhook and its delivery records. A delivery is an
-// async_operations row, so the records go with the registration.
+// DeleteWebhook removes a webhook registration. The delivery records are
+// operations — historical facts — and are left in place, exactly as the
+// reference and the memory backend leave them.
 func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID string) error {
-	qualified := quoteIdent(s.schema)
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.async_operations
-		 WHERE bank_id = $1 AND operation_type = 'webhook_delivery'
-		   AND task_payload->>'webhook_id' = $2`,
-		bankID, webhookID); err != nil {
-		return err
-	}
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+qualified+`.webhooks WHERE bank_id = $1 AND id::text = $2`, bankID, webhookID)
+		`DELETE FROM `+quoteIdent(s.schema)+`.webhooks WHERE bank_id = $1 AND id::text = $2`, bankID, webhookID)
 	if err != nil {
 		return err
 	}
@@ -130,6 +125,12 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 	           AND ($2 = '' OR task_payload->>'webhook_id' = $2)`
 	args := []any{bankID, webhookID}
 	if cursor != "" {
+		// The cursor is validated here rather than left to the driver so the
+		// rejection matches the reference's own adapter error and the memory
+		// backend's, instead of surfacing the driver's schema-specific text.
+		if _, err := parseDeliveryCursor(cursor); err != nil {
+			return WebhookDeliveryPage{}, errInvalidDeliveryCursor(cursor)
+		}
 		filter += ` AND created_at < $3::timestamptz`
 		args = append(args, cursor)
 	}
@@ -149,6 +150,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 		        COALESCE(error_message, ''),
 		        (result_metadata->>'last_status_code')::int,
 		        result_metadata->>'last_response_body',
+		        result_metadata->>'last_attempt_at',
 		        created_at,
 		        updated_at
 		 FROM `+qualified+`.async_operations WHERE `+filter+`
@@ -162,11 +164,11 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 	for rows.Next() {
 		var delivery WebhookDelivery
 		var statusCode sql.NullInt64
-		var responseBody sql.NullString
+		var responseBody, lastAttempt sql.NullString
 		var nextRetryAt sql.NullTime
 		if err := rows.Scan(&delivery.ID, &delivery.WebhookID, &delivery.BankID, &delivery.URL,
 			&delivery.EventType, &delivery.Status, &delivery.Attempts, &nextRetryAt,
-			&delivery.LastError, &statusCode, &responseBody, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
+			&delivery.LastError, &statusCode, &responseBody, &lastAttempt, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
 			return WebhookDeliveryPage{}, err
 		}
 		delivery.LastResponseStatus = nullIntPtr(statusCode)
@@ -175,6 +177,11 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 		if responseBody.Valid {
 			value := responseBody.String
 			delivery.LastResponseBody = &value
+		}
+		if lastAttempt.Valid {
+			if parsed, err := parseDeliveryCursor(lastAttempt.String); err == nil {
+				delivery.LastAttemptAt = &parsed
+			}
 		}
 		if nextRetryAt.Valid {
 			value := nextRetryAt.Time

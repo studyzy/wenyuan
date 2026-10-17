@@ -125,3 +125,44 @@ func TestMemoryKnowledgeSearchOrderIsStable(t *testing.T) {
 		}
 	}
 }
+
+// A bank whose `enable_text_search` is off serves no keyword arm. This backend
+// keeps no page embeddings, so there is no vector arm to fall back on and the
+// search has no answer to give rather than a ranking off a disabled index.
+func TestMemoryKnowledgeSearchTextArmDisabled(t *testing.T) {
+	store, bank := newContractStore(t)
+	putKnowledge(t, store, KnowledgeNode{ID: "p1", BankID: bank, Kind: KnowledgeKindPage, Title: "Deployment", Text: "run the pipeline"})
+
+	hits, err := store.SearchKnowledgeNodes(context.Background(), KnowledgeSearchQuery{
+		BankID: bank, Query: "pipeline", Limit: 10, DisableTextArm: true,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits = %v, want none with the text arm disabled", knowledgeHitIDs(hits))
+	}
+}
+
+// The tag filter narrows the candidate set before ranking, so a tagged page
+// that ranks below untagged pages is still returned when the limit is 1. The
+// reference binds the filter into each arm's WHERE rather than dropping hits
+// after the cut, so a post-ranking filter would miss it.
+func TestMemoryKnowledgeSearchTagFilterPreRanking(t *testing.T) {
+	store, bank := newContractStore(t)
+	putKnowledge(t, store, KnowledgeNode{ID: "p-high", BankID: bank, Kind: KnowledgeKindPage,
+		Title: "Deployment", Text: "pipeline pipeline pipeline"})
+	putKnowledge(t, store, KnowledgeNode{ID: "p-tagged", BankID: bank, Kind: KnowledgeKindPage,
+		Title: "Tagged", Text: "pipeline", Tags: []string{"keep"}})
+
+	hits, err := store.SearchKnowledgeNodes(context.Background(), KnowledgeSearchQuery{
+		BankID: bank, Query: "pipeline", Limit: 1,
+		Tags: []string{"keep"}, TagsMatch: TagsMatchAllStrict,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Node.ID != "p-tagged" {
+		t.Fatalf("filtered hits = %v, want [p-tagged]", knowledgeHitIDs(hits))
+	}
+}

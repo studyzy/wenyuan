@@ -49,7 +49,7 @@ func (s *MemoryStore) ListBanks(ctx context.Context, query BankQuery) (BankPage,
 			continue
 		}
 		bank.FactCount = len(s.memories[id])
-		if hits := aliasHits(aliases, query.Search); len(hits) > 0 {
+		if hits := aliasesExplaining(bank.BankID, bank.Name, aliases, query.Search); len(hits) > 0 {
 			matchedAliases[id] = hits
 		}
 		matched = append(matched, bank)
@@ -153,7 +153,6 @@ func (s *MemoryStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) 
 	bank.UpdatedAt = time.Now().UTC()
 	bank.LastWriteAt = existing.LastWriteAt
 	bank.LastDocumentAt = existing.LastDocumentAt
-	storeBankDefaults(&bank)
 	s.banks[bank.BankID] = bank
 	s.invalidateBankLocked(bank.BankID)
 	return bank, nil
@@ -319,6 +318,14 @@ func applyBankPatch(bank *Bank, patch BankPatch) {
 			merged[key] = value
 		}
 		bank.Disposition = merged
+	}
+	if len(patch.ClearDispositionTraits) > 0 {
+		for _, key := range patch.ClearDispositionTraits {
+			delete(bank.Disposition, key)
+		}
+		if len(bank.Disposition) == 0 {
+			bank.Disposition = nil
+		}
 	}
 	if patch.Mission != nil {
 		bank.Mission = *patch.Mission

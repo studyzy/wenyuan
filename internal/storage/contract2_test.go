@@ -97,6 +97,11 @@ func TestContractMentalModels(t *testing.T) {
 	if err != nil || cleared.Content != "" {
 		t.Fatalf("clear model = %+v (err %v)", cleared, err)
 	}
+	// Clearing resets the content and the refresh baseline; it is not a delete,
+	// so the recorded refreshes stay readable in the model's history.
+	if history, err := store.MentalModelHistory(ctx, bank, model.ID); err != nil || len(history) != 1 {
+		t.Fatalf("history after clear = %v (err %v), want the recorded refresh to survive", history, err)
+	}
 	if err := store.DeleteMentalModel(ctx, bank, model.ID); err != nil {
 		t.Fatalf("delete model: %v", err)
 	}
@@ -171,6 +176,37 @@ func TestContractOperationLifecycle(t *testing.T) {
 	page, err := store.ListOperations(ctx, OperationQuery{BankID: bank, Limit: 10})
 	if err != nil || page.Total != 1 {
 		t.Fatalf("list operations = %+v (err %v)", page, err)
+	}
+}
+
+// A cancelled operation moves its status and updated_at only: the reference
+// leaves completed_at null, so the read model reports the status change without
+// inventing a completion time.
+func TestContractCancelLeavesCompletedAtNull(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+	if _, err := store.PutOperation(ctx, Operation{
+		OperationID: "op-cancel", BankID: bank, OperationType: OperationTypeRetain, Status: StatusPending,
+	}); err != nil {
+		t.Fatalf("put operation: %v", err)
+	}
+	cancelled, err := store.CancelOperation(ctx, bank, "op-cancel")
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled.Status != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled", cancelled.Status)
+	}
+	if cancelled.CompletedAt != nil {
+		t.Fatalf("completed_at = %v, want null", *cancelled.CompletedAt)
+	}
+	// The read model agrees with the write.
+	reread, err := store.GetOperation(ctx, bank, "op-cancel")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if reread.CompletedAt != nil {
+		t.Fatalf("stored completed_at = %v, want null", *reread.CompletedAt)
 	}
 }
 

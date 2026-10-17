@@ -83,8 +83,8 @@ func TestPostgresDeleteOperation(t *testing.T) {
 	}
 }
 
-// Clearing removes units and what hangs off them, narrows by type, and leaves
-// the bank, its entities and its documents in place.
+// Clearing narrows by type, and a full clear purges the bank's documents and
+// entities as well while leaving the bank row itself.
 func TestPostgresClearBankMemories(t *testing.T) {
 	ctx := context.Background()
 	pg, _ := newClearMemoriesStore(t, "clear_mem")
@@ -134,7 +134,7 @@ func TestPostgresClearBankMemories(t *testing.T) {
 		t.Fatalf("scoped clear removed %d, want 2", removed)
 	}
 
-	// The bank, its document and its entity survive a clear.
+	// A type-scoped clear leaves the bank, its document and its entity alone.
 	if _, err := pg.GetBank(ctx, "b1"); err != nil {
 		t.Fatalf("bank must survive a clear: %v", err)
 	}
@@ -149,6 +149,18 @@ func TestPostgresClearBankMemories(t *testing.T) {
 	}
 	if removed != 2 {
 		t.Fatalf("clear all removed %d, want 2", removed)
+	}
+	// The full clear is the purge: the bank row survives, but its documents and
+	// entities go with its memories.
+	if _, err := pg.GetDocument(ctx, "b1", "doc-1"); !errors.Is(err, ErrDocumentNotFound) {
+		t.Fatalf("document after a full clear = %v, want ErrDocumentNotFound", err)
+	}
+	entities, err := pg.ListEntities(ctx, EntityQuery{BankID: "b1", Limit: 10})
+	if err != nil {
+		t.Fatalf("list entities after clear: %v", err)
+	}
+	if len(entities.Entities) != 0 {
+		t.Fatalf("entities after a full clear = %d, want 0", len(entities.Entities))
 	}
 	page, err := pg.ListMemories(ctx, MemoryQuery{BankID: "b1", Limit: 10})
 	if err != nil {

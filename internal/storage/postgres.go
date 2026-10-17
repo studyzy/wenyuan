@@ -145,6 +145,12 @@ type PostgresStore struct {
 	// and the vector recall arm cannot rank it, so recall would reach the
 	// synthesis only by keyword.
 	observationEmbedder EmbeddingGenerator
+	// autoConsolidation is the deployment default for whether a curation edit
+	// submits the follow-up consolidation pass. A bank's own
+	// enable_auto_consolidation override wins over it. It mirrors the reference,
+	// which submits consolidation after an edit only when the resolved bank
+	// config enables it.
+	autoConsolidation bool
 	// tuning carries the resolved retrieval, write and reflection knobs, so a
 	// deployment's configuration reaches the pipeline.
 	tuning Tuning
@@ -192,6 +198,13 @@ func (s *PostgresStore) SetTuning(tuning Tuning) {
 // configured.
 func (s *PostgresStore) SetObservationEmbedder(generator EmbeddingGenerator) {
 	s.observationEmbedder = generator
+}
+
+// SetAutoConsolidation installs the deployment default for whether a curation
+// edit submits the follow-up consolidation pass. The composition root calls it
+// once at startup; a bank's own enable_auto_consolidation override still wins.
+func (s *PostgresStore) SetAutoConsolidation(enabled bool) {
+	s.autoConsolidation = enabled
 }
 
 // SetRecallPhaseObserver installs the receiver of the per-phase recall

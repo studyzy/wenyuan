@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/timefmt"
 )
 
 // ConsolidationTuning reports the deployment's consolidation knobs, so the pass
@@ -204,13 +206,12 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 	if !ok || unit.BankID != bankID || unit.FactType != TypeObservation {
 		return ErrMemoryNotFound
 	}
-	// The pre-update text is kept as a history entry, so what the conclusion
-	// said before it was reinforced stays readable. The tail is bounded so a
-	// frequently-reinforced observation does not grow forever.
-	if unit.Text != text {
-		if s.tuning.ObservationHistory {
-			s.recordObservationHistoryLocked(observationID, unit.Text)
-		}
+	// The pre-update state is kept as a history entry, so what the conclusion
+	// said before it was reinforced — and which sources it already rested on —
+	// stays readable. The tail is bounded so a frequently-reinforced observation
+	// does not grow forever.
+	if s.tuning.ObservationHistory {
+		s.recordObservationHistoryLocked(unit, sourceIDs)
 	}
 	unit.Text = text
 	now := time.Now().UTC()
@@ -226,21 +227,30 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 
 // recordObservationHistoryLocked appends one pre-update snapshot and trims the
 // history to its retention bound. The caller holds the write lock.
-func (s *MemoryStore) recordObservationHistoryLocked(observationID, text string) {
+func (s *MemoryStore) recordObservationHistoryLocked(unit MemoryUnit, newSourceIDs []string) {
 	if s.memoryHistory == nil {
 		s.memoryHistory = map[string][]MemoryHistoryEntry{}
 	}
-	s.memoryHistory[observationID] = append(s.memoryHistory[observationID], MemoryHistoryEntry{
-		ChangedAt: time.Now().UTC(),
-		Reason:    "consolidated",
-		Text:      text,
+	text := unit.Text
+	tags := append([]string(nil), unit.Tags...)
+	if tags == nil {
+		tags = []string{}
+	}
+	s.memoryHistory[unit.ID] = append(s.memoryHistory[unit.ID], MemoryHistoryEntry{
+		ChangedAt:             time.Now().UTC(),
+		PreviousText:          &text,
+		PreviousTags:          tags,
+		PreviousOccurredStart: timefmt.FormatTimestampPtr(unit.OccurredStart),
+		PreviousOccurredEnd:   timefmt.FormatTimestampPtr(unit.OccurredEnd),
+		PreviousMentionedAt:   timefmt.FormatTimestampPtr(unit.MentionedAt),
+		NewSourceMemoryIDs:    append([]string(nil), newSourceIDs...),
 	})
 	bound := s.tuning.ObservationHistoryMax
 	if bound <= 0 {
 		bound = ObservationHistoryMaxEntries
 	}
-	if len(s.memoryHistory[observationID]) > bound {
-		s.memoryHistory[observationID] = s.memoryHistory[observationID][len(s.memoryHistory[observationID])-bound:]
+	if len(s.memoryHistory[unit.ID]) > bound {
+		s.memoryHistory[unit.ID] = s.memoryHistory[unit.ID][len(s.memoryHistory[unit.ID])-bound:]
 	}
 }
 
@@ -364,9 +374,10 @@ func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []str
 		delete(s.units, id)
 		delete(s.observationSources, id)
 		delete(s.consolidated, id)
+		delete(s.memoryHistory, id)
 	}
 	for _, id := range remaining {
-		if unit, ok := s.units[id]; ok {
+		if unit, ok := s.units[id]; ok && (unit.FactType == TypeWorld || unit.FactType == TypeExperience) {
 			unit.ConsolidatedAt = nil
 			s.units[id] = unit
 			delete(s.consolidated, id)

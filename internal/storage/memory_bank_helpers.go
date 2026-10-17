@@ -2,6 +2,7 @@ package storage
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,27 @@ func aliasHits(aliases []string, search string) []string {
 			hits = append(hits, alias)
 		}
 	}
+	return hits
+}
+
+// aliasesExplaining returns the aliases worth reporting for one search hit: the
+// aliases that matched the filter, but only when the bank's own id or name does
+// not already contain the search text. This answers "why is this row in my
+// results", so a row that explains itself needs no footnote. The list is sorted
+// by alias text, matching the reference's ORDER BY alias.
+func aliasesExplaining(bankID, name string, aliases []string, search string) []string {
+	if search == "" {
+		return nil
+	}
+	needle := strings.ToUpper(search)
+	if strings.Contains(strings.ToUpper(bankID), needle) || strings.Contains(strings.ToUpper(name), needle) {
+		return nil
+	}
+	hits := aliasHits(aliases, search)
+	if len(hits) == 0 {
+		return nil
+	}
+	sort.Strings(hits)
 	return hits
 }
 

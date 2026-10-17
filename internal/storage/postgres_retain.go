@@ -15,6 +15,8 @@ import (
 // into chunks, persists units, resolves entities, and returns created unit
 // identifiers grouped per item in item order.
 func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (RetainOutcome, error) {
+	ctx, phases := beginRetainPhases(ctx, postgresStorePhaseLabel)
+	defer phases.finish()
 	if _, err := s.GetBank(ctx, req.BankID); err != nil {
 		if !errors.Is(err, ErrBankNotFound) {
 			return RetainOutcome{}, err
@@ -338,6 +340,23 @@ func (s *PostgresStore) unitIDsForDocument(ctx context.Context, bankID, docID st
 // the document row, so a replace-mode re-retain rebuilds its evidence.
 func (s *PostgresStore) clearDocumentUnits(ctx context.Context, bankID, docID string) error {
 	qualified := quoteIdent(s.schema)
+	// The document's units are about to go with their postings, so give back
+	// the mention counts the postings contributed before they are deleted.
+	if err := releaseEntityPostings(ctx, s.db, qualified,
+		`ue.unit_id IN (SELECT id FROM `+qualified+`.memory_units WHERE bank_id = $1 AND document_id = $2)`,
+		bankID, docID); err != nil {
+		return err
+	}
+	// A replaced document's units are being re-derived, so the survivors that
+	// pointed at them lose their outgoing edges: queue them for a relink before
+	// the links go.
+	unitIDs, err := s.unitIDsForDocument(ctx, bankID, docID)
+	if err != nil {
+		return err
+	}
+	if err := s.enqueueRelinkVictims(ctx, s.db, bankID, unitIDs, false); err != nil {
+		return err
+	}
 	for _, statement := range []string{
 		`DELETE FROM ` + qualified + `.memory_links
 		 WHERE from_unit_id IN (SELECT id FROM ` + qualified + `.memory_units WHERE bank_id = $1 AND document_id = $2)
@@ -441,15 +460,20 @@ func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitID
 	return nil
 }
 
-// GetDocument returns one stored document by identifier.
+// GetDocument returns one stored document by identifier, with the count of the
+// memory units written from it (units carrying its document_id; an observation
+// has no document id of its own) counted in the same statement, so the count
+// never depends on the document being inside a listing window.
 func (s *PostgresStore) GetDocument(ctx context.Context, bankID, docID string) (Document, error) {
 	query := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''), created_at, updated_at,
-	                 COALESCE(retain_params, '{}'::jsonb), COALESCE(tags, '{}')
+	                 COALESCE(retain_params, '{}'::jsonb), COALESCE(tags, '{}'),
+	                 (SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.memory_units u
+	                   WHERE u.bank_id = documents.bank_id AND u.document_id = documents.id)
 	          FROM ` + quoteIdent(s.schema) + `.documents WHERE id=$1 AND bank_id=$2`
 	var doc Document
 	var paramsRaw, tagsRaw []byte
 	err := s.reader().QueryRowContext(ctx, query, docID, bankID).Scan(&doc.ID, &doc.BankID, &doc.OriginalText,
-		&doc.ContentHash, &doc.CreatedAt, &doc.UpdatedAt, &paramsRaw, &tagsRaw)
+		&doc.ContentHash, &doc.CreatedAt, &doc.UpdatedAt, &paramsRaw, &tagsRaw, &doc.MemoryUnitCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrDocumentNotFound
 	}
@@ -464,6 +488,9 @@ func (s *PostgresStore) GetDocument(ctx context.Context, bankID, docID string) (
 	// tags is a text[] column, not jsonb: its literal form is an array, which
 	// json.Unmarshal would read as an object.
 	doc.Tags = decodePostgresTextArray(tagsRaw)
+	// document_metadata is sourced from retain_params.metadata, the same key the
+	// listing serves it on, so the detail read agrees with the list read.
+	doc.Metadata = documentMetadata(doc.RetainParams)
 	return doc, nil
 }
 
@@ -853,6 +880,32 @@ func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID s
 	return err
 }
 
+// releaseEntityPostings gives back the mention counts the entity postings a
+// cascade is about to remove contributed, the inverse of UpsertUnitEntity.
+//
+// mention_count is otherwise increment-only, so without this the denormalised
+// count drifts upward every time a document is replaced, a memory is deleted
+// or invalidated, memories are cleared, or an edit rewrites a unit's entity
+// set. postingsWhere is a predicate over the postings alias `ue` selecting
+// exactly the rows the caller is about to delete; it must run in the same
+// transaction as — and before — that delete, because afterwards the rows the
+// entity ids are read from are gone. The decrement is per entity and floored
+// at zero, counting the postings actually going rather than assuming one per
+// unit, mirroring the reference's single unlink choke point (its
+// enqueue_entity_prune_candidates → release_entity_postings).
+func releaseEntityPostings(ctx context.Context, q stmtExecer, qualified, postingsWhere string, args ...any) error {
+	_, err := q.ExecContext(ctx, `UPDATE `+qualified+`.entities e
+		SET mention_count = GREATEST(e.mention_count - v.n, 0)
+		FROM (
+			SELECT ue.entity_id AS id, COUNT(*) AS n
+			FROM `+qualified+`.unit_entities ue
+			WHERE `+postingsWhere+`
+			GROUP BY ue.entity_id
+		) v
+		WHERE e.id = v.id`, args...)
+	return err
+}
+
 // SetUnitEntities replaces the entities one memory unit mentions.
 //
 // The names are resolved first so a name that creates an entity is not left
@@ -898,11 +951,24 @@ func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID stri
 	}
 	_ = rows.Close()
 
+	dropped := make([]string, 0, len(linked))
 	for _, id := range linked {
 		if _, keep := wanted[id]; keep {
 			delete(wanted, id)
 			continue
 		}
+		dropped = append(dropped, id)
+	}
+	// The postings that are about to go each contributed one mention, so give
+	// them back before the rows are deleted: an edit that rewrites the entity
+	// set is one of the unlink paths that would otherwise drift the count.
+	if len(dropped) > 0 {
+		if err := releaseEntityPostings(ctx, s.db, qualified,
+			`ue.unit_id = $1::uuid AND ue.entity_id = ANY($2::uuid[])`, unitID, dropped); err != nil {
+			return err
+		}
+	}
+	for _, id := range dropped {
 		if _, err := s.db.ExecContext(ctx,
 			`DELETE FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid AND entity_id = $2::uuid`,
 			unitID, id); err != nil {

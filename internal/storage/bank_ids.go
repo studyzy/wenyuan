@@ -21,9 +21,12 @@ func ValidBankID(id string) bool {
 	return !containsControl(id)
 }
 
+// containsControl reports whether the identifier carries a Unicode `Cc`
+// character: the C0 controls (U+0000-U+001F), DEL (U+007F) and the C1 controls
+// (U+0080-U+009F), which is what the reference rejects.
 func containsControl(s string) bool {
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return true
 		}
 	}

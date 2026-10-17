@@ -97,10 +97,9 @@ type ReflectInclude struct {
 	ToolOutput *bool
 }
 
-// ReflectFactsInclude carries the nested cited-evidence options.
-type ReflectFactsInclude struct {
-	MaxTokens int
-}
+// ReflectFactsInclude carries the nested cited-evidence options. The reference
+// declares no members for this object: its presence alone selects the behaviour.
+type ReflectFactsInclude struct{}
 
 // ReflectDirective is one directive candidate considered for a reflection.
 // Tags scope it to matching requests; Scope is the execution scope, where an
@@ -139,7 +138,10 @@ type ReflectCitation struct {
 	ChunkID       string
 	Metadata      map[string]any
 	Tags          []string
-	Attachments   []RecallAttachment
+	// Entities are the resolved entity names the fact mentions, attached to an
+	// observation's tool result when the caller asked for them.
+	Entities    []string
+	Attachments []RecallAttachment
 	// Fresh reports that a perspective is current enough to answer from
 	// without descending to raw facts. It is meaningful only for a mental-model
 	// citation; a fact never carries it.

@@ -113,7 +113,11 @@ type BankPatch struct {
 	// ClearDisposition removes every stored trait when true, so a reset leaves
 	// the bank on the neutral defaults rather than on traits it once set.
 	ClearDisposition bool
-	Mission          *string
+	// ClearDispositionTraits names individual traits to remove, so a config
+	// write can clear one override (a JSON-null tombstone) without touching the
+	// others.
+	ClearDispositionTraits []string
+	Mission                *string
 	// Config, when set, merges into the bank's configuration overrides; a nil
 	// value for a key removes it.
 	Config *map[string]any

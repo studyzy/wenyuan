@@ -7,9 +7,11 @@ import (
 )
 
 // The audit and LLM-request listings narrow by every documented filter. The
-// fixture times are whole hours so a window edge is unambiguous.
+// fixture times are whole hours so a window edge is unambiguous; the base is
+// today's UTC midnight so the rows also fall inside the statistics routes'
+// bounded window (the reference filters on `started_at >= now - period`).
 func observabilityBase() time.Time {
-	return time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	return time.Now().UTC().Truncate(24 * time.Hour)
 }
 
 // seedObservabilityStore builds a bank with a few audit rows and model-call
@@ -180,10 +182,11 @@ func TestMemoryLLMRequestFilters(t *testing.T) {
 		{"scope", LLMRequestQuery{Scope: "synthesis"}, []string{"r3"}},
 		{"provider", LLMRequestQuery{Provider: "anthropic"}, []string{"r3"}},
 		{"trace", LLMRequestQuery{TraceID: "T1"}, []string{"r2", "r1"}},
-		{"document", LLMRequestQuery{DocumentID: "doc-2"}, []string{"r3"}},
-		{"produced memory", LLMRequestQuery{MemoryID: "m1"}, []string{"r1"}},
-		{"consumed memory", LLMRequestQuery{MemoryID: "m2"}, []string{"r2"}},
-		{"absent memory", LLMRequestQuery{MemoryID: "m9"}, nil},
+		{"document", LLMRequestQuery{DocumentID: "doc-2", DocumentIDSet: true}, []string{"r3"}},
+		{"empty document", LLMRequestQuery{DocumentID: "", DocumentIDSet: true}, nil},
+		{"produced memory", LLMRequestQuery{MemoryID: "m1", MemoryIDSet: true}, []string{"r1"}},
+		{"consumed memory", LLMRequestQuery{MemoryID: "m2", MemoryIDSet: true}, []string{"r2"}},
+		{"absent memory", LLMRequestQuery{MemoryID: "m9", MemoryIDSet: true}, nil},
 		{"unknown status", LLMRequestQuery{Status: "weird"}, nil},
 		{"unknown operation", LLMRequestQuery{Operation: "frobnicate"}, nil},
 	}

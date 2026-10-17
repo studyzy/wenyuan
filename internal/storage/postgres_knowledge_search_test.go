@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -121,5 +122,69 @@ func TestKnowledgeSearchBackendsAgreeOnOrder(t *testing.T) {
 		if pgOrder[i] != memOrder[i] {
 			t.Fatalf("postgres order %v != memory order %v", pgOrder, memOrder)
 		}
+	}
+}
+
+// With `enable_text_search` off the keyword arm is dropped: the search ranks on
+// the vector arm alone, and with no query embedding either it returns nothing
+// rather than a ranking off an index the bank switched off.
+func TestPostgresKnowledgeSearchTextArmDisabled(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	putKnowledge(t, store, KnowledgeNode{ID: "p-body", BankID: "vec-bank", Kind: KnowledgeKindPage, Title: "Deployment", Text: "run the pipeline"})
+
+	hits, err := store.SearchKnowledgeNodes(ctx, KnowledgeSearchQuery{
+		BankID: "vec-bank", Query: "pipeline", Limit: 10, DisableTextArm: true,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits = %d, want none without an embedding and the text arm off", len(hits))
+	}
+}
+
+// The tag predicate is bound into each arm's WHERE, so a tagged page that ranks
+// below untagged pages is still returned when the limit is 1 — the filter is
+// part of the search, not a post-ranking drop that a short window can starve.
+func TestPostgresKnowledgeSearchTagFilterPreRanking(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	putKnowledge(t, store, KnowledgeNode{ID: "p-high", BankID: "vec-bank", Kind: KnowledgeKindPage,
+		Title: "Deployment", Text: "pipeline pipeline pipeline"})
+	putKnowledge(t, store, KnowledgeNode{ID: "p-tagged", BankID: "vec-bank", Kind: KnowledgeKindPage,
+		Title: "Tagged", Text: "pipeline", Tags: []string{"keep"}})
+
+	hits, err := store.SearchKnowledgeNodes(ctx, KnowledgeSearchQuery{
+		BankID: "vec-bank", Query: "pipeline", Limit: 1,
+		Tags: []string{"keep"}, TagsMatch: TagsMatchAllStrict,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Node.ID != "p-tagged" {
+		t.Fatalf("filtered hits = %v, want [p-tagged]", knowledgeHitIDs(hits))
+	}
+}
+
+// A corrupted parent cycle (a tree written before the walk was guarded, or
+// restored from such an export) must not spin the recursive subtree walk: the
+// delete terminates on the first repeat and removes the reachable rows.
+func TestPostgresKnowledgeDeleteSubtreeCycleSafe(t *testing.T) {
+	store := postgresVectorStore(t)
+	pg := store.(*PostgresStore)
+	ctx := context.Background()
+	putKnowledge(t, store, KnowledgeNode{ID: "cyc-a", BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: "a"})
+	putKnowledge(t, store, KnowledgeNode{ID: "cyc-b", BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: "b", ParentID: "cyc-a"})
+	if _, err := pg.db.ExecContext(ctx,
+		`UPDATE `+quoteIdent(pg.schema)+`.knowledge_pages SET parent_id = $1 WHERE bank_id = $2 AND id = $3`,
+		"cyc-b", "vec-bank", "cyc-a"); err != nil {
+		t.Fatalf("introduce cycle: %v", err)
+	}
+	if err := store.DeleteKnowledgeNode(ctx, "vec-bank", "cyc-a"); err != nil {
+		t.Fatalf("delete cyclic subtree: %v", err)
+	}
+	if _, err := store.GetKnowledgeNode(ctx, "vec-bank", "cyc-b"); !errors.Is(err, ErrKnowledgeNodeNotFound) {
+		t.Fatalf("cyc-b still present after cascade: %v", err)
 	}
 }

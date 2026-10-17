@@ -2,7 +2,6 @@ package storage
 
 import (
 	"encoding/json"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -545,6 +544,26 @@ func factContents(bankID, docID string, chunkBySegment map[int]string, item Reta
 	return out
 }
 
+// labelDerivedTags returns the subset of a unit's stored tags that were derived
+// from the bank's entity-label groups rather than supplied by the caller: those
+// carrying a key (the part before the first colon, case-insensitively) that
+// labelKeys names. It is the read-side counterpart of appendTagLabels, used by
+// a retag to tell a unit's label projection from its document tags.
+func labelDerivedTags(tags []string, labelKeys map[string]bool) []string {
+	if len(tags) == 0 || len(labelKeys) == 0 {
+		return nil
+	}
+	var out []string
+	for _, tag := range tags {
+		key, _, found := strings.Cut(tag, ":")
+		if !found || !labelKeys[strings.ToLower(key)] {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
 // appendTagLabels unions a unit's caller-supplied tags with the label-derived
 // tags from one fact, preserving order and dropping repeats.
 func appendTagLabels(tags, labelTags []string) []string {
@@ -774,44 +793,9 @@ func linkTuplesFor(bankID string, unitIDs []string) []MemoryLink {
 // whose embedding is within the similarity floor, capped at semanticLinkFanOut
 // per unit.
 func semanticLinksFor(bankID string, units []MemoryUnit, minSimilarity float64) []MemoryLink {
-	const fanOut = 5
 	links := make([]MemoryLink, 0)
 	for i := range units {
-		if len(units[i].Embedding) == 0 {
-			continue
-		}
-		type scored struct {
-			id         string
-			similarity float64
-		}
-		neighbours := make([]scored, 0)
-		for j := range units {
-			if i == j || len(units[j].Embedding) == 0 {
-				continue
-			}
-			similarity := cosineBetween(units[i].Embedding, units[j].Embedding)
-			if similarity >= minSimilarity {
-				neighbours = append(neighbours, scored{id: units[j].ID, similarity: similarity})
-			}
-		}
-		sort.SliceStable(neighbours, func(a, b int) bool {
-			if neighbours[a].similarity != neighbours[b].similarity {
-				return neighbours[a].similarity > neighbours[b].similarity
-			}
-			return neighbours[a].id < neighbours[b].id
-		})
-		if len(neighbours) > fanOut {
-			neighbours = neighbours[:fanOut]
-		}
-		for _, neighbour := range neighbours {
-			links = append(links, MemoryLink{
-				BankID:     bankID,
-				FromUnitID: units[i].ID,
-				ToUnitID:   neighbour.id,
-				LinkType:   LinkSemantic,
-				Weight:     neighbour.similarity,
-			})
-		}
+		links = append(links, semanticLinksFrom(bankID, units[i], units, minSimilarity)...)
 	}
 	return links
 }
