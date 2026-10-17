@@ -18,9 +18,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -428,6 +430,9 @@ func (c *Consolidator) runBatch(ctx context.Context, bankID string, scope []stri
 		if err == nil {
 			break
 		}
+		// Count the failed call. A raised call is transport-shaped: an unchanged
+		// re-send may succeed, so it is the "retry" class.
+		recordBatchFailure(failureClassRetry, err)
 		// A cancelled or expired context will not clear on a retry, so it stops
 		// the attempt loop rather than burning the budget on a dead call.
 		if ctx.Err() != nil {
@@ -442,6 +447,35 @@ func (c *Consolidator) runBatch(ctx context.Context, bankID string, scope []stri
 		return Result{}, &llmFailure{factIDs: factIDsOf(facts), err: err}
 	}
 	return c.applyDecision(ctx, bankID, scope, facts, observations, decision, response.Usage, remaining)
+}
+
+// failureClassRetry is the consolidation batch failure class this service can
+// produce: a model call that raised. The reference also has a "fail_fast" class
+// for a response its schema rejects and a "propagate" class for a control
+// signal; this service's response parser never rejects a response and never
+// raises a control signal, so those two classes are never recorded rather than
+// fabricated.
+const failureClassRetry = "retry"
+
+// recordBatchFailure reports one failed consolidation batch call, labelled by
+// failure class so the transport-shaped failures stay separable from the
+// schema-shaped ones, and by the error's concrete type name, as the reference
+// reports the exception class.
+func recordBatchFailure(failureClass string, err error) {
+	monitoring.Workload.CountConsolidationBatchFailure(failureClass, errorTypeName(err))
+}
+
+// errorTypeName is an error's concrete type name without its package qualifier
+// or pointer marker.
+func errorTypeName(err error) string {
+	if err == nil {
+		return ""
+	}
+	t := reflect.TypeOf(err)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Name()
 }
 
 // llmFailure marks a batch whose model call failed or answered unusably, so the

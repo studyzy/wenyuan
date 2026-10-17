@@ -8,7 +8,6 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/httpx"
-	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -87,7 +86,9 @@ var configurableFields = map[string]configValueKind{
 }
 
 // dispositionFieldKeys maps the public config field names to the storage trait
-// keys, so a config update and a profile write land on the same column.
+// keys. The config route stores these fields as overrides in the bank's config
+// column, the same as every other accepted key; the mapping is the one the
+// profile/list overlay uses to read a trait out of the resolved config.
 var dispositionFieldKeys = map[string]string{
 	"disposition_skepticism": storage.DispositionKeySkepticism,
 	"disposition_literalism": storage.DispositionKeyLiteralism,
@@ -109,13 +110,56 @@ var positiveIntFields = map[string]struct{}{
 // is unknown or carries the wrong shape: the reference raises ValueError for
 // these and answers 400, not 422.
 //
-// The disposition traits are three keys of the single reference-side
-// disposition object, so they are collected and applied as one partial map.
-// reflect_mission is the bank's mission column rather than a stored override.
+// Every accepted key — the disposition traits and reflect_mission included —
+// is an override in the bank's config column, which is the only place the
+// reference's config endpoint writes and the only place it reads. The legacy
+// disposition and mission columns belong to the profile paths.
 func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
+	// The policy check runs before everything else, matching the reference: an
+	// invalid memory_defense is a 422 regardless of what else the update names.
+	// It keys on the raw field name, as the reference's engine does: an
+	// environment-variable-spelled key (HINDSIGHT_API_MEMORY_DEFENSE) skips the
+	// policy check and is stored verbatim after only the base type check.
+	for key, raw := range updates {
+		if key == "memory_defense" && raw != nil {
+			if err := validateMemoryDefense(raw); err != nil {
+				return storage.BankPatch{}, err
+			}
+		}
+	}
+
 	patch := storage.BankPatch{}
-	traits := map[string]int{}
 	configValues := map[string]any{}
+
+	// Normalize every key once: the credential and configurability checks work
+	// on the whole update set, not the first offending key.
+	normalizedKeys := make([]string, 0, len(updates))
+	for key := range updates {
+		normalizedKeys = append(normalizedKeys, normalizeConfigKey(key))
+	}
+	// Credentials (API keys, base URLs, service-account keys) are rejected first
+	// with their own message, over every offending key at once, exactly as the
+	// reference does before it checks configurability.
+	if attempts := sortedIntersection(normalizedKeys, credentialConfigFields); len(attempts) > 0 {
+		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Cannot set credential fields via API: "+pyStringList(attempts)+
+				". Credentials (API keys, base URLs) must be set at server level only.")
+	}
+	invalid := sortedDifference(normalizedKeys, configurableFields)
+	// A key that is a real server-level field has its own message, distinct from
+	// an unknown one: "static" is a field the deployment knows but which cannot
+	// vary per bank.
+	if staticFields := sortedIntersection(invalid, staticConfigFields); len(staticFields) > 0 {
+		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Cannot override static (server-level) fields: "+pyStringList(staticFields)+
+				". Only configurable fields can be overridden per-bank. Configurable fields include: "+
+				configFieldSample()+"... (total: "+fmt.Sprintf("%d", len(configurableFields))+" fields)")
+	}
+	if len(invalid) > 0 {
+		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Unknown configuration fields: "+pyStringList(invalid)+
+				". Valid configurable fields: "+configFieldSample()+"...")
+	}
 
 	keys := make([]string, 0, len(updates))
 	for key := range updates {
@@ -128,48 +172,35 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 	for _, key := range keys {
 		normalized := normalizeConfigKey(key)
 		raw := updates[key]
-		kind, ok := configurableFields[normalized]
-		if !ok {
-			return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest, unknownConfigFieldMessage(normalized))
-		}
+		kind := configurableFields[normalized]
 		if raw == nil {
-			// JSON null is the reference's "server default" tombstone: it clears
-			// the override. The mission column has no tombstone, so it clears to
-			// the empty mission; the disposition columns cannot be unset here.
-			if normalized == "reflect_mission" {
-				empty := ""
-				patch.Mission = &empty
-			} else if _, isTrait := dispositionFieldKeys[normalized]; !isTrait {
-				configValues[normalized] = nil
-			}
+			// JSON null is the reference's "server default" tombstone: the value
+			// is dropped at read, so the override is cleared. The store applies
+			// the same clear by deleting the key.
+			configValues[normalized] = nil
 			continue
 		}
-		if traitKey, isTrait := dispositionFieldKeys[normalized]; isTrait {
+		if _, isTrait := dispositionFieldKeys[normalized]; isTrait {
 			value, ok := asInt(raw)
 			if !ok || value < storage.DispositionTraitMin || value > storage.DispositionTraitMax {
 				return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
 					fmt.Sprintf("%s must be an integer between 1 and 5, got %s", normalized, describeValue(raw)))
 			}
-			traits[traitKey] = value
+			configValues[normalized] = value
 			continue
 		}
 		if !kindMatches(kind, raw) {
 			return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-				fmt.Sprintf("%s must be %s, got %s", normalized, describeKind(kind), describeValue(raw)))
+				fmt.Sprintf("%s must be %s, got %s", normalized, describeKind(kind), pythonTypeName(raw)))
 		}
 		if err := validateConfigValue(normalized, raw); err != nil {
 			return storage.BankPatch{}, err
 		}
-		if normalized == "reflect_mission" {
-			value, _ := raw.(string)
-			patch.Mission = &value
-			continue
-		}
 		configValues[normalized] = raw
 	}
 
-	if len(traits) > 0 {
-		patch.Disposition = &traits
+	if err := validateRecallBudgetBounds(updates); err != nil {
+		return storage.BankPatch{}, err
 	}
 	if len(configValues) > 0 {
 		patch.Config = &configValues
@@ -181,10 +212,15 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 // after the base type check: a positive segment size, and a structural check
 // for the two fields whose shape decides whether the bank can ever extract.
 func validateConfigValue(key string, raw any) *httpx.HTTPError {
+	if strings.HasPrefix(key, "recall_budget_") {
+		if err := validateRecallBudget(key, raw); err != nil {
+			return err
+		}
+	}
 	if _, ok := positiveIntFields[key]; ok {
 		if value, ok := asInt(raw); !ok || value < 1 {
 			return httpx.NewHTTPError(httpx.KindBadRequest,
-				fmt.Sprintf("%s must be a positive integer, got %s", key, describeValue(raw)))
+				fmt.Sprintf("%s must be >= 1, got %s", key, numberLiteral(value, raw)))
 		}
 	}
 	switch key {
@@ -192,9 +228,9 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 		if _, err := entitylabels.Parse(raw); err != nil {
 			return httpx.NewHTTPError(httpx.KindBadRequest, "Invalid entity_labels format: "+err.Error())
 		}
-	case "memory_defense":
-		if _, err := memoryops.ParseDefensePolicy(raw); err != nil {
-			return httpx.NewHTTPError(httpx.KindBadRequest, "Invalid memory_defense policy: "+err.Error())
+	case "retain_strategies":
+		if err := validateRetainStrategies(raw); err != nil {
+			return err
 		}
 	case "consolidation_strategies":
 		if err := validateConsolidationStrategies(raw); err != nil {
@@ -224,6 +260,202 @@ func validateKnowledgePageDefaultTrigger(raw any) *httpx.HTTPError {
 	if failure := mentalmodels.ValidateTriggerObject(object); failure != nil {
 		return httpx.NewHTTPError(httpx.KindBadRequest,
 			"knowledge_page_default_trigger is invalid: "+failure.Error())
+	}
+	return nil
+}
+
+// memoryDefenseActions are the actions a memory_defense rule accepts.
+var memoryDefenseActions = []string{"allow", "block", "redact"}
+
+// validateMemoryDefense reproduces the reference's parse_policy failure as a
+// 422, so a malformed policy (a missing/empty `on`, or an unknown action) is
+// rejected with the same status and detail the reference reports.
+func validateMemoryDefense(raw any) *httpx.HTTPError {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rules, _ := object["rules"].([]any)
+	for _, entry := range rules {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		on, isString := item["on"].(string)
+		if !isString || on == "" {
+			return httpx.NewHTTPError(httpx.KindUnprocessable,
+				"invalid memory_defense policy: invalid on "+pyRepr(item["on"])+"; must be a non-empty string")
+		}
+		action, isString := item["action"].(string)
+		if !isString || !containsString(memoryDefenseActions, action) {
+			return httpx.NewHTTPError(httpx.KindUnprocessable,
+				"invalid memory_defense policy: invalid action "+pyRepr(item["action"])+"; must be one of "+pyList(memoryDefenseActions))
+		}
+	}
+	return nil
+}
+
+// pyRepr renders a JSON value the way Python's repr does, which the reference's
+// error messages interpolate: a string is single-quoted, null is None.
+func pyRepr(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "None"
+	case string:
+		return "'" + typed + "'"
+	case bool:
+		if typed {
+			return "True"
+		}
+		return "False"
+	case float64:
+		if typed == float64(int(typed)) {
+			return fmt.Sprintf("%d", int(typed))
+		}
+		return fmt.Sprintf("%v", typed)
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+// numberLiteral renders a rejected numeric value the way the reference's
+// f-string does: the integer as-is when it parsed, otherwise the raw JSON value.
+func numberLiteral(value int, raw any) string {
+	if _, ok := asInt(raw); ok {
+		return fmt.Sprintf("%d", value)
+	}
+	return describeValue(raw)
+}
+
+// validateRecallBudgetBounds reproduces the reference's cross-field recall
+// budget check, which only fires when the update names both bounds.
+func validateRecallBudgetBounds(updates map[string]any) *httpx.HTTPError {
+	normalized := make(map[string]any, len(updates))
+	for key, value := range updates {
+		normalized[normalizeConfigKey(key)] = value
+	}
+	rawMin, hasMin := normalized["recall_budget_min"]
+	rawMax, hasMax := normalized["recall_budget_max"]
+	if !hasMin || !hasMax || rawMin == nil || rawMax == nil {
+		return nil
+	}
+	min, okMin := asIntStrict(rawMin)
+	max, okMax := asIntStrict(rawMax)
+	if okMin && okMax && min > max {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			fmt.Sprintf("recall_budget_min (%d) must be <= recall_budget_max (%d)", min, max))
+	}
+	return nil
+}
+
+// containsString reports whether values holds want.
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// pyList renders a string list the way Python's repr does.
+func pyList(values []string) string {
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = "'" + value + "'"
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// validateRecallBudget reproduces the reference's recall-budget checks, raising
+// the same 400 messages. Only the fields the update names are checked.
+func validateRecallBudget(key string, raw any) *httpx.HTTPError {
+	switch key {
+	case "recall_budget_function":
+		value, ok := raw.(string)
+		if !ok || !containsString([]string{"adaptive", "fixed"}, strings.ToLower(value)) {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				"recall_budget_function must be one of ['adaptive', 'fixed'], got "+pyRepr(raw))
+		}
+	case "recall_budget_fixed_low", "recall_budget_fixed_mid", "recall_budget_fixed_high",
+		"recall_budget_min", "recall_budget_max":
+		value, ok := asIntStrict(raw)
+		if !ok || value < 1 {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				key+" must be a positive integer, got "+pyRepr(raw))
+		}
+	case "recall_budget_adaptive_low", "recall_budget_adaptive_mid", "recall_budget_adaptive_high":
+		value, ok := asFloat(raw)
+		if !ok || value <= 0 {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				key+" must be a positive number, got "+pyRepr(raw))
+		}
+	}
+	return nil
+}
+
+// asIntStrict reads an integer, rejecting a bool (which JSON decodes as bool)
+// and a fractional number.
+func asIntStrict(raw any) (int, bool) {
+	if _, isBool := raw.(bool); isBool {
+		return 0, false
+	}
+	value, ok := asInt(raw)
+	if !ok {
+		return 0, false
+	}
+	if number, isFloat := raw.(float64); isFloat && number != float64(int(number)) {
+		return 0, false
+	}
+	return value, true
+}
+
+// asFloat reads a number, rejecting a bool.
+func asFloat(raw any) (float64, bool) {
+	if _, isBool := raw.(bool); isBool {
+		return 0, false
+	}
+	switch typed := raw.(type) {
+	case int:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case json.Number:
+		value, err := typed.Float64()
+		return value, err == nil
+	}
+	return 0, false
+}
+
+// validateRetainStrategies reproduces the reference's retain_strategies checks:
+// an empty strategy name, a non-object strategy, or a wrong-shaped value inside
+// one is a 400 naming the offending location.
+func validateRetainStrategies(raw any) *httpx.HTTPError {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	for name, overrides := range object {
+		if strings.TrimSpace(name) == "" {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				"Strategy names must not be empty strings. Remove entries with empty names before saving.")
+		}
+		inner, ok := overrides.(map[string]any)
+		if !ok {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				"Invalid retain strategy "+pyRepr(name)+": must be an object")
+		}
+		for innerKey, innerValue := range inner {
+			normalized := normalizeConfigKey(innerKey)
+			kind, known := configurableFields[normalized]
+			if !known {
+				continue
+			}
+			if innerValue != nil && !kindMatches(kind, innerValue) {
+				return httpx.NewHTTPError(httpx.KindBadRequest,
+					"Invalid retain strategy "+pyRepr(name)+": "+normalized+" must be "+describeKind(kind)+", got "+pythonTypeName(innerValue))
+			}
+		}
 	}
 	return nil
 }
@@ -409,10 +641,12 @@ func normalizeConfigKey(key string) string {
 	return strings.ToLower(strings.TrimPrefix(key, "HINDSIGHT_API_"))
 }
 
-// unknownConfigFieldMessage names the offending key and a sample of the fields
-// that are configurable, matching the shape of the reference's ValueError.
-func unknownConfigFieldMessage(key string) string {
-	sample := make([]string, 0, 10)
+// configFieldSample renders a sample of the configurable fields the way the
+// reference does: the first ten, sorted, as a Python list repr. The reference
+// takes the sample from an unordered set, so its particular ten vary per
+// process; the wording and quoting are what the message contract pins.
+func configFieldSample() string {
+	sample := make([]string, 0, len(configurableFields))
 	for name := range configurableFields {
 		sample = append(sample, name)
 	}
@@ -420,8 +654,54 @@ func unknownConfigFieldMessage(key string) string {
 	if len(sample) > 10 {
 		sample = sample[:10]
 	}
-	return fmt.Sprintf("Unknown configuration fields: [%s]. Valid configurable fields: [%s]...",
-		key, strings.Join(sample, ", "))
+	return pyStringList(sample)
+}
+
+// pyStringList renders a string slice the way Python's repr does: single-quoted
+// members, comma-separated, wrapped in brackets.
+func pyStringList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = "'" + value + "'"
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// sortedIntersection returns the sorted members of names that are in set.
+func sortedIntersection(names []string, set map[string]struct{}) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		if _, ok := set[name]; !ok {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedDifference returns the sorted distinct members of names that are not
+// keys of fields.
+func sortedDifference(names []string, fields map[string]configValueKind) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		if _, ok := fields[name]; ok {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // describeKind names a value kind the way the JSON payload reads.
@@ -443,6 +723,31 @@ func describeKind(kind configValueKind) string {
 		return "a list or an object"
 	default:
 		return "the declared type"
+	}
+}
+
+// pythonTypeName names a JSON value's type the way Python's type(value).__name__
+// does, which the reference interpolates into a wrong-typed-value message.
+func pythonTypeName(raw any) string {
+	switch raw.(type) {
+	case bool:
+		return "bool"
+	case float64:
+		return "float"
+	case json.Number:
+		return "int"
+	case int, int64:
+		return "int"
+	case string:
+		return "str"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "dict"
+	case nil:
+		return "NoneType"
+	default:
+		return fmt.Sprintf("%T", raw)
 	}
 }
 

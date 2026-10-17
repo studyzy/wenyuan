@@ -68,11 +68,14 @@ func TestDefaultBankTemplateAppliedOnCreate(t *testing.T) {
 	if got := bank.Config["retain_chunk_size"]; got != float64(512) && got != 512 {
 		t.Fatalf("bank config retain_chunk_size = %#v, want 512", got)
 	}
-	if got := bank.Trait(storage.DispositionKeySkepticism); got != 5 {
-		t.Fatalf("disposition skepticism = %d, want 5", got)
+	if got := bank.Config["disposition_skepticism"]; got != float64(5) && got != 5 {
+		t.Fatalf("bank config disposition_skepticism = %#v, want 5", got)
 	}
-	if bank.Mission != "help" {
-		t.Fatalf("mission = %q, want help", bank.Mission)
+	if got := bank.Config["reflect_mission"]; got != "help" {
+		t.Fatalf("bank config reflect_mission = %#v, want help", got)
+	}
+	if bank.Mission != "" {
+		t.Fatalf("the legacy mission column must stay unset: %q", bank.Mission)
 	}
 
 	models, err := store.ListMentalModels(context.Background(), "fresh", "")

@@ -82,12 +82,12 @@ func TestTransferRouteFamilyIsMounted(t *testing.T) {
 		{"export", http.MethodGet, "/v1/default/banks/route-bank/export", http.StatusOK},
 		{"retired document read", http.MethodGet, "/v1/default/banks/route-bank/document-transfer", http.StatusGone},
 		{"transfer export submit", http.MethodPost, "/v1/default/banks/route-bank/transfer/export", http.StatusAccepted},
-		{"clone without target", http.MethodPost, "/v1/default/banks/route-bank/clone", http.StatusBadRequest},
+		{"clone without target", http.MethodPost, "/v1/default/banks/route-bank/clone", http.StatusUnprocessableEntity},
 		{"attachment miss", http.MethodGet, "/v1/default/banks/route-bank/attachments/none", http.StatusNotFound},
-		// The standard mux normalizes a dot-segment before the handler runs, so
-		// the traversal never reaches the transfer code. Either the mux
-		// redirects it away or the handler reports not-found; both are safe.
-		{"download traversal", http.MethodGet, "/v1/default/files/download/../etc/passwd", http.StatusMovedPermanently},
+		// A dot segment is routed as written; the transfer handler rejects the
+		// parent-directory key as not-found, as the reference does, rather than
+		// the mux redirecting the traversal away.
+		{"download traversal", http.MethodGet, "/v1/default/files/download/../etc/passwd", http.StatusNotFound},
 	}
 
 	for _, tc := range cases {

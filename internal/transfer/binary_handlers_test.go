@@ -75,14 +75,45 @@ func TestDownloadResolvesOwningBankFromKey(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/zip" {
 		t.Fatalf("content type = %q, want application/zip", got)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got == "" {
-		t.Fatal("download must declare an attachment disposition")
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="bank-a-documents.zip"` {
+		t.Fatalf("disposition = %q", got)
 	}
-	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Fatalf("no-sniff directive = %q", got)
+	// The download route serves exactly what the reference serves: no
+	// no-sniff directive and no cache directive.
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("no-sniff directive = %q, want none", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "" {
+		t.Fatalf("cache directive = %q, want none", got)
 	}
 	if rec.Body.String() != "zip-bytes" {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+// test-download-key-is-used-verbatim: the reference splits the raw path
+// remainder, so a key padded with a leading or doubled slash leaves an empty
+// first segment and never resolves — even when the trimmed key would name a
+// stored file.
+func TestDownloadRejectsSlashPaddedKey(t *testing.T) {
+	h, store := newTestHandlers(t)
+	seedBank(t, store, "bank-a")
+	if err := store.PutStoredFile(context.Background(), storage.StoredFile{
+		Key: "banks/bank-a/x.zip", ContentType: "application/zip", Data: []byte("zip"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, raw := range []string{
+		"/v1/default/files/download//banks/bank-a/x.zip",
+		"/v1/default/files/download/banks/bank-a/x.zip/",
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, raw, nil)
+		h.ServeDownload(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404 (body %s)", raw, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -104,6 +135,72 @@ func TestDownloadKeyOutsideBankPrefixIsNotFound(t *testing.T) {
 	h.ServeDownload(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// test-download-is-gated: a disabled document-export gate answers the download
+// route with the reference's disabled message before any key work.
+func TestDownloadIsGated(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	h := NewHandlers(store, false, true)
+	seedBank(t, store, "bank-a")
+	key := storage.StoredFileKeyForBank("bank-a", "archive.zip")
+	if err := store.PutStoredFile(context.Background(), storage.StoredFile{
+		Key: key, ContentType: "application/zip", Data: []byte("zip-bytes"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/default/files/download/"+key, nil)
+	h.ServeDownload(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API") {
+		t.Fatalf("disabled detail must name the flag: %s", got)
+	}
+}
+
+// test-download-accepts-tenant-prefixed-keys: the reference stores keys under
+// both the tenants/{schema}/banks/... and banks/... layouts, and both resolve.
+func TestDownloadAcceptsTenantPrefixedKeys(t *testing.T) {
+	h, store := newTestHandlers(t)
+	seedBank(t, store, "bank-a")
+	key := "tenants/public/banks/bank-a/exports/op/transfer.zip"
+	if err := store.PutStoredFile(context.Background(), storage.StoredFile{
+		Key: key, ContentType: "application/zip", Data: []byte("tenant-zip"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/default/files/download/"+key, nil)
+	h.ServeDownload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "tenant-zip" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="bank-a-documents.zip"` {
+		t.Fatalf("disposition = %q", got)
+	}
+}
+
+// test-attachment-not-found-names-the-resource: the reference's attachment
+// miss reports "Attachment not found", not a generic message.
+func TestAttachmentNotFoundNamesTheResource(t *testing.T) {
+	h, store := newTestHandlers(t)
+	seedBank(t, store, "bank-a")
+	rec := httptest.NewRecorder()
+	h.ServeAttachment(rec, routeRequest(http.MethodGet, "/v1/default/banks/bank-a/attachments/nope", nil,
+		map[string]string{"bank_id": "bank-a", "attachment_id": "nope"}))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Body.String(); got != `{"detail":"Attachment not found"}` {
+		t.Fatalf("body = %s", got)
 	}
 }
 

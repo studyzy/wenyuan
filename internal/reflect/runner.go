@@ -35,19 +35,22 @@ func NewRunner(p provider.Provider) *Runner {
 // Run performs the reflection and reports the answer with the evidence it used.
 func (r *Runner) Run(ctx context.Context, req storage.AgenticReflectRequest) (storage.ReflectOutcome, error) {
 	loop := NewLoop(r.provider, &retrievalAdapter{
-		inner: req.Retrieval, bankID: req.BankID, directives: req.Directives,
+		inner: req.Retrieval, bankID: req.BankID, directives: toDirectives(req.Directives),
 		tags: req.Tags, tagsMatch: req.TagsMatch, tagGroups: req.TagGroups,
+		observationIncludeEntities: req.SearchObservationsIncludeEntities,
 	}, Config{
-		MaxIterations:       req.MaxIterations,
-		Question:            req.Question,
-		MaxTokens:           req.MaxTokens,
-		MaxCompletionTokens: req.MaxCompletionTokens,
-		Budget:              req.Budget,
-		ResponseSchema:      req.ResponseSchema,
-		BankName:            req.BankName,
-		Mission:             req.Mission,
-		Disposition:         req.Disposition,
-		AnswerAsDocument:    req.AnswerAsDocument,
+		MaxIterations:              req.MaxIterations,
+		Question:                   req.Question,
+		MaxTokens:                  req.MaxTokens,
+		MaxCompletionTokens:        req.MaxCompletionTokens,
+		Budget:                     req.Budget,
+		ObservationMaxTokens:       req.SearchObservationsMaxTokens,
+		ObservationIncludeEntities: req.SearchObservationsIncludeEntities,
+		ResponseSchema:             req.ResponseSchema,
+		BankName:                   req.BankName,
+		Mission:                    req.Mission,
+		Disposition:                req.Disposition,
+		AnswerAsDocument:           req.AnswerAsDocument,
 	})
 	outcome, err := loop.Run(ctx)
 	if err != nil {
@@ -237,6 +240,9 @@ func evidencePayloads(batch []Evidence, kind string) []map[string]any {
 		if len(item.Tags) > 0 {
 			payload["tags"] = item.Tags
 		}
+		if len(item.Entities) > 0 {
+			payload["entities"] = item.Entities
+		}
 		if item.OccurredStart != nil {
 			payload["occurred_start"] = item.OccurredStart.UTC().Format(time.RFC3339)
 		}
@@ -342,12 +348,15 @@ func knowledgeSnippet(content string) string {
 type retrievalAdapter struct {
 	inner      storage.ReflectionRetrieval
 	bankID     string
-	directives []string
+	directives []Directive
 	// tags, tagsMatch and tagGroups are the reader's tag scope, so expand can
 	// confine the source text it returns to documents the reader may see.
 	tags      []string
 	tagsMatch string
 	tagGroups []storage.TagGroup
+	// observationIncludeEntities carries the caller's resolved switch: the
+	// reference attaches resolved entity names to each observation by default.
+	observationIncludeEntities bool
 }
 
 // ReflectMentalModels returns perspectives matching a query.
@@ -359,7 +368,13 @@ func (a *retrievalAdapter) ReflectMentalModels(ctx context.Context, query string
 // ReflectObservations returns consolidated conclusions matching a query.
 func (a *retrievalAdapter) ReflectObservations(ctx context.Context, query string, maxTokens int) ([]Evidence, error) {
 	citations, err := a.inner.ReflectObservations(ctx, a.bankID, query, maxTokens)
-	return toEvidence("observation", citations), err
+	evidence := toEvidence("observation", citations)
+	if !a.observationIncludeEntities {
+		for index := range evidence {
+			evidence[index].Entities = nil
+		}
+	}
+	return evidence, err
 }
 
 // ReflectMemories returns raw memories matching a query.
@@ -385,14 +400,24 @@ func (a *retrievalAdapter) ReflectExpand(ctx context.Context, ids []string, dept
 }
 
 // Directives returns the standing instructions that apply to this request.
-func (a *retrievalAdapter) Directives(context.Context) []string {
-	directives := make([]string, 0, len(a.directives))
+func (a *retrievalAdapter) Directives(context.Context) []Directive {
+	directives := make([]Directive, 0, len(a.directives))
 	for _, directive := range a.directives {
-		if trimmed := strings.TrimSpace(directive); trimmed != "" {
-			directives = append(directives, trimmed)
+		if strings.TrimSpace(directive.Content) != "" {
+			directives = append(directives, directive)
 		}
 	}
 	return directives
+}
+
+// toDirectives maps the store's directive candidates onto the loop's rendering
+// shape, keeping the name the prompt bolds ahead of the content.
+func toDirectives(directives []storage.ReflectDirective) []Directive {
+	out := make([]Directive, 0, len(directives))
+	for _, directive := range directives {
+		out = append(out, Directive{Name: directive.Name, Content: directive.Content})
+	}
+	return out
 }
 
 // toEvidence maps stored citations onto the loop's evidence shape, tagging each
@@ -409,6 +434,7 @@ func toEvidence(kind string, citations []storage.ReflectCitation) []Evidence {
 			ChunkID:       citation.ChunkID,
 			Metadata:      citation.Metadata,
 			Tags:          citation.Tags,
+			Entities:      citation.Entities,
 			OccurredStart: citation.OccurredStart,
 			OccurredEnd:   citation.OccurredEnd,
 			MentionedAt:   citation.MentionedAt,

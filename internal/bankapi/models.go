@@ -1,8 +1,7 @@
 package bankapi
 
 import (
-	"time"
-
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -47,11 +46,11 @@ type BankListRow struct {
 	Name           string      `json:"name"`
 	Disposition    Disposition `json:"disposition"`
 	Mission        string      `json:"mission"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	CreatedAt      string      `json:"created_at"`
+	UpdatedAt      string      `json:"updated_at"`
 	FactCount      int         `json:"fact_count"`
-	LastDocumentAt *time.Time  `json:"last_document_at"`
-	LastWriteAt    *time.Time  `json:"last_write_at"`
+	LastDocumentAt *string     `json:"last_document_at"`
+	LastWriteAt    *string     `json:"last_write_at"`
 	// DisplayAlias names the promoted alias the bank is presented under, or
 	// null when no alias is promoted and the bank is shown under its own id.
 	DisplayAlias   *string  `json:"display_alias"`
@@ -72,7 +71,10 @@ type BankListResponse struct {
 // deprecated background alias. The operational fields below are applied through
 // the same configuration path the config write route uses.
 type BankRequest struct {
-	Name string `json:"name"`
+	// Name is a pointer so an absent field is distinguishable from an explicit
+	// empty string: the reference declares it `str | None`, and a supplied
+	// empty string is a value that clears the stored name.
+	Name *string `json:"name"`
 
 	Disposition *DispositionInput `json:"disposition"`
 
@@ -140,6 +142,23 @@ func (r BankRequest) configUpdates() map[string]any {
 	if r.EnableReranking != nil {
 		updates["enable_reranking"] = *r.EnableReranking
 	}
+	// The reflect mission and the disposition traits are configuration overrides
+	// as well as bank-row values: the reference routes them through
+	// get_config_updates, so `GET /config` reports them in `overrides` and the
+	// resolved config carries them. Each is resolved the same way the patch
+	// resolves it (flat field over the deprecated object member).
+	if mission := r.missionValuePtr(); mission != nil {
+		updates["reflect_mission"] = *mission
+	}
+	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
+		updates["disposition_skepticism"] = *value
+	}
+	if value := r.traitPtr(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }); value != nil {
+		updates["disposition_literalism"] = *value
+	}
+	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
+		updates["disposition_empathy"] = *value
+	}
 	return updates
 }
 
@@ -158,8 +177,10 @@ type AliasResponse struct {
 // AliasRequest is the alias creation body: the extra identifier and an optional
 // flag to also display the bank under it.
 type AliasRequest struct {
-	Alias   string `json:"alias"`
-	Primary bool   `json:"primary"`
+	// Alias is a pointer so an absent field is the framework's missing-field
+	// item rather than an empty-string identifier.
+	Alias   *string `json:"alias"`
+	Primary bool    `json:"primary"`
 }
 
 // AliasUpdateRequest is the alias display body. Primary is a pointer so an
@@ -193,14 +214,18 @@ type ConfigWriteRequest struct {
 	Updates *map[string]any `json:"updates"`
 }
 
-// ToResponse converts a stored bank into its public profile representation.
-func ToResponse(bank storage.Bank) BankResponse {
+// ToResponse converts a stored bank into its public profile representation with
+// an already-resolved disposition and mission. The reference builds its profile
+// response from the read that overlays the bank's configuration on the legacy
+// columns, so the caller resolves that pair (overlayDispositionMission) before
+// rendering rather than reporting the raw columns.
+func ToResponse(bank storage.Bank, disposition map[string]int, mission string) BankResponse {
 	return BankResponse{
 		BankID:      bank.BankID,
 		Name:        bank.Name,
-		Disposition: dispositionOf(bank),
-		Mission:     bank.Mission,
-		Background:  bank.Mission,
+		Disposition: dispositionFromMap(disposition),
+		Mission:     mission,
+		Background:  mission,
 	}
 }
 
@@ -223,18 +248,14 @@ func ToListRowWithDisposition(bank storage.Bank, displayAlias *string, matched [
 		Name:           bank.Name,
 		Disposition:    dispositionFromMap(disposition),
 		Mission:        mission,
-		CreatedAt:      bank.CreatedAt,
-		UpdatedAt:      bank.UpdatedAt,
+		CreatedAt:      httpx.FormatTimestamp(bank.CreatedAt),
+		UpdatedAt:      httpx.FormatTimestamp(bank.UpdatedAt),
 		FactCount:      bank.FactCount,
-		LastDocumentAt: bank.LastDocumentAt,
-		LastWriteAt:    bank.LastWriteAt,
+		LastDocumentAt: httpx.FormatTimestampPtr(bank.LastDocumentAt),
+		LastWriteAt:    httpx.FormatTimestampPtr(bank.LastWriteAt),
 		DisplayAlias:   displayAlias,
 		MatchedAliases: matched,
 	}
-}
-
-func dispositionOf(bank storage.Bank) Disposition {
-	return dispositionFromMap(bank.NormalizedDisposition())
 }
 
 // dispositionFromMap renders a trait map as the public disposition.
@@ -273,9 +294,13 @@ func (r BankRequest) ToStorage(id string) storage.Bank {
 	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
 		disposition[storage.DispositionKeyEmpathy] = *value
 	}
+	name := id
+	if r.Name != nil && *r.Name != "" {
+		name = *r.Name
+	}
 	return storage.Bank{
 		BankID:      id,
-		Name:        r.Name,
+		Name:        name,
 		Disposition: disposition,
 		Mission:     r.missionValue(),
 	}
@@ -299,9 +324,8 @@ func (r BankRequest) ToPatch() storage.BankPatch {
 	if len(traits) > 0 {
 		patch.Disposition = &traits
 	}
-	if r.Name != "" {
-		name := r.Name
-		patch.Name = &name
+	if r.Name != nil {
+		patch.Name = r.Name
 	}
 	if mission := r.missionValuePtr(); mission != nil {
 		patch.Mission = mission

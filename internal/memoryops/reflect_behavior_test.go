@@ -91,8 +91,8 @@ func TestReflectStructuredOutputSuccess(t *testing.T) {
 	if response.StructuredOutput["answer"] != "ok" {
 		t.Fatalf("parsed output = %v", response.StructuredOutput)
 	}
-	if response.StructuredOutputError != "" {
-		t.Fatalf("a success must carry no error: %q", response.StructuredOutputError)
+	if response.StructuredOutputError != nil {
+		t.Fatalf("a success must carry no error: %q", *response.StructuredOutputError)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestReflectStructuredOutputFailure(t *testing.T) {
 	if response.StructuredOutput != nil {
 		t.Fatalf("a failed extraction must not yield an object: %v", response.StructuredOutput)
 	}
-	if response.StructuredOutputError == "" {
+	if response.StructuredOutputError == nil || *response.StructuredOutputError == "" {
 		t.Fatal("a failed extraction must carry the error string")
 	}
 }

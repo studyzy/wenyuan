@@ -26,7 +26,7 @@ func (h *Handlers) BankTemplateSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reference returns a bare dict here, not a response model, so its nulls
 	// (every optional field's `"default": null`) are always on the wire. Keep them.
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, schema)
+	httpx.WriteJSON(w, http.StatusOK, schema)
 }
 
 // bankTemplateManifestSchema decodes the embedded reference schema.

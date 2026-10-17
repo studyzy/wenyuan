@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -48,10 +48,9 @@ type operationAccepted struct {
 
 // scope is the tri-state section selector the export and restore routes take.
 type scope struct {
-	Data        bool
-	BankConfig  bool
-	History     bool
-	AnySelected bool
+	Data       bool
+	BankConfig bool
+	History    bool
 	// Present records which include flags the caller actually supplied, so an
 	// intersection with what the archive carries can be computed.
 	Present map[string]bool
@@ -100,7 +99,7 @@ func writeAccepted(w http.ResponseWriter, r *http.Request, op storage.Operation)
 	if strings.TrimSpace(status) == "" {
 		status = string(storage.StatusPending)
 	}
-	httpx.WriteJSONFor(w, r, http.StatusAccepted, operationAccepted{OperationID: op.OperationID, Status: status})
+	httpx.WriteJSON(w, http.StatusAccepted, operationAccepted{OperationID: op.OperationID, Status: status})
 }
 
 // stashUpload persists an uploaded archive under a bank-scoped key and returns
@@ -117,35 +116,54 @@ func (h *Handlers) stashUpload(ctx context.Context, bankID, name string, data []
 	return key, nil
 }
 
+// errUploadFileMissing reports a request that carries no `file` part, or a body
+// that is not multipart at all. The reference declares the archive as a
+// required multipart field, so either case is a request-validation failure
+// naming the missing field, not a caller error.
+var errUploadFileMissing = errors.New("file is required")
+
+// errMultipartUnparseable reports a multipart body the parser could not read.
+// The reference reports the framework's own parse-error detail for this, which
+// is a caller error rather than a validation failure.
+//
+//nolint:staticcheck // the reference's own wording, capitalised
+var errMultipartUnparseable = errors.New("There was an error parsing the body")
+
 // readMultipartArchive extracts the archive upload field from a multipart
-// request, enforcing the size bound before any parsing work.
+// request. There is no size bound: the reference reads the whole upload with no
+// ceiling, so neither does this, and the multipart parser already spills the
+// body to disk beyond its in-memory allowance.
 func readMultipartArchive(r *http.Request) ([]byte, error) {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return nil, errUploadFileMissing
+	}
 	if err := r.ParseMultipartForm(multipartMemoryBound); err != nil {
-		return nil, fmt.Errorf("request body must be a multipart upload: %w", err)
+		return nil, errMultipartUnparseable
 	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		return nil, errors.New("multipart upload must carry a file field")
+		return nil, errUploadFileMissing
 	}
 	defer func() { _ = file.Close() }()
-	return readAllBounded(file, maxArchiveUploadBytes)
+	return io.ReadAll(file)
 }
 
-// readOptionalMultipartArchive returns the archive when a file field is
-// present and reports whether one was supplied.
+// readOptionalMultipartArchive returns the archive carried by the request's
+// `file` part. The part is required, so a request without one reports
+// errUploadFileMissing rather than a nil payload.
 func readOptionalMultipartArchive(r *http.Request) ([]byte, bool, error) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		return nil, false, nil
+		return nil, false, errUploadFileMissing
 	}
 	if err := r.ParseMultipartForm(multipartMemoryBound); err != nil {
-		return nil, false, fmt.Errorf("request body must be a multipart upload: %w", err)
+		return nil, false, errMultipartUnparseable
 	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		return nil, false, nil
+		return nil, false, errUploadFileMissing
 	}
 	defer func() { _ = file.Close() }()
-	data, err := readAllBounded(file, maxArchiveUploadBytes)
+	data, err := io.ReadAll(file)
 	return data, true, err
 }
 
@@ -171,8 +189,17 @@ func asHTTPError(err error) *httpx.HTTPError {
 		return httpx.NewHTTPError(httpx.KindConflict, "the target bank already exists")
 	case errors.Is(err, storage.ErrDocumentConflict):
 		return httpx.NewHTTPError(httpx.KindConflict, "conflicting document")
+	case errors.Is(err, storage.ErrInvalidBankID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "bank identifier is invalid")
+	case errors.Is(err, storage.ErrAliasConflict):
+		return httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias")
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
 	default:
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
 

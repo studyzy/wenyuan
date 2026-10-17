@@ -128,12 +128,16 @@ func TestAliaserPrefixesAndReuse(t *testing.T) {
 	}
 }
 
-// Directives appear as a mandatory section when the conversation opens and as a
-// numbered reminder beside the answer, so a later turn cannot out-rank them.
+// Directives appear as a mandatory section that opens each system prompt and as
+// a numbered reminder inside the same prompt, so a later turn cannot out-rank
+// them. The rule's name is bolded ahead of its content.
 func TestDirectivesAppearAsSectionAndReminder(t *testing.T) {
 	retrieval := &stubRetrieval{
 		observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "weekly deployments"}},
-		directives:   []string{"Always answer in French.", "Never mention salaries."},
+		directives: []Directive{
+			{Name: "Language", Content: "Always answer in French."},
+			{Content: "Never mention salaries."},
+		},
 	}
 	p := &scriptedProvider{name: "stub", script: turnScript(
 		toolCall(ToolSearchObservations, map[string]any{"query": "deploy"}),
@@ -142,29 +146,35 @@ func TestDirectivesAppearAsSectionAndReminder(t *testing.T) {
 	if _, err := NewLoop(p, retrieval, Config{Question: "when do we deploy?"}).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var sawSection, sawReminder bool
-	for call, req := range p.requests {
-		for index, message := range req.Messages {
-			if strings.Contains(message.Content, "## DIRECTIVES (MANDATORY)") {
-				sawSection = true
-			}
-			if strings.Contains(message.Content, "## REMINDER: MANDATORY DIRECTIVES") {
-				sawReminder = true
-				// The reminder is the last message of the answering call.
-				if index != len(req.Messages)-1 {
-					t.Fatalf("call %d: the reminder must close the prompt", call)
-				}
-				if !strings.Contains(message.Content, "1. Always answer in French.") {
-					t.Fatalf("rules must be numbered: %q", message.Content)
-				}
-			}
+	// The section rides in both the reasoning loop's system prompt and the
+	// answering call's, which is a separate call with its own prompt. The loop
+	// re-sends its system prompt each turn, so the two calls are the first and
+	// last requests.
+	first := p.requests[0].Messages[0].Content
+	last := p.requests[len(p.requests)-1].Messages[0].Content
+	if first == last {
+		t.Fatal("the reasoning and answering prompts must differ")
+	}
+	for _, content := range []string{first, last} {
+		if !strings.Contains(content, "## DIRECTIVES (MANDATORY)") {
+			t.Fatalf("the section must open the system prompt: %q", content)
+		}
+		if !strings.Contains(content, "- **Language**: Always answer in French.") {
+			t.Fatalf("a named rule must be bolded: %q", content)
+		}
+		if !strings.Contains(content, "## REMINDER: MANDATORY DIRECTIVES") {
+			t.Fatalf("the reminder must ride inside the same system prompt: %q", content)
+		}
+		if !strings.Contains(content, "1. **Language**: Always answer in French.") ||
+			!strings.Contains(content, "2. Never mention salaries.") {
+			t.Fatalf("the reminder must number the rules: %q", content)
 		}
 	}
-	if !sawSection {
-		t.Fatal("the opening section is missing")
-	}
-	if !sawReminder {
-		t.Fatal("the closing reminder is missing")
+	// The reasoning prompt closes with the reminder, after every instruction the
+	// model reads.
+	if !strings.HasSuffix(
+		first, "Do NOT include any commentary about how you handled directives - just follow them.") {
+		t.Fatalf("the reasoning prompt must close with the reminder: %q", first)
 	}
 }
 
@@ -174,10 +184,10 @@ func TestNoDirectivesNoBlocks(t *testing.T) {
 	if got := directivesSection(nil); got != "" {
 		t.Fatalf("section = %q, want empty", got)
 	}
-	if got := directivesReminder([]string{"  "}); got != "" {
+	if got := directivesReminder([]Directive{{Content: "  "}}); got != "" {
 		t.Fatalf("reminder = %q, want empty", got)
 	}
-	section := directivesSection([]string{"b rule", "a rule"})
+	section := directivesSection([]Directive{{Content: "b rule"}, {Content: "a rule"}})
 	if strings.Index(section, "a rule") > strings.Index(section, "b rule") {
 		t.Fatalf("rules must render in a stable order: %q", section)
 	}
@@ -305,7 +315,7 @@ func (r *concurrentRetrieval) ReflectReadModels(context.Context, []string) ([]Ev
 func (r *concurrentRetrieval) ReflectExpand(context.Context, []string, string) ([]Evidence, error) {
 	return nil, nil
 }
-func (r *concurrentRetrieval) Directives(context.Context) []string { return nil }
+func (r *concurrentRetrieval) Directives(context.Context) []Directive { return nil }
 
 // The lookups one turn asked for run together, and their results are still
 // recorded in the order the model asked for them.
@@ -365,4 +375,4 @@ func (r *failingRetrieval) ReflectReadModels(context.Context, []string) ([]Evide
 func (r *failingRetrieval) ReflectExpand(context.Context, []string, string) ([]Evidence, error) {
 	return nil, nil
 }
-func (r *failingRetrieval) Directives(context.Context) []string { return nil }
+func (r *failingRetrieval) Directives(context.Context) []Directive { return nil }

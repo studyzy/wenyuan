@@ -7,71 +7,64 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// Model is the wire shape of a mental model. Field names are public surface.
+// Model is the wire shape of a mental model. It declares exactly the fourteen
+// fields the reference's MentalModelResponse carries, always present: a field
+// the reference leaves unset serializes as JSON null rather than being dropped.
+// The detail level decides which of the nullable members are populated.
 type Model struct {
-	ID          string `json:"id"`
-	BankID      string `json:"bank_id"`
-	Subtype     string `json:"subtype"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	SourceQuery string `json:"source_query,omitempty"`
-	// Content is always present, as the empty string before a refresh has
-	// written anything: the frontend's detail pane reads its length and a client
-	// that has to treat an absent key as empty would be one more place to guess.
-	Content   string   `json:"content"`
+	ID          string  `json:"id"`
+	BankID      string  `json:"bank_id"`
+	Name        string  `json:"name"`
+	SourceQuery *string `json:"source_query"`
+	// Content is null at metadata detail and the stored (possibly empty) markdown
+	// at content/full, matching the reference's opt-in content projection.
+	Content   *string  `json:"content"`
 	Tags      []string `json:"tags"`
-	MaxTokens int      `json:"max_tokens"`
-	// Trigger is the model's refresh trigger, exposed so a client can read the
-	// schedule it was created with.
-	Trigger map[string]any `json:"trigger,omitempty"`
-	// Observations carries the recorded observations; it is always present so a
-	// client can rely on the key rather than on its absence.
-	Observations map[string]any `json:"observations"`
-	// ReflectResponse is the stored reflect payload, exposed at detail=full.
-	ReflectResponse map[string]any `json:"reflect_response,omitempty"`
+	MaxTokens *int     `json:"max_tokens"`
+	// Trigger is the model's refresh trigger, null at metadata detail and the
+	// normalized object otherwise.
+	Trigger map[string]any `json:"trigger"`
+	// LastRefreshedAt is when a refresh last finished.
+	LastRefreshedAt *string `json:"last_refreshed_at"`
 	// LastMemorySeenAt is the bank write watermark the last refresh observed.
-	LastMemorySeenAt *time.Time `json:"last_memory_seen_at,omitempty"`
+	LastMemorySeenAt *string `json:"last_memory_seen_at"`
 	// LastRefreshFailedAt parks an automatic refresh after a failure.
-	LastRefreshFailedAt *time.Time `json:"last_refresh_failed_at,omitempty"`
+	LastRefreshFailedAt *string `json:"last_refresh_failed_at"`
+	CreatedAt           string  `json:"created_at"`
+	// ReflectResponse is the stored reflect payload, populated only at full.
+	ReflectResponse map[string]any `json:"reflect_response"`
 	// IsStale reports whether a write inside the model's scope is newer than
-	// the last refresh observed.
-	IsStale       bool       `json:"is_stale"`
-	LastUpdated   *time.Time `json:"last_updated,omitempty"`
-	LastRefreshed *time.Time `json:"last_refreshed_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	// the last refresh observed. Null when the route did not compute it (a
+	// single read below full detail).
+	IsStale *bool `json:"is_stale"`
 }
 
-// CreateRequest is the create body.
+// CreateRequest is the create body. It declares exactly the reference's
+// CreateMentalModelRequest fields: id, name, source_query, tags, max_tokens and
+// trigger. Any other key a client sends is reported through the ignored-params
+// channel, never honoured.
 type CreateRequest struct {
-	// ID is an optional client-supplied identifier, validated for shape and
-	// rejected with a conflict when it already names a model in the bank.
-	ID          string   `json:"id"`
-	Subtype     string   `json:"subtype"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	SourceQuery string   `json:"source_query"`
-	Content     string   `json:"content"`
-	Tags        []string `json:"tags"`
-	MaxTokens   int      `json:"max_tokens"`
-	// Trigger carries the refresh settings. It is decoded raw so the handler can
-	// distinguish an absent trigger from an explicit one and validate its members.
-	Trigger json.RawMessage `json:"trigger"`
+	ID          *string         `json:"id"`
+	Name        *string         `json:"name"`
+	SourceQuery *string         `json:"source_query"`
+	Tags        *[]string       `json:"tags"`
+	MaxTokens   *int            `json:"max_tokens"`
+	Trigger     json.RawMessage `json:"trigger"`
 }
 
-// UpdateRequest is the partial-update body. A nil field is left unchanged.
+// UpdateRequest is the partial-update body. It declares exactly the reference's
+// UpdateMentalModelRequest fields: name, source_query, max_tokens, tags and
+// trigger. A nil field is left unchanged.
 type UpdateRequest struct {
-	Name        *string   `json:"name"`
-	Description *string   `json:"description"`
-	SourceQuery *string   `json:"source_query"`
-	Content     *string   `json:"content"`
-	Tags        *[]string `json:"tags"`
-	MaxTokens   *int      `json:"max_tokens"`
-	// Trigger carries refresh settings to patch over the model's current ones.
-	// Only the members the client actually sent are applied.
-	Trigger json.RawMessage `json:"trigger"`
+	Name        *string         `json:"name"`
+	SourceQuery *string         `json:"source_query"`
+	MaxTokens   *int            `json:"max_tokens"`
+	Tags        *[]string       `json:"tags"`
+	Trigger     json.RawMessage `json:"trigger"`
 }
 
 // SubmitResponse is the accepted-operation acknowledgement a refresh returns.
@@ -92,7 +85,7 @@ type HistoryEntry struct {
 	// PreviousReflectResponse is the reflect response the refresh replaced.
 	PreviousReflectResponse map[string]any `json:"previous_reflect_response"`
 	// ChangedAt is when the entry was recorded.
-	ChangedAt time.Time `json:"changed_at"`
+	ChangedAt string `json:"changed_at"`
 	// Kind marks a failure record; absent on a version snapshot.
 	Kind string `json:"kind,omitempty"`
 	// Outcome, FailureReason and ErrorMessage describe a refused write.
@@ -110,53 +103,61 @@ type ListResponse struct {
 }
 
 // CreateResponse is the create acknowledgement. Generation runs in the
-// background, so the caller polls the operation.
+// background, so the caller polls the operation, which is always queued.
 type CreateResponse struct {
 	MentalModelID string `json:"mental_model_id"`
-	OperationID   string `json:"operation_id,omitempty"`
+	OperationID   string `json:"operation_id"`
 }
 
-// toModel renders a stored record for the wire.
+// toModel renders a stored record for the wire at full detail; the caller
+// trims it with applyDetail.
 func toModel(record storage.MentalModel) Model {
-	observations := record.Observations
-	if observations == nil {
-		observations = map[string]any{"observations": []any{}}
-	}
 	tags := record.Tags
 	if tags == nil {
 		tags = []string{}
 	}
-	model := Model{
+	sourceQuery := record.SourceQuery
+	content := record.Content
+	var maxTokens *int
+	if record.MaxTokens > 0 {
+		value := record.MaxTokens
+		maxTokens = &value
+	}
+	return Model{
 		ID:                  record.ID,
 		BankID:              record.BankID,
-		Subtype:             string(record.Subtype),
 		Name:                record.Name,
-		Description:         record.Description,
-		SourceQuery:         record.SourceQuery,
-		Content:             record.Content,
+		SourceQuery:         &sourceQuery,
+		Content:             &content,
 		Tags:                tags,
-		MaxTokens:           record.MaxTokens,
-		Trigger:             record.Trigger,
-		Observations:        observations,
+		MaxTokens:           maxTokens,
+		Trigger:             normalizeTrigger(record.Trigger),
+		LastRefreshedAt:     timestampPtr(record.LastRefreshedAt),
+		LastMemorySeenAt:    httpx.FormatTimestampPtr(record.LastMemorySeenAt),
+		LastRefreshFailedAt: httpx.FormatTimestampPtr(record.LastRefreshFailedAt),
+		CreatedAt:           httpx.FormatTimestamp(record.CreatedAt),
 		ReflectResponse:     record.ReflectResult,
-		LastMemorySeenAt:    record.LastMemorySeenAt,
-		LastRefreshFailedAt: record.LastRefreshFailedAt,
-		CreatedAt:           record.CreatedAt,
 	}
-	if !record.LastUpdated.IsZero() {
-		updated := record.LastUpdated
-		model.LastUpdated = &updated
-	}
-	if !record.LastRefreshedAt.IsZero() {
-		refreshed := record.LastRefreshedAt
-		model.LastRefreshed = &refreshed
-	}
-	return model
 }
 
-// applyDetail trims a model to the requested detail level. "metadata" keeps
-// names, tags, staleness and timestamps; "content" adds the stored content and
-// configuration; "full" keeps everything, including the reflect response.
+// timestampPtr renders a time as the reference's isoformat, or nil when it is
+// the zero value so the field serializes as JSON null.
+func timestampPtr(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	rendered := httpx.FormatTimestamp(t)
+	return &rendered
+}
+
+// applyDetail trims a model to the requested detail level, mirroring the
+// reference's _row_to_mental_model projection:
+//
+//   - metadata: names, tags, staleness and timestamps only; content, source
+//     query, max_tokens, trigger and reflect_response are null.
+//   - content: adds content and configuration (source_query, max_tokens,
+//     trigger); reflect_response stays null.
+//   - full: keeps everything, including reflect_response.
 func applyDetail(model *Model, detail string) {
 	switch detail {
 	case "full":
@@ -164,8 +165,10 @@ func applyDetail(model *Model, detail string) {
 	case "content":
 		model.ReflectResponse = nil
 	default: // metadata
-		model.Content = ""
-		model.Observations = nil
+		model.SourceQuery = nil
+		model.Content = nil
+		model.MaxTokens = nil
+		model.Trigger = nil
 		model.ReflectResponse = nil
 	}
 }

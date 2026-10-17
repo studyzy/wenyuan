@@ -125,9 +125,9 @@ type systemPromptOptions struct {
 	// depth section.
 	Budget string
 	// Directives are the bank's standing rules, stated as a mandatory section
-	// near the top of the system prompt. The numbered reminder that closes the
-	// answering call is sent by that call itself, as its last message.
-	Directives []string
+	// near the top of the system prompt and repeated, numbered, at its end so a
+	// later turn cannot out-rank them.
+	Directives []Directive
 	// HasMentalModels and IncludeObservations say which retrieval levels the
 	// prompt may describe. Naming a level the model has no tool for makes a
 	// weaker model either hallucinate the call or give up.
@@ -243,6 +243,13 @@ func buildSystemPromptForTools(opts systemPromptOptions) string {
 	// disposition are the only bank-specific rows, so everything above stays a
 	// cacheable prefix shared across banks.
 	parts = append(parts, bankIdentityLines(opts.Profile)...)
+
+	// The directive reminder closes the system prompt, after every instruction
+	// the model reads, so a rule stated at the top is restated where it cannot
+	// be out-ranked.
+	if reminder := directivesReminder(opts.Directives); reminder != "" {
+		parts = append(parts, reminder)
+	}
 	return strings.Join(parts, "\n")
 }
 
@@ -576,7 +583,7 @@ func outputFormatSection() []string {
 // directives are repeated here because the answer is a separate call: a rule
 // stated only in the reasoning prompt is out of scope for the model that
 // actually writes the answer.
-func buildFinalSystemPrompt(directives []string, profile bankProfile) string {
+func buildFinalSystemPrompt(directives []Directive, profile bankProfile) string {
 	role := defaultFinalRole
 	if trimmed := strings.TrimSpace(profile.Mission); trimmed != "" {
 		role = trimmed + "\n" + defaultFinalRole

@@ -6,7 +6,9 @@ package app
 // memory the whole way a client would — retain it, recall it, read it back,
 // reflect over it, and see it counted in the bank's statistics — so a
 // regression that breaks the write and read sides' agreement surfaces here
-// rather than in the consumer that first noticed.
+// rather than in the consumer that first noticed. Reflection is part of the
+// walk, but a deployment with no LLM provider refuses it rather than answering,
+// so the route's refusal is what this case observes.
 
 import (
 	"context"
@@ -52,11 +54,10 @@ func TestMemoryLifecycleEndToEnd(t *testing.T) {
 	}
 
 	reflect := exchange(app, http.MethodPost, bank+"/reflect", `{"query":"when is the deployment window?"}`)
-	if reflect.Code != http.StatusOK {
+	// This deployment has no LLM provider, so the reference refuses the
+	// reflection rather than answering it from a deterministic synthesis.
+	if reflect.Code != http.StatusBadRequest {
 		t.Fatalf("reflect: %d, body = %s", reflect.Code, reflect.Body.String())
-	}
-	if answer, _ := decodeJSON(t, reflect)["text"].(string); answer == "" {
-		t.Fatalf("reflect produced no answer: %s", reflect.Body.String())
 	}
 
 	// The statistics route must see the write the retain route made.

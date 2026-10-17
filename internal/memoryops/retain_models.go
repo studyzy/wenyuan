@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -34,7 +35,16 @@ type RetainItem struct {
 	ObservationScopes ScopeList `json:"observation_scopes,omitempty"`
 	Strategy          string    `json:"strategy,omitempty"`
 	UpdateMode        string    `json:"update_mode,omitempty"`
-	ForceReextract    bool      `json:"force_reextract,omitempty"`
+	// metadataIssues records the metadata values the caller sent that are not
+	// strings, in the order they appeared, so the field-level validator reports
+	// each at its own key. The reference's metadata is dict[str, str], so a
+	// non-string value is rejected rather than coerced or dropped.
+	metadataIssues []metadataIssue
+	// updateModeInvalid records an update_mode outside the accepted literal set,
+	// so the field-level validator reports it instead of the write proceeding
+	// with an unrecognised value.
+	updateModeInvalid bool
+	updateModeInput   any
 	// AttachmentIDs are the short attachment ids the upload was recorded
 	// under. They are set by the file route after the bytes are stored, and
 	// are internal rather than wire fields.
@@ -43,6 +53,102 @@ type RetainItem struct {
 	// storeInlineAttachments so the extractor can send them to the model. They
 	// are internal rather than wire fields.
 	Attachments []RetainAttachment `json:"-"`
+}
+
+// metadataIssue is one metadata member that fails the reference's dict[str, str]
+// shape: either the member itself is not an object (key is empty) or one of its
+// values is not a string (key names the offending entry). input is the value the
+// caller sent, reported verbatim.
+type metadataIssue struct {
+	key   string
+	kind  string
+	input any
+}
+
+// itemAlias mirrors RetainItem for decoding, so the custom UnmarshalJSON can
+// decode all the ordinary members through it and then run the extra per-member
+// checks the reference performs, without recursing back into itself.
+type itemAlias RetainItem
+
+// UnmarshalJSON decodes one retain item and records the member-level type
+// failures the reference reports at the item's own paths: a metadata value that
+// is not a string, and an update_mode outside its literal set. They are recorded
+// rather than returned so the whole body is still described field by field, the
+// way the reference's own validators report.
+func (r *RetainItem) UnmarshalJSON(data []byte) error {
+	var alias itemAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*r = RetainItem(alias)
+	var probe struct {
+		Metadata   json.RawMessage `json:"metadata"`
+		UpdateMode json.RawMessage `json:"update_mode"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	r.metadataIssues = metadataTypeIssues(probe.Metadata)
+	r.updateModeInvalid, r.updateModeInput = updateModeTypeIssue(probe.UpdateMode)
+	return nil
+}
+
+// metadataTypeIssues reports the metadata members that fail the dict[str, str]
+// shape, in the order the caller sent them. A value that is not an object is
+// reported at the member itself; otherwise each non-string value is reported at
+// its key.
+func metadataTypeIssues(raw json.RawMessage) []metadataIssue {
+	trimmed := trimSpaceBytes(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return []metadataIssue{{kind: "dict_type", input: decodeAny(trimmed)}}
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	issues := make([]metadataIssue, 0)
+	if _, err := dec.Token(); err != nil { // consume the opening brace
+		return nil
+	}
+	for dec.More() {
+		keyToken, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, _ := keyToken.(string)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			break
+		}
+		if !isJSONStringValue(value) {
+			issues = append(issues, metadataIssue{key: key, kind: "string_type", input: decodeAny(value)})
+		}
+	}
+	return issues
+}
+
+// isJSONStringValue reports whether a raw JSON value is a string literal.
+func isJSONStringValue(raw json.RawMessage) bool {
+	trimmed := trimSpaceBytes(raw)
+	return len(trimmed) > 0 && trimmed[0] == '"'
+}
+
+// updateModeLiteral is the reference's accepted update_mode set.
+var updateModeLiteral = []string{"replace", "append"}
+
+// updateModeTypeIssue reports an update_mode outside the accepted literals. An
+// absent or null value is valid (it means "unset"), so only a present value that
+// is not one of the literals is reported.
+func updateModeTypeIssue(raw json.RawMessage) (bool, any) {
+	trimmed := trimSpaceBytes(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return false, nil
+	}
+	var value string
+	if err := json.Unmarshal(trimmed, &value); err == nil && (value == "replace" || value == "append") {
+		return false, nil
+	}
+	return true, decodeAny(trimmed)
 }
 
 // RetainAttachment is one decoded inline attachment, carried from the retain
@@ -324,22 +430,28 @@ func decodeAny(raw []byte) any {
 type EntityInput struct {
 	Text string `json:"text"`
 	Type string `json:"type,omitempty"`
+	// Invalid records an element the reference's EntityInput model rejects: the
+	// entities list takes objects only, so a bare string (or a JSON null) is
+	// reported at its own path rather than silently accepted or dropped.
+	// InvalidInput is the value the caller sent.
+	Invalid      bool `json:"-"`
+	InvalidInput any  `json:"-"`
 }
 
-// UnmarshalJSON accepts the canonical object form and the bare-string form.
-// The string form carries no type, so an entity sent that way is untyped.
+// UnmarshalJSON accepts only the canonical object form. The bare-string form is
+// recorded as invalid rather than decoded: the reference's entities list takes
+// EntityInput objects, and a string element fails validation there.
 func (e *EntityInput) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		e.Invalid = true
+		e.InvalidInput = decodeAny(trimmed)
 		return nil
-	}
-	if trimmed[0] == '"' {
-		return json.Unmarshal(data, &e.Text)
 	}
 	type entityAlias EntityInput
 	var alias entityAlias
 	if err := json.Unmarshal(data, &alias); err != nil {
-		return errors.New("entity must be a string or an object with a text field")
+		return errors.New("entity must be an object with a text field")
 	}
 	*e = EntityInput(alias)
 	return nil

@@ -222,3 +222,13 @@ func ProviderSettings(pc config.ProviderConfig) provider.Settings {
 func unsupportedProviderKeys(cfg config.Config) error {
 	return cfg.ValidateSupported()
 }
+
+// reflectModelConfigured reports whether the deployment has a model for the
+// reflect pipeline. The reference refuses reflect and mental-model refresh when
+// the provider is "none" (HINDSIGHT_API_LLM_PROVIDER=none), so the composition
+// root uses this to arm both availability gates; a deployment with no model
+// therefore behaves like the reference rather than falling back to the
+// deterministic loop.
+func reflectModelConfigured(p provider.Provider) bool {
+	return p != nil && p.Name() != none.NameNone
+}

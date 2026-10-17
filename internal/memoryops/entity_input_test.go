@@ -8,14 +8,16 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// An entity may be sent as a bare name or as an object with a name and a type,
-// and both forms decode into the same shape.
+// An entity is an object with a name and an optional type. The reference's
+// entities list takes objects only, so a bare string, a JSON null or a number is
+// recorded as invalid (reported at its own path by the write validation) rather
+// than decoded or silently dropped.
 func TestEntityInputDecode(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		want     EntityInputList
-		wantFail bool
+		name    string
+		body    string
+		want    EntityInputList
+		invalid []bool
 	}{
 		{
 			name: "object form with a type",
@@ -28,14 +30,28 @@ func TestEntityInputDecode(t *testing.T) {
 			want: EntityInputList{{Text: "Alice"}},
 		},
 		{
-			name: "bare string form",
-			body: `["Alice"]`,
-			want: EntityInputList{{Text: "Alice"}},
+			name:    "bare string form is invalid",
+			body:    `["Alice"]`,
+			want:    EntityInputList{{}},
+			invalid: []bool{true},
 		},
 		{
-			name: "mixed forms in one list",
-			body: `["Alice",{"text":"Google","type":"ORG"}]`,
-			want: EntityInputList{{Text: "Alice"}, {Text: "Google", Type: "ORG"}},
+			name:    "mixed forms keep object elements and flag the string",
+			body:    `["Alice",{"text":"Google","type":"ORG"}]`,
+			want:    EntityInputList{{}, {Text: "Google", Type: "ORG"}},
+			invalid: []bool{true, false},
+		},
+		{
+			name:    "null element is invalid",
+			body:    `[null]`,
+			want:    EntityInputList{{}},
+			invalid: []bool{true},
+		},
+		{
+			name:    "a number is invalid",
+			body:    `[42]`,
+			want:    EntityInputList{{}},
+			invalid: []bool{true},
 		},
 		{
 			name: "empty list",
@@ -47,25 +63,13 @@ func TestEntityInputDecode(t *testing.T) {
 			body: `null`,
 			want: nil,
 		},
-		{
-			name:     "a number is rejected",
-			body:     `[42]`,
-			wantFail: true,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var item struct {
 				Entities EntityInputList `json:"entities"`
 			}
-			err := json.Unmarshal([]byte(`{"entities":`+test.body+`}`), &item)
-			if test.wantFail {
-				if err == nil {
-					t.Fatal("expected a decode error")
-				}
-				return
-			}
-			if err != nil {
+			if err := json.Unmarshal([]byte(`{"entities":`+test.body+`}`), &item); err != nil {
 				t.Fatal(err)
 			}
 			if len(item.Entities) != len(test.want) {
@@ -74,6 +78,10 @@ func TestEntityInputDecode(t *testing.T) {
 			for i, entity := range item.Entities {
 				if entity.Text != test.want[i].Text || entity.Type != test.want[i].Type {
 					t.Fatalf("entity %d = %+v, want %+v", i, entity, test.want[i])
+				}
+				wantInvalid := len(test.invalid) > i && test.invalid[i]
+				if entity.Invalid != wantInvalid {
+					t.Fatalf("entity %d invalid = %v, want %v", i, entity.Invalid, wantInvalid)
 				}
 			}
 		})

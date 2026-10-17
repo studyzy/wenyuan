@@ -13,10 +13,7 @@ import (
 )
 
 func (s *Server) getMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	modelID := stringArgument(args, "mental_model_id")
 	if modelID == "" {
 		return nil, errors.New("get_mental_model requires mental_model_id")
@@ -29,10 +26,7 @@ func (s *Server) getMentalModel(ctx context.Context, args map[string]any) (any, 
 }
 
 func (s *Server) createMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "create_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	name := stringArgument(args, "name")
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("name cannot be empty")
@@ -66,10 +60,7 @@ func (s *Server) createMentalModel(ctx context.Context, args map[string]any) (an
 }
 
 func (s *Server) updateMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "update_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	modelID := stringArgument(args, "mental_model_id")
 	if modelID == "" {
 		return nil, errors.New("update_mental_model requires mental_model_id")
@@ -102,10 +93,7 @@ func (s *Server) updateMentalModel(ctx context.Context, args map[string]any) (an
 }
 
 func (s *Server) deleteMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "delete_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	modelID := stringArgument(args, "mental_model_id")
 	if modelID == "" {
 		return nil, errors.New("delete_mental_model requires mental_model_id")
@@ -117,15 +105,12 @@ func (s *Server) deleteMentalModel(ctx context.Context, args map[string]any) (an
 }
 
 func (s *Server) refreshMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "refresh_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	modelID := stringArgument(args, "mental_model_id")
 	if modelID == "" {
 		return nil, errors.New("refresh_mental_model requires mental_model_id")
 	}
-	_, err = s.store.EnqueueOperation(ctx, storage.EnqueueRequest{
+	_, err := s.store.EnqueueOperation(ctx, storage.EnqueueRequest{
 		Operation: storage.Operation{
 			BankID:           bankID,
 			OperationType:    storage.OperationTypeRefreshMentalModel,
@@ -141,10 +126,7 @@ func (s *Server) refreshMentalModel(ctx context.Context, args map[string]any) (a
 }
 
 func (s *Server) clearMentalModel(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "clear_mental_model")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	modelID := stringArgument(args, "mental_model_id")
 	if modelID == "" {
 		return nil, errors.New("clear_mental_model requires mental_model_id")
@@ -157,10 +139,7 @@ func (s *Server) clearMentalModel(ctx context.Context, args map[string]any) (any
 }
 
 func (s *Server) createDirective(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "create_directive")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	name, content := stringArgument(args, "name"), stringArgument(args, "content")
 	if name == "" || content == "" {
 		return nil, errors.New("create_directive requires name and content")
@@ -181,10 +160,7 @@ func (s *Server) createDirective(ctx context.Context, args map[string]any) (any,
 }
 
 func (s *Server) deleteDirective(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "delete_directive")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	directiveID := stringArgument(args, "directive_id")
 	if directiveID == "" {
 		return nil, errors.New("delete_directive requires directive_id")
@@ -196,10 +172,7 @@ func (s *Server) deleteDirective(ctx context.Context, args map[string]any) (any,
 }
 
 func (s *Server) listDocuments(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "list_documents")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	page, err := s.store.ListDocuments(ctx, storage.DocumentQuery{
 		BankID: bankID,
 		Query:  stringArgument(args, "q"),
@@ -217,10 +190,7 @@ func (s *Server) listDocuments(ctx context.Context, args map[string]any) (any, e
 }
 
 func (s *Server) getDocument(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_document")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	docID := stringArgument(args, "document_id")
 	if docID == "" {
 		return nil, errors.New("get_document requires document_id")
@@ -233,10 +203,7 @@ func (s *Server) getDocument(ctx context.Context, args map[string]any) (any, err
 }
 
 func (s *Server) deleteDocument(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "delete_document")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	docID := stringArgument(args, "document_id")
 	if docID == "" {
 		return nil, errors.New("delete_document requires document_id")
@@ -249,10 +216,7 @@ func (s *Server) deleteDocument(ctx context.Context, args map[string]any) (any, 
 }
 
 func (s *Server) listOperations(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "list_operations")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	page, err := s.store.ListOperations(ctx, storage.OperationQuery{
 		BankID: bankID,
 		Status: stringArgument(args, "status"),
@@ -271,10 +235,7 @@ func (s *Server) listOperations(ctx context.Context, args map[string]any) (any, 
 }
 
 func (s *Server) getOperation(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_operation")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	opID := stringArgument(args, "operation_id")
 	if opID == "" {
 		return nil, errors.New("get_operation requires operation_id")
@@ -287,10 +248,7 @@ func (s *Server) getOperation(ctx context.Context, args map[string]any) (any, er
 }
 
 func (s *Server) cancelOperation(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "cancel_operation")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	opID := stringArgument(args, "operation_id")
 	if opID == "" {
 		return nil, errors.New("cancel_operation requires operation_id")
@@ -303,10 +261,7 @@ func (s *Server) cancelOperation(ctx context.Context, args map[string]any) (any,
 }
 
 func (s *Server) getBankStats(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_bank_stats")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	stats, err := s.store.BankStats(ctx, bankID)
 	if err != nil {
 		return nil, err
@@ -318,10 +273,7 @@ func (s *Server) getBankStats(ctx context.Context, args map[string]any) (any, er
 }
 
 func (s *Server) listTags(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "list_tags")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	tags, err := s.store.ListTags(ctx, bankID)
 	if err != nil {
 		return nil, err

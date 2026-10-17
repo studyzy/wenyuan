@@ -353,6 +353,39 @@ func TestGracefulStopReleasesHeldWork(t *testing.T) {
 	}
 }
 
+// test-last-poll-stamp: the liveness payload reports the age of the last
+// completed claim cycle, so a consumer that never ran reports nil and every
+// completed cycle — including an empty batch — advances the stamp.
+func TestLastPollStampsCompletedClaimCycles(t *testing.T) {
+	store := newStore(t)
+	consumer := New(store, stubProcessor{}, Config{WorkerID: "w1", Concurrency: 1, PollInterval: time.Millisecond, Logger: quietLogger()})
+	if consumer.LastPoll() != nil {
+		t.Fatal("a consumer that has not run must report no poll yet")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = consumer.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && consumer.LastPoll() == nil {
+		time.Sleep(2 * time.Millisecond)
+	}
+	last := consumer.LastPoll()
+	if last == nil {
+		t.Fatal("a completed empty claim cycle must stamp the poll time")
+	}
+	if age := time.Since(*last); age > time.Second {
+		t.Fatalf("poll stamp is stale: %v", age)
+	}
+	cancel()
+	<-done
+}
+
 // waitForStatus polls until the operation reaches the wanted status.
 func waitForStatus(t *testing.T, store storage.Store, id string, want storage.OperationStatus) {
 	t.Helper()

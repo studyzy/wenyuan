@@ -222,7 +222,7 @@ func TestReadSurfaceNotFound(t *testing.T) {
 	}{
 		{"unknown document", http.MethodGet, base + "/documents/absent"},
 		{"unknown document chunks", http.MethodGet, base + "/documents/absent/chunks"},
-		{"unknown entity", http.MethodGet, base + "/entities/absent"},
+		{"unknown entity", http.MethodGet, base + "/entities/00000000-0000-0000-0000-000000000000"},
 		{"unknown chunk", http.MethodGet, "/v1/default/chunks/absent"},
 		{"unknown bank documents", http.MethodGet, unknownBank + "/documents"},
 		{"unknown bank tags", http.MethodGet, unknownBank + "/tags"},

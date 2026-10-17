@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -30,7 +29,21 @@ type Handlers struct {
 	// DryRun previews a refresh without persisting; when nil the route reports
 	// that the preview is unavailable rather than inventing a result.
 	DryRun DryRunFunc
+	// RefuseWithoutRefreshModel makes the refresh route refuse with the
+	// reference's message when the deployment is configured with no LLM
+	// provider (HINDSIGHT_API_LLM_PROVIDER=none): the reference rejects refresh
+	// work before any lookup rather than queuing it. False (the zero value)
+	// leaves the route queuing, which is what a handler set assembled without a
+	// provider expects.
+	RefuseWithoutRefreshModel bool
 }
+
+// ErrNoRefreshModel is the refusal the reference returns for a mental-model
+// refresh on a provider-"none" deployment; the message is the reference's,
+// verbatim.
+//
+//nolint:staticcheck // the reference's own wording, capitalised and sentence-final
+var ErrNoRefreshModel = errors.New("Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
 
 // NewHandlers builds the handlers over the store.
 func NewHandlers(store storage.Store) *Handlers {
@@ -40,34 +53,49 @@ func NewHandlers(store storage.Store) *Handlers {
 // List returns the bank's mental models, filtered by tags, at the requested
 // detail level and page.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.pathBankID(w, r)
 	if !ok {
 		return
 	}
-	// The route has no subtype filter: the reference lists every model of the
-	// bank and narrows by tags only.
-	detail := detailParam(httpx.Query(r, "detail"), "metadata")
+	// The list route is the one route in the family that probes the bank: the
+	// reference's list_mental_models calls _require_bank_exists, so an unknown
+	// bank is a bank-level 404 rather than an empty page.
+	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
+		return
+	}
+	detail, ok := detailParam(w, r, "metadata")
+	if !ok {
+		return
+	}
+	mode, ok := tagsMatchParam(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := pageParams(w, r)
+	if !ok {
+		return
+	}
 	records, err := h.Store.ListMentalModels(r.Context(), bankID, "")
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	tags := httpx.QueryValues(r, "tags")
-	mode := strings.TrimSpace(httpx.Query(r, "tags_match"))
 	items := make([]Model, 0, len(records))
 	for _, record := range records {
 		if len(tags) > 0 && !matchesTags(record.Tags, tags, mode) {
 			continue
 		}
 		model := toModel(record)
-		model.IsStale = h.Store.IsStale(r.Context(), bankID, record)
+		stale := h.Store.IsStale(r.Context(), bankID, record)
+		model.IsStale = &stale
 		applyDetail(&model, detail)
 		items = append(items, model)
 	}
 	total := len(items)
-	limit, offset := pageParams(r, 100)
 	items = pageSlice(items, offset, limit)
-	httpx.WriteJSONFor(w, r, http.StatusOK, ListResponse{Items: items, Total: total, Limit: limit, Offset: offset})
+	httpx.WriteJSON(w, http.StatusOK, ListResponse{Items: items, Total: total, Limit: limit, Offset: offset})
 }
 
 // Get returns one mental model.
@@ -76,57 +104,73 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	detail, ok := detailParam(w, r, "full")
+	if !ok {
+		return
+	}
 	record, err := h.Store.GetMentalModel(r.Context(), bankID, id)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, h.modelError(id, err))
 		return
 	}
 	model := toModel(record)
-	model.IsStale = h.Store.IsStale(r.Context(), bankID, record)
-	applyDetail(&model, detailParam(httpx.Query(r, "detail"), "full"))
-	httpx.WriteJSONFor(w, r, http.StatusOK, model)
+	// is_stale is populated only at full detail on a single read, matching the
+	// reference's get_mental_model; the list route computes it at every level.
+	if detail == "full" {
+		stale := h.Store.IsStale(r.Context(), bankID, record)
+		model.IsStale = &stale
+	}
+	applyDetail(&model, detail)
+	httpx.WriteJSON(w, http.StatusOK, model)
 }
-
-// mentalModelIDPattern is the shape a client-supplied identifier must have:
-// alphanumeric lowercase with hyphens, starting with a letter or digit.
-var mentalModelIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // Create adds a mental model. An unknown bank is created first, matching the
 // reference's lazy bank creation.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireOrCreateBank(w, r)
+	bankID, ok := h.pathBankID(w, r)
 	if !ok {
 		return
 	}
 	var body CreateRequest
-	if failure := decodeBody(r, &body); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	object, failure := decodeBody(r, &body)
+	if failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	subtype := storage.MentalModelSubtype(strings.TrimSpace(body.Subtype))
-	if subtype == "" {
-		subtype = storage.SubtypePinned
+	// name and source_query are required (pydantic `str` with no default); an
+	// absent key, or an explicit null, is the framework's missing-field item.
+	// The reference's model reports every failing field in one envelope, in the
+	// model's declaration order, so a body that omits a required field and
+	// carries an out-of-range value is described by both items.
+	var bodyErrors []httpx.ValidationError
+	if body.Name == nil {
+		bodyErrors = append(bodyErrors, httpx.Missing([]string{"body", "name"}, object))
 	}
-	if !storage.ValidMentalModelSubtype(subtype) {
-		httpx.WriteValidationFor(w, r, bodyValueError("subtype", body.Subtype, "unknown mental model subtype"))
-		return
+	if body.SourceQuery == nil {
+		bodyErrors = append(bodyErrors, httpx.Missing([]string{"body", "source_query"}, object))
 	}
-	if strings.TrimSpace(body.Name) == "" {
-		httpx.WriteValidationFor(w, r, missingBodyField("name"))
+	maxTokens := defaultMentalModelTokens
+	if body.MaxTokens != nil {
+		if failure := maxTokensFailure(*body.MaxTokens); failure != nil {
+			bodyErrors = append(bodyErrors, failure.Errors...)
+		} else {
+			maxTokens = *body.MaxTokens
+		}
+	}
+	if len(bodyErrors) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: bodyErrors})
 		return
 	}
 	trigger, failure := parseTrigger(body.Trigger, true)
 	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	id := strings.TrimSpace(body.ID)
-	if id != "" {
-		if !mentalModelIDPattern.MatchString(id) {
-			httpx.WriteValidationFor(w, r, bodyValueError("id", id,
-				fmt.Sprintf("Mental model id '%s' must be alphanumeric lowercase with hyphens, starting with a letter or digit.", id)))
-			return
-		}
+	id := newID()
+	if body.ID != nil && strings.TrimSpace(*body.ID) != "" {
+		// The reference declares id a plain string with no shape validator, so
+		// only uniqueness is enforced; the stored value is the client's.
+		id = *body.ID
 		if _, err := h.Store.GetMentalModel(r.Context(), bankID, id); err == nil {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindConflict,
 				fmt.Sprintf("Mental model '%s' already exists in bank '%s'", id, bankID)))
@@ -135,47 +179,66 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
-	} else {
-		id = newID()
 	}
+	// The bank is created lazily inside the same flow, matching the reference.
+	if _, ok := h.requireOrCreateBank(w, r); !ok {
+		return
+	}
+	// A create always stores subtype 'pinned' and a single-space description;
+	// neither is client-supplied.
 	record, err := h.Store.PutMentalModel(r.Context(), storage.MentalModel{
 		ID:          id,
 		BankID:      bankID,
-		Subtype:     subtype,
-		Name:        body.Name,
-		Description: body.Description,
-		SourceQuery: body.SourceQuery,
-		Content:     body.Content,
-		Tags:        body.Tags,
-		MaxTokens:   body.MaxTokens,
+		Subtype:     storage.SubtypePinned,
+		Name:        *body.Name,
+		Description: " ",
+		SourceQuery: *body.SourceQuery,
+		Content:     "",
+		Tags:        derefTags(body.Tags),
+		MaxTokens:   maxTokens,
 		Trigger:     trigger,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	response := CreateResponse{MentalModelID: record.ID}
-	// A model with a source query is generated in the background, so the
-	// create returns the queued operation rather than waiting on a model call.
-	if strings.TrimSpace(record.SourceQuery) != "" {
-		opID, err := h.enqueueModelRefresh(r, bankID, record.ID)
-		if err != nil {
-			httpx.WriteErrorFor(w, r, asHTTPError(err))
-			return
-		}
-		response.OperationID = opID
+	// With no LLM provider the reference submits the refresh this route needs
+	// and does not catch the refusal, so the create answers the framework's
+	// internal-error body (500) with the refusal's message — and the model it
+	// just stored stays stored.
+	if h.RefuseWithoutRefreshModel {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, ErrNoRefreshModel.Error()))
+		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, response)
+	// A refresh is always queued, so the acknowledgement always carries the
+	// operation id the caller polls, even for an empty source query.
+	opID, err := h.enqueueModelRefresh(r, bankID, record.ID, record.Name)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, CreateResponse{MentalModelID: record.ID, OperationID: opID})
+}
+
+// derefTags returns the supplied tag list, or an empty slice when absent.
+func derefTags(tags *[]string) []string {
+	if tags == nil {
+		return []string{}
+	}
+	return *tags
 }
 
 // enqueueModelRefresh queues a refresh of a mental model and returns the
-// operation identifier, or an empty string when there is nothing to run.
-func (h *Handlers) enqueueModelRefresh(r *http.Request, bankID, modelID string) (string, error) {
+// operation identifier. It records the model's identifier and name in the
+// operation's result metadata, which is what the operation-status route reads
+// back as mental_model_id, matching the reference.
+func (h *Handlers) enqueueModelRefresh(r *http.Request, bankID, modelID, name string) (string, error) {
 	result, err := h.Store.EnqueueOperation(r.Context(), storage.EnqueueRequest{
 		Operation: storage.Operation{
 			BankID:           bankID,
 			OperationType:    storage.OperationTypeRefreshMentalModel,
 			Payload:          map[string]any{storage.MentalModelIDPayloadKey: modelID},
+			ResultMetadata:   map[string]any{storage.MentalModelIDPayloadKey: modelID, "name": name},
 			SerializationKey: storage.MentalModelSerializationKey(modelID),
 		},
 		DedupeByPayloadKey: storage.MentalModelIDPayloadKey,
@@ -193,38 +256,51 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body UpdateRequest
-	if failure := decodeBody(r, &body); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	if _, failure := decodeBody(r, &body); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
+	}
+	if body.MaxTokens != nil {
+		if failure := maxTokensFailure(*body.MaxTokens); failure != nil {
+			httpx.WriteValidationFailure(w, failure)
+			return
+		}
 	}
 	patch := storage.MentalModelPatch{
 		Name:        body.Name,
-		Description: body.Description,
 		SourceQuery: body.SourceQuery,
-		Content:     body.Content,
 		Tags:        body.Tags,
 		MaxTokens:   body.MaxTokens,
 	}
 	if len(body.Trigger) > 0 && string(body.Trigger) != "null" {
 		triggerPatch, failure := parseTrigger(body.Trigger, false)
 		if failure != nil {
-			httpx.WriteValidationFor(w, r, failure)
+			httpx.WriteValidationFailure(w, failure)
 			return
 		}
 		current, err := h.Store.GetMentalModel(r.Context(), bankID, id)
 		if err != nil {
-			httpx.WriteErrorFor(w, r, asHTTPError(err))
+			httpx.WriteErrorFor(w, r, h.modelError(id, err))
 			return
 		}
 		merged := mergeTrigger(current.Trigger, triggerPatch)
 		patch.Trigger = &merged
 	}
-	record, err := h.Store.UpdateMentalModel(r.Context(), bankID, id, patch)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+	// The reference builds a dynamic UPDATE and answers 404 when it names no
+	// column: a patch that sets nothing is indistinguishable from a missing row.
+	if patch.Name == nil && patch.SourceQuery == nil && patch.Tags == nil &&
+		patch.MaxTokens == nil && patch.Trigger == nil {
+		httpx.WriteErrorFor(w, r, h.modelError(id, storage.ErrMentalModelNotFound))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toModel(record))
+	record, err := h.Store.UpdateMentalModel(r.Context(), bankID, id, patch)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, h.modelError(id, err))
+		return
+	}
+	model := toModel(record)
+	applyDetail(&model, "full")
+	httpx.WriteJSON(w, http.StatusOK, model)
 }
 
 // Delete removes a mental model.
@@ -234,10 +310,10 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Store.DeleteMentalModel(r.Context(), bankID, id); err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, h.modelError(id, err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, deleteResponse{Status: "deleted"})
+	httpx.WriteJSON(w, http.StatusOK, deleteResponse{Status: "deleted"})
 }
 
 // deleteResponse is the delete acknowledgement the reference returns.
@@ -253,10 +329,12 @@ func (h *Handlers) Clear(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.Store.ClearMentalModel(r.Context(), bankID, id)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, h.modelError(id, err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toModel(record))
+	model := toModel(record)
+	applyDetail(&model, "full")
+	httpx.WriteJSON(w, http.StatusOK, model)
 }
 
 // History returns the recorded refreshes of one mental model as a bare JSON
@@ -268,7 +346,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := h.Store.MentalModelHistory(r.Context(), bankID, id)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, h.modelError(id, err))
 		return
 	}
 	out := make([]HistoryEntry, 0, len(entries))
@@ -276,7 +354,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		out = append(out, HistoryEntry{
 			PreviousContent:         entry.PreviousContent,
 			PreviousReflectResponse: entry.PreviousReflectResponse,
-			ChangedAt:               entry.ChangedAt,
+			ChangedAt:               httpx.FormatTimestamp(entry.ChangedAt),
 			Kind:                    entry.Kind,
 			Outcome:                 entry.Outcome,
 			FailureReason:           entry.FailureReason,
@@ -285,26 +363,34 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reference returns the bare list, with explicit nulls on a version
 	// snapshot's failure fields, so nulls are preserved here.
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // Refresh enqueues a refresh of a mental model and reports the accepted
 // operation, which the caller polls to completion.
 func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
+	// A deployment with no LLM provider refuses refresh work before any lookup,
+	// matching the reference: the gate precedes the model's existence check, so
+	// an unknown model is the same refusal rather than a 404.
+	if h.RefuseWithoutRefreshModel {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, ErrNoRefreshModel.Error()))
+		return
+	}
 	bankID, id, ok := h.member(w, r)
 	if !ok {
 		return
 	}
-	if _, err := h.Store.GetMentalModel(r.Context(), bankID, id); err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+	record, err := h.Store.GetMentalModel(r.Context(), bankID, id)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, h.refreshError(bankID, id, err))
 		return
 	}
-	opID, err := h.enqueueModelRefresh(r, bankID, id)
+	opID, err := h.enqueueModelRefresh(r, bankID, id, record.Name)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, SubmitResponse{OperationID: opID, Status: "queued"})
+	httpx.WriteJSON(w, http.StatusOK, SubmitResponse{OperationID: opID, Status: "queued"})
 }
 
 // DryRunRefresh reports what a refresh would do without applying it.
@@ -317,18 +403,28 @@ func (h *Handlers) DryRunRefresh(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, "dry-run refresh is not configured"))
 		return
 	}
-	result, err := h.DryRun(r.Context(), bankID, id)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+	// The reference resolves the model before it checks provider availability,
+	// so a missing model is a 404 even when no LLM is configured.
+	if h.RefuseWithoutRefreshModel {
+		if _, err := h.Store.GetMentalModel(r.Context(), bankID, id); err != nil {
+			httpx.WriteErrorFor(w, r, h.dryRunError(id, err))
+			return
+		}
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, ErrNoRefreshModel.Error()))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, result)
+	result, err := h.DryRun(r.Context(), bankID, id)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, h.dryRunError(id, err))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 // BindRoutes registers the family's route table.
 func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMentalModels), httpx.QueryParams(h.List,
-		"subtype", "tags", "tags_match", "detail", "limit", "offset"))
+		"tags", "tags_match", "detail", "limit", "offset"))
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMentalModels), h.Create)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMentalModelMember), httpx.QueryParams(h.Get, "detail"))
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixMentalModelMember), h.Update)
@@ -339,33 +435,57 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMentalModelClear), h.Clear)
 }
 
-// member resolves the bank and the mental-model identifier.
+// member reads the bank and the mental-model identifier from the path.
 func (h *Handlers) member(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.pathBankID(w, r)
 	if !ok {
 		return "", "", false
 	}
 	id := strings.TrimSpace(r.PathValue("mental_model_id"))
 	if id == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "mental model not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Mental model '' not found"))
 		return "", "", false
 	}
 	return bankID, id, true
 }
 
-// requireBank reports not-found for an unknown bank, so every route in the
-// family authorizes the same way.
-func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, bool) {
+// pathBankID reads the bank identifier from the path. The family never probes
+// bank existence: like the reference, an unknown bank is indistinguishable from
+// a missing model (the model lookup itself reports not-found).
+func (h *Handlers) pathBankID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	if bankID == "" {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", false
 	}
-	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
-		return "", false
-	}
 	return bankID, true
+}
+
+// modelError names the requested model in a not-found detail, matching the
+// reference's `Mental model '<id>' not found`.
+func (h *Handlers) modelError(id string, err error) *httpx.HTTPError {
+	if errors.Is(err, storage.ErrMentalModelNotFound) {
+		return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Mental model '%s' not found", id))
+	}
+	return asHTTPError(err)
+}
+
+// refreshError renders the refresh route's not-found detail, which names both
+// the model and the bank: `Mental model <id> not found in bank <bank>`.
+func (h *Handlers) refreshError(bankID, id string, err error) *httpx.HTTPError {
+	if errors.Is(err, storage.ErrMentalModelNotFound) || errors.Is(err, storage.ErrBankNotFound) {
+		return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Mental model %s not found in bank %s", id, bankID))
+	}
+	return asHTTPError(err)
+}
+
+// dryRunError renders the dry-run route's not-found detail, which names only the
+// model: `Mental model <id> not found`.
+func (h *Handlers) dryRunError(id string, err error) *httpx.HTTPError {
+	if errors.Is(err, storage.ErrMentalModelNotFound) || errors.Is(err, storage.ErrBankNotFound) {
+		return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Mental model %s not found", id))
+	}
+	return asHTTPError(err)
 }
 
 // requireOrCreateBank resolves a bank, creating it when unknown so a create on
@@ -404,8 +524,21 @@ func asHTTPError(err error) *httpx.HTTPError {
 		return httpx.NewHTTPError(httpx.KindBadRequest, "unknown mental model subtype")
 	case errors.Is(err, storage.ErrEmbeddingDimensions):
 		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
-	default:
+	case errors.Is(err, storage.ErrInvalidBankID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "bank identifier is invalid")
+	case errors.Is(err, storage.ErrAliasConflict):
+		return httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias")
+	case errors.Is(err, storage.ErrReflectModelUnavailable):
+		// The dry-run route surfaces the reflection boundary: a deployment with no
+		// usable model refused the preview, which the reference answers 400 for.
 		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
+	default:
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
 

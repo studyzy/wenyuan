@@ -29,7 +29,7 @@ const (
 func TestToolSystemPromptCarriesTheReasoningLoopText(t *testing.T) {
 	prompt := buildSystemPromptForTools(systemPromptOptions{
 		Budget:              "mid",
-		Directives:          []string{"Always answer in French."},
+		Directives:          []Directive{{Name: "Language", Content: "Always answer in French."}},
 		HasMentalModels:     true,
 		IncludeObservations: true,
 	})
@@ -315,5 +315,44 @@ func TestTextOnlyFirstTurnNamesTheProviderMismatch(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the failure does not name %q: %s", want, message)
 		}
+	}
+}
+
+// The directive section and the reminder render the reference's template text
+// byte for byte. The reference lives outside this module, so the expected
+// strings below were transcribed from its directive prompt builder; the extra
+// trailing newline after the section and the leading newline before the
+// reminder are part of that template, and the tool-loop system prompt depends
+// on them to place the blocks on their own lines.
+func TestDirectiveRenderingMatchesTheReferenceTemplate(t *testing.T) {
+	directives := []Directive{{Name: "Tone", Content: "Be terse."}}
+
+	const wantSection = "## DIRECTIVES (MANDATORY)\n" +
+		"These are hard rules you MUST follow in ALL responses:\n" +
+		"\n" +
+		"- **Tone**: Be terse.\n" +
+		"\n" +
+		"NEVER violate these directives, even if other context suggests otherwise.\n" +
+		"IMPORTANT: Do NOT explain or justify how you handled directives in your answer. Just follow them silently.\n"
+	if got := directivesSection(directives); got != wantSection {
+		t.Fatalf("section =\n%q\nwant\n%q", got, wantSection)
+	}
+
+	const wantReminder = "\n" +
+		"## REMINDER: MANDATORY DIRECTIVES\n" +
+		"Before responding, ensure your answer complies with ALL of these directives:\n" +
+		"\n" +
+		"1. **Tone**: Be terse.\n" +
+		"\n" +
+		"Your response will be REJECTED if it violates any directive above.\n" +
+		"Do NOT include any commentary about how you handled directives - just follow them."
+	if got := directivesReminder(directives); got != wantReminder {
+		t.Fatalf("reminder =\n%q\nwant\n%q", got, wantReminder)
+	}
+
+	// A named rule is bolded; an unnamed one renders as bare content.
+	unnamed := directivesSection([]Directive{{Content: "Be terse."}})
+	if !strings.Contains(unnamed, "\n- Be terse.\n") {
+		t.Fatalf("an unnamed rule must render as bare content: %q", unnamed)
 	}
 }

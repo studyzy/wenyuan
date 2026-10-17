@@ -33,21 +33,23 @@ var directiveTagsMatch = []string{"any", "all", "exact"}
 
 // Directive is the wire shape. Field names are public surface.
 type Directive struct {
-	ID        string    `json:"id"`
-	BankID    string    `json:"bank_id"`
-	Name      string    `json:"name"`
-	Content   string    `json:"content"`
-	Priority  int       `json:"priority"`
-	IsActive  bool      `json:"is_active"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string   `json:"id"`
+	BankID    string   `json:"bank_id"`
+	Name      string   `json:"name"`
+	Content   string   `json:"content"`
+	Priority  int      `json:"priority"`
+	IsActive  bool     `json:"is_active"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
-// CreateRequest is the create body.
+// CreateRequest is the create body. name and content are required; the pointer
+// fields distinguish an absent key from an empty string, which the reference
+// accepts.
 type CreateRequest struct {
-	Name     string   `json:"name"`
-	Content  string   `json:"content"`
+	Name     *string  `json:"name"`
+	Content  *string  `json:"content"`
 	Priority int      `json:"priority"`
 	IsActive *bool    `json:"is_active"`
 	Tags     []string `json:"tags"`
@@ -90,13 +92,13 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	activeOnly, failure := parseActiveOnly(httpx.Query(r, "active_only"))
 	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	mode := "any"
 	if raw := strings.TrimSpace(httpx.Query(r, "tags_match")); raw != "" {
 		if !containsString(directiveTagsMatch, raw) {
-			httpx.WriteValidationFor(w, r, queryItem(httpx.Literal(
+			httpx.WriteValidationFailure(w, queryItem(httpx.Literal(
 				[]string{"query", "tags_match"}, raw, []string{"any", "all", "exact"})))
 			return
 		}
@@ -104,7 +106,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset, failure := parsePage(httpx.Query(r, "limit"), httpx.Query(r, "offset"))
 	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 
@@ -114,7 +116,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := httpx.QueryValues(r, "tags")
-	matched := make([]Directive, 0, len(records))
+	filtered := make([]storage.Directive, 0, len(records))
 	for _, record := range records {
 		if activeOnly && !record.IsActive {
 			continue
@@ -122,22 +124,27 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		if len(tags) > 0 && !directiveMatchesTags(record.Tags, tags, mode) {
 			continue
 		}
-		matched = append(matched, toDirective(record))
+		filtered = append(filtered, record)
 	}
 	// Highest priority first, breaking ties newest-first then by id, so paging
-	// stays stable across pages.
-	sort.SliceStable(matched, func(i, j int) bool {
-		if matched[i].Priority != matched[j].Priority {
-			return matched[i].Priority > matched[j].Priority
+	// stays stable across pages. The order is decided on the stored records:
+	// the rendered DTO carries the timestamps as strings, which do not compare.
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].Priority != filtered[j].Priority {
+			return filtered[i].Priority > filtered[j].Priority
 		}
-		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
-			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		if !filtered[i].CreatedAt.Equal(filtered[j].CreatedAt) {
+			return filtered[i].CreatedAt.After(filtered[j].CreatedAt)
 		}
-		return matched[i].ID > matched[j].ID
+		return filtered[i].ID > filtered[j].ID
 	})
+	matched := make([]Directive, 0, len(filtered))
+	for _, record := range filtered {
+		matched = append(matched, toDirective(record))
+	}
 	total := len(matched)
 	matched = pageSlice(matched, offset, limit)
-	httpx.WriteJSONFor(w, r, http.StatusOK, ListResponse{
+	httpx.WriteJSON(w, http.StatusOK, ListResponse{
 		Items:  matched,
 		Total:  total,
 		Limit:  limit,
@@ -192,29 +199,47 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.Store.GetDirective(r.Context(), bankID, id)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, directiveError(id, err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toDirective(record))
+	httpx.WriteJSON(w, http.StatusOK, toDirective(record))
 }
 
 // Create adds a directive.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	// The reference does not check that the bank exists on this route: it issues
+	// the INSERT and lets the foreign key on `directives.bank_id` reject an
+	// unknown bank, so the caller sees a 500 rather than a 404. The body is
+	// validated first (a malformed body is a 422 even for an unknown bank), and
+	// the bank parameter is canonicalised through the alias table so a
+	// registered alias inserts against the bank it points at.
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	if bankID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
+	}
+	if canonical, err := h.Store.ResolveBankID(r.Context(), bankID); err == nil {
+		bankID = canonical
 	}
 	var body CreateRequest
-	if failure := decodeBody(r, &body); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	object, failure := decodeBody(r, &body)
+	if failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	if strings.TrimSpace(body.Name) == "" {
-		httpx.WriteValidationFor(w, r, missingBodyField("name"))
-		return
+	// name and content are required strings with no length floor: an empty
+	// value is accepted, only an absent key (or an explicit null) is rejected.
+	// Every missing required field is reported in one envelope, in the model's
+	// declaration order, as the reference's validator does.
+	var missing []httpx.ValidationError
+	if body.Name == nil {
+		missing = append(missing, httpx.Missing([]string{"body", "name"}, object))
 	}
-	if strings.TrimSpace(body.Content) == "" {
-		httpx.WriteValidationFor(w, r, missingBodyField("content"))
+	if body.Content == nil {
+		missing = append(missing, httpx.Missing([]string{"body", "content"}, object))
+	}
+	if len(missing) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: missing})
 		return
 	}
 	// A directive is active unless the caller explicitly deactivates it.
@@ -225,8 +250,8 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	record, err := h.Store.PutDirective(r.Context(), storage.Directive{
 		ID:       newID(),
 		BankID:   bankID,
-		Name:     body.Name,
-		Content:  body.Content,
+		Name:     *body.Name,
+		Content:  *body.Content,
 		Priority: body.Priority,
 		IsActive: active,
 		Tags:     body.Tags,
@@ -235,7 +260,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toDirective(record))
+	httpx.WriteJSON(w, http.StatusOK, toDirective(record))
 }
 
 // Update applies a partial update.
@@ -245,8 +270,8 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body UpdateRequest
-	if failure := decodeBody(r, &body); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	if _, failure := decodeBody(r, &body); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	record, err := h.Store.UpdateDirective(r.Context(), bankID, id, storage.DirectivePatch{
@@ -257,10 +282,10 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		Tags:     body.Tags,
 	})
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, directiveError(id, err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toDirective(record))
+	httpx.WriteJSON(w, http.StatusOK, toDirective(record))
 }
 
 // Delete removes a directive.
@@ -270,10 +295,10 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Store.DeleteDirective(r.Context(), bankID, id); err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, directiveError(id, err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteResponse{Status: "deleted"})
+	httpx.WriteJSON(w, http.StatusOK, DeleteResponse{Status: "deleted"})
 }
 
 // BindRoutes registers the family's route table.
@@ -286,18 +311,30 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixDirectiveMember), h.Delete)
 }
 
-// member resolves the bank and the directive identifier.
+// member reads the bank and the directive identifier from the path. The member
+// routes never probe bank existence: like the reference, an unknown bank yields
+// the same not-found as a missing directive.
 func (h *Handlers) member(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	if bankID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", "", false
 	}
 	id := strings.TrimSpace(r.PathValue("directive_id"))
 	if id == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "directive not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Directive '' not found"))
 		return "", "", false
 	}
 	return bankID, id, true
+}
+
+// directiveError names the requested directive in a not-found detail, matching
+// the reference's `Directive '<id>' not found`.
+func directiveError(id string, err error) *httpx.HTTPError {
+	if errors.Is(err, storage.ErrDirectiveNotFound) || errors.Is(err, storage.ErrBankNotFound) {
+		return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Directive '%s' not found", id))
+	}
+	return asHTTPError(err)
 }
 
 // requireBank reports not-found for an unknown bank.
@@ -338,10 +375,10 @@ func parsePage(rawLimit, rawOffset string) (int, int, *httpx.ValidationFailure) 
 			return 0, 0, queryItem(httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, trimmed))
 		}
 		if parsed < 1 {
-			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "limit"}, parsed, 1))
+			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "limit"}, trimmed, 1))
 		}
 		if parsed > maxListLimit {
-			return 0, 0, queryItem(httpx.LessThanEqual([]string{"query", "limit"}, parsed, maxListLimit))
+			return 0, 0, queryItem(httpx.LessThanEqual([]string{"query", "limit"}, trimmed, maxListLimit))
 		}
 		limit = parsed
 	}
@@ -352,7 +389,7 @@ func parsePage(rawLimit, rawOffset string) (int, int, *httpx.ValidationFailure) 
 			return 0, 0, queryItem(httpx.TypeMismatch("int_parsing", []string{"query", "offset"}, trimmed))
 		}
 		if parsed < 0 {
-			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "offset"}, parsed, 0))
+			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "offset"}, trimmed, 0))
 		}
 		offset = parsed
 	}
@@ -372,14 +409,6 @@ func pageSlice[T any](items []T, offset, limit int) []T {
 	return items[offset:end]
 }
 
-// missingBodyField builds the item the framework emits for an absent required
-// body field.
-func missingBodyField(field string) *httpx.ValidationFailure {
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-		httpx.Missing([]string{"body", field}, map[string]any{}),
-	}}
-}
-
 // queryItem builds a one-item validation failure for a query parameter.
 func queryItem(item httpx.ValidationError) *httpx.ValidationFailure {
 	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
@@ -387,18 +416,33 @@ func queryItem(item httpx.ValidationError) *httpx.ValidationFailure {
 
 // decodeBody decodes a JSON body with a size bound, reporting a malformed body
 // as a request validation failure.
-func decodeBody(r *http.Request, target any) *httpx.ValidationFailure {
+func decodeBody(r *http.Request, target any) (map[string]any, *httpx.ValidationFailure) {
 	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	defer func() { _ = limited.Close() }()
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return httpx.BodyDecodeFailure(err, body)
+		return nil, httpx.BodyDecodeFailure(err, body)
 	}
-	httpx.RecordUnknownBodyFields(r, body, target)
-	if err := json.Unmarshal(body, target); err != nil {
-		return httpx.BodyDecodeFailure(err, body)
+	decoded, err := httpx.DecodeLax(body, target)
+	httpx.RecordUnknownBodyFields(r, decoded, target)
+	trimmed := strings.TrimSpace(string(decoded))
+	// The framework's required-body field reports an absent body and the JSON
+	// literal null as the same missing item. A body that is only whitespace is
+	// not absent: the parser runs first and rejects it, so it falls through to
+	// the decode failure below.
+	if len(decoded) == 0 || trimmed == "null" {
+		return nil, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.Missing([]string{"body"}, nil),
+		}}
 	}
-	return nil
+	if err != nil {
+		return nil, httpx.BodyDecodeFailure(err, decoded)
+	}
+	object := map[string]any{}
+	if err := json.Unmarshal(decoded, &object); err != nil {
+		return nil, httpx.BodyDecodeFailure(err, decoded)
+	}
+	return object, nil
 }
 
 // toDirective renders a stored record for the wire.
@@ -415,8 +459,8 @@ func toDirective(record storage.Directive) Directive {
 		Priority:  record.Priority,
 		IsActive:  record.IsActive,
 		Tags:      tags,
-		CreatedAt: record.CreatedAt,
-		UpdatedAt: record.UpdatedAt,
+		CreatedAt: httpx.FormatTimestamp(record.CreatedAt),
+		UpdatedAt: httpx.FormatTimestamp(record.UpdatedAt),
 	}
 }
 
@@ -429,8 +473,13 @@ func asHTTPError(err error) *httpx.HTTPError {
 		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	case errors.Is(err, storage.ErrDirectiveNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, "directive not found")
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
 	default:
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
 

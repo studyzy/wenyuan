@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/provider/mock"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -21,6 +22,28 @@ func newParityApp(t *testing.T) *App {
 		return cfg
 	}(), Dependencies{
 		Store: storage.NewMemoryStore("public"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Store.CreateBank(context.Background(), storage.Bank{BankID: "mm-bank", Name: "mm-bank"}); err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+// newParityAppWithProvider builds the same app with the deterministic mock
+// provider injected, so the mental-model create route is not gated by the
+// no-provider refusal and its response contract can be exercised.
+func newParityAppWithProvider(t *testing.T) *App {
+	t.Helper()
+	app, err := New(context.Background(), func() config.Config {
+		cfg := testConfig()
+		cfg.EnableBankLLMHealth = true
+		return cfg
+	}(), Dependencies{
+		Store:    storage.NewMemoryStore("public"),
+		Provider: &mock.Provider{DimensionsValue: storage.EmbeddingDimensions},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,19 +88,39 @@ func TestMentalModelLifecycle(t *testing.T) {
 		mem.SeedMemory("mm-bank", storage.RecallMatch{ID: "mm-fact", Text: "deployment happens on tuesday", Type: "world"})
 	}
 
-	// Create.
+	// This deployment has no LLM provider, so the reference refuses the refresh a
+	// create needs — without catching the refusal, so the route answers the
+	// framework's internal-error body — and stores the model regardless. The
+	// family's remaining routes are exercised against that stored model.
 	rec := send(app, http.MethodPost, base,
 		`{"subtype":"pinned","name":"deploy days","description":"when deployments happen","source_query":"deployment"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("create = %d (body %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("create without a model = %d, want 500 (body %s)", rec.Code, rec.Body.String())
 	}
-	var created map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
+	// The model the create stored is the one the rest of the lifecycle uses.
+	rec = send(app, http.MethodGet, base, "")
+	var stored struct {
+		Items []map[string]any `json:"items"`
 	}
-	id, _ := created["mental_model_id"].(string)
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("list after a refused create: %v (%s)", err, rec.Body.String())
+	}
+	if len(stored.Items) != 1 {
+		t.Fatalf("the create must have stored its model: %v", stored.Items)
+	}
+	id, _ := stored.Items[0]["id"].(string)
 	if id == "" {
-		t.Fatalf("create must return a mental_model_id: %v", created)
+		t.Fatalf("stored model carries no id: %v", stored.Items[0])
+	}
+	// A refresh operation is queued through the store, standing in for the one a
+	// deployment with a model would have queued at create time.
+	operationID := "11111111-1111-1111-1111-111111111111"
+	if _, err := app.Store.PutOperation(context.Background(), storage.Operation{
+		OperationID: operationID, BankID: "mm-bank",
+		OperationType: storage.OperationTypeRefreshMentalModel, Status: storage.StatusPending,
+		Payload: map[string]any{storage.MentalModelIDPayloadKey: id},
+	}); err != nil {
+		t.Fatalf("queue the refresh: %v", err)
 	}
 
 	// Read.
@@ -119,39 +162,27 @@ func TestMentalModelLifecycle(t *testing.T) {
 		t.Fatalf("history = %d", rec.Code)
 	}
 
-	// A dry run reports without applying.
+	// A dry run also needs a model, so it is refused with the same message (the
+	// reference resolves the model first, then checks availability, so the route
+	// answers 400 here).
 	rec = send(app, http.MethodPost, base+"/"+id+"/dry-run-refresh", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("dry run = %d", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("dry run without a model = %d (body %s)", rec.Code, rec.Body.String())
 	}
 	var dry map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &dry); err != nil {
 		t.Fatal(err)
 	}
-	if dry["effective_mode"] == nil || dry["outcome"] == nil || dry["mental_model_id"] != id {
-		t.Fatalf("dry run must report the upstream result shape: %v", dry)
-	}
-	if dry["trace"] == nil {
-		t.Fatalf("a dry run must include a trace: %v", dry)
+	if dry["detail"] == nil {
+		t.Fatalf("a refused dry run must carry the refusal detail: %v", dry)
 	}
 
-	// A real refresh queues the work rather than performing it in the request,
-	// because it regenerates the model's content through a model call. The
-	// request reports the accepted operation, and the caller polls that.
+	// An explicit refresh asks for work that only a model can do, and this
+	// deployment has no LLM provider, so the reference refuses it outright
+	// instead of queueing it.
 	rec = send(app, http.MethodPost, base+"/"+id+"/refresh", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("refresh = %d (body %s)", rec.Code, rec.Body.String())
-	}
-	var queued map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &queued); err != nil {
-		t.Fatal(err)
-	}
-	if queued["status"] != "queued" {
-		t.Fatalf("refresh must report the operation as queued: %v", queued)
-	}
-	operationID, _ := queued["operation_id"].(string)
-	if operationID == "" {
-		t.Fatalf("refresh must name the queued operation: %v", queued)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("refresh without a model = %d (body %s)", rec.Code, rec.Body.String())
 	}
 	// Nothing has been recorded yet: the operation has not run.
 	rec = send(app, http.MethodGet, base+"/"+id+"/history", "")
@@ -218,7 +249,7 @@ func TestMentalModelRejectsUnknownSubtype(t *testing.T) {
 // test-mental-model-trigger-and-id: a create carries a validated trigger and an
 // optional client-supplied id, both echoed, with a collision reported as 409.
 func TestMentalModelTriggerAndID(t *testing.T) {
-	app := newParityApp(t)
+	app := newParityAppWithProvider(t)
 	base := "/v1/default/banks/mm-bank/mental-models"
 
 	rec := send(app, http.MethodPost, base,
@@ -347,7 +378,7 @@ func TestDirectiveRequiresContent(t *testing.T) {
 // test-families-reject-unknown-bank: a read reports not-found for a bank the
 // store does not hold, while a mental-model create lazily creates it.
 func TestFamiliesRejectUnknownBank(t *testing.T) {
-	app := newParityApp(t)
+	app := newParityAppWithProvider(t)
 	for _, path := range []string{
 		"/v1/default/banks/ghost/mental-models",
 		"/v1/default/banks/ghost/directives",

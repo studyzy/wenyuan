@@ -140,14 +140,15 @@ func TestWebhookGuardBlocksInternalTargets(t *testing.T) {
 	}
 }
 
-// test-webhook-rejects-unknown-event: a webhook cannot subscribe to an event
-// that will never fire.
-func TestWebhookRejectsUnknownEvent(t *testing.T) {
+// test-webhook-accepts-unknown-event: the reference puts no enum on
+// event_types, so an event name it does not know is stored verbatim rather than
+// refused.
+func TestWebhookAcceptsUnknownEvent(t *testing.T) {
 	app := webhookApp(t)
 	rec := send(app, http.MethodPost, "/v1/default/banks/wh-bank/webhooks",
 		`{"url":"https://hooks.example.com/endpoint","event_types":["nonsense.event"]}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown event = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("unknown event = %d, want %d (body %s)", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
 
@@ -160,8 +161,8 @@ func TestWebhookNotFound(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"unknown webhook", http.MethodDelete, "/v1/default/banks/wh-bank/webhooks/absent"},
-		{"unknown webhook deliveries", http.MethodGet, "/v1/default/banks/wh-bank/webhooks/absent/deliveries"},
+		{"unknown webhook", http.MethodDelete, "/v1/default/banks/wh-bank/webhooks/11111111-1111-1111-1111-111111111111"},
+		{"unknown webhook deliveries", http.MethodGet, "/v1/default/banks/wh-bank/webhooks/11111111-1111-1111-1111-111111111111/deliveries"},
 		{"unknown bank", http.MethodGet, "/v1/default/banks/ghost/webhooks"},
 	}
 	for _, tc := range cases {

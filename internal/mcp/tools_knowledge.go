@@ -9,10 +9,7 @@ import (
 )
 
 func (s *Server) getKnowledgeBaseTree(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_knowledge_base_tree")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	nodes, err := s.store.ListKnowledgeNodes(ctx, bankID)
 	if err != nil {
 		return nil, err
@@ -25,10 +22,7 @@ func (s *Server) getKnowledgeBaseTree(ctx context.Context, args map[string]any) 
 }
 
 func (s *Server) searchKnowledgeBase(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "search_knowledge_base")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	query := stringArgument(args, "query")
 	if query == "" {
 		return nil, errors.New("search_knowledge_base requires query")
@@ -49,10 +43,7 @@ func (s *Server) searchKnowledgeBase(ctx context.Context, args map[string]any) (
 }
 
 func (s *Server) getKnowledgePage(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "get_knowledge_page")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	pageID := stringArgument(args, "page_id")
 	if pageID == "" {
 		return nil, errors.New("get_knowledge_page requires page_id")
@@ -65,10 +56,7 @@ func (s *Server) getKnowledgePage(ctx context.Context, args map[string]any) (any
 }
 
 func (s *Server) createKnowledgeFolder(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "create_knowledge_folder")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	name := stringArgument(args, "name")
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("name cannot be empty")
@@ -87,10 +75,7 @@ func (s *Server) createKnowledgeFolder(ctx context.Context, args map[string]any)
 }
 
 func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "create_knowledge_page")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	name := stringArgument(args, "name")
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("name cannot be empty")
@@ -115,10 +100,7 @@ func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (
 }
 
 func (s *Server) updateKnowledgeNode(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "update_knowledge_node")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	nodeID := stringArgument(args, "node_id")
 	if nodeID == "" {
 		return nil, errors.New("update_knowledge_node requires node_id")
@@ -147,10 +129,7 @@ func (s *Server) updateKnowledgeNode(ctx context.Context, args map[string]any) (
 }
 
 func (s *Server) deleteKnowledgeNode(ctx context.Context, args map[string]any) (any, error) {
-	bankID, err := s.bankArgument(ctx, args, "delete_knowledge_node")
-	if err != nil {
-		return nil, err
-	}
+	bankID := s.bankArgument(ctx, args)
 	nodeID := stringArgument(args, "node_id")
 	if nodeID == "" {
 		return nil, errors.New("delete_knowledge_node requires node_id")

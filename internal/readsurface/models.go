@@ -3,9 +3,10 @@
 package readsurface
 
 import (
-	"time"
-
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
+
+	"unicode/utf8"
 )
 
 // DocumentListItem is one document as the listing renders it.
@@ -40,7 +41,7 @@ type ChunkAttachment struct {
 	Kind      string  `json:"kind"`
 	MediaType string  `json:"media_type"`
 	ByteSize  int64   `json:"byte_size"`
-	Filename  *string `json:"filename"`
+	Filename  *string `json:"filename,omitempty"`
 	URL       string  `json:"url"`
 }
 
@@ -66,10 +67,10 @@ type DocumentResponse struct {
 	Attachments       []ChunkAttachment `json:"attachments"`
 }
 
-// UpdateDocumentRequest is the partial-update body. A nil field is unchanged.
+// UpdateDocumentRequest is the partial-update body. `tags` is the only mutable
+// field, and it must be present; any other body field is ignored.
 type UpdateDocumentRequest struct {
-	Tags     *[]string       `json:"tags"`
-	Metadata *map[string]any `json:"document_metadata"`
+	Tags *[]string `json:"tags"`
 }
 
 // UpdateDocumentResponse is the update result.
@@ -125,14 +126,15 @@ type TagListResponse struct {
 	Offset int       `json:"offset"`
 }
 
-// EntityListItem is one entity as the listing renders it.
+// EntityListItem is one entity as the listing renders it. `metadata` is always
+// present, an empty object when the entity carries none.
 type EntityListItem struct {
 	ID            string         `json:"id"`
 	CanonicalName string         `json:"canonical_name"`
 	MentionCount  int            `json:"mention_count"`
 	FirstSeen     *string        `json:"first_seen"`
 	LastSeen      *string        `json:"last_seen"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	Metadata      map[string]any `json:"metadata"`
 }
 
 // EntityListResponse is the entity listing envelope.
@@ -149,26 +151,30 @@ type EntityObservation struct {
 	MentionedAt *string `json:"mentioned_at"`
 }
 
-// EntityDetailResponse is one entity's detail.
+// EntityDetailResponse is one entity's detail. `metadata` is always present (an
+// empty object when the entity carries none) and `observations` is always an
+// empty list: entity observations were retired in favour of mental models.
 type EntityDetailResponse struct {
 	ID            string              `json:"id"`
 	CanonicalName string              `json:"canonical_name"`
 	MentionCount  int                 `json:"mention_count"`
 	FirstSeen     *string             `json:"first_seen"`
 	LastSeen      *string             `json:"last_seen"`
-	Metadata      map[string]any      `json:"metadata,omitempty"`
+	Metadata      map[string]any      `json:"metadata"`
 	Observations  []EntityObservation `json:"observations"`
 }
 
-// GraphNodeData is the payload of a memory-graph node.
+// GraphNodeData is the payload of a memory-graph node. Every key is always
+// present: the reference's graph models are row models, so its route keeps nulls
+// rather than dropping absent fields.
 type GraphNodeData struct {
-	ID       string  `json:"id"`
-	Label    string  `json:"label"`
-	Text     string  `json:"text"`
-	Date     *string `json:"date"`
-	Context  string  `json:"context,omitempty"`
-	Entities string  `json:"entities"`
-	Color    string  `json:"color,omitempty"`
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Text     string `json:"text"`
+	Date     string `json:"date"`
+	Context  string `json:"context"`
+	Entities string `json:"entities"`
+	Color    string `json:"color"`
 }
 
 // GraphNode wraps a node payload, matching the shape clients render.
@@ -176,16 +182,17 @@ type GraphNode struct {
 	Data GraphNodeData `json:"data"`
 }
 
-// GraphEdgeData is the payload of a memory-graph edge.
+// GraphEdgeData is the payload of a memory-graph edge. Every key is always
+// present.
 type GraphEdgeData struct {
 	ID         string  `json:"id"`
 	Source     string  `json:"source"`
 	Target     string  `json:"target"`
-	LinkType   string  `json:"linkType,omitempty"`
+	LinkType   string  `json:"linkType"`
 	Weight     float64 `json:"weight"`
-	EntityName string  `json:"entityName,omitempty"`
-	Color      string  `json:"color,omitempty"`
-	LineStyle  string  `json:"lineStyle,omitempty"`
+	EntityName string  `json:"entityName"`
+	Color      string  `json:"color"`
+	LineStyle  string  `json:"lineStyle"`
 }
 
 // GraphEdge wraps an edge payload.
@@ -193,22 +200,23 @@ type GraphEdge struct {
 	Data GraphEdgeData `json:"data"`
 }
 
-// GraphTableRow is one memory as a flat row.
+// GraphTableRow is one memory as a flat row. Every key is always present; an
+// absent value is a JSON null.
 type GraphTableRow struct {
 	ID            string   `json:"id"`
 	Text          string   `json:"text"`
-	Context       string   `json:"context,omitempty"`
+	Context       string   `json:"context"`
 	OccurredStart *string  `json:"occurred_start"`
 	OccurredEnd   *string  `json:"occurred_end"`
 	MentionedAt   *string  `json:"mentioned_at"`
-	Date          *string  `json:"date"`
-	CreatedAt     *string  `json:"created_at"`
+	Date          string   `json:"date"`
 	Entities      string   `json:"entities"`
-	DocumentID    string   `json:"document_id,omitempty"`
-	ChunkID       string   `json:"chunk_id,omitempty"`
-	FactType      string   `json:"fact_type,omitempty"`
+	DocumentID    *string  `json:"document_id"`
+	ChunkID       *string  `json:"chunk_id"`
+	FactType      *string  `json:"fact_type"`
 	Tags          []string `json:"tags"`
-	ProofCount    int      `json:"proof_count"`
+	CreatedAt     *string  `json:"created_at"`
+	ProofCount    *int     `json:"proof_count"`
 }
 
 // GraphResponse is the memory graph.
@@ -259,30 +267,6 @@ type EntityGraphResponse struct {
 	Limit         int               `json:"limit"`
 }
 
-// formatTime renders a timestamp the way this surface reports it. A zero time
-// renders as the empty string so a client never sees a placeholder date.
-func formatTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339)
-}
-
-// formatTimePtr renders an optional timestamp at the stored resolution.
-//
-// RFC3339Nano keeps the sub-second part when there is one and drops it when
-// there is not, which is what the reference's own “isoformat“ does — and it
-// matters where ordering is read off the string: two mentions of an entity a
-// moment apart are the same second, so a second-resolution format would report
-// “first_seen == last_seen“ for an entity that was in fact seen twice.
-func formatTimePtr(value *time.Time) *string {
-	if value == nil || value.IsZero() {
-		return nil
-	}
-	formatted := value.UTC().Format(time.RFC3339Nano)
-	return &formatted
-}
-
 // toDocumentListItem renders a stored document for the listing.
 func toDocumentListItem(doc storage.Document) DocumentListItem {
 	tags := doc.Tags
@@ -293,11 +277,11 @@ func toDocumentListItem(doc storage.Document) DocumentListItem {
 		ID:              doc.ID,
 		BankID:          doc.BankID,
 		ContentHash:     optionalString(doc.ContentHash),
-		CreatedAt:       formatTime(doc.CreatedAt),
-		UpdatedAt:       formatTime(doc.UpdatedAt),
-		TextLength:      len(doc.OriginalText),
+		CreatedAt:       httpx.FormatTimestamp(doc.CreatedAt),
+		UpdatedAt:       httpx.FormatTimestamp(doc.UpdatedAt),
+		TextLength:      utf8.RuneCountInString(doc.OriginalText),
 		MemoryUnitCount: doc.MemoryUnitCount,
-		RetainParams:    doc.RetainParams,
+		RetainParams:    presentRetainParams(doc.RetainParams),
 		Metadata:        doc.Metadata,
 		Tags:            tags,
 	}
@@ -312,7 +296,7 @@ func toChunkResponse(chunk storage.Chunk, attachments []storage.Attachment) Chun
 		BankID:      chunk.BankID,
 		ChunkIndex:  chunk.ChunkIndex,
 		ChunkText:   chunk.ChunkText,
-		CreatedAt:   formatTime(chunk.CreatedAt),
+		CreatedAt:   httpx.FormatTimestamp(chunk.CreatedAt),
 		Attachments: toChunkAttachments(chunk.BankID, attachments),
 	}
 }
@@ -343,6 +327,17 @@ func chunkAttachment(bankID string, attachment storage.Attachment) ChunkAttachme
 	}
 }
 
+// presentRetainParams renders a document's retain parameters the way the
+// reference does: the recorded object, or null when the write recorded nothing
+// to replay. The reference builds the field as `retain_params_parsed or None`,
+// so an empty object reads back as a JSON null rather than `{}`.
+func presentRetainParams(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
 // optionalString renders a possibly-empty string as a nullable field, so an
 // absent value is a JSON null rather than an empty string.
 func optionalString(value string) *string {
@@ -352,14 +347,19 @@ func optionalString(value string) *string {
 	return &value
 }
 
-// toEntityListItem renders a stored entity.
+// toEntityListItem renders a stored entity. `metadata` is always an object on
+// the wire, so an absent value becomes an empty one.
 func toEntityListItem(entity storage.Entity) EntityListItem {
+	metadata := entity.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
 	return EntityListItem{
 		ID:            entity.ID,
 		CanonicalName: entity.CanonicalName,
 		MentionCount:  entity.MentionCount,
-		FirstSeen:     formatTimePtr(entity.FirstSeen),
-		LastSeen:      formatTimePtr(entity.LastSeen),
-		Metadata:      entity.Metadata,
+		FirstSeen:     httpx.FormatTimestampPtr(entity.FirstSeen),
+		LastSeen:      httpx.FormatTimestampPtr(entity.LastSeen),
+		Metadata:      metadata,
 	}
 }

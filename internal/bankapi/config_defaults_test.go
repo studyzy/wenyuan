@@ -186,3 +186,106 @@ func TestListRowPrefersTheBanksOwnConfig(t *testing.T) {
 		t.Errorf("skepticism = %d, want the bank's own 1", body.Banks[0].Disposition.Skepticism)
 	}
 }
+
+// The profile a create/replace/partial-update returns reports the bank's
+// configuration overlaid on the legacy columns, exactly as the reference's
+// update_bank returns its profile read-back: a bank whose configuration names a
+// trait or a mission must report them, not the columns it was created with.
+func TestProfileResponseOverlaysConfigDispositionAndMission(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
+	h := NewHandlers(store).WithConfigAPI(true).
+		WithConfigDefaults(PublicConfigDefaults(config.FromEnv(func(string) (string, bool) { return "", false })))
+	mux := newMux(h)
+
+	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config",
+		`{"updates":{"disposition_skepticism":5,"reflect_mission":"be careful"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("config write status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1", `{"name":"Renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("partial update status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var profile BankResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Disposition.Skepticism != 5 {
+		t.Errorf("skepticism = %d, want the configured 5", profile.Disposition.Skepticism)
+	}
+	if profile.Mission != "be careful" {
+		t.Errorf("mission = %q, want the configured mission", profile.Mission)
+	}
+	if profile.Background != profile.Mission {
+		t.Errorf("background = %q, want it to echo the mission", profile.Background)
+	}
+}
+
+// The deployment's JSON-valued settings reach the configuration read as the
+// parsed container, not the raw environment string, which is what the reference
+// stores after json.loads.
+func TestPublicConfigDefaultsParseJSONProcessKeys(t *testing.T) {
+	values := map[string]string{
+		"HINDSIGHT_API_MCP_ENABLED_TOOLS":              "recall, retain ,",
+		"HINDSIGHT_API_OBSERVATION_SCOPE_LIMITS":       `[{"scope":"shared","limit":5}]`,
+		"HINDSIGHT_API_CONSOLIDATION_STRATEGIES":       `[{"name":"s1"}]`,
+		"HINDSIGHT_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER": `{"min_facts":3}`,
+		"HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS":     `[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_NONE"}]`,
+	}
+	cfg := config.FromEnv(func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	})
+	got := PublicConfigDefaults(cfg)
+
+	tools, ok := got["mcp_enabled_tools"].([]string)
+	if !ok || len(tools) != 2 || tools[0] != "recall" || tools[1] != "retain" {
+		t.Fatalf("mcp_enabled_tools = %#v, want the split list", got["mcp_enabled_tools"])
+	}
+	scopes, ok := got["observation_scope_limits"].([]any)
+	if !ok || len(scopes) != 1 {
+		t.Fatalf("observation_scope_limits = %#v, want the parsed list", got["observation_scope_limits"])
+	}
+	strategies, ok := got["consolidation_strategies"].([]any)
+	if !ok || len(strategies) != 1 {
+		t.Fatalf("consolidation_strategies = %#v, want the parsed list", got["consolidation_strategies"])
+	}
+	trigger, ok := got["knowledge_page_default_trigger"].(map[string]any)
+	if !ok || trigger["min_facts"] != float64(3) {
+		t.Fatalf("knowledge_page_default_trigger = %#v, want the parsed object", got["knowledge_page_default_trigger"])
+	}
+	safety, ok := got["llm_gemini_safety_settings"].([]any)
+	if !ok || len(safety) != 1 {
+		t.Fatalf("llm_gemini_safety_settings = %#v, want the parsed list", got["llm_gemini_safety_settings"])
+	}
+}
+
+// A key the deployment did not set keeps the reference's null for these
+// JSON-valued and list-valued fields rather than an empty container or the
+// empty string.
+func TestPublicConfigDefaultsKeepJSONKeysNull(t *testing.T) {
+	cfg := config.FromEnv(func(string) (string, bool) { return "", false })
+	got := PublicConfigDefaults(cfg)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{
+		"mcp_enabled_tools",
+		"observation_scope_limits",
+		"consolidation_strategies",
+		"knowledge_page_default_trigger",
+		"llm_gemini_safety_settings",
+	} {
+		raw, present := wire[key]
+		if !present || string(raw) != "null" {
+			t.Fatalf("%s = %s, want null (present=%v)", key, raw, present)
+		}
+	}
+}

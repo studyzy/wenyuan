@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/worker"
@@ -42,6 +43,9 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	if err != nil {
 		return classifyRetainFailure(err)
 	}
+	// Count the document by its extraction outcome, as the synchronous path
+	// does, so both routes report the same facts/no_facts split.
+	monitoring.Workload.CountRetainDocument(countUnitIDs(outcome))
 	worker.ReportOutcome(ctx, map[string]any{
 		"unit_ids_count":          countUnitIDs(outcome),
 		"extraction_errors_count": 0,

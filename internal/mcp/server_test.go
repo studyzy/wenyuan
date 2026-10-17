@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -22,20 +24,81 @@ func newServer(t *testing.T) *Server {
 	return New(store, nil)
 }
 
-// rpc posts one JSON-RPC request to a path and decodes the response.
+// initializeBody is the handshake the reference requires: a protocol revision,
+// the client's capabilities and the client's identity.
+const initializeBody = `{"jsonrpc":"2.0","id":1,"method":"initialize",
+	"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`
+
+// assertTransportError decodes a transport-level error envelope and checks the
+// id and message the reference returns for it.
+func assertTransportError(t *testing.T, rec *httptest.ResponseRecorder, message string) {
+	t.Helper()
+	var decoded struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("error body is not JSON: %s", rec.Body.String())
+	}
+	if decoded.JSONRPC != jsonRPCVersion || string(decoded.ID) != `"server-error"` {
+		t.Fatalf("error envelope must carry the server-error id: %s", rec.Body.String())
+	}
+	if decoded.Error == nil || decoded.Error.Code != codeInvalidRequest || decoded.Error.Message != message {
+		t.Fatalf("error = %+v, want code %d message %q", decoded.Error, codeInvalidRequest, message)
+	}
+}
+
+// sseMessage extracts and decodes the JSON-RPC payload of an event-stream
+// response.
+func sseMessage(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(sseData(t, rec)), &decoded); err != nil {
+		t.Fatalf("decode response: %v (body %s)", err, rec.Body.String())
+	}
+	return decoded
+}
+
+// rpcAt posts one JSON-RPC request to a path and decodes the response. A
+// request other than the handshake is sent with the session the transport
+// requires, established first on the same path.
 func rpcAt(t *testing.T, server *Server, path, body string) map[string]any {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if !strings.Contains(body, `"method":"initialize"`) {
+		req.Header.Set(mcpSessionHeader, handshakeSession(t, server, path))
+	}
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(sseData(t, rec)), &decoded); err != nil {
 		t.Fatalf("decode response: %v (body %s)", err, rec.Body.String())
 	}
 	return decoded
+}
+
+// sseData extracts the JSON-RPC payload from a Server-Sent Events response,
+// which is how the transport returns every answered request.
+func sseData(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type = %q, want text/event-stream (body %s)", ct, rec.Body.String())
+	}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if payload, ok := strings.CutPrefix(line, "data: "); ok {
+			return payload
+		}
+	}
+	t.Fatalf("response body carries no data frame: %s", rec.Body.String())
+	return ""
 }
 
 // rpc posts one JSON-RPC request to the multi-bank mount and decodes the response.
@@ -46,13 +109,13 @@ func rpc(t *testing.T, server *Server, body string) map[string]any {
 
 // The handshake names the reference server and its release version.
 func TestInitializeHandshake(t *testing.T) {
-	got := rpc(t, newServer(t), `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	got := rpc(t, newServer(t), initializeBody)
 	result, ok := got["result"].(map[string]any)
 	if !ok {
 		t.Fatalf("result = %v", got["result"])
 	}
-	if result["protocolVersion"] != protocolVersion {
-		t.Fatalf("protocolVersion = %v, want %q", result["protocolVersion"], protocolVersion)
+	if result["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want the requested 2025-06-18", result["protocolVersion"])
 	}
 	info, _ := result["serverInfo"].(map[string]any)
 	if info["name"] != "hindsight-mcp-server" {
@@ -66,14 +129,14 @@ func TestInitializeHandshake(t *testing.T) {
 // A client that asks for a revision the server speaks is answered with it.
 func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
 	got := rpc(t, newServer(t), `{"jsonrpc":"2.0","id":1,"method":"initialize",
-		"params":{"protocolVersion":"2024-11-05"}}`)
+		"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
 	result, _ := got["result"].(map[string]any)
 	if result["protocolVersion"] != "2024-11-05" {
 		t.Fatalf("protocolVersion = %v, want the requested 2024-11-05", result["protocolVersion"])
 	}
 	// An unknown revision falls back to the server's own.
 	got = rpc(t, newServer(t), `{"jsonrpc":"2.0","id":1,"method":"initialize",
-		"params":{"protocolVersion":"1999-01-01"}}`)
+		"params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
 	result, _ = got["result"].(map[string]any)
 	if result["protocolVersion"] != protocolVersion {
 		t.Fatalf("protocolVersion = %v, want %q", result["protocolVersion"], protocolVersion)
@@ -167,10 +230,10 @@ func TestSingleBankMountScopesTheRoster(t *testing.T) {
 func TestSingleBankMountFixesTheBank(t *testing.T) {
 	server := newServer(t)
 	body := `{"jsonrpc":"2.0","id":2,"method":"tools/call",
-		"params":{"name":"retain","arguments":{"content":"Alice works at Google."}}}`
+		"params":{"name":"sync_retain","arguments":{"content":"Alice works at Google."}}}`
 	result, _ := rpcAt(t, server, "/mcp/b1", body)["result"].(map[string]any)
 	if result["isError"] == true {
-		t.Fatalf("single-bank retain reported an error: %v", result)
+		t.Fatalf("single-bank sync_retain reported an error: %v", result)
 	}
 	listed, _ := rpcAt(t, server, "/mcp/b1", `{"jsonrpc":"2.0","id":3,"method":"tools/call",
 		"params":{"name":"list_memories","arguments":{}}}`)["result"].(map[string]any)
@@ -181,7 +244,9 @@ func TestSingleBankMountFixesTheBank(t *testing.T) {
 	}
 }
 
-// A tools/call runs the tool and returns its payload as text content.
+// A tools/call runs the tool and returns its payload as text content. retain
+// queues the write and reports the receipt; the synchronous write is what makes
+// the content recallable, so the recall check runs after sync_retain.
 func TestToolsCallRunsRetainAndRecall(t *testing.T) {
 	server := newServer(t)
 	retain := rpc(t, server, `{"jsonrpc":"2.0","id":3,"method":"tools/call",
@@ -190,8 +255,26 @@ func TestToolsCallRunsRetainAndRecall(t *testing.T) {
 	if result["isError"] == true {
 		t.Fatalf("retain reported an error: %v", result)
 	}
+	receipt := decodeTextPayload(t, result)
+	if receipt["status"] != "accepted" || receipt["message"] != "Memory storage initiated" {
+		t.Fatalf("retain receipt = %v", receipt)
+	}
+	if id, _ := receipt["operation_id"].(string); id == "" {
+		t.Fatalf("retain receipt carries no operation_id: %v", receipt)
+	}
 
-	recall := rpc(t, server, `{"jsonrpc":"2.0","id":4,"method":"tools/call",
+	sync := rpc(t, server, `{"jsonrpc":"2.0","id":4,"method":"tools/call",
+		"params":{"name":"sync_retain","arguments":{"bank_id":"b1","content":"the code is 4417"}}}`)
+	syncResult, _ := sync["result"].(map[string]any)
+	stored := decodeTextPayload(t, syncResult)
+	if stored["status"] != "completed" || stored["message"] != "Memory stored successfully" {
+		t.Fatalf("sync_retain payload = %v", stored)
+	}
+	if ids, _ := stored["memory_ids"].([]any); len(ids) == 0 {
+		t.Fatalf("sync_retain payload carries no memory_ids: %v", stored)
+	}
+
+	recall := rpc(t, server, `{"jsonrpc":"2.0","id":5,"method":"tools/call",
 		"params":{"name":"recall","arguments":{"bank_id":"b1","query":"code"}}}`)
 	recallResult, _ := recall["result"].(map[string]any)
 	content, _ := recallResult["content"].([]any)
@@ -204,10 +287,25 @@ func TestToolsCallRunsRetainAndRecall(t *testing.T) {
 	}
 }
 
+// decodeTextPayload parses a tool result's JSON text content into an object.
+func decodeTextPayload(t *testing.T, result map[string]any) map[string]any {
+	t.Helper()
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("result carries no content: %v", result)
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		t.Fatalf("decode tool payload %s: %v", text, err)
+	}
+	return payload
+}
+
 // reflect reads its question from the reference's query argument.
 func TestReflectUsesQueryArgument(t *testing.T) {
 	server := newServer(t)
-	callTool(t, server, "1", "retain", `{"bank_id":"b1","content":"Alice works at Google."}`)
+	callTool(t, server, "1", "sync_retain", `{"bank_id":"b1","content":"Alice works at Google."}`)
 	result := callTool(t, server, "2", "reflect", `{"bank_id":"b1","query":"where does Alice work?"}`)
 	if result["isError"] == true {
 		t.Fatalf("reflect failed: %v", result)
@@ -221,8 +319,13 @@ func TestUnknownMethodIsAnError(t *testing.T) {
 	if !ok {
 		t.Fatalf("error = %v", got["error"])
 	}
-	if int(rpcError["code"].(float64)) != codeMethodNotFound {
-		t.Fatalf("code = %v, want %d", rpcError["code"], codeMethodNotFound)
+	// The reference reports an unrecognised method as a parameter-validation
+	// failure with an empty detail, not as a method-not-found code.
+	if int(rpcError["code"].(float64)) != codeInvalidParams {
+		t.Fatalf("code = %v, want %d", rpcError["code"], codeInvalidParams)
+	}
+	if rpcError["message"] != "Invalid request parameters" || rpcError["data"] != "" {
+		t.Fatalf("error = %v", rpcError)
 	}
 }
 
@@ -240,15 +343,37 @@ func TestToolFailureIsAResult(t *testing.T) {
 	}
 }
 
-// A notification carries no id and is answered with an empty body.
+// A notification carries no id and is accepted with an empty body and the
+// transport's 202 — but only once the session it rides on is established, which
+// the transport requires of every message but the handshake.
 func TestNotificationIsNotAnswered(t *testing.T) {
+	server := newServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
 		`{"jsonrpc":"2.0","method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(mcpSessionHeader, handshakeSession(t, server, "/mcp"))
 	rec := httptest.NewRecorder()
-	newServer(t).ServeHTTP(rec, req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("body = %s, want empty", rec.Body.String())
 	}
+}
+
+// A notification with no session is refused before it is answered: the session
+// check precedes the 202 the transport would otherwise send.
+func TestNotificationWithoutSessionIsRefused(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newServer(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	assertTransportError(t, rec, "Bad Request: Missing session ID")
 }
 
 // callTool posts a tools/call and returns the decoded result content.
@@ -264,9 +389,10 @@ func callTool(t *testing.T, server *Server, id, name, args string) map[string]an
 // transport error.
 func TestEveryToolIsInvocable(t *testing.T) {
 	server := newServer(t)
-	// Seed one memory so the read tools have something to return.
-	if result := callTool(t, server, "1", "retain", `{"bank_id":"b1","content":"Alice works at Google."}`); result["isError"] == true {
-		t.Fatalf("retain failed: %v", result)
+	// Seed one memory so the read tools have something to return. sync_retain
+	// is the synchronous write, so the seeded memory is readable in this test.
+	if result := callTool(t, server, "1", "sync_retain", `{"bank_id":"b1","content":"Alice works at Google."}`); result["isError"] == true {
+		t.Fatalf("sync_retain failed: %v", result)
 	}
 	created := callTool(t, server, "1", "get_mental_model", `{"bank_id":"b1","mental_model_id":"missing"}`)
 	if created["isError"] != true {
@@ -335,7 +461,7 @@ func decodeField(t *testing.T, result map[string]any, field string) string {
 // get_memory reads one unit by identifier once the bank holds one.
 func TestGetMemoryTool(t *testing.T) {
 	server := newServer(t)
-	callTool(t, server, "1", "retain", `{"bank_id":"b1","content":"Alice works at Google."}`)
+	callTool(t, server, "1", "sync_retain", `{"bank_id":"b1","content":"Alice works at Google."}`)
 
 	listed := callTool(t, server, "2", "list_memories", `{"bank_id":"b1"}`)
 	content, _ := listed["content"].([]any)
@@ -374,16 +500,12 @@ func TestToolsCallMalformedParams(t *testing.T) {
 // JSON-RPC codes the protocol defines.
 func TestMalformedRequests(t *testing.T) {
 	server := newServer(t)
-	got := rpc(t, server, `{"jsonrpc":"1.0","id":1,"method":"initialize"}`)
-	rpcError, _ := got["error"].(map[string]any)
-	if rpcError == nil || int(rpcError["code"].(float64)) != codeInvalidRequest {
-		t.Fatalf("wrong version error = %v, want code %d", got["error"], codeInvalidRequest)
-	}
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
@@ -392,6 +514,9 @@ func TestMalformedRequests(t *testing.T) {
 	errObj, _ := decoded["error"].(map[string]any)
 	if errObj == nil || int(errObj["code"].(float64)) != codeParseError {
 		t.Fatalf("parse error = %v, want code %d", decoded["error"], codeParseError)
+	}
+	if decoded["id"] != "server-error" {
+		t.Fatalf("parse error id = %v, want server-error", decoded["id"])
 	}
 }
 
@@ -468,13 +593,27 @@ func TestGetWithoutSessionIsAProbe(t *testing.T) {
 	}
 }
 
+// A GET that names a session the app never opened is a not-found, the same
+// answer the reference's session manager gives before any stream is attempted.
+func TestGetWithUnknownSessionIsNotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(mcpSessionHeader, "unknown-session-id")
+	rec := httptest.NewRecorder()
+	newServer(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	assertTransportError(t, rec, "Session not found")
+}
+
 // The transport applies the reference's Accept handling: the two media types a
 // response may carry are supplied when the caller's Accept does not ask for an
 // event stream, so a missing header and a JSON-only header are both served. A
 // request that asks for an event stream while refusing JSON is refused before
 // it is dispatched, with the transport's exact error and a null id.
 func TestPostAcceptHeaderRequirement(t *testing.T) {
-	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+	const body = initializeBody
 	for name, accept := range map[string]string{
 		"missing":  "",
 		"json":     "application/json",
@@ -482,6 +621,7 @@ func TestPostAcceptHeaderRequirement(t *testing.T) {
 		"wildcard": "*/*",
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		if accept != "" {
 			req.Header.Set("Accept", accept)
 		}
@@ -493,6 +633,7 @@ func TestPostAcceptHeaderRequirement(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	rec := httptest.NewRecorder()
 	newServer(t).ServeHTTP(rec, req)
@@ -517,8 +658,8 @@ func TestPostAcceptHeaderRequirement(t *testing.T) {
 		decoded.Error.Message != "Not Acceptable: Client must accept both application/json and text/event-stream" {
 		t.Fatalf("406 error = %+v", decoded.Error)
 	}
-	if decoded.JSONRPC != "2.0" || string(decoded.ID) != "null" {
-		t.Fatalf("406 envelope must carry a null id: %s", rec.Body.String())
+	if decoded.JSONRPC != "2.0" || string(decoded.ID) != `"server-error"` {
+		t.Fatalf("406 envelope must carry the server-error id: %s", rec.Body.String())
 	}
 }
 
@@ -526,7 +667,8 @@ func TestPostAcceptHeaderRequirement(t *testing.T) {
 // identifier it presents.
 func TestInitializeCarriesSessionHeader(t *testing.T) {
 	server := newServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(initializeBody))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
@@ -538,6 +680,7 @@ func TestInitializeCarriesSessionHeader(t *testing.T) {
 		t.Fatal("initialize response must carry a session id")
 	}
 	next := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	next.Header.Set("Content-Type", "application/json")
 	next.Header.Set("Accept", "application/json, text/event-stream")
 	next.Header.Set(mcpSessionHeader, session)
 	rec2 := httptest.NewRecorder()
@@ -555,7 +698,7 @@ func TestGetOpensEventStream(t *testing.T) {
 	ts := httptest.NewServer(server)
 	defer ts.Close()
 
-	init, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	init, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(initializeBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +744,7 @@ func TestGetSuppliesMissingEventStreamAccept(t *testing.T) {
 	ts := httptest.NewServer(server)
 	defer ts.Close()
 
-	init, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	init, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(initializeBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,18 +796,207 @@ func TestDeleteTerminatesSession(t *testing.T) {
 	}
 }
 
-// initializeSession runs the handshake and returns the session it establishes.
+// initializeSession runs the handshake on the multi-bank mount and returns the
+// session it establishes.
 func initializeSession(t *testing.T, server *Server) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	return handshakeSession(t, server, "/mcp")
+}
+
+// handshakeSession runs the initialize handshake on a path and returns the
+// session it establishes. The handshake is the one call the transport serves
+// without a session, and it is where every other call's session comes from.
+func handshakeSession(t *testing.T, server *Server, path string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(initializeBody))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handshake status = %d: %s", rec.Code, rec.Body.String())
+	}
 	session := rec.Header().Get(mcpSessionHeader)
 	if session == "" {
 		t.Fatal("initialize response must carry a session id")
 	}
 	return session
+}
+
+// postRaw posts a body to a path with a session header already set (empty for
+// none) and returns the recorder, so a test can inspect a refusal.
+func postRaw(t *testing.T, server *Server, path, body, session string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if session != "" {
+		req.Header.Set(mcpSessionHeader, session)
+	}
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	return rec
+}
+
+// A call that is not the handshake must present a session. One that names none
+// is refused with the transport's missing-session error, and the fresh session
+// the request opened rides on the refusal: the reference's manager opens one
+// before the request is judged, so the identifier a client reads back names a
+// live session.
+func TestPostWithoutSessionIsRefused(t *testing.T) {
+	server := newServer(t)
+	rec := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	assertTransportError(t, rec, "Bad Request: Missing session ID")
+	fresh := rec.Header().Get(mcpSessionHeader)
+	if fresh == "" {
+		t.Fatal("a request that names no session still opens one, whose id rides on the response")
+	}
+	if again := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":3,"method":"ping"}`, fresh); again.Code != http.StatusOK {
+		t.Fatalf("the session minted on the refusal is not live: %d %s", again.Code, again.Body.String())
+	}
+}
+
+// A session serves only the handshake and ping until it is initialized: the
+// reference reports every other request as a parameter-validation failure, and
+// the handshake then brings the session into service.
+func TestSessionServesOnlyHandshakeAndPingBeforeInitialization(t *testing.T) {
+	server := newServer(t)
+	minted := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "")
+	session := minted.Header().Get(mcpSessionHeader)
+	if session == "" {
+		t.Fatal("the session-less request must open a session")
+	}
+
+	refused := sseMessage(t, postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`, session))
+	if errObj, _ := refused["error"].(map[string]any); errObj == nil ||
+		int(errObj["code"].(float64)) != codeInvalidParams || errObj["message"] != "Invalid request parameters" {
+		t.Fatalf("a request before initialization = %v, want the parameter-validation failure", refused)
+	}
+
+	pinged := sseMessage(t, postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":4,"method":"ping"}`, session))
+	if _, ok := pinged["result"].(map[string]any); !ok {
+		t.Fatalf("ping before initialization = %v, want a result", pinged)
+	}
+
+	if rec := postRaw(t, server, "/mcp", initializeBody, session); rec.Code != http.StatusOK {
+		t.Fatalf("handshake on the minted session = %d: %s", rec.Code, rec.Body.String())
+	}
+	served := sseMessage(t, postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":5,"method":"tools/list"}`, session))
+	if _, ok := served["result"].(map[string]any); !ok {
+		t.Fatalf("tools/list after the handshake = %v, want a result", served)
+	}
+}
+
+// The client's initialized notification completes the handshake for a session
+// whose initialize never ran, which is the other way the reference brings a
+// session into service.
+func TestInitializedNotificationCompletesTheHandshake(t *testing.T) {
+	server := newServer(t)
+	minted := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "")
+	session := minted.Header().Get(mcpSessionHeader)
+	note := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, session)
+	if note.Code != http.StatusAccepted {
+		t.Fatalf("initialized notification = %d, want 202: %s", note.Code, note.Body.String())
+	}
+	served := sseMessage(t, postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":5,"method":"tools/list"}`, session))
+	if _, ok := served["result"].(map[string]any); !ok {
+		t.Fatalf("tools/list after the notification = %v, want a result", served)
+	}
+}
+
+// The handshake is the one call the transport serves without a session, and it
+// echoes the session it establishes rather than refusing.
+func TestHandshakeNeedsNoSession(t *testing.T) {
+	server := newServer(t)
+	rec := postRaw(t, server, "/mcp", initializeBody, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(mcpSessionHeader) == "" {
+		t.Fatal("the handshake must establish a session")
+	}
+}
+
+// A session the app never opened is a not-found, and carries no session header
+// back: there is no transport to answer with one.
+func TestUnknownSessionIsNotFound(t *testing.T) {
+	server := newServer(t)
+	rec := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "unknown-session-id")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	assertTransportError(t, rec, "Session not found")
+	if got := rec.Header().Get(mcpSessionHeader); got != "" {
+		t.Fatalf("an unknown session must not be echoed back, got %q", got)
+	}
+}
+
+// A session the client already ended is reported as terminated, which the
+// transport tells apart from one that never existed.
+func TestTerminatedSessionIsToldApart(t *testing.T) {
+	server := newServer(t)
+	session := initializeSession(t, server)
+
+	del := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+	del.Header.Set(mcpSessionHeader, session)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, del)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	after := postRaw(t, server, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, session)
+	if after.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", after.Code, after.Body.String())
+	}
+	assertTransportError(t, after, "Not Found: Session has been terminated")
+	if got := after.Header().Get(mcpSessionHeader); got != session {
+		t.Fatalf("a terminated session is echoed back, got %q want %q", got, session)
+	}
+}
+
+// DELETE with no session cannot terminate anything: the transport reports a
+// missing session and still hands back the session the request opened.
+func TestDeleteWithoutSessionIsRefused(t *testing.T) {
+	server := newServer(t)
+	req := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	assertTransportError(t, rec, "Bad Request: Missing session ID")
+	if rec.Header().Get(mcpSessionHeader) == "" {
+		t.Fatal("the delete opens a session, whose id rides on the refusal")
+	}
+}
+
+// The two MCP apps keep their sessions apart, exactly as the reference gives
+// each its own session manager: a session from /mcp is unknown to
+// /mcp/{bank_id} and vice versa.
+func TestSessionsAreScopedToTheMount(t *testing.T) {
+	server := newServer(t)
+	if _, err := server.store.CreateBank(context.Background(), storage.Bank{BankID: "b2", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	multi := handshakeSession(t, server, "/mcp")
+	single := handshakeSession(t, server, "/mcp/b1")
+	if multi == single {
+		t.Fatal("the two apps must not share a session identifier")
+	}
+	for _, tc := range []struct{ name, path, session string }{
+		{"multi session on the single-bank mount", "/mcp/b1", multi},
+		{"single-bank session on the multi mount", "/mcp", single},
+	} {
+		rec := postRaw(t, server, tc.path, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, tc.session)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404: %s", tc.name, rec.Code, rec.Body.String())
+		}
+		assertTransportError(t, rec, "Session not found")
+	}
 }
 
 // The server-level allowlist hides every tool outside it, and a call to a
@@ -706,5 +1038,281 @@ func TestInstructionsAppendToRetainAndRecall(t *testing.T) {
 	}
 	if !sawRetain || !sawRecall {
 		t.Fatalf("instructions missing: retain=%v recall=%v", sawRetain, sawRecall)
+	}
+}
+
+// The handshake advertises the reference's capability set, including the tool
+// list-change notification and the UI extension, and echoes a supported
+// protocol revision beyond the previous ceiling.
+func TestInitializeCapabilitiesAndLatestVersion(t *testing.T) {
+	got := rpc(t, newServer(t), `{"jsonrpc":"2.0","id":1,"method":"initialize",
+		"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+	result, _ := got["result"].(map[string]any)
+	if result["protocolVersion"] != "2025-11-25" {
+		t.Fatalf("protocolVersion = %v, want 2025-11-25", result["protocolVersion"])
+	}
+	caps, _ := result["capabilities"].(map[string]any)
+	if caps == nil {
+		t.Fatalf("capabilities = %v", result["capabilities"])
+	}
+	tools, _ := caps["tools"].(map[string]any)
+	if tools["listChanged"] != true {
+		t.Fatalf("capabilities.tools = %v, want listChanged true", caps["tools"])
+	}
+	extensions, _ := caps["extensions"].(map[string]any)
+	if _, ok := extensions["io.modelcontextprotocol/ui"]; !ok {
+		t.Fatalf("capabilities.extensions = %v, want the UI extension", caps["extensions"])
+	}
+	for _, key := range []string{"experimental", "logging", "prompts", "resources"} {
+		if _, ok := caps[key]; !ok {
+			t.Fatalf("capabilities is missing %q: %v", key, caps)
+		}
+	}
+}
+
+// The handshake requires the client's capabilities and identity, which the
+// reference's request model rejects the absence of.
+func TestInitializeRequiresClientCapabilitiesAndInfo(t *testing.T) {
+	for name, params := range map[string]string{
+		"absent":            ``,
+		"empty":             `"params":{}`,
+		"no-client-info":    `"params":{"protocolVersion":"2025-11-25","capabilities":{}}`,
+		"no-capabilities":   `"params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"t","version":"1"}}`,
+		"no-client-version": `"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t"}}`,
+	} {
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize"`
+		if params != "" {
+			body += "," + params
+		}
+		body += "}"
+		got := rpc(t, newServer(t), body)
+		rpcError, ok := got["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: error = %v, want a validation failure", name, got["error"])
+		}
+		if int(rpcError["code"].(float64)) != codeInvalidParams {
+			t.Fatalf("%s: code = %v, want %d", name, rpcError["code"], codeInvalidParams)
+		}
+	}
+}
+
+// Every answered POST is a Server-Sent Events frame carrying the message, which
+// is the framing the reference transport returns.
+func TestPostAnswersWithAnEventStream(t *testing.T) {
+	server := newServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(mcpSessionHeader, handshakeSession(t, server, "/mcp"))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type = %q, want text/event-stream", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache, no-transform" {
+		t.Fatalf("cache-control = %q", cc)
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "event: message\ndata: ") || !strings.HasSuffix(body, "\n\n") {
+		t.Fatalf("frame = %q, want an event/data frame terminated by a blank line", body)
+	}
+}
+
+// A POST that does not declare the JSON media type is refused before it is
+// parsed, with the transport's plain-text error.
+func TestPostRequiresJSONContentType(t *testing.T) {
+	for name, contentType := range map[string]string{"missing": "", "text": "text/plain"} {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"ping"}`))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		rec := httptest.NewRecorder()
+		newServer(t).ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", name, rec.Code)
+		}
+		if body := strings.TrimSpace(rec.Body.String()); body != "Invalid Content-Type header" {
+			t.Fatalf("%s: body = %q", name, body)
+		}
+	}
+}
+
+// Every advertised tool carries the annotations, structured-output schema and
+// metadata the reference publishes, and the read-only and destructive sets are
+// exactly the reference's.
+func TestToolsListCarriesAnnotations(t *testing.T) {
+	got := rpc(t, newServer(t), `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	result, _ := got["result"].(map[string]any)
+	tools, _ := result["tools"].([]any)
+	for _, entry := range tools {
+		definition, _ := entry.(map[string]any)
+		name, _ := definition["name"].(string)
+		annotations, _ := definition["annotations"].(map[string]any)
+		if annotations == nil {
+			t.Fatalf("tool %q has no annotations", name)
+		}
+		if annotations["openWorldHint"] != false {
+			t.Fatalf("tool %q openWorldHint = %v", name, annotations["openWorldHint"])
+		}
+		switch {
+		case readOnlyMCPTools[name]:
+			if annotations["readOnlyHint"] != true {
+				t.Fatalf("read-only tool %q annotations = %v", name, annotations)
+			}
+		case destructiveMCPTools[name]:
+			if annotations["destructiveHint"] != true {
+				t.Fatalf("destructive tool %q annotations = %v", name, annotations)
+			}
+		default:
+			if annotations["readOnlyHint"] != false || annotations["destructiveHint"] != false {
+				t.Fatalf("write tool %q annotations = %v", name, annotations)
+			}
+		}
+		if _, ok := definition["outputSchema"].(map[string]any); !ok {
+			t.Fatalf("tool %q has no output schema", name)
+		}
+		meta, _ := definition["_meta"].(map[string]any)
+		if _, ok := meta["fastmcp"]; !ok {
+			t.Fatalf("tool %q has no _meta", name)
+		}
+	}
+}
+
+// The recall tool passes the compound tag filter, score floors, query anchor and
+// temporal window through to retrieval instead of accepting and ignoring them.
+func TestRecallArgumentsReachTheQuery(t *testing.T) {
+	request, err := recallRequest(map[string]any{
+		"query":               "x",
+		"bank_id":             "b1",
+		"tag_groups":          []any{map[string]any{"tags": []any{"t1"}, "match": "any_strict"}},
+		"min_scores":          map[string]any{"reranker": 0.5},
+		"query_timestamp":     "2024-01-15T10:30:00Z",
+		"temporal_window":     map[string]any{"start": "2024-01-01", "end": "2024-02-01"},
+		"tags_match":          "all",
+		"prefer_observations": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := buildRecallQuery("b1", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query.MinScores["reranker"] != 0.5 {
+		t.Fatalf("min_scores = %v", query.MinScores)
+	}
+	if len(query.TagGroups) != 1 || query.TagGroups[0].Tags[0] != "t1" || query.TagGroups[0].Match != "any_strict" {
+		t.Fatalf("tag_groups = %+v", query.TagGroups)
+	}
+	if query.QueryTimestamp == nil || query.QueryTimestamp.UTC().Format(time.RFC3339) != "2024-01-15T10:30:00Z" {
+		t.Fatalf("query_timestamp = %v", query.QueryTimestamp)
+	}
+	if query.Temporal == nil || !query.Temporal.HasStart || query.Temporal.Start.Format("2006-01-02") != "2024-01-01" {
+		t.Fatalf("temporal = %+v", query.Temporal)
+	}
+	if query.Budget != defaultRecallBudget || query.MaxTokens != defaultRecallMaxTokens {
+		t.Fatalf("defaults = budget %q max %d", query.Budget, query.MaxTokens)
+	}
+	if query.TagsMatch != "all" || !query.PreferObservations {
+		t.Fatalf("query = %+v", query)
+	}
+
+	// A malformed window is refused rather than silently matching nothing.
+	if _, err := buildRecallQuery("b1", memoryops.RecallRequest{
+		Query:          "x",
+		TemporalWindow: &memoryops.TemporalWindowRequest{Start: "nonsense", End: "2024-02-01"},
+	}); err == nil {
+		t.Fatal("a malformed temporal window must be refused")
+	}
+}
+
+// The tool roster's read-only and destructive annotations match the reference's
+// sets exactly, so a client's auto-approval decision cannot drift.
+func TestToolAnnotationSetsMatchReference(t *testing.T) {
+	wantRead := []string{
+		"recall", "reflect", "list_banks", "get_bank", "get_bank_stats", "list_mental_models",
+		"get_mental_model", "list_directives", "list_memories", "get_memory", "list_documents",
+		"get_document", "list_operations", "get_operation", "list_tags", "get_knowledge_base_tree",
+		"search_knowledge_base", "get_knowledge_page",
+	}
+	wantDestructive := []string{
+		"delete_bank", "clear_memories", "clear_mental_model", "delete_mental_model",
+		"delete_directive", "delete_document", "invalidate_memory", "delete_knowledge_node",
+	}
+	for _, name := range wantRead {
+		if !readOnlyMCPTools[name] {
+			t.Errorf("tool %q must be read-only", name)
+		}
+	}
+	for _, name := range wantDestructive {
+		if !destructiveMCPTools[name] {
+			t.Errorf("tool %q must be destructive", name)
+		}
+	}
+	if len(readOnlyMCPTools) != len(wantRead) || len(destructiveMCPTools) != len(wantDestructive) {
+		t.Fatalf("annotation sets: read %d destructive %d", len(readOnlyMCPTools), len(destructiveMCPTools))
+	}
+}
+
+// A multi-bank request scoped by the X-Bank-Id header resolves its bank from
+// the header when a tool omits bank_id, and keeps the multi-bank roster.
+func TestSessionBankFromHeader(t *testing.T) {
+	server := newServer(t)
+	session := handshakeSession(t, server, "/mcp")
+
+	post := func(body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Bank-Id", "from-header")
+		req.Header.Set(mcpSessionHeader, session)
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(sseData(t, rec)), &decoded); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+		}
+		return decoded
+	}
+
+	// A write with no bank_id lands in the header's bank.
+	got := post(`{"jsonrpc":"2.0","id":1,"method":"tools/call",
+		"params":{"name":"sync_retain","arguments":{"content":"header scoped"}}}`)
+	result, _ := got["result"].(map[string]any)
+	if result["isError"] == true {
+		t.Fatalf("sync_retain failed: %v", result)
+	}
+	listed := post(`{"jsonrpc":"2.0","id":2,"method":"tools/call",
+		"params":{"name":"list_memories","arguments":{}}}`)
+	payload := decodeTextPayload(t, listed["result"].(map[string]any))
+	if items, _ := payload["items"].([]any); len(items) != 1 {
+		t.Fatalf("header bank items = %v, want the one just written", payload)
+	}
+
+	// The roster stays the multi-bank one, because the bank came from a header
+	// and not from the path.
+	roster := post(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
+	tools, _ := roster["result"].(map[string]any)["tools"].([]any)
+	if len(tools) != 39 {
+		t.Fatalf("header-scoped roster has %d tools, want the multi-bank 39", len(tools))
+	}
+
+	// With neither a path bank nor a header, the request is scoped to the
+	// default bank.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_memories","arguments":{}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(mcpSessionHeader, session)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(sseData(t, rec)), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	result, _ = decoded["result"].(map[string]any)
+	if result["isError"] == true {
+		t.Fatalf("a default-bank read failed: %v", result)
 	}
 }

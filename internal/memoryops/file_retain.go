@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -181,13 +182,18 @@ func isImageUpload(filename, contentType string) bool {
 func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
 	if h.FileUploadDisabled {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "file upload is not enabled"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
+			"File upload API is disabled. Set HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true to enable."))
+		return
+	}
+	// A body that is not multipart cannot carry the two required parts, which
+	// the reference reports as a validation error rather than a sentence.
+	if !isMultipartForm(r) {
+		httpx.WriteValidationFailure(w, missingFileRetainParts())
 		return
 	}
 	// The body is bounded before it is parsed: a multipart handler reads the
 	// upload into memory, so an unbounded body is a way to exhaust the process.
-	// The bound admits the configured attachment count at the configured size,
-	// plus room for the surrounding form fields.
 	if limit := h.uploadBodyLimit(); limit > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 	}
@@ -197,16 +203,21 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 				h.uploadTooLargeMessage()))
 			return
 		}
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "request body must be a multipart upload"))
+		httpx.WriteValidationFailure(w, missingFileRetainParts())
 		return
 	}
-	if err := rejectRequestLevelFileFields(r); err != nil {
-		httpx.WriteValidationFor(w, r, err)
+	// The `request` part is required: only a present-but-unusable one is the
+	// JSON refusal, an absent one is a missing-field validation error.
+	rawRequest, present := firstFormValue(r, "request")
+	if !present {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.Missing([]string{"body", "request"}, nil),
+		}})
 		return
 	}
-	fileRequest, failure := h.parseFileRetainRequest(r)
-	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	fileRequest, err := h.parseFileRetainRequest(rawRequest)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, err)
 		return
 	}
 	files := r.MultipartForm.File["files"]
@@ -216,11 +227,11 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 				len(fileRequest.metadata), len(files))))
 		return
 	}
-	if h.MaxAttachments > 0 && len(files) > h.MaxAttachments {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
-			fmt.Sprintf("the request carries %d files, more than the %d-file limit. Split the upload across several requests.",
-				len(files), h.MaxAttachments)))
-		return
+	if len(fileRequest.parser) > 0 {
+		if err := h.validateParserChain(fileRequest.parser, "request-level parser"); err != nil {
+			httpx.WriteErrorFor(w, r, err)
+			return
+		}
 	}
 	if h.MaxFileBatchCount > 0 && len(files) > h.MaxFileBatchCount {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
@@ -242,21 +253,20 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 	items := make([]RetainItem, 0, len(files))
 	for index, header := range files {
 		meta := fileRequest.filesMeta(index)
+		chain := resolveParserChain(meta.Parser, fileRequest.parser, h.effectiveParserChain())
+		if err := h.validateParserChain(chain, "file '"+header.Filename+"'"); err != nil {
+			httpx.WriteErrorFor(w, r, err)
+			return
+		}
 		// The document is decided before the bytes are stored: an attachment row
 		// keys on the document that owns it, so the id has to exist first. It is
-		// the caller's when they named one, and a minted identifier otherwise —
-		// the same rule the inline-attachment ingress follows.
+		// the caller's when they named one, and a minted `file_<uuid>` otherwise.
 		documentID := meta.DocumentID
 		if documentID == "" {
-			documentID = storage.NewDocumentID()
+			documentID = "file_" + storage.NewDocumentID()
 		}
-		item, err := h.itemFromUpload(r, bankID, documentID, header, resolveParserChain(meta.Parser, fileRequest.parser, h.effectiveParserChain()))
+		item, err := h.itemFromUpload(r, bankID, documentID, header, chain)
 		if err != nil {
-			var oversize oversizeUploadError
-			if errors.As(err, &oversize) {
-				httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, oversize.Error()))
-				return
-			}
 			var unsupported unsupportedUploadError
 			if errors.As(err, &unsupported) {
 				httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, unsupported.Error()))
@@ -269,35 +279,56 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	if len(items) == 0 {
-		httpx.WriteValidationFor(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.Missing([]string{"body", "files"}, map[string]any{}),
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.Missing([]string{"body", "files"}, nil),
 		}})
 		return
 	}
-	req := RetainRequest{Items: items, Async: true}
-	// Reject an update mode placed per file, which the file route does not accept.
-	if field := updateModeInItems(items); field != "" {
-		httpx.WriteValidationFor(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.ValueError([]string{"body"}, field,
-				"'update_mode' is not supported by /files/retain, which always processes asynchronously"),
-		}})
-		return
+	// One operation per file: the reference submits each file as its own
+	// conversion operation, so a caller tracks each upload separately.
+	overrides := httpx.TenantOverridesFrom(r)
+	operationIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		write := toStorageRetain(bankID, RetainRequest{Items: []RetainItem{item}, Async: true})
+		// The bank's retain configuration applies to a converted upload too, so
+		// the file route extracts with the same prompt and chunking as the JSON
+		// route. The tenant's overrides layer under the bank's own. As on the
+		// JSON route, a configuration that cannot be read refuses the upload
+		// rather than storing it without the bank's Memory Defense policy.
+		result, bank, err := h.executeRetain(r.Context(), bankID, overrides, write)
+		if err != nil {
+			httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+			return
+		}
+		operationIDs = append(operationIDs, result.OperationID)
+		h.enqueuePostRetainConsolidation(r.Context(), bankID, bank)
 	}
-	write := toStorageRetain(bankID, req)
-	// The bank's retain configuration applies to a converted upload too, so the
-	// file route extracts with the same prompt and chunking as the JSON route.
-	// The tenant's overrides layer under the bank's own. As on the JSON route, a
-	// configuration that cannot be read refuses the upload rather than storing
-	// it without the bank's Memory Defense policy.
-	result, bank, err := h.executeRetain(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
-		return
+	httpx.WriteJSON(w, http.StatusOK, FileRetainResponse{OperationIDs: operationIDs})
+}
+
+// missingFileRetainParts is the validation failure for a body that cannot
+// carry the route's two required parts.
+func missingFileRetainParts() *httpx.ValidationFailure {
+	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.Missing([]string{"body", "files"}, nil),
+		httpx.Missing([]string{"body", "request"}, nil),
+	}}
+}
+
+// isMultipartForm reports whether the request declares a multipart body.
+func isMultipartForm(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return err == nil && mediaType == "multipart/form-data"
+}
+
+// firstFormValue returns a form field's value and whether the field was present
+// at all, so a required-but-empty part is distinguishable from a missing one.
+func firstFormValue(r *http.Request, name string) (string, bool) {
+	values, ok := r.MultipartForm.Value[name]
+	if !ok || len(values) == 0 {
+		return "", false
 	}
-	h.enqueuePostRetainConsolidation(r.Context(), bankID, bank)
-	httpx.WriteJSONFor(w, r, http.StatusOK, FileRetainResponse{
-		OperationIDs: result.OperationIDs,
-	})
+	return values[0], true
 }
 
 // parsedFileRetainRequest carries the optional request field.
@@ -326,37 +357,95 @@ func resolveParserChain(perFile, requestLevel ParserSelection, fallback []string
 	return fallback
 }
 
-// parseFileRetainRequest reads the optional `request` form field and validates
-// every requested parser against the allowlist, reporting a validation failure
-// for a parser the deployment does not offer.
-func (h *Handlers) parseFileRetainRequest(r *http.Request) (parsedFileRetainRequest, *httpx.ValidationFailure) {
-	raw := strings.TrimSpace(r.FormValue("request"))
-	if raw == "" {
-		return parsedFileRetainRequest{}, nil
+// parseFileRetainRequest decodes the required `request` form field. The field
+// is a validated JSON string on the reference, so a JSON or shape error is its
+// 400 "Invalid request JSON" refusal rather than a nested-model validation
+// item, and per-file fields placed at the JSON root are refused the same way.
+func (h *Handlers) parseFileRetainRequest(raw string) (parsedFileRetainRequest, *httpx.HTTPError) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return parsedFileRetainRequest{}, invalidRequestJSONError("Invalid JSON", err.Error())
+	}
+	if root == nil {
+		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error",
+			"Input should be a valid dictionary or instance of FileRetainRequest")
+	}
+	if message := misplacedFileFieldMessage(root); message != "" {
+		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error", message)
 	}
 	var body FileRetainRequest
 	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		return parsedFileRetainRequest{}, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.ValidationItem("json_invalid", []string{"body", "request"}, "JSON decode error", nil,
-				map[string]any{"error": err.Error()}),
-		}}
-	}
-	selections := []ParserSelection{body.Parser}
-	for _, meta := range body.FilesMetadata {
-		selections = append(selections, meta.Parser)
-	}
-	for _, selection := range selections {
-		for _, parser := range selection {
-			if parser == "" || h.allowedParser(parser) {
-				continue
-			}
-			return parsedFileRetainRequest{}, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-				httpx.ValueError([]string{"body", "request", "parser"}, parser,
-					"Parser(s) not available: "+parser),
-			}}
-		}
+		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error", err.Error())
 	}
 	return parsedFileRetainRequest{parser: body.Parser, metadata: body.FilesMetadata}, nil
+}
+
+// fileRetainPerFileFields are the FileRetainMetadata members that are not
+// members of FileRetainRequest: naming one at the request's JSON root is a
+// misplaced per-file field. `parser` belongs to both models, so it is legal in
+// either position.
+var fileRetainPerFileFields = []string{"context", "document_id", "metadata", "strategy", "tags", "timestamp"}
+
+// misplacedFileFieldMessage reports the per-file fields a request JSON placed at
+// its root, in the reference's message shape, or "" when the root is clean.
+func misplacedFileFieldMessage(root map[string]json.RawMessage) string {
+	misplaced := make([]string, 0, len(fileRetainPerFileFields))
+	for _, name := range fileRetainPerFileFields {
+		if raw, ok := root[name]; ok && !isJSONNull(raw) {
+			misplaced = append(misplaced, name)
+		}
+	}
+	problems := make([]string, 0, 2)
+	if len(misplaced) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"Per-file fields (%s) must be placed in the corresponding 'files_metadata' entry",
+			strings.Join(misplaced, ", ")))
+	}
+	if raw, ok := root["update_mode"]; ok && !isJSONNull(raw) {
+		problems = append(problems, "'update_mode' is not supported by /files/retain, which always processes asynchronously")
+	}
+	return strings.Join(problems, "; ")
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null.
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// invalidRequestJSONError renders the reference's refusal for the `request`
+// form field: a pydantic validation error string wrapped in a 400 detail.
+func invalidRequestJSONError(kind, message string) *httpx.HTTPError {
+	return httpx.NewHTTPError(httpx.KindBadRequest,
+		"Invalid request JSON: 1 validation error for FileRetainRequest\n  "+kind+", "+message)
+}
+
+// validateParserChain refuses a parser chain naming a parser the deployment does
+// not offer, in the reference's 400 shape: the scope the chain came from and the
+// available parsers.
+func (h *Handlers) validateParserChain(chain []string, context string) *httpx.HTTPError {
+	disallowed := make([]string, 0, len(chain))
+	for _, parser := range chain {
+		if parser == "" || h.allowedParser(parser) {
+			continue
+		}
+		disallowed = append(disallowed, parser)
+	}
+	if len(disallowed) == 0 {
+		return nil
+	}
+	return httpx.NewHTTPError(httpx.KindBadRequest,
+		fmt.Sprintf("Parser(s) not available (%s): %s. Available: %s",
+			context, pythonStringList(disallowed), pythonStringList(h.parserAllowlist())))
+}
+
+// pythonStringList renders a string list the way the reference's f-string does,
+// so the refusal text carries the same names and quoting.
+func pythonStringList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // applyFileMetadata overlays per-file metadata onto the retain item.
@@ -384,29 +473,6 @@ func applyFileMetadata(item *RetainItem, meta FileRetainMeta) {
 	}
 }
 
-// rejectRequestLevelFileFields rejects per-file fields placed at the request
-// level instead of nested per file.
-func rejectRequestLevelFileFields(r *http.Request) *httpx.ValidationFailure {
-	for _, name := range []string{"content", "document_id", "timestamp", "metadata"} {
-		if r.FormValue(name) != "" {
-			return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-				httpx.ValueError([]string{"body", name}, nil,
-					"per-file fields must be placed in the corresponding 'files_metadata' entry"),
-			}}
-		}
-	}
-	return nil
-}
-
-func updateModeInItems(items []RetainItem) string {
-	for _, item := range items {
-		if item.UpdateMode != "" {
-			return item.UpdateMode
-		}
-	}
-	return ""
-}
-
 // itemFromUpload reads one uploaded file, converts it to markdown through the
 // requested parser chain, records the original bytes content-addressed under
 // the owning bank and document, and returns the retain item that carries the
@@ -415,32 +481,18 @@ func updateModeInItems(items []RetainItem) string {
 // leaves a blob cached by key, which the next upload of the same content
 // reuses rather than duplicating.
 func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, header *multipart.FileHeader, parserChain []string) (RetainItem, error) {
-	// The declared size is checked before the bytes are read, so an oversize
-	// upload is refused rather than loaded and then rejected.
-	if h.MaxAttachmentBytes > 0 && header.Size > h.MaxAttachmentBytes {
-		return RetainItem{}, oversizeUploadError{
-			filename: header.Filename, size: header.Size, limit: h.MaxAttachmentBytes,
-		}
-	}
+	// The reference bounds only the whole batch on this route (the conversion
+	// batch size and byte total, enforced by the caller); it places no per-file
+	// size cap, so a single large upload is accepted as long as the batch bound
+	// holds.
 	file, err := header.Open()
 	if err != nil {
 		return RetainItem{}, err
 	}
 	defer func() { _ = file.Close() }()
-	// A lying Content-Length cannot get past the read either: the reader is
-	// capped at the limit, so the slice never grows past it.
-	var reader io.Reader = file
-	if h.MaxAttachmentBytes > 0 {
-		reader = io.LimitReader(file, h.MaxAttachmentBytes+1)
-	}
-	data, err := io.ReadAll(reader)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return RetainItem{}, err
-	}
-	if h.MaxAttachmentBytes > 0 && int64(len(data)) > h.MaxAttachmentBytes {
-		return RetainItem{}, oversizeUploadError{
-			filename: header.Filename, size: int64(len(data)), limit: h.MaxAttachmentBytes,
-		}
 	}
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
@@ -525,19 +577,6 @@ const multipartOverheadBytes = 1 << 20
 func (h *Handlers) uploadTooLargeMessage() string {
 	return fmt.Sprintf("the upload exceeds the %d-file limit of %s per file.",
 		h.MaxAttachments, humanBytes(h.MaxAttachmentBytes))
-}
-
-// oversizeUploadError reports one upload larger than the configured per-file
-// limit.
-type oversizeUploadError struct {
-	filename string
-	size     int64
-	limit    int64
-}
-
-func (e oversizeUploadError) Error() string {
-	return fmt.Sprintf("file %s is %s, exceeding the %s limit for a single attachment.",
-		e.filename, humanBytes(e.size), humanBytes(e.limit))
 }
 
 // humanBytes renders a byte count in the units the limit was configured in.

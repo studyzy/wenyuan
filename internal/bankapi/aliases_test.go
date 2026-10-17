@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -103,6 +104,30 @@ func TestAliasDemoteReturnsToBankID(t *testing.T) {
 	// A body with no primary field is the reference's required-field error.
 	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/owner/aliases/first", `{}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("missing primary = %d, want 422", rec.Code)
+	}
+}
+
+// An alias create body that omits `alias` is the framework's missing-field
+// item; an explicit null for the non-nullable `primary` is a bool_type item
+// rather than a silently-ignored zero.
+func TestAliasCreateBodyValidation(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "owner", Name: "Owner"})
+
+	rec := post(t, mux, "/v1/default/banks/owner/aliases", `{"primary":false}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing alias = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"loc":["body","alias"]`) {
+		t.Fatalf("missing-alias item must name the field: %s", rec.Body.String())
+	}
+
+	rec = post(t, mux, "/v1/default/banks/owner/aliases", `{"alias":"x","primary":null}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("null primary = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"bool_type"`) || !strings.Contains(rec.Body.String(), `"loc":["body","primary"]`) {
+		t.Fatalf("null primary must be a bool_type item on the field: %s", rec.Body.String())
 	}
 }
 
@@ -248,7 +273,7 @@ func TestBankConfigReadAlwaysWriteGated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bank.Trait(storage.DispositionKeyEmpathy) != 5 || bank.Mission != "live" {
+	if bank.Config["disposition_empathy"] != 5 || bank.Config["reflect_mission"] != "live" {
 		t.Fatalf("config write must apply the overrides: %+v", bank)
 	}
 }

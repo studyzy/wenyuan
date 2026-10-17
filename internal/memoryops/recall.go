@@ -18,6 +18,75 @@ const defaultBudgetLevel = storage.BudgetMid
 // one.
 const defaultTagMatchMode = storage.TagsMatchAny
 
+// Include token-budget defaults. The reference declares each as a plain field
+// default, so an omitted budget is bounded rather than unlimited: 4096 for the
+// fact list, 500 for entity observations, 8192 for chunks, 4096 total and -1
+// (unlimited) per observation for source facts.
+const (
+	defaultRecallMaxTokens                 = 4096
+	defaultEntityMaxTokens                 = 500
+	defaultChunkMaxTokens                  = 8192
+	defaultSourceFactsMaxTokens            = 4096
+	defaultSourceFactsPerObservationTokens = -1
+)
+
+// recallInclude is the resolved include configuration: whether each side
+// channel is on and the token budget that bounds it.
+type recallInclude struct {
+	entities                 bool
+	entityTokens             int
+	chunks                   bool
+	chunkTokens              int
+	sourceFacts              bool
+	sourceFactTokens         int
+	sourceFactPerObservation int
+}
+
+// recallMaxTokens returns the request's fact token budget, defaulting an
+// omitted one to the reference's 4096. An explicit non-positive budget means no
+// facts, which the reference also returns for 0 or a negative value.
+func recallMaxTokens(req RecallRequest) int {
+	if req.MaxTokens != nil {
+		return *req.MaxTokens
+	}
+	return defaultRecallMaxTokens
+}
+
+// resolveRecallInclude applies the reference's include defaults: the entities
+// sub-object is on unless explicitly nulled, chunks and source facts are off
+// unless supplied, and each channel's omitted token budget falls back to the
+// reference's own default.
+func resolveRecallInclude(include *IncludeRequest) recallInclude {
+	resolved := recallInclude{
+		entityTokens:             defaultEntityMaxTokens,
+		chunkTokens:              defaultChunkMaxTokens,
+		sourceFactTokens:         defaultSourceFactsMaxTokens,
+		sourceFactPerObservation: defaultSourceFactsPerObservationTokens,
+	}
+	if include == nil {
+		resolved.entities = true
+		return resolved
+	}
+	resolved.entities = include.Entities != nil
+	if include.Entities != nil && include.Entities.MaxTokens != nil {
+		resolved.entityTokens = *include.Entities.MaxTokens
+	}
+	resolved.chunks = include.Chunks != nil
+	if include.Chunks != nil && include.Chunks.MaxTokens != nil {
+		resolved.chunkTokens = *include.Chunks.MaxTokens
+	}
+	resolved.sourceFacts = include.SourceFacts != nil
+	if include.SourceFacts != nil {
+		if include.SourceFacts.MaxTokens != nil {
+			resolved.sourceFactTokens = *include.SourceFacts.MaxTokens
+		}
+		if include.SourceFacts.MaxTokensPerObservation != nil {
+			resolved.sourceFactPerObservation = *include.SourceFacts.MaxTokensPerObservation
+		}
+	}
+	return resolved
+}
+
 // Recall serves the memory recall route: a single synchronous JSON read with no
 // streaming variant.
 func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
@@ -29,14 +98,14 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		// JSON, so "not valid JSON" would send the caller looking in the wrong
 		// place.
 		if errors.Is(err, ErrMalformedTagGroup) {
-			httpx.WriteValidationFor(w, r, tagGroupFailure())
+			httpx.WriteValidationFailure(w, tagGroupFailure())
 			return
 		}
-		httpx.WriteValidationFor(w, r, httpx.BodyDecodeFailure(err, body))
+		httpx.WriteValidationFailure(w, recallDecodeFailure(r, &req, body, err))
 		return
 	}
-	if failure := ValidateRecall(req); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	if failure := ValidateRecall(req, requestBodyObject(body)); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	if h.RerankerScoresByRankPosition && hasRerankerFloor(req.MinScores) {
@@ -92,7 +161,7 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		h.writeReadError(w, r, err)
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, BuildRecallResponse(result, req))
+	httpx.WriteJSON(w, http.StatusOK, BuildRecallResponse(result, req))
 }
 
 // buildRecallQuery resolves a validated request into the storage recall query,
@@ -120,13 +189,14 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		}
 		window = temporalWindowFromQuery(req.Query, reference)
 	}
+	inc := resolveRecallInclude(req.Include)
 	query := storage.RecallQuery{
 		BankID:             bankID,
 		Query:              req.Query,
 		Types:              req.Types,
 		PreferObservations: req.PreferObservations,
 		Budget:             budgetOrDefault(req.Budget),
-		MaxTokens:          derefInt(req.MaxTokens),
+		MaxTokens:          recallMaxTokens(req),
 		MinScores:          req.MinScores,
 		Tags:               req.Tags,
 		TagsMatch:          tagsMatchOrDefault(req.TagsMatch),
@@ -136,6 +206,9 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		StrategyBoosts:     h.RecallStrategyBoosts,
 		Recency:            h.RecallRecency,
 		DisabledArms:       h.DisabledRecallArms,
+		IncludeEntities:    inc.entities,
+		IncludeChunks:      inc.chunks,
+		IncludeSourceFacts: inc.sourceFacts,
 	}
 	if h.Reranker != nil {
 		query.Rerank = h.Reranker.Rerank
@@ -146,16 +219,6 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		query.RerankRankPosition = h.RerankerScoresByRankPosition
 		query.RerankPrunesCandidates = h.RerankerPrunesCandidates
 		query.RerankSeedFromFused = h.RerankerSeedFromFused
-	}
-	if req.Include != nil {
-		// Entity states default to included: the include decoder leaves Entities
-		// non-nil unless the caller explicitly nulls it, so an omitted key still
-		// means include. Chunks and source facts stay excluded unless supplied.
-		query.IncludeEntities = req.Include.Entities != nil
-		query.IncludeChunks = req.Include.Chunks != nil
-		query.IncludeSourceFacts = req.Include.SourceFacts != nil
-	} else {
-		query.IncludeEntities = true
 	}
 	return query, nil
 }
@@ -177,14 +240,6 @@ func parseQueryTimestamp(value string) (*time.Time, error) {
 func hasRerankerFloor(minScores map[string]float64) bool {
 	_, ok := minScores["reranker"]
 	return ok
-}
-
-// derefInt returns the pointed-to int or zero when absent.
-func derefInt(value *int) int {
-	if value == nil {
-		return 0
-	}
-	return *value
 }
 
 // budgetOrDefault returns the budget level, defaulting to mid.

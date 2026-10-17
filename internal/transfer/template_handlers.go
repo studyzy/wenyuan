@@ -3,11 +3,14 @@ package transfer
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/banktemplate"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -37,26 +40,49 @@ func (h *Handlers) ImportTemplate(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
 	}
+	// dry_run is a strict boolean query parameter: the reference validates it
+	// before the handler body runs, so an unparseable value is a
+	// request-validation failure rather than a silent non-dry run.
+	dryRun, _, failure := queryBool(r, "dry_run")
+	if failure != nil {
+		writeValidationFailure(w, r, failure)
+		return
+	}
 	var manifest banktemplate.Manifest
 	if err := decodeJSONBody(r, maxTemplateBodyBytes, &manifest); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "Template schema validation failed: "+err.Error()))
+		// A body that is not JSON (or is truncated) fails before the schema is
+		// consulted, so the reference reports the parser's own message rather
+		// than a schema-validation prefix.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
 		return
 	}
 	if err := validateTemplateManifest(manifest); err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
 		return
 	}
-	dryRun := isTruthy(httpx.Query(r, "dry_run"))
 	if dryRun {
-		httpx.WriteJSONFor(w, r, http.StatusOK, dryRunResponse(bankID, manifest))
+		httpx.WriteJSON(w, http.StatusOK, dryRunResponse(bankID, manifest))
+		return
+	}
+	// A template import changes the whole bank's config; the reference only
+	// refuses a scoped caller on the applying path, not the dry run.
+	if httpx.RefuseBankWideIfScoped(w, r, "import a bank template") {
 		return
 	}
 	result, err := h.applyTemplateManifest(r.Context(), bankID, manifest)
 	if err != nil {
+		// A bank deleted between the import's authorization and its write is a
+		// retryable conflict, exactly as the reference reports it, rather than a
+		// not-found the caller would read as "no such bank".
+		if errors.Is(err, storage.ErrBankNotFound) {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindConflict, fmt.Sprintf(
+				"Bank '%s' changed or was deleted during template import; retry the import.", bankID)))
+			return
+		}
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, result)
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 // validateTemplateManifest enforces the rules the reference applies beyond JSON
@@ -133,6 +159,11 @@ func (h *Handlers) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A template export carries the whole bank's config, an admin read the
+	// reference refuses to a tag-scoped caller.
+	if httpx.RefuseBankWideIfScoped(w, r, "export the bank template") {
+		return
+	}
 	bank, err := h.Store.GetBank(r.Context(), bankID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -150,17 +181,21 @@ func (h *Handlers) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	manifest := banktemplate.Manifest{Version: banktemplate.CurrentTemplateVersion}
-	if bankConfig := bankTemplateConfig(bank); len(bankConfig) > 0 {
+	if bankConfig := bankTemplateConfig(bank); bankConfig != nil {
 		manifest.Bank = bankConfig
 	}
 	for _, model := range models {
+		// The reference constructs its trigger model from the stored value on
+		// every export, so a stored trigger that model rejects — a foreign-written
+		// or otherwise corrupt row — fails the export with a server error rather
+		// than being emitted unvalidated.
+		if failure := mentalmodels.ValidateTriggerObject(model.Trigger); failure != nil {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, failure.Error()))
+			return
+		}
 		tags := model.Tags
 		if tags == nil {
 			tags = []string{}
-		}
-		trigger := model.Trigger
-		if trigger == nil {
-			trigger = map[string]any{}
 		}
 		maxTokens := model.MaxTokens
 		if maxTokens == 0 {
@@ -172,7 +207,7 @@ func (h *Handlers) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 			SourceQuery: model.SourceQuery,
 			Tags:        tags,
 			MaxTokens:   maxTokens,
-			Trigger:     trigger,
+			Trigger:     bankTemplateTrigger(model.Trigger),
 		})
 	}
 	for _, directive := range directives {
@@ -188,7 +223,7 @@ func (h *Handlers) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 			Tags:     tags,
 		})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, manifest)
+	httpx.WriteJSON(w, http.StatusOK, manifest)
 }
 
 // emptyTemplateResponse is the zero response with every list a non-nil empty
@@ -204,13 +239,142 @@ func emptyTemplateResponse(bankID string) BankTemplateImportResponse {
 	}
 }
 
+// bankTemplateFields are the configurable fields a template carries, in the
+// reference model's declaration order. A stored field outside this set is not
+// part of a template and is dropped on export. The names are the template
+// model's own wire contract — the same fields internal/bankapi/config_keys.go
+// lets a bank write.
+var bankTemplateFields = []string{
+	"reflect_mission",
+	"retain_mission",
+	"retain_extraction_mode",
+	"retain_custom_instructions",
+	"retain_chunk_size",
+	"retain_structured_chunk_size",
+	"enable_observations",
+	"observations_mission",
+	"enable_text_search",
+	"enable_temporal_retrieval",
+	"enable_graph_retrieval",
+	"enable_reranking",
+	"disposition_skepticism",
+	"disposition_literalism",
+	"disposition_empathy",
+	"entity_labels",
+	"entities_allow_free_form",
+	"retain_default_strategy",
+	"retain_strategies",
+	"retain_chunk_batch_size",
+	"retain_max_attachments_per_chunk",
+	"mcp_enabled_tools",
+	"consolidation_llm_batch_size",
+	"consolidation_source_facts_max_tokens",
+	"consolidation_source_facts_max_tokens_per_observation",
+	"max_observations_per_scope",
+	"observation_scope_limits",
+	"consolidation_strategies",
+	"reflect_source_facts_max_tokens",
+	"knowledge_page_default_trigger",
+	"reflect_default_options",
+	"mental_model_min_refresh_interval_seconds",
+	"llm_gemini_safety_settings",
+	"recall_budget_function",
+	"recall_budget_fixed_low",
+	"recall_budget_fixed_mid",
+	"recall_budget_fixed_high",
+	"recall_budget_adaptive_low",
+	"recall_budget_adaptive_mid",
+	"recall_budget_adaptive_high",
+	"recall_budget_min",
+	"recall_budget_max",
+	"audit_log_enabled",
+	"store_document_text",
+	"enable_auto_consolidation",
+	"consolidation_max_memories_per_round",
+	"consolidation_llm_parallelism",
+	"recall_include_chunks",
+	"recall_max_tokens",
+	"recall_chunks_max_tokens",
+	"memory_defense",
+}
+
+// bankTemplateFieldSet is bankTemplateFields as a membership set.
+var bankTemplateFieldSet = func() map[string]struct{} {
+	set := make(map[string]struct{}, len(bankTemplateFields))
+	for _, field := range bankTemplateFields {
+		set[field] = struct{}{}
+	}
+	return set
+}()
+
+// triggerTemplateFields are the trigger members the reference model declares,
+// in declaration order. Every one is exported — null where unset — because the
+// reference dumps the whole model rather than only what was stored.
+var triggerTemplateFields = []string{
+	"budget",
+	"mode",
+	"refresh_after_consolidation",
+	"refresh_cron",
+	"min_refresh_interval_seconds",
+	"fact_types",
+	"exclude_mental_models",
+	"exclude_mental_model_ids",
+	"tags_match",
+	"tag_groups",
+	"include_chunks",
+	"recall_max_tokens",
+	"recall_chunks_max_tokens",
+	"reflect_search_observations_max_tokens",
+	"reflect_search_observations_include_entities",
+	"response_schema",
+	"keep_trace",
+}
+
+// triggerTemplateDefaults are the trigger members the reference model gives a
+// non-null default. The rest default to null.
+var triggerTemplateDefaults = map[string]any{
+	"mode":                        "full",
+	"refresh_after_consolidation": false,
+	"exclude_mental_models":       false,
+	"keep_trace":                  false,
+}
+
+// bankTemplateTrigger renders a stored trigger as the reference exports it: the
+// full model, with the stored value where one exists and the model's default
+// (or null) elsewhere. A stored member the model does not declare is dropped.
+func bankTemplateTrigger(stored map[string]any) map[string]any {
+	out := make(map[string]any, len(triggerTemplateFields))
+	for _, field := range triggerTemplateFields {
+		out[field] = nil
+	}
+	for key, value := range stored {
+		if _, known := out[key]; known {
+			out[key] = value
+		}
+	}
+	for key, value := range triggerTemplateDefaults {
+		if out[key] == nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
 // bankTemplateConfig is the bank's own configuration as a template carries it:
-// the stored configuration overrides, plus the disposition traits and reflect
-// mission that live on the bank row. Only what the bank actually set is named,
-// so an unset field stays absent rather than being materialized as its default.
+// every template field, with the bank's stored value where it has one and null
+// elsewhere. A bank with no stored configuration at all exports no config
+// section (nil), matching the reference. A stored value the template model
+// rejects — for example a disposition outside 1..5, written by an older version
+// or another writer — is dropped rather than failing the whole export.
 func bankTemplateConfig(bank storage.Bank) map[string]any {
-	out := map[string]any{}
+	out := make(map[string]any, len(bankTemplateFields))
 	for key, value := range bank.Config {
+		if _, known := bankTemplateFieldSet[key]; !known {
+			continue
+		}
+		if !templateValueAllowed(key, value) {
+			continue
+		}
 		out[key] = value
 	}
 	for _, trait := range []struct{ field, key string }{
@@ -218,12 +382,54 @@ func bankTemplateConfig(bank storage.Bank) map[string]any {
 		{"disposition_literalism", "literalism"},
 		{"disposition_empathy", "empathy"},
 	} {
-		if value, ok := bank.Disposition[trait.key]; ok {
+		if value, ok := bank.Disposition[trait.key]; ok && templateValueAllowed(trait.field, value) {
 			out[trait.field] = value
 		}
 	}
 	if bank.Mission != "" {
 		out["reflect_mission"] = bank.Mission
 	}
+	if len(out) == 0 {
+		return nil
+	}
+	for _, field := range bankTemplateFields {
+		if _, present := out[field]; !present {
+			out[field] = nil
+		}
+	}
 	return out
+}
+
+// templateValueAllowed reports whether a stored config value satisfies the
+// bounds the template model declares for its field. Fields without a declared
+// bound accept any value here; the bounds that exist are the disposition traits
+// (1..5) and the minimum refresh interval (>= 0).
+func templateValueAllowed(field string, value any) bool {
+	switch field {
+	case "disposition_skepticism", "disposition_literalism", "disposition_empathy":
+		number, ok := wholeNumber(value)
+		return ok && number >= 1 && number <= 5
+	case "mental_model_min_refresh_interval_seconds":
+		number, ok := wholeNumber(value)
+		return ok && number >= 0
+	default:
+		return true
+	}
+}
+
+// wholeNumber reports whether a decoded JSON value is an integer, returning it.
+func wholeNumber(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		if typed == math.Trunc(typed) {
+			return int64(typed), true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
 }

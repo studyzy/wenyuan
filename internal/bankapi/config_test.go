@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -136,6 +137,44 @@ func TestBankConfigWriteValidation(t *testing.T) {
 	}
 }
 
+// The config write distinguishes three rejection messages, as the reference
+// does: a credential field, a server-level (static) field, and a truly unknown
+// field — each naming every offending key, all at once.
+func TestBankConfigWriteRejectionMessages(t *testing.T) {
+	mux, _ := configServer(t)
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"credential field",
+			`{"updates":{"llm_api_key":"x"}}`,
+			"Cannot set credential fields via API: ['llm_api_key']. Credentials (API keys, base URLs) must be set at server level only.",
+		},
+		{
+			"static field",
+			`{"updates":{"database_url":"x"}}`,
+			"Cannot override static (server-level) fields: ['database_url'].",
+		},
+		{
+			"several unknown keys",
+			`{"updates":{"totally_unknown":1,"another_unknown":2}}`,
+			"Unknown configuration fields: ['another_unknown', 'totally_unknown']. Valid configurable fields: ",
+		},
+	}
+	for _, tc := range cases {
+		rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body %s)", tc.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s: body = %s, want it to contain %q", tc.name, rec.Body.String(), tc.want)
+		}
+	}
+}
+
 // The operational fields on the bank write body are applied through the config
 // path rather than parsed and ignored.
 func TestBankWriteAppliesOperationalConfig(t *testing.T) {
@@ -186,5 +225,109 @@ func TestBankWriteAppliesOperationalConfig(t *testing.T) {
 	}
 	if created.Config["enable_reranking"] != false || created.Config["retain_chunk_size"] != 64 {
 		t.Fatalf("created bank config = %v", created.Config)
+	}
+}
+
+// The reflect mission and the disposition traits written through the bank
+// routes are configuration overrides as well as bank-row values: the reference
+// routes them through get_config_updates, so `GET /config` reports them in
+// `overrides` and the resolved config carries them.
+func TestBankWriteStoresMissionAndDispositionAsOverrides(t *testing.T) {
+	mux, store := newTestServer(t)
+
+	create := `{"name":"M","mission":"be terse",
+		"disposition":{"skepticism":5,"literalism":2,"empathy":1}}`
+	if rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/bm", create); rec.Code != http.StatusOK {
+		t.Fatalf("put bank = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	bank, err := store.GetBank(context.TODO(), "bm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"reflect_mission":        "be terse",
+		"disposition_skepticism": 5,
+		"disposition_literalism": 2,
+		"disposition_empathy":    1,
+	}
+	for key, expected := range want {
+		if got := bank.Config[key]; got != expected {
+			t.Fatalf("config[%q] = %#v, want %#v (config=%v)", key, got, expected, bank.Config)
+		}
+	}
+
+	// The flat fields take precedence over the deprecated object, and the
+	// partial update stores only what it carried.
+	patch := `{"disposition":{"skepticism":1,"literalism":1,"empathy":1},"disposition_empathy":4}`
+	if rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/bm", patch); rec.Code != http.StatusOK {
+		t.Fatalf("patch bank = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	patched, err := store.GetBank(context.TODO(), "bm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.Config["disposition_empathy"] != 4 {
+		t.Fatalf("flat field must win: config = %v", patched.Config)
+	}
+	if patched.Config["disposition_skepticism"] != 1 {
+		t.Fatalf("object member must be stored: config = %v", patched.Config)
+	}
+}
+
+// The configuration read reports only the bank's stored overrides. The legacy
+// disposition and mission columns are not consulted, so a bank whose columns
+// carry values (the schema's neutral default, or a profile write) still reports
+// an empty overrides map and a null disposition — which is what the reference's
+// config endpoint answers, since it reads its config column and nothing else.
+func TestBankConfigReadIgnoresLegacyDispositionColumns(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One",
+		Disposition: map[string]int{storage.DispositionKeySkepticism: 4},
+		Mission:     "legacy mission"})
+	h := NewHandlers(store).WithConfigAPI(true).
+		WithConfigDefaults(PublicConfigDefaults(config.FromEnv(func(string) (string, bool) { return "", false })))
+	mux := newMux(h)
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks/b1/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config read = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg := decodeConfig(t, rec.Body.Bytes())
+	if len(cfg.Overrides) != 0 {
+		t.Fatalf("overrides must ignore the legacy columns: %v", cfg.Overrides)
+	}
+	for _, key := range []string{"disposition_skepticism", "reflect_mission"} {
+		if value, present := cfg.Config[key]; !present || value != nil {
+			t.Fatalf("config[%q] = %#v, want null (present=%v)", key, value, present)
+		}
+	}
+}
+
+// A bank whose stored configuration is invalid fails the read the way the
+// reference's resolve_full_config does: a 500 naming the field, not a 200 with
+// a configuration that could not retain.
+func TestBankConfigReadRejectsInvalidResolvedConfig(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
+	bad := map[string]any{"retain_chunk_size": 0}
+	if _, err := store.UpdateBank(context.TODO(), "b1", storage.BankPatch{Config: &bad}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store).WithConfigAPI(true).
+		WithConfigDefaults(PublicConfigDefaults(config.FromEnv(func(string) (string, bool) { return "", false })))
+	mux := newMux(h)
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks/b1/config", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("invalid stored config = %d, want 500 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Detail != "retain_chunk_size must be >= 1, got 0" {
+		t.Fatalf("detail = %q, want the reference's message", body.Detail)
 	}
 }

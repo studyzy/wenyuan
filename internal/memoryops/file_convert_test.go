@@ -139,10 +139,11 @@ func uploadWithRequest(t *testing.T, mux *http.ServeMux, filename, body, request
 	if _, err := part.Write([]byte(body)); err != nil {
 		t.Fatal(err)
 	}
-	if request != "" {
-		if err := writer.WriteField("request", request); err != nil {
-			t.Fatal(err)
-		}
+	if request == "" {
+		request = "{}"
+	}
+	if err := writer.WriteField("request", request); err != nil {
+		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)

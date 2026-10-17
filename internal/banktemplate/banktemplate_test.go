@@ -58,25 +58,30 @@ func TestLoadParsesValidManifest(t *testing.T) {
 	}
 }
 
-// BankPatch routes the row-backed fields to their own columns and leaves every
-// other key a configuration override.
-func TestBankPatchRoutesTraitsAndMission(t *testing.T) {
+// BankPatch routes every key — the disposition traits and the reflect mission
+// included — to the bank's config overrides, which is where the reference's
+// template import persists the whole bank section.
+func TestBankPatchRoutesEveryKeyToConfig(t *testing.T) {
 	patch := BankPatch(map[string]any{
 		"disposition_skepticism": float64(5),
 		"reflect_mission":        "help",
 		"retain_chunk_size":      float64(300),
 	})
-	if patch.Disposition == nil || (*patch.Disposition)["skepticism"] != 5 {
-		t.Fatalf("disposition = %#v", patch.Disposition)
+	if patch.Disposition != nil || patch.Mission != nil {
+		t.Fatalf("no field belongs on the legacy columns: %+v", patch)
 	}
-	if patch.Mission == nil || *patch.Mission != "help" {
-		t.Fatalf("mission = %#v", patch.Mission)
+	if patch.Config == nil {
+		t.Fatal("every key must land in the config overrides")
 	}
-	if patch.Config == nil || (*patch.Config)["retain_chunk_size"] == nil {
-		t.Fatalf("config = %#v", patch.Config)
+	want := map[string]any{
+		"disposition_skepticism": float64(5),
+		"reflect_mission":        "help",
+		"retain_chunk_size":      float64(300),
 	}
-	if _, leaked := (*patch.Config)["disposition_skepticism"]; leaked {
-		t.Fatalf("a trait leaked into the config overrides: %#v", patch.Config)
+	for key, value := range want {
+		if got := (*patch.Config)[key]; got != value {
+			t.Fatalf("config[%q] = %#v, want %#v", key, got, value)
+		}
 	}
 }
 
@@ -107,6 +112,44 @@ func TestCreateHookProvisionsAndIsNilWhenUnset(t *testing.T) {
 	}
 	if len(directives) != 1 {
 		t.Fatalf("directives = %+v", directives)
+	}
+}
+
+// A template value the freshly-created bank already stored as a configuration
+// override is left alone, so the create request's own fields win; a template
+// value the bank does not carry is applied into the config column — the only
+// place the template's disposition traits and reflect mission now live.
+func TestCreateHookKeepsStoredConfigAndAppliesTheRest(t *testing.T) {
+	store := newStore(t)
+	stored := map[string]any{"disposition_skepticism": 1}
+	if _, err := store.UpdateBank(context.Background(), "b1", storage.BankPatch{Config: &stored}); err != nil {
+		t.Fatal(err)
+	}
+	hook := CreateHook(store, map[string]any{
+		"version": "1",
+		"bank": map[string]any{
+			"disposition_skepticism": 5,
+			"reflect_mission":        "help",
+		},
+	})
+	if hook == nil {
+		t.Fatal("a valid manifest must yield a hook")
+	}
+	if err := hook(context.Background(), "b1"); err != nil {
+		t.Fatal(err)
+	}
+	bank, err := store.GetBank(context.Background(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bank.Config["disposition_skepticism"]; got != 1 {
+		t.Fatalf("disposition_skepticism = %#v, want the stored 1 to win", got)
+	}
+	if got := bank.Config["reflect_mission"]; got != "help" {
+		t.Fatalf("reflect_mission = %#v, want the template's help", got)
+	}
+	if bank.Mission != "" {
+		t.Fatalf("the legacy mission column must stay unset: %q", bank.Mission)
 	}
 }
 
@@ -180,5 +223,99 @@ func TestApplyWritesConfigAndResources(t *testing.T) {
 	}
 	if len(directives) != 1 {
 		t.Fatalf("directives = %+v", directives)
+	}
+}
+
+// A manifest that omits tags says nothing about them, so re-applying it must
+// not clear the tags a previous apply stored.
+func TestApplyResourcesPreservesTagsWhenManifestOmitsThem(t *testing.T) {
+	store := newStore(t)
+	withTags := Manifest{MentalModels: []MentalModel{
+		{ID: "m", Name: "M", SourceQuery: "q", Tags: []string{"imported"}},
+	}}
+	if _, err := ApplyResources(context.Background(), store, "b1", withTags); err != nil {
+		t.Fatal(err)
+	}
+	withoutTags := Manifest{MentalModels: []MentalModel{{ID: "m", Name: "M", SourceQuery: "q"}}}
+	again, err := ApplyResources(context.Background(), store, "b1", withoutTags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.MentalModelsUpdated) != 0 || len(again.OperationIDs) != 0 {
+		t.Fatalf("an omitted tag list must not update the model: %+v", again)
+	}
+	model, err := store.GetMentalModel(context.Background(), "b1", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Tags) != 1 || model.Tags[0] != "imported" {
+		t.Fatalf("stored tags = %v, want [imported]", model.Tags)
+	}
+}
+
+// A model created from a manifest that names no trigger stores the reference's
+// full default trigger object, not an empty one.
+func TestApplyResourcesStoresDefaultTrigger(t *testing.T) {
+	store := newStore(t)
+	manifest := Manifest{MentalModels: []MentalModel{{ID: "m", Name: "M", SourceQuery: "q"}}}
+	if _, err := ApplyResources(context.Background(), store, "b1", manifest); err != nil {
+		t.Fatal(err)
+	}
+	model, err := store.GetMentalModel(context.Background(), "b1", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Trigger["mode"] != "full" || model.Trigger["refresh_after_consolidation"] != false ||
+		model.Trigger["keep_trace"] != false {
+		t.Fatalf("stored trigger = %#v, want the reference's full default", model.Trigger)
+	}
+	if len(model.Trigger) != 17 {
+		t.Fatalf("stored trigger has %d members, want the full model", len(model.Trigger))
+	}
+}
+
+// The structural messages are the reference's Pydantic output, served verbatim:
+// the dotted loc, the "Value error, " prefix on a custom validator, and the
+// duplicate-list message that the model's own list validator raises. A
+// duplicate is a structural failure, not one of the semantic checks.
+func TestValidateStructuralMessagesMatchReference(t *testing.T) {
+	model := func(id string, maxTokens int) MentalModel {
+		return MentalModel{ID: id, Name: "n", SourceQuery: "q", MaxTokens: maxTokens}
+	}
+	cases := []struct {
+		name     string
+		manifest Manifest
+		want     string
+	}{
+		{"bad id", Manifest{Version: "1", MentalModels: []MentalModel{model("BAD", 2048)}},
+			"mental_models.0.id: Value error, Mental model id 'BAD' must be alphanumeric lowercase with hyphens, starting with a letter or digit."},
+		{"max tokens below the floor", Manifest{Version: "1", MentalModels: []MentalModel{model("m", 10)}},
+			"mental_models.0.max_tokens: Input should be greater than or equal to 256"},
+		{"max tokens above the ceiling", Manifest{Version: "1", MentalModels: []MentalModel{model("m", 9000)}},
+			"mental_models.0.max_tokens: Input should be less than or equal to 8192"},
+		{"duplicate model ids", Manifest{Version: "1", MentalModels: []MentalModel{model("m", 2048), model("m", 2048)}},
+			"mental_models: Value error, Duplicate mental model ids: ['m']"},
+		{"duplicate directive names", Manifest{Version: "1", Directives: []Directive{{Name: "d", Content: "c"}, {Name: "d", Content: "c2"}}},
+			"directives: Value error, Duplicate directive names: ['d']"},
+		{"bank disposition below the floor", Manifest{Version: "1", Bank: map[string]any{"disposition_empathy": 0}},
+			"bank.disposition_empathy: Input should be greater than or equal to 1"},
+		{"non-numeric version", Manifest{Version: "abc"},
+			"version: Value error, version must be a numeric string, got 'abc'"},
+	}
+	for _, tc := range cases {
+		structural, _ := Validate(tc.manifest)
+		if len(structural) != 1 || structural[0] != tc.want {
+			t.Errorf("%s: structural = %q, want [%q]", tc.name, structural, tc.want)
+		}
+	}
+}
+
+// The extraction-mode message renders the accepted modes the way Python's
+// tuple repr does, because the reference interpolates its own tuple.
+func TestValidateExtractionModeMessageMatchesReference(t *testing.T) {
+	_, semantic := Validate(Manifest{Version: "1", Bank: map[string]any{"retain_extraction_mode": "bogus"}})
+	want := "bank.retain_extraction_mode: must be one of ('concise', 'verbose', 'custom', 'verbatim', 'chunks'), got 'bogus'"
+	if len(semantic) != 1 || semantic[0] != want {
+		t.Fatalf("semantic = %q, want [%q]", semantic, want)
 	}
 }

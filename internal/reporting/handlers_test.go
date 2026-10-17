@@ -3,6 +3,7 @@ package reporting
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,6 +123,18 @@ func TestObservabilityRoutes(t *testing.T) {
 	if summary.BankID != bank {
 		t.Fatalf("stats bank = %q", summary.BankID)
 	}
+	// The breakdown fields stay in the shape but are deliberately empty objects
+	// (never null), as the reference guarantees.
+	body := stats.Body.String()
+	for _, want := range []string{`"links_by_fact_type":{}`, `"links_breakdown":{}`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stats body missing %s: %s", want, body)
+		}
+	}
+	// refresh=true is accepted and answered.
+	if rec := send(mux, http.MethodGet, base+"/stats?refresh=true", ""); rec.Code != http.StatusOK {
+		t.Fatalf("stats refresh: %d, body = %s", rec.Code, rec.Body.String())
+	}
 
 	for _, path := range []string{
 		"/stats/memories-timeseries",
@@ -164,7 +177,7 @@ func TestMemorySubRoutes(t *testing.T) {
 	if rec := send(mux, http.MethodPatch, base+"/memories/"+id, "not json"); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("malformed update: %d, want 422", rec.Code)
 	}
-	if rec := send(mux, http.MethodGet, base+"/memories/does-not-exist", ""); rec.Code != http.StatusNotFound {
+	if rec := send(mux, http.MethodGet, base+"/memories/00000000-0000-0000-0000-000000000000", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown memory: %d, want 404", rec.Code)
 	}
 }
@@ -201,7 +214,7 @@ func TestKnowledgeBaseRoutes(t *testing.T) {
 	if folder.Code != http.StatusCreated {
 		t.Fatalf("create folder: %d, body = %s", folder.Code, folder.Body.String())
 	}
-	page := send(mux, http.MethodPost, base+"/knowledge-base/pages", `{"name":"Deploy","content":"steps"}`)
+	page := send(mux, http.MethodPost, base+"/knowledge-base/pages", `{"name":"Deploy","source_query":"steps"}`)
 	if page.Code != http.StatusCreated {
 		t.Fatalf("create page: %d, body = %s", page.Code, page.Body.String())
 	}
@@ -222,7 +235,7 @@ func TestKnowledgeBaseRoutes(t *testing.T) {
 		if rec := send(mux, http.MethodGet, base+"/knowledge-base/pages/"+created.ID, ""); rec.Code != http.StatusOK {
 			t.Fatalf("get page: %d, body = %s", rec.Code, rec.Body.String())
 		}
-		if rec := send(mux, http.MethodPatch, base+"/knowledge-base/nodes/"+created.ID, `{"content":"updated"}`); rec.Code != http.StatusOK {
+		if rec := send(mux, http.MethodPatch, base+"/knowledge-base/nodes/"+created.ID, `{"name":"Deployed"}`); rec.Code != http.StatusOK {
 			t.Fatalf("update node: %d, body = %s", rec.Code, rec.Body.String())
 		}
 		if rec := send(mux, http.MethodDelete, base+"/knowledge-base/nodes/"+created.ID, ""); rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
@@ -326,7 +339,7 @@ func TestHealthLLMShape(t *testing.T) {
 func TestDuplicateKnowledgePageRejected(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank
-	body := `{"name":"Deploy","content":"steps"}`
+	body := `{"name":"Deploy","source_query":"steps"}`
 	if rec := send(mux, http.MethodPost, base+"/knowledge-base/pages", body); rec.Code != http.StatusCreated {
 		t.Fatalf("first page: %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -340,7 +353,8 @@ func TestDuplicateKnowledgePageRejected(t *testing.T) {
 }
 
 // The prompt preview renders the real prompt of each operation rather than an
-// empty stub, and reports the operations it can render.
+// empty stub, partitioned into per-setting blocks, and reports the bank's
+// configured strategies (none, for an unconfigured bank).
 func TestPromptPreviewRendersRealPrompts(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank
@@ -370,19 +384,31 @@ func TestPromptPreviewRendersRealPrompts(t *testing.T) {
 			if len(message.Blocks) == 0 {
 				t.Fatalf("%s: a message carried no blocks", operation)
 			}
-			if strings.TrimSpace(message.Blocks[0].Text) == "" {
-				t.Fatalf("%s: an empty block was rendered", operation)
+			// The active blocks concatenate back to the message that is sent, so
+			// at least one must be active.
+			active := false
+			for _, block := range message.Blocks {
+				if block.Active {
+					active = true
+				}
+				// No block may be a bare copy of the whole message: the point of
+				// partitioning is that each names its setting in its field/heading.
+				if block.Text == "" && block.Field == "" && block.Section == "" && block.Heading == "" {
+					t.Fatalf("%s: an unattributed empty block was rendered", operation)
+				}
+			}
+			if !active {
+				t.Fatalf("%s: no active block in the %s message", operation, message.Role)
 			}
 		}
 		if !sawSystem || !sawUser {
 			t.Fatalf("%s: expected both a system and a user message", operation)
 		}
-		if len(payload.Strategies) != 3 {
-			t.Fatalf("%s: strategies = %v", operation, payload.Strategies)
+		if len(payload.Strategies) != 0 {
+			t.Fatalf("%s: strategies = %v, want none for an unconfigured bank", operation, payload.Strategies)
 		}
 	}
-	// The retain render carries the extraction schema, so a caller can see the
-	// shape it will get back.
+	// The retain render carries the extraction schema; consolidation sends none.
 	rec := send(mux, http.MethodPost, base+"/prompts/preview", `{"operation":"retain"}`)
 	var retained PromptPreviewResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &retained); err != nil {
@@ -391,15 +417,53 @@ func TestPromptPreviewRendersRealPrompts(t *testing.T) {
 	if retained.ResponseSchema == nil {
 		t.Fatal("the retain preview must carry its response schema")
 	}
+	if len(retained.RunSettings) == 0 {
+		t.Fatal("the retain preview must report its chunk-size run settings")
+	}
+	rec = send(mux, http.MethodPost, base+"/prompts/preview", `{"operation":"consolidation"}`)
+	var consolidated PromptPreviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &consolidated); err != nil {
+		t.Fatal(err)
+	}
+	if consolidated.ResponseSchema != nil {
+		t.Fatalf("consolidation preview schema = %v, want null", consolidated.ResponseSchema)
+	}
 }
 
-// An unknown operation is refused rather than answered with an invented prompt.
+// An unknown operation is refused with the framework's Literal rejection rather
+// than answered with an invented prompt.
 func TestPromptPreviewRejectsUnknownOperation(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank
 	rec := send(mux, http.MethodPost, base+"/prompts/preview", `{"operation":"summarise"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "literal_error") {
+		t.Fatalf("body = %s, want a literal_error", rec.Body.String())
+	}
+}
+
+// The preview route is the one bank-scoped route that does NOT catch the
+// reference's OperationValidationError: an unknown bank escapes to the generic
+// handler, which answers 500 with the wrapped text rather than the route's 404.
+func TestPromptPreviewUnknownBankAnswersUncaughtValidationError(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	const missing = "no-such-bank"
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("bank_id", missing)
+			handler(w, r)
+		})
+	})
+	rec := send(mux, http.MethodPost, "/v1/default/banks/"+missing+"/prompts/preview", `{"operation":"retain"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	want := `{"detail":"Operation validation failed: Bank 'no-such-bank' not found"}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body = %s, want %s", got, want)
 	}
 }
 
@@ -476,6 +540,18 @@ func scopedHandler(t *testing.T, store storage.Store) http.Handler {
 // caller's tag scope from it.
 func sendKeyed(handler http.Handler, apiKey, method, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// sendKeyedBody is sendKeyed with a JSON body.
+func sendKeyedBody(handler http.Handler, apiKey, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
@@ -594,5 +670,417 @@ func TestKnowledgePageTriggerLayersProcessTenantAndBank(t *testing.T) {
 	}
 	if request["refresh_cron"] != "*/5 * * * *" {
 		t.Fatalf("the request's trigger did not win: %+v", request)
+	}
+}
+
+// asHTTPError passes an error that already carries a status through untouched,
+// names the storage sentinels a route can hit, and treats anything it does not
+// name as a server fault.
+func TestReportingErrorMapping(t *testing.T) {
+	conflict := httpx.NewHTTPError(httpx.KindConflict, "A page named 'x' already exists in this folder")
+	cases := []struct {
+		err    error
+		expect int
+	}{
+		{conflict, http.StatusConflict},
+		{storage.ErrBankNotFound, http.StatusNotFound},
+		{storage.ErrMemoryNotFound, http.StatusNotFound},
+		{storage.ErrKnowledgeNodeNotFound, http.StatusNotFound},
+		{storage.ErrAuditEntryNotFound, http.StatusNotFound},
+		{storage.ErrMentalModelNotFound, http.StatusNotFound},
+		{storage.ErrInvalidMentalModelSubtype, http.StatusBadRequest},
+		{storage.ErrEmbeddingDimensions, http.StatusBadRequest},
+		{storage.ErrInvalidBankID, http.StatusBadRequest},
+		{storage.ErrAliasConflict, http.StatusConflict},
+		{storage.ErrWritesUnavailable, http.StatusServiceUnavailable},
+		{errors.New("storage exploded"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		if got := asHTTPError(tc.err); got == nil || got.Status != tc.expect {
+			t.Fatalf("error %v mapped to %+v, want status %d", tc.err, got, tc.expect)
+		}
+	}
+	if asHTTPError(nil) != nil {
+		t.Fatal("a nil error must map to nil")
+	}
+}
+
+// The retain preview resolves the effective strategy (the caller's, else the
+// bank's default), reports the bank's configured strategy names, and skips the
+// render entirely for a bank whose mode stores chunks verbatim.
+func TestPromptPreviewResolvesStrategyAndChunks(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	config := map[string]any{
+		"retain_extraction_mode":  "chunks",
+		"retain_default_strategy": "verbose_one",
+		"retain_strategies": map[string]any{
+			"verbose_one": map[string]any{"retain_extraction_mode": "verbose"},
+			"terse_one":   map[string]any{"retain_mission": "Only terse facts."},
+		},
+	}
+	if _, err := store.UpdateBank(ctx, bank, storage.BankPatch{Config: &config}); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	preview := func(body string) PromptPreviewResponse {
+		rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/prompts/preview", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview %s: %d, body = %s", body, rec.Code, rec.Body.String())
+		}
+		var payload PromptPreviewResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+
+	// No strategy named: the bank's default applies, overriding the mode to
+	// verbose, so the preview renders a prompt and echoes the default's name.
+	resolved := preview(`{"operation":"retain"}`)
+	if resolved.Strategy == nil || *resolved.Strategy != "verbose_one" {
+		t.Fatalf("strategy = %v, want the bank's default", resolved.Strategy)
+	}
+	if len(resolved.Strategies) != 2 || resolved.Strategies[0] != "terse_one" || resolved.Strategies[1] != "verbose_one" {
+		t.Fatalf("strategies = %v, want the sorted configured names", resolved.Strategies)
+	}
+	if resolved.SkippedReason != nil {
+		t.Fatalf("a verbose strategy must render a prompt, got skipped: %v", *resolved.SkippedReason)
+	}
+
+	// A named strategy that leaves the mode on chunks skips the render, and the
+	// effective name is echoed.
+	skipped := preview(`{"operation":"retain","strategy":"terse_one"}`)
+	if skipped.Strategy == nil || *skipped.Strategy != "terse_one" {
+		t.Fatalf("strategy = %v, want the requested name", skipped.Strategy)
+	}
+	if skipped.SkippedReason == nil || !strings.Contains(*skipped.SkippedReason, "Chunks mode") {
+		t.Fatalf("skipped_reason = %v, want the chunks-mode explanation", skipped.SkippedReason)
+	}
+	if len(skipped.Messages) != 1 || skipped.Messages[0].Role != "system" || len(skipped.Messages[0].Blocks) != 1 {
+		t.Fatalf("chunks preview messages = %+v, want one system block", skipped.Messages)
+	}
+	block := skipped.Messages[0].Blocks[0]
+	if block.Field != "retain_extraction_mode" || block.Active || block.Value == nil || *block.Value != "chunks" || !block.Editable {
+		t.Fatalf("chunks mode block = %+v", block)
+	}
+	if len(skipped.RunSettings) != 2 {
+		t.Fatalf("run_settings = %+v, want the two chunk sizes", skipped.RunSettings)
+	}
+
+	// Consolidation has no strategies: neither the response strategy nor the
+	// list carries one, even when the caller names one.
+	consolidated := preview(`{"operation":"consolidation","strategy":"verbose_one"}`)
+	if consolidated.Strategy != nil {
+		t.Fatalf("consolidation strategy = %v, want null", consolidated.Strategy)
+	}
+	if len(consolidated.Strategies) != 0 {
+		t.Fatalf("consolidation strategies = %v, want none", consolidated.Strategies)
+	}
+	if consolidated.ResponseSchema != nil {
+		t.Fatalf("consolidation response_schema = %v, want null", consolidated.ResponseSchema)
+	}
+}
+
+// With a label vocabulary configured, the entity-labels section is split around
+// the one line entities_allow_free_form decides, so the flag is reported as its
+// own block rather than hidden inside the labels text.
+func TestPromptPreviewSplitsEntityLabelsSection(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	config := map[string]any{
+		"retain_extraction_mode":   "concise",
+		"entities_allow_free_form": false,
+		"entity_labels": []any{
+			map[string]any{"key": "pedagogy", "type": "value", "values": []any{map[string]any{"value": "scaffolding"}, map[string]any{"value": "inquiry"}}},
+			map[string]any{"key": "interest", "type": "text"},
+		},
+	}
+	if _, err := store.UpdateBank(ctx, bank, storage.BankPatch{Config: &config}); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/prompts/preview", `{"operation":"retain"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload PromptPreviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var labels, freeForm int
+	for _, message := range payload.Messages {
+		for _, block := range message.Blocks {
+			switch block.Field {
+			case "entity_labels":
+				labels++
+				if block.Kind != "complex" || !block.Editable {
+					t.Fatalf("entity_labels block = %+v", block)
+				}
+			case "entities_allow_free_form":
+				freeForm++
+				if block.Kind != "boolean" || block.Value == nil || *block.Value != "false" || !block.Editable {
+					t.Fatalf("entities_allow_free_form block = %+v", block)
+				}
+				if !strings.Contains(block.Text, "labels-only mode") {
+					t.Fatalf("free-form block text = %q", block.Text)
+				}
+			}
+		}
+	}
+	if labels < 2 || freeForm != 1 {
+		t.Fatalf("labels blocks = %d, free-form blocks = %d, want the section split into two label blocks and one flag line", labels, freeForm)
+	}
+}
+
+// The retain preview reports the reference's extraction response JSON schema —
+// the pydantic document of the model the deployment config selects — verbatim,
+// and reports none for the operations that declare no response model.
+func TestPromptPreviewServesExtractionResponseSchema(t *testing.T) {
+	type schemaResponse struct {
+		ResponseSchema json.RawMessage `json:"response_schema"`
+	}
+	// previewFor builds a server whose retain switches are the ones under test
+	// and whose bank carries the given config, then returns the retain preview.
+	previewFor := func(t *testing.T, config map[string]any, causal *bool, optionalDimensions bool) json.RawMessage {
+		t.Helper()
+		store := storage.NewMemoryStore("public")
+		ctx := context.Background()
+		if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+			t.Fatal(err)
+		}
+		if config != nil {
+			if _, err := store.UpdateBank(ctx, bank, storage.BankPatch{Config: &config}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mux := http.NewServeMux()
+		handlers := NewHandlers(store)
+		handlers.RetainExtractCausalLinks = causal
+		handlers.RetainOptionalFactDimensions = optionalDimensions
+		handlers.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+			if !strings.Contains(pattern, "{bank_id}") {
+				mux.HandleFunc(method+" "+pattern, handler)
+				return
+			}
+			mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+				r.SetPathValue("bank_id", bank)
+				handler(w, r)
+			})
+		})
+		rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/prompts/preview", `{"operation":"retain"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var payload schemaResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.ResponseSchema
+	}
+	// expected reads the committed document and reports the title it announces.
+	expected := func(t *testing.T, name string) (json.RawMessage, string) {
+		t.Helper()
+		data, err := extractionResponseSchemas.ReadFile("extraction_schemas/" + name + ".json")
+		if err != nil {
+			t.Fatalf("missing committed schema %s: %v", name, err)
+		}
+		var head struct {
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(data, &head); err != nil {
+			t.Fatalf("%s is not a JSON document: %v", name, err)
+		}
+		return json.RawMessage(data), head.Title
+	}
+	falseValue := false
+	cases := []struct {
+		name        string
+		config      map[string]any
+		causal      *bool
+		optional    bool
+		wantVariant string
+	}{
+		{name: "concise default", wantVariant: "retain"},
+		{name: "custom falls back to the concise model", config: map[string]any{"retain_extraction_mode": "custom"}, wantVariant: "retain"},
+		{name: "verbose", config: map[string]any{"retain_extraction_mode": "verbose"}, wantVariant: "retain_verbose"},
+		{name: "verbatim", config: map[string]any{"retain_extraction_mode": "verbatim"}, wantVariant: "retain_verbatim"},
+		{name: "causal links disabled", causal: &falseValue, wantVariant: "retain_no_causal"},
+		{name: "optional fact dimensions", optional: true, wantVariant: "retain_optional_dimensions"},
+		{name: "verbose without causal links", config: map[string]any{"retain_extraction_mode": "verbose"}, causal: &falseValue, wantVariant: "retain_no_causal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, title := expected(t, tc.wantVariant)
+			got := previewFor(t, tc.config, tc.causal, tc.optional)
+			if string(got) != string(want) {
+				t.Fatalf("response_schema is not the committed %s document:\n got %s\nwant %s", tc.wantVariant, got, want)
+			}
+			var head struct {
+				Title string `json:"title"`
+			}
+			if err := json.Unmarshal(got, &head); err != nil {
+				t.Fatal(err)
+			}
+			if head.Title != title {
+				t.Fatalf("response_schema title = %q, want %q", head.Title, title)
+			}
+		})
+	}
+	// The reference serves the pydantic model's document, so the shipped default
+	// must announce the model's own name and reference its extracted-fact model,
+	// not a set of Go field names.
+	want, _ := expected(t, "retain")
+	if !strings.Contains(string(want), `"title":"FactExtractionResponse"`) {
+		t.Fatalf("the default document does not name the reference model: %s", want)
+	}
+	if !strings.Contains(string(want), `"$ref":"#/$defs/ExtractedFact"`) {
+		t.Fatalf("the default document does not reference its fact model: %s", want)
+	}
+	if got := previewFor(t, nil, nil, false); !strings.Contains(string(got), `"$defs"`) {
+		t.Fatalf("the served schema is not the pydantic document: %s", got)
+	}
+	// Consolidation has no response model, so its preview reports none — and so
+	// does reflect, whose schema is per-request rather than config-selected.
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		if !strings.Contains(pattern, "{bank_id}") {
+			mux.HandleFunc(method+" "+pattern, handler)
+			return
+		}
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("bank_id", bank)
+			handler(w, r)
+		})
+	})
+	for _, operation := range []string{"consolidation", "reflect"} {
+		rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/prompts/preview", `{"operation":"`+operation+`"}`)
+		var payload schemaResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(payload.ResponseSchema)) != "null" {
+			t.Fatalf("%s preview response_schema = %s, want null", operation, payload.ResponseSchema)
+		}
+	}
+}
+
+// A bank-wide observation clear against an unknown bank is an empty clear, not a
+// not-found: the reference takes no bank-existence check on this route, so the
+// delete simply matches no rows.
+func TestDeleteObservationsUnknownBankIsEmptyClear(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(pattern, "{bank_id}") {
+				r.SetPathValue("bank_id", "ghost")
+			}
+			handler(w, r)
+		})
+	})
+	rec := send(mux, http.MethodDelete, "/v1/default/banks/ghost/observations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown-bank clear = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp DeleteResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &resp)
+	if !resp.Success || resp.DeletedCount != 0 || resp.Message != "Cleared 0 observations" {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+// The memory-observations clear takes no bank-existence check either: the
+// reference resolves the memory by id alone, so a delete against an unknown
+// bank clears zero rows and answers 200 rather than 404ing the bank.
+func TestClearMemoryObservationsUnknownBankIsEmptyClear(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(pattern, "{bank_id}") {
+				r.SetPathValue("bank_id", "ghost")
+			}
+			if strings.Contains(pattern, "{memory_id}") {
+				r.SetPathValue("memory_id", "00000000-0000-0000-0000-000000000000")
+			}
+			handler(w, r)
+		})
+	})
+	rec := send(mux, http.MethodDelete,
+		"/v1/default/banks/ghost/memories/00000000-0000-0000-0000-000000000000/observations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown-bank memory clear = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ClearMemoryObservationsResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &resp)
+	if resp.DeletedCount != 0 {
+		t.Fatalf("deleted_count = %d, want 0", resp.DeletedCount)
+	}
+}
+
+// The memory listing carries the attachments each fact was drawn from, and an
+// observation shows its source facts'. A fact with none omits the key.
+func TestListMemoriesCarriesAttachments(t *testing.T) {
+	mux, store := newServerWithStore(t)
+	ctx := context.Background()
+	const sourceID = "11111111-1111-1111-1111-111111111111"
+	const observationID = "22222222-2222-2222-2222-222222222222"
+	if err := store.PutAttachment(ctx, storage.Attachment{
+		BankID: bank, DocumentID: "doc-att", AttachmentHash: "hash-1", ShortID: "abc123",
+		MediaType: "image/png", ByteSize: 12, StorageKey: "k", Kind: "image", Filename: "chart.png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: sourceID, BankID: bank, Text: "a chart", FactType: storage.TypeExperience,
+		DocumentID: "doc-att", AttachmentIDs: []string{"abc123"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: observationID, BankID: bank, Text: "obs", FactType: storage.TypeObservation,
+		SourceMemoryIDs: []string{sourceID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := send(mux, http.MethodGet, "/v1/default/banks/"+bank+"/memories/list?limit=100", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var list MemoryListResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &list)
+	byID := map[string]MemoryItem{}
+	for _, item := range list.Items {
+		byID[item.ID] = item
+	}
+	source, ok := byID[sourceID]
+	if !ok || len(source.Attachments) != 1 {
+		t.Fatalf("source item = %+v", source)
+	}
+	got := source.Attachments[0]
+	if got["id"] != "abc123" || got["hash"] != "hash-1" || got["kind"] != "image" ||
+		got["media_type"] != "image/png" || got["byte_size"] != float64(12) ||
+		got["filename"] != "chart.png" || got["url"] != "/v1/default/banks/b1/attachments/abc123" {
+		t.Fatalf("attachment = %+v", got)
+	}
+	// The observation inherits its source fact's attachment.
+	if observation, ok := byID[observationID]; !ok || len(observation.Attachments) != 1 {
+		t.Fatalf("observation item = %+v", observation)
+	}
+	// The fixture's own fact carries no attachment, so the key is omitted.
+	plain := byID[memoryID(t, mux)]
+	if plain.Attachments != nil {
+		t.Fatalf("plain item carries attachments: %+v", plain.Attachments)
 	}
 }

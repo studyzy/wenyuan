@@ -16,13 +16,7 @@ import (
 // an empty string, so an unconfigured deployment sends exactly what it sent
 // before.
 func OutputLanguageDirective(language string) string {
-	language = strings.TrimSpace(language)
-	if language == "" {
-		return ""
-	}
-	return "\n\nIMPORTANT: Respond exclusively in " + language + ". " +
-		"Translate any source content into " + language + ". " +
-		"All output text — including fact text, observations, entity names, and the final response — must be in " + language + "."
+	return provider.OutputLanguageDirective(language)
 }
 
 // languageProvider applies the configured output language to every completion,

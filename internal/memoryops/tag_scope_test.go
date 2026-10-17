@@ -131,7 +131,7 @@ func TestDeniedRetainStoresNothing(t *testing.T) {
 	mux, spy := countingServer(t)
 	host := httpx.NewExtensionHost()
 	host.RegisterOperationValidator(&denyValidator{operation: httpx.OperationRetain, status: http.StatusForbidden, reason: "frozen"})
-	handler := httpx.Chain(mux, httpx.NullDropMiddleware(false), httpx.OperationValidationMiddleware(host))
+	handler := httpx.Chain(mux, httpx.OperationValidationMiddleware(host))
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories",
@@ -150,7 +150,7 @@ func TestDeniedRecallReadsNothing(t *testing.T) {
 	mux, spy := countingServer(t)
 	host := httpx.NewExtensionHost()
 	host.RegisterOperationValidator(&denyValidator{operation: httpx.OperationRecall, status: http.StatusForbidden, reason: "no reads"})
-	handler := httpx.Chain(mux, httpx.NullDropMiddleware(false), httpx.OperationValidationMiddleware(host))
+	handler := httpx.Chain(mux, httpx.OperationValidationMiddleware(host))
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/memories/recall",

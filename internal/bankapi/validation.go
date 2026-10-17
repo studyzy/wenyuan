@@ -18,13 +18,13 @@ func ValidateBankID(id string) (int, string, bool) {
 	var msg string
 	switch {
 	case id == "":
-		msg = "bank identifier must not be empty"
+		msg = "Bank id must not be empty"
 	case len(id) > storage.BankIDMaxBytes:
-		msg = "bank identifier must be at most 192 bytes"
+		msg = "Bank id is too long: at most 192 bytes of UTF-8 are allowed"
 	case !utf8.ValidString(id):
-		msg = "bank identifier must be valid UTF-8"
+		msg = "Bank id must be valid UTF-8"
 	default:
-		msg = "bank identifier must not contain control characters"
+		msg = "Bank id must not contain control characters"
 	}
 	return http.StatusBadRequest, msg, false
 }
@@ -50,19 +50,33 @@ func ValidatePatch(req BankRequest) *httpx.ValidationFailure {
 	return failureOrNil(traitErrors(req))
 }
 
-// traitErrors reports out-of-range bounded disposition traits, taking the
-// explicit individual field over the deprecated disposition object.
+// traitErrors reports out-of-range bounded disposition traits and incomplete
+// disposition objects.
 //
-// The object form is checked for completeness first: the reference declares
-// all three members required, so a partial object is rejected with a missing
-// field rather than being read as zeros. Without this the omission would
-// surface as a misleading range error on a value the caller never sent.
+// Both forms are validated independently, as the reference's nested model and
+// flat fields are: an out-of-range member of the `disposition` object is
+// rejected even when a flat `disposition_<trait>` field for the same trait
+// would win the storage precedence, and its item names the member's own path
+// (["body","disposition","skepticism"]). The object's missing members are
+// reported first, since the model declares it before the flat fields.
 func traitErrors(req BankRequest) []httpx.ValidationError {
 	var items []httpx.ValidationError
 	items = append(items, missingTraitErrors(req)...)
-	items = append(items, traitError("disposition_skepticism", req.traitPtr(req.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }))...)
-	items = append(items, traitError("disposition_literalism", req.traitPtr(req.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }))...)
-	items = append(items, traitError("disposition_empathy", req.traitPtr(req.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }))...)
+	if req.Disposition != nil {
+		for _, member := range []struct {
+			name  string
+			value *int
+		}{
+			{"skepticism", req.Disposition.Skepticism},
+			{"literalism", req.Disposition.Literalism},
+			{"empathy", req.Disposition.Empathy},
+		} {
+			items = append(items, traitError([]string{"body", "disposition", member.name}, member.value)...)
+		}
+	}
+	items = append(items, traitError([]string{"body", "disposition_skepticism"}, req.DispositionSkepticism)...)
+	items = append(items, traitError([]string{"body", "disposition_literalism"}, req.DispositionLiteralism)...)
+	items = append(items, traitError([]string{"body", "disposition_empathy"}, req.DispositionEmpathy)...)
 	return items
 }
 
@@ -110,15 +124,15 @@ func dispositionInput(d *DispositionInput) map[string]any {
 	return out
 }
 
-func traitError(field string, value *int) []httpx.ValidationError {
+func traitError(loc []string, value *int) []httpx.ValidationError {
 	if value == nil {
 		return nil
 	}
 	if *value < storage.DispositionTraitMin {
-		return []httpx.ValidationError{httpx.GreaterThanEqual([]string{"body", field}, *value, storage.DispositionTraitMin)}
+		return []httpx.ValidationError{httpx.GreaterThanEqual(loc, *value, storage.DispositionTraitMin)}
 	}
 	if *value > storage.DispositionTraitMax {
-		return []httpx.ValidationError{httpx.LessThanEqual([]string{"body", field}, *value, storage.DispositionTraitMax)}
+		return []httpx.ValidationError{httpx.LessThanEqual(loc, *value, storage.DispositionTraitMax)}
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"time"
 )
 
 // Archive entry names beyond the manifest and the per-document payloads. A
@@ -73,16 +72,16 @@ func DataEntry(table string) string { return DataDir + "/" + table + ".json" }
 // in — an opaque ordinal, because a storage key is caller-shaped and must never
 // become a path inside the archive.
 type Attachment struct {
-	BankID         string     `json:"bank_id"`
-	DocumentID     string     `json:"document_id"`
-	AttachmentHash string     `json:"attachment_hash"`
-	ShortID        string     `json:"short_id"`
-	MediaType      string     `json:"media_type"`
-	ByteSize       int64      `json:"byte_size"`
-	Kind           string     `json:"kind"`
-	Filename       string     `json:"filename"`
-	CreatedAt      *time.Time `json:"created_at"`
-	Entry          string     `json:"entry"`
+	BankID         string  `json:"bank_id"`
+	DocumentID     string  `json:"document_id"`
+	AttachmentHash string  `json:"attachment_hash"`
+	ShortID        string  `json:"short_id"`
+	MediaType      string  `json:"media_type"`
+	ByteSize       int64   `json:"byte_size"`
+	Kind           string  `json:"kind"`
+	Filename       string  `json:"filename"`
+	CreatedAt      *string `json:"created_at"`
+	Entry          string  `json:"entry"`
 }
 
 // BlobEntry names the archive entry for the attachment at an ordinal. The name
@@ -115,12 +114,12 @@ type ObservationSource struct {
 type Observation struct {
 	SourceID          string              `json:"source_id"`
 	Text              string              `json:"text"`
-	CreatedAt         *time.Time          `json:"created_at"`
+	CreatedAt         *string             `json:"created_at"`
 	Tags              []string            `json:"tags"`
-	EventDate         *time.Time          `json:"event_date"`
-	OccurredStart     *time.Time          `json:"occurred_start"`
-	OccurredEnd       *time.Time          `json:"occurred_end"`
-	MentionedAt       *time.Time          `json:"mentioned_at"`
+	EventDate         *string             `json:"event_date"`
+	OccurredStart     *string             `json:"occurred_start"`
+	OccurredEnd       *string             `json:"occurred_end"`
+	MentionedAt       *string             `json:"mentioned_at"`
 	ObservationScopes json.RawMessage     `json:"observation_scopes"`
 	ProofCount        int                 `json:"proof_count"`
 	Sources           []ObservationSource `json:"sources"`
@@ -130,15 +129,15 @@ type Observation struct {
 // The identifier and a page's mental_model_id are preserved across a transfer,
 // because every other node's parent link names them.
 type KnowledgePage struct {
-	ID            string     `json:"id"`
-	ParentID      string     `json:"parent_id"`
-	Kind          string     `json:"kind"`
-	Name          string     `json:"name"`
-	MentalModelID string     `json:"mental_model_id"`
-	SortOrder     int        `json:"sort_order"`
-	Managed       bool       `json:"managed"`
-	CreatedAt     *time.Time `json:"created_at"`
-	UpdatedAt     *time.Time `json:"updated_at"`
+	ID            string  `json:"id"`
+	ParentID      string  `json:"parent_id"`
+	Kind          string  `json:"kind"`
+	Name          string  `json:"name"`
+	MentalModelID string  `json:"mental_model_id"`
+	SortOrder     int     `json:"sort_order"`
+	Managed       bool    `json:"managed"`
+	CreatedAt     *string `json:"created_at"`
+	UpdatedAt     *string `json:"updated_at"`
 }
 
 // ReadSection reads and decodes an optional JSON section. A section the

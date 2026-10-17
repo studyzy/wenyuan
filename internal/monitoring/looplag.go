@@ -7,8 +7,10 @@ import (
 	"time"
 )
 
-// LoopLagMetricName is the exposition name of the event-loop lag histogram.
-const LoopLagMetricName = "hindsight_event_loop_lag"
+// LoopLagMetricName is the exposition name of the event-loop lag histogram. The
+// reference declares its unit "s", so the exporter appends the "seconds" suffix
+// to the instrument name.
+const LoopLagMetricName = "hindsight_event_loop_lag_seconds"
 
 // LoopLagBuckets are the histogram boundaries for the event-loop lag metric, in
 // seconds. Lag is sub-millisecond on a healthy loop and reaches seconds only
@@ -112,8 +114,14 @@ func (p *LoopLagProbe) Run(ctx context.Context) {
 		// handler only ever renders it when the deployment opts in, so recording
 		// here keeps the probe independent of the exposition's tuning.
 		LoopLag.Observe(lag.Seconds())
-		if p.Stall > 0 && lag >= p.Stall && p.Logger != nil {
-			p.Logger.Warn("event loop lag", "lag_ms", lag.Milliseconds())
+		if p.Stall > 0 && lag >= p.Stall {
+			// A tick the loop ran this late is a stall: the watchdog counts it
+			// and records how long the loop was blocked, so an operator scrapes
+			// the same signal the log line reports.
+			Workload.ObserveLoopStall(lag.Seconds())
+			if p.Logger != nil {
+				p.Logger.Warn("event loop lag", "lag_ms", lag.Milliseconds())
+			}
 		}
 		deadline = deadline.Add(p.Interval)
 		if now().After(deadline) {

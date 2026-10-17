@@ -1,25 +1,23 @@
 package memoryops
 
-import (
-	"time"
-)
-
 // RetainResponse is the write acceptance response. Every field name is public
-// surface.
+// surface. The reference keeps nulls for this route, so operation_id and
+// operation_ids are always on the wire and report null when the write was
+// synchronous or resolved to a single strategy group — the reference only
+// populates operation_ids when a request fanned into more than one group.
 type RetainResponse struct {
 	Success    bool   `json:"success"`
 	BankID     string `json:"bank_id"`
 	ItemsCount int    `json:"items_count"`
 	Async      bool   `json:"async"`
+	// OperationID is null for a synchronous write.
+	OperationID *string `json:"operation_id"`
+	// OperationIDs is null unless the write resolved to more than one strategy
+	// group.
+	OperationIDs []string `json:"operation_ids"`
 	// Usage is null for an asynchronous write, whose accounting is not known
 	// until the queued operation completes.
-	Usage        *Usage   `json:"usage"`
-	OperationID  string   `json:"operation_id,omitempty"`
-	OperationIDs []string `json:"operation_ids,omitempty"`
-	// ProcessedContentTokens is the number of content tokens the engine
-	// accounted for. It is omitted when the path does not report one, so a
-	// client never reads a fabricated zero as a real measurement.
-	ProcessedContentTokens *int `json:"processed_content_tokens,omitempty"`
+	Usage *Usage `json:"usage"`
 }
 
 // Operation is one list entry, matching the reference's OperationResponse.
@@ -40,47 +38,50 @@ type Operation struct {
 	// Details is the typed per-operation-type outcome detail; null for the
 	// operation types that report none.
 	Details      map[string]any `json:"details"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    *time.Time     `json:"updated_at"`
+	CreatedAt    string         `json:"created_at"`
+	UpdatedAt    *string        `json:"updated_at"`
 	Status       string         `json:"status"`
 	ErrorMessage *string        `json:"error_message"`
 	RetryCount   int            `json:"retry_count"`
-	NextRetryAt  *time.Time     `json:"next_retry_at"`
+	NextRetryAt  *string        `json:"next_retry_at"`
 	Progress     map[string]any `json:"progress"`
 }
 
 // ChildOperationStatus is one child entry of a parent batch operation,
-// matching the reference's ChildOperationStatus.
+// matching the reference's ChildOperationStatus. The response keeps nulls, so a
+// member the child's metadata does not carry is emitted as an explicit null
+// rather than dropped or defaulted to zero.
 type ChildOperationStatus struct {
-	OperationID   string `json:"operation_id"`
-	Status        string `json:"status"`
-	SubBatchIndex int    `json:"sub_batch_index"`
-	ItemsCount    int    `json:"items_count"`
-	ErrorMessage  string `json:"error_message,omitempty"`
+	OperationID   string  `json:"operation_id"`
+	Status        string  `json:"status"`
+	SubBatchIndex *int    `json:"sub_batch_index"`
+	ItemsCount    *int    `json:"items_count"`
+	ErrorMessage  *string `json:"error_message"`
 }
 
 // OperationStatus is the single-operation read, matching the reference's
 // OperationStatusResponse. Unlike the list entry it carries result_metadata, the
-// child roll-up and the raw task payload. The model drops null fields (it is in
-// the drop-nulls policy), so the nullable members are omitempty.
+// child roll-up and the raw task payload. The model keeps nulls (the response
+// contract always emits all sixteen keys), so no member carries omitempty: an
+// absent value serializes as an explicit null.
 type OperationStatus struct {
 	OperationID     string                 `json:"operation_id"`
 	Status          string                 `json:"status"`
-	OperationType   *string                `json:"operation_type,omitempty"`
-	ID              *string                `json:"id,omitempty"`
-	TaskType        *string                `json:"task_type,omitempty"`
-	MentalModelID   *string                `json:"mental_model_id,omitempty"`
-	CreatedAt       *time.Time             `json:"created_at,omitempty"`
-	UpdatedAt       *time.Time             `json:"updated_at,omitempty"`
-	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
-	ErrorMessage    *string                `json:"error_message,omitempty"`
-	RetryCount      *int                   `json:"retry_count,omitempty"`
-	NextRetryAt     *time.Time             `json:"next_retry_at,omitempty"`
-	Progress        map[string]any         `json:"progress,omitempty"`
-	ResultMetadata  map[string]any         `json:"result_metadata,omitempty"`
-	Details         map[string]any         `json:"details,omitempty"`
-	ChildOperations []ChildOperationStatus `json:"child_operations,omitempty"`
-	TaskPayload     map[string]any         `json:"task_payload,omitempty"`
+	OperationType   *string                `json:"operation_type"`
+	ID              *string                `json:"id"`
+	TaskType        *string                `json:"task_type"`
+	MentalModelID   *string                `json:"mental_model_id"`
+	CreatedAt       *string                `json:"created_at"`
+	UpdatedAt       *string                `json:"updated_at"`
+	CompletedAt     *string                `json:"completed_at"`
+	ErrorMessage    *string                `json:"error_message"`
+	RetryCount      *int                   `json:"retry_count"`
+	NextRetryAt     *string                `json:"next_retry_at"`
+	Progress        map[string]any         `json:"progress"`
+	ResultMetadata  map[string]any         `json:"result_metadata"`
+	Details         map[string]any         `json:"details"`
+	ChildOperations []ChildOperationStatus `json:"child_operations"`
+	TaskPayload     map[string]any         `json:"task_payload"`
 }
 
 // OperationListResponse is the operation listing envelope. Every field name is

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -27,7 +28,20 @@ func (h *Handlers) KnowledgeExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projected := projectKnowledgeNodes(nodes, models)
-	files := make([]KnowledgeFile, 0, len(nodes)+1)
+	// A scoped caller exports only the pages it may read. As in the tree the
+	// scope is applied on its own: a hidden page is dropped from the bundle and
+	// its history is never read. Without a scope every node is visible and the
+	// bundle is unchanged.
+	scope := memoryops.ScopeFromRequest(r)
+	scoped := len(scope) > 0
+	if scoped {
+		projected = pruneKnowledgeNodesToScope(projected, scope)
+	}
+	visible := make(map[string]bool, len(projected))
+	for _, node := range projected {
+		visible[node.ID] = true
+	}
+	files := make([]KnowledgeFile, 0, len(projected)+1)
 	files = append(files, KnowledgeFile{
 		Path:    knowledgeIndexFilename,
 		Content: renderKnowledgeIndex(nestKnowledge(projected)),
@@ -36,12 +50,36 @@ func (h *Handlers) KnowledgeExport(w http.ResponseWriter, r *http.Request) {
 		if node.Kind != knowledgeKindPage {
 			continue
 		}
+		if scoped && !visible[node.ID] {
+			continue
+		}
 		files = append(files, KnowledgeFile{
 			Path:    node.ID + ".md",
 			Content: renderKnowledgeDocument(knowledgeDocFields(node, models[node.MentalModelID]), node.Text, false),
 		})
+		// A page's refresh history travels with it, so a bundle that is read back
+		// in keeps the revisions the export carried rather than only the last body.
+		if node.MentalModelID == "" {
+			continue
+		}
+		history, err := h.Store.MentalModelHistory(r.Context(), bankID, node.MentalModelID)
+		if err != nil {
+			httpx.WriteErrorFor(w, r, asHTTPError(err))
+			return
+		}
+		if len(history) == 0 {
+			continue
+		}
+		title := node.Title
+		if title == "" {
+			title = node.ID
+		}
+		files = append(files, KnowledgeFile{
+			Path:    node.ID + knowledgeLogSuffix,
+			Content: renderKnowledgeLog(title, history),
+		})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, KnowledgePageBundleResponse{Files: files})
+	httpx.WriteJSON(w, http.StatusOK, KnowledgePageBundleResponse{Files: files})
 }
 
 // KnowledgeSearch searches the bank's pages.
@@ -67,18 +105,32 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
+	// The caller's resolved read scope joins the filter: search returns pages
+	// only, so unlike the tree the scope can simply be AND-ed on. The top level
+	// of a group list is an AND, so appending narrows rather than replaces.
+	if scope := memoryops.ScopeFromRequest(r); len(scope) > 0 {
+		filter.groups = append(filter.groups, fromStorageTagGroups(scope)...)
+	}
+	// `enable_text_search` is per bank, so it is resolved rather than taken from
+	// a constant: a bank that switched the keyword arm off in recall must not
+	// keep hitting a text index here. With no embedding either there is no arm
+	// left to run, so the search has no answer to give rather than a degraded one.
+	search := storage.KnowledgeSearchQuery{
+		BankID:         bankID,
+		Query:          query,
+		Limit:          limit,
+		DisableTextArm: !h.knowledgeTextSearchEnabled(r, bankID),
+		// The tag filter rides into the storage arms so it narrows before
+		// ranking: the returned `limit` hits are always the best matching pages,
+		// never a short set left by matching pages that ranked above the window.
+		// The reference binds the same clause into each of its arms.
+		Tags:      filter.tags,
+		TagsMatch: filter.tagsMatch,
+		TagGroups: toStorageTagGroups(filter.groups),
+	}
 	out := make([]KnowledgeSearchResult, 0)
 	// Upstream strips the query and answers an all-whitespace one with no results.
 	if strings.TrimSpace(query) != "" {
-		// Over-fetch so a tag filter applied after ranking can still fill `limit`.
-		fetch := limit * 4
-		if fetch < 40 {
-			fetch = 40
-		}
-		if fetch > 200 {
-			fetch = 200
-		}
-		search := storage.KnowledgeSearchQuery{BankID: bankID, Query: query, Limit: fetch}
 		// With an embedding model configured the query text is embedded so the
 		// vector arm can rank by similarity; a failed embedding degrades to the
 		// text arm rather than failing the read, matching recall.
@@ -98,27 +150,44 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, hit := range hits {
-			if filter.active() && !filter.matches(pageTags(hit.Node, models)) {
-				continue
+			model, hasModel := models[hit.Node.MentalModelID]
+			var sourceQuery, updatedAt *string
+			if hasModel {
+				sourceQuery = &model.SourceQuery
+				updatedAt = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
 			}
-			model := models[hit.Node.MentalModelID]
 			out = append(out, KnowledgeSearchResult{
 				ID:            hit.Node.ID,
 				Name:          hit.Node.Title,
-				MentalModelID: hit.Node.MentalModelID,
-				SourceQuery:   model.SourceQuery,
+				MentalModelID: optionalString(hit.Node.MentalModelID),
+				SourceQuery:   sourceQuery,
 				Snippet:       knowledgeSnippet(hit.Node.Text),
 				Score:         hit.Score,
-				UpdatedAt:     formatTime(model.LastRefreshedAt),
+				UpdatedAt:     updatedAt,
 			})
-			if len(out) == limit {
-				break
-			}
 		}
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, KnowledgePageSearchResponse{
+	httpx.WriteJSON(w, http.StatusOK, KnowledgePageSearchResponse{
 		Results: out, Total: len(out),
 	})
+}
+
+// knowledgeTextSearchEnabled resolves the bank's `enable_text_search` setting,
+// which defaults to on: the bank's own override wins, then the caller's tenant
+// layer, then the process default.
+func (h *Handlers) knowledgeTextSearchEnabled(r *http.Request, bankID string) bool {
+	if config, err := h.Store.BankConfig(r.Context(), bankID); err == nil {
+		if value, ok := config[bankConfigEnableTextSearch].(bool); ok {
+			return value
+		}
+	}
+	if value, ok := httpx.TenantOverridesFrom(r)[bankConfigEnableTextSearch].(bool); ok {
+		return value
+	}
+	if value, ok := h.ProcessDefaults[bankConfigEnableTextSearch].(bool); ok {
+		return value
+	}
+	return true
 }
 
 // knowledgeSearchQuery reads the required `q` parameter. A missing or empty
@@ -126,21 +195,38 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 func knowledgeSearchQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
 	values, present := httpx.QueryPresent(r, "q")
 	if !present || len(values) == 0 {
-		writeKnowledgeItem(w, r, httpx.Missing([]string{"query", "q"}, map[string]any{}))
+		// A missing query parameter has no value to report, so its input is null.
+		writeKnowledgeItem(w, r, httpx.Missing([]string{"query", "q"}, nil))
 		return "", false
 	}
-	if values[0] == "" {
+	// A scalar query parameter comes from the reference's multimap, whose lookup
+	// returns the LAST occurrence, so a repeated `q` binds its final value.
+	value := values[len(values)-1]
+	if value == "" {
 		writeKnowledgeItem(w, r, httpx.StringTooShort([]string{"query", "q"}, "", 1))
 		return "", false
 	}
-	return values[0], true
+	return value, true
 }
 
-// knowledgeSearchLimit reads the `limit` parameter: default 10, range 1..50.
+// knowledgeSearchLimit reads the `limit` parameter: default 10, range 1..50. An
+// explicitly empty value is not the same as an absent one — the reference parses
+// the raw string, so `limit=` fails to parse and is its `int_parsing` 422.
 func knowledgeSearchLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
-	raw := strings.TrimSpace(httpx.Query(r, "limit"))
+	// The reference reads the scalar from a multimap, so a repeated `limit` binds
+	// its LAST occurrence; an explicitly empty value is not the same as an absent
+	// one — the raw string is parsed, so `limit=` is its `int_parsing` 422.
+	values, present := httpx.QueryPresent(r, "limit")
+	raw := ""
+	if present && len(values) > 0 {
+		raw = strings.TrimSpace(values[len(values)-1])
+	}
 	if raw == "" {
-		return 10, true
+		if !present {
+			return 10, true
+		}
+		writeKnowledgeItem(w, r, httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, ""))
+		return 0, false
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
@@ -148,11 +234,11 @@ func knowledgeSearchLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 		return 0, false
 	}
 	if value < 1 {
-		writeKnowledgeItem(w, r, httpx.GreaterThanEqual([]string{"query", "limit"}, value, 1))
+		writeKnowledgeItem(w, r, httpx.GreaterThanEqual([]string{"query", "limit"}, raw, 1))
 		return 0, false
 	}
 	if value > 50 {
-		writeKnowledgeItem(w, r, httpx.LessThanEqual([]string{"query", "limit"}, value, 50))
+		writeKnowledgeItem(w, r, httpx.LessThanEqual([]string{"query", "limit"}, raw, 50))
 		return 0, false
 	}
 	return value, true

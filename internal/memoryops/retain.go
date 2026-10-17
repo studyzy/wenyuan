@@ -15,6 +15,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/fileparse"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -50,8 +51,9 @@ type Handlers struct {
 	// carry no ordering information (the RRF passthrough), so recall seeds the
 	// base from the fused ordering rather than the reranker's output.
 	RerankerSeedFromFused bool
-	// ReflectSchemaValidator validates a caller-supplied structured-output
-	// schema; nil accepts any non-null schema.
+	// ReflectSchemaValidator is an optional second structured-output schema
+	// validator, run only after the reference's own response-schema rules pass;
+	// nil adds no extra rule. The built-in rules are always enforced.
 	ReflectSchemaValidator ReflectSchemaValidator
 	// BankReflectDefaults carries the two per-bank reflection defaults applied
 	// unless the request overrides them; nil uses the shipped defaults.
@@ -72,6 +74,10 @@ type Handlers struct {
 	// FileUploadDisabled makes the file retain route report not-found, matching
 	// the reference's HINDSIGHT_API_ENABLE_FILE_UPLOAD_API gate when it is off.
 	FileUploadDisabled bool
+	// RetainBatchEnabled is the reference's HINDSIGHT_API_RETAIN_BATCH_ENABLED.
+	// When it is on a synchronous retain is refused, because a batch retain can
+	// run for hours and cannot complete inside a synchronous request.
+	RetainBatchEnabled bool
 	// DefaultExtractionMode is the deployment's extraction mode, used when the
 	// bank configures none; DefaultOptionalFactDimensions relaxes the schema the
 	// same way.
@@ -90,6 +96,14 @@ type Handlers struct {
 	// Reflection, when non-nil, replaces the deterministic in-process
 	// reflection with the model-driven retrieval loop.
 	Reflection storage.ReflectRunner
+	// RefuseWithoutReflectModel makes the reflect route refuse with the
+	// reference's message when the deployment is configured with no reflect
+	// model (HINDSIGHT_API_LLM_PROVIDER=none). The reference answers 400 rather
+	// than synthesizing an answer, so a deployment with no model behaves like
+	// the reference instead of falling back to the deterministic loop. False
+	// (the zero value) leaves the route serving, which is what a handler set
+	// assembled without a provider expects.
+	RefuseWithoutReflectModel bool
 	// Reranker, when non-nil, rescoring of the fused recall candidates runs
 	// through the cross-encoder instead of falling back to the best per-arm
 	// score. A deployment with no rerank model leaves it nil.
@@ -180,13 +194,24 @@ func NewHandlers(store storage.Store, retryAfterSeconds, readTimeoutMillis int) 
 }
 
 // retainBodyFields is the set of top-level body names the retain route accepts.
-// Deprecated aliases the contract keeps accepting are listed alongside the
-// current names so a client that sends one is not told it is unknown.
+// It is exactly the reference's RetainRequest members (items, async,
+// operation_id, document_tags); any other top-level name is reported as an
+// ignored parameter, so a deprecated alias such as "background" or
+// "reflect_mission" — which the reference's model does not declare — surfaces the
+// same warning rather than being silently accepted.
 var retainBodyFields = map[string]struct{}{
 	"items": {}, "async": {}, "operation_id": {}, "document_tags": {},
-	// Deprecated aliases kept for compatibility.
-	"background": {}, "reflect_mission": {},
 }
+
+// retainBatchDisabledMessage is the reference's refusal for a synchronous write
+// when the batch API is enabled. It is the reference's sentence character for
+// character — it names the setting to change.
+//
+//nolint:staticcheck // the reference's own wording, period included
+var retainBatchDisabledMessage = "Batch API is enabled (HINDSIGHT_API_RETAIN_BATCH_ENABLED=true) but async=false. " +
+	"Batch operations can take several minutes to hours and will timeout in synchronous mode. " +
+	"Please set async=true in your request to use background processing, or disable batch API by setting " +
+	"HINDSIGHT_API_RETAIN_BATCH_ENABLED=false in your environment."
 
 // retainWriteScopeFailure refuses a retain that would write a tag outside the
 // caller's write scope, answering 403. Every item's tags (with the batch's
@@ -232,18 +257,43 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	// client that sends a field the route does not know learns about it.
 	body, r := httpx.RecordIgnoredBodyFields(r, retainBodyFields)
 	var req RetainRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if decoded, err := httpx.DecodeLax(body, &req); err != nil {
 		// The reference's framework rejects a malformed body as a structured
 		// 422 item, not with a 400 sentence.
-		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, body))
+		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, decoded))
 		return
 	}
 	if failure := ValidateRetain(req); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
+		return
+	}
+	// The reference enforces these two as handler-level 400 sentences, not model
+	// validators, and only on the queued path: a synchronous request ignores a
+	// supplied operation_id and folds shared-document items sequentially, so
+	// neither rule applies to it. They run before any write.
+	if req.Async {
+		if req.OperationID != "" && strategyGroupCount(req.Items) > 1 {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+				"operation_id requires all retain items to resolve to a single strategy"))
+			return
+		}
+		if duplicates := duplicateDocumentIDsInGroups(req.Items); len(duplicates) > 0 {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+				"Batch contains duplicate document_ids: "+pythonStringList(duplicates)+
+					". Each content item in an async batch must have a unique document_id to avoid races between the "+
+					"parallel workers that process them. To fold several items into one document, send the batch "+
+					"synchronously (async=false), which processes them sequentially."))
+			return
+		}
+	} else if h.RetainBatchEnabled {
+		// A synchronous retain when the batch API is on would run for hours and
+		// time out in the request, so it is refused with the reference's own
+		// explanation of how to proceed.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, retainBatchDisabledMessage))
 		return
 	}
 	if blocked := blockedWriteFailure(req, h.VisionEnabled); blocked != nil {
-		httpx.WriteValidationFor(w, r, blocked)
+		httpx.WriteValidationFailure(w, blocked)
 		return
 	}
 	// Inline attachments are decoded and stored before the retain is submitted,
@@ -307,7 +357,7 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	h.enqueuePostRetainConsolidation(r.Context(), bankID, bank)
-	httpx.WriteJSONFor(w, r, http.StatusOK, BuildRetainResponse(bankID, req, result))
+	httpx.WriteJSON(w, http.StatusOK, BuildRetainResponse(bankID, req, result))
 }
 
 // enqueuePostRetainConsolidation queues the consolidation pass that follows a
@@ -401,24 +451,36 @@ func (h *Handlers) resolveBankConfig(ctx context.Context, overrides map[string]a
 // the queue's — so the response reports an item count and an operation id and
 // no usage, because none has happened yet.
 func (h *Handlers) submitAsyncRetain(r *http.Request, w http.ResponseWriter, bankID string, req RetainRequest, write storage.RetainRequest) {
-	prepared, _, err := h.prepareRetain(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
+	result, err := h.queueRetainAsync(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, BuildRetainResponse(bankID, req, result))
+}
+
+// queueRetainAsync resolves the bank's configuration onto the write and queues
+// it, returning the receipt a caller polls. It is the one path a queued retain
+// and a document reprocess both take, so the two queue the same shape of work:
+// one parent batch operation that aggregates the submission and one child per
+// token-bounded sub-batch. Nothing is extracted here — the work is the queue's.
+func (h *Handlers) queueRetainAsync(ctx context.Context, bankID string, overrides map[string]any, write storage.RetainRequest) (storage.RetainOutcome, error) {
+	prepared, _, err := h.prepareRetain(ctx, bankID, overrides, write)
+	if err != nil {
+		return storage.RetainOutcome{}, err
 	}
 	prepared.Async = true
 	tokensPerBatch := h.RetainSubBatchTokens
 	if tokensPerBatch <= 0 {
 		tokensPerBatch = storage.DefaultRetainSubBatchTokens
 	}
-	submission, err := h.Store.SubmitAsyncRetain(r.Context(), prepared, tokensPerBatch)
+	submission, err := h.Store.SubmitAsyncRetain(ctx, prepared, tokensPerBatch)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
-		return
+		return storage.RetainOutcome{}, err
 	}
 	// The receipt names the parent, which is what the caller polls and what a
 	// retried submission with the same identifier rejoins.
-	result := storage.RetainOutcome{
+	return storage.RetainOutcome{
 		OperationID: submission.OperationID,
 		// The submission's own identifier is reported in both fields, so a
 		// caller that reads either sees the operation it polls. A request that
@@ -428,8 +490,7 @@ func (h *Handlers) submitAsyncRetain(r *http.Request, w http.ResponseWriter, ban
 		// No accounting has happened yet, which is reported as absent rather
 		// than as zero.
 		ProcessedContentTokens: -1,
-	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, BuildRetainResponse(bankID, req, result))
+	}, nil
 }
 
 // errAppendWithoutStoredText refuses an append when the bank stores no document
@@ -462,7 +523,21 @@ func (h *Handlers) executeRetain(ctx context.Context, bankID string, overrides m
 	if err != nil {
 		return storage.RetainOutcome{}, storage.Bank{}, err
 	}
+	// Count the document by its extraction outcome. A document whose extraction
+	// produced no memory units is stored but unreachable through recall, and
+	// this counter is the only surface that shows it.
+	monitoring.Workload.CountRetainDocument(countRetainedUnits(outcome))
 	return outcome, bank, nil
+}
+
+// countRetainedUnits totals the memory units one retain produced, across every
+// item it carried.
+func countRetainedUnits(outcome storage.RetainOutcome) int {
+	total := 0
+	for _, ids := range outcome.ItemUnitIDs {
+		total += len(ids)
+	}
+	return total
 }
 
 // prepareRetain resolves the bank's retain configuration onto the write and
@@ -494,12 +569,14 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 // ReprocessDocument re-runs the retain pipeline over a document's stored text
 // and replayable parameters, replacing what the earlier retain derived from it.
 //
-// The stored text is the input, so reprocess re-reads without rewriting it; the
-// replayable parameters (strategy, context, event date, metadata, observation
-// scopes, tags) are restored so a re-extraction runs under the same settings
-// the document was retained with rather than under the bank defaults. The write
-// is forced to re-extract, so an unchanged content hash cannot turn the
-// reprocess into a silent no-op.
+// Like the reference, it submits a queued batch retain rather than extracting
+// in the request: the reply names a pending parent operation with children, and
+// the work runs in a worker. The stored text is the input, so reprocess re-reads
+// without rewriting it; every retain parameter the document stored is replayed
+// (see applyRetainParams) so a re-extraction runs under the same settings the
+// document was retained with rather than under the bank defaults. The write is
+// forced to re-extract, so an unchanged content hash cannot turn the reprocess
+// into a silent no-op.
 func (h *Handlers) ReprocessDocument(ctx context.Context, bankID, documentID string) (storage.RetainOutcome, error) {
 	doc, err := h.Store.GetDocument(ctx, bankID, documentID)
 	if err != nil {
@@ -510,33 +587,105 @@ func (h *Handlers) ReprocessDocument(ctx context.Context, bankID, documentID str
 	if strings.TrimSpace(doc.OriginalText) == "" {
 		return storage.RetainOutcome{}, storage.ErrDocumentNotFound
 	}
-	item := storage.RetainItem{
-		Content:        doc.OriginalText,
-		DocumentID:     documentID,
-		UpdateMode:     "replace",
-		ForceReextract: true,
-		Tags:           doc.Tags,
-	}
-	params := doc.RetainParams
-	item.Strategy = stringFromParams(params, "strategy")
-	item.Context = stringFromParams(params, "context")
-	if metadata, ok := params["metadata"].(map[string]any); ok {
-		item.Metadata = metadata
-	}
-	if eventDate := stringFromParams(params, "event_date"); eventDate != "" {
-		if parsed, err := time.Parse(time.RFC3339, eventDate); err == nil {
-			item.Timestamp = &parsed
-			item.HasTimestamp = true
-		}
-	}
-	if scopes, ok := params["observation_scopes"]; ok {
-		if encoded, err := json.Marshal(scopes); err == nil {
-			item.ObservationScopes = encoded
-		}
-	}
+	item := storage.RetainItem{}
+	applyRetainParams(&item, doc.RetainParams)
+	// These are the reprocess's own and win over anything the stored parameters
+	// carried: the document's text and identifier are the input, the mode is
+	// replace, and the re-extract is forced.
+	item.Content = doc.OriginalText
+	item.DocumentID = documentID
+	item.UpdateMode = "replace"
+	item.ForceReextract = true
+	item.Tags = doc.Tags
 	write := storage.RetainRequest{BankID: bankID, Items: []storage.RetainItem{item}}
-	outcome, _, err := h.executeRetain(ctx, bankID, nil, write)
-	return outcome, err
+	return h.queueRetainAsync(ctx, bankID, nil, write)
+}
+
+// retainParamsNotReplayed names the retain-parameter keys a reprocess does not
+// replay. The write carries the document's own content, identifier and mode,
+// and the parameters never record the tag list or the force switch; everything
+// else the document stored is replayed. This is a deny-list, matching the
+// reference, so a newly persisted parameter round-trips through a reprocess
+// without a second edit here.
+var retainParamsNotReplayed = map[string]bool{
+	"content":         true,
+	"document_id":     true,
+	"update_mode":     true,
+	"tags":            true,
+	"force_reextract": true,
+}
+
+// applyRetainParams restores a document's stored retain parameters onto the
+// item a reprocess writes, so the re-extraction runs under the document's own
+// settings. A key the item cannot express is ignored; an absent or malformed
+// value leaves the field at its zero value rather than failing the reprocess.
+func applyRetainParams(item *storage.RetainItem, params map[string]any) {
+	for key, value := range params {
+		if retainParamsNotReplayed[key] || value == nil {
+			continue
+		}
+		switch key {
+		case "strategy":
+			item.Strategy = stringFromParams(params, "strategy")
+		case "context":
+			item.Context = stringFromParams(params, "context")
+		case "event_date":
+			if eventDate := stringFromParams(params, "event_date"); eventDate != "" {
+				if parsed, err := time.Parse(time.RFC3339, eventDate); err == nil {
+					item.Timestamp = &parsed
+					item.HasTimestamp = true
+				}
+			}
+		case "metadata":
+			if metadata, ok := value.(map[string]any); ok {
+				item.Metadata = metadata
+			}
+		case "observation_scopes":
+			if encoded, err := json.Marshal(value); err == nil {
+				item.ObservationScopes = encoded
+			}
+		case "entities":
+			item.Entities = retainEntitiesFromParams(value)
+		case "resolve_entities":
+			if resolve, ok := value.(bool); ok {
+				item.ResolveEntities = resolve
+			}
+		}
+	}
+}
+
+// retainEntitiesFromParams reads a stored entity list back into the storage
+// shape. The reference records each entity as {"text", "type"}; a value of any
+// other shape yields no entities rather than failing the reprocess. The list
+// arrives as []map[string]any from the in-process store, which never round-trips
+// through JSON, and as []any from the postgres store, which does.
+func retainEntitiesFromParams(value any) []storage.RetainEntity {
+	var entries []any
+	switch typed := value.(type) {
+	case []any:
+		entries = typed
+	case []map[string]any:
+		entries = make([]any, 0, len(typed))
+		for _, entry := range typed {
+			entries = append(entries, entry)
+		}
+	default:
+		return nil
+	}
+	out := make([]storage.RetainEntity, 0, len(entries))
+	for _, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := object["text"].(string)
+		if text == "" {
+			continue
+		}
+		kind, _ := object["type"].(string)
+		out = append(out, storage.RetainEntity{Text: text, Kind: kind})
+	}
+	return out
 }
 
 // stringFromParams reads a string field from a document's retain parameters,
@@ -717,20 +866,19 @@ func BuildRetainResponse(bankID string, req RetainRequest, result storage.Retain
 		Async:      req.Async,
 	}
 	if req.Async {
-		response.OperationID = result.OperationID
-		response.OperationIDs = result.OperationIDs
-	} else {
-		response.Usage = &Usage{
-			InputTokens:  result.Usage.InputTokens,
-			OutputTokens: result.Usage.OutputTokens,
-			TotalTokens:  result.Usage.TotalTokens,
+		if result.OperationID != "" {
+			id := result.OperationID
+			response.OperationID = &id
 		}
+		// operation_ids stays null: this service queues a single strategy group,
+		// and the reference serializes operation_ids as null whenever only one
+		// group was submitted.
+		return response
 	}
-	// A negative count means the path did not account for the content, which is
-	// reported as absent rather than as zero.
-	if result.ProcessedContentTokens >= 0 {
-		tokens := result.ProcessedContentTokens
-		response.ProcessedContentTokens = &tokens
+	response.Usage = &Usage{
+		InputTokens:  result.Usage.InputTokens,
+		OutputTokens: result.Usage.OutputTokens,
+		TotalTokens:  result.Usage.TotalTokens,
 	}
 	return response
 }
@@ -812,7 +960,7 @@ func tagScopeFailure(err error) *httpx.ValidationFailure {
 // keeps its existing mapping.
 func (h *Handlers) writeReadError(w http.ResponseWriter, r *http.Request, err error) {
 	if failure := tagScopeFailure(err); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	httpx.WriteErrorFor(w, r, h.mapReadError(err))
@@ -837,11 +985,17 @@ func toStorageRetainItems(bankID string, req RetainRequest, fold bool) storage.R
 	for _, item := range items {
 		stored = append(stored, toStorageRetainItem(item))
 	}
+	// A client-supplied identity is stored in its canonical spelling, which is
+	// what the reference's uuid-typed validator produces.
+	operationID := req.OperationID
+	if canonical, ok := canonicalOperationID(operationID); ok {
+		operationID = canonical
+	}
 	return storage.RetainRequest{
 		BankID:       bankID,
 		Items:        stored,
 		Async:        req.Async,
-		OperationID:  req.OperationID,
+		OperationID:  operationID,
 		DocumentTags: req.DocumentTags,
 	}
 }
@@ -858,7 +1012,6 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		ObservationScopes: item.ObservationScopes.RawJSON(),
 		Strategy:          item.Strategy,
 		UpdateMode:        item.UpdateMode,
-		ForceReextract:    item.ForceReextract,
 		AttachmentIDs:     item.AttachmentIDs,
 		Attachments:       toStorageAttachments(item.Attachments),
 	}

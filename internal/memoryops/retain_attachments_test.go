@@ -183,6 +183,11 @@ func uploadFile(t *testing.T, mux *http.ServeMux, filename, body, contentType st
 	if _, err := part.Write([]byte(body)); err != nil {
 		t.Fatal(err)
 	}
+	// The `request` part is required by the route, so the helper always sends
+	// the empty object.
+	if err := writer.WriteField("request", "{}"); err != nil {
+		t.Fatal(err)
+	}
 	_ = writer.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())

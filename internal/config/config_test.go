@@ -42,9 +42,6 @@ func TestFromEnvDefaults(t *testing.T) {
 	if !cfg.MCPEnabled || !cfg.EnableBankConfigAPI || !cfg.EnableObservations || !cfg.StoreDocumentText {
 		t.Fatalf("boolean env defaults must match the reference: %+v", cfg)
 	}
-	if !cfg.NullDropFields {
-		t.Fatal("null fields are dropped by default, as the reference drops them")
-	}
 }
 
 func TestFromEnvReadsEveryApprovedVariable(t *testing.T) {

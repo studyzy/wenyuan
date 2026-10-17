@@ -18,13 +18,13 @@ func seedReporting(t *testing.T, app *App) {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.UpsertUnit(ctx, storage.MemoryUnit{
-		ID: "mem-1", BankID: "rp-bank", Text: "the deployment runs on Tuesdays",
+		ID: "11111111-1111-1111-1111-111111111111", BankID: "rp-bank", Text: "the deployment runs on Tuesdays",
 		FactType: storage.TypeWorld, Tags: []string{"ops"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Store.UpsertUnit(ctx, storage.MemoryUnit{
-		ID: "obs-1", BankID: "rp-bank", Text: "deployments happen weekly",
+		ID: "33333333-3333-3333-3333-333333333333", BankID: "rp-bank", Text: "deployments happen weekly",
 		FactType: storage.TypeObservation,
 	}); err != nil {
 		t.Fatal(err)
@@ -66,12 +66,12 @@ func TestReportingRoutesResolve(t *testing.T) {
 		{"llm request stats", http.MethodGet, base + "/llm-requests/stats", http.StatusOK},
 		{"observations delete", http.MethodDelete, base + "/observations", http.StatusOK},
 		{"observation scopes", http.MethodGet, base + "/observations/scopes", http.StatusOK},
-		{"consolidation preview", http.MethodPost, base + "/consolidation-strategies/preview", http.StatusOK},
+		{"consolidation preview", http.MethodPost, base + "/consolidation-strategies/preview", http.StatusUnprocessableEntity},
 		{"consolidation recover", http.MethodPost, base + "/consolidation/recover", http.StatusOK},
 		{"consolidate", http.MethodPost, base + "/consolidate", http.StatusOK},
 		{"memories list", http.MethodGet, base + "/memories/list", http.StatusOK},
-		{"memory get", http.MethodGet, base + "/memories/mem-1", http.StatusOK},
-		{"memory history", http.MethodGet, base + "/memories/mem-1/history", http.StatusOK},
+		{"memory get", http.MethodGet, base + "/memories/11111111-1111-1111-1111-111111111111", http.StatusOK},
+		{"memory history", http.MethodGet, base + "/memories/11111111-1111-1111-1111-111111111111/history", http.StatusOK},
 		{"prompt preview", http.MethodPost, base + "/prompts/preview", http.StatusOK},
 		{"knowledge tree", http.MethodGet, base + "/knowledge-base/tree", http.StatusOK},
 		{"knowledge export", http.MethodGet, base + "/knowledge-base/export", http.StatusOK},
@@ -129,7 +129,7 @@ func TestReportingStatsCounts(t *testing.T) {
 // observation carries a history, a source fact reports an empty array.
 func TestReportingMemoryUpdateAndHistory(t *testing.T) {
 	app := reportingApp(t)
-	base := "/v1/default/banks/rp-bank/memories/mem-1"
+	base := "/v1/default/banks/rp-bank/memories/11111111-1111-1111-1111-111111111111"
 
 	rec := send(app, http.MethodPatch, base, `{"text":"the deployment now runs on Wednesdays","tags":["ops","changed"]}`)
 	if rec.Code != http.StatusOK {
@@ -156,10 +156,11 @@ func TestReportingMemoryUpdateAndHistory(t *testing.T) {
 		t.Fatalf("a source fact must report no history, got %d", len(worldHistory))
 	}
 
-	// An observation's update leaves a history entry.
-	obs := "/v1/default/banks/rp-bank/memories/obs-1"
-	if rec := send(app, http.MethodPatch, obs, `{"text":"deployments happen every week"}`); rec.Code != http.StatusOK {
-		t.Fatalf("observation update = %d (body %s)", rec.Code, rec.Body.String())
+	// A derived observation is not curatable: the reference refuses the edit and
+	// the observation regenerates from its sources instead.
+	obs := "/v1/default/banks/rp-bank/memories/33333333-3333-3333-3333-333333333333"
+	if rec := send(app, http.MethodPatch, obs, `{"text":"deployments happen every week"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("observation update = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 	rec = send(app, http.MethodGet, obs+"/history", "")
 	if rec.Code != http.StatusOK {
@@ -169,8 +170,8 @@ func TestReportingMemoryUpdateAndHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
 		t.Fatalf("history must be a bare array: %v (%s)", err, rec.Body.String())
 	}
-	if len(history) != 1 {
-		t.Fatalf("history has %d entries after one update, want 1", len(history))
+	if len(history) != 0 {
+		t.Fatalf("history has %d entries after a refused edit, want 0", len(history))
 	}
 }
 
@@ -218,7 +219,7 @@ func TestReportingKnowledgeTreeLifecycle(t *testing.T) {
 	base := "/v1/default/banks/rp-bank/knowledge-base"
 
 	// A folder, then a page inside it.
-	folderRec := send(app, http.MethodPost, base+"/folders", `{"title":"ops"}`)
+	folderRec := send(app, http.MethodPost, base+"/folders", `{"name":"ops"}`)
 	if folderRec.Code != http.StatusCreated {
 		t.Fatalf("create folder = %d (body %s)", folderRec.Code, folderRec.Body.String())
 	}
@@ -230,7 +231,7 @@ func TestReportingKnowledgeTreeLifecycle(t *testing.T) {
 	}
 
 	pageRec := send(app, http.MethodPost, base+"/pages",
-		`{"name":"deploy runbook","text":"deployments run on Tuesdays","parent_id":"`+folder.ID+`"}`)
+		`{"name":"deploy runbook","source_query":"when do deployments run","parent_id":"`+folder.ID+`"}`)
 	if pageRec.Code != http.StatusCreated {
 		t.Fatalf("create page = %d (body %s)", pageRec.Code, pageRec.Body.String())
 	}
@@ -260,8 +261,9 @@ func TestReportingKnowledgeTreeLifecycle(t *testing.T) {
 		t.Fatalf("the folder must hold one child, got %v", tree.Roots[0]["children"])
 	}
 
-	// Search finds the page by its body text.
-	searchRec := send(app, http.MethodGet, base+"/search?q=Tuesdays", "")
+	// Search finds the page: without a configured model a page has no body, so
+	// the text arm matches on the page name.
+	searchRec := send(app, http.MethodGet, base+"/search?q=runbook", "")
 	var search struct {
 		Results []map[string]any `json:"results"`
 	}
@@ -285,7 +287,8 @@ func TestReportingKnowledgeTreeLifecycle(t *testing.T) {
 }
 
 // test-reporting-memory-nulls-kept: the memory list and detail models keep
-// their declared null fields under the global null-dropping rule.
+// their declared null fields, as the reference's route class never applies
+// exclude_none.
 func TestReportingMemoryKeepsDeclaredNulls(t *testing.T) {
 	app := reportingApp(t)
 	base := "/v1/default/banks/rp-bank"
@@ -309,7 +312,7 @@ func TestReportingMemoryKeepsDeclaredNulls(t *testing.T) {
 		}
 	}
 
-	detailRec := send(app, http.MethodGet, base+"/memories/mem-1", "")
+	detailRec := send(app, http.MethodGet, base+"/memories/11111111-1111-1111-1111-111111111111", "")
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail = %d (body %s)", detailRec.Code, detailRec.Body.String())
 	}
@@ -339,7 +342,7 @@ func TestReportingNotFound(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"unknown memory", http.MethodGet, base + "/memories/absent"},
+		{"unknown memory", http.MethodGet, base + "/memories/00000000-0000-0000-0000-000000000000"},
 		{"unknown knowledge page", http.MethodGet, base + "/knowledge-base/pages/absent"},
 		{"unknown knowledge node", http.MethodDelete, base + "/knowledge-base/nodes/absent"},
 		{"unknown bank stats", http.MethodGet, unknownBank + "/stats"},

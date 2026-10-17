@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -29,6 +30,10 @@ type MemoryItem struct {
 	EditedAt              *string        `json:"edited_at"`
 	UpdatedAt             *string        `json:"updated_at"`
 	SourceMemoryIDs       []string       `json:"source_memory_ids"`
+	// Attachments are the inline attachments this memory was drawn from, in the
+	// reference's read-surface shape. The key is omitted when the memory carries
+	// none, matching the reference, which only sets it for resolved records.
+	Attachments []map[string]any `json:"attachments,omitempty"`
 }
 
 // MemoryListResponse is the memory listing envelope.
@@ -66,19 +71,11 @@ type MemoryHistoryEntry struct {
 
 // SourceFactModel is one source fact behind a history entry.
 type SourceFactModel struct {
-	ID            string  `json:"id"`
-	Text          *string `json:"text"`
-	Type          *string `json:"type"`
-	Context       *string `json:"context"`
-	IsNew         bool    `json:"is_new"`
-	OccurredStart *string `json:"occurred_start,omitempty"`
-	MentionedAt   *string `json:"mentioned_at,omitempty"`
-}
-
-// PromptPreviewRequest is the prompt-preview body.
-type PromptPreviewRequest struct {
-	Operation string  `json:"operation"`
-	Strategy  *string `json:"strategy"`
+	ID      string  `json:"id"`
+	Text    *string `json:"text"`
+	Type    *string `json:"type"`
+	Context *string `json:"context"`
+	IsNew   bool    `json:"is_new"`
 }
 
 // PromptBlockModel is one block of a rendered message.
@@ -198,7 +195,7 @@ func toMemoryItem(unit storage.MemoryUnit) MemoryItem {
 	}
 	date := ""
 	if unit.EventDate != nil {
-		date = formatTime(*unit.EventDate)
+		date = httpx.FormatTimestamp(*unit.EventDate)
 	}
 	var factType *string
 	if unit.FactType != "" {
@@ -209,17 +206,17 @@ func toMemoryItem(unit storage.MemoryUnit) MemoryItem {
 		ID: unit.ID, Text: unit.Text, Context: unit.Context, Date: date,
 		FactType: factType, DocumentID: nullableString(unit.DocumentID),
 		ChunkID: nullableString(unit.ChunkID), Tags: tags, Metadata: metadata,
-		OccurredStart:         formatTimePtr(unit.OccurredStart),
-		OccurredEnd:           formatTimePtr(unit.OccurredEnd),
-		MentionedAt:           formatTimePtr(unit.MentionedAt),
+		OccurredStart:         httpx.FormatTimestampPtr(unit.OccurredStart),
+		OccurredEnd:           httpx.FormatTimestampPtr(unit.OccurredEnd),
+		MentionedAt:           httpx.FormatTimestampPtr(unit.MentionedAt),
 		ProofCount:            unit.ProofCount,
-		ConsolidatedAt:        formatTimePtr(unit.ConsolidatedAt),
-		ConsolidationFailedAt: formatTimePtr(unit.ConsolidationFailedAt),
+		ConsolidatedAt:        httpx.FormatTimestampPtr(unit.ConsolidatedAt),
+		ConsolidationFailedAt: httpx.FormatTimestampPtr(unit.ConsolidationFailedAt),
 		State:                 memoryState(unit),
 		InvalidationReason:    unit.InvalidationReason,
-		InvalidatedAt:         formatTimePtr(unit.InvalidatedAt),
-		UpdatedAt:             formatTimePtr(unit.UpdatedAt),
-		EditedAt:              formatTimePtr(unit.EditedAt),
+		InvalidatedAt:         httpx.FormatTimestampPtr(unit.InvalidatedAt),
+		UpdatedAt:             httpx.FormatTimestampPtr(unit.UpdatedAt),
+		EditedAt:              httpx.FormatTimestampPtr(unit.EditedAt),
 		SourceMemoryIDs:       sources,
 	}
 }

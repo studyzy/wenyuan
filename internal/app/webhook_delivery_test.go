@@ -269,12 +269,10 @@ func TestGlobalWebhookResponseBodyExposure(t *testing.T) {
 				t.Fatalf("recorded %d deliveries, want 1", len(page.Deliveries))
 			}
 			delivery := page.Deliveries[0]
-			if tc.expose {
-				if delivery.LastResponseBody == nil || *delivery.LastResponseBody != "receiver-body" {
-					t.Fatalf("last_response_body = %v, want the receiver's body", delivery.LastResponseBody)
-				}
-			} else if delivery.LastResponseBody != nil {
-				t.Fatalf("last_response_body = %q, want it withheld", *delivery.LastResponseBody)
+			// The store always keeps the bounded body: the reference persists it
+			// on every attempt and decides visibility when the delivery is read.
+			if delivery.LastResponseBody == nil || *delivery.LastResponseBody != "receiver-body" {
+				t.Fatalf("last_response_body = %v, want the receiver's body", delivery.LastResponseBody)
 			}
 			if delivery.LastResponseStatus == nil || *delivery.LastResponseStatus != http.StatusOK {
 				t.Fatalf("last_response_status = %v, want the answered status", delivery.LastResponseStatus)

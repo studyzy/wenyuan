@@ -30,7 +30,7 @@ func registerConfiguredValidator(host *httpx.ExtensionHost, cfg config.Config) e
 	}
 	switch strings.TrimSpace(class) {
 	case tagScopeValidatorName:
-		host.RegisterOperationValidator(httpx.UserTagScopeValidator{})
+		host.RegisterOperationValidator(instrumentOperationValidator(httpx.UserTagScopeValidator{}))
 		return nil
 	default:
 		return fmt.Errorf("%s names an operation validator this build does not implement: %q",

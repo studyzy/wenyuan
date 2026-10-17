@@ -123,17 +123,32 @@ func declaredValues(values []entitylabels.Value) []string {
 	return out
 }
 
+// BuildFreeFormEntitiesInstruction renders the one line entities_allow_free_form
+// decides, inside the entity-labels section. It is shared with the prompt
+// preview, which reports this line as its own block so the flag is visible as
+// something shaping the prompt rather than hiding inside the labels text.
+func BuildFreeFormEntitiesInstruction(freeForm bool) string {
+	if freeForm {
+		return "Classify each fact using the structured 'labels' field below. " +
+			"Continue extracting regular named entities in the 'entities' field."
+	}
+	return "Classify each fact using the structured 'labels' field below. " +
+		"Do NOT add regular named entities — labels-only mode."
+}
+
 // labelsPromptSection renders the vocabulary as a clearly-labelled block
 // appended to the fact-extraction prompt. It mirrors the reference's two-part
 // layout: classification attributes first, then the structured (map) entity
-// types.
-func labelsPromptSection(vocab *entitylabels.Vocabulary) string {
+// types. The opening sentence is the one line entities_allow_free_form decides:
+// whether regular named entities keep being extracted alongside the labels.
+func labelsPromptSection(vocab *entitylabels.Vocabulary, freeForm bool) string {
 	var builder strings.Builder
 	builder.WriteString("\n\n")
 	builder.WriteString("══════════════════════════════════════════════════════════════════════════\n")
 	builder.WriteString("ENTITY LABELS - CLASSIFICATION ATTRIBUTES\n")
 	builder.WriteString("══════════════════════════════════════════════════════════════════════════\n\n")
-	builder.WriteString("Classify each fact using the structured 'labels' field below.\n\n")
+	builder.WriteString(BuildFreeFormEntitiesInstruction(freeForm))
+	builder.WriteString("\n\n")
 	builder.WriteString("For each fact, fill the 'labels' object. Each field is a label group:\n\n")
 
 	hasClassification := false

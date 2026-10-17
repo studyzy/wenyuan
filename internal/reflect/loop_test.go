@@ -45,7 +45,7 @@ type stubRetrieval struct {
 	observations []Evidence
 	facts        []Evidence
 	expanded     []Evidence
-	directives   []string
+	directives   []Directive
 	// askedIDs records the ids the id-addressed tools were called with, so a
 	// test can prove an alias resolved before the lookup.
 	askedIDs []string
@@ -75,7 +75,7 @@ func (s *stubRetrieval) ReflectExpand(_ context.Context, ids []string, _ string)
 	s.askedIDs = append(s.askedIDs, ids...)
 	return s.expanded, nil
 }
-func (s *stubRetrieval) Directives(context.Context) []string { return s.directives }
+func (s *stubRetrieval) Directives(context.Context) []Directive { return s.directives }
 
 // ctxRecordingRetrieval records the context each Directives read was given, so
 // a test can prove the loop's request context reaches the directive reads.
@@ -84,7 +84,7 @@ type ctxRecordingRetrieval struct {
 	got []context.Context
 }
 
-func (c *ctxRecordingRetrieval) Directives(ctx context.Context) []string {
+func (c *ctxRecordingRetrieval) Directives(ctx context.Context) []Directive {
 	c.got = append(c.got, ctx)
 	return c.directives
 }
@@ -279,7 +279,7 @@ func TestNoModelIsAnExplicitError(t *testing.T) {
 // what the model sees.
 func TestDirectivesReachTheModel(t *testing.T) {
 	p := &scriptedProvider{name: "openai", script: turnScript(toolCall(ToolDone, nil))}
-	retrieval := &stubRetrieval{directives: []string{"always answer in past tense"}}
+	retrieval := &stubRetrieval{directives: []Directive{{Content: "always answer in past tense"}}}
 	if _, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}

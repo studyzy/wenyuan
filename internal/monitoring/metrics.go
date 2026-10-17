@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"sort"
@@ -10,8 +11,22 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 )
 
-// PrometheusContentType is the text exposition content type scrapers expect.
-const PrometheusContentType = "text/plain; version=0.0.4; charset=utf-8"
+// PrometheusContentType is the text exposition content type scrapers expect. It
+// is the reference's OpenTelemetry Prometheus exporter content type, the 1.0.0
+// text exposition, not the older 0.0.4 one.
+const PrometheusContentType = "text/plain; version=1.0.0; charset=utf-8"
+
+// MetricsScopeName is the OpenTelemetry instrumentation-scope name every
+// hindsight_* series carries as its otel_scope_name label, matching the
+// reference's meter name.
+const MetricsScopeName = "hindsight_api.metrics"
+
+// ServiceName and ServiceVersion identify this process in target_info, the
+// metadata gauge the reference's exporter emits from its resource attributes.
+const (
+	ServiceName    = "hindsight-api"
+	ServiceVersion = "1.0.0"
+)
 
 // Metric is one additional gauge or counter sample beyond the HTTP instruments.
 // It is not necessarily unique by name: per-bank series share a name and differ
@@ -58,8 +73,9 @@ type MetricsHandler struct {
 	Extra func() []Metric
 	// Histograms supplies additional histogram families; it may be nil.
 	Histograms func() []Histogram
-	// Tenant, when non-empty, is added to every rendered series as a `tenant`
-	// label. A deployment sets it to the database schema it is scoped to.
+	// Tenant, when non-empty, is added to every rendered instrument series
+	// (but not the target_info metadata gauge) as a `tenant` label. A
+	// deployment sets it to the database schema it is scoped to.
 	Tenant string
 	// Workers, when non-nil, makes one scrape cover every worker of a
 	// multi-process server: the response is this process's own series read live
@@ -85,12 +101,13 @@ func (h *MetricsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 // worker's snapshot, and the whole body when no worker label is configured.
 func (h *MetricsHandler) Exposition() []byte {
 	var b strings.Builder
+	writeTargetInfo(&b)
 	var snap httpx.MetricsSnapshot
 	if h.Recorder != nil {
 		snap = h.Recorder.Snapshot()
 	}
-	// The HTTP instruments are declared at start-up, so their HELP/TYPE lines
-	// are always present even before the first request lands.
+	// The HTTP families render only from series the recorder has observed, as
+	// the reference's registry does; the metadata gauge leads the body.
 	writeHTTPRequests(&b, snap, h.Tenant)
 	if h.Extra != nil {
 		writeSamples(&b, sortMetrics(h.Extra()), h.Tenant)
@@ -98,7 +115,45 @@ func (h *MetricsHandler) Exposition() []byte {
 	if h.Histograms != nil {
 		writeHistogramFamilies(&b, h.Histograms(), h.Tenant)
 	}
+	// The per-workload families the process has recorded — operations, LLM
+	// calls, retain documents and so on — render after the deployment's own
+	// extras. Like every other family they are absent until an observation
+	// exists, so a scrape carries only what the process actually did.
+	writeSamples(&b, Workload.Samples(), h.Tenant)
+	writeHistogramFamilies(&b, Workload.Histograms(), h.Tenant)
 	return []byte(b.String())
+}
+
+// serviceInstanceID identifies this process in target_info. It is generated once
+// per process, so a scrape tells a restarted server from a live one.
+var serviceInstanceID = newServiceInstanceID()
+
+// newServiceInstanceID returns a random identifier stable for the process's
+// lifetime. A read failure falls back to the service name rather than failing
+// the exposition.
+func newServiceInstanceID() string {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return ServiceName
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16])
+}
+
+// writeTargetInfo renders the metadata gauge the reference's exporter emits from
+// its resource attributes. It describes the process rather than carrying a
+// measurement, so it is always present with value 1. The telemetry_sdk_* labels
+// name the SDK whose exporter shape this exposition follows.
+func writeTargetInfo(b *strings.Builder) {
+	writeHelpType(b, "target_info", "Target metadata", "gauge")
+	labels := map[string]string{
+		"service_instance_id":    serviceInstanceID,
+		"service_name":           ServiceName,
+		"service_version":        ServiceVersion,
+		"telemetry_sdk_language": "go",
+		"telemetry_sdk_name":     "opentelemetry",
+		"telemetry_sdk_version":  "",
+	}
+	fmt.Fprintf(b, "target_info%s 1.0\n", requestLabelStringMap(labels))
 }
 
 // BindMetricsRoutes registers the metrics route.
@@ -109,18 +164,30 @@ func BindMetricsRoutes(h *MetricsHandler, handle func(method, pattern string, ha
 // writeHTTPRequests renders the request total, in-progress and duration series
 // under the reference's instrument names.
 func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant string) {
-	writeHelpType(b, "hindsight_http_requests_total", "Total number of HTTP requests", "counter")
-	for _, series := range snap.Requests {
-		labels := requestLabels(series, true, tenant)
-		fmt.Fprintf(b, "hindsight_http_requests_total%s %s\n", labels, formatValue(series.Count))
+	// A family exists only once it has a sample, as the reference's registry
+	// does: before the first request the whole HTTP trio is absent rather than
+	// declared with no series.
+	if len(snap.Requests) > 0 {
+		writeHelpType(b, "hindsight_http_requests_total", "Total number of HTTP requests", "counter")
+		for _, series := range snap.Requests {
+			labels := requestLabels(series, true, tenant)
+			fmt.Fprintf(b, "hindsight_http_requests_total%s %s\n", labels, formatValue(series.Count))
+		}
 	}
 
-	writeHelpType(b, "hindsight_http_requests_in_progress", "Number of HTTP requests in progress", "gauge")
-	for _, series := range snap.InProgress {
-		labels := methodEndpointLabels(series.Method, series.Endpoint, tenant)
-		fmt.Fprintf(b, "hindsight_http_requests_in_progress%s %d\n", labels, series.Count)
+	// The in-progress counter's exposed name gains the unit suffix the
+	// reference's instrument name takes from its declared unit "requests".
+	if len(snap.InProgress) > 0 {
+		writeHelpType(b, "hindsight_http_requests_in_progress_requests", "Number of HTTP requests in progress", "gauge")
+		for _, series := range snap.InProgress {
+			labels := methodEndpointLabels(series.Method, series.Endpoint, tenant)
+			fmt.Fprintf(b, "hindsight_http_requests_in_progress_requests%s %d\n", labels, series.Count)
+		}
 	}
 
+	if len(snap.Requests) == 0 {
+		return
+	}
 	writeHelpType(b, "hindsight_http_duration_seconds", "Duration of HTTP requests in seconds", "histogram")
 	for _, series := range snap.Requests {
 		labels := requestLabels(series, true, tenant)
@@ -153,15 +220,22 @@ func writeSamples(b *strings.Builder, samples []Metric, tenant string) {
 			last = sample.Name
 		}
 		fmt.Fprintf(b, "%s%s %s\n", sample.Name,
-			requestLabelStringMap(mergeTenant(sample.Labels, tenant)), formatValue(sample.Value))
+			requestLabelStringMap(withScope(mergeTenant(sample.Labels, tenant))), formatValue(sample.Value))
 	}
 }
 
-// writeHistogramFamilies renders each family's buckets, sum and count.
+// writeHistogramFamilies renders each family's buckets, sum and count. The
+// families must be sorted by name: the HELP/TYPE block is emitted once per
+// name, so several label sets of one family share one declaration rather than
+// repeating it before every series.
 func writeHistogramFamilies(b *strings.Builder, families []Histogram, tenant string) {
+	last := ""
 	for _, family := range families {
-		writeHelpType(b, family.Name, helpOr(family.Help), "histogram")
-		labels := mergeTenant(family.Labels, tenant)
+		if family.Name != last {
+			writeHelpType(b, family.Name, helpOr(family.Help), "histogram")
+			last = family.Name
+		}
+		labels := withScope(mergeTenant(family.Labels, tenant))
 		for i, boundary := range family.Buckets {
 			var count uint64
 			if i < len(family.Counts) {
@@ -219,7 +293,7 @@ func requestLabelString(method, endpoint, statusCode, statusClass, le string, wi
 	if le != "" {
 		labels["le"] = le
 	}
-	return requestLabelStringMap(mergeTenant(labels, tenant))
+	return requestLabelStringMap(withScope(mergeTenant(labels, tenant)))
 }
 
 // mergeTenant returns the labels with a tenant label added when one is set. It
@@ -243,6 +317,21 @@ func withLabel(labels map[string]string, name, value string) map[string]string {
 		out[k] = v
 	}
 	out[name] = value
+	return out
+}
+
+// withScope returns the labels with the OpenTelemetry instrumentation-scope
+// labels every hindsight_* series carries, never mutating the input. The
+// reference's Prometheus exporter stamps otel_scope_name (the meter's module),
+// otel_scope_version and otel_scope_schema_url onto each rendered series.
+func withScope(labels map[string]string) map[string]string {
+	out := make(map[string]string, len(labels)+3)
+	for k, v := range labels {
+		out[k] = v
+	}
+	out["otel_scope_name"] = MetricsScopeName
+	out["otel_scope_schema_url"] = ""
+	out["otel_scope_version"] = ""
 	return out
 }
 

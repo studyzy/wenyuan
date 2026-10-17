@@ -197,6 +197,11 @@ func providerProbeValue(key string) string {
 	if key == EnvLLMDefaultHeaders {
 		return "X-Probe: one"
 	}
+	if key == EnvLLMGeminiSafetySettings {
+		// The safety-settings override is a JSON list; the probe must be a
+		// literal the resolver acts on, not a bare token that is not JSON.
+		return `[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_NONE"}]`
+	}
 	if strings.Contains(key, "TEMPERATURE") {
 		return "0.5"
 	}

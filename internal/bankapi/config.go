@@ -1,7 +1,9 @@
 package bankapi
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -36,18 +38,30 @@ func (h *Handlers) UpdateBankConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, configAPIDisabledDetail))
 		return
 	}
+	// The bank's config is bank-wide, so a tag-scoped caller may not change it.
+	if httpx.RefuseBankWideIfScoped(w, r, "change the bank's config") {
+		return
+	}
 	bankID, err := h.Store.ResolveBankID(r.Context(), r.PathValue("bank_id"))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
 		return
 	}
 	var req ConfigWriteRequest
-	if err := httpx.DecodeBody(r, &req); err != nil {
+	object, err := decodeRequest(r, &req)
+	if err != nil {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	if req.Updates == nil {
-		httpx.WriteValidationFor(w, r, updatesRequiredFailure())
+	if raw, present := object["updates"]; !present {
+		httpx.WriteValidationFailure(w, updatesRequiredFailure(object))
+		return
+	} else if raw == nil {
+		// The reference declares updates a required dict: an explicit null is a
+		// dict_type item, not the missing-field one an absent key yields.
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.ValidationItem("dict_type", []string{"body", "updates"}, "Input should be a valid dictionary", nil, nil),
+		}})
 		return
 	}
 	patch, httpErr := configPatch(*req.Updates)
@@ -81,6 +95,9 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, configAPIDisabledDetail))
 		return
 	}
+	if httpx.RefuseBankWideIfScoped(w, r, "reset the bank's config") {
+		return
+	}
 	// The id is resolved for aliases but not required to exist: the reference's
 	// reset is a single unconditional update of the bank row's config column,
 	// so it answers 200 with the caller's resolved defaults for a bank that is
@@ -92,15 +109,12 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
 		return
 	}
-	// A reset removes every override the bank holds — the configuration keys,
-	// the disposition traits and the reflect mission alike — so the bank reads
-	// the process defaults again. The disposition and mission live on the bank
-	// row rather than in the override map, so they are cleared explicitly.
-	empty := ""
+	// A reset removes every override the bank holds in its config column, so
+	// the bank reads the process defaults again. It does not touch the legacy
+	// disposition and mission columns: the reference's reset writes only
+	// `config = '{}'`, and those columns are owned by the profile paths.
 	bank, err := h.Store.UpdateBank(r.Context(), bankID, storage.BankPatch{
-		ClearDisposition: true,
-		Mission:          &empty,
-		ClearConfig:      true,
+		ClearConfig: true,
 	})
 	if errors.Is(err, storage.ErrBankNotFound) {
 		// A reset is an unconditional clear in the reference: it updates the
@@ -124,38 +138,109 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 // bank-specific overrides for a bank row.
 func (h *Handlers) writeConfigResponse(w http.ResponseWriter, r *http.Request, bankID string, bank storage.Bank) {
 	overrides := bankOverrides(bank)
-	httpx.WriteJSONFor(w, r, http.StatusOK, ConfigResponse{
+	resolved := resolvedConfig(overrides, r, h.ConfigDefaults)
+	// The reference validates the resolved configuration on every read
+	// (resolve_full_config), and its handler lets a validation fault escape as
+	// an internal error rather than answering with a bank that could not retain.
+	if detail := validateResolvedConfig(resolved); detail != "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, detail))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, ConfigResponse{
 		BankID:    bankID,
-		Config:    resolvedConfig(overrides, r, h.ConfigDefaults),
+		Config:    resolved,
 		Overrides: overrides,
 	})
 }
 
+// validateResolvedConfig reproduces the guard the reference runs on every
+// resolved bank configuration: the retain chunking sizes and the per-chunk
+// attachment count must be integers of at least one. It returns the reference's
+// message for the first offending field, and the empty string when the
+// configuration is valid.
+//
+// A field absent from the resolved map is skipped rather than rejected: the
+// process layer always supplies these three, so an absent one means the caller
+// resolved no defaults at all (a bare handler), not that the bank stored a null.
+func validateResolvedConfig(resolved map[string]any) string {
+	if value, ok := resolved["retain_chunk_size"]; ok {
+		if detail := validateChunkingInt("retain_chunk_size", value, false); detail != "" {
+			return detail
+		}
+	}
+	if value, ok := resolved["retain_structured_chunk_size"]; ok {
+		if detail := validateChunkingInt("retain_structured_chunk_size", value, true); detail != "" {
+			return detail
+		}
+	}
+	if value, ok := resolved["retain_max_attachments_per_chunk"]; ok {
+		if detail := validateChunkingInt("retain_max_attachments_per_chunk", value, false); detail != "" {
+			return detail
+		}
+	}
+	return ""
+}
+
+// validateChunkingInt checks one size field, returning the reference's message
+// (`{name} must be an integer, got {value!r}` / `{name} must be >= 1, got
+// {value}`) when it is not an integer of at least one. nullable marks the field
+// the reference skips when it is absent rather than rejecting.
+func validateChunkingInt(name string, value any, nullable bool) string {
+	if value == nil && nullable {
+		return ""
+	}
+	number, ok := asInt(value)
+	if !ok {
+		return fmt.Sprintf("%s must be an integer, got %s", name, pyRepr(value))
+	}
+	if number < 1 {
+		return fmt.Sprintf("%s must be >= 1, got %d", name, number)
+	}
+	return ""
+}
+
 // updatesRequiredFailure reports the required updates field of the config write
 // body, which the reference declares without a default.
-func updatesRequiredFailure() *httpx.ValidationFailure {
+func updatesRequiredFailure(input any) *httpx.ValidationFailure {
 	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-		httpx.Missing([]string{"body", "updates"}, map[string]any{}),
+		httpx.Missing([]string{"body", "updates"}, input),
 	}}
 }
 
-// bankOverrides returns the bank's own overrides: every configuration key the
-// bank has set, plus the disposition traits and reflect mission that live in
-// the bank's own columns. It is the top layer of the resolution, so it names
-// only what the bank itself overrides and never a shipped default — a trait the
-// bank never set, and an empty mission, are absent rather than materialized.
+// bankOverrides returns the bank's own overrides: exactly the keys stored in
+// the bank's config JSONB column, normalized to the internal field form and
+// filtered the way the reference's active-override read does. It is the top
+// layer of the resolution, so it names only what the bank itself overrides and
+// never a shipped default.
+//
+// The reference reads the config column and nothing else: the legacy
+// disposition and mission columns are consulted by the profile and list paths,
+// not by the configuration endpoint, so a bank whose columns hold the schema
+// default reports no disposition override here. A key the bank stored but the
+// reference does not consider configurable is filtered out, and a value whose
+// shape does not match the field is dropped (a string field keeps its JSON
+// encoding) so a pre-validation row falls back to the server default instead of
+// breaking the read.
 func bankOverrides(bank storage.Bank) map[string]any {
-	overrides := make(map[string]any, len(bank.Config)+4)
-	for key, value := range bank.Config {
-		overrides[key] = value
-	}
-	for trait, key := range dispositionFieldKeys {
-		if value, ok := bank.Disposition[key]; ok {
-			overrides[trait] = value
+	overrides := make(map[string]any, len(bank.Config))
+	for rawKey, value := range bank.Config {
+		key := normalizeConfigKey(rawKey)
+		kind, configurable := configurableFields[key]
+		if !configurable || value == nil {
+			continue
 		}
-	}
-	if bank.Mission != "" {
-		overrides["reflect_mission"] = bank.Mission
+		if kindMatches(kind, value) {
+			overrides[key] = value
+			continue
+		}
+		// A string field whose stored value is a container keeps the author's
+		// intent as its JSON encoding; anything else is dropped so the bank
+		// falls back rather than wedging every later read.
+		if kind == kindString {
+			if encoded, err := json.Marshal(value); err == nil {
+				overrides[key] = string(encoded)
+			}
+		}
 	}
 	return overrides
 }

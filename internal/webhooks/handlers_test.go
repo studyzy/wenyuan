@@ -3,8 +3,10 @@ package webhooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -159,8 +161,9 @@ func TestWebhookLifecycle(t *testing.T) {
 	}
 }
 
-// A create with a rejected URL, an unknown event, or a malformed body is
-// refused before anything is stored.
+// A create with a rejected URL is refused before anything is stored; a body the
+// request model rejects is the framework's 422; an unknown event name is
+// accepted (the reference applies no enum to the field).
 func TestWebhookCreateValidation(t *testing.T) {
 	mux, store := newServer(t)
 	const base = "/v1/default/banks/b1/webhooks"
@@ -169,15 +172,21 @@ func TestWebhookCreateValidation(t *testing.T) {
 	if rec := send(mux, http.MethodPost, base, `{"url":"http://10.0.0.5/hook"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("private target: %d, want 400", rec.Code)
 	}
-	if rec := send(mux, http.MethodPost, base, `{"url":"https://example.test/hook","event_types":["nope"]}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown event: %d, want 400", rec.Code)
+	// An unknown event name is accepted, matching the reference.
+	if rec := send(mux, http.MethodPost, base, `{"url":"https://example.test/hook","event_types":["nope"]}`); rec.Code != http.StatusCreated {
+		t.Fatalf("unknown event: %d, want 201", rec.Code)
 	}
-	if rec := send(mux, http.MethodPost, base, `not json`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("malformed body: %d, want 400", rec.Code)
+	// A malformed body is a 422 with the framework's item envelope.
+	if rec := send(mux, http.MethodPost, base, `not json`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed body: %d, want 422", rec.Code)
+	}
+	// A missing required url is the framework's 422 too.
+	if rec := send(mux, http.MethodPost, base, `{}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing url: %d, want 422", rec.Code)
 	}
 	hooks, err := store.ListWebhooks(context.Background(), "b1")
-	if err != nil || len(hooks) != 0 {
-		t.Fatalf("nothing must be stored after a refused create: %v (err %v)", hooks, err)
+	if err != nil || len(hooks) != 1 {
+		t.Fatalf("only the accepted create must be stored: %v (err %v)", hooks, err)
 	}
 }
 
@@ -207,6 +216,10 @@ func TestWebhookDeliveriesShapeAndCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, id := range []string{"op-1", "op-2", "op-3"} {
+		// The store stamps created_at itself, and the cursor pages on that
+		// microsecond-resolution value: two rows minted inside the same
+		// microsecond collapse under `< cursor`, so keep them apart.
+		time.Sleep(1200 * time.Microsecond)
 		if _, err := store.PutOperation(context.Background(), storage.Operation{
 			OperationID:   id,
 			BankID:        "b1",
@@ -265,7 +278,10 @@ func TestWebhookDeliveriesShapeAndCursor(t *testing.T) {
 		}
 	}
 
-	next := send(mux, http.MethodGet, base+"/"+webhook.ID+"/deliveries?limit=2&cursor="+*page.NextCursor, "")
+	// The cursor is the last row's created_at as the reference reports it — the
+	// PostgreSQL text form, which contains a space — so a caller must
+	// URL-encode it before putting it in a query string.
+	next := send(mux, http.MethodGet, base+"/"+webhook.ID+"/deliveries?limit=2&cursor="+url.QueryEscape(*page.NextCursor), "")
 	var second struct {
 		Items []struct {
 			ID string `json:"id"`
@@ -275,7 +291,7 @@ func TestWebhookDeliveriesShapeAndCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(second.Items) != 1 || second.Items[0].ID != "op-1" {
-		t.Fatalf("second page = %+v", second.Items)
+		t.Fatalf("second page = %+v (status %d, body %s)", second.Items, next.Code, next.Body.String())
 	}
 }
 
@@ -294,9 +310,12 @@ func TestWebhookNegativeCases(t *testing.T) {
 	}
 
 	seeded, _ := newServer(t)
-	// The member path has no read route, so an unknown webhook is probed with
-	// a method the surface actually offers.
-	if rec := send(seeded, http.MethodDelete, "/v1/default/banks/b1/webhooks/does-not-exist", ""); rec.Code != http.StatusNotFound {
+	// A malformed webhook identifier is the reference's 422, not a 404.
+	if rec := send(seeded, http.MethodDelete, "/v1/default/banks/b1/webhooks/does-not-exist", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed webhook id: %d, want 422", rec.Code)
+	}
+	// A well-formed but unknown identifier is a 404.
+	if rec := send(seeded, http.MethodDelete, "/v1/default/banks/b1/webhooks/11111111-1111-1111-1111-111111111111", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown webhook: %d, want 404", rec.Code)
 	}
 }
@@ -304,4 +323,29 @@ func TestWebhookNegativeCases(t *testing.T) {
 // timeAt returns a distinct timestamp for delivery fixtures.
 func timeAt(ordinal int) time.Time {
 	return time.Date(2026, 1, 1, 0, ordinal, 0, 0, time.UTC)
+}
+
+// asHTTPError names the storage sentinels a route can hit and treats anything
+// it does not name as a server fault.
+func TestWebhookErrorMapping(t *testing.T) {
+	cases := []struct {
+		err    error
+		expect int
+	}{
+		{storage.ErrBankNotFound, http.StatusNotFound},
+		{storage.ErrWebhookNotFound, http.StatusNotFound},
+		{storage.ErrWebhookURLNotAllowed, http.StatusBadRequest},
+		{storage.ErrInvalidBankID, http.StatusBadRequest},
+		{storage.ErrAliasConflict, http.StatusConflict},
+		{storage.ErrWritesUnavailable, http.StatusServiceUnavailable},
+		{errors.New("storage exploded"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		if got := asHTTPError(tc.err); got == nil || got.Status != tc.expect {
+			t.Fatalf("error %v mapped to %+v, want status %d", tc.err, got, tc.expect)
+		}
+	}
+	if asHTTPError(nil) != nil {
+		t.Fatal("a nil error must map to nil")
+	}
 }

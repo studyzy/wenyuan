@@ -48,7 +48,7 @@ const defaultBankListLimit = 100
 func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 	query, failure := parseBankQuery(r)
 	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	page, err := h.Store.ListBanks(r.Context(), query)
@@ -62,11 +62,10 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 		// The row reports the bank's resolved disposition and mission, which is
 		// what the reference's list serves: a bank whose configuration names a
 		// trait reports it rather than the column it was created with.
-		resolved := resolvedConfig(bankOverrides(bank), r, h.ConfigDefaults)
-		disposition, mission := overlayDispositionMission(resolved, bank)
+		disposition, mission := h.resolvedDispositionMission(r, bank)
 		rows = append(rows, ToListRowWithDisposition(bank, display, page.MatchedAliases[bank.BankID], disposition, mission))
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, BankListResponse{
+	httpx.WriteJSON(w, http.StatusOK, BankListResponse{
 		Banks:  rows,
 		Total:  page.Total,
 		Limit:  page.Limit,
@@ -79,6 +78,11 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 // that is only an alias of another bank is a conflict; otherwise the bank is
 // created.
 func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
+	// Changing a bank's mission or config reaches the whole bank, so a
+	// tag-scoped caller may not run it at all.
+	if httpx.RefuseBankWideIfScoped(w, r, "change the bank's mission or config") {
+		return
+	}
 	rawID := r.PathValue("bank_id")
 	var req BankRequest
 	if err := httpx.DecodeBody(r, &req); err != nil {
@@ -86,7 +90,7 @@ func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if failure := ValidateCreate(req); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	configPatchValue, httpErr := configPatch(req.configUpdates())
@@ -103,34 +107,58 @@ func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 		// The name is not a real bank: a name that is only an alias of another
 		// bank cannot be created because it would shadow that alias.
 		if owner, _ := h.Store.ResolveBankID(r.Context(), rawID); owner != rawID {
-			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias"))
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindConflict, "'"+rawID+"' is an alias of another bank"))
 			return
 		}
 		bank := req.ToStorage(rawID)
+		// The identifier admission runs on the create path only, matching the
+		// reference's _ensure_bank_exists, and reports the specific rule it broke.
+		if writeIdentifierError(w, r, rawID) {
+			return
+		}
 		bank.Config = mergeConfig(nil, configPatchValue.Config)
 		created, cerr := h.Store.CreateBank(r.Context(), bank)
 		if cerr != nil {
 			httpx.WriteErrorFor(w, r, h.mapWriteError(cerr))
 			return
 		}
-		httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(created))
+		httpx.WriteJSON(w, http.StatusOK, h.profileResponse(r, created))
 		return
 	}
-	bank := req.ToStorage(rawID)
-	// The reference merges config updates into the bank's existing overrides
-	// rather than replacing them, so a replace that names no config field keeps
-	// every override the bank already had.
-	bank.Config = mergeConfig(existing.Config, configPatchValue.Config)
-	replaced, err := h.Store.ReplaceBank(r.Context(), bank)
+	// The bank exists: apply only the fields the request supplied, exactly as
+	// the reference's update_bank does for a PUT to an existing bank.
+	h.applyBankUpdate(w, r, rawID, req, existing)
+}
+
+// applyBankUpdate writes the fields a PUT or PATCH actually supplied over an
+// existing bank, leaving every field the caller omitted untouched. It mirrors
+// the reference's update_bank, whose SET clause names only the supplied columns:
+// a name-only update keeps the stored mission and disposition, and a
+// mission-only update keeps the stored name.
+func (h *Handlers) applyBankUpdate(w http.ResponseWriter, r *http.Request, bankID string, req BankRequest, current storage.Bank) {
+	configPatchValue, httpErr := configPatch(req.configUpdates())
+	if httpErr != nil {
+		httpx.WriteErrorFor(w, r, httpErr)
+		return
+	}
+	patch := req.ToPatch()
+	if configPatchValue.Config != nil {
+		merged := mergeConfig(current.Config, configPatchValue.Config)
+		patch.Config = &merged
+	}
+	updated, err := h.Store.UpdateBank(r.Context(), bankID, patch)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+		httpx.WriteErrorFor(w, r, validateBankExists(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(replaced))
+	httpx.WriteJSON(w, http.StatusOK, h.profileResponse(r, updated))
 }
 
 // UpdateBank serves the partial-update route. A missing bank is not created.
 func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
+	if httpx.RefuseBankWideIfScoped(w, r, "change the bank's mission or config") {
+		return
+	}
 	bankID, ok := h.resolveCanonical(w, r)
 	if !ok {
 		return
@@ -141,29 +169,23 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if failure := ValidatePatch(req); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	configPatchValue, httpErr := configPatch(req.configUpdates())
-	if httpErr != nil {
-		httpx.WriteErrorFor(w, r, httpErr)
-		return
-	}
-	storagePatch := req.ToPatch()
-	if configPatchValue.Config != nil {
-		storagePatch.Config = configPatchValue.Config
-	}
-	bank, err := h.Store.UpdateBank(r.Context(), bankID, storagePatch)
+	current, err := h.Store.GetBank(r.Context(), bankID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, validateBankExists(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ToResponse(bank))
+	h.applyBankUpdate(w, r, bankID, req, current)
 }
 
 // DeleteBank serves the bank deletion route. Deleting a bank that never existed
 // is a zero-item no-op.
 func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
+	if httpx.RefuseBankWideIfScoped(w, r, "delete or clear the bank") {
+		return
+	}
 	rawID := r.PathValue("bank_id")
 	bankID, err := h.Store.ResolveBankID(r.Context(), rawID)
 	if err != nil {
@@ -177,7 +199,7 @@ func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reference answers one message for every outcome, including a bank
 	// that never existed; the count is what varies.
-	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteResponse{
+	httpx.WriteJSON(w, http.StatusOK, DeleteResponse{
 		Success:      true,
 		Message:      "Bank '" + bankID + "' and all associated data deleted successfully",
 		DeletedCount: deleted,
@@ -203,6 +225,22 @@ func (h *Handlers) resolveCanonical(w http.ResponseWriter, r *http.Request) (str
 		return "", false
 	}
 	return bankID, true
+}
+
+// resolvedDispositionMission resolves the disposition and mission a bank
+// reports: its own configuration overrides layered over the process defaults,
+// overlaid on the legacy columns by overlayDispositionMission. Shared by the
+// list and single-bank paths so both return the same pair for the same bank.
+func (h *Handlers) resolvedDispositionMission(r *http.Request, bank storage.Bank) (map[string]int, string) {
+	return overlayDispositionMission(resolvedConfig(bankOverrides(bank), r, h.ConfigDefaults), bank)
+}
+
+// profileResponse renders a bank as its public profile with the configuration
+// overlaid on the legacy columns, matching what the reference returns from a
+// create, replace or partial update.
+func (h *Handlers) profileResponse(r *http.Request, bank storage.Bank) BankResponse {
+	disposition, mission := h.resolvedDispositionMission(r, bank)
+	return ToResponse(bank, disposition, mission)
 }
 
 func (h *Handlers) displayAlias(r *http.Request, bankID string) *string {
@@ -246,10 +284,16 @@ func validateBankExists(err error) error {
 // a non-negative integer, and a value that is not is a validation failure, the
 // same 422 the reference's bounded query parameters produce.
 func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailure) {
-	query := storage.BankQuery{Search: httpx.Query(r, "q"), Limit: defaultBankListLimit}
+	query := storage.BankQuery{Limit: defaultBankListLimit}
+	// The reference declares scalar query parameters, and the framework keeps
+	// the last occurrence of a repeated key. Read the last value of each name
+	// rather than the first so a repeated q/limit/offset behaves the same.
+	if raw, ok := httpx.QueryPresent(r, "q"); ok {
+		query.Search = raw[len(raw)-1]
+	}
 	var items []httpx.ValidationError
 	if raw, ok := httpx.QueryPresent(r, "limit"); ok {
-		value, failure := parseNonNegativeParam("limit", raw[0])
+		value, failure := parseNonNegativeParam("limit", raw[len(raw)-1])
 		if failure != nil {
 			items = append(items, *failure)
 		} else {
@@ -257,7 +301,7 @@ func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailur
 		}
 	}
 	if raw, ok := httpx.QueryPresent(r, "offset"); ok {
-		value, failure := parseNonNegativeParam("offset", raw[0])
+		value, failure := parseNonNegativeParam("offset", raw[len(raw)-1])
 		if failure != nil {
 			items = append(items, *failure)
 		} else {
@@ -280,7 +324,8 @@ func parseNonNegativeParam(name, raw string) (int, *httpx.ValidationError) {
 		return 0, &item
 	}
 	if parsed < 0 {
-		item := httpx.GreaterThanEqual([]string{"query", name}, parsed, 0)
+		// The framework reports the raw query string as the item's input.
+		item := httpx.GreaterThanEqual([]string{"query", name}, raw, 0)
 		return 0, &item
 	}
 	return parsed, nil

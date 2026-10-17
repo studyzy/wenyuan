@@ -72,6 +72,9 @@ var resolvedProviderKeys = map[string]bool{
 	EnvLLMSupportsMaxItems:     true,
 	EnvLLMSupportsStringPattrn: true,
 	EnvLLMTimeout:              true,
+	// The Gemini safety-settings override is JSON that this build parses into
+	// the bank configuration surface, so the key is read rather than refused.
+	EnvLLMGeminiSafetySettings: true,
 	EnvLLMTraceEnabled:         true,
 	EnvLLMTraceMaxChars:        true,
 	EnvLLMTraceRetentionDays:   true,
@@ -373,7 +376,6 @@ var providerRefusalReasons = []struct {
 	{"HINDSIGHT_API_LLM_OLLAMA", "the Ollama request tuning is not implemented"},
 	{"HINDSIGHT_API_LLM_CODEX_HOME", "the Codex CLI provider is not implemented"},
 	{"HINDSIGHT_API_LLM_VERTEXAI", "the Vertex AI provider is not implemented"},
-	{"HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS", "the Gemini safety-settings override is not implemented"},
 	{"HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
 	{"HINDSIGHT_API_RETAIN_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
 	{"HINDSIGHT_API_REFLECT_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},

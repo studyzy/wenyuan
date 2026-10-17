@@ -38,11 +38,11 @@ func TestGuardRefusesInternalTargets(t *testing.T) {
 	}
 }
 
-// test-guard-refuses-other-schemes-and-shapes: only an absolute
-// credential-free HTTP(S) URL is accepted. `http` is accepted because the
-// reference accepts it: what makes a target safe is the address it resolves to,
-// not the scheme, and a plain-HTTP receiver is exactly what an operator
-// allowlists for testing.
+// test-guard-refuses-other-schemes-and-shapes: only an absolute HTTP(S) URL is
+// accepted. `http` is accepted because the reference accepts it: what makes a
+// target safe is the address it resolves to, not the scheme, and a plain-HTTP
+// receiver is exactly what an operator allowlists for testing. Credentials in
+// the URL are accepted, matching the reference, which has no userinfo rule.
 func TestGuardRefusesOtherSchemes(t *testing.T) {
 	guard := NewGuard(GuardConfig{})
 	cases := []struct {
@@ -53,7 +53,6 @@ func TestGuardRefusesOtherSchemes(t *testing.T) {
 		{"gopher scheme", "gopher://example.com/"},
 		{"no scheme", "example.com/hook"},
 		{"no host", "https:///hook"},
-		{"credentials", "https://user:pass@example.com/hook"},
 		{"empty", ""},
 	}
 	for _, tc := range cases {
@@ -62,6 +61,9 @@ func TestGuardRefusesOtherSchemes(t *testing.T) {
 				t.Fatalf("%q must be refused", tc.url)
 			}
 		})
+	}
+	if err := guard.Validate("https://user:pass@example.com/hook"); err != nil {
+		t.Fatalf("credentials in the URL are accepted by the reference: %v", err)
 	}
 }
 
@@ -105,19 +107,39 @@ func TestGuardAcceptsPlainHTTP(t *testing.T) {
 }
 
 // test-private-address-detection: the classifier covers the ranges that matter
-// for a server-side fetch.
-func TestIsPrivateAddress(t *testing.T) {
-	private := []string{"127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.20.0.1", "169.254.169.254", "0.0.0.0", "fe80::1"}
-	for _, raw := range private {
-		if !isPrivateAddress(parseIP(t, raw)) {
-			t.Fatalf("%s must be classified private", raw)
+// for a server-side fetch, including the reserved blocks and carrier-grade NAT.
+func TestIPIsBlocked(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.20.0.1",
+		"169.254.169.254", "0.0.0.0", "fe80::1", "100.64.0.1", "240.0.0.1",
+	}
+	for _, raw := range blocked {
+		if !ipIsBlocked(parseIP(t, raw)) {
+			t.Fatalf("%s must be classified blocked", raw)
 		}
 	}
 	public := []string{"8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"}
 	for _, raw := range public {
-		if isPrivateAddress(parseIP(t, raw)) {
+		if ipIsBlocked(parseIP(t, raw)) {
 			t.Fatalf("%s must be classified public", raw)
 		}
+	}
+}
+
+// test-legacy-numeric-address-spellings: the numeric IPv4 spellings the OS
+// resolver folds onto an address must not smuggle a loopback target past the
+// registration check.
+func TestLegacyNumericHosts(t *testing.T) {
+	guard := NewGuard(GuardConfig{})
+	for _, url := range []string{"http://2130706433/hook", "http://127.1/hook", "http://0x7f.1/hook"} {
+		if err := guard.Validate(url); err == nil {
+			t.Fatalf("%s must be refused", url)
+		}
+	}
+	// Octal 010 is 8, a public address, so this is accepted — the same fold the
+	// reference's socket.inet_aton performs.
+	if err := guard.Validate("http://010.0.0.1/hook"); err != nil {
+		t.Fatalf("octal 010 folds to 8.0.0.1 and is accepted: %v", err)
 	}
 }
 

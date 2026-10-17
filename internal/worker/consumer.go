@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/audit"
+	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -195,6 +196,10 @@ type Consumer struct {
 
 	inflightMu sync.Mutex
 	inflight   map[string]int
+	// pollMu guards lastPoll, the time of the last completed claim cycle that
+	// the worker liveness probe reports the age of.
+	pollMu   sync.Mutex
+	lastPoll time.Time
 	// consolidationPriority is the parsed ConsolidationByBank list, applied to
 	// consolidation claims. It is empty when the deployment configured none.
 	consolidationPriority map[string]int
@@ -341,6 +346,26 @@ func (c *Consumer) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// LastPoll reports the time of the last completed claim cycle, or nil before
+// the first one. The worker liveness probe reports its age for alerting, so a
+// stalled consumer is visible without a restart.
+func (c *Consumer) LastPoll() *time.Time {
+	c.pollMu.Lock()
+	defer c.pollMu.Unlock()
+	if c.lastPoll.IsZero() {
+		return nil
+	}
+	last := c.lastPoll
+	return &last
+}
+
+// stampPoll records that a claim cycle completed just now.
+func (c *Consumer) stampPoll() {
+	c.pollMu.Lock()
+	c.lastPoll = c.cfg.Now()
+	c.pollMu.Unlock()
+}
+
 // Stop asks the consumer to finish and hand back its work.
 func (c *Consumer) Stop() {
 	c.once.Do(func() { close(c.stopCh) })
@@ -353,6 +378,12 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 			return
 		}
 		op, err := c.claim(ctx)
+		// A claim cycle that completed — an operation taken, or an empty batch —
+		// is what the liveness probe ages; a failed claim is not a completed
+		// cycle, so it leaves the stamp alone.
+		if err == nil || errors.Is(err, storage.ErrOperationNotFound) {
+			c.stampPoll()
+		}
 		if err != nil {
 			if errors.Is(err, storage.ErrOperationNotFound) {
 				c.wait(ctx)
@@ -507,6 +538,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 
 	if err == nil {
 		c.complete(ctx, op, sink.metadata)
+		c.recordOperation(op, true, time.Since(started))
 		return
 	}
 	if errors.Is(err, storage.ErrOperationAborted) {
@@ -520,6 +552,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		// A permanent failure is terminal on the first try; it must not consume
 		// the retry budget.
 		c.fail(ctx, op, err.Error(), sink.metadata)
+		c.recordOperation(op, false, time.Since(started))
 		return
 	}
 	if isBackpressure(err) || isDeferral(err) {
@@ -533,7 +566,30 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		c.deferOperation(ctx, op, err, sink.metadata)
 		return
 	}
-	c.retry(ctx, op, err, sink.metadata)
+	c.retry(ctx, op, err, sink.metadata, started)
+}
+
+// recordOperation reports one terminally-settled operation to the metric
+// registry: its duration and count, under the worker source. Only a terminal
+// outcome is counted — a deferral, or a retry that is still scheduled, is not a
+// completion and must not appear as one.
+func (c *Consumer) recordOperation(op storage.Operation, success bool, duration time.Duration) {
+	monitoring.Workload.ObserveOperation(metricOperationLabel(op.OperationType), "worker", "", "", success, duration.Seconds())
+}
+
+// metricOperationLabel names an operation for the operation-duration and
+// operation-total families. The reference collapses every retain-shaped type
+// into one "retain" series and reports any other type by its own name, so a
+// batch retain and a file-convert retain read as the same workload.
+func metricOperationLabel(operationType string) string {
+	switch operationType {
+	case storage.OperationTypeRetain, storage.AsyncRetainType, storage.OperationTypeFileConvertRetain:
+		return "retain"
+	case "":
+		return "unknown"
+	default:
+		return operationType
+	}
 }
 
 // isBackpressure reports whether a failure is the store shedding load rather
@@ -604,10 +660,11 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 
 // retry schedules another attempt, or fails the operation once the attempt
 // budget is spent.
-func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error, metadata map[string]any) {
+func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error, metadata map[string]any, started time.Time) {
 	attempt := op.RetryCount + 1
 	if attempt > c.cfg.MaxRetries {
 		c.fail(ctx, op, fmt.Sprintf("retry budget exhausted after %d attempt(s): %v", op.RetryCount, cause), metadata)
+		c.recordOperation(op, false, time.Since(started))
 		return
 	}
 

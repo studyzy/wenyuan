@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -18,7 +19,7 @@ func nestKnowledge(nodes []KnowledgeNode) []KnowledgeNode {
 	}
 	byParent := map[string][]KnowledgeNode{}
 	for _, node := range nodes {
-		parent := node.ParentID
+		parent := derefString(node.ParentID)
 		if parent != "" && !present[parent] {
 			parent = ""
 		}
@@ -46,7 +47,7 @@ func pruneKnowledgeNodes(nodes []KnowledgeNode, filter knowledgeTagFilter) []Kno
 	}
 	parentOf := make(map[string]string, len(nodes))
 	for _, node := range nodes {
-		parentOf[node.ID] = node.ParentID
+		parentOf[node.ID] = derefString(node.ParentID)
 	}
 	keep := map[string]bool{}
 	for _, node := range nodes {
@@ -55,6 +56,74 @@ func pruneKnowledgeNodes(nodes []KnowledgeNode, filter knowledgeTagFilter) []Kno
 		}
 		for id := node.ID; id != "" && !keep[id]; id = parentOf[id] {
 			keep[id] = true
+		}
+	}
+	out := make([]KnowledgeNode, 0, len(keep))
+	for _, node := range nodes {
+		if keep[node.ID] {
+			out = append(out, node)
+		}
+	}
+	return out
+}
+
+// pruneKnowledgeNodesToScope keeps the knowledge nodes a caller confined to
+// `scope` may see: a page whose tags satisfy the scope, every folder on the
+// path to one, and every folder the scope leaves empty. A folder holding only
+// out-of-scope pages is someone else's and is dropped; an empty folder is no
+// one's yet, so its creator still sees it to put pages in it. The caller's own
+// tag filter and its resolved scope are applied as separate passes, as the
+// reference does: the filter drops a folder it leaves empty, the scope does
+// not. An empty scope leaves every node visible.
+func pruneKnowledgeNodesToScope(nodes []KnowledgeNode, scope []storage.TagGroup) []KnowledgeNode {
+	if len(scope) == 0 {
+		return nodes
+	}
+	byID := make(map[string]KnowledgeNode, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	holdsPages := map[string]bool{}
+	holdsVisible := map[string]bool{}
+	for _, node := range nodes {
+		if node.Kind != string(knowledgeKindPage) {
+			continue
+		}
+		visible := storage.TagsVisibleUnderScope(node.Tags, scope)
+		// Mark the page and every ancestor; `seen` guards a corrupted, cyclic tree.
+		seen := map[string]bool{}
+		for id := node.ID; id != "" && !seen[id]; {
+			seen[id] = true
+			holdsPages[id] = true
+			if visible {
+				holdsVisible[id] = true
+			}
+			next, ok := byID[id]
+			if !ok {
+				break
+			}
+			id = derefString(next.ParentID)
+		}
+	}
+	keep := map[string]bool{}
+	for _, node := range nodes {
+		if holdsVisible[node.ID] || !holdsPages[node.ID] {
+			keep[node.ID] = true
+		}
+	}
+	// Every kept node keeps its ancestors, so the tree the caller builds stays
+	// connected even when a parent was otherwise dropped.
+	for _, node := range nodes {
+		if !keep[node.ID] {
+			continue
+		}
+		for id := derefString(node.ParentID); id != "" && !keep[id]; {
+			ancestor, ok := byID[id]
+			if !ok {
+				break
+			}
+			keep[id] = true
+			id = derefString(ancestor.ParentID)
 		}
 	}
 	out := make([]KnowledgeNode, 0, len(keep))
@@ -77,36 +146,42 @@ func projectKnowledgeNodes(nodes []storage.KnowledgeNode, models map[string]stor
 }
 
 // projectKnowledgeNode renders a stored node for the wire. A page's
-// description, tags and trigger come from its backing model when one is given.
+// description, tags, trigger and last refresh outcome come from its backing
+// model when one is given; every member is always emitted, so a folder reports
+// null for the page-only ones. Staleness is left null here: only the tree
+// computes it.
 func projectKnowledgeNode(node storage.KnowledgeNode, model *storage.MentalModel) KnowledgeNode {
+	parentID := optionalString(node.ParentID)
 	out := KnowledgeNode{
 		ID: node.ID, Kind: string(node.Kind), Name: node.Title,
-		ParentID: node.ParentID, MentalModelID: node.MentalModelID,
-		Managed: node.Managed, Tags: []string{}, Children: []KnowledgeNode{},
+		ParentID: parentID, Managed: node.Managed,
+		Tags: []string{}, Children: []KnowledgeNode{},
 	}
 	if node.Kind != knowledgeKindPage {
-		out.Timestamp = formatTime(node.UpdatedAt)
+		out.Timestamp = httpx.FormatTimestampPtr(&node.UpdatedAt)
 		return out
 	}
+	out.MentalModelID = optionalString(node.MentalModelID)
 	if model != nil {
-		out.Description = model.SourceQuery
-		out.Trigger = model.Trigger
+		out.Description = &model.SourceQuery
 		out.Tags = normalizeKnowledgeTags(model.Tags)
-		out.Timestamp = formatTime(model.LastRefreshedAt)
+		out.Timestamp = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
+		out.LastRefreshFailedAt = httpx.FormatTimestampPtr(model.LastRefreshFailedAt)
+		out.Trigger = mentalmodels.NormalizeTrigger(model.Trigger)
 	}
-	if out.Timestamp == "" {
-		out.Timestamp = formatTime(node.CreatedAt)
+	if out.Timestamp == nil {
+		out.Timestamp = httpx.FormatTimestampPtr(&node.CreatedAt)
 	}
 	return out
 }
 
-// pageTags returns the tags a page is scoped by, falling back to any tags on the
-// node when its model is not in the map.
-func pageTags(node storage.KnowledgeNode, models map[string]storage.MentalModel) []string {
-	if model, ok := models[node.MentalModelID]; ok {
-		return model.Tags
+// optionalString renders a stored identifier as the wire's nullable string: an
+// empty column value is the reference's null, not an empty string.
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
 	}
-	return node.Tags
+	return &value
 }
 
 // knowledgeModels returns the bank's mental models keyed by identifier.
@@ -137,25 +212,27 @@ func (h *Handlers) knowledgeModel(ctx context.Context, bankID string, node stora
 // knowledgeDocFields builds the ordered frontmatter fields of a page document.
 func knowledgeDocFields(node storage.KnowledgeNode, model storage.MentalModel) []knowledgeField {
 	pageType := knowledgePageType(node.Tags)
-	timestamp := formatTime(node.CreatedAt)
+	timestamp := httpx.FormatTimestamp(node.CreatedAt)
 	if !model.LastRefreshedAt.IsZero() {
-		timestamp = formatTime(model.LastRefreshedAt)
+		timestamp = httpx.FormatTimestamp(model.LastRefreshedAt)
 	}
 	return knowledgeDocumentFields(node.ID, pageType.Type, node.Title, model.SourceQuery, timestamp, pageType.DisplayTags)
 }
 
 // writeKnowledgePage renders a page as a markdown document, adding the
-// empty-page notice to `markdown` when the body is empty.
-func writeKnowledgePage(w http.ResponseWriter, r *http.Request, node storage.KnowledgeNode, pageType knowledgePageTypeInfo, description, timestamp string, body *string) {
+// empty-page notice to `markdown` when the body is empty. The frontmatter is
+// rendered from the non-null spelling of each nullable member, because the
+// reference drops a null key from the block while keeping it on the wire.
+func writeKnowledgePage(w http.ResponseWriter, r *http.Request, node storage.KnowledgeNode, pageType knowledgePageTypeInfo, description, timestamp *string, body *string) {
 	bodyText := ""
 	if body != nil {
 		bodyText = *body
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, KnowledgePageResponse{
+	httpx.WriteJSON(w, http.StatusOK, KnowledgePageResponse{
 		ID: node.ID, Name: node.Title, Type: pageType.Type,
 		Description: description, Tags: pageType.DisplayTags, Timestamp: timestamp,
 		Body:     body,
-		Markdown: renderKnowledgeDocument(knowledgeDocumentFields(node.ID, pageType.Type, node.Title, description, timestamp, pageType.DisplayTags), bodyText, true),
+		Markdown: renderKnowledgeDocument(knowledgeDocumentFields(node.ID, pageType.Type, node.Title, derefString(description), derefString(timestamp), pageType.DisplayTags), bodyText, true),
 	})
 }
 
@@ -206,14 +283,4 @@ func modelPtr(model storage.MentalModel, ok bool) *storage.MentalModel {
 		return nil
 	}
 	return &model
-}
-
-// firstStringPtr returns the first non-nil pointer, or nil when both are nil.
-func firstStringPtr(values ...*string) *string {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
 }

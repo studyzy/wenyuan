@@ -90,17 +90,17 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 		Text:                  fact.Text,
 		FactType:              storage.MemoryUnitType(fact.FactType),
 		Context:               fact.Context,
-		EventDate:             fact.EventDate,
-		OccurredStart:         fact.OccurredStart,
-		OccurredEnd:           fact.OccurredEnd,
-		MentionedAt:           fact.MentionedAt,
+		EventDate:             hindsightarchive.ParseTime(fact.EventDate),
+		OccurredStart:         hindsightarchive.ParseTime(fact.OccurredStart),
+		OccurredEnd:           hindsightarchive.ParseTime(fact.OccurredEnd),
+		MentionedAt:           hindsightarchive.ParseTime(fact.MentionedAt),
 		Metadata:              fact.Metadata,
 		DocumentID:            documentID,
 		Tags:                  fact.Tags,
 		SourceMemoryIDs:       sourceMemoryIDs(fact.SourceID),
 		ObservationScopes:     archiveScopes(fact.ObservationScopes),
-		ConsolidatedAt:        fact.ConsolidatedAt,
-		ConsolidationFailedAt: fact.ConsolidationFailedAt,
+		ConsolidatedAt:        hindsightarchive.ParseTime(fact.ConsolidatedAt),
+		ConsolidationFailedAt: hindsightarchive.ParseTime(fact.ConsolidationFailedAt),
 	}
 	if fact.ChunkIndex != nil {
 		unit.ChunkID = chunkID(bankID, documentID, *fact.ChunkIndex)

@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"reflect"
-	"strings"
 
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -63,6 +63,7 @@ func ApplyResources(ctx context.Context, store storage.Store, bankID string, man
 			if maxTokens == 0 {
 				maxTokens = 2048
 			}
+			trigger := normalizedTrigger(model.Trigger)
 			if current, ok := byID[model.ID]; ok {
 				if modelMatchesManifest(current, model, maxTokens) {
 					// An unchanged definition is left alone and, crucially, not
@@ -76,12 +77,15 @@ func ApplyResources(ctx context.Context, store storage.Store, bankID string, man
 				patch := storage.MentalModelPatch{
 					Name:        &model.Name,
 					SourceQuery: &model.SourceQuery,
-					Tags:        &model.Tags,
 					MaxTokens:   &maxTokens,
+					Trigger:     &trigger,
 				}
-				if model.Trigger != nil {
-					trigger := model.Trigger
-					patch.Trigger = &trigger
+				// An omitted or empty manifest tag list leaves the stored tags
+				// alone, exactly as the reference writes `tags=mm.tags if mm.tags
+				// else None`: the manifest says nothing about tags, so it must not
+				// clear them.
+				if len(model.Tags) > 0 {
+					patch.Tags = &model.Tags
 				}
 				if _, err := store.UpdateMentalModel(ctx, bankID, model.ID, patch); err != nil {
 					return Result{}, err
@@ -96,7 +100,7 @@ func ApplyResources(ctx context.Context, store storage.Store, bankID string, man
 					SourceQuery: model.SourceQuery,
 					Tags:        model.Tags,
 					MaxTokens:   maxTokens,
-					Trigger:     model.Trigger,
+					Trigger:     trigger,
 				}); err != nil {
 					return Result{}, err
 				}
@@ -125,14 +129,22 @@ func ApplyResources(ctx context.Context, store storage.Store, bankID string, man
 				tags = []string{}
 			}
 			if current, ok := byName[directive.Name]; ok {
-				if directiveMatchesManifest(current, directive, tags) {
+				if directiveMatchesManifest(current, directive) {
 					// Unchanged: nothing to write and nothing to report.
 					continue
 				}
 				content, priority, active := directive.Content, directive.Priority, directive.IsActive
-				if _, err := store.UpdateDirective(ctx, bankID, current.ID, storage.DirectivePatch{
-					Content: &content, Priority: &priority, IsActive: &active, Tags: &tags,
-				}); err != nil {
+				patch := storage.DirectivePatch{
+					Content: &content, Priority: &priority, IsActive: &active,
+				}
+				// An omitted or empty manifest tag list leaves the stored tags
+				// alone, exactly as the reference writes `tags=directive.tags if
+				// directive.tags else None`: the manifest says nothing about
+				// tags, so it must not clear them.
+				if len(directive.Tags) > 0 {
+					patch.Tags = &directive.Tags
+				}
+				if _, err := store.UpdateDirective(ctx, bankID, current.ID, patch); err != nil {
 					return Result{}, err
 				}
 				result.DirectivesUpdated = append(result.DirectivesUpdated, directive.Name)
@@ -198,22 +210,15 @@ func applyUnderExistingConfig(ctx context.Context, store storage.Store, bankID s
 	if err != nil {
 		return Result{}, err
 	}
+	// Every template field — the disposition traits and the reflect mission
+	// included — is now an override in the bank's config column, so a field the
+	// create request already stored there is the one the template must leave
+	// alone. A manifest value that is explicit JSON null never reaches here:
+	// ConfigValues dropped it, so it can neither claim a key nor clobber one.
 	kept := make(map[string]any, len(values))
 	for key, value := range values {
 		if _, taken := bank.Config[key]; taken {
 			continue
-		}
-		// The disposition traits and the reflect mission live on the bank row
-		// rather than in its override map, so they are compared there.
-		switch key {
-		case "disposition_skepticism", "disposition_literalism", "disposition_empathy":
-			if _, taken := bank.Disposition[strings.TrimPrefix(key, "disposition_")]; taken {
-				continue
-			}
-		case "reflect_mission":
-			if bank.Mission != "" {
-				continue
-			}
 		}
 		kept[key] = value
 	}
@@ -254,6 +259,10 @@ func enqueueModelRefresh(ctx context.Context, store storage.Store, bankID, model
 
 // modelMatchesManifest reports whether a stored mental model already carries
 // the definition a manifest names, so an unchanged apply can leave it alone.
+//
+// Tags are compared as a set, and only when the manifest names any: an omitted
+// or empty manifest tag list says nothing about tags, so it can never differ —
+// matching the reference's `not mm.tags or set(stored) == set(mm.tags)`.
 func modelMatchesManifest(current storage.MentalModel, model MentalModel, maxTokens int) bool {
 	if current.Name != model.Name || current.SourceQuery != model.SourceQuery {
 		return false
@@ -261,38 +270,62 @@ func modelMatchesManifest(current storage.MentalModel, model MentalModel, maxTok
 	if current.MaxTokens != maxTokens {
 		return false
 	}
-	if !equalStringSlices(current.Tags, model.Tags) {
+	if len(model.Tags) > 0 && !sameTagSet(current.Tags, model.Tags) {
 		return false
 	}
 	return sameTrigger(current.Trigger, model.Trigger)
 }
 
 // directiveMatchesManifest reports whether a stored directive already carries
-// the definition a manifest names.
-func directiveMatchesManifest(current storage.Directive, directive Directive, tags []string) bool {
-	return current.Content == directive.Content &&
-		current.Priority == directive.Priority &&
-		current.IsActive == directive.IsActive &&
-		equalStringSlices(current.Tags, tags)
-}
-
-// sameTrigger compares two trigger maps treating an absent map as empty, so a
-// model stored without a trigger matches a manifest that names none.
-func sameTrigger(a, b map[string]any) bool {
-	if len(a) == 0 && len(b) == 0 {
-		return true
+// the definition a manifest names. Tags follow the same rule as a mental
+// model's: compared as a set, and only when the manifest names any.
+func directiveMatchesManifest(current storage.Directive, directive Directive) bool {
+	if current.Content != directive.Content ||
+		current.Priority != directive.Priority ||
+		current.IsActive != directive.IsActive {
+		return false
 	}
-	return reflect.DeepEqual(a, b)
+	if len(directive.Tags) > 0 && !sameTagSet(current.Tags, directive.Tags) {
+		return false
+	}
+	return true
 }
 
-// equalStringSlices compares two string slices treating nil and empty as equal,
-// since a stored empty list and an omitted one mean the same thing.
-func equalStringSlices(a, b []string) bool {
+// sameTrigger compares two trigger maps through the reference's
+// MentalModelTrigger model, so each side's unset members are filled with the
+// model's defaults and members the model does not declare are dropped. A nil
+// trigger reads as the model's own defaults — the reference validates
+// `stored["trigger"] or {}` — so an absent trigger matches a manifest that
+// names none.
+func sameTrigger(a, b map[string]any) bool {
+	return reflect.DeepEqual(normalizedTrigger(a), normalizedTrigger(b))
+}
+
+// normalizedTrigger projects a trigger through the reference's
+// MentalModelTrigger model: every declared member carries the stored value or
+// its default, and any member the model does not declare is dropped. A nil
+// trigger becomes the model's full default object, which is what the reference
+// stores (`mm.trigger.model_dump()`) when a manifest names no trigger.
+func normalizedTrigger(raw map[string]any) map[string]any {
+	if raw == nil {
+		return mentalmodels.NormalizeTrigger(map[string]any{})
+	}
+	return mentalmodels.NormalizeTrigger(raw)
+}
+
+// sameTagSet reports whether two tag lists carry the same tags ignoring order,
+// which is how the reference compares them (`set(stored) == set(manifest)`).
+func sameTagSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	counts := make(map[string]int, len(a))
+	for _, tag := range a {
+		counts[tag]++
+	}
+	for _, tag := range b {
+		counts[tag]--
+		if counts[tag] < 0 {
 			return false
 		}
 	}

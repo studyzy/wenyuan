@@ -91,6 +91,52 @@ type Extractor struct {
 	// leaves the parameter unset, which is what a deployment that configured no
 	// cap asks for.
 	MaxCompletionTokens int
+	// Vision is the retain model's image-reading capability: non-nil true means
+	// it reads images, non-nil false means it cannot, and nil means the provider
+	// could not say. It is consulted only when a call carries inline
+	// attachments, which is the one input that requires the model to read an
+	// image rather than its caption.
+	Vision *bool
+	// VisionModel names the model configured to read attachments, so the
+	// refusal below can point the caller at the setting that fixes it. It is
+	// only used in the refusal's message.
+	VisionModel string
+}
+
+// VisionNotSupportedError reports an attachment-bearing extraction the model
+// configured to read attachments cannot serve. It is a distinct type so the
+// reporting layer can map it to the reference's 422 rather than the 500 the
+// generic error path would produce.
+type VisionNotSupportedError struct {
+	// Detail is the client-safe sentence, matching the reference's own refusal.
+	Detail string
+}
+
+func (e *VisionNotSupportedError) Error() string { return e.Detail }
+
+// VisionRefusal reports why a call carrying inline attachments must be refused,
+// or nil when the configured model reads images. A model that reads images is
+// the only state that accepts an attachment: an explicit "cannot" and a
+// provider that could not say are both refused, because extracting from the
+// caption and dropping the image would store a document that looks retained
+// while the information the caller cared about is gone.
+func (e *Extractor) VisionRefusal() error {
+	if e == nil || (e.Vision != nil && *e.Vision) {
+		return nil
+	}
+	model := e.VisionModel
+	if model == "" {
+		model = "the configured model"
+	}
+	if e.Vision != nil {
+		return &VisionNotSupportedError{Detail: "The model configured to read attachments (" + model +
+			") cannot read images, but this request carries inline image content. Point " +
+			"HINDSIGHT_API_VLM_MODEL at a vision-capable model, or send the content as text only."}
+	}
+	return &VisionNotSupportedError{Detail: "Hindsight cannot tell whether the model configured to read " +
+		"attachments (" + model + ") can read images, and this request carries inline image content. If " +
+		"that model is vision-capable, set HINDSIGHT_API_LLM_VISION=true; otherwise send the content as " +
+		"text only."}
 }
 
 // New builds an extractor over the provider boundary. The scope labels the
@@ -129,6 +175,14 @@ func (e *Extractor) ExtractWith(ctx context.Context, text string, opts Options) 
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return Result{}, errors.New("extraction requires non-empty text")
+	}
+	// An attachment-bearing call needs a model that can read images. Refusing
+	// here, before any model call, matches the reference's pre-extraction gate
+	// and keeps a caption-only extraction from silently dropping the picture.
+	if len(opts.Attachments) > 0 {
+		if refusal := e.VisionRefusal(); refusal != nil {
+			return Result{}, refusal
+		}
 	}
 	if resolveMode(opts.Mode) == ModeChunks {
 		// Chunks mode asks the model nothing: each segment of the item becomes

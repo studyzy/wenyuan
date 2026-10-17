@@ -30,6 +30,13 @@ func recordImportOperation(t *testing.T, store *storage.MemoryStore, archive []b
 		Status: storage.StatusPending,
 		Payload: map[string]any{
 			storage.OperationPayloadKeyStoredFile: key,
+			// A whole-bank restore writes into its target bank, which the
+			// reference's task payload always names, and carries the requested
+			// scope booleans (data + bank config on, history off).
+			"target_bank_id":      "restored",
+			"include_data":        true,
+			"include_bank_config": true,
+			"include_history":     false,
 		},
 	})
 	if err != nil {
@@ -66,7 +73,8 @@ func buildImportArchive(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// The queue processor imports a stashed archive into the operation's bank.
+// The queue processor restores a stashed whole-bank archive into the target
+// bank the task payload names.
 func TestArchiveProcessorImportsStashedArchive(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore("public")
@@ -79,8 +87,8 @@ func TestArchiveProcessorImportsStashedArchive(t *testing.T) {
 	if err := processor.Process(ctx, op); err != nil {
 		t.Fatalf("process import: %v", err)
 	}
-	// The import wrote the archive's document into the target bank.
-	page, err := store.ListDocuments(ctx, storage.DocumentQuery{BankID: "b1", Limit: 10})
+	// The restore wrote the archive's document into the target bank.
+	page, err := store.ListDocuments(ctx, storage.DocumentQuery{BankID: "restored", Limit: 10})
 	if err != nil || page.Total == 0 {
 		t.Fatalf("the import wrote no documents: %+v (err %v)", page, err)
 	}

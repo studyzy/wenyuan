@@ -92,7 +92,7 @@ func TestRecallExplicitTypesFilters(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Results) != 1 || response.Results[0].Type != "world" {
+	if len(response.Results) != 1 || response.Results[0].Type == nil || *response.Results[0].Type != "world" {
 		t.Fatalf("explicit selection must recall only the named types: %s", rec.Body.String())
 	}
 }

@@ -15,13 +15,25 @@ import (
 // the bank sets one.
 const defaultReflectBudget = storage.ReflectBudgetLow
 
+// defaultReflectMaxTokens is the answer-length target the reference applies
+// when the request omits max_tokens.
+const defaultReflectMaxTokens = 4096
+
 // defaultReflectSearchObservationsMaxTokens is the shipped per-bank default for
 // the observation-search token budget.
-const defaultReflectSearchObservationsMaxTokens = 0
+const defaultReflectSearchObservationsMaxTokens = 5000
 
 // defaultReflectSearchObservationsIncludeEntities is the shipped per-bank
 // default for entity attachment on observation evidence.
-const defaultReflectSearchObservationsIncludeEntities = false
+const defaultReflectSearchObservationsIncludeEntities = true
+
+// ErrNoReflectModel is the refusal the reference returns for a reflection on a
+// deployment whose LLM provider is "none": rather than falling back to a
+// synthesized answer it reports that no model can serve the request. The
+// message is the reference's, verbatim.
+//
+//nolint:staticcheck // the reference's own wording, capitalised and sentence-final
+var ErrNoReflectModel = errors.New("Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
 
 // ReflectDefaultOptions is the deployment's process-level default for a bank's
 // reflect_default_options object: the reflect options applied wherever neither
@@ -70,14 +82,27 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 	var req ReflectRequest
 	body, err := decodeJSON(r, &req)
 	if err != nil {
-		httpx.WriteValidationFor(w, r, httpx.BodyDecodeFailure(err, body))
+		httpx.WriteValidationFailure(w, reflectDecodeFailure(r, &req, body, err, h.ReflectSchemaValidator))
 		return
 	}
-	if failure := ValidateReflect(req, h.ReflectSchemaValidator); failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+	if failure := ValidateReflect(req, requestBodyObject(body), h.ReflectSchemaValidator); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
+		return
+	}
+	// A deployment with no reflect model refuses the request outright, matching
+	// the reference: it never synthesizes an answer from a deterministic loop.
+	if h.RefuseWithoutReflectModel {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, ErrNoReflectModel.Error()))
 		return
 	}
 	query := h.buildReflectQuery(bankID, req)
+	// The reference's reflection resolves the bank profile with
+	// create-if-missing, so a reflection against an unknown bank creates the
+	// row with defaults and is answered rather than 404'd.
+	if err := h.Store.EnsureBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, h.mapReflectError(err))
+		return
+	}
 	ctx, cancel := reflectTimeoutContext(r, h.ReflectTimeout)
 	defer cancel()
 	// Every model call the reflection makes is recorded under this bank and
@@ -102,7 +127,7 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, h.mapReflectError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, response)
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // buildReflectQuery resolves a validated request into the storage reflect
@@ -112,7 +137,7 @@ func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.
 	include := storage.ReflectInclude{}
 	if req.Include != nil {
 		if req.Include.Facts != nil {
-			include.Facts = &storage.ReflectFactsInclude{MaxTokens: req.Include.Facts.MaxTokens}
+			include.Facts = &storage.ReflectFactsInclude{}
 		}
 		if req.Include.ToolCalls != nil {
 			include.ToolCalls = true
@@ -126,7 +151,7 @@ func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.
 		Query:                             appendContext(req.Query, req.Context),
 		Budget:                            resolveReflectBudget(req.Budget, h.BankReflectDefaults),
 		HasBudget:                         req.Budget != "",
-		MaxTokens:                         derefInt(req.MaxTokens),
+		MaxTokens:                         reflectMaxTokens(req),
 		Include:                           include,
 		ResponseSchema:                    req.ResponseSchema,
 		Types:                             req.FactTypes,
@@ -146,6 +171,15 @@ func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.
 		query.Directives = h.ReflectCatalog.Directives(bankID)
 	}
 	return query
+}
+
+// reflectMaxTokens returns the request's answer-length target, defaulting an
+// omitted one to the reference's 4096.
+func reflectMaxTokens(req ReflectRequest) int {
+	if req.MaxTokens != nil {
+		return *req.MaxTokens
+	}
+	return defaultReflectMaxTokens
 }
 
 // resolveReflectBudget resolves the effort level as explicit-request over bank
@@ -220,13 +254,15 @@ func (h *Handlers) mapReflectError(err error) error {
 	switch {
 	case errors.Is(err, storage.ErrBankNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
+	case errors.Is(err, storage.ErrInvalidBankID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "bank identifier is invalid")
 	case errors.Is(err, storage.ErrReadShed):
 		return httpx.NewHTTPError(httpx.KindUnavailable, "reflection is temporarily unavailable").
 			WithHeader(httpx.HeaderRetryAfter, itoa(h.DefaultRetryAfterSeconds))
 	case errors.Is(err, storage.ErrReflectTimeout):
 		detail := err.Error()
-		if errors.Is(err, storage.ErrReflectTimeout) && err.Error() == storage.ErrReflectTimeout.Error() {
-			detail = "reflection exceeded its wall-clock budget; try a smaller budget or a simpler query"
+		if detail == storage.ErrReflectTimeout.Error() {
+			detail = "Reflect operation timed out. Consider reducing the budget or simplifying the query."
 		}
 		return httpx.NewHTTPError(httpx.KindTimeout, detail)
 	case errors.Is(err, storage.ErrReflectModelUnavailable):

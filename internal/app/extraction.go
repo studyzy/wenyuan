@@ -6,6 +6,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/extraction"
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/provider/mock"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/reflect"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -62,6 +63,14 @@ type ExtractionSettings struct {
 	// MaxCompletionTokens caps the extraction call's generated tokens; zero
 	// leaves the parameter unset.
 	MaxCompletionTokens int
+	// Vision is the retain model's image-reading capability as a tri-state:
+	// non-nil true it reads images, non-nil false it cannot, nil the provider
+	// could not say. It travels with the extraction so an attachment-bearing
+	// call is refused before a model call runs.
+	Vision *bool
+	// VisionModel names the model configured to read attachments, for the
+	// refusal's message.
+	VisionModel string
 }
 
 // ExtractionSettingsFrom resolves the settings a configuration carries.
@@ -69,7 +78,41 @@ func ExtractionSettingsFrom(cfg config.Config) ExtractionSettings {
 	return ExtractionSettings{
 		CorrectionRetries:   cfg.Provider.RetainMaxRetries,
 		MaxCompletionTokens: cfg.RetainTuning.MaxCompletionTokens,
+		Vision:              retainVisionCapability(cfg),
+		VisionModel:         providerModelLabel(cfg.Provider),
 	}
+}
+
+// retainVisionCapability resolves the retain model's image-reading capability as
+// a tri-state, mirroring the reference's supports_vision(): an explicit
+// HINDSIGHT_API_LLM_VISION wins, otherwise the provider's own answer — OpenAI
+// and Anthropic claim they read images, and every gateway or proxy is unknown
+// (nil), which an attachment-bearing call refuses rather than silently dropping
+// the image.
+func retainVisionCapability(cfg config.Config) *bool {
+	if cfg.Provider.Vision != nil {
+		return cfg.Provider.Vision
+	}
+	switch cfg.Provider.Provider {
+	case "openai", "anthropic", mock.NameMock:
+		reads := true
+		return &reads
+	default:
+		return nil
+	}
+}
+
+// providerModelLabel names the configured model the way the reference's refusals
+// do: "<provider>/<model>". An unnamed model leaves the provider name alone so a
+// message never ends in a bare slash.
+func providerModelLabel(pc config.ProviderConfig) string {
+	if pc.Provider == "" {
+		return pc.Model
+	}
+	if pc.Model == "" {
+		return pc.Provider
+	}
+	return pc.Provider + "/" + pc.Model
 }
 
 func newFactExtractor(p provider.Provider, settings ExtractionSettings) storage.FactExtraction {
@@ -79,7 +122,16 @@ func newFactExtractor(p provider.Provider, settings ExtractionSettings) storage.
 	}
 	extractor.MaxCorrectionRetries = settings.CorrectionRetries
 	extractor.MaxCompletionTokens = settings.MaxCompletionTokens
+	extractor.Vision = settings.Vision
+	extractor.VisionModel = settings.VisionModel
 	return factExtractor{extractor: extractor}
+}
+
+// VisionRefusal exposes the extractor's attachment gate to the reporting layer,
+// so an attachment-bearing dry run is refused before any billable call runs. It
+// returns nil when the configured model reads images.
+func (f factExtractor) VisionRefusal() error {
+	return f.extractor.VisionRefusal()
 }
 
 // Extract turns one item's text into the facts storage should store.
@@ -140,6 +192,8 @@ func extractionOptions(opts storage.FactExtractionOptions) extraction.Options {
 		ReferenceTime:          opts.ReferenceTime,
 		OptionalFactDimensions: opts.OptionalFactDimensions,
 		Vocabulary:             opts.Vocabulary,
+		AllowFreeFormEntities:  opts.AllowFreeFormEntities,
+		OutputLanguage:         opts.OutputLanguage,
 		Attachments:            attachments,
 		ExtractCausalLinks:     opts.ExtractCausalLinks,
 	}

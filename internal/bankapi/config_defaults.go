@@ -29,7 +29,7 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 	p := cfg.ProcessDefaults
 	return map[string]any{
 		// MCP and audit.
-		"mcp_enabled_tools": nil,
+		"mcp_enabled_tools": p.MCPEnabledTools,
 		"audit_log_enabled": cfg.AuditLogEnabled,
 		// Persisting raw source text.
 		"store_document_text": cfg.StoreDocumentText,
@@ -58,8 +58,8 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 		"consolidation_source_facts_max_tokens_per_observation": p.ConsolidationSourceFactTokensPerObservation,
 		"observations_mission":                                  optionalString(p.ObservationsMission),
 		"max_observations_per_scope":                            p.MaxObservationsPerScope,
-		"observation_scope_limits":                              optionalString(p.ObservationScopeLimits),
-		"consolidation_strategies":                              optionalString(p.ConsolidationStrategies),
+		"observation_scope_limits":                              p.ObservationScopeLimits,
+		"consolidation_strategies":                              p.ConsolidationStrategies,
 		"mental_model_min_refresh_interval_seconds":             p.MentalModelMinRefreshSeconds,
 		"knowledge_page_default_trigger":                        p.KnowledgePageDefaultTrigger,
 		"reflect_mission":                                       optionalString(p.ReflectMission),
@@ -80,7 +80,7 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 		"disposition_skepticism":                                optionalInt(p.DispositionSkepticism),
 		"disposition_literalism":                                optionalInt(p.DispositionLiteralism),
 		"disposition_empathy":                                   optionalInt(p.DispositionEmpathy),
-		"llm_gemini_safety_settings":                            nil,
+		"llm_gemini_safety_settings":                            p.LLMGeminiSafetySettings,
 		"memory_defense":                                        nil,
 	}
 }

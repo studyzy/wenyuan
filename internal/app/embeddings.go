@@ -146,3 +146,15 @@ func setObservationEmbedder(store storage.Store, generator storage.EmbeddingGene
 		setter.SetObservationEmbedder(generator)
 	}
 }
+
+// setStoreAutoConsolidation gives the store the deployment default for whether
+// a curation edit submits the follow-up consolidation pass. The store resolves a
+// bank's own enable_auto_consolidation override on top of it. A store without
+// the capability keeps the reference's default of not submitting.
+func setStoreAutoConsolidation(store storage.Store, enabled bool) {
+	if setter, ok := store.(interface {
+		SetAutoConsolidation(bool)
+	}); ok {
+		setter.SetAutoConsolidation(enabled)
+	}
+}

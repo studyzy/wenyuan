@@ -37,7 +37,6 @@ type FlagValues struct {
 	SSLKeyFile             *string
 	SSLCertFile            *string
 	Daemon                 *bool
-	NullDropFields         *bool
 	DatabaseURL            *string
 	DatabaseSchema         *string
 	RunMigrationsOnStartup *bool
@@ -102,9 +101,6 @@ func ApplyFlags(base Config, flags FlagValues) Config {
 	}
 	if flags.SSLCertFile != nil {
 		cfg.SSLCertFile = *flags.SSLCertFile
-	}
-	if flags.NullDropFields != nil {
-		cfg.NullDropFields = *flags.NullDropFields
 	}
 	if flags.DatabaseURL != nil {
 		cfg.DatabaseURL = strings.TrimSpace(*flags.DatabaseURL)

@@ -2,15 +2,81 @@ package memoryops
 
 import (
 	"encoding/json"
-	"time"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// Validation bounds for the write request.
-const (
-	MinWriteItemsCount = 1
-)
+// includeRequestPath is the JSON path from the request body root to the include
+// object. Both request models name the member "include", and the include
+// unmarshallers are the only layer that knows a nested member failed, so they
+// supply this prefix for a localized decode failure.
+var includeRequestPath = []string{"include"}
+
+// includeMemberPath returns the JSON path from the body root to one include
+// member: the prefix a member's field-level decode localizes its failures onto.
+func includeMemberPath(member string) []string {
+	return append(append([]string(nil), includeRequestPath...), member)
+}
+
+// includeMemberFailures records the structured items each of an include
+// object's members produced when its own fields failed to decode, keyed by
+// member name.
+//
+// The reference reports every invalid member of one request in a single
+// validation failure, and every invalid field within one member, so an include
+// decoder that stopped at the first failing member — or the first failing field
+// of a member — would under-report. The decoders therefore decode each member
+// field by field and record all of a member's items here; the validation pass
+// splices them back into the include's member order, alongside the shape items
+// for members that are not objects at all.
+type includeMemberFailures struct {
+	items map[string][]httpx.ValidationError
+}
+
+// record stores the items a member's decode produced. A member object decodes
+// field by field, so one member may carry several items — one per field the
+// reference's model rejects — in field-declaration order.
+func (f *includeMemberFailures) record(member string, errs []error) {
+	items := httpx.NestedFailureItems(errs)
+	if len(items) == 0 {
+		return
+	}
+	if f.items == nil {
+		f.items = map[string][]httpx.ValidationError{}
+	}
+	f.items[member] = items
+}
+
+// lookup returns the items a member's own decode produced, if any.
+func (f *includeMemberFailures) lookup(member string) ([]httpx.ValidationError, bool) {
+	items, ok := f.items[member]
+	return items, ok
+}
+
+// includeMemberFailureSource exposes the decode failures an include decoder
+// recorded, so one validation pass serves both request models. The lookup
+// tolerates a nil receiver: a request that omitted the include key leaves the
+// member pointer nil.
+type includeMemberFailureSource interface {
+	memberFailure(member string) ([]httpx.ValidationError, bool)
+}
+
+// memberFailure returns the items the named member's decode produced, if any.
+func (i *IncludeRequest) memberFailure(member string) ([]httpx.ValidationError, bool) {
+	if i == nil {
+		return nil, false
+	}
+	return i.failures.lookup(member)
+}
+
+// memberFailure returns the items the named member's decode produced, if any.
+func (i *ReflectIncludeRequest) memberFailure(member string) ([]httpx.ValidationError, bool) {
+	if i == nil {
+		return nil, false
+	}
+	return i.failures.lookup(member)
+}
 
 // RecallRequest is the recall body. Every field name is public surface. Fields
 // are optional so a request carrying only the query stays valid.
@@ -37,6 +103,10 @@ type IncludeRequest struct {
 	Entities    *IncludeEntityRequest     `json:"entities"`
 	Chunks      *IncludeChunkRequest      `json:"chunks"`
 	SourceFacts *IncludeSourceFactRequest `json:"source_facts"`
+
+	// failures holds the item each member's own decode produced, so every
+	// invalid member is reported in one failure rather than only the first.
+	failures includeMemberFailures
 }
 
 // UnmarshalJSON applies the reference's default-factory semantics: an omitted
@@ -45,54 +115,73 @@ type IncludeRequest struct {
 // stay excluded unless supplied. Distinguishing "key absent" from "key null"
 // needs this decoder, because a plain *IncludeEntityRequest collapses both to
 // nil.
+//
+// A member (or the whole value) that is neither an object nor null is left at
+// its disabled default rather than rejected here: the reference reports that as
+// a validation item naming the member, which ValidateRecall builds from the raw
+// body, so the decoder stays lenient and the error keeps its exact location.
+//
+// A member object is decoded field by field through httpx.DecodeStructFields,
+// so every field its model rejects contributes an item and the items stay in
+// field-declaration order. The decoder reads the member from a sub-slice, so
+// the field decoder's offset is relative to that sub-slice and its path lacks
+// the enclosing levels; record rebases each item onto the request body and
+// keeps the full path with the offending value. Recording rather than returning
+// is deliberate: the reference reports every invalid member of one request in a
+// single failure, so the decoder must keep decoding the members that follow.
 func (i *IncludeRequest) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if len(trimmed) == 0 || string(trimmed) == "null" || trimmed[0] != '{' {
 		return nil
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+		return nil
 	}
 	i.Entities = &IncludeEntityRequest{}
 	if raw, ok := fields["entities"]; ok {
 		i.Entities = nil
-		if string(trimSpaceBytes(raw)) != "null" {
+		if value := trimSpaceBytes(raw); len(value) > 0 && string(value) != "null" {
 			i.Entities = &IncludeEntityRequest{}
-			if err := json.Unmarshal(raw, i.Entities); err != nil {
-				return err
+			if value[0] == '{' {
+				i.failures.record("entities", httpx.DecodeStructFields(raw, i.Entities, includeMemberPath("entities")))
 			}
 		}
 	}
 	if raw, ok := fields["chunks"]; ok && string(trimSpaceBytes(raw)) != "null" {
 		i.Chunks = &IncludeChunkRequest{}
-		if err := json.Unmarshal(raw, i.Chunks); err != nil {
-			return err
+		if value := trimSpaceBytes(raw); len(value) > 0 && value[0] == '{' {
+			i.failures.record("chunks", httpx.DecodeStructFields(raw, i.Chunks, includeMemberPath("chunks")))
 		}
 	}
 	if raw, ok := fields["source_facts"]; ok && string(trimSpaceBytes(raw)) != "null" {
 		i.SourceFacts = &IncludeSourceFactRequest{}
-		if err := json.Unmarshal(raw, i.SourceFacts); err != nil {
-			return err
+		if value := trimSpaceBytes(raw); len(value) > 0 && value[0] == '{' {
+			i.failures.record("source_facts", httpx.DecodeStructFields(raw, i.SourceFacts, includeMemberPath("source_facts")))
 		}
 	}
 	return nil
 }
 
-// IncludeEntityRequest carries the entity-state inclusion options.
+// IncludeEntityRequest carries the entity-state inclusion options. MaxTokens
+// is a pointer so an omitted value is distinguishable from an explicit zero:
+// the reference defaults an omitted budget to 500 tokens.
 type IncludeEntityRequest struct {
-	MaxTokens int `json:"max_tokens,omitempty"`
+	MaxTokens *int `json:"max_tokens,omitempty"`
 }
 
-// IncludeChunkRequest carries the chunk inclusion options.
+// IncludeChunkRequest carries the chunk inclusion options. An omitted budget
+// defaults to 8192 tokens.
 type IncludeChunkRequest struct {
-	MaxTokens int `json:"max_tokens,omitempty"`
+	MaxTokens *int `json:"max_tokens,omitempty"`
 }
 
-// IncludeSourceFactRequest carries the source-fact inclusion options.
+// IncludeSourceFactRequest carries the source-fact inclusion options. An
+// omitted total budget defaults to 4096 tokens and an omitted per-observation
+// budget to -1 (unlimited).
 type IncludeSourceFactRequest struct {
-	MaxTokens               int `json:"max_tokens,omitempty"`
-	MaxTokensPerObservation int `json:"max_tokens_per_observation,omitempty"`
+	MaxTokens               *int `json:"max_tokens,omitempty"`
+	MaxTokensPerObservation *int `json:"max_tokens_per_observation,omitempty"`
 }
 
 // TemporalWindowRequest is the caller-supplied temporal window. Bounds are
@@ -116,25 +205,24 @@ type TagGroupRequest struct {
 }
 
 // RecallResultItem is one recall result object. Every field name is public
-// surface. Fields without omitempty are always present, defaulting to an empty
-// collection, so consumers can rely on their shape.
+// surface. The reference keeps nulls for this route, so every optional member
+// is present on the wire and reports null when the fact carries no value; a
+// strict client can therefore read a key unconditionally.
 type RecallResultItem struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-	Type string `json:"type"`
-	// Context is always present: the reference reports the empty string when a
-	// memory carries no context, so a client can read the key unconditionally.
-	Context       string            `json:"context"`
-	OccurredStart *time.Time        `json:"occurred_start,omitempty"`
-	OccurredEnd   *time.Time        `json:"occurred_end,omitempty"`
-	MentionedAt   *time.Time        `json:"mentioned_at,omitempty"`
-	ChunkID       string            `json:"chunk_id,omitempty"`
-	DocumentID    string            `json:"document_id,omitempty"`
+	ID            string            `json:"id"`
+	Text          string            `json:"text"`
+	Type          *string           `json:"type"`
+	Entities      []string          `json:"entities"`
+	Context       *string           `json:"context"`
+	OccurredStart *string           `json:"occurred_start"`
+	OccurredEnd   *string           `json:"occurred_end"`
+	MentionedAt   *string           `json:"mentioned_at"`
+	DocumentID    *string           `json:"document_id"`
 	Metadata      map[string]any    `json:"metadata"`
+	ChunkID       *string           `json:"chunk_id"`
+	Tags          []string          `json:"tags"`
 	SourceFactIDs []string          `json:"source_fact_ids"`
 	Scores        RecallScoreObject `json:"scores"`
-	Entities      []string          `json:"entities"`
-	Tags          []string          `json:"tags"`
 	Attachments   []Attachment      `json:"attachments"`
 }
 
@@ -188,30 +276,35 @@ type EntityStateEntry struct {
 }
 
 // EntityObservationEntry is one observation carried on an entity-state entry.
+// mentioned_at is present and null when the observation carries no stamp.
 type EntityObservationEntry struct {
-	Text        string     `json:"text"`
-	MentionedAt *time.Time `json:"mentioned_at,omitempty"`
+	Text        string  `json:"text"`
+	MentionedAt *string `json:"mentioned_at"`
 }
 
 // ChunkEntry is one entry of the chunk side channel. It is keyed by chunk id at
-// the envelope layer.
+// the envelope layer. attachments is present and null when the chunk
+// references none.
 type ChunkEntry struct {
 	ID          string       `json:"id"`
 	Text        string       `json:"text"`
 	ChunkIndex  int          `json:"chunk_index"`
 	Truncated   bool         `json:"truncated"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Attachments []Attachment `json:"attachments"`
 }
 
 // RecallResponse is the recall response envelope with its optional side
-// channels.
+// channels. The reference keeps nulls for this route and gates no key, so every
+// member is always on the wire: an absent side channel reports null rather than
+// disappearing, and source_facts_truncated is null unless source facts were
+// requested.
 type RecallResponse struct {
 	Results              []RecallResultItem          `json:"results"`
-	Entities             map[string]EntityStateEntry `json:"entities,omitempty"`
-	Chunks               map[string]ChunkEntry       `json:"chunks,omitempty"`
-	SourceFacts          map[string]RecallResultItem `json:"source_facts,omitempty"`
-	SourceFactsTruncated bool                        `json:"source_facts_truncated"`
-	Trace                map[string]any              `json:"trace,omitempty"`
+	Trace                map[string]any              `json:"trace"`
+	Entities             map[string]EntityStateEntry `json:"entities"`
+	Chunks               map[string]ChunkEntry       `json:"chunks"`
+	SourceFacts          map[string]RecallResultItem `json:"source_facts"`
+	SourceFactsTruncated *bool                       `json:"source_facts_truncated"`
 }
 
 // ReflectRequest is the reflection body. Every field name is public surface,
@@ -244,12 +337,50 @@ type ReflectRequest struct {
 type ReflectIncludeRequest struct {
 	Facts     *ReflectFactsIncludeRequest     `json:"facts,omitempty"`
 	ToolCalls *ReflectToolCallsIncludeRequest `json:"tool_calls,omitempty"`
+
+	// failures holds the item each member's own decode produced, so every
+	// invalid member is reported in one failure rather than only the first.
+	failures includeMemberFailures
 }
 
-// ReflectFactsIncludeRequest carries the cited-evidence inclusion options.
-type ReflectFactsIncludeRequest struct {
-	MaxTokens int `json:"max_tokens,omitempty"`
+// UnmarshalJSON keeps a member (or the whole value) that is neither an object
+// nor null at its disabled default rather than rejecting it here. The reference
+// reports such a value as a validation item naming it, which ValidateReflect
+// builds from the raw body, so the decoder stays lenient and the error keeps its
+// exact location. A member object whose own fields fail to decode is recorded
+// through includeMemberFailures.record for the same reason as the recall
+// include: the reference reports every invalid member of one request in a single
+// failure, so the decoder keeps decoding the members that follow. Each member is
+// decoded field by field, so every field its model rejects contributes an item
+// in field-declaration order.
+func (i *ReflectIncludeRequest) UnmarshalJSON(data []byte) error {
+	trimmed := trimSpaceBytes(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" || trimmed[0] != '{' {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil
+	}
+	if raw, ok := fields["facts"]; ok && string(trimSpaceBytes(raw)) != "null" {
+		i.Facts = &ReflectFactsIncludeRequest{}
+		if value := trimSpaceBytes(raw); len(value) > 0 && value[0] == '{' {
+			i.failures.record("facts", httpx.DecodeStructFields(raw, i.Facts, includeMemberPath("facts")))
+		}
+	}
+	if raw, ok := fields["tool_calls"]; ok && string(trimSpaceBytes(raw)) != "null" {
+		i.ToolCalls = &ReflectToolCallsIncludeRequest{}
+		if value := trimSpaceBytes(raw); len(value) > 0 && value[0] == '{' {
+			i.failures.record("tool_calls", httpx.DecodeStructFields(raw, i.ToolCalls, includeMemberPath("tool_calls")))
+		}
+	}
+	return nil
 }
+
+// ReflectFactsIncludeRequest carries the cited-evidence inclusion options. The
+// reference's model declares no fields — the member is a pure enable switch —
+// so any member it carries is ignored and only its presence matters.
+type ReflectFactsIncludeRequest struct{}
 
 // ReflectToolCallsIncludeRequest carries the trace inclusion options. Output
 // controls whether each tool entry carries its output payload; a nil pointer
@@ -259,19 +390,21 @@ type ReflectToolCallsIncludeRequest struct {
 }
 
 // ReflectCitedFact is one cited fact. Every field name is public surface and is
-// shared with the read path, so one renderer serves both.
+// shared with the read path, so one renderer serves both. The reference keeps
+// nulls here, so every optional member is present and reports null when the
+// fact carries no value.
 type ReflectCitedFact struct {
 	ID            string         `json:"id"`
 	Text          string         `json:"text"`
-	Type          string         `json:"type"`
-	Context       string         `json:"context,omitempty"`
-	OccurredStart *time.Time     `json:"occurred_start,omitempty"`
-	OccurredEnd   *time.Time     `json:"occurred_end,omitempty"`
-	MentionedAt   *time.Time     `json:"mentioned_at,omitempty"`
-	DocumentID    string         `json:"document_id,omitempty"`
-	ChunkID       string         `json:"chunk_id,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	Type          *string        `json:"type"`
+	Context       *string        `json:"context"`
+	OccurredStart *string        `json:"occurred_start"`
+	OccurredEnd   *string        `json:"occurred_end"`
+	MentionedAt   *string        `json:"mentioned_at"`
+	DocumentID    *string        `json:"document_id"`
+	ChunkID       *string        `json:"chunk_id"`
 	Tags          []string       `json:"tags"`
+	Metadata      map[string]any `json:"metadata"`
 	Attachments   []Attachment   `json:"attachments"`
 }
 
@@ -327,20 +460,25 @@ type ReflectUsage struct {
 	ThoughtsTokens int `json:"thoughts_tokens"`
 }
 
-// ReflectResponse is the reflection response envelope. Text is required; every
-// other field is optional and gated by the request.
+// ReflectResponse is the reflection response envelope. Text is required; the
+// reference keeps nulls for this route and gates no key, so every other member
+// is always on the wire and reports null when the request did not ask for it.
 type ReflectResponse struct {
 	Text                  string         `json:"text"`
-	BasedOn               *CitedEvidence `json:"based_on,omitempty"`
-	StructuredOutput      map[string]any `json:"structured_output,omitempty"`
-	StructuredOutputError string         `json:"structured_output_error,omitempty"`
-	Usage                 *ReflectUsage  `json:"usage,omitempty"`
-	Trace                 *ReflectTrace  `json:"trace,omitempty"`
+	BasedOn               *CitedEvidence `json:"based_on"`
+	StructuredOutput      map[string]any `json:"structured_output"`
+	StructuredOutputError *string        `json:"structured_output_error"`
+	Usage                 *ReflectUsage  `json:"usage"`
+	Trace                 *ReflectTrace  `json:"trace"`
 }
 
-// Usage reports token accounting for a memory write.
+// Usage reports token accounting for a memory write. cached_tokens and
+// thoughts_tokens are reported on the wire; the deterministic write path does
+// not account for them, so they stay zero.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens    int `json:"input_tokens"`
+	OutputTokens   int `json:"output_tokens"`
+	TotalTokens    int `json:"total_tokens"`
+	CachedTokens   int `json:"cached_tokens"`
+	ThoughtsTokens int `json:"thoughts_tokens"`
 }

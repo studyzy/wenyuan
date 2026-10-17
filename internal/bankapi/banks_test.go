@@ -408,6 +408,39 @@ func TestBankListDefaultLimitAndValidation(t *testing.T) {
 	}
 }
 
+// A repeated scalar query parameter keeps its last occurrence, the behaviour
+// the reference's framework gives a declared scalar param.
+func TestBankListRepeatedParamLastWins(t *testing.T) {
+	mux, store := newTestServer(t)
+	for _, id := range []string{"b1", "b2", "b3"} {
+		mustCreate(t, store, storage.Bank{BankID: id, Name: id})
+	}
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?limit=1&limit=2", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Banks []BankListRow `json:"banks"`
+		Limit int           `json:"limit"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Limit != 2 || len(envelope.Banks) != 2 {
+		t.Fatalf("repeated limit must take the last occurrence: limit=%d len=%d", envelope.Limit, len(envelope.Banks))
+	}
+
+	// The search text behaves the same way: the last q wins.
+	rec = doJSON(t, mux, http.MethodGet, "/v1/default/banks?q=nomatch&q=b2", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Banks) != 1 || envelope.Banks[0].BankID != "b2" {
+		t.Fatalf("repeated q must take the last occurrence: %+v", envelope.Banks)
+	}
+}
+
 func mustCreate(t *testing.T, store *storage.MemoryStore, bank storage.Bank) {
 	t.Helper()
 	if _, err := store.CreateBank(context.TODO(), bank); err != nil {

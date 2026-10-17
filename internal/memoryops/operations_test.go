@@ -3,6 +3,7 @@ package memoryops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -365,5 +366,113 @@ func seedOp(t *testing.T, store *storage.MemoryStore, id string, status storage.
 		if _, err := store.AdvanceOperation(context.TODO(), id, status, ""); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// test-operation-parent-self-heal (55 D4): a parent batch left "pending" though
+// every child has finished reads as its corrected terminal status — failed when
+// a child failed, completed otherwise — and the correction is persisted, so the
+// next read (and the list) sees the repaired row. A child still in flight, and a
+// cancelled child, leave the parent untouched.
+func TestOperationParentSelfHeal(t *testing.T) {
+	seedBatch := func(t *testing.T, store *storage.MemoryStore, parent string, childStatuses ...storage.OperationStatus) {
+		t.Helper()
+		if _, err := store.PutOperation(context.TODO(), storage.Operation{
+			OperationID: parent, BankID: "b1", OperationType: "batch_retain", Status: storage.StatusPending,
+			ResultMetadata: map[string]any{"is_parent": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for i, status := range childStatuses {
+			childID := "0000000" + string(rune('0'+i)) + "-0000-0000-0000-000000000000"
+			if _, err := store.PutOperation(context.TODO(), storage.Operation{
+				OperationID: childID, BankID: "b1", OperationType: "retain", Status: status,
+				ResultMetadata: map[string]any{"parent_operation_id": parent, "sub_batch_index": i},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	statusOf := func(t *testing.T, mux *http.ServeMux, parent string) string {
+		t.Helper()
+		rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+parent)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got["status"].(string)
+	}
+
+	// All children completed: the pending parent reads completed and is repaired.
+	mux, store := newServer(t)
+	seedBatch(t, store, validOpID, storage.StatusCompleted, storage.StatusCompleted)
+	if got := statusOf(t, mux, validOpID); got != "completed" {
+		t.Fatalf("self-healed status = %q, want completed", got)
+	}
+	repaired, err := store.GetOperation(context.TODO(), "b1", validOpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Status != storage.StatusCompleted || repaired.CompletedAt == nil {
+		t.Fatalf("parent not persisted as repaired: %+v", repaired)
+	}
+
+	// A failed child makes the corrected status failed.
+	mux2, store2 := newServer(t)
+	seedBatch(t, store2, validOpID, storage.StatusCompleted, storage.StatusFailed)
+	if got := statusOf(t, mux2, validOpID); got != "failed" {
+		t.Fatalf("self-healed status = %q, want failed", got)
+	}
+
+	// A child still running leaves the parent pending — no repair.
+	mux3, store3 := newServer(t)
+	seedBatch(t, store3, validOpID, storage.StatusCompleted, storage.StatusProcessing)
+	if got := statusOf(t, mux3, validOpID); got != "pending" {
+		t.Fatalf("status = %q, want pending (a child is in flight)", got)
+	}
+
+	// A cancelled child is not finished for the read-path repair: the parent stays pending.
+	mux4, store4 := newServer(t)
+	seedBatch(t, store4, validOpID, storage.StatusCompleted, storage.StatusCancelled)
+	if got := statusOf(t, mux4, validOpID); got != "pending" {
+		t.Fatalf("status = %q, want pending (a child was cancelled)", got)
+	}
+}
+
+// test-operation-delete-drops-archive (58 D3): deleting a terminal export
+// operation removes the stored archive its result_metadata points at, so the
+// blob does not outlive the row that is its only handle.
+func TestDeleteOperationRemovesExportArchive(t *testing.T) {
+	mux, store := newServer(t)
+	const key = "banks/b1/exports-" + validOpID + ".zip"
+	if err := store.PutStoredFile(context.TODO(), storage.StoredFile{
+		Key: key, ContentType: "application/zip", Data: []byte("PK\x03\x04archive"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: "export", Status: storage.StatusPending,
+		ResultMetadata: map[string]any{"storage_key": key, "download_url": "/v1/default/files/download/" + key},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdvanceOperation(context.TODO(), validOpID, storage.StatusProcessing, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdvanceOperation(context.TODO(), validOpID, storage.StatusCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetStoredFile(context.TODO(), key); err != nil {
+		t.Fatalf("archive must exist before delete: %v", err)
+	}
+	rec := do(t, mux, http.MethodDelete, "/v1/default/banks/b1/operations/"+validOpID+"/delete")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if _, err := store.GetStoredFile(context.TODO(), key); !errors.Is(err, storage.ErrStoredFileNotFound) {
+		t.Fatalf("archive survived the delete: err = %v", err)
 	}
 }

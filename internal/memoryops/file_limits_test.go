@@ -43,6 +43,9 @@ func uploadFiles(t *testing.T, files map[string]string) (*http.Request, string) 
 			t.Fatal(err)
 		}
 	}
+	if err := writer.WriteField("request", "{}"); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -51,50 +54,70 @@ func uploadFiles(t *testing.T, files map[string]string) (*http.Request, string) 
 	return req, writer.FormDataContentType()
 }
 
-// A file larger than the configured limit is refused before it is stored, and
-// the refusal names the limit.
-func TestUploadOverSizeLimitRefused(t *testing.T) {
+// A single upload larger than the configured retention-attachment size is
+// accepted: the reference places no per-file cap on the /files/retain route,
+// bounding only the whole batch (the conversion batch size and byte total).
+func TestUploadHasNoPerFileSizeCap(t *testing.T) {
 	mux, store := limitedServer(t, 16, 5)
 	req, _ := uploadFiles(t, map[string]string{"big.txt": strings.Repeat("x", 64)})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "exceeding") {
-		t.Fatalf("the refusal must name the limit: %s", rec.Body.String())
-	}
-	// The refusal happens before any bytes are stored, so no document exists.
 	documents, err := store.ListDocuments(context.TODO(), storage.DocumentQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if documents.Total != 0 {
-		t.Fatalf("an oversize upload must not be stored: %+v", documents.Documents)
+	if documents.Total != 1 {
+		t.Fatalf("the upload must be stored: %+v", documents.Documents)
 	}
 }
 
-// More files than the configured count is refused, and a file within the limits
-// is accepted.
-func TestUploadOverCountLimitRefused(t *testing.T) {
-	mux, _ := limitedServer(t, 1<<20, 1)
+// The file route's count bound is the conversion batch size
+// (HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE), not the retention attachment
+// count: a request above the latter but within the former is accepted.
+func TestUploadCountBoundIsConversionBatchSize(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	h.MaxAttachments = 1
+	h.MaxFileBatchCount = 2
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	req, _ := uploadFiles(t, map[string]string{"a.txt": "alpha", "b.txt": "beta"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a request within the conversion batch size must be accepted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// More files than the conversion batch size is refused, naming the bound.
+func TestUploadOverBatchSizeRefused(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	h.MaxFileBatchCount = 1
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
 	req, _ := uploadFiles(t, map[string]string{"a.txt": "alpha", "b.txt": "beta"})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "1-file limit") {
+	if !strings.Contains(rec.Body.String(), "Maximum 1 files per request") {
 		t.Fatalf("the refusal must name the count: %s", rec.Body.String())
-	}
-
-	ok, _ := limitedServer(t, 1<<20, 2)
-	req, _ = uploadFiles(t, map[string]string{"a.txt": "alpha"})
-	rec = httptest.NewRecorder()
-	ok.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("a file within the limits must be accepted: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

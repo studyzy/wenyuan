@@ -31,7 +31,7 @@ func seedParityOps(t *testing.T, app *App) {
 		}
 	}
 	for _, unit := range []storage.MemoryUnit{
-		{ID: "api-world-1", BankID: "api-bank", Text: "the saga service owns billing",
+		{ID: "22222222-2222-2222-2222-222222222222", BankID: "api-bank", Text: "the saga service owns billing",
 			FactType: storage.TypeWorld},
 		{ID: "api-obs-1", BankID: "api-bank", Text: "billing deploys on Fridays",
 			FactType: storage.TypeObservation},
@@ -132,7 +132,7 @@ func TestClearMemoriesContract(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "api-bank") {
 		t.Fatalf("bank must survive a clear: %d (body %s)", rec.Code, rec.Body.String())
 	}
-	rec = send(app, http.MethodGet, base+"/api-world-1", "")
+	rec = send(app, http.MethodGet, base+"/22222222-2222-2222-2222-222222222222", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unrelated fact must survive a scoped clear: %d (body %s)", rec.Code, rec.Body.String())
 	}

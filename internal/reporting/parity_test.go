@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -21,14 +22,14 @@ func parityServer(t *testing.T) *http.ServeMux {
 		t.Fatal(err)
 	}
 	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
-		ID: "mem-world", BankID: bank, Text: "the deployment runs on Tuesdays",
+		ID: "44444444-4444-4444-4444-444444444444", BankID: bank, Text: "the deployment runs on Tuesdays",
 		FactType: storage.TypeWorld, Tags: []string{"ops"}, DocumentID: "doc-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
-		ID: "mem-obs", BankID: bank, Text: "deployments happen weekly",
-		FactType: storage.TypeObservation, SourceMemoryIDs: []string{"mem-world"},
+		ID: "55555555-5555-5555-5555-555555555555", BankID: bank, Text: "deployments happen weekly",
+		FactType: storage.TypeObservation, SourceMemoryIDs: []string{"44444444-4444-4444-4444-444444444444"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestMemoryStateFilter(t *testing.T) {
 	mux := parityServer(t)
 	base := "/v1/default/banks/" + bank
 
-	rec := send(mux, http.MethodPatch, base+"/memories/mem-world", `{"state":"invalidated","reason":"superseded"}`)
+	rec := send(mux, http.MethodPatch, base+"/memories/44444444-4444-4444-4444-444444444444", `{"state":"invalidated","reason":"superseded"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("invalidate = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -140,7 +141,7 @@ func TestMemoryDetailShape(t *testing.T) {
 	mux := parityServer(t)
 	base := "/v1/default/banks/" + bank
 
-	rec := send(mux, http.MethodGet, base+"/memories/mem-world", "")
+	rec := send(mux, http.MethodGet, base+"/memories/44444444-4444-4444-4444-444444444444", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -160,7 +161,7 @@ func TestMemoryDetailShape(t *testing.T) {
 	}
 
 	// An observation also carries history and its resolved sources.
-	obs := decodeObject(t, send(mux, http.MethodGet, base+"/memories/mem-obs", ""))
+	obs := decodeObject(t, send(mux, http.MethodGet, base+"/memories/55555555-5555-5555-5555-555555555555", ""))
 	if _, ok := obs["history"].([]any); !ok {
 		t.Fatalf("observation detail must carry history list: %v", obs)
 	}
@@ -179,7 +180,7 @@ func TestMemoryUpdateBody(t *testing.T) {
 	mux := parityServer(t)
 	base := "/v1/default/banks/" + bank
 
-	rec := send(mux, http.MethodPatch, base+"/memories/mem-world", `{"text":"updated text","reason":"fix"}`)
+	rec := send(mux, http.MethodPatch, base+"/memories/44444444-4444-4444-4444-444444444444", `{"text":"updated text","reason":"fix"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -191,24 +192,24 @@ func TestMemoryUpdateBody(t *testing.T) {
 		t.Fatalf("update response must be the detail dict: %v", detail)
 	}
 	// Empty body is a 422.
-	if rec := send(mux, http.MethodPatch, base+"/memories/mem-world", `{}`); rec.Code != http.StatusUnprocessableEntity {
+	if rec := send(mux, http.MethodPatch, base+"/memories/44444444-4444-4444-4444-444444444444", `{}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("empty update = %d, want 422: %s", rec.Code, rec.Body.String())
 	}
 	// A state outside the enum is a 422.
-	if rec := send(mux, http.MethodPatch, base+"/memories/mem-world", `{"state":"nope"}`); rec.Code != http.StatusUnprocessableEntity {
+	if rec := send(mux, http.MethodPatch, base+"/memories/44444444-4444-4444-4444-444444444444", `{"state":"nope"}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bad state = %d, want 422: %s", rec.Code, rec.Body.String())
 	}
 }
 
 // finding 4: the history route returns a bare array with the reference's keys.
+// An observation is not curatable (the reference refuses the edit), so a
+// history entry only appears once consolidation rewrites one; this fixture has
+// no model, so the route answers an empty bare array and the declared key set
+// is asserted on the entry type directly.
 func TestMemoryHistoryBareArray(t *testing.T) {
 	mux := parityServer(t)
 	base := "/v1/default/banks/" + bank
-	// Produce a history entry.
-	if rec := send(mux, http.MethodPatch, base+"/memories/mem-obs", `{"text":"changed"}`); rec.Code != http.StatusOK {
-		t.Fatalf("update = %d: %s", rec.Code, rec.Body.String())
-	}
-	rec := send(mux, http.MethodGet, base+"/memories/mem-obs/history", "")
+	rec := send(mux, http.MethodGet, base+"/memories/55555555-5555-5555-5555-555555555555/history", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("history = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -216,13 +217,22 @@ func TestMemoryHistoryBareArray(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
 		t.Fatalf("history must be a bare array: %v (%s)", err, rec.Body.String())
 	}
-	if len(entries) == 0 {
-		t.Fatalf("history had no entries: %s", rec.Body.String())
+	if len(entries) != 0 {
+		t.Fatalf("history had %d entries, want none in this fixture: %s", len(entries), rec.Body.String())
+	}
+
+	encoded, err := json.Marshal(MemoryHistoryEntry{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(encoded, &entry); err != nil {
+		t.Fatal(err)
 	}
 	for _, key := range []string{"previous_text", "previous_tags", "previous_occurred_start",
 		"previous_occurred_end", "previous_mentioned_at", "changed_at", "new_source_memory_ids", "source_facts"} {
-		if _, ok := entries[0][key]; !ok {
-			t.Fatalf("entry missing %q: %v", key, entries[0])
+		if _, ok := entry[key]; !ok {
+			t.Fatalf("entry missing %q: %v", key, entry)
 		}
 	}
 }
@@ -411,5 +421,248 @@ func TestLLMStatsTokenKeys(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), `"input_tokens"`) {
 		t.Fatalf("token sums must not use input_tokens: %s", encoded)
+	}
+}
+
+// The history route rebuilds each change's cumulative source set by walking
+// backwards from the observation's current sources, and emits the changes
+// oldest-first — the reference's reconstruction, whose source ids are only ever
+// accumulated.
+func TestMemoryHistoryReconstructsSourceFacts(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{
+		"alpha": "11111111-1111-4111-8111-111111111111",
+		"beta":  "22222222-2222-4222-8222-222222222222",
+		"gamma": "33333333-3333-4333-8333-333333333333",
+	}
+	for name, id := range ids {
+		if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+			ID: id, BankID: bank, Text: name + " fact", FactType: storage.TypeWorld,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observationID, err := store.CreateObservation(ctx, bank, "v1", []string{ids["alpha"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateObservation(ctx, bank, observationID, "v2", []string{ids["beta"]}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateObservation(ctx, bank, observationID, "v3", []string{ids["gamma"]}); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := reportingMux(store)
+	rec := send(mux, http.MethodGet, "/v1/default/banks/"+bank+"/memories/"+observationID+"/history", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history = %d: %s", rec.Code, rec.Body.String())
+	}
+	var entries []struct {
+		PreviousText       *string  `json:"previous_text"`
+		ChangedAt          string   `json:"changed_at"`
+		NewSourceMemoryIDs []string `json:"new_source_memory_ids"`
+		SourceFacts        []struct {
+			ID    string  `json:"id"`
+			Text  *string `json:"text"`
+			Type  *string `json:"type"`
+			IsNew bool    `json:"is_new"`
+		} `json:"source_facts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2: %s", len(entries), rec.Body.String())
+	}
+	// Oldest first: the first change rewrote v1, the second rewrote v2.
+	if got := deref(entries[0].PreviousText); got != "v1" {
+		t.Fatalf("entries[0].previous_text = %q, want \"v1\" (oldest first)", got)
+	}
+	if got := deref(entries[1].PreviousText); got != "v2" {
+		t.Fatalf("entries[1].previous_text = %q, want \"v2\"", got)
+	}
+	if !strings.HasSuffix(entries[0].ChangedAt, "+00:00") || strings.HasSuffix(entries[0].ChangedAt, "Z") {
+		t.Fatalf("changed_at = %q, want isoformat with +00:00", entries[0].ChangedAt)
+	}
+	// The first change had folded in alpha and beta; the second all three, with
+	// gamma marked as the one it added.
+	wantFacts := [][]string{
+		{ids["alpha"], ids["beta"]},
+		{ids["alpha"], ids["beta"], ids["gamma"]},
+	}
+	wantNew := []map[string]bool{
+		{ids["alpha"]: false, ids["beta"]: true},
+		{ids["alpha"]: false, ids["beta"]: false, ids["gamma"]: true},
+	}
+	for i, entry := range entries {
+		if len(entry.SourceFacts) != len(wantFacts[i]) {
+			t.Fatalf("entry %d source_facts = %+v, want %v", i, entry.SourceFacts, wantFacts[i])
+		}
+		for j, fact := range entry.SourceFacts {
+			if fact.ID != wantFacts[i][j] {
+				t.Fatalf("entry %d fact %d id = %q, want %q", i, j, fact.ID, wantFacts[i][j])
+			}
+			if fact.IsNew != wantNew[i][fact.ID] {
+				t.Fatalf("entry %d fact %q is_new = %v, want %v", i, fact.ID, fact.IsNew, wantNew[i][fact.ID])
+			}
+			if fact.Text == nil || fact.Type == nil {
+				t.Fatalf("entry %d fact %q must resolve text/type: %+v", i, fact.ID, fact)
+			}
+		}
+	}
+}
+
+// deref reads a required test string pointer.
+func deref(value *string) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return *value
+}
+
+// A curation body that violates more than one rule reports the first violation
+// only, and the error carries the whole request object as its input — the shape
+// the reference's model validator produces.
+func TestMemoryUpdateValidationInput(t *testing.T) {
+	mux := parityServer(t)
+	base := "/v1/default/banks/" + bank
+	rec := send(mux, http.MethodPatch, base+"/memories/44444444-4444-4444-4444-444444444444",
+		`{"state":"bogus","fact_type":"observation"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("validation = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Detail []struct {
+			Msg   string         `json:"msg"`
+			Input map[string]any `json:"input"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if len(body.Detail) != 1 {
+		t.Fatalf("errors = %d, want only the first: %s", len(body.Detail), rec.Body.String())
+	}
+	if body.Detail[0].Msg != "Value error, state must be 'valid' or 'invalidated'." {
+		t.Fatalf("msg = %q", body.Detail[0].Msg)
+	}
+	if body.Detail[0].Input["fact_type"] != "observation" {
+		t.Fatalf("input = %v, want the whole request object", body.Detail[0].Input)
+	}
+}
+
+// An explicit occurred_start edit re-derives the legacy single date, and an
+// explicit null clears the occurrence and falls the date back to mentioned_at.
+func TestMemoryUpdateRederivesEventDate(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	mentioned := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: "44444444-4444-4444-4444-444444444444", BankID: bank, Text: "the deployment runs on Tuesdays",
+		FactType: storage.TypeWorld, MentionedAt: &mentioned,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	path := "/v1/default/banks/" + bank + "/memories/44444444-4444-4444-4444-444444444444"
+
+	detail := decodeObject(t, send(mux, http.MethodPatch, path, `{"occurred_start":"2024-01-15"}`))
+	if detail["occurred_start"] != "2024-01-15T00:00:00+00:00" {
+		t.Fatalf("occurred_start = %v", detail["occurred_start"])
+	}
+	if detail["date"] != "2024-01-15T00:00:00+00:00" {
+		t.Fatalf("date = %v, want the new occurred_start", detail["date"])
+	}
+
+	detail = decodeObject(t, send(mux, http.MethodPatch, path, `{"occurred_start":null}`))
+	if detail["occurred_start"] != nil {
+		t.Fatalf("occurred_start = %v, want null", detail["occurred_start"])
+	}
+	if detail["date"] != "2025-06-01T12:00:00+00:00" {
+		t.Fatalf("date = %v, want mentioned_at after the clear", detail["date"])
+	}
+}
+
+// Re-invalidating an already-retired memory keeps its invalidation time and only
+// records a new reason when one is sent.
+func TestMemoryUpdateArchivedReason(t *testing.T) {
+	mux := parityServer(t)
+	base := "/v1/default/banks/" + bank
+	path := base + "/memories/44444444-4444-4444-4444-444444444444"
+
+	first := decodeObject(t, send(mux, http.MethodPatch, path, `{"state":"invalidated","reason":"first"}`))
+	retiredAt, _ := first["invalidated_at"].(string)
+	if retiredAt == "" {
+		t.Fatalf("invalidated_at = %v", first["invalidated_at"])
+	}
+	updated := decodeObject(t, send(mux, http.MethodPatch, path, `{"state":"invalidated","reason":"second"}`))
+	if updated["invalidation_reason"] != "second" {
+		t.Fatalf("invalidation_reason = %v, want the new reason", updated["invalidation_reason"])
+	}
+	if updated["invalidated_at"] != retiredAt {
+		t.Fatalf("invalidated_at = %v, want the original %q", updated["invalidated_at"], retiredAt)
+	}
+	kept := decodeObject(t, send(mux, http.MethodPatch, path, `{"state":"invalidated"}`))
+	if kept["invalidation_reason"] != "second" {
+		t.Fatalf("a reason-free repeat wiped the reason: %v", kept["invalidation_reason"])
+	}
+
+	// Editing a retired memory is refused.
+	rec := send(mux, http.MethodPatch, path, `{"text":"corrected"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Cannot edit an invalidated memory") {
+		t.Fatalf("edit of an invalidated memory = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An observation's source_memories come from the live table only: a source id
+// that no longer exists is dropped, and a source whose text/context column is
+// unset stays null rather than being flattened to an empty string.
+func TestMemorySourceMemoriesDropsMissingAndKeepsNulls(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	// A source fact with no text and no context.
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: "11111111-1111-1111-1111-111111111111", BankID: bank, FactType: storage.TypeWorld,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An observation pointing at the live source and at one that does not exist.
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: "22222222-2222-2222-2222-222222222222", BankID: bank, Text: "an observation",
+		FactType:        storage.TypeObservation,
+		SourceMemoryIDs: []string{"11111111-1111-1111-1111-111111111111", "99999999-9999-9999-9999-999999999999"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	base := "/v1/default/banks/" + bank
+	obs := decodeObject(t, send(mux, http.MethodGet, base+"/memories/22222222-2222-2222-2222-222222222222", ""))
+	sources, ok := obs["source_memories"].([]any)
+	if !ok || len(sources) != 1 {
+		t.Fatalf("source_memories = %v, want exactly the live source", obs["source_memories"])
+	}
+	row, ok := sources[0].(map[string]any)
+	if !ok {
+		t.Fatalf("source row = %T", sources[0])
+	}
+	if row["id"] != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("source id = %v", row["id"])
+	}
+	if row["text"] != nil {
+		t.Fatalf("source text = %v, want null for an unset column", row["text"])
+	}
+	if row["context"] != nil {
+		t.Fatalf("source context = %v, want null for an unset column", row["context"])
 	}
 }

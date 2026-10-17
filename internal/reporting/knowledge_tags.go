@@ -218,7 +218,9 @@ func knowledgeTagFilterFromRequest(w http.ResponseWriter, r *http.Request) (know
 		return filter, true
 	}
 	if err := json.Unmarshal([]byte(rawGroups), &filter.groups); err != nil {
-		writeKnowledgeItem(w, r, httpx.ValueError([]string{"query", "tag_groups"}, rawGroups,
+		// The reference raises a plain HTTPException(422, detail="Invalid tag_groups: …"),
+		// so the envelope carries a string, not a validation-item list.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable,
 			"Invalid tag_groups: "+err.Error()))
 		return knowledgeTagFilter{}, false
 	}
@@ -314,5 +316,5 @@ func containsKnowledgeString(values []string, target string) bool {
 
 // writeKnowledgeItem emits one structured item in the framework's 422 body.
 func writeKnowledgeItem(w http.ResponseWriter, r *http.Request, item httpx.ValidationError) {
-	httpx.WriteValidationFor(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
+	httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
 }

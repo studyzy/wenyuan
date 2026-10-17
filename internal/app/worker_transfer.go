@@ -63,9 +63,16 @@ func (p archiveProcessor) applyImport(ctx context.Context, op storage.Operation)
 		// now is permanent rather than transient.
 		return worker.Permanent(err)
 	}
+	// The task payload follows the reference: a bank restore records an
+	// import_bank operation with no mode member, a document merge records an
+	// import_documents operation, so the operation type is the discriminator.
 	mode := transfer.ImportMode(payloadString(op, "mode"))
 	if mode == "" {
-		mode = transfer.ImportMerge
+		if op.OperationType == storage.OperationTypeTransferImport {
+			mode = transfer.ImportRestore
+		} else {
+			mode = transfer.ImportMerge
+		}
 	}
 	target, _ := op.Payload["target_bank_id"].(string)
 	if target == "" {
@@ -76,7 +83,7 @@ func (p archiveProcessor) applyImport(ctx context.Context, op storage.Operation)
 		BankID:       op.BankID,
 		TargetBankID: target,
 		Mode:         mode,
-		OnConflict:   payloadString(op, "document_conflict"),
+		OnConflict:   payloadString(op, "on_conflict"),
 		Scope:        scopeFromPayload(op),
 	})
 	if err != nil {

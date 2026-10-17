@@ -1,6 +1,11 @@
 package reporting
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/storage"
+)
 
 // Knowledge-page markdown constants. They mirror the reference's rendering
 // module so the read surface and the export bundle carry the same bytes.
@@ -16,6 +21,9 @@ const (
 	knowledgeEmptyNotice = "No content yet."
 	// knowledgeIndexFilename is the reserved navigation file of an export.
 	knowledgeIndexFilename = "index.md"
+	// knowledgeLogSuffix is the reserved per-page history filename suffix, so a
+	// bundle carries the refreshes a page went through, not only its last body.
+	knowledgeLogSuffix = ".log.md"
 	// knowledgeSnippetChars bounds a search snippet to the page's opening text.
 	knowledgeSnippetChars = 280
 	// knowledgePageDefaultMaxTokens is the refresh budget a knowledge page gets
@@ -49,19 +57,21 @@ func knowledgePageType(tags []string) knowledgePageTypeInfo {
 	return knowledgePageTypeInfo{Type: resolved, DisplayTags: display}
 }
 
-// knowledgeSnippet is the opening text a search result shows. A page whose body
-// is still empty says so in words rather than coming back blank, so a caller can
-// tell an unwritten page from one whose snippet simply did not render.
+// knowledgeSnippet is the opening text a search result shows. The reference cuts
+// the stored body to its first 280 characters in SQL and strips that window, so
+// leading whitespace consumes the budget rather than being removed before it. A
+// page whose body is still empty says so in words rather than coming back blank,
+// so a caller can tell an unwritten page from one whose snippet did not render.
 func knowledgeSnippet(content string) string {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return knowledgeEmptyNotice
-	}
-	runes := []rune(trimmed)
+	runes := []rune(content)
 	if len(runes) > knowledgeSnippetChars {
 		runes = runes[:knowledgeSnippetChars]
 	}
-	return strings.TrimSpace(string(runes))
+	trimmed := strings.TrimSpace(string(runes))
+	if trimmed == "" {
+		return knowledgeEmptyNotice
+	}
+	return trimmed
 }
 
 // knowledgeField is one ordered frontmatter entry: either a scalar or a list.
@@ -155,8 +165,8 @@ func renderKnowledgeIndex(roots []KnowledgeNode) string {
 				continue
 			}
 			link := indent + "- [" + node.Name + "](./" + node.ID + ".md)"
-			if node.Description != "" {
-				lines = append(lines, link+" \u2014 "+node.Description)
+			if description := derefString(node.Description); description != "" {
+				lines = append(lines, link+" \u2014 "+description)
 			} else {
 				lines = append(lines, link)
 			}
@@ -167,4 +177,35 @@ func renderKnowledgeIndex(roots []KnowledgeNode) string {
 		lines = append(lines, "_No knowledge pages yet._")
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// renderKnowledgeLog renders the reserved per-page `<id>.log.md` from a page's
+// refresh history. Each entry captures the content a refresh replaced, newest
+// first; the file exists only when there is at least one entry, so a bundle
+// never carries an empty history.
+func renderKnowledgeLog(title string, entries []storage.MentalModelHistoryEntry) string {
+	frontmatter := renderKnowledgeFrontmatter([]knowledgeField{
+		{key: "type", value: "log"},
+		{key: "title", value: title + " \u2014 history"},
+	})
+	lines := []string{frontmatter, "", "# " + title + " \u2014 history", ""}
+	if len(entries) == 0 {
+		lines = append(lines, "_No refresh history._")
+		return strings.Join(lines, "\n") + "\n"
+	}
+	for _, entry := range entries {
+		changedAt := httpx.FormatTimestamp(entry.ChangedAt)
+		if changedAt == "" {
+			changedAt = "unknown"
+		}
+		previous := ""
+		if entry.PreviousContent != nil {
+			previous = strings.TrimSpace(*entry.PreviousContent)
+		}
+		if previous == "" {
+			previous = "_(empty)_"
+		}
+		lines = append(lines, "## "+changedAt, "", previous, "")
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), " \n\t") + "\n"
 }

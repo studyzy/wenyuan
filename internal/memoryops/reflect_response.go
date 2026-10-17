@@ -3,6 +3,7 @@ package memoryops
 import (
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -48,22 +49,19 @@ func buildCitedEvidence(outcome storage.ReflectOutcome) *CitedEvidence {
 		Directives:   make([]ReflectCitedDirective, 0, len(outcome.Directives)),
 	}
 	for _, f := range outcome.Facts {
-		attachments := make([]Attachment, 0, len(f.Attachments))
-		for _, a := range f.Attachments {
-			attachments = append(attachments, attachmentFromRecall(a))
-		}
+		attachments := toAttachments(f.Attachments)
 		evidence.Memories = append(evidence.Memories, ReflectCitedFact{
 			ID:            f.ID,
 			Text:          f.Text,
-			Type:          f.Type,
-			Context:       f.Context,
-			OccurredStart: f.OccurredStart,
-			OccurredEnd:   f.OccurredEnd,
-			MentionedAt:   f.MentionedAt,
-			DocumentID:    f.DocumentID,
-			ChunkID:       f.ChunkID,
-			Metadata:      f.Metadata,
-			Tags:          nonNilStrings(f.Tags),
+			Type:          nullIfEmptyString(f.Type),
+			Context:       nullIfEmptyString(f.Context),
+			OccurredStart: httpx.FormatTimestampPtr(f.OccurredStart),
+			OccurredEnd:   httpx.FormatTimestampPtr(f.OccurredEnd),
+			MentionedAt:   httpx.FormatTimestampPtr(f.MentionedAt),
+			DocumentID:    nullIfEmptyString(f.DocumentID),
+			ChunkID:       nullIfEmptyString(f.ChunkID),
+			Metadata:      nonNilMap(f.Metadata),
+			Tags:          nonEmptyStrings(f.Tags),
 			Attachments:   attachments,
 		})
 	}
@@ -164,12 +162,13 @@ func looksLikeIdentifier(token string) bool {
 func applyStructuredOutput(response *ReflectResponse, schema map[string]any, outcome storage.ReflectOutcome) {
 	if outcome.StructuredOutput != nil || outcome.StructuredOutputError != "" {
 		response.StructuredOutput = outcome.StructuredOutput
-		response.StructuredOutputError = outcome.StructuredOutputError
+		response.StructuredOutputError = nullIfEmptyString(outcome.StructuredOutputError)
 		return
 	}
 	parsed, err := parseStructuredOutput(schema, outcome.Answer)
 	if err != nil {
-		response.StructuredOutputError = err.Error()
+		message := err.Error()
+		response.StructuredOutputError = &message
 		return
 	}
 	response.StructuredOutput = parsed

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -68,11 +69,12 @@ type ListResponse struct {
 	Offset int       `json:"offset"`
 }
 
-// DeleteResponse is the delete acknowledgement.
+// DeleteResponse is the delete acknowledgement. The reference keeps nulls on
+// this response, so the unused members are emitted as explicit nulls.
 type DeleteResponse struct {
-	Success      bool   `json:"success"`
-	Message      string `json:"message,omitempty"`
-	DeletedCount *int   `json:"deleted_count,omitempty"`
+	Success      bool    `json:"success"`
+	Message      *string `json:"message"`
+	DeletedCount *int    `json:"deleted_count"`
 }
 
 // Delivery is one recorded delivery attempt. Nullable fields stay present as
@@ -110,12 +112,15 @@ func toWebhook(record storage.Webhook) Webhook {
 		ID: record.ID, BankID: record.BankID, URL: record.URL,
 		EventTypes: events, Enabled: record.Enabled,
 		HTTPConfig: toHTTPConfig(record.HTTPConfig),
-		CreatedAt:  formatTime(record.CreatedAt), UpdatedAt: formatTime(record.UpdatedAt),
+		CreatedAt:  httpx.FormatPostgresTimestamp(record.CreatedAt),
+		UpdatedAt:  httpx.FormatPostgresTimestamp(record.UpdatedAt),
 	}
 }
 
-// toDelivery renders one stored delivery record for the wire.
-func toDelivery(record storage.WebhookDelivery) Delivery {
+// toDelivery renders one stored delivery record for the wire. exposeBody gates
+// the receiver's response body: the row stores it, but the reference withholds
+// it from API callers unless the deployment opts in.
+func toDelivery(record storage.WebhookDelivery, exposeBody bool) Delivery {
 	delivery := Delivery{
 		ID:        record.ID,
 		WebhookID: record.WebhookID,
@@ -125,7 +130,7 @@ func toDelivery(record storage.WebhookDelivery) Delivery {
 		Attempts:  record.Attempts,
 	}
 	if record.NextRetryAt != nil {
-		value := formatTime(*record.NextRetryAt)
+		value := httpx.FormatPostgresTimestamp(*record.NextRetryAt)
 		delivery.NextRetryAt = &value
 	}
 	if record.LastError != "" {
@@ -133,17 +138,19 @@ func toDelivery(record storage.WebhookDelivery) Delivery {
 		delivery.LastError = &value
 	}
 	delivery.LastResponseStatus = record.LastResponseStatus
-	delivery.LastResponseBody = record.LastResponseBody
+	if exposeBody {
+		delivery.LastResponseBody = record.LastResponseBody
+	}
 	if record.LastAttemptAt != nil {
-		value := formatTime(*record.LastAttemptAt)
+		value := httpx.FormatTimestamp(*record.LastAttemptAt)
 		delivery.LastAttemptAt = &value
 	}
 	if !record.CreatedAt.IsZero() {
-		value := formatDeliveryTime(record.CreatedAt)
+		value := httpx.FormatPostgresTimestamp(record.CreatedAt)
 		delivery.CreatedAt = &value
 	}
 	if !record.UpdatedAt.IsZero() {
-		value := formatDeliveryTime(record.UpdatedAt)
+		value := httpx.FormatPostgresTimestamp(record.UpdatedAt)
 		delivery.UpdatedAt = &value
 	}
 	return delivery
@@ -159,7 +166,10 @@ func toHTTPConfig(raw map[string]any) HTTPConfig {
 	if method, ok := raw["method"].(string); ok && method != "" {
 		cfg.Method = method
 	}
-	if seconds, ok := numberValue(raw["timeout_seconds"]); ok && seconds > 0 {
+	if seconds, ok := numberValue(raw["timeout_seconds"]); ok {
+		// An explicit value is honoured as stored: zero is a timeout the caller
+		// asked for, not an unset field, so it must not fall back to the
+		// default the way a missing key does.
 		cfg.TimeoutSeconds = seconds
 	}
 	if headers, ok := raw["headers"]; ok {
@@ -177,9 +187,6 @@ func toStorageConfig(cfg HTTPConfig) map[string]any {
 	if cfg.Method == "" {
 		cfg.Method = "POST"
 	}
-	if cfg.TimeoutSeconds == 0 {
-		cfg.TimeoutSeconds = 30
-	}
 	if cfg.Headers == nil {
 		cfg.Headers = map[string]string{}
 	}
@@ -192,12 +199,6 @@ func toStorageConfig(cfg HTTPConfig) map[string]any {
 		"headers":         cfg.Headers,
 		"params":          cfg.Params,
 	}
-}
-
-// toStorageConfigPtr renders the wire configuration for a partial update.
-func toStorageConfigPtr(cfg HTTPConfig) *map[string]any {
-	stored := toStorageConfig(cfg)
-	return &stored
 }
 
 // stringMap converts a decoded JSON object to a string map, dropping
@@ -240,23 +241,6 @@ func numberValue(raw any) (int, bool) {
 	}
 }
 
-// formatTime renders a timestamp as the API reports it, at second precision.
-func formatTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339)
-}
-
-// formatDeliveryTime renders a delivery timestamp at full precision, so the
-// created_at cursor round-trips without collapsing records that share a second.
-func formatDeliveryTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339Nano)
-}
-
 // asHTTPError maps a storage error to the shared envelope.
 func asHTTPError(err error) *httpx.HTTPError {
 	switch {
@@ -265,11 +249,20 @@ func asHTTPError(err error) *httpx.HTTPError {
 	case errors.Is(err, storage.ErrBankNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	case errors.Is(err, storage.ErrWebhookNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "webhook not found")
+		return httpx.NewHTTPError(httpx.KindNotFound, "Webhook not found")
 	case errors.Is(err, storage.ErrWebhookURLNotAllowed):
 		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+	case errors.Is(err, storage.ErrInvalidBankID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "bank identifier is invalid")
+	case errors.Is(err, storage.ErrAliasConflict):
+		return httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias")
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
 	default:
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
 
@@ -291,4 +284,67 @@ func newID() string {
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	hexed := hex.EncodeToString(raw[:])
 	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
+}
+
+// canonicalWebhookID folds the uuid spellings the reference's parser accepts —
+// the dashed 8-4-4-4-12 form, the 32-hex form, and the brace- and urn-wrapped
+// spellings — onto the canonical dashed form the store compares against. It
+// reports false for a value that is not a uuid at all, which the route answers
+// with the reference's 422 "Invalid webhook ID".
+func canonicalWebhookID(raw string) (string, bool) {
+	value := raw
+	if len(value) >= len("urn:uuid:") && strings.EqualFold(value[:len("urn:uuid:")], "urn:uuid:") {
+		value = value[len("urn:uuid:"):]
+	}
+	if len(value) >= 2 && value[0] == '{' && value[len(value)-1] == '}' {
+		value = value[1 : len(value)-1]
+	}
+	switch len(value) {
+	case 32:
+		if !isHex(value) {
+			return "", false
+		}
+	case 36:
+		if !dashedUUIDShape(value) {
+			return "", false
+		}
+		value = strings.ReplaceAll(value, "-", "")
+	default:
+		return "", false
+	}
+	hexed := strings.ToLower(value)
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32], true
+}
+
+// isHex reports whether every byte of a value is a hexadecimal digit.
+func isHex(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := range value {
+		if !isHexDigit(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// dashedUUIDShape reports whether a value has the 8-4-4-4-12 hex shape.
+func dashedUUIDShape(value string) bool {
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if value[i] != '-' {
+				return false
+			}
+			continue
+		}
+		if !isHexDigit(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }

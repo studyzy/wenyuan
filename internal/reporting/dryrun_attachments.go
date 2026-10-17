@@ -63,9 +63,12 @@ func renderChunkPlaceholders(text string, occurrences []dryRunOccurrence) string
 		return text
 	}
 	index := 0
-	return dryRunPlaceholderRe.ReplaceAllStringFunc(text, func(string) string {
+	return dryRunPlaceholderRe.ReplaceAllStringFunc(text, func(token string) string {
 		if index >= len(occurrences) {
-			return ""
+			// Occurrences are exhausted: keep the original placeholder token,
+			// exactly as the reference leaves an unmatched placeholder intact
+			// rather than dropping it.
+			return token
 		}
 		occurrence := occurrences[index]
 		index++

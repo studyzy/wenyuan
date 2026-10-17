@@ -44,7 +44,7 @@ func (s *Server) invokeAudited(ctx context.Context, name string, args map[string
 		bankID = bank
 	}
 	if bankID == "" {
-		bankID = defaultBank(ctx)
+		bankID = sessionBank(ctx)
 	}
 	if !s.auditor.ShouldAudit(ctx, name, bankID) {
 		return s.invoke(ctx, name, args)
@@ -172,13 +172,15 @@ func (s *Server) invoke(ctx context.Context, name string, args map[string]any) (
 }
 
 // bankArgument resolves the bank a tool acts on: an explicit bank_id argument,
-// or the single-bank server's fixed bank when the argument is absent.
-func (s *Server) bankArgument(ctx context.Context, args map[string]any, tool string) (string, error) {
+// the single-bank mount's fixed bank, or the session bank the request was
+// scoped to — which the transport defaults to the default bank. Every request
+// therefore resolves to some bank, as the reference's session bank does.
+func (s *Server) bankArgument(ctx context.Context, args map[string]any) string {
 	if bank := stringArgument(args, "bank_id"); bank != "" {
-		return bank, nil
+		return bank
 	}
-	if bank := defaultBank(ctx); bank != "" {
-		return bank, nil
+	if bank := mountBank(ctx); bank != "" {
+		return bank
 	}
-	return "", fmt.Errorf("%s requires bank_id", tool)
+	return sessionBank(ctx)
 }

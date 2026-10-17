@@ -25,6 +25,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/maintenance"
 	"github.com/studyzy/wenyuan/internal/monitoring"
+	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
@@ -87,6 +88,11 @@ func run(args []string) error {
 	// The worker records its model calls in the same trace the server writes,
 	// so a queued consolidation or refresh is visible to /llm-requests too.
 	model = app.TraceProvider(model, store, cfg.Provider)
+	// Record the worker's completions in the same metric registry the server
+	// fills, so a queued consolidation or refresh reports its LLM calls too.
+	model = provider.MetricsProvider(model, cfg.Provider.Model)
+	app.InstallRecallPhaseObserver(store)
+	app.InstallRetainPhaseObserver()
 	reflection := app.NewReflectRunner(model)
 
 	// The worker resolves the embedding backend the same way the server does,
@@ -114,7 +120,7 @@ func run(args []string) error {
 
 	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg)).
 		WithAuditor(app.NewAuditLogger(cfg, store))
-	startWorkerHTTP(ctx, cfg, store)
+	startWorkerHTTP(ctx, cfg, store, consumer)
 	return runBoth(ctx, consumer, loop)
 }
 
@@ -123,10 +129,11 @@ type workerPinger struct{ store storage.Store }
 
 func (p workerPinger) Ping(r *http.Request) error { return p.store.Ready(r.Context()) }
 
-// startWorkerHTTP serves the worker's health surface on its own port, so an
-// orchestrator can probe the worker exactly as it probes the API. A
-// non-positive port disables the surface.
-func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store) {
+// startWorkerHTTP serves the worker's HTTP surface on its own port: the root
+// info endpoint, the health probes, and the metrics exposition. An orchestrator
+// probes the worker exactly as it probes the API. A non-positive port disables
+// the surface.
+func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store, consumer *worker.Consumer) {
 	if cfg.Worker.HTTPPort <= 0 {
 		return
 	}
@@ -134,11 +141,14 @@ func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store
 		HealthHandler: monitoring.HealthHandler{DB: workerPinger{store: store}, Version: httpx.APIVersion, Started: time.Now()},
 		WorkerID:      cfg.Worker.ID,
 		IsShutdown:    func() bool { return ctx.Err() != nil },
+		LastPoll:      consumer.LastPoll,
 	}
 	mux := http.NewServeMux()
-	monitoring.BindWorkerRoutes(handler, func(method, pattern string, h http.HandlerFunc) {
+	bind := func(method, pattern string, h http.HandlerFunc) {
 		mux.HandleFunc(method+" "+pattern, h)
-	})
+	}
+	monitoring.BindWorkerRoutes(handler, bind)
+	monitoring.BindMetricsRoutes(app.WorkerMetricsHandler(store, cfg), bind)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Worker.HTTPPort),
 		Handler:           mux,

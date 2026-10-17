@@ -3,6 +3,7 @@ package mentalmodels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,7 +123,7 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if err := json.Unmarshal(got.Body.Bytes(), &model); err != nil {
 		t.Fatal(err)
 	}
-	if model.Name != "goals" || model.Subtype != string(storage.SubtypePinned) {
+	if model.Name != "goals" {
 		t.Fatalf("created model = %+v", model)
 	}
 
@@ -170,7 +171,7 @@ func TestMentalModelLifecycle(t *testing.T) {
 		t.Fatalf("content before a refresh = %s, want an empty string", content)
 	}
 
-	updated := send(mux, http.MethodPatch, base+"/"+model.ID, `{"description":"the current goals"}`)
+	updated := send(mux, http.MethodPatch, base+"/"+model.ID, `{"name":"the current goals"}`)
 	if updated.Code != http.StatusOK {
 		t.Fatalf("update: %d, body = %s", updated.Code, updated.Body.String())
 	}
@@ -220,9 +221,14 @@ func TestMentalModelCreateValidation(t *testing.T) {
 	if len(detail) == 0 || detail[0].Loc[0] != "body" {
 		t.Fatalf("missing name detail = %+v", detail)
 	}
-	detail = decodeValidationFailure(t, send(mux, http.MethodPost, base, `{"name":"x","subtype":"bogus"}`))
-	if len(detail) == 0 || detail[0].Loc[1] != "subtype" {
-		t.Fatalf("unknown subtype detail = %+v", detail)
+	detail = decodeValidationFailure(t, send(mux, http.MethodPost, base, `{"name":"x"}`))
+	if len(detail) == 0 || detail[0].Loc[1] != "source_query" {
+		t.Fatalf("missing source_query detail = %+v", detail)
+	}
+	// An unmodelled body field is reported as ignored, never honoured or
+	// rejected: the reference's create model has no subtype.
+	if rec := send(mux, http.MethodPost, base, `{"name":"x","source_query":"q","subtype":"bogus"}`); rec.Code != http.StatusOK {
+		t.Fatalf("an unknown body field must be ignored: %d, body = %s", rec.Code, rec.Body.String())
 	}
 	decodeValidationFailure(t, send(mux, http.MethodPost, base, `not json`))
 
@@ -235,7 +241,7 @@ func TestMentalModelTriggerValidationAndEcho(t *testing.T) {
 	mux, _ := newServer(t)
 	const base = "/v1/default/banks/b1/mental-models"
 
-	created := send(mux, http.MethodPost, base, `{"name":"x","trigger":{"mode":"delta","keep_trace":true}}`)
+	created := send(mux, http.MethodPost, base, `{"name":"x","source_query":"q","trigger":{"mode":"delta","keep_trace":true}}`)
 	if created.Code != http.StatusOK {
 		t.Fatalf("create with trigger: %d, body = %s", created.Code, created.Body.String())
 	}
@@ -254,16 +260,16 @@ func TestMentalModelTriggerValidationAndEcho(t *testing.T) {
 
 	// An invalid enum member is rejected with the structured envelope.
 	detail := decodeValidationFailure(t, send(mux, http.MethodPost, base,
-		`{"name":"x","trigger":{"mode":"sideways"}}`))
+		`{"name":"x","source_query":"q","trigger":{"mode":"sideways"}}`))
 	if len(detail) == 0 || detail[0].Loc[2] != "mode" {
 		t.Fatalf("invalid mode detail = %+v", detail)
 	}
 	// Mutually exclusive triggers are rejected.
 	decodeValidationFailure(t, send(mux, http.MethodPost, base,
-		`{"name":"x","trigger":{"refresh_after_consolidation":true,"refresh_cron":"0 3 * * *"}}`))
+		`{"name":"x","source_query":"q","trigger":{"refresh_after_consolidation":true,"refresh_cron":"0 3 * * *"}}`))
 	// An empty fact_types list is rejected.
 	decodeValidationFailure(t, send(mux, http.MethodPost, base,
-		`{"name":"x","trigger":{"fact_types":[]}}`))
+		`{"name":"x","source_query":"q","trigger":{"fact_types":[]}}`))
 
 	// Patching a trigger overlays only the sent member.
 	patched := send(mux, http.MethodPatch, base+"/"+createdResp.MentalModelID, `{"trigger":{"refresh_after_consolidation":true}}`)
@@ -298,10 +304,10 @@ func TestMentalModelClientSuppliedID(t *testing.T) {
 	if rec := send(mux, http.MethodPost, base, `{"id":"team-comms","name":"again","source_query":"q"}`); rec.Code != http.StatusConflict {
 		t.Fatalf("collision: %d, want 409", rec.Code)
 	}
-	// A malformed id is a validation failure.
-	detail := decodeValidationFailure(t, send(mux, http.MethodPost, base, `{"id":"Bad Id","name":"x"}`))
-	if len(detail) == 0 || detail[0].Loc[1] != "id" {
-		t.Fatalf("bad id detail = %+v", detail)
+	// The reference declares id a plain string with no shape validator, so a
+	// non-slug id is accepted verbatim.
+	if rec := send(mux, http.MethodPost, base, `{"id":"Bad Id","name":"x","source_query":"q"}`); rec.Code != http.StatusOK {
+		t.Fatalf("id shape must not be validated: %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -401,25 +407,25 @@ func TestMentalModelTriggerIntegerVocabulary(t *testing.T) {
 	}{
 		{
 			name:     "string that will not parse",
-			body:     `{"name":"x","trigger":{"min_refresh_interval_seconds":"soon"}}`,
+			body:     `{"name":"x","source_query":"q","trigger":{"min_refresh_interval_seconds":"soon"}}`,
 			wantType: "int_parsing",
 			wantMsg:  "Input should be a valid integer, unable to parse string as an integer",
 		},
 		{
 			name:     "value of another kind",
-			body:     `{"name":"x","trigger":{"reflect_search_observations_max_tokens":{}}}`,
+			body:     `{"name":"x","source_query":"q","trigger":{"reflect_search_observations_max_tokens":{}}}`,
 			wantType: "int_type",
 			wantMsg:  "Input should be a valid integer",
 		},
 		{
 			name:     "number with a fraction",
-			body:     `{"name":"x","trigger":{"min_refresh_interval_seconds":1.5}}`,
+			body:     `{"name":"x","source_query":"q","trigger":{"min_refresh_interval_seconds":1.5}}`,
 			wantType: "int_from_float",
 			wantMsg:  "Input should be a valid integer, got a number with a fractional part",
 		},
 		{
 			name:     "below its bound",
-			body:     `{"name":"x","trigger":{"reflect_search_observations_max_tokens":0}}`,
+			body:     `{"name":"x","source_query":"q","trigger":{"reflect_search_observations_max_tokens":0}}`,
 			wantType: "greater_than_equal",
 			wantMsg:  "Input should be greater than or equal to 1",
 		},
@@ -440,5 +446,60 @@ func TestMentalModelTriggerIntegerVocabulary(t *testing.T) {
 				t.Fatalf("loc = %v, want [body trigger <member>]", detail[0].Loc)
 			}
 		})
+	}
+}
+
+// asHTTPError names the storage sentinels a route can hit and treats anything
+// it does not name as a server fault, which is the reference's catch-all.
+func TestMentalModelErrorMapping(t *testing.T) {
+	cases := []struct {
+		err    error
+		expect int
+	}{
+		{storage.ErrBankNotFound, http.StatusNotFound},
+		{storage.ErrMentalModelNotFound, http.StatusNotFound},
+		{storage.ErrInvalidMentalModelSubtype, http.StatusBadRequest},
+		{storage.ErrEmbeddingDimensions, http.StatusBadRequest},
+		{storage.ErrInvalidBankID, http.StatusBadRequest},
+		{storage.ErrAliasConflict, http.StatusConflict},
+		// The dry-run route surfaces the reflection boundary's model failure.
+		{storage.ErrReflectModelUnavailable, http.StatusBadRequest},
+		{storage.ErrWritesUnavailable, http.StatusServiceUnavailable},
+		{errors.New("storage exploded"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		if got := asHTTPError(tc.err); got == nil || got.Status != tc.expect {
+			t.Fatalf("error %v mapped to %+v, want status %d", tc.err, got, tc.expect)
+		}
+	}
+	if asHTTPError(nil) != nil {
+		t.Fatal("a nil error must map to nil")
+	}
+}
+
+// A deployment with no LLM provider refuses refresh work before any lookup, so
+// a model that does not exist is the same 400 refusal rather than a 404.
+func TestRefreshRefusesWithoutModelConfigured(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	h := NewHandlers(store)
+	h.RefuseWithoutRefreshModel = true
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/default/banks/b1/mental-models/no-such-model/refresh", nil)
+	req.SetPathValue("bank_id", "b1")
+	req.SetPathValue("mental_model_id", "no-such-model")
+	rec := httptest.NewRecorder()
+	h.Refresh(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("refresh = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
+	if body["detail"] != want {
+		t.Fatalf("detail = %v, want %q", body["detail"], want)
 	}
 }

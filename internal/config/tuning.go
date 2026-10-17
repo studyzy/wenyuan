@@ -20,7 +20,7 @@ import (
 // exactly as it does there.
 func resolveProcessDefaults(lookup func(string) (string, bool)) ProcessDefaults {
 	return ProcessDefaults{
-		MCPEnabledTools:               optionalStringValue(lookup, EnvMCPEnabledTools),
+		MCPEnabledTools:               mcpConfigToolsFromEnv(lookup),
 		EnableTextSearch:              boolFromEnv(lookup, EnvEnableTextSearch, true),
 		EnableTemporalRetrieval:       boolFromEnv(lookup, EnvEnableTemporalRetrieval, true),
 		EnableGraphRetrieval:          boolFromEnv(lookup, EnvEnableGraphRetrieval, true),
@@ -40,10 +40,11 @@ func resolveProcessDefaults(lookup func(string) (string, bool)) ProcessDefaults 
 			DefaultConsolidationSourceFactsMaxTokensPerObservation),
 		ObservationsMission:          optionalStringValue(lookup, EnvObservationsMission),
 		MaxObservationsPerScope:      intFromEnvAllowNegative(lookup, EnvMaxObservationsPerScope, -1),
-		ObservationScopeLimits:       optionalStringValue(lookup, EnvObservationScopeLimits),
-		ConsolidationStrategies:      optionalStringValue(lookup, EnvConsolidationStrategies),
+		ObservationScopeLimits:       jsonOnceFromEnv(lookup, EnvObservationScopeLimits),
+		ConsolidationStrategies:      jsonOnceFromEnv(lookup, EnvConsolidationStrategies),
 		MentalModelMinRefreshSeconds: intFromEnv(lookup, EnvMentalModelMinRefreshIntervalSeconds, 0),
-		KnowledgePageDefaultTrigger:  optionalStringValue(lookup, EnvKnowledgePageDefaultTrigger),
+		KnowledgePageDefaultTrigger:  jsonOnceFromEnv(lookup, EnvKnowledgePageDefaultTrigger),
+		LLMGeminiSafetySettings:      jsonValueFromEnv(lookup, EnvLLMGeminiSafetySettings),
 		ReflectMission:               optionalStringValue(lookup, EnvReflectMission),
 		ReflectSourceFactsMaxTokens:  intFromEnvAllowNegative(lookup, EnvReflectSourceFactsMaxTokens, DefaultReflectSourceFactsMaxTokens),
 		ReflectDefaultOptions:        jsonObjectFromEnv(lookup, EnvReflectDefaultOptions),
@@ -319,6 +320,75 @@ func mcpEnabledToolsFromEnv(lookup func(string) (string, bool)) []string {
 		return nil
 	}
 	return stringListFromEnv(lookup, EnvMCPEnabledTools)
+}
+
+// mcpConfigToolsFromEnv reads the MCP tool allowlist as the bank configuration
+// surface reports it: the comma-separated list when the deployment set the key,
+// and null when it did not. Unlike the server-level allowlist, the literal
+// "all" is not folded away, because the reference's own configurable field
+// holds the split list verbatim ("all" becomes ["all"]).
+func mcpConfigToolsFromEnv(lookup func(string) (string, bool)) []string {
+	raw, ok := lookup(EnvMCPEnabledTools)
+	// The reference tests the raw value for truthiness: an unset or empty key
+	// resolves to null, while a whitespace-only value yields an empty list.
+	if !ok || raw == "" {
+		return nil
+	}
+	tools := []string{}
+	for _, tool := range strings.Split(raw, ",") {
+		if tool = strings.TrimSpace(tool); tool != "" {
+			tools = append(tools, tool)
+		}
+	}
+	return tools
+}
+
+// jsonValueFromEnv parses a JSON-valued key, mirroring the reference's
+// `json.loads(os.getenv(key, "null"))`: an unset key resolves to null, and a
+// value that is not valid JSON also resolves to null rather than faulting the
+// read.
+func jsonValueFromEnv(lookup func(string) (string, bool), key string) any {
+	raw, ok := lookup(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// jsonOnceFromEnv parses a JSON-valued key whose reference resolution is
+// `json.loads(env or "null") or DEFAULT` with a null default: the parsed
+// literal, or null when the key is unset, unparseable, or falsey (0, false,
+// "", [], {}) — the `or` fallback the reference applies to the parsed value.
+func jsonOnceFromEnv(lookup func(string) (string, bool), key string) any {
+	value := jsonValueFromEnv(lookup, key)
+	if !jsonTruthy(value) {
+		return nil
+	}
+	return value
+}
+
+// jsonTruthy reports whether a parsed JSON value is true in the sense the
+// reference's `parsed or default` fallback tests.
+func jsonTruthy(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case string:
+		return typed != ""
+	case []any:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	}
+	return true
 }
 
 // floatSecondsFromEnv reads a duration expressed in fractional seconds, which

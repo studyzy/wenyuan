@@ -53,11 +53,11 @@ func intParam(w http.ResponseWriter, r *http.Request, name string, def, min, max
 		return 0, false
 	}
 	if value < min {
-		writeQueryItem(w, r, httpx.GreaterThanEqual([]string{"query", name}, value, min))
+		writeQueryItem(w, r, httpx.GreaterThanEqual([]string{"query", name}, raw, min))
 		return 0, false
 	}
 	if max >= min && value > max {
-		writeQueryItem(w, r, httpx.LessThanEqual([]string{"query", name}, value, max))
+		writeQueryItem(w, r, httpx.LessThanEqual([]string{"query", name}, raw, max))
 		return 0, false
 	}
 	return value, true
@@ -81,7 +81,24 @@ func freeIntParam(w http.ResponseWriter, r *http.Request, name string, def int) 
 // writeQueryItem emits the framework's structured validation body for one
 // rejected query parameter.
 func writeQueryItem(w http.ResponseWriter, r *http.Request, item httpx.ValidationError) {
-	httpx.WriteValidationFor(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
+	httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
+}
+
+// literalParam validates an optional query parameter against an allowed set of
+// literals, emitting the framework's literal validation envelope for a value
+// outside it. An absent parameter passes.
+func literalParam(w http.ResponseWriter, r *http.Request, name string, allowed []string) bool {
+	raw := httpx.Query(r, name)
+	if raw == "" {
+		return true
+	}
+	for _, token := range allowed {
+		if token == raw {
+			return true
+		}
+	}
+	writeQueryItem(w, r, httpx.Literal([]string{"query", name}, raw, allowed))
+	return false
 }
 
 // tagGroupsQuery parses the JSON-encoded `tag_groups` filter. A GET carries no
@@ -144,4 +161,29 @@ func (n tagGroupNode) toStorage() storage.TagGroup {
 // space cannot escape its path segment.
 func bankAttachmentURL(bankID, attachmentID string) string {
 	return httpx.PrefixBanksV1 + "/" + url.PathEscape(bankID) + "/attachments/" + url.PathEscape(attachmentID)
+}
+
+// validUUIDShape reports whether value has the canonical 8-4-4-4-12 hex form,
+// the shape every entity identifier the store writes carries.
+func validUUIDShape(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if r != '-' {
+				return false
+			}
+			continue
+		}
+		if !isHexRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// isHexRune reports whether r is a hexadecimal digit.
+func isHexRune(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -21,127 +22,9 @@ const (
 // merged over the built-in page default when a page is created.
 const bankConfigKnowledgePageTrigger = "knowledge_page_default_trigger"
 
-// KnowledgeNode is one node of the bank's knowledge tree: a folder grouping
-// pages, or a page carrying text. The field set mirrors the reference's node
-// model — a page's description/tags/trigger come from its backing mental model.
-type KnowledgeNode struct {
-	ID                  string          `json:"id"`
-	Kind                string          `json:"kind"`
-	Name                string          `json:"name"`
-	ParentID            string          `json:"parent_id,omitempty"`
-	MentalModelID       string          `json:"mental_model_id,omitempty"`
-	Managed             bool            `json:"managed"`
-	Description         string          `json:"description,omitempty"`
-	Tags                []string        `json:"tags"`
-	Timestamp           string          `json:"timestamp,omitempty"`
-	IsStale             *bool           `json:"is_stale,omitempty"`
-	LastRefreshFailedAt string          `json:"last_refresh_failed_at,omitempty"`
-	Trigger             map[string]any  `json:"trigger,omitempty"`
-	Children            []KnowledgeNode `json:"children"`
-}
-
-// KnowledgeTreeResponse is the knowledge tree envelope.
-type KnowledgeTreeResponse struct {
-	Roots []KnowledgeNode `json:"roots"`
-}
-
-// CreateKnowledgeNodeRequest is the create body for a folder or a page. The
-// reference names the node `name`; `title` is retained as a compatibility
-// alias, as are `text`/`content` for a page's initial body.
-type CreateKnowledgeNodeRequest struct {
-	ParentID    string         `json:"parent_id"`
-	Name        string         `json:"name"`
-	Title       string         `json:"title"`
-	SourceQuery string         `json:"source_query"`
-	Text        string         `json:"text"`
-	Content     string         `json:"content"`
-	Tags        []string       `json:"tags"`
-	MaxTokens   int            `json:"max_tokens"`
-	Trigger     map[string]any `json:"trigger"`
-}
-
-// nodeName returns the requested node name, accepting either spelling.
-func (b CreateKnowledgeNodeRequest) nodeName() string {
-	if strings.TrimSpace(b.Name) != "" {
-		return b.Name
-	}
-	return b.Title
-}
-
-// pageText returns the requested initial body, accepting either spelling.
-func (b CreateKnowledgeNodeRequest) pageText() string {
-	if b.Text != "" {
-		return b.Text
-	}
-	return b.Content
-}
-
-// CreateKnowledgePageResponse is the page-create result: the page is generated
-// in the background, so the caller polls the operation. The backing mental
-// model id is always present, because every page has one.
-type CreateKnowledgePageResponse struct {
-	PageID        string `json:"page_id"`
-	MentalModelID string `json:"mental_model_id"`
-	OperationID   string `json:"operation_id,omitempty"`
-}
-
-// KnowledgePageResponse is one page rendered as a markdown document.
-type KnowledgePageResponse struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Tags        []string `json:"tags"`
-	Timestamp   string   `json:"timestamp,omitempty"`
-	// Body is null until a refresh writes content; the stored body stays empty
-	// where `markdown` says so in words. It is dropped when null.
-	Body     *string `json:"body,omitempty"`
-	Markdown string  `json:"markdown"`
-}
-
-// KnowledgeFile is one file of an exported knowledge bundle.
-type KnowledgeFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
-// KnowledgePageBundleResponse is an exported bundle of pages.
-type KnowledgePageBundleResponse struct {
-	Files []KnowledgeFile `json:"files"`
-}
-
-// KnowledgeSearchResult is one search result.
-type KnowledgeSearchResult struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	MentalModelID string  `json:"mental_model_id,omitempty"`
-	SourceQuery   string  `json:"source_query,omitempty"`
-	Snippet       string  `json:"snippet"`
-	Score         float64 `json:"score"`
-	UpdatedAt     string  `json:"updated_at,omitempty"`
-}
-
-// KnowledgePageSearchResponse is the search envelope.
-type KnowledgePageSearchResponse struct {
-	Results []KnowledgeSearchResult `json:"results"`
-	Total   int                     `json:"total"`
-}
-
-// UpdateKnowledgeNodeRequest is the partial-update body. `name`/`parent_id`
-// rename and move the node; `source_query`, `tags`, `max_tokens` and `trigger`
-// update a page's options on its backing mental model. `title`/`text`/`content`
-// are retained as compatibility aliases.
-type UpdateKnowledgeNodeRequest struct {
-	Name        *string        `json:"name"`
-	Title       *string        `json:"title"`
-	ParentID    *string        `json:"parent_id"`
-	SourceQuery *string        `json:"source_query"`
-	Tags        *[]string      `json:"tags"`
-	MaxTokens   *int           `json:"max_tokens"`
-	Trigger     map[string]any `json:"trigger"`
-	Text        *string        `json:"text"`
-	Content     *string        `json:"content"`
-}
+// bankConfigEnableTextSearch is the bank configuration key that switches the
+// keyword arm off for a bank, resolved rather than read off the process config.
+const bankConfigEnableTextSearch = "enable_text_search"
 
 // KnowledgeTree returns the bank's knowledge tree, nested by parent.
 func (h *Handlers) KnowledgeTree(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +52,26 @@ func (h *Handlers) KnowledgeTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projected := pruneKnowledgeNodes(projectKnowledgeNodes(nodes, models), filter)
-	httpx.WriteJSONFor(w, r, http.StatusOK, KnowledgeTreeResponse{
+	// The caller's resolved read scope is applied on its own rather than folded
+	// into the filter: a filter drops the folders it leaves empty, but a scoped
+	// caller must still see an empty folder so it can put pages in it.
+	projected = pruneKnowledgeNodesToScope(projected, memoryops.ScopeFromRequest(r))
+	// The tree is the one surface that reports staleness: it answers the same
+	// scoped question a scheduled refresh asks before spending a model call, so
+	// a flagged page is one a refresh would actually rewrite. A folder has no
+	// backing model, so it keeps the null.
+	for i := range projected {
+		if projected[i].Kind != string(knowledgeKindPage) || projected[i].MentalModelID == nil {
+			continue
+		}
+		model, ok := models[*projected[i].MentalModelID]
+		if !ok {
+			continue
+		}
+		stale := h.Store.IsStale(r.Context(), bankID, model)
+		projected[i].IsStale = &stale
+	}
+	httpx.WriteJSON(w, http.StatusOK, KnowledgeTreeResponse{
 		Roots: nestKnowledge(projected),
 	})
 }
@@ -191,28 +93,29 @@ func (h *Handlers) createKnowledgeNode(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	var body CreateKnowledgeNodeRequest
-	if err := decodeBody(r, &body); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
+	if failure := decodeKnowledgeCreateBody(r, &body, kind); failure != nil {
+		httpx.WriteErrorFor(w, r, failure)
 		return
 	}
-	name := body.nodeName()
-	if strings.TrimSpace(name) == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "name is required"))
+	name := *body.Name
+	parentID, failure := knowledgeParentFromBody(body.ParentID)
+	if failure != nil {
+		httpx.WriteErrorFor(w, r, failure)
 		return
 	}
-	parentID := strings.TrimSpace(body.ParentID)
-	// A parent must exist in the same bank, so the tree cannot be given a
-	// dangling reference.
-	if parentID != "" {
-		if _, err := h.Store.GetKnowledgeNode(r.Context(), bankID, parentID); err != nil {
-			httpx.WriteErrorFor(w, r, asHTTPError(err))
+	// A parent must be an existing folder in this bank, so the tree cannot be
+	// given a dangling reference or a page with children.
+	if parentID != nil {
+		if httpErr := h.assertKnowledgeFolderParent(r.Context(), bankID, *parentID); httpErr != nil {
+			httpx.WriteErrorFor(w, r, httpErr)
 			return
 		}
 	}
 	if kind == knowledgeKindPage {
-		// A page name is unique within its folder: the reference refuses a second
-		// page of the same name rather than letting two nodes shadow each other.
-		if err := h.rejectDuplicatePage(r, bankID, parentID, name); err != nil {
+		// A page name is unique within its folder, compared case-insensitively:
+		// the reference refuses a second page of the same name rather than letting
+		// two nodes shadow each other.
+		if err := h.rejectDuplicatePage(r, bankID, derefString(parentID), name); err != nil {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
@@ -220,41 +123,49 @@ func (h *Handlers) createKnowledgeNode(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	node, err := h.Store.PutKnowledgeNode(r.Context(), storage.KnowledgeNode{
-		ID: "kf-" + newID(), BankID: bankID, ParentID: parentID, Kind: kind, Title: name,
+		ID: "kf-" + newID(), BankID: bankID, ParentID: derefString(parentID), Kind: kind, Title: name,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusCreated, projectKnowledgeNode(node, nil))
+	httpx.WriteJSON(w, http.StatusCreated, projectKnowledgeNode(node, nil))
 }
 
 // createKnowledgePageNode creates a page and the mental model that backs it, so
 // the page has a body to render and an options record to update later. The page
 // is then refreshed asynchronously, so the create returns the queued operation
 // rather than waiting on a model call.
-func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Request, bankID, parentID, name string, body CreateKnowledgeNodeRequest) {
+//
+// The page starts with an empty body: the reference's create body carries no
+// content member, so the document is written by the refresh the create queues.
+func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Request, bankID string, parentID *string, name string, body CreateKnowledgeNodeRequest) {
 	ctx := r.Context()
-	text := body.pageText()
 	trigger, failure := h.knowledgePageTrigger(ctx, r, bankID, body.Trigger)
 	if failure != nil {
-		httpx.WriteValidationFor(w, r, failure)
+		httpx.WriteValidationFailure(w, failure)
 		return
+	}
+	sourceQuery := derefString(body.SourceQuery)
+	tags := derefStrings(body.Tags)
+	maxTokens := 0
+	if body.MaxTokens != nil {
+		maxTokens = *body.MaxTokens
 	}
 	modelID := "mm-" + newID()
 	model, err := h.Store.PutMentalModel(ctx, storage.MentalModel{
 		ID: modelID, BankID: bankID, Subtype: storage.SubtypePinned,
-		Name: name, SourceQuery: body.SourceQuery, Content: text,
-		Tags: body.Tags, MaxTokens: knowledgePageMaxTokens(body.MaxTokens), Trigger: trigger,
-		Embedding: h.pageEmbedding(ctx, name+" "+text),
+		Name: name, SourceQuery: sourceQuery, Content: "",
+		Tags: tags, MaxTokens: knowledgePageMaxTokens(maxTokens), Trigger: trigger,
+		Embedding: h.pageEmbedding(ctx, name+" "),
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	node, err := h.Store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
-		ID: "kp-" + newID(), BankID: bankID, ParentID: parentID, Kind: knowledgeKindPage,
-		Title: name, MentalModelID: model.ID, Text: text, Tags: body.Tags, Managed: true,
+		ID: "kp-" + newID(), BankID: bankID, ParentID: derefString(parentID), Kind: knowledgeKindPage,
+		Title: name, MentalModelID: model.ID, Tags: tags,
 	})
 	if err != nil {
 		_ = h.Store.DeleteMentalModel(ctx, bankID, model.ID)
@@ -266,7 +177,7 @@ func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Reques
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusCreated, CreateKnowledgePageResponse{
+	httpx.WriteJSON(w, http.StatusCreated, CreateKnowledgePageResponse{
 		PageID: node.ID, MentalModelID: model.ID, OperationID: operationID,
 	})
 }
@@ -345,14 +256,15 @@ func (h *Handlers) enqueuePageRefresh(ctx context.Context, bankID, modelID strin
 }
 
 // rejectDuplicatePage returns a conflict error when a page of the same name
-// already sits in the target folder.
+// already sits in the target folder. The reference's uniqueness index compares
+// lower-cased names, so `Deploy` and `deploy` cannot coexist in one folder.
 func (h *Handlers) rejectDuplicatePage(r *http.Request, bankID, parentID, name string) error {
 	nodes, err := h.Store.ListKnowledgeNodes(r.Context(), bankID)
 	if err != nil {
 		return err
 	}
 	for _, node := range nodes {
-		if node.Kind == knowledgeKindPage && node.ParentID == parentID && node.Title == name {
+		if node.Kind == knowledgeKindPage && node.ParentID == parentID && strings.EqualFold(node.Title, name) {
 			return httpx.NewHTTPError(httpx.KindConflict,
 				"A page named '"+name+"' already exists in this folder")
 		}
@@ -360,93 +272,144 @@ func (h *Handlers) rejectDuplicatePage(r *http.Request, bankID, parentID, name s
 	return nil
 }
 
-// KnowledgePage returns one page as a markdown document.
+// KnowledgePage returns one page as a markdown document. The bank is not
+// pre-checked: a page in an unknown bank answers the page's own not-found.
 func (h *Handlers) KnowledgePage(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	pageID := strings.TrimSpace(r.PathValue("page_id"))
 	node, err := h.Store.GetKnowledgeNode(r.Context(), bankID, pageID)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, knowledgeNotFound(err, knowledgePageNotFound(pageID)))
 		return
 	}
-	// A folder is not a page: upstream's page read joins on kind='page' and a
-	// folder reads as missing rather than as an empty document.
+	// A folder is not a page: the reference's page read joins on kind='page' and
+	// a folder reads as a missing page rather than as an empty document.
 	if node.Kind != knowledgeKindPage {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "knowledge node not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, knowledgePageNotFound(pageID)))
 		return
 	}
 	model, hasModel := h.knowledgeModel(r.Context(), bankID, node)
 	pageType := knowledgePageType(node.Tags)
-	description := ""
-	timestamp := formatTime(node.CreatedAt)
+	var description *string
+	timestamp := httpx.FormatTimestampPtr(&node.CreatedAt)
 	if hasModel {
-		description = model.SourceQuery
+		description = &model.SourceQuery
 		if !model.LastRefreshedAt.IsZero() {
-			timestamp = formatTime(model.LastRefreshedAt)
+			timestamp = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
 		}
 	}
 	body := node.Text
 	writeKnowledgePage(w, r, node, pageType, description, timestamp, &body)
 }
 
-// UpdateKnowledgeNode applies a partial update to one node.
+// UpdateKnowledgeNode applies a partial update to one node. The bank is not
+// pre-checked: an unknown bank answers the node's own not-found.
 func (h *Handlers) UpdateKnowledgeNode(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	nodeID := strings.TrimSpace(r.PathValue("node_id"))
 	var body UpdateKnowledgeNodeRequest
-	if err := decodeBody(r, &body); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
+	if _, failure := decodeKnowledgeBody(r, &body); failure != nil {
+		httpx.WriteErrorFor(w, r, failure)
 		return
 	}
-	if body.ParentID != nil {
-		if parent := strings.TrimSpace(*body.ParentID); parent != "" {
-			if _, err := h.Store.GetKnowledgeNode(r.Context(), bankID, parent); err != nil {
-				httpx.WriteErrorFor(w, r, asHTTPError(err))
-				return
-			}
+	// parent_id is applied only when the key is present, so an explicit null
+	// moves the node to the root and an absent key leaves the parent alone.
+	moving := len(body.ParentID) > 0
+	newParent, failure := knowledgeParentFromBody(body.ParentID)
+	if failure != nil {
+		httpx.WriteErrorFor(w, r, failure)
+		return
+	}
+	trigger, triggerSupplied, failure := knowledgeUpdateTrigger(body.Trigger)
+	if failure != nil {
+		httpx.WriteErrorFor(w, r, failure)
+		return
+	}
+	// Page options live on the backing mental model and take the opposite
+	// convention: an absent member is "not changing this", while an empty value
+	// is a real change (tags=[] clears them). A body that is null all the way
+	// down changes nothing at all, and is refused before anything is read.
+	pageOptions := body.SourceQuery != nil || body.Tags != nil || body.MaxTokens != nil || triggerSupplied
+	if body.Name == nil && !moving && !pageOptions {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Provide name, parent_id, source_query, tags, max_tokens, and/or trigger to update"))
+		return
+	}
+	if moving && newParent != nil && *newParent == nodeID {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "A node cannot be its own parent"))
+		return
+	}
+	node, err := h.Store.GetKnowledgeNode(r.Context(), bankID, nodeID)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, knowledgeNotFound(err, knowledgeNodeNotFound(nodeID)))
+		return
+	}
+	// Page options only exist on a page's backing model; asking for them on a
+	// folder is the reference's "not found", not a silent no-op.
+	if pageOptions && (node.Kind != knowledgeKindPage || node.MentalModelID == "") {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, knowledgeNodeNotFound(nodeID)))
+		return
+	}
+	if moving && newParent != nil {
+		if httpErr := h.assertKnowledgeFolderParent(r.Context(), bankID, *newParent); httpErr != nil {
+			httpx.WriteErrorFor(w, r, httpErr)
+			return
+		}
+		if httpErr := h.assertKnowledgeMove(r.Context(), bankID, nodeID, *newParent); httpErr != nil {
+			httpx.WriteErrorFor(w, r, httpErr)
+			return
 		}
 	}
-	node, err := h.Store.UpdateKnowledgeNode(r.Context(), bankID, nodeID, storage.KnowledgeNodePatch{
-		Title: firstStringPtr(body.Name, body.Title), Text: firstStringPtr(body.Text, body.Content),
-		ParentID: body.ParentID, Tags: body.Tags,
-	})
+	patch := storage.KnowledgeNodePatch{Title: body.Name, Tags: body.Tags}
+	if moving {
+		parent := derefString(newParent)
+		patch.ParentID = &parent
+	}
+	node, err = h.Store.UpdateKnowledgeNode(r.Context(), bankID, nodeID, patch)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	model, hasModel := h.knowledgeModel(r.Context(), bankID, node)
-	if hasModel && (body.SourceQuery != nil || body.Tags != nil || body.MaxTokens != nil || body.Trigger != nil) {
+	if hasModel && pageOptions {
 		// Tags live on the backing model too, so a page's tags are one value
 		// across the tree, search and read surfaces rather than two that drift.
-		patch := storage.MentalModelPatch{SourceQuery: body.SourceQuery, Tags: body.Tags, MaxTokens: body.MaxTokens}
-		if body.Trigger != nil {
-			patch.Trigger = &body.Trigger
+		modelPatch := storage.MentalModelPatch{
+			SourceQuery: body.SourceQuery, Tags: body.Tags, MaxTokens: body.MaxTokens,
 		}
-		updated, err := h.Store.UpdateMentalModel(r.Context(), bankID, model.ID, patch)
+		if triggerSupplied {
+			// The trigger patches: the members the client stated are updated and
+			// the rest keep the page's current values, so moving a page onto a
+			// schedule does not reset how it refreshes.
+			merged := mentalmodels.MergeTrigger(trigger, model.Trigger)
+			modelPatch.Trigger = &merged
+		}
+		updated, err := h.Store.UpdateMentalModel(r.Context(), bankID, model.ID, modelPatch)
 		if err != nil {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
 		model = updated
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, projectKnowledgeNode(node, modelPtr(model, hasModel)))
+	// A new source query means the content is stale, so the page is rebuilt —
+	// scheduled only once the patch has committed, so a refresh is never queued
+	// for a change that rolled back.
+	if body.SourceQuery != nil && hasModel {
+		if _, err := h.enqueuePageRefresh(r.Context(), bankID, model.ID); err != nil {
+			httpx.WriteErrorFor(w, r, asHTTPError(err))
+			return
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, projectKnowledgeNode(node, modelPtr(model, hasModel)))
 }
 
-// DeleteKnowledgeNode removes one node and its descendants.
+// DeleteKnowledgeNode removes one node and its descendants. The bank is not
+// pre-checked: an unknown bank answers the node's own not-found.
 func (h *Handlers) DeleteKnowledgeNode(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	nodeID := strings.TrimSpace(r.PathValue("node_id"))
 	if _, err := h.Store.GetKnowledgeNode(r.Context(), bankID, nodeID); err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, knowledgeNotFound(err, knowledgeNodeNotFound(nodeID)))
 		return
 	}
 	// The pages in the doomed subtree are removed with it, so their backing
@@ -459,7 +422,7 @@ func (h *Handlers) DeleteKnowledgeNode(w http.ResponseWriter, r *http.Request) {
 	for _, modelID := range models {
 		_ = h.Store.DeleteMentalModel(r.Context(), bankID, modelID)
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, map[string]any{"status": "deleted"})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
 // Version reports the API version under the versioned namespace. It is the
@@ -469,7 +432,7 @@ func (h *Handlers) Version(w http.ResponseWriter, r *http.Request) {
 	if features == nil {
 		features = map[string]bool{}
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"api_version": h.APIVersion,
 		"features":    features,
 	})

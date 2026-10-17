@@ -319,8 +319,8 @@ func (a ImportApplier) applyDocuments(ctx context.Context, req ImportRequest, ta
 // writeDocument persists one document and its facts.
 func (a ImportApplier) writeDocument(ctx context.Context, target, documentID string, document hindsightarchive.Document) error {
 	created := a.now()
-	if document.CreatedAt != nil {
-		created = document.CreatedAt.UTC()
+	if parsed := hindsightarchive.ParseTime(document.CreatedAt); parsed != nil {
+		created = *parsed
 	}
 	stored, err := a.Store.PutDocument(ctx, target, documentID, storage.Document{
 		ID:           documentID,
@@ -388,16 +388,16 @@ func (a ImportApplier) unitForFact(target, documentID string, document hindsight
 		Text:                  fact.Text,
 		FactType:              storage.MemoryUnitType(fact.FactType),
 		Context:               fact.Context,
-		EventDate:             fact.EventDate,
-		OccurredStart:         fact.OccurredStart,
-		OccurredEnd:           fact.OccurredEnd,
-		MentionedAt:           fact.MentionedAt,
+		EventDate:             hindsightarchive.ParseTime(fact.EventDate),
+		OccurredStart:         hindsightarchive.ParseTime(fact.OccurredStart),
+		OccurredEnd:           hindsightarchive.ParseTime(fact.OccurredEnd),
+		MentionedAt:           hindsightarchive.ParseTime(fact.MentionedAt),
 		Metadata:              fact.Metadata,
 		DocumentID:            documentID,
 		Tags:                  nonNilStrings(fact.Tags),
-		ConsolidatedAt:        fact.ConsolidatedAt,
-		ConsolidationFailedAt: fact.ConsolidationFailedAt,
-		CreatedAt:             fact.CreatedAt,
+		ConsolidatedAt:        hindsightarchive.ParseTime(fact.ConsolidatedAt),
+		ConsolidationFailedAt: hindsightarchive.ParseTime(fact.ConsolidationFailedAt),
+		CreatedAt:             hindsightarchive.ParseTime(fact.CreatedAt),
 	}
 	if unit.Metadata == nil {
 		unit.Metadata = map[string]any{}
@@ -441,11 +441,11 @@ func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest,
 			Tags:              nonNilStrings(observation.Tags),
 			SourceMemoryIDs:   sources,
 			ProofCount:        proofCount(observation.ProofCount, len(sources)),
-			EventDate:         observation.EventDate,
-			OccurredStart:     observation.OccurredStart,
-			OccurredEnd:       observation.OccurredEnd,
-			MentionedAt:       observation.MentionedAt,
-			CreatedAt:         observation.CreatedAt,
+			EventDate:         hindsightarchive.ParseTime(observation.EventDate),
+			OccurredStart:     hindsightarchive.ParseTime(observation.OccurredStart),
+			OccurredEnd:       hindsightarchive.ParseTime(observation.OccurredEnd),
+			MentionedAt:       hindsightarchive.ParseTime(observation.MentionedAt),
+			CreatedAt:         hindsightarchive.ParseTime(observation.CreatedAt),
 			ObservationScopes: observation.ObservationScopes,
 			Metadata:          map[string]any{},
 		}

@@ -27,7 +27,7 @@ func (h *VersionHandler) Serve(w http.ResponseWriter, r *http.Request) {
 	if features == nil {
 		features = map[string]bool{}
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, VersionBody{
+	httpx.WriteJSON(w, http.StatusOK, VersionBody{
 		APIVersion: h.APIVersion,
 		Features:   features,
 	})

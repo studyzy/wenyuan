@@ -122,8 +122,8 @@ func ensureBank(ctx context.Context, store storage.Store, bankID string, opts Op
 
 func writeDocument(ctx context.Context, store storage.Store, bankID string, doc hindsightarchive.Document) error {
 	created := time.Now().UTC()
-	if doc.CreatedAt != nil {
-		created = *doc.CreatedAt
+	if parsed := hindsightarchive.ParseTime(doc.CreatedAt); parsed != nil {
+		created = *parsed
 	}
 	document := storage.Document{
 		ID:           doc.ID,

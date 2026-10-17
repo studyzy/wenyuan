@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -17,6 +20,70 @@ import (
 // scoped reader cannot tell an out-of-scope document from an absent one.
 func documentVisible(r *http.Request, doc storage.Document) bool {
 	return storage.TagsVisibleUnderScope(doc.Tags, memoryops.ScopeFromRequest(r))
+}
+
+// requireDocumentWritable enforces the reference's `_require_writable` for a
+// by-id document write. Outside the caller's read scope the document reads as
+// the reference's own not-found — `Document '<id>' not found`, id echoed
+// because that is the message `_require_writable` raises; a document the caller
+// may read whose tags — or the tags the write would give it — fall outside the
+// write scope is refused with the reference's 403. Without either scope it is a
+// no-op, so an unextended deployment keeps its current behaviour. A nil newTags
+// skips the write's own tag check, which a delete has none of.
+func (h *Handlers) requireDocumentWritable(w http.ResponseWriter, r *http.Request, doc storage.Document, newTags []string) bool {
+	readScope := memoryops.ScopeFromRequest(r)
+	writeScope, confined := memoryops.WriteScopeFromRequest(r)
+	if len(readScope) == 0 && !confined {
+		return true
+	}
+	// A document hidden by the scope reads exactly as an absent one.
+	if !storage.TagsVisibleUnderScope(doc.Tags, readScope) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
+			fmt.Sprintf("Document '%s' not found", doc.ID)))
+		return false
+	}
+	what := fmt.Sprintf("document '%s'", doc.ID)
+	if !tagsWritableUnderScope(doc.Tags, writeScope, confined) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindForbidden,
+			fmt.Sprintf("You can't write %s tagged %s", what, strings.Join(unwritableTags(doc.Tags, writeScope), ", "))))
+		return false
+	}
+	if newTags != nil && !tagsWritableUnderScope(newTags, writeScope, confined) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindForbidden,
+			fmt.Sprintf("You can't write an item tagged %s", strings.Join(unwritableTags(newTags, writeScope), ", "))))
+		return false
+	}
+	return true
+}
+
+// tagsWritableUnderScope reports whether every tag is one the caller may write.
+// With no write scope every tag is writable; an untagged item belongs to
+// everyone, so a confined writer may neither produce nor change one — matching
+// the reference's `tags_writable`.
+func tagsWritableUnderScope(tags, writeScope []string, confined bool) bool {
+	if !confined {
+		return true
+	}
+	if len(tags) == 0 {
+		return false
+	}
+	return httpx.TagsWritable(tags, writeScope, confined)
+}
+
+// unwritableTags names the tags the caller may not write, sorted, or
+// `(untagged)` when the item carries none.
+func unwritableTags(tags, writeScope []string) []string {
+	outside := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if !httpx.TagsWritable([]string{tag}, writeScope, true) {
+			outside = append(outside, tag)
+		}
+	}
+	sort.Strings(outside)
+	if len(outside) == 0 {
+		return []string{"(untagged)"}
+	}
+	return outside
 }
 
 // ListDocuments returns one page of the bank's documents.
@@ -38,12 +105,20 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	if tagsMatch == "" {
 		tagsMatch = storage.TagsMatchAnyStrict
 	}
+	if !literalParam(w, r, "time_field", []string{"created_at", "updated_at"}) {
+		return
+	}
 	start, ok := parseDateParam(w, r, "start_date")
 	if !ok {
 		return
 	}
 	end, ok := parseDateParam(w, r, "end_date")
 	if !ok {
+		return
+	}
+	if start != nil && end != nil && !end.After(*start) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Invalid time window: end_date must be after start_date."))
 		return
 	}
 	// The caller's resolved read scope narrows the listing, so a scoped reader
@@ -69,7 +144,7 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	for _, doc := range page.Documents {
 		items = append(items, toDocumentListItem(doc))
 	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, DocumentListResponse{
+	httpx.WriteJSON(w, http.StatusOK, DocumentListResponse{
 		Items: items, Total: page.Total, Limit: limit, Offset: offset,
 	})
 }
@@ -88,18 +163,11 @@ func (h *Handlers) GetDocument(w http.ResponseWriter, r *http.Request) {
 	// A scoped reader may only open a document whose tags its scope admits; one
 	// that does not reads as not-found rather than leaking that it exists.
 	if !documentVisible(r, doc) {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document "+docID+" not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document not found"))
 		return
 	}
-	page, err := h.Store.ListDocuments(r.Context(), storage.DocumentQuery{BankID: bankID, Limit: 500})
-	if err == nil {
-		for _, listed := range page.Documents {
-			if listed.ID == doc.ID {
-				doc.MemoryUnitCount = listed.MemoryUnitCount
-				break
-			}
-		}
-	}
+	// The store counts the document's units in the same read that resolves the
+	// row, so the count does not depend on the document appearing in a listing.
 	tags := doc.Tags
 	if tags == nil {
 		tags = []string{}
@@ -116,15 +184,12 @@ func (h *Handlers) GetDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	var scopes any
-	if doc.RetainParams != nil {
-		scopes = doc.RetainParams["observation_scopes"]
-	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, DocumentResponse{
+	scopes := presentObservationScopes(doc.RetainParams)
+	httpx.WriteJSON(w, http.StatusOK, DocumentResponse{
 		ID: doc.ID, BankID: doc.BankID, OriginalText: optionalString(doc.OriginalText),
-		ContentHash: optionalString(doc.ContentHash), CreatedAt: formatTime(doc.CreatedAt),
-		UpdatedAt: formatTime(doc.UpdatedAt), MemoryUnitCount: doc.MemoryUnitCount,
-		Tags: tags, Metadata: doc.Metadata, RetainParams: doc.RetainParams,
+		ContentHash: optionalString(doc.ContentHash), CreatedAt: httpx.FormatTimestamp(doc.CreatedAt),
+		UpdatedAt: httpx.FormatTimestamp(doc.UpdatedAt), MemoryUnitCount: doc.MemoryUnitCount,
+		Tags: tags, Metadata: doc.Metadata, RetainParams: presentRetainParams(doc.RetainParams),
 		NodesByFactType: factTypeCounts(factCounts), ObservationScopes: scopes,
 		Attachments: toChunkAttachments(bankID, attachments),
 	})
@@ -141,10 +206,40 @@ func factTypeCounts(counts map[string]int) map[string]int {
 	}
 }
 
+// presentObservationScopes returns the retain-time scope spec when it carries
+// content; an absent or empty value reads as null, the shape the reference
+// renders for a falsy scope.
+func presentObservationScopes(retainParams map[string]any) any {
+	if retainParams == nil {
+		return nil
+	}
+	value, ok := retainParams["observation_scopes"]
+	if !ok || value == nil {
+		return nil
+	}
+	if list, ok := value.([]any); ok && len(list) == 0 {
+		return nil
+	}
+	return value
+}
+
 // UpdateDocument applies a partial update and reports the outcome.
 func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	bankID, docID, ok := h.documentMember(w, r)
 	if !ok {
+		return
+	}
+	// The body is validated before the document is looked up, the way the
+	// framework validates a request model before the endpoint body runs: a
+	// request that names no field is rejected regardless of the document.
+	var body UpdateDocumentRequest
+	if err := httpx.DecodeBody(r, &body); err != nil {
+		httpx.WriteErrorFor(w, r, err)
+		return
+	}
+	if body.Tags == nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable,
+			"At least one field (tags) must be provided"))
 		return
 	}
 	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
@@ -152,18 +247,15 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	var body UpdateDocumentRequest
-	if err := httpx.DecodeBody(r, &body); err != nil {
-		httpx.WriteErrorFor(w, r, err)
+	// Reading a document does not make it the caller's to change: outside its
+	// read scope the document reads as not-found, and a visible one whose tags —
+	// or the tags the write would give it — the caller may not write is refused
+	// with 403. A deployment that resolves no scope is left untouched.
+	if !h.requireDocumentWritable(w, r, doc, *body.Tags) {
 		return
 	}
 	oldTags := append([]string(nil), doc.Tags...)
-	if body.Tags != nil {
-		doc.Tags = append([]string(nil), (*body.Tags)...)
-	}
-	if body.Metadata != nil {
-		doc.Metadata = *body.Metadata
-	}
+	doc.Tags = append([]string(nil), (*body.Tags)...)
 	if _, err := h.Store.PutDocument(r.Context(), bankID, docID, doc); err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -173,20 +265,53 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	// under the new tag — otherwise recall by the new tag no longer reaches them.
 	// A tag set equal to the current one is a no-op (a bulk normalisation sweep
 	// re-sends an identical array), so the cascade is skipped for it.
-	if body.Tags != nil && !sameTagSet(oldTags, doc.Tags) {
-		deleted, err := h.Store.RetagDocumentMemories(r.Context(), bankID, docID, oldTags, doc.Tags)
+	if !sameTagSet(oldTags, doc.Tags) {
+		deleted, err := h.Store.RetagDocumentMemories(r.Context(), bankID, docID, oldTags, doc.Tags,
+			h.bankLabelTagKeys(r.Context(), bankID))
 		if err != nil {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
-		if deleted > 0 {
+		if deleted > 0 && h.autoConsolidationEnabled(r.Context(), bankID) {
 			if _, _, err := h.Store.EnqueueConsolidation(r.Context(), bankID); err != nil {
 				httpx.WriteErrorFor(w, r, asHTTPError(err))
 				return
 			}
 		}
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, UpdateDocumentResponse{Success: true})
+	httpx.WriteJSON(w, http.StatusOK, UpdateDocumentResponse{Success: true})
+}
+
+// autoConsolidationEnabled reports whether a document retag that invalidated
+// observations re-consolidates the bank. The reference submits the pass only
+// when the resolved enable_auto_consolidation is on; the bank's own override
+// wins over the deployment default the composition root supplies.
+func (h *Handlers) autoConsolidationEnabled(ctx context.Context, bankID string) bool {
+	auto := h.AutoConsolidationEnabled
+	if bank, err := h.Store.GetBank(ctx, bankID); err == nil {
+		if value, ok := bank.Config["enable_auto_consolidation"].(bool); ok {
+			auto = value
+		}
+	}
+	return auto
+}
+
+// bankLabelTagKeys returns the keys of the bank's entity_labels groups flagged
+// tag:true — the tag keys a unit's tags may have been derived from, rather than
+// supplied by the caller, at extraction. A retag replaces only the document's
+// own tags, so it needs to tell the two apart to keep the label projection.
+// Configuration that cannot be read yields no keys, which leaves every tag on a
+// unit looking caller-supplied: the retag then behaves as it did before.
+func (h *Handlers) bankLabelTagKeys(ctx context.Context, bankID string) map[string]bool {
+	overrides, err := h.Store.BankConfig(ctx, bankID)
+	if err != nil {
+		return nil
+	}
+	vocabulary, err := entitylabels.Parse(config.ResolveLayers(overrides, nil, nil)["entity_labels"])
+	if err != nil {
+		return nil
+	}
+	return vocabulary.TagKeys()
 }
 
 // sameTagSet reports whether two tag lists name the same set. Consolidation
@@ -219,8 +344,16 @@ func (h *Handlers) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := h.Store.GetDocument(r.Context(), bankID, docID); err != nil {
+	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
+	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	// A delete is a by-id write, so it carries the same read/write scope gate a
+	// retag does: a document outside the caller's read scope reads as not-found,
+	// and one whose tags the caller may not write is refused. A delete changes
+	// no tags, so there is no new-tag set to check.
+	if !h.requireDocumentWritable(w, r, doc, nil) {
 		return
 	}
 	unitsDeleted, err := h.Store.DeleteDocument(r.Context(), bankID, docID)
@@ -228,7 +361,7 @@ func (h *Handlers) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteDocumentResponse{
+	httpx.WriteJSON(w, http.StatusOK, DeleteDocumentResponse{
 		Success:            true,
 		Message:            fmt.Sprintf("Document '%s' and %d associated memory units deleted successfully", docID, unitsDeleted),
 		DocumentID:         docID,
@@ -250,7 +383,7 @@ func (h *Handlers) ListDocumentChunks(w http.ResponseWriter, r *http.Request) {
 	// The document's chunks are its own source text, so a scoped reader that may
 	// not open the document may not page its chunks either.
 	if !documentVisible(r, doc) {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document "+docID+" not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document not found"))
 		return
 	}
 	limit, ok := intParam(w, r, "limit", defaultPageLimit, 1, 1000)
@@ -277,17 +410,18 @@ func (h *Handlers) ListDocumentChunks(w http.ResponseWriter, r *http.Request) {
 	for _, chunk := range page.Chunks {
 		items = append(items, toChunkResponse(chunk, byChunk[chunk.ChunkID]))
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ChunkListResponse{
+	httpx.WriteJSON(w, http.StatusOK, ChunkListResponse{
 		Items: items, Total: page.Total, Limit: limit, Offset: offset,
 	})
 }
 
 // ReprocessDocument re-extracts one document from its stored text.
 //
-// The pipeline runs through the same configuration path the write route uses,
-// so a re-extraction is shaped by the bank's current settings and the document's
-// own replayable parameters. The response hands back the operation the write
-// recorded, which is the handle a caller follows to completion.
+// The write is queued, not run in the request: the reply names the pending
+// batch operation the caller polls, and the extraction runs later in a worker.
+// The queued write runs through the same configuration path the write route
+// uses, so a re-extraction is shaped by the bank's current settings and the
+// document's own replayable parameters.
 func (h *Handlers) ReprocessDocument(w http.ResponseWriter, r *http.Request) {
 	bankID, docID, ok := h.documentMember(w, r)
 	if !ok {
@@ -302,16 +436,19 @@ func (h *Handlers) ReprocessDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ReprocessDocumentResponse{
+	httpx.WriteJSON(w, http.StatusOK, ReprocessDocumentResponse{
 		Success: true, OperationID: outcome.OperationID, ItemsCount: 1,
 	})
 }
 
-// GetChunk returns one chunk, addressed by its globally unique identifier.
+// GetChunk returns one chunk, addressed by its globally unique identifier. The
+// identifier is the raw path remainder after the namespace, exactly as the
+// reference captures it: a trailing or doubled slash is part of the id, so it
+// resolves to no chunk rather than being trimmed away.
 func (h *Handlers) GetChunk(w http.ResponseWriter, r *http.Request) {
-	chunkID := strings.Trim(strings.TrimPrefix(r.URL.Path, httpx.PrefixChunksV1), "/")
+	chunkID := strings.TrimPrefix(r.URL.Path, httpx.PrefixChunksV1)
 	if chunkID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "chunk not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Chunk not found"))
 		return
 	}
 	// A chunk identifier is globally unique, so the owning bank is resolved
@@ -325,7 +462,7 @@ func (h *Handlers) GetChunk(w http.ResponseWriter, r *http.Request) {
 	// scope must admit the document; otherwise the chunk reads as not-found.
 	doc, err := h.Store.GetDocument(r.Context(), chunk.BankID, chunk.DocumentID)
 	if err != nil || !documentVisible(r, doc) {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "chunk not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Chunk not found"))
 		return
 	}
 	// A chunk addressed by its own id resolves its bank and document from the
@@ -335,7 +472,7 @@ func (h *Handlers) GetChunk(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, toChunkResponse(chunk, byChunk[chunk.ChunkID]))
+	httpx.WriteJSON(w, http.StatusOK, toChunkResponse(chunk, byChunk[chunk.ChunkID]))
 }
 
 // findChunkByID locates a chunk by its globally unique identifier, scanning the

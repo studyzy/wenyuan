@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -65,7 +66,8 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	archive := &hindsightarchive.Archive{}
 	archive.Manifest.SchemaVersion = hindsightarchive.SupportedSchemaVersion
 	archive.Manifest.SourceBankID = bankID
-	archive.Manifest.ExportedAt = &now
+	exportedAt := httpx.FormatZuluTimestamp(now)
+	archive.Manifest.ExportedAt = &exportedAt
 
 	documents, err := loadDocuments(ctx, store, bankID, opts.DocumentIDs)
 	if err != nil {
@@ -218,8 +220,8 @@ func operationRow(op storage.Operation) map[string]any {
 		"operation_type":    op.OperationType,
 		"status":            string(op.Status),
 		"error":             op.Error,
-		"created_at":        op.CreatedAt,
-		"updated_at":        op.UpdatedAt,
+		"created_at":        timeOrNil(op.CreatedAt),
+		"updated_at":        timeOrNil(op.UpdatedAt),
 		"completed_at":      timeOrNil2(op.CompletedAt),
 		"retry_count":       op.RetryCount,
 		"next_retry_at":     timeOrNil2(op.NextRetryAt),
@@ -327,7 +329,7 @@ func auditRow(entry storage.AuditEntry) map[string]any {
 		"action":     entry.Action,
 		"transport":  entry.Transport,
 		"bank_id":    entry.BankID,
-		"started_at": entry.StartedAt,
+		"started_at": timeOrNil(entry.StartedAt),
 		"ended_at":   timeOrNil2(entry.EndedAt),
 		"request":    entry.Request,
 		"response":   entry.Response,
@@ -365,7 +367,7 @@ func llmRequestRow(request storage.LLMRequest) map[string]any {
 		"provider":        request.Provider,
 		"model":           request.Model,
 		"status":          request.Status,
-		"started_at":      request.StartedAt,
+		"started_at":      timeOrNil(request.StartedAt),
 		"ended_at":        timeOrNil2(request.EndedAt),
 		"duration_ms":     intOrNil(request.DurationMS),
 		"input_tokens":    intOrNil(request.InputTokens),
@@ -381,13 +383,16 @@ func llmRequestRow(request storage.LLMRequest) map[string]any {
 	}
 }
 
-// timeOrNil2 renders a pointer time as itself or nil, so an absent value is a
-// JSON null rather than a zero timestamp.
+// timeOrNil2 renders a pointer time as the archive's row timestamp string, or
+// nil when it was never set. The data and history sections are written by the
+// reference through json.dumps(default=_row_json_default), whose datetime hook
+// is Python's isoformat, so the string is the same form as every other HTTP
+// response timestamp.
 func timeOrNil2(value *time.Time) any {
-	if value == nil {
+	if value == nil || value.IsZero() {
 		return nil
 	}
-	return *value
+	return httpx.FormatTimestamp(*value)
 }
 
 // intOrNil renders a pointer integer as itself or nil.
@@ -493,7 +498,7 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 		Tags:         document.Tags,
 	}
 	if !document.CreatedAt.IsZero() {
-		created := document.CreatedAt.UTC()
+		created := httpx.FormatZuluTimestamp(document.CreatedAt)
 		built.CreatedAt = &created
 	}
 	chunks, err := loadChunks(ctx, store, bankID, document.ID)
@@ -519,16 +524,16 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 			SourceID:              unit.ID,
 			FactType:              string(unit.FactType),
 			Context:               unit.Context,
-			EventDate:             unit.EventDate,
-			OccurredStart:         unit.OccurredStart,
-			OccurredEnd:           unit.OccurredEnd,
-			MentionedAt:           unit.MentionedAt,
+			EventDate:             httpx.FormatZuluTimestampPtr(unit.EventDate),
+			OccurredStart:         httpx.FormatZuluTimestampPtr(unit.OccurredStart),
+			OccurredEnd:           httpx.FormatZuluTimestampPtr(unit.OccurredEnd),
+			MentionedAt:           httpx.FormatZuluTimestampPtr(unit.MentionedAt),
 			Metadata:              mapMetadata(unit.Metadata),
 			Tags:                  unit.Tags,
 			ObservationScopes:     archiveScopeList(unit.ObservationScopes),
-			CreatedAt:             unit.CreatedAt,
-			ConsolidatedAt:        unit.ConsolidatedAt,
-			ConsolidationFailedAt: unit.ConsolidationFailedAt,
+			CreatedAt:             httpx.FormatZuluTimestampPtr(unit.CreatedAt),
+			ConsolidatedAt:        httpx.FormatZuluTimestampPtr(unit.ConsolidatedAt),
+			ConsolidationFailedAt: httpx.FormatZuluTimestampPtr(unit.ConsolidationFailedAt),
 		}
 		if unit.ChunkID != "" {
 			if index, ok := chunkOrdinals[unit.ChunkID]; ok {
@@ -615,12 +620,12 @@ func buildObservations(ctx context.Context, store storage.Store, bankID string, 
 		out = append(out, hindsightarchive.Observation{
 			SourceID:          unit.ID,
 			Text:              unit.Text,
-			CreatedAt:         unit.CreatedAt,
+			CreatedAt:         httpx.FormatZuluTimestampPtr(unit.CreatedAt),
 			Tags:              unit.Tags,
-			EventDate:         unit.EventDate,
-			OccurredStart:     unit.OccurredStart,
-			OccurredEnd:       unit.OccurredEnd,
-			MentionedAt:       unit.MentionedAt,
+			EventDate:         httpx.FormatZuluTimestampPtr(unit.EventDate),
+			OccurredStart:     httpx.FormatZuluTimestampPtr(unit.OccurredStart),
+			OccurredEnd:       httpx.FormatZuluTimestampPtr(unit.OccurredEnd),
+			MentionedAt:       httpx.FormatZuluTimestampPtr(unit.MentionedAt),
 			ObservationScopes: unit.ObservationScopes,
 			ProofCount:        unit.ProofCount,
 			Sources:           sources,
@@ -676,11 +681,11 @@ func buildKnowledgeBase(ctx context.Context, store storage.Store, bankID string)
 			Managed:       node.Managed,
 		}
 		if !node.CreatedAt.IsZero() {
-			created := node.CreatedAt.UTC()
+			created := httpx.FormatZuluTimestamp(node.CreatedAt)
 			page.CreatedAt = &created
 		}
 		if !node.UpdatedAt.IsZero() {
-			updated := node.UpdatedAt.UTC()
+			updated := httpx.FormatZuluTimestamp(node.UpdatedAt)
 			page.UpdatedAt = &updated
 		}
 		pages = append(pages, page)
@@ -840,10 +845,11 @@ func nonNilStrings(values []string) []string {
 	return values
 }
 
-// timeOrNil renders a timestamp for a row, or nil when it was never set.
+// timeOrNil renders a timestamp for a row, or nil when it was never set. See
+// timeOrNil2 for why the form is Python's isoformat rather than a bare time.
 func timeOrNil(value time.Time) any {
 	if value.IsZero() {
 		return nil
 	}
-	return value.UTC()
+	return httpx.FormatTimestamp(value)
 }

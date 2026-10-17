@@ -36,8 +36,8 @@ import (
 )
 
 // protocolVersion is the MCP revision this server answers with when a client
-// asks for one it does not speak.
-const protocolVersion = "2025-06-18"
+// asks for one it does not speak: the newest revision it supports.
+const protocolVersion = "2025-11-25"
 
 // supportedProtocolVersions are the MCP revisions this server accepts. A client
 // that asks for one of these is answered with its own revision, which is the
@@ -46,7 +46,12 @@ var supportedProtocolVersions = map[string]bool{
 	"2024-11-05": true,
 	"2025-03-26": true,
 	"2025-06-18": true,
+	"2025-11-25": true,
 }
+
+// transportErrorID is the id the transport stamps on an error envelope whose
+// request could not be identified, in place of the JSON-RPC null.
+const transportErrorID = "server-error"
 
 // jsonRPCVersion is the only JSON-RPC version the protocol uses.
 const jsonRPCVersion = "2.0"
@@ -58,8 +63,13 @@ type Server struct {
 	// auditor, when non-nil, records auditable tool calls.
 	auditor Auditor
 
-	mu       sync.Mutex
-	sessions map[string]struct{}
+	// multiBank and singleBank are the session registries of the two MCP apps
+	// the reference runs: the multi-bank one behind /mcp and the single-bank
+	// one behind /mcp/{bank_id}. Each app keeps its own sessions — a session
+	// established on one is unknown to the other — because the reference gives
+	// each its own session manager.
+	multiBank  *sessionRegistry
+	singleBank *sessionRegistry
 
 	// enabledTools, when non-nil, is the server-level tool allowlist: every
 	// tool outside it is hidden from tools/list and refused if called. Nil
@@ -80,7 +90,12 @@ type Auditor interface {
 
 // New builds an MCP server over the store. A nil auditor disables auditing.
 func New(store storage.Store, auditor Auditor) *Server {
-	return &Server{store: store, auditor: auditor, sessions: make(map[string]struct{})}
+	return &Server{
+		store:      store,
+		auditor:    auditor,
+		multiBank:  newSessionRegistry(),
+		singleBank: newSessionRegistry(),
+	}
 }
 
 // Options configure the advertised tool surface, so a deployment can narrow the
@@ -134,42 +149,132 @@ func (s *Server) toolAllowed(name string) bool {
 // transport.
 const mcpSessionHeader = "Mcp-Session-Id"
 
+// initializedNotification is the notification a client sends once the handshake
+// completes. The transport treats its arrival as completing the handshake for a
+// session whose initialize never completed — a client that opened one without
+// the handshake and then announced itself.
+const initializedNotification = "notifications/initialized"
+
 // sseKeepAlive is how often an open event stream emits a comment, so an idle
 // connection is not dropped by an intermediary that sees no traffic.
 const sseKeepAlive = 15 * time.Second
 
-// mintSession records a fresh session and returns its identifier. A failed
-// random read returns empty, which leaves the response without a session header
-// rather than failing the handshake.
-func (s *Server) mintSession() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return ""
-	}
-	id := hex.EncodeToString(buf)
-	s.mu.Lock()
-	s.sessions[id] = struct{}{}
-	s.mu.Unlock()
-	return id
+// session is one live session's state. The reference serves a session only
+// after its handshake: until an initialize request — or the client's initialized
+// notification — arrives, it answers only the handshake and ping, and refuses
+// every other request as a parameter-validation failure.
+type liveSession struct {
+	initialized bool
 }
 
-// validSession reports whether id names a session this server established.
+// sessionRegistry tracks the sessions one MCP app has established. A session is
+// either live or terminated; an identifier in neither set names a session the
+// app never opened, which the reference reports differently from one it has
+// ended.
+type sessionRegistry struct {
+	mu         sync.Mutex
+	active     map[string]*liveSession
+	terminated map[string]struct{}
+}
+
+// newSessionRegistry builds an empty registry for one MCP app.
+func newSessionRegistry() *sessionRegistry {
+	return &sessionRegistry{
+		active:     make(map[string]*liveSession),
+		terminated: make(map[string]struct{}),
+	}
+}
+
+// mint records a fresh session — one whose handshake has not yet completed —
+// and returns its identifier and state. A failed random read returns empty,
+// which leaves the response without a session header rather than failing the
+// handshake.
+func (r *sessionRegistry) mint() (string, *liveSession) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", nil
+	}
+	id := hex.EncodeToString(buf)
+	live := &liveSession{}
+	r.mu.Lock()
+	r.active[id] = live
+	r.mu.Unlock()
+	return id, live
+}
+
+// lookup returns the live session an identifier names, or reports that the app
+// terminated it. A nil session with no termination means the app never opened
+// it.
+func (r *sessionRegistry) lookup(id string) (*liveSession, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if live, ok := r.active[id]; ok {
+		return live, false
+	}
+	_, ok := r.terminated[id]
+	return nil, ok
+}
+
+// initialize marks a live session's handshake complete.
+func (r *sessionRegistry) initialize(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if live, ok := r.active[id]; ok {
+		live.initialized = true
+	}
+}
+
+// terminate ends a live session: it moves to the terminated set so a later
+// request presenting it is answered as a session that has gone away rather than
+// as one that never existed.
+func (r *sessionRegistry) terminate(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.active[id]; ok {
+		delete(r.active, id)
+		r.terminated[id] = struct{}{}
+	}
+}
+
+// registryFor picks the session registry of the MCP app a request reaches: the
+// single-bank app when the path fixes a bank, the multi-bank one otherwise.
+// This mirrors the reference's choice between its two apps, which decides which
+// set of sessions the request is validated against.
+func (s *Server) registryFor(r *http.Request) *sessionRegistry {
+	if requestBank(r) != "" {
+		return s.singleBank
+	}
+	return s.multiBank
+}
+
+// presentedSession returns the session identifier a request carries and whether
+// it carries the header at all. The distinction matters: a header present but
+// empty names a session the app does not know, while an absent header is a
+// request that names no session.
+func presentedSession(r *http.Request) (string, bool) {
+	values, ok := r.Header[mcpSessionHeader]
+	if !ok {
+		return "", false
+	}
+	if len(values) == 0 {
+		return "", true
+	}
+	return values[0], true
+}
+
+// validSession reports whether id names a live session in either app. It exists
+// for callers that inspect session state after the fact, not for request
+// handling, which decides per app.
 func (s *Server) validSession(id string) bool {
 	if id == "" {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.sessions[id]
-	return ok
-}
-
-// terminateSession forgets a session, so a later request presenting it is not
-// found.
-func (s *Server) terminateSession(id string) {
-	s.mu.Lock()
-	delete(s.sessions, id)
-	s.mu.Unlock()
+	for _, registry := range []*sessionRegistry{s.multiBank, s.singleBank} {
+		if live, _ := registry.lookup(id); live != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // request is one JSON-RPC call. A notification carries no id and is answered
@@ -189,17 +294,25 @@ type response struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
-// rpcError is the JSON-RPC error object.
+// rpcError is the JSON-RPC error object. Data carries the reference's empty
+// detail string on the parameter-validation errors, which it always emits.
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+}
+
+// invalidParamsError is the reference's parameter-validation failure: the same
+// code and message it returns for an unknown method, a malformed initialize, or
+// a tools/call with no name.
+func invalidParamsError() *rpcError {
+	return &rpcError{Code: codeInvalidParams, Message: "Invalid request parameters", Data: ""}
 }
 
 // The JSON-RPC error codes the protocol defines.
 const (
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
 	codeInvalidParams  = -32602
 	codeInternalError  = -32603
 )
@@ -221,10 +334,44 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// servePost answers one JSON-RPC request. The transport validates the Accept
-// header first, then decodes and dispatches the call, and answers the
-// initialize handshake with the session header the client presents thereafter.
+// servePost answers one JSON-RPC request. It first resolves the session the
+// request presents, then validates the Content-Type and Accept headers, decodes
+// the call, and dispatches it — answering every JSON-RPC message as a
+// Server-Sent Events frame, the framing the reference transport returns.
+//
+// Sessions are mandatory after the handshake, as the reference enforces: the
+// handshake itself may arrive without one, every other call must present a live
+// session, and a call that presents none, an unknown one, or one that has been
+// terminated is refused before it reaches a tool. A request that names no
+// session still opens one, exactly as the reference's session manager does: its
+// fresh identifier rides on the response — including on a refusal — so a client
+// that followed the handshake never notices the difference.
 func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
+	registry := s.registryFor(r)
+	session, presented := presentedSession(r)
+	var live *liveSession
+	if presented {
+		var terminated bool
+		live, terminated = registry.lookup(session)
+		if terminated {
+			w.Header().Set(mcpSessionHeader, session)
+			writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Not Found: Session has been terminated")
+			return
+		}
+		if live == nil {
+			writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Session not found")
+			return
+		}
+	} else {
+		session, live = registry.mint()
+	}
+	if session != "" {
+		w.Header().Set(mcpSessionHeader, session)
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writePlainText(w, http.StatusBadRequest, "Invalid Content-Type header")
+		return
+	}
 	if !acceptablePost(r) {
 		writeTransportError(w, http.StatusNotAcceptable, codeInvalidRequest,
 			"Not Acceptable: Client must accept both application/json and text/event-stream")
@@ -232,34 +379,65 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 	}
 	var call request
 	if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
-		httpx.WriteJSONFor(w, r, http.StatusOK, errorResponse(nil, codeParseError, "request body is not valid JSON"))
+		writeTransportError(w, http.StatusBadRequest, codeParseError, "Parse error: "+err.Error())
 		return
 	}
 	if call.JSONRPC != jsonRPCVersion {
-		httpx.WriteJSONFor(w, r, http.StatusOK, errorResponse(call.ID, codeInvalidRequest, "jsonrpc must be \"2.0\""))
+		writeTransportError(w, http.StatusBadRequest, codeInvalidParams, "Invalid request parameters")
 		return
 	}
-	// A notification is answered with nothing, which the transport expresses as
-	// an empty body rather than a response object.
+	// Only the handshake — and only as a request, since a notification is no
+	// request — may open a session: every other call has to present one, which
+	// the transport reports as a missing session rather than as an unsupported
+	// method.
+	if !presented && (call.Method != "initialize" || len(call.ID) == 0) {
+		writeTransportError(w, http.StatusBadRequest, codeInvalidRequest, "Bad Request: Missing session ID")
+		return
+	}
+	// A notification is a well-formed message with no id; the transport accepts
+	// it without answering. The client's own initialized notification is where a
+	// handshake that skipped initialize completes.
 	if len(call.ID) == 0 {
+		if call.Method == initializedNotification {
+			registry.initialize(session)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	ctx := withDefaultBank(r.Context(), requestBank(r))
+	// Until the handshake completes, a session answers only the handshake and
+	// ping; every other request fails validation, exactly as the reference's
+	// session reports it.
+	if live != nil && !live.initialized && call.Method != "initialize" && call.Method != "ping" {
+		writeSSE(w, errorResponse(call.ID, invalidParamsError()))
+		return
+	}
+	if call.Method == "initialize" {
+		result, rpcErr := s.initialize(call.Params)
+		if rpcErr != nil {
+			writeSSE(w, errorResponse(call.ID, rpcErr))
+			return
+		}
+		registry.initialize(session)
+		writeSSE(w, response{JSONRPC: jsonRPCVersion, ID: call.ID, Result: result})
+		return
+	}
+	mount, bank := resolveBanks(r)
+	ctx := withBanks(r.Context(), mount, bank)
 	result, rpcErr := s.dispatch(ctx, call)
 	if rpcErr != nil {
-		httpx.WriteJSONFor(w, r, http.StatusOK, errorResponse(call.ID, rpcErr.Code, rpcErr.Message))
+		writeSSE(w, errorResponse(call.ID, rpcErr))
 		return
 	}
-	// The handshake establishes the session; a later call echoes the one it
-	// presented so a stateful client keeps its identifier.
-	if call.Method == "initialize" {
-		if id := s.mintSession(); id != "" {
-			w.Header().Set(mcpSessionHeader, id)
-		}
-	} else if session := r.Header.Get(mcpSessionHeader); session != "" {
-		w.Header().Set(mcpSessionHeader, session)
-	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, response{JSONRPC: jsonRPCVersion, ID: call.ID, Result: result})
+	writeSSE(w, response{JSONRPC: jsonRPCVersion, ID: call.ID, Result: result})
+}
+
+// isJSONContentType reports whether the request declares the JSON media type
+// the transport requires. An empty Content-Type is refused, as is any non-JSON
+// type; parameters such as charset are ignored.
+func isJSONContentType(header string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(header, ";", 2)[0]))
+	return mediaType == "application/json"
 }
 
 // serveGet opens the server-to-client event stream. A GET with no session is
@@ -275,8 +453,14 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "{}")
 		return
 	}
-	if !s.validSession(session) {
-		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Not Found: Invalid or expired session ID")
+	live, terminated := s.registryFor(r).lookup(session)
+	if terminated {
+		w.Header().Set(mcpSessionHeader, session)
+		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Not Found: Session has been terminated")
+		return
+	}
+	if live == nil {
+		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Session not found")
 		return
 	}
 	if !acceptsEventStream(r) {
@@ -316,19 +500,33 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveDelete terminates the session a client presents. A DELETE with no
-// session cannot terminate anything and is refused, which is what tells the
-// client session teardown is not supported.
+// session cannot terminate anything, which the transport reports as a missing
+// session rather than as an unsupported method; a session it does not know is
+// a not-found, and one it already ended is reported as terminated.
 func (s *Server) serveDelete(w http.ResponseWriter, r *http.Request) {
-	session := r.Header.Get(mcpSessionHeader)
-	if session == "" {
-		writeTransportError(w, http.StatusMethodNotAllowed, codeInvalidRequest, "Method Not Allowed: Session termination not supported")
+	registry := s.registryFor(r)
+	session, presented := presentedSession(r)
+	if !presented {
+		// A DELETE without a session still opens one, exactly as the reference's
+		// manager does, and then refuses to terminate a session the request did
+		// not name.
+		if minted, _ := registry.mint(); minted != "" {
+			w.Header().Set(mcpSessionHeader, minted)
+		}
+		writeTransportError(w, http.StatusBadRequest, codeInvalidRequest, "Bad Request: Missing session ID")
 		return
 	}
-	if !s.validSession(session) {
-		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Not Found: Invalid or expired session ID")
+	live, terminated := registry.lookup(session)
+	if terminated {
+		w.Header().Set(mcpSessionHeader, session)
+		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Not Found: Session has been terminated")
 		return
 	}
-	s.terminateSession(session)
+	if live == nil {
+		writeTransportError(w, http.StatusNotFound, codeInvalidRequest, "Session not found")
+		return
+	}
+	registry.terminate(session)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(mcpSessionHeader, session)
 	w.WriteHeader(http.StatusOK)
@@ -384,53 +582,130 @@ func acceptHas(header, media string) bool {
 	return false
 }
 
-// writeTransportError emits the transport's JSON-RPC error envelope for a
-// transport-level failure, which carries the status the transport returned and
-// a null id, the value the protocol reserves for an error whose request could
-// not be identified.
-func writeTransportError(w http.ResponseWriter, status, code int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"jsonrpc": jsonRPCVersion,
-		"id":      nil,
-		"error":   map[string]any{"code": code, "message": message},
-	})
+// writeSSE writes one JSON-RPC message as a single Server-Sent Events frame,
+// the framing the reference transport returns for every answered POST: an
+// `event: message` line, the JSON payload on a `data:` line, and a blank line
+// terminating the frame. The response is streamed rather than buffered, so a
+// client that reads events incrementally gets the message as soon as it is
+// written.
+func writeSSE(w http.ResponseWriter, payload any) {
+	header := w.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache, no-transform")
+	w.WriteHeader(http.StatusOK)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		// The payload is built from decoded values, so this cannot fail in
+		// practice; if it does, a bare error frame is still parseable by the
+		// client rather than leaving the stream open with nothing on it.
+		encoded, _ = json.Marshal(errorResponse(nil, invalidParamsError()))
+	}
+	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", encoded)
 }
 
-// dispatch routes one method to its handler.
+// writeTransportError emits the transport's JSON-RPC error envelope for a
+// transport-level failure, which carries the status the transport returned and
+// the "server-error" id the protocol reserves for an error whose request could
+// not be identified.
+func writeTransportError(w http.ResponseWriter, status, code int, message string) {
+	writeJSON(w, status, errorEnvelope(code, message))
+}
+
+// writePlainText writes a bare-text transport response, the shape the reference
+// returns for a rejected Content-Type.
+func writePlainText(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, message)
+}
+
+// writeJSON writes a JSON body with an explicit status.
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// errorEnvelope is the transport error envelope with the "server-error" id.
+func errorEnvelope(code int, message string) map[string]any {
+	return map[string]any{
+		"jsonrpc": jsonRPCVersion,
+		"id":      transportErrorID,
+		"error":   map[string]any{"code": code, "message": message},
+	}
+}
+
+// dispatch routes one method to its handler. The protocol's own discovery
+// methods are answered with empty surfaces — the reference server registers no
+// resources, resource templates or prompts — and an unrecognised method is the
+// transport's parameter-validation failure.
 func (s *Server) dispatch(ctx context.Context, call request) (any, *rpcError) {
 	switch call.Method {
 	case "initialize":
-		return s.initialize(call.Params), nil
+		return s.initialize(call.Params)
 	case "tools/list":
-		return map[string]any{"tools": withInstructions(s.advertisedTools(defaultBank(ctx) == ""), s.instructions)}, nil
+		return map[string]any{"tools": toolEntries(withInstructions(s.advertisedTools(mountBank(ctx) == ""), s.instructions))}, nil
 	case "tools/call":
 		return s.callTool(ctx, call.Params)
 	case "ping":
 		return map[string]any{}, nil
+	case "resources/list":
+		return map[string]any{"resources": []any{}}, nil
+	case "resources/templates/list":
+		return map[string]any{"resourceTemplates": []any{}}, nil
+	case "prompts/list":
+		return map[string]any{"prompts": []any{}}, nil
+	case "logging/setLevel":
+		return map[string]any{}, nil
 	default:
-		return nil, &rpcError{Code: codeMethodNotFound, Message: "unknown method " + call.Method}
+		return nil, invalidParamsError()
 	}
 }
 
 // initialize answers the handshake with the server's capabilities and identity.
 // It negotiates the protocol revision: a revision the server speaks is echoed,
-// otherwise the server declares its own.
-func (s *Server) initialize(params json.RawMessage) map[string]any {
-	negotiated := protocolVersion
+// otherwise the server declares its newest. The request must carry the client's
+// capabilities and identity, as the reference's handshake requires.
+func (s *Server) initialize(params json.RawMessage) (any, *rpcError) {
 	var asked struct {
-		ProtocolVersion string `json:"protocolVersion"`
+		ProtocolVersion string          `json:"protocolVersion"`
+		Capabilities    json.RawMessage `json:"capabilities"`
+		ClientInfo      *struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
 	}
-	if len(params) > 0 && json.Unmarshal(params, &asked) == nil && supportedProtocolVersions[asked.ProtocolVersion] {
+	if len(params) == 0 || json.Unmarshal(params, &asked) != nil {
+		return nil, invalidParamsError()
+	}
+	if len(asked.Capabilities) == 0 || asked.ClientInfo == nil ||
+		asked.ClientInfo.Name == "" || asked.ClientInfo.Version == "" {
+		return nil, invalidParamsError()
+	}
+	negotiated := protocolVersion
+	if supportedProtocolVersions[asked.ProtocolVersion] {
 		negotiated = asked.ProtocolVersion
 	}
 	return map[string]any{
 		"protocolVersion": negotiated,
-		"capabilities": map[string]any{
-			"tools": map[string]any{"listChanged": false},
-		},
-		"serverInfo": map[string]any{"name": "hindsight-mcp-server", "version": serverVersion},
+		"capabilities":    serverCapabilities(),
+		"serverInfo":      map[string]any{"name": "hindsight-mcp-server", "version": serverVersion},
+	}, nil
+}
+
+// serverCapabilities is the capability set the reference server advertises:
+// every capability the SDK's low-level server exposes with its tools-change
+// notification enabled, plus the UI extension. The sets the server does not
+// actually populate (resources, prompts) are still advertised, because the
+// client's feature negotiation reads them.
+func serverCapabilities() map[string]any {
+	return map[string]any{
+		"experimental": map[string]any{},
+		"logging":      map[string]any{},
+		"prompts":      map[string]any{"listChanged": true},
+		"resources":    map[string]any{"subscribe": false, "listChanged": true},
+		"tools":        map[string]any{"listChanged": true},
+		"extensions":   map[string]any{"io.modelcontextprotocol/ui": map[string]any{}},
 	}
 }
 
@@ -441,12 +716,15 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "tools/call requires a name and arguments"}
+		return nil, invalidParamsError()
+	}
+	if params.Name == "" {
+		return nil, invalidParamsError()
 	}
 	if !s.toolAllowed(params.Name) {
 		// The reference removes a disallowed tool from the surface, so calling
 		// it is the same as calling something that does not exist.
-		return toolError("unknown tool: " + params.Name), nil
+		return toolError("Unknown tool: '" + params.Name + "'"), nil
 	}
 	payload, err := s.invokeAudited(ctx, params.Name, params.Arguments)
 	if err != nil {
@@ -454,7 +732,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		// so the client sees which call failed rather than losing the session.
 		return toolError(err.Error()), nil
 	}
-	return toolResult(payload), nil
+	return toolResult(params.Name, payload), nil
 }
 
 // requestBank is the bank a single-bank mount fixes, or empty for the
@@ -479,25 +757,59 @@ func requestBank(r *http.Request) string {
 // contextKey is the private type for this package's context values.
 type contextKey int
 
-// defaultBankKey carries the single-bank mount's fixed bank through the request.
-const defaultBankKey contextKey = iota
+// mountBankKey carries the fixed bank a single-bank mount establishes.
+// sessionBankKey carries the bank a tool uses when its arguments omit bank_id.
+const (
+	mountBankKey contextKey = iota
+	sessionBankKey
+)
 
-// withDefaultBank records the fixed bank for a single-bank request.
-func withDefaultBank(ctx context.Context, bank string) context.Context {
-	if bank == "" {
-		return ctx
+// defaultMCPBank is the bank a request that names none is scoped to, the
+// reference's DEFAULT_BANK_ID.
+const defaultMCPBank = "default"
+
+// withBanks records the mount's fixed bank — empty for the multi-bank mount —
+// and the session bank a tool falls back to.
+func withBanks(ctx context.Context, mount, session string) context.Context {
+	if mount != "" {
+		ctx = context.WithValue(ctx, mountBankKey, mount)
 	}
-	return context.WithValue(ctx, defaultBankKey, bank)
+	if session != "" {
+		ctx = context.WithValue(ctx, sessionBankKey, session)
+	}
+	return ctx
 }
 
-// defaultBank reads the fixed bank a single-bank mount set, or empty for a
+// mountBank reads the fixed bank a single-bank mount set, or empty for a
 // multi-bank request where every tool must carry its own bank_id.
-func defaultBank(ctx context.Context) string {
-	bank, _ := ctx.Value(defaultBankKey).(string)
+func mountBank(ctx context.Context) string {
+	bank, _ := ctx.Value(mountBankKey).(string)
 	return bank
 }
 
+// sessionBank reads the bank a multi-bank request is scoped to: the X-Bank-Id
+// header when it carries one, and the default bank otherwise.
+func sessionBank(ctx context.Context) string {
+	bank, _ := ctx.Value(sessionBankKey).(string)
+	return bank
+}
+
+// resolveBanks picks the mount's fixed bank from the request path and the
+// session bank from the header, falling back to the default bank. A path-based
+// bank is both, which is what selects the single-bank tool surface.
+func resolveBanks(r *http.Request) (mount, session string) {
+	mount = requestBank(r)
+	session = mount
+	if session == "" {
+		session = strings.TrimSpace(r.Header.Get("X-Bank-Id"))
+	}
+	if session == "" {
+		session = defaultMCPBank
+	}
+	return mount, session
+}
+
 // errorResponse builds a JSON-RPC error response.
-func errorResponse(id json.RawMessage, code int, message string) response {
-	return response{JSONRPC: jsonRPCVersion, ID: id, Error: &rpcError{Code: code, Message: message}}
+func errorResponse(id json.RawMessage, rpcErr *rpcError) response {
+	return response{JSONRPC: jsonRPCVersion, ID: id, Error: rpcErr}
 }

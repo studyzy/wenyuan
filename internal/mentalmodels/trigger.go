@@ -2,7 +2,6 @@ package mentalmodels
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -15,17 +14,62 @@ import (
 // The trigger members the reference accepts, spelled out so validation rejects
 // exactly the values the reference's Literals reject.
 var (
-	triggerBudgets    = []string{"low", "mid", "high"}
-	triggerModes      = []string{"full", "delta"}
-	triggerTagsMatch  = []string{"any", "all", "any_strict", "all_strict", "exact"}
-	triggerFactTypes  = []string{"world", "experience", "observation"}
-	triggerDefaultMap = map[string]any{
-		"mode":                        "full",
-		"refresh_after_consolidation": false,
-		"exclude_mental_models":       false,
-		"keep_trace":                  false,
-	}
+	triggerBudgets   = []string{"low", "mid", "high"}
+	triggerModes     = []string{"full", "delta"}
+	triggerTagsMatch = []string{"any", "all", "any_strict", "all_strict", "exact"}
+	triggerFactTypes = []string{"world", "experience", "observation"}
 )
+
+// triggerDefaultMap is the reference's MentalModelTrigger at its defaults: the
+// four non-nullable members carry their declared default, the rest null.
+var triggerDefaultMap = map[string]any{
+	"budget":                                 nil,
+	"mode":                                   "full",
+	"refresh_after_consolidation":            false,
+	"refresh_cron":                           nil,
+	"min_refresh_interval_seconds":           nil,
+	"fact_types":                             nil,
+	"exclude_mental_models":                  false,
+	"exclude_mental_model_ids":               nil,
+	"tags_match":                             nil,
+	"tag_groups":                             nil,
+	"include_chunks":                         nil,
+	"recall_max_tokens":                      nil,
+	"recall_chunks_max_tokens":               nil,
+	"reflect_search_observations_max_tokens": nil,
+	"reflect_search_observations_include_entities": nil,
+	"response_schema": nil,
+	"keep_trace":      false,
+}
+
+// triggerKnownMember reports whether a member is part of the reference's
+// trigger model, so a projection keeps exactly that set.
+func triggerKnownMember(name string) bool {
+	_, ok := triggerDefaultMap[name]
+	return ok
+}
+
+// NormalizeTrigger projects a stored trigger through the reference's
+// MentalModelTrigger model for callers outside this package (the knowledge-base
+// routes project the same stored trigger). It fills every unset member with its
+// default, drops members the model does not declare, and leaves nil nil.
+func NormalizeTrigger(stored map[string]any) map[string]any { return normalizeTrigger(stored) }
+
+// normalizeTrigger projects a stored trigger through the reference's model: it
+// fills every unset member with its default and drops any member the model does
+// not declare. A nil stored trigger stays nil (the reference's null).
+func normalizeTrigger(stored map[string]any) map[string]any {
+	if stored == nil {
+		return nil
+	}
+	out := cloneTrigger(triggerDefaultMap)
+	for key, value := range stored {
+		if triggerKnownMember(key) {
+			out[key] = value
+		}
+	}
+	return out
+}
 
 // triggerFailure wraps one or more structured items for a trigger member.
 func triggerFailure(items ...httpx.ValidationError) *httpx.ValidationFailure {
@@ -40,7 +84,8 @@ func triggerLoc(member string) []string { return []string{"body", "trigger", mem
 // reference's defaults; when false (a patch) only the members the client sent
 // are returned, so the caller can overlay them on the model's current trigger.
 //
-// A nil raw (member absent) yields the defaults for a create and nil for a patch.
+// A nil raw (member absent) yields the full default trigger for a create and
+// nil for a patch, which leaves the model's current trigger untouched.
 func parseTrigger(raw json.RawMessage, create bool) (map[string]any, *httpx.ValidationFailure) {
 	if len(raw) == 0 || string(raw) == "null" {
 		if create {
@@ -55,14 +100,20 @@ func parseTrigger(raw json.RawMessage, create bool) (map[string]any, *httpx.Vali
 	if failure := validateTrigger(object); failure != nil {
 		return nil, failure
 	}
+	// The reference validates the member set through its MentalModelTrigger
+	// model, so unknown members are dropped and every declared member is kept —
+	// including one the client set to null, which clears it on a patch.
+	supplied := make(map[string]any, len(object))
+	for key, value := range object {
+		if triggerKnownMember(key) {
+			supplied[key] = value
+		}
+	}
 	if !create {
-		return nonNullMembers(object), nil
+		return supplied, nil
 	}
 	merged := cloneTrigger(triggerDefaultMap)
-	for key, value := range object {
-		if value == nil {
-			continue
-		}
+	for key, value := range supplied {
 		merged[key] = value
 	}
 	return merged, nil
@@ -70,9 +121,17 @@ func parseTrigger(raw json.RawMessage, create bool) (map[string]any, *httpx.Vali
 
 // validateTrigger checks each member against the reference's accepted values.
 func validateTrigger(object map[string]any) *httpx.ValidationFailure {
-	if raw, ok := object["mode"]; ok && raw != nil {
-		mode, ok := raw.(string)
-		if !ok || !contains(triggerModes, mode) {
+	// The reference's non-nullable members reject an explicit null the way any
+	// wrong-typed value is rejected: mode is a Literal, the rest are bools.
+	for _, member := range []string{"refresh_after_consolidation", "exclude_mental_models", "keep_trace"} {
+		if raw, ok := object[member]; ok {
+			if _, isBool := raw.(bool); !isBool {
+				return triggerFailure(httpx.ScalarTypeMismatch("bool", triggerLoc(member), raw))
+			}
+		}
+	}
+	if raw, ok := object["mode"]; ok {
+		if mode, isString := raw.(string); !isString || !contains(triggerModes, mode) {
 			return triggerFailure(httpx.Literal(triggerLoc("mode"), raw, triggerModes))
 		}
 	}
@@ -127,14 +186,17 @@ func validateTrigger(object map[string]any) *httpx.ValidationFailure {
 		}
 		if trimmed := strings.TrimSpace(expression); trimmed != "" {
 			if _, err := cron.ParseStandard(trimmed); err != nil {
+				// The reference interpolates repr(v), which single-quotes a string.
 				return triggerFailure(httpx.ValueError(triggerLoc("refresh_cron"), expression,
-					fmt.Sprintf("refresh_cron is not a valid cron expression: %q", trimmed)))
+					"refresh_cron is not a valid cron expression: '"+trimmed+"'"))
 			}
 		}
 	}
 	if refreshAfter, ok := object["refresh_after_consolidation"].(bool); ok && refreshAfter {
 		if expression, ok := object["refresh_cron"].(string); ok && strings.TrimSpace(expression) != "" {
-			return triggerFailure(httpx.ValueError([]string{"body", "trigger"}, expression,
+			// The framework's model-level validator reports the whole trigger
+			// object as the item's input.
+			return triggerFailure(httpx.ValueError([]string{"body", "trigger"}, object,
 				"refresh_after_consolidation and refresh_cron are mutually exclusive: "+
 					"a mental model refreshes either after consolidation or on a cron schedule, not both."))
 		}
@@ -142,7 +204,8 @@ func validateTrigger(object map[string]any) *httpx.ValidationFailure {
 	if raw, ok := object["tag_groups"]; ok && raw != nil {
 		if triggerHasFuzzy(raw) {
 			return triggerFailure(httpx.ValueError(triggerLoc("tag_groups"), raw,
-				"resolve='fuzzy' is not supported in a trigger's tag_groups"))
+				"resolve='fuzzy' is not supported in a trigger's tag_groups. "+
+					"A stored scope must be exact; use it on a recall or reflect request instead."))
 		}
 	}
 	return nil
@@ -186,19 +249,6 @@ func triggerHasFuzzy(value any) bool {
 		}
 	}
 	return false
-}
-
-// nonNullMembers drops explicit-null members, so a patch overlays only the
-// values the client actually set.
-func nonNullMembers(object map[string]any) map[string]any {
-	out := make(map[string]any, len(object))
-	for key, value := range object {
-		if value == nil {
-			continue
-		}
-		out[key] = value
-	}
-	return out
 }
 
 // KnowledgePageDefaultTrigger is the built-in refresh policy a knowledge page
@@ -264,7 +314,11 @@ func cloneTrigger(in map[string]any) map[string]any {
 	return out
 }
 
-// mergeTrigger overlays a patch's set members onto an existing trigger.
+// mergeTrigger overlays a patch's set members onto an existing trigger, matching
+// the reference's _merge_trigger: an explicit null in the patch clears the
+// stored member, and the two refresh-scheduling members stay mutually exclusive.
+// Naming one without the other drops the other, so moving a model onto a cron
+// schedule clears the auto-refresh it had and vice versa.
 func mergeTrigger(current map[string]any, patch map[string]any) map[string]any {
 	out := cloneTrigger(current)
 	if out == nil {
@@ -273,7 +327,27 @@ func mergeTrigger(current map[string]any, patch map[string]any) map[string]any {
 	for key, value := range patch {
 		out[key] = value
 	}
+	_, namesConsolidation := patch["refresh_after_consolidation"]
+	_, namesCron := patch["refresh_cron"]
+	if triggerTruthy(patch["refresh_cron"]) && !namesConsolidation {
+		delete(out, "refresh_after_consolidation")
+	}
+	if triggerTruthy(patch["refresh_after_consolidation"]) && !namesCron {
+		delete(out, "refresh_cron")
+	}
 	return out
+}
+
+// triggerTruthy reports whether a scheduling member was stated as enabled: a
+// false bool, an empty string and null all read as "not stated".
+func triggerTruthy(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return typed != ""
+	}
+	return false
 }
 
 func contains(values []string, want string) bool {

@@ -16,13 +16,19 @@ package hindsightarchive
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
 	"sort"
 	"strings"
-	"time"
 )
+
+// ErrManifestMissing reports an archive that has no manifest.json entry. It is
+// a distinct sentinel so a caller can render the endpoint's own wording — the
+// reference names the endpoint a valid archive comes from — rather than the
+// generic file-read error the underlying filesystem returns.
+var ErrManifestMissing = errors.New("manifest.json is missing")
 
 // SupportedSchemaVersion is the archive layout this reader understands.
 const SupportedSchemaVersion = 1
@@ -40,22 +46,22 @@ const DocumentsDir = "documents"
 // field beyond the schema version and the source bank is optional, because an
 // archive written by an older producer lacks the ones added later.
 type Manifest struct {
-	SchemaVersion          int        `json:"schema_version"`
-	SourceBankID           string     `json:"source_bank_id"`
-	ExportedAt             *time.Time `json:"exported_at,omitempty"`
-	DocumentCount          int        `json:"document_count"`
-	FactCount              int        `json:"fact_count"`
-	ObservationCount       int        `json:"observation_count"`
-	MentalModelCount       int        `json:"mental_model_count,omitempty"`
-	KnowledgePageCount     int        `json:"knowledge_page_count,omitempty"`
-	ArchiveType            string     `json:"archive_type"`
-	DirectiveCount         int        `json:"directive_count,omitempty"`
-	WebhookCount           int        `json:"webhook_count,omitempty"`
-	IncludesHistory        bool       `json:"includes_history"`
-	Scope                  *Scope     `json:"scope,omitempty"`
-	AttachmentCount        int        `json:"attachment_count,omitempty"`
-	OperationCount         int        `json:"operation_count,omitempty"`
-	InvalidatedMemoryCount int        `json:"invalidated_memory_count,omitempty"`
+	SchemaVersion          int     `json:"schema_version"`
+	SourceBankID           string  `json:"source_bank_id"`
+	ExportedAt             *string `json:"exported_at,omitempty"`
+	DocumentCount          int     `json:"document_count"`
+	FactCount              int     `json:"fact_count"`
+	ObservationCount       int     `json:"observation_count"`
+	MentalModelCount       int     `json:"mental_model_count,omitempty"`
+	KnowledgePageCount     int     `json:"knowledge_page_count,omitempty"`
+	ArchiveType            string  `json:"archive_type"`
+	DirectiveCount         int     `json:"directive_count,omitempty"`
+	WebhookCount           int     `json:"webhook_count,omitempty"`
+	IncludesHistory        bool    `json:"includes_history"`
+	Scope                  *Scope  `json:"scope,omitempty"`
+	AttachmentCount        int     `json:"attachment_count,omitempty"`
+	OperationCount         int     `json:"operation_count,omitempty"`
+	InvalidatedMemoryCount int     `json:"invalidated_memory_count,omitempty"`
 }
 
 // ScopeCarriesData reports whether the archive was produced with the data
@@ -78,12 +84,18 @@ func (m Manifest) ScopeCarriesBankConfig() bool {
 }
 
 // Document is a single source document plus its chunks and extracted facts.
+//
+// Its timestamps are strings rather than time.Time because the archive's
+// document section is serialized by the reference's pydantic models, whose JSON
+// output (six fractional digits, 'Z' suffix, no trailing-zero trimming) differs
+// from Go's encoding/json time encoding. Write them with
+// httpx.FormatZuluTimestampPtr and read them with ParseTime.
 type Document struct {
 	ID           string         `json:"id"`
 	OriginalText string         `json:"original_text"`
 	RetainParams map[string]any `json:"retain_params"`
 	Tags         []string       `json:"tags"`
-	CreatedAt    *time.Time     `json:"created_at"`
+	CreatedAt    *string        `json:"created_at"`
 	Chunks       []Chunk        `json:"chunks"`
 	Facts        []Fact         `json:"facts"`
 }
@@ -100,10 +112,10 @@ type Fact struct {
 	SourceID      string         `json:"source_id"`
 	FactType      string         `json:"fact_type"`
 	Context       string         `json:"context"`
-	EventDate     *time.Time     `json:"event_date"`
-	OccurredStart *time.Time     `json:"occurred_start"`
-	OccurredEnd   *time.Time     `json:"occurred_end"`
-	MentionedAt   *time.Time     `json:"mentioned_at"`
+	EventDate     *string        `json:"event_date"`
+	OccurredStart *string        `json:"occurred_start"`
+	OccurredEnd   *string        `json:"occurred_end"`
+	MentionedAt   *string        `json:"mentioned_at"`
 	Metadata      map[string]any `json:"metadata"`
 	Tags          []string       `json:"tags"`
 	// ObservationScopes is the fact's consolidation scoping kept as raw JSON.
@@ -114,9 +126,9 @@ type Fact struct {
 	ChunkIndex            *int             `json:"chunk_index"`
 	Entities              []string         `json:"entities"`
 	CausalRelations       []CausalRelation `json:"causal_relations"`
-	CreatedAt             *time.Time       `json:"created_at"`
-	ConsolidatedAt        *time.Time       `json:"consolidated_at"`
-	ConsolidationFailedAt *time.Time       `json:"consolidation_failed_at"`
+	CreatedAt             *string          `json:"created_at"`
+	ConsolidatedAt        *string          `json:"consolidated_at"`
+	ConsolidationFailedAt *string          `json:"consolidation_failed_at"`
 }
 
 // CausalRelation is a causal edge from a fact to another fact in the same
@@ -166,6 +178,9 @@ type Archive struct {
 func Read(fsys fs.FS) (*Archive, error) {
 	manifestBytes, err := fs.ReadFile(fsys, ManifestName)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrManifestMissing
+		}
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
 	var manifest Manifest

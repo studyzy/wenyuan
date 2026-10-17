@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 )
@@ -120,6 +121,56 @@ func TestProbePayloadFields(t *testing.T) {
 	}
 }
 
+// The probe payloads' float fields render the way Python's json.dumps renders a
+// float: an integral value keeps its trailing ".0" and a fractional one is
+// unchanged. The reference builds these payloads as Python floats, so the wire
+// text — not only the number it parses to — is part of the contract.
+func TestProbeFloatRendering(t *testing.T) {
+	live, err := json.Marshal(LivenessBody{Status: "alive", Version: "1.0.0", UptimeSeconds: Float(812)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"status":"alive","version":"1.0.0","uptime_seconds":812.0}`; string(live) != want {
+		t.Errorf("liveness body = %s, want %s", live, want)
+	}
+
+	// The served route renders the same text: started 812s ago, the probe
+	// payload's uptime is a whole number and keeps its trailing ".0".
+	served := bindHealth(&HealthHandler{Version: "1.0.0", Started: time.Now().Add(-812 * time.Second)})
+	rec := httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathHealthLive, nil))
+	if want := `{"status":"alive","version":"1.0.0","uptime_seconds":812.0}`; rec.Body.String() != want {
+		t.Errorf("served liveness body = %s, want %s", rec.Body.String(), want)
+	}
+
+	acquire := Float(1)
+	ready, err := json.Marshal(HealthBody{Status: "healthy", Database: "connected", DBAcquireMS: &acquire})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"status":"healthy","database":"connected","db_acquire_ms":1.0}`; string(ready) != want {
+		t.Errorf("readiness body = %s, want %s", ready, want)
+	}
+
+	age := Float(0.4)
+	worker, err := json.Marshal(WorkerLivenessBody{
+		Status: "alive", Version: "1.0.0", UptimeSeconds: Float(100), WorkerID: "w", SecondsSinceLastPoll: &age,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"status":"alive","version":"1.0.0","uptime_seconds":100.0,"worker_id":"w","is_shutdown":false,"seconds_since_last_poll":0.4}`; string(worker) != want {
+		t.Errorf("worker liveness body = %s, want %s", worker, want)
+	}
+
+	if frac, err := json.Marshal(Float(812.4)); err != nil || string(frac) != "812.4" {
+		t.Errorf("fractional float = %s (err %v), want 812.4", frac, err)
+	}
+	if zero, err := json.Marshal(Float(0)); err != nil || string(zero) != "0.0" {
+		t.Errorf("zero float = %s (err %v), want 0.0", zero, err)
+	}
+}
+
 // poolPinger reports pool utilization, which the readiness body surfaces on
 // success when the dependency can.
 type poolPinger struct{ *fakePinger }
@@ -229,6 +280,91 @@ func TestWorkerLivenessFields(t *testing.T) {
 	}
 }
 
+// The worker readiness body carries the worker identity and shutdown state on
+// both /health and /health/ready, matching the reference's shared body.
+func TestWorkerReadinessInjectsWorkerFields(t *testing.T) {
+	handler := &WorkerHandler{
+		HealthHandler: HealthHandler{DB: &fakePinger{}, Version: "1.0.0"},
+		WorkerID:      "w-test",
+		IsShutdown:    func() bool { return false },
+	}
+	mux := http.NewServeMux()
+	BindWorkerRoutes(handler, func(method, pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, h)
+	})
+	for _, path := range []string{httpx.PathHealth, httpx.PathReady} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, rec.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["status"] != "healthy" {
+			t.Fatalf("%s status body = %v", path, body)
+		}
+		if body["worker_id"] != "w-test" || body["is_shutdown"] != false {
+			t.Fatalf("%s must carry worker_id and is_shutdown: %v", path, body)
+		}
+	}
+}
+
+// A failing readiness probe keeps the worker fields and the 503 the reference
+// returns, so an operator sees both the failure and which worker reported it.
+func TestWorkerReadinessFailureKeepsWorkerFields(t *testing.T) {
+	handler := &WorkerHandler{
+		HealthHandler: HealthHandler{DB: &fakePinger{err: errors.New("down")}},
+		WorkerID:      "w-test",
+		IsShutdown:    func() bool { return true },
+	}
+	mux := http.NewServeMux()
+	BindWorkerRoutes(handler, func(method, pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, h)
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathHealth, nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "unhealthy" || body["worker_id"] != "w-test" || body["is_shutdown"] != true {
+		t.Fatalf("worker readiness failure body = %v", body)
+	}
+}
+
+// The worker root endpoint returns the info payload, and every other path still
+// 404s rather than falling through to it.
+func TestWorkerRootInfoEndpoint(t *testing.T) {
+	handler := &WorkerHandler{WorkerID: "w-test", IsShutdown: func() bool { return false }}
+	mux := http.NewServeMux()
+	BindWorkerRoutes(handler, func(method, pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, h)
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root status = %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["service"] != "hindsight-worker" || body["worker_id"] != "w-test" || body["is_shutdown"] != false {
+		t.Fatalf("root body = %v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown path status = %d, want 404", rec.Code)
+	}
+}
+
 // The metrics endpoint includes deployment-provided gauges.
 func TestMetricsExtraSeries(t *testing.T) {
 	handler := &MetricsHandler{Extra: func() []Metric {
@@ -240,7 +376,7 @@ func TestMetricsExtraSeries(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathMetrics, nil))
-	if !strings.Contains(rec.Body.String(), "wenyuan_async_operations_pending 3") {
+	if !strings.Contains(rec.Body.String(), "wenyuan_async_operations_pending{otel_scope_name=\"hindsight_api.metrics\",otel_scope_schema_url=\"\",otel_scope_version=\"\"} 3") {
 		t.Fatalf("metrics body = %q", rec.Body.String())
 	}
 }

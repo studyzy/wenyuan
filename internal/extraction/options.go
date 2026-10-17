@@ -42,6 +42,12 @@ type Options struct {
 	// prompt describes it and the schema gains a 'labels' object the model must
 	// fill; a nil or empty vocabulary leaves both exactly as they were.
 	Vocabulary *entitylabels.Vocabulary
+	// AllowFreeFormEntities decides one sentence inside the entity-labels
+	// section: whether regular named entities are still extracted alongside the
+	// labels. A nil value keeps the reference's default (on); it only matters
+	// when a vocabulary is configured, because the section that carries the
+	// sentence exists only then.
+	AllowFreeFormEntities *bool
 	// Attachments are the item's inline attachments' decoded bytes. They are
 	// interleaved back into the user message where their placeholders stand, so
 	// the model reads an image in the position the caller wrote it.
@@ -52,12 +58,23 @@ type Options struct {
 	// is parsed. False drops the ask and the parse, so a disabled switch yields
 	// no causal relations at all, exactly as the reference threads the option.
 	ExtractCausalLinks *bool
+	// OutputLanguage forces the language of the extracted facts, replacing the
+	// prompt's preserve-the-source-language rule. Empty leaves that rule in
+	// place, matching a deployment that configured no language.
+	OutputLanguage string
 }
 
 // causalLinksEnabled reports whether the extraction should ask for and parse
 // causal relations. An unset option is the reference's default (on).
 func causalLinksEnabled(opts Options) bool {
 	return opts.ExtractCausalLinks == nil || *opts.ExtractCausalLinks
+}
+
+// freeFormEntities reports whether regular named entities are still extracted
+// alongside the structured labels. An unset option is the reference's default
+// (on).
+func freeFormEntities(opts Options) bool {
+	return opts.AllowFreeFormEntities == nil || *opts.AllowFreeFormEntities
 }
 
 // Attachment is one inline attachment carried into an extraction call: the
@@ -155,10 +172,16 @@ func composeExtractionPrompt(opts Options) string {
 	var builder strings.Builder
 	builder.WriteString(prompt)
 	if !opts.Vocabulary.Empty() {
-		builder.WriteString(labelsPromptSection(opts.Vocabulary))
+		builder.WriteString(labelsPromptSection(opts.Vocabulary, freeFormEntities(opts)))
 	}
 	if opts.OptionalFactDimensions && mode != ModeVerbatim {
 		builder.WriteString(optionalDimensionsSection)
+	}
+	// A forced output language overrides the prompt's own preserve-the-source
+	// rule, exactly as the deployment-level language wrapper overrides it for
+	// every other pipeline. An empty language leaves the prompt unchanged.
+	if language := strings.TrimSpace(opts.OutputLanguage); language != "" {
+		builder.WriteString(provider.OutputLanguageDirective(language))
 	}
 	return builder.String()
 }

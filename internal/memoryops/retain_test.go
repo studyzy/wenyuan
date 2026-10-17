@@ -78,7 +78,9 @@ func TestAsyncWriteReturnsOperationIDs(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Async || got.OperationID == "" || len(got.OperationIDs) == 0 {
+	// A single-strategy submission serializes operation_ids as null, which is
+	// what the reference does when only one group was queued.
+	if !got.Async || got.OperationID == "" || got.OperationIDs != nil {
 		t.Fatalf("async acceptance incomplete: %s", rec.Body.String())
 	}
 	if got.ItemsCount != 1 {
@@ -143,12 +145,22 @@ func TestWriteUnavailableReturnsRetryAfter(t *testing.T) {
 	}
 }
 
-// ec-0001 / err-0004: an empty item list is rejected as a client error.
-func TestEmptyItemsRejected(t *testing.T) {
+// ec-0001 / err-0004: an empty item list is accepted and reports nothing
+// written, which is what the reference does for a zero-item batch.
+func TestEmptyItemsAccepted(t *testing.T) {
 	mux, _ := newServer(t)
 	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[]}`)
-	if rec.Code != http.StatusUnprocessableEntity {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ItemsCount int `json:"items_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ItemsCount != 0 {
+		t.Fatalf("items_count = %d, want 0: %s", got.ItemsCount, rec.Body.String())
 	}
 }
 
@@ -319,6 +331,7 @@ func TestFileRetainIsAsync(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = part.Write([]byte("file body"))
+	_ = w.WriteField("request", "{}")
 	_ = w.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
@@ -349,6 +362,7 @@ func TestFileRetainPersistsAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = part.Write([]byte("png bytes"))
+	_ = w.WriteField("request", "{}")
 	_ = w.Close()
 	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
@@ -499,8 +513,13 @@ func TestFileRetainRejectsUnknownParser(t *testing.T) {
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("unknown parser = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	// A parser the deployment does not offer is the reference's 400, which
+	// names the scope and the available parsers.
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown parser = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request-level parser") {
+		t.Fatalf("the refusal must name the scope: %s", rec.Body.String())
 	}
 }
 

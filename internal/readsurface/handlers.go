@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +28,11 @@ type Handlers struct {
 	// is supplied by the composition root, which owns the extraction and
 	// embedding boundaries the pipeline needs; a nil value refuses reprocess.
 	Reprocess DocumentReprocessor
+	// AutoConsolidationEnabled is the deployment's enable_auto_consolidation
+	// setting. A document retag that invalidates observations re-consolidates
+	// only when it is on (a bank's own override wins), the same gate the
+	// reference applies; the composition root supplies the deployment value.
+	AutoConsolidationEnabled bool
 }
 
 // DocumentReprocessor re-runs the retain pipeline over one document's stored
@@ -99,10 +106,14 @@ func (h *Handlers) dispatchDocumentMember(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// ListTags returns the bank's tags with usage counts.
+// ListTags returns the bank's tags with usage counts. `source` selects the
+// table the histogram is read from: memory_units by default, or mental_models.
 func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
+		return
+	}
+	if !literalParam(w, r, "source", []string{"memories", "mental_models"}) {
 		return
 	}
 	limit, ok := intParam(w, r, "limit", defaultPageLimit, 0, -1)
@@ -113,52 +124,89 @@ func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	counts, err := h.Store.ListTags(r.Context(), bankID)
+	var (
+		counts []storage.TagCount
+		err    error
+	)
+	if strings.TrimSpace(httpx.Query(r, "source")) == "mental_models" {
+		counts, err = h.mentalModelTagCounts(r.Context(), bankID)
+	} else {
+		counts, err = h.Store.ListTags(r.Context(), bankID)
+	}
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	items := make([]TagItem, 0, len(counts))
-	pattern := strings.ToLower(strings.TrimSpace(httpx.Query(r, "q")))
-	for _, entry := range counts {
-		if pattern != "" && !tagMatchesPattern(entry.Tag, pattern) {
-			continue
+	if pattern := httpx.Query(r, "q"); pattern != "" {
+		matcher, err := compileTagPattern(pattern)
+		if err != nil {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "Invalid pattern"))
+			return
 		}
-		items = append(items, TagItem{Tag: entry.Tag, Count: entry.Count})
+		for _, entry := range counts {
+			if !matcher.MatchString(entry.Tag) {
+				continue
+			}
+			items = append(items, TagItem{Tag: entry.Tag, Count: entry.Count})
+		}
+	} else {
+		for _, entry := range counts {
+			items = append(items, TagItem{Tag: entry.Tag, Count: entry.Count})
+		}
 	}
 	total := len(items)
 	items = pageItems(items, offset, limit)
-	httpx.WriteJSONFor(w, r, http.StatusOK, TagListResponse{
+	httpx.WriteJSON(w, http.StatusOK, TagListResponse{
 		Items: items, Total: total, Limit: limit, Offset: offset,
 	})
 }
 
-// tagMatchesPattern reports whether a tag matches a lowercase wildcard pattern,
-// where "*" matches any run of characters.
-func tagMatchesPattern(tag, pattern string) bool {
-	lower := strings.ToLower(tag)
-	if !strings.Contains(pattern, "*") {
-		return strings.Contains(lower, pattern)
+// mentalModelTagCounts builds the tag histogram of a bank's mental models, most
+// used first, with the same ordering the memory histogram uses.
+func (h *Handlers) mentalModelTagCounts(ctx context.Context, bankID string) ([]storage.TagCount, error) {
+	models, err := h.Store.ListMentalModels(ctx, bankID, "")
+	if err != nil {
+		return nil, err
 	}
-	parts := strings.Split(pattern, "*")
-	position := 0
-	for i, part := range parts {
-		if part == "" {
-			continue
+	counts := map[string]int{}
+	for _, model := range models {
+		for _, tag := range model.Tags {
+			counts[tag]++
 		}
-		index := strings.Index(lower[position:], part)
-		if index < 0 {
-			return false
-		}
-		if i == 0 && !strings.HasPrefix(pattern, "*") && index != 0 {
-			return false
-		}
-		position += index + len(part)
 	}
-	if !strings.HasSuffix(pattern, "*") && !strings.HasSuffix(lower, parts[len(parts)-1]) {
-		return false
+	out := make([]storage.TagCount, 0, len(counts))
+	for tag, count := range counts {
+		out = append(out, storage.TagCount{Tag: tag, Count: count})
 	}
-	return true
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Tag < out[j].Tag
+	})
+	return out, nil
+}
+
+// compileTagPattern turns a caller's tag pattern into the matcher SQL ILIKE
+// applies: '*' is the documented wildcard and an alias for '%', a '%' matches
+// any run of characters, an '_' any single character, and everything else is
+// literal. The match is anchored and case-insensitive.
+func compileTagPattern(pattern string) (*regexp.Regexp, error) {
+	var builder strings.Builder
+	builder.WriteString("(?is)^")
+	for _, r := range pattern {
+		switch r {
+		case '*', '%':
+			builder.WriteString(".*")
+		case '_':
+			builder.WriteString(".")
+		default:
+			builder.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	builder.WriteString("$")
+	return regexp.Compile(builder.String())
 }
 
 // pageItems applies offset and limit to a matched list.
@@ -211,18 +259,23 @@ func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
 	graph = h.scopeGraphData(r, bankID, graph)
 	nodes := make([]GraphNode, 0, len(graph.Nodes))
 	for _, node := range graph.Nodes {
+		entities := "None"
+		if len(node.Entities) > 0 {
+			entities = strings.Join(node.Entities, ", ")
+		}
 		nodes = append(nodes, GraphNode{Data: GraphNodeData{
-			ID: node.ID, Label: node.Text, Text: node.Text,
-			Date: formatTimePtr(node.Date), Context: node.Context,
-			Entities: strings.Join(node.Entities, ", "),
+			ID: node.ID, Label: graphLabel(node.Text), Text: node.Text,
+			Date: graphNodeDate(node.Date), Context: node.Context,
+			Entities: entities, Color: graphNodeColor(len(node.Entities)),
 		}})
 	}
 	edges := make([]GraphEdge, 0, len(graph.Edges))
 	for _, edge := range graph.Edges {
+		color, lineStyle := graphEdgeStyle(edge.Type)
 		edges = append(edges, GraphEdge{Data: GraphEdgeData{
-			ID: edge.ID, Source: edge.From, Target: edge.To,
-			LinkType: edge.Type, Weight: edge.Weight,
-			EntityName: edge.Entity, LineStyle: edge.LineType,
+			ID: edge.From + "-" + edge.To + "-" + edge.Type, Source: edge.From, Target: edge.To,
+			LinkType: edge.Type, Weight: edge.Weight, EntityName: edge.Entity,
+			Color: color, LineStyle: lineStyle,
 		}})
 	}
 	rows := make([]GraphTableRow, 0, len(graph.TableRows))
@@ -231,22 +284,99 @@ func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
 		if tags == nil {
 			tags = []string{}
 		}
+		entities := "None"
+		if row.Entities != "" {
+			entities = row.Entities
+		}
 		rows = append(rows, GraphTableRow{
-			ID: row.ID, Text: row.Text, Context: row.Context,
-			OccurredStart: formatTimePtr(row.OccurredStart),
-			OccurredEnd:   formatTimePtr(row.OccurredEnd),
-			MentionedAt:   formatTimePtr(row.MentionedAt),
-			Date:          formatTimePtr(row.Date),
-			CreatedAt:     formatTimePtr(row.CreatedAt),
-			Entities:      row.Entities, DocumentID: row.DocumentID,
-			ChunkID: row.ChunkID, FactType: row.FactType, Tags: tags,
-			ProofCount: row.ProofCount,
+			ID: row.ID, Text: row.Text, Context: graphRowContext(row.Context),
+			OccurredStart: httpx.FormatTimestampPtr(row.OccurredStart),
+			OccurredEnd:   httpx.FormatTimestampPtr(row.OccurredEnd),
+			MentionedAt:   httpx.FormatTimestampPtr(row.MentionedAt),
+			Date:          graphRowDate(row.Date),
+			Entities:      entities,
+			DocumentID:    optionalString(row.DocumentID),
+			ChunkID:       optionalString(row.ChunkID),
+			FactType:      optionalString(row.FactType),
+			Tags:          tags,
+			CreatedAt:     httpx.FormatTimestampPtr(row.CreatedAt),
+			ProofCount:    graphProofCount(row.ProofCount),
 		})
 	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, GraphResponse{
+	httpx.WriteJSON(w, http.StatusOK, GraphResponse{
 		Nodes: nodes, Edges: edges, TableRows: rows,
 		TotalUnits: graph.Total, Limit: graph.Limit,
 	})
+}
+
+// graphLabel is a node's display label: the text, truncated to 30 characters
+// with an ellipsis when it is longer.
+func graphLabel(text string) string {
+	runes := []rune(text)
+	if len(runes) > 30 {
+		return string(runes[:30]) + "..."
+	}
+	return text
+}
+
+// graphNodeDate renders a node's event date, empty when unknown.
+func graphNodeDate(date *time.Time) string {
+	if date == nil {
+		return ""
+	}
+	return httpx.FormatTimestamp(*date)
+}
+
+// graphNodeColor colours a node by how many entities it mentions.
+func graphNodeColor(entityCount int) string {
+	switch entityCount {
+	case 0:
+		return "#e0e0e0"
+	case 1:
+		return "#90caf9"
+	default:
+		return "#42a5f5"
+	}
+}
+
+// graphEdgeStyle returns the colour and line style a link type is drawn with.
+func graphEdgeStyle(linkType string) (string, string) {
+	switch linkType {
+	case "temporal":
+		return "#00bcd4", "dashed"
+	case "semantic":
+		return "#ff69b4", "solid"
+	case "entity":
+		return "#ffd700", "solid"
+	default:
+		return "#999999", "solid"
+	}
+}
+
+// graphRowContext renders a table row's context, "N/A" when absent.
+func graphRowContext(context string) string {
+	if context == "" {
+		return "N/A"
+	}
+	return context
+}
+
+// graphRowDate renders a table row's event date in the deprecated
+// "%Y-%m-%d %H:%M" form, "N/A" when unknown.
+func graphRowDate(date *time.Time) string {
+	if date == nil {
+		return "N/A"
+	}
+	return date.UTC().Format("2006-01-02 15:04")
+}
+
+// graphProofCount renders a row's evidence count, null when it is not a real
+// positive count.
+func graphProofCount(count int) *int {
+	if count <= 0 {
+		return nil
+	}
+	return &count
 }
 
 // scopeGraphData withholds the memory-graph rows the caller's resolved read
@@ -301,14 +431,21 @@ func (h *Handlers) scopeGraphData(r *http.Request, bankID string, graph storage.
 		}
 	}
 	graph.Nodes, graph.TableRows, graph.Edges = nodes, rows, edges
-	// With rows withheld, the total reports what is actually visible so the
-	// page and the total agree.
-	graph.Total = len(rows)
+	// The total stays the store's scoped count of matching units, even for rows
+	// the document-visibility gate then withholds: the reference reports the
+	// count of units matching the filter and tag scope, not the page size.
 	return graph
 }
 
 // ListEntities returns one page of the bank's entities.
 func (h *Handlers) ListEntities(w http.ResponseWriter, r *http.Request) {
+	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
+	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
+		return
+	}
+	if tagsMatch == "" {
+		tagsMatch = storage.TagsMatchAny
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -325,10 +462,6 @@ func (h *Handlers) ListEntities(w http.ResponseWriter, r *http.Request) {
 	tagGroups, ok := tagGroupsQuery(w, r, tags)
 	if !ok {
 		return
-	}
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
 	}
 	// The caller's resolved read scope narrows the listing: a scoped reader
 	// sees only the entities of the memories it may read.
@@ -348,31 +481,35 @@ func (h *Handlers) ListEntities(w http.ResponseWriter, r *http.Request) {
 	for _, entity := range page.Entities {
 		items = append(items, toEntityListItem(entity))
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, EntityListResponse{
+	httpx.WriteJSON(w, http.StatusOK, EntityListResponse{
 		Items: items, Total: page.Total, Limit: limit, Offset: offset,
 	})
 }
 
-// GetEntity returns one entity's detail. A tag filter that no matching memory
+// GetEntity returns one entity's detail. The identifier is parsed as a UUID
+// before the bank is consulted, and a tag filter that no matching memory
 // satisfies leaves the entity unknown to this read, so it answers not-found.
+// The bank is not pre-checked: an unknown bank answers the entity's own
+// not-found, the same detail an absent entity gets.
 func (h *Handlers) GetEntity(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
+	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
 		return
+	}
+	if tagsMatch == "" {
+		tagsMatch = storage.TagsMatchAny
 	}
 	entityID := strings.TrimSpace(r.PathValue("entity_id"))
-	if entityID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "entity not found"))
+	if !validUUIDShape(entityID) {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Invalid entity_id: '"+entityID+"' is not a valid UUID"))
 		return
 	}
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	tags := queryValues(r, "tags")
 	tagGroups, ok := tagGroupsQuery(w, r, tags)
 	if !ok {
 		return
-	}
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
 	}
 	// A by-id read still honours the caller's resolved scope, so an entity only
 	// another scope names answers not-found rather than leaking its existence.
@@ -390,7 +527,7 @@ func (h *Handlers) GetEntity(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Entity "+entityID+" not found"))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, h.entityDetail(r.Context(), page.Entities[0], bankID))
+	httpx.WriteJSON(w, http.StatusOK, h.entityDetail(r.Context(), page.Entities[0], bankID))
 }
 
 // RegenerateEntity is the retired observation-regeneration route: the reference
@@ -403,6 +540,13 @@ func (h *Handlers) RegenerateEntity(w http.ResponseWriter, r *http.Request) {
 
 // EntityGraph returns the bank's entity graph.
 func (h *Handlers) EntityGraph(w http.ResponseWriter, r *http.Request) {
+	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
+	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
+		return
+	}
+	if tagsMatch == "" {
+		tagsMatch = storage.TagsMatchAny
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -419,10 +563,6 @@ func (h *Handlers) EntityGraph(w http.ResponseWriter, r *http.Request) {
 	tagGroups, ok := tagGroupsQuery(w, r, tags)
 	if !ok {
 		return
-	}
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
 	}
 	tagGroups, tags, tagsMatch = scopedTagFilter(r, tagGroups, tags, tagsMatch)
 	graph, err := h.Store.EntityGraph(r.Context(), storage.EntityGraphQuery{
@@ -451,40 +591,39 @@ func (h *Handlers) EntityGraph(w http.ResponseWriter, r *http.Request) {
 		// relation drawn as a solid gold line, with an id derived from its
 		// endpoints.
 		edges = append(edges, EntityGraphEdge{Data: EntityGraphEdgeData{
-			ID:        edge.Source + "-" + edge.Target,
-			Source:    edge.Source,
-			Target:    edge.Target,
-			Weight:    edge.Weight,
-			Color:     "#ffd700",
-			LinkType:  "cooccurrence",
-			LineStyle: "solid",
+			ID:             edge.Source + "-" + edge.Target,
+			Source:         edge.Source,
+			Target:         edge.Target,
+			Weight:         edge.Weight,
+			Color:          "#ffd700",
+			LinkType:       "cooccurrence",
+			LineStyle:      "solid",
+			LastCooccurred: httpx.FormatTimestampPtr(edge.LastCooccurred),
 		}})
 	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, EntityGraphResponse{
+	httpx.WriteJSON(w, http.StatusOK, EntityGraphResponse{
 		Nodes: nodes, Edges: edges, TotalEntities: graph.TotalEntities,
 		TotalEdges: graph.TotalEdges, Limit: graph.Limit,
 	})
 }
 
-// entityDetail assembles an entity's detail, including the observations that
-// mention it.
-func (h *Handlers) entityDetail(ctx context.Context, entity storage.Entity, bankID string) EntityDetailResponse {
-	observations := make([]EntityObservation, 0)
-	mentions, err := h.Store.EntityMentions(ctx, bankID, entity.ID, 100)
-	if err != nil {
-		return EntityDetailResponse{ID: entity.ID, CanonicalName: entity.CanonicalName, MentionCount: entity.MentionCount}
-	}
-	for _, mention := range mentions {
-		observations = append(observations, EntityObservation{Text: mention.Text, MentionedAt: formatTimePtr(mention.MentionedAt)})
+// entityDetail assembles an entity's detail. Observations are always empty:
+// they were retired in favour of mental models, and the reference's own store
+// hardcodes the empty list on both backends. Metadata is always present, an
+// empty object when the entity carries none.
+func (h *Handlers) entityDetail(_ context.Context, entity storage.Entity, _ string) EntityDetailResponse {
+	metadata := entity.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
 	}
 	return EntityDetailResponse{
 		ID:            entity.ID,
 		CanonicalName: entity.CanonicalName,
 		MentionCount:  entity.MentionCount,
-		FirstSeen:     formatTimePtr(entity.FirstSeen),
-		LastSeen:      formatTimePtr(entity.LastSeen),
-		Metadata:      entity.Metadata,
-		Observations:  observations,
+		FirstSeen:     httpx.FormatTimestampPtr(entity.FirstSeen),
+		LastSeen:      httpx.FormatTimestampPtr(entity.LastSeen),
+		Metadata:      metadata,
+		Observations:  []EntityObservation{},
 	}
 }
 
@@ -502,15 +641,18 @@ func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, 
 	return bankID, true
 }
 
-// documentMember resolves the bank and the document identifier.
+// documentMember resolves the bank and the document identifier. It does not
+// check that the bank exists: a document member route answers with the
+// document's own not-found whether the document is absent or its bank is, so a
+// caller cannot tell the two apart.
 func (h *Handlers) documentMember(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return "", "", false
-	}
-	docID := strings.TrimSpace(r.PathValue("document_id"))
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	// The reference captures the document id as the raw `{document_id:path}`
+	// remainder and hands it to the store verbatim, so whitespace around an id
+	// is part of the id rather than something to strip.
+	docID := r.PathValue("document_id")
 	if docID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "document not found"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document not found"))
 		return "", "", false
 	}
 	return bankID, docID, true
@@ -528,20 +670,47 @@ func queryValues(r *http.Request, name string) []string {
 	return out
 }
 
-// parseDateParam reads an optional RFC 3339 query parameter. It writes a
-// bad-request error and reports false for a malformed value.
+// parseDateParam reads an optional ISO-8601 query parameter. It writes a
+// bad-request error and reports false for a malformed value. An offset is
+// optional — a value without one is read as UTC, the same reading the reference
+// gives it — and a trailing Z is accepted.
 func parseDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
 	raw := strings.TrimSpace(httpx.Query(r, key))
 	if raw == "" {
 		return nil, true
 	}
-	parsed, err := time.Parse(time.RFC3339, raw)
+	parsed, err := parseISODateTime(raw)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, key+" must be an RFC 3339 timestamp"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			"Invalid "+key+": '"+raw+"' is not an ISO-8601 datetime."))
 		return nil, false
 	}
-	utc := parsed.UTC()
-	return &utc, true
+	return &parsed, true
+}
+
+// isoDateLayouts are the offsets-free forms a caller may send; a value without
+// an offset is read as UTC.
+var isoDateLayouts = []string{
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// parseISODateTime parses an ISO-8601 timestamp, accepting an explicit offset,
+// a trailing Z, or no offset at all (read as UTC).
+func parseISODateTime(raw string) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.UTC(), nil
+	}
+	for _, layout := range isoDateLayouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, errors.New("not an ISO-8601 datetime")
 }
 
 // asHTTPError maps a storage error to the shared envelope.
@@ -552,12 +721,17 @@ func asHTTPError(err error) *httpx.HTTPError {
 	case errors.Is(err, storage.ErrBankNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank)
 	case errors.Is(err, storage.ErrDocumentNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "document not found")
+		return httpx.NewHTTPError(httpx.KindNotFound, "Document not found")
 	case errors.Is(err, storage.ErrChunkNotFound):
-		return httpx.NewHTTPError(httpx.KindNotFound, "chunk not found")
+		return httpx.NewHTTPError(httpx.KindNotFound, "Chunk not found")
 	case errors.Is(err, storage.ErrEntityNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, "entity not found")
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
 	default:
-		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }

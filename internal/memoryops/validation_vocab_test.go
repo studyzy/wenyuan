@@ -78,11 +78,11 @@ func TestRecallOperationLimitOutOfRangeReportsBound(t *testing.T) {
 	if item.Type != "less_than_equal" {
 		t.Fatalf("type = %q, want less_than_equal", item.Type)
 	}
-	if item.Msg != "Input should be less than or equal to 1000" {
+	if item.Msg != "Input should be less than or equal to 100" {
 		t.Fatalf("msg = %q", item.Msg)
 	}
-	if le, ok := item.Ctx["le"].(float64); !ok || le != 1000 {
-		t.Fatalf("ctx = %#v, want ge bound 1000", item.Ctx)
+	if le, ok := item.Ctx["le"].(float64); !ok || le != 100 {
+		t.Fatalf("ctx = %#v, want le bound 100", item.Ctx)
 	}
 }
 

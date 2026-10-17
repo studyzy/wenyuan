@@ -17,5 +17,6 @@ import (
 func (a *App) mountReadSurface(handle func(method, pattern string, handler http.HandlerFunc), writes *memoryops.Handlers) {
 	handlers := readsurface.NewHandlers(a.Store)
 	handlers.Reprocess = writes
+	handlers.AutoConsolidationEnabled = a.Config.EnableAutoConsolidation
 	handlers.BindRoutes(handle)
 }

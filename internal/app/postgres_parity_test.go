@@ -196,7 +196,7 @@ func TestPostgresKnowledgeFuzzyTagGroups(t *testing.T) {
 	// The vocabulary is the bank's memory tags. Before any memory carries the
 	// page's tag there is nothing for the token to resolve to.
 	page := exchange(a, http.MethodPost, "/v1/default/banks/"+bank+"/knowledge-base/pages",
-		`{"name":"Alpha","tags":["name:thee"]}`)
+		`{"name":"Alpha","source_query":"what does the page cover","tags":["name:thee"]}`)
 	if page.Code != http.StatusCreated {
 		t.Fatalf("create page = %d, body %s", page.Code, page.Body.String())
 	}

@@ -213,12 +213,6 @@ const (
 	// for the per-bank reflection observation entity-attachment flag.
 	EnvReflectSearchObservationsIncludeEntities = "HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES"
 
-	// EnvNullDropFields is the internal tuning switch for dropping explicit
-	// null object fields from responses. It is intentionally not part of the
-	// approved public environment-variable allowlist; see the implementation
-	// report assumption A-null-drop.
-	EnvNullDropFields = "HINDSIGHT_API_DROP_NULL_FIELDS"
-
 	// EnvForwardedAllowIPs is the reference HTTP server's own variable for the
 	// peers whose X-Forwarded-* headers are trusted. It is deliberately not a
 	// HINDSIGHT_API_ key: it is resolved by the server, not by the application
@@ -465,7 +459,6 @@ type Config struct {
 	// WebhookAllowedHosts narrows webhook targets to an explicit host set.
 	WebhookAllowedHosts []string
 	GzipMinSize         int
-	NullDropFields      bool
 	// Admission bounds the concurrency of the expensive operations.
 	AdmissionMaxWait time.Duration
 	// AdmissionRecallMaxWait, AdmissionReflectMaxWait and AdmissionRetainMaxWait
@@ -739,7 +732,11 @@ type ReadReplicaConfig struct {
 // which is what distinguishes "the deployment set nothing" from "the deployment
 // set the empty string".
 type ProcessDefaults struct {
-	MCPEnabledTools                             *string
+	// MCPEnabledTools is the reference's list[str] | None: the parsed allowlist
+	// when the deployment set one, and null otherwise. An explicit empty list is
+	// distinct from null, which is why this is a slice rather than a pointer to
+	// the raw string.
+	MCPEnabledTools                             []string
 	EnableTextSearch                            bool
 	EnableTemporalRetrieval                     bool
 	EnableGraphRetrieval                        bool
@@ -759,28 +756,36 @@ type ProcessDefaults struct {
 	ConsolidationSourceFactTokensPerObservation int
 	ObservationsMission                         *string
 	MaxObservationsPerScope                     int
-	ObservationScopeLimits                      *string
-	ConsolidationStrategies                     *string
-	MentalModelMinRefreshSeconds                int
-	KnowledgePageDefaultTrigger                 *string
-	ReflectMission                              *string
-	ReflectSourceFactsMaxTokens                 int
-	ReflectDefaultOptions                       map[string]any
-	RecallIncludeChunks                         bool
-	RecallMaxTokens                             int
-	RecallChunksMaxTokens                       int
-	RecallBudgetFunction                        string
-	RecallBudgetFixedLow                        int
-	RecallBudgetFixedMid                        int
-	RecallBudgetFixedHigh                       int
-	RecallBudgetAdaptiveLow                     float64
-	RecallBudgetAdaptiveMid                     float64
-	RecallBudgetAdaptiveHigh                    float64
-	RecallBudgetMin                             int
-	RecallBudgetMax                             int
-	DispositionSkepticism                       *int
-	DispositionLiteralism                       *int
-	DispositionEmpathy                          *int
+	// ObservationScopeLimits, ConsolidationStrategies and
+	// KnowledgePageDefaultTrigger are JSON-valued: the reference parses them out
+	// of the environment, so the process layer holds the parsed container (or
+	// null) rather than the raw string the deployment set.
+	ObservationScopeLimits       any
+	ConsolidationStrategies      any
+	MentalModelMinRefreshSeconds int
+	KnowledgePageDefaultTrigger  any
+	// LLMGeminiSafetySettings is the reference's parsed JSON safety-settings
+	// override (list | None). It is reported through the bank configuration
+	// surface, which is where the reference exposes it.
+	LLMGeminiSafetySettings     any
+	ReflectMission              *string
+	ReflectSourceFactsMaxTokens int
+	ReflectDefaultOptions       map[string]any
+	RecallIncludeChunks         bool
+	RecallMaxTokens             int
+	RecallChunksMaxTokens       int
+	RecallBudgetFunction        string
+	RecallBudgetFixedLow        int
+	RecallBudgetFixedMid        int
+	RecallBudgetFixedHigh       int
+	RecallBudgetAdaptiveLow     float64
+	RecallBudgetAdaptiveMid     float64
+	RecallBudgetAdaptiveHigh    float64
+	RecallBudgetMin             int
+	RecallBudgetMax             int
+	DispositionSkepticism       *int
+	DispositionLiteralism       *int
+	DispositionEmpathy          *int
 }
 
 // RecallTuning is the retrieval pipeline's process-level tuning.
@@ -1149,7 +1154,6 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.WebhookAllowInsecure = boolFromEnv(lookup, EnvWebhookAllowInsecure, false)
 	cfg.WebhookAllowPrivateHosts = boolFromEnv(lookup, EnvWebhookAllowPrivateHosts, false)
 	cfg.WebhookAllowedHosts = hostListFromEnv(lookup, EnvWebhookAllowedHosts)
-	cfg.NullDropFields = boolFromEnv(lookup, EnvNullDropFields, true)
 	cfg.RetainBatchEnabled = boolFromEnv(lookup, EnvRetainBatchEnabled, false)
 	cfg.FileStorage = resolveFileStorage(lookup)
 	if v, ok := lookup(EnvRecallStrategyBoosts); ok {

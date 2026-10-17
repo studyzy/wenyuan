@@ -76,6 +76,12 @@ func TestTransferPostgresEndToEnd(t *testing.T) {
 	h := NewHandlers(store, true, true)
 	data := archiveBytes(t, bankID)
 
+	// A restore records the operation against the bank in the path, which must
+	// already exist: nothing is created as a side effect of the submit.
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bankID, Name: bankID}); err != nil {
+		t.Fatalf("create bank: %v", err)
+	}
+
 	// The archive is accepted, validated, stashed, and recorded.
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

@@ -117,7 +117,7 @@ func TestRunnerPassesDirectivesToTheModel(t *testing.T) {
 		BankID:     "b1",
 		Question:   "q",
 		Retrieval:  &storageRetrieval{},
-		Directives: []string{"prefer the newest fact"},
+		Directives: []storage.ReflectDirective{{Name: "Preference", Content: "prefer the newest fact"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestRunnerPassesDirectivesToTheModel(t *testing.T) {
 	found := false
 	for _, request := range model.requests {
 		for _, message := range request.Messages {
-			if message.Role == "system" && strings.Contains(message.Content, "prefer the newest fact") {
+			if message.Role == "system" && strings.Contains(message.Content, "**Preference**: prefer the newest fact") {
 				found = true
 			}
 		}

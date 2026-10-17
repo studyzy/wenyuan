@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -48,32 +50,53 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		return nil, err
 	}
 
+	// The delta branch was taken (baseline content, unchanged query). It either
+	// applies or fails, but either way this run read a delta-scoped window, which
+	// is what the reference gates the delta-not-applied refusal on.
+	useDelta := effectiveMode == "delta"
 	candidate := outcome.Answer
 	preview := candidate
+	deltaApplied := false
 	var deltaOperations *mentalmodels.DryRunDeltaOps
-	if effectiveMode == "delta" {
+	if useDelta {
 		if merged, err := r.mergeDelta(ctx, model.Content, candidate, retraction); err == nil && strings.TrimSpace(merged) != "" {
 			preview = merged
+			deltaApplied = true
 			deltaOperations = &mentalmodels.DryRunDeltaOps{Applied: []any{}, Skipped: []any{}}
 		} else {
-			// The delta merge could not run; the next refresh would fall back to
-			// a full regeneration, so the preview reports that.
+			// The delta merge could not run, so the effective mode is full; the
+			// candidate, though, was synthesised over a delta-scoped recall only,
+			// and the outcome branch below refuses to write it.
 			effectiveMode = "full"
 			fallback = "delta_ops_failed"
 			preview = candidate
 		}
 	}
 
+	// The delta window's lower bound: the newest memory the previous refresh saw,
+	// or the time it last refreshed. It is what the reference gates the
+	// delta-not-applied refusal on.
+	createdAfter := deltaWindowLowerBound(model)
+
 	refreshOutcome := "content_written"
 	switch {
-	case strings.TrimSpace(candidate) == "":
+	case strings.TrimSpace(preview) == "":
 		refreshOutcome = "refresh_failed_empty_candidate"
-	case strings.TrimSpace(preview) == strings.TrimSpace(model.Content):
+	case useDelta && !deltaApplied && createdAfter != nil:
+		// Writing a delta-window candidate as the whole document would drop
+		// everything grounded in older memories, so a real refresh refuses it.
+		refreshOutcome = "refresh_failed_delta_not_applied"
+	case strings.TrimSpace(preview) == model.Content:
 		refreshOutcome = "content_unchanged"
 	}
 	// Both writing outcomes persist the candidate: content_unchanged just
-	// happens to store text identical to the current document.
-	wouldPersist := refreshOutcome == "content_written" || refreshOutcome == "content_unchanged"
+	// happens to store text identical to the current document. A refusal or a
+	// no-new-facts run persists nothing, so its preview is the stored content.
+	writesContent := refreshOutcome == "content_written" || refreshOutcome == "content_unchanged"
+	previewContent := preview
+	if !writesContent {
+		previewContent = model.Content
+	}
 
 	createdBefore := seenAt
 	if createdBefore.IsZero() {
@@ -84,8 +107,8 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		watermark := seenAt.UTC().Format(time.RFC3339Nano)
 		window.Watermark = &watermark
 	}
-	if effectiveMode == "delta" && model.LastMemorySeenAt != nil {
-		after := model.LastMemorySeenAt.UTC().Format(time.RFC3339Nano)
+	if useDelta && createdAfter != nil {
+		after := createdAfter.UTC().Format(time.RFC3339Nano)
 		window.CreatedAfter = &after
 	}
 
@@ -97,8 +120,13 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		ThoughtsTokens: outcome.Usage.ThoughtsTokens,
 	}
 
+	// A null fallback reason (no fallback happened) is emitted as null, not "".
+	var fallbackPtr *string
+	if fallback != "" {
+		fallbackPtr = &fallback
+	}
 	scope := mentalmodels.DryRunScope{
-		Tags:                  model.Tags,
+		Tags:                  nonNilTags(model.Tags),
 		TagsMatch:             resolveTagsMatch(model),
 		TagGroups:             triggerSlice(model.Trigger, "tag_groups"),
 		FactTypes:             triggerStrings(model.Trigger, "fact_types"),
@@ -109,12 +137,18 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 	durationMS := int(time.Since(started).Milliseconds())
 	recordedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	retractionReport := retractionReportFor(retraction)
+	// The delta window a real refresh would have scoped its retrieval to; only a
+	// delta run bounds its tool calls with it.
+	var deltaWindow *time.Time
+	if useDelta {
+		deltaWindow = createdAfter
+	}
 	trace := mentalmodels.DryRunTrace{
 		RecordedAt:         &recordedAt,
 		EffectiveMode:      effectiveMode,
-		ModeFallbackReason: fallback,
+		ModeFallbackReason: fallbackPtr,
 		Outcome:            refreshOutcome,
-		ToolCalls:          toolCallTraces(outcome.Trace),
+		ToolCalls:          toolCallTraces(outcome.Trace, deltaWindow),
 		LLMCalls:           llmCallTraces(outcome.Trace),
 		DeltaOperations:    deltaOperations,
 		Retraction:         retractionReport,
@@ -123,24 +157,22 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		Warnings:           []string{},
 	}
 
-	candidateContent := candidate
-	previewContent := preview
 	return &mentalmodels.DryRunResult{
 		MentalModelID:      model.ID,
 		Name:               model.Name,
 		RequestedMode:      requestedMode,
 		EffectiveMode:      effectiveMode,
-		ModeFallbackReason: fallback,
+		ModeFallbackReason: fallbackPtr,
 		Outcome:            refreshOutcome,
-		WouldPersist:       wouldPersist,
+		WouldPersist:       writesContent,
 		Scope:              scope,
 		Window:             window,
 		Facts:              factCounts(outcome),
-		BasedOn:            map[string][]any{"memories": renderFacts(outcome)},
+		BasedOn:            renderBasedOn(outcome),
 		CurrentContent:     model.Content,
-		CandidateContent:   candidateContent,
+		CandidateContent:   candidate,
 		PreviewContent:     previewContent,
-		Diff:               unifiedDiff(model.Content, preview),
+		Diff:               unifiedDiff(model.Content, previewContent),
 		DeltaOperations:    deltaOperations,
 		Retraction:         retractionReport,
 		Trace:              trace,
@@ -148,6 +180,15 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		DurationMS:         durationMS,
 		Warnings:           []string{},
 	}, nil
+}
+
+// nonNilTags reports a model's tags as an empty list rather than null when it
+// carries none, matching how the reference reads the tags column back.
+func nonNilTags(tags []string) []string {
+	if tags == nil {
+		return []string{}
+	}
+	return tags
 }
 
 // resolveTagsMatch reports the tag match mode a refresh resolves to: the
@@ -163,25 +204,156 @@ func resolveTagsMatch(model storage.MentalModel) string {
 	return "any"
 }
 
-// factCounts counts the cited facts by type. The repo's reflect runner reports
-// the facts the agent based its answer on, so retrieved and used are the same
-// set here.
+// factCounts reports the facts a refresh saw: retrieved, the facts the reflect
+// agent's tool calls actually returned, and used, the facts the agent declared
+// it based the answer on. The two are deliberately independent — retrieval
+// finding plenty while the agent uses none is the signature of an off-topic
+// source query, and nothing else on this surface reports it.
 func factCounts(outcome storage.ReflectOutcome) mentalmodels.DryRunFactCounts {
 	used := map[string]int{}
 	for _, fact := range outcome.Facts {
 		used[fact.Type]++
 	}
-	retrieved := map[string]int{}
-	for kind, count := range used {
-		retrieved[kind] = count
+	return mentalmodels.DryRunFactCounts{Retrieved: retrievedFactCounts(outcome.Trace), Used: used}
+}
+
+// retrievedFactCounts tallies what a refresh's tool calls returned, by fact
+// type, exactly as the reference does: every returned memory, observation or
+// mental model is counted once under its own type, deduplicated by id.
+func retrievedFactCounts(trace *storage.ReflectTrace) map[string]int {
+	counts := map[string]int{}
+	if trace == nil {
+		return counts
 	}
-	return mentalmodels.DryRunFactCounts{Retrieved: retrieved, Used: used}
+	seen := map[[2]string]bool{}
+	tally := func(factType string, id any) {
+		if id != nil {
+			key := [2]string{factType, fmt.Sprint(id)}
+			if seen[key] {
+				return
+			}
+			seen[key] = true
+		}
+		counts[factType]++
+	}
+	for _, call := range trace.ToolCalls {
+		switch call.Tool {
+		case "recall":
+			for _, memory := range toolResultObjects(call.Output, "memories") {
+				factType, _ := memory["fact_type"].(string)
+				if factType == "" {
+					factType = "world"
+				}
+				tally(factType, memory["id"])
+			}
+		case "search_observations":
+			for _, observation := range toolResultObjects(call.Output, "observations") {
+				tally("observation", observation["id"])
+			}
+		case "search_mental_models":
+			for _, model := range toolResultObjects(call.Output, "mental_models") {
+				tally("mental-models", model["id"])
+			}
+		}
+	}
+	return counts
+}
+
+// toolResultObjects reads a tool call's result list out of its output payload,
+// returning nothing when the payload carries no such list. The list may be a
+// []any (JSON-decoded) or a typed slice (built in-process), so it is walked by
+// reflection.
+func toolResultObjects(output map[string]any, key string) []map[string]any {
+	items := sliceElements(output[key])
+	objects := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if object, ok := item.(map[string]any); ok {
+			objects = append(objects, object)
+		}
+	}
+	return objects
+}
+
+// sliceElements returns a value's elements when it is a slice or array, and nil
+// otherwise. It accepts both []any and typed slices, so a payload built
+// in-process and one decoded from JSON are read the same way.
+func sliceElements(value any) []any {
+	if value == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil
+	}
+	out := make([]any, 0, rv.Len())
+	for i := range rv.Len() {
+		out = append(out, rv.Index(i).Interface())
+	}
+	return out
+}
+
+// renderBasedOn renders the evidence a dry run would ground the document on,
+// keyed by fact type — the shape a refresh persists under
+// reflect_response.based_on. Every fact-type key is present, even when empty,
+// matching the reference's fixed key set.
+func renderBasedOn(outcome storage.ReflectOutcome) map[string][]any {
+	based := map[string][]any{
+		"world":         {},
+		"experience":    {},
+		"opinion":       {},
+		"observation":   {},
+		"mental-models": {},
+		"directives":    {},
+	}
+	memoryFactTypes := map[string]bool{"world": true, "experience": true, "opinion": true, "observation": true}
+	for _, fact := range outcome.Facts {
+		if !memoryFactTypes[fact.Type] {
+			continue
+		}
+		based[fact.Type] = append(based[fact.Type], map[string]any{
+			"id": fact.ID, "text": fact.Text, "type": fact.Type, "context": fact.Context,
+		})
+	}
+	for _, model := range outcome.MentalModels {
+		based["mental-models"] = append(based["mental-models"], map[string]any{
+			"id": model.ID, "text": model.Text, "type": "mental-models", "context": model.Context,
+		})
+	}
+	for _, directive := range outcome.Directives {
+		based["directives"] = append(based["directives"], map[string]any{
+			"id": directive.ID, "text": directive.Content, "type": "directives", "context": nil,
+		})
+	}
+	return based
+}
+
+// deltaWindowLowerBound is the lower bound of a delta refresh's window: the
+// newest memory the previous refresh saw, or the time it last refreshed. It is
+// the same value the reference uses both for the window and for the
+// delta-not-applied refusal.
+func deltaWindowLowerBound(model storage.MentalModel) *time.Time {
+	if model.LastMemorySeenAt != nil {
+		return model.LastMemorySeenAt
+	}
+	if model.LastRefreshedAt.IsZero() {
+		return nil
+	}
+	refreshed := model.LastRefreshedAt
+	return &refreshed
 }
 
 // toolCallTraces renders the reflect tool calls a dry run reports.
-func toolCallTraces(trace *storage.ReflectTrace) []mentalmodels.DryRunToolCall {
+//
+// deltaWindow is the delta refresh's lower bound, stamped onto the calls whose
+// retrieval it narrowly scoped; the others take no time bound and leave it null.
+func toolCallTraces(trace *storage.ReflectTrace, deltaWindow *time.Time) []mentalmodels.DryRunToolCall {
 	if trace == nil {
 		return []mentalmodels.DryRunToolCall{}
+	}
+	var updatedAt *string
+	if deltaWindow != nil {
+		formatted := deltaWindow.UTC().Format(time.RFC3339Nano)
+		updatedAt = &formatted
 	}
 	out := make([]mentalmodels.DryRunToolCall, 0, len(trace.ToolCalls))
 	for _, call := range trace.ToolCalls {
@@ -194,10 +366,21 @@ func toolCallTraces(trace *storage.ReflectTrace) []mentalmodels.DryRunToolCall {
 		if entry.Input == nil {
 			entry.Input = map[string]any{}
 		}
-		if call.HasOutput {
+		if reason, ok := call.Input["reason"].(string); ok && reason != "" {
+			entry.Reason = &reason
+		}
+		if len(call.Output) > 0 {
 			entry.Output = call.Output
-			count := len(call.Output)
-			entry.ResultCount = &count
+		}
+		for _, key := range []string{"memories", "observations", "mental_models", "chunks", "results"} {
+			if items := sliceElements(call.Output[key]); items != nil {
+				count := len(items)
+				entry.ResultCount = &count
+				break
+			}
+		}
+		if call.Tool == "recall" || call.Tool == "search_observations" {
+			entry.UpdatedAt = updatedAt
 		}
 		out = append(out, entry)
 	}

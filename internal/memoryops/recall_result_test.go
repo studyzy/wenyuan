@@ -77,7 +77,7 @@ func TestBuildRecallResponseMapsMatchFields(t *testing.T) {
 		t.Fatalf("result count = %d", len(response.Results))
 	}
 	item := response.Results[0]
-	if item.ID != "m1" || item.Text != "text one two" || item.Type != "world" {
+	if item.ID != "m1" || item.Text != "text one two" || item.Type == nil || *item.Type != "world" {
 		t.Fatalf("mapped item = %+v", item)
 	}
 	if item.Scores.Final != 0.9 {
@@ -114,7 +114,7 @@ func TestSelectByTokenBudgetSkipsOversized(t *testing.T) {
 		{ID: "b", Text: "short one"},
 		{ID: "c", Text: "short two"},
 	}
-	selected := applyTokenCap(matches, intPtr(10))
+	selected := applyTokenCap(matches, 10)
 	ids := []string{}
 	for _, m := range selected {
 		ids = append(ids, m.ID)
@@ -130,7 +130,7 @@ func TestSelectByTokenBudgetReturnsTopOverBudget(t *testing.T) {
 		{ID: "a", Text: strings.Repeat("word ", 50)},
 		{ID: "b", Text: strings.Repeat("word ", 40)},
 	}
-	selected := applyTokenCap(matches, intPtr(5))
+	selected := applyTokenCap(matches, 5)
 	if len(selected) != 1 || selected[0].ID != "a" {
 		t.Fatalf("top fact must be returned over budget: %+v", selected)
 	}
@@ -139,7 +139,7 @@ func TestSelectByTokenBudgetReturnsTopOverBudget(t *testing.T) {
 // ts-0007: a non-positive cap returns no facts.
 func TestSelectByTokenBudgetNonPositive(t *testing.T) {
 	matches := []storage.RecallMatch{{ID: "a", Text: "text"}}
-	if got := applyTokenCap(matches, intPtr(0)); len(got) != 0 {
+	if got := applyTokenCap(matches, 0); len(got) != 0 {
 		t.Fatalf("non-positive cap must return no facts: %+v", got)
 	}
 }

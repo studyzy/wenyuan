@@ -192,7 +192,7 @@ func TestParityServedValidationItemShape(t *testing.T) {
 			name: "string for a list", method: http.MethodPost,
 			path: "/v1/default/banks/vocab/memories", body: `{"items":"x"}`,
 			wantType: "list_type", wantLoc: []any{"body", "items"},
-			wantMsg: "Input should be a valid array", wantInput: "x",
+			wantMsg: "Input should be a valid list", wantInput: "x",
 		},
 		{
 			name: "truncated body", method: http.MethodPost,
@@ -203,7 +203,7 @@ func TestParityServedValidationItemShape(t *testing.T) {
 			name: "value above its inclusive bound", method: http.MethodGet,
 			path:     "/v1/default/banks/vocab/operations?limit=5000",
 			wantType: "less_than_equal", wantLoc: []any{"query", "limit"},
-			wantMsg: "Input should be less than or equal to 1000", wantCtx: true, wantInput: float64(5000),
+			wantMsg: "Input should be less than or equal to 100", wantCtx: true, wantInput: "5000",
 		},
 		{
 			name: "value outside an enum", method: http.MethodPost,

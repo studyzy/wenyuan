@@ -51,7 +51,9 @@ func newCaptureServer(t *testing.T) (*http.ServeMux, *captureStore) {
 	if _, err := memory.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
-	started := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Today's UTC midnight keeps the rows inside the statistics routes' bounded
+	// window (the reference filters on `started_at >= now - period`).
+	started := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, request := range []storage.LLMRequest{
 		{ID: "t1", BankID: bank, Status: "success", Operation: "retain", StartedAt: started},
 		{ID: "t2", BankID: bank, Status: "success", Operation: "reflect", StartedAt: started.Add(time.Hour)},
@@ -233,5 +235,63 @@ func jsonUnmarshal(t *testing.T, body []byte, target any) {
 	t.Helper()
 	if err := json.Unmarshal(body, target); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The model-request filters keep whitespace-only values and treat an explicitly
+// empty document_id/memory_id as a real filter, matching the reference's truthy
+// (`if value:`) and presence (`is not None`) tests.
+func TestLLMRequestsFilterPresenceReachesStore(t *testing.T) {
+	mux, store := newCaptureServer(t)
+	base := "/v1/default/banks/" + bank
+
+	// A whitespace-only status is a filter on the literal " ", not a dropped one.
+	if rec := send(mux, http.MethodGet, base+"/llm-requests?status=%20", ""); rec.Code != http.StatusOK {
+		t.Fatalf("whitespace status: %d", rec.Code)
+	}
+	if store.llm.Status != " " {
+		t.Fatalf("whitespace status dropped: %q", store.llm.Status)
+	}
+
+	// An explicitly empty document_id is a filter that selects nothing.
+	rec := send(mux, http.MethodGet, base+"/llm-requests?document_id=", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty document_id: %d", rec.Code)
+	}
+	if !store.llm.DocumentIDSet || store.llm.DocumentID != "" {
+		t.Fatalf("empty document_id dropped: set=%v value=%q", store.llm.DocumentIDSet, store.llm.DocumentID)
+	}
+	var page LLMRequestListResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &page)
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("empty document_id selected %+v", page)
+	}
+
+	// Absent filters leave the presence flags off.
+	if rec := send(mux, http.MethodGet, base+"/llm-requests", ""); rec.Code != http.StatusOK {
+		t.Fatalf("no filters: %d", rec.Code)
+	}
+	if store.llm.DocumentIDSet || store.llm.MemoryIDSet {
+		t.Fatalf("absent filters marked present: %+v", store.llm)
+	}
+}
+
+// A whitespace-only audit action is a real filter, so it selects no row rather
+// than being trimmed away.
+func TestAuditLogsActionWhitespaceIsFilter(t *testing.T) {
+	mux, store := newCaptureServer(t)
+	base := "/v1/default/banks/" + bank
+
+	rec := send(mux, http.MethodGet, base+"/audit-logs?action=%20", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whitespace action: %d", rec.Code)
+	}
+	if store.audit.Action != " " {
+		t.Fatalf("whitespace action dropped: %q", store.audit.Action)
+	}
+	var page AuditLogListResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &page)
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("whitespace action selected %+v", page)
 	}
 }

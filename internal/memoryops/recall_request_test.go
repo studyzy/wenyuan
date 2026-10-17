@@ -31,7 +31,7 @@ func TestRecallRequestDecodesDocumentedFields(t *testing.T) {
 	if req.MaxTokens == nil || *req.MaxTokens != 256 {
 		t.Fatalf("max_tokens = %v", req.MaxTokens)
 	}
-	if req.Include == nil || req.Include.Chunks == nil || req.Include.Chunks.MaxTokens != 20 {
+	if req.Include == nil || req.Include.Chunks == nil || req.Include.Chunks.MaxTokens == nil || *req.Include.Chunks.MaxTokens != 20 {
 		t.Fatalf("include = %+v", req.Include)
 	}
 	if req.TemporalWindow == nil || req.TemporalWindow.End == "" {

@@ -56,13 +56,22 @@ func TestDispositionObjectIsValidated(t *testing.T) {
 	}
 }
 
-// in-0003: the individual trait wins over the disposition object for validation.
-func TestExplicitTraitWinsForValidation(t *testing.T) {
-	if failure := ValidateCreate(BankRequest{
+// The disposition object and the flat fields are validated independently, as
+// the reference validates the nested model and the flat fields: an
+// out-of-range object member is rejected even when a valid flat field for the
+// same trait would win the storage precedence, and its item names the member's
+// own nested path.
+func TestDispositionObjectIsValidatedIndependently(t *testing.T) {
+	failure := ValidateCreate(BankRequest{
 		Disposition:           &DispositionInput{Skepticism: intPtr(99), Literalism: intPtr(3), Empathy: intPtr(3)},
 		DispositionSkepticism: intPtr(3),
-	}); failure != nil {
-		t.Fatalf("a valid explicit trait must shadow an invalid object trait: %+v", failure)
+	})
+	if failure == nil || len(failure.Errors) != 1 {
+		t.Fatalf("an out-of-range object trait must be rejected: %+v", failure)
+	}
+	loc := failure.Errors[0].Loc
+	if len(loc) != 3 || loc[0] != "body" || loc[1] != "disposition" || loc[2] != "skepticism" {
+		t.Fatalf("item location = %v, want the nested member path", loc)
 	}
 }
 

@@ -20,8 +20,10 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/consolidation"
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/timefmt"
 	"github.com/studyzy/wenyuan/internal/webhooks"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
@@ -67,14 +69,6 @@ func (p archiveProcessor) guard() *webhooks.Guard {
 	return p.webhookGuard
 }
 
-// exposesWebhookResponseBody reports whether a delivery records the receiver's
-// response body. It is a deployment-wide switch read from the global target, so
-// it applies to a bank's own deliveries exactly as it does to the global
-// receiver's.
-func (p archiveProcessor) exposesWebhookResponseBody() bool {
-	return p.guard().Global().ExposesResponseBody()
-}
-
 // logger returns the worker log sink.
 func (p archiveProcessor) logger() *slog.Logger { return slog.Default() }
 
@@ -106,6 +100,8 @@ func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) er
 		return p.applyClone(ctx, op)
 	case storage.OperationTypeConsolidate:
 		return p.applyConsolidation(ctx, op)
+	case storage.OperationTypeGraphMaintenance:
+		return p.applyGraphMaintenance(ctx, op)
 	case storage.OperationTypeRefreshMentalModel:
 		return p.applyMentalModelRefresh(ctx, op)
 	case storage.OperationTypeWebhookDelivery:
@@ -175,8 +171,7 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		}
 		bodyBytes = rendered
 	}
-	expose := p.exposesWebhookResponseBody()
-	status, responseBody, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes, expose)
+	status, responseBody, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes)
 	if err != nil {
 		// A target the guard refuses at delivery time, or a receiver that
 		// answers with a redirect, is a permanent failure: the same
@@ -184,18 +179,18 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		// spends the attempt budget. The receiver's status is recorded when it
 		// answered, so an operator can see what was refused.
 		if errors.Is(err, storage.ErrWebhookURLNotAllowed) || errors.Is(err, errWebhookRedirectRefused) {
-			worker.ReportOutcome(ctx, webhookOutcome(status, responseBody, expose))
+			worker.ReportOutcome(ctx, webhookOutcome(status, responseBody))
 			return worker.Permanent(err)
 		}
 		// A transport failure is retried on the reference's backoff ladder, and
 		// reported with no status because the receiver never answered.
-		worker.ReportOutcome(ctx, webhookOutcome(0, "", expose))
+		worker.ReportOutcome(ctx, webhookOutcome(0, ""))
 		return worker.DeferAt(webhookRetryDelay(op.RetryCount), err)
 	}
 	// The receiver's status is recorded on the delivery either way: it is what
 	// an operator reads to tell "the endpoint is refusing us" from "we never
 	// reached it".
-	worker.ReportOutcome(ctx, webhookOutcome(status, responseBody, expose))
+	worker.ReportOutcome(ctx, webhookOutcome(status, responseBody))
 	if status == 429 || status >= 500 {
 		return worker.DeferAt(webhookRetryDelay(op.RetryCount),
 			fmt.Errorf("webhook receiver failed with status %d", status))
@@ -227,12 +222,15 @@ func (p archiveProcessor) deliveryTarget(ctx context.Context, op storage.Operati
 }
 
 // webhookOutcome renders the metadata recorded on one delivery attempt. The
-// status is always recorded; the receiver's response body is recorded only when
-// the deployment exposes it and the receiver actually answered, which is the
-// same gate the reference applies because a body can carry data.
-func webhookOutcome(status int, responseBody string, expose bool) map[string]any {
-	outcome := map[string]any{"last_status_code": nullableStatus(status)}
-	if expose && status != 0 {
+// reference records the attempt time on every attempt and the receiver's
+// response body (already bounded) whenever the receiver answered; whether the
+// body is visible to a caller is decided when the delivery is read, not here.
+func webhookOutcome(status int, responseBody string) map[string]any {
+	outcome := map[string]any{
+		"last_status_code": nullableStatus(status),
+		"last_attempt_at":  httpx.FormatTimestamp(time.Now()),
+	}
+	if status != 0 {
 		outcome["last_response_body"] = responseBody
 	}
 	return outcome
@@ -274,17 +272,17 @@ func nullableStatus(status int) any {
 const webhookResponseBodyLimit = 2048
 
 // deliverWebhook posts one signed delivery and returns the receiver's status and
-// response body. The body is captured only when the deployment exposes it;
-// otherwise it is drained and discarded. The signature is HMAC-SHA256 over
-// "<timestamp>.<body>", keyed by the webhook's secret, carried in the
-// reference's header shapes.
+// response body. The body is captured (bounded) on every attempt and whether it
+// is visible to a caller is decided when the delivery is read. The signature is
+// HMAC-SHA256 over "<timestamp>.<body>", keyed by the webhook's secret, carried
+// in the reference's header shapes.
 //
 // The target is re-validated immediately before the request and the resolved
 // address is vetted again at connect time, because a name can resolve
 // differently at delivery than it did at registration. A redirect is refused
 // rather than followed: it would move the request to a target the guard never
 // checked.
-func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte, expose bool) (int, string, error) {
+func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte) (int, string, error) {
 	guard := p.guard()
 	if err := guard.Validate(webhook.URL); err != nil {
 		return 0, "", err
@@ -324,7 +322,7 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 	response, err := client.Do(request)
 	if err != nil {
 		if response != nil {
-			captured := readWebhookBody(response, expose)
+			captured := readWebhookBody(response)
 			_ = response.Body.Close()
 			if errors.Is(err, errWebhookRedirectRefused) {
 				return response.StatusCode, captured, errWebhookRedirectRefused
@@ -333,18 +331,14 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		return 0, "", err
 	}
 	defer func() { _ = response.Body.Close() }()
-	return response.StatusCode, readWebhookBody(response, expose), nil
+	return response.StatusCode, readWebhookBody(response), nil
 }
 
-// readWebhookBody drains the response body so the connection can be reused,
-// capturing it (bounded as the reference bounds it) only when the deployment
-// exposes it. A body is never buffered when it is not going to be recorded, so
-// the common case allocates nothing.
-func readWebhookBody(response *http.Response, expose bool) string {
-	if !expose {
-		_, _ = io.Copy(io.Discard, response.Body)
-		return ""
-	}
+// readWebhookBody captures the receiver's response body, bounded as the
+// reference bounds it. The body is always captured because the reference
+// persists it on every attempt and decides visibility when the delivery is
+// read.
+func readWebhookBody(response *http.Response) string {
 	captured, _ := io.ReadAll(io.LimitReader(response.Body, webhookResponseBodyLimit))
 	return string(captured)
 }
@@ -476,6 +470,19 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 		p.enqueueConsolidationRefreshes(ctx, op.BankID)
 	}
 	return nil
+}
+
+// applyGraphMaintenance runs the graph-maintenance sweep a curation edit
+// submitted: it drains the bank's relink and entity-prune queues through the
+// same drain the periodic graph.maintenance job runs, so the curated unit's
+// neighbours are relinked and its orphaned entities are pruned. A store with no
+// maintenance queue has nothing to drain, so the operation is a no-op there.
+func (p archiveProcessor) applyGraphMaintenance(ctx context.Context, op storage.Operation) error {
+	maintainer, ok := p.store.(storage.GraphMaintainer)
+	if !ok {
+		return nil
+	}
+	return drainGraphMaintenance(ctx, maintainer)
 }
 
 // enqueueConsolidationRefreshes queues a refresh for every model that follows
@@ -653,8 +660,10 @@ func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.
 		BankID:      bankID,
 		OperationID: operationID,
 		Status:      status,
-		Timestamp:   at.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
-		Data:        data,
+		// The event body is a pydantic model in the reference, so its
+		// timestamp takes the pydantic JSON form.
+		Timestamp: timefmt.FormatZuluTimestamp(at),
+		Data:      data,
 	}); err != nil {
 		return nil, err
 	}

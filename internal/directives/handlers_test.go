@@ -3,6 +3,7 @@ package directives
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -257,6 +258,10 @@ func TestDirectiveErrorMapping(t *testing.T) {
 	}{
 		{storage.ErrBankNotFound, http.StatusNotFound},
 		{storage.ErrDirectiveNotFound, http.StatusNotFound},
+		{storage.ErrWritesUnavailable, http.StatusServiceUnavailable},
+		// An error the storage layer did not name is a server fault, not a
+		// malformed request: the reference's catch-all answers 500.
+		{errors.New("storage exploded"), http.StatusInternalServerError},
 		{nil, 0},
 	}
 	for _, tc := range cases {
@@ -270,5 +275,67 @@ func TestDirectiveErrorMapping(t *testing.T) {
 		if got == nil || got.Status != tc.expect {
 			t.Fatalf("error %v mapped to %+v, want status %d", tc.err, got, tc.expect)
 		}
+	}
+}
+
+// A store that cannot take writes answers service-unavailable rather than
+// blaming the caller's body.
+func TestDirectiveWriteUnavailableAnswers503(t *testing.T) {
+	mux, store := newServer(t)
+	store.SetWriteError(storage.ErrWritesUnavailable)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/b1/directives", `{"name":"tone","content":"be terse"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A partial update whose members are all null leaves the directive unchanged:
+// every member of the reference's update model is nullable, so an explicit null
+// means "no change" rather than a rejected value, and the resulting empty patch
+// must be applied without failing.
+func TestDirectiveUpdateAllNullMembers(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	created := send(mux, http.MethodPost, base, `{"name":"tone","content":"be terse","priority":5}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d (body %s)", created.Code, created.Body.String())
+	}
+	var directive Directive
+	if err := json.Unmarshal(created.Body.Bytes(), &directive); err != nil {
+		t.Fatal(err)
+	}
+	rec := send(mux, http.MethodPatch, base+"/"+directive.ID,
+		`{"name":null,"content":null,"priority":null,"is_active":null,"tags":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("all-null update: %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var updated Directive
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "tone" || updated.Content != "be terse" || updated.Priority != 5 || !updated.IsActive {
+		t.Fatalf("an all-null update changed the directive: %+v", updated)
+	}
+}
+
+// A body that is only whitespace is malformed, not absent: the parser rejects
+// it, so the caller reads the json_invalid item rather than a missing body.
+func TestDirectiveUpdateWhitespaceBody(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	created := send(mux, http.MethodPost, base, `{"name":"tone","content":"be terse"}`)
+	var directive Directive
+	if err := json.Unmarshal(created.Body.Bytes(), &directive); err != nil {
+		t.Fatal(err)
+	}
+	rec := send(mux, http.MethodPatch, base+"/"+directive.ID, "   ")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"json_invalid"`) {
+		t.Fatalf("detail = %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"type":"missing"`) {
+		t.Fatalf("a whitespace body was reported as absent: %s", rec.Body.String())
 	}
 }

@@ -460,11 +460,20 @@ func TestIntegrationCompleteWorkflow(t *testing.T) {
 		t.Logf("recall result carries no chunk id, which is allowed when the chunk arm is off")
 	}
 
-	reflected, err := client.Reflect(ctx, bankID, ReflectRequest{Query: "summarise what is known."})
+	// The generated API rather than the convenience Reflect, so the response
+	// status is visible: a slower model can push a reflection past the
+	// deployment's wall-clock budget, and that documented refusal (504) is a
+	// valid outcome of the step, not a failure of the workflow.
+	reflected, reflectResp, err := client.MemoryAPI.Reflect(ctx, bankID).
+		ReflectRequest(ReflectRequest{Query: "summarise what is known."}).
+		Execute()
 	if err != nil {
-		t.Fatalf("reflect: %v", err)
-	}
-	if strings.TrimSpace(reflected.Text) == "" {
+		if httpStatus(reflectResp) == http.StatusGatewayTimeout {
+			t.Logf("reflection exceeded the deployment's budget; the call and its refusal decoded")
+		} else {
+			t.Fatalf("reflect: %v (status %v)", err, httpStatus(reflectResp))
+		}
+	} else if strings.TrimSpace(reflected.Text) == "" {
 		t.Fatalf("reflect in the workflow answered with no text")
 	}
 

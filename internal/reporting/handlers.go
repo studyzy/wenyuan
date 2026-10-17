@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,9 +19,6 @@ import (
 
 // maxBodyBytes bounds a request body on this route family.
 const maxBodyBytes = 1 << 20
-
-// defaultPageLimit is the page size used when the caller does not ask for one.
-const defaultPageLimit = 50
 
 // Handlers serves the reporting, memory sub-route, knowledge-base, observation
 // and consolidation families.
@@ -56,6 +52,14 @@ type Handlers struct {
 	// the retention previews. Nil means the reference's default, which extracts
 	// causal relations.
 	RetainExtractCausalLinks *bool
+	// RetainOptionalFactDimensions is the deployment's switch for letting the
+	// four descriptive fact dimensions be omitted, read by the retention
+	// previews. A bank may not override it.
+	RetainOptionalFactDimensions bool
+	// LLMOutputLanguage is the deployment's forced output language. The previews
+	// report it as the llm_output_language block, the same setting the request
+	// path applies to every model call.
+	LLMOutputLanguage string
 	// ProcessDefaults is the process layer of a bank's configuration, used where
 	// this area resolves a value the same way the bank-config read does (the
 	// knowledge-page default trigger). Nil means the reference's shipped
@@ -117,23 +121,42 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 
 // Stats reports one bank's operational summary.
 func (h *Handlers) Stats(w http.ResponseWriter, r *http.Request) {
+	// Bank-wide read: a tag-scoped caller may not run it at all, and the
+	// reference refuses before it even checks the bank exists.
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's statistics") {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
 	}
-	stats, err := h.Store.BankStats(r.Context(), bankID)
+	var stats storage.BankStats
+	var err error
+	refresh, ok := strictBoolParam(w, r, "refresh", false)
+	if !ok {
+		return
+	}
+	if refresh {
+		if refresher, ok := h.Store.(storage.BankStatsRefresher); ok {
+			stats, err = refresher.BankStatsRefreshing(r.Context(), bankID, true)
+		} else {
+			stats, err = h.Store.BankStats(r.Context(), bankID)
+		}
+	} else {
+		stats, err = h.Store.BankStats(r.Context(), bankID)
+	}
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, BankStatsResponse{
+	httpx.WriteJSON(w, http.StatusOK, BankStatsResponse{
 		BankID: stats.BankID, TotalNodes: stats.TotalNodes, TotalLinks: stats.TotalLinks,
 		TotalDocuments: stats.TotalDocuments, NodesByFactType: stats.NodesByFactType,
 		LinksByLinkType: stats.LinksByLinkType, LinksByFactType: stats.LinksByFactType,
 		LinksBreakdown: stats.LinksBreakdown, PendingOperations: stats.PendingOperations,
 		FailedOperations: stats.FailedOperations, OperationsByStatus: stats.OperationsByStatus,
-		LastConsolidatedAt:   formatTimePtr(stats.LastConsolidatedAt),
-		LastMemoryWriteAt:    formatTimePtr(stats.LastMemoryWriteAt),
+		LastConsolidatedAt:   httpx.FormatTimestampPtr(stats.LastConsolidatedAt),
+		LastMemoryWriteAt:    httpx.FormatTimestampPtr(stats.LastMemoryWriteAt),
 		PendingConsolidation: stats.PendingConsolidation,
 		FailedConsolidation:  stats.FailedConsolidation,
 		TotalObservations:    stats.TotalObservations,
@@ -155,7 +178,7 @@ func (h *Handlers) Timeseries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	buckets := padTimeseriesBuckets(series.Buckets, cfg, time.Now().UTC())
-	httpx.WriteJSONFor(w, r, http.StatusOK, MemoriesTimeseriesResponse{
+	httpx.WriteJSON(w, http.StatusOK, MemoriesTimeseriesResponse{
 		BankID: bankID, Period: cfg.period, Trunc: cfg.trunc,
 		TimeField: timeField, Buckets: buckets,
 	})
@@ -185,11 +208,11 @@ func padTimeseriesBuckets(rows []storage.TimeseriesBucket, cfg timeseriesPeriodC
 	out := make([]TimeseriesBucket, 0, cfg.count)
 	for i := 0; i < cfg.count; i++ {
 		slot := end.Add(-cfg.step * time.Duration(cfg.count-1-i))
-		out = append(out, TimeseriesBucket{Time: formatTime(slot)})
+		out = append(out, TimeseriesBucket{Time: httpx.FormatTimestamp(slot)})
 		byKey[out[len(out)-1].Time] = &out[len(out)-1]
 	}
 	for _, row := range rows {
-		key := formatTime(truncateToWidth(row.Time, cfg.trunc))
+		key := httpx.FormatTimestamp(truncateToWidth(row.Time, cfg.trunc))
 		bucket, ok := byKey[key]
 		if !ok {
 			continue
@@ -232,7 +255,8 @@ func (h *Handlers) HealthLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.BankLLMHealthEnabled {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "bank LLM health is not enabled"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
+			"Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable."))
 		return
 	}
 	status, ok, latencyMS := h.probeLLM(r.Context())
@@ -242,7 +266,7 @@ func (h *Handlers) HealthLLM(w http.ResponseWriter, r *http.Request) {
 			Operation: name, OK: ok, Status: status, LatencyMS: latencyMS,
 		})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, BankLLMHealthResponse{BankID: bankID, Operations: operations})
+	httpx.WriteJSON(w, http.StatusOK, BankLLMHealthResponse{BankID: bankID, Operations: operations})
 }
 
 // probeLLM runs the configured probe and classifies the result. A deployment
@@ -287,8 +311,21 @@ func roundMillis(d time.Duration) float64 {
 
 // AuditLogs returns one page of the audit trail.
 func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
+	// The reference validates the paging query before the handler runs.
+	limit, ok := boundedIntParam(w, r, "limit", 50, 1, 500)
+	if !ok {
+		return
+	}
+	offset, ok := boundedIntParam(w, r, "offset", 0, 0, -1)
+	if !ok {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
+		return
+	}
+	// The reference reports a missing bank before refusing a scoped caller.
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
 		return
 	}
 	startDate, ok := parseDateParam(w, r, "start_date")
@@ -301,11 +338,11 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.Store.ListAuditLog(r.Context(), storage.AuditQuery{
 		BankID:    bankID,
-		Action:    strings.TrimSpace(httpx.Query(r, "action")),
-		Transport: strings.TrimSpace(httpx.Query(r, "transport")),
+		Action:    httpx.Query(r, "action"),
+		Transport: httpx.Query(r, "transport"),
 		StartDate: startDate,
 		EndDate:   endDate,
-		Limit:     pageLimit(r), Offset: pageOffset(r),
+		Limit:     limit, Offset: offset,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -313,7 +350,7 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]AuditLogEntry, 0, len(page.Entries))
 	for _, entry := range page.Entries {
-		startedAt := formatTime(entry.StartedAt)
+		startedAt := httpx.FormatTimestamp(entry.StartedAt)
 		metadata := entry.Metadata
 		if metadata == nil {
 			metadata = map[string]any{}
@@ -321,7 +358,7 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		item := AuditLogEntry{
 			ID: entry.ID, Action: entry.Action, Transport: entry.Transport,
 			BankID: nullableString(entry.BankID), StartedAt: &startedAt,
-			EndedAt: formatTimePtr(entry.EndedAt),
+			EndedAt: httpx.FormatTimestampPtr(entry.EndedAt),
 			Request: entry.Request, Response: entry.Response, Metadata: metadata,
 		}
 		if entry.EndedAt != nil {
@@ -330,8 +367,8 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, AuditLogListResponse{
-		BankID: bankID, Total: page.Total, Limit: pageLimit(r), Offset: pageOffset(r), Items: items,
+	httpx.WriteJSON(w, http.StatusOK, AuditLogListResponse{
+		BankID: bankID, Total: page.Total, Limit: limit, Offset: offset, Items: items,
 	})
 }
 
@@ -341,8 +378,14 @@ func (h *Handlers) AuditLogStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	stats, err := h.Store.AuditLogStats(r.Context(), bankID,
-		strings.TrimSpace(httpx.Query(r, "period")), strings.TrimSpace(httpx.Query(r, "action")))
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
+		return
+	}
+	period := httpx.Query(r, "period")
+	if period == "" {
+		period = "7d"
+	}
+	stats, err := h.Store.AuditLogStats(r.Context(), bankID, period, httpx.Query(r, "action"))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -350,19 +393,32 @@ func (h *Handlers) AuditLogStats(w http.ResponseWriter, r *http.Request) {
 	buckets := make([]AuditLogStatsBucket, 0, len(stats.Bucket))
 	for _, bucket := range stats.Bucket {
 		buckets = append(buckets, AuditLogStatsBucket{
-			Time: formatTime(bucket.Time), Actions: bucket.Actions, Total: bucket.Total,
+			Time: httpx.FormatTimestamp(bucket.Time), Actions: bucket.Actions, Total: bucket.Total,
 		})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, AuditLogStatsResponse{
+	httpx.WriteJSON(w, http.StatusOK, AuditLogStatsResponse{
 		BankID: stats.BankID, Period: stats.Period, Trunc: stats.Trunc,
-		Start: formatTime(stats.Start), Buckets: buckets,
+		Start: httpx.FormatTimestamp(stats.Start), Buckets: buckets,
 	})
 }
 
 // LLMRequests returns one page of the model-request trace.
 func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
+	// The reference validates the paging query before the handler runs.
+	limit, ok := boundedIntParam(w, r, "limit", 50, 1, 500)
+	if !ok {
+		return
+	}
+	offset, ok := boundedIntParam(w, r, "offset", 0, 0, -1)
+	if !ok {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
+		return
+	}
+	// The reference reports a missing bank before refusing a scoped caller.
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
 		return
 	}
 	startDate, ok := parseDateParam(w, r, "start_date")
@@ -373,19 +429,32 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	params := r.URL.Query()
+	_, documentIDSet := params["document_id"]
+	_, memoryIDSet := params["memory_id"]
+	group, ok := strictBoolParam(w, r, "group", false)
+	if !ok {
+		return
+	}
 	page, err := h.Store.ListLLMRequests(r.Context(), storage.LLMRequestQuery{
-		BankID:     bankID,
-		Status:     strings.TrimSpace(httpx.Query(r, "status")),
-		Operation:  strings.TrimSpace(httpx.Query(r, "operation")),
-		Scope:      strings.TrimSpace(httpx.Query(r, "scope")),
-		Provider:   strings.TrimSpace(httpx.Query(r, "provider")),
-		TraceID:    strings.TrimSpace(httpx.Query(r, "trace_id")),
-		DocumentID: strings.TrimSpace(httpx.Query(r, "document_id")),
-		MemoryID:   strings.TrimSpace(httpx.Query(r, "memory_id")),
-		Group:      boolQueryParam(httpx.Query(r, "group")),
-		StartDate:  startDate,
-		EndDate:    endDate,
-		Limit:      pageLimit(r), Offset: pageOffset(r),
+		BankID: bankID,
+		// The reference treats these as truthy strings (`if value:`), so a
+		// whitespace-only value filters on that literal value rather than being
+		// dropped. Only document_id/memory_id are presence-gated, matching the
+		// reference's `is not None` test, which makes an empty value a filter.
+		Status:        httpx.Query(r, "status"),
+		Operation:     httpx.Query(r, "operation"),
+		Scope:         httpx.Query(r, "scope"),
+		Provider:      httpx.Query(r, "provider"),
+		TraceID:       httpx.Query(r, "trace_id"),
+		DocumentID:    httpx.Query(r, "document_id"),
+		DocumentIDSet: documentIDSet,
+		MemoryID:      httpx.Query(r, "memory_id"),
+		MemoryIDSet:   memoryIDSet,
+		Group:         group,
+		StartDate:     startDate,
+		EndDate:       endDate,
+		Limit:         limit, Offset: offset,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -393,7 +462,7 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]LLMRequestEntry, 0, len(page.Requests))
 	for _, request := range page.Requests {
-		startedAt := formatTime(request.StartedAt)
+		startedAt := httpx.FormatTimestamp(request.StartedAt)
 		llmInfo := request.LLMInfo
 		if llmInfo == nil {
 			llmInfo = map[string]any{}
@@ -407,7 +476,7 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 			Scope: nullableString(request.Scope), TraceID: nullableString(request.TraceID),
 			SpanID: nullableString(request.SpanID), ParentSpanID: nullableString(request.ParentSpanID),
 			Provider: nullableString(request.Provider), Model: nullableString(request.Model),
-			Status: request.Status, StartedAt: &startedAt, EndedAt: formatTimePtr(request.EndedAt),
+			Status: request.Status, StartedAt: &startedAt, EndedAt: httpx.FormatTimestampPtr(request.EndedAt),
 			DurationMS: request.DurationMS, InputTokens: request.InputTokens,
 			OutputTokens: request.OutputTokens, CachedTokens: request.CachedTokens,
 			ThoughtsTokens: request.ThoughtsTokens, TotalTokens: request.TotalTokens,
@@ -415,8 +484,8 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 			LLMInfo: llmInfo, Metadata: metadata,
 		})
 	}
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, LLMRequestListResponse{
-		BankID: bankID, Total: page.Total, Limit: pageLimit(r), Offset: pageOffset(r), Items: items,
+	httpx.WriteJSON(w, http.StatusOK, LLMRequestListResponse{
+		BankID: bankID, Total: page.Total, Limit: limit, Offset: offset, Items: items,
 	})
 }
 
@@ -426,8 +495,14 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	stats, err := h.Store.LLMRequestStats(r.Context(), bankID,
-		strings.TrimSpace(httpx.Query(r, "period")), strings.TrimSpace(httpx.Query(r, "operation")))
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
+		return
+	}
+	period := httpx.Query(r, "period")
+	if period == "" {
+		period = "7d"
+	}
+	stats, err := h.Store.LLMRequestStats(r.Context(), bankID, period, httpx.Query(r, "operation"))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -435,7 +510,7 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 	buckets := make([]LLMRequestStatsBucket, 0, len(stats.Bucket))
 	for _, bucket := range stats.Bucket {
 		buckets = append(buckets, LLMRequestStatsBucket{
-			Time: formatTime(bucket.Time), Statuses: bucket.Statuses, Total: bucket.Total,
+			Time: httpx.FormatTimestamp(bucket.Time), Statuses: bucket.Statuses, Total: bucket.Total,
 			Tokens: LLMTokenSums{
 				Input: bucket.Tokens.InputTokens, Output: bucket.Tokens.OutputTokens,
 				Cached: bucket.Tokens.CachedTokens, Thoughts: bucket.Tokens.ThoughtsTokens,
@@ -443,71 +518,83 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, LLMRequestStatsResponse{
+	httpx.WriteJSON(w, http.StatusOK, LLMRequestStatsResponse{
 		BankID: stats.BankID, Period: stats.Period, Trunc: stats.Trunc,
-		Start: formatTime(stats.Start), Buckets: buckets,
+		Start: httpx.FormatTimestamp(stats.Start), Buckets: buckets,
 	})
 }
 
 // DeleteObservations removes a bank's observations.
 func (h *Handlers) DeleteObservations(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	// A bank-wide clear reaches every observation regardless of tags, so a
+	// tag-scoped caller may not run it at all.
+	if httpx.RefuseBankWideIfScoped(w, r, "clear the bank's observations") {
 		return
 	}
+	// The reference takes no bank-existence check on this route: an unknown bank
+	// simply matches no rows and clears zero observations, so a delete against a
+	// missing bank is a 200 with deleted_count 0 rather than a 404.
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	removed, err := h.Store.DeleteObservations(r.Context(), bankID, "")
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, DeleteResponse{
-		Success: true, Message: "observations deleted", DeletedCount: removed,
+	httpx.WriteJSON(w, http.StatusOK, DeleteResponse{
+		Success: true, Message: fmt.Sprintf("Cleared %d observations", removed), DeletedCount: removed,
 	})
 }
 
 // ObservationScopes lists a bank's observation scopes.
 func (h *Handlers) ObservationScopes(w http.ResponseWriter, r *http.Request) {
+	// The reference validates the query before the handler runs, so an
+	// out-of-range limit/offset is a 422 even for an unknown bank.
+	limit, ok := boundedIntParam(w, r, "limit", 100, 0, 1000)
+	if !ok {
+		return
+	}
+	offset, ok := boundedIntParam(w, r, "offset", 0, 0, -1)
+	if !ok {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
 	}
-	page, err := h.Store.ListObservationScopes(r.Context(), bankID, pageLimit(r), pageOffset(r))
+	page, err := h.Store.ListObservationScopes(r.Context(), bankID, limit, offset)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	scopes := make([]ObservationScopeItem, 0, len(page.Scopes))
 	for _, scope := range page.Scopes {
-		scopes = append(scopes, ObservationScopeItem{Tags: scopeTags(scope.Scope), Count: scope.Count})
+		tags := scope.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		scopes = append(scopes, ObservationScopeItem{Tags: tags, Count: scope.Count})
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ObservationScopesResponse{
-		Scopes: scopes, Total: page.Total, Limit: pageLimit(r), Offset: pageOffset(r),
+	httpx.WriteJSON(w, http.StatusOK, ObservationScopesResponse{
+		Scopes: scopes, Total: page.Total, Limit: limit, Offset: offset,
 	})
 }
 
-// scopeTags splits a stored scope string into the tag set it represents, sorted
-// so [a,b] and [b,a] render identically. An empty scope is the global/untagged
-// scope and yields an empty list.
-func scopeTags(scope string) []string {
-	trimmed := strings.TrimSpace(scope)
-	if trimmed == "" {
-		return []string{}
-	}
-	parts := strings.Split(trimmed, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if value := strings.TrimSpace(part); value != "" {
-			out = append(out, value)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // ClearMemoryObservations removes the observations derived from one memory.
+//
+// The bank is not required to exist: the reference resolves the memory by id
+// alone, so a delete against an unknown bank clears zero rows and reports it
+// rather than 404ing the bank.
 func (h *Handlers) ClearMemoryObservations(w http.ResponseWriter, r *http.Request) {
-	bankID, memoryID, ok := h.memoryMember(w, r)
-	if !ok {
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
+	if memoryID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "memory not found"))
+		return
+	}
+	// The memory must be one the caller may change: outside its read scope the
+	// memory reads as not-found, and a visible one whose tags the caller may not
+	// write is refused with 403. Without a scope this is a no-op.
+	if !h.requireWritableMemory(w, r, bankID, memoryID) {
 		return
 	}
 	removed, err := h.Store.DeleteObservations(r.Context(), bankID, memoryID)
@@ -515,30 +602,46 @@ func (h *Handlers) ClearMemoryObservations(w http.ResponseWriter, r *http.Reques
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ClearMemoryObservationsResponse{DeletedCount: removed})
+	httpx.WriteJSON(w, http.StatusOK, ClearMemoryObservationsResponse{DeletedCount: removed})
 }
 
 // ConsolidationPreview reports which of the bank's existing observation scopes
 // each draft consolidation strategy would apply to.
 func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	var body consolidationScopesPreviewRequest
-	if err := decodeBody(r, &body); err != nil {
+	// The reference validates the body before the handler body runs and the
+	// bank existence check lives inside the engine call, so a malformed body is
+	// rejected before an unknown bank is reported.
+	body, err := readOptionalBody(r)
+	if err != nil {
 		writeRequiredBodyFailure(w, r, err)
 		return
 	}
-	sampleLimit := 5
-	if body.SampleLimit != nil {
-		sampleLimit = *body.SampleLimit
+	httpx.RecordUnknownBodyFields(r, body, &consolidationScopesPreviewRequest{})
+	if len(body) == 0 {
+		writeRequiredBodyFailure(w, r, httpx.ErrEmptyBody)
+		return
 	}
-	if sampleLimit < 0 {
-		sampleLimit = 0
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, body))
+		return
 	}
-	if sampleLimit > 50 {
-		sampleLimit = 50
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			consolidationModelAttributesType([]string{"body"}, raw),
+		}})
+		return
+	}
+	req, failures := decodeConsolidationPreview(obj)
+	if len(failures) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: failures})
+		return
+	}
+
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
+		return
 	}
 	scopePage, err := h.Store.ListObservationScopes(r.Context(), bankID, 10000, 0)
 	if err != nil {
@@ -547,14 +650,23 @@ func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) 
 	}
 	scopes := make([]scopePreview, 0, len(scopePage.Scopes))
 	for _, scope := range scopePage.Scopes {
-		scopes = append(scopes, scopePreview{Tags: scopeTags(scope.Scope), Count: scope.Count})
+		tags := scope.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		scopes = append(scopes, scopePreview{Tags: tags, Count: scope.Count})
 	}
-	preview := buildConsolidationPreview(body.Strategies, scopes, sampleLimit, scopePage.Total <= len(scopes))
-	httpx.WriteJSONOpenRow(w, r, http.StatusOK, preview)
+	preview := buildConsolidationPreview(req.Strategies, scopes, req.SampleLimit, scopePage.Total <= len(scopes))
+	httpx.WriteJSON(w, http.StatusOK, preview)
 }
 
 // ConsolidationRecover retries a bank's failed consolidations.
 func (h *Handlers) ConsolidationRecover(w http.ResponseWriter, r *http.Request) {
+	// A bank-wide consolidation retry reaches every memory regardless of tags,
+	// so a tag-scoped caller may not run it at all.
+	if httpx.RefuseBankWideIfScoped(w, r, "retry the bank's failed consolidation") {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -564,51 +676,149 @@ func (h *Handlers) ConsolidationRecover(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, RecoverConsolidationResponse{RetriedCount: retried})
+	httpx.WriteJSON(w, http.StatusOK, RecoverConsolidationResponse{RetriedCount: retried})
 }
 
 // Consolidate queues a consolidation pass for one bank.
 func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
+	// The reference validates the optional body before the handler runs, so a
+	// malformed or wrong-shaped body is a 422 even for an unknown bank.
+	scopes, ok := parseConsolidationRequest(w, r)
+	if !ok {
+		return
+	}
+	// A bank-wide consolidation reaches every memory regardless of tags, so a
+	// tag-scoped caller may not run it at all.
+	if httpx.RefuseBankWideIfScoped(w, r, "run consolidation on the bank") {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
 	}
-	op, deduplicated, err := h.Store.EnqueueConsolidation(r.Context(), bankID)
+	op, deduplicated, err := h.Store.EnqueueConsolidation(r.Context(), bankID, scopes...)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	httpx.WriteJSONFor(w, r, http.StatusOK, ConsolidationResponse{
+	httpx.WriteJSON(w, http.StatusOK, ConsolidationResponse{
 		OperationID: op.OperationID, Deduplicated: deduplicated,
 	})
 }
 
-// parseDateParam reads an optional RFC 3339 query parameter, writing a
-// bad-request error and reporting false for a malformed value.
-func parseDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
-	raw := strings.TrimSpace(httpx.Query(r, key))
-	if raw == "" {
+// consolidationRequest is the consolidation route's optional body: the tag
+// scopes to consolidate, each scope a list of tags. The declaration is the
+// same one the served contract publishes, so the shared decoder's walk reports
+// a rejected body with the reference's own items.
+type consolidationRequest struct {
+	ObservationScopes [][]string `json:"observation_scopes"`
+}
+
+// parseConsolidationRequest reads the optional consolidation body and returns
+// its observation scopes. An absent or null body yields no scopes (a full-bank
+// pass); a body the reference's model rejects is answered with that model's
+// items through the shared decoder.
+func parseConsolidationRequest(w http.ResponseWriter, r *http.Request) ([][]string, bool) {
+	body, err := readOptionalBody(r)
+	if err != nil {
+		writeRequiredBodyFailure(w, r, err)
+		return nil, false
+	}
+	trimmed := strings.TrimSpace(string(body))
+	// The declared body is optional and nullable, so an absent body and the
+	// JSON literal null both mean "the whole bank" rather than a missing field.
+	if trimmed == "" || trimmed == "null" {
 		return nil, true
 	}
-	parsed, err := time.Parse(time.RFC3339, raw)
+	// The walk reports every value the model refuses — a body that is not an
+	// object, a member that is not a list of lists of strings — with the
+	// vocabulary, location and input the reference serves.
+	if items := httpx.ValidationItemsAgainstRequest(r, &consolidationRequest{}, body); len(items) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
+		return nil, false
+	}
+	var req consolidationRequest
+	if _, err := httpx.DecodeLax(body, &req); err != nil {
+		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, body))
+		return nil, false
+	}
+	// A non-empty list is a scoped submit: it must not deduplicate against a
+	// pending full-bank pass. (An explicitly empty list is indistinguishable
+	// from an absent one through the variadic enqueue, so both mean a full-bank
+	// pass; the reference treats an empty list as a scoped no-op run.)
+	if len(req.ObservationScopes) == 0 {
+		return nil, true
+	}
+	return req.ObservationScopes, true
+}
+
+// parseDateParam reads an optional ISO-8601 query parameter, writing a
+// bad-request error and reporting false when the value is not a datetime. It
+// mirrors the reference's _parse_iso_datetime: date-only and offset-less forms
+// are accepted (a naive value is read as UTC), and an absent parameter is
+// nothing while a present-but-empty one is a bad request.
+func parseDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
+	if _, present := r.URL.Query()[key]; !present {
+		return nil, true
+	}
+	raw := httpx.Query(r, key)
+	parsed, err := parseISODateTime(raw)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, key+" must be an RFC 3339 timestamp"))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			fmt.Sprintf("Invalid %s: '%s' is not an ISO-8601 datetime.", key, raw)))
 		return nil, false
 	}
 	utc := parsed.UTC()
 	return &utc, true
 }
 
-// boolQueryParam reads a boolean query parameter, false for an absent or
-// unrecognised value. The accepted spellings are the ones the reference's
-// boolean coercion takes.
-func boolQueryParam(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "true", "1", "yes", "on", "t", "y":
-		return true
-	default:
-		return false
+// parseISODateTime parses the ISO-8601 forms Python's datetime.fromisoformat
+// accepts: a date-only value, an offset-less datetime (read as UTC), fractional
+// seconds, and either a trailing "Z" or a numeric offset. The space separator is
+// taken too, which fromisoformat also admits.
+func parseISODateTime(value string) (time.Time, error) {
+	normalized := value
+	if strings.HasSuffix(normalized, "Z") {
+		normalized = normalized[:len(normalized)-1] + "+00:00"
 	}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, normalized); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("value is not an ISO-8601 datetime")
+}
+
+// strictBoolParam reads a boolean query parameter the way the reference's
+// framework coerces one: an absent parameter takes the default, the lax spelling
+// set is accepted, and any other value is the framework's bool_parsing failure
+// rather than a silent false. It reports whether it produced a value; on false
+// the failure has been written.
+func strictBoolParam(w http.ResponseWriter, r *http.Request, name string, def bool) (bool, bool) {
+	values, present := httpx.QueryPresent(r, name)
+	if !present || len(values) == 0 {
+		return def, true
+	}
+	raw := values[0]
+	switch strings.ToLower(raw) {
+	case "true", "1", "yes", "on", "t", "y":
+		return true, true
+	case "false", "0", "no", "off", "f", "n":
+		return false, true
+	}
+	httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.TypeMismatch("bool_parsing", []string{"query", name}, raw),
+	}})
+	return false, false
 }
 
 // requireBank reports not-found for an unknown bank.
@@ -641,75 +851,66 @@ func (h *Handlers) requireOrCreateBank(w http.ResponseWriter, r *http.Request) (
 	return bankID, true
 }
 
-// memoryMember resolves the bank and the memory identifier.
-func (h *Handlers) memoryMember(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return "", "", false
-	}
-	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
-	if memoryID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "memory not found"))
-		return "", "", false
-	}
-	return bankID, memoryID, true
-}
-
-// pageLimit reads the page size, defaulting and clamping it.
-func pageLimit(r *http.Request) int {
-	raw := strings.TrimSpace(httpx.Query(r, "limit"))
+// boundedIntParam reads an optional integer query parameter with an inclusive
+// [min,max] bound (a negative max means unbounded above), defaulting when absent.
+// A malformed, non-integer, or out-of-range value is rejected with the
+// framework's 422 validation envelope before the handler body runs, matching how
+// FastAPI validates a typed Query before the route function.
+func boundedIntParam(w http.ResponseWriter, r *http.Request, name string, def, min, max int) (int, bool) {
+	raw := httpx.Query(r, name)
 	if raw == "" {
-		return defaultPageLimit
+		return def, true
 	}
 	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return defaultPageLimit
+	if err != nil {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.TypeMismatch("int_parsing", []string{"query", name}, raw),
+		}})
+		return 0, false
 	}
-	if value > 500 {
-		return 500
+	if value < min {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.GreaterThanEqual([]string{"query", name}, raw, min),
+		}})
+		return 0, false
 	}
-	return value
+	if max >= 0 && value > max {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.LessThanEqual([]string{"query", name}, raw, max),
+		}})
+		return 0, false
+	}
+	return value, true
 }
 
-// pageOffset reads the page offset.
-func pageOffset(r *http.Request) int {
-	raw := strings.TrimSpace(httpx.Query(r, "offset"))
-	if raw == "" {
-		return 0
+// readOptionalBody reads a request body with a size bound, returning the raw
+// bytes (possibly empty) so a caller can tell an absent body from a present one.
+func readOptionalBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return 0
-	}
-	return value
-}
-
-// decodeBody decodes a JSON body with a size bound.
-func decodeBody(r *http.Request, target any) error {
 	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	defer func() { _ = limited.Close() }()
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return fmt.Errorf("request body must be JSON: %w", err)
+		return nil, fmt.Errorf("request body must be JSON: %w", err)
 	}
-	httpx.RecordUnknownBodyFields(r, body, target)
-	if err := json.Unmarshal(body, target); err != nil {
-		return fmt.Errorf("request body must be JSON: %w", err)
-	}
-	return nil
+	return body, nil
 }
 
 // writeRequiredBodyFailure emits the framework's 422 body for a missing or
 // malformed required JSON body.
 func writeRequiredBodyFailure(w http.ResponseWriter, r *http.Request, err error) {
-	httpx.WriteValidationFor(w, r, httpx.BodyDecodeFailure(err, nil))
+	httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, nil))
 }
 
 // writeQueryEnumFailure emits the framework's 422 body for a query parameter
-// whose value is outside its declared enum.
+// whose value is outside its declared enum. Both callers (tags_match,
+// time_field) are declared as `Literal` in the reference, whose rejected-value
+// item is `literal_error` rather than `enum`, so the kind is emitted as such.
 func writeQueryEnumFailure(w http.ResponseWriter, r *http.Request, name, input string, allowed []string) {
-	httpx.WriteValidationFor(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-		httpx.Enum([]string{"query", name}, input, allowed),
+	httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.Literal([]string{"query", name}, input, allowed),
 	}})
 }
 
@@ -730,8 +931,23 @@ func asHTTPError(err error) *httpx.HTTPError {
 		return httpx.NewHTTPError(httpx.KindNotFound, "knowledge node not found")
 	case errors.Is(err, storage.ErrAuditEntryNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, "audit entry not found")
-	default:
+	case errors.Is(err, storage.ErrMentalModelNotFound):
+		return httpx.NewHTTPError(httpx.KindNotFound, "mental model not found")
+	case errors.Is(err, storage.ErrInvalidMentalModelSubtype):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "unknown mental model subtype")
+	case errors.Is(err, storage.ErrEmbeddingDimensions):
 		return httpx.NewHTTPError(httpx.KindBadRequest, err.Error())
+	case errors.Is(err, storage.ErrInvalidBankID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, "bank identifier is invalid")
+	case errors.Is(err, storage.ErrAliasConflict):
+		return httpx.NewHTTPError(httpx.KindConflict, "name conflicts with an existing bank or alias")
+	case errors.Is(err, storage.ErrWritesUnavailable):
+		return httpx.NewHTTPError(httpx.KindUnavailable, httpx.DetailWritesDown)
+	default:
+		// Anything the storage layer did not recognise is a server fault, not a
+		// malformed request: the reference's catch-all answers 500 and reports the
+		// error it caught.
+		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
 

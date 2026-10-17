@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -47,6 +48,32 @@ type MentalModel struct {
 	Trigger     map[string]any `json:"trigger"`
 }
 
+// defaultMaxTokens is the manifest model's default, applied when a model does
+// not name one so an import stores the same value the reference's model does
+// rather than the Go zero value.
+const defaultMaxTokens = 2048
+
+// UnmarshalJSON fills the manifest model's field defaults, so an absent
+// max_tokens reads as the reference's default rather than as zero.
+func (m *MentalModel) UnmarshalJSON(raw []byte) error {
+	type alias MentalModel
+	var typed alias
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return err
+	}
+	*m = MentalModel(typed)
+	var probe struct {
+		MaxTokens *int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	if probe.MaxTokens == nil {
+		m.MaxTokens = defaultMaxTokens
+	}
+	return nil
+}
+
 // Directive is one directive definition within a manifest. Directives are
 // matched by name on re-import.
 type Directive struct {
@@ -55,6 +82,27 @@ type Directive struct {
 	Priority int      `json:"priority"`
 	IsActive bool     `json:"is_active"`
 	Tags     []string `json:"tags"`
+}
+
+// UnmarshalJSON fills the manifest model's field defaults, so an absent
+// is_active reads as the reference's default (true) rather than as false.
+func (d *Directive) UnmarshalJSON(raw []byte) error {
+	type alias Directive
+	var typed alias
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return err
+	}
+	*d = Directive(typed)
+	var probe struct {
+		IsActive *bool `json:"is_active"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	if probe.IsActive == nil {
+		d.IsActive = true
+	}
+	return nil
 }
 
 // ValidationError reports a manifest the loader refused. Structural failures
@@ -111,6 +159,13 @@ func Load(raw map[string]any) (Manifest, error) {
 // from the semantic ones, each listing every failure it found rather than
 // stopping at the first.
 func Validate(manifest Manifest) (structural, semantic []string) {
+	// The messages below are the reference's Pydantic output, rendered the way
+	// its handler renders it: "<'.'.join(loc)>: <msg>". A value_error carries the
+	// framework's "Value error, " prefix and a missing required field is
+	// "Field required". The order follows the model's field declaration — the
+	// version, then the bank section, then the mental models, then the
+	// directives — because the framework reports every failure it found in that
+	// order rather than stopping at the first.
 	version := strings.TrimSpace(manifest.Version)
 	parsed, err := strconv.Atoi(version)
 	switch {
@@ -118,25 +173,32 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 		structural = append(structural, "version: Field required")
 	case err != nil:
 		structural = append(structural,
-			fmt.Sprintf("version: version must be a numeric string, got '%s'", version))
+			fmt.Sprintf("version: Value error, version must be a numeric string, got '%s'", version))
 	case parsed < 1:
-		structural = append(structural, "version: version must be >= 1")
+		structural = append(structural, "version: Value error, version must be >= 1")
 	case parsed > atoiVersion(CurrentTemplateVersion):
 		structural = append(structural, fmt.Sprintf(
-			"version '%s' is not supported by this server (max supported: %s). Please upgrade Wenyuan.",
+			"version: Value error, version '%s' is not supported by this server (max supported: %s). Please upgrade Wenyuan.",
 			version, CurrentTemplateVersion))
 	}
 
+	structural = append(structural, bankConfigStructural(manifest.Bank)...)
+
 	seenModels := map[string]bool{}
+	duplicateModelIDs := map[string]bool{}
 	for i, model := range manifest.MentalModels {
 		if !templateIDPattern.MatchString(model.ID) {
 			structural = append(structural, fmt.Sprintf(
-				"mental_models[%d].id: Mental model id '%s' must be alphanumeric lowercase with hyphens, starting with a letter or digit.",
+				"mental_models.%d.id: Value error, Mental model id '%s' must be alphanumeric lowercase with hyphens, starting with a letter or digit.",
 				i, model.ID))
 		}
-		if model.MaxTokens != 0 && (model.MaxTokens < 256 || model.MaxTokens > 8192) {
+		switch {
+		case model.MaxTokens < 256:
 			structural = append(structural, fmt.Sprintf(
-				"mental_models[%d].max_tokens: must be between 256 and 8192", i))
+				"mental_models.%d.max_tokens: Input should be greater than or equal to 256", i))
+		case model.MaxTokens > 8192:
+			structural = append(structural, fmt.Sprintf(
+				"mental_models.%d.max_tokens: Input should be less than or equal to 8192", i))
 		}
 		if strings.TrimSpace(model.Name) == "" {
 			semantic = append(semantic, fmt.Sprintf("mental_models[%d].name: must not be empty", i))
@@ -145,12 +207,20 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 			semantic = append(semantic, fmt.Sprintf("mental_models[%d].source_query: must not be empty", i))
 		}
 		if seenModels[model.ID] {
-			semantic = append(semantic, fmt.Sprintf("mental_models[%d].id: duplicate id '%s'", i, model.ID))
+			duplicateModelIDs[model.ID] = true
 		}
 		seenModels[model.ID] = true
 	}
+	// Duplicate ids are caught by the model's own list validator, so they are a
+	// structural failure surfaced under the schema message, not one of the
+	// semantic checks below.
+	if len(duplicateModelIDs) > 0 {
+		structural = append(structural, fmt.Sprintf(
+			"mental_models: Value error, Duplicate mental model ids: %s", pythonStringList(duplicateModelIDs)))
+	}
 
 	seenDirectives := map[string]bool{}
+	duplicateDirectiveNames := map[string]bool{}
 	for i, directive := range manifest.Directives {
 		if strings.TrimSpace(directive.Name) == "" {
 			semantic = append(semantic, fmt.Sprintf("directives[%d].name: must not be empty", i))
@@ -159,9 +229,13 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 			semantic = append(semantic, fmt.Sprintf("directives[%d].content: must not be empty", i))
 		}
 		if seenDirectives[directive.Name] {
-			semantic = append(semantic, fmt.Sprintf("directives[%d].name: duplicate name '%s'", i, directive.Name))
+			duplicateDirectiveNames[directive.Name] = true
 		}
 		seenDirectives[directive.Name] = true
+	}
+	if len(duplicateDirectiveNames) > 0 {
+		structural = append(structural, fmt.Sprintf(
+			"directives: Value error, Duplicate directive names: %s", pythonStringList(duplicateDirectiveNames)))
 	}
 
 	// The bank's own settings have to agree with each other before they are
@@ -172,14 +246,103 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 		custom, _ := bank["retain_custom_instructions"].(string)
 		if mode != "" && !retainExtractionMode(mode) {
 			semantic = append(semantic, fmt.Sprintf(
-				"bank.retain_extraction_mode: must be one of (%s), got '%s'",
-				strings.Join(retainExtractionModes, ", "), mode))
+				"bank.retain_extraction_mode: must be one of %s, got '%s'",
+				pythonTuple(retainExtractionModes), mode))
 		}
 		if strings.TrimSpace(custom) != "" && mode != "custom" {
 			semantic = append(semantic, "bank.retain_custom_instructions: requires retain_extraction_mode='custom'")
 		}
 	}
 	return structural, semantic
+}
+
+// bankConfigStructural enforces the numeric bounds the template's bank model
+// declares, reported the way the framework words a failed constraint. Only the
+// fields with a declared bound are checked here; the rest of the bank model is
+// free-form on this path.
+func bankConfigStructural(bank map[string]any) []string {
+	if bank == nil {
+		return nil
+	}
+	var out []string
+	for _, field := range []string{"disposition_skepticism", "disposition_literalism", "disposition_empathy"} {
+		value, present := bank[field]
+		if !present || value == nil {
+			continue
+		}
+		number, ok := configNumber(value)
+		if !ok {
+			out = append(out, fmt.Sprintf("bank.%s: %s", field, integerTypeMessage(value)))
+			continue
+		}
+		switch {
+		case number < 1:
+			out = append(out, fmt.Sprintf("bank.%s: Input should be greater than or equal to 1", field))
+		case number > 5:
+			out = append(out, fmt.Sprintf("bank.%s: Input should be less than or equal to 5", field))
+		}
+	}
+	if value, present := bank["mental_model_min_refresh_interval_seconds"]; present && value != nil {
+		number, ok := configNumber(value)
+		if !ok {
+			out = append(out, "bank.mental_model_min_refresh_interval_seconds: "+integerTypeMessage(value))
+		} else if number < 0 {
+			out = append(out, "bank.mental_model_min_refresh_interval_seconds: Input should be greater than or equal to 0")
+		}
+	}
+	return out
+}
+
+// configNumber reports a decoded JSON value as a whole number.
+func configNumber(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		if typed == float64(int64(typed)) {
+			return int64(typed), true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// integerTypeMessage is the framework's wording for a value that is not a
+// whole number: a string that cannot be parsed says so, any other kind is
+// simply the wrong type.
+func integerTypeMessage(value any) string {
+	if _, isString := value.(string); isString {
+		return "Input should be a valid integer, unable to parse string as an integer"
+	}
+	return "Input should be a valid integer"
+}
+
+// pythonStringList renders a set of strings the way Python's repr renders a
+// sorted list, e.g. ['a', 'b'], because the message is served verbatim.
+func pythonStringList(values map[string]bool) string {
+	ordered := make([]string, 0, len(values))
+	for value := range values {
+		ordered = append(ordered, value)
+	}
+	sort.Strings(ordered)
+	quoted := make([]string, 0, len(ordered))
+	for _, value := range ordered {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// pythonTuple renders a list of strings the way Python's repr renders a tuple,
+// e.g. ('a', 'b'), because the message is served verbatim.
+func pythonTuple(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return "(" + strings.Join(quoted, ", ") + ")"
 }
 
 // retainExtractionMode reports whether the mode is one the engine implements.
@@ -216,52 +379,20 @@ func ConfigValues(in map[string]any) map[string]any {
 	return out
 }
 
-// BankPatch splits a manifest's bank section into the bank patch it applies.
-// The disposition traits and the reflect mission live on the bank row rather
-// than in the override map, so they are routed to their own columns; every
-// other key is a configuration override.
+// BankPatch turns a manifest's bank section into the bank patch it applies.
+// Every key — the disposition traits and the reflect mission included — is a
+// configuration override in the bank's config column, which is where the
+// reference's template import persists the whole bank section and the only
+// place its configuration read consults. A manifest therefore round-trips
+// through exactly the column the config endpoint reads and writes.
 func BankPatch(updates map[string]any) storage.BankPatch {
 	patch := storage.BankPatch{}
-	traits := map[string]int{}
 	config := map[string]any{}
 	for key, value := range updates {
-		switch key {
-		case "disposition_skepticism", "disposition_literalism", "disposition_empathy":
-			if raw, ok := asIntValue(value); ok {
-				traits[strings.TrimPrefix(key, "disposition_")] = raw
-			}
-		case "reflect_mission":
-			if text, ok := value.(string); ok {
-				mission := text
-				patch.Mission = &mission
-			}
-		default:
-			config[key] = value
-		}
-	}
-	if len(traits) > 0 {
-		patch.Disposition = &traits
+		config[key] = value
 	}
 	if len(config) > 0 {
 		patch.Config = &config
 	}
 	return patch
-}
-
-// asIntValue decodes a JSON number that arrived as float64 (or a Go int) into
-// an int, reporting whether the value was numeric.
-func asIntValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		if typed != float64(int(typed)) {
-			return 0, false
-		}
-		return int(typed), true
-	default:
-		return 0, false
-	}
 }

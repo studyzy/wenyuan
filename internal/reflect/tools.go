@@ -5,7 +5,6 @@ package reflect
 
 import (
 	"encoding/json"
-	"sort"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -178,11 +177,4 @@ type ToolCall struct {
 	ID    string
 	Name  string
 	Input map[string]any
-}
-
-// sortStrings returns a sorted copy, so a rendered tool result is stable.
-func sortStrings(values []string) []string {
-	out := append([]string(nil), values...)
-	sort.Strings(out)
-	return out
 }

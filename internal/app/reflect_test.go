@@ -77,9 +77,11 @@ func TestReflectUsesModelLoopThroughServedHandler(t *testing.T) {
 	}
 }
 
-// With no model configured the reflection falls back to the deterministic
-// in-process loop, so the default offline deployment still answers.
-func TestReflectFallsBackWithoutModel(t *testing.T) {
+// With no model configured the reference refuses a reflection outright rather
+// than synthesizing an answer, so a deployment whose provider is "none" reports
+// the reference's 400 message instead of falling back to the deterministic
+// in-process loop.
+func TestReflectRefusesWithoutModel(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
@@ -99,7 +101,11 @@ func TestReflectFallsBackWithoutModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := send(application, http.MethodPost, "/v1/default/banks/b1/reflect", string(body))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reflect status = %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reflect status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	const want = "Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
+	if detail, _ := decodeJSON(t, rec)["detail"].(string); detail != want {
+		t.Fatalf("detail = %q, want %q", detail, want)
 	}
 }

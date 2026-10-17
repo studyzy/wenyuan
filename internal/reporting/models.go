@@ -3,10 +3,6 @@
 // public surface.
 package reporting
 
-import (
-	"time"
-)
-
 // BankStatsResponse is the per-bank operational summary.
 type BankStatsResponse struct {
 	BankID               string                    `json:"bank_id"`
@@ -236,21 +232,4 @@ type ConsolidationStrategiesPreview struct {
 // ClearMemoryObservationsResponse reports how many observations were removed.
 type ClearMemoryObservationsResponse struct {
 	DeletedCount int `json:"deleted_count"`
-}
-
-// formatTime renders a timestamp as the API reports it.
-func formatTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339)
-}
-
-// formatTimePtr renders an optional timestamp.
-func formatTimePtr(value *time.Time) *string {
-	if value == nil || value.IsZero() {
-		return nil
-	}
-	formatted := value.UTC().Format(time.RFC3339)
-	return &formatted
 }

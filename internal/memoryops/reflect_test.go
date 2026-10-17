@@ -24,8 +24,8 @@ func TestReflectSuccessReturnsAnswer(t *testing.T) {
 	if strings.TrimSpace(text) == "" {
 		t.Fatalf("answer text must be non-empty: %v", body)
 	}
-	if _, ok := body["based_on"]; ok {
-		t.Fatalf("cited evidence must be omitted without the facts gate: %v", body)
+	if body["based_on"] != nil {
+		t.Fatalf("cited evidence must be null without the facts gate: %v", body)
 	}
 }
 
@@ -128,8 +128,8 @@ func TestReflectTraceGateOutputFlag(t *testing.T) {
 func TestReflectTraceOmittedWithoutGate(t *testing.T) {
 	mux, _ := reflectServer(t)
 	_, body := reflectBody(t, mux, "b1", `{"query":"q"}`)
-	if _, ok := body["trace"]; ok {
-		t.Fatalf("trace must be omitted without the gate: %v", body)
+	if body["trace"] != nil {
+		t.Fatalf("trace must be null without the gate: %v", body)
 	}
 }
 
@@ -144,11 +144,11 @@ func TestReflectStructuredOutput(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
-	if _, hasOut := body["structured_output"]; hasOut {
-		t.Fatalf("nothing-found must omit the structured output: %v", body)
+	if body["structured_output"] != nil {
+		t.Fatalf("nothing-found must report null structured output: %v", body)
 	}
-	if _, hasErr := body["structured_output_error"]; hasErr {
-		t.Fatalf("nothing-found must omit the error: %v", body)
+	if body["structured_output_error"] != nil {
+		t.Fatalf("nothing-found must report a null error: %v", body)
 	}
 
 	h := NewHandlers(storage.NewMemoryStore("public"), 5, 30000)
@@ -159,17 +159,20 @@ func TestReflectStructuredOutput(t *testing.T) {
 	}
 }
 
-// ts-0005 / beh-0005 / ec-0002: context is appended to the query; a blank query
-// with non-blank context is accepted, while a blank query with no context is
-// unprocessable before any model work.
+// ts-0005 / beh-0005 / ec-0002: context is appended to the query; the query is
+// a required field, so a body carrying only context is the framework's missing
+// item, and a supplied blank query with or without context is unprocessable
+// before any model work.
 func TestReflectContextConcatenationAndBlankGuard(t *testing.T) {
 	mux, _ := reflectServer(t)
 	code, body := reflectBody(t, mux, "b1", `{"context":"only context"}`)
-	if code != http.StatusOK {
-		t.Fatalf("context-only must be accepted: %d %v", code, body)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("context-only must be 422: %d %v", code, body)
 	}
-	if _, ok := body["text"].(string); !ok {
-		t.Fatalf("answer missing: %v", body)
+	if items, _ := body["detail"].([]any); len(items) != 1 {
+		t.Fatalf("context-only detail = %v", body["detail"])
+	} else if item, _ := items[0].(map[string]any); item["type"] != "missing" || item["loc"].([]any)[1] != "query" {
+		t.Fatalf("context-only item = %v", item)
 	}
 	for _, blank := range []string{`{"query":""}`, `{"query":"   "}`, `{}`} {
 		code, _ := reflectBody(t, mux, "b1", blank)
@@ -533,5 +536,23 @@ func TestReflectDefaultOptionsLayering(t *testing.T) {
 	query = h.buildReflectQuery("b1", ReflectRequest{Query: "q"})
 	if query.SearchObservationsMaxTokens != bankTokens || query.SearchObservationsIncludeEntities {
 		t.Fatalf("the bank value must win over the deployment default: %+v", query)
+	}
+}
+
+// A deployment with no reflect model refuses the request before it reaches the
+// store, matching the reference's 400 and its message verbatim.
+func TestReflectRefusesWithoutModelConfigured(t *testing.T) {
+	_, store := newServer(t)
+	h := NewHandlers(store, 5, 30000)
+	h.RefuseWithoutReflectModel = true
+	mux := bindHandlers(t, h)
+
+	code, body := reflectBody(t, mux, "b-no-reflect-model", `{"query":"q"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+	const want = "Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
+	if body["detail"] != want {
+		t.Fatalf("detail = %v, want %q", body["detail"], want)
 	}
 }

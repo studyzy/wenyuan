@@ -8,7 +8,7 @@ type DryRunResult struct {
 	Name               string            `json:"name"`
 	RequestedMode      string            `json:"requested_mode"`
 	EffectiveMode      string            `json:"effective_mode"`
-	ModeFallbackReason string            `json:"mode_fallback_reason,omitempty"`
+	ModeFallbackReason *string           `json:"mode_fallback_reason"`
 	Outcome            string            `json:"outcome"`
 	WouldPersist       bool              `json:"would_persist"`
 	Scope              DryRunScope       `json:"scope"`
@@ -19,8 +19,8 @@ type DryRunResult struct {
 	CandidateContent   string            `json:"candidate_content"`
 	PreviewContent     string            `json:"preview_content"`
 	Diff               string            `json:"diff"`
-	DeltaOperations    *DryRunDeltaOps   `json:"delta_operations,omitempty"`
-	Retraction         *DryRunRetraction `json:"retraction,omitempty"`
+	DeltaOperations    *DryRunDeltaOps   `json:"delta_operations"`
+	Retraction         *DryRunRetraction `json:"retraction"`
 	Trace              DryRunTrace       `json:"trace"`
 	Usage              DryRunUsage       `json:"usage"`
 	DurationMS         int               `json:"duration_ms"`
@@ -29,19 +29,19 @@ type DryRunResult struct {
 
 // DryRunScope is the memory scope a refresh resolved to.
 type DryRunScope struct {
-	Tags                  []string `json:"tags,omitempty"`
+	Tags                  []string `json:"tags"`
 	TagsMatch             string   `json:"tags_match"`
-	TagGroups             []any    `json:"tag_groups,omitempty"`
-	FactTypes             []string `json:"fact_types,omitempty"`
+	TagGroups             []any    `json:"tag_groups"`
+	FactTypes             []string `json:"fact_types"`
 	ExcludeMentalModels   bool     `json:"exclude_mental_models"`
 	ExcludeMentalModelIDs []string `json:"exclude_mental_model_ids"`
 }
 
 // DryRunWindow is the time window a refresh read memories from.
 type DryRunWindow struct {
-	CreatedAfter  *string `json:"created_after,omitempty"`
+	CreatedAfter  *string `json:"created_after"`
 	CreatedBefore string  `json:"created_before"`
-	Watermark     *string `json:"watermark,omitempty"`
+	Watermark     *string `json:"watermark"`
 }
 
 // DryRunFactCounts counts facts retrieved versus actually used, by fact type.
@@ -61,20 +61,20 @@ type DryRunRetraction struct {
 	FactIDs        []string `json:"fact_ids"`
 	FactTexts      []string `json:"fact_texts"`
 	Applied        bool     `json:"applied"`
-	DeferredReason string   `json:"deferred_reason,omitempty"`
+	DeferredReason *string  `json:"deferred_reason"`
 }
 
 // DryRunTrace is the execution trace of a refresh, always included on a dry run.
 type DryRunTrace struct {
-	RecordedAt         *string           `json:"recorded_at,omitempty"`
+	RecordedAt         *string           `json:"recorded_at"`
 	EffectiveMode      string            `json:"effective_mode"`
-	ModeFallbackReason string            `json:"mode_fallback_reason,omitempty"`
+	ModeFallbackReason *string           `json:"mode_fallback_reason"`
 	Outcome            string            `json:"outcome"`
 	ToolCalls          []DryRunToolCall  `json:"tool_calls"`
 	LLMCalls           []DryRunLLMCall   `json:"llm_calls"`
-	DeltaOperations    *DryRunDeltaOps   `json:"delta_operations,omitempty"`
-	Retraction         *DryRunRetraction `json:"retraction,omitempty"`
-	Usage              *DryRunUsage      `json:"usage,omitempty"`
+	DeltaOperations    *DryRunDeltaOps   `json:"delta_operations"`
+	Retraction         *DryRunRetraction `json:"retraction"`
+	Usage              *DryRunUsage      `json:"usage"`
 	DurationMS         int               `json:"duration_ms"`
 	Warnings           []string          `json:"warnings"`
 }
@@ -82,11 +82,11 @@ type DryRunTrace struct {
 // DryRunToolCall is one reflect tool call made during a refresh.
 type DryRunToolCall struct {
 	Tool        string         `json:"tool"`
-	Reason      string         `json:"reason,omitempty"`
+	Reason      *string        `json:"reason"`
 	Input       map[string]any `json:"input"`
-	Output      map[string]any `json:"output,omitempty"`
-	UpdatedAt   *string        `json:"updated_at,omitempty"`
-	ResultCount *int           `json:"result_count,omitempty"`
+	Output      map[string]any `json:"output"`
+	UpdatedAt   *string        `json:"updated_at"`
+	ResultCount *int           `json:"result_count"`
 	DurationMS  int            `json:"duration_ms"`
 	Iteration   int            `json:"iteration"`
 }

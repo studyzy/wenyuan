@@ -32,6 +32,8 @@ func (a *App) mountReporting(handle func(method, pattern string, handler http.Ha
 	handlers.Extraction = newFactExtractor(a.Provider, ExtractionSettingsFrom(a.Config))
 	handlers.Embeddings = embeddingGeneratorFrom(a.Embedder)
 	handlers.ProcessDefaults = bankapi.PublicConfigDefaults(a.Config)
+	handlers.LLMOutputLanguage = a.Config.Provider.OutputLanguage
+	handlers.RetainOptionalFactDimensions = a.Config.RetainOptionalFactDimensions
 	// The switch is passed only when it is off: an unconfigured deployment keeps
 	// the reference's default, which extracts causal relations.
 	if !a.Config.RetainTuning.ExtractCausalLinks {

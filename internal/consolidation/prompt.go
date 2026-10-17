@@ -108,7 +108,7 @@ Existing observation:
 Expected output (one UPDATE, no creates — both new facts are additional evidence for the same canonical decision):
 
 {"creates": [],
-  "updates": [{"text": "Donald named Athena's sovereignty as a foundational principle of the Janus architecture.", "observation_id": "11111111-1111-1111-1111-111111111111", "source_fact_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"], "reason": "Both new facts restate the same sovereignty decision already captured by obs 1111 — merged as evidence rather than creating siblings."}}],
+  "updates": [{"text": "Donald named Athena's sovereignty as a foundational principle of the Janus architecture.", "observation_id": "11111111-1111-1111-1111-111111111111", "source_fact_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"], "reason": "Both new facts restate the same sovereignty decision already captured by obs 1111 — merged as evidence rather than creating siblings."}],
   "deletes": []}
 
 ### Example 2 — State change updates one observation; unrelated fact creates a new one
@@ -138,7 +138,7 @@ Expected output (the waitlist observation is no longer true of anyone and record
 
 {"creates": [{"text": "Bob uses the product through open signup; the beta waitlist was shut down.", "source_fact_ids": ["e5f6a7b8-c9d0-1234-efab-345678901234"], "reason": "The waitlist observation is superseded outright rather than amended, so CREATE the replacement and DELETE the old one."}],
   "updates": [],
-  "deletes": [{"observation_id": "33333333-3333-3333-3333-333333333333", "reason": "The waitlist no longer exists — this observation is superseded, not merely out of date."}]}}
+  "deletes": [{"observation_id": "33333333-3333-3333-3333-333333333333", "reason": "The waitlist no longer exists — this observation is superseded, not merely out of date."}]}
 
 ### Observation text rules
 

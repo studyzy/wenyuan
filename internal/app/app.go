@@ -147,6 +147,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	// The configured output language applies to every generated artifact, so it
 	// is applied at the provider boundary rather than in each pipeline.
 	activeProvider = WithOutputLanguage(activeProvider, cfg.Provider.OutputLanguage)
+	// Record every completion at the provider boundary, so the LLM duration,
+	// call and token families report the calls that actually ran.
+	activeProvider = provider.MetricsProvider(activeProvider, cfg.Provider.Model)
 
 	tenantAuth, err := cfg.ResolveTenantAuth()
 	if err != nil {
@@ -175,7 +178,6 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	extensions.SetPassthroughHeaders(cfg.ExtensionPassThroughHeaders)
 	auditLogger := NewAuditLogger(cfg, store)
 	router := httpx.NewRouter(httpx.RouterOptions{
-		NullDropFields:        cfg.NullDropFields,
 		BasePath:              cfg.BasePath,
 		TenantAPIKey:          tenantAuth.APIKey,
 		TenantMCPAuthDisabled: tenantAuth.MCPAuthDisabled,
@@ -354,8 +356,15 @@ func (a *App) mount(router *httpx.Router) error {
 	}
 	monitoring.BindVersionRoutes(version, handle)
 
-	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: operationMetrics(a.Store, a.Config.MetricsTuning), Histograms: loopLagHistograms(a.Config.MetricsTuning), Tenant: metricsTenant(a.Config)}
+	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: expositionExtras(a.Store, a.Config), Histograms: loopLagHistograms(a.Config.MetricsTuning), Tenant: metricsTenant(a.Config)}
 	monitoring.BindMetricsRoutes(a.MetricsH, handle)
+	// The store measures a recall's phases; installing the observer here puts
+	// them in the same registry the exposition reads.
+	InstallRecallPhaseObserver(a.Store)
+	// The store measures a retain's phases (the embedder and each pooled
+	// acquire); installing the observer here puts them in the same registry the
+	// exposition reads.
+	InstallRetainPhaseObserver()
 	if a.Config.PprofEnabled {
 		monitoring.BindProfileRoutes(handle)
 	}
@@ -419,8 +428,10 @@ func (a *App) mount(router *httpx.Router) error {
 	setStoreTuning(a.Store, a.Config)
 	memops.RetainSubBatchTokens = a.Config.RetainTuning.SubBatchTokens
 	memops.FileUploadDisabled = !a.Config.EnableFileUploadAPI
+	memops.RetainBatchEnabled = a.Config.RetainBatchEnabled
 	memops.ObservationsEnabled = a.Config.EnableObservations
 	memops.AutoConsolidationEnabled = a.Config.EnableAutoConsolidation
+	setStoreAutoConsolidation(a.Store, a.Config.EnableAutoConsolidation)
 	memops.DiscardDocumentText = !a.Config.StoreDocumentText
 	memops.DefaultExtractionMode = a.Config.RetainExtractionMode
 	if strategy := a.Config.ProcessDefaults.RetainDefaultStrategy; strategy != nil {
@@ -429,8 +440,10 @@ func (a *App) mount(router *httpx.Router) error {
 	memoryops.ReflectDefaultOptions = a.Config.ProcessDefaults.ReflectDefaultOptions
 	memops.DefaultOptionalFactDimensions = a.Config.RetainOptionalFactDimensions
 	// The model-driven reflection loop replaces the deterministic one when a
-	// model is configured.
+	// model is configured. With no model the reference refuses reflect outright
+	// (400) rather than synthesizing an answer, so the route is armed to refuse.
 	memops.Reflection = newReflectRunner(a.Provider)
+	memops.RefuseWithoutReflectModel = !reflectModelConfigured(a.Provider)
 	// The cross-encoder replaces the best-per-arm relevance fallback when a
 	// reranker is configured. A dedicated RERANKER-family backend wins over the
 	// chat provider's own capability, and the flags derived from the selected
@@ -442,7 +455,11 @@ func (a *App) mount(router *httpx.Router) error {
 		SearchObservationsMaxTokens:       a.Config.ReflectSearchObservationsMaxTokens,
 		SearchObservationsIncludeEntities: a.Config.ReflectSearchObservationsIncludeEntities,
 	}
-	memops.ReflectTimeout = a.Config.ReadTimeout
+	// The reflect wall clock is the reference's own knob: the HTTP reflect route
+	// shares the refresh operation's budget (HINDSIGHT_API_REFLECT_WALL_TIMEOUT,
+	// default 300s), not the generic HTTP read timeout a user request is expected
+	// to finish within.
+	memops.ReflectTimeout = a.Config.Worker.WallTimeouts["refresh_mental_model"]
 	// Memory Defense decisions enqueue their webhook through the worker's one
 	// enqueue path; a deployment with no webhooks still gets the notifier, but
 	// it finds no subscriber and queues nothing.

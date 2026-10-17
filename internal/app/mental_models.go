@@ -12,6 +12,9 @@ import (
 // composition root.
 func (a *App) mountMentalModels(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handlers := mentalmodels.NewHandlers(a.Store)
+	// With no LLM provider the reference refuses refresh work before any
+	// lookup, so the route is armed to refuse rather than queue it.
+	handlers.RefuseWithoutRefreshModel = !reflectModelConfigured(a.Provider)
 	// The dry run runs the same reflect pipeline a refresh does, so it is
 	// supplied from the composition root, which holds the model boundary.
 	runner := newMentalModelRefresh(a.Store, a.Provider, newReflectRunner(a.Provider))

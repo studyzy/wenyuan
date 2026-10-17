@@ -23,6 +23,11 @@ const DefaultMaxIterations = 10
 // reflection cannot grow without bound.
 const DefaultContextBudget = 24000
 
+// DefaultObservationToolTokens is the budget the search_observations tool
+// applies when the model omits a max_tokens argument and neither the request
+// nor the bank configured one.
+const DefaultObservationToolTokens = 5000
+
 // ErrNoModel reports a reflection attempted with no model configured. The loop
 // is model-driven, so without one there is nothing to decide the next step.
 var ErrNoModel = errors.New("reflection requires a configured model")
@@ -48,8 +53,11 @@ type Evidence struct {
 	// Metadata, Tags, OccurredStart and OccurredEnd are the source document's
 	// stamp and the memory's temporal fields, carried so a tool result can show
 	// the model where a fact came from.
-	Metadata      map[string]any
-	Tags          []string
+	Metadata map[string]any
+	Tags     []string
+	// Entities are the resolved entity names the fact mentions, carried so an
+	// observation's tool result can list them.
+	Entities      []string
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time
@@ -107,7 +115,7 @@ type Retrieval interface {
 	// requested depth (chunk or document).
 	ReflectExpand(ctx context.Context, ids []string, depth string) ([]Evidence, error)
 	// Directives returns the standing instructions that apply to this request.
-	Directives(ctx context.Context) []string
+	Directives(ctx context.Context) []Directive
 }
 
 // Config tunes the loop.
@@ -140,6 +148,13 @@ type Config struct {
 	BankName    string
 	Mission     string
 	Disposition map[string]int
+	// ObservationMaxTokens is the budget the search_observations tool applies
+	// when the model omits a max_tokens argument. A zero value keeps the
+	// shipped default.
+	ObservationMaxTokens int
+	// ObservationIncludeEntities attaches resolved entity names to each
+	// observation a search returns.
+	ObservationIncludeEntities bool
 	// AnswerAsDocument makes the loop take its answer from the `done` call's
 	// arguments rather than composing prose afterwards: the model states either
 	// a structured `document` or a plain `answer`, and the markdown is derived
@@ -479,13 +494,23 @@ func (l *Loop) executeAll(ctx context.Context, calls []ToolCall) ([][]Evidence, 
 	return batches, nil
 }
 
+// observationToolTokens is the budget the search_observations tool applies when
+// the model names none: the caller's resolved value, else the shipped default.
+func (l *Loop) observationToolTokens() int {
+	if l.cfg.ObservationMaxTokens > 0 {
+		return l.cfg.ObservationMaxTokens
+	}
+	return DefaultObservationToolTokens
+}
+
 // execute dispatches one tool call to the retriever.
 func (l *Loop) execute(ctx context.Context, call ToolCall) ([]Evidence, error) {
 	switch call.Name {
 	case ToolSearchMentalModels:
 		return l.retrieval.ReflectMentalModels(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_results", 5), 1, 50))
 	case ToolSearchObservations:
-		return l.retrieval.ReflectObservations(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_tokens", 5000), 1000, 16000))
+		return l.retrieval.ReflectObservations(ctx, stringArg(call.Input, "query"),
+			clampInt(intArg(call.Input, "max_tokens", l.observationToolTokens()), 1000, 16000))
 	case ToolRecall:
 		return l.retrieval.ReflectMemories(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_tokens", 2048), 1000, 16000))
 	case ToolReadMentalModels:
@@ -704,14 +729,8 @@ func (l *Loop) aliasToolText(text string, kindByID map[string]string) string {
 // turns used, so a citation the model writes reads the same on both sides.
 func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 	messages := []provider.Message{
-		{Role: "system", Content: buildFinalSystemPrompt(nil, l.profile())},
+		{Role: "system", Content: buildFinalSystemPrompt(l.retrieval.Directives(ctx), l.profile())},
 		{Role: "user", Content: buildFinalPrompt(l.cfg.Question, l.renderEvidence(), l.cfg.MaxTokens)},
-	}
-	// The compliance gate: the reminder goes last, after the question and the
-	// evidence, so it is not out-ranked by the turns that follow the section at
-	// the top of the conversation.
-	if reminder := directivesReminder(l.retrieval.Directives(ctx)); reminder != "" {
-		messages = append(messages, provider.Message{Role: provider.RoleSystem, Content: reminder})
 	}
 	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
 		Messages:  messages,
@@ -832,6 +851,10 @@ func (l *Loop) rewriteToLength(ctx context.Context, outcome *Outcome, answer str
 			{Role: provider.RoleUser, Content: fmt.Sprintf("Target budget: %d tokens.\n\nText to rewrite:\n%s", l.cfg.MaxTokens, answer)},
 		},
 		Scope: "reflect",
+		// The rewrite's cost is bounded by the deployment's completion cap, not
+		// by the visible-length target: the same knob the final synthesis call
+		// uses, and unset (zero) by default, which is what the reference does.
+		MaxTokens: l.cfg.MaxCompletionTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("reflection length rewrite failed: %w", err)
