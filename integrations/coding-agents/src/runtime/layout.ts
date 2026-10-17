@@ -16,7 +16,6 @@ import { OWNERSHIP_MARKER } from "../write/marker";
 export const PER_USER_DIRECTORY_NAME = ".wenyuan";
 export const RUNTIME_DIRECTORY_NAME = OWNERSHIP_MARKER;
 export const HOOKS_SUBDIRECTORY = "hooks";
-export const HOOK_FILE_SUFFIX = ".mjs";
 export const MCP_SERVER_FILE_NAME = "mcp-server.mjs";
 
 export function homeDirectory(): string {
@@ -30,11 +29,6 @@ export function homeDirectory(): string {
 
 export function runtimeDirectory(): string {
   return join(homeDirectory(), PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME);
-}
-
-/** The absolute path a host config points at for one packaged lifecycle hook. */
-export function hookPath(eventId: string): string {
-  return join(runtimeDirectory(), HOOKS_SUBDIRECTORY, `${eventId}${HOOK_FILE_SUFFIX}`);
 }
 
 /** The absolute path a host launches as the packaged MCP server. */

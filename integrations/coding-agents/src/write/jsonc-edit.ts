@@ -165,8 +165,9 @@ export function removeFromJsoncArray(
 
 /**
  * Writes one named member into the object a key path names: an existing
- * member of ours is replaced in place, a foreign member with the same name is
- * reported as a conflict and left alone, and a missing member is created.
+ * member of ours is replaced in place, a missing member is created, and a
+ * foreign member is left alone unless its value is a list, in which case the
+ * host's own elements are kept and ours is appended after them.
  */
 export function upsertJsoncMember(
   source: string,
@@ -209,6 +210,31 @@ export function upsertJsoncMember(
   }
   const existing: Member | null = findMember(source, object, key);
   if (existing) {
+    if (source[existing.value.start] === "[") {
+      // A list on this key is the host's own shape or one install already
+      // appended to: strip any of ours and append ours after the host's
+      // entries, so both survive and a re-run does not stack copies.
+      const cleaned: string = withoutOwnElements(source, existing.value, isOwned);
+      const elements: Range[] = arrayElements(cleaned, existing.value);
+      if (elements.length === 0) {
+        return {
+          text: `${cleaned.slice(0, existing.value.start + 1)}${JSON.stringify(value)}${cleaned.slice(
+            existing.value.end - 1,
+          )}`,
+          changed: true,
+        };
+      }
+      const last: Range | undefined = elements[elements.length - 1];
+      if (!last) {
+        return { ...unchanged(source), conflict: true };
+      }
+      const pad: string = lineIndentAt(cleaned, last.start) ?? indent;
+      const at: number = last.end;
+      return {
+        text: `${cleaned.slice(0, at)},${lineEnding}${pad}${JSON.stringify(value)}${cleaned.slice(at)}`,
+        changed: true,
+      };
+    }
     // Ownership is decided by the value alone: the key is this package's own
     // name, so it carries the marker whether the entry is ours or not.
     if (!isOwned(source.slice(existing.value.start, existing.value.end))) {
@@ -222,7 +248,31 @@ export function upsertJsoncMember(
   return { text: insertMember(source, object, memberText), changed: true };
 }
 
-/** Removes one named member, but only when it is ours. */
+/** Drops this package's own elements from one array, leaving the array's own. */
+function withoutOwnElements(
+  source: string,
+  array: Range,
+  isOwned: (elementSource: string) => boolean,
+): string {
+  const owned: Range[] = arrayElements(source, array).filter((element) =>
+    isOwned(source.slice(element.start, element.end)),
+  );
+  let text: string = source;
+  for (let index = owned.length - 1; index >= 0; index -= 1) {
+    const element: Range | undefined = owned[index];
+    if (!element) {
+      continue;
+    }
+    const span: Range = extendOverAdjacentComma(text, element);
+    text = `${text.slice(0, span.start)}${text.slice(span.end)}`;
+  }
+  return text;
+}
+
+/**
+ * Removes one named member when it is ours, and when the host wrote a list on
+ * the key removes only our elements from it, leaving the host's own behind.
+ */
 export function removeJsoncMember(
   source: string,
   path: readonly string[],
@@ -239,6 +289,26 @@ export function removeJsoncMember(
   const member: Member | null = findMember(source, container, key);
   if (!member) {
     return unchanged(source);
+  }
+  if (source[member.value.start] === "[") {
+    // The host wrote a list on this key and install appended our entry to it:
+    // strip only our elements, keep the host's own, and drop the key only when
+    // nothing but our entries was ever there.
+    const owned: Range[] = arrayElements(source, member.value).filter((element) =>
+      isOwned(source.slice(element.start, element.end)),
+    );
+    if (owned.length === 0) {
+      return { ...unchanged(source), conflict: true };
+    }
+    const cleaned: string = withoutOwnElements(source, member.value, isOwned);
+    if (arrayElements(cleaned, member.value).length === 0) {
+      const withoutMember: string | null = deleteMember(cleaned, [...path, key]);
+      if (withoutMember === null) {
+        return unchanged(source);
+      }
+      return { text: pruneEmptiedContainers(withoutMember, path), changed: true };
+    }
+    return { text: cleaned, changed: true };
   }
   if (!isOwned(source.slice(member.value.start, member.value.end))) {
     return { ...unchanged(source), conflict: true };

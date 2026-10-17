@@ -8,7 +8,8 @@ import {
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
 import { backupExistingFile } from "../write/backup";
 import { upsertJsoncMember } from "../write/jsonc-edit";
-import { installLifecycleHooks, removeLifecycleHooks } from "./hooks";
+import { installLifecycleHooks } from "./hooks";
+import { removeLifecycleHooks } from "./hooks-remove";
 import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
   hostConfigPath,
@@ -63,10 +64,10 @@ const host: HostContribution = {
     }
 
     const hooks = await installLifecycleHooks({
+      hostId: host.id,
       configPath,
       format: host.locations.configFormat,
       runtimeDirectory: env.runtimeDirectory,
-      environment: options.environment,
     });
     if (!hooks.ok) {
       return { hostId: host.id, ok: false, messages: hooks.messages };
@@ -95,6 +96,7 @@ const host: HostContribution = {
     let ok = true;
     for (const configPath of hostConfigPaths(host, env.home)) {
       const result = await removeLifecycleHooks({
+        hostId: host.id,
         configPath,
         format: host.locations.configFormat,
       });

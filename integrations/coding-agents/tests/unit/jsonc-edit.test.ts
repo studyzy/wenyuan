@@ -154,6 +154,44 @@ describe("a named member", () => {
     expect(gone?.changed).toBe(true);
     expect(gone?.text).not.toContain("wenyuan-memory");
   });
+
+  it("appends into a foreign list on the same key rather than reporting a conflict", () => {
+    const source: string = '{\n  "hooks": {\n    "session-start": [\n      { "command": "other" }\n    ]\n  }\n}\n';
+    const edit = upsertJsoncMember(source, ["hooks"], "session-start", entry, isOwned);
+    expect(edit?.conflict).toBeUndefined();
+    expect(edit?.changed).toBe(true);
+    const text: string = edit?.text ?? "";
+    expect(text).toContain('"command": "other"');
+    expect(text).toContain(OWNERSHIP_MARKER);
+    expect(text.split(OWNERSHIP_MARKER).length - 1).toBe(1);
+  });
+
+  it("keeps the foreign entries and stays idempotent across a re-run", () => {
+    const source: string = '{\n  "hooks": {\n    "session-start": [\n      { "command": "other" }\n    ]\n  }\n}\n';
+    const first: string = upsertJsoncMember(source, ["hooks"], "session-start", entry, isOwned)?.text ?? "";
+    const second: string = upsertJsoncMember(first, ["hooks"], "session-start", entry, isOwned)?.text ?? "";
+    expect(second).toContain('"command": "other"');
+    expect(second.split(OWNERSHIP_MARKER).length - 1).toBe(1);
+  });
+
+  it("strips only its own element from a foreign list, leaving the host's", () => {
+    const source: string = '{\n  "hooks": {\n    "session-start": [\n      { "command": "other" }\n    ]\n  }\n}\n';
+    const withOurs: string = upsertJsoncMember(source, ["hooks"], "session-start", entry, isOwned)?.text ?? "";
+    const removed = removeJsoncMember(withOurs, ["hooks"], "session-start", isOwned);
+    expect(removed?.changed).toBe(true);
+    const text: string = removed?.text ?? "";
+    expect(text).not.toContain(OWNERSHIP_MARKER);
+    expect(text).toContain('"command": "other"');
+    expect(text).toContain('"session-start"');
+  });
+
+  it("deletes the key when its list held only this package's entry", () => {
+    const source: string = '{\n  "hooks": {\n    "session-start": []\n  }\n}\n';
+    const withOurs: string = upsertJsoncMember(source, ["hooks"], "session-start", entry, isOwned)?.text ?? "";
+    const removed = removeJsoncMember(withOurs, ["hooks"], "session-start", isOwned);
+    expect(removed?.changed).toBe(true);
+    expect(removed?.text).not.toContain('"session-start"');
+  });
 });
 
 /** A file the edit produced has to still be a document the editor can read. */

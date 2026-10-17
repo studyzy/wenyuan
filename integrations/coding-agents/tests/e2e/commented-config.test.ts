@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LIFECYCLE_EVENTS } from "../../src/hosts/hooks";
+import { declaredEvents } from "../helpers/hooks";
 import { BACKUP_SUFFIX } from "../../src/write/backup";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
@@ -9,6 +9,8 @@ import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home"
  * commas and the file's own line endings survive install and uninstall. One
  * that will not parse is left byte-identical instead of being rewritten.
  */
+
+const DECLARED_EVENT_COUNT = declaredEvents("claude-code").length;
 
 const COMMENTED = [
   "{",
@@ -42,7 +44,7 @@ describe("a host config that permits comments", () => {
         expect(text).toContain('"model": "opus"');
         expect(text).toContain('"command": "echo foreign"');
         // One registration per lifecycle event, and no marker anywhere else.
-        expect(occurrences(text, OWNERSHIP_MARKER)).toBe(LIFECYCLE_EVENTS.length);
+        expect(occurrences(text, OWNERSHIP_MARKER)).toBe(DECLARED_EVENT_COUNT);
         expect(text.endsWith("\n")).toBe(true);
       },
     );

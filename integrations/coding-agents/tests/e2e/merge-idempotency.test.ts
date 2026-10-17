@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { LIFECYCLE_EVENTS } from "../../src/hosts/hooks";
+import { HOST_LIFECYCLES, orderedRegistrations } from "../../src/hosts/lifecycle";
 import { MCP_SERVERS_KEY } from "../../src/mcp/register";
 import { BACKUP_SUFFIX } from "../../src/write/backup";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
+import { declaredEvents, eventValue, ownEntryCount } from "../helpers/hooks";
 import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
 
 /**
@@ -21,10 +22,17 @@ const HOSTS: HostFixture[] = [
   { id: "codex", config: ".codex/settings.json", mcp: ".codex/mcp.json" },
 ];
 
+/** The stage-one event spelling each host declares, holding the foreign entry. */
+function sessionStartEvent(hostId: string): string {
+  return orderedRegistrations(HOST_LIFECYCLES[hostId]!)[0]!.registration.event;
+}
+
 const SEEDED_CONFIG = `${JSON.stringify(
   {
     model: "opus",
-    hooks: { "session-start": [{ command: "echo foreign" }] },
+    hooks: {
+      "session-start": [{ command: "echo foreign" }],
+    },
   },
   null,
   2,
@@ -39,26 +47,17 @@ const SEEDED_MCP = `${JSON.stringify(
   2,
 )}\n`;
 
-function eventEntries(document: JsonDocument, eventId: string): unknown[] {
-  const hooks: unknown = document["hooks"];
-  if (hooks === null || typeof hooks !== "object") {
-    return [];
-  }
-  const entries: unknown = (hooks as JsonDocument)[eventId];
-  return Array.isArray(entries) ? entries : [];
-}
-
-function ownEntryCount(document: JsonDocument, eventId: string): number {
-  return eventEntries(document, eventId).filter(
-    (entry) => entry !== null && typeof entry === "object" && JSON.stringify(entry).includes(OWNERSHIP_MARKER),
-  ).length;
-}
-
 describe("installing into a home whose host config already holds other content", () => {
   it.each(HOSTS)("keeps everything foreign in $id", async (host: HostFixture) => {
+    // The seed's event spelling must match what the host declares, or the
+    // foreign entry lands on a key the installer never touches and the suite
+    // would pass for the wrong reason.
+    const seeded: JsonDocument = { model: "opus", hooks: { [sessionStartEvent(host.id)]: [{ command: "echo foreign" }] } };
+    const seededConfig = `${JSON.stringify(seeded, null, 2)}\n`;
+
     await withFakeHome(
       {
-        files: { [host.config]: SEEDED_CONFIG, [host.mcp]: SEEDED_MCP },
+        files: { [host.config]: seededConfig, [host.mcp]: SEEDED_MCP },
         environment: { PATH: "" },
       },
       async (home: FakeHome) => {
@@ -67,12 +66,17 @@ describe("installing into a home whose host config already holds other content",
 
         const document: JsonDocument = await home.readJson(host.config);
         expect(document["model"]).toBe("opus");
-        const sessionStart: unknown[] = eventEntries(document, "session-start");
-        expect(sessionStart).toHaveLength(2);
-        expect(JSON.stringify(sessionStart)).toContain("echo foreign");
-        expect(ownEntryCount(document, "session-start")).toBe(1);
-        for (const event of LIFECYCLE_EVENTS) {
-          expect(ownEntryCount(document, event.id), `${host.id} ${event.id}`).toBe(1);
+        // The foreign entry is kept exactly as the host wrote it, in the same
+        // list our own entry was appended to, and neither its spelling nor its
+        // shape is rewritten to match ours.
+        const seeded: unknown = eventValue(document, sessionStartEvent(host.id));
+        expect(Array.isArray(seeded)).toBe(true);
+        const foreign = (seeded as unknown[]).filter(
+          (entry) => JSON.stringify(entry).includes("echo foreign"),
+        );
+        expect(foreign).toEqual([{ command: "echo foreign" }]);
+        for (const event of declaredEvents(host.id)) {
+          expect(ownEntryCount(document, event), `${host.id} ${event}`).toBe(1);
         }
 
         const mcp: JsonDocument = await home.readJson(host.mcp);
@@ -103,8 +107,8 @@ describe("installing the same host twice", () => {
 
         expect(afterSecond).toEqual(afterFirst);
         expect(mcpAfterSecond).toEqual(mcpAfterFirst);
-        for (const event of LIFECYCLE_EVENTS) {
-          expect(ownEntryCount(afterSecond, event.id), `${host.id} ${event.id}`).toBe(1);
+        for (const event of declaredEvents(host.id)) {
+          expect(ownEntryCount(afterSecond, event), `${host.id} ${event}`).toBe(1);
         }
         expect(Object.keys(mcpAfterSecond[MCP_SERVERS_KEY] as JsonDocument)).toHaveLength(2);
       },

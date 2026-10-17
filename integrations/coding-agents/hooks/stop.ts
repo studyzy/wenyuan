@@ -1,22 +1,37 @@
-import { LIFECYCLE_EVENTS, type LifecycleEventId } from "../src/hosts/hooks";
+import { failOpen, hooksDisabled, parsePayload, readStdin } from "../src/runtime/hook-contract";
+import { stageDeadlineMs } from "../src/runtime/deadline";
+import { runStop } from "../src/runtime/stop-stage";
+import { resolveHostId } from "../src/runtime/hook-host";
 
 /**
  * The packaged stop hook, launched when a session stops.
  *
- * The event it serves comes from the one shared declaration, so install,
- * uninstall and this entry point cannot disagree about which events exist.
- * The hook's runtime behavior belongs to a later slice: for now it exists so
- * the host has something to launch, and it succeeds without touching anything.
+ * It is a thin adapter over the stop stage: it honors the disable guard, reads
+ * the payload from standard input, runs the stage behind the shared fail-open
+ * wrapper, and exits zero on every fail-open path. It writes nothing to its
+ * standard output on any path, so the host session is never disturbed.
  */
-const EVENT_ID: LifecycleEventId = "stop";
 
-function main(): number {
-  const known: boolean = LIFECYCLE_EVENTS.some((candidate) => candidate.id === EVENT_ID);
-  if (!known) {
-    process.stderr.write(`unknown lifecycle event: ${EVENT_ID}\n`);
-    return 1;
+const STAGE = "stop";
+
+async function main(): Promise<number> {
+  if (hooksDisabled()) {
+    return 0;
   }
+  const source: string = await readStdin();
+  const payload: Record<string, unknown> = parsePayload(source);
+  const hostId: string | undefined = resolveHostId(payload);
+  if (hostId === undefined) {
+    return 0;
+  }
+  await failOpen(async () => {
+    await runStop({
+      hostId,
+      payload,
+      timeoutMs: stageDeadlineMs(hostId, STAGE),
+    });
+  });
   return 0;
 }
 
-process.exit(main());
+process.exit(await main());

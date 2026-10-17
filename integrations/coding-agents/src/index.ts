@@ -8,7 +8,9 @@ export { OWNERSHIP_MARKER, carriesMarker, valueCarriesMarker } from "./write/mar
 export {
   containerAt,
   mergeEntryIntoContainer,
+  mergeValueIntoContainer,
   removeOwnEntriesFromContainer,
+  removeOwnValuesFromContainer,
   readJsonFile,
   writeJsonFile,
   type ConfigFormat,
@@ -41,11 +43,44 @@ export {
   type ServerMode,
 } from "./config/connection";
 
-export { hookPath, mcpServerPath, runtimeDirectory } from "./runtime/layout";
+export { mcpServerPath, runtimeDirectory } from "./runtime/layout";
 export { stageRuntime, builtRuntimeDirectory, runtimeIsStaged } from "./runtime/stage";
+export { MemoryClient, openMemoryClient, textsFromRecall } from "./runtime/memory-client";
+export { resolveHookConnection, type HookConnection, type HookConnectionResult } from "./runtime/hook-connection";
+export { hooksDisabled, failOpen, readStdin, parsePayload, DISABLE_HOOKS_ENV } from "./runtime/hook-contract";
+export { stageDeadlineMs, STOP_DEADLINE_MARGIN_SECONDS } from "./runtime/deadline";
+export { runSessionStart } from "./runtime/session-start-stage";
+export { runPrePrompt } from "./runtime/pre-prompt-stage";
+export { runStop } from "./runtime/stop-stage";
+export { conversationFromPayload, conversationDocumentId, conversationFingerprint } from "./runtime/conversation";
 
-export { LIFECYCLE_EVENTS, installLifecycleHooks, removeLifecycleHooks } from "./hosts/hooks";
-export type { LifecycleEventId, LifecycleHookEntry } from "./hosts/hooks";
+export { HOOKS_CONTAINER_KEY, installLifecycleHooks, hookPathFor } from "./hosts/hooks";
+export { removeLifecycleHooks } from "./hosts/hooks-remove";
+export {
+  HOOK_COMMAND_TYPE,
+  MATCHER_GROUP_KEY,
+  encodeRegistration,
+  commandEntriesOf,
+  registrationIsOwned,
+} from "./hosts/hook-shape";
+export {
+  HOST_LIFECYCLES,
+  HOOK_SCRIPT_FILES,
+  hostLifecycle,
+  declaredHostIds,
+  orderedRegistrations,
+  registrationFor,
+  stageForScriptFile,
+  budgetMilliseconds,
+} from "./hosts/lifecycle";
+export { LIFECYCLE_STAGES } from "./hosts/lifecycle-types";
+export type {
+  LifecycleRegistration,
+  LifecycleStage,
+  HostLifecycle,
+  BudgetUnit,
+  RegistrationStyle,
+} from "./hosts/lifecycle-types";
 export {
   MCP_HARNESS_ENV,
   MCP_SERVER_NAME,

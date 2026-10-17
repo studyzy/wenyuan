@@ -88,7 +88,7 @@ function ensureContainer(document: JsonDocument, path: readonly string[]): unkno
 }
 
 /**
- * Merges one entry into the container a key path names: the package's own
+ * Merges one value into the container a key path names: the package's own
  * entries are filtered out first, so foreign entries survive and a second run
  * leaves exactly one entry of ours behind.
  */
@@ -102,6 +102,113 @@ export function mergeEntryIntoContainer(
   kept.push(entry);
   container.length = 0;
   container.push(...kept);
+}
+
+/**
+ * Merges one whole value onto the member a key path names, rather than into an
+ * array. A host registration whose own shape is a nested object (a matcher
+ * group holding a command entry) lives on the event key directly, so this sets
+ * the key to the value: a key already holding one of ours is replaced in place,
+ * a key holding a foreign array of entries keeps those entries and receives
+ * ours appended after them, and any other foreign value is left alone.
+ */
+export function mergeValueIntoContainer(
+  document: JsonDocument,
+  path: readonly string[],
+  value: unknown,
+): void {
+  ensureObjectMembers(document, path.slice(0, -1));
+  const key: string | undefined = path[path.length - 1];
+  if (key === undefined) {
+    return;
+  }
+  let parent: JsonDocument = document;
+  for (const step of path.slice(0, -1)) {
+    const next: unknown = parent[step];
+    if (!isJsonObject(next)) {
+      break;
+    }
+    parent = next;
+  }
+  const existing: unknown = parent[key];
+  if (Array.isArray(existing)) {
+    // A list on this key is the host's own shape or one install already
+    // appended to: drop any of ours and append ours after the host's entries,
+    // so both survive and a re-run still leaves exactly one of ours.
+    const kept: unknown[] = existing.filter((item) => !valueCarriesMarker(item));
+    existing.length = 0;
+    existing.push(...kept, value);
+    return;
+  }
+  if (existing !== undefined && !valueCarriesMarker(existing)) {
+    // A foreign registration of any other shape has no room for a second entry
+    // and is left exactly as it is.
+    return;
+  }
+  parent[key] = value;
+}
+
+/** Ensures every object on a key path exists, creating the missing ones. */
+function ensureObjectMembers(document: JsonDocument, path: readonly string[]): void {
+  let current: JsonDocument = document;
+  for (const key of path) {
+    const next: unknown = current[key];
+    if (!isJsonObject(next)) {
+      const created: JsonDocument = {};
+      current[key] = created;
+      current = created;
+    } else {
+      current = next;
+    }
+  }
+}
+
+/**
+ * Removes this package's own value on the member a key path names, whether the
+ * member holds our value directly or a foreign array we appended ours into.
+ * Returns how many values went away.
+ */
+export function removeOwnValuesFromContainer(
+  document: JsonDocument,
+  path: readonly string[],
+): number {
+  const key: string | undefined = path[path.length - 1];
+  if (key === undefined) {
+    return 0;
+  }
+  let parent: JsonDocument = document;
+  for (const step of path.slice(0, -1)) {
+    const next: unknown = parent[step];
+    if (!isJsonObject(next)) {
+      return 0;
+    }
+    parent = next;
+  }
+  const existing: unknown = parent[key];
+  if (existing === undefined) {
+    return 0;
+  }
+  if (Array.isArray(existing)) {
+    // A foreign list the install appended our entry to: only our elements go,
+    // and a list left empty is deleted with the key.
+    const kept: unknown[] = existing.filter((item) => !valueCarriesMarker(item));
+    const removed: number = existing.length - kept.length;
+    if (removed === 0) {
+      return 0;
+    }
+    if (kept.length === 0) {
+      delete parent[key];
+    } else {
+      existing.length = 0;
+      existing.push(...kept);
+    }
+    return removed;
+  }
+  if (!valueCarriesMarker(existing)) {
+    return 0;
+  }
+  delete parent[key];
+  return 1;
 }
 
 /**

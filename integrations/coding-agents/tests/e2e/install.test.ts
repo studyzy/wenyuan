@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { LIFECYCLE_EVENTS } from "../../src/hosts/hooks";
 import { MCP_SERVERS_KEY } from "../../src/mcp/register";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
+import { declaredEvents, ownEntryCount } from "../helpers/hooks";
 import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
 
 /**
@@ -16,18 +16,6 @@ const CONFIG = ".claude/settings.json";
 const MCP = ".claude.json";
 const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/claude-code/SKILL.md`;
 const WORKSPACE_KEY = "enableAllProjectMcpServers";
-
-function ownEntries(document: JsonDocument, eventId: string): number {
-  const hooks: unknown = document["hooks"];
-  if (hooks === null || typeof hooks === "object") {
-    const entries: unknown = (hooks as JsonDocument)?.[eventId];
-    if (Array.isArray(entries)) {
-      return entries.filter((entry: unknown) => JSON.stringify(entry).includes(OWNERSHIP_MARKER))
-        .length;
-    }
-  }
-  return 0;
-}
 
 describe("the conversation-backfill opt-in flag", () => {
   it("attempts the backfill only when the flag is passed, and wires identically", async () => {
@@ -100,8 +88,8 @@ describe("a host whose preflight check fails", () => {
 
       expect(await home.isFile(".codex/settings.json")).toBe(true);
       const codex: JsonDocument = await home.readJson(".codex/settings.json");
-      for (const event of LIFECYCLE_EVENTS) {
-        expect(ownEntries(codex, event.id)).toBe(1);
+      for (const event of declaredEvents("codex")) {
+        expect(ownEntryCount(codex, event)).toBe(1);
       }
       expect(Object.keys((await home.readJson(".codex/mcp.json"))[MCP_SERVERS_KEY] as JsonDocument)).toEqual([
         OWNERSHIP_MARKER,

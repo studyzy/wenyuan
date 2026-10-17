@@ -1,49 +1,41 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { HOOKS_SUBDIRECTORY, HOOK_FILE_SUFFIX } from "../runtime/layout";
+import { HOOKS_SUBDIRECTORY } from "../runtime/layout";
 import { backupExistingFile } from "../write/backup";
-import {
-  insertIntoJsoncArray,
-  jsoncDocumentIsEmpty,
-  removeFromJsoncArray,
-  type JsoncEdit,
-} from "../write/jsonc-edit";
+import { upsertJsoncMember, type JsoncEdit } from "../write/jsonc-edit";
+import { OWNERSHIP_MARKER } from "../write/marker";
 import {
   asJsonDocument,
-  documentIsEmpty,
-  mergeEntryIntoContainer,
-  pruneEmptyContainers,
-  removeOwnEntriesFromContainer,
+  mergeValueIntoContainer,
   type ConfigFormat,
   type JsonDocument,
 } from "../write/json-merge";
-import { OWNERSHIP_MARKER } from "../write/marker";
+import { encodeRegistration, HOOKS_CONTAINER_KEY, type EncodedRegistration } from "./hook-shape";
+import {
+  budgetMilliseconds,
+  hostLifecycle,
+  orderedRegistrations,
+} from "./lifecycle";
+import type { LifecycleRegistration } from "./lifecycle-types";
 
 /**
- * The three lifecycle hooks install merges into a host config, and the entry
- * points that hosts launch.
+ * The three lifecycle hooks install merges into a host config.
  *
- * The events are declared once, here, and shared by install, uninstall and the
- * packaged entry points. The registration shape is deliberately minimal and
- * carries no per-host variation: the per-host field spellings and budget units
- * for these registrations belong to a later slice, and keeping them in one
- * place means supplying them later touches neither merging, backup nor removal.
+ * Each host's lifecycle comes from the one shared declaration, so the event
+ * spelling, the packaged script file and the numeric budget are never decided
+ * here. This module only turns each declared registration into the host's own
+ * registration shape and merges it in non-destructively: a pre-existing file
+ * is backed up first, foreign entries and unrelated keys survive, and a second
+ * run leaves exactly one registration per event.
  */
 
-export const HOOKS_CONTAINER_KEY = "hooks";
+export { HOOKS_CONTAINER_KEY };
 
-export const LIFECYCLE_EVENTS = [
-  { id: "session-start", summary: "a session starts" },
-  { id: "pre-prompt", summary: "a user prompt is about to be submitted" },
-  { id: "stop", summary: "a session stops" },
-] as const;
+/** The two interactive event spellings, shared so a host always matches. */
+export const INTERACTIVE_EVENTS: readonly string[] = ["SessionStart", "UserPromptSubmit"];
 
-export type LifecycleEventId = (typeof LIFECYCLE_EVENTS)[number]["id"];
-
-export interface LifecycleHookEntry {
-  command: string;
-  env?: Record<string, string>;
-}
+/** The stop event spelling, shared so a host always matches. */
+export const STOP_EVENT = "Stop";
 
 export interface HookWriteResult {
   ok: boolean;
@@ -51,29 +43,39 @@ export interface HookWriteResult {
   messages: string[];
 }
 
-/** One registration: the staged hook's absolute path, plus the runtime's environment. */
-export function lifecycleHookEntry(
-  eventId: LifecycleEventId,
-  runtimeDirectory: string,
-  environment?: Record<string, string>,
-): LifecycleHookEntry {
-  const entry: LifecycleHookEntry = { command: hookPathFor(eventId, runtimeDirectory) };
-  if (environment && Object.keys(environment).length > 0) {
-    entry.env = { ...environment };
-  }
-  return entry;
-}
-
-/** The command path for one event, inside the stable runtime directory. */
-export function hookPathFor(eventId: LifecycleEventId, runtimeDirectory: string): string {
-  return join(runtimeDirectory, HOOKS_SUBDIRECTORY, `${eventId}${HOOK_FILE_SUFFIX}`);
-}
-
 export interface HookWriteInput {
+  /** The host whose lifecycle is installed, resolved from the declaration. */
+  hostId: string;
   configPath: string;
   format: ConfigFormat;
+  /** The stable staged runtime every written command path points into. */
   runtimeDirectory: string;
-  environment?: Record<string, string>;
+}
+
+/** The absolute path a host config points at for one declared registration. */
+export function hookPathFor(scriptFile: string, runtimeDirectory: string): string {
+  return join(runtimeDirectory, HOOKS_SUBDIRECTORY, scriptFile);
+}
+
+/**
+ * The value one event's key holds: the encoded registration for that host.
+ * The budget is converted into the host's declared unit at this boundary so
+ * the encoder stays a pure transformation.
+ */
+function eventValue(
+  registration: LifecycleRegistration,
+  runtimeDirectory: string,
+): EncodedRegistration {
+  const budgetValue: number =
+    registration.budgetUnit === "seconds"
+      ? registration.budget
+      : budgetMilliseconds(registration);
+  return encodeRegistration(registration, hookPathFor(registration.scriptFile, runtimeDirectory), budgetValue);
+}
+
+/** One event key path for a host config: the wrapper key plus the event spelling. */
+function eventPath(event: string): string[] {
+  return [HOOKS_CONTAINER_KEY, event];
 }
 
 /**
@@ -83,14 +85,15 @@ export interface HookWriteInput {
  * survive, and a second run leaves exactly one registration per event.
  */
 export async function installLifecycleHooks(input: HookWriteInput): Promise<HookWriteResult> {
+  const registrations = orderedRegistrations(hostLifecycle(input.hostId));
   const before: string | null = await readConfigSource(input.configPath);
   if (before === null) {
     const document: JsonDocument = {};
-    for (const event of LIFECYCLE_EVENTS) {
-      mergeEntryIntoContainer(
+    for (const { registration } of registrations) {
+      mergeValueIntoContainer(
         document,
-        [HOOKS_CONTAINER_KEY, event.id],
-        lifecycleHookEntry(event.id, input.runtimeDirectory, input.environment),
+        eventPath(registration.event),
+        eventValue(registration, input.runtimeDirectory),
       );
     }
     await writeConfigSource(input.configPath, `${JSON.stringify(document, null, 2)}\n`);
@@ -99,11 +102,17 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
   await backupExistingFile(input.configPath);
   let text: string = before;
   if (input.format === "jsonc") {
-    for (const event of LIFECYCLE_EVENTS) {
-      const edit: JsoncEdit | null = insertIntoJsoncArray(
+    for (const { registration } of registrations) {
+      // The host's event maps to a nested value, so the member on the event key
+      // is written directly. A member already holding one of ours is replaced
+      // in place; a foreign member on the same event is left exactly as it is,
+      // matching the document-merge behavior for a config that permits comments.
+      const edit: JsoncEdit | null = upsertJsoncMember(
         text,
-        [HOOKS_CONTAINER_KEY, event.id],
-        lifecycleHookEntry(event.id, input.runtimeDirectory, input.environment),
+        [HOOKS_CONTAINER_KEY],
+        registration.event,
+        eventValue(registration, input.runtimeDirectory),
+        (memberSource) => memberSource.includes(OWNERSHIP_MARKER),
       );
       if (edit === null) {
         return {
@@ -118,67 +127,12 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
     }
   } else {
     const document: JsonDocument = asJsonDocument(text);
-    for (const event of LIFECYCLE_EVENTS) {
-      mergeEntryIntoContainer(
+    for (const { registration } of registrations) {
+      mergeValueIntoContainer(
         document,
-        [HOOKS_CONTAINER_KEY, event.id],
-        lifecycleHookEntry(event.id, input.runtimeDirectory, input.environment),
+        eventPath(registration.event),
+        eventValue(registration, input.runtimeDirectory),
       );
-    }
-    text = `${JSON.stringify(document, null, 2)}\n`;
-  }
-  if (text === before) {
-    return { ok: true, written: false, messages: [] };
-  }
-  await writeConfigSource(input.configPath, text);
-  return { ok: true, written: true, messages: [] };
-}
-
-/**
- * Removes this package's own registrations, then deletes the containers the
- * removal emptied and the file itself when nothing meaningful is left.
- */
-export async function removeLifecycleHooks(input: {
-  configPath: string;
-  format: ConfigFormat;
-}): Promise<HookWriteResult> {
-  const before: string | null = await readConfigSource(input.configPath);
-  if (before === null) {
-    return { ok: true, written: false, messages: [] };
-  }
-  await backupExistingFile(input.configPath);
-  let text: string = before;
-  if (input.format === "jsonc") {
-    for (const event of LIFECYCLE_EVENTS) {
-      const edit: JsoncEdit | null = removeFromJsoncArray(
-        text,
-        [HOOKS_CONTAINER_KEY, event.id],
-        (elementSource) => elementSource.includes(OWNERSHIP_MARKER),
-      );
-      if (edit === null) {
-        return {
-          ok: false,
-          written: false,
-          messages: [
-            `${input.configPath} could not be parsed, so its lifecycle hooks were left alone.`,
-          ],
-        };
-      }
-      text = edit.text;
-    }
-    if (jsoncDocumentIsEmpty(text)) {
-      await rm(input.configPath, { force: true });
-      return { ok: true, written: true, messages: [] };
-    }
-  } else {
-    const document: JsonDocument = asJsonDocument(text);
-    for (const event of LIFECYCLE_EVENTS) {
-      removeOwnEntriesFromContainer(document, [HOOKS_CONTAINER_KEY, event.id]);
-    }
-    pruneEmptyContainers(document);
-    if (documentIsEmpty(document)) {
-      await rm(input.configPath, { force: true });
-      return { ok: true, written: true, messages: [] };
     }
     text = `${JSON.stringify(document, null, 2)}\n`;
   }

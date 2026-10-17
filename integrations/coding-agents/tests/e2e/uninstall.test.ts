@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { LIFECYCLE_EVENTS } from "../../src/hosts/hooks";
+import { HOST_LIFECYCLES, orderedRegistrations } from "../../src/hosts/lifecycle";
 import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/register";
 import { PER_USER_DIRECTORY_NAME } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
+import { declaredEvents } from "../helpers/hooks";
 import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
 
 /**
@@ -16,8 +17,16 @@ const CONFIG = ".claude/settings.json";
 const MCP = ".claude.json";
 const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/claude-code/SKILL.md`;
 
+/**
+ * The event spellings this host declares, and the first stage's spelling — the
+ * one whose event also carries a foreign entry seeded below.
+ */
+const DECLARED_EVENTS = declaredEvents("claude-code");
+const SESSION_START_EVENT = orderedRegistrations(HOST_LIFECYCLES["claude-code"]!)[0]!.registration.event;
+const SURVIVING_EVENTS = DECLARED_EVENTS.filter((event) => event !== SESSION_START_EVENT);
+
 const SEEDED_CONFIG = `${JSON.stringify(
-  { model: "opus", hooks: { "session-start": [{ command: "echo foreign" }] } },
+  { model: "opus", hooks: { [SESSION_START_EVENT]: [{ command: "echo foreign" }] } },
   null,
   2,
 )}\n`;
@@ -53,13 +62,11 @@ describe("uninstalling a home seeded with foreign content", () => {
         expect(document["model"]).toBe("opus");
         const hooks: JsonDocument = hooksOf(document);
         // The event that also carried a foreign entry stays, with that entry.
-        expect(hooks["session-start"]).toEqual([{ command: "echo foreign" }]);
+        expect(hooks[SESSION_START_EVENT]).toEqual([{ command: "echo foreign" }]);
         // The events that held nothing but its own entries were emptied and
         // deleted rather than left as empty arrays.
-        for (const event of LIFECYCLE_EVENTS) {
-          if (event.id !== "session-start") {
-            expect(hooks[event.id]).toBeUndefined();
-          }
+        for (const event of SURVIVING_EVENTS) {
+          expect(hooks[event]).toBeUndefined();
         }
 
         const mcp: JsonDocument = await home.readJson(MCP);
