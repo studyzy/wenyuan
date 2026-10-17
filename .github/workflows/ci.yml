@@ -16,9 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The version go.mod requires, not an older one: with an older Go the
+      # toolchain is fetched as a module, and a partial restore of the module
+      # cache leaves it without the tools the coverage step needs (the run
+      # fails with `no such tool "covdata"` instead of a real result).
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
           cache: true
 
       - name: Verify module tidiness
@@ -51,7 +55,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Check formatting
         run: |
@@ -90,7 +94,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
           cache: true
 
       # The default gate never talks to a database, so the schema, vector and
@@ -148,7 +152,8 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.gate.outputs.changed == 'true'
         with:
-          # The nested clients/go module declares go 1.25.
+          # go.mod requires 1.25, here and in the nested clients/go module, so
+          # the toolchain is installed rather than fetched as a module.
           go-version: "1.25"
 
       - name: Python SDK suite
