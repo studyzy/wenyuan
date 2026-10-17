@@ -123,7 +123,10 @@ export {
   addArguments,
   removeArguments,
 } from "./mcp/command-line";
-export { copyPackagedSkill, removeInstalledSkill, installedSkillDirectory } from "./hosts/skills";
+export { copyPackagedSkill, removeInstalledSkill, packagedSkillDirectory, SKILL_DIRECTORY_NAME } from "./hosts/skills";
+export { skillsRootFor, installedSkillDirectoryFor } from "./hosts/skill-locations";
+export { SKILL_NAME, SKILL_DESCRIPTION, SKILL_TOOL_IDENTIFIERS } from "./hosts/skill-tools";
+export { refreshInstalledSkill, type SkillRefreshOutcome } from "./runtime/skill-refresh";
 
 export { HOSTS, HOST_IDS, hostNames, findHost, detectHosts, hostIsDetected } from "./hosts/registry";
 export { selectHosts, ALL_HOSTS_KEYWORD } from "./hosts/select";

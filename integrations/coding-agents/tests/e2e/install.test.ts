@@ -13,7 +13,7 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
  */
 
 const CONFIG = ".claude/settings.json";
-const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/claude-code/SKILL.md`;
+const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/SKILL.md`;
 const WORKSPACE_KEY = "enableAllProjectMcpServers";
 
 describe("the conversation-backfill opt-in flag", () => {

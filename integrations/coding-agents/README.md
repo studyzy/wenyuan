@@ -66,6 +66,15 @@ shape.
 
 ## Development
 
+<!-- region:skill-usage -->
+## Using the companion skill
+
+Once installed, each host loads the packaged skill from its own skills root.
+The skill instructs the agent to store deliberately, to retrieve search-first,
+and to correct stale memory with a correction document — the same tool surface
+the installed MCP server exposes.
+<!-- /region -->
+
 ```sh
 npm --prefix integrations/coding-agents install
 npm --prefix integrations/coding-agents run typecheck

@@ -10,7 +10,6 @@ import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
   hostConfigPath,
   hostConfigPaths,
-  hostSkillsPath,
   type HostContribution,
   type HostEnvironment,
   type HostInstallOptions,
@@ -72,7 +71,7 @@ const host: HostContribution = {
       return { hostId: host.id, ok: false, messages };
     }
 
-    const skill = await copyPackagedSkill(hostSkillsPath(host, env.home), host.id);
+    const skill = await copyPackagedSkill(host.id, env.home);
     messages.push(...skill.messages);
 
     return { hostId: host.id, ok: mcp.ok && skill.ok, messages };
@@ -97,7 +96,7 @@ const host: HostContribution = {
     });
     ok = ok && mcp.ok;
     messages.push(...mcp.messages);
-    const skill = await removeInstalledSkill(hostSkillsPath(host, env.home), host.id);
+    const skill = await removeInstalledSkill(host.id, env.home);
     messages.push(...skill.messages);
     return { hostId: host.id, ok: ok && skill.ok, messages };
   },

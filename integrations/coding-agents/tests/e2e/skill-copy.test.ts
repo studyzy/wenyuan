@@ -5,36 +5,39 @@ import { HOSTS } from "../../src/hosts/registry";
 import type { HostContribution } from "../../src/hosts/types";
 import {
   copyPackagedSkill,
-  installedSkillDirectory,
   packagedSkillDirectory,
   removeInstalledSkill,
   SKILL_DIRECTORY_NAME,
 } from "../../src/hosts/skills";
+import { skillsRootFor } from "../../src/hosts/skill-locations";
 import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
 
 /**
- * The companion skill is copied into each host's own skills directory and
- * removed again on uninstall. Hosts install into a directory of their own
- * inside the shared fixed name, so uninstalling one host cannot take another
- * host's still-live copy even when two hosts resolve to the same skills root.
+ * The companion skill is copied into each host's own skills directory under one
+ * fixed child-directory name and removed again on uninstall. The name is the
+ * same for every host, and the copy overwrites in place, so a repeated install
+ * never nests or duplicates it.
  */
 
-function skillFile(skillsRoot: string, hostId: string): string {
-  return `${installedSkillDirectory(skillsRoot, hostId)}/SKILL.md`;
+/** The installed skill file as a home-relative path, the form FakeHome reads. */
+function skillFile(hostId: string, home: FakeHome): string {
+  const root: string | null = skillsRootFor(hostId, home.home);
+  if (root === null) {
+    throw new Error(`no skills root declared for ${hostId}`);
+  }
+  return relativeToHome(home, join(root, SKILL_DIRECTORY_NAME, "SKILL.md"));
 }
 
 describe("installing and uninstalling two hosts", () => {
   it("removes only the host that was uninstalled", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code", "codex"])).status).toBe(0);
-      const claudeSkill: string = skillFile(".claude/skills", "claude-code");
-      const codexSkill: string = skillFile(".codex/skills", "codex");
-      expect(await home.isFile(claudeSkill)).toBe(true);
-      expect(await home.isFile(codexSkill)).toBe(true);
+      expect(await home.isFile(skillFile("claude-code", home))).toBe(true);
+      expect(await home.isFile(skillFile("codex", home))).toBe(true);
 
       expect((await runInstaller(["uninstall", "claude-code"])).status).toBe(0);
-      expect(await home.exists(claudeSkill)).toBe(false);
-      expect((await home.read(codexSkill)).length).toBeGreaterThan(0);
+      expect(await home.exists(skillFile("claude-code", home))).toBe(false);
+      expect((await home.read(skillFile("codex", home))).length).toBeGreaterThan(0);
     });
   });
 
@@ -43,56 +46,75 @@ describe("installing and uninstalling two hosts", () => {
       expect(
         (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status,
       ).toBe(0);
-      const roots: string[] = [];
       for (const host of HOSTS) {
-        const relative: string = skillFile(host.locations.skillsDirectory, host.id);
-        expect(await home.isFile(relative), relative).toBe(true);
-        roots.push(host.locations.skillsDirectory);
+        const path: string = skillFile(host.id, home);
+        expect(await home.isFile(path), path).toBe(true);
       }
-      // Whether or not two hosts resolve to the same root, each copy is a
-      // directory of its own and all of them are present at once.
-      expect(new Set(roots).size).toBeLessThanOrEqual(roots.length);
     });
   });
 });
 
-describe("a skills root two hosts share", () => {
+describe("the fixed child-directory name", () => {
+  it("is the same name for every host", async () => {
+    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      expect(
+        (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status,
+      ).toBe(0);
+      const children: string[][] = [];
+      for (const host of HOSTS) {
+        const root: string | null = skillsRootFor(host.id, home.home);
+        expect(root).not.toBeNull();
+        children.push(await home.list(relativeToHome(home, root as string)));
+      }
+      for (const listed of children) {
+        expect(listed).toContain(SKILL_DIRECTORY_NAME);
+      }
+    });
+  });
+
   it("keeps the other host's copy when one host is uninstalled", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const shared: string = home.path("shared-skills");
-      expect((await copyPackagedSkill(shared, "host-a")).ok).toBe(true);
-      expect((await copyPackagedSkill(shared, "host-b")).ok).toBe(true);
-      expect(await home.isFile(skillFile("shared-skills", "host-a"))).toBe(true);
-      expect(await home.isFile(skillFile("shared-skills", "host-b"))).toBe(true);
+      expect((await runInstaller(["install", "claude-code", "codebuddy"])).status).toBe(0);
+      const claude: string = skillFile("claude-code", home);
+      const buddy: string = skillFile("codebuddy", home);
 
-      expect((await removeInstalledSkill(shared, "host-a")).ok).toBe(true);
-      expect(await home.exists(skillFile("shared-skills", "host-a"))).toBe(false);
-      expect((await home.read(skillFile("shared-skills", "host-b"))).length).toBeGreaterThan(0);
+      expect((await runInstaller(["uninstall", "claude-code"])).status).toBe(0);
+      expect(await home.exists(claude)).toBe(false);
+      expect((await home.read(buddy)).length).toBeGreaterThan(0);
     });
   });
 
-  it("keeps a copy that also holds something this package did not create", async () => {
+  it("preserves a foreign sibling under the skills root", async () => {
+    const source: string | null = packagedSkillDirectory();
+    expect(source).not.toBeNull();
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const shared: string = home.path("shared-skills");
-      await copyPackagedSkill(shared, "host-a");
-      await home.write(`${installedSkillDirectory(shared, "host-a")}/mine.md`, "# mine\n");
+      await copyPackagedSkill("claude-code", home.home);
+      await home.write(".claude/skills/foreign/SKILL.md", "# foreign\n");
 
-      const result = await removeInstalledSkill(shared, "host-a");
+      const result = await removeInstalledSkill("claude-code", home.home);
       expect(result.ok).toBe(true);
-      expect(await home.exists(`${installedSkillDirectory(shared, "host-a")}/SKILL.md`)).toBe(false);
-      expect(await home.read(`${installedSkillDirectory(shared, "host-a")}/mine.md`)).toContain("mine");
+      expect(await home.exists(skillFile("claude-code", home))).toBe(false);
+      expect(await home.isFile(".claude/skills/foreign/SKILL.md")).toBe(true);
     });
   });
+});
 
-  it("installs under the shared fixed directory name", async () => {
+describe("a copy after the package moved", () => {
+  it("refreshes the installed content in place", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
-      const relative: string = `.codebuddy/skills/${SKILL_DIRECTORY_NAME}/codebuddy/SKILL.md`;
-      expect(await home.isFile(relative)).toBe(true);
+      expect((await copyPackagedSkill("claude-code", home.home)).ok).toBe(true);
+      const before: string = await home.read(".claude/skills/wenyuan-memory/SKILL.md");
+
+      // Simulate a newer package by overwriting the installed copy, then a
+      // re-install restores the packaged content.
+      await home.write(".claude/skills/wenyuan-memory/SKILL.md", "# stale\n");
+      await copyPackagedSkill("claude-code", home.home);
+      const after: string = await home.read(".claude/skills/wenyuan-memory/SKILL.md");
+      expect(after).toBe(before);
     });
   });
 
-  it("removes a nested packaged file and collapses the per-host directory", async () => {
+  it("refreshes a nested packaged file", async () => {
     const source: string | null = packagedSkillDirectory();
     expect(source).not.toBeNull();
     const nested: string = join(source as string, "guides", "usage.md");
@@ -100,16 +122,20 @@ describe("a skills root two hosts share", () => {
     await writeFile(nested, "# usage\n");
     try {
       await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-        const shared: string = home.path("shared-skills");
-        const relative: string = `shared-skills/${SKILL_DIRECTORY_NAME}/host-a`;
-        await copyPackagedSkill(shared, "host-a");
-        expect(await home.isFile(`${relative}/guides/usage.md`)).toBe(true);
+        await copyPackagedSkill("claude-code", home.home);
+        expect(await home.isFile(".claude/skills/wenyuan-memory/guides/usage.md")).toBe(true);
 
-        expect((await removeInstalledSkill(shared, "host-a")).ok).toBe(true);
-        expect(await home.exists(relative)).toBe(false);
+        expect((await removeInstalledSkill("claude-code", home.home)).ok).toBe(true);
+        expect(await home.exists(".claude/skills/wenyuan-memory")).toBe(false);
+        expect(await home.exists(".claude/skills")).toBe(true);
       });
     } finally {
       await removeFile(join(source as string, "guides"), { recursive: true, force: true });
     }
   });
 });
+
+/** The path of a directory relative to the fake home, for home.list(). */
+function relativeToHome(home: FakeHome, absolute: string): string {
+  return absolute.startsWith(home.home) ? absolute.slice(home.home.length + 1) : absolute;
+}

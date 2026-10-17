@@ -1,5 +1,6 @@
 import { openMemoryClient, type MemoryClient } from "./memory-client";
 import { sessionStartOutput, type SessionStartOutput } from "./hook-output";
+import { refreshInstalledSkill } from "./skill-refresh";
 
 /**
  * The session-start stage behavior.
@@ -9,6 +10,10 @@ import { sessionStartOutput, type SessionStartOutput } from "./hook-output";
  * anything, offers a context block and a short user-facing message. A session
  * that begins with no reachable service or no relevant memory emits nothing at
  * all rather than an empty envelope.
+ *
+ * It also refreshes the host's installed companion skill on drift, best-effort,
+ * so an upgraded package reaches the installed copy without a re-install. The
+ * refresh never reaches the session: a failure leaves the output unchanged.
  */
 
 export interface SessionStartResult {
@@ -27,6 +32,10 @@ export interface SessionStartOptions {
   timeoutMs: number;
   /** Injectable for tests; a client is opened when absent. */
   client?: MemoryClient | null;
+  /** The host this firing belongs to, for the best-effort skill refresh. */
+  hostId?: string;
+  /** The home directory the host's skills root is resolved under. */
+  home?: string;
 }
 
 const DEFAULT_MESSAGE = "WenYuan memory is active for this session.";
@@ -36,6 +45,12 @@ const DEFAULT_MESSAGE = "WenYuan memory is active for this session.";
  * an error becomes a null context block, and the message is offered on its own.
  */
 export async function runSessionStart(options: SessionStartOptions): Promise<SessionStartResult> {
+  if (options.hostId !== undefined && options.home !== undefined) {
+    // Best-effort: a refresh failure must not affect the session, so the
+    // refresh swallows its own errors and nothing here is awaited on its result.
+    await refreshInstalledSkill(options.hostId, options.home);
+  }
+
   const client: MemoryClient | null =
     options.client !== undefined
       ? options.client

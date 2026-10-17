@@ -25,7 +25,7 @@ interface ExpectedLocations {
 
 const LOCATIONS: ExpectedLocations[] = [
   { id: "claude-code", config: ".claude/settings.json", skills: ".claude/skills" },
-  { id: "codex", config: ".codex/settings.json", skills: ".codex/skills" },
+  { id: "codex", config: ".codex/settings.json", skills: ".agents/skills" },
   { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
 ];
 
@@ -58,7 +58,7 @@ describe("installing into a home where the host has no config at all", () => {
         expect(commands[0]).toContain(staged);
       }
 
-      expect(await home.isFile(`${expected.skills}/${OWNERSHIP_MARKER}/${hostId}/SKILL.md`)).toBe(true);
+      expect(await home.isFile(`${expected.skills}/${OWNERSHIP_MARKER}/SKILL.md`)).toBe(true);
     });
   });
 

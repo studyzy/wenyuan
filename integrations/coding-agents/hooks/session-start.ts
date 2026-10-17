@@ -1,6 +1,7 @@
 import { failOpen, hooksDisabled, parsePayload, readStdin } from "../src/runtime/hook-contract";
 import { stageDeadlineMs } from "../src/runtime/deadline";
 import { runSessionStart } from "../src/runtime/session-start-stage";
+import { homeDirectory } from "../src/config/paths";
 import { registrationFor, resolveHostId } from "../src/runtime/hook-host";
 
 /**
@@ -30,6 +31,8 @@ async function main(): Promise<number> {
       eventName: registrationFor(hostId, STAGE).event,
       query: "What should I know about this project and the user at the start of a session?",
       timeoutMs: stageDeadlineMs(hostId, STAGE),
+      hostId,
+      home: homeDirectory(),
     });
     if (result.output !== null) {
       process.stdout.write(`${JSON.stringify(result.output)}\n`);

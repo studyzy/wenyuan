@@ -96,8 +96,3 @@ export function hostMcpConfigPaths(host: HostContribution, home: string): string
 export function hostHasMcpConfigFile(host: HostContribution): boolean {
   return host.locations.mcpConfigFiles.length > 0;
 }
-
-/** This package's own skill directory inside the host's skills root. */
-export function hostSkillsPath(host: HostContribution, home: string): string {
-  return join(home, host.locations.skillsDirectory);
-}

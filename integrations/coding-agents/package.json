@@ -25,6 +25,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && node build.config.mjs",
+    "build:skill": "node scripts/generate-skill.mjs",
+    "check:skill": "node scripts/generate-skill.mjs --check",
     "test": "vitest run tests/unit",
     "test:e2e": "npm run build && vitest run tests/e2e"
   },

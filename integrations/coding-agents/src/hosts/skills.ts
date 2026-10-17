@@ -1,20 +1,22 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { cp, mkdir, readdir, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OWNERSHIP_MARKER } from "../write/marker";
+import { rm } from "node:fs/promises";
+import { installedSkillDirectoryFor, SKILL_DIRECTORY_NAME } from "./skill-locations";
 
 /**
  * The packaged companion skill and its copy into each host.
  *
- * Hosts may resolve their skills directory to a root another host also uses,
- * so each host gets a directory of its own inside the shared fixed name:
- * uninstalling one host then cannot take another host's still-live copy, and a
- * skills directory holding anything this package did not create is never
- * deleted outright.
+ * The destination is resolved through the shared skill-location declaration,
+ * so the installer and the session-start refresh can never disagree about where
+ * a host's skill lives. The copy is idempotent: it overwrites the fixed child
+ * directory recursively and is a handled no-op when the package ships no built
+ * skill file. Removal deletes exactly that fixed child directory and leaves
+ * anything else under the skills root in place.
  */
 
-export const SKILL_DIRECTORY_NAME = OWNERSHIP_MARKER;
+export { SKILL_DIRECTORY_NAME };
 export const PACKAGED_SKILL_DIRECTORY = "skill";
 export const PACKAGED_SKILL_FILE = "SKILL.md";
 
@@ -47,69 +49,59 @@ export function packagedSkillDirectory(
   return null;
 }
 
-/** Where this host's own copy of the skill lives. */
-export function installedSkillDirectory(skillsRoot: string, hostId: string): string {
-  return join(skillsRoot, SKILL_DIRECTORY_NAME, hostId);
+/** The packaged skill file a host loads, or null when the package ships none. */
+export function packagedSkillFile(): string | null {
+  const directory: string | null = packagedSkillDirectory();
+  return directory === null ? null : join(directory, PACKAGED_SKILL_FILE);
 }
 
-/** Copies the packaged skill into one host's skills directory. */
-export async function copyPackagedSkill(skillsRoot: string, hostId: string): Promise<SkillResult> {
+/**
+ * Copies the packaged skill into one host's skills directory.
+ *
+ * Recipients pass the host and home rather than a path, so the destination is
+ * always the shared declaration's answer. The copy creates a missing skills
+ * root, overwrites the fixed child directory in place, and is a handled no-op
+ * when the package ships no built skill file.
+ */
+export async function copyPackagedSkill(hostId: string, home: string): Promise<SkillResult> {
+  const target: string | null = installedSkillDirectoryFor(hostId, home);
+  if (target === null) {
+    return {
+      ok: true,
+      changed: false,
+      messages: [`${hostId} has no declared skills root, so no companion skill was placed.`],
+    };
+  }
   const source: string | null = packagedSkillDirectory();
   if (source === null) {
     return {
-      ok: false,
+      ok: true,
       changed: false,
       messages: [
-        `the packaged companion skill was not found beside this command, so it was not copied into ${installedSkillDirectory(skillsRoot, hostId)}`,
+        `the packaged companion skill was not found beside this command, so none was copied into ${target}`,
       ],
     };
   }
-  const target: string = installedSkillDirectory(skillsRoot, hostId);
-  await mkdir(target, { recursive: true });
-  await cp(source, target, { recursive: true });
+  await mkdir(dirname(target), { recursive: true });
+  await cp(source, target, { recursive: true, force: true });
   return { ok: true, changed: true, messages: [] };
 }
 
 /**
- * Removes one host's own copy, and only the files this package put there. A
- * directory that still holds anything foreign is left in place.
+ * Removes the fixed child directory under a host's skills root, recursively and
+ * tolerating its absence. Nothing else under the skills root is touched, so a
+ * foreign skill sibling survives an uninstall.
  */
-export async function removeInstalledSkill(
-  skillsRoot: string,
-  hostId: string,
-): Promise<SkillResult> {
-  const target: string = installedSkillDirectory(skillsRoot, hostId);
+export async function removeInstalledSkill(hostId: string, home: string): Promise<SkillResult> {
+  const target: string | null = installedSkillDirectoryFor(hostId, home);
+  if (target === null) {
+    return { ok: true, changed: false, messages: [] };
+  }
   if (!(await isDirectory(target))) {
     return { ok: true, changed: false, messages: [] };
   }
-  for (const file of await packagedSkillFiles()) {
-    await rm(join(target, file), { force: true });
-  }
-  if ((await listFiles(target)).length > 0) {
-    return {
-      ok: true,
-      changed: true,
-      messages: [
-        `${target} also holds files this package did not create, so the directory was kept; only the packaged skill files were removed.`,
-      ],
-    };
-  }
   await rm(target, { recursive: true, force: true });
-  const shared: string = dirname(target);
-  if ((await listFiles(shared)).length === 0) {
-    await rm(shared, { recursive: true, force: true });
-  }
   return { ok: true, changed: true, messages: [] };
-}
-
-/**
- * The files the packaged skill carries. Removal goes by this inventory rather
- * than by whatever the package happens to hold at uninstall time, so a copy is
- * still removed after the package that installed it was replaced or moved.
- */
-async function packagedSkillFiles(): Promise<string[]> {
-  const source: string | null = packagedSkillDirectory();
-  return source === null ? [PACKAGED_SKILL_FILE] : listFiles(source);
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -120,28 +112,27 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Every file below a directory, named relative to that directory rather than
- * by bare basename, so a nested file is removed from where it actually sits.
- */
+/** Every file below a directory, for a caller that needs the packaged inventory. */
+export async function packagedSkillFiles(): Promise<string[]> {
+  const source: string | null = packagedSkillDirectory();
+  return source === null ? [PACKAGED_SKILL_FILE] : listFiles(source);
+}
+
 async function listFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
-  async function walk(current: string): Promise<void> {
-    let entries: { name: string; isDirectory(): boolean }[];
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path: string = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await walk(path);
-      } else {
-        files.push(relative(directory, path));
-      }
+  let entries: { name: string; isDirectory(): boolean }[];
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const entry of entries) {
+    const path: string = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(path)).map((nested) => join(entry.name, nested)));
+    } else {
+      files.push(entry.name);
     }
   }
-  await walk(directory);
   return files;
 }

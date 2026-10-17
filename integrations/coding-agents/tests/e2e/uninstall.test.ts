@@ -14,7 +14,7 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
  */
 
 const CONFIG = ".claude/settings.json";
-const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/claude-code/SKILL.md`;
+const SKILL = `.claude/skills/${OWNERSHIP_MARKER}/SKILL.md`;
 
 /**
  * The event spellings this host declares, and the first stage's spelling — the
