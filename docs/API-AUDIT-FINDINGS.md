@@ -499,3 +499,27 @@ Oracle 的 `JSON_VALUE` 对数组返回 NULL，注释已照抄这个理由）。
 `reporting/knowledge_tag_groups.go` 的 tagged switch。
 
 **复核对账**：`grep -c '^## 组 '` = 17，A…Q 齐全，无 `待填` 残留。
+
+### 4. 模板导出：`bank` 段的字段来源与键序（对等性全链接口暴露）
+
+`make parity` 全量跑出 **1 处 DIFF**（209 项里 203 项一致 → 修完后 202 一致 / 0 differing / 7 known）：
+
+1. **`bank` 段错误地读了 `banks.disposition` 遗留列**。参考的 `api_export_bank_template` 只调
+   `_load_bank_config`，而它 `SELECT config` 一列（`config_resolver.py:415-425`）；disposition 三个
+   trait 是 **config 的键**（`config_resolver.py:988-994`），不是遗留列。本服务把中性三元组从列里
+   摊平进模板，于是「无配置的 bank」导出了整段 51 个 null，参考导出的是 `"bank": null`。
+   这是**先前那个 disposition 修复的连带回归**——修好写入之后才暴露出来。
+
+2. **`bank` 段的键序是字典序**。`Manifest.Bank` 是 `map[string]any`，Go 的 `encoding/json` 对 map
+   一律排序，而参考按 `BankTemplateConfig` 的**声明序**渲染（`api/http.py:3833-4070`）。值全对、字节全错。
+   新增 `internal/banktemplate/marshal.go`（`Manifest.MarshalJSON` + `orderedObject`），按声明序
+   输出已知键，未知键排在后面且有序，不会静默丢键。修完两侧 **1680 字节逐字节相同**。
+
+用例：`TestManifestRendersTheBankSectionInDeclarationOrder`、
+`TestManifestBankSectionNullAndUnknownKeys`（还原即 FAIL）。
+
+**顺带把一条含糊的 known-difference 查清了**：`config patch bad key` 原先记为「线上跑的是更旧的
+build」。实测**不是**——两侧 `(total: 51 fields)` 与拒绝措辞完全一致，差异只在样例那十个名字。
+参考写的是 `sorted(list(a_set)[:10])`，Python str 集合的迭代序受**哈希随机化**支配：同一份代码
+三次启动给出三组不同的名字，`PYTHONHASHSEED=0` 也不等于字典序前十。这是**不可复现的输出**，不是契约；
+本服务取字典序前十个是同一事实的确定性呈现。该条 known-difference 的说明已据实改写。

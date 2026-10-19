@@ -366,6 +366,16 @@ func bankTemplateTrigger(stored map[string]any) map[string]any {
 // section (nil), matching the reference. A stored value the template model
 // rejects — for example a disposition outside 1..5, written by an older version
 // or another writer — is dropped rather than failing the whole export.
+//
+// The template reads the config COLUMN and nothing else, so the disposition
+// traits are whatever the bank's stored config carries ('disposition_skepticism'
+// and its siblings are config keys — config_resolver.py:988-994) and never the
+// legacy banks.disposition column. The reference's export loads
+// _load_bank_config, which selects `config` alone
+// (config_resolver.py:415-425), so a bank whose legacy column holds the neutral
+// triple exports `disposition_*: null` there. Reading the column here would
+// invent three values the reference does not report, and would turn a bank with
+// no config into a populated `bank` section where the reference sends null.
 func bankTemplateConfig(bank storage.Bank) map[string]any {
 	out := make(map[string]any, len(bankTemplateFields))
 	for key, value := range bank.Config {
@@ -376,15 +386,6 @@ func bankTemplateConfig(bank storage.Bank) map[string]any {
 			continue
 		}
 		out[key] = value
-	}
-	for _, trait := range []struct{ field, key string }{
-		{"disposition_skepticism", "skepticism"},
-		{"disposition_literalism", "literalism"},
-		{"disposition_empathy", "empathy"},
-	} {
-		if value, ok := bank.Disposition[trait.key]; ok && templateValueAllowed(trait.field, value) {
-			out[trait.field] = value
-		}
 	}
 	if bank.Mission != "" {
 		out["reflect_mission"] = bank.Mission

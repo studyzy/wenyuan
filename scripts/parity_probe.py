@@ -197,7 +197,7 @@ KNOWN_DIFFERENCES = {
     "directive patch missing": "driver error text only (asyncpg vs pgx); the status matches",
     "directive delete missing": "driver error text only (asyncpg vs pgx); the status matches",
     "knowledge tree bad groups": "the reference embeds pydantic's multi-line error text in the detail string",
-    "config patch bad key": "the live deployment runs a build whose configurable-field sample list differs from the checkout wenyuan was written against",
+    "config patch bad key": "the reference samples sorted(list(a_set)[:10]); a Python str set's iteration order follows hash randomization, so the ten names change per process and are not the alphabetically first ten even when PYTHONHASHSEED is pinned. The field COUNT (51) and the rejection wording do match; listing ten alphabetically-first fields is the deterministic rendering of the same fact",
     "config patch bad defense": "same as the unknown-key case",
     "dry run ghost bank": "the fact text is the chat model's output, and each deployment runs a different model",
     "reflect ghost bank": "the answer is the chat model's output, and each deployment runs a different model",
