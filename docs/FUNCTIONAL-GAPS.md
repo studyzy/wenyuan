@@ -48,6 +48,82 @@ directives、knowledge pages、mental models、webhooks）。后果是每次删�
 `memory_units + entities + documents`，`message` 统一为上游那一句（从未存在过的银行报 0）。
 发现过程、根因与回归测试见 `docs/PARITY-PLAN.md` §8 的 2026-10-16 条目。
 
+### 派生数据在导入与维护路径上的缺口（2026-10-17 迁移实测发现，已修）
+
+三处同族缺陷，都是"派生数据没按上游那样重建"，由控制台可见面反查出来的。
+
+**(1) 导入不重建实体共现。** 控制台 `/banks/{id}?view=entities` 的 Relations 视图对导入进来的 bank
+显示"还没有实体共现"，而同一 bank 在上游有 2000 条边。根因：`entity_cooccurrences` 是**派生表**——
+上游的导出把 `entities / unit_entities / memory_links / entity_cooccurrences` 明确列为
+`_REPLAYED_TABLES`（`engine/transfer/export.py:64-84`："rebuilt on import by replaying the
+document/fact/observation payload through the import pipeline"），其导入把每个文档走一遍 retain 写路径
+（`engine/transfer/importer.py` 的 `_import_document_batch` → `engine/retain/orchestrator.py:815`
+的 `link_units_to_entities_batch`），因此共现在导入时被重建。wenyuan 的两个导入器
+（`internal/transfer/import_apply.go` 的服务路径、`internal/migration/hindsight/run.go` 的
+`bankctl bank migrate`）只写 `unit_entities` 链接，从不写配对行，于是 `/entities/graph` 的无过滤分支
+（读 `entity_cooccurrences`）返回 0 节点 0 边；后端解析权重也因此拿不到邻居计数。
+
+修复：`storage.Store` 新增 `UpsertUnitCooccurrences(ctx, bankID, entityIDs, seenAt)`（两后端都实现，
+配对规则与 retain 共用一份），retain、transfer 导入、migrate 导入三处统一调用；成对行的
+`last_cooccurred` 取**见证该对的 unit 自身时间**（`storage.UnitSeenAt`：occurred_start → mentioned_at →
+event_date，零值回落写库时间），冲突时 `GREATEST` 合并——与上游修好后的写法一致
+（`engine/memories/pg/entity_resolver.py` 的 flush SQL，修好时间戳的那次迁移是
+`alembic/versions/b5d4e3f2a1c9_backfill_entity_cooccurrences_event_time.py`）。此前 wenyuan 写的是
+`now()`，会让整库的"最近共现"热力全部塌到导入时刻。
+
+**(2) 导入不重建 chunk 行。** 同一个 bank 的文档分块在 wenyuan 全为空、在上游有 498 条（逐文档对比：
+`01a14994-…` 0 vs 36、`01a144d1-…` 0 vs 33、`01a14589-…` 0 vs 7）。根因同族：`chunks` 也在
+`_REPLAYED_TABLES` 里，上游导入把 `document.chunks` 变成 `ChunkMetadata` 后
+`chunk_storage.store_chunks_batch` 落行（`engine/transfer/importer.py:1320-1326`），再用返回的
+index→id 映射把每条 fact 的 `chunk_id` 指到新行上（`:1455-1466`）；wenyuan 的导入器不写 chunk 行，
+而且 fact 的 chunk 引用被刻意丢弃（当时那是为了躲 `memory_units_chunk_fkey` 的权宜修法）。
+修复：`storage.Store` 新增 `PutDocumentChunks(ctx, bankID, documentID, chunks, storeText)`（两后端，
+upsert 语义与跨 bank 冲突拒绝照抄上游 `ops_postgresql.bulk_upsert_chunks`），两个导入器先写 chunk 行
+再把 fact 的引用指过去；是否保留 chunk 文本按上游语义取**部署级** `store_document_text`（不是 bank 覆盖），
+关掉时仍写 content hash。`bankctl` 侧由 cmd 解析配置后经 flags 传入。
+
+**(3) 改实体集与 graph maintenance 不维护共现。** `SetUnitEntities` 只维护 mention 计数与
+`unit_entities`；上游编辑时经同一个 resolver 增记整组配对，`engine/graph_maintenance.py` 的第二遍
+（entity prune）再清掉"两个实体都还在、但已经没有 unit 同时见证"的陈旧配对
+（`engine/db/ops_postgresql.prune_stale_cooccurrences`，按 `(entity_id_1, entity_id_2)` 顺序先锁后删，
+避免与 retain 的 upsert 死锁）。前者已按上游补齐（编辑后按结果集记录配对，含存活配对，即上游的
+re-link 语义）；后者已并入 entity prune（`PruneEntity` 在孤儿删除之后同事务删陈旧配对）。
+
+回归测试（均先证伪）：
+`internal/transfer/engine_test.go::TestRestoreRebuildsEntityCooccurrences`（修前 `graph nodes = 0`）、
+`TestRestoreRebuildsDocumentChunks` / `TestRestoreDiscardsChunkTextWhenConfigured`（修前 `chunks stored = 0`
+与 `chunk not found`）、`internal/migration/hindsight/postgres_integration_test.go`（修前 `entity graph
+edges = 0` / `chunks stored = 0`，并钉住边权、`last_cooccurred` = 事实自己的时间、fact 的 chunk 引用可解析）、
+`internal/storage/entity_cooccurrence_test.go` 与 `entity_cooccurrence_pgx_test.go`（编辑记配对、prune 删陈旧配对，
+两个后端各一份）。
+
+**(4) 导入读不懂上游的行内 JSON 编码（2026-10-17 实测发现，已修）。** 上游的归档在 manifest 里声明
+`bank_rows_json_encoding: "serialized"`：每个 jsonb 列都以 **JSON 文本**写进行（`"{\"mode\": \"delta\"}"`），
+而 wenyuan 自己写的是解码后的对象，读取端只认对象形态，于是**上游归档里所有 jsonb 字段静默回落到默认值**。
+实测（`coding-agent::wenyuan`，2026-10-17 导入后的库 vs 线上）：
+`mental_model_history.content` 52 行里 50 行 `previous_content` 变成 null（上游有值）；mental model 的
+`trigger.mode` 从 `delta` 变回默认 `full`、`fact_types` 从 `["world","experience"]` 变空。修复：
+`internal/transfer/import_apply.go` 的 `archiveJSONValue` 统一做一次解码——字符串以 `{`/`[` 开头才解析，
+所以文本列（mission、name）保持字面值。回归测试 `TestRestoreReadsSerializedRowJSON`（修前
+`bank config = map[]`）。修后用同一份上游归档重导 `coding-agent::workspace`：5 个 mental model 的
+`trigger`/`observations`/`structured` 与上游**逐字段一致**，bank config 一致。
+
+**唯一的取舍**：`graph_maintenance_queue` / `entity_maintenance_queue` 这两张"待办标记"表不随归档走。
+上游会写它们，并把 graph 行按自己重放出来的 unit-id 映射重写、entity 行按 `canonical_name` 重新解析，
+对不上的丢弃（上游注释：*"the target re-enqueues its own maintenance as the import writes land"*）。
+这些行标记的是已做完或可重新推导的工作，不承载记忆数据，目标端的维护任务会自己重新入队，所以不搬。
+
+**仍开着的一项**：修复前导入的 bank（含 2026-10-16 那批 33 个）行里没有配对也没有 chunk，只有重新导入
+才会有；上游没有回填命令可对标（这两个表只出现在它的备份表清单里），所以这里也不加手写回填，重导入
+即是修复路径——2026-10-17 已按此把上游 36 个 bank 全部重导一遍（见 `docs/PARITY-PLAN.md`）。
+
+**一条已排除的怀疑**：同一 bank 的实体总量我们 3017/3563、上游 5686/5731，头部实体 `mention_count` 也不同，
+看起来像导入时的实体解析口径差异。实测排除：实体集合与共现、chunk 一样属于 `_REPLAYED_TABLES`，导入时是
+**重建**而不是搬运（上游导入器自述 "entity merges are therefore computed relative to the target bank's
+existing memories"），所以"我方导入的 bank"与"上游长期积累的 live bank"本来就该不同。正确的对照是小 bank 上
+拿上游**自己的导入**（`POST .../clone`）同口径比较：`coding-agent::workspace`（11 facts）三方实体数均为 13，
+且逐个实体名与 `mention_count` **完全一致**（无多、无少、无差异）。结论：导入语义与上游一致，不是缺口。
+
 ### 1.1 HIGH（5 项，全部闭合）
 
 | # | 原判断 | 结论与证据 |

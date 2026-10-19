@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -97,6 +98,7 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 			Run:           1,
 			CreatedAt:     now,
 			UpdatedAt:     now,
+			Payload:       map[string]any{},
 		}
 	} else {
 		s.operations[opID] = Operation{
@@ -108,6 +110,7 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 			CreatedAt:     now,
 			UpdatedAt:     now,
 			CompletedAt:   &now,
+			Payload:       map[string]any{},
 		}
 	}
 	return outcome, nil
@@ -196,15 +199,7 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 		// Every pair of entities this unit mentions co-occurs, which is what the
 		// entity graph draws and resolution weights. Per unit, so two entities a
 		// unit does not share are not neighbours.
-		for i := range len(mentioned) {
-			for j := i + 1; j < len(mentioned); j++ {
-				a, b := mentioned[i], mentioned[j]
-				if a > b {
-					a, b = b, a
-				}
-				s.cooccurrences[req.BankID+"\x00"+a+"\x00"+b]++
-			}
-		}
+		s.upsertUnitCooccurrencesLocked(req.BankID, mentioned)
 		units = append(units, unit.ID)
 	}
 	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
@@ -372,6 +367,72 @@ func (s *MemoryStore) pruneEntitiesIfOrphanedLocked(bankID string, entityIDs []s
 	}
 }
 
+// PutDocumentChunks upserts one document's chunks in memory and reports the
+// identifier each index resolves to.
+//
+// An identifier that names an existing row of another bank is refused rather
+// than overwritten, which is the same refusal the PostgreSQL backend raises for
+// a row whose identifier collides across banks.
+func (s *MemoryStore) PutDocumentChunks(ctx context.Context, bankID, documentID string, chunks []DocumentChunk, storeText bool) (map[int]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byIndex := make(map[int]string, len(chunks))
+	owned := make([]string, 0)
+	for _, chunk := range chunks {
+		id := BuildChunkID(bankID, documentID, chunk.ChunkIndex)
+		byIndex[chunk.ChunkIndex] = id
+		if at := s.chunkAtLocked(id); at >= 0 && s.chunks[at].BankID != bankID {
+			owned = append(owned, id)
+		}
+	}
+	if len(owned) > 0 {
+		return nil, fmt.Errorf("chunk id(s) %v already belong to another bank", owned)
+	}
+	for _, chunk := range chunks {
+		text := chunk.ChunkText
+		if !storeText {
+			text = ""
+		}
+		s.putChunkLocked(Chunk{
+			ChunkID:     BuildChunkID(bankID, documentID, chunk.ChunkIndex),
+			BankID:      bankID,
+			DocumentID:  documentID,
+			ChunkIndex:  chunk.ChunkIndex,
+			ChunkText:   text,
+			ContentHash: ContentHash(chunk.ChunkText),
+		})
+	}
+	return byIndex, nil
+}
+
+// chunkAtLocked reports where a chunk identifier's row sits, or -1 when no row
+// carries it. The caller holds the lock.
+func (s *MemoryStore) chunkAtLocked(chunkID string) int {
+	for i := range s.chunks {
+		if s.chunks[i].ChunkID == chunkID {
+			return i
+		}
+	}
+	return -1
+}
+
+// putChunkLocked writes a chunk row, replacing the row with its identifier when
+// one exists so a replay overwrites rather than duplicates. The caller holds
+// the write lock.
+func (s *MemoryStore) putChunkLocked(chunk Chunk) {
+	if at := s.chunkAtLocked(chunk.ChunkID); at >= 0 {
+		// The write stamps no new creation time, matching the column the
+		// PostgreSQL upsert leaves alone.
+		chunk.CreatedAt = s.chunks[at].CreatedAt
+		s.chunks[at] = chunk
+		return
+	}
+	s.chunks = append(s.chunks, chunk)
+}
+
 // putItemChunksLocked stores one item's segments and returns their identifiers
 // in order. When storeText is false the raw chunk text is not kept, but the
 // content hash is still computed from it so delta dedup is unaffected.
@@ -444,6 +505,13 @@ func retainParamsFor(item RetainItem) map[string]any {
 		if err := json.Unmarshal(item.ObservationScopes, &scopes); err == nil {
 			params["observation_scopes"] = scopes
 		}
+	}
+	// The names the caller gave this item's attachments ride the document's
+	// parameters, which is what lets a reprocess restate them: the document's
+	// record is rewritten by every write, so a name that is not replayed is a
+	// name the document loses.
+	if len(item.AttachmentFilenames) > 0 {
+		params["attachment_filenames"] = item.AttachmentFilenames
 	}
 	// The reference records the supplied entities and the resolution switch
 	// together, and only when entities were supplied: a document retained with
@@ -655,6 +723,10 @@ func (s *MemoryStore) GetDocument(ctx context.Context, bankID, docID string) (Do
 			doc.MemoryUnitCount++
 		}
 	}
+	// document_metadata is sourced from retain_params.metadata on every read,
+	// the same member the database-backed store derives it from, so a document
+	// imported with its parameters carries the same value on either backend.
+	doc.Metadata = DocumentMetadata(doc.RetainParams)
 	return doc, nil
 }
 
@@ -666,6 +738,18 @@ func (s *MemoryStore) PutDocument(ctx context.Context, bankID, docID string, doc
 	doc.BankID = bankID
 	if doc.ContentHash == "" {
 		doc.ContentHash = ContentHash(doc.OriginalText)
+	}
+	// A document has no metadata column in the reference: the value lives inside
+	// retain_params.metadata, so a caller-supplied one is merged into that
+	// member before the document is stored, exactly as the database-backed
+	// write merges it.
+	if metadata := DocumentMetadataValue(doc.Metadata); metadata != nil {
+		params := copyAnyMap(doc.RetainParams)
+		if params == nil {
+			params = map[string]any{}
+		}
+		params["metadata"] = metadata
+		doc.RetainParams = params
 	}
 	if doc.CreatedAt.IsZero() {
 		doc.CreatedAt = time.Now().UTC()
@@ -789,14 +873,42 @@ func (s *MemoryStore) UpsertUnitEntity(ctx context.Context, unitID, entityID str
 func (s *MemoryStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// One row per unordered pair, smaller id first, keyed by bank so reads stay
-	// bank-scoped — the same shape the reader in EntityGraph parses.
+	s.upsertEntityCooccurrenceLocked(bankID, entityID1, entityID2)
+	return nil
+}
+
+// UpsertUnitCooccurrences records one co-occurrence for every unordered pair of
+// the entities a memory unit mentions. The unit's seen time is not stored: the
+// reader derives each pair's last-co-occurrence from the units that witness it,
+// so a pair written here carries the same recency an imported unit's own dates
+// imply.
+func (s *MemoryStore) UpsertUnitCooccurrences(ctx context.Context, bankID string, entityIDs []string, seenAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upsertUnitCooccurrencesLocked(bankID, entityIDs)
+	return nil
+}
+
+// upsertUnitCooccurrencesLocked counts the unordered pairs of one unit's entity
+// set, which is the shape the entity graph reads. The caller holds the write
+// lock and passes the entities de-duplicated by identity.
+func (s *MemoryStore) upsertUnitCooccurrencesLocked(bankID string, entityIDs []string) {
+	for i := range len(entityIDs) {
+		for j := i + 1; j < len(entityIDs); j++ {
+			s.upsertEntityCooccurrenceLocked(bankID, entityIDs[i], entityIDs[j])
+		}
+	}
+}
+
+// upsertEntityCooccurrenceLocked increments one unordered pair's counter. One
+// row per pair, smaller id first, keyed by bank so reads stay bank-scoped — the
+// same shape the reader in EntityGraph parses.
+func (s *MemoryStore) upsertEntityCooccurrenceLocked(bankID, entityID1, entityID2 string) {
 	if entityID1 > entityID2 {
 		entityID1, entityID2 = entityID2, entityID1
 	}
 	key := bankID + "\x00" + entityID1 + "\x00" + entityID2
 	s.cooccurrences[key]++
-	return nil
 }
 
 // UpsertLink persists one directed memory link.

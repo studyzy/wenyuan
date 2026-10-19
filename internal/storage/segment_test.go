@@ -56,6 +56,27 @@ func TestSegmentSplitsOnPreferredBoundary(t *testing.T) {
 	}
 }
 
+// A cut keeps the separator at the start of the piece that follows it, so a
+// piece that alone overflows the budget is recursed into without its leading
+// separator and its trailing word is emitted as its own chunk. This is the
+// reference's keep_separator=True convention, and the same body at the default
+// budget still comes back as one chunk.
+func TestSegmentKeepsSeparatorOnTheFollowingPiece(t *testing.T) {
+	got := SegmentWith("Alpha beta.", SegmentOptions{ChunkSize: 5})
+	want := []string{"Alpha", "beta", "."}
+	if len(got) != len(want) {
+		t.Fatalf("chunks = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk %d = %q, want %q (all: %q)", i, got[i], want[i], got)
+		}
+	}
+	if chunks := SegmentWith("Alpha beta.", SegmentOptions{}); len(chunks) != 1 {
+		t.Fatalf("the same body within budget must stay one chunk: %q", chunks)
+	}
+}
+
 // No chunk may exceed the budget, including when the content offers no
 // separator at all and the splitter must fall back to per-character cutting.
 func TestSegmentNeverExceedsBudget(t *testing.T) {

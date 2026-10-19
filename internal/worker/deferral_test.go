@@ -223,3 +223,48 @@ func TestNonBackpressureDeferralKeepsBackoff(t *testing.T) {
 		t.Fatalf("non-backpressure deferral = %v, want the 3s backoff", delay)
 	}
 }
+
+// A retry that names its own delay spends an attempt: the count advances and the
+// cause is recorded, so a caller's ladder walks to its own ceiling instead of
+// re-running the first rung forever. The consumer's own retry budget does not
+// apply — the delay, and therefore the ceiling, is the caller's.
+func TestRetryAtSpendsAnAttemptAtTheNamedDelay(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MaxRetries is below the number of attempts this processor will make, so a
+	// budget-governed retry would stop at the first one.
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		return RetryAt(5*time.Second, errors.New("HTTP 404 from https://example.test/hook: nope"))
+	}), Config{
+		WorkerID: "worker-1", MaxRetries: 1, InitialBackoff: time.Hour,
+		MaxBackoff: time.Hour, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now: func() time.Time { return time.Now().UTC() }, Sleep: func(time.Duration) {},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1 (the attempt must be spent)", after.RetryCount)
+	}
+	if after.Status != storage.StatusPending {
+		t.Fatalf("status = %s, want pending", after.Status)
+	}
+	if after.Error != "HTTP 404 from https://example.test/hook: nope" {
+		t.Fatalf("recorded cause = %q, want the processor's message", after.Error)
+	}
+	if after.NextRetryAt == nil {
+		t.Fatal("the retry must be scheduled")
+	}
+	// The named delay, not the consumer's backoff, is what was scheduled.
+	if delay := time.Until(*after.NextRetryAt); delay > 30*time.Second {
+		t.Fatalf("next retry in %s, want the named 5s delay rather than the 1h backoff", delay)
+	}
+}

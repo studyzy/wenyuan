@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/entitylabels"
@@ -143,9 +142,10 @@ type ExtractedFact struct {
 // A nil extractor (no model configured) and the "chunks" mode both store an
 // item's text verbatim; only a configured model turns an empty answer into
 // "the model found nothing here", which is what tells the storage layer to
-// store no unit rather than fall back to the raw text.
+// store no unit rather than fall back to the raw text. The mode is compared
+// exactly, as the reference does ("CHUNKS" is an unrecognised mode, not chunks).
 func modelExtractionEnabled(req RetainRequest) bool {
-	return req.Extraction != nil && !strings.EqualFold(strings.TrimSpace(req.ExtractionMode), "chunks")
+	return req.Extraction != nil && req.ExtractionMode != "chunks"
 }
 
 // extractForItems runs the configured extractor for every item, one entry per
@@ -184,8 +184,9 @@ func extractForItems(ctx context.Context, req RetainRequest, extractCausalLinks 
 func extractItemFacts(ctx context.Context, extractor FactExtraction, item RetainItem, req RetainRequest, extractCausalLinks bool) ([]ExtractedFact, error) {
 	// Chunks mode stores each segment as its own memory and asks the model
 	// nothing, so the extractor is never called: leaving the item's facts empty
-	// makes the caller store its segments verbatim, one unit per chunk.
-	if strings.EqualFold(strings.TrimSpace(req.ExtractionMode), "chunks") {
+	// makes the caller store its segments verbatim, one unit per chunk. The
+	// comparison is exact, matching the reference's `== "chunks"`.
+	if req.ExtractionMode == "chunks" {
 		return nil, nil
 	}
 	opts := FactExtractionOptions{
@@ -207,6 +208,15 @@ func extractItemFacts(ctx context.Context, extractor FactExtraction, item Retain
 	}
 	if item.Timestamp != nil {
 		opts.ReferenceTime = *item.Timestamp
+	} else if !item.HasTimestamp {
+		// An item that named no timestamp is dated to the write clock, and that
+		// clock is also the reference the extraction resolves relative phrases
+		// against. The reference builds the prompt's event date the same way
+		// (utcnow()), so "yesterday" resolves against the day of the write
+		// rather than going unanswered for want of a date. An item that asked
+		// for no timestamp keeps none here either, so its content stays
+		// timeless exactly as it is stored.
+		opts.ReferenceTime = time.Now().UTC()
 	}
 	// Extraction runs one call per chunk, so every piece of a long document is
 	// asked about exactly once and a fact names the piece it came from. A chunk

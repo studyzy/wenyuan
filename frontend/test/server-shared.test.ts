@@ -191,6 +191,36 @@ describe("download SSRF guard", () => {
     expect(guardDownloadPath(`${UPSTREAM_DOWNLOAD_PREFIX}/../secrets`).allowed).toBe(false);
     expect(guardDownloadPath(undefined).allowed).toBe(false);
   });
+
+  it("forwards a key's own escapes unchanged", () => {
+    // An export archive's key percent-encodes the bank segment, and the
+    // published download URL escapes those escapes again. Decoding here would
+    // hand the upstream a key nothing is stored under, so the path travels as
+    // it arrived — the decoded form is only what the guard checks.
+    const requested = `${UPSTREAM_DOWNLOAD_PREFIX}/banks/coding-agent%253A%253Awenyuan/exports-op-1.zip`;
+    const guard = guardDownloadPath(requested);
+    expect(guard.allowed).toBe(true);
+    expect(guard.allowed && guard.path).toBe(requested);
+  });
+
+  it("rejects a traversal in the form the upstream would decode", () => {
+    // The guard reads the once-decoded form, which is exactly the form the
+    // upstream decodes before it resolves a key, so a single-encoded `..`
+    // segment is refused here.
+    expect(guardDownloadPath(`${UPSTREAM_DOWNLOAD_PREFIX}/banks/%2E%2E/secrets.zip`).allowed).toBe(
+      false,
+    );
+  });
+
+  it("leaves an escape-nested dot segment to the upstream's own key validation", () => {
+    // `%252E%252E` decodes to the text `%2E%2E`, which the upstream treats as an
+    // unknown key rather than as a parent segment: it is not a traversal the
+    // guard could be tricked into passing on, and it is forwarded unchanged.
+    const requested = `${UPSTREAM_DOWNLOAD_PREFIX}/banks/%252E%252E/secrets.zip`;
+    const guard = guardDownloadPath(requested);
+    expect(guard.allowed).toBe(true);
+    expect(guard.allowed && guard.path).toBe(requested);
+  });
 });
 
 describe("upstream client shaping", () => {

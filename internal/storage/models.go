@@ -102,6 +102,20 @@ func (b Bank) NormalizedDisposition() map[string]int {
 	}
 }
 
+// WithNeutralDisposition returns the bank with its disposition column set to the
+// three neutral traits the reference writes when it creates a row
+// (engine/retain/bank_utils.py:200 DEFAULT_DISPOSITION, inserted at :396).
+//
+// The reference fills those columns from a constant, not from the request, so a
+// bank created through any route carries them. The HTTP read path hides the
+// difference — an absent trait resolves to the same neutral value — but an
+// exported archive reads the column itself, so an empty column exports as {}
+// where the reference exports the triple.
+func (b Bank) WithNeutralDisposition() Bank {
+	b.Disposition = b.NormalizedDisposition()
+	return b
+}
+
 // BankPatch carries a partial bank update; nil fields are left unchanged.
 type BankPatch struct {
 	Name *string
@@ -334,6 +348,12 @@ type RetainItem struct {
 	// The file route stores the uploaded bytes and records them here so the
 	// units built from the item can name their provenance.
 	AttachmentIDs []string
+	// AttachmentFilenames are the names the caller gave this item's attachments,
+	// keyed by short id. A name describes the reference rather than the bytes —
+	// the same image can be "diagram.png" in one document and "fig-2.png" in
+	// another — so it is recorded on the document's replayable parameters and
+	// restated by a reprocess instead of being read back off the blob.
+	AttachmentFilenames map[string]string
 	// Attachments are the inline attachments' decoded bytes, in block order,
 	// carried so the extractor can put each image into the prompt where its
 	// placeholder stands. The ids here match AttachmentIDs.
@@ -427,7 +447,12 @@ type Document struct {
 	BankID       string
 	OriginalText string
 	ContentHash  string
-	Metadata     map[string]any
+	// Metadata is the document's metadata value as it stands, which the
+	// reference keeps only inside retain_params.metadata and serves as
+	// `document_metadata`. It is derived from that member on every read and
+	// merged back into it on write, so it is an arbitrary JSON value rather
+	// than an object.
+	Metadata     any
 	RetainParams map[string]any
 	Tags         []string
 	CreatedAt    time.Time
@@ -446,6 +471,15 @@ type Chunk struct {
 	ChunkText   string
 	ContentHash string
 	CreatedAt   time.Time
+}
+
+// DocumentChunk is one chunk of a document's text as a writer supplies it: the
+// index it sits at and the text it carries. The chunk's identity, bank and
+// content hash are the writer's to derive, so a caller replaying text never has
+// to know the id scheme.
+type DocumentChunk struct {
+	ChunkIndex int
+	ChunkText  string
 }
 
 // Entity is a resolved entity identity within a bank.

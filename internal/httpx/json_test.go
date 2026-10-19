@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -37,5 +38,19 @@ func TestWriteErrorUnwrapsUnknownErrors(t *testing.T) {
 	}
 	if body[FieldDetail] != DetailInternal {
 		t.Fatalf("generic detail expected, got %q", body[FieldDetail])
+	}
+}
+
+// WriteJSON frames the response with a Content-Length the way the reference's
+// JSON response does, so a large payload is not written chunked.
+func TestWriteJSONSetsContentLength(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteJSON(rec, http.StatusOK, map[string]string{"payload": "value"})
+	want := len(`{"payload":"value"}`)
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(want) {
+		t.Fatalf("Content-Length = %q, want %d", got, want)
+	}
+	if rec.Body.Len() != want {
+		t.Fatalf("body length = %d, want %d", rec.Body.Len(), want)
 	}
 }

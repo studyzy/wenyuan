@@ -204,38 +204,19 @@ func splitNamespace(tag string) (string, string) {
 	return namespace, value
 }
 
-// trigramJaccard returns the Jaccard similarity of two strings' character
-// trigram sets, which is the metric the reference uses to approximate a near
-// match without a database extension.
+// trigramJaccard returns the similarity two strings score under pg_trgm's
+// `similarity(a, b)` — the measure the reference computes in memory and shares
+// between entity resolution and fuzzy tag matching (`engine/trigram.py`).
+//
+// It is the per-word measure, not a whole-string one: pg_trgm splits each string
+// into maximal alphanumeric runs and pads every word separately, so a space or a
+// punctuation mark inside a tag costs nothing. Scoring the whole padded string
+// instead spends grams on the separators and lands on a different number, which
+// moves tags across the resolution floor: `mongp`/`mongo` scores 0.50 the way the
+// reference measures it and 0.40 the whole-string way, and 0.45 is the floor, so
+// the whole-string measure silently stops resolving a tag the reference resolves.
 func trigramJaccard(a, b string) float64 {
-	setA := trigrams(a)
-	setB := trigrams(b)
-	if len(setA) == 0 || len(setB) == 0 {
-		return 0
-	}
-	intersection := 0
-	for gram := range setA {
-		if setB[gram] {
-			intersection++
-		}
-	}
-	union := len(setA) + len(setB) - intersection
-	if union == 0 {
-		return 0
-	}
-	return float64(intersection) / float64(union)
-}
-
-// trigrams returns the set of overlapping three-character substrings of a
-// padded string, so short strings still produce grams.
-func trigrams(value string) map[string]bool {
-	padded := "  " + value + "  "
-	runes := []rune(padded)
-	out := make(map[string]bool, len(runes))
-	for i := 0; i+3 <= len(runes); i++ {
-		out[string(runes[i:i+3])] = true
-	}
-	return out
+	return entityNameTrigramSimilarity(a, b)
 }
 
 // sameTagSet reports whether two tag lists contain exactly the same values.

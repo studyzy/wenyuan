@@ -666,3 +666,80 @@ func TestMemorySourceMemoriesDropsMissingAndKeepsNulls(t *testing.T) {
 		t.Fatalf("source context = %v, want null for an unset column", row["context"])
 	}
 }
+
+// A repeated scalar query parameter binds its final value, as the reference's
+// request model does; the first value used to win here.
+func TestMemoryListRepeatedScalarParamTakesLast(t *testing.T) {
+	mux := parityServer(t)
+	base := "/v1/default/banks/" + bank
+
+	rec := send(mux, http.MethodGet, base+"/memories/list?limit=1&limit=2", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+		Limit int              `json:"limit"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Limit != 2 || len(page.Items) != 2 {
+		t.Fatalf("repeated limit bound %d (items %d), want 2", page.Limit, len(page.Items))
+	}
+}
+
+// The listing reports a unit's own entity postings only. An observation carries
+// none, so it lists none, even though its detail view inherits its sources'.
+func TestMemoryListObservationHasNoInheritedEntities(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: "44444444-4444-4444-4444-444444444444", BankID: bank, Text: "Alice works at Google",
+		FactType: storage.TypeWorld, Tags: []string{"ops"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: "55555555-5555-5555-5555-555555555555", BankID: bank, Text: "Alice is employed",
+		FactType: storage.TypeObservation, SourceMemoryIDs: []string{"44444444-4444-4444-4444-444444444444"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUnitEntities(ctx, bank, "44444444-4444-4444-4444-444444444444", []string{"Alice", "Google"}, true); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	base := "/v1/default/banks/" + bank
+
+	rec := send(mux, http.MethodGet, base+"/memories/list?type=observation", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0]["entities"] != "" {
+		t.Fatalf("observation listing entities = %v, want \"\"", page.Items)
+	}
+
+	rec = send(mux, http.MethodGet, base+"/memories/55555555-5555-5555-5555-555555555555", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail = %d: %s", rec.Code, rec.Body.String())
+	}
+	var detail struct {
+		Entities []string `json:"entities"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Entities) != 2 {
+		t.Fatalf("observation detail entities = %v, want the source's two", detail.Entities)
+	}
+}

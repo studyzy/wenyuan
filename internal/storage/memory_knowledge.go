@@ -84,8 +84,39 @@ func (s *MemoryStore) PutKnowledgeNode(ctx context.Context, node KnowledgeNode) 
 	return cloneKnowledgeNode(node), nil
 }
 
+// applyKnowledgeNodePatch overwrites the members a patch states, so the memory
+// and postgres backends apply the same partial update field for field.
+func applyKnowledgeNodePatch(node *KnowledgeNode, patch KnowledgeNodePatch) {
+	if patch.Title != nil {
+		node.Title = *patch.Title
+	}
+	if patch.Text != nil {
+		node.Text = *patch.Text
+	}
+	if patch.ParentID != nil {
+		node.ParentID = *patch.ParentID
+	}
+	if patch.Tags != nil {
+		node.Tags = append([]string(nil), (*patch.Tags)...)
+	}
+}
+
 // UpdateKnowledgeNode applies a partial update.
 func (s *MemoryStore) UpdateKnowledgeNode(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch) (KnowledgeNode, error) {
+	return s.UpdateKnowledgeNodeWithModel(ctx, bankID, nodeID, patch, nil)
+}
+
+// UpdateKnowledgeNodeWithModel applies a node patch and, when one is given, a
+// patch to the model behind the node under one lock, so the two rows change as
+// a unit. The reference runs the whole patch in one transaction for the same
+// reason: a rename must not survive the option update that fails after it, and
+// a reader must never see the node renamed while its model still carries the
+// old name.
+//
+// Both rows are built first and stored together, so a model write that refuses
+// (a vector the deployment's dimension rejects, say) leaves the node as it was
+// rather than half-applied.
+func (s *MemoryStore) UpdateKnowledgeNodeWithModel(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch, modelPatch *MentalModelPatch) (KnowledgeNode, error) {
 	if err := ctx.Err(); err != nil {
 		return KnowledgeNode{}, err
 	}
@@ -99,47 +130,63 @@ func (s *MemoryStore) UpdateKnowledgeNode(ctx context.Context, bankID, nodeID st
 	if !ok {
 		return KnowledgeNode{}, ErrKnowledgeNodeNotFound
 	}
-	if patch.Title != nil {
-		node.Title = *patch.Title
-	}
-	if patch.Text != nil {
-		node.Text = *patch.Text
-	}
-	if patch.ParentID != nil {
-		node.ParentID = *patch.ParentID
-	}
-	if patch.Tags != nil {
-		node.Tags = append([]string(nil), (*patch.Tags)...)
-	}
+	node = cloneKnowledgeNode(node)
+	applyKnowledgeNodePatch(&node, patch)
 	node.UpdatedAt = time.Now().UTC()
-	s.knowledgeNodes[key] = cloneKnowledgeNode(node)
+
 	// A page's searchable document lives on its backing model, so a rename has to
 	// reach the model and rebuild its vector from the new name: without it the
 	// stored embedding keeps describing the old title and search matches on text
 	// the page no longer has. Mirrors the postgres write, which carries the node's
 	// name onto the model in PutKnowledgeNode.
-	s.syncKnowledgePageModel(ctx, node)
+	model, hasModel := s.knowledgePageModelLocked(ctx, node)
+	if modelPatch != nil {
+		if !hasModel {
+			return KnowledgeNode{}, ErrMentalModelNotFound
+		}
+		applyMentalModelPatch(&model, *modelPatch)
+		// The reference's update re-embeds from the new name and the stored
+		// content, so a rename or content change moves the page's vector too.
+		if generator := s.observationEmbedder; generator != nil {
+			if vector := embedMentalModelText(ctx, generator, model.Name, model.Content); len(vector) > 0 {
+				if err := ValidateEmbedding(vector); err != nil {
+					return KnowledgeNode{}, err
+				}
+				model.Embedding = vector
+			}
+		}
+		model.LastUpdated = time.Now().UTC()
+	}
+
+	s.knowledgeNodes[key] = node
+	if hasModel {
+		s.mentalModelRecords[mentalModelKey(node.BankID, node.MentalModelID)] = model
+	}
 	return cloneKnowledgeNode(node), nil
 }
 
-// syncKnowledgePageModel renames a page's backing mental model to match its node
-// and rebuilds the model's vector from the new name and its own content. Called
-// with s.mu held; a folder, or a page with no model, is left alone. The model's
-// content and tags are not taken from the node — a read overlays the model onto
-// the node, not the reverse — so only the name and its vector change here.
-func (s *MemoryStore) syncKnowledgePageModel(ctx context.Context, node KnowledgeNode) {
+// knowledgePageModelLocked returns the model backing a page after a node write,
+// with the node's name carried onto it and its vector rebuilt from that name.
+// Called with s.mu held. The model is returned rather than stored so a caller
+// that also patches the model can commit both rows at once; a folder, or a page
+// with no model, comes back with false. The model's content and tags are not
+// taken from the node — a read overlays the model onto the node, not the reverse
+// — so only the name and its vector change here.
+func (s *MemoryStore) knowledgePageModelLocked(ctx context.Context, node KnowledgeNode) (MentalModel, bool) {
 	if node.Kind != KnowledgeKindPage || node.MentalModelID == "" {
-		return
+		return MentalModel{}, false
 	}
-	key := mentalModelKey(node.BankID, node.MentalModelID)
-	model, ok := s.mentalModelRecords[key]
-	if !ok || model.Name == node.Title {
-		return
+	stored, ok := s.mentalModelRecords[mentalModelKey(node.BankID, node.MentalModelID)]
+	if !ok {
+		return MentalModel{}, false
 	}
-	model.Name = node.Title
-	model.Embedding = embedMentalModelText(ctx, s.observationEmbedder, model.Name, model.Content)
-	model.LastUpdated = time.Now().UTC()
-	s.mentalModelRecords[key] = cloneMentalModel(model)
+	model := cloneMentalModel(stored)
+	if model.Name != node.Title {
+		model.Name = node.Title
+		model.Embedding = embedMentalModelText(ctx, s.observationEmbedder, model.Name, model.Content)
+		model.LastUpdated = time.Now().UTC()
+	}
+	return model, true
 }
 
 // DeleteKnowledgeNode removes a node and its descendants.

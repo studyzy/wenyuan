@@ -28,7 +28,16 @@ const FRONTEND_ROOT = resolve(__dirname, "..", "..");
 const VIEW = join(FRONTEND_ROOT, "components", "bank-operations-view.tsx");
 const ENGINE_DIR = join(FRONTEND_ROOT, "..", "internal", "storage");
 
-const ENGINE_OPERATION_TYPE_PATTERN = /OperationType[A-Za-z]*\s*=\s*"([a-z_]+)"/g;
+/**
+ * A declaration line of an operation-type constant: `OperationTypeFoo = "bar"`.
+ *
+ * Anchored to the start of the line and to the identifier, so an assignment to
+ * a *field* of that name (`group.OperationType = "unknown"`, which the
+ * observability grouping writes for a row with no recognizable type) is not
+ * mistaken for a vocabulary entry — the guard reads this file for the set of
+ * types the engine can enqueue, and a fallback label is not one of them.
+ */
+const ENGINE_OPERATION_TYPE_PATTERN = /^[ \t]*OperationType[A-Za-z]*[ \t]*=[ \t]*"([a-z_]+)"/gm;
 
 /** Build a set from an iterable — the membership tests below need `.has`. */
 function toSet(values: Iterable<string>): Set<string> {

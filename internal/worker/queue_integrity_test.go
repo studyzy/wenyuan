@@ -212,28 +212,26 @@ func TestDeferIsNoopWhenOperationRowIsGone(t *testing.T) {
 func TestLapsedCompleteSkipsParentRollup(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
-	if _, err := store.PutOperation(ctx, storage.Operation{
-		OperationID: "parent-1", BankID: "bank-a", OperationType: storage.AsyncRetainType,
-		Status: storage.StatusPending, Run: 1,
-		ResultMetadata: map[string]any{"is_parent": true},
-		CreatedAt:      time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.PutOperation(ctx, storage.Operation{
-		OperationID: "op-1", BankID: "bank-a", OperationType: storage.OperationTypeRetain,
-		Status: storage.StatusPending, Run: 1,
-		ResultMetadata: map[string]any{"parent_operation_id": "parent-1"},
-		CreatedAt:      time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	}); err != nil {
+	// A batch parent is a payload-less aggregator the claim never takes, so the
+	// only claimable row is its child. SubmitAsyncRetain builds exactly that
+	// pair the way production does — a parent written with a NULL payload that
+	// no claim may take, and one claimable child pointing back at it.
+	submission, err := store.SubmitAsyncRetain(ctx, storage.RetainRequest{
+		BankID: "bank-a",
+		Items:  []storage.RetainItem{{Content: "Alice moved to Berlin."}},
+	}, storage.DefaultRetainSubBatchTokens)
+	if err != nil {
 		t.Fatal(err)
 	}
 	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.OperationID != "op-1" {
-		t.Fatalf("claimed %q, want the child op-1", op.OperationID)
+	if op.OperationID == submission.OperationID {
+		t.Fatalf("claimed the batch parent %q, want its child", op.OperationID)
+	}
+	if parent, _ := op.ResultMetadata["parent_operation_id"].(string); parent != submission.OperationID {
+		t.Fatalf("claimed %q (parent %q), want a child of the batch", op.OperationID, parent)
 	}
 	logger, logs := logCapture()
 	consumer := New(store, ProcessorFunc(func(ctx context.Context, _ storage.Operation) error {

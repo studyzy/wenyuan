@@ -29,6 +29,9 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.TextSearchExtension != DefaultTextSearchExtension {
 		t.Fatalf("text search extension default = %q", cfg.TextSearchExtension)
 	}
+	if cfg.TextSearchExtensionNativeLanguage != DefaultTextSearchExtensionNativeLanguage {
+		t.Fatalf("native text-search dictionary default = %q", cfg.TextSearchExtensionNativeLanguage)
+	}
 	if cfg.GzipMinSize != DefaultGzipMinSize {
 		t.Fatalf("gzip floor default = %d", cfg.GzipMinSize)
 	}
@@ -72,6 +75,22 @@ func TestFromEnvReadsEveryApprovedVariable(t *testing.T) {
 	}
 	if cfg.GzipMinSize != -1 {
 		t.Fatalf("negative gzip floor must be preserved, got %d", cfg.GzipMinSize)
+	}
+}
+
+func TestFromEnvReadsTheNativeTextSearchDictionary(t *testing.T) {
+	// The reference accepts any PostgreSQL identifier here (it lowercases the
+	// value first), so a deployment that switches to a CJK dictionary or to
+	// `simple` must resolve rather than be refused: the dictionary is embedded
+	// in the stored search_vector and in every keyword query, so a silent
+	// fallback to english would leave such a deployment searching with a
+	// tokenizer its rows were not written with.
+	cfg := FromEnv(envMap(map[string]string{EnvTextSearchExtensionNativeLanguage: "  ZHParser "}))
+	if cfg.TextSearchExtensionNativeLanguage != "zhparser" {
+		t.Fatalf("dictionary = %q, want the lowercased value", cfg.TextSearchExtensionNativeLanguage)
+	}
+	if err := cfg.ValidateSupported(); err != nil {
+		t.Fatalf("a configured dictionary must be honoured, not refused: %v", err)
 	}
 }
 

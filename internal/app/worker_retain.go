@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -43,6 +44,12 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	if err != nil {
 		return classifyRetainFailure(err)
 	}
+	// The write landed, so the completion events are raised here exactly as the
+	// synchronous path raises them: one delivery per submitted item, sharing the
+	// operation that ran the write. A failed write raises none — the reference's
+	// outbox callback runs inside the retain's transaction, so a rolled-back write
+	// leaves no event behind.
+	p.notifyRetainCompleted(ctx, op, req.Items)
 	// Count the document by its extraction outcome, as the synchronous path
 	// does, so both routes report the same facts/no_facts split.
 	monitoring.Workload.CountRetainDocument(countUnitIDs(outcome))
@@ -51,6 +58,22 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 		"extraction_errors_count": 0,
 	})
 	return nil
+}
+
+// notifyRetainCompleted fires one retain.completed event per item the queued
+// child operation retained, in the shape the synchronous path raises (see
+// memoryops.RetainCompletedData): the operation is the retain operation a worker
+// ran, and the data carries the document the item named, the tags it held and how
+// many memory units that document owns. The reference raises these from the same
+// outbox for both routes, so the two differ only in the operation id — a
+// synchronous retain mints one, a queued one carries the id of the operation the
+// worker executed.
+func (p archiveProcessor) notifyRetainCompleted(ctx context.Context, op storage.Operation, items []storage.RetainItem) {
+	for _, item := range items {
+		p.enqueueWebhookEvent(ctx, op.BankID, "retain.completed",
+			memoryops.RetainCompletedData(op.OperationID, item.DocumentID, item.Tags,
+				memoryops.DocumentUnitCount(ctx, p.store, op.BankID, item.DocumentID)))
+	}
 }
 
 // classifyRetainFailure separates a write that can succeed later from one that

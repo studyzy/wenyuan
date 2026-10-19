@@ -40,10 +40,13 @@ func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, l
 		if !claimable(op, now, lease) {
 			continue
 		}
-		// A batch parent is a status aggregator nothing executes: its
-		// lifecycle is driven by its children reaching terminal states. A
-		// claim would mark it processing and then settle it as if it had run.
-		if op.OperationType == AsyncRetainType {
+		// A missing payload marks a status aggregator nothing executes — the
+		// batch parent is the one such row, and its lifecycle is driven by its
+		// children reaching terminal states. The reference claims only rows
+		// whose task_payload is present, so a payload-less row is left for its
+		// children to settle; a claim would mark it processing and then settle
+		// it as if it had run.
+		if op.Payload == nil {
 			continue
 		}
 		if len(types) > 0 && !containsString(types, op.OperationType) {
@@ -128,6 +131,11 @@ func (s *MemoryStore) ClaimConsolidationByPriority(ctx context.Context, workerID
 	candidates := make([]string, 0)
 	for id, op := range s.operations {
 		if op.OperationType != OperationTypeConsolidate {
+			continue
+		}
+		// Same payload predicate as the shared claim: the reference claims
+		// only rows whose task_payload is present.
+		if op.Payload == nil {
 			continue
 		}
 		if !claimable(op, now, lease) {

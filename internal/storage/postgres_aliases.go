@@ -177,10 +177,10 @@ func (s *PostgresStore) ownsAlias(ctx context.Context, bankID, alias string) boo
 }
 
 func (s *PostgresStore) bankExists(ctx context.Context, bankID string) (string, bool) {
-	var id string
+	var seen string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&id)
-	return id, err == nil
+		`SELECT bank_id FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&seen)
+	return seen, err == nil
 }
 
 func (s *PostgresStore) clearPrimary(ctx context.Context, bankID string) error {

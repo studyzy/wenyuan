@@ -96,3 +96,36 @@ func TestReprocessSubmitsAsyncBatchReplayingParams(t *testing.T) {
 		t.Fatalf("replayed observation_scopes = %s", item.ObservationScopes)
 	}
 }
+
+// The names a caller gave its attachments ride the document's replayable
+// parameters, so a reprocess restates them instead of losing them: a write
+// replaces the document record, and the reference keeps the names by replaying
+// them. The parameter round-trips through the stored map and back onto the item
+// a reprocess writes.
+func TestReprocessReplaysAttachmentFilenames(t *testing.T) {
+	params := map[string]any{
+		"attachment_filenames": map[string]any{"abc123": "plan.txt", "def456": "chart.png"},
+	}
+	item := storage.RetainItem{}
+	applyRetainParams(&item, params)
+	if len(item.AttachmentFilenames) != 2 || item.AttachmentFilenames["abc123"] != "plan.txt" {
+		t.Fatalf("filenames not replayed: %+v", item.AttachmentFilenames)
+	}
+	// The postgres store hands the map back as map[string]string, because the
+	// decodeJSONMap keeper keeps a nested object it can type directly.
+	direct := storage.RetainItem{}
+	applyRetainParams(&direct, map[string]any{
+		"attachment_filenames": map[string]string{"abc123": "plan.txt"},
+	})
+	if direct.AttachmentFilenames["abc123"] != "plan.txt" {
+		t.Fatalf("typed map not replayed: %+v", direct.AttachmentFilenames)
+	}
+	// A malformed entry is dropped rather than failing the reprocess.
+	broken := storage.RetainItem{}
+	applyRetainParams(&broken, map[string]any{
+		"attachment_filenames": map[string]any{"abc123": 5, "": "plan.txt"},
+	})
+	if len(broken.AttachmentFilenames) != 0 {
+		t.Fatalf("malformed names kept: %+v", broken.AttachmentFilenames)
+	}
+}

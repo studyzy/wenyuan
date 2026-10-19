@@ -3,6 +3,7 @@ package monitoring
 import (
 	"crypto/rand"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -181,7 +182,7 @@ func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant st
 		writeHelpType(b, "hindsight_http_requests_in_progress_requests", "Number of HTTP requests in progress", "gauge")
 		for _, series := range snap.InProgress {
 			labels := methodEndpointLabels(series.Method, series.Endpoint, tenant)
-			fmt.Fprintf(b, "hindsight_http_requests_in_progress_requests%s %d\n", labels, series.Count)
+			fmt.Fprintf(b, "hindsight_http_requests_in_progress_requests%s %s\n", labels, formatValue(float64(series.Count)))
 		}
 	}
 
@@ -201,8 +202,8 @@ func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant st
 		}
 		fmt.Fprintf(b, "hindsight_http_duration_seconds_bucket%s %s\n",
 			requestLabelsWithLe(series, "+Inf", tenant), formatValue(float64(series.DurationCount)))
-		fmt.Fprintf(b, "hindsight_http_duration_seconds_sum%s %s\n", labels, formatValue(series.DurationSum))
 		fmt.Fprintf(b, "hindsight_http_duration_seconds_count%s %s\n", labels, formatValue(float64(series.DurationCount)))
+		fmt.Fprintf(b, "hindsight_http_duration_seconds_sum%s %s\n", labels, formatValue(series.DurationSum))
 	}
 }
 
@@ -241,13 +242,13 @@ func writeHistogramFamilies(b *strings.Builder, families []Histogram, tenant str
 			if i < len(family.Counts) {
 				count = family.Counts[i]
 			}
-			fmt.Fprintf(b, "%s_bucket%s %d\n", family.Name,
-				requestLabelStringMap(withLabel(labels, "le", formatBoundary(boundary))), count)
+			fmt.Fprintf(b, "%s_bucket%s %s\n", family.Name,
+				requestLabelStringMap(withLabel(labels, "le", formatBoundary(boundary))), formatValue(float64(count)))
 		}
-		fmt.Fprintf(b, "%s_bucket%s %d\n", family.Name,
-			requestLabelStringMap(withLabel(labels, "le", "+Inf")), family.Count)
+		fmt.Fprintf(b, "%s_bucket%s %s\n", family.Name,
+			requestLabelStringMap(withLabel(labels, "le", "+Inf")), formatValue(float64(family.Count)))
+		fmt.Fprintf(b, "%s_count%s %s\n", family.Name, requestLabelStringMap(labels), formatValue(float64(family.Count)))
 		fmt.Fprintf(b, "%s_sum%s %s\n", family.Name, requestLabelStringMap(labels), formatValue(family.Sum))
-		fmt.Fprintf(b, "%s_count%s %d\n", family.Name, requestLabelStringMap(labels), family.Count)
 	}
 }
 
@@ -343,16 +344,58 @@ func escapeLabelValue(value string) string {
 	return value
 }
 
-// formatValue renders a sample value without an exponent for the magnitudes
-// counters and durations reach.
+// formatValue renders a sample value the way the reference's exposition does:
+// CPython's repr of the float, then the reference exporter's one adjustment,
+// which re-spells a positive value with more than six integer digits in
+// exponent form ("2.8493856768e+010") because Go switches to exponents later
+// than Python. A whole value therefore keeps the ".0" a scraper would not
+// need but the reference's text carries.
 func formatValue(value float64) string {
-	return strconv.FormatFloat(value, 'g', -1, 64)
+	switch {
+	case math.IsNaN(value):
+		return "NaN"
+	case math.IsInf(value, 1):
+		return "+Inf"
+	case math.IsInf(value, -1):
+		return "-Inf"
+	}
+	text := pythonFloat(value)
+	if value > 0 {
+		if dot := strings.IndexByte(text, '.'); dot > 6 {
+			mantissa := strings.TrimRight(text[:1]+"."+text[1:dot]+text[dot+1:], "0.")
+			return mantissa + "e+0" + strconv.Itoa(dot-1)
+		}
+	}
+	return text
 }
 
 // formatBoundary renders a histogram boundary the way the exposition format
-// spells it.
+// spells it: CPython's str of the float, so a whole boundary keeps its ".0"
+// ("1.0", not "1") and a boundary is the same label value on both sides.
 func formatBoundary(boundary float64) string {
-	return strconv.FormatFloat(boundary, 'g', -1, 64)
+	return pythonFloat(boundary)
+}
+
+// pythonFloat renders a float the way CPython's repr does: the shortest
+// decimal that round-trips, in fixed notation while the decimal exponent is in
+// [-4, 16) and in scientific notation (signed, at least two exponent digits)
+// outside it. FormatFloat's 'e' is used to read the exponent because Go's
+// 'g'/'f' switch to exponents on different bounds than Python's repr.
+func pythonFloat(value float64) string {
+	scientific := strconv.FormatFloat(value, 'e', -1, 64)
+	_, exponent, ok := strings.Cut(scientific, "e")
+	if !ok {
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	}
+	exp, err := strconv.Atoi(exponent)
+	if err != nil || exp < -4 || exp >= 16 {
+		return scientific
+	}
+	fixed := strconv.FormatFloat(value, 'f', -1, 64)
+	if !strings.Contains(fixed, ".") {
+		fixed += ".0"
+	}
+	return fixed
 }
 
 func writeHelpType(b *strings.Builder, name, help, kind string) {

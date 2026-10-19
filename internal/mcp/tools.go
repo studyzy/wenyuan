@@ -88,7 +88,7 @@ func (s *Server) retain(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	content := stringArgument(args, "content")
 	if content == "" {
-		return nil, errors.New("retain requires content")
+		return nil, invalidArgument("retain requires content")
 	}
 	item := retainItem(args, content)
 	if item.Context == "" {
@@ -115,7 +115,7 @@ func (s *Server) syncRetain(ctx context.Context, args map[string]any) (any, erro
 	bankID := s.bankArgument(ctx, args)
 	content := stringArgument(args, "content")
 	if content == "" {
-		return nil, errors.New("sync_retain requires content")
+		return nil, invalidArgument("sync_retain requires content")
 	}
 	item := retainItem(args, content)
 	if item.Context == "" {
@@ -171,7 +171,7 @@ func (s *Server) recall(ctx context.Context, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if strings.TrimSpace(request.Query) == "" {
-		return nil, errors.New("recall requires query")
+		return nil, invalidArgument("recall requires query")
 	}
 	query, err := buildRecallQuery(bankID, request)
 	if err != nil {
@@ -195,7 +195,7 @@ func (s *Server) reflect(ctx context.Context, args map[string]any) (any, error) 
 	bankID := s.bankArgument(ctx, args)
 	query := stringArgument(args, "query")
 	if query == "" {
-		return nil, errors.New("reflect requires query")
+		return nil, invalidArgument("reflect requires query")
 	}
 	outcome, err := s.store.Reflect(ctx, storage.ReflectQuery{BankID: bankID, Query: query})
 	if err != nil {
@@ -213,11 +213,7 @@ func (s *Server) reflect(ctx context.Context, args map[string]any) (any, error) 
 			"thoughts_tokens": outcome.Usage.ThoughtsTokens,
 		},
 	}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return toolText(encoded), nil
+	return toolText(pythonJSONText(payload)), nil
 }
 
 // structuredOutput renders the reshaped answer, reporting null when the request
@@ -286,27 +282,46 @@ func bankProfile(bank storage.Bank) map[string]any {
 	}
 }
 
-// createBank creates a bank.
+// createBank creates a bank or, when it already exists, applies the supplied
+// profile to it — the reference's create_bank updates the profile with the
+// values it was given and only then reports it, so calling it on a bank that
+// exists is an update rather than a duplicate-key failure.
 func (s *Server) createBank(ctx context.Context, args map[string]any) (any, error) {
 	bankID := stringArgument(args, "bank_id")
 	if bankID == "" {
-		return nil, errors.New("create_bank requires bank_id")
+		return nil, invalidArgument("create_bank requires bank_id")
 	}
-	bank, err := s.store.CreateBank(ctx, storage.Bank{
-		BankID:  bankID,
-		Name:    stringArgument(args, "name"),
-		Mission: stringArgument(args, "mission"),
-	})
+	name, mission := stringArgument(args, "name"), stringArgument(args, "mission")
+	bank, err := s.store.GetBank(ctx, bankID)
+	switch {
+	case errors.Is(err, storage.ErrBankNotFound):
+		bank, err = s.store.CreateBank(ctx, storage.Bank{BankID: bankID, Name: name, Mission: mission})
+	case err == nil:
+		patch := storage.BankPatch{}
+		if name != "" {
+			patch.Name = &name
+		}
+		if mission != "" {
+			patch.Mission = &mission
+		}
+		if patch.Name != nil || patch.Mission != nil {
+			bank, err = s.store.UpdateBank(ctx, bankID, patch)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return bankProfile(bank), nil
 }
 
-// getBank reads one bank.
+// getBank reads one bank. An unknown bank is a normal negative answer, as it is
+// in the reference, rather than a tool failure.
 func (s *Server) getBank(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	bank, err := s.store.GetBank(ctx, bankID)
+	if errors.Is(err, storage.ErrBankNotFound) {
+		return notFoundAnswer("Bank '" + bankID + "' not found"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -333,69 +348,125 @@ func (s *Server) updateBank(ctx context.Context, args map[string]any) (any, erro
 	return bankProfile(bank), nil
 }
 
-// deleteBank removes a bank and its data.
+// deleteBank removes a bank and its data, reporting the cascade the engine
+// reports: the units, entities and documents that went with the bank.
 func (s *Server) deleteBank(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
-	if _, err := s.store.DeleteBank(ctx, bankID); err != nil {
+	documents, entities := s.bankCounts(ctx, bankID)
+	deleted, err := s.store.DeleteBank(ctx, bankID)
+	if err != nil && !errors.Is(err, storage.ErrBankNotFound) {
 		return nil, err
 	}
-	return map[string]any{"success": true}, nil
+	if errors.Is(err, storage.ErrBankNotFound) {
+		deleted = 0
+	}
+	return compactToolText(deleteBankAck{
+		Status: "deleted", BankID: bankID, MemoryUnitsDeleted: deleted,
+		EntitiesDeleted: entities, DocumentsDeleted: documents, BankDeleted: true,
+	}), nil
 }
 
-// clearMemories removes a bank's memory units.
+// clearMemories removes a bank's memory units and reports the cascade the engine
+// reports.
 func (s *Server) clearMemories(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
-	removed, err := s.store.ClearBankMemories(ctx, bankID, stringArgument(args, "type"))
+	factType := stringArgument(args, "type")
+	ack := clearMemoriesAck{Status: "cleared", BankID: bankID}
+	if factType == "" {
+		// A full clear sweeps the bank's entities and documents as well, and the
+		// engine reports both counts.
+		documents, entities := s.bankCounts(ctx, bankID)
+		ack.EntitiesDeleted = entities
+		ack.DocumentsDeleted = &documents
+	}
+	removed, err := s.store.ClearBankMemories(ctx, bankID, factType)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"deleted_count": removed}, nil
+	ack.MemoryUnitsDeleted = removed
+	return compactToolText(ack), nil
 }
 
-// listMemories lists a bank's memory units.
+// bankCounts reads how many documents and entities a bank holds, which the
+// destructive tools report as the cascade they performed. A bank that cannot be
+// read — one that is already gone — reports nothing to delete.
+func (s *Server) bankCounts(ctx context.Context, bankID string) (documents, entities int) {
+	stats, err := s.store.BankStats(ctx, bankID)
+	if err != nil {
+		return 0, 0
+	}
+	page, err := s.store.ListEntities(ctx, storage.EntityQuery{BankID: bankID, Limit: 1})
+	if err != nil {
+		return stats.TotalDocuments, 0
+	}
+	return stats.TotalDocuments, page.Total
+}
+
+// listMemories browses a bank's memory units with the same rows and page
+// envelope the HTTP listing serves.
 func (s *Server) listMemories(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
+	if s.bankMissing(ctx, bankID) {
+		return bankMissingAnswer(bankID), nil
+	}
+	limit, offset := intArgument(args, "limit", 100), intArgument(args, "offset", 0)
+	tagsMatch := stringArgument(args, "tags_match")
+	if tagsMatch == "" {
+		tagsMatch = storage.TagsMatchAny
+	}
 	page, err := s.store.ListMemories(ctx, storage.MemoryQuery{
 		BankID:    bankID,
 		Type:      stringArgument(args, "type"),
 		Q:         stringArgument(args, "q"),
 		Tags:      stringListArgument(args, "tags"),
-		TagsMatch: stringArgument(args, "tags_match"),
-		Limit:     intArgument(args, "limit", 100),
-		Offset:    intArgument(args, "offset", 0),
+		TagsMatch: tagsMatch,
+		Limit:     limit,
+		Offset:    offset,
 	})
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(page.Memories))
-	for _, unit := range page.Memories {
-		items = append(items, map[string]any{
-			"id": unit.ID, "text": unit.Text, "type": string(unit.FactType),
-		})
+	items, err := s.memoryListItems(ctx, bankID, page.Memories)
+	if err != nil {
+		return nil, err
 	}
-	return map[string]any{"items": items, "total": page.Total}, nil
+	return memoryListPage{Items: items, Total: page.Total, Limit: limit, Offset: offset}, nil
 }
 
-// getMemory reads one memory unit.
+// getMemory reads one memory unit in the detail shape the HTTP route serves.
 func (s *Server) getMemory(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	memoryID := stringArgument(args, "memory_id")
 	if memoryID == "" {
-		return nil, errors.New("get_memory requires memory_id")
+		return nil, invalidArgument("get_memory requires memory_id")
+	}
+	if !uuidAnyForm(memoryID) {
+		return notFoundAnswer("Invalid memory_id: '" + memoryID + "' is not a valid UUID"), nil
 	}
 	unit, err := s.store.GetMemory(ctx, bankID, memoryID)
+	if errors.Is(err, storage.ErrMemoryNotFound) {
+		return notFoundAnswer("Memory '" + memoryID + "' not found"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": unit.ID, "text": unit.Text, "type": string(unit.FactType)}, nil
+	detail, err := s.memoryDetailPayload(ctx, bankID, unit)
+	if err != nil {
+		return nil, err
+	}
+	return detail, nil
 }
 
-// updateMemory applies a partial update to one memory unit.
+// updateMemory applies a partial update to one memory unit and reports the
+// updated unit in the same detail shape a read serves.
 func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	memoryID := stringArgument(args, "memory_id")
 	if memoryID == "" {
-		return nil, errors.New("update_memory requires memory_id")
+		return nil, invalidArgument("update_memory requires memory_id")
+	}
+	if !uuidAnyForm(memoryID) {
+		return notFoundAnswer("Invalid memory_id: '" + memoryID + "' is not a valid UUID"), nil
 	}
 	patch := storage.MemoryPatch{}
 	if text := stringArgument(args, "text"); text != "" {
@@ -405,52 +476,112 @@ func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, er
 		patch.Tags = &tags
 	}
 	unit, err := s.store.UpdateMemory(ctx, bankID, memoryID, patch)
+	if errors.Is(err, storage.ErrMemoryNotFound) {
+		return notFoundAnswer("Memory '" + memoryID + "' not found"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": unit.ID, "text": unit.Text}, nil
+	detail, err := s.memoryDetailPayload(ctx, bankID, unit)
+	if err != nil {
+		return nil, err
+	}
+	return detail, nil
 }
 
-// invalidateMemory clears a memory's observations.
+// invalidateMemory clears a memory's observations and reports the memory in the
+// detail shape a read serves, as the reference's tool does.
 func (s *Server) invalidateMemory(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	memoryID := stringArgument(args, "memory_id")
 	if memoryID == "" {
-		return nil, errors.New("invalidate_memory requires memory_id")
+		return nil, invalidArgument("invalidate_memory requires memory_id")
 	}
-	removed, err := s.store.DeleteObservations(ctx, bankID, memoryID)
+	if !uuidAnyForm(memoryID) {
+		return notFoundAnswer("Invalid memory_id: '" + memoryID + "' is not a valid UUID"), nil
+	}
+	if _, err := s.store.DeleteObservations(ctx, bankID, memoryID); err != nil {
+		if errors.Is(err, storage.ErrMemoryNotFound) {
+			return notFoundAnswer("Memory '" + memoryID + "' not found"), nil
+		}
+		return nil, err
+	}
+	unit, err := s.store.GetMemory(ctx, bankID, memoryID)
+	if errors.Is(err, storage.ErrMemoryNotFound) {
+		return notFoundAnswer("Memory '" + memoryID + "' not found"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"deleted_count": removed}, nil
+	detail, err := s.memoryDetailPayload(ctx, bankID, unit)
+	if err != nil {
+		return nil, err
+	}
+	return detail, nil
 }
 
-// listMentalModels lists a bank's mental models.
+// listMentalModels lists a bank's mental models as metadata rows — identity,
+// tags, staleness and timestamps, never the synthesized content — with the
+// total the engine reports.
 func (s *Server) listMentalModels(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
+	if s.bankMissing(ctx, bankID) {
+		return bankMissingAnswer(bankID, jsonField{"items", []any{}}), nil
+	}
 	models, err := s.store.ListMentalModels(ctx, bankID, "")
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(models))
+	tags := stringListArgument(args, "tags")
+	limit, offset := intArgument(args, "limit", 100), intArgument(args, "offset", 0)
+	items := make([]mentalModelItem, 0, len(models))
 	for _, model := range models {
-		items = append(items, map[string]any{"id": model.ID, "name": model.Name})
+		if !mentalModelMatchesTags(model.Tags, tags) {
+			continue
+		}
+		items = append(items, mentalModelItemFrom(model, s.store.IsStaleBatch(ctx, bankID, model)))
 	}
-	return map[string]any{"items": items}, nil
+	total := len(items)
+	items = pageSlice(items, offset, limit)
+	return mentalModelListPage{Items: items, Total: total}, nil
 }
 
-// listDirectives lists a bank's directives.
+// listDirectives lists a bank's directives, highest priority first, with the
+// tags and active-only selectors the schema declares and the total the engine
+// reports.
 func (s *Server) listDirectives(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
+	if s.bankMissing(ctx, bankID) {
+		return bankMissingAnswer(bankID, jsonField{"items", []any{}}), nil
+	}
 	directives, err := s.store.ListDirectives(ctx, bankID)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(directives))
-	for _, directive := range directives {
-		items = append(items, map[string]any{"id": directive.ID, "name": directive.Name})
+	activeOnly := boolArgument(args, "active_only", true)
+	tags := stringListArgument(args, "tags")
+	tagsMatch := stringArgument(args, "tags_match")
+	if tagsMatch == "" {
+		tagsMatch = "any"
 	}
-	return map[string]any{"items": items}, nil
+	filtered := make([]storage.Directive, 0, len(directives))
+	for _, record := range directives {
+		if activeOnly && !record.IsActive {
+			continue
+		}
+		if len(tags) > 0 && !directiveMatchesTags(record.Tags, tags, tagsMatch) {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	sortDirectives(filtered)
+	items := make([]directiveItem, 0, len(filtered))
+	for _, record := range filtered {
+		items = append(items, toDirectiveItem(record))
+	}
+	total := len(items)
+	items = pageSlice(items, intArgument(args, "offset", 0), intArgument(args, "limit", 100))
+	return directiveListPage{Items: items, Total: total}, nil
 }
 
 // toolText marks a payload that is already the JSON text a str-returning tool
@@ -584,7 +715,10 @@ func toolEntries(defs []tool) []map[string]any {
 }
 
 // toolResult wraps a tool payload in the envelope its return kind calls for. The
-// two memory-write tools return objects; every other tool returns text.
+// two memory-write tools return objects; every other tool returns text, which
+// the reference pretty-prints with CPython's json.dumps(indent=2) — a tool that
+// has already rendered its own text (recall's compact dump, an error payload)
+// keeps it.
 func toolResult(name string, payload any) map[string]any {
 	if name == "retain" || name == "sync_retain" {
 		return objectToolResult(payload)
@@ -592,11 +726,7 @@ func toolResult(name string, payload any) map[string]any {
 	if text, ok := payload.(toolText); ok {
 		return textToolResult(string(text))
 	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return toolError(err.Error())
-	}
-	return textToolResult(string(encoded))
+	return textToolResult(pythonJSONText(payload))
 }
 
 // toolError reports a tool failure as a result carrying the message. The

@@ -33,7 +33,7 @@ func TestRecallOverTagCapIsClientError(t *testing.T) {
 		mux.HandleFunc(method+" "+pattern, handler)
 	})
 
-	body := `{"query":"q","tag_groups":[{"tag":"team:alpha","match":"exact","resolve":"fuzzy"}]}`
+	body := `{"query":"q","tag_groups":[{"tags":["team:alpha"],"match":"exact","resolve":"fuzzy"}]}`
 	rec := post(t, mux, "/v1/default/banks/b1/memories/recall", body)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (not 500); body = %s", rec.Code, rec.Body.String())

@@ -23,12 +23,23 @@ const (
 // reference's DEFAULT_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA.
 const defaultPGFunctionSchema = "paradedb"
 
+// defaultNativeLanguage is the reference's
+// DEFAULT_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE: the dictionary the native
+// tsvector backend uses when the deployment names none.
+const defaultNativeLanguage = "english"
+
 // textSearchBackend is the resolved lexical backend: which arm to build, and
-// the pg_search settings its SQL embeds.
+// the settings its SQL embeds.
 type textSearchBackend struct {
 	extension      string
 	functionSchema string
 	tokenizer      string
+	// nativeLanguage is the tsvector dictionary the native backend tokenizes
+	// with. It is written into every search_vector expression and every keyword
+	// query, so rows written under one dictionary are not equivalent under
+	// another — the reference's own behaviour, and the reason a deployment that
+	// changes it must reindex to keep its existing rows searchable.
+	nativeLanguage string
 }
 
 // resolveTextSearchBackend reads the configured text-search backend.
@@ -40,6 +51,14 @@ type textSearchBackend struct {
 // than an injection. Validation runs whether or not pg_search is selected, so a
 // deployment that later switches the extension does not discover a malformed
 // setting by failing to start for a different reason.
+//
+// The native dictionary is checked the same way and for the same reason: the
+// reference validates it as a PostgreSQL identifier in HindsightConfig.validate
+// before embedding it in to_tsvector(...), and raises at startup when it is not
+// one. Which dictionaries *exist* is
+// deliberately not checked — the reference is permissive there and lets the
+// server raise its own error at query time, so a name this build accepts but
+// the server lacks fails the query rather than the start.
 func resolveTextSearchBackend(cfg BackendConfig) (textSearchBackend, error) {
 	extension := strings.ToLower(strings.TrimSpace(cfg.TextSearchExtension))
 	if extension == "" {
@@ -52,11 +71,19 @@ func resolveTextSearchBackend(cfg BackendConfig) (textSearchBackend, error) {
 		return textSearchBackend{}, fmt.Errorf(
 			"invalid pg_search function schema %q: must be a PostgreSQL identifier", cfg.PGFunctionSchema)
 	}
+	language := strings.ToLower(strings.TrimSpace(cfg.TextSearchNativeLanguage))
+	if language == "" {
+		language = defaultNativeLanguage
+	} else if !pgIdentifierPattern.MatchString(language) {
+		return textSearchBackend{}, fmt.Errorf(
+			"invalid text-search dictionary %q: must be a PostgreSQL identifier "+
+				"(letters, digits, underscores; not starting with a digit)", cfg.TextSearchNativeLanguage)
+	}
 	tokenizer, err := normalizePGSearchTokenizer(cfg.PGTokenizer)
 	if err != nil {
 		return textSearchBackend{}, err
 	}
-	return textSearchBackend{extension: extension, functionSchema: schema, tokenizer: tokenizer}, nil
+	return textSearchBackend{extension: extension, functionSchema: schema, tokenizer: tokenizer, nativeLanguage: language}, nil
 }
 
 // pgIdentifierPattern is the identifier shape the reference accepts for the

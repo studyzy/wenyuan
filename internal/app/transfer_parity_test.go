@@ -135,3 +135,47 @@ func TestExistingRoutesUnchangedAfterTransferMount(t *testing.T) {
 		})
 	}
 }
+
+// test-export-download-url-resolves: the archive URL an export publishes is
+// fetched exactly as published. A bank identifier the storage key encodes
+// leaves the key holding an escape of its own, and the download route splits
+// the path it receives rather than decoding it, so a URL built from the raw key
+// addresses a key nothing is stored under and answers not-found.
+func TestExportDownloadURLResolvesForEncodedBankID(t *testing.T) {
+	ctx := context.Background()
+	app, err := New(ctx, testConfig(), Dependencies{
+		Store: storage.NewMemoryStore("public"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bankID = "coding-agent::wenyuan"
+	if _, err := app.Store.CreateBank(ctx, storage.Bank{BankID: bankID, Name: bankID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The key is the one an export of this bank stashes its archive under, so
+	// its bank segment carries the escapes the bank identifier was encoded to.
+	key := storage.ExportStorageKey(bankID, "op-1")
+	if key == "banks/"+"coding-agent::wenyuan"+"/exports/op-1/transfer.zip" {
+		t.Fatalf("the key must encode the bank segment to exercise this case: %q", key)
+	}
+	if err := app.Store.PutStoredFile(ctx, storage.StoredFile{
+		Key:         key,
+		ContentType: "application/zip",
+		Data:        []byte("zip-bytes"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	app.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, downloadURLFor(key), nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the published download URL must resolve: %s = %d, want %d (body %s)",
+			downloadURLFor(key), rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "zip-bytes" {
+		t.Fatalf("body = %q, want the stored bytes", got)
+	}
+}

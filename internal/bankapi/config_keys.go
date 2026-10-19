@@ -113,7 +113,9 @@ var positiveIntFields = map[string]struct{}{
 // Every accepted key — the disposition traits and reflect_mission included —
 // is an override in the bank's config column, which is the only place the
 // reference's config endpoint writes and the only place it reads. The legacy
-// disposition and mission columns belong to the profile paths.
+// disposition and mission columns are never written by any route: the
+// reference leaves them at their create-time defaults and resolves the profile
+// by overlaying these overrides on top.
 func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 	// The policy check runs before everything else, matching the reference: an
 	// invalid memory_defense is a 422 regardless of what else the update names.
@@ -180,23 +182,27 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 			configValues[normalized] = nil
 			continue
 		}
+		if !requestKindMatches(kind, raw) {
+			return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
+				fmt.Sprintf("%s must be %s, got %s", normalized, describeKind(kind), pythonTypeName(raw)))
+		}
+		// The type check runs before the trait's range check, as the reference
+		// does: a float, string or bool is reported as the wrong type, and only
+		// an integer reaches the 1-5 bound check, whose message interpolates the
+		// value's repr.
 		if _, isTrait := dispositionFieldKeys[normalized]; isTrait {
-			value, ok := asInt(raw)
-			if !ok || value < storage.DispositionTraitMin || value > storage.DispositionTraitMax {
+			value, _ := asInt(raw)
+			if value < storage.DispositionTraitMin || value > storage.DispositionTraitMax {
 				return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-					fmt.Sprintf("%s must be an integer between 1 and 5, got %s", normalized, describeValue(raw)))
+					fmt.Sprintf("%s must be an integer between 1 and 5, got %s", normalized, pyRepr(raw)))
 			}
 			configValues[normalized] = value
 			continue
 		}
-		if !kindMatches(kind, raw) {
-			return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-				fmt.Sprintf("%s must be %s, got %s", normalized, describeKind(kind), pythonTypeName(raw)))
-		}
 		if err := validateConfigValue(normalized, raw); err != nil {
 			return storage.BankPatch{}, err
 		}
-		configValues[normalized] = raw
+		configValues[normalized] = normalizeConfigNumber(kind, raw)
 	}
 
 	if err := validateRecallBudgetBounds(updates); err != nil {
@@ -225,6 +231,12 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 	}
 	switch key {
 	case "entity_labels":
+		// An empty attribute list is "no vocabulary" rather than a malformed
+		// one: the reference's parser returns null for it (both for `[]` and
+		// for `{"attributes": []}`), so it is stored as the empty vocabulary.
+		if isEntityLabelsEmpty(raw) {
+			break
+		}
 		if _, err := entitylabels.Parse(raw); err != nil {
 			return httpx.NewHTTPError(httpx.KindBadRequest, "Invalid entity_labels format: "+err.Error())
 		}
@@ -248,20 +260,89 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 	return nil
 }
 
+// isEntityLabelsEmpty reports the two shapes the reference reads as "no
+// vocabulary configured": an empty list, and an object whose attributes list is
+// absent or empty.
+func isEntityLabelsEmpty(raw any) bool {
+	switch typed := raw.(type) {
+	case []any:
+		return len(typed) == 0
+	case map[string]any:
+		attributes, present := typed["attributes"]
+		if !present || attributes == nil {
+			return true
+		}
+		list, ok := attributes.([]any)
+		return ok && len(list) == 0
+	}
+	return false
+}
+
 // validateKnowledgePageDefaultTrigger rejects a bank default whose shape or
 // members the page layer could not apply. It is checked at the write so a bad
 // value cannot break every later page creation in the bank.
+//
+// The message is the reference's: the value is validated against the trigger
+// model, so an unknown member raises "{key} has unknown fields: {members}"
+// before anything else, and a wrong value raises "Invalid {key}: {member}:
+// {reason}" with every offending member joined by "; " in member-name order.
 func validateKnowledgePageDefaultTrigger(raw any) *httpx.HTTPError {
 	object, ok := raw.(map[string]any)
 	if !ok {
 		return httpx.NewHTTPError(httpx.KindBadRequest,
-			fmt.Sprintf("knowledge_page_default_trigger must be an object, got %s", describeValue(raw)))
+			"knowledge_page_default_trigger: Input should be a valid dictionary")
 	}
-	if failure := mentalmodels.ValidateTriggerObject(object); failure != nil {
+	unknown := make([]string, 0, len(object))
+	for key := range object {
+		if !mentalmodels.TriggerMember(key) {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
 		return httpx.NewHTTPError(httpx.KindBadRequest,
-			"knowledge_page_default_trigger is invalid: "+failure.Error())
+			"knowledge_page_default_trigger has unknown fields: "+strings.Join(unknown, ", "))
+	}
+	problems := triggerProblems(object)
+	if len(problems) > 0 {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			"Invalid knowledge_page_default_trigger: "+strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// triggerReason renders a validation item the way the reference's model
+// validator report does, as "{location}: {message}". The item's location starts
+// with the request path the mental-model trigger validator assumes; a bank
+// configuration is not that request, so only what follows the "trigger" segment
+// names the member. A model-level item has nothing after it, and the reference
+// renders such an item with the noun the value was validated as.
+func triggerReason(item httpx.ValidationError, noun string) string {
+	location := noun
+	for index, segment := range item.Loc {
+		if segment == "trigger" && index+1 < len(item.Loc) {
+			location = strings.Join(item.Loc[index+1:], ".")
+		}
+	}
+	if location == "" || item.Msg == "" {
+		return item.Type
+	}
+	return location + ": " + item.Msg
+}
+
+// triggerProblems validates a knowledge-page default trigger the way the
+// reference validates it against its trigger model, returning one entry per
+// offending member in member-name order. The trigger's own validator already
+// knows each member's contract (it answers the mental-model routes), so the
+// whole object goes to it first and its items are kept, with the reason
+// prefixed by the member each item names.
+func triggerProblems(object map[string]any) []string {
+	var problems []string
+	for _, item := range mentalmodels.TriggerErrors(object) {
+		problems = append(problems, triggerReason(item, "trigger"))
+	}
+	sort.SliceStable(problems, func(i, j int) bool { return problems[i] < problems[j] })
+	return problems
 }
 
 // memoryDefenseActions are the actions a memory_defense rule accepts.
@@ -325,6 +406,36 @@ func numberLiteral(value int, raw any) string {
 		return fmt.Sprintf("%d", value)
 	}
 	return describeValue(raw)
+}
+
+// isIntegerNumber reports whether a JSON number literal is an integer: it has no
+// fraction dot and no exponent, which is exactly the split the framework's
+// parser draws between an int and a float.
+func isIntegerNumber(text string) bool {
+	return !strings.ContainsAny(text, ".eE")
+}
+
+// normalizeConfigNumber converts an accepted JSON number to the Go type its
+// declared kind implies: an integer field stores an int, a float field a
+// float64. The written form (a json.Number from the request decode) is resolved
+// here, so a stored override carries a concrete number rather than the raw
+// literal. A value already of the right type passes through.
+func normalizeConfigNumber(kind configValueKind, raw any) any {
+	number, ok := raw.(json.Number)
+	if !ok {
+		return raw
+	}
+	switch kind {
+	case kindInt:
+		if value, err := number.Int64(); err == nil {
+			return int(value)
+		}
+	case kindFloat:
+		if value, err := number.Float64(); err == nil {
+			return value
+		}
+	}
+	return raw
 }
 
 // validateRecallBudgetBounds reproduces the reference's cross-field recall
@@ -493,49 +604,95 @@ func validateConsolidationStrategies(raw any) *httpx.HTTPError {
 	for index, entry := range list {
 		object, ok := entry.(map[string]any)
 		if !ok {
-			return invalidStrategy(index, "entry", "Input should be a valid dictionary")
+			return invalidStrategy(index, "entry",
+				"Input should be a valid dictionary or instance of StrictConsolidationStrategySpec")
 		}
-		for key := range object {
+		// The entry's own members come before its rules: pydantic reports a
+		// model's field errors in declaration order, and `scopes` is declared
+		// first, so a bad scope is reported before a bad setting.
+		if scopesRaw, present := object["scopes"]; present && scopesRaw != nil {
+			if httpErr := validateStrategyScopes(index, scopesRaw); httpErr != nil {
+				return httpErr
+			}
+		}
+		for _, key := range sortedKeys(object) {
 			if _, known := consolidationStrategyKeys[key]; !known {
 				return invalidStrategy(index, key, "Extra inputs are not permitted")
 			}
 		}
-		scopesRaw, present := object["scopes"]
-		if !present || scopesRaw == nil {
-			continue
-		}
-		rules, ok := scopesRaw.([]any)
-		if !ok {
-			return invalidStrategy(index, "scopes", "Input should be a valid list")
-		}
-		for ruleIndex, ruleRaw := range rules {
-			rule, ok := ruleRaw.(map[string]any)
-			if !ok {
-				return invalidStrategy(index, fmt.Sprintf("scopes.%d", ruleIndex), "Input should be a valid dictionary")
+		for _, key := range []string{
+			"max_observations_per_scope",
+			"consolidation_source_facts_max_tokens",
+			"consolidation_source_facts_max_tokens_per_observation",
+		} {
+			value, present := object[key]
+			if !present || value == nil {
+				continue
 			}
-			for key := range rule {
-				if _, known := consolidationScopeRuleKeys[key]; !known {
-					return invalidStrategy(index, fmt.Sprintf("scopes.%d.%s", ruleIndex, key), "Extra inputs are not permitted")
-				}
-			}
-			if tagsRaw, present := rule["tags"]; present && tagsRaw != nil {
-				tags, ok := tagsRaw.([]any)
-				if !ok || !allStrings(tags) {
-					return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags", ruleIndex), "Input should be a valid list")
-				}
-			}
-			if mode, present := rule["tags_match"]; present && mode != nil {
-				text, ok := mode.(string)
-				if !ok {
-					return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags_match", ruleIndex), "Input should be a valid string")
-				}
-				if _, known := consolidationTagsMatchValues[text]; !known {
-					return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags_match", ruleIndex), "must be one of all, exact")
-				}
+			if failure := httpx.ScalarTypeMismatch("int", nil, value); failure.Type != "" {
+				return invalidStrategy(index, key, failure.Msg)
 			}
 		}
 	}
 	return nil
+}
+
+// validateStrategyScopes checks one strategy's scope rules, naming the
+// offending rule and member the way the reference's nested models do.
+func validateStrategyScopes(index int, raw any) *httpx.HTTPError {
+	rules, ok := raw.([]any)
+	if !ok {
+		return invalidStrategy(index, "scopes", "Input should be a valid list")
+	}
+	for ruleIndex, ruleRaw := range rules {
+		rule, ok := ruleRaw.(map[string]any)
+		if !ok {
+			return invalidStrategy(index, fmt.Sprintf("scopes.%d", ruleIndex), "Input should be a valid dictionary")
+		}
+		if tagsRaw, present := rule["tags"]; present && tagsRaw != nil {
+			tags, ok := tagsRaw.([]any)
+			if !ok {
+				return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags", ruleIndex), "Input should be a valid list")
+			}
+			// A list is checked element by element: pydantic names the position
+			// of the element that failed, not the list it was in.
+			for position, tag := range tags {
+				if _, isString := tag.(string); !isString {
+					return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags.%d", ruleIndex, position),
+						"Input should be a valid string")
+				}
+			}
+		}
+		if mode, present := rule["tags_match"]; present && mode != nil {
+			text, ok := mode.(string)
+			if !ok {
+				return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags_match", ruleIndex), "Input should be a valid string")
+			}
+			if _, known := consolidationTagsMatchValues[text]; !known {
+				// The mode is checked by a field validator, so the framework
+				// prefixes its raised message with "Value error, ".
+				return invalidStrategy(index, fmt.Sprintf("scopes.%d.tags_match", ruleIndex),
+					"Value error, must be one of all, exact")
+			}
+		}
+		for _, key := range sortedKeys(rule) {
+			if _, known := consolidationScopeRuleKeys[key]; !known {
+				return invalidStrategy(index, fmt.Sprintf("scopes.%d.%s", ruleIndex, key), "Extra inputs are not permitted")
+			}
+		}
+	}
+	return nil
+}
+
+// sortedKeys returns a map's keys in sorted order, so a report over several
+// offending members is deterministic.
+func sortedKeys(object map[string]any) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // invalidStrategy renders the reference's consolidation-strategy validation
@@ -587,14 +744,25 @@ func validateReflectDefaultOptions(raw any) *httpx.HTTPError {
 	return nil
 }
 
-// allStrings reports whether every element of a decoded list is a string.
-func allStrings(values []any) bool {
-	for _, value := range values {
-		if _, ok := value.(string); !ok {
+// requestKindMatches is kindMatches for a value taken from a request body, where
+// the written form of a number is known. An integer field takes only an integer
+// literal (`5`), never a decimal or exponent one (`5.0`, `1e3`): the framework's
+// parser reads the latter as a float, and a float does not satisfy an int. The
+// stored-value filter cannot use this, because a value read back from the
+// database has already lost its written form.
+func requestKindMatches(kind configValueKind, raw any) bool {
+	if kind == kindInt {
+		switch typed := raw.(type) {
+		case int:
+			return true
+		case json.Number:
+			_, err := typed.Int64()
+			return err == nil
+		default:
 			return false
 		}
 	}
-	return true
+	return kindMatches(kind, raw)
 }
 
 // kindMatches reports whether a JSON-decoded value satisfies a field's declared
@@ -729,13 +897,18 @@ func describeKind(kind configValueKind) string {
 // pythonTypeName names a JSON value's type the way Python's type(value).__name__
 // does, which the reference interpolates into a wrong-typed-value message.
 func pythonTypeName(raw any) string {
-	switch raw.(type) {
+	switch raw := raw.(type) {
 	case bool:
 		return "bool"
 	case float64:
 		return "float"
 	case json.Number:
-		return "int"
+		// The framework's parser keeps an integer literal an int and a decimal
+		// or exponent literal a float; the written form decides which.
+		if isIntegerNumber(string(raw)) {
+			return "int"
+		}
+		return "float"
 	case int, int64:
 		return "int"
 	case string:
@@ -771,8 +944,15 @@ func describeValue(raw any) string {
 	}
 }
 
+// asInt reads an integer from a decoded or stored configuration value. A bool
+// is not an integer: Python's bool is an int subclass, so the reference has to
+// reject it explicitly, and it does — `true` never satisfies an integer field.
+// The write is refused as a bool, and a stored one drops out of the overrides
+// and falls back to the server default.
 func asInt(raw any) (int, bool) {
 	switch value := raw.(type) {
+	case bool:
+		return 0, false
 	case int:
 		return value, true
 	case float64:

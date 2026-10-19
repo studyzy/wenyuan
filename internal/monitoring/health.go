@@ -63,6 +63,24 @@ type PoolStatsReporter interface {
 	PoolStats() (PoolStats, bool)
 }
 
+// PoolWaitingReporter reports how many callers are queued for a pooled
+// connection. The reference gathers that count from its pool instrumentation
+// rather than from the backend's own snapshot, so it is a separate capability:
+// the readiness payload carries db_pool_waiting whenever this is implemented,
+// even when the utilization keys are omitted.
+type PoolWaitingReporter interface {
+	PoolWaiting() (int, bool)
+}
+
+// PoolWaiter is the database handle's own waiter counter, the process-wide
+// count of callers blocked in a pooled acquire. A dependency that is backed by
+// such a pool reports it through this method instead of PoolWaitingReporter;
+// the readiness probe then writes db_pool_waiting even though the adapter it is
+// handed does not forward the counter itself.
+type PoolWaiter interface {
+	PoolWaitingCount() (int, bool)
+}
+
 // HealthBody is the JSON status object returned by the readiness routes. It
 // names the database state and the connection-acquire latency, so a failing or
 // slow probe is self-diagnosing.
@@ -74,6 +92,14 @@ type HealthBody struct {
 	// Reason names why the service is not ready when there is no dependency to
 	// probe at all, which the reference reports as "not_initialized".
 	Reason string `json:"reason,omitempty"`
+	// PoolWaiting is the number of callers blocked waiting for a pooled
+	// connection, present whenever the dependency can count them — including
+	// when nothing is waiting, where the reference writes 0 rather than omitting
+	// the key. It precedes the utilization keys because the reference writes it
+	// first: `_pool_health_stats` inserts db_pool_waiting before in_use/max/idle
+	// (engine/memory_engine.py:6220-6235), and the response bytes carry the
+	// order.
+	PoolWaiting *int `json:"db_pool_waiting,omitempty"`
 	// PoolInUse, PoolMax and PoolIdle describe the connection pool on success,
 	// and are present only when the dependency reports them.
 	PoolInUse *int `json:"db_pool_in_use,omitempty"`
@@ -130,7 +156,28 @@ func (h *HealthHandler) readyBody(r *http.Request) (HealthBody, int) {
 			body.PoolIdle = &stats.Idle
 		}
 	}
+	// The waiter count comes from the instrumentation, not the backend's
+	// snapshot, so it is gathered on its own and written whenever the
+	// dependency can count: the reference reports 0 explicitly when nothing is
+	// waiting, and omits the key only when it has no counter at all.
+	if waiting, ok := h.poolWaiting(); ok {
+		body.PoolWaiting = &waiting
+	}
 	return body, http.StatusOK
+}
+
+// poolWaiting reads the dependency's pooled-acquire waiter count. The reference
+// takes it from its own pool instrumentation, so a dependency may report it
+// directly (PoolWaitingReporter) or expose the pool's handle that holds it
+// (PoolWaiter); neither reports the key at all.
+func (h *HealthHandler) poolWaiting() (int, bool) {
+	if reporter, ok := h.DB.(PoolWaitingReporter); ok {
+		return reporter.PoolWaiting()
+	}
+	if waiter, ok := h.DB.(PoolWaiter); ok {
+		return waiter.PoolWaitingCount()
+	}
+	return 0, false
 }
 
 // errorText renders a probe failure the way the reference does: the message

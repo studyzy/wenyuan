@@ -26,8 +26,10 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 		args = append(args, query.Type)
 		conditions = append(conditions, "mu.fact_type = $"+itoa(len(args)))
 	}
-	if search := strings.TrimSpace(query.Q); search != "" {
-		// The search reads both the fact's text and its context.
+	if search := query.Q; search != "" {
+		// The search reads both the fact's text and its context. The query is
+		// taken as given — the reference only tests it for emptiness, so
+		// whitespace is a search term that matches nothing, not an absent one.
 		args = append(args, "%"+search+"%")
 		placeholder := "$" + itoa(len(args))
 		conditions = append(conditions, "(mu.text ILIKE "+placeholder+" OR mu.context ILIKE "+placeholder+")")
@@ -471,7 +473,7 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 	// re-embedded vector, a reset of both consolidation markers (the fact must
 	// be folded again with its new text) and both edit stamps.
 	query := `UPDATE ` + qualified + `.memory_units
-	          SET text = $3, search_vector = ` + searchVectorExpr("$3", "$6", "text_signals") + `, tags = $4, metadata = $5::jsonb,
+	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "$6", "text_signals") + `, tags = $4, metadata = $5::jsonb,
 	              context = $6, fact_type = $7, occurred_start = $8, occurred_end = $9, event_date = $10,
 	              consolidated_at = NULL, consolidation_failed_at = NULL, edited_at = now(), updated_at = now()` +
 		embeddingClause + `
@@ -737,98 +739,70 @@ func (s *PostgresStore) clearBankObservationsTx(ctx context.Context, tx Tx, bank
 // pass — the caller wants a targeted run — and records the scopes in the task
 // payload; an unscoped submit reuses an outstanding pass for the bank.
 func (s *PostgresStore) EnqueueConsolidation(ctx context.Context, bankID string, observationScopes ...[]string) (Operation, bool, error) {
-	if len(observationScopes) == 0 {
-		existing, err := s.findPendingConsolidation(ctx, bankID)
-		if err == nil {
-			return existing, true, nil
-		}
-		if !errors.Is(err, ErrOperationNotFound) {
-			return Operation{}, false, err
-		}
-	}
 	op := Operation{
 		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
 		Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bankID),
 	}
 	if len(observationScopes) > 0 {
+		// A scoped submit targets a subset of the bank, so it never deduplicates
+		// against a pass already queued — the caller asked for this run
+		// specifically. It is not conditional, so it does not take the bank lock.
 		op.Payload = map[string]any{"observation_scopes": observationScopes}
+		stored, err := s.PutOperation(ctx, op)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		return stored, false, nil
 	}
-	op, err := s.PutOperation(ctx, op)
+	// An unscoped submit reuses an outstanding full-bank pass. The check-and-
+	// insert is atomic, so a burst of submits cannot each see no queued pass and
+	// each insert its own — the duplicate passes that race the observation layer
+	// and pile up as retry_blocked.
+	result, err := s.enqueueDedupeByBank(ctx, op, []string{"pending", "processing"}, true)
 	if err != nil {
 		return Operation{}, false, err
 	}
-	return op, false, nil
-}
-
-// findPendingConsolidation returns a non-terminal consolidation for a bank.
-func (s *PostgresStore) findPendingConsolidation(ctx context.Context, bankID string) (Operation, error) {
-	return s.findNonTerminalOperation(ctx, bankID, OperationTypeConsolidate)
+	return result.Operation, result.Deduplicated, nil
 }
 
 // EnqueueGraphMaintenance records a graph-maintenance pass for a bank, reusing
 // one already pending or running for the bank. A sweep drains the bank's
 // relink and entity-prune queues to empty, so a running one already covers work
 // queued after it started — matching the reference's dedupe_by_bank including
-// processing.
+// processing. The check-and-insert is atomic for the same reason
+// EnqueueConsolidation's is.
 func (s *PostgresStore) EnqueueGraphMaintenance(ctx context.Context, bankID string) (Operation, bool, error) {
-	if existing, err := s.findNonTerminalOperation(ctx, bankID, OperationTypeGraphMaintenance); err == nil {
-		return existing, true, nil
-	} else if !errors.Is(err, ErrOperationNotFound) {
-		return Operation{}, false, err
-	}
 	op := Operation{
 		OperationID: newID(), BankID: bankID, OperationType: OperationTypeGraphMaintenance,
 		Status: StatusPending, SerializationKey: GraphMaintenanceSerializationKey(bankID),
 	}
-	op, err := s.PutOperation(ctx, op)
+	result, err := s.enqueueDedupeByBank(ctx, op, []string{"pending", "processing"}, false)
 	if err != nil {
 		return Operation{}, false, err
 	}
-	return op, false, nil
-}
-
-// findNonTerminalOperation returns the oldest pending or running operation of
-// one type for a bank, or ErrOperationNotFound when none exists.
-func (s *PostgresStore) findNonTerminalOperation(ctx context.Context, bankID, operationType string) (Operation, error) {
-	qualified := quoteIdent(s.schema)
-	query := `SELECT operation_id, bank_id, COALESCE(operation_type,''), status, COALESCE(error_message,''),
-	                 created_at, updated_at, completed_at, COALESCE(retry_count,0), next_retry_at,
-	                 result_metadata, COALESCE(worker_id,''), claimed_at, COALESCE(task_payload, 'null'::jsonb), COALESCE(serialization_key,'')
-	          FROM ` + qualified + `.async_operations
-	          WHERE bank_id = $1 AND operation_type = $2 AND status IN ('pending','processing')
-	          ORDER BY created_at ASC LIMIT 1`
-	op, err := scanOperation(s.db.QueryRowContext(ctx, query, bankID, operationType))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Operation{}, ErrOperationNotFound
-		}
-		return Operation{}, err
-	}
-	return op, nil
+	return result.Operation, result.Deduplicated, nil
 }
 
 // RecoverConsolidations returns a bank's permanently-failed sources to the
 // not-yet-consolidated state and reports how many. The count is per stranded
-// fact, not per round. A pass is queued so the recovery lands without waiting
-// for the next reconcile sweep.
+// fact, not per round; only source facts (world/experience) are eligible, so an
+// observation that somehow carries a failure marker is left alone. No pass is
+// queued: the reference's retry runs the requeue UPDATE and returns the count,
+// leaving the next consolidation to pick the sources up.
 func (s *PostgresStore) RecoverConsolidations(ctx context.Context, bankID string) (int, error) {
 	qualified := quoteIdent(s.schema)
 	query := `WITH requeued AS (
 	              UPDATE ` + qualified + `.memory_units
 	              SET consolidation_failed_at = NULL, consolidated_at = NULL
-	              WHERE bank_id = $1 AND consolidation_failed_at IS NOT NULL
+	              WHERE bank_id = $1
+	                AND consolidation_failed_at IS NOT NULL
+	                AND fact_type IN ('experience', 'world')
 	              RETURNING 1
 	          )
 	          SELECT count(*) FROM requeued`
 	var retried int
 	if err := s.db.QueryRowContext(ctx, query, bankID).Scan(&retried); err != nil {
 		return 0, err
-	}
-	if retried == 0 {
-		return 0, nil
-	}
-	if _, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
-		return retried, err
 	}
 	return retried, nil
 }
@@ -873,6 +847,37 @@ func scanMemoryUnitRow(row rowScanner) (MemoryUnit, error) {
 		unit.InvalidationReason = &reason
 	}
 	return unit, nil
+}
+
+// DirectUnitEntityNames returns the entities each unit mentions through its own
+// postings, keyed by unit id. It is the listing's read: the listing does not
+// inherit an observation's source memories' entities the way the detail read
+// does, because the reference's list query joins unit_entities alone. Units
+// with no postings are absent from the map rather than mapped to an empty slice.
+func (s *PostgresStore) DirectUnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	if len(unitIDs) == 0 {
+		return map[string][]string{}, nil
+	}
+	qualified := quoteIdent(s.schema)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ue.unit_id::text, e.canonical_name
+		 FROM `+qualified+`.unit_entities ue
+		 JOIN `+qualified+`.entities e ON e.id = ue.entity_id
+		 WHERE ue.unit_id = ANY($1::uuid[]) AND e.bank_id = $2
+		 ORDER BY 2`, unitIDs, bankID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byUnit := map[string][]string{}
+	for rows.Next() {
+		var unitID, name string
+		if err := rows.Scan(&unitID, &name); err != nil {
+			return nil, err
+		}
+		byUnit[unitID] = append(byUnit[unitID], name)
+	}
+	return byUnit, rows.Err()
 }
 
 // ensure strings is used by the knowledge search.

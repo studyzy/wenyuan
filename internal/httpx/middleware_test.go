@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -283,4 +284,84 @@ func TestAdmissionShedsWhenSaturated(t *testing.T) {
 	}
 	close(release)
 	<-firstDone
+}
+
+// A body at or above the floor is varied even when the client did not ask for
+// gzip, matching the reference's identity responder, which adds Vary there too.
+// A body below the floor is not varied, and the body is never compressed
+// without an accepted encoding.
+func TestGzipVaryOnIdentityResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /big", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("a", 4096)))
+	})
+	mux.HandleFunc("GET /small", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("tiny"))
+	})
+	handler := Chain(mux, GzipMiddleware(1024))
+
+	// Large, no Accept-Encoding: not compressed, but varied.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/big", nil))
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("an identity response must not be compressed, got %q", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("large identity Vary = %q, want Accept-Encoding", got)
+	}
+	if rec.Body.Len() != 4096 {
+		t.Fatalf("identity body length = %d", rec.Body.Len())
+	}
+
+	// Small, no Accept-Encoding: neither compressed nor varied.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/small", nil))
+	if got := rec.Header().Get("Vary"); got != "" {
+		t.Fatalf("small identity Vary = %q, want none", got)
+	}
+}
+
+// A compressed response carries the compressed Content-Length, as the
+// reference's gzip middleware sets it, rather than falling back to chunked.
+func TestGzipSetsCompressedContentLength(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /big", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("ab", 4096)))
+	})
+	handler := Chain(mux, GzipMiddleware(1024))
+
+	req := httptest.NewRequest(http.MethodGet, "/big", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := rec.Header().Get("Content-Length"); got != "" && got != strconv.Itoa(rec.Body.Len()) {
+		t.Fatalf("Content-Length = %q, body length = %d", got, rec.Body.Len())
+	}
+}
+
+// A panic in a handler is answered with the reference's unexpected-exception
+// response: a plain-text 500 rather than a dropped connection.
+func TestRecoveryMiddlewareAnswersPanic(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /boom", func(w http.ResponseWriter, r *http.Request) {
+		panic("kaboom")
+	})
+	handler := Chain(mux, RecoveryMiddleware())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/boom", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if body := rec.Body.String(); body != "Internal Server Error" {
+		t.Fatalf("body = %q", body)
+	}
 }

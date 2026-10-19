@@ -43,6 +43,7 @@ func (s *MemoryStore) EnqueueOperation(ctx context.Context, req EnqueueRequest) 
 	if op.Run == 0 {
 		op.Run = 1
 	}
+	op.Payload = executablePayload(op.Payload)
 	s.operations[op.OperationID] = op
 	return EnqueueResult{Operation: op}, nil
 }

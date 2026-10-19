@@ -34,6 +34,92 @@ func (s *PostgresStore) attachRecallSideChannels(ctx context.Context, q RecallQu
 	return nil
 }
 
+// attachRecallEntities resolves the entities the returned matches carry and
+// builds the name-keyed entity channel from them.
+//
+// It runs after the fact token budget has selected the returned matches: the
+// entity channel is a view of those matches, so a fact the budget dropped must
+// not leave its entities behind. A match that resolves to no entity keeps a
+// null list and contributes no channel entry.
+func (s *PostgresStore) attachRecallEntities(ctx context.Context, q RecallQuery, result *RecallResult) error {
+	if len(result.Matches) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(result.Matches))
+	for _, m := range result.Matches {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	refs, err := s.recallUnitEntityRefs(ctx, q.BankID, ids)
+	if err != nil {
+		return err
+	}
+	applyRecallEntities(result, refs)
+	return nil
+}
+
+// recallUnitEntityRefs resolves the entities each unit carries, keyed by unit
+// id, in entity-id order. Direct postings answer for most units; an
+// observation with no postings of its own inherits its source memories'
+// entities, which is the set its own detail read reports. A unit that resolves
+// to no entity is absent from the result rather than mapped to an empty list.
+func (s *PostgresStore) recallUnitEntityRefs(ctx context.Context, bankID string, unitIDs []string) (map[string][]EntityRef, error) {
+	if len(unitIDs) == 0 {
+		return nil, nil
+	}
+	qualified := quoteIdent(s.schema)
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT ue.unit_id::text, ue.entity_id::text, e.canonical_name
+		FROM `+qualified+`.unit_entities ue
+		JOIN `+qualified+`.entities e ON e.id = ue.entity_id
+		WHERE ue.unit_id = ANY($1::uuid[]) AND e.bank_id = $2
+		UNION
+		SELECT obs.id::text, src_ue.entity_id::text, e.canonical_name
+		FROM `+qualified+`.memory_units obs
+		CROSS JOIN LATERAL unnest(obs.source_memory_ids) AS src_id
+		JOIN `+qualified+`.unit_entities src_ue ON src_ue.unit_id = src_id
+		JOIN `+qualified+`.entities e ON e.id = src_ue.entity_id
+		WHERE obs.id = ANY($1::uuid[]) AND obs.fact_type = 'observation'
+		  AND obs.source_memory_ids IS NOT NULL
+		  AND e.bank_id = $2
+		  AND NOT EXISTS (SELECT 1 FROM `+qualified+`.unit_entities d WHERE d.unit_id = obs.id)
+		ORDER BY 1, 2`, unitIDs, bankID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byUnit := map[string][]EntityRef{}
+	for rows.Next() {
+		var unitID string
+		var ref EntityRef
+		if err := rows.Scan(&unitID, &ref.ID, &ref.CanonicalName); err != nil {
+			return nil, err
+		}
+		// UNION removes duplicate rows, but a unit can reach one entity
+		// through several source memories, so dedupe per unit as well.
+		if containsEntityRef(byUnit[unitID], ref.ID) {
+			continue
+		}
+		byUnit[unitID] = append(byUnit[unitID], ref)
+	}
+	return byUnit, rows.Err()
+}
+
+// containsEntityRef reports whether a unit's ref list already names an entity
+// id, so a duplicated posting is kept once.
+func containsEntityRef(refs []EntityRef, id string) bool {
+	for _, ref := range refs {
+		if ref.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // recallChunkEntries assembles the chunk side channel keyed by chunk id for the
 // chunks the returned matches reference, dropping any chunk whose document the
 // reader may not see.

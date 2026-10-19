@@ -238,13 +238,12 @@ func decodeJSONBody(r *http.Request, limit int64, target any) error {
 	if err != nil {
 		return err
 	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return errors.New("request body is required")
-	}
 	if !json.Valid(data) {
-		// A body that is not JSON at all is reported by the parser, exactly as
-		// it was before the walk existed.
-		return json.Unmarshal(data, target)
+		// A body that is not JSON is reported the way the reference's
+		// `await request.json()` reports it: CPython's message, not Go's. An
+		// empty body is one of these -- `json.loads("")` raises the same
+		// "Expecting value" at char 0, so it needs no message of its own.
+		return pythonJSONError(data)
 	}
 	items := httpx.ValidationItemsAgainstRequest(r, target, data)
 	manifest, isManifest := target.(*banktemplate.Manifest)

@@ -453,3 +453,77 @@ func TestFirstRefreshReadsTheWholeScope(t *testing.T) {
 
 // ptrTo returns a pointer to a copy, for patch fields.
 func ptrTo[T any](value T) *T { return &value }
+
+// noSourceFixture builds a bank holding a single model and nothing to read:
+// no memory units, no recall projection, and no sibling document with content.
+func noSourceFixture(t *testing.T) (*storage.MemoryStore, string) {
+	t.Helper()
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := store.PutMentalModel(ctx, storage.MentalModel{
+		ID: "model-1", BankID: "b1", Subtype: storage.SubtypePinned,
+		Name: "empty page", SourceQuery: "what is the secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, model.ID
+}
+
+// A refresh over a scope with nothing to read writes no content, but it does
+// leave a record: the reflect_response says why nothing was read, and the
+// refresh stamp moves so a reader can tell a run that happened from one that
+// never did. Nothing was read, so the memory watermark stays where it was.
+func TestRefreshWithNoSourcesRecordsTheSkipWithoutWritingContent(t *testing.T) {
+	store, modelID := noSourceFixture(t)
+	ctx := context.Background()
+	planted := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if _, err := store.UpdateMentalModel(ctx, "b1", modelID, storage.MentalModelPatch{Content: ptrTo("stays as it is")}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := store.GetMentalModel(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.LastRefreshedAt = planted
+	if _, err := store.PutMentalModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newMentalModelRefresh(store, nil, nil)
+	_, report, err := runner.refresh(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if report.outcome != outcomeContentPreservedNoNewFacts {
+		t.Fatalf("outcome = %q, want %q", report.outcome, outcomeContentPreservedNoNewFacts)
+	}
+	// The refresh stamps the model in a second write, so the record is read back
+	// rather than taken from the value the content update returned.
+	updated, err := store.GetMentalModel(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Content != "stays as it is" {
+		t.Fatalf("content = %q, want the document preserved", updated.Content)
+	}
+	skipped, _ := updated.ReflectResult["reflect_skipped"].(string)
+	if skipped != "no_sources_in_scope" {
+		t.Fatalf("reflect_skipped = %q, want no_sources_in_scope", skipped)
+	}
+	if got, _ := updated.ReflectResult["outcome"].(string); got != outcomeContentPreservedNoNewFacts {
+		t.Fatalf("recorded outcome = %q, want %q", got, outcomeContentPreservedNoNewFacts)
+	}
+	if basedOn, ok := updated.ReflectResult["based_on"].(map[string]any); !ok || len(basedOn) != 0 {
+		t.Fatalf("based_on = %#v, want an empty map", updated.ReflectResult["based_on"])
+	}
+	if !updated.LastRefreshedAt.After(planted) {
+		t.Fatalf("last_refreshed_at = %v, want it advanced past %v", updated.LastRefreshedAt, planted)
+	}
+	if updated.LastMemorySeenAt != nil {
+		t.Fatalf("last_memory_seen_at = %v, want it untouched: nothing was read", updated.LastMemorySeenAt)
+	}
+}

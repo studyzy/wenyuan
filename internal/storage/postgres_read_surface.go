@@ -124,7 +124,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	qualified := quoteIdent(s.schema)
 	args := []any{query.BankID}
 	conds := []string{"bank_id = $1"}
-	if term := strings.TrimSpace(query.Query); term != "" {
+	if term := query.Query; term != "" {
 		args = append(args, "%"+term+"%")
 		conds = append(conds, fmt.Sprintf("id ILIKE $%d", len(args)))
 	}
@@ -195,7 +195,13 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 
 // ListChunks returns one page of a bank's chunks plus the total.
 func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (ChunkPage, error) {
-	limit := clampLimit(query.Limit, 100)
+	// The route already bounds the page size (1..1000), and the reference hands
+	// it straight to LIMIT, so it is not capped again here: a cap below the
+	// route's own bound would silently return a short page.
+	limit := query.Limit
+	if limit < 0 {
+		limit = 100
+	}
 	filter := `bank_id = $1 AND ($2 = '' OR document_id = $2)`
 	var total int
 	if err := s.reader().QueryRowContext(ctx,
@@ -239,6 +245,22 @@ func (s *PostgresStore) GetChunk(ctx context.Context, bankID, chunkID string) (C
 	return chunk, nil
 }
 
+// FindChunk returns one stored chunk by identifier, wherever it is stored. The
+// identifier is the chunks table's key, so no bank filter applies.
+func (s *PostgresStore) FindChunk(ctx context.Context, chunkID string) (Chunk, error) {
+	query := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
+	                 COALESCE(content_hash,''), created_at
+	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE chunk_id = $1`
+	chunk, err := scanChunkRow(s.reader().QueryRowContext(ctx, query, chunkID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Chunk{}, ErrChunkNotFound
+		}
+		return Chunk{}, err
+	}
+	return chunk, nil
+}
+
 // ListTags returns the bank's tags with their usage counts, most used first.
 func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount, error) {
 	query := `SELECT tag, COUNT(*) FROM (
@@ -268,7 +290,12 @@ func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount
 // recomputes each entity's mention count and dates over those memories only;
 // without one the stored entity columns are served as they stand.
 func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error) {
-	limit := clampLimit(query.Limit, 100)
+	// The route bounds only the lower end (`ge=0`), so the caller's page size is
+	// handed to LIMIT unchanged — the reference does the same.
+	limit := query.Limit
+	if limit < 0 {
+		limit = 100
+	}
 	mode := query.TagsMatch
 	if mode == "" {
 		mode = TagsMatchAny
@@ -365,7 +392,7 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 		args = append(args, query.Type)
 		conds = append(conds, fmt.Sprintf("fact_type = $%d", len(args)))
 	}
-	if term := strings.TrimSpace(query.Query); term != "" {
+	if term := query.Query; term != "" {
 		args = append(args, "%"+term+"%")
 		conds = append(conds, fmt.Sprintf("(text ILIKE $%d OR context ILIKE $%d)", len(args), len(args)))
 	}
@@ -602,7 +629,7 @@ func scanDocumentRow(row rowScanner) (Document, error) {
 		return Document{}, err
 	}
 	doc.RetainParams = decodeJSONMap(retainParams)
-	doc.Metadata = documentMetadata(doc.RetainParams)
+	doc.Metadata = DocumentMetadata(doc.RetainParams)
 	doc.Tags = decodePostgresTextArray(tagsRaw)
 	return doc, nil
 }
@@ -641,19 +668,4 @@ func nullableTagArray(tags []string) any {
 		return nil
 	}
 	return tags
-}
-
-// documentMetadata reads the document metadata the reference keeps inside
-// retain_params. The document has no metadata column, and this series serves
-// the value on the same wire key the reference does, so it is derived from the
-// nested object rather than stored beside it.
-func documentMetadata(retainParams map[string]any) map[string]any {
-	if retainParams == nil {
-		return nil
-	}
-	nested, ok := retainParams["metadata"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	return nested
 }

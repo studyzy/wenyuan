@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,107 @@ func TestMergeCreatesItsTarget(t *testing.T) {
 	}
 }
 
+// A skip re-import leaves the target's documents alone, so nothing is
+// replayed: an observation whose evidence did not come back is counted as
+// skipped rather than silently re-pointed at the facts the target already
+// holds, and the merge reports the documents it skipped by id.
+func TestMergeSkipCountsSkippedObservations(t *testing.T) {
+	ctx := context.Background()
+	source := storage.NewMemoryStore("public")
+	bank, _ := seedSourceBank(t, source)
+	archive, err := BuildArchive(ctx, source, bank, ExportOptions{
+		IncludeObservations: true, Scope: DefaultExportScope(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := storage.NewMemoryStore("public")
+	applier := ImportApplier{Store: target}
+	if _, err := applier.Apply(ctx, ImportRequest{Archive: archive, BankID: "dst", Mode: ImportMerge}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := applier.Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "dst", Mode: ImportMerge, OnConflict: ConflictSkip,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DocumentsSkipped != 1 || report.DocumentsImported != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.SkippedDocumentIDs) != 1 || report.SkippedDocumentIDs[0] != "d1" {
+		t.Fatalf("skipped ids = %v", report.SkippedDocumentIDs)
+	}
+	if report.ObservationsSkipped != 1 || report.ObservationsImported != 0 {
+		t.Fatalf("a skipped document leaves its observations skipped: %+v", report)
+	}
+}
+
+// A merge and a whole-bank restore report different result_metadata
+// vocabularies: the merge carries the document/observation counts and the
+// skipped/remapped id maps, the restore carries the per-component counts and
+// the bank it created.
+func TestImportMetadataVocabularyIsModeSpecific(t *testing.T) {
+	ctx := context.Background()
+	source := storage.NewMemoryStore("public")
+	bank, _ := seedSourceBank(t, source)
+	archive, err := BuildArchive(ctx, source, bank, ExportOptions{Scope: DefaultExportScope()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergeReport, err := ImportApplier{Store: storage.NewMemoryStore("public")}.Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "merged", Mode: ImportMerge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreReport, err := ImportApplier{Store: storage.NewMemoryStore("public")}.Apply(ctx, ImportRequest{
+		Archive: archive, TargetBankID: "restored", Mode: ImportRestore,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergeKeys := sortedKeys(mergeReport.Metadata())
+	wantMerge := []string{
+		"documents_imported", "documents_skipped", "facts_imported",
+		"knowledge_pages_imported", "mental_models_imported",
+		"observations_imported", "observations_skipped",
+		"remapped_document_ids", "skipped_document_ids",
+	}
+	if strings.Join(mergeKeys, ",") != strings.Join(wantMerge, ",") {
+		t.Fatalf("merge metadata keys = %v, want %v", mergeKeys, wantMerge)
+	}
+	restoreMetadata := restoreReport.Metadata()
+	if restoreMetadata["restored_bank_id"] != "restored" {
+		t.Fatalf("restore metadata must name the bank it created: %v", restoreMetadata)
+	}
+	if _, ok := restoreMetadata["documents_skipped"]; ok {
+		t.Fatalf("restore metadata carries no documents_skipped: %v", restoreMetadata)
+	}
+	wantRestore := []string{
+		"attachments_imported", "directives_imported", "documents_imported",
+		"facts_imported", "history_rows_imported", "invalidated_memories_imported",
+		"knowledge_pages_imported", "maintenance_queue_rows_imported",
+		"mental_model_history_imported", "mental_models_imported",
+		"observations_imported", "operations_imported", "restored_bank_id",
+		"target_bank_id", "webhooks_imported",
+	}
+	if got := sortedKeys(restoreMetadata); strings.Join(got, ",") != strings.Join(wantRestore, ",") {
+		t.Fatalf("restore metadata keys = %v, want %v", got, wantRestore)
+	}
+}
+
+// sortedKeys returns a metadata map's keys in sorted order, so a test can pin
+// the exact key set the reference emits without depending on map iteration.
+func sortedKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // A restore re-keys the directives it copies rather than carrying the source's
 // id. A directive's id is unique across the whole schema, so a copy that kept
 // it would resolve onto the still-present original on a same-instance transfer:
@@ -399,9 +501,11 @@ func TestExportSkipsAnAttachmentWithoutBytes(t *testing.T) {
 	}
 }
 
-// An attachment whose document did not come across is skipped on import: its
-// row would name a document the target does not hold.
-func TestImportSkipsAttachmentsOfUnimportedDocuments(t *testing.T) {
+// A merge is the reference's document import: it folds in the archive's
+// documents, facts and observations and nothing else, so an attachment the
+// archive carries is deliberately not restored — only a whole-bank restore
+// writes attachments back.
+func TestMergeDoesNotRestoreAttachments(t *testing.T) {
 	ctx := context.Background()
 	source := storage.NewMemoryStore("public")
 	bank, _ := seedSourceBank(t, source)
@@ -411,9 +515,9 @@ func TestImportSkipsAttachmentsOfUnimportedDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	// A merge that lands a different document leaves the attachment's own
-	// document unimported.
-	archive.Attachments[0].DocumentID = "not-imported"
+	if len(archive.Attachments) != 1 {
+		t.Fatalf("archive should carry the attachment: %+v", archive.Attachments)
+	}
 
 	target := storage.NewMemoryStore("public")
 	report, err := ImportApplier{Store: target}.Apply(ctx, ImportRequest{
@@ -422,8 +526,11 @@ func TestImportSkipsAttachmentsOfUnimportedDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if report.AttachmentsImported != 0 || report.AttachmentsSkipped != 1 {
-		t.Fatalf("report = %+v", report)
+	if report.AttachmentsImported != 0 || report.AttachmentsSkipped != 0 {
+		t.Fatalf("a merge must not touch attachments: %+v", report)
+	}
+	if _, err := target.GetAttachment(ctx, "dst", "abc123"); err == nil {
+		t.Fatal("a merged bank must not hold the archive's attachment")
 	}
 }
 
@@ -609,15 +716,23 @@ func TestInvalidatedMemoriesTravel(t *testing.T) {
 // strPtrState renders a curation-state patch value.
 func strPtrState(value string) *string { return &value }
 
-// The operations log travels with the data section, and only its finished rows:
-// a pending operation names work the source instance still owes.
-func TestFinishedOperationsTravelOnly(t *testing.T) {
+// The operations log travels with the data section verbatim -- every row,
+// in-flight ones included -- because the archive is a dump of the table: the
+// reference exports with `SELECT *` (engine/transfer/export.py:431-440). The
+// in-flight rows are dropped on restore instead
+// (engine/transfer/importer.py:775-793), since a restored `pending` row is work
+// the target's worker would actually run.
+func TestOperationsLogTravelsVerbatimAndRestoresFinishedOnly(t *testing.T) {
 	ctx := context.Background()
 	source := storage.NewMemoryStore("public")
 	bank, _ := seedSourceBank(t, source)
-	if _, err := source.PutOperation(ctx, storage.Operation{
+	// Seeded through RestoreOperation so the source row carries a real created_at;
+	// PutOperation would stamp the current time and the assertion below could not
+	// tell a preserved timestamp from a restamped one.
+	archivedCreated := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := source.RestoreOperation(ctx, storage.Operation{
 		OperationID: "op-done", BankID: bank, OperationType: "retain",
-		Status: storage.StatusCompleted, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Status: storage.StatusCompleted, CreatedAt: archivedCreated, UpdatedAt: archivedCreated,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -632,14 +747,27 @@ func TestFinishedOperationsTravelOnly(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 	rows := archive.Data[hindsightarchive.AsyncOperationsTable]
-	if len(rows) != 1 || rows[0]["operation_type"] != "retain" {
-		t.Fatalf("operation rows = %+v", rows)
+	if len(rows) != 2 {
+		t.Fatalf("the archive must carry every row, live ones included: %+v", rows)
 	}
-	if _, carried := rows[0]["bank_id"]; !carried {
-		t.Fatalf("row = %+v", rows[0])
-	}
-	if archive.Manifest.OperationCount != 1 {
+	if archive.Manifest.OperationCount != 2 {
 		t.Fatalf("manifest operation count = %d", archive.Manifest.OperationCount)
+	}
+	// The archived row is the table row: the reference's dump is `SELECT *`, so
+	// an importer written against it reads these names.
+	for _, column := range []string{
+		"operation_id", "bank_id", "operation_type", "status", "error_message",
+		"created_at", "updated_at", "completed_at", "retry_count", "next_retry_at",
+		"serialization_key", "task_payload", "result_metadata", "worker_id", "claimed_at",
+	} {
+		if _, carried := rows[0][column]; !carried {
+			t.Fatalf("archived row is missing column %q: %+v", column, rows[0])
+		}
+	}
+	for _, invented := range []string{"payload", "error", "is_parent"} {
+		if _, carried := rows[0][invented]; carried {
+			t.Fatalf("archived row must not carry invented member %q: %+v", invented, rows[0])
+		}
 	}
 
 	target := storage.NewMemoryStore("public")
@@ -656,8 +784,21 @@ func TestFinishedOperationsTravelOnly(t *testing.T) {
 	if err != nil || len(page.Operations) != 1 {
 		t.Fatalf("operations = %+v, err = %v", page.Operations, err)
 	}
-	if page.Operations[0].Status != storage.StatusCompleted || page.Operations[0].OperationID == "op-done" {
-		t.Fatalf("restored operation = %+v", page.Operations[0])
+	restored := page.Operations[0]
+	if restored.Status != storage.StatusCompleted {
+		t.Fatalf("restored operation = %+v", restored)
+	}
+	// The row keeps the id the archive carries: the reference inserts every
+	// column of the dumped row (`_restore_rows`, `INSERT ... ON CONFLICT DO
+	// NOTHING`), so a restore is idempotent rather than duplicating the log.
+	if restored.OperationID != "op-done" {
+		t.Fatalf("restored operation id = %q, want the archived id", restored.OperationID)
+	}
+	// The archived timestamps survive: the reference inserts the dumped row column
+	// for column, so a restored operation reports when it ran, not when it was
+	// restored. The import replays through RestoreOperation for this reason.
+	if !restored.CreatedAt.Equal(archivedCreated) {
+		t.Fatalf("restored created_at = %s, want the archived %s", restored.CreatedAt, archivedCreated)
 	}
 }
 
@@ -827,5 +968,361 @@ func TestCausalEdgesMayPointForward(t *testing.T) {
 	}
 	if store.links != 2 {
 		t.Fatalf("links = %d, want 2", store.links)
+	}
+}
+
+// test-import-rebuilds-entity-cooccurrences: entity co-occurrences are derived
+// data the archive never carries, so a restore has to rebuild them from the
+// facts it writes. Without that the entity graph of an imported bank has no
+// edges at all — the relations view of an imported bank draws nothing.
+func TestRestoreRebuildsEntityCooccurrences(t *testing.T) {
+	ctx := context.Background()
+	archive := &hindsightarchive.Archive{
+		Manifest: hindsightarchive.Manifest{
+			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			SourceBankID:  "src",
+			ArchiveType:   "bank",
+		},
+		Documents: []hindsightarchive.Document{{
+			ID:           "d1",
+			OriginalText: "Alice moved to Berlin.",
+			Facts: []hindsightarchive.Fact{{
+				Text: "Alice moved to Berlin.", FactType: "world",
+				// The same entity twice, so the pair is counted once for this
+				// unit rather than once per mention.
+				Entities: []string{"Alice", "Berlin", "Alice"},
+			}},
+		}},
+	}
+	store := storage.NewMemoryStore("public")
+	if _, err := (ImportApplier{Store: store}).Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "src", TargetBankID: "dst",
+		Mode: ImportRestore, Scope: DefaultExportScope(),
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	graph, err := store.EntityGraph(ctx, storage.EntityGraphQuery{BankID: "dst", Limit: 100, MinCount: 1})
+	if err != nil {
+		t.Fatalf("entity graph: %v", err)
+	}
+	if len(graph.Nodes) != 2 {
+		t.Fatalf("graph nodes = %d, want the fact's two entities", len(graph.Nodes))
+	}
+	if len(graph.Edges) != 1 {
+		t.Fatalf("graph edges = %d, want the one pair the fact witnesses", len(graph.Edges))
+	}
+	if graph.Edges[0].Weight != 1 {
+		t.Fatalf("edge weight = %d, want 1: a repeated entity counts once", graph.Edges[0].Weight)
+	}
+}
+
+// test-import-rebuilds-document-chunks: the archive carries each document's
+// chunk text, and the target rebuilds the chunk rows from it — the reference
+// classifies chunks as replayed data — so a fact that names a chunk is
+// addressed by a row that exists in the imported bank. Without this an imported
+// bank has no chunks at all and the fact's reference would have nowhere to
+// point.
+func TestRestoreRebuildsDocumentChunks(t *testing.T) {
+	ctx := context.Background()
+	archive := &hindsightarchive.Archive{
+		Manifest: hindsightarchive.Manifest{
+			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			SourceBankID:  "src",
+			ArchiveType:   "bank",
+		},
+		Documents: []hindsightarchive.Document{{
+			ID:           "d1",
+			OriginalText: "The deployment runs on Tuesdays. Alice leads the team.",
+			Chunks: []hindsightarchive.Chunk{
+				{ChunkIndex: 0, ChunkText: "The deployment runs on Tuesdays."},
+				{ChunkIndex: 1, ChunkText: "Alice leads the team."},
+			},
+			Facts: []hindsightarchive.Fact{{
+				Text: "Alice leads the team.", FactType: "world",
+				ChunkIndex: intPtr(1),
+			}},
+		}},
+	}
+	store := storage.NewMemoryStore("public")
+	if _, err := (ImportApplier{Store: store}).Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "src", TargetBankID: "dst",
+		Mode: ImportRestore, Scope: DefaultExportScope(),
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	page, err := store.ListChunks(ctx, storage.ChunkQuery{BankID: "dst", DocumentID: "d1", Limit: 10})
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("chunks stored = %d, want the document's two", page.Total)
+	}
+	for _, chunk := range page.Chunks {
+		want := archive.Documents[0].Chunks[chunk.ChunkIndex].ChunkText
+		if chunk.ChunkText != want {
+			t.Fatalf("chunk %d text = %q, want %q", chunk.ChunkIndex, chunk.ChunkText, want)
+		}
+		if chunk.ContentHash != storage.ContentHash(want) {
+			t.Fatalf("chunk %d hash = %q, want the hash of its text", chunk.ChunkIndex, chunk.ContentHash)
+		}
+	}
+
+	// The fact points at the chunk row it came from, which is what the
+	// addressed chunk route and a delta retain both read.
+	memories, err := store.ListMemories(ctx, storage.MemoryQuery{BankID: "dst", Limit: 10})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+	if len(memories.Memories) != 1 {
+		t.Fatalf("memories = %d, want 1", len(memories.Memories))
+	}
+	wantID := storage.BuildChunkID("dst", "d1", 1)
+	if got := memories.Memories[0].ChunkID; got != wantID {
+		t.Fatalf("fact chunk id = %q, want %q", got, wantID)
+	}
+	if _, err := store.GetChunk(ctx, "dst", wantID); err != nil {
+		t.Fatalf("the fact's chunk id must resolve in the imported bank: %v", err)
+	}
+}
+
+// A deployment that keeps no source text still records the chunk rows and their
+// content hashes, so a delta retain recognises a chunk whose text it does not
+// hold.
+func TestRestoreDiscardsChunkTextWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	const text = "The deployment runs on Tuesdays."
+	archive := &hindsightarchive.Archive{
+		Manifest: hindsightarchive.Manifest{
+			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			SourceBankID:  "src",
+			ArchiveType:   "bank",
+		},
+		Documents: []hindsightarchive.Document{{
+			ID:     "d1",
+			Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: text}},
+			Facts:  []hindsightarchive.Fact{{Text: text, FactType: "world"}},
+		}},
+	}
+	store := storage.NewMemoryStore("public")
+	if _, err := (ImportApplier{Store: store, DiscardDocumentText: true}).Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "src", TargetBankID: "dst",
+		Mode: ImportRestore, Scope: DefaultExportScope(),
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	chunk, err := store.GetChunk(ctx, "dst", storage.BuildChunkID("dst", "d1", 0))
+	if err != nil {
+		t.Fatalf("get chunk: %v", err)
+	}
+	if chunk.ChunkText != "" {
+		t.Fatalf("chunk text = %q, want none when the deployment keeps no source text", chunk.ChunkText)
+	}
+	if chunk.ContentHash != storage.ContentHash(text) {
+		t.Fatalf("chunk hash = %q, want the hash of the discarded text", chunk.ContentHash)
+	}
+}
+
+// intPtr returns a pointer to the value, for the optional members of an
+// archive fact.
+func intPtr(value int) *int { return &value }
+
+// test-archive-carries-operational-history: the operational-history section is
+// the pair of tables the reference writes under history/ and restores only when
+// the caller asked for it. This pins both halves on the in-process store, so the
+// section cannot go missing (or become unconditional) unnoticed.
+func TestArchiveCarriesOperationalHistoryOnRequest(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	const bank = "hist-src"
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: bank}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAuditLog(ctx, storage.AuditEntry{
+		Action: "retain", Transport: "http", BankID: bank, StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordLLMRequest(ctx, storage.LLMRequest{
+		BankID: bank, Operation: "retain", Provider: "mock", Model: "m",
+		Status: "success", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the section selected the history rows stay behind.
+	plain, err := BuildArchive(ctx, store, bank, ExportOptions{Scope: DefaultExportScope()})
+	if err != nil {
+		t.Fatalf("export without history: %v", err)
+	}
+	if len(plain.History) != 0 {
+		t.Fatalf("an export that did not ask for history carried %v", plain.History)
+	}
+
+	withHistory, err := BuildArchive(ctx, store, bank, ExportOptions{
+		Scope: ExportScope{Data: true, BankConfig: true, History: true},
+	})
+	if err != nil {
+		t.Fatalf("export with history: %v", err)
+	}
+	if len(withHistory.History[hindsightarchive.AuditLogTable]) != 1 ||
+		len(withHistory.History[hindsightarchive.LLMRequestsTable]) != 1 {
+		t.Fatalf("history sections = %v, want one row each", withHistory.History)
+	}
+
+	// The restore puts them back when, and only when, the caller asks.
+	restored, err := (ImportApplier{Store: store}).Apply(ctx, ImportRequest{
+		Archive: withHistory, BankID: bank, TargetBankID: "hist-dst",
+		Mode: ImportRestore, Scope: ExportScope{Data: true, BankConfig: true, History: true},
+	})
+	if err != nil {
+		t.Fatalf("import with history: %v", err)
+	}
+	if restored.HistoryRows != 2 {
+		t.Fatalf("history rows imported = %d, want the audit row and the model-request row", restored.HistoryRows)
+	}
+	audit, err := store.ListAuditLog(ctx, storage.AuditQuery{BankID: "hist-dst", Limit: 10})
+	if err != nil || len(audit.Entries) != 1 {
+		t.Fatalf("audit rows in the target = %v (err %v), want 1", audit.Entries, err)
+	}
+}
+
+// test-import-reads-the-reference-json-encoding: the reference declares
+// `bank_rows_json_encoding: "serialized"` and writes every jsonb column as its
+// JSON text, so an archive it produced carries `"{\"mode\": \"delta\"}"` where
+// this service writes the object. Reading only the object form loses the field
+// silently: a bank's config, a mental model's trigger and a history payload all
+// fall back to their defaults.
+func TestRestoreReadsSerializedRowJSON(t *testing.T) {
+	ctx := context.Background()
+	archive := &hindsightarchive.Archive{
+		Manifest: hindsightarchive.Manifest{
+			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			SourceBankID:  "src",
+			ArchiveType:   "bank",
+		},
+		Banks: []map[string]any{{
+			"bank_id":     "src",
+			"name":        "source",
+			"mission":     "keep the ledger",
+			"disposition": `{"empathy": 4, "literalism": 2, "skepticism": 5}`,
+			"config":      `{"retain_extraction_mode": "verbose", "entity_labels": [{"key": "knowledge"}]}`,
+		}},
+		MentalModels: []map[string]any{{
+			"id":           "mm-1",
+			"bank_id":      "src",
+			"name":         "ledger",
+			"trigger":      `{"mode": "delta", "fact_types": ["world"], "refresh_after_consolidation": true}`,
+			"observations": `{"observations": [{"text": "seen"}]}`,
+		}},
+		MentalModelHistory: []map[string]any{{
+			"mental_model_id": "mm-1",
+			"bank_id":         "src",
+			"changed_at":      "2026-01-02T00:00:00Z",
+			"content":         `{"previous_content": "the version before", "previous_reflect_response": {"based_on": {}}}`,
+		}},
+	}
+	store := storage.NewMemoryStore("public")
+	report, err := (ImportApplier{Store: store}).Apply(ctx, ImportRequest{
+		Archive: archive, BankID: "src", TargetBankID: "dst",
+		Mode: ImportRestore, Scope: DefaultExportScope(),
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if report.MentalModelHistory != 1 {
+		t.Fatalf("history rows imported = %d, want 1", report.MentalModelHistory)
+	}
+
+	bank, err := store.GetBank(ctx, "dst")
+	if err != nil {
+		t.Fatalf("bank: %v", err)
+	}
+	if got, _ := bank.Config["retain_extraction_mode"].(string); got != "verbose" {
+		t.Fatalf("bank config = %v, want the serialized value", bank.Config)
+	}
+	if bank.Disposition["empathy"] != 4 || bank.Disposition["skepticism"] != 5 {
+		t.Fatalf("disposition = %v, want the serialized values", bank.Disposition)
+	}
+	if bank.Mission != "keep the ledger" {
+		t.Fatalf("mission = %q, want the plain text column kept literal", bank.Mission)
+	}
+
+	model, err := store.GetMentalModel(ctx, "dst", "mm-1")
+	if err != nil {
+		t.Fatalf("mental model: %v", err)
+	}
+	if mode, _ := model.Trigger["mode"].(string); mode != "delta" {
+		t.Fatalf("trigger = %v, want the serialized trigger", model.Trigger)
+	}
+	if facts, _ := model.Trigger["fact_types"].([]any); len(facts) != 1 {
+		t.Fatalf("trigger fact_types = %v, want the serialized list", model.Trigger["fact_types"])
+	}
+
+	history, err := store.MentalModelHistory(ctx, "dst", "mm-1")
+	if err != nil || len(history) != 1 {
+		t.Fatalf("history = %v (err %v)", history, err)
+	}
+	if history[0].PreviousContent == nil || *history[0].PreviousContent != "the version before" {
+		t.Fatalf("history previous_content = %v, want the serialized payload", history[0].PreviousContent)
+	}
+}
+
+// A restore re-points the carried maintenance queues onto the target's own
+// units/entities and counts what landed. A graph row naming a source unit the
+// replay produced is remapped; a row naming a unit that did not come back is
+// dropped.
+func TestRestoreRemapsMaintenanceQueues(t *testing.T) {
+	ctx := context.Background()
+	source := storage.NewMemoryStore("public")
+	bank, facts := seedSourceBank(t, source)
+	archive, err := BuildArchive(ctx, source, bank, ExportOptions{Scope: DefaultExportScope()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One row names a fact that travels, one names a unit that does not.
+	archive.Data[hindsightarchive.GraphMaintenanceQueueTable] = []map[string]any{
+		{"bank_id": bank, "unit_id": facts["Alice moved to Berlin | Involving: Alice"]},
+		{"bank_id": bank, "unit_id": "00000000-0000-4000-8000-000000000000"},
+	}
+	target := storage.NewMemoryStore("public")
+	report, err := ImportApplier{Store: target}.Apply(ctx, ImportRequest{
+		Archive: archive, BankID: bank, TargetBankID: "copy", Mode: ImportRestore,
+		Scope: DefaultExportScope(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.MaintenanceQueueRows != 1 {
+		t.Fatalf("maintenance rows imported = %d, want 1 (the mapped row only)", report.MaintenanceQueueRows)
+	}
+	drained, err := target.DrainGraphMaintenance(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceUnitID := facts["Alice moved to Berlin | Involving: Alice"]
+	ordinal := -1
+	for index, fact := range archive.Documents[0].Facts {
+		if fact.SourceID == sourceUnitID {
+			ordinal = index
+		}
+	}
+	if ordinal < 0 {
+		t.Fatal("the named fact must travel in the archive")
+	}
+	want := archiveUnitID("copy", "d1", ordinal)
+	found := false
+	for _, row := range drained {
+		if row.BankID == "copy" && row.ID == want {
+			found = true
+		}
+		if row.ID == "00000000-0000-4000-8000-000000000000" {
+			t.Fatalf("a row naming an absent unit must be dropped")
+		}
+	}
+	if !found {
+		t.Fatalf("the mapped graph row must be queued for the target: %+v", drained)
 	}
 }

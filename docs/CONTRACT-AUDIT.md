@@ -68,7 +68,7 @@
 | 4 | 审计与 LLM 请求的过滤器 | **已闭合**。两后端都暴露并在 SQL 生效：审计 `action`/`transport`/`start_date`/`end_date`/`limit`/`offset`；LLM 请求另加 `status`/`operation`/`scope`/`provider`/`trace_id`/`document_id`/`memory_id`/`group`（`internal/storage/observability.go:25-36,89-113`、`postgres_observability.go:263-470`、`memory_observability.go:181-360`）。本轮补了"不传过滤"与"组合过滤"两个测试缺口 |
 | 5 | 指标标签集与时长直方图 | **已闭合**：三个 instrument 与上游同名同标签（`internal/monitoring/metrics.go:57-133`），桶与上游 `HTTP_DURATION_BUCKETS` 相同。**真残留已修**：`endpoint` 标签曾原样带出 Go 的通配符（`{chunk_id...}`），上游是**转换器剥离后**的模板（`{chunk_id}`，其自有测试 `tests/test_http_observability_middleware.py:200` 钉住）——同一路由在两侧是两个 series。已改为剥离（注册用的 pattern 不动） |
 | 6 | 405 的指标 `endpoint` 标签 | **已闭合**：用不带方法段的模式解析，路径匹配/方法不匹配即该路由模板（`internal/httpx/router.go:170-190`、`metrics_test.go:47-51`）。上游 `observability.py:93-115` "首次完全匹配，否则首次仅路径匹配（405）" |
-| 7 | `/health` 未初始化态与连接池统计 | **已闭合**，且原前提有误：上游未初始化分支在**读池统计之前**就返回，因此那里**不该**有池键；成功分支才有 `db_acquire_ms`/`db_pool_in_use/max/idle`（`engine/memory_engine.py:6196-6240` ↔ `internal/monitoring/health.go:96-104`）。**残留（无法实现，已记录）**：成功分支的 `db_pool_waiting`（在途 acquire）——Go 的 `database/sql` 不暴露"当前等待数"，上游自己的池统计本身是尽力而为、允许后端省略 |
+| 7 | `/health` 未初始化态与连接池统计 | **已闭合**，且原前提有误：上游未初始化分支在**读池统计之前**就返回，因此那里**不该**有池键；成功分支才有 `db_acquire_ms`/`db_pool_in_use/max/idle`（`engine/memory_engine.py:6196-6240` ↔ `internal/monitoring/health.go:96-104`）。**原残留已于 2026-10-20 闭合**：`db_pool_waiting` 曾判为"Go 无法复刻"（`database/sql` 无等待者计数），这个前提不成立——上游的计数来自它自己的 acquire 插桩而非后端池快照，本服务同样在自己包住每次 acquire 的地方计数即可（`internal/storage/db.go` 的 `waitingAcquires` + `acquirePooledConnection`，失败路径 `defer` 回补，对应上游 `engine/db/pool_instrumentation.py:69-84`）。键的**存在性**与**键序**均已对齐：成功分支的键序为 `status,database,db_acquire_ms,db_pool_waiting,db_pool_in_use,db_pool_max,db_pool_idle`，与上游 `_pool_health_stats` 先插 waiting 再插 in_use/max/idle 相同；`/metrics` 的 `hindsight_db_pool_waiting` 一并补齐。用例 `TestHealthReportsPoolWaiting`、`TestHealthPoolKeyOrder` |
 | 8 | 知识库 `tag_groups` 的 `resolve:"fuzzy"` | **确实开着，已修**。上游把 fuzzy 叶子对**银行的记忆标签词表**解析后改为精确匹配（`engine/memory_engine.py:19488` → `engine/search/tag_resolution.py`，`MIN_SIMILARITY=0.45`、`MAX_VOCABULARY=5000`、`MAX_EXACT_COMBINATIONS=32`）。旧实现是拿叶子和**每个页面自己的标签**比相似度，三个可观测差异：精确命中被放宽到相近标签、**词表为空时近似词仍命中**、两个上限未生效。现为 `internal/storage/tag_resolution.go`（精确大小写不敏感命中即胜；否则同命名空间 trigram ≥0.45；`any`=并、`all`=交、`exact`=去重组合的或且先查上限）+ `internal/reporting/knowledge_tags.go` 经 `ListTags` 取词表，超 5000 用上游的 422 文案 |
 | 9 | MCP 传输层 | **部分开着，已修**。上游会在 `Accept` 缺少 `text/event-stream` 时**改写**该头（`api/mcp.py:566-568`，注释明说是为了兼容不发 Accept 的客户端），因此契约是：缺 Accept / `application/json` / `*/*` **都放行**，只有"有 event-stream 而无 json"才 406。我们曾对 `application/json` 与 `*/*` 直接 406——**错拒了正确的客户端**。已实现通配符感知的判定、对齐 SDK 的错误信封（`id:null`、406、精确文案）与 GET 的 SSE 保活帧（`ping - <RFC3339>` + CRLF + `Cache-Control: no-cache, no-transform` + 回显 session） |
 | 10 | `HINDSIGHT_API_STORE_DOCUMENT_TEXT=false` | **确实开着，已修**。① 上游存 **NULL** 而非空串（PG 现绑 NULL；内存后端保持 `''` 但读面统一收敛为 null，两后端观测一致）；② 拒绝文案丢掉了设置名，现与上游逐字相同（该句以句号结尾，与 ST1005 冲突，已在声明处标注理由并保留上游原文）；③ `internal/storage/direct_reference.go` 把可空的 `original_text` 扫进 `string`——**一个选择不存文本的库会让读取失败**，已 COALESCE |
@@ -154,7 +154,7 @@ make check        # build + test + vet + pgx 构建 + lint + gofmt
 6. **已接受（不再修）**：`uptime_seconds` 的 JSON 文本 `812` vs `812.0`（数值相同）；audit `request` 的
    「声明键补 null」形状（仅在开启审计时可观察，线上无法验证）；驱动错误文案（asyncpg vs pgx，状态码已
    一致）；错误串里的品牌词；Go 与 Python 的 JSON 解析错误文本；`70 D5` 的 500 响应体文本；
-   两处 Go 无法复刻的诊断项（`db_pool_waiting`、驱动文案）。
+   一处 Go 无法复刻的诊断项（驱动文案）；`db_pool_waiting` 已于 2026-10-20 闭合。
 
 ### 请求体校验词表轮（2026-10-17）
 
@@ -185,7 +185,7 @@ make check        # build + test + vet + pgx 构建 + lint + gofmt
 | 多错累积 | 一个 body 里多个坏成员/坏字段各出一条 item，按**声明顺序**插排 | `httpx.NestedFailureItems` + `DecodeStructFields`（逐字段解码）+ `OrderItemsByDeclaration` |
 
 仍未闭合（本轮换为 live 探针的 `KNOWN_DIFFERENCES`，每条带理由）：`/health` 的
-`db_pool_waiting`（`database/sql` 无等待者计数）、directives 三个 404 的驱动文案、知识库
+directives 三个 404 的驱动文案、知识库
 `tree` 分组报错的 pydantic 多行文案、config 写入报错里的「可配置字段」样例列表、reflect
 提示词预览（线上构建比 checkout 旧，配置写入在两侧落点不同）、`dry-run`/`reflect` 的
 **模型输出文本**（两个部署跑不同的 chat 模型）、bank 列表的 `total`（两侧银行数本就不同）。

@@ -179,6 +179,108 @@ func (p poolPinger) PoolStats() (PoolStats, bool) {
 	return PoolStats{InUse: 3, Max: 10, Idle: 7}, true
 }
 
+// waitingPinger reports the pooled-acquire waiter count through the capability
+// a dependency backed by a counted pool exposes.
+type waitingPinger struct {
+	*fakePinger
+	waiting int
+	present bool
+}
+
+func (p waitingPinger) PoolWaitingCount() (int, bool) { return p.waiting, p.present }
+
+// poolStatsPinger reports utilization only; it has no waiter counter.
+type poolStatsPinger struct{ *fakePinger }
+
+func (p poolStatsPinger) PoolStats() (PoolStats, bool) {
+	return PoolStats{InUse: 1, Max: 10, Idle: 9}, true
+}
+
+// The readiness payload carries db_pool_waiting whenever the dependency can
+// count its waiters — written as 0 when nothing is waiting, not omitted. The
+// reference writes the key unconditionally from its pool instrumentation
+// (engine/memory_engine.py:6218, engine/db/pool_instrumentation.py:29), so the
+// key's presence is part of the contract even at zero.
+func TestHealthReportsPoolWaiting(t *testing.T) {
+	cases := []struct {
+		name  string
+		db    Pinger
+		want  bool
+		value float64
+	}{
+		{name: "no waiter counter omits the key", db: &fakePinger{}, want: false},
+		{name: "utilization without a counter omits the key", db: poolStatsPinger{&fakePinger{}}, want: false},
+		{name: "zero waiters writes 0", db: waitingPinger{fakePinger: &fakePinger{}, present: true}, want: true, value: 0},
+		{name: "waiters are reported", db: waitingPinger{fakePinger: &fakePinger{}, waiting: 4, present: true}, want: true, value: 4},
+		{name: "an absent count omits the key", db: waitingPinger{fakePinger: &fakePinger{}, present: false}, want: false},
+	}
+	for _, path := range []string{httpx.PathHealth, httpx.PathReady} {
+		for _, tc := range cases {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				mux := bindHealth(&HealthHandler{DB: tc.db})
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200", rec.Code)
+				}
+				var body map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				got, ok := body["db_pool_waiting"]
+				if ok != tc.want {
+					t.Fatalf("%s must %s db_pool_waiting: %v", path, map[bool]string{true: "carry", false: "omit"}[tc.want], body)
+				}
+				if ok && got.(float64) != tc.value {
+					t.Fatalf("db_pool_waiting = %v, want %v", got, tc.value)
+				}
+			})
+		}
+	}
+}
+
+// A dependency that forwards the count itself takes precedence over the pool
+// handle, and a failing probe never reports pool keys — the reference returns
+// its error payload before gathering them.
+func TestHealthPoolWaitingForwardingAndFailure(t *testing.T) {
+	forwarding := &forwardingPinger{fakePinger: &fakePinger{}, waiting: 2}
+	mux := bindHealth(&HealthHandler{DB: forwarding})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathHealth, nil))
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["db_pool_waiting"].(float64) != 2 {
+		t.Fatalf("forwarded db_pool_waiting = %v, want 2", body["db_pool_waiting"])
+	}
+
+	failing := &forwardingPinger{fakePinger: &fakePinger{err: errors.New("down")}, waiting: 2}
+	mux = bindHealth(&HealthHandler{DB: failing})
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathHealth, nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	body = map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["db_pool_waiting"]; ok {
+		t.Fatalf("a failed probe must not report pool keys: %v", body)
+	}
+}
+
+// forwardingPinger reports the waiter count directly rather than through a pool
+// handle, and also answers through the pool handle so the precedence between
+// the two is observable.
+type forwardingPinger struct {
+	*fakePinger
+	waiting int
+}
+
+func (p *forwardingPinger) PoolWaiting() (int, bool) { return p.waiting, true }
+
 // Before anything is wired to probe, readiness reports not-initialized rather
 // than a database error, as the reference does.
 func TestReadinessNotInitialized(t *testing.T) {
@@ -378,5 +480,42 @@ func TestMetricsExtraSeries(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathMetrics, nil))
 	if !strings.Contains(rec.Body.String(), "wenyuan_async_operations_pending{otel_scope_name=\"hindsight_api.metrics\",otel_scope_schema_url=\"\",otel_scope_version=\"\"} 3") {
 		t.Fatalf("metrics body = %q", rec.Body.String())
+	}
+}
+
+// combinedPinger reports both the waiter count and the pool utilization, so
+// the readiness body carries every pool key.
+type combinedPinger struct {
+	*fakePinger
+	waiting int
+	stats   PoolStats
+}
+
+func (p combinedPinger) PoolWaiting() (int, bool) { return p.waiting, true }
+
+func (p combinedPinger) PoolStats() (PoolStats, bool) { return p.stats, true }
+
+// The readiness payload's key order is the reference's, because the response
+// bytes are the contract. The reference builds the body with
+// `health.update(self._pool_health_stats(backend))` (engine/memory_engine.py:6208),
+// whose dict inserts db_pool_waiting before db_pool_in_use/max/idle
+// (engine/memory_engine.py:6220-6235), so a scrape sees waiting first.
+func TestHealthPoolKeyOrder(t *testing.T) {
+	db := combinedPinger{fakePinger: &fakePinger{}, waiting: 0,
+		stats: PoolStats{InUse: 1, Max: 100, Idle: 2}}
+	mux := bindHealth(&HealthHandler{DB: db})
+	for _, path := range []string{httpx.PathHealth, httpx.PathReady} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		body := rec.Body.String()
+		// db_acquire_ms is a measurement, so it is matched by position here.
+		prefix := `{"status":"healthy","database":"connected","db_acquire_ms":`
+		if !strings.HasPrefix(body, prefix) {
+			t.Fatalf("%s body = %s, want the reference's leading keys", path, body)
+		}
+		want := `,"db_pool_waiting":0,"db_pool_in_use":1,"db_pool_max":100,"db_pool_idle":2}`
+		if !strings.HasSuffix(body, want) {
+			t.Fatalf("%s body = %s, want suffix %s", path, body, want)
+		}
 	}
 }

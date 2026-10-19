@@ -23,10 +23,10 @@ func TestValidateCreateRejectsMalformedIdentifier(t *testing.T) {
 func TestValidateTraitsAcceptsBounds(t *testing.T) {
 	min := storage.DispositionTraitMin
 	max := storage.DispositionTraitMax
-	if failure := ValidateCreate(BankRequest{DispositionSkepticism: &min}); failure != nil {
+	if failure := ValidateCreate(BankRequest{DispositionSkepticism: &min}, nil); failure != nil {
 		t.Fatalf("lower bound must be accepted: %+v", failure)
 	}
-	if failure := ValidatePatch(BankRequest{DispositionEmpathy: &max}); failure != nil {
+	if failure := ValidatePatch(BankRequest{DispositionEmpathy: &max}, nil); failure != nil {
 		t.Fatalf("upper bound must be accepted: %+v", failure)
 	}
 }
@@ -34,16 +34,16 @@ func TestValidateTraitsAcceptsBounds(t *testing.T) {
 func TestValidateTraitsRejectsOutOfBounds(t *testing.T) {
 	low := storage.DispositionTraitMin - 1
 	high := storage.DispositionTraitMax + 1
-	if failure := ValidatePatch(BankRequest{DispositionSkepticism: &low}); failure == nil {
+	if failure := ValidatePatch(BankRequest{DispositionSkepticism: &low}, nil); failure == nil {
 		t.Fatal("below the lower bound must be rejected")
 	}
-	if failure := ValidatePatch(BankRequest{DispositionSkepticism: &high}); failure == nil {
+	if failure := ValidatePatch(BankRequest{DispositionSkepticism: &high}, nil); failure == nil {
 		t.Fatal("above the upper bound must be rejected")
 	}
 }
 
 func TestValidateAllowsUnsetTraits(t *testing.T) {
-	if failure := ValidateCreate(BankRequest{}); failure != nil {
+	if failure := ValidateCreate(BankRequest{}, nil); failure != nil {
 		t.Fatalf("unset traits must be allowed: %+v", failure)
 	}
 }
@@ -51,7 +51,7 @@ func TestValidateAllowsUnsetTraits(t *testing.T) {
 // in-0003: an out-of-range trait inside the deprecated disposition object is
 // still rejected when no explicit individual trait is supplied.
 func TestDispositionObjectIsValidated(t *testing.T) {
-	if failure := ValidateCreate(BankRequest{Disposition: &DispositionInput{Skepticism: intPtr(99), Literalism: intPtr(3), Empathy: intPtr(3)}}); failure == nil {
+	if failure := ValidateCreate(BankRequest{Disposition: &DispositionInput{Skepticism: intPtr(99), Literalism: intPtr(3), Empathy: intPtr(3)}}, nil); failure == nil {
 		t.Fatal("an out-of-range disposition object trait must be rejected")
 	}
 }
@@ -65,7 +65,7 @@ func TestDispositionObjectIsValidatedIndependently(t *testing.T) {
 	failure := ValidateCreate(BankRequest{
 		Disposition:           &DispositionInput{Skepticism: intPtr(99), Literalism: intPtr(3), Empathy: intPtr(3)},
 		DispositionSkepticism: intPtr(3),
-	})
+	}, nil)
 	if failure == nil || len(failure.Errors) != 1 {
 		t.Fatalf("an out-of-range object trait must be rejected: %+v", failure)
 	}
@@ -82,7 +82,7 @@ func TestDispositionObjectIsValidatedIndependently(t *testing.T) {
 func TestPartialDispositionObjectReportsMissingMembers(t *testing.T) {
 	failure := ValidateCreate(BankRequest{
 		Disposition: &DispositionInput{Skepticism: intPtr(4)},
-	})
+	}, nil)
 	if failure == nil {
 		t.Fatal("a partial disposition object must be rejected")
 	}
@@ -107,7 +107,7 @@ func TestPartialDispositionObjectReportsMissingMembers(t *testing.T) {
 // An empty disposition object is rejected for every member, so no trait is
 // silently read as a zero.
 func TestEmptyDispositionObjectReportsEveryMember(t *testing.T) {
-	failure := ValidateCreate(BankRequest{Disposition: &DispositionInput{}})
+	failure := ValidateCreate(BankRequest{Disposition: &DispositionInput{}}, nil)
 	if failure == nil {
 		t.Fatal("an empty disposition object must be rejected")
 	}
@@ -116,23 +116,46 @@ func TestEmptyDispositionObjectReportsEveryMember(t *testing.T) {
 	}
 }
 
-// A member the object did not carry is not a value: a patch built from a
-// partial object must not reset the traits it did not mention.
+// Inside the disposition object the items follow the member declaration order,
+// each at the position its member holds: an out-of-range member is reported
+// where it stands, not after the missing ones.
+func TestDispositionObjectItemsFollowMemberOrder(t *testing.T) {
+	failure := ValidateCreate(BankRequest{
+		Disposition: &DispositionInput{Skepticism: intPtr(9)},
+	}, nil)
+	if failure == nil || len(failure.Errors) != 3 {
+		t.Fatalf("errors = %+v, want one per member", failure)
+	}
+	want := []struct{ kind, member string }{
+		{"less_than_equal", "skepticism"},
+		{"missing", "literalism"},
+		{"missing", "empathy"},
+	}
+	for i, expected := range want {
+		item := failure.Errors[i]
+		if item.Type != expected.kind || item.Loc[2] != expected.member {
+			t.Fatalf("item %d = %s %v, want %s %s", i, item.Type, item.Loc, expected.kind, expected.member)
+		}
+	}
+}
+
+// A member the object did not carry is not a value: the overrides built from a
+// partial object must name only the traits the request carried, and the legacy
+// disposition and mission columns must never be written.
 func TestPartialDispositionObjectDoesNotPatchAbsentMembers(t *testing.T) {
-	patch := BankRequest{
-		Disposition: &DispositionInput{Skepticism: intPtr(4)},
-	}.ToPatch()
-	if patch.Disposition == nil {
-		t.Fatal("the carried member must reach the patch")
+	req := BankRequest{Disposition: &DispositionInput{Skepticism: intPtr(4)}}
+	patch := req.ToPatch()
+	if patch.Disposition != nil || patch.Mission != nil {
+		t.Fatalf("the legacy columns must not be written: %+v", patch)
 	}
-	traits := *patch.Disposition
-	if traits[storage.DispositionKeySkepticism] != 4 {
-		t.Fatalf("skepticism = %d, want 4", traits[storage.DispositionKeySkepticism])
+	updates := req.configUpdates()
+	if updates["disposition_skepticism"] != 4 {
+		t.Fatalf("skepticism = %v, want 4", updates["disposition_skepticism"])
 	}
-	if _, present := traits[storage.DispositionKeyLiteralism]; present {
-		t.Fatalf("literalism must not be patched when the object omitted it: %v", traits)
+	if _, present := updates["disposition_literalism"]; present {
+		t.Fatalf("literalism must not be overridden when the object omitted it: %v", updates)
 	}
-	if _, present := traits[storage.DispositionKeyEmpathy]; present {
-		t.Fatalf("empathy must not be patched when the object omitted it: %v", traits)
+	if _, present := updates["disposition_empathy"]; present {
+		t.Fatalf("empathy must not be overridden when the object omitted it: %v", updates)
 	}
 }

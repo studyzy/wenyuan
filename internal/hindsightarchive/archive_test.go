@@ -262,3 +262,68 @@ func TestHistoryAbsentWhenNotSelected(t *testing.T) {
 		t.Fatalf("history = %+v, want nil", got.History)
 	}
 }
+
+// A whole-bank archive this service writes matches the reference's producer:
+// every manifest field is present (zero or not), the scope and encoding are
+// recorded, every selected section is written even when empty, and a document's
+// list members are arrays rather than null.
+func TestWriteBankArchiveMatchesReferenceShape(t *testing.T) {
+	encoding := EncodingSerialized
+	archive := &Archive{
+		Manifest: Manifest{
+			SchemaVersion:        SupportedSchemaVersion,
+			SourceBankID:         "b1",
+			ArchiveType:          "bank",
+			Scope:                &Scope{Data: true, BankConfig: true},
+			BankRowsJSONEncoding: &encoding,
+		},
+		Documents: []Document{{ID: "d1", Facts: []Fact{{Text: "t"}}}},
+		Data: map[string][]map[string]any{
+			GraphMaintenanceQueueTable: nil,
+		},
+	}
+	raw, err := Write(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(name string) string {
+		for _, f := range zr.File {
+			if f.Name == name {
+				rc, err := f.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = rc.Close() }()
+				var buf bytes.Buffer
+				if _, err := buf.ReadFrom(rc); err != nil {
+					t.Fatal(err)
+				}
+				return buf.String()
+			}
+		}
+		return ""
+	}
+	manifest := read(ManifestName)
+	for _, key := range []string{
+		`"schema_version"`, `"observation_count": 0`, `"mental_model_count": 0`,
+		`"scope"`, `"bank_rows_json_encoding": "serialized"`, `"exported_at": null`,
+	} {
+		if !bytes.Contains([]byte(manifest), []byte(key)) {
+			t.Fatalf("manifest %s missing %s", manifest, key)
+		}
+	}
+	// Selected-but-empty sections are written as an empty array.
+	for _, name := range []string{MentalModelsName, BanksName, KnowledgePagesName, DataEntry(GraphMaintenanceQueueTable)} {
+		if got := read(name); got != "[]" {
+			t.Fatalf("%s = %q, want []", name, got)
+		}
+	}
+	// A document's list members are arrays, never null.
+	if doc := read(DocumentsDir + "/000000.json"); !bytes.Contains([]byte(doc), []byte(`"causal_relations":[]`)) {
+		t.Fatalf("document facts must carry an empty causal_relations array: %s", doc)
+	}
+}

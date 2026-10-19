@@ -188,18 +188,29 @@ func decodeChatResponse(raw []byte, req provider.CompletionRequest, queueWait, l
 		QueueWait:    provider.Duration(queueWait),
 		Latency:      provider.Duration(latency),
 	}
-	if isOutputLimit(choice.FinishReason) {
-		return result, &provider.OutputTooLongError{FinishReason: choice.FinishReason}
-	}
 	if req.ResponseSchema != nil {
 		structured, err := ParseStructured(choice.Message.Content, req.ResponseSchema, req.SkipValidation)
 		result.Structured = structured
+		// A generation that stopped at its own output limit still carries the
+		// text it produced before stopping, and the reference uses it rather
+		// than failing the run. So the payload is filled in first and the
+		// limit is reported afterwards: a caller that tolerates the limit
+		// reads the truncated content, and one that treats it as fatal still
+		// gets the typed error. The parse failure of a truncated payload is
+		// not this call's error to report — the limit is.
+		if isOutputLimit(choice.FinishReason) {
+			result.Content = StripScaffolding(choice.Message.Content)
+			return result, &provider.OutputTooLongError{FinishReason: choice.FinishReason}
+		}
 		if err != nil {
 			return result, err
 		}
 		return result, nil
 	}
 	result.Content = StripScaffolding(choice.Message.Content)
+	if isOutputLimit(choice.FinishReason) {
+		return result, &provider.OutputTooLongError{FinishReason: choice.FinishReason}
+	}
 	return result, nil
 }
 

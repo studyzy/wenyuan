@@ -82,6 +82,10 @@ type Turn struct {
 	// Batches holds each call's results, indexed to match Calls, so a tool
 	// result can be rendered per call rather than as the merged evidence set.
 	Batches [][]Evidence
+	// Usage is the token accounting the provider reported for this turn's
+	// model call. The loop sums it into the run's total, so the caller sees the
+	// cost of every retrieval turn rather than only the closing calls.
+	Usage provider.Usage
 }
 
 // Outcome is the finished reflection.
@@ -156,11 +160,12 @@ type Config struct {
 	// observation a search returns.
 	ObservationIncludeEntities bool
 	// AnswerAsDocument makes the loop take its answer from the `done` call's
-	// arguments rather than composing prose afterwards: the model states either
-	// a structured `document` or a plain `answer`, and the markdown is derived
-	// from it. It is what a mental-model refresh wants — the model's structure,
-	// not its prose, is the source of truth — so no free-text render is ever
-	// read back to work out what the model meant.
+	// structure rather than its prose: the model states a structured `document`
+	// (or a plain `answer`) and the markdown is derived from it. It is what a
+	// mental-model refresh wants — the model's structure, not its prose, is the
+	// source of truth — so no free-text render is ever read back to work out
+	// what the model meant. Without it the loop still answers from the `done`
+	// call's `answer`; this only changes which field that is.
 	AnswerAsDocument bool
 }
 
@@ -200,6 +205,12 @@ type Loop struct {
 	// documentAnswer is the markdown a document-mode `done` call produced, held
 	// until the loop stops.
 	documentAnswer string
+	// doneAnswer is the answer a prose-mode `done` call carried, held until the
+	// loop stops. The model's own done call is the answer: the reference trusts
+	// it verbatim rather than paying for a second synthesis call that would
+	// restate what the loop already has. Empty means no done call produced a
+	// usable answer, which is when synthesis takes over.
+	doneAnswer string
 	// documentRejections counts `done` documents the shape refused, which is
 	// what bounds the re-asks.
 	documentRejections int
@@ -239,8 +250,9 @@ func forcedLayers() []string {
 // perspective releases the remaining forced steps, and the model then decides
 // each turn which tool to call. The loop stops when the model calls the done
 // tool, when the iteration bound is reached, or when the evidence budget is
-// spent; in every case the answer is composed from the evidence actually
-// gathered, so the loop never answers from nothing.
+// spent. A done call carries the answer and the run ends on it; a stop without
+// one is answered by synthesis over the evidence actually gathered — never from
+// nothing.
 func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 	if !l.modelAvailable() {
 		return Outcome{}, ErrNoModel
@@ -266,15 +278,32 @@ func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 	}
 	outcome.Evidence = append([]Evidence(nil), l.evidence...)
 	// In document mode the `done` call already carried the answer as a
-	// structure, so there is nothing to compose: reading markdown back out of
-	// free text would be exactly the round trip this mode exists to avoid.
+	// structure, so there is nothing to compose or extend: reading markdown
+	// back out of free text would be exactly the round trip this mode exists
+	// to avoid.
 	if l.cfg.AnswerAsDocument && strings.TrimSpace(l.documentAnswer) != "" {
 		outcome.Answer = l.aliases.scrubUnverifiedIDs(l.aliases.resolve(strings.TrimSpace(l.documentAnswer)))
 		return outcome, nil
 	}
-	answer, err := l.compose(ctx, &outcome)
-	if err != nil {
-		return outcome, err
+	// The `done` call's own answer is the answer: the model wrote it, and the
+	// reference trusts it verbatim rather than spending a second call
+	// restating what the loop already has. It still goes through the same
+	// length rewrite and structured extraction every answer does. Synthesis is
+	// the fallback for a loop that stopped without a done answer — on the
+	// iteration bound, the evidence budget, or a text-only turn.
+	answer := strings.TrimSpace(l.doneAnswer)
+	if answer == "" {
+		composed, err := l.compose(ctx, &outcome)
+		if err != nil {
+			return outcome, err
+		}
+		answer = composed
+	} else {
+		finalized, err := l.finalize(ctx, &outcome, answer)
+		if err != nil {
+			return outcome, err
+		}
+		answer = finalized
 	}
 	answer = l.aliases.resolve(answer)
 	answer = l.aliases.scrubUnverifiedIDs(answer)
@@ -333,6 +362,7 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	if err != nil {
 		return turn, false, fmt.Errorf("reflection turn %d failed: %w", iteration, err)
 	}
+	turn.Usage = response.Usage
 
 	// A model that answered in prose has answered; there is no tool to run.
 	//
@@ -399,6 +429,13 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 					continue
 				}
 				l.documentAnswer = answer
+			} else if answer := strings.TrimSpace(stringArg(toolCall.Input, "answer")); answer != "" {
+				// A prose-mode done call carries the answer itself, and the
+				// model wrote it: the loop ends on that answer rather than
+				// paying for a synthesis call that would restate it. A done
+				// carrying nothing usable is not an answer, so the run stops
+				// without one and synthesis covers that stop.
+				l.doneAnswer = answer
 			}
 			finish = true
 			continue
@@ -727,6 +764,9 @@ func (l *Loop) aliasToolText(text string, kindByID map[string]string) string {
 // retrieval instructions and a tool list, neither of which belongs on the call
 // that writes prose. The evidence is rendered under the aliases the reasoning
 // turns used, so a citation the model writes reads the same on both sides.
+//
+// It is the fallback, not the answer path: a loop that stopped on a `done` call
+// already has its answer and never reaches here.
 func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 	messages := []provider.Message{
 		{Role: "system", Content: buildFinalSystemPrompt(l.retrieval.Directives(ctx), l.profile())},
@@ -737,18 +777,33 @@ func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 		Scope:     "reflect",
 		MaxTokens: l.synthesisMaxTokens(),
 	})
-	if err != nil {
-		return "", fmt.Errorf("reflection answer failed: %w", err)
-	}
 	outcome.Usage = addUsage(outcome.Usage, response.Usage)
 	answer := strings.TrimSpace(response.Content)
 	if answer == "" {
+		if err != nil {
+			return "", fmt.Errorf("reflection answer failed: %w", err)
+		}
 		// The answering call asked for another tool instead of answering, so
 		// there is no answer to return. Reporting that is better than handing
 		// the caller an empty string that reads as "the answer is nothing".
 		return "", ErrNoAnswer
 	}
-	answer, err = l.rewriteToLength(ctx, outcome, answer)
+	// A generation that stopped at its own output limit still wrote text, and
+	// the reference uses it: failing the run here is what turned a small
+	// max_tokens into a 500. The truncated answer is a real answer, so it is
+	// finalized like any other; only a failure that carried no text is fatal.
+	if err != nil && !provider.IsOutputTooLong(err) {
+		return "", fmt.Errorf("reflection answer failed: %w", err)
+	}
+	return l.finalize(ctx, outcome, answer)
+}
+
+// finalize applies the post-answer work every answer source shares: the
+// visible-length rewrite, then the structured extraction when the request asked
+// for one. The `done` path and the synthesis fallback both end here, so the two
+// cannot drift apart.
+func (l *Loop) finalize(ctx context.Context, outcome *Outcome, answer string) (string, error) {
+	answer, err := l.rewriteToLength(ctx, outcome, answer)
 	if err != nil {
 		return "", err
 	}
@@ -759,13 +814,19 @@ func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 }
 
 // synthesisMaxTokens is the transport cap for the final synthesis call: the
-// deployment's reflect cap when one is set, else the caller's visible-length
-// target, which is what the loop sent before the cap existed.
+// deployment's reflect cap when one is set, else unset.
+//
+// It is deliberately *not* the caller's max_tokens. That value is a target for
+// the visible answer length, enforced by the rewrite once the answer exists;
+// sending it as the provider's output cap lets a thinking model spend it on
+// reasoning tokens and truncate the answer mid-word — the reference decouples
+// the two for exactly that reason, leaving the transport level unset by
+// default.
 func (l *Loop) synthesisMaxTokens() int {
 	if l.cfg.MaxCompletionTokens > 0 {
 		return l.cfg.MaxCompletionTokens
 	}
-	return l.cfg.MaxTokens
+	return 0
 }
 
 // extractStructured runs the second call that reshapes the prose answer into
@@ -856,10 +917,14 @@ func (l *Loop) rewriteToLength(ctx context.Context, outcome *Outcome, answer str
 		// uses, and unset (zero) by default, which is what the reference does.
 		MaxTokens: l.cfg.MaxCompletionTokens,
 	})
-	if err != nil {
+	if err != nil && !provider.IsOutputTooLong(err) {
 		return "", fmt.Errorf("reflection length rewrite failed: %w", err)
 	}
 	outcome.Usage = addUsage(outcome.Usage, response.Usage)
+	// A rewrite that stopped at its output limit still returned its shortened
+	// text, and the reference uses it; a rewrite that produced nothing keeps
+	// the original answer rather than emptying it, which is also what the
+	// reference does.
 	if rewritten := strings.TrimSpace(response.Content); rewritten != "" {
 		return rewritten, nil
 	}
@@ -885,10 +950,9 @@ func (l *Loop) evidenceTokens() int {
 	return total
 }
 
-// turnUsage sums the usage a turn's calls reported. The loop records usage from
-// the provider responses it receives, so this is a placeholder for the shape
-// rather than a second source of truth.
-func turnUsage(Turn) provider.Usage { return provider.Usage{} }
+// turnUsage reports the usage the turn's model call was billed, so the run's
+// total includes every retrieval turn rather than only the closing calls.
+func turnUsage(turn Turn) provider.Usage { return turn.Usage }
 
 // addUsage sums two usage values.
 func addUsage(left, right provider.Usage) provider.Usage {
@@ -929,7 +993,7 @@ func (l *Loop) offeredTools() []provider.ToolDefinition {
 	if l.forcedStepPending() {
 		return []provider.ToolDefinition{ToolDefinition(l.forcedSequence[l.forcedStepsDone])}
 	}
-	return ToolDefinitions()
+	return ToolDefinitions(l.cfg.AnswerAsDocument)
 }
 
 // forcedStepPending reports whether a forced retrieval layer is still owed.

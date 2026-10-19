@@ -305,3 +305,142 @@ func runConsumerForOperation(t *testing.T, store storage.Store, processor worker
 	<-done
 	t.Fatalf("operation %s did not settle", opID)
 }
+
+// A registration's http_config is the delivery shape it asked for: the method
+// selects a bodyless GET, and its headers and query parameters are applied. The
+// Hindsight-controlled headers still win, so a custom header cannot forge the
+// event type.
+func TestWebhookDeliveryHonoursHTTPConfig(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	type seen struct {
+		method, query, custom, event, body string
+	}
+	var got atomic.Value
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got.Store(seen{
+			method: r.Method, query: r.URL.RawQuery,
+			custom: r.Header.Get("X-Custom"), event: r.Header.Get("X-Hindsight-Event"),
+			body: string(body),
+		})
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	if _, err := store.PutWebhook(ctx, storage.Webhook{
+		ID: "w1", BankID: "b1", URL: receiver.URL, EventTypes: []string{"retain.completed"}, Enabled: true,
+		HTTPConfig: map[string]any{
+			"method": "GET", "timeout_seconds": 7,
+			"headers": map[string]any{"X-Custom": "v"},
+			"params":  map[string]any{"q": "2"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	op := webhookDeliveryOperation("w1")
+	op.Payload["body"] = `{"event":"retain.completed"}`
+	processor := archiveProcessor{store: store, webhookGuard: deliveryTestGuard()}
+	if err := processor.Process(ctx, op); err != nil {
+		t.Fatalf("delivery failed: %v", err)
+	}
+	captured, _ := got.Load().(seen)
+	if captured.method != http.MethodGet {
+		t.Fatalf("method = %q, want GET (http_config.method)", captured.method)
+	}
+	if captured.query != "q=2" {
+		t.Fatalf("query = %q, want the configured params", captured.query)
+	}
+	if captured.custom != "v" {
+		t.Fatalf("X-Custom = %q, want the configured header", captured.custom)
+	}
+	if captured.event != "retain.completed" {
+		t.Fatalf("X-Hindsight-Event = %q, want the event type", captured.event)
+	}
+	if captured.body != "" {
+		t.Fatalf("body = %q, want none on a GET", captured.body)
+	}
+}
+
+// A receiver's rejection is retried on the reference's ladder rather than failed
+// on the spot, and the recorded cause is the reference's own wording: the
+// status, the endpoint and the receiver's explanation. The delivery only fails
+// permanently once the attempts are spent.
+func TestWebhookDeliveryRetriesReceiverRejection(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"no such hook"}`))
+	}))
+	defer receiver.Close()
+	if _, err := store.PutWebhook(ctx, storage.Webhook{
+		ID: "w1", BankID: "b1", URL: receiver.URL, EventTypes: []string{"retain.completed"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	processor := archiveProcessor{store: store, webhookGuard: deliveryTestGuard()}
+
+	op := webhookDeliveryOperation("w1")
+	op.Payload["body"] = `{"event":"retain.completed"}`
+	err := processor.Process(ctx, op)
+	if err == nil {
+		t.Fatal("a 404 must not be delivered as a success")
+	}
+	if worker.IsPermanent(err) {
+		t.Fatalf("a 404 must be retried, got a permanent failure: %v", err)
+	}
+	want := "HTTP 404 from " + receiver.URL + `: {"detail":"no such hook"}`
+	if err.Error() != want {
+		t.Fatalf("cause = %q, want %q", err.Error(), want)
+	}
+
+	// Once the ladder's rungs are spent the next failure is terminal.
+	op.RetryCount = len(webhookRetryDelays)
+	err = processor.Process(ctx, op)
+	if err == nil || !worker.IsPermanent(err) {
+		t.Fatalf("after the attempts are spent the delivery must fail permanently, got %v", err)
+	}
+}
+
+// The delivery backoff ladder is the reference's, rung for rung:
+// RETRY_DELAYS = [5, 300, 1800, 7200, 18000] with
+// MAX_ATTEMPTS = len(RETRY_DELAYS) + 1 (webhooks/manager.py:22-23). A retry
+// after the first failure waits RETRY_DELAYS[retry_count], and the attempt that
+// exhausts the ladder is terminal rather than waiting again.
+func TestWebhookRetryLadderMatchesTheReference(t *testing.T) {
+	want := []time.Duration{
+		5 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 5 * time.Hour,
+	}
+	if len(webhookRetryDelays) != len(want) {
+		t.Fatalf("ladder has %d rungs, want %d", len(webhookRetryDelays), len(want))
+	}
+	for i, expected := range want {
+		if webhookRetryDelays[i] != expected {
+			t.Fatalf("rung %d = %v, want %v", i, webhookRetryDelays[i], expected)
+		}
+		if got := webhookRetryDelay(i); got != expected {
+			t.Fatalf("webhookRetryDelay(%d) = %v, want %v", i, got, expected)
+		}
+	}
+	// The reference makes len(RETRY_DELAYS)+1 attempts in total: the first try,
+	// then one per rung. A retry_count equal to the rung count means those
+	// attempts are spent.
+	op := storage.Operation{OperationType: "webhook_delivery", RetryCount: len(webhookRetryDelays)}
+	err := webhookRetryOrFail(op, errors.New("boom"))
+	if err == nil || !worker.IsPermanent(err) {
+		t.Fatalf("a spent ladder must fail permanently, got %v", err)
+	}
+	// One rung short still schedules.
+	op.RetryCount = len(webhookRetryDelays) - 1
+	err = webhookRetryOrFail(op, errors.New("boom"))
+	if err == nil || worker.IsPermanent(err) {
+		t.Fatalf("the last rung must still schedule a retry, got %v", err)
+	}
+}

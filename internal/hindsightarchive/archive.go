@@ -33,6 +33,15 @@ var ErrManifestMissing = errors.New("manifest.json is missing")
 // SupportedSchemaVersion is the archive layout this reader understands.
 const SupportedSchemaVersion = 1
 
+// The values Manifest.BankRowsJSONEncoding can carry. Each describes how the
+// producing instance wrote a jsonb column in its bank/history row files.
+const (
+	// EncodingSerialized means a jsonb column travelled as its JSON text.
+	EncodingSerialized = "serialized"
+	// EncodingDecoded means a jsonb column travelled as a decoded object.
+	EncodingDecoded = "decoded"
+)
+
 // ManifestName is the archive entry holding the manifest.
 const ManifestName = "manifest.json"
 
@@ -42,26 +51,37 @@ const DocumentsDir = "documents"
 // Manifest is the top-level archive descriptor (manifest.json).
 //
 // A documents-only export populates the document and fact counts; a whole-bank
-// export adds the bank-level counts and the scope it was produced with. Every
-// field beyond the schema version and the source bank is optional, because an
-// archive written by an older producer lacks the ones added later.
+// export adds the bank-level counts and the scope it was produced with.
+//
+// Every field is always serialized, zero value or not, because the reference's
+// producer emits the whole manifest on every export (a documents-only archive
+// carries `"scope": null`, a bank archive with no observations carries
+// `"observation_count": 0`). A reader tolerates a field an older producer
+// lacked, but a producer that dropped zero-valued fields would not be a
+// byte-for-byte match — so no field carries `omitempty`.
 type Manifest struct {
 	SchemaVersion          int     `json:"schema_version"`
 	SourceBankID           string  `json:"source_bank_id"`
-	ExportedAt             *string `json:"exported_at,omitempty"`
+	ExportedAt             *string `json:"exported_at"`
 	DocumentCount          int     `json:"document_count"`
 	FactCount              int     `json:"fact_count"`
 	ObservationCount       int     `json:"observation_count"`
-	MentalModelCount       int     `json:"mental_model_count,omitempty"`
-	KnowledgePageCount     int     `json:"knowledge_page_count,omitempty"`
+	MentalModelCount       int     `json:"mental_model_count"`
+	KnowledgePageCount     int     `json:"knowledge_page_count"`
 	ArchiveType            string  `json:"archive_type"`
-	DirectiveCount         int     `json:"directive_count,omitempty"`
-	WebhookCount           int     `json:"webhook_count,omitempty"`
+	DirectiveCount         int     `json:"directive_count"`
+	WebhookCount           int     `json:"webhook_count"`
 	IncludesHistory        bool    `json:"includes_history"`
-	Scope                  *Scope  `json:"scope,omitempty"`
-	AttachmentCount        int     `json:"attachment_count,omitempty"`
-	OperationCount         int     `json:"operation_count,omitempty"`
-	InvalidatedMemoryCount int     `json:"invalidated_memory_count,omitempty"`
+	Scope                  *Scope  `json:"scope"`
+	AttachmentCount        int     `json:"attachment_count"`
+	OperationCount         int     `json:"operation_count"`
+	InvalidatedMemoryCount int     `json:"invalidated_memory_count"`
+	// BankRowsJSONEncoding records how JSON/JSONB column values in the
+	// bank/history row files were represented by the producing instance: "serialized"
+	// when a jsonb column travelled as its JSON text, "decoded" when it travelled as
+	// an object. Absent on an archive whose producer did not say, which a reader
+	// treats as decoded.
+	BankRowsJSONEncoding *string `json:"bank_rows_json_encoding"`
 }
 
 // ScopeCarriesData reports whether the archive was produced with the data
@@ -100,6 +120,25 @@ type Document struct {
 	Facts        []Fact         `json:"facts"`
 }
 
+// MarshalJSON writes the document with its list members as empty arrays rather
+// than null. The reference's reader declares tags/chunks/facts as lists, so a
+// null there is a validation error rather than "empty" — a document this
+// service exports must carry `[]`.
+func (d Document) MarshalJSON() ([]byte, error) {
+	type alias Document
+	out := alias(d)
+	if out.Tags == nil {
+		out.Tags = []string{}
+	}
+	if out.Chunks == nil {
+		out.Chunks = []Chunk{}
+	}
+	if out.Facts == nil {
+		out.Facts = []Fact{}
+	}
+	return json.Marshal(out)
+}
+
 // Chunk is a raw text chunk of the source document, reused verbatim.
 type Chunk struct {
 	ChunkIndex int    `json:"chunk_index"`
@@ -129,6 +168,28 @@ type Fact struct {
 	CreatedAt             *string          `json:"created_at"`
 	ConsolidatedAt        *string          `json:"consolidated_at"`
 	ConsolidationFailedAt *string          `json:"consolidation_failed_at"`
+}
+
+// MarshalJSON writes the fact with its list and object members as empty
+// collections rather than null, matching the reference's schema (tags,
+// entities, causal_relations are lists and metadata is an object there, so a
+// null is a validation error).
+func (f Fact) MarshalJSON() ([]byte, error) {
+	type alias Fact
+	out := alias(f)
+	if out.Tags == nil {
+		out.Tags = []string{}
+	}
+	if out.Entities == nil {
+		out.Entities = []string{}
+	}
+	if out.CausalRelations == nil {
+		out.CausalRelations = []CausalRelation{}
+	}
+	if out.Metadata == nil {
+		out.Metadata = map[string]any{}
+	}
+	return json.Marshal(out)
 }
 
 // CausalRelation is a causal edge from a fact to another fact in the same

@@ -5,12 +5,9 @@ import (
 	"strings"
 )
 
-// attachSideChannels populates the entity, chunk and source-fact channels the
-// request asked for. Each channel is independent of the fact token cap.
+// attachSideChannels populates the chunk and source-fact channels the request
+// asked for. Each channel is independent of the fact token cap.
 func (s *MemoryStore) attachSideChannels(result *RecallResult, q RecallQuery, types []string) {
-	if q.IncludeEntities {
-		result.EntityStates = s.entityStatesFor(q.BankID, result.Matches)
-	}
 	if q.IncludeChunks {
 		result.ChunkEntries = s.chunksFor(q, result.Matches)
 	}
@@ -21,33 +18,83 @@ func (s *MemoryStore) attachSideChannels(result *RecallResult, q RecallQuery, ty
 	}
 }
 
-// entityStatesFor assembles the entity side channel keyed by entity name for
-// the entities the returned matches carry.
-func (s *MemoryStore) entityStatesFor(bankID string, matches []RecallMatch) []EntityState {
-	byName := map[string]*EntityState{}
-	for _, m := range matches {
-		for _, name := range m.Entities {
-			state := byName[name]
-			if state == nil {
-				state = &EntityState{Name: name, ID: name, CanonicalName: name}
-				byName[name] = state
-			}
-			state.Observations = append(state.Observations, EntityObservation{
-				Text:        m.Text,
-				MentionedAt: m.MentionedAt,
-			})
+// attachRecallEntities resolves the entities the returned matches carry and
+// builds the name-keyed entity channel from them.
+//
+// It runs after the fact token budget has selected the returned matches: the
+// entity channel is a view of those matches, so a fact the budget dropped must
+// not leave its entities behind. A match that resolves to no entity keeps a
+// null list and contributes no channel entry.
+func (s *MemoryStore) attachRecallEntities(q RecallQuery, result *RecallResult) {
+	if len(result.Matches) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(result.Matches))
+	for _, m := range result.Matches {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
 		}
 	}
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]EntityState, 0, len(names))
-	for _, name := range names {
-		out = append(out, *byName[name])
+	applyRecallEntities(result, s.recallEntityRefs(q.BankID, ids))
+}
+
+// recallEntityRefs resolves the entities each unit carries, keyed by unit id,
+// in entity-id order. Direct postings answer for most units; an observation
+// with no postings of its own inherits its source memories' entities, which is
+// the set the unit's own detail read reports. A unit that resolves to no
+// entity is absent from the result rather than mapped to an empty list.
+//
+// The caller holds the store's read lock.
+func (s *MemoryStore) recallEntityRefs(bankID string, unitIDs []string) map[string][]EntityRef {
+	out := make(map[string][]EntityRef, len(unitIDs))
+	for _, unitID := range unitIDs {
+		unit, ok := s.units[unitID]
+		if !ok {
+			unit, ok = s.invalidated[unitID]
+		}
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		ids := s.unitEntities[unitID]
+		if len(ids) == 0 && unit.FactType == TypeObservation && len(unit.SourceMemoryIDs) > 0 {
+			for _, sourceID := range unit.SourceMemoryIDs {
+				source, ok := s.units[sourceID]
+				if !ok || source.BankID != bankID {
+					continue
+				}
+				ids = append(ids, s.unitEntities[sourceID]...)
+			}
+		}
+		if refs := entityRefsFor(ids, s.entities); len(refs) > 0 {
+			out[unitID] = refs
+		}
 	}
 	return out
+}
+
+// entityRefsFor maps entity ids onto their registry rows, deduped and ordered
+// by entity id — the order the reference's own resolve returns. An id with no
+// registry row is dropped, so a dangling posting never invents a label.
+func entityRefsFor(ids []string, registry map[string]Entity) []EntityRef {
+	if len(ids) == 0 {
+		return nil
+	}
+	ordered := append([]string(nil), ids...)
+	sort.Strings(ordered)
+	refs := make([]EntityRef, 0, len(ordered))
+	seen := make(map[string]bool, len(ordered))
+	for _, id := range ordered {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		entity, ok := registry[id]
+		if !ok {
+			continue
+		}
+		refs = append(refs, EntityRef{ID: id, CanonicalName: entity.CanonicalName})
+	}
+	return refs
 }
 
 // chunksFor assembles the chunk side channel keyed by chunk id for the chunks

@@ -202,3 +202,94 @@ func TestRenderChunkPlaceholdersKeepsUnmatchedToken(t *testing.T) {
 func AttachmentPlaceholderForTest(shortID string) string {
 	return "\u27e6hs-att:" + shortID + "\u27e7"
 }
+
+// dryRunBankServer binds the reporting routes over a seeded store, so the
+// dry-run route resolves a bank's own configuration.
+func dryRunBankServer(t *testing.T, store storage.Store, extractor storage.FactExtraction, bankID string) *http.ServeMux {
+	t.Helper()
+	handlers := NewHandlers(store)
+	handlers.Extraction = extractor
+	mux := http.NewServeMux()
+	handlers.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("bank_id", bankID)
+			handler(w, r)
+		})
+	})
+	return mux
+}
+
+// D8: the body's chunks override stores each chunk verbatim and never calls the
+// model, matching the reference's chunks branch.
+func TestDryRunExtractChunksModeIsVerbatim(t *testing.T) {
+	extractor := &fakeDryRunExtractor{facts: []storage.ExtractedFact{{Text: "model fact"}}}
+	mux := dryRunServer(t, extractor, bank)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/memories/dry-run-extract",
+		`{"content":"Alpha beta gamma.","retain_extraction_mode":"chunks"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeObject(t, rec)
+	facts, _ := body["facts"].([]any)
+	if len(facts) != 1 {
+		t.Fatalf("chunks mode must yield one fact per chunk, got %v", body["facts"])
+	}
+	fact := facts[0].(map[string]any)
+	if fact["text"] != "Alpha beta gamma." || fact["fact_type"] != "world" {
+		t.Fatalf("verbatim fact = %v", fact)
+	}
+	if extractor.calls != 0 {
+		t.Fatalf("chunks mode called the model %d times", extractor.calls)
+	}
+}
+
+// D9: a bank whose configuration selects chunks mode extracts under it, so a
+// dry run previews what the bank would actually do.
+func TestDryRunExtractResolvesBankConfiguredMode(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(ctx, storage.Bank{
+		BankID: bank, Name: "Bank",
+		Config: map[string]any{"retain_extraction_mode": "chunks"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	extractor := &fakeDryRunExtractor{facts: []storage.ExtractedFact{{Text: "model fact"}}}
+	mux := dryRunBankServer(t, store, extractor, bank)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/memories/dry-run-extract",
+		`{"content":"Alpha beta gamma."}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeObject(t, rec)
+	facts, _ := body["facts"].([]any)
+	if len(facts) != 1 || facts[0].(map[string]any)["text"] != "Alpha beta gamma." {
+		t.Fatalf("bank-configured chunks mode was not honored: %v", body["facts"])
+	}
+	if extractor.calls != 0 {
+		t.Fatalf("bank-configured chunks mode called the model %d times", extractor.calls)
+	}
+}
+
+// D10: the bank's retain_mission reaches the extractor, so a dry run previews
+// the bank's own prompt rather than the shipped default.
+func TestDryRunExtractResolvesBankMission(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(ctx, storage.Bank{
+		BankID: bank, Name: "Bank",
+		Config: map[string]any{"retain_mission": "Only record fruit."},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	extractor := &fakeDryRunExtractor{}
+	mux := dryRunBankServer(t, store, extractor, bank)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/memories/dry-run-extract",
+		`{"content":"Apples are red."}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if extractor.options.Mission != "Only record fruit." {
+		t.Fatalf("bank mission did not reach the options: %q", extractor.options.Mission)
+	}
+}

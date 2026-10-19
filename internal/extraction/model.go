@@ -117,21 +117,26 @@ func (e *Extractor) extractModel(ctx context.Context, text string, opts Options,
 		return Result{Extracted: true, Usage: response.Usage}, nil
 	}
 	applyDateInference(facts, opts.ReferenceTime)
-	dropNonEventDates(facts)
+	applyFactKindDates(facts)
 	return Result{Facts: facts, Extracted: true, Usage: response.Usage}, nil
 }
 
-// dropNonEventDates clears the occurred dates of a fact the model explicitly
-// classified as anything but an event. The pipeline keeps
-// occurred_start/occurred_end only for an event; a date on a conversation fact
-// is silently discarded, matching the reference. A model that named no fact kind
-// is left alone, because inference from the text still applies to it.
-func dropNonEventDates(facts []Fact) {
+// applyFactKindDates keeps a fact's occurred dates only where the reference does:
+// on an event. A fact the model classified as anything else loses them, and a
+// model that named no fact kind is read as the reference reads it — the absent
+// value defaults to "conversation" there — so an inferred or echoed date on such
+// a fact is dropped rather than stored. An event that stated a start but no end
+// is a point event, and its end is its start.
+func applyFactKindDates(facts []Fact) {
 	for index := range facts {
 		kind := strings.TrimSpace(facts[index].Kind)
-		if kind != "" && !strings.EqualFold(kind, "event") {
+		if !strings.EqualFold(kind, "event") {
 			facts[index].OccurredStart = ""
 			facts[index].OccurredEnd = ""
+			continue
+		}
+		if facts[index].OccurredEnd == "" {
+			facts[index].OccurredEnd = facts[index].OccurredStart
 		}
 	}
 }

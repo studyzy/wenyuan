@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
@@ -65,6 +67,7 @@ type ImportReport struct {
 	DocumentsSkipped       int
 	FactsImported          int
 	ObservationsImported   int
+	ObservationsSkipped    int
 	MentalModelsImported   int
 	KnowledgePagesImported int
 	DirectivesImported     int
@@ -75,27 +78,65 @@ type ImportReport struct {
 	HistoryRows            int
 	InvalidatedMemories    int
 	Operations             int
+	// MaintenanceQueueRows counts maintenance-queue rows restored: the
+	// graph-relink and entity-prune rows the archive carried, re-pointed onto
+	// the target's own units/entities. A row whose target did not come back is
+	// dropped, so like the reference this counts only what landed.
+	MaintenanceQueueRows int
+	// SkippedDocumentIDs names the archive documents a merge left alone, in
+	// archive order, and RemappedDocumentIDs maps an original id to the fresh
+	// one a new-id import wrote it under. Both are merge-only.
+	SkippedDocumentIDs  []string
+	RemappedDocumentIDs map[string]string
+	// mode is the resolved import mode, so Metadata renders the vocabulary of
+	// the operation that ran rather than one union of both.
+	mode ImportMode
 }
 
 // Metadata renders the report in the reference's result_metadata vocabulary,
 // so a caller polling the operation reads the same keys it would anywhere else.
+//
+// A document merge and a whole-bank restore report different key sets: the
+// reference writes the merge's document/observation counts and the restore's
+// per-component counts, never a union of the two.
 func (r ImportReport) Metadata() map[string]any {
+	if r.mode == ImportRestore {
+		return map[string]any{
+			"target_bank_id":                  r.TargetBankID,
+			"restored_bank_id":                r.TargetBankID,
+			"documents_imported":              r.DocumentsImported,
+			"facts_imported":                  r.FactsImported,
+			"observations_imported":           r.ObservationsImported,
+			"attachments_imported":            r.AttachmentsImported,
+			"operations_imported":             r.Operations,
+			"maintenance_queue_rows_imported": r.MaintenanceQueueRows,
+			"invalidated_memories_imported":   r.InvalidatedMemories,
+			"mental_models_imported":          r.MentalModelsImported,
+			"mental_model_history_imported":   r.MentalModelHistory,
+			"knowledge_pages_imported":        r.KnowledgePagesImported,
+			"directives_imported":             r.DirectivesImported,
+			"webhooks_imported":               r.WebhooksImported,
+			"history_rows_imported":           r.HistoryRows,
+		}
+	}
+	skipped := r.SkippedDocumentIDs
+	if skipped == nil {
+		skipped = []string{}
+	}
+	remapped := r.RemappedDocumentIDs
+	if remapped == nil {
+		remapped = map[string]string{}
+	}
 	return map[string]any{
-		"target_bank_id":                r.TargetBankID,
-		"documents_imported":            r.DocumentsImported,
-		"documents_skipped":             r.DocumentsSkipped,
-		"facts_imported":                r.FactsImported,
-		"observations_imported":         r.ObservationsImported,
-		"mental_models_imported":        r.MentalModelsImported,
-		"knowledge_pages_imported":      r.KnowledgePagesImported,
-		"directives_imported":           r.DirectivesImported,
-		"webhooks_imported":             r.WebhooksImported,
-		"attachments_imported":          r.AttachmentsImported,
-		"attachments_skipped":           r.AttachmentsSkipped,
-		"mental_model_history_imported": r.MentalModelHistory,
-		"history_rows_imported":         r.HistoryRows,
-		"invalidated_memories_imported": r.InvalidatedMemories,
-		"operations_imported":           r.Operations,
+		"documents_imported":       r.DocumentsImported,
+		"documents_skipped":        r.DocumentsSkipped,
+		"facts_imported":           r.FactsImported,
+		"observations_imported":    r.ObservationsImported,
+		"observations_skipped":     r.ObservationsSkipped,
+		"mental_models_imported":   r.MentalModelsImported,
+		"knowledge_pages_imported": r.KnowledgePagesImported,
+		"skipped_document_ids":     skipped,
+		"remapped_document_ids":    remapped,
 	}
 }
 
@@ -106,6 +147,12 @@ func (r ImportReport) Metadata() map[string]any {
 type ImportApplier struct {
 	Store      storage.Store
 	Embeddings storage.EmbeddingGenerator
+	// DiscardDocumentText drops the replayed chunks' text, keeping only their
+	// content hashes. The reference's import reads its process-level default for
+	// this setting (not the bank's own override), so the caller resolves the
+	// deployment value; the zero value keeps the text, so an unwired caller
+	// loses nothing.
+	DiscardDocumentText bool
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }
@@ -124,14 +171,22 @@ func (a ImportApplier) Apply(ctx context.Context, req ImportRequest) (ImportRepo
 	default:
 		return ImportReport{}, fmt.Errorf("Invalid on_conflict '%s'; expected skip|replace|new-id", conflict) //nolint:staticcheck // exact copy text of the reference contract
 	}
-	report := ImportReport{}
-	switch req.Mode {
+	// The mode decides which result_metadata vocabulary the report renders, so
+	// the empty default is resolved here rather than at the call site.
+	mode := req.Mode
+	switch mode {
+	case ImportRestore:
+	case ImportMerge, "":
+		mode = ImportMerge
+	default:
+		return ImportReport{}, fmt.Errorf("Invalid mode '%s' (expected restore|merge)", req.Mode) //nolint:staticcheck // exact copy text of the reference contract
+	}
+	report := ImportReport{mode: mode}
+	switch mode {
 	case ImportRestore:
 		return a.restore(ctx, req, report)
-	case ImportMerge, "":
-		return a.merge(ctx, req, conflict, report)
 	default:
-		return report, fmt.Errorf("Invalid mode '%s' (expected restore|merge)", req.Mode) //nolint:staticcheck // exact copy text of the reference contract
+		return a.merge(ctx, req, conflict, report)
 	}
 }
 
@@ -152,14 +207,14 @@ func (a ImportApplier) restore(ctx context.Context, req ImportRequest, report Im
 		return report, err
 	}
 	if req.Scope.Data {
-		documentIDs, err := a.applyDocuments(ctx, req, target, ConflictSkip, &report)
+		documentIDs, imported, err := a.applyDocuments(ctx, req, target, ConflictSkip, &report)
 		if err != nil {
 			return report, err
 		}
 		if err := a.applyAttachments(ctx, req, target, documentIDs, &report); err != nil {
 			return report, err
 		}
-		if err := a.applyObservations(ctx, req, target, documentIDs, &report); err != nil {
+		if err := a.applyObservations(ctx, req, target, documentIDs, imported, &report); err != nil {
 			return report, err
 		}
 		// Mental models and knowledge pages are a reading of the bank's facts,
@@ -173,6 +228,12 @@ func (a ImportApplier) restore(ctx context.Context, req ImportRequest, report Im
 			return report, err
 		}
 		if err := a.applyInvalidatedMemories(ctx, req, target, &report); err != nil {
+			return report, err
+		}
+		// The maintenance queues name work the replay regenerated, so their rows
+		// are re-pointed onto the target's own units/entities here, after the
+		// documents and entities exist.
+		if err := a.applyMaintenanceQueues(ctx, req, target, documentIDs, imported, &report); err != nil {
 			return report, err
 		}
 	}
@@ -198,14 +259,15 @@ func (a ImportApplier) merge(ctx context.Context, req ImportRequest, conflict st
 	if err := a.Store.EnsureBank(ctx, target); err != nil {
 		return report, err
 	}
-	documentIDs, err := a.applyDocuments(ctx, req, target, conflict, &report)
+	documentIDs, imported, err := a.applyDocuments(ctx, req, target, conflict, &report)
 	if err != nil {
 		return report, err
 	}
-	if err := a.applyAttachments(ctx, req, target, documentIDs, &report); err != nil {
-		return report, err
-	}
-	if err := a.applyObservations(ctx, req, target, documentIDs, &report); err != nil {
+	// A merge is the reference's document import, which folds in the archive's
+	// documents, facts and observations only: it does not restore attachments,
+	// even when the archive carries them. Attachments ride with a whole-bank
+	// restore instead.
+	if err := a.applyObservations(ctx, req, target, documentIDs, imported, &report); err != nil {
 		return report, err
 	}
 	if err := a.applyKnowledgeBase(ctx, req, target, &report); err != nil {
@@ -286,34 +348,45 @@ func (a ImportApplier) createBank(ctx context.Context, req ImportRequest, target
 // document row, its facts re-embedded with the target's model, the entity
 // resolution the reference re-runs, and the causal links between a document's
 // own facts.
-func (a ImportApplier) applyDocuments(ctx context.Context, req ImportRequest, target, conflict string, report *ImportReport) (map[string]string, error) {
+func (a ImportApplier) applyDocuments(ctx context.Context, req ImportRequest, target, conflict string, report *ImportReport) (map[string]string, map[string]bool, error) {
 	documentIDs := make(map[string]string, len(req.Archive.Documents))
+	imported := make(map[string]bool, len(req.Archive.Documents))
 	for _, document := range req.Archive.Documents {
 		documentID := document.ID
 		if _, err := a.Store.GetDocument(ctx, target, documentID); err == nil {
 			switch conflict {
 			case ConflictSkip:
 				report.DocumentsSkipped++
+				report.SkippedDocumentIDs = append(report.SkippedDocumentIDs, document.ID)
 				// A skipped document keeps the identity the target already
-				// holds, which is what its facts are addressed by.
+				// holds, which is what its facts are addressed by. It is not
+				// marked imported: the reference builds its observation
+				// evidence only from the documents it replayed, so an
+				// observation backed by a skipped document is skipped rather
+				// than re-pointed at the target's existing facts.
 				documentIDs[document.ID] = documentID
 				continue
 			case ConflictReplace:
 				if _, err := a.Store.DeleteDocument(ctx, target, documentID); err != nil {
-					return nil, fmt.Errorf("replace document %s: %w", documentID, err)
+					return nil, nil, fmt.Errorf("replace document %s: %w", documentID, err)
 				}
 			case ConflictNewID:
 				documentID = archiveDocumentID(target, document.ID)
+				if report.RemappedDocumentIDs == nil {
+					report.RemappedDocumentIDs = map[string]string{}
+				}
+				report.RemappedDocumentIDs[document.ID] = documentID
 			}
 		}
 		if err := a.writeDocument(ctx, target, documentID, document); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		documentIDs[document.ID] = documentID
+		imported[document.ID] = true
 		report.DocumentsImported++
 		report.FactsImported += len(document.Facts)
 	}
-	return documentIDs, nil
+	return documentIDs, imported, nil
 }
 
 // writeDocument persists one document and its facts.
@@ -334,9 +407,26 @@ func (a ImportApplier) writeDocument(ctx context.Context, target, documentID str
 	}
 	_ = stored
 
+	// The document's chunks are replayed before its facts, because a fact names
+	// the chunk it came from: the archive carries that text, and the target
+	// rebuilds the rows (and the index→identifier mapping) rather than
+	// importing them, exactly as a retain writes them.
+	chunkIDs, err := a.Store.PutDocumentChunks(ctx, target, documentID, documentChunks(document), !a.DiscardDocumentText)
+	if err != nil {
+		return fmt.Errorf("write chunks of %s: %w", documentID, err)
+	}
+
 	units := make([]storage.MemoryUnit, 0, len(document.Facts))
 	for ordinal, fact := range document.Facts {
-		units = append(units, a.unitForFact(target, documentID, document, ordinal, fact))
+		unit := a.unitForFact(target, documentID, document, ordinal, fact)
+		// A fact that names a chunk is addressed by the identifier the row was
+		// just written under. A fact naming an index the archive carried no
+		// chunk for keeps no reference, which is what the store would store for
+		// a retain that produced no chunk for it.
+		if fact.ChunkIndex != nil {
+			unit.ChunkID = chunkIDs[*fact.ChunkIndex]
+		}
+		units = append(units, unit)
 	}
 	if err := a.embedUnits(ctx, units); err != nil {
 		return err
@@ -347,17 +437,36 @@ func (a ImportApplier) writeDocument(ctx context.Context, target, documentID str
 	// edges the producer emits.
 	for index, unit := range units {
 		fact := document.Facts[index]
-		if _, err := a.Store.UpsertUnit(ctx, unit); err != nil {
+		stored, err := a.Store.UpsertUnit(ctx, unit)
+		if err != nil {
 			return fmt.Errorf("write fact %d of %s: %w", index, documentID, err)
 		}
+		// The entities this fact mentions, de-duplicated by identity, so the
+		// co-occurrence cross-product counts each pair once for this unit.
+		mentioned := make([]string, 0, len(fact.Entities))
+		seen := map[string]bool{}
 		for _, name := range fact.Entities {
 			entity, err := a.Store.ResolveEntity(ctx, target, name, storage.EntityKindRegular, true)
 			if err != nil {
 				return fmt.Errorf("resolve entity %q: %w", name, err)
 			}
+			if entity.ID == "" {
+				continue
+			}
 			if err := a.Store.UpsertUnitEntity(ctx, unit.ID, entity.ID); err != nil {
 				return fmt.Errorf("link unit %s to entity %s: %w", unit.ID, entity.ID, err)
 			}
+			if !seen[entity.ID] {
+				seen[entity.ID] = true
+				mentioned = append(mentioned, entity.ID)
+			}
+		}
+		// Entity co-occurrences are derived data the archive does not carry, so
+		// the replay rebuilds them here: without this the entity graph of an
+		// imported bank has no edges, and the resolution weighting has no
+		// neighbour counts.
+		if err := a.Store.UpsertUnitCooccurrences(ctx, target, mentioned, storage.UnitSeenAt(stored)); err != nil {
+			return fmt.Errorf("write co-occurrences of %s: %w", unit.ID, err)
 		}
 	}
 	for index, unit := range units {
@@ -402,23 +511,33 @@ func (a ImportApplier) unitForFact(target, documentID string, document hindsight
 	if unit.Metadata == nil {
 		unit.Metadata = map[string]any{}
 	}
-	// A fact's chunk id is deliberately not carried: the archive's chunk rows
-	// are informational, the store's write path is what creates chunk rows, and
-	// a unit naming a chunk this import did not write would violate the chunk
-	// foreign key. The fact's text and its document are what recall reads.
+	// The chunk reference is the caller's to set: it only means anything once
+	// the document's chunks have been written, and the identifier comes from
+	// that write.
 	unit.ObservationScopes = factObservationScopes(fact)
 	return unit
+}
+
+// documentChunks renders the archive's chunks in index order, which is the
+// order the rows are written in.
+func documentChunks(document hindsightarchive.Document) []storage.DocumentChunk {
+	chunks := make([]storage.DocumentChunk, 0, len(document.Chunks))
+	for _, chunk := range document.Chunks {
+		chunks = append(chunks, storage.DocumentChunk{ChunkIndex: chunk.ChunkIndex, ChunkText: chunk.ChunkText})
+	}
+	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ChunkIndex < chunks[j].ChunkIndex })
+	return chunks
 }
 
 // applyObservations writes the archive's observations, rewriting each one's
 // evidence onto the facts this import actually inserted. An observation whose
 // sources do not all resolve is skipped rather than stored with dangling
 // evidence, which is the failure this rewrite exists to prevent.
-func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest, target string, documentIDs map[string]string, report *ImportReport) error {
+func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest, target string, documentIDs map[string]string, imported map[string]bool, report *ImportReport) error {
 	if len(req.Archive.Observations) == 0 {
 		return nil
 	}
-	locations := unitLocations(target, req.Archive, documentIDs)
+	locations := unitLocations(target, req.Archive, documentIDs, imported)
 	units := make([]storage.MemoryUnit, 0, len(req.Archive.Observations))
 	for index, observation := range req.Archive.Observations {
 		sources := make([]string, 0, len(observation.Sources))
@@ -431,6 +550,10 @@ func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest,
 			sources = append(sources, unitID)
 		}
 		if len(sources) == 0 {
+			// The reference counts an observation it cannot resolve rather
+			// than dropping it silently, so a caller sees how many were left
+			// behind by a document that did not come across.
+			report.ObservationsSkipped++
 			continue
 		}
 		unit := storage.MemoryUnit{
@@ -463,13 +586,18 @@ func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest,
 	return nil
 }
 
-// unitLocations maps every (document, ordinal) in the archive to the unit id
-// this import assigned it, which is what an observation's rewritten evidence
+// unitLocations maps every (document, ordinal) the import actually replayed to
+// the unit id it assigned it, which is what an observation's rewritten evidence
 // resolves through. The document's *imported* id is used, so a document that
-// arrived under a new identity still resolves its own facts.
-func unitLocations(target string, archive *hindsightarchive.Archive, documentIDs map[string]string) map[string]string {
+// arrived under a new identity still resolves its own facts; a document that
+// was not imported (a merge skip) contributes no mapping, so an observation
+// citing it is skipped rather than re-pointed at the target's own facts.
+func unitLocations(target string, archive *hindsightarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
 	locations := map[string]string{}
 	for _, document := range archive.Documents {
+		if imported != nil && !imported[document.ID] {
+			continue
+		}
 		documentID, ok := documentIDs[document.ID]
 		if !ok {
 			documentID = document.ID
@@ -536,38 +664,69 @@ func (a ImportApplier) applyKnowledgeBase(ctx context.Context, req ImportRequest
 	return nil
 }
 
-// applyOperations replays the archive's finished operations into the target's
-// own log. The identifier is left to the store, so the target's sequence stays
-// ahead and the log reads as the target's own.
+// applyOperations replays the archive's operations log into the target's own
+// log, minus anything still in flight at export time.
+//
+// The archive carries every row -- the reference dumps the table with
+// `SELECT *`, live rows included -- and the in-flight ones are dropped here
+// rather than at export, because `async_operations` doubles as the task queue:
+// a restored `pending` row is work the target's worker would actually run,
+// re-firing the source bank's webhooks and re-running its retains against a
+// bank that never asked for it. The reference drops them at this same point
+// (`engine/transfer/importer.py:775-793`).
+//
+// The member names are the table's columns, which is what the archive holds.
 func (a ImportApplier) applyOperations(ctx context.Context, req ImportRequest, target string, report *ImportReport) error {
 	for _, row := range req.Archive.Data[hindsightarchive.AsyncOperationsTable] {
 		status := storage.OperationStatus(rowString(row, "status"))
 		if !status.Terminal() {
-			// A row that is not finished would make the target's worker pick up
-			// work belonging to another instance.
 			continue
 		}
 		operation := storage.Operation{
+			OperationID:      rowString(row, "operation_id"),
 			BankID:           target,
 			OperationType:    rowString(row, "operation_type"),
 			Status:           status,
-			Error:            rowString(row, "error"),
+			Error:            rowString(row, "error_message"),
 			CreatedAt:        rowTime(row, "created_at", a.now()),
 			UpdatedAt:        rowTime(row, "updated_at", a.now()),
 			CompletedAt:      rowTimePtr(row, "completed_at"),
 			NextRetryAt:      rowTimePtr(row, "next_retry_at"),
 			RetryCount:       rowInt(row, "retry_count"),
 			SerializationKey: rowString(row, "serialization_key"),
-			IsParent:         rowBool(row, "is_parent"),
-			ResultMetadata:   mapValue(row, "result_metadata"),
-			Payload:          mapValue(row, "payload"),
+			WorkerID:         rowString(row, "worker_id"),
+			ClaimedAt:        rowTimePtr(row, "claimed_at"),
+			ResultMetadata:   jsonbRowMap(row, "result_metadata"),
+			Payload:          jsonbRowMap(row, "task_payload"),
 		}
-		if _, err := a.Store.PutOperation(ctx, operation); err != nil {
+		// The archived row carries when the operation ran; the import replays it
+		// with those stamps rather than restamping the restore time, which is what
+		// the reference's column-for-column insert does.
+		if _, err := a.Store.RestoreOperation(ctx, operation); err != nil {
 			return fmt.Errorf("write operation: %w", err)
 		}
 		report.Operations++
 	}
 	return nil
+}
+
+// jsonbRowMap reads a jsonb column from an archived row, accepting both
+// encodings the archive may hold: the serialized JSON text the reference's dump
+// writes (`bank_rows_json_encoding: "serialized"`) and an already-decoded
+// object, which an archive produced by this service before that encoding was
+// pinned may carry.
+func jsonbRowMap(row map[string]any, key string) map[string]any {
+	if text, isText := row[key].(string); isText {
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			return nil
+		}
+		return decoded
+	}
+	return mapValue(row, key)
 }
 
 // applyInvalidatedMemories restores the curation archive into the backend that
@@ -603,6 +762,80 @@ func (a ImportApplier) applyInvalidatedMemories(ctx context.Context, req ImportR
 		_ = inserted
 	}
 	return nil
+}
+
+// applyMaintenanceQueues restores the two maintenance work queues.
+//
+// Both queues name work keyed by ids the import regenerates, so each row is
+// re-pointed at the target's own rows and a row whose target did not come back
+// is dropped: a graph row is mapped through the unit-id map the replay built,
+// and an entity row is re-resolved by its canonical name. The count is what
+// landed, which is what the reference reports as
+// maintenance_queue_rows_imported.
+func (a ImportApplier) applyMaintenanceQueues(ctx context.Context, req ImportRequest, target string, documentIDs map[string]string, imported map[string]bool, report *ImportReport) error {
+	queues, ok := a.Store.(maintenanceQueueStore)
+	if !ok {
+		return nil
+	}
+	units := archiveUnitMap(target, req.Archive, documentIDs, imported)
+
+	graphRows := make([]storage.MaintenanceQueueRow, 0)
+	for _, row := range req.Archive.Data[hindsightarchive.GraphMaintenanceQueueTable] {
+		mapped := units[rowString(row, "unit_id")]
+		if mapped == "" {
+			continue
+		}
+		graphRows = append(graphRows, storage.MaintenanceQueueRow{
+			ID:         mapped,
+			EnqueuedAt: rowTime(row, "enqueued_at", a.now()),
+		})
+	}
+	graphRestored, err := queues.ImportGraphMaintenance(ctx, target, graphRows)
+	if err != nil {
+		return fmt.Errorf("write graph maintenance queue: %w", err)
+	}
+	report.MaintenanceQueueRows += graphRestored
+
+	entityRows := make([]storage.MaintenanceQueueRow, 0)
+	for _, row := range req.Archive.Data[hindsightarchive.EntityMaintenanceQueueTable] {
+		name := rowString(row, "canonical_name")
+		if name == "" {
+			continue
+		}
+		entityRows = append(entityRows, storage.MaintenanceQueueRow{
+			CanonicalName: name,
+			EnqueuedAt:    rowTime(row, "enqueued_at", a.now()),
+		})
+	}
+	entityRestored, err := queues.ImportEntityMaintenance(ctx, target, entityRows)
+	if err != nil {
+		return fmt.Errorf("write entity maintenance queue: %w", err)
+	}
+	report.MaintenanceQueueRows += entityRestored
+	return nil
+}
+
+// archiveUnitMap maps every archived fact's source unit id to the unit id this
+// import assigned it, for the documents the import replayed. It is what lets a
+// maintenance-queue row — which names a unit by its source id — be re-pointed
+// at the target's own unit; a document that was not imported contributes no
+// mapping, so a row naming one of its units is dropped rather than admitted
+// against an id the target does not hold.
+func archiveUnitMap(target string, archive *hindsightarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
+	out := map[string]string{}
+	for _, document := range archive.Documents {
+		if !imported[document.ID] {
+			continue
+		}
+		targetDoc := documentIDs[document.ID]
+		for ordinal, fact := range document.Facts {
+			if fact.SourceID == "" {
+				continue
+			}
+			out[fact.SourceID] = archiveUnitID(target, targetDoc, ordinal)
+		}
+	}
+	return out
 }
 
 // applyMentalModelHistory replays each carried refresh log onto the model it
@@ -718,9 +951,39 @@ func rowIntPtr(row map[string]any, key string) *int {
 	return &value
 }
 
-// rowValue returns a field as it stands, for a column that carries free-form
-// JSON.
-func rowValue(row map[string]any, key string) any { return row[key] }
+// rowValue returns a field as the JSON value it carries, for a column that
+// holds free-form JSON.
+func rowValue(row map[string]any, key string) any { return archiveJSONValue(row[key]) }
+
+// archiveJSONValue reads one archive value that the producer may have written
+// in either JSON encoding.
+//
+// A row this service wrote holds a decoded object or array where the column is
+// jsonb. The reference writes the same column as its JSON *text* and declares
+// `bank_rows_json_encoding: "serialized"` in the manifest, so an archive it
+// produced carries `"{\"mode\": \"delta\"}"` where ours carries the object. Both
+// have to read the same, or every jsonb field of an imported reference archive
+// silently falls back to its default — which is what a trigger, a bank config or
+// a history payload losing its contents looks like.
+//
+// Only a string that opens as a JSON object or array is parsed, so a text column
+// that happens to hold braces keeps its literal value rather than being
+// reinterpreted as structure.
+func archiveJSONValue(value any) any {
+	text, isText := value.(string)
+	if !isText {
+		return value
+	}
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return value
+	}
+	return decoded
+}
 
 // mapString reads a string member of a decoded object.
 func mapString(object map[string]any, key string) string {
@@ -728,10 +991,12 @@ func mapString(object map[string]any, key string) string {
 	return text
 }
 
-// mapValue reads an object member of a decoded object, reporting nil when it is
-// absent or not an object.
+// mapValue reads an object member of an archive row or of an already-decoded
+// object, reporting nil when it is absent or not an object. The member may be
+// written in either JSON encoding, which is what an audit row's request or an
+// operation's payload arrives as.
 func mapValue(object map[string]any, key string) map[string]any {
-	nested, _ := object[key].(map[string]any)
+	nested, _ := archiveJSONValue(object[key]).(map[string]any)
 	return nested
 }
 
@@ -1071,7 +1336,7 @@ func rowStrings(row map[string]any, key string) []string {
 	if !ok {
 		return nil
 	}
-	switch typed := value.(type) {
+	switch typed := archiveJSONValue(value).(type) {
 	case []string:
 		return typed
 	case []any:
@@ -1095,7 +1360,7 @@ func rowMap(row map[string]any, key string) (map[string]any, bool) {
 	if !ok {
 		return nil, false
 	}
-	object, ok := value.(map[string]any)
+	object, ok := archiveJSONValue(value).(map[string]any)
 	return object, ok
 }
 
@@ -1110,7 +1375,7 @@ func rowIntMap(row map[string]any, key string) map[string]int {
 	if typed, ok := value.(map[string]int); ok {
 		return typed
 	}
-	object, ok := value.(map[string]any)
+	object, ok := archiveJSONValue(value).(map[string]any)
 	if !ok {
 		return nil
 	}

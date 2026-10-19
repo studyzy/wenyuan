@@ -278,6 +278,7 @@ func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (st
 		PoolSlowAcquireThreshold: cfg.DBTuning.PoolSlowAcquireThreshold,
 		AcquireWarnThreshold:     cfg.DBTuning.AcquireWarnThreshold,
 		TextSearchExtension:      cfg.TextSearchExtension,
+		TextSearchNativeLanguage: cfg.TextSearchExtensionNativeLanguage,
 		RunMigrations:            cfg.RunMigrationsOnStartup,
 		BankInfoCacheTTL:         cfg.BankInfoCacheTTL,
 		BankInfoCacheMaxEntries:  cfg.ConsolidationTuning.BankInfoCacheMaxEntries,
@@ -523,4 +524,18 @@ func (p storePinger) PoolStats() (monitoring.PoolStats, bool) {
 		return monitoring.PoolStats{}, false
 	}
 	return monitoring.PoolStats{InUse: stats.InUse, Max: stats.Max, Idle: stats.Idle}, true
+}
+
+// PoolWaiting forwards the store's pooled-acquire waiter count. The reference
+// gathers that count from its pool instrumentation rather than from the
+// backend's utilization snapshot, so it reaches the readiness payload through
+// its own capability and a store with no counted pool omits the key.
+func (p storePinger) PoolWaiting() (int, bool) {
+	reporter, ok := p.store.(interface {
+		PoolWaiting() (int, bool)
+	})
+	if !ok {
+		return 0, false
+	}
+	return reporter.PoolWaiting()
 }

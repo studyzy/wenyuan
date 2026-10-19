@@ -251,6 +251,51 @@ func jsonColumn(value map[string]any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+// DocumentMetadata returns the value a document serves as its
+// `document_metadata`: the `metadata` member of its retain_params, as it
+// stands. The document has no metadata column, so that member is where the
+// value lives, written there by the retain that received it; a document that
+// never carried metadata has no member and reads as nil.
+func DocumentMetadata(retainParams map[string]any) any {
+	return DocumentMetadataValue(retainParams["metadata"])
+}
+
+// DocumentMetadataValue returns the value to serve for a document's metadata
+// member, or nil when it reads as absent.
+//
+// The reference serves the member through a truth test (`metadata or None`)
+// rather than a type test, so a value that is present but empty — null, false,
+// zero, "", {} or [] — is reported as no metadata, while a string, array or
+// number that is present is served as it stands even though it is not an
+// object.
+func DocumentMetadataValue(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case bool:
+		if !typed {
+			return nil
+		}
+	case string:
+		if typed == "" {
+			return nil
+		}
+	case float64:
+		if typed == 0 {
+			return nil
+		}
+	case []any:
+		if len(typed) == 0 {
+			return nil
+		}
+	case map[string]any:
+		if len(typed) == 0 {
+			return nil
+		}
+	}
+	return value
+}
+
 // decodePostgresTextArray parses a text[] value that arrived as its literal
 // form. The driver returns the array textually for a column selected through a
 // plain query, so it is decoded here rather than left to a type the scanner
@@ -269,12 +314,31 @@ func decodePostgresTextArray(raw []byte) []string {
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		part = strings.Trim(part, `"`)
+		// Only the quotes that fence the element come off. Trimming every quote
+		// would also eat one an element literally carries — the tag
+		// `say "hi"` arrives as `"say ""hi"""`, with the inner quotes doubled —
+		// and turn it into a different tag. PostgreSQL folds the doubling as it
+		// reads the literal or casts the array to text itself, so both dialect
+		// forms decode to the element as stored.
+		part = trimArrayQuotes(part)
 		if part != "" {
 			out = append(out, part)
 		}
 	}
 	return out
+}
+
+// trimArrayQuotes removes the double quotes fencing an array element and folds
+// each doubled quote inside it back into one.
+func trimArrayQuotes(element string) string {
+	if !strings.HasPrefix(element, `"`) {
+		return element
+	}
+	element = element[1:]
+	if !strings.HasSuffix(element, `"`) {
+		return `"` + element
+	}
+	return strings.ReplaceAll(element[:len(element)-1], `""`, `"`)
 }
 
 // splitArrayElements splits on commas that are not inside a quoted element, so

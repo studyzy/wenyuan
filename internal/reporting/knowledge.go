@@ -8,6 +8,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
+	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -28,11 +29,16 @@ const bankConfigEnableTextSearch = "enable_text_search"
 
 // KnowledgeTree returns the bank's knowledge tree, nested by parent.
 func (h *Handlers) KnowledgeTree(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	// The query parameters are validated before the bank is looked up, because
+	// in the reference `tag_filter` is a `Depends` (api/http.py:7314): the
+	// framework resolves the dependency — and reports a bad `tags_match` or
+	// `tag_groups` as a 422 — before the handler body runs, so a malformed
+	// filter on an unknown bank is the 422, not the 404.
+	filter, ok := knowledgeTagFilterFromRequest(w, r)
 	if !ok {
 		return
 	}
-	filter, ok := knowledgeTagFilterFromRequest(w, r)
+	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
 	}
@@ -68,7 +74,9 @@ func (h *Handlers) KnowledgeTree(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		stale := h.Store.IsStale(r.Context(), bankID, model)
+		// The tree reports the reference's batch staleness, which deliberately
+		// skips the retraction check the single-model read applies.
+		stale := h.Store.IsStaleBatch(r.Context(), bankID, model)
 		projected[i].IsStale = &stale
 	}
 	httpx.WriteJSON(w, http.StatusOK, KnowledgeTreeResponse{
@@ -365,32 +373,37 @@ func (h *Handlers) UpdateKnowledgeNode(w http.ResponseWriter, r *http.Request) {
 		parent := derefString(newParent)
 		patch.ParentID = &parent
 	}
-	node, err = h.Store.UpdateKnowledgeNode(r.Context(), bankID, nodeID, patch)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	model, hasModel := h.knowledgeModel(r.Context(), bankID, node)
-	if hasModel && pageOptions {
+	// The node row and the model backing it commit as one change: the reference
+	// runs the whole patch in one transaction, so a rename cannot survive the
+	// option update that failed after it, and no reader sees the pair disagree.
+	//
+	// The model is read here only to merge a stated trigger over the page's
+	// current one; the storage write re-reads it inside the transaction.
+	current, pageHasModel := h.knowledgeModel(r.Context(), bankID, node)
+	var modelPatch *storage.MentalModelPatch
+	if pageHasModel && pageOptions {
 		// Tags live on the backing model too, so a page's tags are one value
 		// across the tree, search and read surfaces rather than two that drift.
-		modelPatch := storage.MentalModelPatch{
+		pending := storage.MentalModelPatch{
 			SourceQuery: body.SourceQuery, Tags: body.Tags, MaxTokens: body.MaxTokens,
 		}
 		if triggerSupplied {
 			// The trigger patches: the members the client stated are updated and
 			// the rest keep the page's current values, so moving a page onto a
 			// schedule does not reset how it refreshes.
-			merged := mentalmodels.MergeTrigger(trigger, model.Trigger)
-			modelPatch.Trigger = &merged
+			merged := mentalmodels.MergeTrigger(trigger, current.Trigger)
+			pending.Trigger = &merged
 		}
-		updated, err := h.Store.UpdateMentalModel(r.Context(), bankID, model.ID, modelPatch)
-		if err != nil {
-			httpx.WriteErrorFor(w, r, asHTTPError(err))
-			return
-		}
-		model = updated
+		modelPatch = &pending
 	}
+	node, err = h.Store.UpdateKnowledgeNodeWithModel(r.Context(), bankID, nodeID, patch, modelPatch)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	// A rename carries the name onto the backing model, so the model is read
+	// after the patch rather than rendered from the pre-patch copy.
+	model, hasModel := h.knowledgeModel(r.Context(), bankID, node)
 	// A new source query means the content is stale, so the page is rebuilt —
 	// scheduled only once the patch has committed, so a refresh is never queued
 	// for a change that rolled back.
@@ -426,14 +439,16 @@ func (h *Handlers) DeleteKnowledgeNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // Version reports the API version under the versioned namespace. It is the
-// same payload as the root version endpoint.
+// same payload as the root version endpoint, so it renders through the same
+// body: the feature map's members are emitted in the reference's declaration
+// order rather than in Go's map order.
 func (h *Handlers) Version(w http.ResponseWriter, r *http.Request) {
 	features := h.Features
 	if features == nil {
 		features = map[string]bool{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"api_version": h.APIVersion,
-		"features":    features,
+	httpx.WriteJSON(w, http.StatusOK, monitoring.VersionBody{
+		APIVersion: h.APIVersion,
+		Features:   features,
 	})
 }

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
 )
 
@@ -69,5 +71,40 @@ func TestVersionFeatureMapNeverNil(t *testing.T) {
 	}
 	if _, ok := raw["features"]; !ok {
 		t.Fatalf("features must always be present: %s", rec.Body.String())
+	}
+}
+
+// The features object is serialised in the reference's declaration order, not
+// the alphabetical order a Go map would produce. The key set is the same; only
+// the JSON object order is contracted.
+func TestVersionFeaturesDeclarationOrder(t *testing.T) {
+	h := &VersionHandler{APIVersion: httpx.APIVersion, Features: config.FromEnv(func(string) (string, bool) { return "", false }).FeatureMap()}
+	rec := httptest.NewRecorder()
+	h.Serve(rec, httptest.NewRequest(http.MethodGet, httpx.PathVersion, nil))
+	body := rec.Body.String()
+
+	if !strings.HasPrefix(body, `{"api_version":`) {
+		t.Fatalf("api_version must come first: %s", body)
+	}
+	last := -1
+	for _, key := range config.FeatureKeys {
+		at := strings.Index(body, `"`+key+`":`)
+		if at < 0 {
+			t.Fatalf("feature %q missing from body: %s", key, body)
+		}
+		if at < last {
+			t.Fatalf("feature %q is out of declaration order: %s", key, body)
+		}
+		last = at
+	}
+	// The key set stays the reference's eleven flags.
+	var decoded struct {
+		Features map[string]bool `json:"features"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Features) != len(config.FeatureKeys) {
+		t.Fatalf("features has %d keys, want %d: %v", len(decoded.Features), len(config.FeatureKeys), decoded.Features)
 	}
 }

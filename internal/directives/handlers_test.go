@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -241,12 +242,23 @@ func TestDirectiveUnknownBank(t *testing.T) {
 	}
 }
 
-// A missing directive identifier answers not-found rather than an empty result.
+// A missing directive identifier is not a 404: the id is bound to a `uuid`
+// column, so a segment that is not a UUID fails while the driver binds the
+// argument and the reference reports that failure as a 500. Only a well-formed
+// UUID that no row carries reaches the handler's own not-found.
 func TestDirectiveMissingMember(t *testing.T) {
 	mux, _ := newServer(t)
 	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/directives/does-not-exist", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("non-uuid directive id: %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid UUID 'does-not-exist'") {
+		t.Fatalf("body = %s, want the driver's invalid-UUID message", rec.Body.String())
+	}
+
+	rec = send(mux, http.MethodGet, "/v1/default/banks/b1/directives/00000000-0000-0000-0000-000000000000", "")
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("missing directive: %d, want 404", rec.Code)
+		t.Fatalf("absent uuid: %d, want 404", rec.Code)
 	}
 }
 
@@ -337,5 +349,110 @@ func TestDirectiveUpdateWhitespaceBody(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `"type":"missing"`) {
 		t.Fatalf("a whitespace body was reported as absent: %s", rec.Body.String())
+	}
+}
+
+// The query selectors follow the reference's framework: a boolean parameter
+// accepts its word list case-insensitively, a repeated scalar parameter takes
+// its last occurrence, and a parameter present with no value is still validated
+// rather than treated as absent.
+func TestDirectiveListQuerySemantics(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	send(mux, http.MethodPost, base, `{"name":"a","content":"c"}`)
+	send(mux, http.MethodPost, base, `{"name":"b","content":"c2"}`)
+
+	// The framework's boolean word list is accepted where strconv's is not.
+	for _, value := range []string{"yes", "no", "on", "off", "y", "n", "TRUE", "False"} {
+		if rec := send(mux, http.MethodGet, base+"?active_only="+value, ""); rec.Code != http.StatusOK {
+			t.Fatalf("active_only=%s: %d, want 200", value, rec.Code)
+		}
+	}
+	// A word outside the list is the framework's bool_parsing item.
+	rec := send(mux, http.MethodGet, base+"?active_only=maybe", "")
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"type":"bool_parsing"`) {
+		t.Fatalf("active_only=maybe: %d %s", rec.Code, rec.Body.String())
+	}
+	// A parameter present with no value is validated, not defaulted.
+	for _, query := range []string{"active_only=", "limit=", "offset=", "tags_match="} {
+		if rec := send(mux, http.MethodGet, base+"?"+query, ""); rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d, want 422", query, rec.Code)
+		}
+	}
+	// A repeated scalar parameter takes its last occurrence.
+	rec = send(mux, http.MethodGet, base+"?limit=1&limit=2", "")
+	var list ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Limit != 2 {
+		t.Fatalf("repeated limit = %d, want the last occurrence 2", list.Limit)
+	}
+	rec = send(mux, http.MethodGet, base+"?offset=0&offset=1", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || list.Offset != 1 {
+		t.Fatalf("repeated offset: %d, offset = %d, want 200 and the last occurrence 1", rec.Code, list.Offset)
+	}
+	// The framework's integer coercion reads the raw string and reports it.
+	rec = send(mux, http.MethodGet, base+"?limit=%20abc", "")
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"input":" abc"`) {
+		t.Fatalf("limit= abc: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An integer too large for int64 is not a validation failure: the reference
+// parses it losslessly and the storage layer that cannot carry it fails, which
+// the caller sees as a 500. A negative value of the same size breaks the lower
+// bound instead and stays a validation item, and so does a limit, which has an
+// upper bound.
+func TestDirectiveListIntegerTooLargeForInt64(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+	send(mux, http.MethodPost, base, `{"name":"a","content":"c"}`)
+
+	rec := send(mux, http.MethodGet, base+"?offset=99999999999999999999", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("huge offset: %d %s, want 500", rec.Code, rec.Body.String())
+	}
+	rec = send(mux, http.MethodGet, base+"?offset=-99999999999999999999", "")
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"type":"greater_than_equal"`) {
+		t.Fatalf("huge negative offset: %d %s, want 422 greater_than_equal", rec.Code, rec.Body.String())
+	}
+	rec = send(mux, http.MethodGet, base+"?limit=99999999999999999999", "")
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"type":"less_than_equal"`) {
+		t.Fatalf("huge limit: %d %s, want 422 less_than_equal", rec.Code, rec.Body.String())
+	}
+}
+
+// A body with several rejected fields reports every one of them, in the model's
+// declaration order, not only the first the decoder stopped on.
+func TestDirectiveCreateAccumulatesFieldErrors(t *testing.T) {
+	mux, _ := newServer(t)
+	rec := send(mux, http.MethodPost, "/v1/default/banks/b1/directives",
+		`{"name":123,"content":4,"priority":"z","tags":[1,2]}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var failure struct {
+		Detail []struct {
+			Loc []any `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]any{
+		{"body", "name"}, {"body", "content"}, {"body", "priority"},
+		{"body", "tags", float64(0)}, {"body", "tags", float64(1)},
+	}
+	if len(failure.Detail) != len(want) {
+		t.Fatalf("items = %+v, want %d", failure.Detail, len(want))
+	}
+	for i := range want {
+		if !reflect.DeepEqual(failure.Detail[i].Loc, want[i]) {
+			t.Fatalf("item %d loc = %v, want %v", i, failure.Detail[i].Loc, want[i])
+		}
 	}
 }

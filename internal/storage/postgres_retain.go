@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -238,7 +239,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 				mentioned = append(mentioned, resolved.ID)
 			}
 		}
-		if err := s.recordUnitCooccurrences(ctx, req.BankID, mentioned); err != nil {
+		if err := s.UpsertUnitCooccurrences(ctx, req.BankID, mentioned, UnitSeenAt(stored)); err != nil {
 			return nil, err
 		}
 		units = append(units, stored.ID)
@@ -420,6 +421,81 @@ func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, conten
 	return bySegment, nil
 }
 
+// PutDocumentChunks upserts one document's chunks in a single statement and
+// reports the identifier each index resolves to.
+//
+// The upsert is guarded on the conflicting row belonging to the same bank:
+// chunks is keyed on the identifier alone, so an identifier that collides with
+// another bank's row (possible for rows written before the chunk-id escaping)
+// must refuse the write rather than overwrite that bank's text.
+func (s *PostgresStore) PutDocumentChunks(ctx context.Context, bankID, documentID string, chunks []DocumentChunk, storeText bool) (map[int]string, error) {
+	if len(chunks) == 0 {
+		return map[int]string{}, nil
+	}
+	ids := make([]string, 0, len(chunks))
+	documentIDs := make([]string, 0, len(chunks))
+	bankIDs := make([]string, 0, len(chunks))
+	texts := make([]string, 0, len(chunks))
+	indices := make([]int32, 0, len(chunks))
+	hashes := make([]string, 0, len(chunks))
+	byIndex := make(map[int]string, len(chunks))
+	for _, chunk := range chunks {
+		id := BuildChunkID(bankID, documentID, chunk.ChunkIndex)
+		ids = append(ids, id)
+		documentIDs = append(documentIDs, documentID)
+		bankIDs = append(bankIDs, bankID)
+		text := chunk.ChunkText
+		if !storeText {
+			text = ""
+		}
+		texts = append(texts, text)
+		indices = append(indices, int32(chunk.ChunkIndex))
+		// The hash comes from the real text either way, so a deployment that
+		// keeps no text still recognises a chunk it has already stored.
+		hashes = append(hashes, ContentHash(chunk.ChunkText))
+		byIndex[chunk.ChunkIndex] = id
+	}
+
+	table := quoteIdent(s.schema) + `.chunks`
+	rows, err := s.db.QueryContext(ctx,
+		`INSERT INTO `+table+` (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
+		 SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::integer[], $5::text[], $6::text[])
+		 ON CONFLICT (chunk_id) DO UPDATE SET
+		     chunk_text = EXCLUDED.chunk_text,
+		     chunk_index = EXCLUDED.chunk_index,
+		     content_hash = EXCLUDED.content_hash
+		 WHERE `+table+`.bank_id = EXCLUDED.bank_id
+		 RETURNING chunk_id`,
+		ids, bankIDs, documentIDs, indices, texts, hashes)
+	if err != nil {
+		return nil, err
+	}
+	written := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		written[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+	if len(written) != len(ids) {
+		skipped := make([]string, 0, len(ids)-len(written))
+		for _, id := range ids {
+			if !written[id] {
+				skipped = append(skipped, id)
+			}
+		}
+		return nil, fmt.Errorf("chunk id(s) %v already belong to another bank", skipped)
+	}
+	return byIndex, nil
+}
+
 // chunkIndexAttempts bounds how far one chunk steps past a taken index before
 // giving up, so a table that is somehow full of the same document cannot spin.
 const chunkIndexAttempts = 50
@@ -490,7 +566,7 @@ func (s *PostgresStore) GetDocument(ctx context.Context, bankID, docID string) (
 	doc.Tags = decodePostgresTextArray(tagsRaw)
 	// document_metadata is sourced from retain_params.metadata, the same key the
 	// listing serves it on, so the detail read agrees with the list read.
-	doc.Metadata = documentMetadata(doc.RetainParams)
+	doc.Metadata = DocumentMetadata(doc.RetainParams)
 	return doc, nil
 }
 
@@ -525,25 +601,34 @@ func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string,
 	if params == nil {
 		params = map[string]any{}
 	}
-	if len(doc.Metadata) > 0 {
+	if metadata := DocumentMetadataValue(doc.Metadata); metadata != nil {
 		params = copyAnyMap(params)
-		params["metadata"] = doc.Metadata
+		params["metadata"] = metadata
 	}
 	retainParams, err := jsonColumn(params)
 	if err != nil {
 		return Document{}, err
 	}
 	tags := normalizeTags(doc.Tags)
+	// A caller that carries the source's creation time (an archive import) keeps
+	// it, so the restored document shows when it was written rather than when it
+	// was copied; a zero value falls back to now(), which is what an ordinary
+	// write means. The conflict path below leaves created_at untouched, so a
+	// rewrite never re-stamps an existing row.
+	var createdArg any
+	if !doc.CreatedAt.IsZero() {
+		createdArg = doc.CreatedAt
+	}
 	query := `INSERT INTO ` + quoteIdent(s.schema) + `.documents
 	          (id, bank_id, original_text, content_hash, retain_params, tags, created_at, updated_at)
-	          VALUES ($1,$2,$3,$4,$5::jsonb,$6, now(), now())
+	          VALUES ($1,$2,$3,$4,$5::jsonb,$6, COALESCE($7, now()), now())
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
 	              original_text = $3, content_hash = $4,
 	              retain_params = $5::jsonb, tags = $6, updated_at = now()
 	          RETURNING id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
 	                    COALESCE(retain_params, '{}'::jsonb),
 	                    COALESCE(tags, '{}'), created_at, updated_at`
-	args := []any{docID, bankID, originalText, doc.ContentHash, retainParams, tags}
+	args := []any{docID, bankID, originalText, doc.ContentHash, retainParams, tags, createdArg}
 	if expectHash != "" {
 		query = `UPDATE ` + quoteIdent(s.schema) + `.documents
 		         SET original_text = $3, content_hash = $4,
@@ -552,7 +637,7 @@ func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string,
 		         RETURNING id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
 		                   COALESCE(retain_params, '{}'::jsonb),
 		                   COALESCE(tags, '{}'), created_at, updated_at`
-		args = append(args, expectHash)
+		args = []any{docID, bankID, originalText, doc.ContentHash, retainParams, tags, expectHash}
 	}
 	var out Document
 	var retainRaw, tagsRaw []byte
@@ -567,7 +652,7 @@ func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string,
 		return Document{}, err
 	}
 	out.RetainParams = decodeJSONMap(retainRaw)
-	out.Metadata = documentMetadata(out.RetainParams)
+	out.Metadata = DocumentMetadata(out.RetainParams)
 	out.Tags = decodePostgresTextArray(tagsRaw)
 	return out, nil
 }
@@ -825,7 +910,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	            occurred_end, mentioned_at, document_id, chunk_id, tags, embedding,
 	            source_memory_ids, observation_scopes, consolidated_at, consolidation_failed_at, attachment_ids,
 	            text_signals)
-	           VALUES ($1,$2,$3,` + searchVectorExpr("$3", "$4", "$20") + `,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14::vector,
+	           VALUES ($1,$2,$3,` + s.searchVectorExpr("$3", "$4", "$20") + `,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14::vector,
 	                   $15::uuid[],$16::jsonb,$17,$18,$19,$20)
 	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
 	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
@@ -980,7 +1065,56 @@ func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID stri
 			return err
 		}
 	}
-	return nil
+	// The set the unit now names witnesses its pairs, which is what the
+	// reference records when an edit re-links the unit: a pair that no longer
+	// shares a unit is left to the entity prune, which deletes a co-occurrence
+	// no current unit witnesses.
+	return s.recordEditedSetCooccurrences(ctx, bankID, unitID)
+}
+
+// recordEditedSetCooccurrences records the pairs the unit's resulting entity set
+// witnesses, reading the set back from the postings so a link that survived the
+// edit is counted exactly as a new one is. An edit that names one entity
+// records nothing, because a pair needs two.
+func (s *PostgresStore) recordEditedSetCooccurrences(ctx context.Context, bankID, unitID string) error {
+	qualified := quoteIdent(s.schema)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT entity_id::text FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid ORDER BY entity_id`, unitID)
+	if err != nil {
+		return err
+	}
+	entityIDs := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		entityIDs = append(entityIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	if len(entityIDs) < 2 {
+		return nil
+	}
+	// The pair carries the unit's own seen time, exactly as a retain of that
+	// unit stamps it, so an edit does not collapse the pair's recency onto the
+	// edit moment.
+	var occurred, mentioned, event sql.NullTime
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT occurred_start, mentioned_at, event_date FROM `+qualified+`.memory_units WHERE id = $1::uuid`,
+		unitID).Scan(&occurred, &mentioned, &event); err != nil {
+		return err
+	}
+	unit := MemoryUnit{
+		OccurredStart: nullTimePtr(occurred),
+		MentionedAt:   nullTimePtr(mentioned),
+		EventDate:     nullTimePtr(event),
+	}
+	return s.UpsertUnitCooccurrences(ctx, bankID, entityIDs, UnitSeenAt(unit))
 }
 
 // UnitEntityNames returns the entities each unit mentions, keyed by unit id.
@@ -1038,35 +1172,45 @@ func (s *PostgresStore) UnitEntityNames(ctx context.Context, bankID string, unit
 // comes first, so the row is not addressed by bank at all. The endpoints are
 // ordered here, so no caller has to know which of the two is smaller.
 func (s *PostgresStore) UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error {
-	if entityID1 > entityID2 {
-		entityID1, entityID2 = entityID2, entityID1
-	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.entity_cooccurrences (entity_id_1, entity_id_2, cooccurrence_count)
-	          VALUES ($1,$2,1)
-	          ON CONFLICT (entity_id_1, entity_id_2)
-	          DO UPDATE SET cooccurrence_count = entity_cooccurrences.cooccurrence_count + 1,
-	                        last_cooccurred = now()`
-	_, err := s.db.ExecContext(ctx, query, entityID1, entityID2)
-	return err
+	return s.upsertEntityCooccurrence(ctx, entityID1, entityID2, time.Now().UTC())
 }
 
-// recordUnitCooccurrences records one co-occurrence for every unordered pair of
-// the entities a single memory unit mentions, which is the shape the entity
-// graph reads and the resolution weighting counts. Pairing is per unit, so two
-// entities mentioned by two different facts are not neighbours.
-//
-// It is idempotent per unit: the caller passes the unit's entities already
-// de-duplicated by identity, so a fact that names the same entity twice counts
-// the pair once.
-func (s *PostgresStore) recordUnitCooccurrences(ctx context.Context, bankID string, entityIDs []string) error {
+// UpsertUnitCooccurrences records one co-occurrence for every unordered pair of
+// the entities a single memory unit mentions — the same cross product retain
+// records, so an imported unit contributes the pairs its own entity set
+// witnesses and nothing more.
+func (s *PostgresStore) UpsertUnitCooccurrences(ctx context.Context, bankID string, entityIDs []string, seenAt time.Time) error {
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
 	for i := range len(entityIDs) {
 		for j := i + 1; j < len(entityIDs); j++ {
-			if err := s.UpsertEntityCooccurrence(ctx, bankID, entityIDs[i], entityIDs[j]); err != nil {
+			if err := s.upsertEntityCooccurrence(ctx, entityIDs[i], entityIDs[j], seenAt); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// upsertEntityCooccurrence upserts one unordered pair, stamping the pair's
+// last-co-occurrence with the time the witnessing unit was seen.
+//
+// Both members of the write are the reference's: the count accumulates rather
+// than being replaced, and the stamp is the LATEST of the two times, so a unit
+// seen before the pair's existing stamp cannot pull the pair's recency back.
+func (s *PostgresStore) upsertEntityCooccurrence(ctx context.Context, entityID1, entityID2 string, seenAt time.Time) error {
+	if entityID1 > entityID2 {
+		entityID1, entityID2 = entityID2, entityID1
+	}
+	table := quoteIdent(s.schema) + `.entity_cooccurrences`
+	query := `INSERT INTO ` + table + ` (entity_id_1, entity_id_2, cooccurrence_count, last_cooccurred)
+	          VALUES ($1,$2,1,$3)
+	          ON CONFLICT (entity_id_1, entity_id_2)
+	          DO UPDATE SET cooccurrence_count = ` + table + `.cooccurrence_count + 1,
+	                        last_cooccurred = GREATEST(` + table + `.last_cooccurred, EXCLUDED.last_cooccurred)`
+	_, err := s.db.ExecContext(ctx, query, entityID1, entityID2, seenAt)
+	return err
 }
 
 // UpsertLink persists one directed memory link.

@@ -65,9 +65,9 @@ func (p *ParserSelection) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(data, &single); err != nil {
 			return err
 		}
-		if single == "" {
-			return nil
-		}
+		// An empty string is a name like any other: the reference resolves it to
+		// a one-element chain ([""]) that then fails the allowlist, rather than
+		// treating it as "no parser requested".
 		*p = ParserSelection{single}
 		return nil
 	}
@@ -206,13 +206,20 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, missingFileRetainParts())
 		return
 	}
-	// The `request` part is required: only a present-but-unusable one is the
-	// JSON refusal, an absent one is a missing-field validation error.
+	// Both form parts are required and the framework validates them together,
+	// in declaration order (`files` before `request`), before the handler runs:
+	// a body missing both reports both, and one missing either reports that one.
+	files := r.MultipartForm.File["files"]
 	rawRequest, present := firstFormValue(r, "request")
-	if !present {
-		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.Missing([]string{"body", "request"}, nil),
-		}})
+	if len(files) == 0 || !present {
+		var missing []httpx.ValidationError
+		if len(files) == 0 {
+			missing = append(missing, httpx.Missing([]string{"body", "files"}, nil))
+		}
+		if !present {
+			missing = append(missing, httpx.Missing([]string{"body", "request"}, nil))
+		}
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: missing})
 		return
 	}
 	fileRequest, err := h.parseFileRetainRequest(rawRequest)
@@ -220,8 +227,18 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	files := r.MultipartForm.File["files"]
-	if fileRequest.metadata != nil && len(fileRequest.metadata) != len(files) {
+	// The reference's request-layer gates run in a fixed order — file count,
+	// then the files_metadata count, then the request-level parser — so a request
+	// that trips several names the first one the reference would name.
+	if h.MaxFileBatchCount > 0 && len(files) > h.MaxFileBatchCount {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			fmt.Sprintf("Too many files. Maximum %d files per request.", h.MaxFileBatchCount)))
+		return
+	}
+	// An empty files_metadata list is absent, not a zero-length alignment: the
+	// reference's truthiness test skips the count check for it and every file
+	// keeps its defaults.
+	if len(fileRequest.metadata) > 0 && len(fileRequest.metadata) != len(files) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			fmt.Sprintf("files_metadata count (%d) must match files count (%d)",
 				len(fileRequest.metadata), len(files))))
@@ -233,10 +250,19 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if h.MaxFileBatchCount > 0 && len(files) > h.MaxFileBatchCount {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
-			fmt.Sprintf("Too many files. Maximum %d files per request.", h.MaxFileBatchCount)))
-		return
+	// Every file's parser chain is resolved and validated before the batch-size
+	// bound, so a request that both overflows the batch and names a bad parser
+	// reports the parser, as the reference does: it validates the chain inside
+	// its per-file loop and only checks the total afterwards.
+	chains := make([][]string, len(files))
+	for index, header := range files {
+		meta := fileRequest.filesMeta(index)
+		chain := resolveParserChain(meta.Parser, fileRequest.parser, h.effectiveParserChain())
+		if err := h.validateParserChain(chain, "file '"+header.Filename+"'"); err != nil {
+			httpx.WriteErrorFor(w, r, err)
+			return
+		}
+		chains[index] = chain
 	}
 	if h.MaxFileBatchBytes > 0 {
 		var total int64
@@ -253,11 +279,7 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 	items := make([]RetainItem, 0, len(files))
 	for index, header := range files {
 		meta := fileRequest.filesMeta(index)
-		chain := resolveParserChain(meta.Parser, fileRequest.parser, h.effectiveParserChain())
-		if err := h.validateParserChain(chain, "file '"+header.Filename+"'"); err != nil {
-			httpx.WriteErrorFor(w, r, err)
-			return
-		}
+		chain := chains[index]
 		// The document is decided before the bytes are stored: an attachment row
 		// keys on the document that owns it, so the id has to exist first. It is
 		// the caller's when they named one, and a minted `file_<uuid>` otherwise.
@@ -277,12 +299,6 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		}
 		applyFileMetadata(&item, meta)
 		items = append(items, item)
-	}
-	if len(items) == 0 {
-		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.Missing([]string{"body", "files"}, nil),
-		}})
-		return
 	}
 	// One operation per file: the reference submits each file as its own
 	// conversion operation, so a caller tracks each upload separately.
@@ -425,7 +441,7 @@ func invalidRequestJSONError(kind, message string) *httpx.HTTPError {
 func (h *Handlers) validateParserChain(chain []string, context string) *httpx.HTTPError {
 	disallowed := make([]string, 0, len(chain))
 	for _, parser := range chain {
-		if parser == "" || h.allowedParser(parser) {
+		if h.allowedParser(parser) {
 			continue
 		}
 		disallowed = append(disallowed, parser)

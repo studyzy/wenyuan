@@ -19,7 +19,7 @@ type DocumentListItem struct {
 	TextLength      int            `json:"text_length"`
 	MemoryUnitCount int            `json:"memory_unit_count"`
 	RetainParams    map[string]any `json:"retain_params"`
-	Metadata        map[string]any `json:"document_metadata"`
+	Metadata        any            `json:"document_metadata"`
 	Tags            []string       `json:"tags"`
 }
 
@@ -36,13 +36,16 @@ type DocumentListResponse struct {
 // hash, how to classify and fetch the bytes, and the bank-scoped URL that
 // serves them.
 type ChunkAttachment struct {
-	ID        string  `json:"id"`
-	Hash      string  `json:"hash"`
-	Kind      string  `json:"kind"`
-	MediaType string  `json:"media_type"`
-	ByteSize  int64   `json:"byte_size"`
-	Filename  *string `json:"filename,omitempty"`
-	URL       string  `json:"url"`
+	ID        string `json:"id"`
+	Hash      string `json:"hash"`
+	Kind      string `json:"kind"`
+	MediaType string `json:"media_type"`
+	ByteSize  int64  `json:"byte_size"`
+	// Filename is the original name the caller gave the attachment, or null
+	// when it named none: the reference's attachment model keeps the key with a
+	// null value rather than dropping it.
+	Filename *string `json:"filename"`
+	URL      string  `json:"url"`
 }
 
 // DocumentResponse is one document's detail.
@@ -58,7 +61,7 @@ type DocumentResponse struct {
 	UpdatedAt       string         `json:"updated_at"`
 	MemoryUnitCount int            `json:"memory_unit_count"`
 	Tags            []string       `json:"tags"`
-	Metadata        map[string]any `json:"document_metadata"`
+	Metadata        any            `json:"document_metadata"`
 	RetainParams    map[string]any `json:"retain_params"`
 	NodesByFactType map[string]int `json:"nodes_by_fact_type"`
 	// ObservationScopes is the scope spec configured at retain time: a mode
@@ -88,13 +91,15 @@ type DeleteDocumentResponse struct {
 
 // ChunkResponse is one chunk.
 type ChunkResponse struct {
-	ChunkID     string            `json:"chunk_id"`
-	DocumentID  string            `json:"document_id"`
-	BankID      string            `json:"bank_id"`
-	ChunkIndex  int               `json:"chunk_index"`
-	ChunkText   string            `json:"chunk_text"`
-	CreatedAt   string            `json:"created_at"`
-	Attachments []ChunkAttachment `json:"attachments,omitempty"`
+	ChunkID    string `json:"chunk_id"`
+	DocumentID string `json:"document_id"`
+	BankID     string `json:"bank_id"`
+	ChunkIndex int    `json:"chunk_index"`
+	ChunkText  string `json:"chunk_text"`
+	CreatedAt  string `json:"created_at"`
+	// Attachments is null, not absent, when the chunk's text references none:
+	// the reference's chunk model always carries the key.
+	Attachments []ChunkAttachment `json:"attachments"`
 }
 
 // ChunkListResponse is the chunk listing envelope.

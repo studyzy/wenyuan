@@ -27,9 +27,10 @@ const (
 )
 
 // resolveMode normalises a configured mode. An empty or unrecognised value is
-// the concise default, matching the reference's dispatch.
+// the concise default, matching the reference's dispatch, which compares the
+// configured string exactly (not case-folded) against each mode name.
 func resolveMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	switch mode {
 	case ModeVerbose:
 		return ModeVerbose
 	case ModeCustom:
@@ -440,8 +441,10 @@ the text states about a different subject.`
 // stored fact text. They are also the fields optional-dimensions mode relaxes.
 var dimensionNames = []string{"what", "when", "where", "who", "why"}
 
-// dimensionValue reads a dimension field, treating the reference's "N/A"
-// placeholder and an absent value alike: both mean the model stated nothing.
+// dimensionValue reads a field the model may answer with the reference's "N/A"
+// placeholder, treating that placeholder and an absent value alike: both mean
+// the model stated nothing. The timestamp fields go through it too, so an
+// occurred_start of "N/A" is a missing date rather than the literal string.
 func dimensionValue(value any) string {
 	text := stringValue(value)
 	if strings.EqualFold(text, "N/A") {

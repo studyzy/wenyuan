@@ -36,7 +36,7 @@ func fixtureArchive(t *testing.T) *hindsightarchive.Archive {
 	  "facts":[
 	    {"text":"The deployment runs on Tuesdays.","fact_type":"world","context":"ops schedule",
 	     "event_date":"2026-01-02T00:00:00Z","occurred_start":"2026-01-02T00:00:00Z",
-	     "entities":["Tuesday"],"tags":["ops"],"metadata":{"confidence_score":0.5}}
+	     "entities":["Tuesday","Berlin"],"tags":["ops"],"metadata":{"confidence_score":0.5},"chunk_index":0}
 	  ]}`)
 	write("documents/000001.json", `{"id":"doc-2","original_text":"Alice leads the team.",
 	  "chunks":[{"chunk_index":0,"chunk_text":"Alice leads the team."}],

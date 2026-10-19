@@ -1,6 +1,10 @@
 package storage
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+	"time"
+)
 
 // The reference's perspective mapping: "assistant" and "experience" both mean
 // the agent acted, "world" is objective, and an unexpected value falls back to
@@ -154,5 +158,77 @@ func TestApplyIntrabatchCanonical(t *testing.T) {
 	untouched := applyIntrabatchCanonical(RetainEntity{Text: "Alice"}, canonical)
 	if untouched.Text != "Alice" {
 		t.Fatalf("text = %q, want it left alone", untouched.Text)
+	}
+}
+
+// A fact date arrives in whatever shape the model wrote it, and the reference's
+// own reader accepts all of them: a bare date, a zone-less time (read as UTC), a
+// space in place of the "T", and any fractional seconds. Parsing only the fully
+// zoned RFC 3339 form dropped every one of those, leaving occurred_start NULL
+// where the reference stored a value.
+func TestParseFactTimeAcceptsModelDateShapes(t *testing.T) {
+	cases := []struct {
+		value string
+		want  string
+	}{
+		{"2015-07-01", "2015-07-01T00:00:00Z"},
+		{"2015-07-01T00:00:00", "2015-07-01T00:00:00Z"},
+		{"2015-07-01 00:00:00", "2015-07-01T00:00:00Z"},
+		{"2026-10-16T23:59:59", "2026-10-16T23:59:59Z"},
+		{"2026-10-16T00:00:00.01+00:00", "2026-10-16T00:00:00.01Z"},
+		{"2026-10-16T00:00:00Z", "2026-10-16T00:00:00Z"},
+		{"2015-07-01T10:30+02:00", "2015-07-01T08:30:00Z"},
+		{"", ""},
+		{"N/A", ""},
+		{"sometime", ""},
+	}
+	for _, tc := range cases {
+		got := parseFactTime(tc.value)
+		if tc.want == "" {
+			if got != nil {
+				t.Fatalf("parseFactTime(%q) = %v, want nil", tc.value, got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Fatalf("parseFactTime(%q) = nil, want %s", tc.value, tc.want)
+		}
+		if formatted := got.Format(time.RFC3339Nano); formatted != tc.want {
+			t.Fatalf("parseFactTime(%q) = %s, want %s", tc.value, formatted, tc.want)
+		}
+	}
+}
+
+// A date the model wrote as "2015-07-01" reaches the unit's columns rather than
+// being dropped on the way, and the fact's own date wins over the item's ingest
+// clock for event_date, as it does in the reference.
+func TestApplyFactDatesKeepsADateOnlyOccurrence(t *testing.T) {
+	unit := MemoryUnit{}
+	applyFactDates(&unit, ExtractedFact{OccurredStart: "2015-07-01", OccurredEnd: "2015-07-01"})
+	if unit.OccurredStart == nil || unit.OccurredStart.Format(time.RFC3339) != "2015-07-01T00:00:00Z" {
+		t.Fatalf("occurred_start = %v, want 2015-07-01T00:00:00Z", unit.OccurredStart)
+	}
+	if unit.OccurredEnd == nil || unit.OccurredEnd.Format(time.RFC3339) != "2015-07-01T00:00:00Z" {
+		t.Fatalf("occurred_end = %v, want 2015-07-01T00:00:00Z", unit.OccurredEnd)
+	}
+	if unit.EventDate == nil || unit.EventDate.Format(time.RFC3339) != "2015-07-01T00:00:00Z" {
+		t.Fatalf("event_date = %v, want the fact's own date", unit.EventDate)
+	}
+}
+
+// The names a caller gave a write's attachments are recorded on the document's
+// replayable parameters, which is what lets a reprocess restate them: the
+// document record is replaced by every write, so a name that is not recorded is
+// a name the next write loses. Nothing is recorded when no name was given, so a
+// document retained without named attachments carries no key.
+func TestRetainParamsRecordAttachmentFilenames(t *testing.T) {
+	named := retainParamsFor(RetainItem{
+		AttachmentFilenames: map[string]string{"abc123": "plan.txt"},
+	})
+	if !reflect.DeepEqual(named["attachment_filenames"], map[string]string{"abc123": "plan.txt"}) {
+		t.Fatalf("attachment_filenames = %#v, want the caller's names", named["attachment_filenames"])
+	}
+	if _, present := retainParamsFor(RetainItem{})["attachment_filenames"]; present {
+		t.Fatal("a write with no named attachment must carry no attachment_filenames key")
 	}
 }

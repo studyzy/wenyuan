@@ -64,7 +64,11 @@ func (h *Handlers) UpdateBankConfig(w http.ResponseWriter, r *http.Request) {
 		}})
 		return
 	}
-	patch, httpErr := configPatch(*req.Updates)
+	// The override map is taken from the number-preserving decode rather than
+	// the typed request: a configuration value keeps the written form of its
+	// number (see decodeRawObject), which the patch's type checks read.
+	updates, _ := object["updates"].(map[string]any)
+	patch, httpErr := configPatch(updates)
 	if httpErr != nil {
 		httpx.WriteErrorFor(w, r, httpErr)
 		return
@@ -112,7 +116,7 @@ func (h *Handlers) ResetBankConfig(w http.ResponseWriter, r *http.Request) {
 	// A reset removes every override the bank holds in its config column, so
 	// the bank reads the process defaults again. It does not touch the legacy
 	// disposition and mission columns: the reference's reset writes only
-	// `config = '{}'`, and those columns are owned by the profile paths.
+	// `config = '{}'`, and no route ever writes those two columns.
 	bank, err := h.Store.UpdateBank(r.Context(), bankID, storage.BankPatch{
 		ClearConfig: true,
 	})

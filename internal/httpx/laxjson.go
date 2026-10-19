@@ -508,7 +508,12 @@ func coercible(target reflect.Type) (reflect.Type, bool) {
 // reference's lax mode does. A string field takes nothing else, so no string
 // value is rewritten for one.
 func laxString(target reflect.Type, text string) (string, bool) {
+	// A type that decodes itself owns its parsing, so nothing is rewritten for
+	// it: andUnmarshalerFree reports that by returning no type at all.
 	target = andUnmarshalerFree(target)
+	if target == nil {
+		return "", false
+	}
 	switch target.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		value, ok := pythonInt(text)
@@ -543,7 +548,11 @@ func laxString(target reflect.Type, text string) (string, bool) {
 // field can be waiting for it: an integer field takes a number with no
 // fractional part, and a boolean field takes exactly 0 or 1.
 func laxLiteral(target reflect.Type, literal []byte) (string, bool) {
+	// Same as laxString: a type that owns its parsing is never rewritten.
 	target = andUnmarshalerFree(target)
+	if target == nil {
+		return "", false
+	}
 	switch string(literal) {
 	case "true", "false":
 		return laxBool(target, string(literal) == "true")
@@ -640,6 +649,42 @@ func LaxInteger(text string) (int, bool) {
 		return 0, false
 	}
 	return int(value), true
+}
+
+// LaxBoolean reads a value the reference's boolean coercion accepts and returns
+// it as a bool: a JSON boolean, one of the accepted words ("true", "yes", "on",
+// and their negatives), or the integers 0 and 1. It reports false for anything
+// else, so a caller can decide whether the value is a framework rejection
+// (`bool_type`/`bool_parsing`) or outside it.
+func LaxBoolean(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		return boolWord(typed)
+	case float64:
+		if typed == 0 || typed == 1 {
+			return typed == 1, true
+		}
+	}
+	return false, false
+}
+
+// LaxFloat reads a value the reference's integer coercion accepts and returns it
+// as an integer: a JSON number with no fractional part, or a string Python's
+// int() reads. It reports false for anything else, including a number carrying a
+// fraction, which the framework names separately (`int_from_float`).
+func LaxFloat(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed != math.Trunc(typed) {
+			return 0, false
+		}
+		return int(typed), true
+	case string:
+		return LaxInteger(typed)
+	}
+	return 0, false
 }
 
 // pythonInt reads a string the reference's integer coercion accepts, the way

@@ -187,8 +187,32 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 		since = *model.LastMemorySeenAt
 	}
 	if !r.hasSources(ctx, bankID, model, since) {
+		// Nothing in scope was readable, so the reflect loop is skipped and the
+		// document is left exactly as it is. The run is still recorded: the
+		// reflect_response says why nothing was read, and the refresh stamp
+		// advances so a reader can tell a refresh that ran from one that never
+		// did. The memory watermark is deliberately left alone — the window was
+		// never read, so nothing has been seen.
+		reflectResult := map[string]any{
+			"text":            "",
+			"based_on":        map[string]any{},
+			"mental_models":   []any{},
+			"reflect_skipped": "no_sources_in_scope",
+			"outcome":         outcomeContentPreservedNoNewFacts,
+		}
+		sourceQuery := model.SourceQuery
+		updated, err := r.store.UpdateMentalModel(ctx, bankID, modelID, storage.MentalModelPatch{
+			ReflectResult:            &reflectResult,
+			LastRefreshedSourceQuery: &sourceQuery,
+		})
+		if err != nil {
+			return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
+		}
+		if err := r.store.MarkMentalModelSeen(ctx, bankID, modelID, time.Time{}); err != nil {
+			return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
+		}
 		report.outcome = outcomeContentPreservedNoNewFacts
-		return model, report, nil
+		return updated, report, nil
 	}
 
 	// The refresh reads through the same reflection path the API exposes, so a

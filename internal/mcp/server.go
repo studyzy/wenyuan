@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,12 +137,19 @@ func (s *Server) advertisedTools(multiBank bool) []tool {
 	return filtered
 }
 
-// toolAllowed reports whether a tool name is inside the configured allowlist. A
-// server with no allowlist allows every name; a tool outside it is answered the
-// way an unknown tool is, because the reference removes it from the surface
-// entirely.
-func (s *Server) toolAllowed(name string) bool {
-	return s.enabledTools == nil || s.enabledTools[name]
+// advertisedTool reports whether a name is one of the tools the mount's roster
+// actually exposes: the reference roster for the mount, narrowed by the
+// configured allowlist. A name outside that surface — one it never registered,
+// or one the allowlist removed — is answered the way the reference answers an
+// unknown tool, because the reference removes a disallowed tool from the
+// surface entirely.
+func (s *Server) advertisedTool(ctx context.Context, name string) bool {
+	for _, def := range s.advertisedTools(mountBank(ctx) == "") {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpSessionHeader is the header that carries the session a client establishes
@@ -334,10 +342,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// servePost answers one JSON-RPC request. It first resolves the session the
-// request presents, then validates the Content-Type and Accept headers, decodes
-// the call, and dispatches it — answering every JSON-RPC message as a
-// Server-Sent Events frame, the framing the reference transport returns.
+// servePost answers one JSON-RPC request. It first validates the Content-Type
+// header, then resolves the session the request presents, then validates the
+// Accept header, decodes the call, and dispatches it — answering every JSON-RPC
+// message as a Server-Sent Events frame, the framing the reference transport
+// returns.
 //
 // Sessions are mandatory after the handshake, as the reference enforces: the
 // handshake itself may arrive without one, every other call must present a live
@@ -347,6 +356,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // fresh identifier rides on the response — including on a refusal — so a client
 // that followed the handshake never notices the difference.
 func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
+	// The transport validates the Content-Type before it touches the session,
+	// as the reference's SDK does: a request with the wrong media type is
+	// refused without a session established or named, so the refusal carries no
+	// session header.
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writePlainText(w, http.StatusBadRequest, "Invalid Content-Type header")
+		return
+	}
 	registry := s.registryFor(r)
 	session, presented := presentedSession(r)
 	var live *liveSession
@@ -368,10 +385,6 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 	if session != "" {
 		w.Header().Set(mcpSessionHeader, session)
 	}
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		writePlainText(w, http.StatusBadRequest, "Invalid Content-Type header")
-		return
-	}
 	if !acceptablePost(r) {
 		writeTransportError(w, http.StatusNotAcceptable, codeInvalidRequest,
 			"Not Acceptable: Client must accept both application/json and text/event-stream")
@@ -379,7 +392,7 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 	}
 	var call request
 	if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
-		writeTransportError(w, http.StatusBadRequest, codeParseError, "Parse error: "+err.Error())
+		writeTransportError(w, http.StatusBadRequest, codeParseError, "Parse error: "+parseErrorMessage(r))
 		return
 	}
 	if call.JSONRPC != jsonRPCVersion {
@@ -603,6 +616,23 @@ func writeSSE(w http.ResponseWriter, payload any) {
 	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", encoded)
 }
 
+// parseErrorMessage renders why the body could not be decoded the way the
+// reference does. Its transport hands the bytes to CPython's json module, so a
+// malformed body is reported with that module's sentence — "Expecting value:
+// line 1 column 1 (char 0)" — rather than the Go decoder's wording. A body the
+// Go decoder rejects but CPython accepts (the NaN and Infinity literals) or one
+// already consumed keeps the Go decoder's own message.
+func parseErrorMessage(r *http.Request) string {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "EOF"
+	}
+	if text, ok := httpx.PythonJSONDecodeError(body); ok {
+		return text
+	}
+	return "EOF"
+}
+
 // writeTransportError emits the transport's JSON-RPC error envelope for a
 // transport-level failure, which carries the status the transport returned and
 // the "server-error" id the protocol reserves for an error whose request could
@@ -612,26 +642,52 @@ func writeTransportError(w http.ResponseWriter, status, code int, message string
 }
 
 // writePlainText writes a bare-text transport response, the shape the reference
-// returns for a rejected Content-Type.
+// returns for a rejected Content-Type: the body carries the message and the
+// response declares no media type, so a client reads it as the transport's own
+// complaint rather than as a payload in a format it asked for.
 func writePlainText(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// Declaring the header absent keeps net/http from sniffing a media type for
+	// the body, which is what lets the refusal carry no Content-Type at all.
+	w.Header()["Content-Type"] = nil
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, message)
 }
 
-// writeJSON writes a JSON body with an explicit status.
+// writeJSON writes a JSON body with an explicit status. It writes the encoded
+// bytes without the newline an encoder would append, matching the reference's
+// JSON responses byte for byte.
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		encoded = []byte("{}")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_, _ = w.Write(encoded)
 }
 
-// errorEnvelope is the transport error envelope with the "server-error" id.
-func errorEnvelope(code int, message string) map[string]any {
-	return map[string]any{
-		"jsonrpc": jsonRPCVersion,
-		"id":      transportErrorID,
-		"error":   map[string]any{"code": code, "message": message},
+// transportErrorEnvelope is the transport's own error envelope, which carries
+// the status the transport returned and the "server-error" id the protocol
+// reserves for an error whose request could not be identified. The members are
+// declared in the reference's order so the body reads the same.
+type transportErrorEnvelope struct {
+	JSONRPC string                        `json:"jsonrpc"`
+	ID      string                        `json:"id"`
+	Error   transportErrorEnvelopeMessage `json:"error"`
+}
+
+// transportErrorEnvelopeMessage is the error object of the transport envelope.
+type transportErrorEnvelopeMessage struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// errorEnvelope builds the transport error envelope with the "server-error" id.
+func errorEnvelope(code int, message string) transportErrorEnvelope {
+	return transportErrorEnvelope{
+		JSONRPC: jsonRPCVersion,
+		ID:      transportErrorID,
+		Error:   transportErrorEnvelopeMessage{Code: code, Message: message},
 	}
 }
 
@@ -721,19 +777,57 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	if params.Name == "" {
 		return nil, invalidParamsError()
 	}
-	if !s.toolAllowed(params.Name) {
-		// The reference removes a disallowed tool from the surface, so calling
-		// it is the same as calling something that does not exist.
+	if !s.advertisedTool(ctx, params.Name) {
+		// The reference registers only its advertised tools, so a name outside
+		// that surface — one it never registered, or one the allowlist removed —
+		// is the same as calling something that does not exist.
 		return toolError("Unknown tool: '" + params.Name + "'"), nil
 	}
 	payload, err := s.invokeAudited(ctx, params.Name, params.Arguments)
 	if err != nil {
-		// A tool failure is reported as a tool result, not a transport error,
-		// so the client sees which call failed rather than losing the session.
-		return toolError(err.Error()), nil
+		return toolFailure(params.Name, err), nil
 	}
 	return toolResult(params.Name, payload), nil
 }
+
+// toolFailure reports a tool failure as a tool result rather than a transport
+// error, so the client sees which call failed instead of losing the session.
+//
+// The reference distinguishes two kinds. A call it could not attempt — a
+// required argument missing from a request the transport validates before the
+// tool runs — is an error result (isError true). Everything the tool itself
+// failed at, including the ordinary negative answers the tools raise for a
+// missing record, is a normal result whose payload carries the sentence: the
+// two memory-write tools an error status object, recall an empty result list,
+// and every other tool the error JSON.
+func toolFailure(name string, err error) map[string]any {
+	var invalid invalidArgumentError
+	if errors.As(err, &invalid) {
+		return toolError(invalid.Error())
+	}
+	message := err.Error()
+	switch name {
+	case "retain", "sync_retain":
+		return objectToolResult(map[string]any{"status": "error", "message": message})
+	case "recall":
+		return textToolResult(errorText(message, jsonField{"results", []any{}}))
+	case "list_banks":
+		return textToolResult(errorText(message, jsonField{"banks", []any{}}))
+	default:
+		return textToolResult(errorText(message))
+	}
+}
+
+// invalidArgumentError marks a failure the transport reports as an error result:
+// the call could not be attempted because the request did not carry a value the
+// tool's schema declares required, which the reference's own validation refuses
+// before the tool runs.
+type invalidArgumentError struct{ message string }
+
+func (e invalidArgumentError) Error() string { return e.message }
+
+// invalidArgument builds an invalidArgumentError.
+func invalidArgument(message string) error { return invalidArgumentError{message: message} }
 
 // requestBank is the bank a single-bank mount fixes, or empty for the
 // multi-bank mount at /mcp. It reads the {bank_id} path value when the router

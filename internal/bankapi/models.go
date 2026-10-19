@@ -277,68 +277,35 @@ func ToAliasResponse(bankID string, aliases []storage.BankAlias) AliasResponse {
 }
 
 // ToStorage converts a create-or-replace request into a stored bank with the
-// documented precedence and neutral defaults.
+// documented defaults.
 //
-// Only the disposition traits the request actually named are stored. A trait
-// the caller left alone is absent rather than written as the neutral value, so
-// the bank's own overrides name exactly what it set — which is what the
-// configuration read and the template export report.
+// The request's disposition traits and mission never reach the legacy
+// disposition and mission columns from here: the reference routes both through
+// config updates alone, so a supplied trait is not written. The row is still
+// created holding the neutral disposition, exactly as the reference's
+// _ensure_bank_exists inserts json.dumps(DEFAULT_DISPOSITION)
+// (engine/retain/bank_utils.py:200,396) alongside an empty mission — those are
+// the column's contents, not the caller's. Leaving the column empty would be
+// invisible over HTTP, because the read path fills the same defaults in, but it
+// travels: an exported archive's banks.json would carry {} where the
+// reference's carries the three traits.
 func (r BankRequest) ToStorage(id string) storage.Bank {
-	disposition := map[string]int{}
-	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
-		disposition[storage.DispositionKeySkepticism] = *value
-	}
-	if value := r.traitPtr(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }); value != nil {
-		disposition[storage.DispositionKeyLiteralism] = *value
-	}
-	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
-		disposition[storage.DispositionKeyEmpathy] = *value
-	}
 	name := id
 	if r.Name != nil && *r.Name != "" {
 		name = *r.Name
 	}
-	return storage.Bank{
-		BankID:      id,
-		Name:        name,
-		Disposition: disposition,
-		Mission:     r.missionValue(),
-	}
+	return storage.Bank{BankID: id, Name: name}.WithNeutralDisposition()
 }
 
-// ToPatch converts a partial-update request into a storage patch. Only the
-// traits the request actually carried are included in the partial map, so a
-// patch never resets a trait the caller left alone.
+// ToPatch converts a partial-update request into a storage patch. The
+// disposition traits and mission reach the bank as configuration overrides,
+// never as legacy column writes, so a patch carries the name alone.
 func (r BankRequest) ToPatch() storage.BankPatch {
 	patch := storage.BankPatch{}
-	traits := map[string]int{}
-	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
-		traits[storage.DispositionKeySkepticism] = *value
-	}
-	if value := r.traitPtr(r.DispositionLiteralism, func(d DispositionInput) *int { return d.Literalism }); value != nil {
-		traits[storage.DispositionKeyLiteralism] = *value
-	}
-	if value := r.traitPtr(r.DispositionEmpathy, func(d DispositionInput) *int { return d.Empathy }); value != nil {
-		traits[storage.DispositionKeyEmpathy] = *value
-	}
-	if len(traits) > 0 {
-		patch.Disposition = &traits
-	}
 	if r.Name != nil {
 		patch.Name = r.Name
 	}
-	if mission := r.missionValuePtr(); mission != nil {
-		patch.Mission = mission
-	}
 	return patch
-}
-
-// missionValue resolves the reflect_mission > mission > background precedence.
-func (r BankRequest) missionValue() string {
-	if value := r.missionValuePtr(); value != nil {
-		return *value
-	}
-	return ""
 }
 
 func (r BankRequest) missionValuePtr() *string {

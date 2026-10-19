@@ -8,24 +8,23 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
+// getKnowledgeBaseTree returns the bank's knowledge tree: the flat node list
+// assembled into nested roots, each node projected the way the reference's MCP
+// tools render one.
 func (s *Server) getKnowledgeBaseTree(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
-	nodes, err := s.store.ListKnowledgeNodes(ctx, bankID)
+	roots, err := s.knowledgeTreePayload(ctx, bankID)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, knowledgeNodeJSON(node))
-	}
-	return map[string]any{"roots": items}, nil
+	return map[string]any{"roots": roots}, nil
 }
 
 func (s *Server) searchKnowledgeBase(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	query := stringArgument(args, "query")
 	if query == "" {
-		return nil, errors.New("search_knowledge_base requires query")
+		return nil, invalidArgument("search_knowledge_base requires query")
 	}
 	hits, err := s.store.SearchKnowledgeNodes(ctx, storage.KnowledgeSearchQuery{
 		BankID: bankID,
@@ -46,9 +45,12 @@ func (s *Server) getKnowledgePage(ctx context.Context, args map[string]any) (any
 	bankID := s.bankArgument(ctx, args)
 	pageID := stringArgument(args, "page_id")
 	if pageID == "" {
-		return nil, errors.New("get_knowledge_page requires page_id")
+		return nil, invalidArgument("get_knowledge_page requires page_id")
 	}
 	node, err := s.store.GetKnowledgeNode(ctx, bankID, pageID)
+	if errors.Is(err, storage.ErrKnowledgeNodeNotFound) {
+		return notFoundAnswer("Knowledge page '" + pageID + "' not found in bank '" + bankID + "'"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +73,14 @@ func (s *Server) createKnowledgeFolder(ctx context.Context, args map[string]any)
 	if err != nil {
 		return nil, err
 	}
-	return knowledgeNodeJSON(node), nil
+	view, err := s.knowledgeNodePayload(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	if view.Kind == string(storage.KnowledgeKindFolder) {
+		view.Children = []knowledgeNodeView{}
+	}
+	return view, nil
 }
 
 func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (any, error) {
@@ -96,14 +105,18 @@ func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (
 	if err != nil {
 		return nil, err
 	}
-	return knowledgeNodeJSON(node), nil
+	view, err := s.knowledgeNodePayload(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
 func (s *Server) updateKnowledgeNode(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	nodeID := stringArgument(args, "node_id")
 	if nodeID == "" {
-		return nil, errors.New("update_knowledge_node requires node_id")
+		return nil, invalidArgument("update_knowledge_node requires node_id")
 	}
 	patch := storage.KnowledgeNodePatch{}
 	if name := stringArgument(args, "name"); name != "" {
@@ -122,32 +135,37 @@ func (s *Server) updateKnowledgeNode(ctx context.Context, args map[string]any) (
 		patch.ParentID = &parent
 	}
 	node, err := s.store.UpdateKnowledgeNode(ctx, bankID, nodeID, patch)
+	if errors.Is(err, storage.ErrKnowledgeNodeNotFound) {
+		return notFoundAnswer("Knowledge node '" + nodeID + "' not found in bank '" + bankID + "'"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	return knowledgeNodeJSON(node), nil
+	view, err := s.knowledgeNodePayload(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	if view.Kind == string(storage.KnowledgeKindFolder) {
+		view.Children = []knowledgeNodeView{}
+	}
+	return view, nil
 }
 
 func (s *Server) deleteKnowledgeNode(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	nodeID := stringArgument(args, "node_id")
 	if nodeID == "" {
-		return nil, errors.New("delete_knowledge_node requires node_id")
+		return nil, invalidArgument("delete_knowledge_node requires node_id")
 	}
 	if err := s.store.DeleteKnowledgeNode(ctx, bankID, nodeID); err != nil {
+		if errors.Is(err, storage.ErrKnowledgeNodeNotFound) {
+			return notFoundAnswer("Knowledge node '" + nodeID + "' not found in bank '" + bankID + "'"), nil
+		}
 		return nil, err
 	}
-	return map[string]any{"status": "deleted", "node_id": nodeID}, nil
+	return compactToolText(deleteKnowledgeNodeAck{Status: "deleted", NodeID: nodeID}), nil
 }
 
 // knowledgeRootParent is the literal a caller sends to move a node to the top
 // level, since an MCP argument cannot express an explicit null.
 const knowledgeRootParent = "root"
-
-// knowledgeNodeJSON projects a stored node into the compact shape the tools return.
-func knowledgeNodeJSON(node storage.KnowledgeNode) map[string]any {
-	return map[string]any{
-		"id": node.ID, "name": node.Title, "kind": string(node.Kind),
-		"parent_id": node.ParentID, "tags": node.Tags,
-	}
-}

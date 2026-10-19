@@ -212,6 +212,52 @@ func TestReportingConsolidationDeduplicated(t *testing.T) {
 	}
 }
 
+// test-scoped-consolidation-is-never-deduplicated: a submit that names
+// observation_scopes asks for a targeted run, so it neither reuses a pending
+// full-bank pass nor is reused by one — even when the scope list is empty, which
+// the reference treats as a scoped run matching no memory rather than a
+// full-bank sweep.
+func TestReportingScopedConsolidationNotDeduplicated(t *testing.T) {
+	app := reportingApp(t)
+	path := "/v1/default/banks/rp-bank/consolidate"
+	type answer struct {
+		OperationID  string `json:"operation_id"`
+		Deduplicated bool   `json:"deduplicated"`
+	}
+	post := func(body string) answer {
+		t.Helper()
+		rec := send(app, http.MethodPost, path, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("consolidate %q = %d (body %s)", body, rec.Code, rec.Body.String())
+		}
+		var got answer
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	full := post("")
+	if full.Deduplicated {
+		t.Fatal("the first consolidation must not report itself as deduplicated")
+	}
+	// A scoped submit beside the pending full-bank pass gets its own operation.
+	scoped := post(`{"observation_scopes":[["team:exec"]]}`)
+	if scoped.Deduplicated || scoped.OperationID == full.OperationID {
+		t.Fatalf("scoped submit = %+v, want its own operation", scoped)
+	}
+	// An explicit empty scope list is scoped too, not a full-bank sweep.
+	empty := post(`{"observation_scopes":[]}`)
+	if empty.Deduplicated || empty.OperationID == full.OperationID {
+		t.Fatalf("empty-scope submit = %+v, want its own operation", empty)
+	}
+	// The full-bank submit still deduplicates against the pending full-bank pass.
+	again := post(`{"observation_scopes":null}`)
+	if !again.Deduplicated || again.OperationID != full.OperationID {
+		t.Fatalf("second full-bank submit = %+v, want the first operation", again)
+	}
+}
+
 // test-knowledge-tree-nests-and-deletes-descendants: the tree reports the
 // hierarchy, and deleting a folder removes what it held.
 func TestReportingKnowledgeTreeLifecycle(t *testing.T) {

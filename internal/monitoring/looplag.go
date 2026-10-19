@@ -61,7 +61,7 @@ func (h *LagHistogram) Snapshot() Histogram {
 	copy(counts, h.counts)
 	return Histogram{
 		Name:    LoopLagMetricName,
-		Help:    "Event-loop lag: extra time a ready goroutine waited before it ran",
+		Help:    "Event-loop lag: extra time a ready coroutine waited before it ran",
 		Buckets: LoopLagBuckets,
 		Counts:  counts,
 		Sum:     h.sum,
@@ -89,6 +89,12 @@ type LoopLagProbe struct {
 func (p *LoopLagProbe) Run(ctx context.Context) {
 	if p.Interval <= 0 {
 		return
+	}
+	// A watchdog that will report stalls publishes its counter up front, the
+	// point at which the reference declares the stall instruments: a scrape
+	// before the first stall then reads zero stalls rather than no series.
+	if p.Stall > 0 {
+		DeclareEventLoopStall()
 	}
 	now := p.Now
 	if now == nil {

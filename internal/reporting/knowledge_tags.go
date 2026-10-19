@@ -2,7 +2,6 @@ package reporting
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,10 +22,15 @@ type knowledgeTagFilter struct {
 
 // knowledgeTagGroup is one compound tag-filter node: a boolean node (and/or/not)
 // or a leaf naming tags with its own match mode.
+//
+// The shapes are the reference's exactly (engine/search/tags.py:307-337): `and`
+// and `or` hold a *list* of children, while `not` holds a *single* child that is
+// negated as a whole. `not` was previously read as a list here, which both
+// accepted a document the reference refuses and negated differently.
 type knowledgeTagGroup struct {
 	And     []knowledgeTagGroup `json:"and"`
 	Or      []knowledgeTagGroup `json:"or"`
-	Not     []knowledgeTagGroup `json:"not"`
+	Not     *knowledgeTagGroup  `json:"not"`
 	Tag     string              `json:"tag"`
 	Tags    []string            `json:"tags"`
 	Resolve string              `json:"resolve"`
@@ -72,13 +76,9 @@ func knowledgeFlatFilterMatches(requested, present []string, mode string) bool {
 // matches evaluates one compound tag-group node against a page's tags.
 func (g knowledgeTagGroup) matches(tags []string) bool {
 	switch {
-	case len(g.Not) > 0:
-		for _, child := range g.Not {
-			if child.matches(tags) {
-				return false
-			}
-		}
-		return true
+	case g.Not != nil:
+		// `not` negates its single child as a whole.
+		return !g.Not.matches(tags)
 	case len(g.And) > 0:
 		for _, child := range g.And {
 			if !child.matches(tags) {
@@ -217,13 +217,18 @@ func knowledgeTagFilterFromRequest(w http.ResponseWriter, r *http.Request) (know
 	if rawGroups == "" {
 		return filter, true
 	}
-	if err := json.Unmarshal([]byte(rawGroups), &filter.groups); err != nil {
+	// The reference validates this parameter through a Pydantic TypeAdapter
+	// (`_TAG_GROUPS_ADAPTER`, api/http.py:3712-3720), so a document that parses
+	// but is not a well-formed tag-group tree is refused too — not only one that
+	// fails to parse. The detail carries the whole rendered validation report.
+	groups, detail, ok := decodeKnowledgeTagGroups(rawGroups)
+	if !ok {
 		// The reference raises a plain HTTPException(422, detail="Invalid tag_groups: …"),
 		// so the envelope carries a string, not a validation-item list.
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable,
-			"Invalid tag_groups: "+err.Error()))
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, detail))
 		return knowledgeTagFilter{}, false
 	}
+	filter.groups = groups
 	return filter, true
 }
 
@@ -273,10 +278,17 @@ func toStorageTagGroups(groups []knowledgeTagGroup) []storage.TagGroup {
 	}
 	out := make([]storage.TagGroup, 0, len(groups))
 	for _, group := range groups {
+		// storage.TagGroup models `not` as a list while the reference (and this
+		// filter) model it as one negated child, so the single child crosses as
+		// a one-element list and comes back the same way.
+		var not []storage.TagGroup
+		if group.Not != nil {
+			not = toStorageTagGroups([]knowledgeTagGroup{*group.Not})
+		}
 		out = append(out, storage.TagGroup{
 			And:     toStorageTagGroups(group.And),
 			Or:      toStorageTagGroups(group.Or),
-			Not:     toStorageTagGroups(group.Not),
+			Not:     not,
 			Tag:     group.Tag,
 			Tags:    group.Tags,
 			Resolve: group.Resolve,
@@ -291,10 +303,15 @@ func toStorageTagGroups(groups []knowledgeTagGroup) []storage.TagGroup {
 func fromStorageTagGroups(groups []storage.TagGroup) []knowledgeTagGroup {
 	out := make([]knowledgeTagGroup, 0, len(groups))
 	for _, group := range groups {
+		var not *knowledgeTagGroup
+		if len(group.Not) > 0 {
+			child := fromStorageTagGroups(group.Not)[0]
+			not = &child
+		}
 		out = append(out, knowledgeTagGroup{
 			And:     fromStorageTagGroups(group.And),
 			Or:      fromStorageTagGroups(group.Or),
-			Not:     fromStorageTagGroups(group.Not),
+			Not:     not,
 			Tag:     group.Tag,
 			Tags:    group.Tags,
 			Resolve: group.Resolve,

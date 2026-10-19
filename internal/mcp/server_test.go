@@ -394,9 +394,14 @@ func TestEveryToolIsInvocable(t *testing.T) {
 	if result := callTool(t, server, "1", "sync_retain", `{"bank_id":"b1","content":"Alice works at Google."}`); result["isError"] == true {
 		t.Fatalf("sync_retain failed: %v", result)
 	}
+	// A missing record is a normal negative answer in the reference, not an
+	// error result, so the tool reports the sentence in its payload.
 	created := callTool(t, server, "1", "get_mental_model", `{"bank_id":"b1","mental_model_id":"missing"}`)
-	if created["isError"] != true {
-		t.Fatalf("get_mental_model on a missing model should error, got %v", created)
+	if created["isError"] == true {
+		t.Fatalf("get_mental_model on a missing model reported an error, got %v", created)
+	}
+	if text := rawText(t, created); text != `{"error": "Mental model 'missing' not found in bank 'b1'"}` {
+		t.Fatalf("get_mental_model on a missing model = %s", text)
 	}
 	model := callTool(t, server, "1", "create_mental_model", `{"bank_id":"b1","name":"m","source_query":"q"}`)
 	if model["isError"] == true {
@@ -485,6 +490,14 @@ func TestUnknownToolIsAResult(t *testing.T) {
 	result := callTool(t, newServer(t), "1", "not_a_tool", `{}`)
 	if result["isError"] != true {
 		t.Fatalf("unknown tool = %v, want an error result", result)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("unknown tool content = %v, want one text entry", result["content"])
+	}
+	first, _ := content[0].(map[string]any)
+	if first["text"] != "Unknown tool: 'not_a_tool'" {
+		t.Fatalf("unknown tool content = %v, want the reference's message", result["content"])
 	}
 }
 
@@ -1007,10 +1020,10 @@ func TestEnabledToolsNarrowTheRoster(t *testing.T) {
 	if len(defs) != 1 || defs[0].Name != "recall" {
 		t.Fatalf("advertised tools = %+v, want only recall", defs)
 	}
-	if server.toolAllowed("retain") {
+	if server.advertisedTool(context.Background(), "retain") {
 		t.Fatal("a tool outside the allowlist is still callable")
 	}
-	if !server.toolAllowed("recall") {
+	if !server.advertisedTool(context.Background(), "recall") {
 		t.Fatal("an allowlisted tool is not callable")
 	}
 	// A server without an allowlist advertises the whole reference roster.
@@ -1136,6 +1149,15 @@ func TestPostRequiresJSONContentType(t *testing.T) {
 		if body := strings.TrimSpace(rec.Body.String()); body != "Invalid Content-Type header" {
 			t.Fatalf("%s: body = %q", name, body)
 		}
+		// The reference validates the media type before it touches the session,
+		// so the refusal names no session, and it declares no media type of its
+		// own for the bare-text complaint.
+		if session := rec.Header().Get(mcpSessionHeader); session != "" {
+			t.Fatalf("%s: refusal carried a session id %q", name, session)
+		}
+		if contentType := rec.Header().Get("Content-Type"); contentType != "" {
+			t.Fatalf("%s: refusal declared Content-Type %q", name, contentType)
+		}
 	}
 }
 
@@ -1219,12 +1241,20 @@ func TestRecallArgumentsReachTheQuery(t *testing.T) {
 		t.Fatalf("query = %+v", query)
 	}
 
-	// A malformed window is refused rather than silently matching nothing.
+	// A window whose bounds are inverted is refused rather than silently matching
+	// nothing; the window model parses its own bounds at decode time.
+	inverted := func() *memoryops.TemporalWindowRequest {
+		var window memoryops.TemporalWindowRequest
+		if err := json.Unmarshal([]byte(`{"start":"2024-02-01T00:00:00Z","end":"2024-01-01T00:00:00Z"}`), &window); err != nil {
+			t.Fatal(err)
+		}
+		return &window
+	}()
 	if _, err := buildRecallQuery("b1", memoryops.RecallRequest{
 		Query:          "x",
-		TemporalWindow: &memoryops.TemporalWindowRequest{Start: "nonsense", End: "2024-02-01"},
+		TemporalWindow: inverted,
 	}); err == nil {
-		t.Fatal("a malformed temporal window must be refused")
+		t.Fatal("an inverted temporal window must be refused")
 	}
 }
 
@@ -1315,4 +1345,15 @@ func TestSessionBankFromHeader(t *testing.T) {
 	if result["isError"] == true {
 		t.Fatalf("a default-bank read failed: %v", result)
 	}
+}
+
+// rawText reads the verbatim text of a tool result's first content entry.
+func rawText(t *testing.T, result map[string]any) string {
+	t.Helper()
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("result carries no content: %v", result)
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	return text
 }

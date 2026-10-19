@@ -10,8 +10,8 @@ func (s *MemoryStore) runArm(arm string, q RecallQuery, types []string, term str
 		return nil
 	}
 	// The graph arm does not score memories by their own text: it reaches the
-	// ones connected to what the lexical arms already matched. It therefore
-	// runs from those seeds rather than from the bank's rows.
+	// ones connected to the memories the dense arm already matched. It
+	// therefore runs from those seeds rather than from the bank's rows.
 	if arm == ArmGraph {
 		hits := s.runGraphArm(q, types, term)
 		sortHits(hits)
@@ -49,7 +49,7 @@ func sortHits(hits []recallHit) {
 	})
 }
 
-// Graph-arm bounds. Spreading walks outward from the lexical seeds, so it is
+// Graph-arm bounds. Spreading walks outward from the dense seeds, so it is
 // bounded in both depth and breadth: an unbounded walk from a well-connected
 // seed would drag in most of the bank.
 const (
@@ -58,8 +58,8 @@ const (
 	graphIterationCap = 2
 	// graphSeedLimit bounds how many seeds the walk starts from. Upstream
 	// starts from the cosine-nearest handful (GRAPH_SEED_LIMIT = 20) rather than
-	// from every lexical match, so a broad lexical hit set does not fan the walk
-	// out from weak seeds.
+	// from every dense hit, so a broad tail does not fan the walk out from weak
+	// seeds.
 	graphSeedLimit = 20
 	// graphEntitySaturation is the upstream entity-saturation rate: a candidate
 	// sharing n entities with the seeds weights tanh(n * 0.5), which maps
@@ -67,14 +67,14 @@ const (
 	graphEntitySaturation = 0.5
 )
 
-// runGraphArm reaches the memories connected to the memories the lexical arms
+// runGraphArm reaches the memories connected to the memories the dense arm
 // already matched, scoring each by the strength of the path that reached it.
 //
 // A result surfaced here is neither semantically nor lexically similar to the
 // query — that is the point, since a fact linked to a relevant one is often
 // relevant itself without sharing its wording.
 func (s *MemoryStore) runGraphArm(q RecallQuery, types []string, term string) []recallHit {
-	if term == "" || !graphSeedsAllowed(q, s.tuning.GraphSeedMinSimilarity) {
+	if term == "" {
 		return nil
 	}
 	seeds := s.graphSeeds(q, types, term)
@@ -107,17 +107,20 @@ func (s *MemoryStore) runGraphArm(q RecallQuery, types []string, term string) []
 	return hits
 }
 
-// graphSeeds collects the memories the lexical arms match, which are where the
-// graph walk starts. Only the strongest graphSeedLimit seed the walk: upstream
-// starts from the cosine-nearest handful, and with no embeddings the offline
-// lexical score is the stand-in, so the same cap keeps the two backends alike.
+// graphSeeds collects the memories the semantic arm matches, which are where the
+// graph walk starts — the lexical arm never seeds it, matching the PostgreSQL
+// arm. Only the strongest graphSeedLimit seed the walk, and only those clearing
+// the configured seed floor: upstream starts from the cosine-nearest handful
+// above `graph_seed_min_similarity`, and with no embeddings the offline lexical
+// score is that arm's stand-in, so the same floor and cap keep the two backends
+// alike.
 func (s *MemoryStore) graphSeeds(q RecallQuery, types []string, term string) []recallHit {
 	seeds := make([]recallHit, 0)
 	for _, m := range s.memories[q.BankID] {
 		if !containsString(types, m.Type) || !s.tagScopeAllows(q, m) {
 			continue
 		}
-		if score, ok := armScore(ArmSemantic, m, term); ok && score > 0 {
+		if score, ok := armScore(ArmSemantic, m, term); ok && score >= s.tuning.GraphSeedMinSimilarity {
 			seeds = append(seeds, recallHit{match: m, score: score})
 		}
 	}

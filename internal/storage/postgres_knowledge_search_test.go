@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -186,5 +187,38 @@ func TestPostgresKnowledgeDeleteSubtreeCycleSafe(t *testing.T) {
 	}
 	if _, err := store.GetKnowledgeNode(ctx, "vec-bank", "cyc-b"); !errors.Is(err, ErrKnowledgeNodeNotFound) {
 		t.Fatalf("cyc-b still present after cascade: %v", err)
+	}
+}
+
+// The tree's sibling order is the reference's: sort_order, then the name by code
+// point. The comparison cannot be left to ORDER BY, because a UTF-8 collation
+// orders case-insensitively — it puts "a" before "Alpha" where the reference
+// (sorting in Python) puts "Alpha" first — and both the tree and the export
+// index render this order.
+func TestPostgresKnowledgeListOrderIsCodePoint(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+	for id, name := range map[string]string{"ord-a": "a", "ord-A": "Alpha", "ord-e": "EmbA", "ord-z": "Zeta"} {
+		putKnowledge(t, store, KnowledgeNode{ID: id, BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: name})
+	}
+	// A non-zero sort_order places the node after the zeros whatever its name says.
+	putKnowledge(t, store, KnowledgeNode{ID: "ord-late", BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: "zzz", SortOrder: 1})
+
+	nodes, err := store.ListKnowledgeNodes(ctx, "vec-bank")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.BankID == "vec-bank" {
+			got = append(got, node.Title)
+		}
+	}
+	// sort_order ascends first, so the node that sets it (1) trails the zeros;
+	// the names then order by code point, which is where a database collation
+	// would have disagreed.
+	want := []string{"Alpha", "EmbA", "Zeta", "a", "zzz"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
 	}
 }

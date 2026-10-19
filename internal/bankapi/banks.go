@@ -84,12 +84,12 @@ func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawID := r.PathValue("bank_id")
-	var req BankRequest
-	if err := httpx.DecodeBody(r, &req); err != nil {
+	req, fieldItems, err := decodeBankBody(r)
+	if err != nil && !carriesValidationItems(err) {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	if failure := ValidateCreate(req); failure != nil {
+	if failure := ValidateCreate(req, fieldItems); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
@@ -159,16 +159,20 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "change the bank's mission or config") {
 		return
 	}
-	bankID, ok := h.resolveCanonical(w, r)
+	// The id is resolved for aliases but its existence is checked only after
+	// the body is validated: the reference validates the request model before
+	// its handler runs, so a malformed body is a 422 even for a bank that is
+	// not there.
+	bankID, ok := h.resolveAlias(w, r)
 	if !ok {
 		return
 	}
-	var req BankRequest
-	if err := httpx.DecodeBody(r, &req); err != nil {
+	req, fieldItems, err := decodeBankBody(r)
+	if err != nil && !carriesValidationItems(err) {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	if failure := ValidatePatch(req); failure != nil {
+	if failure := ValidatePatch(req, fieldItems); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
@@ -204,6 +208,18 @@ func (h *Handlers) DeleteBank(w http.ResponseWriter, r *http.Request) {
 		Message:      "Bank '" + bankID + "' and all associated data deleted successfully",
 		DeletedCount: deleted,
 	})
+}
+
+// resolveAlias rewrites a bank-scoped path parameter to the id an alias points
+// at, without requiring the bank to exist. It reports false only when the store
+// itself failed.
+func (h *Handlers) resolveAlias(w http.ResponseWriter, r *http.Request) (string, bool) {
+	bankID, err := h.Store.ResolveBankID(r.Context(), r.PathValue("bank_id"))
+	if err != nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
+		return "", false
+	}
+	return bankID, true
 }
 
 // resolveCanonical rewrites a bank-scoped path parameter to its canonical

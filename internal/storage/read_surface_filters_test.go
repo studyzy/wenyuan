@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -166,5 +169,117 @@ func TestMemoryInvalidateAndRevert(t *testing.T) {
 	}
 	if restored.Total != 1 || restored.Memories[0].InvalidatedAt != nil {
 		t.Fatalf("revert must restore the live view: %+v", restored)
+	}
+}
+
+// A chunk identifier is the chunks table's key, so a chunk is resolved by that
+// identifier alone, wherever its bank sits in the listing: the addressed chunk
+// route has no bank in its path. The lookup must therefore not depend on a page
+// of the bank listing, or a chunk in a bank past that page is unreachable.
+func TestMemoryFindChunkIgnoresTheBankPageWindow(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore("public")
+	seedRetained(t, store, "Alice moved to Berlin.", "doc-1", nil)
+	page, err := store.ListChunks(ctx, ChunkQuery{BankID: "b1", DocumentID: "doc-1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Chunks) == 0 {
+		t.Fatal("the retained document has no chunks")
+	}
+	chunkID := page.Chunks[0].ChunkID
+
+	// Banks created after the fixture sort ahead of it, filling a
+	// ListBanks(Limit: 500) page of their own.
+	for i := range 500 {
+		filler := fmt.Sprintf("filler-%03d", i)
+		if _, err := store.CreateBank(ctx, Bank{BankID: filler, Name: "Filler"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	banks, err := store.ListBanks(ctx, BankQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(banks.Banks) != 500 {
+		t.Fatalf("bank page = %d rows, want the window to be full", len(banks.Banks))
+	}
+	for _, listed := range banks.Banks {
+		if listed.BankID == "b1" {
+			t.Fatal("the fixture bank is still inside the first page of the bank listing")
+		}
+	}
+
+	chunk, err := store.FindChunk(ctx, chunkID)
+	if err != nil {
+		t.Fatalf("find chunk %s: %v", chunkID, err)
+	}
+	if chunk.BankID != "b1" || chunk.DocumentID != "doc-1" {
+		t.Fatalf("chunk = %+v, want its own bank and document", chunk)
+	}
+	if _, err := store.FindChunk(ctx, "no-such-chunk"); !errors.Is(err, ErrChunkNotFound) {
+		t.Fatalf("unknown chunk error = %v, want ErrChunkNotFound", err)
+	}
+}
+
+// document_metadata is the document's metadata value as it stands. The
+// reference keeps it only inside retain_params.metadata and serves that member
+// through a truth test, so a value that is present is echoed even when it is
+// not an object, and one that is present but empty reads as no metadata.
+func TestMemoryDocumentMetadataFollowsRetainParams(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore("public")
+	cases := []struct {
+		name   string
+		retain map[string]any
+		want   any
+	}{
+		{"object", map[string]any{"metadata": map[string]any{"source": "slack"}}, map[string]any{"source": "slack"}},
+		{"string", map[string]any{"metadata": "slack"}, "slack"},
+		{"array", map[string]any{"metadata": []any{"a", "b"}}, []any{"a", "b"}},
+		{"number", map[string]any{"metadata": float64(3)}, float64(3)},
+		{"empty object", map[string]any{"metadata": map[string]any{}}, nil},
+		{"empty array", map[string]any{"metadata": []any{}}, nil},
+		{"null", map[string]any{"metadata": nil}, nil},
+		{"absent", map[string]any{"context": "notes"}, nil},
+		{"supplied", nil, "slack"},
+	}
+	for i, tc := range cases {
+		docID := fmt.Sprintf("doc-%d", i)
+		doc := Document{OriginalText: "body", RetainParams: tc.retain}
+		if tc.retain == nil {
+			// A caller may supply the metadata value itself instead of the
+			// retain parameters it is kept in; the write merges it there.
+			doc.Metadata = tc.want
+		}
+		if _, err := store.PutDocument(ctx, "b1", docID, doc); err != nil {
+			t.Fatal(err)
+		}
+		if tc.retain == nil {
+			stored, err := store.GetDocument(ctx, "b1", docID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored.RetainParams["metadata"], tc.want) {
+				t.Fatalf("%s: retain_params member = %#v, want %#v", tc.name, stored.RetainParams["metadata"], tc.want)
+			}
+		}
+		doc, err := store.GetDocument(ctx, "b1", docID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(doc.Metadata, tc.want) {
+			t.Fatalf("%s: detail metadata = %#v, want %#v", tc.name, doc.Metadata, tc.want)
+		}
+		list, err := store.ListDocuments(ctx, DocumentQuery{BankID: "b1", Query: docID, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Documents) != 1 {
+			t.Fatalf("%s: listed %d documents, want 1", tc.name, len(list.Documents))
+		}
+		if !reflect.DeepEqual(list.Documents[0].Metadata, tc.want) {
+			t.Fatalf("%s: listed metadata = %#v, want %#v", tc.name, list.Documents[0].Metadata, tc.want)
+		}
 	}
 }

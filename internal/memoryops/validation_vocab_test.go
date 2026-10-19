@@ -165,21 +165,108 @@ func TestRetainBadTimestampReportsFieldLevelValueError(t *testing.T) {
 	}
 }
 
-// The observation-scope form validator reports at its own path too.
-func TestRetainBadObservationScopesReportsFieldLevelValueError(t *testing.T) {
+// The observation-scope field is a union of the named modes and a list of tag
+// groups, and the reference reports both branches' failures — the literal set
+// first, then the list, whose own elements are named per position. These are the
+// bodies the live reference serves for the same requests.
+func TestRetainBadObservationScopesReportsBothUnionBranches(t *testing.T) {
 	mux, _ := newServer(t)
-	item := decodeVocab(t, post(t, mux, "/v1/default/banks/b1/memories",
-		`{"items":[{"content":"x","observation_scopes":5}]}`))[0]
-	if item.Type != "value_error" {
-		t.Fatalf("type = %q, want value_error", item.Type)
+	cases := []struct {
+		value string
+		want  string
+	}{
+		{
+			`"bogus"`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":"bogus","ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]"],` +
+				`"msg":"Input should be a valid list","input":"bogus"}]}`,
+		},
+		{
+			`5`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":5,"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]"],` +
+				`"msg":"Input should be a valid list","input":5}]}`,
+		},
+		{
+			`true`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":true,"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]"],` +
+				`"msg":"Input should be a valid list","input":true}]}`,
+		},
+		{
+			`{}`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":{},"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]"],` +
+				`"msg":"Input should be a valid list","input":{}}]}`,
+		},
+		{
+			`["a","b"]`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":["a","b"],"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]",0],` +
+				`"msg":"Input should be a valid list","input":"a"},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]",1],` +
+				`"msg":"Input should be a valid list","input":"b"}]}`,
+		},
+		{
+			`[["a"],5]`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":[["a"],5],"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"list_type","loc":["body","items",0,"observation_scopes","list[list[str]]",1],` +
+				`"msg":"Input should be a valid list","input":5}]}`,
+		},
+		{
+			`[["a",5]]`,
+			`{"detail":[` +
+				`{"type":"literal_error","loc":["body","items",0,"observation_scopes",` +
+				`"literal['per_tag','combined','all_combinations','shared']"],` +
+				`"msg":"Input should be 'per_tag', 'combined', 'all_combinations' or 'shared'",` +
+				`"input":[["a",5]],"ctx":{"expected":"'per_tag', 'combined', 'all_combinations' or 'shared'"}},` +
+				`{"type":"string_type","loc":["body","items",0,"observation_scopes","list[list[str]]",0,1],` +
+				`"msg":"Input should be a valid string","input":5}]}`,
+		},
 	}
-	want := []any{"body", "items", float64(0), "observation_scopes"}
-	if len(item.Loc) != len(want) {
-		t.Fatalf("loc = %v, want %v", item.Loc, want)
+	for _, tc := range cases {
+		body := `{"items":[{"content":"x","observation_scopes":` + tc.value + `}]}`
+		rec := post(t, mux, "/v1/default/banks/b1/memories", body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("scopes=%s: status = %d, body = %s", tc.value, rec.Code, rec.Body.String())
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != tc.want {
+			t.Errorf("scopes=%s:\n got %s\nwant %s", tc.value, got, tc.want)
+		}
 	}
-	for i := range want {
-		if item.Loc[i] != want[i] {
-			t.Fatalf("loc = %v, want %v", item.Loc, want)
+}
+
+// Both accepted observation-scope forms still pass validation.
+func TestRetainAcceptsBothObservationScopeForms(t *testing.T) {
+	mux, _ := newServer(t)
+	for _, value := range []string{`"per_tag"`, `[["a"]]`, `[]`, `[[]]`} {
+		body := `{"items":[{"content":"hello world","observation_scopes":` + value + `}]}`
+		if rec := post(t, mux, "/v1/default/banks/b1/memories", body); rec.Code != http.StatusOK {
+			t.Fatalf("scopes=%s: status = %d, body = %s", value, rec.Code, rec.Body.String())
 		}
 	}
 }

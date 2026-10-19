@@ -69,7 +69,7 @@ func TestMetricsScopeLabelsAndInProgressName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathMetrics, nil))
 	body := rec.Body.String()
-	want := `hindsight_http_requests_in_progress_requests{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0`
+	want := `hindsight_http_requests_in_progress_requests{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("in-progress series missing:\n%s", body)
 	}
@@ -82,7 +82,7 @@ func TestMetricsRendersRequestSeries(t *testing.T) {
 	recorder.Observe(http.MethodGet, "/v1/default/banks/{bank_id}", http.StatusOK, 0)
 	rec := serveMetrics(&MetricsHandler{Recorder: recorder})
 	body := rec.Body.String()
-	want := `hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1`
+	want := `hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("request total series missing:\n%s", body)
 	}
@@ -120,9 +120,9 @@ func TestMetricsEndpointLabelEndToEnd(t *testing.T) {
 	body := rec.Body.String()
 
 	for _, want := range []string{
-		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1`,
-		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="POST",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="405"} 1`,
-		`hindsight_http_requests_total{endpoint="unmatched",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="404"} 1`,
+		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`,
+		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="POST",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="405"} 1.0`,
+		`hindsight_http_requests_total{endpoint="unmatched",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="404"} 1.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing series %q in body:\n%s", want, body)
@@ -158,8 +158,8 @@ func TestMetricsTenantLabel(t *testing.T) {
 	}
 	body := serveMetrics(h).Body.String()
 	for _, want := range []string{
-		`hindsight_http_requests_total{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200",tenant="tenant_a"} 1`,
-		`wenyuan_gauge{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",tenant="tenant_a"} 1`,
+		`hindsight_http_requests_total{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200",tenant="tenant_a"} 1.0`,
+		`wenyuan_gauge{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",tenant="tenant_a"} 1.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in body:\n%s", want, body)
@@ -201,13 +201,15 @@ func TestMetricsLabelledSamples(t *testing.T) {
 	}
 }
 
-// A histogram family renders its buckets (including +Inf), sum and count, each
-// series carrying the scope labels.
+// A histogram family renders its buckets (including +Inf), then its count and
+// its sum, each series carrying the scope labels. Bucket bounds and counts are
+// rendered as the reference's floats do — a whole value keeps its ".0", so a
+// bound is the same label value ("1.0") on both sides.
 func TestMetricsHistogramFamily(t *testing.T) {
 	h := &MetricsHandler{Histograms: func() []Histogram {
 		return []Histogram{{
 			Name:    "hindsight_event_loop_lag_seconds",
-			Buckets: []float64{0.001, 0.005},
+			Buckets: []float64{0.001, 1.0},
 			Counts:  []uint64{1, 2},
 			Sum:     0.01,
 			Count:   2,
@@ -217,14 +219,66 @@ func TestMetricsHistogramFamily(t *testing.T) {
 	const scope = `otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""`
 	for _, want := range []string{
 		"# TYPE hindsight_event_loop_lag_seconds histogram",
-		`hindsight_event_loop_lag_seconds_bucket{le="0.001",` + scope + `} 1`,
-		`hindsight_event_loop_lag_seconds_bucket{le="0.005",` + scope + `} 2`,
-		`hindsight_event_loop_lag_seconds_bucket{le="+Inf",` + scope + `} 2`,
+		`hindsight_event_loop_lag_seconds_bucket{le="0.001",` + scope + `} 1.0`,
+		`hindsight_event_loop_lag_seconds_bucket{le="1.0",` + scope + `} 2.0`,
+		`hindsight_event_loop_lag_seconds_bucket{le="+Inf",` + scope + `} 2.0`,
+		`hindsight_event_loop_lag_seconds_count{` + scope + `} 2.0`,
 		`hindsight_event_loop_lag_seconds_sum{` + scope + `} 0.01`,
-		`hindsight_event_loop_lag_seconds_count{` + scope + `} 2`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in body:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, "_count{") > strings.Index(body, "_sum{") {
+		t.Fatalf("count must precede sum, as the reference's exposition orders them:\n%s", body)
+	}
+}
+
+// The exposition's numbers are the reference's text, not Go's: a whole value
+// keeps the ".0" CPython's repr writes, and a large positive magnitude is
+// re-spelled in exponent form the way the reference exporter does.
+func TestExpositionFloatFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{0, "0.0"},
+		{1, "1.0"},
+		{23, "23.0"},
+		{-3, "-3.0"},
+		{0.005, "0.005"},
+		{0.036437034606933594, "0.036437034606933594"},
+		{33665024, "3.3665024e+07"},
+		{6038089728, "6.038089728e+09"},
+		{100000, "100000.0"},
+		{1000000, "1e+06"},
+		{1e16, "1e+16"},
+		{1e-5, "1e-05"},
+	} {
+		if got := formatValue(tc.in); got != tc.want {
+			t.Errorf("formatValue(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A histogram bound is a label value, so its text must match the reference's
+// byte for byte: a whole bound keeps its ".0", which is what keeps "1.0" and
+// "1" from being two different series.
+func TestHistogramBoundaryFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{0, "0.0"},
+		{1, "1.0"},
+		{10, "10.0"},
+		{30, "30.0"},
+		{10000, "10000.0"},
+		{2.5, "2.5"},
+		{0.025, "0.025"},
+	} {
+		if got := formatBoundary(tc.in); got != tc.want {
+			t.Errorf("formatBoundary(%v) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

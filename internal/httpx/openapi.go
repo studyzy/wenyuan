@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -117,6 +118,9 @@ func (r *Router) mountDescriptorNamespace() {
 	basePath := r.options.BasePath
 	writeBody := func(w http.ResponseWriter, contentType, body string) {
 		w.Header().Set("Content-Type", contentType)
+		// The reference's descriptor routes are ordinary Starlette responses, so
+		// a body of any size is framed with its length rather than chunked.
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(body))
 	}

@@ -78,6 +78,18 @@ func StoredFileKeyForBank(bankID, name string) string {
 	return "banks/" + encodeSegment(bankID) + "/" + encodeSegment(name)
 }
 
+// ExportStorageKey builds the storage key for a bank's transfer/export archive.
+//
+// The layout matches the reference's own
+// "banks/{bank}/exports/{export}/transfer.zip", so a deployment that shares the
+// object store with the reference addresses the same object from either side.
+// The export segment is the operation id, which keeps two exports of one bank
+// apart, and every segment is encoded independently so a bank identifier cannot
+// escape its own prefix.
+func ExportStorageKey(bankID, exportID string) string {
+	return "banks/" + encodeSegment(bankID) + "/exports/" + encodeSegment(exportID) + "/transfer.zip"
+}
+
 // AttachmentStorageKey is where one document's copy of an attachment lives.
 // The document is part of the key because an attachment belongs to its
 // document: two documents carrying the same image hold two copies, so deleting

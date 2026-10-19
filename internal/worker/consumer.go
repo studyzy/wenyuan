@@ -167,6 +167,39 @@ func isExplicitDeferral(err error) bool {
 	return ok
 }
 
+// retryAtError is a retry that names its own delay and consumes one attempt.
+// It is the reference's RetryTaskAt: the attempt is recorded (so the count and
+// the error text advance, and a caller reading the record sees how many tries
+// have been spent) while the delay is the caller's own ladder rather than the
+// generic backoff. Unlike a deferral it is not exempt from the attempt budget;
+// the processor enforces its own ceiling, exactly as the reference's webhook
+// handler does.
+type retryAtError struct {
+	delay time.Duration
+	cause error
+}
+
+func (e *retryAtError) Error() string { return e.cause.Error() }
+func (e *retryAtError) Unwrap() error { return e.cause }
+
+// RetryAt marks an error as a retry consuming one attempt, scheduled at an
+// explicit delay.
+func RetryAt(delay time.Duration, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &retryAtError{delay: delay, cause: err}
+}
+
+// retryAtDelay returns the explicit retry delay, if the error asked for one.
+func retryAtDelay(err error) (time.Duration, bool) {
+	var target *retryAtError
+	if errors.As(err, &target) {
+		return target.delay, true
+	}
+	return 0, false
+}
+
 // Permanent marks an error as non-retryable.
 func Permanent(err error) error {
 	if err == nil {
@@ -555,6 +588,13 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		c.recordOperation(op, false, time.Since(started))
 		return
 	}
+	if delay, ok := retryAtDelay(err); ok {
+		// A retry that named its own delay: it records the failed attempt and
+		// advances the count, so the caller's ladder walks toward its own
+		// ceiling instead of re-running the first rung forever.
+		c.retryAt(ctx, op, delay, err, sink.metadata)
+		return
+	}
 	if isBackpressure(err) || isDeferral(err) {
 		// A store that is shedding load, or a handler that asked for a deferral
 		// (a provider rate limit, say), is a transient condition, not a failure
@@ -680,6 +720,20 @@ func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error,
 	}
 	c.cfg.Logger.Info("operation scheduled for retry",
 		"operation_id", op.OperationID, "attempt", attempt, "next_retry_at", next)
+}
+
+// retryAt reschedules an operation at the delay the processor named, recording
+// the failed attempt and its cause — the reference's RetryTaskAt. The attempt
+// count advances, so a caller's ladder reaches its own ceiling; the budget is
+// the processor's, not the consumer's, because the delay is.
+func (c *Consumer) retryAt(ctx context.Context, op storage.Operation, delay time.Duration, cause error, metadata map[string]any) {
+	next := c.cfg.Now().Add(delay)
+	if err := c.scheduleRetry(ctx, op, op.RetryCount+1, next, cause.Error(), metadata); err != nil {
+		c.reportSettleLapse(op, "schedule-retry", err)
+		return
+	}
+	c.cfg.Logger.Info("operation scheduled for retry",
+		"operation_id", op.OperationID, "attempt", op.RetryCount+1, "next_retry_at", next)
 }
 
 // wait pauses before the next empty poll, waking early on shutdown.

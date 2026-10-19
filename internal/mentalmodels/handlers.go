@@ -132,39 +132,33 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body CreateRequest
-	object, failure := decodeBody(r, &body)
+	object, bodyErrors, failure := requestItems(r, &body)
 	if failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	// name and source_query are required (pydantic `str` with no default); an
-	// absent key, or an explicit null, is the framework's missing-field item.
-	// The reference's model reports every failing field in one envelope, in the
-	// model's declaration order, so a body that omits a required field and
-	// carries an out-of-range value is described by both items.
-	var bodyErrors []httpx.ValidationError
-	if body.Name == nil {
-		bodyErrors = append(bodyErrors, httpx.Missing([]string{"body", "name"}, object))
+	decodeInto(object, &body)
+	// The request model's contract supplies the items for its members — including
+	// name and source_query, which are required (a pydantic `str` with no
+	// default, so an absent key or an explicit null is the framework's
+	// missing-field item) — in the order the framework files them at this route:
+	// name, source_query, tags, then the trigger. The shared walk files no numeric
+	// bound, so max_tokens' range is checked here and appended after those and
+	// before the trigger's items, which is where the reference puts it.
+	if items := maxTokensItems(body.MaxTokens, object["max_tokens"]); len(items) > 0 {
+		bodyErrors = append(bodyErrors, items...)
 	}
-	if body.SourceQuery == nil {
-		bodyErrors = append(bodyErrors, httpx.Missing([]string{"body", "source_query"}, object))
-	}
-	maxTokens := defaultMentalModelTokens
-	if body.MaxTokens != nil {
-		if failure := maxTokensFailure(*body.MaxTokens); failure != nil {
-			bodyErrors = append(bodyErrors, failure.Errors...)
-		} else {
-			maxTokens = *body.MaxTokens
-		}
+	trigger, triggerFailure := parseTrigger(body.Trigger, true)
+	if triggerFailure != nil {
+		bodyErrors = append(bodyErrors, triggerFailure.Errors...)
 	}
 	if len(bodyErrors) > 0 {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: bodyErrors})
 		return
 	}
-	trigger, failure := parseTrigger(body.Trigger, true)
-	if failure != nil {
-		httpx.WriteValidationFailure(w, failure)
-		return
+	maxTokens := defaultMentalModelTokens
+	if body.MaxTokens != nil {
+		maxTokens = *body.MaxTokens
 	}
 	id := newID()
 	if body.ID != nil && strings.TrimSpace(*body.ID) != "" {
@@ -256,15 +250,31 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body UpdateRequest
-	if _, failure := decodeBody(r, &body); failure != nil {
+	object, bodyErrors, failure := requestItems(r, &body)
+	if failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	if body.MaxTokens != nil {
-		if failure := maxTokensFailure(*body.MaxTokens); failure != nil {
-			httpx.WriteValidationFailure(w, failure)
-			return
+	decodeInto(object, &body)
+	// Like every request model in this family, the reference reports every
+	// failing field in one envelope; the walk supplies them in declaration order.
+	// Unlike the create route, a patch files its items in strict declaration
+	// order — name, source_query, max_tokens, tags, trigger — so the bound is
+	// placed ahead of the walk's tags item.
+	bodyErrors = insertBeforeLoc(bodyErrors, []string{"body", "tags"},
+		maxTokensItems(body.MaxTokens, object["max_tokens"]))
+	var triggerPatch map[string]any
+	hasTrigger := len(body.Trigger) > 0 && string(body.Trigger) != "null"
+	if hasTrigger {
+		parsed, failure := parseTrigger(body.Trigger, false)
+		if failure != nil {
+			bodyErrors = append(bodyErrors, failure.Errors...)
 		}
+		triggerPatch = parsed
+	}
+	if len(bodyErrors) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: bodyErrors})
+		return
 	}
 	patch := storage.MentalModelPatch{
 		Name:        body.Name,
@@ -272,12 +282,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		Tags:        body.Tags,
 		MaxTokens:   body.MaxTokens,
 	}
-	if len(body.Trigger) > 0 && string(body.Trigger) != "null" {
-		triggerPatch, failure := parseTrigger(body.Trigger, false)
-		if failure != nil {
-			httpx.WriteValidationFailure(w, failure)
-			return
-		}
+	if hasTrigger {
 		current, err := h.Store.GetMentalModel(r.Context(), bankID, id)
 		if err != nil {
 			httpx.WriteErrorFor(w, r, h.modelError(id, err))

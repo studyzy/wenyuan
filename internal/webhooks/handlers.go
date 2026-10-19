@@ -113,12 +113,11 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The framework validates the body before the handler runs, so a rejected
-	// body is a 422 that precedes the webhook identifier's own 422/404.
+	// body is a 422 that precedes the webhook identifier's own 422/404. The
+	// identifier is parsed next — before the body is inspected for a field to
+	// update, which is the reference's order: a malformed identifier is refused
+	// whether or not the body named anything.
 	input, failure, noFields := validateUpdateBody(r)
-	if noFields {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, "No fields provided to update"))
-		return
-	}
 	if failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
@@ -127,11 +126,33 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if noFields {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, "No fields provided to update"))
+		return
+	}
 	if input.url != nil {
 		if err := h.Guard.Validate(*input.url); err != nil {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, err.Error()))
 			return
 		}
+	}
+	// A null on a member the update model admits reaches the reference's write
+	// unprepared: http_config is dereferenced while the statement is built, and
+	// the other three are written into a NOT NULL column. Both are its 500, and
+	// the 404 falls out of the statement matching no row. The status codes are
+	// reproduced here; the detail is this service's own internal-error wording
+	// rather than the reference's driver text (see docs/CONTRACT-AUDIT.md §5).
+	if input.nullHTTPConfig {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
+		return
+	}
+	if input.nullColumn != "" {
+		if _, err := h.Store.GetWebhook(r.Context(), bankID, webhookID); err != nil {
+			httpx.WriteErrorFor(w, r, asHTTPError(err))
+			return
+		}
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
+		return
 	}
 	record, err := h.Store.UpdateWebhook(r.Context(), bankID, webhookID, storage.WebhookPatch{
 		URL: input.url, Secret: input.secret, ClearSecret: input.clearSecret,
@@ -281,9 +302,10 @@ func parseDeliveryLimit(r *http.Request) (int, *httpx.ValidationFailure) {
 	if !present || len(values) == 0 {
 		return 50, nil
 	}
-	parsed, err := strconv.Atoi(values[0])
+	raw := lastQueryValue(values)
+	parsed, err := strconv.Atoi(raw)
 	if err != nil {
-		item := httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, values[0])
+		item := httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, raw)
 		return 0, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
 	}
 	if parsed > 200 {
@@ -300,7 +322,7 @@ func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx
 	if !present || len(values) == 0 {
 		return 0, false, nil
 	}
-	raw := values[0]
+	raw := lastQueryValue(values)
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
 		item := httpx.TypeMismatch("int_parsing", []string{"query", key}, raw)
@@ -315,6 +337,13 @@ func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx
 		return 0, false, &item
 	}
 	return parsed, true, nil
+}
+
+// lastQueryValue returns the value a scalar query parameter binds to. The
+// reference binds the LAST occurrence of a repeated key (`?limit=1&limit=2` →
+// 2), so reading the first would answer a request the reference refuses.
+func lastQueryValue(values []string) string {
+	return values[len(values)-1]
 }
 
 // pageSlice returns one page of a slice.

@@ -250,13 +250,18 @@ var llmHealthOperations = []string{"retain", "consolidation", "reflect"}
 // HealthLLM reports whether the bank's model path is usable, probing the
 // provider once and reporting the same result per operation.
 func (h *Handlers) HealthLLM(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	// The disabled check comes first: it reads a process setting, so it is a
+	// property of the deployment rather than of the bank, and the reference
+	// answers it before the bank is looked up (api/http.py:6695-6699) -- an
+	// unknown bank on a deployment with the check off is "disabled", not
+	// "not found".
 	if !h.BankLLMHealthEnabled {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
 			"Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable."))
+		return
+	}
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
 		return
 	}
 	status, ok, latencyMS := h.probeLLM(r.Context())
@@ -320,20 +325,26 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	// The reference reports a missing bank before refusing a scoped caller.
-	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
-		return
-	}
+	// The date parameters are bound in the reference's handler *signature*
+	// (`_parse_iso_datetime`, api/http.py:10583-10586 and 10659-10662), which
+	// FastAPI resolves before the body runs -- so a malformed date is answered
+	// 400 before the bank is looked up, and an unknown bank with a bad date is a
+	// 400 rather than a 404.
 	startDate, ok := parseDateParam(w, r, "start_date")
 	if !ok {
 		return
 	}
 	endDate, ok := parseDateParam(w, r, "end_date")
 	if !ok {
+		return
+	}
+
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
+		return
+	}
+	// The reference reports a missing bank before refusing a scoped caller.
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
 		return
 	}
 	page, err := h.Store.ListAuditLog(r.Context(), storage.AuditQuery{
@@ -381,10 +392,9 @@ func (h *Handlers) AuditLogStats(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
 		return
 	}
-	period := httpx.Query(r, "period")
-	if period == "" {
-		period = "7d"
-	}
+	// The default applies only when the key is absent: `?period=` binds the
+	// empty string, which is what the response echoes back.
+	period := chartPeriod(r)
 	stats, err := h.Store.AuditLogStats(r.Context(), bankID, period, httpx.Query(r, "action"))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -413,20 +423,26 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	// The reference reports a missing bank before refusing a scoped caller.
-	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
-		return
-	}
+	// The date parameters are bound in the reference's handler *signature*
+	// (`_parse_iso_datetime`, api/http.py:10583-10586 and 10659-10662), which
+	// FastAPI resolves before the body runs -- so a malformed date is answered
+	// 400 before the bank is looked up, and an unknown bank with a bad date is a
+	// 400 rather than a 404.
 	startDate, ok := parseDateParam(w, r, "start_date")
 	if !ok {
 		return
 	}
 	endDate, ok := parseDateParam(w, r, "end_date")
 	if !ok {
+		return
+	}
+
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
+		return
+	}
+	// The reference reports a missing bank before refusing a scoped caller.
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
 		return
 	}
 	params := r.URL.Query()
@@ -498,10 +514,7 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
 		return
 	}
-	period := httpx.Query(r, "period")
-	if period == "" {
-		period = "7d"
-	}
+	period := chartPeriod(r)
 	stats, err := h.Store.LLMRequestStats(r.Context(), bankID, period, httpx.Query(r, "operation"))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -540,6 +553,11 @@ func (h *Handlers) DeleteObservations(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
+	// Clearing observations changes the counts the bank summary reports, so the
+	// cached summary is dropped; the reference invalidates it here too, or a poll
+	// in the next TTL window would serve observations that no longer exist. The
+	// memory-scoped clear below deliberately does not, matching the reference.
+	invalidateBankStats(r.Context(), h.Store, bankID)
 	httpx.WriteJSON(w, http.StatusOK, DeleteResponse{
 		Success: true, Message: fmt.Sprintf("Cleared %d observations", removed), DeletedCount: removed,
 	})
@@ -579,32 +597,6 @@ func (h *Handlers) ObservationScopes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ClearMemoryObservations removes the observations derived from one memory.
-//
-// The bank is not required to exist: the reference resolves the memory by id
-// alone, so a delete against an unknown bank clears zero rows and reports it
-// rather than 404ing the bank.
-func (h *Handlers) ClearMemoryObservations(w http.ResponseWriter, r *http.Request) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
-	if memoryID == "" {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "memory not found"))
-		return
-	}
-	// The memory must be one the caller may change: outside its read scope the
-	// memory reads as not-found, and a visible one whose tags the caller may not
-	// write is refused with 403. Without a scope this is a no-op.
-	if !h.requireWritableMemory(w, r, bankID, memoryID) {
-		return
-	}
-	removed, err := h.Store.DeleteObservations(r.Context(), bankID, memoryID)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, ClearMemoryObservationsResponse{DeletedCount: removed})
-}
-
 // ConsolidationPreview reports which of the bank's existing observation scopes
 // each draft consolidation strategy would apply to.
 func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) {
@@ -624,6 +616,15 @@ func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) 
 	var raw any
 	if err := json.Unmarshal(body, &raw); err != nil {
 		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, body))
+		return
+	}
+	// A body that is the JSON literal null reads as an absent required body: the
+	// framework reports the field missing rather than a value it cannot extract
+	// fields from. A list or scalar body keeps the model_attributes_type item.
+	if raw == nil {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.Missing([]string{"body"}, nil),
+		}})
 		return
 	}
 	obj, ok := raw.(map[string]any)
@@ -667,10 +668,10 @@ func (h *Handlers) ConsolidationRecover(w http.ResponseWriter, r *http.Request) 
 	if httpx.RefuseBankWideIfScoped(w, r, "retry the bank's failed consolidation") {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	// The reference's retry is one UPDATE filtered by bank_id: it never checks
+	// that the bank exists, so an unknown bank retries nothing and answers 200
+	// with a zero count rather than 404ing.
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	retried, err := h.Store.RecoverConsolidations(r.Context(), bankID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -683,7 +684,7 @@ func (h *Handlers) ConsolidationRecover(w http.ResponseWriter, r *http.Request) 
 func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 	// The reference validates the optional body before the handler runs, so a
 	// malformed or wrong-shaped body is a 422 even for an unknown bank.
-	scopes, ok := parseConsolidationRequest(w, r)
+	scopes, scoped, ok := parseConsolidationRequest(w, r)
 	if !ok {
 		return
 	}
@@ -696,7 +697,14 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	op, deduplicated, err := h.Store.EnqueueConsolidation(r.Context(), bankID, scopes...)
+	var op storage.Operation
+	var deduplicated bool
+	var err error
+	if scoped {
+		op, deduplicated, err = enqueueScopedConsolidation(r.Context(), h.Store, bankID, scopes)
+	} else {
+		op, deduplicated, err = h.Store.EnqueueConsolidation(r.Context(), bankID)
+	}
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -704,6 +712,37 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, ConsolidationResponse{
 		OperationID: op.OperationID, Deduplicated: deduplicated,
 	})
+}
+
+// scopedConsolidationEnqueuer is the optional capability a store provides to
+// submit a scoped consolidation whose scope list may be empty.
+type scopedConsolidationEnqueuer interface {
+	EnqueueConsolidationScoped(ctx context.Context, bankID string, observationScopes [][]string) (storage.Operation, bool, error)
+}
+
+// enqueueScopedConsolidation submits a scoped consolidation pass. A store that
+// implements the scoped capability is asked directly, so an explicit but empty
+// scope list stays a scoped (never deduplicated) run; a store without it falls
+// back to the variadic enqueue with a non-nil list, which carries the scopes and
+// likewise never deduplicates.
+func enqueueScopedConsolidation(ctx context.Context, store storage.Store, bankID string, scopes [][]string) (storage.Operation, bool, error) {
+	if enqueuer, ok := store.(scopedConsolidationEnqueuer); ok {
+		return enqueuer.EnqueueConsolidationScoped(ctx, bankID, scopes)
+	}
+	if scopes == nil {
+		scopes = [][]string{}
+	}
+	return store.EnqueueConsolidation(ctx, bankID, scopes...)
+}
+
+// invalidateBankStats drops a bank's cached summary through the optional
+// capability a store provides, so the next stats read recomputes.
+func invalidateBankStats(ctx context.Context, store storage.Store, bankID string) {
+	if invalidator, ok := store.(interface {
+		InvalidateBankStats(ctx context.Context, bankID string)
+	}); ok {
+		invalidator.InvalidateBankStats(ctx, bankID)
+	}
 }
 
 // consolidationRequest is the consolidation route's optional body: the tag
@@ -715,41 +754,41 @@ type consolidationRequest struct {
 }
 
 // parseConsolidationRequest reads the optional consolidation body and returns
-// its observation scopes. An absent or null body yields no scopes (a full-bank
-// pass); a body the reference's model rejects is answered with that model's
-// items through the shared decoder.
-func parseConsolidationRequest(w http.ResponseWriter, r *http.Request) ([][]string, bool) {
+// its observation scopes together with whether the body was a scoped submit. An
+// absent or null body yields no scopes and reports scoped=false (a full-bank
+// pass); a body that names observation_scopes — even an empty list — reports
+// scoped=true, since the reference treats a present list as a targeted run that
+// must not deduplicate against a pending full-bank pass. A body the reference's
+// model rejects is answered with that model's items through the shared decoder.
+func parseConsolidationRequest(w http.ResponseWriter, r *http.Request) ([][]string, bool, bool) {
 	body, err := readOptionalBody(r)
 	if err != nil {
 		writeRequiredBodyFailure(w, r, err)
-		return nil, false
+		return nil, false, false
 	}
 	trimmed := strings.TrimSpace(string(body))
 	// The declared body is optional and nullable, so an absent body and the
 	// JSON literal null both mean "the whole bank" rather than a missing field.
 	if trimmed == "" || trimmed == "null" {
-		return nil, true
+		return nil, false, true
 	}
 	// The walk reports every value the model refuses — a body that is not an
 	// object, a member that is not a list of lists of strings — with the
 	// vocabulary, location and input the reference serves.
 	if items := httpx.ValidationItemsAgainstRequest(r, &consolidationRequest{}, body); len(items) > 0 {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
-		return nil, false
+		return nil, false, false
 	}
 	var req consolidationRequest
 	if _, err := httpx.DecodeLax(body, &req); err != nil {
 		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, body))
-		return nil, false
+		return nil, false, false
 	}
-	// A non-empty list is a scoped submit: it must not deduplicate against a
-	// pending full-bank pass. (An explicitly empty list is indistinguishable
-	// from an absent one through the variadic enqueue, so both mean a full-bank
-	// pass; the reference treats an empty list as a scoped no-op run.)
-	if len(req.ObservationScopes) == 0 {
-		return nil, true
-	}
-	return req.ObservationScopes, true
+	// A present list is a scoped submit whether or not it is empty: an empty
+	// list is a targeted run matching no memory, which the reference submits
+	// without deduplication, not a full-bank sweep. A null or absent member
+	// decodes to a nil slice and stays a full-bank pass.
+	return req.ObservationScopes, req.ObservationScopes != nil, true
 }
 
 // parseDateParam reads an optional ISO-8601 query parameter, writing a
@@ -808,7 +847,8 @@ func strictBoolParam(w http.ResponseWriter, r *http.Request, name string, def bo
 	if !present || len(values) == 0 {
 		return def, true
 	}
-	raw := values[0]
+	// The reference binds the LAST occurrence of a repeated scalar parameter.
+	raw := values[len(values)-1]
 	switch strings.ToLower(raw) {
 	case "true", "1", "yes", "on", "t", "y":
 		return true, true

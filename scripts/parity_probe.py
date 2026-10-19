@@ -12,6 +12,10 @@ shapes on empty banks, gate wording, descriptor routes, MCP transport errors.
 
 Everything is read-only except the fixture it creates and deletes: one bank, a
 second one for the clone/transfer targets, and the objects it posts to them.
+Each run names its fixture banks after its own pid (or `--run-id`), so two probes
+against the same deployment cannot see each other's fixtures — without that, one
+run's `reflect` creates the bank a concurrent run's `recall` then finds, and both
+report a difference that is only the other run's state.
 Timestamps and generated ids are normalised away, so a difference reported here
 is a difference in shape or wording, not in clock time.
 
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -72,8 +77,36 @@ def is_measurement(key):
     return key in MEASUREMENTS or key.endswith("_tokens")
 
 
+# Feature flags a deployment sets for itself rather than something a client reads
+# as a contract: two services are expected to differ when one of them runs
+# without an embedded worker (`scripts/parity_dev_service.sh` switches it off so a
+# sandbox cannot consume the real deployment's queue). The version response is
+# compared with these members blanked; their presence is still checked.
+DEPLOYMENT_SETTINGS = {"features.worker"}
+
+
+def without_deployment_settings(value):
+    """Blank the feature flags that describe a deployment's own configuration."""
+    if not isinstance(value, dict) or not isinstance(value.get("features"), dict):
+        return value
+    value = dict(value)
+    value["features"] = {
+        key: ("<SETTING>" if f"features.{key}" in DEPLOYMENT_SETTINGS else item)
+        for key, item in value["features"].items()
+    }
+    return value
+
+
 def request(base, method, path, body=None, key=None, content_type="application/json", headers=None):
     """Issue one request, returning (status, parsed body or text)."""
+    status, payload, _, _ = request_full(base, method, path, body, key, content_type, headers)
+    return status, payload
+
+
+def request_full(base, method, path, body=None, key=None, content_type="application/json", headers=None):
+    """Issue one request, returning (status, parsed body or text, response
+    headers lower-cased by name, and the response body length in bytes). The
+    header and length results let a check compare framing instead of a body."""
     data = body.encode() if isinstance(body, str) else None
     req = urllib.request.Request(base + path, data=data, method=method)
     if key:
@@ -87,15 +120,35 @@ def request(base, method, path, body=None, key=None, content_type="application/j
         with urllib.request.urlopen(req, timeout=30) as response:
             payload = response.read()
             status = response.status
+            raw_headers = response.headers
     except urllib.error.HTTPError as error:
         payload = error.read()
         status = error.code
+        raw_headers = error.headers
     except Exception as error:  # noqa: BLE001 - the status is the datum
-        return 0, f"<transport error: {error}>"
+        return 0, f"<transport error: {error}>", {}, 0
+    response_headers = {name.lower(): value for name, value in (raw_headers or {}).items()}
     try:
-        return status, json.loads(payload.decode("utf-8", "replace"))
+        parsed = json.loads(payload.decode("utf-8", "replace"))
     except Exception:  # noqa: BLE001 - a non-JSON body is compared as text
-        return status, payload.decode("utf-8", "replace")
+        parsed = payload.decode("utf-8", "replace")
+    return status, parsed, response_headers, len(payload)
+
+
+def header_view(response_headers, body_length, names):
+    """Reduce a response to the headers a check names, for a comparison across
+    deployments. Content-Length is compared as its self-consistency (does the
+    header equal the body length?) rather than as one number, because the two
+    deployments' bodies can differ in length while both must still frame the
+    body; every other named header is compared by value, with an absent header
+    rendering as None."""
+    view = {}
+    for name in names:
+        if name == "content-length":
+            view[name] = response_headers.get(name) == str(body_length)
+        else:
+            view[name] = response_headers.get(name)
+    return view
 
 
 # Count-bearing envelopes whose values legitimately differ between two services
@@ -138,7 +191,7 @@ def _nested_keys(value, depth):
 # Differences that are documented elsewhere rather than fixable here, printed
 # under their own heading and not counted as failures.
 KNOWN_DIFFERENCES = {
-    "health": "the readiness payload's db_pool_waiting has no Go equivalent (database/sql exposes no waiter count)",
+    "health": "the pool utilization counts are live measurements (each process reports its own idle/in-use connections), so they cannot agree across two processes; db_pool_waiting now matches",
     "health ready": "same as /health",
     "directive get missing": "driver error text only (asyncpg vs pgx); the status matches",
     "directive patch missing": "driver error text only (asyncpg vs pgx); the status matches",
@@ -167,8 +220,11 @@ def bank_list_shape(value):
     return shape
 
 
-def checks(bank: str, other: str, ghost: str):
-    """The request list. Every entry is (name, method, path, body-or-None)."""
+def checks(bank: str, other: str, ghost: str, clone_target: str):
+    """The request list. Every entry is (name, method, path, body-or-None), with
+    an optional request-headers dict and an optional list of response-header
+    names. An entry that names response headers is compared on its status and
+    those headers instead of on its body."""
     return [
         # Descriptor and monitoring surfaces.
         ("version", "GET", "/version", None),
@@ -178,7 +234,11 @@ def checks(bank: str, other: str, ghost: str):
         ("health live", "GET", "/health/live", None),
         ("bank template schema", "GET", "/v1/bank-template-schema", None),
         ("unknown route", "GET", "/v1/default/nope", None),
+        ("unknown route ignored params", "GET", "/v1/default/nope", None, None, ["x-ignored-params"]),
         ("wrong method", "POST", "/version", None),
+        ("wrong method ignored params", "POST", "/version", None, None, ["x-ignored-params"]),
+        ("version framing", "GET", "/version", None, None, ["content-length", "vary"]),
+        ("openapi framing", "GET", "/openapi.json", None, None, ["content-length", "vary"]),
         # Bank collection and lifecycle.
         ("banks list", "GET", "/v1/default/banks?limit=1", None),
         ("banks list q", "GET", "/v1/default/banks?q=zzz-none", None),
@@ -210,6 +270,7 @@ def checks(bank: str, other: str, ghost: str):
         ("config delete", "DELETE", f"/v1/default/banks/{bank}/config", None),
         # Memory collection and validation.
         ("memories list", "GET", f"/v1/default/banks/{bank}/memories/list", None),
+        ("memories list repeated limit", "GET", f"/v1/default/banks/{bank}/memories/list?limit=1&limit=50", None),
         ("memories list limit 0", "GET", f"/v1/default/banks/{bank}/memories/list?limit=0", None),
         ("memories list tags_match bogus", "GET", f"/v1/default/banks/{bank}/memories/list?tags_match=bogus", None),
         ("memories list consolidation bogus", "GET", f"/v1/default/banks/{bank}/memories/list?consolidation_state=bogus", None),
@@ -235,6 +296,12 @@ def checks(bank: str, other: str, ghost: str):
         ("reflect empty body", "POST", f"/v1/default/banks/{bank}/reflect", "{}"),
         ("reflect bad include", "POST", f"/v1/default/banks/{bank}/reflect", json.dumps({"query": "q", "include": None})),
         ("retain empty items", "POST", f"/v1/default/banks/{bank}/memories", json.dumps({"items": []})),
+        ("retain nested bad metadata", "POST", f"/v1/default/banks/{bank}/memories", json.dumps({"items": [{"content": "hi", "metadata": 5}]})),
+        ("retain item not object", "POST", f"/v1/default/banks/{bank}/memories", json.dumps({"items": [1]})),
+        # A valid lax body must be accepted (it used to panic). It writes a real
+        # document, so it targets the `other` bank and leaves the main probe
+        # bank's document list empty for the document checks that follow.
+        ("retain lax async word", "POST", f"/v1/default/banks/{other}/memories", json.dumps({"items": [{"content": "hi"}], "async": "yes"})),
         ("retain bad operation_id", "POST", f"/v1/default/banks/{bank}/memories", json.dumps({"items": [{"content": "x"}], "async": True, "operation_id": "nope"})),
         ("retain unknown field", "POST", f"/v1/default/banks/{bank}/memories", json.dumps({"items": [{"content": "x"}], "background": "b"})),
         ("retain clear unknown bank", "DELETE", f"/v1/default/banks/{ghost}/memories", None),
@@ -256,6 +323,7 @@ def checks(bank: str, other: str, ghost: str):
         ("prompts preview ghost bank", "POST", f"/v1/default/banks/{ghost}/prompts/preview", json.dumps({"operation": "retain"})),
         # Documents, chunks, tags.
         ("documents list", "GET", f"/v1/default/banks/{bank}/documents", None),
+        ("documents list repeated limit", "GET", f"/v1/default/banks/{bank}/documents?limit=1&limit=50", None),
         ("documents list limit 0", "GET", f"/v1/default/banks/{bank}/documents?limit=0", None),
         ("documents list time_field bogus", "GET", f"/v1/default/banks/{bank}/documents?time_field=bogus", None),
         ("documents list inverted window", "GET", f"/v1/default/banks/{bank}/documents?start_date=2025-01-02&end_date=2025-01-01", None),
@@ -280,6 +348,7 @@ def checks(bank: str, other: str, ghost: str):
         ("entity get bad id", "GET", f"/v1/default/banks/{bank}/entities/notauuid", None),
         ("entity regenerate", "POST", f"/v1/default/banks/{bank}/entities/00000000-0000-0000-0000-000000000000/regenerate", None),
         ("graph", "GET", f"/v1/default/banks/{bank}/graph", None),
+        ("graph repeated limit", "GET", f"/v1/default/banks/{bank}/graph?limit=1&limit=50", None),
         ("graph limit 0", "GET", f"/v1/default/banks/{bank}/graph?limit=0", None),
         ("graph tags_match bogus", "GET", f"/v1/default/banks/{bank}/graph?tags_match=bogus", None),
         # Mental models.
@@ -374,7 +443,7 @@ def checks(bank: str, other: str, ghost: str):
         ("transfer import missing", "POST", f"/v1/default/banks/{bank}/transfer/import", None),
         ("clone missing target", "POST", f"/v1/default/banks/{bank}/clone", None),
         ("clone self", "POST", f"/v1/default/banks/{bank}/clone?target_bank_id={bank}", None),
-        ("clone ghost source", "POST", f"/v1/default/banks/{ghost}/clone?target_bank_id=x1", None),
+        ("clone ghost source", "POST", f"/v1/default/banks/{ghost}/clone?target_bank_id={clone_target}", None),
         ("attachment missing", "GET", f"/v1/default/banks/{bank}/attachments/nope", None),
         ("download missing", "GET", "/v1/default/files/download/banks/b1/x.zip", None),
         ("download unclean", "GET", "/v1/default/files/download//banks/b1/x.zip", None),
@@ -395,30 +464,52 @@ def main() -> int:
     parser.add_argument("--reference-key", default="")
     parser.add_argument("--service", required=True)
     parser.add_argument("--service-key", default="")
-    parser.add_argument("--bank", default="parity-probe")
-    parser.add_argument("--other", default="parity-probe-other")
+    parser.add_argument("--bank", default="")
+    parser.add_argument("--other", default="")
+    parser.add_argument("--run-id", default="",
+                        help="suffix for the fixture banks (default: this process's pid, so "
+                             "two probes against the same deployment cannot see each other's "
+                             "fixtures)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    bank, other = args.bank, args.other
+    run_id = args.run_id or str(os.getpid())
+    bank = args.bank or f"parity-probe-{run_id}"
+    other = args.other or f"parity-probe-other-{run_id}"
     ghost = bank + "-ghost"
+    clone_target = f"parity-clone-{run_id}"
+    fixtures = (bank, other, ghost, clone_target)
     for base, key in ((args.reference, args.reference_key), (args.service, args.service_key)):
-        for name in (bank, other, ghost):
+        for name in fixtures:
             request(base, "DELETE", f"/v1/default/banks/{name}", key=key)
 
     same = differing = known = 0
-    for entry in checks(bank, other, ghost):
+    for entry in checks(bank, other, ghost, clone_target):
         name, method, path, body = entry[:4]
         headers = entry[4] if len(entry) > 4 else None
-        want = request(args.reference, method, path, body, args.reference_key, headers=headers)
-        got = request(args.service, method, path, body, args.service_key, headers=headers)
-        if name == "banks list":
-            want = (want[0], bank_list_shape(want[1]))
-            got = (got[0], bank_list_shape(got[1]))
-        if name in SHAPE_ONLY:
-            matches = want[0] == got[0] and shape_of(want[1]) == shape_of(got[1])
+        header_names = entry[5] if len(entry) > 5 else None
+        want_status, want_body, want_headers, want_length = request_full(
+            args.reference, method, path, body, args.reference_key, headers=headers
+        )
+        got_status, got_body, got_headers, got_length = request_full(
+            args.service, method, path, body, args.service_key, headers=headers
+        )
+        if header_names is not None:
+            want = (want_status, header_view(want_headers, want_length, header_names))
+            got = (got_status, header_view(got_headers, got_length, header_names))
+            matches = want == got
         else:
-            matches = want[0] == got[0] and normalise(want[1]) == normalise(got[1])
+            want = (want_status, want_body)
+            got = (got_status, got_body)
+            if name == "banks list":
+                want = (want[0], bank_list_shape(want[1]))
+                got = (got[0], bank_list_shape(got[1]))
+            if name in SHAPE_ONLY:
+                matches = want[0] == got[0] and shape_of(want[1]) == shape_of(got[1])
+            else:
+                matches = want[0] == got[0] and normalise(
+                    without_deployment_settings(want[1])
+                ) == normalise(without_deployment_settings(got[1]))
         if matches:
             same += 1
             if args.verbose:
@@ -434,7 +525,7 @@ def main() -> int:
         print(f"  service  [{got[0]}]: {json.dumps(got[1], ensure_ascii=False)[:300]}")
 
     for base, key in ((args.reference, args.reference_key), (args.service, args.service_key)):
-        for name in (bank, other, ghost):
+        for name in fixtures:
             request(base, "DELETE", f"/v1/default/banks/{name}", key=key)
 
     total = same + differing + known

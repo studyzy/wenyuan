@@ -9,6 +9,14 @@ export type DownloadGuardResult =
   | { allowed: true; path: string }
   | { allowed: false };
 
+/**
+ * The guard validates the decoded form and forwards the path exactly as it
+ * arrived. A stored-file key is opaque and may itself carry percent-escapes —
+ * a bank identifier the key encodes — and the upstream splits the path it
+ * receives rather than decoding it, so handing upstream the decoded form would
+ * address a key nothing is stored under. The decoded form is only what the
+ * prefix and traversal checks read.
+ */
 export function guardDownloadPath(requestedPath: string | undefined | null): DownloadGuardResult {
   if (!requestedPath) return { allowed: false };
   let decoded: string;
@@ -21,5 +29,5 @@ export function guardDownloadPath(requestedPath: string | undefined | null): Dow
   if (decoded !== UPSTREAM_DOWNLOAD_PREFIX && !decoded.startsWith(`${UPSTREAM_DOWNLOAD_PREFIX}/`)) {
     return { allowed: false };
   }
-  return { allowed: true, path: decoded };
+  return { allowed: true, path: requestedPath };
 }

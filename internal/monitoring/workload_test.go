@@ -287,6 +287,12 @@ func TestWorkloadLoopStall(t *testing.T) {
 	if duration.Count != 1 || duration.Sum != 1.5 {
 		t.Fatalf("stall duration = %d/%v", duration.Count, duration.Sum)
 	}
+	// The instrument is hindsight.event_loop.stalls with unit "stalls", but the
+	// reference's exporter appends the unit suffix only when the name does not
+	// already end with it, so the exposition name is hindsight_event_loop_stalls_total.
+	if EventLoopStallsName != "hindsight_event_loop_stalls_total" {
+		t.Fatalf("stall counter name %q, want the reference's rendered name", EventLoopStallsName)
+	}
 }
 
 // ts-d8-exposition: a recorded family reaches the exposition body with the
@@ -294,11 +300,39 @@ func TestWorkloadLoopStall(t *testing.T) {
 func TestWorkloadFamiliesInExposition(t *testing.T) {
 	Workload.ObserveOperation("recall", "api", "mid", "4096", true, 0.5)
 	body := string((&MetricsHandler{}).Exposition())
-	want := `hindsight_operation_operations_total{budget="mid",max_tokens="4096",operation="recall",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",source="api",success="true"} 1`
+	want := `hindsight_operation_operations_total{budget="mid",max_tokens="4096",operation="recall",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",source="api",success="true"} 1.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("operation total missing from exposition:\n%s", body)
 	}
 	if !strings.Contains(body, "# HELP hindsight_operation_duration_seconds Duration of Hindsight operations in seconds") {
 		t.Fatalf("operation duration family missing:\n%s", body)
+	}
+}
+
+// The stall counter is declared before any stall happens, so a healthy scrape
+// reports zero stalls rather than omitting the family. The reference declares
+// the instrument as it builds its collector (metrics.py:623), so its exposition
+// carries hindsight_event_loop_stalls_total 0.0 on a loop that never stalled;
+// a registry that only creates the series on the first stall reads as "no
+// data" where the reference reads "no stalls".
+func TestWorkloadLoopStallsDeclaredAtZero(t *testing.T) {
+	registry := NewWorkloadRegistry()
+	if registry.Samples() != nil {
+		t.Fatal("fresh registry must emit no counters")
+	}
+	registry.declareLoopStall()
+	stalls := findSample(t, registry.Samples(), EventLoopStallsName)
+	if stalls.Value != 0 || stalls.Labels != nil {
+		t.Fatalf("declared stalls = %v labels %v, want a zero-valued series", stalls.Value, stalls.Labels)
+	}
+	// A declared series still counts from zero when a stall is recorded.
+	registry.ObserveLoopStall(1.5)
+	if value := findSample(t, registry.Samples(), EventLoopStallsName).Value; value != 1 {
+		t.Fatalf("stalls after one recorded stall = %v, want 1", value)
+	}
+	// The duration histogram stays absent until a stall is observed: the
+	// reference renders a histogram family only from its observations.
+	if len(registry.Histograms()) != 1 {
+		t.Fatalf("only the observed duration family may render, got %v", registry.Histograms())
 	}
 }

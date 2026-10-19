@@ -287,15 +287,15 @@ var referenceRuntimeKeys = []referenceKey{
 		},
 		Reason: "only the native tsvector backend is implemented"},
 	{Name: EnvTextSearchExtensionNativeLanguage, Default: "english",
+		Resolve: func(c Config) any { return c.TextSearchExtensionNativeLanguage },
 		// The dictionary is embedded in the vector expression this build writes
 		// and in every query it makes, and the reference's generated columns
 		// carry it too, so a dictionary is a schema-level choice rather than a
-		// query-level one. Only the default is honoured; naming it explicitly is
-		// not a divergence and is therefore accepted.
-		UnsupportedWhen: func(value string) bool {
-			return !strings.EqualFold(strings.TrimSpace(value), "english")
-		},
-		Reason: "only the english text-search dictionary is implemented"},
+		// query-level one. The reference lowercases the value and validates it as
+		// a PostgreSQL identifier; that check runs where the expression is built,
+		// and a well-formed name of a dictionary the server does not have is
+		// accepted here and surfaces as the server's own error at query time.
+	},
 	{Name: EnvTextSearchPGFunctionSchema, Default: "paradedb", Resolve: func(c Config) any { return c.DBTuning.PGFunctionSchema }},
 	{Name: EnvTextSearchPGTokenizer, Default: "", Resolve: func(c Config) any { return c.DBTuning.PGTokenizer }},
 	{Name: EnvTokenizerEncoding, Default: DefaultTokenizerEncoding, Resolve: func(c Config) any { return c.TokenizerEncoding }},

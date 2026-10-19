@@ -1,10 +1,12 @@
 package memoryops
 
 import (
+	"bytes"
 	"context"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -126,6 +128,145 @@ func TestFileRetainBatchBytesLimit(t *testing.T) {
 // `internal/app`, because the file route always processes asynchronously: the
 // attachment row and the stored bytes are written by the queued operation, not
 // by the request. A unit test here can only observe the enqueue.
+
+// An empty parser name is a name, not "no parser requested": the reference
+// resolves it to a one-element chain that fails the allowlist, and so does this.
+func TestFileRetainEmptyStringParserRejected(t *testing.T) {
+	for _, body := range []string{`{"parser":""}`, `{"files_metadata":[{"parser":""}]}`} {
+		mux, _ := configuredServer(t, nil)
+		rec := uploadWithRequest(t, mux, "notes.txt", "body", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400, body = %s", body, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "['']") {
+			t.Fatalf("%s: the refusal must name the empty parser: %s", body, rec.Body.String())
+		}
+	}
+}
+
+// An empty files_metadata list is absent, not a zero-length alignment: the
+// reference's truthiness test skips the count check, so the upload succeeds.
+func TestFileRetainEmptyMetadataListNotAMismatch(t *testing.T) {
+	mux, _ := configuredServer(t, nil)
+	rec := uploadWithRequest(t, mux, "notes.txt", "body", `{"files_metadata":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The reference's request gates run in a fixed order: the file count is checked
+// before the files_metadata alignment and the request-level parser, so a request
+// that trips several names the count.
+func TestFileRetainCountGatePrecedesOtherGates(t *testing.T) {
+	cases := []string{
+		`{"files_metadata":[{"tags":["x"]}]}`,
+		`{"parser":"nope"}`,
+	}
+	for _, request := range cases {
+		mux, _ := configuredServer(t, func(h *Handlers) { h.MaxFileBatchCount = 1 })
+		req := uploadRequestWith(t, map[string]string{"a.txt": "alpha", "b.txt": "beta"}, request)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400, body = %s", request, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "Too many files") {
+			t.Fatalf("%s: the count gate must run first: %s", request, rec.Body.String())
+		}
+	}
+}
+
+// uploadRequestWith builds one multipart request carrying several files and the
+// given `request` form field.
+func uploadRequestWith(t *testing.T, files map[string]string, request string) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		part, err := writer.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.WriteField("request", request); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+// A bad per-file parser is named before the batch byte bound, which the
+// reference checks only after it has validated every file's chain.
+func TestFileRetainParserGatePrecedesBatchBytes(t *testing.T) {
+	mux, _ := configuredServer(t, func(h *Handlers) { h.MaxFileBatchBytes = 4 })
+	rec := uploadWithRequest(t, mux, "notes.txt", strings.Repeat("x", 64), `{"files_metadata":[{"parser":"nope"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "nope") {
+		t.Fatalf("the parser gate must run before the byte gate: %s", rec.Body.String())
+	}
+}
+
+// A multipart body with neither part reports both, in declaration order; one
+// with only the request reports just the files part.
+func TestFileRetainMissingPartsReportedInOrder(t *testing.T) {
+	cases := []struct {
+		name    string
+		parts   []string
+		missing []string
+	}{
+		{"neither", nil, []string{"files", "request"}},
+		{"files only", []string{"files"}, []string{"request"}},
+	}
+	for _, tc := range cases {
+		mux, _ := configuredServer(t, nil)
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		for _, name := range tc.parts {
+			part, err := writer.CreateFormFile(name, "a.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write([]byte("body")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: status = %d, want 422, body = %s", tc.name, rec.Code, rec.Body.String())
+		}
+		for _, want := range tc.missing {
+			if !strings.Contains(rec.Body.String(), `"`+want+`"`) {
+				t.Fatalf("%s: the refusal must name %s: %s", tc.name, want, rec.Body.String())
+			}
+		}
+		if tc.name == "neither" {
+			body := rec.Body.String()
+			if strings.Index(body, `"files"`) > strings.Index(body, `"request"`) {
+				t.Fatalf("missing parts must be declared in order: %s", body)
+			}
+		}
+	}
+}
 
 // uploadWithRequest posts one file with an optional `request` form field.
 func uploadWithRequest(t *testing.T, mux *http.ServeMux, filename, body, request string) *httptest.ResponseRecorder {

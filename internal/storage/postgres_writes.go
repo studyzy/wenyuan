@@ -34,7 +34,7 @@ func (s *PostgresStore) RecordWrite(ctx context.Context, req WriteRequest) (Writ
 	}
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
 	           (id, bank_id, text, search_vector, fact_type, metadata, document_id, tags)
-	           VALUES ($1,$2,$3,` + searchVectorExpr("$3", "''", "''") + `,$4,$5,$6,$7)`
+	           VALUES ($1,$2,$3,` + s.searchVectorExpr("$3", "''", "''") + `,$4,$5,$6,$7)`
 	if _, err := s.db.ExecContext(ctx, insert, memoryID, req.BankID, req.Content,
 		string(TypeWorld), "{}", nullString(req.DocumentID), req.Tags); err != nil {
 		return WriteResult{}, err
@@ -148,6 +148,46 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 	// contend with every other one.
 	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
 	row := s.db.QueryRowContext(ctx, query, op.OperationID, op.BankID, op.OperationType, string(op.Status), op.Error, op.RetryCount, metadata, payload, serializationKey)
+	return scanOperation(row)
+}
+
+// RestoreOperation records an operation keeping the timestamps it carries. An
+// import replays exported rows into a target, and the reference inserts each one
+// column for column, so a restored operation reports when it ran rather than
+// when it was restored; PutOperation stamps the current time and would rewrite
+// the history the archive carried.
+func (s *PostgresStore) RestoreOperation(ctx context.Context, op Operation) (Operation, error) {
+	if op.OperationID == "" {
+		op.OperationID = newID()
+	}
+	if op.Status == "" {
+		op.Status = StatusPending
+	}
+	metadata, err := marshalMetadata(op.ResultMetadata)
+	if err != nil {
+		return Operation{}, err
+	}
+	payload, err := marshalMetadata(op.Payload)
+	if err != nil {
+		return Operation{}, err
+	}
+	createdAt, updatedAt := op.CreatedAt, op.UpdatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
+	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
+	          (operation_id, bank_id, operation_type, status, error_message, retry_count,
+	           result_metadata, task_payload, serialization_key, created_at, updated_at)
+	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+	          ON CONFLICT (operation_id) DO NOTHING
+	          RETURNING ` + operationColumns
+	row := s.db.QueryRowContext(ctx, query, op.OperationID, op.BankID, op.OperationType,
+		string(op.Status), op.Error, op.RetryCount, metadata, payload, serializationKey,
+		createdAt, updatedAt)
 	return scanOperation(row)
 }
 
@@ -451,7 +491,7 @@ func (s *PostgresStore) retryBatchParent(ctx context.Context, parent Operation) 
 		return Operation{}, err
 	}
 	if !outstanding {
-		return parent, ErrOperationConflict
+		return parent, ErrBatchParentNoWork
 	}
 	revived, err := scanOperation(tx.QueryRowContext(ctx, `UPDATE `+qualified+`.async_operations
 	    SET status='pending', error_message='', completed_at=NULL, next_retry_at=NULL,

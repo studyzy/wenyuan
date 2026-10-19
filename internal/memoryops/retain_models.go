@@ -2,8 +2,11 @@ package memoryops
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +43,14 @@ type RetainItem struct {
 	// each at its own key. The reference's metadata is dict[str, str], so a
 	// non-string value is rejected rather than coerced or dropped.
 	metadataIssues []metadataIssue
+	// tagIssues records the tags-list elements that are not strings, so the
+	// field-level validator reports each at its own position rather than the
+	// element being dropped or the whole body failing to decode.
+	tagIssues []tagIssue
+	// raw is the item object the caller sent, so a rejection about a missing
+	// member can name the item verbatim — the framework reports the object the
+	// member was missing from as its input.
+	raw any
 	// updateModeInvalid records an update_mode outside the accepted literal set,
 	// so the field-level validator reports it instead of the write proceeding
 	// with an unrecognised value.
@@ -53,6 +64,20 @@ type RetainItem struct {
 	// storeInlineAttachments so the extractor can send them to the model. They
 	// are internal rather than wire fields.
 	Attachments []RetainAttachment `json:"-"`
+	// AttachmentFilenames are the names the caller gave this item's attachments,
+	// keyed by short id, set by storeInlineAttachments from the file blocks. A
+	// name describes the reference rather than the bytes, so it is recorded on
+	// the document's replayable parameters and restated by a reprocess.
+	AttachmentFilenames map[string]string `json:"-"`
+}
+
+// rawObject is the item object as the caller sent it, which a rejection about
+// one of its members carries as the item's input.
+func (r RetainItem) rawObject() any {
+	if r.raw != nil {
+		return r.raw
+	}
+	return map[string]any{}
 }
 
 // metadataIssue is one metadata member that fails the reference's dict[str, str]
@@ -78,19 +103,57 @@ type itemAlias RetainItem
 func (r *RetainItem) UnmarshalJSON(data []byte) error {
 	var alias itemAlias
 	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
+		// A `metadata` member that is not the object the contract pins is one of
+		// the item's own field rules, not a structural failure: the reference
+		// validates the item in one pass, so that failure is reported beside the
+		// sibling fields' rules rather than hiding them. The member is therefore
+		// left out of the decode and its failure is recorded below, which is what
+		// lets a body carrying it still name every other field rule. Any other
+		// failure keeps the shared decoder's abort, so the route renders the body
+		// from the request contract exactly as before.
+		rest, ok := withoutMember(data, "metadata")
+		if !ok || json.Unmarshal(rest, &alias) != nil {
+			return err
+		}
 	}
 	*r = RetainItem(alias)
+	r.raw = decodeAny(trimSpaceBytes(data))
 	var probe struct {
 		Metadata   json.RawMessage `json:"metadata"`
 		UpdateMode json.RawMessage `json:"update_mode"`
+		Tags       json.RawMessage `json:"tags"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
 	}
 	r.metadataIssues = metadataTypeIssues(probe.Metadata)
 	r.updateModeInvalid, r.updateModeInput = updateModeTypeIssue(probe.UpdateMode)
+	// The tags list is decoded again here only to collect the elements the
+	// `list[str]` member validation rejects; the decoded value above is what
+	// the write carries.
+	if _, issues, err := decodeTagList(probe.Tags); err == nil {
+		r.tagIssues = issues
+	}
 	return nil
+}
+
+// withoutMember re-encodes a JSON object without one member, so the rest of it
+// can be decoded on its own. It reports false when data is not an object or does
+// not carry the member, which is when there is nothing to leave out.
+func withoutMember(data []byte, member string) ([]byte, bool) {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return nil, false
+	}
+	if _, present := members[member]; !present {
+		return nil, false
+	}
+	delete(members, member)
+	rest, err := json.Marshal(members)
+	if err != nil {
+		return nil, false
+	}
+	return rest, true
 }
 
 // metadataTypeIssues reports the metadata members that fail the dict[str, str]
@@ -167,6 +230,32 @@ type Content struct {
 	Text   string
 	Blocks []ContentBlock
 	IsList bool
+	// blockIssues are the blocks the reference's content union rejected, filed
+	// at the paths its framework names them at. The list is decoded past them
+	// so the item's validation can report every failure in one pass, as the
+	// reference's own single validation pass does.
+	blockIssues []ContentBlockIssue
+	// raw is the value the caller sent, kept so a rejection names it verbatim.
+	raw any
+	// present records that the content member carried a value. A missing
+	// member is the model's "Field required" rejection, which the reference
+	// keeps distinct from a value that is present and empty.
+	present bool
+}
+
+// Present reports whether the item carried a content value at all.
+func (c Content) Present() bool { return c.present }
+
+// rawValue is the content value as the caller sent it, which is what the
+// reference's validation items carry as their `input`.
+func (c Content) rawValue() any {
+	if c.raw != nil {
+		return c.raw
+	}
+	if c.IsList {
+		return []any{}
+	}
+	return c.Text
 }
 
 // ContentBlock is one ordered content block. Type is "text", "image" or
@@ -178,6 +267,11 @@ type ContentBlock struct {
 	// content-addressed on its decoded bytes, so it renders as the canonical
 	// attachment placeholder instead of the raw bytes.
 	Source *AttachmentSource `json:"source,omitempty"`
+	// Filename is the name the caller gave a file block's attachment. The
+	// contract declares it on the file block only — an image block carries none
+	// — and it names the attachment for the model and for a later read, so it is
+	// kept for the retain to record.
+	Filename string `json:"filename,omitempty"`
 }
 
 // AttachmentSource is an inline base64 attachment payload, matching the
@@ -207,15 +301,278 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return nil
 	}
+	c.raw = decodeAny(trimmed)
 	if trimmed[0] == '"' {
+		c.present = true
 		return json.Unmarshal(data, &c.Text)
 	}
 	if trimmed[0] == '[' {
+		c.present = true
 		c.IsList = true
-		return json.Unmarshal(data, &c.Blocks)
+		// The block list is decoded by hand rather than into the block structs
+		// directly: the reference validates every block against the tagged
+		// union in one pass, so a block its model rejects is reported rather
+		// than aborting the decode or being silently accepted.
+		var blocks []json.RawMessage
+		if err := json.Unmarshal(trimmed, &blocks); err != nil {
+			return err
+		}
+		return c.decodeBlocks(blocks, c.raw)
 	}
 	return errors.New("content must be a string or a list of blocks")
 }
+
+// contentBlockModalPath is the loc segment the reference's framework files a
+// block's own field failures under: the union's list arm plus the variant tag.
+func contentBlockModalPath(index int, tag string) []string {
+	return []string{contentUnionPath, strconv.Itoa(index), tag}
+}
+
+// contentUnionPath is the loc segment naming the content union's list arm. The
+// framework builds it from the union's members, so it cannot drift from the
+// tags the union accepts.
+var contentUnionPath = "list[tagged-union[" + contentBlockTags[0] + "," +
+	contentBlockTags[1] + "," + contentBlockTags[2] + "]]"
+
+// contentBlockTags are the block discriminators the union accepts, in the order
+// the framework lists them in a refusal.
+var contentBlockTags = [3]string{"TextContentBlock", "ImageContentBlock", "FileContentBlock"}
+
+// contentMediaTypeRe mirrors the reference's MIME-shape check on an attachment
+// source's media type.
+var contentMediaTypeRe = regexp.MustCompile(`^[\w.+-]+/[\w.+-]+$`)
+
+// decodeBlocks validates and records each block of a block-form content value.
+// A block the union rejects is kept as an issue naming its path rather than a
+// decoded block, so the item's validation reports every failure at once.
+func (c *Content) decodeBlocks(blocks []json.RawMessage, whole any) error {
+	c.Blocks = make([]ContentBlock, 0, len(blocks))
+	for index, raw := range blocks {
+		trimmed := trimSpaceBytes(raw)
+		var members map[string]json.RawMessage
+		if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(trimmed, &members) != nil {
+			c.blockIssues = append(c.blockIssues, ContentBlockIssue{
+				Loc:   []string{contentUnionPath, strconv.Itoa(index)},
+				Kind:  "model_attributes_type",
+				Msg:   "Input should be a valid dictionary or object to extract fields from",
+				Input: decodeAny(trimmed),
+			})
+			continue
+		}
+		tagRaw, hasTag := members["type"]
+		var tag string
+		if hasTag && len(trimSpaceBytes(tagRaw)) > 0 && trimSpaceBytes(tagRaw)[0] == '"' {
+			_ = json.Unmarshal(tagRaw, &tag)
+		}
+		if !hasTag || tag == "" {
+			c.blockIssues = append(c.blockIssues, ContentBlockIssue{
+				Loc:   []string{contentUnionPath, strconv.Itoa(index)},
+				Kind:  "union_tag_not_found",
+				Msg:   "Unable to extract tag using discriminator 'type'",
+				Input: decodeAny(trimmed),
+				Ctx:   map[string]any{"discriminator": "'type'"},
+			})
+			continue
+		}
+		if tag != "text" && tag != "image" && tag != "file" {
+			tags := "'" + strings.Join(contentBlockTagNames, "', '") + "'"
+			c.blockIssues = append(c.blockIssues, ContentBlockIssue{
+				Loc:   []string{contentUnionPath, strconv.Itoa(index)},
+				Kind:  "union_tag_invalid",
+				Msg:   "Input tag '" + tag + "' found using 'type' does not match any of the expected tags: " + tags,
+				Input: decodeAny(trimmed),
+				Ctx:   map[string]any{"discriminator": "'type'", "expected_tags": tags, "tag": tag},
+			})
+			continue
+		}
+		block, issues := decodeContentBlock(index, tag, members, decodeAny(trimmed))
+		c.blockIssues = append(c.blockIssues, issues...)
+		c.Blocks = append(c.Blocks, block)
+	}
+	return nil
+}
+
+// contentBlockTagNames are the accepted tags as a caller reads them.
+var contentBlockTagNames = []string{"text", "image", "file"}
+
+// decodeContentBlock decodes one tagged block and reports its own field
+// failures at the paths the framework names them at.
+func decodeContentBlock(index int, tag string, members map[string]json.RawMessage,
+	whole any) (ContentBlock, []ContentBlockIssue) {
+	block := ContentBlock{Type: tag}
+	var issues []ContentBlockIssue
+	path := contentBlockModalPath(index, tag)
+	if tag == "text" {
+		text, present := members["text"]
+		switch {
+		case !present:
+			issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, path...), "text"),
+				Kind: "missing", Msg: "Field required", Input: whole})
+		case len(trimSpaceBytes(text)) == 0 || trimSpaceBytes(text)[0] != '"':
+			issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, path...), "text"),
+				Kind: "string_type", Msg: "Input should be a valid string", Input: decodeAny(trimSpaceBytes(text))})
+		default:
+			_ = json.Unmarshal(text, &block.Text)
+		}
+		return block, issues
+	}
+	rawSource, present := members["source"]
+	sourcePath := append(append([]string{}, path...), "source")
+	if !present {
+		issues = append(issues, ContentBlockIssue{Loc: sourcePath, Kind: "missing", Msg: "Field required", Input: whole})
+		return block, issues
+	}
+	trimmedSource := trimSpaceBytes(rawSource)
+	var sourceMembers map[string]json.RawMessage
+	if len(trimmedSource) == 0 || trimmedSource[0] != '{' || json.Unmarshal(trimmedSource, &sourceMembers) != nil {
+		issues = append(issues, ContentBlockIssue{Loc: sourcePath, Kind: "model_attributes_type",
+			Msg: "Input should be a valid dictionary or object to extract fields from", Input: decodeAny(trimmedSource)})
+		return block, issues
+	}
+	source := AttachmentSource{}
+	if rawType, ok := sourceMembers["type"]; ok {
+		raw := trimSpaceBytes(rawType)
+		if len(raw) == 0 || raw[0] != '"' || string(raw) != `"base64"` {
+			issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "type"),
+				Kind: "literal_error", Msg: "Input should be 'base64'",
+				Input: decodeAny(raw), Ctx: map[string]any{"expected": "'base64'"}})
+		} else {
+			source.Type = "base64"
+		}
+	}
+	if rawMedia, ok := sourceMembers["media_type"]; !ok {
+		issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "media_type"),
+			Kind: "missing", Msg: "Field required", Input: decodeAny(trimmedSource)})
+	} else if raw := trimSpaceBytes(rawMedia); len(raw) == 0 || raw[0] != '"' {
+		issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "media_type"),
+			Kind: "string_type", Msg: "Input should be a valid string", Input: decodeAny(raw)})
+	} else {
+		_ = json.Unmarshal(rawMedia, &source.MediaType)
+		if !contentMediaTypeRe.MatchString(source.MediaType) {
+			issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "media_type"),
+				Kind: "value_error", Msg: "Value error, media_type must look like 'type/subtype', got '" +
+					source.MediaType + "'", Input: source.MediaType, Ctx: map[string]any{"error": map[string]any{}}})
+		}
+	}
+	if rawData, ok := sourceMembers["data"]; !ok {
+		issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "data"),
+			Kind: "missing", Msg: "Field required", Input: decodeAny(trimmedSource)})
+	} else if raw := trimSpaceBytes(rawData); len(raw) == 0 || raw[0] != '"' {
+		issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, sourcePath...), "data"),
+			Kind: "string_type", Msg: "Input should be a valid string", Input: decodeAny(raw)})
+	} else {
+		_ = json.Unmarshal(rawData, &source.Data)
+	}
+	if tag == "file" {
+		if rawName, ok := members["filename"]; ok {
+			raw := trimSpaceBytes(rawName)
+			if len(raw) == 0 || string(raw) == "null" {
+				block.Filename = ""
+			} else if raw[0] != '"' {
+				issues = append(issues, ContentBlockIssue{Loc: append(append([]string{}, path...), "filename"),
+					Kind: "string_type", Msg: "Input should be a valid string", Input: decodeAny(raw)})
+			} else {
+				_ = json.Unmarshal(rawName, &block.Filename)
+			}
+		}
+	}
+	block.Source = &source
+	return block, issues
+}
+
+// ContentBlockIssue is one block the reference's content union rejects, filed
+// at the path the framework names it at.
+type ContentBlockIssue struct {
+	Loc   []string
+	Kind  string
+	Msg   string
+	Input any
+	Ctx   any
+}
+
+// CarriesContent reports whether the value holds anything to extract: a
+// non-blank string, or a block list with an attachment block or a non-blank
+// text block. Anything else is the reference's "content cannot be empty".
+func (c Content) CarriesContent() bool {
+	if !c.IsList {
+		return strings.TrimSpace(c.Text) != ""
+	}
+	for _, block := range c.Blocks {
+		if block.Type == "image" || block.Type == "file" {
+			return true
+		}
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// attachmentPayloadFailure reports the first attachment block whose payload the
+// reference cannot canonicalize: an empty payload or one that is not decodable
+// base64. pathPrefix is the loc prefix the sentence opens with. The reference
+// reports these as 400 request errors rather than validation items, because
+// they are raised while canonicalizing, after the model validated.
+func (c Content) attachmentPayloadFailure(pathPrefix string) string {
+	if !c.IsList {
+		return ""
+	}
+	for index, block := range c.Blocks {
+		if block.Type != "image" && block.Type != "file" {
+			continue
+		}
+		// A block with no source at all is the model's own "Field required"
+		// rejection, reported as a validation item before canonicalization runs.
+		if block.Source == nil {
+			continue
+		}
+		where := pathPrefix + "[" + strconv.Itoa(index) + "]"
+		if block.Source.Data == "" {
+			return where + ": attachment source data is empty"
+		}
+		if _, err := base64.StdEncoding.DecodeString(block.Source.Data); err != nil {
+			return where + ": attachment source data is not valid base64: Only base64 data is allowed"
+		}
+	}
+	return ""
+}
+
+// scrubPlaceholders strips placeholder-shaped substrings from caller-authored
+// text. Only the canonicalizer may mint a placeholder, so a caller that writes
+// the token by hand cannot have extraction resolve it to an attachment its
+// document never carried. allowedIds exempts the document's own attachments,
+// which makes re-sending a document's body an ordinary edit rather than a write
+// that silently deletes every screenshot in it.
+func scrubPlaceholders(text string, allowedIDs map[string]struct{}) string {
+	matches := placeholderLookalikeRe.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+	var out strings.Builder
+	cursor := 0
+	for _, match := range matches {
+		out.WriteString(text[cursor:match[0]])
+		token := text[match[0]:match[1]]
+		if full := placeholderRe.FindStringSubmatch(token); full != nil {
+			if _, ok := allowedIDs[full[1]]; ok {
+				out.WriteString(token)
+			}
+		}
+		cursor = match[1]
+	}
+	out.WriteString(text[cursor:])
+	return out.String()
+}
+
+var (
+	// placeholderRe matches a well-formed placeholder and captures its short id.
+	placeholderRe = regexp.MustCompile(regexp.QuoteMeta(placeholderOpen) + regexp.QuoteMeta(placeholderBody) +
+		"([0-9a-f]{" + strconv.Itoa(attachmentShortIDLength) + "})" + regexp.QuoteMeta(placeholderClose))
+	// placeholderLookalikeRe matches anything placeholder-shaped, well-formed
+	// or not, so authored text can never impersonate a real attachment.
+	placeholderLookalikeRe = regexp.MustCompile(regexp.QuoteMeta(placeholderOpen) + regexp.QuoteMeta(placeholderBody) +
+		"[^" + regexp.QuoteMeta(placeholderClose) + "]*" + regexp.QuoteMeta(placeholderClose))
+)
 
 // MarshalJSON emits the canonical string form or the ordered-block form.
 func (c Content) MarshalJSON() ([]byte, error) {
@@ -241,9 +598,50 @@ func (c Content) HasImage() bool {
 // canonical placeholder on its own paragraph, so the chunker's preferred
 // boundary falls either side of it and a rendered chunk keeps the caption and
 // image together.
+//
+// A text run is scrubbed of placeholder-shaped substrings the document does not
+// own, exactly as the plain-string form is: only the canonicalizer may mint a
+// placeholder, so one document cannot cite another's image by writing the token
+// itself.
 func (c Content) Flatten() string {
+	return c.flatten(nil)
+}
+
+// FlattenKeepingAttachments is Flatten for content this build assembled itself:
+// an upload that minted a placeholder for an attachment the same request
+// carried. The listed ids are exempt from the scrub, so the caller-authored
+// text is still scrubbed while the minted reference survives.
+func (c Content) FlattenKeepingAttachments(attachmentIDs []string) string {
+	exempt := make(map[string]struct{}, len(attachmentIDs))
+	for _, id := range attachmentIDs {
+		if id != "" {
+			exempt[id] = struct{}{}
+		}
+	}
+	return c.flatten(exempt)
+}
+
+func (c Content) flatten(exempt map[string]struct{}) string {
 	if !c.IsList {
-		return c.Text
+		// A plain string carries no attachments of its own, so only the ids the
+		// caller exempted survive; every other placeholder in it is authored
+		// text.
+		return scrubPlaceholders(c.Text, exempt)
+	}
+	// The exempt set is always non-nil: the blocks below mint their own
+	// placeholders, and a nil map would scrub those along with the authored
+	// ones.
+	allowed := make(map[string]struct{}, len(c.Blocks)+len(exempt))
+	for id := range exempt {
+		allowed[id] = struct{}{}
+	}
+	for _, block := range c.Blocks {
+		if block.Type != "image" && block.Type != "file" {
+			continue
+		}
+		if id := block.attachmentShortID(); id != "" {
+			allowed[id] = struct{}{}
+		}
 	}
 	body := ""
 	afterAttachment := false
@@ -262,7 +660,7 @@ func (c Content) Flatten() string {
 		if afterAttachment {
 			body = padToBlankLine(body)
 		}
-		body += block.Text
+		body += scrubPlaceholders(block.Text, allowed)
 		afterAttachment = false
 	}
 	return body
@@ -284,7 +682,9 @@ type InlineAttachment struct {
 	ShortID    string
 	MediaType  string
 	Kind       string
-	Data       []byte
+	// Filename is the name the caller gave the block, empty when it named none.
+	Filename string
+	Data     []byte
 }
 
 // InlineAttachments decodes the item's attachment blocks in order. A block
@@ -320,6 +720,7 @@ func (c Content) InlineAttachments() []InlineAttachment {
 			ShortID:    shortID,
 			MediaType:  mediaType,
 			Kind:       kind,
+			Filename:   block.Filename,
 			Data:       data,
 		})
 	}
@@ -436,11 +837,26 @@ type EntityInput struct {
 	// InvalidInput is the value the caller sent.
 	Invalid      bool `json:"-"`
 	InvalidInput any  `json:"-"`
+	// memberIssues records the failures the element's own fields raise, in the
+	// model's field order — text is the one required member — each with the
+	// value the caller sent. They are recorded rather than returned so a body
+	// whose other fields also fail is still described field by field.
+	memberIssues []entityMemberIssue
+}
+
+// entityMemberIssue is one rejected member of an entity element.
+type entityMemberIssue struct {
+	kind  string
+	field string
+	input any
 }
 
 // UnmarshalJSON accepts only the canonical object form. The bare-string form is
 // recorded as invalid rather than decoded: the reference's entities list takes
-// EntityInput objects, and a string element fails validation there.
+// EntityInput objects, and a string element fails validation there. An object
+// element is decoded member by member so its own field failures are recorded
+// beside the element's — an element with no text is a missing member, and one
+// whose text is not a string is a type failure.
 func (e *EntityInput) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -448,12 +864,35 @@ func (e *EntityInput) UnmarshalJSON(data []byte) error {
 		e.InvalidInput = decodeAny(trimmed)
 		return nil
 	}
-	type entityAlias EntityInput
-	var alias entityAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &members); err != nil {
 		return errors.New("entity must be an object with a text field")
 	}
-	*e = EntityInput(alias)
+	text, present := members["text"]
+	if !present {
+		e.memberIssues = append(e.memberIssues,
+			entityMemberIssue{kind: "missing", field: "text", input: decodeAny(trimmed)})
+	} else if raw := trimSpaceBytes(text); len(raw) == 0 || raw[0] != '"' {
+		e.memberIssues = append(e.memberIssues,
+			entityMemberIssue{kind: "string_type", field: "text", input: decodeAny(raw)})
+	} else if err := json.Unmarshal(raw, &e.Text); err != nil {
+		return errors.New("entity must be an object with a text field")
+	}
+	if kind, hasType := members["type"]; hasType {
+		raw := trimSpaceBytes(kind)
+		// A null type is the caller leaving the label unset, which the
+		// reference accepts as absent.
+		if len(raw) > 0 && string(raw) != "null" {
+			if raw[0] != '"' {
+				e.memberIssues = append(e.memberIssues,
+					entityMemberIssue{kind: "string_type", field: "type", input: decodeAny(raw)})
+				return nil
+			}
+			if err := json.Unmarshal(raw, &e.Type); err != nil {
+				return errors.New("entity must be an object with a text field")
+			}
+		}
+	}
 	return nil
 }
 
@@ -478,31 +917,67 @@ func (l EntityInputList) Texts() []string {
 // A bare non-JSON string is treated as a single tag.
 type TagList []string
 
-// UnmarshalJSON coerces the accepted tag forms into a list.
+// UnmarshalJSON coerces the accepted tag forms into a list. The per-element
+// failures the reference reports are collected by decodeTagList, which the
+// item decoder calls; a direct decode of the type accepts the forms as before.
 func (t *TagList) UnmarshalJSON(data []byte) error {
+	list, _, err := decodeTagList(data)
+	if err != nil {
+		return err
+	}
+	*t = list
+	return nil
+}
+
+// tagIssue is one element of a tags list the reference's `list[str]` member
+// validation rejects, named by its position in that list and carrying the value
+// the caller sent.
+type tagIssue struct {
+	index int
+	input any
+}
+
+// decodeTagList decodes the accepted tag forms into a list, reporting the
+// positions whose element is not a string instead of dropping or rejecting the
+// whole list: the reference's member validation names each bad element at its
+// own path, and the item's other fields are still reported beside it.
+func decodeTagList(data []byte) (TagList, []tagIssue, error) {
 	trimmed := trimSpaceBytes(data)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
-		return nil
+		return nil, nil, nil
 	}
-	if trimmed[0] == '[' {
-		var list []string
-		if err := json.Unmarshal(data, &list); err != nil {
-			return err
+	if trimmed[0] != '[' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return nil, nil, errors.New("tags must be a list or a string")
 		}
-		*t = list
-		return nil
+		// The string form is a JSON-encoded list when it parses as one; its
+		// elements are then held to the same `list[str]` rule as a real list,
+		// rather than the encoded text being taken on trust.
+		if encoded := trimSpaceBytes([]byte(text)); len(encoded) > 0 && encoded[0] == '[' {
+			return decodeTagList(encoded)
+		}
+		return TagList{text}, nil, nil
 	}
-	var text string
-	if err := json.Unmarshal(data, &text); err != nil {
-		return errors.New("tags must be a list or a string")
+	var elements []json.RawMessage
+	if err := json.Unmarshal(trimmed, &elements); err != nil {
+		return nil, nil, err
 	}
-	var list []string
-	if err := json.Unmarshal([]byte(text), &list); err == nil {
-		*t = list
-		return nil
+	list := make(TagList, 0, len(elements))
+	var issues []tagIssue
+	for index, element := range elements {
+		raw := trimSpaceBytes(element)
+		if len(raw) == 0 || raw[0] != '"' {
+			issues = append(issues, tagIssue{index: index, input: decodeAny(raw)})
+			continue
+		}
+		var tag string
+		if err := json.Unmarshal(raw, &tag); err != nil {
+			return nil, nil, err
+		}
+		list = append(list, tag)
 	}
-	*t = []string{text}
-	return nil
+	return list, issues, nil
 }
 
 // ObservationScopeModes are the named scope literals the write accepts.
@@ -541,21 +1016,48 @@ func (s ScopeList) RawJSON() json.RawMessage {
 }
 
 // UnmarshalJSON accepts the named literal and the list-of-groups forms. Any
-// other shape is recorded as invalid rather than aborting the decode.
+// other shape — a string outside the literal set included — is recorded as
+// invalid rather than aborting the decode, so the field-level validator reports
+// the union's own failures at the field's path.
 func (s *ScopeList) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return nil
 	}
-	if trimmed[0] == '"' {
-		if err := json.Unmarshal(data, &s.Mode); err != nil {
+	value := decodeAny(trimmed)
+	switch typed := value.(type) {
+	case string:
+		if !containsToken(ObservationScopeModes, typed) {
 			s.Invalid = true
-			s.InvalidInput = decodeAny(trimmed)
+			s.InvalidInput = value
 			return nil
 		}
-	} else if err := json.Unmarshal(data, &s.Groups); err != nil {
+		s.Mode = typed
+	case []any:
+		groups := make([][]string, 0, len(typed))
+		for _, element := range typed {
+			tags, ok := element.([]any)
+			if !ok {
+				s.Invalid = true
+				s.InvalidInput = value
+				return nil
+			}
+			group := make([]string, 0, len(tags))
+			for _, tag := range tags {
+				text, ok := tag.(string)
+				if !ok {
+					s.Invalid = true
+					s.InvalidInput = value
+					return nil
+				}
+				group = append(group, text)
+			}
+			groups = append(groups, group)
+		}
+		s.Groups = groups
+	default:
 		s.Invalid = true
-		s.InvalidInput = decodeAny(trimmed)
+		s.InvalidInput = value
 		return nil
 	}
 	s.raw = append(json.RawMessage(nil), trimmed...)

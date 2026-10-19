@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/extraction"
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -26,45 +28,45 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	// when the bank is unknown.
 	query := r.URL.Query()
 	if _, present := query["tags_match"]; present {
-		tagsMatch := httpx.Query(r, "tags_match")
+		tagsMatch := queryLast(r, "tags_match")
 		if !containsString(tagsMatchModes, tagsMatch) {
 			writeQueryEnumFailure(w, r, "tags_match", tagsMatch, tagsMatchModes)
 			return
 		}
 	}
 	if _, present := query["time_field"]; present {
-		timeField := httpx.Query(r, "time_field")
+		timeField := queryLast(r, "time_field")
 		if !containsString(memoryTimeFields, timeField) {
 			writeQueryEnumFailure(w, r, "time_field", timeField, memoryTimeFields)
 			return
 		}
 	}
 	if _, present := query["state"]; present {
-		state := httpx.Query(r, "state")
+		state := queryLast(r, "state")
 		if state != "valid" && state != "invalidated" {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 				fmt.Sprintf("Invalid state '%s': expected 'valid' or 'invalidated'.", state)))
 			return
 		}
 	}
-	rawConsolidationState := httpx.Query(r, "consolidation_state")
+	rawConsolidationState := queryLast(r, "consolidation_state")
 	consolidationState := strings.ToLower(rawConsolidationState)
 	if consolidationState != "" && !containsString(consolidationStates, consolidationState) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			fmt.Sprintf("Invalid consolidation_state '%s': expected 'failed', 'pending', or 'done'.", rawConsolidationState)))
 		return
 	}
-	entityID := httpx.Query(r, "entity_id")
+	entityID := queryLast(r, "entity_id")
 	if _, present := query["entity_id"]; present && !uuidAnyForm(entityID) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			fmt.Sprintf("Invalid entity_id: '%s' is not a valid UUID", entityID)))
 		return
 	}
-	start, ok := parseDateParam(w, r, "start_date")
+	start, ok := lastDateParam(w, r, "start_date")
 	if !ok {
 		return
 	}
-	end, ok := parseDateParam(w, r, "end_date")
+	end, ok := lastDateParam(w, r, "end_date")
 	if !ok {
 		return
 	}
@@ -87,20 +89,24 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tagsMatch := httpx.Query(r, "tags_match")
+	tagsMatch := queryLast(r, "tags_match")
 	if tagsMatch == "" {
 		tagsMatch = storage.TagsMatchAny
 	}
-	state := httpx.Query(r, "state")
-	timeField := httpx.Query(r, "time_field")
+	state := queryLast(r, "state")
+	timeField := queryLast(r, "time_field")
 	// The caller's resolved read scope is AND-ed into the tag filter, so a
 	// scoped reader pages over the memories it may read and the total agrees.
 	tagGroups, tags, tagsMatch := memoryops.ApplyMemoryTagScope(r, httpx.QueryValues(r, "tags"), tagsMatch)
+	// The filters are bound as the caller sent them: the reference hands the
+	// request model's values to the store, which treats only "" as absent, so a
+	// whitespace-padded value is a filter that matches nothing rather than one
+	// that was meant to be trimmed away.
 	page, err := h.Store.ListMemories(r.Context(), storage.MemoryQuery{
 		BankID:             bankID,
-		Type:               strings.TrimSpace(httpx.Query(r, "type")),
-		Q:                  strings.TrimSpace(httpx.Query(r, "q")),
-		DocumentID:         strings.TrimSpace(httpx.Query(r, "document_id")),
+		Type:               queryLast(r, "type"),
+		Q:                  queryLast(r, "q"),
+		DocumentID:         queryLast(r, "document_id"),
 		EntityID:           entityID,
 		Tags:               tags,
 		TagsMatch:          tagsMatch,
@@ -121,8 +127,15 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 		unitIDs = append(unitIDs, unit.ID)
 	}
 	// Entities are postings rather than a column on the unit, so one lookup
-	// answers for the whole page.
-	entityNames, err := h.Store.UnitEntityNames(r.Context(), bankID, unitIDs)
+	// answers for the whole page. The listing shows a unit's own postings: an
+	// observation, which carries none, reports no entities here even though its
+	// detail view inherits its sources'.
+	var entityNames map[string][]string
+	if direct, ok := h.Store.(directEntityStore); ok {
+		entityNames, err = direct.DirectUnitEntityNames(r.Context(), bankID, unitIDs)
+	} else {
+		entityNames, err = h.Store.UnitEntityNames(r.Context(), bankID, unitIDs)
+	}
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -155,6 +168,13 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// directEntityStore is implemented by a store that reports a unit's own entity
+// postings without the observation → source inheritance the detail read applies,
+// which is what the listing shows.
+type directEntityStore interface {
+	DirectUnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error)
+}
+
 // tagsMatchModes are the accepted tags_match values.
 var tagsMatchModes = []string{"any", "all", "any_strict", "all_strict", "exact"}
 
@@ -167,17 +187,27 @@ var consolidationStates = []string{"failed", "pending", "done"}
 // nonNegativeIntParam reads an optional integer query parameter with a default,
 // rejecting a malformed or negative value with the framework's 422 body.
 func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, def int) (int, bool) {
-	raw := strings.TrimSpace(httpx.Query(r, name))
+	raw := queryLast(r, name)
 	if raw == "" {
 		return def, true
 	}
-	value, err := strconv.Atoi(raw)
+	value64, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil && errors.Is(err, strconv.ErrRange) {
+		// The reference's request model parses the parameter as a Python int,
+		// which is unbounded, so an out-of-int64 value passes validation and
+		// only fails when the driver binds it as the query's integer argument.
+		// The route answers 500 with that driver error rather than a 422.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, fmt.Sprintf(
+			"invalid input for query argument $2: %s (value out of int64 range)", raw)))
+		return 0, false
+	}
 	if err != nil {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.TypeMismatch("int_parsing", []string{"query", name}, raw),
 		}})
 		return 0, false
 	}
+	value := int(value64)
 	if value < 0 {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.GreaterThanEqual([]string{"query", name}, raw, 0),
@@ -185,6 +215,35 @@ func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, de
 		return 0, false
 	}
 	return value, true
+}
+
+// queryLast reads a scalar query parameter and returns its final occurrence —
+// the value the reference's request model binds when a client repeats a scalar
+// parameter — recording the read the way httpx.Query does.
+func queryLast(r *http.Request, name string) string {
+	values, present := httpx.QueryPresent(r, name)
+	if !present || len(values) == 0 {
+		return ""
+	}
+	return values[len(values)-1]
+}
+
+// lastDateParam is parseDateParam with the reference's repeated-scalar binding:
+// a repeated start_date/end_date binds its final value. An absent parameter is
+// nothing; a present-but-unparseable one is the reference's bad request.
+func lastDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
+	if _, present := r.URL.Query()[key]; !present {
+		return nil, true
+	}
+	raw := queryLast(r, key)
+	parsed, err := parseISODateTime(raw)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			fmt.Sprintf("Invalid %s: '%s' is not an ISO-8601 datetime.", key, raw)))
+		return nil, false
+	}
+	utc := parsed.UTC()
+	return &utc, true
 }
 
 // containsString reports whether values holds target.
@@ -267,6 +326,90 @@ func memoryUnitNotFound(memoryID string) *httpx.HTTPError {
 	return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Memory unit '%s' not found", memoryID))
 }
 
+// memoryIDDriverFailure is the 500 the reference answers when an identifier it
+// never validates reaches PostgreSQL as a uuid. Every route that normalizes the
+// id first (`get_memory_unit`, `update_memory_unit`, `get_observation_history`)
+// turns a malformed one into a 400 reading "Invalid memory_id: …"; the
+// clear-observations route does not normalize it, so the driver's own uuid
+// parse error escapes to the route's catch-all. The reference runs asyncpg
+// there, whose python uuid parse reports "badly formed hexadecimal UUID string".
+func memoryIDDriverFailure() *httpx.HTTPError {
+	return httpx.NewHTTPError(httpx.KindInternal, "badly formed hexadecimal UUID string")
+}
+
+// ClearMemoryObservations answers DELETE .../memories/{memory_id}/observations.
+//
+// It is the reference handler with the one difference that route has from every
+// other by-id memory read: the id is not normalized before use, so a malformed
+// one reaches the driver and the route's catch-all answers 500 with the
+// driver's uuid error instead of the named 400 the normalizing routes answer.
+// The driver call is the last step, after the scope gate — a scoped caller is
+// answered by that gate about the memory, whatever the id's shape.
+func (h *Handlers) ClearMemoryObservations(w http.ResponseWriter, r *http.Request) {
+	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
+	if memoryID != "" && !uuidAnyForm(memoryID) && !memoryScopeInForce(r) {
+		httpx.WriteErrorFor(w, r, memoryIDDriverFailure())
+		return
+	}
+	h.clearObservationsAndReconsolidate(w, r)
+}
+
+// clearObservationsAndReconsolidate is the body of ClearMemoryObservations plus
+// the follow-up the reference's engine performs: when the clear actually removed
+// observations and the bank consolidates automatically, one consolidation is
+// submitted so the memory produces fresh observations on the next run
+// (engine/memory_engine.py:11855-11859 → :11879-11882). A clear that removed
+// nothing submits nothing, and a bank with automatic consolidation off never
+// submits.
+func (h *Handlers) clearObservationsAndReconsolidate(w http.ResponseWriter, r *http.Request) {
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
+	if memoryID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "memory not found"))
+		return
+	}
+	if !h.requireWritableMemory(w, r, bankID, memoryID) {
+		return
+	}
+	removed, err := h.Store.DeleteObservations(r.Context(), bankID, memoryID)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	if removed > 0 && h.autoConsolidationEnabled(r, bankID) {
+		if _, _, err := h.Store.EnqueueConsolidation(r.Context(), bankID); err != nil {
+			// The clear is already durable; consolidation is a follow-up the
+			// reconcile sweep picks up, so a failed enqueue is not the clear's
+			// failure.
+			slog.Default().Warn("could not enqueue consolidation after clearing observations",
+				"bank_id", bankID, "error", err)
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, ClearMemoryObservationsResponse{DeletedCount: removed})
+}
+
+// autoConsolidationEnabled reports the bank's effective enable_auto_consolidation:
+// the bank's own override, else the caller's tenant override, else the
+// deployment default — the same layering the reference's config resolver applies.
+func (h *Handlers) autoConsolidationEnabled(r *http.Request, bankID string) bool {
+	bankConfig, err := h.Store.BankConfig(r.Context(), bankID)
+	if err != nil && !errors.Is(err, storage.ErrBankNotFound) {
+		return false
+	}
+	resolved := config.ResolveLayers(bankConfig, httpx.TenantOverridesFrom(r), h.ProcessDefaults)
+	enabled, ok := resolved["enable_auto_consolidation"].(bool)
+	return ok && enabled
+}
+
+// memoryScopeInForce reports whether a tenant scope narrows this request, in
+// which case the write-scope gate answers before any id reaches the driver. It
+// mirrors requireWritableMemory's own "no scope, no gate" test.
+func memoryScopeInForce(r *http.Request) bool {
+	readScope := memoryops.ScopeFromRequest(r)
+	_, confined := memoryops.WriteScopeFromRequest(r)
+	return len(readScope) > 0 || confined
+}
+
 // memoryLookupError maps a store lookup failure: a missing unit becomes the
 // reference's named 404, anything else keeps its own status.
 func memoryLookupError(err error, memoryID string) *httpx.HTTPError {
@@ -286,12 +429,16 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		writeRequiredBodyFailure(w, r, err)
 		return
 	}
+	// The framework reads the body before it instantiates the model: an absent
+	// body is the `missing` item for the required body field, and a body the
+	// model rejects is the parser's or the field's own item — the decode
+	// failure names the value, so it is rendered against the bytes sent.
 	if len(raw) == 0 {
-		writeRequiredBodyFailure(w, r, fmt.Errorf("request body must be JSON: empty body"))
+		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, raw))
 		return
 	}
 	if _, err := httpx.DecodeLax(raw, &body); err != nil {
-		writeRequiredBodyFailure(w, r, fmt.Errorf("request body must be JSON: %w", err))
+		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, raw))
 		return
 	}
 	httpx.RecordUnknownBodyFields(r, raw, &body)
@@ -794,6 +941,19 @@ func (b dryRunExtractRequest) content() memoryops.Content {
 	return input.Content()
 }
 
+// dryRunRetainConfig resolves the retain configuration a dry run extracts
+// under: the bank's stored overrides layered over the tenant and process
+// layers, with a named strategy — or the bank's own retain_default_strategy
+// when none is named — applied on top. It is the resolution a retain performs,
+// so a dry run previews the configuration the bank would actually use.
+func (h *Handlers) dryRunRetainConfig(r *http.Request, bankID, strategy string) map[string]any {
+	config := h.resolvePreviewConfig(r, bankID)
+	if strategy == "" {
+		strategy, _ = config["retain_default_strategy"].(string)
+	}
+	return applyRetainStrategy(config, strategy)
+}
+
 // DryRunExtract reports what a retain would extract, without storing anything.
 func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	if h.DryRunExtractDisabled {
@@ -805,7 +965,9 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reference neither requires nor creates the bank: an unknown bank is
 	// answered with default extraction settings, so the path id is taken as
-	// given and never probed.
+	// given — it selects the config to resolve, and a bank with none configured
+	// (including one that does not exist) resolves the process defaults.
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	raw, err := readOptionalBody(r)
 	if err != nil {
 		writeRequiredBodyFailure(w, r, err)
@@ -843,18 +1005,39 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	options := storage.FactExtractionOptions{}
+	// The bank's effective retain configuration is resolved here, the way a
+	// retain resolves it: the request's named strategy (or the bank's default)
+	// overlaid on the bank's stored config over the tenant and process layers.
+	// Every prompt-affecting setting the body does not override is taken from
+	// it, so a dry run against a configured bank previews what the bank sends.
+	strategy := ""
+	if body.Strategy != nil {
+		strategy = *body.Strategy
+	}
+	resolved := h.dryRunRetainConfig(r, bankID, strategy)
+
+	// The mode is the reference's resolution order: the resolved config's, then
+	// a deployment with no model forced to chunks, then the body's override.
+	mode := previewString(resolved, "retain_extraction_mode")
+	if h.Extraction == nil {
+		mode = "chunks"
+	}
+	if body.RetainExtractionMode != nil {
+		mode = *body.RetainExtractionMode
+	}
+
+	options := storage.FactExtractionOptions{
+		Mode:                   mode,
+		Mission:                previewString(resolved, "retain_mission"),
+		Instructions:           previewString(resolved, "retain_custom_instructions"),
+		Strategy:               strategy,
+		OptionalFactDimensions: h.RetainOptionalFactDimensions,
+	}
 	if body.RetainMission != nil {
 		options.Mission = *body.RetainMission
 	}
-	if body.RetainExtractionMode != nil {
-		options.Mode = *body.RetainExtractionMode
-	}
 	if body.RetainCustomInstructions != nil {
 		options.Instructions = *body.RetainCustomInstructions
-	}
-	if body.Strategy != nil {
-		options.Strategy = *body.Strategy
 	}
 	if body.EntityLabels != nil {
 		// The override replaces the label vocabulary for this call, exactly as a
@@ -862,9 +1045,13 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		if vocabulary, err := entitylabels.Parse(body.EntityLabels); err == nil {
 			options.Vocabulary = vocabulary
 		}
+	} else if vocabulary, err := entitylabels.Parse(resolved["entity_labels"]); err == nil {
+		options.Vocabulary = vocabulary
 	}
 	if body.EntitiesAllowFreeForm != nil {
 		options.AllowFreeFormEntities = body.EntitiesAllowFreeForm
+	} else if value, ok := resolved["entities_allow_free_form"].(bool); ok {
+		options.AllowFreeFormEntities = &value
 	}
 	if body.LLMOutputLanguage != nil {
 		options.OutputLanguage = *body.LLMOutputLanguage
@@ -885,14 +1072,21 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		byBlock[attachment.BlockIndex] = attachment
 	}
 
-	chunkSize := 0
+	chunkSize, _ := previewInt(resolved["retain_chunk_size"])
+	structuredChunkSize, _ := previewInt(resolved["retain_structured_chunk_size"])
 	if body.RetainChunkSize != nil {
 		chunkSize = *body.RetainChunkSize
 	}
 	segments := storage.SegmentWith(contentText, storage.SegmentOptions{
-		ChunkSize: chunkSize, StructuredChunkSize: chunkSize,
+		ChunkSize: chunkSize, StructuredChunkSize: structuredChunkSize,
 	})
 	segmentOccurrences := occurrencesBySegment(segments, dryRunOccurrences(inline))
+
+	// Chunks mode stores each chunk verbatim and never asks the model, so the
+	// preview reports one fact per chunk rather than extracted ones. The check is
+	// the reference's own (an exact "chunks"), and a deployment with no model
+	// resolves to that mode above.
+	chunksMode := mode == "chunks"
 
 	facts := make([]ExtractedFactModel, 0)
 	chunks := make([]ExtractionChunk, 0, len(segments))
@@ -900,7 +1094,9 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	for index, segment := range segments {
 		occurrences := segmentOccurrences[index]
 		result := storage.DryRunExtraction{}
-		if h.Extraction != nil {
+		if chunksMode {
+			result.Facts = []storage.ExtractedFact{{Text: segment}}
+		} else if h.Extraction != nil {
 			options.Attachments = attachmentsForSegment(occurrences, byBlock)
 			extracted, err := extractDryRun(r.Context(), h.Extraction, segment, options)
 			if err != nil {
@@ -917,19 +1113,19 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			result = extracted
-			for _, fact := range result.Facts {
-				chunkIndex := index
-				facts = append(facts, ExtractedFactModel{
-					FactType:      extractedFactType(fact.Type),
-					Text:          fact.Text,
-					OccurredStart: nullableString(strings.TrimSpace(fact.OccurredStart)),
-					OccurredEnd:   nullableString(strings.TrimSpace(fact.OccurredEnd)),
-					Entities:      extractedEntityNames(fact),
-					ChunkIndex:    &chunkIndex,
-					Attachments:   attachmentsForFact(fact.FromAttachments, occurrences),
-				})
-			}
 			usage = addTokenUsage(usage, result.Usage)
+		}
+		for _, fact := range result.Facts {
+			chunkIndex := index
+			facts = append(facts, ExtractedFactModel{
+				FactType:      extractedFactType(fact.Type),
+				Text:          fact.Text,
+				OccurredStart: nullableString(strings.TrimSpace(fact.OccurredStart)),
+				OccurredEnd:   nullableString(strings.TrimSpace(fact.OccurredEnd)),
+				Entities:      extractedEntityNames(fact),
+				ChunkIndex:    &chunkIndex,
+				Attachments:   attachmentsForFact(fact.FromAttachments, occurrences),
+			})
 		}
 		chunks = append(chunks, ExtractionChunk{
 			Text: renderChunkPlaceholders(segment, occurrences), FactCount: len(result.Facts),

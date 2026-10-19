@@ -88,6 +88,10 @@ type asyncRetainItem struct {
 	UpdateMode        string              `json:"update_mode,omitempty"`
 	ForceReextract    bool                `json:"force_reextract,omitempty"`
 	AttachmentIDs     []string            `json:"attachment_ids,omitempty"`
+	// AttachmentFilenames are the names the caller gave the item's attachments.
+	// They ride the payload so a queued write records them on the document's
+	// replayable parameters exactly as a synchronous one does.
+	AttachmentFilenames map[string]string `json:"attachment_filenames,omitempty"`
 }
 
 type asyncRetainEntity struct {
@@ -123,20 +127,21 @@ func AsyncRetainPayload(bankID, operationID string, req RetainRequest) map[strin
 	}
 	for _, item := range req.Items {
 		task.Items = append(task.Items, asyncRetainItem{
-			Content:           item.Content,
-			Timestamp:         item.Timestamp,
-			HasTimestamp:      item.HasTimestamp,
-			Context:           item.Context,
-			Metadata:          item.Metadata,
-			DocumentID:        item.DocumentID,
-			Entities:          asyncRetainEntities(item.Entities),
-			ResolveEntities:   item.ResolveEntities,
-			Tags:              item.Tags,
-			ObservationScopes: item.ObservationScopes,
-			Strategy:          item.Strategy,
-			UpdateMode:        item.UpdateMode,
-			ForceReextract:    item.ForceReextract,
-			AttachmentIDs:     item.AttachmentIDs,
+			Content:             item.Content,
+			Timestamp:           item.Timestamp,
+			HasTimestamp:        item.HasTimestamp,
+			Context:             item.Context,
+			Metadata:            item.Metadata,
+			DocumentID:          item.DocumentID,
+			Entities:            asyncRetainEntities(item.Entities),
+			ResolveEntities:     item.ResolveEntities,
+			Tags:                item.Tags,
+			ObservationScopes:   item.ObservationScopes,
+			Strategy:            item.Strategy,
+			UpdateMode:          item.UpdateMode,
+			ForceReextract:      item.ForceReextract,
+			AttachmentIDs:       item.AttachmentIDs,
+			AttachmentFilenames: item.AttachmentFilenames,
 		})
 	}
 	// The map round trip is what keeps the payload the store persists free of
@@ -189,20 +194,21 @@ func DecodeAsyncRetainPayload(payload map[string]any) (RetainRequest, error) {
 	}
 	for _, item := range task.Items {
 		req.Items = append(req.Items, RetainItem{
-			Content:           item.Content,
-			Timestamp:         item.Timestamp,
-			HasTimestamp:      item.HasTimestamp,
-			Context:           item.Context,
-			Metadata:          item.Metadata,
-			DocumentID:        item.DocumentID,
-			Entities:          retainEntities(item.Entities),
-			ResolveEntities:   item.ResolveEntities,
-			Tags:              item.Tags,
-			ObservationScopes: item.ObservationScopes,
-			Strategy:          item.Strategy,
-			UpdateMode:        item.UpdateMode,
-			ForceReextract:    item.ForceReextract,
-			AttachmentIDs:     item.AttachmentIDs,
+			Content:             item.Content,
+			Timestamp:           item.Timestamp,
+			HasTimestamp:        item.HasTimestamp,
+			Context:             item.Context,
+			Metadata:            item.Metadata,
+			DocumentID:          item.DocumentID,
+			Entities:            retainEntities(item.Entities),
+			ResolveEntities:     item.ResolveEntities,
+			Tags:                item.Tags,
+			ObservationScopes:   item.ObservationScopes,
+			Strategy:            item.Strategy,
+			UpdateMode:          item.UpdateMode,
+			ForceReextract:      item.ForceReextract,
+			AttachmentIDs:       item.AttachmentIDs,
+			AttachmentFilenames: item.AttachmentFilenames,
 		})
 	}
 	return req, nil

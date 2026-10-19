@@ -41,9 +41,15 @@ func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, sub
 
 // GetMentalModel returns one mental model by identifier within a bank.
 func (s *PostgresStore) GetMentalModel(ctx context.Context, bankID, id string) (MentalModel, error) {
+	return s.getMentalModelOn(ctx, s.reader(), bankID, id)
+}
+
+// getMentalModelOn reads one model through the given connection, so a read
+// serves both a standalone lookup and one inside a caller's transaction.
+func (s *PostgresStore) getMentalModelOn(ctx context.Context, q queryer, bankID, id string) (MentalModel, error) {
 	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
 	          WHERE bank_id = $1 AND id = $2`
-	model, err := scanMentalModel(s.reader().QueryRowContext(ctx, query, bankID, id))
+	model, err := scanMentalModel(q.QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return MentalModel{}, ErrMentalModelNotFound
@@ -55,8 +61,18 @@ func (s *PostgresStore) GetMentalModel(ctx context.Context, bankID, id string) (
 
 // PutMentalModel inserts or replaces a mental model.
 func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (MentalModel, error) {
-	if err := validateMentalModel(model); err != nil {
+	if err := s.putMentalModelOn(ctx, s.db, model); err != nil {
 		return MentalModel{}, err
+	}
+	return s.GetMentalModel(ctx, model.BankID, model.ID)
+}
+
+// putMentalModelOn inserts or replaces one model through the given statement
+// runner, so one write serves both a standalone put and a put inside a caller's
+// transaction.
+func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, model MentalModel) error {
+	if err := validateMentalModel(model); err != nil {
+		return err
 	}
 	// The reference embeds a mental model from its own text on every write
 	// (`_generate_mental_model_embedding(name, content)`, so a create embeds the
@@ -68,30 +84,30 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	if s.observationEmbedder != nil {
 		arg, err := mentalModelEmbeddingArg(ctx, s.observationEmbedder, model.Name, model.Content)
 		if err != nil {
-			return MentalModel{}, err
+			return err
 		}
 		embedding = arg
 	} else if len(model.Embedding) > 0 {
 		if err := ValidateEmbedding(model.Embedding); err != nil {
-			return MentalModel{}, err
+			return err
 		}
 		embedding = NullableEmbedding(model.Embedding)
 	}
 	observations, err := jsonOrEmpty(model.Observations, `{"observations": []}`)
 	if err != nil {
-		return MentalModel{}, err
+		return err
 	}
 	trigger, err := jsonOrEmpty(model.Trigger, `{"refresh_after_consolidation": false}`)
 	if err != nil {
-		return MentalModel{}, err
+		return err
 	}
 	structured, err := jsonOrNull(model.Structured)
 	if err != nil {
-		return MentalModel{}, err
+		return err
 	}
 	reflectResult, err := jsonOrNull(model.ReflectResult)
 	if err != nil {
-		return MentalModel{}, err
+		return err
 	}
 	maxTokens := model.MaxTokens
 	if maxTokens <= 0 {
@@ -128,14 +144,11 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 	              last_refreshed_at = EXCLUDED.last_refreshed_at,
 	              last_refresh_failed_at = EXCLUDED.last_refresh_failed_at,
 	              last_updated = now()`
-	_, err = s.db.ExecContext(ctx, query, model.ID, model.BankID, string(model.Subtype), model.Name,
+	_, err = e.ExecContext(ctx, query, model.ID, model.BankID, string(model.Subtype), model.Name,
 		model.Description, model.SourceQuery, model.Content, embedding, model.EntityID,
 		observations, model.Links, model.Tags, maxTokens, trigger, structured, reflectResult,
 		model.LastRefreshedSourceQuery, lastRefreshedAt, lastRefreshFailedAt)
-	if err != nil {
-		return MentalModel{}, err
-	}
-	return s.GetMentalModel(ctx, model.BankID, model.ID)
+	return err
 }
 
 // UpdateMentalModel applies a partial update and returns the stored value.

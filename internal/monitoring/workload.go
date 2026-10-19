@@ -36,7 +36,7 @@ const (
 
 	ConsolidationBatchFailuresName = "hindsight_consolidation_batch_failures_calls_total"
 
-	EventLoopStallsName        = "hindsight_event_loop_stalls_stalls_total"
+	EventLoopStallsName        = "hindsight_event_loop_stalls_total"
 	EventLoopStallDurationName = "hindsight_event_loop_stall_duration_seconds"
 )
 
@@ -340,6 +340,23 @@ func (r *WorkloadRegistry) ObserveLoopStall(seconds float64) {
 	r.add(EventLoopStallsName, helpEventLoopStalls, nil, 1)
 	r.observe(EventLoopStallDurationName, helpEventLoopStallDuration, SDKDefaultBuckets, nil, seconds)
 }
+
+// declareLoopStall creates the stall counter's zero-valued series without
+// recording a stall. It is what makes the family visible on a loop that never
+// stalled: the reference declares the stall instruments when it builds its
+// collector, before any stall happens, so its exposition carries
+// `hindsight_event_loop_stalls_total 0.0`. Without the declaration the family
+// is absent from a healthy scrape altogether — a missing series rather than a
+// zero one, so a rule reading it sees no data where the reference reports no
+// stalls.
+func (r *WorkloadRegistry) declareLoopStall() {
+	r.add(EventLoopStallsName, helpEventLoopStalls, nil, 0)
+}
+
+// DeclareEventLoopStall publishes the stall counter's zero-valued series on the
+// process-wide registry. The process calls it once the event-loop watchdog
+// starts, which is when the reference declares its stall instruments.
+func DeclareEventLoopStall() { Workload.declareLoopStall() }
 
 // Samples renders every counter (and, as gauges, nothing) as exposition
 // samples, sorted by name then label set so a scrape is stable. A family with

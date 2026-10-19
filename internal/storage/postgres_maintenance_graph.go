@@ -203,5 +203,56 @@ func (s *PostgresStore) PruneEntity(ctx context.Context, bankID, entityID string
 		 WHERE bank_id = $1 AND id = $2::uuid
 		   AND NOT EXISTS (SELECT 1 FROM `+qualified+`.unit_entities ue WHERE ue.entity_id = $2::uuid)`,
 		bankID, entityID)
+	if err != nil {
+		return err
+	}
+	return s.pruneStaleCooccurrences(ctx, entityID)
+}
+
+// pruneStaleCooccurrences removes the co-occurrence rows incident to one entity
+// that no current memory unit witnesses together.
+//
+// An entity whose last posting is gone is deleted by the orphan prune above,
+// and the foreign key cascades its co-occurrence rows with it. This catches the
+// case the cascade cannot see: both endpoints still exist, but every unit that
+// once mentioned them together has been deleted, so the recorded pair is
+// knowledge the bank no longer holds.
+//
+// The statement is the reference's, scoped to the claimed entity: the incident
+// pairs come off the entity's own rows, and the live set is built from the
+// units that reference it, because every incident pair has it as an endpoint
+// and so every unit witnessing one references it. Victims are locked in
+// (entity_id_1, entity_id_2) order before the delete, which is the order a
+// concurrent retain upserts take them in, so the two cannot cycle.
+func (s *PostgresStore) pruneStaleCooccurrences(ctx context.Context, entityID string) error {
+	qualified := quoteIdent(s.schema)
+	cooccurrences := qualified + `.entity_cooccurrences`
+	postings := qualified + `.unit_entities`
+	_, err := s.db.ExecContext(ctx,
+		`WITH incident AS MATERIALIZED (
+		     SELECT c.entity_id_1, c.entity_id_2 FROM `+cooccurrences+` c WHERE c.entity_id_1 = $1::uuid
+		     UNION
+		     SELECT c.entity_id_1, c.entity_id_2 FROM `+cooccurrences+` c WHERE c.entity_id_2 = $1::uuid
+		 ),
+		 live AS MATERIALIZED (
+		     SELECT u1.entity_id AS e1, u2.entity_id AS e2
+		     FROM `+postings+` seed
+		     JOIN `+postings+` u1 ON u1.unit_id = seed.unit_id
+		     JOIN `+postings+` u2 ON u2.unit_id = u1.unit_id AND u2.entity_id > u1.entity_id
+		     WHERE seed.entity_id = $1::uuid
+		 ),
+		 victims AS (
+		     SELECT c.entity_id_1, c.entity_id_2
+		     FROM incident i
+		     JOIN `+cooccurrences+` c
+		       ON c.entity_id_1 = i.entity_id_1 AND c.entity_id_2 = i.entity_id_2
+		     WHERE NOT EXISTS (SELECT 1 FROM live l WHERE l.e1 = c.entity_id_1 AND l.e2 = c.entity_id_2)
+		     ORDER BY c.entity_id_1, c.entity_id_2
+		     FOR UPDATE OF c
+		 )
+		 DELETE FROM `+cooccurrences+` c
+		 USING victims v
+		 WHERE c.entity_id_1 = v.entity_id_1 AND c.entity_id_2 = v.entity_id_2`,
+		entityID)
 	return err
 }

@@ -179,6 +179,7 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 		if err != nil {
 			return err
 		}
+		flags.DiscardDocumentText = !config.FromEnvironment().StoreDocumentText
 		_, err = bankadmin.RunImportBank(ctx, store, importEmbeddings(stdout), flags, stdout)
 		return err
 	case "migrate":
@@ -186,6 +187,7 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 		if err != nil {
 			return err
 		}
+		flags.DiscardDocumentText = !config.FromEnvironment().StoreDocumentText
 		_, err = bankadmin.RunMigrate(ctx, store, flags, stdout)
 		return err
 	case "repair-bank":
@@ -259,11 +261,12 @@ func openStore(ctx context.Context, schema string) (storage.Store, error) {
 	}
 	backendName := storage.BackendMemory
 	backendCfg := storage.BackendConfig{
-		Schema:        schema,
-		DatabaseURL:   cfg.DatabaseURL,
-		MaxOpenConns:  cfg.DBPoolMaxSize,
-		MaxIdleConns:  cfg.DBPoolMinSize,
-		RunMigrations: cfg.RunMigrationsOnStartup,
+		Schema:                   schema,
+		DatabaseURL:              cfg.DatabaseURL,
+		MaxOpenConns:             cfg.DBPoolMaxSize,
+		MaxIdleConns:             cfg.DBPoolMinSize,
+		RunMigrations:            cfg.RunMigrationsOnStartup,
+		TextSearchNativeLanguage: cfg.TextSearchExtensionNativeLanguage,
 	}
 	if cfg.DatabaseURL != "" {
 		backendName = storage.BackendPostgreSQL

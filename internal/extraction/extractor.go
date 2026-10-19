@@ -321,8 +321,8 @@ func parseFacts(structured any, opts Options) ([]Fact, error) {
 		fact := Fact{
 			Text:            strings.TrimSpace(text),
 			Entities:        stringList(entry["entities"]),
-			OccurredStart:   stringValue(entry["occurred_start"]),
-			OccurredEnd:     stringValue(entry["occurred_end"]),
+			OccurredStart:   dimensionValue(entry["occurred_start"]),
+			OccurredEnd:     dimensionValue(entry["occurred_end"]),
 			Confidence:      numberValue(entry["confidence"]),
 			Where:           stringValue(entry["where"]),
 			Kind:            stringValue(entry["fact_kind"]),
@@ -367,8 +367,8 @@ func parseVerbatimFacts(structured any, vocab *entitylabels.Vocabulary) ([]Fact,
 		}
 		facts = append(facts, Fact{
 			Entities:        stringList(entry["entities"]),
-			OccurredStart:   stringValue(entry["occurred_start"]),
-			OccurredEnd:     stringValue(entry["occurred_end"]),
+			OccurredStart:   dimensionValue(entry["occurred_start"]),
+			OccurredEnd:     dimensionValue(entry["occurred_end"]),
 			Confidence:      numberValue(entry["confidence"]),
 			Where:           stringValue(entry["where"]),
 			Kind:            stringValue(entry["fact_kind"]),

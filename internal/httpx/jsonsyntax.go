@@ -1,5 +1,7 @@
 package httpx
 
+import "fmt"
+
 // jsonsyntax.go replicates the failure text and position CPython's json module
 // reports for a malformed document. The reference's framework parses a request
 // body with a parser whose messages and character positions are CPython's, so a
@@ -35,6 +37,33 @@ func pythonJSONError(body []byte) (int, string, bool) {
 		return end, "Extra data", true
 	}
 	return 0, "", false
+}
+
+// PythonJSONDecodeError renders body the way str(JSONDecodeError) does in
+// CPython for the first failure its json module reports: the bare message, the
+// 1-based line and column and the 0-based character position, as
+// "Expecting value: line 1 column 1 (char 0)". The last result is false when
+// the scanner finds no failure, so a caller keeps its own error rendering.
+func PythonJSONDecodeError(body []byte) (string, bool) {
+	pos, msg, ok := pythonJSONError(body)
+	if !ok {
+		return "", false
+	}
+	runes := []rune(string(body))
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	// CPython derives the line from the newlines before the failure and the
+	// column from the distance back to the last of them.
+	line, column := 1, 1
+	for _, c := range runes[:pos] {
+		if c == '\n' {
+			line, column = line+1, 1
+			continue
+		}
+		column++
+	}
+	return fmt.Sprintf("%s: line %d column %d (char %d)", msg, line, column, pos), true
 }
 
 // scanOncePy scans one JSON value at idx, returning the index just past it or

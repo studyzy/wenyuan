@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -222,10 +223,18 @@ func TestRecallUnhandledErrorReturnsInternal(t *testing.T) {
 // excluded unless their sub-object is supplied.
 func TestRecallIncludeDefaults(t *testing.T) {
 	mux, store := newServer(t)
+	// The entity channel resolves the returned facts against the stored
+	// postings, so the entity-bearing fixture is a real unit with a real
+	// posting. The observation-shaped row is seeded as a recall projection, the
+	// way a unit that cites sources is read back.
 	store.SeedMemory("b1", storage.RecallMatch{
 		ID: "m1", Text: "alpha beta", Type: "world",
-		Entities: []string{"e1"}, ChunkID: "c1", SourceMemoryIDs: []string{"f1"},
+		ChunkID: "c1", SourceMemoryIDs: []string{"f1"},
 	})
+	store.SeedUnit(storage.MemoryUnit{ID: "m2", BankID: "b1", Text: "alpha beta", FactType: storage.TypeWorld})
+	if err := store.SetUnitEntities(context.TODO(), "b1", "m2", []string{"e1"}, true); err != nil {
+		t.Fatal(err)
+	}
 	def := post(t, mux, "/v1/default/banks/b1/memories/recall", `{"query":"alpha","max_tokens":100}`)
 	var defResp RecallResponse
 	if err := json.Unmarshal(def.Body.Bytes(), &defResp); err != nil {

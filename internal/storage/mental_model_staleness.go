@@ -85,28 +85,42 @@ func (m MentalModel) LastMemorySeenAtTime() time.Time {
 	return m.LastRefreshedAt
 }
 
-// IsStale reports whether a write inside the model's scope has landed since the
-// model last looked.
+// IsStale reports whether the model is out of date in the full sense: a write
+// inside its scope landed since it last looked, or evidence it cites has gone.
+//
+// The retraction half is what the watermark cannot see, and it is the question
+// the refresh triggers ask. Display surfaces that read a whole set of models at
+// once ask IsStaleBatch instead — the reference's batch staleness deliberately
+// leaves the retraction check to the single-model path.
+func (s *MemoryStore) IsStale(ctx context.Context, bankID string, model MentalModel) bool {
+	if s.IsStaleBatch(ctx, bankID, model) {
+		return true
+	}
+	return groundingRetracted(ctx, s, bankID, model)
+}
+
+// IsStaleBatch reports whether a write inside the model's scope has landed since
+// the model last looked, with no retraction check.
+//
+// This is the question a list of models is answered with: asking each one
+// whether its grounding is intact costs a lookup per model, and the refresh is
+// queued by the single-model path regardless, so a page can read "up to date"
+// in a listing while its refresh is already scheduled.
 //
 // It asks the bank watermark first: a model cannot be stale if nothing has been
 // written to its bank since it last read, so the scoped query is skipped in the
 // common case where a bank is quiet. That short-circuit is what keeps a cron
 // tick over many models from paying for a scan each.
-func (s *MemoryStore) IsStale(ctx context.Context, bankID string, model MentalModel) bool {
+func (s *MemoryStore) IsStaleBatch(ctx context.Context, bankID string, model MentalModel) bool {
 	scope := ScopeFromModel(model)
 	if scope.Since.IsZero() {
 		// Never stamped with a watermark: nothing to be current with.
 		return true
 	}
 	if bankWatermark := s.BankWriteWatermark(ctx, bankID); !bankWatermark.After(scope.Since) {
-		// Nothing was written since the last look, but evidence the document
-		// cites may have gone: a retraction raises no watermark.
-		return groundingRetracted(ctx, s, bankID, model)
+		return false
 	}
-	if s.anyMemoryInScopeSince(ctx, bankID, scope) {
-		return true
-	}
-	return groundingRetracted(ctx, s, bankID, model)
+	return s.anyMemoryInScopeSince(ctx, bankID, scope)
 }
 
 // anyMemoryInScopeSince reports whether any memory matching the scope was
@@ -338,27 +352,36 @@ func tagGroupFromMap(object map[string]any) TagGroup {
 	return group
 }
 
-// IsStale reports whether a write inside the model's scope has landed since the
-// model last looked.
+// IsStale reports whether the model is out of date in the full sense: a write
+// inside its scope landed since it last looked, or evidence it cites has gone.
+//
+// The retraction half costs a lookup, so it is asked here and not in
+// IsStaleBatch — the same split the reference draws between its single-model and
+// batch staleness questions.
+func (s *PostgresStore) IsStale(ctx context.Context, bankID string, model MentalModel) bool {
+	if s.IsStaleBatch(ctx, bankID, model) {
+		return true
+	}
+	return groundingRetracted(ctx, s, bankID, model)
+}
+
+// IsStaleBatch reports whether a write inside the model's scope has landed since
+// the model last looked, with no retraction check: the batch question a listing
+// of models is answered with.
 //
 // The bank watermark is asked first, in its own cheap query: a model cannot be
 // stale if nothing has been written to its bank since it last read, so the
 // scoped scan is skipped in the common case where a bank is quiet. That
 // short-circuit is what keeps a cron tick over many models proportionate.
-func (s *PostgresStore) IsStale(ctx context.Context, bankID string, model MentalModel) bool {
+func (s *PostgresStore) IsStaleBatch(ctx context.Context, bankID string, model MentalModel) bool {
 	scope := ScopeFromModel(model)
 	if scope.Since.IsZero() {
 		return true
 	}
 	if watermark := s.BankWriteWatermark(ctx, bankID); !watermark.After(scope.Since) {
-		// Nothing was written since the last look, but evidence the document
-		// cites may have gone: a retraction raises no watermark.
-		return groundingRetracted(ctx, s, bankID, model)
+		return false
 	}
-	if s.anyMemoryInScopeSince(ctx, bankID, scope) {
-		return true
-	}
-	return groundingRetracted(ctx, s, bankID, model)
+	return s.anyMemoryInScopeSince(ctx, bankID, scope)
 }
 
 // anyMemoryInScopeSince asks the database whether any in-scope memory is newer

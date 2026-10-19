@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/parity_check.py` and `scripts/parity_dev_service.sh` make a single
+  route comparison cheap: the first sends one request to both deployments and
+  reports `SAME`/`DIFF` on the normalised status and body (with
+  `--reference-only`/`--service-only` to lay down the same fixture on each
+  side), the second builds this working tree and serves it on a given port
+  against the development database, with the embedded worker and maintenance
+  loop switched off so a sandbox cannot consume the real deployment's queue
+  (`--stop` stops it). Both exist so a route being worked on can be compared
+  against the reference service without editing the probe's fixed check list.
 - `/metrics` reports the reference's per-workload families, recorded at the site
   each one measures. **Operation** duration and count come from the worker's
   terminal settle (`hindsight_operation_duration_seconds`,
@@ -27,6 +36,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An unexpected panic answers `500` with the reference's body instead of
+  dropping the connection. Nothing recovered a panic before, so a nil
+  dereference (the lax-coercion walk hit one whenever a body needed a value
+  rewritten beside a member type that decodes itself) closed the connection with
+  no response at all. A recovery layer now sits inside the access-log and
+  metrics chain — so the request is still counted and logged as a 500 — and
+  outside the ignored-parameter reporter, matching where the reference's own
+  exception handler sits; it answers `500 text/plain; charset=utf-8` with
+  `Internal Server Error`, which is what the reference returns for an unhandled
+  exception (`ErrAbortHandler` and post-commit panics are still re-raised).
+  `internal/httpx/laxjson.go` no longer panics in the first place: the coercion
+  helpers treat a type that decodes itself as "nothing to rewrite".
+- `X-Ignored-Params` is reported only when the matched route's handler runs, as
+  the reference does: an unknown path (404), a method mismatch (405) and the
+  slash redirect carry no header. Responses also carry `Content-Length` again
+  (JSON bodies and the descriptor documents were being written chunked), and the
+  gzip layer matches the reference's framing — `Vary: Accept-Encoding` on an
+  identity response at or above the floor, `Content-Length` on the compressed
+  body, and a substring test for `gzip` in `Accept-Encoding`.
+- Prometheus exposition matches the reference textually: the
+  `hindsight_event_loop_stalls_total` counter name (the exporter does not repeat
+  a unit the instrument name already ends with), `le="1.0"`-style float bucket
+  bounds, float-rendered sample values, the count-before-sum series order, an
+  in-progress counter rendered as a float, and the `ready coroutine` help text.
+  A Go deployment still has no equivalent for `db_pool_waiting` or the
+  reference's library-default `python_*`/`process_*` families.
 - A deployment with no LLM provider now refuses reflect and mental-model
   refresh instead of synthesizing a deterministic answer, matching the
   reference for `HINDSIGHT_API_LLM_PROVIDER=none`. `POST .../reflect` answers
@@ -38,6 +73,191 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The residual list from the route-by-route comparison against the reference
+  (`docs/PARITY-OPEN-ITEMS.md`) is closed; each item below carries a test that
+  fails without it and a two-sided comparison recorded in that file. The
+  reference's own blackbox suite now passes end to end against this build
+  (`scripts/run_parity_suite.sh`: **339 passed, 1 skipped, 0 failed**), and the
+  fixed differential probe reports 0 differing checks.
+  - **Concurrent submits serialise per bank**: an unscoped consolidation submit
+    (and a graph-maintenance submit, and the payload-keyed operation dedupe)
+    deduped with a check-then-insert, so a burst of `POST …/consolidate` all saw
+    "nothing pending" and all inserted — the reference's own suite caught five
+    requests producing three runs. The PostgreSQL store now takes the bank row's
+    `FOR NO KEY UPDATE` lock inside one transaction around the conditional
+    check-and-insert, mirroring the reference (that lock serialises submits
+    without blocking the `FOR KEY SHARE` every operation insert takes through the
+    foreign key). The in-memory store already held one lock across both steps.
+  - **Retrieval**: recall now returns every score stage on the wire (an absent
+    stage is an explicit `null` rather than an omitted key), resolves entity
+    names on the PostgreSQL path (direct postings, or an observation's sources'
+    postings, in entity-id order) with the reference's `{entity_id,
+    canonical_name, observations: []}` channel built from the token-capped
+    results, and seeds the graph arm **only** from dense semantic hits — the
+    lexical fallback and its "no vector" gate are gone, matching a reference
+    whose arm returns nothing when its dense arm found nothing.
+  - **Reflection**: the run answers from the `done` call's own `answer` instead
+    of paying for a second synthesis call, `usage` sums every turn's tokens, the
+    trace no longer lists `done`, a generation that hits its output limit is no
+    longer fatal (the truncated text is kept and used), and the `done` /
+    `read_mental_models` schemas require what the reference requires.
+  - **Retain**: the model's date-only timestamps survive to `occurred_start`/
+    `occurred_end`, the extraction is given the ingest clock as its reference
+    time when the item names none, only an explicit event keeps its dates, a
+    rejected nested member no longer aborts the item decode (so structural and
+    field-validation items are reported together), `observation_scopes` is
+    validated as the reference's union and reports both branches, and
+    `attachment_filenames` rides the item through the queued payload into
+    `retain_params` and back out on reprocess.
+  - **Chunking/extraction**: the recursive splitter keeps the separator at the
+    start of the following piece, extraction modes compare exactly rather than
+    case-insensitively, and the model's `"N/A"` placeholder is treated as an
+    absent date.
+  - **Mental models**: a dry run and a refresh both short-circuit when the scope
+    has no sources (the refresh records the skip and advances
+    `last_refreshed_at`), listings use the reference's batch staleness while the
+    single-model read keeps the retraction check, and a model citing evidence
+    that has entirely disappeared now reads stale.
+  - **Knowledge base**: a node PATCH writes the node and its backing model in one
+    transaction, so a rename cannot survive a model write that failed after it.
+  - **Queue**: the worker claims only operations that carry a task payload (a
+    payload-less row is left alone, as the reference leaves it), consolidation
+    recovery no longer queues a pass and only requeues `experience`/`world`
+    facts, an async retain raises `retain.completed` per content item (the same
+    emitter the sync path uses, with the child operation's id), and a failed
+    consolidation raises `consolidation.completed` with `status: "failed"`.
+  - **Webhooks**: an event body drops unset members (`exclude_none`) in the
+    reference's declaration order, and `PATCH .../webhooks/{id}` parses the id
+    before reporting an empty patch (and accepts `null` on the nullable members,
+    answering the same failure the reference does).
+  - **Transfer/archive**: an import preserves each document's source
+    `created_at`, the two maintenance-queue segments are carried and restored by
+    remapping rows onto what the target replayed, the manifest and section
+    shapes match the reference (which also fixes archives the reference used to
+    reject), the export's storage key uses the reference's layout, and a clone
+    reports `archive_byte_size`.
+  - **Banks/directives/MCP/search**: bank PUT/PATCH no longer write the legacy
+    `mission`/`disposition` columns the reference never writes, the config write
+    reports wrong-typed values with their Python type, directive list queries
+    follow the reference's parameter rules, MCP tool results are the reference's
+    payloads (pretty-printed, with not-found as a normal result and the
+    reference's unknown-tool and parse-error wording), and the native
+    text-search dictionary is read from
+    `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` instead of being
+    hardcoded to `english`.
+- A per-route logic comparison against the live reference (and this checkout's
+  source) closed the following divergences, each with a test that fails without
+  it:
+  - **Retain** rendered a rejected body from the Go decoder's error, so a bad
+    nested member reported `loc: ["body","items","metadata"]` and echoed the
+    member *name* as `input` where the reference reports
+    `["body","items",0,"metadata"]` and the value. The rejected bytes are now
+    walked against the request contract, the same renderer recall and reflect
+    use, falling back to the decoder's rendering only when the walk describes
+    nothing.
+  - **Recall** reported an unknown `types` member as a field-validation item
+    where the reference raises the engine's plain
+    `Invalid fact type(s): …` 422, refused `types: ["opinion"]` where the
+    reference drops `opinion` and answers an empty envelope without touching the
+    bank, and set `source_fact_ids` on results regardless of whether the
+    source-facts channel was requested (the reference sets it only from that
+    pass). A result with no entity postings now reports `entities: null` rather
+    than `[]`.
+  - **Reflect** billed only the closing calls: `usage` now sums every loop
+    turn's tokens, and `trace.tool_calls` no longer lists the `done` tool.
+  - **Webhook delivery** failed permanently on the first non-2xx (the reference
+    retries every non-2xx on the ladder and fails only when the attempts are
+    spent), never advanced `retry_count` (so the ladder stayed on the 5s rung
+    forever and `last_error` was never written), and ignored `http_config`
+    (always POST, no custom headers or parameters, 15s instead of the configured
+    default 30s).
+  - **File retain** checked its gates in the wrong order (file count now
+    precedes the metadata match, and per-file parser validation precedes the
+    batch byte budget), treated `files_metadata: []` as a length mismatch where
+    the reference skips the check, silently dropped an empty-string parser name
+    (which the reference resolves and refuses), and reported only one of the two
+    missing form parts.
+  - **Operations**: `include_payload` synthesised a payload envelope for an
+    operation that has none (the reference returns the `task_payload` column,
+    null for a `batch_retain` parent), and retrying a batch parent with no
+    incomplete sub-batches answered the generic conflict message instead of the
+    reference's dedicated one.
+  - **Banks**: an alias whose name matched an existing bank was accepted (the
+    existence check selected a column the `banks` table does not have, so the
+    conflict check always passed); the reference refuses it with 409. A config
+    write reported a decimal literal for an integer field as accepted and
+    rendered wrong types without their Python repr; integer fields are now
+    strict on request values, and the message names the written literal's type.
+  - **Knowledge base**: tree siblings were ordered by the database's collation
+    (case-insensitive) where the reference sorts the fetched rows by code point,
+    which showed in the tree and in the export's `index.md`.
+  - **Memory listing** inherited an observation's source memories' entities
+    (inheritance is detail-only in the reference), and every repeated scalar
+    query parameter took its first occurrence where the reference binds the
+    last.
+  - **Dry-run extraction** ignored the bank's retain configuration (mode,
+    mission, instructions, entity labels, chunk sizes, default strategy) and had
+    no chunks branch; it now resolves process → tenant → bank configuration,
+    overlays the named strategy and the body's overrides, and emits one verbatim
+    fact per chunk without calling the model.
+  - **Directives**: list-query semantics match the reference (a present but
+    empty parameter is validated rather than defaulted, boolean words
+    `yes/no/on/off/y/n/t/f` are accepted, a repeated scalar takes the last
+    occurrence, and the Python integer grammar reads whitespace, underscores and
+    `"1.0"` while reporting the raw string as the item's `input`); a create
+    accumulates every rejected field in declaration order instead of stopping at
+    the first; a generated id is a canonical dashed UUID.
+  - **Mental models**: `tags_match=exact` filters by array equality (order- and
+    duplicate-sensitive), as the reference's `tags = $2::varchar[]` does, rather
+    than by set equality.
+  - **Read surface**: the listing filters `q`/`tags`/`tags_match` are used
+    verbatim (the reference does not trim them, so a padded value matched
+    documents here that match none there), a chunk's `attachments` and an
+    attachment's `filename` are present as null rather than omitted, the chunk
+    and entity page caps match the route's own maximum, `reprocess` honours the
+    document's tag scope (it had no write authorization at all) and the
+    document write routes echo the id in their 404 when a scope is active.
+  - **Transfer import** reported the union of both scopes' `result_metadata`
+    keys instead of the mode's own set, counted observations belonging to
+    skipped documents as imported (and omitted `observations_skipped`/
+    `skipped_document_ids`/`remapped_document_ids`), and restored attachments on
+    a merge import, which the reference does not.
+  - **Consolidation**: an explicitly empty `observation_scopes: []` is a scoped
+    submit and no longer deduplicates against a pending full-bank pass, and a
+    bank-wide observation clear invalidates the cached stats summary so the next
+    read reports the new counts.
+  - **MCP** validated the request's media type after resolving the session, so
+    its 400 carried a freshly minted `Mcp-Session-Id` and a sniffed
+    Content-Type; the reference validates first and declares no media type. Every
+    tool description is now the reference's full docstring (they were truncated,
+    and the reference's `Args:` block had been moved into per-property
+    descriptions), and an unknown tool answers
+    `content: [{"type":"text","text":"Unknown tool: '<name>'"}]` with
+    `isError: true`.
+- Importing a bank rebuilds the derived data the archive leaves out. The
+  reference classifies chunks and entity co-occurrences as replayed data and
+  rebuilds both while replaying facts through the retain write path; neither
+  importer did, so an imported bank had no chunk rows at all (the console's
+  document chunk view was empty, 0 rows against the source's 498) and
+  `/entities/graph` answered no nodes and no edges, leaving the console's
+  relations view with nothing to draw.
+  - Chunks: `storage.Store` gains `PutDocumentChunks`, which upserts one
+    document's chunk rows under the `(bank, document, index)` identifier the
+    retain path derives and refuses a row another bank owns. Both importers
+    write the rows before their facts and point each fact at the chunk it came
+    from. Whether chunk text is kept follows the deployment's
+    `store_document_text` setting, as the reference's import does; the content
+    hash is recorded either way.
+  - Co-occurrences: `storage.Store` gains `UpsertUnitCooccurrences`, which
+    records one row per unordered pair of the entities a unit mentions, shared
+    with the retain path. A pair's `last_cooccurred` is the witnessing unit's
+    own time (occurred start, else mentioned-at, else event date; the write time
+    only when the unit carries none) and merges with `GREATEST`, so an imported
+    corpus keeps its own timeline instead of collapsing onto the import moment.
+  - Entity edits record the pairs their resulting set witnesses, and the entity
+    prune drops a pair no unit witnesses any more — both endpoints may still
+    exist, which is the case the foreign-key cascade cannot reach.
+  - Banks imported before this change need a re-import to gain the rows.
 - Reflect renders directives the way the reference does. Each rule carries the
   directive's **name** bolded ahead of its content (bare content when the bank
   set none), and the numbered `## REMINDER: MANDATORY DIRECTIVES` section now

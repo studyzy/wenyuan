@@ -3,6 +3,7 @@ package memoryops
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,8 +105,37 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, recallDecodeFailure(r, &req, body, err))
 		return
 	}
+	// The engine's fact-type selection differs from the request-model shape: an
+	// absent or empty selection means every recallable type, "opinion" is a fact
+	// type the engine dropped and filters out silently, and a selection left
+	// empty by that filter answers an empty result. The filter runs before
+	// validation so the dropped value is not reported as an unsupported one;
+	// values outside the accepted set are refused afterwards, with the engine's
+	// own plain detail rather than a field-level item.
+	requestedTypes := req.Types
+	keptTypes, invalidTypes := recallFactTypeSelection(requestedTypes)
+	if len(requestedTypes) > 0 {
+		req.Types = keptTypes
+	}
 	if failure := ValidateRecall(req, requestBodyObject(body)); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
+		return
+	}
+	if len(invalidTypes) > 0 {
+		sort.Strings(invalidTypes)
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{
+			Status: http.StatusUnprocessableEntity,
+			Detail: "Invalid fact type(s): " + strings.Join(invalidTypes, ", ") +
+				". Must be one of: experience, observation, world",
+		})
+		return
+	}
+	if len(requestedTypes) > 0 && len(keptTypes) == 0 {
+		// Every requested type was "opinion", which the engine drops: the answer
+		// is an empty result, produced without touching the bank.
+		response := BuildRecallResponse(storage.RecallResult{}, req)
+		response.Trace = nil
+		httpx.WriteJSON(w, http.StatusOK, response)
 		return
 	}
 	if h.RerankerScoresByRankPosition && hasRerankerFloor(req.MinScores) {
@@ -161,6 +191,13 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		h.writeReadError(w, r, err)
 		return
 	}
+	// A non-positive token budget asks for no facts (the documented way to want
+	// chunks without them), and the reference's entity channel is resolved from
+	// the returned facts — so with nothing to resolve it reports null rather
+	// than the entities of a list that was cut away.
+	if recallMaxTokens(req) <= 0 {
+		result.EntityStates = nil
+	}
 	httpx.WriteJSON(w, http.StatusOK, BuildRecallResponse(result, req))
 }
 
@@ -170,8 +207,10 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.RecallQuery, *httpx.HTTPError) {
 	queryTimestamp, err := parseQueryTimestamp(req.QueryTimestamp)
 	if err != nil {
+		// The reference wraps the parser's own message, so a caller sees which
+		// component of its value was refused.
 		return storage.RecallQuery{}, httpx.NewHTTPError(httpx.KindBadRequest,
-			"query_timestamp must be an ISO-8601 date string")
+			"Invalid query_timestamp format. Expected ISO format (e.g., '2023-05-30T23:40:00'): "+err.Error())
 	}
 	window, err := parseTemporalWindow(req.TemporalWindow)
 	if err != nil {
@@ -223,13 +262,37 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 	return query, nil
 }
 
+// recallFactTypeSelection applies the engine's fact-type rules to a request
+// selection: an absent or empty selection is left to the store's own default
+// (every recallable type), "opinion" — removed upstream — is dropped, and the
+// values outside the accepted set are collected separately so the caller can
+// refuse them with the engine's own wording. The kept values preserve the
+// caller's order; a selection that was non-empty and is left empty by the
+// opinion filter means the answer is empty.
+func recallFactTypeSelection(types []string) (kept, invalid []string) {
+	if len(types) == 0 {
+		return nil, nil
+	}
+	for _, factType := range types {
+		switch {
+		case factType == "opinion":
+			continue
+		case containsValue(acceptedFactTypes, factType):
+			kept = append(kept, factType)
+		default:
+			invalid = append(invalid, factType)
+		}
+	}
+	return kept, invalid
+}
+
 // parseQueryTimestamp parses the optional query-time anchor, reading a naive
 // value as UTC. An empty anchor is absent.
 func parseQueryTimestamp(value string) (*time.Time, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
 	}
-	t, err := parseISODate(value)
+	t, err := parseStdlibDateTime(value)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,6 +53,11 @@ type archiveProcessor struct {
 	// force at delivery time. It also carries the deployment-level target, so
 	// the delivery path and the enqueue path read one copy of it.
 	webhookGuard *webhooks.Guard
+	// discardDocumentText drops the text of the chunks an archive import
+	// replays, which is the deployment's store_document_text setting. The
+	// import's own chunks are replayed from the archive, and the retain write
+	// path applies the same setting to a retained one.
+	discardDocumentText bool
 	// embeddings is the deployment's embedding model. The archive import
 	// replays facts through the write path's embedding boundary, so an imported
 	// fact is embedded with the target bank's model exactly as a retained one
@@ -80,7 +86,26 @@ func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) err
 	if err != nil && provider.IsRateLimitReset(err) {
 		return worker.Defer(err)
 	}
+	if err != nil && consolidationFailed(op, err) {
+		// A pass that did not finish reports to the same subscribers a completed
+		// one reports to: the reference fires consolidation.completed with status
+		// "failed" on every failure path — retryable, terminal and wall-clock
+		// alike — and the event's data object then carries only the error.
+		p.fireConsolidationEvent(ctx, op, "failed", map[string]any{"error_message": err.Error()})
+	}
 	return err
+}
+
+// consolidationFailed reports whether err ends a consolidation pass as a failure
+// a subscriber should hear about. Only a consolidation reports this event, and
+// two outcomes are not failures of the pass: a cancelled operation is not run at
+// all (the reference skips it before its failure paths), and the no-model
+// selection completes the pass rather than failing it, so neither fires an event.
+func consolidationFailed(op storage.Operation, err error) bool {
+	if op.OperationType != storage.OperationTypeConsolidate {
+		return false
+	}
+	return !errors.Is(err, storage.ErrOperationAborted) && !errors.Is(err, consolidation.ErrNoModel)
 }
 
 // dispatch routes one operation to its handler.
@@ -185,21 +210,48 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 		// A transport failure is retried on the reference's backoff ladder, and
 		// reported with no status because the receiver never answered.
 		worker.ReportOutcome(ctx, webhookOutcome(0, ""))
-		return worker.DeferAt(webhookRetryDelay(op.RetryCount), err)
+		return webhookRetryOrFail(op, err)
 	}
 	// The receiver's status is recorded on the delivery either way: it is what
 	// an operator reads to tell "the endpoint is refusing us" from "we never
 	// reached it".
 	worker.ReportOutcome(ctx, webhookOutcome(status, responseBody))
-	if status == 429 || status >= 500 {
-		return worker.DeferAt(webhookRetryDelay(op.RetryCount),
-			fmt.Errorf("webhook receiver failed with status %d", status))
+	if status >= 200 && status < 300 {
+		return nil
 	}
-	if status >= 400 {
-		return worker.Permanent(fmt.Errorf("webhook receiver rejected the delivery with status %d", status))
-	}
-	return nil
+	// Every other status is retried on the ladder, the reference's behaviour: a
+	// 4xx is not assumed to be permanent, so a receiver that is briefly
+	// misconfigured gets the same retries a 5xx does. The delivery fails only
+	// once the attempt budget is spent.
+	return webhookRetryOrFail(op, webhookStatusFailure(status, webhook.URL, responseBody))
 }
+
+// webhookRetryOrFail schedules one more attempt at the ladder's next rung, or
+// fails the delivery permanently once the reference's attempts are spent. The
+// reference makes MAX_ATTEMPTS = len(RETRY_DELAYS) + 1 attempts: the first try
+// plus one per rung, so a retry_count that has reached the number of rungs is
+// the last attempt.
+func webhookRetryOrFail(op storage.Operation, cause error) error {
+	if op.RetryCount >= len(webhookRetryDelays) {
+		return worker.Permanent(cause)
+	}
+	return worker.RetryAt(webhookRetryDelay(op.RetryCount), cause)
+}
+
+// webhookStatusFailure renders a receiver's non-2xx answer as the reference does:
+// the status, the endpoint, and the (bounded) body the receiver sent, which is
+// the one place a receiver says why it refused.
+func webhookStatusFailure(status int, url, responseBody string) error {
+	body := responseBody
+	if len(body) > webhookFailureBodyLimit {
+		body = body[:webhookFailureBodyLimit]
+	}
+	return fmt.Errorf("HTTP %d from %s: %s", status, url, body)
+}
+
+// webhookFailureBodyLimit bounds the receiver body carried in a failure message,
+// matching the reference's truncation.
+const webhookFailureBodyLimit = 500
 
 // deliveryTarget resolves the receiver one queued delivery addresses. A
 // bank webhook is read from its live registration so an edit or a delete is
@@ -234,6 +286,70 @@ func webhookOutcome(status int, responseBody string) map[string]any {
 		outcome["last_response_body"] = responseBody
 	}
 	return outcome
+}
+
+// deliveryHTTPConfig is the delivery shape a registration asks for, decoded
+// from its stored http_config. A missing or unreadable member falls back to the
+// reference's own defaults, so a webhook stored before a field existed still
+// delivers.
+type deliveryHTTPConfig struct {
+	httpMethod string
+	headers    map[string]string
+	params     map[string]string
+	timeout    time.Duration
+}
+
+// readDeliveryHTTPConfig reads the stored configuration. Every field is honoured
+// the way the reference's delivery reads it: the method selects GET or POST,
+// the headers and params are applied to the request, and the timeout bounds it.
+func readDeliveryHTTPConfig(raw map[string]any) deliveryHTTPConfig {
+	cfg := deliveryHTTPConfig{httpMethod: http.MethodPost, timeout: 30 * time.Second}
+	if raw == nil {
+		return cfg
+	}
+	if value, ok := raw["method"].(string); ok && strings.EqualFold(value, http.MethodGet) {
+		cfg.httpMethod = http.MethodGet
+	}
+	if seconds, ok := raw["timeout_seconds"].(float64); ok && seconds > 0 {
+		cfg.timeout = time.Duration(seconds) * time.Second
+	}
+	if seconds, ok := raw["timeout_seconds"].(int); ok && seconds > 0 {
+		cfg.timeout = time.Duration(seconds) * time.Second
+	}
+	cfg.headers = stringMapFrom(raw["headers"])
+	cfg.params = stringMapFrom(raw["params"])
+	return cfg
+}
+
+// method returns the HTTP method the request must use. The reference only
+// distinguishes GET from everything else, which is a POST.
+func (c deliveryHTTPConfig) method() string {
+	if c.httpMethod == http.MethodGet {
+		return http.MethodGet
+	}
+	return http.MethodPost
+}
+
+// isGet reports whether the delivery is a bodyless GET.
+func (c deliveryHTTPConfig) isGet() bool { return c.method() == http.MethodGet }
+
+// stringMapFrom reads a stored string map, ignoring members that are not strings
+// rather than failing the delivery.
+func stringMapFrom(raw any) map[string]string {
+	source, ok := raw.(map[string]any)
+	if !ok {
+		if direct, ok := raw.(map[string]string); ok {
+			return direct
+		}
+		return nil
+	}
+	out := make(map[string]string, len(source))
+	for key, value := range source {
+		if text, ok := value.(string); ok {
+			out[key] = text
+		}
+	}
+	return out
 }
 
 // webhookRetryDelays is the delivery backoff ladder, matching the reference.
@@ -288,11 +404,33 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		return 0, "", err
 	}
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, bytes.NewReader(body))
+	// The registration's http_config is the caller's delivery shape: only a GET
+	// is a GET (any other method is a POST, as the reference decides), and its
+	// headers, query parameters and timeout are the caller's.
+	cfg := readDeliveryHTTPConfig(webhook.HTTPConfig)
+	var payload io.Reader
+	if !cfg.isGet() {
+		payload = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, cfg.method(), webhook.URL, payload)
 	if err != nil {
 		return 0, "", worker.Permanent(err)
 	}
+	if len(cfg.params) > 0 {
+		query := request.URL.Query()
+		for name, value := range cfg.params {
+			query.Set(name, value)
+		}
+		request.URL.RawQuery = query.Encode()
+	}
+	// The caller's headers go first so the Hindsight-controlled ones below
+	// always win: a custom header must never be able to forge the event type or
+	// overwrite a signature. Content-Type stays overridable, because some
+	// receivers insist on a vendor media type and the body is JSON either way.
 	request.Header.Set("Content-Type", "application/json")
+	for name, value := range cfg.headers {
+		request.Header.Set(name, value)
+	}
 	request.Header.Set("X-Hindsight-Event", eventType)
 	if webhook.Secret != "" {
 		// The primary signature is over the raw body, `sha256=<hex>`, the
@@ -310,7 +448,7 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		request.Header.Set("X-Hindsight-Signature-V2", "t="+timestamp+",v1="+hex.EncodeToString(timed.Sum(nil)))
 	}
 	client := &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   cfg.timeout,
 		Transport: p.webhookTransport(guard),
 		// A redirect would carry the request to a location the guard never
 		// saw; refusing here leaves the response to report, rather than
@@ -458,9 +596,7 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 		// A completed consolidation is an event a webhook may subscribe to. The
 		// counts are the reference's ConsolidationEventData, so a subscriber
 		// sees what the pass did rather than only that it finished.
-		p.enqueueWebhookEvent(ctx, op.BankID, "consolidation.completed", map[string]any{
-			"operation_id":         op.OperationID,
-			"status":               "completed",
+		p.fireConsolidationEvent(ctx, op, "completed", map[string]any{
 			"observations_created": result.Created,
 			"observations_updated": result.Updated,
 			"observations_deleted": result.Deleted,
@@ -550,6 +686,19 @@ func (p archiveProcessor) enqueueWebhookEvent(ctx context.Context, bankID, event
 	enqueueWebhookEvent(ctx, p.store, p.guard().Global(), bankID, eventType, data)
 }
 
+// fireConsolidationEvent queues one consolidation.completed event: either the
+// counts a completed pass applied, or the error that stopped a failed one. Both
+// outcomes go through one emitter, so a subscriber sees a single event shape and
+// the two branches cannot drift. The status and the operation go into the
+// envelope; a member the caller leaves out is absent from the rendered object,
+// which is how the reference's event model drops an unset count on the failure
+// path.
+func (p archiveProcessor) fireConsolidationEvent(ctx context.Context, op storage.Operation, status string, data map[string]any) {
+	data["operation_id"] = op.OperationID
+	data["status"] = status
+	p.enqueueWebhookEvent(ctx, op.BankID, "consolidation.completed", data)
+}
+
 // enqueueWebhookEvent is the one place a webhook delivery is created: both the
 // worker's own events and the memoryops Memory Defense notifier go through it,
 // so a delivery has a single shape and a single subscription check.
@@ -558,7 +707,11 @@ func (p archiveProcessor) enqueueWebhookEvent(ctx context.Context, bankID, event
 // the body is what a receiver verifies the signature over, so it must be the
 // exact bytes that go on the wire, not a re-serialization at delivery time.
 // Two reserved keys steer the envelope — `operation_id` and `status` — and are
-// taken out of the event data so they do not also appear inside it.
+// taken out of the event data so they do not also appear inside it. A member
+// whose value is nil is left out of the rendered object, which is how the
+// reference's `exclude_none` serialization treats an unset member: a caller
+// that means "this event does not report that" passes no key rather than a
+// placeholder value.
 //
 // The deployment-level target is delivered alongside the bank's own webhooks
 // and independent of them: it is one static receiver named by the deployment,
@@ -637,20 +790,37 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 // signature from the body it parsed re-serializes in this same order, so the
 // bytes stay identical.
 type webhookEventBody struct {
-	Event       string         `json:"event"`
-	BankID      string         `json:"bank_id"`
-	OperationID string         `json:"operation_id"`
-	Status      string         `json:"status"`
-	Timestamp   string         `json:"timestamp"`
-	Data        map[string]any `json:"data"`
+	Event       string          `json:"event"`
+	BankID      string          `json:"bank_id"`
+	OperationID string          `json:"operation_id"`
+	Status      string          `json:"status"`
+	Timestamp   string          `json:"timestamp"`
+	Data        json.RawMessage `json:"data"`
+}
+
+// webhookEventDataOrder is the declaration order of each event's data members.
+// The reference builds the object from a pydantic model and serializes it with
+// `model_dump_json(exclude_none=True)`, so members come out in declaration
+// order and a member the emitter left unset is absent from the wire rather than
+// present as null. Both properties are part of what a receiver hashes.
+var webhookEventDataOrder = map[string][]string{
+	"consolidation.completed": {"observations_created", "observations_updated", "observations_deleted", "error_message"},
+	"retain.completed":        {"document_id", "tags", "memory_unit_count"},
+	"memory_defense.triggered": {
+		"action", "detector", "document_id", "matched_types", "message",
+		// The SIEM-enrichment members an extension may populate; the built-in
+		// defense leaves them unset, so they never reach the wire.
+		"severity", "api_key_name", "hits", "memory_unit_id", "receipt_uri",
+	},
 }
 
 // marshalWebhookEvent renders the event envelope as compact JSON with no HTML
 // escaping, so a receiver's re-serialization of the parsed body reproduces these
 // exact bytes and the signature still verifies.
 func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.Time, data map[string]any) ([]byte, error) {
-	if data == nil {
-		data = map[string]any{}
+	encoded, err := marshalWebhookData(eventType, data)
+	if err != nil {
+		return nil, err
 	}
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
@@ -663,8 +833,77 @@ func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.
 		// The event body is a pydantic model in the reference, so its
 		// timestamp takes the pydantic JSON form.
 		Timestamp: timefmt.FormatZuluTimestamp(at),
-		Data:      data,
+		Data:      encoded,
 	}); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// marshalWebhookData renders one event's data object the way the reference's
+// model does: the members the event type declares, in declaration order, with
+// every unset (null) member dropped. A member the declaration does not name is
+// emitted after the declared ones in sorted order, so a payload a caller adds
+// is never silently lost.
+func marshalWebhookData(eventType string, data map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	written := make(map[string]bool, len(data))
+	first := true
+	write := func(key string, value any) error {
+		if value == nil {
+			// exclude_none: an unset member is absent, not null.
+			return nil
+		}
+		member, err := encodeJSONMember(value)
+		if err != nil {
+			return err
+		}
+		keyJSON, err := json.Marshal(key)
+		if err != nil {
+			return err
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		buf.Write(keyJSON)
+		buf.WriteByte(':')
+		buf.Write(member)
+		return nil
+	}
+	for _, key := range webhookEventDataOrder[eventType] {
+		value, present := data[key]
+		if !present {
+			continue
+		}
+		written[key] = true
+		if err := write(key, value); err != nil {
+			return nil, err
+		}
+	}
+	extra := make([]string, 0, len(data))
+	for key := range data {
+		if !written[key] {
+			extra = append(extra, key)
+		}
+	}
+	sort.Strings(extra)
+	for _, key := range extra {
+		if err := write(key, data[key]); err != nil {
+			return nil, err
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// encodeJSONMember renders one data member under the envelope's escaping rules.
+func encodeJSONMember(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
@@ -940,13 +1179,14 @@ func formatOptionalTime(value *time.Time) string {
 // archive import re-embeds with, exactly as the retain write path does.
 func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
 	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, tuning config.WorkerTuning,
-	guard *webhooks.Guard, extraction ExtractionSettings) *worker.Consumer {
+	guard *webhooks.Guard, extraction ExtractionSettings, discardDocumentText bool) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
-		recallPerSourceCap: cfg.RecallMaxCandidatesPerSource,
-		webhookGuard:       guard,
-		embeddings:         embeddings,
-		extraction:         extraction,
+		recallPerSourceCap:  cfg.RecallMaxCandidatesPerSource,
+		webhookGuard:        guard,
+		embeddings:          embeddings,
+		extraction:          extraction,
+		discardDocumentText: discardDocumentText,
 	}, worker.Config{
 		WorkerID:            cfg.ID,
 		MaxRetries:          cfg.MaxRetries,

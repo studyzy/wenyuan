@@ -102,18 +102,25 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	keywordHits := prepareArm(q, ArmKeyword, armOutcomes[1].hits)
 	recordArm(candidates, ArmKeyword, keywordHits)
 	armTraces = append(armTraces, recallArmTrace{arm: ArmKeyword, hits: keywordHits})
-	// The graph arm walks out from the hits above, so it is its own wave: its
-	// entry points are the dense and lexical results, exactly as the reference
-	// derives them. A query that names no words and carries no vector still
-	// recalls — an empty query returns the bank's newest units — and that list
-	// arm shares the wave, because a graph arm with an empty candidate set has
-	// no seeds to walk from and cannot answer it.
+	// The graph arm walks out from the dense hits alone, so it is its own wave.
+	// The lexical arm never seeds it: the reference derives the entry points
+	// from the semantic arm's ordered rows (or re-queries the dense index when
+	// the caller's own semantic floor sits above the seed floor), so a query
+	// whose dense arm found nothing has no seeds and the arm contributes
+	// nothing — a lexical hit does not fan the walk out. A query that names no
+	// words and carries no vector still recalls — an empty query returns the
+	// bank's newest units — and that list arm shares the wave, because a graph
+	// arm with no seeds cannot answer it.
 	graphEnabled := containsArm(arms, ArmGraph)
+	var graphSeeds []string
+	if graphEnabled {
+		graphSeeds = graphSeedsFrom(armOutcomes[0].hits, s.tuning.GraphSeedMinSimilarity)
+	}
 	listArmNeeded := len(candidates) == 0 && term == "" && len(q.QueryEmbedding) == 0
 	secondWave := make([]recallArmJob, 0, 2)
 	if graphEnabled {
 		secondWave = append(secondWave, recallArmJob{name: ArmGraph, run: func(ctx context.Context) ([]recallHit, error) {
-			return s.graphArm(ctx, q, types, candidates)
+			return s.graphArm(ctx, q, types, graphSeeds)
 		}})
 	}
 	if listArmNeeded {
@@ -171,6 +178,17 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	result.Matches = capMatchesToTokens(result.Matches, q.MaxTokens)
 	result.ChunkEntries = capChunksToTokens(result.ChunkEntries, q.MaxChunkTokens)
 	stop()
+	// Entities are resolved after the fact budget has selected the returned
+	// matches: the entity channel is a view of those matches, so a fact the
+	// budget dropped must not leave its entities behind.
+	if q.IncludeEntities {
+		stop = phases.measure("entity_build", false)
+		err = s.attachRecallEntities(ctx, q, &result)
+		stop()
+		if err != nil {
+			return RecallResult{}, err
+		}
+	}
 	stop = phases.measure("trace", false)
 	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
 	stop()
@@ -451,11 +469,10 @@ func (s *PostgresStore) queryWithStatementTimeout(ctx context.Context, query str
 // carries the combined weight, matching the in-process walk's additive hop
 // weight. The entity arm is weighted tanh(shared_entities * 0.5), the upstream
 // saturation curve.
-func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []string, candidates map[string]*recallCandidate) ([]recallHit, error) {
-	if containsArm(q.DisabledArms, ArmGraph) || !graphSeedsAllowed(q, s.tuning.GraphSeedMinSimilarity) {
+func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []string, seeds []string) ([]recallHit, error) {
+	if containsArm(q.DisabledArms, ArmGraph) {
 		return nil, nil
 	}
-	seeds := graphSeedIDs(candidates)
 	if len(seeds) == 0 {
 		return nil, nil
 	}
@@ -530,48 +547,41 @@ func (s *PostgresStore) scanArmWithTimeout(ctx context.Context, q RecallQuery, q
 // graphArmLimit bounds the graph arm's fan-out.
 const graphArmLimit = 64
 
-// graphSeedIDs picks the strongest candidates to seed the graph walk from.
-// Upstream starts from the cosine-nearest handful (GRAPH_SEED_LIMIT) rather
-// than from every candidate, so a weak lexical tail does not fan the walk out.
-func graphSeedIDs(candidates map[string]*recallCandidate) []string {
-	type rankedSeed struct {
-		id    string
-		score float64
-	}
-	ranked := make([]rankedSeed, 0, len(candidates))
-	for id, cand := range candidates {
-		score := candidateSimilarity(cand)
-		if score <= 0 {
-			continue
+// graphSeedsFrom picks the graph arm's entry points: the dense (semantic) hits
+// that clear the configured seed floor, strongest first, capped at
+// graphSeedLimit.
+//
+// The reference derives them from the semantic arm's similarity-ordered rows
+// (engine/memories/pg/recall.py:299-304 — `similarity is not None and
+// similarity >= graph_seed_threshold`, truncated to GRAPH_SEED_LIMIT), and a
+// query with no dense hits has no entry points at all. The lexical arm never
+// seeds: a keyword-only match is not a graph entry point, or a unit sharing an
+// entity with it would be pulled in on evidence the reference does not have.
+//
+// The floor is the arm's own configured threshold, not the caller's semantic
+// floor: when a caller floors the semantic arm above it, the reference re-runs
+// the dense query for the arm rather than starving it (link_expansion.py:154-172
+// with `preselected_semantic_seeds is None`), so the entry points are the same
+// either way. The hits handed in are the arm's raw rows, before the caller's
+// floor trimmed them, which is what makes that independent of the floor.
+func graphSeedsFrom(hits []recallHit, floor float64) []string {
+	ranked := make([]recallHit, 0, len(hits))
+	for _, hit := range hits {
+		if hit.score >= floor {
+			ranked = append(ranked, hit)
 		}
-		ranked = append(ranked, rankedSeed{id: id, score: score})
 	}
-	// Strongest similarity first, tie-broken on id so the seed set is stable
-	// across runs.
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score == ranked[j].score {
-			return ranked[i].id < ranked[j].id
-		}
-		return ranked[i].score > ranked[j].score
-	})
+	// Strongest similarity first, keeping the arm's own order for ties so the
+	// seed set follows the dense ranking rather than a hash order.
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
 	if len(ranked) > graphSeedLimit {
 		ranked = ranked[:graphSeedLimit]
 	}
 	ids := make([]string, 0, len(ranked))
 	for _, seed := range ranked {
-		ids = append(ids, seed.id)
+		ids = append(ids, seed.match.ID)
 	}
 	return ids
-}
-
-// candidateSimilarity returns a candidate's best similarity signal: the
-// semantic arm's cosine score when the query carried a vector, else the keyword
-// arm's lexical score. It is the actual score the arm assigned, not a rank.
-func candidateSimilarity(cand *recallCandidate) float64 {
-	if score, ok := cand.armScores[ArmSemantic]; ok {
-		return score
-	}
-	return cand.armScores[ArmKeyword]
 }
 
 // scanArm runs an arm query and reads its hits.

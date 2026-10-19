@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -95,16 +96,16 @@ func reflectDecodeFailure(r *http.Request, req *ReflectRequest, body []byte, err
 // operation-identifier shape. The multi-strategy and duplicate-document rules
 // are the reference's handler-level 400s, not model validators, so they are
 // enforced on the write path rather than here.
-func ValidateRetain(req RetainRequest) *httpx.ValidationFailure {
+func ValidateRetain(req RetainRequest, body any) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
 	if req.Items == nil {
-		items = append(items, httpx.Missing([]string{"body", "items"}, map[string]any{}))
+		// The framework reports a missing field with the object it was missing
+		// from as the item's input; here that object is the whole request body,
+		// so a client that sent `{"async":false}` is answered with exactly that.
+		items = append(items, httpx.Missing([]string{"body", "items"}, body))
 	}
 	for index, item := range req.Items {
-		if item.Content.Flatten() == "" && !item.Content.HasImage() {
-			items = append(items, httpx.Missing([]string{"body", "items", strconv.Itoa(index), "content"},
-				map[string]any{}))
-		}
+		items = append(items, itemContentErrors(index, item)...)
 		items = append(items, itemFieldErrors(index, item)...)
 	}
 	// The reference validates this field with `uuid.UUID(value)`, which accepts
@@ -120,6 +121,93 @@ func ValidateRetain(req RetainRequest) *httpx.ValidationFailure {
 		return nil
 	}
 	return &httpx.ValidationFailure{Errors: items}
+}
+
+// scopeUnionErrors renders the failures the reference reports for a value that
+// fits neither branch of the observation_scopes union. The union's first branch
+// is the literal set of scope modes and its second is a list of tag groups, so a
+// rejected value names both branches in that order: the literal failure carries
+// the whole value, and the list failure is reported once for the value itself
+// when it is not a list, or once per element that is not a group, with a
+// non-string tag inside a group named at its own position.
+func scopeUnionErrors(fieldLoc []string, value any) []httpx.ValidationError {
+	items := []httpx.ValidationError{
+		httpx.Literal(append(clonePath(fieldLoc), scopeLiteralBranch), value, ObservationScopeModes),
+	}
+	groups, isList := value.([]any)
+	if !isList {
+		return append(items, httpx.TypeMismatch("list_type", append(clonePath(fieldLoc), scopeListBranch), value))
+	}
+	for index, element := range groups {
+		elementLoc := append(append(clonePath(fieldLoc), scopeListBranch), strconv.Itoa(index))
+		tags, isGroup := element.([]any)
+		if !isGroup {
+			items = append(items, httpx.TypeMismatch("list_type", elementLoc, element))
+			continue
+		}
+		for position, tag := range tags {
+			if _, isText := tag.(string); !isText {
+				items = append(items, httpx.TypeMismatch("string_type",
+					append(clonePath(elementLoc), strconv.Itoa(position)), tag))
+			}
+		}
+	}
+	return items
+}
+
+// clonePath returns a copy of a location, so an item that extends it does not
+// write through to the caller's slice.
+func clonePath(loc []string) []string {
+	return append([]string(nil), loc...)
+}
+
+// scopeLiteralBranch and scopeListBranch are the names the framework gives the
+// observation_scopes union's two branches in a rejected value's location. The
+// literal branch's name is built from the accepted modes, so it cannot drift
+// from the set the field validates against.
+var (
+	scopeLiteralBranch = func() string {
+		quoted := make([]string, 0, len(ObservationScopeModes))
+		for _, mode := range ObservationScopeModes {
+			quoted = append(quoted, "'"+mode+"'")
+		}
+		return "literal[" + strings.Join(quoted, ",") + "]"
+	}()
+	scopeListBranch = "list[list[str]]"
+)
+
+// itemContentErrors reports what the reference's content validator rejects for
+// one item's content value. That value is a `str | list[blocks]` union carrying
+// a field validator, so the list arm's block failures come first — each block
+// under the union's list path, headed by the string arm's own type failure —
+// and the "content cannot be empty" rejection is reached only when every block
+// validated, because a field validator runs after the type validation.
+func itemContentErrors(index int, item RetainItem) []httpx.ValidationError {
+	contentLoc := []string{"body", "items", strconv.Itoa(index), "content"}
+	content := item.Content
+	if !content.Present() {
+		// The member itself is absent, which the model reports before the
+		// value validator can run.
+		return []httpx.ValidationError{httpx.Missing(contentLoc, item.rawObject())}
+	}
+	if len(content.blockIssues) > 0 {
+		items := []httpx.ValidationError{httpx.TypeMismatch("string_type",
+			append(clonePath(contentLoc), "str"), content.rawValue())}
+		for _, issue := range content.blockIssues {
+			loc := append(clonePath(contentLoc), issue.Loc...)
+			items = append(items, httpx.ValidationItem(issue.Kind, loc, issue.Msg, issue.Input, issue.Ctx))
+		}
+		return items
+	}
+	if content.IsList && len(content.Blocks) == 0 {
+		// An empty list is still the list arm's value, so its "cannot be empty"
+		// rejection carries the list itself.
+		return []httpx.ValidationError{httpx.ValueError(contentLoc, []any{}, "content cannot be empty")}
+	}
+	if !content.CarriesContent() {
+		return []httpx.ValidationError{httpx.ValueError(contentLoc, content.rawValue(), "content cannot be empty")}
+	}
+	return nil
 }
 
 // itemFieldErrors reports the per-item failures the reference's model raises at
@@ -149,12 +237,23 @@ func itemFieldErrors(index int, item RetainItem) []httpx.ValidationError {
 				append(path("entities"), strconv.Itoa(position)),
 				"Input should be a valid dictionary or object to extract fields from",
 				entity.InvalidInput, nil))
+			continue
+		}
+		for _, issue := range entity.memberIssues {
+			loc := append(append(path("entities"), strconv.Itoa(position)), issue.field)
+			if issue.kind == "missing" {
+				items = append(items, httpx.Missing(loc, issue.input))
+				continue
+			}
+			items = append(items, httpx.TypeMismatch(issue.kind, loc, issue.input))
 		}
 	}
+	for _, issue := range item.tagIssues {
+		items = append(items, httpx.TypeMismatch("string_type",
+			append(path("tags"), strconv.Itoa(issue.index)), issue.input))
+	}
 	if item.ObservationScopes.Invalid {
-		items = append(items, httpx.ValueError(
-			path("observation_scopes"), item.ObservationScopes.InvalidInput,
-			"observation_scopes must be a mode name or a list of tag groups"))
+		items = append(items, scopeUnionErrors(path("observation_scopes"), item.ObservationScopes.InvalidInput)...)
 	}
 	if item.updateModeInvalid {
 		items = append(items, httpx.Literal(path("update_mode"), item.updateModeInput, updateModeLiteral))
@@ -343,33 +442,51 @@ func ValidateRecall(req RecallRequest, body map[string]any) *httpx.ValidationFai
 		items = append(items, httpx.ValueError([]string{"body", "types"}, unsupported,
 			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
 	}
-	if len(req.Tags) > 0 && len(req.TagGroups.Groups) > 0 {
+	// A group the union could not read is reported at its own path before the
+	// body-level rules: the framework walks the fields before the request model
+	// validates, so a malformed group outranks the mutual-exclusion check.
+	if len(req.TagGroups.failures) > 0 {
+		return &httpx.ValidationFailure{Errors: req.TagGroups.failures}
+	}
+	// The reference's rule is presence, not content: `tags: []` beside a
+	// `tag_groups` list is refused just as a populated one is, because the model
+	// validator tests every member against None.
+	if tagsSupplied(body) && req.TagGroups.Present {
 		items = append(items, httpx.ValueError([]string{"body"}, body,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}
-	if invertedTemporalWindow(req.TemporalWindow) {
-		items = append(items, httpx.ValueError([]string{"body", "temporal_window"}, nil,
-			"temporal_window end must not be earlier than start"))
-	}
+	items = append(items, temporalWindowErrors(req.TemporalWindow, body)...)
 	if len(items) == 0 {
 		return nil
 	}
 	return &httpx.ValidationFailure{Errors: items}
 }
 
-// invertedTemporalWindow reports whether a window's upper bound is earlier than
-// its lower bound. An unparseable bound is not treated as inverted here; it is
-// rejected on the bad-request path.
-func invertedTemporalWindow(window *TemporalWindowRequest) bool {
+// tagsSupplied reports whether the request body states `tags` at all (an
+// explicit null is the same as omitting it, which is what the reference's
+// default-as-None field means).
+func tagsSupplied(body map[string]any) bool {
+	value, present := body["tags"]
+	return present && value != nil
+}
+
+// temporalWindowErrors reports the items the reference's window model raises: one
+// per bound that is absent, null or not a parseable datetime, then — only once
+// both bounds parsed — the range check. The window's input in the range item is
+// the request body's own window object, which is what the framework names.
+func temporalWindowErrors(window *TemporalWindowRequest, body map[string]any) []httpx.ValidationError {
 	if window == nil {
-		return false
+		return nil
 	}
-	start, errStart := parseISODate(window.Start)
-	end, errEnd := parseISODate(window.End)
-	if errStart != nil || errEnd != nil {
-		return false
+	if len(window.fields.items) > 0 {
+		return window.fields.items
 	}
-	return end.Before(start)
+	if !window.fields.inverted {
+		return nil
+	}
+	input, _ := body["temporal_window"].(map[string]any)
+	return []httpx.ValidationError{httpx.ValueError([]string{"body", "temporal_window"}, input,
+		"temporal_window.end must not be earlier than temporal_window.start")}
 }
 
 // tagGroupFailure reports a tag-group filter that would constrain nothing.

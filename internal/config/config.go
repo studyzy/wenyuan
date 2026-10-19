@@ -275,10 +275,16 @@ const (
 	// DefaultDBPoolMinSize is the pool size the reference keeps open.
 	DefaultDBPoolMinSize       = 5
 	DefaultTextSearchExtension = "native"
-	DefaultGzipMinSize         = 1024
-	DefaultReadTimeoutSeconds  = 30
-	DefaultRetryAfterSeconds   = 5
-	DefaultLogLevel            = "info"
+	// DefaultTextSearchExtensionNativeLanguage is the text-search dictionary the
+	// native tsvector backend tokenizes with, the reference's own default. It is
+	// a deployment-level choice, not a per-query one: the dictionary is embedded
+	// in the vector expression every write stores and in every query, so rows
+	// written under one dictionary are not equivalent under another.
+	DefaultTextSearchExtensionNativeLanguage = "english"
+	DefaultGzipMinSize                       = 1024
+	DefaultReadTimeoutSeconds                = 30
+	DefaultRetryAfterSeconds                 = 5
+	DefaultLogLevel                          = "info"
 	// DefaultFileParser is the document-parser chain's default, the reference's
 	// own. The chain is tried in order until one parser converts a document.
 	DefaultFileParser = "markitdown"
@@ -412,15 +418,19 @@ const (
 // Config is the resolved, typed process configuration. It is built once at
 // startup from defaults, environment values, and command-line flags.
 type Config struct {
-	Host                   string
-	Port                   int
-	DatabaseURL            string
-	DatabaseSchema         string
-	VectorExtension        string
-	TextSearchExtension    string
-	RunMigrationsOnStartup bool
-	MCPEnabled             bool
-	EnableBankConfigAPI    bool
+	Host                string
+	Port                int
+	DatabaseURL         string
+	DatabaseSchema      string
+	VectorExtension     string
+	TextSearchExtension string
+	// TextSearchExtensionNativeLanguage is the tsvector dictionary the native
+	// text-search backend tokenizes with (the reference's
+	// HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE).
+	TextSearchExtensionNativeLanguage string
+	RunMigrationsOnStartup            bool
+	MCPEnabled                        bool
+	EnableBankConfigAPI               bool
 	// EnableBankLLMHealth gates the per-bank /health/llm route.
 	EnableBankLLMHealth bool
 	// EnableFileUploadAPI gates the file retain route.
@@ -910,8 +920,28 @@ const (
 	DefaultAdmissionRetainMaxWaitMS  = 2000
 )
 
+// FeatureKeys is the version endpoint's feature-map key order: the reference's
+// feature model declares its fields in this order and serialises them in it, so
+// the served object must follow this declaration order rather than the
+// alphabetical order a Go map would produce. FeatureMap's literal lists the same
+// keys in the same order.
+var FeatureKeys = []string{
+	"observations",
+	"mcp",
+	"worker",
+	"bank_config_api",
+	"bank_llm_health",
+	"file_upload_api",
+	"document_export_api",
+	"document_import_api",
+	"audit_log",
+	"llm_trace",
+	"store_document_text",
+}
+
 // FeatureMap returns the version endpoint's feature map. Keys gate client
-// behavior and reflect effective process configuration.
+// behavior and reflect effective process configuration. The map is unordered;
+// FeatureKeys carries the declaration order the version endpoint serialises in.
 func (c Config) FeatureMap() map[string]bool {
 	return map[string]bool{
 		"observations":        c.EnableObservations,
@@ -977,17 +1007,18 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 		return value, ok
 	}
 	cfg := Config{
-		Host:                DefaultHost,
-		Port:                DefaultPort,
-		DatabaseSchema:      DefaultDatabaseSchema,
-		VectorExtension:     DefaultVectorExtension,
-		TextSearchExtension: DefaultTextSearchExtension,
-		GzipMinSize:         DefaultGzipMinSize,
-		LogLevel:            DefaultLogLevel,
-		Workers:             DefaultWorkers,
-		ReadTimeout:         DefaultReadTimeoutSeconds * time.Second,
-		RetryAfter:          DefaultRetryAfterSeconds * time.Second,
-		BindGrace:           DefaultMigrationGraceWindow,
+		Host:                              DefaultHost,
+		Port:                              DefaultPort,
+		DatabaseSchema:                    DefaultDatabaseSchema,
+		VectorExtension:                   DefaultVectorExtension,
+		TextSearchExtension:               DefaultTextSearchExtension,
+		TextSearchExtensionNativeLanguage: DefaultTextSearchExtensionNativeLanguage,
+		GzipMinSize:                       DefaultGzipMinSize,
+		LogLevel:                          DefaultLogLevel,
+		Workers:                           DefaultWorkers,
+		ReadTimeout:                       DefaultReadTimeoutSeconds * time.Second,
+		RetryAfter:                        DefaultRetryAfterSeconds * time.Second,
+		BindGrace:                         DefaultMigrationGraceWindow,
 	}
 
 	if v, ok := lookup(EnvHost); ok && strings.TrimSpace(v) != "" {
@@ -1009,6 +1040,12 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	}
 	if v, ok := lookup(EnvTextSearchExtension); ok && strings.TrimSpace(v) != "" {
 		cfg.TextSearchExtension = strings.TrimSpace(v)
+	}
+	// The reference lowercases the dictionary before validating it as a
+	// PostgreSQL identifier, so the resolved value is already lowercase here;
+	// the identifier check itself happens where the expression is built.
+	if v, ok := lookup(EnvTextSearchExtensionNativeLanguage); ok && strings.TrimSpace(v) != "" {
+		cfg.TextSearchExtensionNativeLanguage = strings.ToLower(strings.TrimSpace(v))
 	}
 	cfg.RunMigrationsOnStartup = boolFromEnv(lookup, EnvRunMigrationsOnStartup, DefaultRunMigrationsOnStartup)
 	// The defaults are the reference's own defaults, so a deployment that sets

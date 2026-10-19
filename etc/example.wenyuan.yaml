@@ -77,12 +77,12 @@
   # pool_min_size: "5"
   # pool_max_size: "100"
   # command_timeout: "60"  # refused by this build: the per-command database timeout is not implemented
-  # acquire_timeout: "30"  # refused by this build: the connection-acquire timeout is not implemented
-  # pool_slow_acquire_threshold_seconds: "0.05"  # refused by this build: the slow-acquire warning threshold is not implemented
+  # acquire_timeout: "30"
+  # pool_slow_acquire_threshold_seconds: "0.05"
   # statement_timeout: "600"
   # max_parallel_workers_per_gather: ""
   # session_setup_on_acquire: "true"  # value-dependent, honoured as shown: this build applies the session settings to every connection; turning per-acquire setup off is not implemented
-  # acquire_warn_threshold_ms: "1000"  # refused by this build: the pool-acquire warning threshold is not implemented
+  # acquire_warn_threshold_ms: "1000"
 # read:
   # database_url: ""
   # db_pool_min_size: "5"
@@ -106,23 +106,23 @@
   # expansion_per_entity_limit: "200"
   # expansion_timeout: "10"
 # recall:
-  # connection_budget: "4"  # refused by this build: the per-recall connection budget is not implemented
+  # connection_budget: "4"
   # max_query_tokens: "500"
-  # diagnostic_phases: "true"  # refused by this build: recall phase diagnostics are not implemented
-  # phase_sample_every: "1"  # refused by this build: recall phase sampling is not implemented
+  # diagnostic_phases: "true"
+  # phase_sample_every: "1"
   # max_concurrent: "32"
   # include_chunks: "true"
   # max_tokens: ""
   # chunks_max_tokens: ""
-  # budget_function: "fixed"  # value-dependent, honoured as shown: only the fixed budget function is implemented; the adaptive one is not
+  # budget_function: "fixed"
   # budget_fixed_low: "100"
   # budget_fixed_mid: "300"
   # budget_fixed_high: "1000"
-  # budget_adaptive_low: ""  # refused by this build: recall budget tuning is not implemented
-  # budget_adaptive_mid: ""  # refused by this build: recall budget tuning is not implemented
-  # budget_adaptive_high: ""  # refused by this build: recall budget tuning is not implemented
-  # budget_min: ""  # refused by this build: recall budget tuning is not implemented
-  # budget_max: ""  # refused by this build: recall budget tuning is not implemented
+  # budget_adaptive_low: ""
+  # budget_adaptive_mid: ""
+  # budget_adaptive_high: ""
+  # budget_min: ""
+  # budget_max: ""
   # strategy_boosts: ""
   # max_candidates_per_source: "0"
 # backpressure_defer_seconds: ""
@@ -133,7 +133,7 @@
 # retain:
   # attachment_max_size_mb: "20"
   # attachment_max_count: "50"
-  # batch_enabled: "false"
+  # batch_enabled: "false"  # value-dependent, honoured as shown: the reference routes retain extraction through the LLM Batch API when this is set; that path (submission, polling, crash recovery) is not implemented
   # max_completion_tokens: "64000"
   # chunk_size: "3000"
   # structured_chunk_size: ""
@@ -170,7 +170,7 @@
   # llm_reasoning_effort: ""  # refused by this build
   # llm_strategy: ""  # refused by this build
   # llm_timeout: ""  # refused by this build
-# fail_on_extraction_errors: "false"  # refused by this build: failing retain on extraction errors is not implemented
+# fail_on_extraction_errors: "false"  # refused by this build: the reference escalates batch-API extraction errors; this build has no batch path, and its streaming path already fails the operation on an extraction error
 # reflect:
   # max_iterations: "10"
   # prompt_cache_enabled: ""  # refused by this build: the reference's incremental prompt cache is not implemented: it is a per-provider cache session with its own lifecycle, and this build's provider boundary has no equivalent
@@ -202,7 +202,7 @@
 # consolidation:
   # batch_size: "50"
   # max_memories_per_round: "100"
-  # dedup_threshold: "0.97"  # refused by this build: the consolidation dedup threshold is not implemented
+  # dedup_threshold: "0.97"
   # max_tokens: "512"
   # max_completion_tokens: ""
   # source_facts_max_tokens: "4096"
@@ -262,7 +262,7 @@
   # max_scan_tuples: "4000"
 # text:
   # search_extension: "native"  # value-dependent, honoured as shown: only the native tsvector backend is implemented
-  # search_extension_native_language: "english"  # value-dependent, honoured as shown: only the english text-search dictionary is implemented
+  # search_extension_native_language: "english"
   # search_extension_pg_search_function_schema: "paradedb"
   # search_extension_pg_search_tokenizer: ""
 # tokenizer_encoding: "o200k_base"
@@ -270,13 +270,13 @@
 # bank:
   # info_cache_ttl_seconds: "30"
   # info_cache_max_entries: "2048"
-  # alias_cache_ttl_seconds: "10"  # refused by this build: the bank-alias cache is not implemented
-  # alias_cache_max_entries: "2048"  # refused by this build: the bank-alias cache is not implemented
+  # alias_cache_ttl_seconds: "10"
+  # alias_cache_max_entries: "2048"
   # stats_cache_ttl_seconds: "60"
   # stats_cache_max_entries: "1024"
 # entity:
   # trgm_similarity_threshold: "0.3"
-  # intrabatch_merge_similarity: "0.5"  # refused by this build: intra-batch entity merging is not implemented
+  # intrabatch_merge_similarity: "0.5"
   # merge_min_similarity: "0.3"
 # worker:
   # enabled: "true"
@@ -341,12 +341,12 @@
   # storage_azure_account_key: ""
   # parser: "markitdown"  # resolved by resolved by internal/fileparse
   # parser_allowlist: ""  # resolved by resolved by internal/fileparse
-  # parser_markitdown_ocr_enabled: "false"  # refused by this build: the document-parser OCR chain is not implemented
-  # parser_markitdown_ocr_api_key: ""  # refused by this build: the document-parser OCR chain is not implemented
-  # parser_markitdown_ocr_base_url: ""  # refused by this build: the document-parser OCR chain is not implemented
-  # parser_markitdown_ocr_model: ""  # refused by this build: the document-parser OCR chain is not implemented
-  # parser_markitdown_ocr_prompt: ""  # refused by this build: the document-parser OCR chain is not implemented
-  # parser_markitdown_ocr_default_headers: ""  # refused by this build: the document-parser OCR chain is not implemented
+  # parser_markitdown_ocr_enabled: "false"  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_api_key: ""  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_base_url: ""  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_model: ""  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_prompt: ""  # resolved by resolved by internal/fileparse
+  # parser_markitdown_ocr_default_headers: ""  # resolved by resolved by internal/fileparse
   # parser_iris_token: ""  # resolved by resolved by internal/fileparse
   # parser_iris_org_id: ""  # resolved by resolved by internal/fileparse
   # parser_llama_parse_api_key: ""  # resolved by resolved by internal/fileparse
@@ -445,6 +445,7 @@
   # debug_dump_4xx: ""
   # default_headers: ""
   # extra_body: ""
+  # gemini_safety_settings: ""
   # http_log_level: ""
   # initial_backoff: ""
   # max_backoff: ""
@@ -479,7 +480,6 @@
   # vision: ""
   # bedrock_service_tier: ""  # refused by this build
   # codex_home: ""  # refused by this build
-  # gemini_safety_settings: ""  # refused by this build
   # gemini_service_tier: ""  # refused by this build
   # groq_service_tier: ""  # refused by this build
   # litellmrouter_config: ""  # refused by this build

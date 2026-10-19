@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/studyzy/wenyuan/internal/httpx"
 )
 
 // createBody returns the webhook the route created for a body, failing on a
@@ -183,6 +186,81 @@ func TestWebhookUpdateSemantics(t *testing.T) {
 	if stored.Secret != "" {
 		t.Fatalf("secret must be cleared, got %q", stored.Secret)
 	}
+}
+
+// The identifier is parsed before the body is inspected: a malformed one is
+// refused even when the body named nothing to update.
+func TestWebhookUpdateMalformedIDPrecedesNoFields(t *testing.T) {
+	mux, _ := newServer(t)
+	rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/webhooks/not-a-uuid", `{}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if detail := errorDetail(t, rec); detail != "Invalid webhook ID" {
+		t.Fatalf("detail = %q, want %q", detail, "Invalid webhook ID")
+	}
+	// A well-formed identifier with nothing to update keeps the reference's own
+	// no-fields refusal.
+	rec = send(mux, http.MethodPatch, "/v1/default/banks/b1/webhooks/00000000-0000-0000-0000-000000000000", `{}`)
+	if rec.Code != http.StatusUnprocessableEntity || errorDetail(t, rec) != "No fields provided to update" {
+		t.Fatalf("empty patch: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A null on a nullable member is accepted by the model and reaches the
+// reference's write unprepared: http_config is dereferenced while the statement
+// is built, and url/event_types/enabled are written into a NOT NULL column, so
+// an existing row is a 500 either way — while a null on the three columns is
+// only a failure once a row matched, which makes an unknown identifier the
+// reference's 404.
+func TestWebhookUpdateNullMembers(t *testing.T) {
+	mux, store := newServer(t)
+	webhook := createBody(t, mux, `{"url":"https://example.test/null"}`)
+	const missing = "00000000-0000-0000-0000-000000000000"
+	cases := []struct {
+		body   string
+		id     string
+		status int
+		detail string
+	}{
+		{`{"http_config":null}`, webhook.ID, http.StatusInternalServerError, httpx.DetailInternal},
+		{`{"http_config":null}`, missing, http.StatusInternalServerError, httpx.DetailInternal},
+		{`{"url":null}`, webhook.ID, http.StatusInternalServerError, httpx.DetailInternal},
+		{`{"event_types":null}`, webhook.ID, http.StatusInternalServerError, httpx.DetailInternal},
+		{`{"enabled":null}`, webhook.ID, http.StatusInternalServerError, httpx.DetailInternal},
+		{`{"url":null}`, missing, http.StatusNotFound, "Webhook not found"},
+		{`{"event_types":null}`, missing, http.StatusNotFound, "Webhook not found"},
+		{`{"enabled":null}`, missing, http.StatusNotFound, "Webhook not found"},
+	}
+	for _, tc := range cases {
+		rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/webhooks/"+tc.id, tc.body)
+		if rec.Code != tc.status {
+			t.Fatalf("%s on %s: status = %d, want %d (body %s)", tc.body, tc.id, rec.Code, tc.status, rec.Body.String())
+		}
+		if detail := errorDetail(t, rec); detail != tc.detail {
+			t.Fatalf("%s on %s: detail = %q, want %q", tc.body, tc.id, detail, tc.detail)
+		}
+	}
+	// The row is untouched by the failed updates.
+	stored, err := store.GetWebhook(context.Background(), "b1", webhook.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.URL != "https://example.test/null" || stored.EventTypes == nil || !stored.Enabled {
+		t.Fatalf("webhook changed: %+v", stored)
+	}
+}
+
+// errorDetail reads the detail field of an error envelope.
+func errorDetail(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var envelope struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("error body %s: %v", rec.Body.String(), err)
+	}
+	return envelope.Detail
 }
 
 // The deliveries route rejects an out-of-range limit and an unparseable cursor

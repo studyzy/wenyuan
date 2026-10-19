@@ -9,7 +9,13 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/timefmt"
 )
+
+// noSourcesInScopeWarning is what a dry run reports when the model's scope held
+// nothing to read — the reason the reflect loop was skipped. It is the
+// reference's text, verbatim.
+const noSourcesInScopeWarning = "Nothing in this document's scope was readable, so the reflect loop was skipped and the document left as it is. Check the resolved scope — tags, tag_groups and fact_types all narrow it — and, in delta mode, the time window: only memories changed after the last refresh are in range."
 
 // dryRun previews a refresh without persisting anything: same scope resolution,
 // same reflect call, same delta merge — with the content and watermark writes
@@ -38,16 +44,30 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		}
 	}
 
-	// The preview reads the same window a real refresh would, and asks for the
-	// tool-call trace a dry run always reports.
-	outcome, err := r.store.Reflect(ctx, storage.ReflectQuery{
-		BankID:     bankID,
-		Query:      model.SourceQuery,
-		Reflection: r.reflection,
-		Include:    storage.ReflectInclude{ToolCalls: true},
-	})
-	if err != nil {
-		return nil, err
+	// A reflect over a scope with nothing to read is the most expensive reflect
+	// there is, and a real refresh refuses to pay it — so the preview asks the
+	// same question first rather than running one the refresh would skip. The
+	// window it asks about is the one the effective mode reads: a delta run only
+	// sees memories newer than its watermark.
+	since := time.Time{}
+	if effectiveMode == "delta" && model.LastMemorySeenAt != nil {
+		since = *model.LastMemorySeenAt
+	}
+	hasSources := r.hasSources(ctx, bankID, model, since)
+
+	var outcome storage.ReflectOutcome
+	if hasSources {
+		// The preview reads the same window a real refresh would, and asks for
+		// the tool-call trace a dry run always reports.
+		outcome, err = r.store.Reflect(ctx, storage.ReflectQuery{
+			BankID:     bankID,
+			Query:      model.SourceQuery,
+			Reflection: r.reflection,
+			Include:    storage.ReflectInclude{ToolCalls: true},
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// The delta branch was taken (baseline content, unchanged query). It either
@@ -58,7 +78,7 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 	preview := candidate
 	deltaApplied := false
 	var deltaOperations *mentalmodels.DryRunDeltaOps
-	if useDelta {
+	if useDelta && hasSources {
 		if merged, err := r.mergeDelta(ctx, model.Content, candidate, retraction); err == nil && strings.TrimSpace(merged) != "" {
 			preview = merged
 			deltaApplied = true
@@ -80,6 +100,12 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 
 	refreshOutcome := "content_written"
 	switch {
+	case !hasSources && !deltaApplied:
+		// Nothing in this model's scope was readable, so no candidate was even
+		// synthesised: the document is preserved as it stands. Checked before the
+		// empty-candidate guard, which would otherwise read the by-construction
+		// empty candidate as an upstream failure.
+		refreshOutcome = "content_preserved_no_new_facts"
 	case strings.TrimSpace(preview) == "":
 		refreshOutcome = "refresh_failed_empty_candidate"
 	case useDelta && !deltaApplied && createdAfter != nil:
@@ -135,8 +161,23 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 	}
 
 	durationMS := int(time.Since(started).Milliseconds())
-	recordedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	// The reference renders the trace's timestamp through Python's
+	// datetime.isoformat(), which always writes six fractional digits and drops
+	// them only when they are all zero; RFC3339Nano would trim trailing zeros
+	// and emit a different string for the same instant.
+	recordedAt := timefmt.FormatTimestamp(time.Now().UTC())
 	retractionReport := retractionReportFor(retraction)
+	warnings := []string{}
+	if !hasSources {
+		warnings = append(warnings, noSourcesInScopeWarning)
+	}
+	// The evidence a real refresh would record. A run that never reached the
+	// reflect loop has none by construction, and the reference reports that as an
+	// empty map rather than a fixed set of empty fact-type keys.
+	basedOn := renderBasedOn(outcome)
+	if !hasSources {
+		basedOn = map[string][]any{}
+	}
 	// The delta window a real refresh would have scoped its retrieval to; only a
 	// delta run bounds its tool calls with it.
 	var deltaWindow *time.Time
@@ -154,7 +195,7 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		Retraction:         retractionReport,
 		Usage:              &usage,
 		DurationMS:         durationMS,
-		Warnings:           []string{},
+		Warnings:           warnings,
 	}
 
 	return &mentalmodels.DryRunResult{
@@ -168,7 +209,7 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		Scope:              scope,
 		Window:             window,
 		Facts:              factCounts(outcome),
-		BasedOn:            renderBasedOn(outcome),
+		BasedOn:            basedOn,
 		CurrentContent:     model.Content,
 		CandidateContent:   candidate,
 		PreviewContent:     previewContent,
@@ -178,7 +219,7 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		Trace:              trace,
 		Usage:              usage,
 		DurationMS:         durationMS,
-		Warnings:           []string{},
+		Warnings:           warnings,
 	}, nil
 }
 

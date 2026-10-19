@@ -172,6 +172,23 @@ func (s *MemoryStore) BankStatsRefreshing(ctx context.Context, bankID string, fo
 	return stats, nil
 }
 
+// InvalidateBankStats drops a bank's cached summary so the next read recomputes,
+// the in-process counterpart of the reference's cross-process cache eviction.
+func (s *MemoryStore) InvalidateBankStats(ctx context.Context, bankID string) {
+	s.statsCache.invalidate(s.schema, bankID)
+}
+
+// invalidate drops one bank's cached summary. A nil cache (one built with no
+// TTL) has nothing to drop.
+func (c *bankStatsCache) invalidate(schema, bankID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, bankCacheKey(schema, bankID))
+}
+
 // MemoriesTimeseries buckets a bank's memory counts over a period.
 func (s *MemoryStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error) {
 	if err := ctx.Err(); err != nil {

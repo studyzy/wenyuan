@@ -308,6 +308,93 @@ sed -n '23,30p' internal/httpx/errors.go
 
 ## 8. 进度日志（实现记录）
 
+### 2026-10-17 — 遗留项收口（`docs/PARITY-OPEN-ITEMS.md` 全部关闭）
+
+- **做法**：把「逐 URL 对照轮」留下的 40 项残留逐条落地，仍按文件归属切片并行推进
+  （W1–W17 共 17 个切片，父级负责接口约定、文档与最终验收）。每项都要求线上证据
+  （`scripts/parity_check.py` 的 DIFF→SAME，或参考自身 `async_operations.task_payload`
+  里的真实载荷）与「去掉修复即失败」的用例。
+- **工具改进**：`scripts/parity_probe.py` 的夹具银行改为**按运行生成**
+  （`--run-id`，默认取自身 pid），并在 2.3 里新增 10 项检查。此前两个并发探针会互相看到夹具：
+  一个探针的 `reflect` 会为不存在的银行建行（参考与我们都会），另一个探针随后的 `recall`
+  于是读到「存在」的银行并报出 199/1 的假差异——这正是本轮唯一一次「回归」的真实原因，
+  已用隔离修复。
+- **验收**：`make check` 全绿；差分探针（隔离夹具）`209 checks`，参考与本研究逐字节一致，
+  `KNOWN_DIFFERENCES` 保留 11 项已记录差异；参考自带的黑盒套件（77 个 story）
+  **339 passed, 1 skipped, 0 failed**；`docs/PARITY-OPEN-ITEMS.md` 状态看板全 ✅。
+- **验收阶段新发现并修复**（9.1）：`POST …/consolidate` 的并发提交用「先查 pending 再插入」去重，
+  READ COMMITTED 下 5 个并发请求产生了 3 次巩固运行（参考契约是至多 1 次，正是参考套件
+  `test_28_consolidation_serialisation.py` 抓住的）。按参考的做法（`engine/memory_engine.py:22124-22146`）
+  在同一事务里先对 banks 行取 `FOR NO KEY UPDATE`（不是 `FOR UPDATE`：`async_operations` 对 banks 有外键，
+  普通 op 插入会取 `FOR KEY SHARE`），再做条件查-插；`internal/storage/postgres_enqueue.go` 的
+  `enqueueLockedBankTx`/`enqueueDedupeByBank` 统一承载它，`EnqueueConsolidation`（非作用域）与
+  `EnqueueGraphMaintenance` 改走该路径，`EnqueueOperation` 的载荷键去重也归一到同一约定；内存后端
+  本就以单锁覆盖两步。真库用例 `TestPostgresConsolidationEnqueueIsAtomicUnderConcurrency`。
+
+本轮关闭项（摘要，逐条证据见 `docs/PARITY-OPEN-ITEMS.md`）：
+
+| 面 | 关闭内容 |
+|---|---|
+| 请求层 | `httpx.Query` 重复标量取**最后一个**（并清理 operations/reporting/webhooks 的旁路读取）；MCP 解析错误用 CPython 原句；`/version` 与 `/v1/version` 的特征表按声明序输出 |
+| 写面 | retain 的时间推断与 `occurred_*` 落库（date-only 形态、摄取时刻为参考时间、只有显式事件保留日期）、`observation_scopes` 联合类型校验与「结构项+字段项」合并、`attachment_filenames` 端到端重放；分块切分把分隔符放到后一段开头；抽取模式精确比较、`"N/A"` 占位归一 |
+| 检索/反思 | recall 的 `types`/`opinion` 规则、`source_fact_ids` 门控、结果 `entities`、**四个评分通道常驻**（缺席为 null）、PG 侧 entities 解析（直接 postings ∪ observation 继承、entity-id 序）、图臂种子**只取语义密集命中**（删除词法回落）、反思信任 `done.answer`（不再多发一次合成调用）、逐轮 usage、trace 不含 `done`、输出长度超限不再致命 |
+| 心智模型/知识库 | dry-run 与 refresh 的「无来源」短路与落库、列表与详情的陈旧判定分离（`IsStaleBatch`）、「任一引用消失即 stale」、知识节点 PATCH 与背后模型**同一事务** |
+| 队列/投递 | claim 只领 `task_payload IS NOT NULL`、`recover` 不再多入队、恢复谓词补 `fact_type IN ('experience','world')`、`retain.completed` 每内容项一条（同步与异步都发）、失败的巩固发 `status="failed"`、投递按阶梯重试并写回 `retry_count`/`last_error`、`http_config` 生效、事件体 `exclude_none` |
+| 传输/归档 | 导入保留文档 `created_at`、两个维护队列段的导出与重映射恢复、manifest/段形状与参考一致（并修掉会让参考拒收我们归档的 `null` 列表成员）、导出键布局、clone 的 `archive_byte_size` |
+| 银行/指令/其他 | 不再写参考从不写的遗留列、config 写入类型文案、指令列表查询语义与多字段错误累积、超 int64 offset 的状态、原文字典改读 `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` |
+| MCP | 工具返回体改为参考的引擎载荷与 `json.dumps(indent=2)` 渲染、未找到是**正常结果**、未知工具文案、关闭 MCP 时的 404 |
+
+**判为非分歧/不可复现（未改代码，已留证）**：tag 落库次序（参考按 `set` 迭代序，无契约）、
+中文 BM25（分词器/`search_vector`/词项选择三处逐项一致，原观察是夹具问题）、
+`banks.last_consolidated_at`（参考只写不读，无路由可观察）。
+
+### 2026-10-17 — 逐 URL 后端逻辑对照轮（17 个并行切片，含线上差分）
+
+- **做法**：把参考的 100 条装饰器路由（`api/http.py` 的 `@app.{get,post,put,patch,delete}`，
+  其中 99 条在契约文档内 + `include_in_schema=False` 的 `GET /v1/version`）按**文件归属**切成
+  17 个互不重叠的切片，每个切片一个子代理：读参考处理器并追进 `engine/**`，读本服务对应处理器
+  与其存储层，逐字段/逐状态码/逐副作用比对，发现分歧即按参考修正，并用**同一请求打两条线上服务**
+  取 `DIFF→SAME` 证据（参考 `:8888` 与按端口起的工作树副本）。
+- **新工具**：`scripts/parity_check.py`（单请求双向差分，复用 `parity_probe.py` 的规范化；
+  `--reference-only`/`--service-only` 用来先在两侧铺同一份夹具）与
+  `scripts/parity_dev_service.sh <port>`（按端口构建并起一份当前工作树，`HINDSIGHT_API_WORKER_ENABLED=false`
+  以免抢真实部署的队列，`--stop` 停）。
+- **验收**：`make check` 全绿（build / test / vet / pgx 构建 / gofmt / golangci-lint 0 issues）；
+  终态差分探针 `199 checks: 189 identical, 0 differing, 10 known`（10 项为既有已记录差异）。
+- **遗留**：本轮未修完的项**逐条落地**在 `docs/PARITY-OPEN-ITEMS.md`（现象 / 参考证据 / 本服务
+  落点的 file:line / 验收方式），后续接线与修复以该文件为准。
+
+本轮修掉的分歧（每条都有对照证据与"去掉修复即失败"的用例）：
+
+| 面 | 修正 |
+|---|---|
+| 请求层（跨全部路由） | `httpx/laxjson.go` 的宽松重写在遇到"自己解码自身"的成员类型时**空指针 panic**，连接被直接关闭（无响应），且**合法**的宽松 body（如 `async:"yes"`）同样触发——已修并加回归用例；`X-Ignored-Params` 只在路由真正命中时输出（404/405/307 不带）；`RecoveryMiddleware` 让 panic 变为参考的 `500 text/plain "Internal Server Error"` 而不是断连；JSON 与描述符响应补 `Content-Length`；gzip 的 `Vary`/压缩体长度/子串匹配 Accept-Encoding 对齐 |
+| 读面 | documents/graph/entities 的 `q`/`tags`/`tags_match` 不再 TrimSpace（参考逐字使用）；chunks 的 `attachments`、chunk 附件的 `filename` 空值保留为 null；chunks/entities 分页上限 500→1000；`reprocess` 补上按 id 写的 tag-scope 门禁；`PATCH/DELETE document` 在门禁生效时回显 id 的 404；知识库 tree 的兄弟序改为码点序（原 SQL 排序受库排序规则影响大小写不敏感） |
+| 写面 | retain 的解码失败改用**请求契约走查**渲染（`loc` 保留数组下标、`input` 是真值）；retain 的 `session` 下载/`include_payload` 等见下；file retain 的门禁顺序（文件数 → metadata → 请求解析器 → 逐文件解析器 → 字节预算）、`files_metadata: []` 不作数量不匹配、空串解析器名是"一个名字"、两个缺失 form 部件按声明序同时上报 |
+| 检索/反思 | recall 的 `types` 非法值改为引擎级 422 文案、`opinion` 被丢弃（只剩它时返回空结果信封）；`source_fact_ids` 仅在 source-facts 通道开启时出现；结果 `entities` 无 postings 时为 null；reflect 的 `usage` 现在把**每一轮**模型调用的 token 计入（此前只算收尾调用），`trace.tool_calls` 不再含 `done` |
+| 队列/投递 | 操作 `include_payload` 对无载荷的 `batch_retain` 父操作返回 `task_payload: null`（不再合成信封）；重试无未完成子批的 batch 父操作改用参考的专属文案；webhook 投递：非 2xx 一律按阶梯重试（不再首试失败即永久失败）、`retry_count` 正确递增并写 `last_error`、`http_config` 真正生效（method/headers/params/timeout 30s） |
+| 银行族 | 别名撞名已存在的银行改回 409（`bankExists` 选了不存在的 `id` 列，冲突检查永远通过）；config 写入的类型报错文案与严格性（请求侧 int 严格、`got int`/`got float` 按字面量判定、disposition 越界前先查类型并按其 repr 渲染） |
+| 其他契约 | 知识库/指令/告警面的批量小项：指令列表查询参数语义（存在即校验、布尔词表、重复参数取**最后一个**、Python 整数文法）、指令创建的**多字段错误累积**、指令 id 改用带连字符的规范 UUID；心智模型列表 `tags_match=exact` 改为**数组相等**（次序/重复敏感）；巩固 preview 的 `null` body 是"缺少必填 body"；银行级清空 observation 后立即失效 stats 缓存；显式 `observation_scopes: []` 属"有作用域"提交（不与整库 pass 去重）；导入 `result_metadata` 按键集区分 merge(9 键)/restore(15 键)、跳过文档不再计入 observation 导入数、merge 不还原附件；`/metrics` 的 `event_loop_stalls_total` 名、`le`/样本值文本、直方图计数在 sum 之前的系列序、`ready coroutine` 的 HELP；MCP 的 400 媒体类型检查前移到会话解析之前（不带 session、不带 Content-Type）、`tools/list` 的完整 docstring（不再截断、不再把 `Args:` 塞进属性描述）、未知工具文案 |
+
+**本轮发现但未修（留作后续，均带 file:line 与线上证据）**：
+
+- 反思：本服务**忽略 `done.answer`** 而总是多发一次 `compose` 调用，导致小 `max_tokens` 下
+  `finish_reason=length` → `provider.IsOutputTooLong` 被当致命错误 → **500**（`internal/provider/openai/completion.go:184-199`
+  未在返回前填 `Content`）；`done` 工具 schema（参考 `required:["answer"]`、无 `reason`、有指令时要求 `directive_compliance`）、
+  `read_mental_models` 的必填项、`trace.tool_calls[].input` 的 `"tool"` 键、`trace.llm_calls` 恒空。
+- 功能面：`files/retain` 是**同步转换**，参考是入队 `file_convert_retain`（`internal/app/worker.go` 无该类型处理器）；
+  MCP **工具返回体**普遍被裁剪（列表缺 `limit/offset`、`total`、操作/统计字段，未找到在参考里是**正常结果**而非 `isError`）、
+  MCP 解析错误文案（需导出 `internal/httpx/jsonsyntax.go` 的 CPython 扫描器）。
+- 存储/引擎：PostgreSQL 召回路径**从不解析 entities**（`internal/storage/postgres_recall_channels.go:18`，且顺序应按 `entity_id`）；
+  内存后端 entity 通道填了 fact 文本（参考恒 `observations: []`）；claim 谓词用"排除 batch_retain"替代参考的
+  `task_payload IS NOT NULL`；`POST /consolidation/recover` 多入队一次巩固、COUNT/UPDATE 缺 `fact_type IN ('experience','world')`；
+  `PUT/PATCH /banks/{id}` 写了参考从不写的 `banks.mission`/`banks.disposition` 列；`httpx.Query` 对重复标量取**第一个**
+  （参考取最后一个，A4/B1 仅在本路由内绕开）；分块的极小尺寸切分、`resolveMode` 大小写折叠、抽取的 `"N/A"` 占位归一；
+  webhook PATCH 的 `{}`/`null` 字段次序与可空性（参考对 null 是 500）；心智模型 `dry-run-refresh` 缺"无来源短路"、
+  refresh 的无来源分支不落 `reflect_response`、列表 `is_stale` 多算撤回判定、全部引用消失时撤回判定反向。
+- 度量文档项（不修，同类于 asyncpg/pgx 文案）：`target_info` 的 SDK 标签、`prometheus_client` 默认 registry 的
+  `python_*`/`process_*` 家族（那是参考 HTTP 库的默认注册表，Go 无对应物）。
+
 ### 2026-10-17 — 逐路由契约差分扫描（`scripts/parity_probe.py`）
 
 - **做法**：新增 `scripts/parity_probe.py`，把两条服务（上游 `:8888`、wenyuan `:18100`）在
@@ -541,9 +628,14 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   `[REDACTED:<type>]` 就地改写或丢弃该项；非 allow 决策入队
   `memory_defense.triggered` webhook（载荷含 document id、detector、matched types 与**指纹化**
   hits，绝不含原文）。默认关闭。自造响应字段已删除。
-- **B2.7** 图臂三项：种子取**分数最强的 20 个**（两后端一致，无向量时回落词法）；新增
+- **B2.7** 图臂三项：种子取**分数最强的 20 个**（两后端一致）；新增
   **实体共现扩展**（`tanh(shared*0.5)`，无显式链接也可达）；跳权重改**可加**（因果+时序=1.5 而非取最大）；
   顺带修正 PG 图臂的参数位错位（$6 种子、$7 limit）。
+  *2026-10-17 更正*：本条目原写「无向量时回落词法」，**该表述是错的**——参考的图臂种子**只来自语义密集命中**
+  （`similarity >= graph_seed_min_similarity`、截 20；`engine/memories/pg/recall.py:298-304`），密集命中为空时
+  图臂直接返回空（`pg/link_expansion.py:185-186`），调用方自己的语义下限高于种子下限时图臂会**自己再发一次**
+  密集查询（`recall.py:108-113`、`link_expansion.py:154-172`）。词法回落已删除，`graphSeedsAllowed` 门控
+  亦因前提错误而删除；详见 `docs/PARITY-OPEN-ITEMS.md` 的 1.7。
 - **B2.8/B2.6/B2.10/B2.9** 由并行切片推进（时间邻近渐变与 `temporal_score` 拆分、reranker 部分失败/
   passthrough 种子、词表与组合上限 422、中文与英文拼写数字时间解析）。
 - **B3.2** 强制层级检索与"新鲜页短路"由并行切片推进。

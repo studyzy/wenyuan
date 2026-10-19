@@ -148,3 +148,43 @@ func TestRunnerWithoutModelReportsNoModel(t *testing.T) {
 		t.Fatal("expected an error when no model is configured")
 	}
 }
+
+// test-trace-excludes-done: `done` ends the run and carries the answer; it
+// retrieves nothing, so the trace must list only the tools that gathered
+// evidence. The reference's tool trace never contains a done entry.
+func TestRunnerTraceExcludesDoneTool(t *testing.T) {
+	model := &scriptedProvider{name: "openai-compatible", script: []provider.CompletionResult{
+		{ToolCalls: []provider.ToolCall{{ID: "c1", Name: ToolRecall, Arguments: []byte(`{"query":"q"}`)}}},
+		{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{"answer":"final"}`)}}},
+	}}
+	retrieval := &storageRetrieval{memories: []storage.ReflectCitation{{ID: "m-1", Text: "a memory"}}}
+	outcome, err := NewRunner(model).Run(context.TODO(), storage.AgenticReflectRequest{
+		BankID: "b1", Question: "q", Retrieval: retrieval,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Trace == nil {
+		t.Fatal("expected a trace")
+	}
+	if len(outcome.Trace.ToolCalls) != 1 {
+		t.Fatalf("trace = %+v, want the one retrieval entry", outcome.Trace.ToolCalls)
+	}
+	for _, call := range outcome.Trace.ToolCalls {
+		if call.Tool == ToolDone {
+			t.Fatalf("the trace listed the done tool: %+v", outcome.Trace.ToolCalls)
+		}
+		// The reference's trace entry names the tool inside its input, so a
+		// reader can tell what was asked for without walking back to `tool`.
+		if call.Input["tool"] != ToolRecall {
+			t.Fatalf("trace input = %+v, want the called tool named inside it", call.Input)
+		}
+		if call.Input["query"] != "q" {
+			t.Fatalf("trace input = %+v, want the model's own arguments kept", call.Input)
+		}
+	}
+	// The done call's own answer is the run's answer: nothing recomposes it.
+	if outcome.Answer != "final" {
+		t.Fatalf("answer = %q, want the done call's answer", outcome.Answer)
+	}
+}

@@ -27,6 +27,13 @@ type createInput struct {
 // updateInput is a validated partial update. Each pointer is non-nil only when
 // the caller sent that field; clearSecret reports an explicit null secret, which
 // the reference treats as a clear rather than as "unchanged".
+//
+// The reference's update model admits null on every member, so a null names a
+// field without carrying a value for it. What the write then does with that
+// null is not validation: the three members backed by a NOT NULL column reach
+// the statement (and fail it), the fourth is dereferenced by the reference
+// while it builds the statement. nullColumn and nullHTTPConfig report those two
+// cases, which the handler answers before touching the store.
 type updateInput struct {
 	url         *string
 	secret      *string
@@ -34,6 +41,11 @@ type updateInput struct {
 	eventTypes  *[]string
 	enabled     *bool
 	httpConfig  *map[string]any
+	// nullColumn is a field the body set to null whose column is NOT NULL,
+	// in the model's declaration order (url, event_types, enabled).
+	nullColumn string
+	// nullHTTPConfig reports an explicit null http_config.
+	nullHTTPConfig bool
 }
 
 // validateCreateBody decodes and validates a webhook create body the way the
@@ -114,9 +126,13 @@ func validateUpdateBody(r *http.Request) (updateInput, *httpx.ValidationFailure,
 	var items []httpx.ValidationError
 	var input updateInput
 
-	if value, present := fields["url"]; present && !isNull(value) {
-		text, item := asString(value, []string{"body", "url"})
-		if item != nil {
+	// A null the model admits names the field without carrying a value: the
+	// reference records it in `model_fields_set` and then hands the null to the
+	// statement, so validation accepts it and the write is where it shows.
+	if value, present := fields["url"]; present {
+		if isNull(value) {
+			input.nullColumn = "url"
+		} else if text, item := asString(value, []string{"body", "url"}); item != nil {
 			items = append(items, *item)
 		} else {
 			input.url = &text
@@ -132,24 +148,31 @@ func validateUpdateBody(r *http.Request) (updateInput, *httpx.ValidationFailure,
 		}
 	}
 	if value, present := fields["event_types"]; present {
-		parsed, listItems := asStringArray(value, []string{"body", "event_types"})
-		if len(listItems) > 0 {
+		if isNull(value) {
+			if input.nullColumn == "" {
+				input.nullColumn = "event_types"
+			}
+		} else if parsed, listItems := asStringArray(value, []string{"body", "event_types"}); len(listItems) > 0 {
 			items = append(items, listItems...)
 		} else {
 			input.eventTypes = &parsed
 		}
 	}
 	if value, present := fields["enabled"]; present {
-		parsed, item := asBool(value, []string{"body", "enabled"})
-		if item != nil {
+		if isNull(value) {
+			if input.nullColumn == "" {
+				input.nullColumn = "enabled"
+			}
+		} else if parsed, item := asBool(value, []string{"body", "enabled"}); item != nil {
 			items = append(items, *item)
 		} else {
 			input.enabled = &parsed
 		}
 	}
 	if value, present := fields["http_config"]; present {
-		parsed, configItems := asHTTPConfig(value)
-		if len(configItems) > 0 {
+		if isNull(value) {
+			input.nullHTTPConfig = true
+		} else if parsed, configItems := asHTTPConfig(value); len(configItems) > 0 {
 			items = append(items, configItems...)
 		} else {
 			stored := toStorageConfig(parsed)
@@ -223,11 +246,11 @@ type createBodySample struct {
 // member is nullable in the reference's model, which is what the sample's
 // pointer members describe.
 type updateBodySample struct {
-	URL        *string        `json:"url"`
-	Secret     *string        `json:"secret"`
-	EventTypes []string       `json:"event_types"`
-	Enabled    *bool          `json:"enabled"`
-	HTTPConfig map[string]any `json:"http_config"`
+	URL        *string         `json:"url"`
+	Secret     *string         `json:"secret"`
+	EventTypes *[]string       `json:"event_types"`
+	Enabled    *bool           `json:"enabled"`
+	HTTPConfig *map[string]any `json:"http_config"`
 }
 
 // typeItem builds a wrong-type item with the wording the reference uses. It

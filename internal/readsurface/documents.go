@@ -86,26 +86,49 @@ func unwritableTags(tags, writeScope []string) []string {
 	return outside
 }
 
+// documentWriteError renders a by-id document write's failed lookup. Under an
+// active scope the reference's write gate answers before the document is read,
+// echoing the identifier it was handed, so an absent document and one outside
+// the caller's scope read the same; without a scope the write's own plain
+// not-found stands.
+func documentWriteError(r *http.Request, docID string, err error) *httpx.HTTPError {
+	if errors.Is(err, storage.ErrDocumentNotFound) && scopeActive(r) {
+		return httpx.NewHTTPError(httpx.KindNotFound, fmt.Sprintf("Document '%s' not found", docID))
+	}
+	return asHTTPError(err)
+}
+
+// scopeActive reports whether the caller's resolved scope can gate a by-id
+// write at all, so an unextended deployment keeps its current behaviour.
+func scopeActive(r *http.Request) bool {
+	if len(memoryops.ScopeFromRequest(r)) > 0 {
+		return true
+	}
+	_, confined := memoryops.WriteScopeFromRequest(r)
+	return confined
+}
+
 // ListDocuments returns one page of the bank's documents.
 func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	limit, ok := intParam(w, r, "limit", defaultPageLimit, 0, -1)
-	if !ok {
-		return
-	}
-	offset, ok := intParam(w, r, "offset", 0, 0, -1)
-	if !ok {
-		return
-	}
+	// The query parameters are validated before the bank is looked up: in the
+	// reference they are `Query(...)` parameters the framework resolves ahead of
+	// the handler body, so a bad one is the 422 even for an unknown bank. The
+	// start/end dates are parsed inside the handler and so also precede the
+	// bank check, but after every `Query` one — which is why they stay below.
+	// Every `Query(...)` parameter is validated in one pass, because the
+	// reference lists all of a request's failures in a single 422, in the order
+	// the route declares them: tags_match, time_field, limit, offset.
+	var query queryErrors
 	tags := queryValues(r, "tags")
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
+	tagsMatch := httpx.Query(r, "tags_match")
 	if tagsMatch == "" {
 		tagsMatch = storage.TagsMatchAnyStrict
 	}
-	if !literalParam(w, r, "time_field", []string{"created_at", "updated_at"}) {
+	query.literal(r, "time_field", []string{"created_at", "updated_at"}, "")
+	limit := query.int(r, "limit", defaultPageLimit, 0, -1)
+	offset := query.int(r, "offset", 0, 0, -1)
+	if !query.empty() {
+		query.flush(w)
 		return
 	}
 	start, ok := parseDateParam(w, r, "start_date")
@@ -121,6 +144,10 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 			"Invalid time window: end_date must be after start_date."))
 		return
 	}
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
+		return
+	}
 	// The caller's resolved read scope narrows the listing, so a scoped reader
 	// pages over the documents it may see (and the total agrees).
 	scopedGroups, tags, tagsMatch := scopedTagFilter(r, nil, tags, tagsMatch)
@@ -129,7 +156,7 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		Tags:      tags,
 		TagsMatch: tagsMatch,
 		TagGroups: scopedGroups,
-		Query:     strings.TrimSpace(httpx.Query(r, "q")),
+		Query:     httpx.Query(r, "q"),
 		TimeField: strings.TrimSpace(httpx.Query(r, "time_field")),
 		TimeStart: start,
 		TimeEnd:   end,
@@ -244,7 +271,7 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, documentWriteError(r, docID, err))
 		return
 	}
 	// Reading a document does not make it the caller's to change: outside its
@@ -346,7 +373,7 @@ func (h *Handlers) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		httpx.WriteErrorFor(w, r, documentWriteError(r, docID, err))
 		return
 	}
 	// A delete is a by-id write, so it carries the same read/write scope gate a
@@ -371,6 +398,17 @@ func (h *Handlers) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 
 // ListDocumentChunks returns one page of one document's chunks.
 func (h *Handlers) ListDocumentChunks(w http.ResponseWriter, r *http.Request) {
+	// `limit`/`offset` are `Query(...)` parameters in the reference, so they are
+	// validated before the document is looked up: a bad page size is the 422 even
+	// when the document does not exist.
+	limit, ok := intParam(w, r, "limit", defaultPageLimit, 1, 1000)
+	if !ok {
+		return
+	}
+	offset, ok := intParam(w, r, "offset", 0, 0, -1)
+	if !ok {
+		return
+	}
 	bankID, docID, ok := h.documentMember(w, r)
 	if !ok {
 		return
@@ -384,14 +422,6 @@ func (h *Handlers) ListDocumentChunks(w http.ResponseWriter, r *http.Request) {
 	// not open the document may not page its chunks either.
 	if !documentVisible(r, doc) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, "Document not found"))
-		return
-	}
-	limit, ok := intParam(w, r, "limit", defaultPageLimit, 1, 1000)
-	if !ok {
-		return
-	}
-	offset, ok := intParam(w, r, "offset", 0, 0, -1)
-	if !ok {
 		return
 	}
 	page, err := h.Store.ListChunks(r.Context(), storage.ChunkQuery{
@@ -431,6 +461,20 @@ func (h *Handlers) ReprocessDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
 		return
 	}
+	// A reprocess is a by-id write — it deletes the document's units and
+	// re-extracts them — so it carries the same read/write scope gate a retag
+	// and a delete do, applied before the document is read the way the
+	// reference's write gate is: outside the caller's read scope the document
+	// reads as not-found, and one whose tags the caller may not write is
+	// refused. It changes no tags, so there is no new-tag set to check.
+	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, documentWriteError(r, docID, err))
+		return
+	}
+	if !h.requireDocumentWritable(w, r, doc, nil) {
+		return
+	}
 	outcome, err := h.Reprocess.ReprocessDocument(r.Context(), bankID, docID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -453,7 +497,7 @@ func (h *Handlers) GetChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	// A chunk identifier is globally unique, so the owning bank is resolved
 	// from the chunk rather than from the path.
-	chunk, err := h.findChunkByID(r.Context(), chunkID)
+	chunk, err := h.Store.FindChunk(r.Context(), chunkID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -473,23 +517,4 @@ func (h *Handlers) GetChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, toChunkResponse(chunk, byChunk[chunk.ChunkID]))
-}
-
-// findChunkByID locates a chunk by its globally unique identifier, scanning the
-// banks the store holds.
-func (h *Handlers) findChunkByID(ctx context.Context, chunkID string) (storage.Chunk, error) {
-	banks, err := h.Store.ListBanks(ctx, storage.BankQuery{Limit: 500})
-	if err != nil {
-		return storage.Chunk{}, err
-	}
-	for _, bank := range banks.Banks {
-		chunk, err := h.Store.GetChunk(ctx, bank.BankID, chunkID)
-		if err == nil {
-			return chunk, nil
-		}
-		if !errors.Is(err, storage.ErrChunkNotFound) {
-			return storage.Chunk{}, err
-		}
-	}
-	return storage.Chunk{}, storage.ErrChunkNotFound
 }

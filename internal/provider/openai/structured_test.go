@@ -109,9 +109,15 @@ func TestStructuredRepairForCompletedGeneration(t *testing.T) {
 // completion: the output-limit error wins.
 func TestStructuredNotRepairedWhenIncomplete(t *testing.T) {
 	c, _ := testClient(jsonResponse(chatBody("{\"name\":\"ada", "length")))
-	_, err := c.Complete(context.Background(), provider.CompletionRequest{ResponseSchema: testSchema()})
+	result, err := c.Complete(context.Background(), provider.CompletionRequest{ResponseSchema: testSchema()})
 	if !provider.IsOutputTooLong(err) {
 		t.Fatalf("error is %T, want output-too-long", err)
+	}
+	// The unparseable fragment is not a structured value, but it is not thrown
+	// away either: the text the model produced before the cap rides with the
+	// error so a tolerating caller still sees it.
+	if result.Content != `{"name":"ada` {
+		t.Fatalf("content = %q, want the truncated text kept", result.Content)
 	}
 }
 

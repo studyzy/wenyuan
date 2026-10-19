@@ -173,7 +173,8 @@ func queryBool(r *http.Request, key string) (bool, *httpx.ValidationError) {
 	if !present || len(values) == 0 {
 		return false, nil
 	}
-	raw := values[0]
+	// The reference binds the LAST occurrence of a repeated scalar parameter.
+	raw := values[len(values)-1]
 	switch strings.ToLower(raw) {
 	case "true", "1", "yes", "on", "t", "y":
 		return true, nil
@@ -311,6 +312,14 @@ func (h *Handlers) mapRetryError(err error, op storage.Operation, opID, bankID s
 	switch {
 	case errors.Is(err, storage.ErrOperationNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, "Operation "+opID+" not found for bank "+bankID)
+	case errors.Is(err, storage.ErrBatchParentNoWork):
+		// A batch_retain parent is a payload-less status aggregator; retrying it
+		// means re-running the sub-batches beneath it, and with none left to
+		// re-run the reference answers its own 409 pointing at resubmission.
+		return httpx.NewHTTPError(httpx.KindConflict,
+			"Operation "+opID+" is a batch_retain parent with no incomplete sub-batches to retry "+
+				"(its children have all completed, or it has none). Resubmit the source documents "+
+				"to re-ingest them, then delete this record via DELETE /operations/"+opID+"/delete.")
 	case errors.Is(err, storage.ErrOperationConflict):
 		return httpx.NewHTTPError(httpx.KindConflict,
 			"Operation "+opID+" cannot be retried: status is '"+string(op.Status)+"', expected 'failed' or 'cancelled'")
@@ -420,17 +429,13 @@ func ToOperationStatusDTO(op storage.Operation, rawOpID string, children []stora
 // refresh_mental_model payload therefore surfaces as
 // {type, operation_id, bank_id, mental_model_id} rather than the bare stored
 // map.
-func fullTaskPayload(op storage.Operation) map[string]any {
-	payload := make(map[string]any, len(op.Payload)+3)
-	payload["type"] = op.OperationType
-	payload["operation_id"] = op.OperationID
-	payload["bank_id"] = op.BankID
-	for key, value := range op.Payload {
-		payload[key] = value
-	}
-	return payload
-}
-
+//
+// An operation with no stored payload — the batch_retain parent is a
+// payload-less status aggregator no worker executes — reports null, exactly as
+// the reference does: it returns the task_payload column verbatim, and that
+// column is NULL for a parent. A batch_retain row this service wrote with an
+// empty object rather than NULL reads the same way. Synthesising the envelope
+// for such a row would invent a payload the reference never emits.
 // notFoundOperationStatus is the single-operation read for a missing (or
 // wrong-bank) identifier: the reference answers 200 with status "not_found"
 // rather than a 404, carrying the full sixteen-key body with every other member

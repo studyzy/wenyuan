@@ -466,21 +466,38 @@ func (e *MemoryDefenseAllBlockedError) Error() string {
 // notifyMemoryDefense enqueues one memory_defense.triggered delivery. The
 // payload mirrors the upstream MemoryDefenseEventData field names; a nil
 // notifier (no webhooks configured) makes it a no-op.
+//
+// The reference serializes this event with exclude_none and its emitter maps an
+// empty value onto None — `decision.message or None`, `decision.matched_types
+// or None`, hits only when there is per-match data, and no document id when the
+// item carried none — so an unset member must be left out of the map rather
+// than sent as "" or [].
 func (h *Handlers) notifyMemoryDefense(ctx context.Context, bankID, documentID string, decision DefenseDecision) {
 	if h.Webhooks == nil {
 		return
 	}
-	hits := make([]map[string]any, 0, len(decision.Hits))
+	var hits []map[string]any
 	for _, hit := range decision.Hits {
 		hits = append(hits, map[string]any{"detector": hit.Detector, "preview": hit.Preview})
 	}
-	h.Webhooks.EnqueueWebhookEvent(ctx, bankID, "memory_defense.triggered", map[string]any{
-		"status":        string(decision.Action),
-		"action":        string(decision.Action),
-		"detector":      decision.Detector,
-		"document_id":   documentID,
-		"matched_types": decision.MatchedTypes,
-		"message":       decision.Message,
-		"hits":          hits,
-	})
+	data := map[string]any{
+		// Reserved by the delivery envelope: the reference sets its status from
+		// the decision's action, so the two cannot disagree.
+		"status":   string(decision.Action),
+		"action":   string(decision.Action),
+		"detector": decision.Detector,
+	}
+	if documentID != "" {
+		data["document_id"] = documentID
+	}
+	if len(decision.MatchedTypes) > 0 {
+		data["matched_types"] = decision.MatchedTypes
+	}
+	if decision.Message != "" {
+		data["message"] = decision.Message
+	}
+	if len(hits) > 0 {
+		data["hits"] = hits
+	}
+	h.Webhooks.EnqueueWebhookEvent(ctx, bankID, "memory_defense.triggered", data)
 }

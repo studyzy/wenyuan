@@ -62,12 +62,12 @@ Status words:
 | `HINDSIGHT_API_READ_DB_POOL_MAX_SIZE` | `read_db_pool_max_size` | `100` | resolved |  |
 | `HINDSIGHT_API_MIGRATION_DATABASE_URL` | `migration_database_url` | `` | resolved |  |
 | `HINDSIGHT_API_DB_COMMAND_TIMEOUT` | `db_command_timeout` | `60` | refused | the per-command database timeout is not implemented |
-| `HINDSIGHT_API_DB_ACQUIRE_TIMEOUT` | `db_acquire_timeout` | `30` | refused | the connection-acquire timeout is not implemented |
-| `HINDSIGHT_API_DB_POOL_SLOW_ACQUIRE_THRESHOLD_SECONDS` | `db_pool_slow_acquire_threshold_seconds` | `0.05` | refused | the slow-acquire warning threshold is not implemented |
+| `HINDSIGHT_API_DB_ACQUIRE_TIMEOUT` | `db_acquire_timeout` | `30` | resolved |  |
+| `HINDSIGHT_API_DB_POOL_SLOW_ACQUIRE_THRESHOLD_SECONDS` | `db_pool_slow_acquire_threshold_seconds` | `0.05` | resolved |  |
 | `HINDSIGHT_API_DB_STATEMENT_TIMEOUT` | `db_statement_timeout` | `600` | resolved |  |
 | `HINDSIGHT_API_DB_MAX_PARALLEL_WORKERS_PER_GATHER` | `db_max_parallel_workers_per_gather` | `` | resolved |  |
 | `HINDSIGHT_API_DB_SESSION_SETUP_ON_ACQUIRE` | `db_session_setup_on_acquire` | `true` | value-dependent | this build applies the session settings to every connection; turning per-acquire setup off is not implemented |
-| `HINDSIGHT_API_DB_ACQUIRE_WARN_THRESHOLD_MS` | `db_acquire_warn_threshold_ms` | `1000` | refused | the pool-acquire warning threshold is not implemented |
+| `HINDSIGHT_API_DB_ACQUIRE_WARN_THRESHOLD_MS` | `db_acquire_warn_threshold_ms` | `1000` | resolved |  |
 | `HINDSIGHT_API_MIGRATION_ISOLATION` | `migration_isolation` | `false` | value-dependent | this build migrates in-process; the reference's subprocess isolation is not implemented |
 | `HINDSIGHT_API_MIGRATION_CONCURRENCY` | `migration_concurrency` | `1` | value-dependent | this build migrates one schema at a time; the reference's concurrent tenant sweep is not implemented |
 | `HINDSIGHT_API_MCP_ENABLED` | `mcp_enabled` | `true` | resolved |  |
@@ -94,24 +94,24 @@ Status words:
 | `HINDSIGHT_API_BM25_SELECTIVE_TERMS` | `bm25_selective_terms` | `true` | resolved |  |
 | `HINDSIGHT_API_LINK_EXPANSION_PER_ENTITY_LIMIT` | `link_expansion_per_entity_limit` | `200` | resolved |  |
 | `HINDSIGHT_API_LINK_EXPANSION_TIMEOUT` | `link_expansion_timeout` | `10` | resolved |  |
-| `HINDSIGHT_API_RECALL_CONNECTION_BUDGET` | `recall_connection_budget` | `4` | refused | the per-recall connection budget is not implemented |
+| `HINDSIGHT_API_RECALL_CONNECTION_BUDGET` | `recall_connection_budget` | `4` | resolved |  |
 | `HINDSIGHT_API_RECALL_MAX_QUERY_TOKENS` | `recall_max_query_tokens` | `500` | resolved |  |
-| `HINDSIGHT_API_RECALL_DIAGNOSTIC_PHASES` | `recall_diagnostic_phases` | `true` | refused | recall phase diagnostics are not implemented |
-| `HINDSIGHT_API_RECALL_PHASE_SAMPLE_EVERY` | `recall_phase_sample_every` | `1` | refused | recall phase sampling is not implemented |
+| `HINDSIGHT_API_RECALL_DIAGNOSTIC_PHASES` | `recall_diagnostic_phases` | `true` | resolved |  |
+| `HINDSIGHT_API_RECALL_PHASE_SAMPLE_EVERY` | `recall_phase_sample_every` | `1` | resolved |  |
 | `HINDSIGHT_API_RECALL_MAX_CONCURRENT` | `recall_max_concurrent` | `32` | resolved |  |
 | `HINDSIGHT_API_RECALL_INCLUDE_CHUNKS` | `recall_include_chunks` | `true` | resolved |  |
 | `HINDSIGHT_API_RECALL_MAX_TOKENS` | `recall_max_tokens` | `` | resolved |  |
 | `HINDSIGHT_API_RECALL_CHUNKS_MAX_TOKENS` | `recall_chunks_max_tokens` | `` | resolved |  |
 | `HINDSIGHT_API_BACKPRESSURE_DEFER_SECONDS` | `backpressure_defer_seconds` | `` | resolved |  |
-| `HINDSIGHT_API_RECALL_BUDGET_FUNCTION` | `recall_budget_function` | `fixed` | value-dependent | only the fixed budget function is implemented; the adaptive one is not |
+| `HINDSIGHT_API_RECALL_BUDGET_FUNCTION` | `recall_budget_function` | `fixed` | resolved |  |
 | `HINDSIGHT_API_RECALL_BUDGET_FIXED_LOW` | `recall_budget_fixed_low` | `100` | resolved |  |
 | `HINDSIGHT_API_RECALL_BUDGET_FIXED_MID` | `recall_budget_fixed_mid` | `300` | resolved |  |
 | `HINDSIGHT_API_RECALL_BUDGET_FIXED_HIGH` | `recall_budget_fixed_high` | `1000` | resolved |  |
-| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_LOW` | `recall_budget_adaptive_low` | `` | refused | recall budget tuning is not implemented |
-| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_MID` | `recall_budget_adaptive_mid` | `` | refused | recall budget tuning is not implemented |
-| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_HIGH` | `recall_budget_adaptive_high` | `` | refused | recall budget tuning is not implemented |
-| `HINDSIGHT_API_RECALL_BUDGET_MIN` | `recall_budget_min` | `` | refused | recall budget tuning is not implemented |
-| `HINDSIGHT_API_RECALL_BUDGET_MAX` | `recall_budget_max` | `` | refused | recall budget tuning is not implemented |
+| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_LOW` | `recall_budget_adaptive_low` | `` | resolved |  |
+| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_MID` | `recall_budget_adaptive_mid` | `` | resolved |  |
+| `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_HIGH` | `recall_budget_adaptive_high` | `` | resolved |  |
+| `HINDSIGHT_API_RECALL_BUDGET_MIN` | `recall_budget_min` | `` | resolved |  |
+| `HINDSIGHT_API_RECALL_BUDGET_MAX` | `recall_budget_max` | `` | resolved |  |
 | `HINDSIGHT_API_RECALL_STRATEGY_BOOSTS` | `recall_strategy_boosts` | `` | resolved |  |
 | `HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE` | `recall_max_candidates_per_source` | `0` | resolved |  |
 | `HINDSIGHT_API_RECENCY_DECAY_FUNCTION` | `recency_decay_function` | `linear` | resolved |  |
@@ -119,7 +119,7 @@ Status words:
 | `HINDSIGHT_API_RECENCY_DECAY_HALFLIFE_DAYS` | `recency_decay_halflife_days` | `90` | resolved |  |
 | `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB` | `retain_attachment_max_size_mb` | `20` | resolved |  |
 | `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_COUNT` | `retain_attachment_max_count` | `50` | resolved |  |
-| `HINDSIGHT_API_RETAIN_BATCH_ENABLED` | `retain_batch_enabled` | `false` | resolved |  |
+| `HINDSIGHT_API_RETAIN_BATCH_ENABLED` | `retain_batch_enabled` | `false` | value-dependent | the reference routes retain extraction through the LLM Batch API when this is set; that path (submission, polling, crash recovery) is not implemented |
 | `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` | `retain_max_completion_tokens` | `64000` | resolved |  |
 | `HINDSIGHT_API_RETAIN_CHUNK_SIZE` | `retain_chunk_size` | `3000` | resolved |  |
 | `HINDSIGHT_API_RETAIN_STRUCTURED_CHUNK_SIZE` | `retain_structured_chunk_size` | `` | resolved |  |
@@ -141,7 +141,7 @@ Status words:
 | `HINDSIGHT_API_RETAIN_MAX_CONCURRENT` | `retain_max_concurrent` | `4` | refused | the retain concurrency cap is not implemented |
 | `HINDSIGHT_API_RETAIN_SUBBATCH_CONCURRENCY` | `retain_subbatch_concurrency` | `1` | refused | retain sub-batch concurrency is not implemented |
 | `HINDSIGHT_API_RETAIN_STORE_MAX_CONCURRENT` | `retain_store_max_concurrent` | `` | refused | the retain store concurrency cap is not implemented |
-| `HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS` | `fail_on_extraction_errors` | `false` | refused | failing retain on extraction errors is not implemented |
+| `HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS` | `fail_on_extraction_errors` | `false` | refused | the reference escalates batch-API extraction errors; this build has no batch path, and its streaming path already fails the operation on an extraction error |
 | `HINDSIGHT_API_REFLECT_MAX_ITERATIONS` | `reflect_max_iterations` | `10` | resolved |  |
 | `HINDSIGHT_API_REFLECT_PROMPT_CACHE_ENABLED` | `reflect_prompt_cache_enabled` | `` | refused | the reference's incremental prompt cache is not implemented: it is a per-provider cache session with its own lifecycle, and this build's provider boundary has no equivalent |
 | `HINDSIGHT_API_REFLECT_MAX_CONTEXT_TOKENS` | `reflect_max_context_tokens` | `100000` | resolved |  |
@@ -154,7 +154,7 @@ Status words:
 | `HINDSIGHT_API_OBSERVATIONS_MISSION` | `observations_mission` | `` | resolved |  |
 | `HINDSIGHT_API_CONSOLIDATION_BATCH_SIZE` | `consolidation_batch_size` | `50` | resolved |  |
 | `HINDSIGHT_API_CONSOLIDATION_MAX_MEMORIES_PER_ROUND` | `consolidation_max_memories_per_round` | `100` | resolved |  |
-| `HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD` | `consolidation_dedup_threshold` | `0.97` | refused | the consolidation dedup threshold is not implemented |
+| `HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD` | `consolidation_dedup_threshold` | `0.97` | resolved |  |
 | `HINDSIGHT_API_CONSOLIDATION_MAX_TOKENS` | `consolidation_max_tokens` | `512` | resolved |  |
 | `HINDSIGHT_API_CONSOLIDATION_MAX_COMPLETION_TOKENS` | `consolidation_max_completion_tokens` | `` | resolved |  |
 | `HINDSIGHT_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS` | `consolidation_source_facts_max_tokens` | `4096` | resolved |  |
@@ -184,19 +184,19 @@ Status words:
 | `HINDSIGHT_API_ANN_ITERATIVE_SCAN` | `ann_iterative_scan` | `true` | resolved |  |
 | `HINDSIGHT_API_ANN_MAX_SCAN_TUPLES` | `ann_max_scan_tuples` | `4000` | resolved |  |
 | `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` | `text_search_extension` | `native` | value-dependent | only the native tsvector backend is implemented |
-| `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` | `text_search_extension_native_language` | `english` | value-dependent | only the english text-search dictionary is implemented |
+| `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` | `text_search_extension_native_language` | `english` | resolved |  |
 | `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA` | `text_search_extension_pg_search_function_schema` | `paradedb` | resolved |  |
 | `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER` | `text_search_extension_pg_search_tokenizer` | `` | resolved |  |
 | `HINDSIGHT_API_TOKENIZER_ENCODING` | `tokenizer_encoding` | `o200k_base` | resolved |  |
 | `HINDSIGHT_API_QUERY_ANALYZER_LANGUAGES` | `query_analyzer_languages` | `` | refused | dateparser language restriction is not implemented |
 | `HINDSIGHT_API_BANK_INFO_CACHE_TTL_SECONDS` | `bank_info_cache_ttl_seconds` | `30` | resolved |  |
 | `HINDSIGHT_API_BANK_INFO_CACHE_MAX_ENTRIES` | `bank_info_cache_max_entries` | `2048` | resolved |  |
-| `HINDSIGHT_API_BANK_ALIAS_CACHE_TTL_SECONDS` | `bank_alias_cache_ttl_seconds` | `10` | refused | the bank-alias cache is not implemented |
-| `HINDSIGHT_API_BANK_ALIAS_CACHE_MAX_ENTRIES` | `bank_alias_cache_max_entries` | `2048` | refused | the bank-alias cache is not implemented |
+| `HINDSIGHT_API_BANK_ALIAS_CACHE_TTL_SECONDS` | `bank_alias_cache_ttl_seconds` | `10` | resolved |  |
+| `HINDSIGHT_API_BANK_ALIAS_CACHE_MAX_ENTRIES` | `bank_alias_cache_max_entries` | `2048` | resolved |  |
 | `HINDSIGHT_API_BANK_STATS_CACHE_TTL_SECONDS` | `bank_stats_cache_ttl_seconds` | `60` | resolved |  |
 | `HINDSIGHT_API_BANK_STATS_CACHE_MAX_ENTRIES` | `bank_stats_cache_max_entries` | `1024` | resolved |  |
 | `HINDSIGHT_API_ENTITY_TRGM_SIMILARITY_THRESHOLD` | `entity_trgm_similarity_threshold` | `0.3` | resolved |  |
-| `HINDSIGHT_API_ENTITY_INTRABATCH_MERGE_SIMILARITY` | `entity_intrabatch_merge_similarity` | `0.5` | refused | intra-batch entity merging is not implemented |
+| `HINDSIGHT_API_ENTITY_INTRABATCH_MERGE_SIMILARITY` | `entity_intrabatch_merge_similarity` | `0.5` | resolved |  |
 | `HINDSIGHT_API_ENTITY_MERGE_MIN_SIMILARITY` | `entity_merge_min_similarity` | `0.3` | resolved |  |
 | `HINDSIGHT_API_WORKER_ENABLED` | `worker_enabled` | `true` | resolved |  |
 | `HINDSIGHT_API_WORKER_ID` | `worker_id` | `` | resolved |  |
@@ -254,12 +254,12 @@ Status words:
 | `HINDSIGHT_API_FILE_STORAGE_AZURE_ACCOUNT_KEY` | `file_storage_azure_account_key` | `` | resolved |  |
 | `HINDSIGHT_API_FILE_PARSER` | `file_parser` | `markitdown` | delegated | resolved by resolved by internal/fileparse |
 | `HINDSIGHT_API_FILE_PARSER_ALLOWLIST` | `file_parser_allowlist` | `` | delegated | resolved by resolved by internal/fileparse |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_ENABLED` | `file_parser_markitdown_ocr_enabled` | `false` | refused | the document-parser OCR chain is not implemented |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_API_KEY` | `file_parser_markitdown_ocr_api_key` | `` | refused | the document-parser OCR chain is not implemented |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_BASE_URL` | `file_parser_markitdown_ocr_base_url` | `` | refused | the document-parser OCR chain is not implemented |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_MODEL` | `file_parser_markitdown_ocr_model` | `` | refused | the document-parser OCR chain is not implemented |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_PROMPT` | `file_parser_markitdown_ocr_prompt` | `` | refused | the document-parser OCR chain is not implemented |
-| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_DEFAULT_HEADERS` | `file_parser_markitdown_ocr_default_headers` | `` | refused | the document-parser OCR chain is not implemented |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_ENABLED` | `file_parser_markitdown_ocr_enabled` | `false` | delegated | resolved by resolved by internal/fileparse |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_API_KEY` | `file_parser_markitdown_ocr_api_key` | `` | delegated | resolved by resolved by internal/fileparse |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_BASE_URL` | `file_parser_markitdown_ocr_base_url` | `` | delegated | resolved by resolved by internal/fileparse |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_MODEL` | `file_parser_markitdown_ocr_model` | `` | delegated | resolved by resolved by internal/fileparse |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_PROMPT` | `file_parser_markitdown_ocr_prompt` | `` | delegated | resolved by resolved by internal/fileparse |
+| `HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_DEFAULT_HEADERS` | `file_parser_markitdown_ocr_default_headers` | `` | delegated | resolved by resolved by internal/fileparse |
 | `HINDSIGHT_API_FILE_PARSER_IRIS_TOKEN` | `file_parser_iris_token` | `` | delegated | resolved by resolved by internal/fileparse |
 | `HINDSIGHT_API_FILE_PARSER_IRIS_ORG_ID` | `file_parser_iris_org_id` | `` | delegated | resolved by resolved by internal/fileparse |
 | `HINDSIGHT_API_FILE_PARSER_LLAMA_PARSE_API_KEY` | `file_parser_llama_parse_api_key` | `` | delegated | resolved by resolved by internal/fileparse |
@@ -387,6 +387,7 @@ Status words:
 | `HINDSIGHT_API_LLM_DEBUG_DUMP_4XX` | `llm_debug_dump_4xx` | resolved |
 | `HINDSIGHT_API_LLM_DEFAULT_HEADERS` | `llm_default_headers` | resolved |
 | `HINDSIGHT_API_LLM_EXTRA_BODY` | `llm_extra_body` | resolved |
+| `HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS` | `llm_gemini_safety_settings` | resolved |
 | `HINDSIGHT_API_LLM_HTTP_LOG_LEVEL` | `llm_http_log_level` | resolved |
 | `HINDSIGHT_API_LLM_INITIAL_BACKOFF` | `llm_initial_backoff` | resolved |
 | `HINDSIGHT_API_LLM_MAX_BACKOFF` | `llm_max_backoff` | resolved |
@@ -422,7 +423,6 @@ Status words:
 | `HINDSIGHT_API_SKIP_LLM_VERIFICATION` | `skip_llm_verification` | resolved |
 | `HINDSIGHT_API_LLM_BEDROCK_SERVICE_TIER` | `llm_bedrock_service_tier` | refused |
 | `HINDSIGHT_API_LLM_CODEX_HOME` | `llm_codex_home` | refused |
-| `HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS` | `llm_gemini_safety_settings` | refused |
 | `HINDSIGHT_API_LLM_GEMINI_SERVICE_TIER` | `llm_gemini_service_tier` | refused |
 | `HINDSIGHT_API_LLM_GROQ_SERVICE_TIER` | `llm_groq_service_tier` | refused |
 | `HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG` | `llm_litellmrouter_config` | refused |

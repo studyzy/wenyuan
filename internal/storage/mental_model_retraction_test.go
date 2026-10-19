@@ -123,3 +123,55 @@ func TestIsStaleIgnoresModelsWithoutGrounding(t *testing.T) {
 		t.Fatal("a non-memory citation must not be read as a retraction")
 	}
 }
+
+// A model whose every citation is gone is stale too: the question staleness
+// asks is whether the document's grounding is intact, and none of it is. (The
+// refresh draws a finer line when deciding what to do with the prose, but that
+// does not make the document current.)
+func TestIsStaleDetectsFullyRetractedGrounding(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	// A stamped watermark newer than the (unwritten) bank keeps the scoped half
+	// of the check out of the way, so what is exercised here is the retraction.
+	seen := time.Now().UTC()
+	model := groundingModel(
+		map[string]any{"id": "gone-1", "type": "world", "text": "a fact"},
+		map[string]any{"id": "gone-2", "type": "experience", "text": "another"},
+	)
+	model.LastMemorySeenAt = &seen
+	if !store.IsStale(ctx, "b1", model) {
+		t.Fatal("a model citing nothing that still exists must be stale")
+	}
+}
+
+// A listing asks the batch staleness question, which leaves the retraction
+// check to the single-model path: a model whose evidence has gone still reads
+// up to date there, while the detail read reports it stale.
+func TestIsStaleBatchSkipsTheRetractionCheck(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, MemoryUnit{ID: "live", BankID: "b1", Text: "still here"}); err != nil {
+		t.Fatal(err)
+	}
+	// The bank's write watermark is unset (UpsertUnit does not raise it) and the
+	// model's stamp is newer, so the scoped half of the check is quiet for both
+	// variants and the retraction is the only thing left to answer either.
+	seen := time.Now().UTC()
+	model := groundingModel(
+		map[string]any{"id": "gone", "type": "world", "text": "a fact"},
+		map[string]any{"id": "live", "type": "world", "text": "still here"},
+	)
+	model.LastMemorySeenAt = &seen
+	if store.IsStaleBatch(ctx, "b1", model) {
+		t.Fatal("the batch question must not ask about retracted grounding")
+	}
+	if !store.IsStale(ctx, "b1", model) {
+		t.Fatal("the single-model question must still see the retraction")
+	}
+}

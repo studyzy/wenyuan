@@ -241,6 +241,70 @@ func TestOperationChildOperations(t *testing.T) {
 	}
 }
 
+// test-operation-payload-null: an operation with no stored task payload — a
+// batch_retain parent is a payload-less status aggregator no worker executes —
+// reports task_payload null under include_payload. The reference returns the
+// task_payload column verbatim, and that column is NULL for a parent, so
+// synthesising the {type, operation_id, bank_id} envelope here would invent a
+// payload the reference never emits.
+func TestOperationPayloadNullWithoutStoredPayload(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType, Status: storage.StatusPending,
+		ResultMetadata: map[string]any{"is_parent": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	value, present := got["task_payload"]
+	if !present {
+		t.Fatalf("task_payload key must be present: %s", rec.Body.String())
+	}
+	if value != nil {
+		t.Fatalf("a payload-less operation must report task_payload null, got %+v", value)
+	}
+}
+
+// test-operation-retry-batch-parent-no-children: retrying a failed batch_retain
+// parent with no children reports the reference's dedicated 409 message rather
+// than the generic conflict, because reviving a payload-less aggregator with no
+// child left to promote it would strand it permanently pending.
+func TestRetryBatchParentWithNoChildren(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType,
+		Status: storage.StatusFailed, Error: "boom",
+		ResultMetadata: map[string]any{"is_parent": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodPost, "/v1/default/banks/b1/operations/"+validOpID+"/retry")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	detail, _ := got["detail"].(string)
+	want := "Operation " + validOpID + " is a batch_retain parent with no incomplete sub-batches to retry " +
+		"(its children have all completed, or it has none). Resubmit the source documents " +
+		"to re-ingest them, then delete this record via DELETE /operations/" + validOpID + "/delete."
+	if detail != want {
+		t.Fatalf("detail = %q\nwant   %q", detail, want)
+	}
+	if op, err := store.GetOperation(context.TODO(), "b1", validOpID); err != nil || op.Status != storage.StatusFailed {
+		t.Fatalf("parent must stay failed, got %+v, %v", op, err)
+	}
+}
+
 // test-list-operations-exclude-parents: exclude_parents hides parent batch
 // operations from both the page and the total.
 func TestListOperationsExcludeParents(t *testing.T) {
@@ -474,5 +538,77 @@ func TestDeleteOperationRemovesExportArchive(t *testing.T) {
 	}
 	if _, err := store.GetStoredFile(context.TODO(), key); !errors.Is(err, storage.ErrStoredFileNotFound) {
 		t.Fatalf("archive survived the delete: err = %v", err)
+	}
+}
+
+// test-operation-payload-verbatim: include_payload reports the stored
+// task_payload exactly as the column holds it.
+//
+// The reference selects the column and parses it
+// (engine/memory_engine.py:21220-21237); it adds nothing. A real payload
+// already carries its own type, bank_id and operation_id because the
+// submitter wrote them there, so a renderer that adds them is invisible
+// against those rows and wrong against every row that lacks them -- a seeded
+// or imported operation grew three keys the reference never sends. The live
+// comparison caught it on exactly such a row.
+func TestOperationPayloadIsEchoedVerbatim(t *testing.T) {
+	stored := map[string]any{"contents": []any{"hello"}, "custom": "kept"}
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType,
+		Status: storage.StatusCompleted, Payload: stored,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		TaskPayload map[string]any `json:"task_payload"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TaskPayload) != len(stored) {
+		t.Fatalf("task_payload = %+v, want exactly the stored %d keys", got.TaskPayload, len(stored))
+	}
+	for _, invented := range []string{"type", "bank_id", "operation_id"} {
+		if _, present := got.TaskPayload[invented]; present {
+			t.Fatalf("task_payload must not invent %q: %+v", invented, got.TaskPayload)
+		}
+	}
+	if got.TaskPayload["custom"] != "kept" {
+		t.Fatalf("task_payload dropped a stored member: %+v", got.TaskPayload)
+	}
+}
+
+// A payload that already carries the envelope keys passes them through
+// unchanged -- that is the ordinary case, and the echo must not double-handle
+// them either.
+func TestOperationPayloadPassesThroughStoredEnvelopeKeys(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType,
+		Status: storage.StatusCompleted,
+		Payload: map[string]any{
+			"type": "batch_retain", "bank_id": "b1", "operation_id": validOpID,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+validOpID+"?include_payload=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		TaskPayload map[string]any `json:"task_payload"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	// The stored value wins: the submitter's own type string, not the column's.
+	if got.TaskPayload["type"] != "batch_retain" {
+		t.Fatalf("type = %v, want the stored batch_retain", got.TaskPayload["type"])
 	}
 }

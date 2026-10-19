@@ -59,6 +59,7 @@ func (s *MemoryStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteR
 		result.Status = StatusPending
 		result.Accepted = true
 	}
+	op.Payload = executablePayload(op.Payload)
 	s.operations[opID] = op
 	return result, nil
 }

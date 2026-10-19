@@ -11,7 +11,9 @@ import (
 //
 // Chunking is bounded by size, not by blank lines: content that fits the chunk
 // budget is one chunk however many paragraphs it holds. The content here is
-// deliberately over budget so the split is exercised.
+// deliberately over budget so the split is exercised: the paragraph and the
+// oversized line come apart, and the line itself splits in two because the
+// recursive pass drops the leading separator run before cutting mid-word.
 func TestRetainSegmentsIntoChunks(t *testing.T) {
 	store := NewMemoryStore("public")
 	content := "first paragraph\n\n" + strings.Repeat("x", ChunkSize) + "\n\nthird paragraph"
@@ -22,11 +24,11 @@ func TestRetainSegmentsIntoChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outcome.ItemUnitIDs) != 1 || len(outcome.ItemUnitIDs[0]) != 3 {
-		t.Fatalf("expected three chunks in one item group, got %+v", outcome.ItemUnitIDs)
+	if len(outcome.ItemUnitIDs) != 1 || len(outcome.ItemUnitIDs[0]) != 4 {
+		t.Fatalf("expected four chunks in one item group, got %+v", outcome.ItemUnitIDs)
 	}
-	if len(store.chunks) != 3 {
-		t.Fatalf("expected three stored chunks, got %d", len(store.chunks))
+	if len(store.chunks) != 4 {
+		t.Fatalf("expected four stored chunks, got %d", len(store.chunks))
 	}
 	for i, chunk := range store.chunks {
 		if chunk.ChunkIndex != i {

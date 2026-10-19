@@ -59,6 +59,21 @@ func TestOutputTooLongRaisesDistinctError(t *testing.T) {
 	}
 }
 
+// test-output-limit-keeps-content: a generation cut off at its output limit
+// still carries what it produced, and the reference uses that text rather than
+// failing the run. The typed error is still raised, but the payload rides with
+// it so a tolerating caller does not lose the answer.
+func TestOutputLimitKeepsTruncatedContent(t *testing.T) {
+	c, _ := testClient(jsonResponse(chatBody("partial answer", "length")))
+	result, err := c.Complete(context.Background(), provider.CompletionRequest{})
+	if !provider.IsOutputTooLong(err) {
+		t.Fatalf("error is %T, want output-too-long", err)
+	}
+	if result.Content != "partial answer" {
+		t.Fatalf("content = %q, want the truncated text kept", result.Content)
+	}
+}
+
 // test-freeform-strips-scaffolding: reasoning and scaffolding tags are
 // stripped from free-form content.
 func TestFreeFormStripsScaffolding(t *testing.T) {

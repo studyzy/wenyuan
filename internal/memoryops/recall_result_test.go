@@ -106,6 +106,46 @@ func TestRecallResponseSerializationFieldNames(t *testing.T) {
 	}
 }
 
+// Every score stage is on the wire whether or not it surfaced the result: the
+// reference keeps nulls for this route, so a client reading `scores.keyword`
+// unconditionally never hits a missing key.
+func TestRecallScoresCarryEveryStageIncludingNulls(t *testing.T) {
+	source := storage.RecallResult{Matches: []storage.RecallMatch{{
+		ID: "m1", Text: "t", Type: "world", Final: 0.4,
+		Scores: map[string]float64{"semantic": 0.5},
+	}}}
+	response := BuildRecallResponse(source, RecallRequest{MaxTokens: intPtr(10)})
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Results []struct {
+			Scores map[string]json.RawMessage `json:"scores"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("result count = %d", len(decoded.Results))
+	}
+	scores := decoded.Results[0].Scores
+	for _, stage := range []string{"final", "reranker", "semantic", "keyword"} {
+		if _, ok := scores[stage]; !ok {
+			t.Fatalf("scores must always carry %q: %s", stage, encoded)
+		}
+	}
+	if got := string(scores["semantic"]); got != "0.5" {
+		t.Fatalf("semantic = %s, want the reported score", got)
+	}
+	for _, stage := range []string{"reranker", "keyword"} {
+		if got := string(scores[stage]); got != "null" {
+			t.Fatalf("%s = %s, want null for a stage that did not surface the result", stage, got)
+		}
+	}
+}
+
 // ts-0005: an oversized fact skips only itself; shorter lower-ranked facts are
 // still returned.
 func TestSelectByTokenBudgetSkipsOversized(t *testing.T) {
@@ -156,5 +196,29 @@ func TestCapChunkChannelTruncates(t *testing.T) {
 	}
 	if tokenCount(entry.Text) > 3 {
 		t.Fatalf("clipped chunk has %d tokens, want <= 3", tokenCount(entry.Text))
+	}
+}
+
+// recall-ft-4: a source-fact id list is reported only when the caller asked for
+// source facts, and a fact that carries no entity postings reports entities as
+// null rather than an empty list.
+func TestBuildRecallResponseSourceFactIDsGated(t *testing.T) {
+	source := storage.RecallResult{Matches: []storage.RecallMatch{{
+		ID: "m1", Text: "t", Type: "observation", SourceMemoryIDs: []string{"s1"},
+	}}}
+	plain := BuildRecallResponse(source, RecallRequest{Query: "q"})
+	if len(plain.Results) != 1 {
+		t.Fatalf("results = %+v", plain.Results)
+	}
+	if plain.Results[0].SourceFactIDs != nil {
+		t.Fatalf("source_fact_ids must be null unless source facts are included: %+v", plain.Results[0])
+	}
+	if plain.Results[0].Entities != nil {
+		t.Fatalf("entities must be null when the fact carries none: %+v", plain.Results[0])
+	}
+	included := BuildRecallResponse(source, RecallRequest{Query: "q",
+		Include: &IncludeRequest{SourceFacts: &IncludeSourceFactRequest{}}})
+	if len(included.Results) != 1 || len(included.Results[0].SourceFactIDs) != 1 {
+		t.Fatalf("source_fact_ids must be reported when source facts are included: %+v", included.Results)
 	}
 }

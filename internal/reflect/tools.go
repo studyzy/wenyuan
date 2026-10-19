@@ -81,12 +81,21 @@ var (
 	toolSuffixes = []string{"_tool", "_call"}
 )
 
-// ToolDefinitions is the tool set as the provider boundary expects it.
-func ToolDefinitions() []provider.ToolDefinition {
+// ToolDefinitions is the tool set as the provider boundary expects it, for the
+// mode the loop runs in. Document mode swaps `done`'s answer field for the
+// structured document the stored answer is rendered from.
+func ToolDefinitions(answerAsDocument bool) []provider.ToolDefinition {
 	names := ToolNames()
 	defs := make([]provider.ToolDefinition, 0, len(names))
 	for _, name := range names {
 		defs = append(defs, ToolDefinition(name))
+	}
+	if answerAsDocument {
+		for i := range defs {
+			if defs[i].Name == ToolDone {
+				defs[i].Parameters = documentDoneParameters()
+			}
+		}
 	}
 	return defs
 }
@@ -114,7 +123,8 @@ func toolDescription(name string) string {
 	case ToolExpand:
 		return "Get more surrounding context for one or more memories."
 	case ToolDone:
-		return "Finish. Call this once the gathered evidence answers the question."
+		return "Finish with your final answer once the gathered evidence answers the question: " +
+			"put the answer itself in the `answer` argument (or state the document's structure in document mode)."
 	default:
 		return ""
 	}
@@ -154,7 +164,7 @@ func toolParameters(name string) json.RawMessage {
 			`"mental_model_ids":{"type":"array","items":{"type":"string"},"description":"Identifiers a previous search returned"},` +
 			`"ids":{"type":"array","items":{"type":"string"},"description":"Deprecated alias for mental_model_ids"},` +
 			`"max_tokens":{"type":"integer","description":"Maximum tokens of model content to return (default 6000)"}` +
-			`},"required":["reason"]}`)
+			`},"required":["reason","mental_model_ids"]}`)
 	case ToolExpand:
 		return json.RawMessage(`{"type":"object","properties":{` +
 			`"reason":` + reason + `,` +
@@ -164,12 +174,24 @@ func toolParameters(name string) json.RawMessage {
 			`},"required":["reason","memory_ids","depth"]}`)
 	case ToolDone:
 		return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
-			`"answer":{"type":"string","description":"The final synthesized answer as markdown"},` +
-			`"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
-			`},"required":["reason"]}`)
+			`"answer":{"type":"string","description":"Your final synthesized answer as well-formatted markdown, using headers, lists, bold/italic and code blocks for clarity"}` +
+			`,"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
+			`},"required":["reason","answer"]}`)
 	default:
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}
+}
+
+// documentDoneParameters is `done`'s argument schema in document mode: the
+// answer IS the stored document, so the model states its structure (or the
+// answer text the renderer accepts) instead of prose. The reference swaps the
+// two fields the same way — the prose `answer` is not what this mode stores.
+func documentDoneParameters() json.RawMessage {
+	reason := `{"type":"string","description":"Brief explanation of why this call is being made"}`
+	return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
+		`"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
+		`,"answer":{"type":"string","description":"The answer as markdown, when it is not stated as a document"}` +
+		`},"required":["reason"]}`)
 }
 
 // ToolCall is one call the model asked for.

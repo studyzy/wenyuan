@@ -3,31 +3,39 @@ package memoryops
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// A tag-group filter that constrains nothing is refused, so a client trying to
-// narrow a search can never silently receive a wider one.
+// A tag group the reference's union cannot read matches none of its four
+// branches, which is reported as one item per branch at the group's own path
+// rather than as a body-level message. A group carrying only `tag` is such a
+// case: the leaf's member is `tags`, and `tag` belongs to no branch.
 func TestTagGroupsRejectUnconstrainedNodes(t *testing.T) {
 	cases := map[string]string{
 		"empty object":    `{}`,
 		"unknown wrapper": `{"groups":[{"tags":["ops"]}]}`,
-		"empty tag list":  `[[]]`,
-		"empty leaf tags": `[{"tags":[]}]`,
-		"empty boolean":   `[{"and":[]}]`,
+		"bare tag list":   `[[]]`,
+		"empty leaf tags": `{"tags":[]}`,
+		"empty boolean":   `{"and":[]}`,
+		"bare tag":        `{"tag":"team:alpha"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			var field TagGroupsField
-			err := json.Unmarshal([]byte(body), &field)
-			if err == nil {
-				t.Fatalf("%s decoded to %+v, want a validation error", body, field.Groups)
+			if err := json.Unmarshal([]byte(body), &field); err != nil {
+				t.Fatalf("%s must decode its own failure: %v", body, err)
 			}
-			if !strings.Contains(err.Error(), "tag group") {
-				t.Fatalf("error = %v, want the tag-group message", err)
+			if len(field.Groups) != 0 {
+				t.Fatalf("%s decoded to %+v, want no groups", body, field.Groups)
+			}
+			if len(field.failures) != len(tagGroupUnionBranches) {
+				t.Fatalf("%s produced %d items, want one per union branch", body, len(field.failures))
+			}
+			branch := field.failures[0].Loc[len(field.failures[0].Loc)-1]
+			if branch != "tags" && branch != "TagGroupLeaf" {
+				t.Fatalf("%s first item ends at %q, want the leaf's member or branch", body, branch)
 			}
 		})
 	}
@@ -38,7 +46,7 @@ func TestTagGroupsRejectUnconstrainedNodes(t *testing.T) {
 func TestTagGroupsAcceptContractShapes(t *testing.T) {
 	cases := []string{
 		`[{"tags":["ops"]}]`,
-		`[["ops","personal"]]`,
+		`[{"tags":["ops"],"tag":"ignored"}]`,
 		`[{"tags":["ops"],"match":"all","resolve":"exact"}]`,
 		`[{"and":[{"tags":["ops"]},{"tags":["eu"]}]}]`,
 		`[{"or":[{"tags":["ops"]}]}]`,

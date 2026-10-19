@@ -129,13 +129,22 @@ func ensureIgnoredCollector(r *http.Request) *http.Request {
 	return withIgnoredCollector(r, newIgnoredCollector())
 }
 
-// Query reads a query parameter and records it as accepted for the route. A
-// handler reads parameters through Query or QueryValues rather than the raw URL
-// so the declaration and the read cannot drift: a name read without being
-// declared is reported by QueryAudit and fails the declaration test.
+// Query reads a scalar query parameter and records it as accepted for the
+// route. A handler reads parameters through Query or QueryValues rather than
+// the raw URL so the declaration and the read cannot drift: a name read without
+// being declared is reported by QueryAudit and fails the declaration test.
+//
+// The reference binds a scalar query parameter to the LAST occurrence of a
+// repeated key (`?limit=1&limit=2` → 2), so a repeated scalar must not read the
+// first value the way `url.Values.Get` would. A parameter that legitimately
+// repeats as a sequence is read through QueryValues instead.
 func Query(r *http.Request, name string) string {
 	recordQueryRead(r, name)
-	return r.URL.Query().Get(name)
+	values, present := r.URL.Query()[name]
+	if !present || len(values) == 0 {
+		return ""
+	}
+	return values[len(values)-1]
 }
 
 // QueryValues reads a repeatable query parameter and records it as accepted,
@@ -265,9 +274,14 @@ func (c *ignoredCollector) ignoredFor(r *http.Request) []string {
 }
 
 // SuppressIgnoredParams marks the current request as one that never reports
-// ignored parameters, whatever query names it carries. The reference's
-// descriptor routes are the only such routes: they are plain routes, not the
-// route class that reports unknown parameters.
+// ignored parameters, whatever query names it carries.
+//
+// The reference reports ignored parameters from inside the matched route's
+// handler, so a request no route dispatches to carries no header: the
+// descriptor routes (plain Starlette routes, not the reporting route class),
+// an unmatched path (404), a method mismatch (405) and a slash redirect are the
+// callers. The router suppresses the reporting for the last three before the
+// fallback answers.
 func SuppressIgnoredParams(r *http.Request) {
 	if c := collectorFrom(r.Context()); c != nil {
 		c.noReport = true

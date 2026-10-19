@@ -131,15 +131,14 @@ func TestGraphArmCausalHopOutweighsTemporalHop(t *testing.T) {
 	}
 }
 
-// Only the strongest candidates seed the walk, so a broad lexical tail does not
-// fan it out. The similarity is the semantic score when present, else the
-// keyword score; a non-positive score never seeds.
-func TestGraphSeedIDsPicksStrongestBySimilarity(t *testing.T) {
-	candidates := map[string]*recallCandidate{}
+// Only the strongest dense hits seed the walk, so a broad tail does not fan it
+// out. A hit below the configured seed floor never seeds.
+func TestGraphSeedsPickStrongestDenseHits(t *testing.T) {
+	hits := make([]recallHit, 0, graphSeedLimit+5)
 	for i := range graphSeedLimit + 5 {
-		candidates[idFor(i)] = &recallCandidate{armScores: map[string]float64{ArmSemantic: float64(i + 1)}}
+		hits = append(hits, recallHit{match: RecallMatch{ID: idFor(i)}, score: float64(i + 1)})
 	}
-	ids := graphSeedIDs(candidates)
+	ids := graphSeedsFrom(hits, 0.3)
 	if len(ids) != graphSeedLimit {
 		t.Fatalf("seeded %d candidates, want %d", len(ids), graphSeedLimit)
 	}
@@ -151,22 +150,28 @@ func TestGraphSeedIDsPicksStrongestBySimilarity(t *testing.T) {
 	}
 }
 
-func TestGraphSeedIDsFallsBackToKeywordAndDropsZeroScores(t *testing.T) {
-	candidates := map[string]*recallCandidate{
-		"keyword": {armScores: map[string]float64{ArmKeyword: 2}},
-		"zero":    {armScores: map[string]float64{}},
+// A dense hit below the arm's seed floor is not an entry point, and a candidate
+// the dense arm did not surface cannot seed at all: there is no lexical
+// fallback, matching the reference.
+func TestGraphSeedsClearTheFloorAndComeOnlyFromDenseHits(t *testing.T) {
+	hits := []recallHit{
+		{match: RecallMatch{ID: "strong"}, score: 0.9},
+		{match: RecallMatch{ID: "weak"}, score: 0.1},
 	}
-	ids := graphSeedIDs(candidates)
-	if !containsID(ids, "keyword") {
-		t.Fatalf("a keyword-only candidate must seed the walk offline: %v", ids)
+	ids := graphSeedsFrom(hits, 0.3)
+	if !containsID(ids, "strong") {
+		t.Fatalf("a dense hit above the floor must seed the walk: %v", ids)
 	}
-	if containsID(ids, "zero") {
-		t.Fatalf("a candidate with no positive similarity must not seed: %v", ids)
+	if containsID(ids, "weak") {
+		t.Fatalf("a dense hit below the floor must not seed: %v", ids)
+	}
+	if got := graphSeedsFrom(nil, 0.3); len(got) != 0 {
+		t.Fatalf("a query with no dense hits must have no seeds: %v", got)
 	}
 }
 
-// The in-process seed set is capped the same way, so both backends start from
-// the strongest handful.
+// The in-process seed set applies the same floor and cap as the PostgreSQL arm,
+// so both backends start from the strongest handful.
 func TestMemoryGraphSeedsAreCapped(t *testing.T) {
 	store := NewMemoryStore("public")
 	matches := make([]RecallMatch, 0, graphSeedLimit+5)
@@ -177,5 +182,21 @@ func TestMemoryGraphSeedsAreCapped(t *testing.T) {
 	seeds := store.graphSeeds(RecallQuery{BankID: "b1", Query: "alice google"}, []string{"world"}, "alice google")
 	if len(seeds) != graphSeedLimit {
 		t.Fatalf("seeded %d, want %d", len(seeds), graphSeedLimit)
+	}
+}
+
+// A memory that fails the dense arm's seed floor is not an entry point, even
+// though the dense arm would still report it above zero: the memory backend
+// applies the same floor as PostgreSQL.
+func TestMemoryGraphSeedsRequireTheDenseFloor(t *testing.T) {
+	store := NewMemoryStore("public")
+	// One of the query's four words, so the dense stand-in scores 0.25 — below
+	// the 0.3 seed floor.
+	seedBank(t, store, "b1", RecallMatch{ID: "half-alice", Text: "alice", Type: "world"})
+	seeds := store.graphSeeds(
+		RecallQuery{BankID: "b1", Query: "alice google campus annex"},
+		[]string{"world"}, "alice google campus annex")
+	if len(seeds) != 0 {
+		t.Fatalf("a memory below the dense seed floor must not seed the walk: %v", seeds)
 	}
 }

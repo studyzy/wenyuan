@@ -240,6 +240,50 @@ func TestPatchUpdateAndMissingBank(t *testing.T) {
 	}
 }
 
+// A PUT/PATCH routes the disposition traits and mission through config
+// overrides alone: the legacy disposition and mission columns are never
+// written, so resetting the config falls back to the create-time defaults
+// rather than reporting the value the earlier write supplied.
+func TestBankUpdateDoesNotWriteLegacyDispositionMissionColumns(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := newMux(newConfigHandler(store))
+	rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/legacy",
+		`{"mission":"be terse","disposition_skepticism":5}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var profile BankResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Mission != "be terse" || profile.Disposition.Skepticism != 5 {
+		t.Fatalf("the write must still report the supplied profile: %+v", profile)
+	}
+
+	rec = doJSON(t, mux, http.MethodDelete, "/v1/default/banks/legacy/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, mux, http.MethodGet, "/v1/default/banks?q=legacy", "")
+	var envelope struct {
+		Banks []BankResponse `json:"banks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Banks) != 1 {
+		t.Fatalf("banks = %+v, want the one bank", envelope.Banks)
+	}
+	got := envelope.Banks[0]
+	if got.Mission != "" {
+		t.Fatalf("mission after reset = %q, want the empty default", got.Mission)
+	}
+	if got.Disposition.Skepticism != storage.DispositionTraitNeutral {
+		t.Fatalf("skepticism after reset = %d, want the neutral default", got.Disposition.Skepticism)
+	}
+}
+
 // ts-0008 / ts-0009: out-of-range traits and malformed identifiers are refused.
 func TestValidationFailures(t *testing.T) {
 	mux, _ := newTestServer(t)
@@ -441,9 +485,122 @@ func TestBankListRepeatedParamLastWins(t *testing.T) {
 	}
 }
 
+// The reference validates its model field by field, so a body carrying more
+// than one wrong-typed value is answered with one item per rejected field, in
+// the model's field order — not just the first failure the decoder stops on.
+func TestCreateOrReplaceReportsEveryTypeItem(t *testing.T) {
+	mux, _ := newTestServer(t)
+	rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/typed",
+		`{"name":123,"enable_reranking":"bad"}`)
+	assertValidationItems(t, rec, []string{"string_type:body.name", "bool_parsing:body.enable_reranking"})
+}
+
+// A body mixing a type failure, a bounds failure and a later type failure
+// reports all three, each at its field's declared position.
+func TestPartialUpdateReportsEveryItemInFieldOrder(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "ordered", Name: "Ordered"})
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/ordered",
+		`{"name":123,"disposition_skepticism":9,"enable_reranking":"bad"}`)
+	assertValidationItems(t, rec, []string{
+		"string_type:body.name",
+		"less_than_equal:body.disposition_skepticism",
+		"bool_parsing:body.enable_reranking",
+	})
+}
+
+// A `null` on a field the model gives a default is a missing input the model
+// drops, so it never becomes an item — and the fields after it are still
+// reported.
+func TestNullFieldDoesNotSuppressLaterItems(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "nulled", Name: "Nulled"})
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/nulled",
+		`{"name":null,"disposition_skepticism":9,"enable_reranking":"bad"}`)
+	assertValidationItems(t, rec, []string{
+		"less_than_equal:body.disposition_skepticism",
+		"bool_parsing:body.enable_reranking",
+	})
+}
+
+// A failed decode the per-field walk cannot describe — a body that is not an
+// object — keeps the shared decoder's own answer rather than being replaced.
+func TestNonObjectBodyKeepsTheDecoderAnswer(t *testing.T) {
+	mux, _ := newTestServer(t)
+	rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/notobj", `[]`)
+	assertValidationItems(t, rec, []string{"model_attributes_type:body"})
+}
+
+// The body is validated before the bank's existence is checked, because the
+// reference validates its request model before the handler runs: a malformed
+// body is a 422 even on a route that would otherwise answer 404.
+func TestMissingBankStillValidatesTheBody(t *testing.T) {
+	mux, _ := newTestServer(t)
+	assertValidationItems(t, doJSON(t, mux, http.MethodPatch, "/v1/default/banks/absent",
+		`{"name":123}`), []string{"string_type:body.name"})
+	assertValidationItems(t, doJSON(t, mux, http.MethodPatch, "/v1/default/banks/absent/aliases/x",
+		`{"primary":"bad"}`), []string{"bool_parsing:body.primary"})
+	// A body that validates reaches the existence check and is a 404.
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/absent", `{"name":"ok"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// assertValidationItems checks a validation failure's status and each item's
+// "type:location" rendering, in order.
+func assertValidationItems(t *testing.T, rec *httptest.ResponseRecorder, want []string) {
+	t.Helper()
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Detail []struct {
+			Type string   `json:"type"`
+			Loc  []string `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(envelope.Detail))
+	for i, item := range envelope.Detail {
+		got[i] = item.Type + ":" + strings.Join(item.Loc, ".")
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("items = %v, want %v (body %s)", got, want, rec.Body.String())
+	}
+}
+
 func mustCreate(t *testing.T, store *storage.MemoryStore, bank storage.Bank) {
 	t.Helper()
 	if _, err := store.CreateBank(context.TODO(), bank); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A created bank's disposition column holds the reference's neutral triple, not
+// an empty object. The HTTP read path resolves an absent trait to the same
+// value, so this is invisible over the API — but the archive export reads the
+// column itself, and an empty column would export `{}` where the reference
+// exports `{"skepticism":3,"literalism":3,"empathy":3}`
+// (engine/retain/bank_utils.py:200,396).
+func TestCreatedBankStoresTheNeutralDisposition(t *testing.T) {
+	mux, store := newTestServer(t)
+	if rec := doJSON(t, mux, http.MethodPut, "/v1/default/banks/disp-bank", `{"name":"disp"}`); rec.Code != http.StatusOK {
+		t.Fatalf("create = %d, body %s", rec.Code, rec.Body.String())
+	}
+	bank, err := store.GetBank(context.TODO(), "disp-bank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"skepticism": 3, "literalism": 3, "empathy": 3}
+	if len(bank.Disposition) != len(want) {
+		t.Fatalf("stored disposition = %#v, want the neutral triple", bank.Disposition)
+	}
+	for key, value := range want {
+		if bank.Disposition[key] != value {
+			t.Fatalf("stored disposition = %#v, want %#v", bank.Disposition, want)
+		}
 	}
 }

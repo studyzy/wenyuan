@@ -147,6 +147,14 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	result.Matches = capMatchesToTokens(result.Matches, q.MaxTokens)
 	result.ChunkEntries = capChunksToTokens(result.ChunkEntries, q.MaxChunkTokens)
 	stop()
+	// Entities are resolved after the fact budget has selected the returned
+	// matches: the entity channel is a view of those matches, so a fact the
+	// budget dropped must not leave its entities behind.
+	if q.IncludeEntities {
+		stop = phases.measure("entity_build", false)
+		s.attachRecallEntities(q, &result)
+		stop()
+	}
 	stop = phases.measure("trace", false)
 	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
 	stop()

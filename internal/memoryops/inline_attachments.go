@@ -54,6 +54,10 @@ func (h *Handlers) storeInlineAttachments(ctx context.Context, bankID string, re
 		}
 		ids := make([]string, 0, len(inline))
 		attachments := make([]RetainAttachment, 0, len(inline))
+		// The names the caller gave the item's attachments ride the document's
+		// replayable parameters, so a reprocess restates them instead of losing
+		// them to the rewrite.
+		filenames := map[string]string{}
 		for _, attachment := range inline {
 			hash := attachmentHashOf(attachment.Data)
 			key := storage.AttachmentStorageKey(bankID, documentID, hash)
@@ -71,10 +75,14 @@ func (h *Handlers) storeInlineAttachments(ctx context.Context, bankID string, re
 				ByteSize:       int64(len(attachment.Data)),
 				StorageKey:     key,
 				Kind:           attachment.Kind,
+				Filename:       attachment.Filename,
 			}); err != nil {
 				return err
 			}
 			ids = append(ids, attachment.ShortID)
+			if attachment.Filename != "" {
+				filenames[attachment.ShortID] = attachment.Filename
+			}
 			attachments = append(attachments, RetainAttachment{
 				ShortID:   attachment.ShortID,
 				MediaType: attachment.MediaType,
@@ -85,6 +93,9 @@ func (h *Handlers) storeInlineAttachments(ctx context.Context, bankID string, re
 		item.DocumentID = documentID
 		item.AttachmentIDs = ids
 		item.Attachments = attachments
+		if len(filenames) > 0 {
+			item.AttachmentFilenames = filenames
+		}
 	}
 	return nil
 }

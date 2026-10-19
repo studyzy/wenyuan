@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
@@ -29,7 +30,7 @@ func (p archiveProcessor) applyExport(ctx context.Context, op storage.Operation)
 	}
 	// A fresh key per export keeps two concurrent exports of the same bank from
 	// clobbering each other's archive.
-	key := storage.StoredFileKeyForBank(op.BankID, exportArchiveName(op))
+	key := storage.ExportStorageKey(op.BankID, op.OperationID)
 	if err := p.store.PutStoredFile(ctx, storage.StoredFile{
 		Key:         key,
 		ContentType: "application/zip",
@@ -117,6 +118,13 @@ func (p archiveProcessor) applyClone(ctx context.Context, op storage.Operation) 
 	if err != nil {
 		return err
 	}
+	// The clone never stashes its archive, but the reference still measures the
+	// copy it made and publishes its size, so the caller reads the same key off
+	// a clone operation as off an export.
+	archiveBytes, err := hindsightarchive.Write(archive)
+	if err != nil {
+		return err
+	}
 	report, err := p.importApplier().Apply(ctx, transfer.ImportRequest{
 		Archive:      archive,
 		BankID:       op.BankID,
@@ -130,7 +138,9 @@ func (p archiveProcessor) applyClone(ctx context.Context, op storage.Operation) 
 	// The clone is measured against its source, so the operation's counts name
 	// the bank the copy landed in.
 	report.TargetBankID = target
-	worker.ReportOutcome(ctx, report.Metadata())
+	metadata := report.Metadata()
+	metadata["archive_byte_size"] = len(archiveBytes)
+	worker.ReportOutcome(ctx, metadata)
 	return nil
 }
 
@@ -188,13 +198,6 @@ func scopeFromPayload(op storage.Operation) transfer.ExportScope {
 	}
 }
 
-// exportArchiveName derives the stored-file name of an export's archive. The
-// operation id keeps two exports of one bank apart, and the name carries no
-// separator so the download URL never needs an encoded slash.
-func exportArchiveName(op storage.Operation) string {
-	return "exports-" + op.OperationID + ".zip"
-}
-
 // exportFilename is the name the caller's download carries.
 func exportFilename(op storage.Operation) string {
 	suffix := "documents"
@@ -207,9 +210,20 @@ func exportFilename(op storage.Operation) string {
 // downloadURLFor renders the API-relative URL an archive is fetched from. It is
 // the path the download route serves, so a client can fetch it with its own
 // credentials and no absolute host.
+//
+// The key is escaped for a URL path. A stored key percent-encodes each of its
+// own segments, so a bank identifier carrying a reserved character leaves the
+// key holding an escape of its own, and the download route splits the path it
+// receives rather than decoding it. Handing out the key unescaped therefore
+// advertises a URL that resolves to a different key and answers not-found; a
+// key with no escape in it is rendered unchanged.
 func downloadURLFor(key string) string {
-	return "/v1/default/files/download/" + key
+	return (&url.URL{Path: downloadPathPrefix + key}).EscapedPath()
 }
+
+// downloadPathPrefix is the route prefix the download URL is built from; it is
+// the same prefix the download route serves under.
+const downloadPathPrefix = "/v1/default/files/download/"
 
 // payloadString reads a string field from an operation payload.
 func payloadString(op storage.Operation, key string) string {

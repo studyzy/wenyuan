@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,5 +125,82 @@ func TestDryRunRetrievedFactsAreDeduplicated(t *testing.T) {
 	}
 	if got := factCounts(outcome).Retrieved["observation"]; got != 2 {
 		t.Fatalf("observation retrieved = %d, want 2 (deduplicated)", got)
+	}
+}
+
+// A preview over a scope with nothing to read skips the reflect loop the real
+// refresh would skip, and reports the preserved-content outcome and why: it must
+// not run — or report — a reflect whose result the refresh itself would throw
+// away.
+func TestDryRunWithNoSourcesSkipsTheReflect(t *testing.T) {
+	store, modelID := noSourceFixture(t)
+	ctx := context.Background()
+	if _, err := store.UpdateMentalModel(ctx, "b1", modelID, storage.MentalModelPatch{Content: ptrTo("as it stands")}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newMentalModelRefresh(store, nil, nil)
+	result, err := runner.dryRun(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if result.Outcome != "content_preserved_no_new_facts" {
+		t.Fatalf("outcome = %q, want content_preserved_no_new_facts", result.Outcome)
+	}
+	if result.WouldPersist {
+		t.Error("a preview with nothing to read must not report would_persist")
+	}
+	if result.CandidateContent != "" {
+		t.Fatalf("candidate = %q, want empty: no reflect ran", result.CandidateContent)
+	}
+	if result.PreviewContent != "as it stands" {
+		t.Fatalf("preview = %q, want the stored content", result.PreviewContent)
+	}
+	if len(result.BasedOn) != 0 {
+		t.Fatalf("based_on = %#v, want empty", result.BasedOn)
+	}
+	if len(result.Trace.ToolCalls) != 0 || len(result.Trace.LLMCalls) != 0 {
+		t.Fatalf("trace = %+v, want no calls", result.Trace)
+	}
+	if result.Usage.TotalTokens != 0 {
+		t.Fatalf("usage = %+v, want no tokens spent", result.Usage)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0] != noSourcesInScopeWarning {
+		t.Fatalf("warnings = %#v, want the no-sources explanation", result.Warnings)
+	}
+}
+
+// The reference stamps a trace with datetime.isoformat(), so the string always
+// carries six fractional digits (and none at all only when they are zero). An
+// RFC3339Nano rendering trims trailing zeros and writes a different string for
+// the same instant, which a client parsing the trace would see as a different
+// format from the reference's.
+func TestDryRunRecordedAtUsesTheReferenceRendering(t *testing.T) {
+	store, modelID := noSourceFixture(t)
+	ctx := context.Background()
+	if _, err := store.UpdateMentalModel(ctx, "b1", modelID, storage.MentalModelPatch{Content: ptrTo("as it stands")}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newMentalModelRefresh(store, nil, nil)
+	result, err := runner.dryRun(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if result.Trace.RecordedAt == nil {
+		t.Fatal("a dry run always records when it ran")
+	}
+	stamp := *result.Trace.RecordedAt
+	// Python's isoformat writes either bare seconds or exactly six digits.
+	bare := len("2006-01-02T15:04:05") + len("+00:00")
+	withMicros := len("2006-01-02T15:04:05") + len(".000000") + len("+00:00")
+	if len(stamp) != withMicros && len(stamp) != bare {
+		t.Fatalf("recorded_at = %q (len %d), want six fractional digits or none", stamp, len(stamp))
+	}
+	if _, err := time.Parse("2006-01-02T15:04:05.000000+00:00", stamp); err != nil {
+		t.Fatalf("recorded_at = %q does not parse as the reference's rendering: %v", stamp, err)
+	}
+	if !strings.HasSuffix(stamp, "+00:00") {
+		t.Fatalf("recorded_at = %q, want Python's +00:00 offset rather than Z", stamp)
 	}
 }

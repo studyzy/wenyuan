@@ -120,6 +120,13 @@ type LiveMemoryIDs interface {
 // It is the check the watermark cannot make: staleness asks whether anything was
 // written since the last refresh, and a retraction is the absence of a row, so it
 // raises no watermark and reaches no prompt.
+//
+// Any missing citation counts, including the case where every one is gone: the
+// question asked here is whether the document's grounding is intact, and a
+// document citing nothing that still exists is not intact. (The refresh's unsay
+// pass makes the finer distinction — a wholly unresolved grounding is a broken
+// link rather than a retraction — but that is a decision about what to do with
+// the prose, not about whether the document is up to date.)
 func groundingRetracted(ctx context.Context, store LiveMemoryIDs, bankID string, model MentalModel) bool {
 	cited := CitedGrounding(model)
 	if len(cited) == 0 {
@@ -135,6 +142,5 @@ func groundingRetracted(ctx context.Context, store LiveMemoryIDs, bankID string,
 		// retries rather than silently skipping the retraction.
 		return false
 	}
-	retraction := RetractionOf(model, live)
-	return len(retraction.Facts) > 0 && !retraction.Unresolvable()
+	return len(RetractionOf(model, live).Facts) > 0
 }

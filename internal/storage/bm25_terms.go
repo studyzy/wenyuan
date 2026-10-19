@@ -98,29 +98,7 @@ func selectSelectiveTerms(tokens []string, stats []bm25TermStat, maxTerms int) [
 // result aligns with tokens by position. It is best-effort: a failure returns
 // an error the caller treats as "fall back to the first-N cap".
 func (s *PostgresStore) bm25TokenDocumentFrequencies(ctx context.Context, tokens []string) ([]bm25TermStat, error) {
-	query := `WITH toks AS (
-	              SELECT ord, tok
-	              FROM unnest($1::text[]) WITH ORDINALITY AS u(tok, ord)
-	          ),
-	          lex AS (
-	              SELECT t.ord, l.lexeme
-	              FROM toks t
-	              LEFT JOIN LATERAL unnest(tsvector_to_array(to_tsvector('english', t.tok))) AS l(lexeme) ON true
-	          ),
-	          stats AS (
-	              SELECT unnest(most_common_elems::text::text[]) AS lexeme,
-	                     unnest((most_common_elem_freqs)[1:array_length(most_common_elems::text::text[], 1)]) AS freq
-	              FROM pg_stats
-	              WHERE schemaname = $2 AND tablename = $3 AND attname = 'search_vector'
-	          )
-	          SELECT lex.ord AS ord,
-	                 bool_or(lex.lexeme IS NOT NULL) AS has_lexeme,
-	                 COALESCE(MAX(stats.freq), 0)::float8 AS df
-	          FROM lex
-	          LEFT JOIN stats ON stats.lexeme = lex.lexeme
-	          GROUP BY lex.ord
-	          ORDER BY lex.ord`
-	rows, err := s.reader().QueryContext(ctx, query, tokens, s.schema, "memory_units")
+	rows, err := s.reader().QueryContext(ctx, s.bm25TermStatsQuery(), tokens, s.schema, "memory_units")
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +119,40 @@ func (s *PostgresStore) bm25TokenDocumentFrequencies(ctx context.Context, tokens
 		return nil, err
 	}
 	return stats, nil
+}
+
+// bm25TermStatsQuery renders the statement that maps the query tokens to
+// lexemes and reads each lexeme's document frequency from pg_stats.
+//
+// The tokens are mapped to lexemes with the deployment's dictionary — the same
+// one the stored search_vector was built with — so a stopword in that
+// dictionary is recognised as one (its to_tsvector is empty) and the
+// frequencies read from pg_stats line up with the vector's elements. Reading
+// them under a different dictionary would compare lexemes from one stemmer
+// against statistics collected from another.
+func (s *PostgresStore) bm25TermStatsQuery() string {
+	return `WITH toks AS (
+	              SELECT ord, tok
+	              FROM unnest($1::text[]) WITH ORDINALITY AS u(tok, ord)
+	          ),
+	          lex AS (
+	              SELECT t.ord, l.lexeme
+	              FROM toks t
+	              LEFT JOIN LATERAL unnest(tsvector_to_array(to_tsvector(` + sqlTextLiteral(s.nativeLanguage()) + `, t.tok))) AS l(lexeme) ON true
+	          ),
+	          stats AS (
+	              SELECT unnest(most_common_elems::text::text[]) AS lexeme,
+	                     unnest((most_common_elem_freqs)[1:array_length(most_common_elems::text::text[], 1)]) AS freq
+	              FROM pg_stats
+	              WHERE schemaname = $2 AND tablename = $3 AND attname = 'search_vector'
+	          )
+	          SELECT lex.ord AS ord,
+	                 bool_or(lex.lexeme IS NOT NULL) AS has_lexeme,
+	                 COALESCE(MAX(stats.freq), 0)::float8 AS df
+	          FROM lex
+	          LEFT JOIN stats ON stats.lexeme = lex.lexeme
+	          GROUP BY lex.ord
+	          ORDER BY lex.ord`
 }
 
 // boundedBM25Text returns the text a BM25 arm binds: the query's tokens

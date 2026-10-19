@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,12 @@ func (s *PostgresStore) knowledgeFrom() string {
 // ListKnowledgeNodes returns every knowledge node of one bank, ordered the way
 // the reference orders the flat tree: by sort_order then name, so siblings
 // appear in display order and the nest needs no second sort.
+//
+// The name comparison runs here rather than in ORDER BY: the reference sorts the
+// fetched rows in Python, whose string order is by code point, while a database
+// collation orders case-insensitively ('a' before 'Alpha' where the reference
+// puts 'Alpha' first). Both surfaces that read this — the tree and the export
+// index — render that order, so it has to be the reference's.
 func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1
@@ -45,14 +52,33 @@ func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) (
 		}
 		out = append(out, node)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		if out[i].Title != out[j].Title {
+			return out[i].Title < out[j].Title
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 // GetKnowledgeNode returns one knowledge node by identifier.
 func (s *PostgresStore) GetKnowledgeNode(ctx context.Context, bankID, nodeID string) (KnowledgeNode, error) {
+	return s.getKnowledgeNodeOn(ctx, s.reader(), bankID, nodeID)
+}
+
+// getKnowledgeNodeOn reads one node through the given connection, so a read
+// serves both a standalone lookup and one inside a caller's transaction — the
+// read the reference takes inside the patch's transaction.
+func (s *PostgresStore) getKnowledgeNodeOn(ctx context.Context, q queryer, bankID, nodeID string) (KnowledgeNode, error) {
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1 AND kp.id = $2`
-	node, err := scanKnowledgeNode(s.reader().QueryRowContext(ctx, query, bankID, nodeID))
+	node, err := scanKnowledgeNode(q.QueryRowContext(ctx, query, bankID, nodeID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return KnowledgeNode{}, ErrKnowledgeNodeNotFound
@@ -77,29 +103,7 @@ func (s *PostgresStore) PutKnowledgeNode(ctx context.Context, node KnowledgeNode
 		return KnowledgeNode{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	modelID := ""
-	if node.Kind == KnowledgeKindPage {
-		modelID = node.MentalModelID
-		if modelID == "" {
-			modelID = newUUID()
-			if err := s.insertKnowledgePageModel(ctx, tx, node, modelID); err != nil {
-				return KnowledgeNode{}, err
-			}
-		} else if err := s.updateKnowledgePageModel(ctx, tx, node, modelID); err != nil {
-			return KnowledgeNode{}, err
-		}
-	}
-
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.knowledge_pages
-	          (id, bank_id, parent_id, kind, name, mental_model_id, managed, sort_order, created_at, updated_at)
-	          VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8, now(), now())
-	          ON CONFLICT (id) DO UPDATE SET
-	              parent_id = EXCLUDED.parent_id, kind = EXCLUDED.kind, name = EXCLUDED.name,
-	              mental_model_id = EXCLUDED.mental_model_id, managed = EXCLUDED.managed,
-	              sort_order = EXCLUDED.sort_order, updated_at = now()`
-	if _, err := tx.ExecContext(ctx, query, node.ID, node.BankID, node.ParentID,
-		string(node.Kind), node.Title, modelID, node.Managed, node.SortOrder); err != nil {
+	if err := s.putKnowledgeNodeTx(ctx, tx, node); err != nil {
 		return KnowledgeNode{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -153,27 +157,6 @@ func (s *PostgresStore) updateKnowledgePageModel(ctx context.Context, tx Tx, nod
 	query += ` WHERE bank_id = $1 AND id = $2`
 	_, err := tx.ExecContext(ctx, query, args...)
 	return err
-}
-
-// UpdateKnowledgeNode applies a partial update.
-func (s *PostgresStore) UpdateKnowledgeNode(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch) (KnowledgeNode, error) {
-	current, err := s.GetKnowledgeNode(ctx, bankID, nodeID)
-	if err != nil {
-		return KnowledgeNode{}, err
-	}
-	if patch.Title != nil {
-		current.Title = *patch.Title
-	}
-	if patch.Text != nil {
-		current.Text = *patch.Text
-	}
-	if patch.ParentID != nil {
-		current.ParentID = *patch.ParentID
-	}
-	if patch.Tags != nil {
-		current.Tags = append([]string(nil), (*patch.Tags)...)
-	}
-	return s.PutKnowledgeNode(ctx, current)
 }
 
 // DeleteKnowledgeNode removes a node and its descendants.

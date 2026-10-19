@@ -35,6 +35,11 @@ type MigrateFlags struct {
 	Incremental bool
 	// DryRun parses and maps without writing.
 	DryRun bool
+	// DiscardDocumentText is resolved by the caller from the deployment
+	// configuration, not parsed from the command line: the reference's import
+	// reads its process-level store_document_text setting for the chunk text it
+	// replays. The zero value keeps the text.
+	DiscardDocumentText bool
 }
 
 // ParseMigrate parses a `bank migrate --from-hindsight` command.
@@ -132,7 +137,7 @@ func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, ou
 	report, err := hindsight.Run(ctx, store, hindsight.Mapping{
 		Archive: archive,
 		BankID:  flags.BankID,
-	}, hindsight.Options{Mode: mode, DryRun: flags.DryRun})
+	}, hindsight.Options{Mode: mode, DryRun: flags.DryRun, DiscardDocumentText: flags.DiscardDocumentText})
 	if err != nil {
 		return hindsight.Report{}, err
 	}

@@ -729,18 +729,43 @@ func applyFactDates(unit *MemoryUnit, fact ExtractedFact) {
 	}
 }
 
+// factTimeLayouts are the shapes a fact's occurred timestamp may arrive in.
+// The reference reads these with its own ISO reader, which accepts a date with
+// no time, a time with no zone (taken as UTC), a space instead of the "T", and
+// any fractional-second precision — and a model writes exactly those. Parsing
+// only the fully-zoned RFC 3339 form silently dropped the date of every fact
+// whose answer was "2015-07-01", so the column stayed NULL where the reference
+// stored midnight.
+var factTimeLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04Z07:00",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02",
+}
+
 // parseFactTime reads a fact timestamp, returning nil for an absent or
-// unparseable value rather than failing the write over a model's bad format.
+// unparseable value rather than failing the write over a model's bad format. A
+// value with no zone is read as UTC, the way the reference's reader does.
 func parseFactTime(value string) *time.Time {
-	if value == "" {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
 		return nil
 	}
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return nil
+	for _, layout := range factTimeLayouts {
+		parsed, err := time.Parse(layout, trimmed)
+		if err != nil {
+			continue
+		}
+		utc := parsed.UTC()
+		return &utc
 	}
-	utc := parsed.UTC()
-	return &utc
+	return nil
 }
 
 // causalLinksFor returns the caused_by links joining an item's units to the

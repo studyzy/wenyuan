@@ -75,20 +75,6 @@ func RecallArms() []string {
 	return []string{ArmSemantic, ArmKeyword, ArmGraph, ArmTemporal, ArmEntity}
 }
 
-// graphSeedsAllowed reports whether the graph arm may run for this query.
-//
-// The reference derives the graph arm's entry points from the semantic arm's
-// dense hits, and it only does so while the caller's semantic floor leaves room
-// for them: once a floor above graphSeedMinSimilarity is set, the arm is starved
-// of seeds and contributes nothing. Reproducing that starvation is what stops a
-// fact the caller floored out of the semantic arm from being resurrected
-// through a link from a survivor — which is the only way retrieval-level floors
-// remove a fact, and the behaviour the min_scores contract pins.
-func graphSeedsAllowed(q RecallQuery, seedFloor float64) bool {
-	floor, ok := q.MinScores[ArmSemantic]
-	return !ok || floor <= seedFloor
-}
-
 // TemporalWindow is a caller-supplied inclusive window used for temporal
 // proximity ranking. Bounds are inclusive; a zero bound is treated as absent.
 type TemporalWindow struct {
@@ -419,6 +405,11 @@ func recallTokenCost(text string) int {
 // keeping the best-ranked matches that fit and skipping any that would cross
 // it. The list arrives in descending relevance, so a skipped match is a lower
 // one the budget cannot afford. A non-positive budget is unbounded.
+//
+// A positive budget that no match fits keeps the top-ranked match, whole and
+// over budget, as the reference's selection does (engine/fact_budget.py:76-86):
+// answering with nothing would be indistinguishable from "no such memory",
+// while a fact clipped mid-sentence would be a claim the memory never made.
 func capMatchesToTokens(matches []RecallMatch, maxTokens int) []RecallMatch {
 	if maxTokens <= 0 || len(matches) == 0 {
 		return matches
@@ -433,7 +424,59 @@ func capMatchesToTokens(matches []RecallMatch, maxTokens int) []RecallMatch {
 		selected = append(selected, match)
 		spent += cost
 	}
+	if len(selected) == 0 {
+		return matches[:1]
+	}
 	return selected
+}
+
+// EntityRef is one entity a memory unit carries: the registry id and the
+// canonical name recall renders on the fact. A unit's refs are ordered by
+// entity id, the order the reference's own resolve returns.
+type EntityRef struct {
+	ID            string
+	CanonicalName string
+}
+
+// applyRecallEntities attaches each returned match's entity names and builds
+// the name-keyed entity channel from the returned matches in rank order.
+//
+// A match with no entities keeps a nil list, which the envelope renders as
+// null. Only the entities of returned matches reach the channel, so a fact the
+// token budget dropped contributes nothing.
+//
+// Every channel entry carries an empty observation list: the per-entity
+// summaries the older shape held now live in the mental models, so an entry is
+// the label and the id and nothing else. An entity id shared by several
+// matches is reported once, at the rank of the first match that carries it.
+func applyRecallEntities(result *RecallResult, refs map[string][]EntityRef) {
+	if len(result.Matches) == 0 || len(refs) == 0 {
+		return
+	}
+	states := make([]EntityState, 0, len(refs))
+	seen := make(map[string]bool, len(refs))
+	for i := range result.Matches {
+		unitRefs := refs[result.Matches[i].ID]
+		if len(unitRefs) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(unitRefs))
+		for _, ref := range unitRefs {
+			names = append(names, ref.CanonicalName)
+			if seen[ref.ID] {
+				continue
+			}
+			seen[ref.ID] = true
+			states = append(states, EntityState{
+				Name:          ref.CanonicalName,
+				ID:            ref.ID,
+				CanonicalName: ref.CanonicalName,
+				Observations:  []EntityObservation{},
+			})
+		}
+		result.Matches[i].Entities = names
+	}
+	result.EntityStates = states
 }
 
 // capChunksToTokens bounds the chunk side channel by its token budget: the

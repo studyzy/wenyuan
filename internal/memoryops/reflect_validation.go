@@ -80,6 +80,13 @@ func validateReflectResponseSchema(schema map[string]any) error {
 	return nil
 }
 
+// ValidateResponseSchema applies the reference's response-schema check to a
+// schema a non-reflect surface accepts (a bank's knowledge_page_default_trigger
+// carries one), so both doors give the same answer with the same wording.
+func ValidateResponseSchema(schema map[string]any) error {
+	return validateReflectResponseSchema(schema)
+}
+
 // renderPythonStringList renders a list of names the way the reference's
 // f-string over a Python list does, so the error text matches byte-for-byte.
 func renderPythonStringList(names []string) string {
@@ -139,9 +146,21 @@ func ValidateReflect(req ReflectRequest, body map[string]any, schemaValidator Re
 		items = append(items, httpx.ValueError([]string{"body", "fact_types"}, unsupported,
 			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
 	}
-	if len(req.Tags) > 0 && len(req.TagGroups.Groups) > 0 {
+	// Reflect's field is `list[TagGroup]`, so an object where a list belongs is a
+	// list-type failure reported before the union's own items.
+	if req.TagGroups.singleObject {
+		items = append(items, httpx.TypeMismatch("list_type", []string{"body", "tag_groups"}, req.TagGroups.rawInput))
+	} else if len(req.TagGroups.failures) > 0 {
+		items = append(items, req.TagGroups.failures...)
+	} else if tagsSupplied(body) && req.TagGroups.Present {
 		items = append(items, httpx.ValueError([]string{"body"}, body,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
+	}
+	// The reference declares the per-observation search budget with `ge=1`, so a
+	// zero or negative override is refused before any tool runs.
+	if req.ReflectSearchObservationsMaxTokens != nil && *req.ReflectSearchObservationsMaxTokens < 1 {
+		items = append(items, httpx.GreaterThanEqual([]string{"body", "reflect_search_observations_max_tokens"},
+			*req.ReflectSearchObservationsMaxTokens, 1))
 	}
 	if req.ResponseSchema != nil {
 		if err := validateReflectResponseSchema(req.ResponseSchema); err != nil {

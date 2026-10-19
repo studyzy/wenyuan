@@ -72,8 +72,8 @@ func (s *PostgresStore) bm25ArmQuery(q RecallQuery, term string, limit int) (str
 		return head + fn + `.score(id) AS score` + tail + `id @@@ ` + fn + `.boolean(should => ` + should + `)` + `
 	          ORDER BY score DESC, ctid ASC LIMIT $4`, args
 	}
-	return head + `ts_rank_cd(search_vector, to_tsquery('english', $3)) AS score` + tail +
-		`search_vector @@ to_tsquery('english', $3)` + `
+	return head + `ts_rank_cd(search_vector, to_tsquery(` + sqlTextLiteral(s.nativeLanguage()) + `, $3)) AS score` + tail +
+		`search_vector @@ to_tsquery(` + sqlTextLiteral(s.nativeLanguage()) + `, $3)` + `
 	          ORDER BY score DESC, ctid ASC LIMIT $4`, args
 }
 

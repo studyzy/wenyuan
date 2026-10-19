@@ -113,13 +113,27 @@ func TestCollapseSkipsAbsentDimensions(t *testing.T) {
 	}
 }
 
+// The "N/A" placeholder means "no value" for the temporal fields too, so a
+// model that answers occurred_start with it must not have the literal string
+// stored as a date.
+func TestTimestampPlaceholderIsNotADate(t *testing.T) {
+	structured := map[string]any{"facts": []any{
+		map[string]any{"what": "Alice moved to Berlin", "occurred_start": "N/A", "occurred_end": "n/a"},
+	}}
+	_, result := extractWithMode(t, Options{Mode: ModeVerbose}, structured)
+	fact := result.Facts[0]
+	if fact.OccurredStart != "" || fact.OccurredEnd != "" {
+		t.Fatalf("placeholder dates survived: %+v", fact)
+	}
+}
+
 // test-verbatim-stores-the-chunk-text: verbatim mode stores the input text as
 // the fact, with the metadata the model extracted (entities, dates) riding
 // along, and collapses the model's entries to one fact.
 func TestVerbatimStoresChunkText(t *testing.T) {
 	const chunk = "Alice moved to Berlin in March."
 	structured := map[string]any{"facts": []any{
-		map[string]any{"entities": []any{"Alice", "Berlin"}, "where": "Berlin", "occurred_start": "2024-03-01T00:00:00", "fact_type": "world"},
+		map[string]any{"entities": []any{"Alice", "Berlin"}, "where": "Berlin", "fact_kind": "event", "occurred_start": "2024-03-01T00:00:00", "fact_type": "world"},
 		map[string]any{"entities": []any{"moving"}},
 	}}
 	stub := &stubProvider{name: "openai", structured: structured}
@@ -169,6 +183,29 @@ func TestChunksModeSkipsTheModel(t *testing.T) {
 	}
 	if stub.lastReq.Messages != nil {
 		t.Fatal("chunks mode must not call the model")
+	}
+}
+
+// The mode name is matched exactly, as the reference's `== "chunks"` does: an
+// unrecognised spelling such as "CHUNKS" is the concise default, so the model
+// is called rather than the write taking the verbatim chunk path.
+func TestModeNamesAreMatchedExactly(t *testing.T) {
+	stub := &stubProvider{name: "openai", structured: map[string]any{"facts": []any{
+		map[string]any{"what": "Alice moved to Berlin"},
+	}}}
+	result, err := New(stub).ExtractWith(context.Background(), "Alice moved to Berlin.",
+		Options{Mode: "CHUNKS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.lastReq.Messages == nil {
+		t.Fatal("an unrecognised mode must fall back to the model-backed concise default")
+	}
+	if len(result.Facts) != 1 || result.Facts[0].Text != "Alice moved to Berlin" {
+		t.Fatalf("facts = %+v, want the concise extraction", result.Facts)
+	}
+	if stub.lastReq.Messages[0].Content != factExtractionPrompt {
+		t.Fatal("an unrecognised mode must run the concise prompt")
 	}
 }
 

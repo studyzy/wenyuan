@@ -209,3 +209,92 @@ func TestPostgresConsolidationClaimPrefersHigherPriorityBank(t *testing.T) {
 		t.Fatalf("claimed bank %s, want the higher-priority bank", claimed.BankID)
 	}
 }
+
+// A burst of consolidation submits for one bank produces one pass, not one per
+// caller.
+//
+// This is the reference's dedupe_by_bank submit. Its guard is a check on what
+// is already queued, and under READ COMMITTED a check-then-insert races: every
+// caller reads "no pending pass" before any of them writes, so every caller
+// inserts its own. The passes then race the observation layer — each decides
+// what to create and retire from its own read — and pile up as retry_blocked,
+// starving the bank. The check must therefore run under a lock that serialises
+// submits for the bank.
+func TestPostgresConsolidationEnqueueIsAtomicUnderConcurrency(t *testing.T) {
+	url := os.Getenv("WENYUAN_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("WENYUAN_TEST_DATABASE_URL is not set; the concurrent enqueue test was not run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	schema := fmt.Sprintf("consolidate_race_%d", time.Now().UnixNano())
+	backend := &PostgresBackend{}
+	store, err := backend.Open(ctx, BackendConfig{DatabaseURL: url, Schema: schema})
+	if err != nil {
+		t.Fatalf("open postgres backend: %v", err)
+	}
+	pg := store.(*PostgresStore)
+	defer func() {
+		_ = pg.DropSchemaForTest(schema)
+		_ = pg.Close()
+	}()
+	if err := pg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatalf("create bank: %v", err)
+	}
+
+	const callers = 5
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		inserted int
+		seen     = map[string]int{}
+		errs     []error
+	)
+	start := make(chan struct{})
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			op, deduplicated, err := pg.EnqueueConsolidation(ctx, "b1")
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			if !deduplicated {
+				inserted++
+			}
+			seen[op.OperationID]++
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for _, err := range errs {
+		t.Errorf("enqueue failed: %v", err)
+	}
+	if inserted != 1 {
+		t.Errorf("%d callers inserted, want exactly one — the guard is not atomic", inserted)
+	}
+	if len(seen) != 1 {
+		t.Errorf("callers saw %d distinct operations, want the one survivor", len(seen))
+	}
+
+	// One row in the queue, not one per caller.
+	page, err := pg.ListOperations(ctx, OperationQuery{BankID: "b1", Type: OperationTypeConsolidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("queue holds %d consolidation operations, want 1", page.Total)
+	}
+	if page.Operations[0].Status.Terminal() {
+		t.Fatalf("the surviving operation is %s, want a non-terminal pass", page.Operations[0].Status)
+	}
+}

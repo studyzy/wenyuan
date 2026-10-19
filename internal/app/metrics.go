@@ -32,6 +32,9 @@ const (
 	metricDBPoolIdle = "hindsight_db_pool_idle"
 	metricDBPoolMin  = "hindsight_db_pool_min"
 	metricDBPoolMax  = "hindsight_db_pool_max"
+	// metricDBPoolWaiting is the callers-queued gauge. The reference reports it
+	// from its pool instrumentation, so it is present even at zero.
+	metricDBPoolWaiting = "hindsight_db_pool_waiting"
 )
 
 // expositionExtras composes every family the exposition renders beyond the HTTP
@@ -151,9 +154,9 @@ func consolidationPair(pending, failed int, labels map[string]string) []monitori
 
 // dbPoolMetrics reports the database connection-pool gauges. A store that does
 // not expose its pool yields a nil renderer, so a non-pool backend reports no
-// pool series. The reference has no analogue for its waiter count, and the
-// store cannot report one, so that gauge is left absent rather than reported as
-// a misleading zero.
+// pool series. The waiter gauge comes from the store's acquire instrumentation
+// and is reported whenever the store can count, which is what lets a saturated
+// pool be told apart from a healthy one.
 func dbPoolMetrics(store storage.Store, cfg config.Config) func() []monitoring.Metric {
 	provider, ok := store.(storage.PoolStatter)
 	if !ok {
@@ -168,12 +171,24 @@ func dbPoolMetrics(store storage.Store, cfg config.Config) func() []monitoring.M
 		if max <= 0 {
 			max = cfg.DBPoolMaxSize
 		}
-		return []monitoring.Metric{
+		series := []monitoring.Metric{
 			{Name: metricDBPoolSize, Help: "Current number of connections in the pool", Value: float64(stats.InUse + stats.Idle)},
 			{Name: metricDBPoolIdle, Help: "Number of idle connections in the pool", Value: float64(stats.Idle)},
 			{Name: metricDBPoolMin, Help: "Minimum pool size", Value: float64(cfg.DBPoolMinSize)},
 			{Name: metricDBPoolMax, Help: "Maximum pool size", Value: float64(max)},
 		}
+		if waiter, ok := store.(interface {
+			PoolWaiting() (int, bool)
+		}); ok {
+			if waiting, ok := waiter.PoolWaiting(); ok {
+				series = append(series, monitoring.Metric{
+					Name:  metricDBPoolWaiting,
+					Help:  "Callers currently blocked waiting to acquire a pooled connection",
+					Value: float64(waiting),
+				})
+			}
+		}
+		return series
 	}
 }
 

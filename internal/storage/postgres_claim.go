@@ -52,7 +52,7 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	                         OR claimed_at IS NULL
 	                         OR claimed_at <= now() - make_interval(secs => $2))))
 	              AND ($3::text[] IS NULL OR operation_type = ANY($3))
-	              AND operation_type <> ` + quoteLiteral(AsyncRetainType) + `
+	              AND task_payload IS NOT NULL
 	              AND (serialization_key IS NULL
 	                   OR NOT EXISTS (
 	                        SELECT 1 FROM ` + quoteIdent(s.schema) + `.async_operations held
@@ -209,6 +209,7 @@ func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, worker
 	                         OR claimed_at IS NULL
 	                         OR claimed_at <= now() - make_interval(secs => $2))))
 	              AND operation_type = ` + quoteLiteral(OperationTypeConsolidate) + `
+	              AND task_payload IS NOT NULL
 	              AND (serialization_key IS NULL
 	                   OR NOT EXISTS (
 	                        SELECT 1 FROM ` + qualified + `.async_operations held

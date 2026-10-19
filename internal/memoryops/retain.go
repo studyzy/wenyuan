@@ -250,6 +250,109 @@ func (h *Handlers) retainWriteScopeFailure(r *http.Request, bankID string, _ Ret
 	return nil
 }
 
+// retainDecodeFailure renders a write body the decoder refused. The shared
+// decoder stops at the first member it cannot place, and a member inside the
+// item list cannot name the index it sits at from inside its own type, so the
+// rejected bytes are walked against the request contract instead: that walk
+// names every value the reference's model refuses, at the full path the
+// reference reports — index levels included — with the offending value itself
+// as the item's input. A body the walk cannot describe keeps the decoder's own
+// rendering.
+func retainDecodeFailure(r *http.Request, req *RetainRequest, body, decoded []byte, err error) *httpx.ValidationFailure {
+	items := httpx.ValidationItemsAgainstRequest(r, req, body)
+	if len(items) == 0 {
+		return httpx.BodyDecodeFailure(err, decoded)
+	}
+	// The walk names the structural rejections; the item's own field rules — the
+	// timestamp's format, the observation-scope union, the update-mode literal —
+	// are the model's, and the model is refilled from the same bytes so those are
+	// reported beside them, the way the reference's single validation pass
+	// reports one field failure per rule. A rule the walk already named at the
+	// same item field is dropped, because the walk's rendering of it is the one
+	// the reference serves.
+	_ = json.Unmarshal(body, req)
+	items = missingItemObjects(items, req, body)
+	for index, item := range req.Items {
+		for _, field := range itemFieldErrors(index, item) {
+			if fieldReported(field.Loc, items) {
+				continue
+			}
+			items = append(items, field)
+		}
+	}
+	httpx.OrderItemsByDeclaration(r, req, items)
+	return &httpx.ValidationFailure{Errors: items}
+}
+
+// missingItemObjects replaces the empty object the generic walk reports for a
+// missing item member with the item the caller actually sent. The framework
+// reports "Field required" with the object the field was missing *from* as the
+// item's input, and for an item member that object is the item.
+func missingItemObjects(items []httpx.ValidationError, req *RetainRequest, body []byte) []httpx.ValidationError {
+	raw, ok := requestItemsRaw(body)
+	if !ok {
+		return items
+	}
+	for position, itemError := range items {
+		if itemError.Type != "missing" || len(itemError.Loc) != 4 ||
+			itemError.Loc[0] != "body" || itemError.Loc[1] != "items" {
+			continue
+		}
+		index, err := strconv.Atoi(itemError.Loc[2])
+		if err != nil || index < 0 || index >= len(raw) {
+			continue
+		}
+		items[position].Input = decodeAny(raw[index])
+	}
+	return items
+}
+
+// decodedRequestValue is the request body as a caller's JSON value, which the
+// framework carries as a validation item's `input` when a top-level member is
+// missing. A body that does not decode leaves the empty object, which is the
+// shape an absent body has.
+func decodedRequestValue(body []byte) any {
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil || value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+// requestItemsRaw returns the raw JSON value of each element of the body's
+// `items` list, so a rejection can name the item the caller sent verbatim.
+func requestItemsRaw(body []byte) ([]json.RawMessage, bool) {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(body, &members); err != nil {
+		return nil, false
+	}
+	list, present := members["items"]
+	if !present {
+		return nil, false
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(list, &raw); err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// fieldReported reports whether the walk already named a failure for the item
+// field the location sits in, at any depth of that field: the walk names a
+// union's branches at their own paths, so an exact match is not enough.
+func fieldReported(loc []string, items []httpx.ValidationError) bool {
+	if len(loc) < 4 {
+		return false
+	}
+	field := loc[:4]
+	for _, item := range items {
+		if len(item.Loc) >= 4 && equalPath(item.Loc[:4], field) {
+			return true
+		}
+	}
+	return false
+}
+
 // Retain serves the memory write route.
 func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
@@ -260,10 +363,10 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	if decoded, err := httpx.DecodeLax(body, &req); err != nil {
 		// The reference's framework rejects a malformed body as a structured
 		// 422 item, not with a 400 sentence.
-		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, decoded))
+		httpx.WriteErrorFor(w, r, retainDecodeFailure(r, &req, body, decoded, err))
 		return
 	}
-	if failure := ValidateRetain(req); failure != nil {
+	if failure := ValidateRetain(req, decodedRequestValue(body)); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
@@ -295,6 +398,15 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	if blocked := blockedWriteFailure(req, h.VisionEnabled); blocked != nil {
 		httpx.WriteValidationFailure(w, blocked)
 		return
+	}
+	// The reference canonicalizes each item's content after the model validated
+	// it, and a block whose payload cannot be decoded there is a 400 naming the
+	// item and the block rather than a quietly degraded write.
+	for index, item := range req.Items {
+		if failure := item.Content.attachmentPayloadFailure("items[" + strconv.Itoa(index) + "].content"); failure != "" {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, failure))
+			return
+		}
 	}
 	// Inline attachments are decoded and stored before the retain is submitted,
 	// so the canonical text carries only placeholders and the bytes never enter
@@ -345,19 +457,100 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
-	// The write is durable here, so the event is raised once and only for work
+	// The write is durable here, so the events are raised once and only for work
 	// that actually landed: a caller polling the operation and a subscriber
-	// receiving the delivery see the same completion.
-	if h.Webhooks != nil {
-		h.Webhooks.EnqueueWebhookEvent(r.Context(), bankID, "retain.completed", map[string]any{
-			"document_id":  retainDocumentID(write),
-			"items_count":  len(result.ItemUnitIDs),
-			"unit_ids":     flattenedUnitIDs(result),
-			"operation_id": result.OperationID,
-		})
-	}
+	// receiving the delivery see the same completion. The reference raises one
+	// event per content item, carrying only what that item contributed, and the
+	// events of one retain share a single operation id.
+	h.notifyRetainCompleted(r.Context(), bankID, req.Items)
 	h.enqueuePostRetainConsolidation(r.Context(), bankID, bank)
 	httpx.WriteJSON(w, http.StatusOK, BuildRetainResponse(bankID, req, result))
+}
+
+// notifyRetainCompleted raises one retain.completed delivery per retained
+// content item, which is the reference's shape: a two-item batch delivers two
+// events, each with the document that item named, the tags it carried, and how
+// many memory units the document holds afterwards (the number the Documents API
+// reports). A member the item left unset is absent from the event rather than
+// present as null — an item that named no document has no count to report,
+// because there is no document to count against.
+//
+// A synchronous retain has no operation of its own in the reference, so its
+// events carry a fresh `uuid4().hex` rather than an operation id; the id is
+// minted once so the events of one retain can be recognised as a group.
+func (h *Handlers) notifyRetainCompleted(ctx context.Context, bankID string, items []RetainItem) {
+	if h.Webhooks == nil {
+		return
+	}
+	operationID := eventOperationID()
+	for _, item := range items {
+		h.Webhooks.EnqueueWebhookEvent(ctx, bankID, "retain.completed",
+			RetainCompletedData(operationID, item.DocumentID, item.Tags, DocumentUnitCount(ctx, h.Store, bankID, item.DocumentID)))
+	}
+}
+
+// RetainCompletedData renders the data object one retain.completed event
+// carries: the tags the item held, the document it wrote to and how many memory
+// units that document owns, and the operation the events of one retain share. A
+// member the item left unset is absent from the rendered object rather than a
+// null, matching the reference's `exclude_none` serialization, and an item that
+// named no document reports no count — there is no document to count against.
+//
+// Both retain routes shape their events here rather than each building the
+// object: the synchronous path mints the operation id (it has no operation row
+// of its own), and a queued child passes the id of the operation it ran, so the
+// two paths cannot drift on what a subscriber sees. tags is passed through as
+// the caller holds it, so an in-process subscriber sees the same value the wire
+// carries rather than a copy of a different type.
+func RetainCompletedData(operationID, documentID string, tags any, memoryUnitCount int) map[string]any {
+	data := map[string]any{"operation_id": operationID}
+	if documentID != "" {
+		data["document_id"] = documentID
+		data["memory_unit_count"] = memoryUnitCount
+	}
+	if tagsPresent(tags) {
+		data["tags"] = tags
+	}
+	return data
+}
+
+// tagsPresent reports whether a caller supplied tags worth reporting: an item
+// that named none leaves the member out rather than sending an empty list.
+func tagsPresent(tags any) bool {
+	switch value := tags.(type) {
+	case nil:
+		return false
+	case []string:
+		return len(value) > 0
+	case TagList:
+		return len(value) > 0
+	default:
+		return true
+	}
+}
+
+// DocumentUnitCount reports how many memory units a document owns after a write,
+// which is what the reference counts for the retain.completed event and what the
+// Documents API serves. A document that cannot be read counts zero, the answer a
+// count over no matching rows gives, and a call with no document id counts zero
+// without touching the store.
+func DocumentUnitCount(ctx context.Context, store storage.Store, bankID, documentID string) int {
+	if documentID == "" {
+		return 0
+	}
+	document, err := store.GetDocument(ctx, bankID, documentID)
+	if err != nil {
+		return 0
+	}
+	return document.MemoryUnitCount
+}
+
+// eventOperationID mints the identifier a retain.completed event carries when
+// the retain has no operation of its own. The reference uses `uuid4().hex`: a
+// bare 32-character lower-case hexadecimal uuid, so the dashes come off the
+// same version-4 generator the store's other identifiers use.
+func eventOperationID() string {
+	return strings.ReplaceAll(storage.NewDocumentID(), "-", "")
 }
 
 // enqueuePostRetainConsolidation queues the consolidation pass that follows a
@@ -382,35 +575,6 @@ func (h *Handlers) enqueuePostRetainConsolidation(ctx context.Context, bankID st
 	if _, _, err := h.Store.EnqueueConsolidation(ctx, bankID); err != nil {
 		slog.Default().Warn("could not enqueue post-retain consolidation", "bank_id", bankID, "error", err)
 	}
-}
-
-// retainDocumentID reports the document the write targeted, which is the
-// request's when every item shares one. An empty value means the items were not
-// written to a single document, which is what a batch of separate items is.
-func retainDocumentID(write storage.RetainRequest) string {
-	documentID := ""
-	for _, item := range write.Items {
-		if item.DocumentID == "" {
-			return ""
-		}
-		if documentID == "" {
-			documentID = item.DocumentID
-			continue
-		}
-		if item.DocumentID != documentID {
-			return ""
-		}
-	}
-	return documentID
-}
-
-// flattenedUnitIDs returns every unit the write created, in item order.
-func flattenedUnitIDs(result storage.RetainOutcome) []string {
-	out := make([]string, 0)
-	for _, ids := range result.ItemUnitIDs {
-		out = append(out, ids...)
-	}
-	return out
 }
 
 // errBankConfigRead marks a write refused because the bank's configuration
@@ -644,6 +808,8 @@ func applyRetainParams(item *storage.RetainItem, params map[string]any) {
 			if encoded, err := json.Marshal(value); err == nil {
 				item.ObservationScopes = encoded
 			}
+		case "attachment_filenames":
+			item.AttachmentFilenames = attachmentFilenamesFromParams(value)
 		case "entities":
 			item.Entities = retainEntitiesFromParams(value)
 		case "resolve_entities":
@@ -652,6 +818,33 @@ func applyRetainParams(item *storage.RetainItem, params map[string]any) {
 			}
 		}
 	}
+}
+
+// attachmentFilenamesFromParams reads a stored attachment-filename map back into
+// the storage shape. It arrives as map[string]string from the in-process store,
+// which never round-trips through JSON, and as map[string]any from the postgres
+// store, which does. An entry that is not a pair of non-empty strings is dropped
+// rather than failing the reprocess.
+func attachmentFilenamesFromParams(value any) map[string]string {
+	entries, ok := value.(map[string]any)
+	if !ok {
+		if direct, isStrings := value.(map[string]string); isStrings {
+			return direct
+		}
+		return nil
+	}
+	names := make(map[string]string, len(entries))
+	for id, name := range entries {
+		text, isText := name.(string)
+		if id == "" || !isText || text == "" {
+			continue
+		}
+		names[id] = text
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 // retainEntitiesFromParams reads a stored entity list back into the storage
@@ -1002,18 +1195,24 @@ func toStorageRetainItems(bankID string, req RetainRequest, fold bool) storage.R
 
 func toStorageRetainItem(item RetainItem) storage.RetainItem {
 	stored := storage.RetainItem{
-		Content:           item.Content.Flatten(),
-		Context:           item.Context,
-		Metadata:          DropNullValues(item.Metadata),
-		DocumentID:        item.DocumentID,
-		Entities:          toStorageEntities(item.Entities),
-		ResolveEntities:   resolveEntitiesOrDefault(item.ResolveEntities),
-		Tags:              item.Tags,
-		ObservationScopes: item.ObservationScopes.RawJSON(),
-		Strategy:          item.Strategy,
-		UpdateMode:        item.UpdateMode,
-		AttachmentIDs:     item.AttachmentIDs,
-		Attachments:       toStorageAttachments(item.Attachments),
+		// The ids this request recorded are exempt from the placeholder scrub:
+		// an upload minted its placeholder from an attachment the same request
+		// carries, so scrubbing it would store the bytes and drop the reference
+		// to them. Authored text carrying someone else's token is still
+		// scrubbed.
+		Content:             item.Content.FlattenKeepingAttachments(item.AttachmentIDs),
+		Context:             item.Context,
+		Metadata:            DropNullValues(item.Metadata),
+		DocumentID:          item.DocumentID,
+		Entities:            toStorageEntities(item.Entities),
+		ResolveEntities:     resolveEntitiesOrDefault(item.ResolveEntities),
+		Tags:                item.Tags,
+		ObservationScopes:   item.ObservationScopes.RawJSON(),
+		Strategy:            item.Strategy,
+		UpdateMode:          item.UpdateMode,
+		AttachmentIDs:       item.AttachmentIDs,
+		Attachments:         toStorageAttachments(item.Attachments),
+		AttachmentFilenames: item.AttachmentFilenames,
 	}
 	if item.Timestamp.Set {
 		stored.HasTimestamp = true

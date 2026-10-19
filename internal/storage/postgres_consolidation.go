@@ -195,7 +195,7 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 		}
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
-	          SET text = $3, search_vector = ` + searchVectorExpr("$3", "''", "''") + `, mentioned_at = now()
+	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "''", "''") + `, mentioned_at = now()
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $4`
 	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation))
 	if err != nil {

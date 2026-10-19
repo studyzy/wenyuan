@@ -147,6 +147,18 @@ func (r *Runner) toStorageOutcome(outcome Outcome) storage.ReflectOutcome {
 	return converted
 }
 
+// traceInput is a tool call's arguments as the trace reports them: the model's
+// own arguments under a `tool` member naming the tool that was called, which is
+// the shape the reference's trace entries carry.
+func traceInput(call ToolCall) map[string]any {
+	input := make(map[string]any, len(call.Input)+1)
+	input["tool"] = call.Name
+	for key, value := range call.Input {
+		input[key] = value
+	}
+	return input
+}
+
 // buildTrace records each tool call the loop ran, with the result it returned,
 // so a caller can audit the retrieval behind an answer. The output shape
 // follows the reference's tools: a recall call returns `memories`, an
@@ -156,9 +168,15 @@ func buildTrace(outcome Outcome) *storage.ReflectTrace {
 	trace := &storage.ReflectTrace{}
 	for _, turn := range outcome.Turns {
 		for index, call := range turn.Calls {
+			// `done` retrieves nothing: it ends the run and carries the answer,
+			// so it is not a retrieval entry in the trace. The reference's tool
+			// trace lists only the tools that gathered evidence.
+			if call.Name == ToolDone {
+				continue
+			}
 			entry := storage.ReflectToolCall{
 				Tool:      call.Name,
-				Input:     call.Input,
+				Input:     traceInput(call),
 				Iteration: turn.Iteration,
 				HasOutput: true,
 				ID:        call.ID,

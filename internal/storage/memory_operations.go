@@ -22,6 +22,33 @@ func (s *MemoryStore) PutOperation(ctx context.Context, op Operation) (Operation
 	if op.Run == 0 {
 		op.Run = 1
 	}
+	op.Payload = executablePayload(op.Payload)
+	s.operations[op.OperationID] = op
+	return op, nil
+}
+
+// RestoreOperation records an operation keeping the timestamps it carries, so an
+// import replays the exported row's history instead of stamping the restore
+// time. See the interface's note on why it is separate from PutOperation.
+func (s *MemoryStore) RestoreOperation(ctx context.Context, op Operation) (Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if op.OperationID == "" {
+		op.OperationID = newID()
+	}
+	if op.Status == "" {
+		op.Status = StatusPending
+	}
+	if op.CreatedAt.IsZero() {
+		op.CreatedAt = time.Now().UTC()
+	}
+	if op.UpdatedAt.IsZero() {
+		op.UpdatedAt = op.CreatedAt
+	}
+	if op.Run == 0 {
+		op.Run = 1
+	}
+	op.Payload = executablePayload(op.Payload)
 	s.operations[op.OperationID] = op
 	return op, nil
 }
@@ -257,7 +284,7 @@ func (s *MemoryStore) retryBatchParentLocked(parent Operation) (Operation, error
 	if !outstanding {
 		// Nothing beneath it can be re-run, so reviving the parent would strand
 		// it pending with no child left to promote it.
-		return parent, ErrOperationConflict
+		return parent, ErrBatchParentNoWork
 	}
 	parent.Status = StatusPending
 	parent.Error = ""

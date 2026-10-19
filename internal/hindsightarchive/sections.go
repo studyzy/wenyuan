@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"reflect"
 )
 
 // Archive entry names beyond the manifest and the per-document payloads. A
@@ -45,6 +46,13 @@ const (
 	// carried: a pending one names work the source instance still owes, and a
 	// target that restored it would run work that was never its own.
 	AsyncOperationsTable = "async_operations"
+	// GraphMaintenanceQueueTable and EntityMaintenanceQueueTable are the two
+	// maintenance work queues: relink targets keyed by unit id, and prune
+	// targets keyed by entity. Their rows name work the import regenerates, so
+	// the importing instance remaps each row onto an id its own replay minted
+	// and drops the rest.
+	GraphMaintenanceQueueTable  = "graph_maintenance_queue"
+	EntityMaintenanceQueueTable = "entity_maintenance_queue"
 	// AuditLogTable and LLMRequestsTable name the operational-history tables.
 	AuditLogTable    = "audit_log"
 	LLMRequestsTable = "llm_requests"
@@ -55,8 +63,15 @@ const (
 var HistoryTables = []string{AuditLogTable, LLMRequestsTable}
 
 // DataTables are the bank-scoped state tables an archive carries under DataDir
-// with the data section, in export order.
-var DataTables = []string{AsyncOperationsTable, InvalidatedMemoryTable}
+// with the data section, in export order. The order matches the reference's own
+// producer: the operations log, then the two maintenance queues, then the
+// curation archive.
+var DataTables = []string{
+	AsyncOperationsTable,
+	GraphMaintenanceQueueTable,
+	EntityMaintenanceQueueTable,
+	InvalidatedMemoryTable,
+}
 
 // HistoryEntry names the archive entry holding one operational-history table.
 func HistoryEntry(table string) string { return HistoryDir + "/" + table + ".json" }
@@ -125,6 +140,21 @@ type Observation struct {
 	Sources           []ObservationSource `json:"sources"`
 }
 
+// MarshalJSON writes the observation with its list members as empty arrays
+// rather than null, matching the reference's schema (its reader rejects null for
+// tags/sources).
+func (o Observation) MarshalJSON() ([]byte, error) {
+	type alias Observation
+	out := alias(o)
+	if out.Tags == nil {
+		out.Tags = []string{}
+	}
+	if out.Sources == nil {
+		out.Sources = []ObservationSource{}
+	}
+	return json.Marshal(out)
+}
+
 // KnowledgePage is one node of the knowledge-base tree: a folder or a page.
 // The identifier and a page's mental_model_id are preserved across a transfer,
 // because every other node's parent link names them.
@@ -158,6 +188,17 @@ func ReadSection[T any](fsys fs.FS, name string) ([]T, error) {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
 	return out, nil
+}
+
+// nonNilSlice turns a nil slice into an empty one of the same type, so a
+// selected-but-empty section serialises as `[]` rather than `null`. A value
+// that is not a slice is returned unchanged.
+func nonNilSlice(value any) any {
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	}
+	return value
 }
 
 // Write serialises an archive back into its ZIP representation. It is the
@@ -220,61 +261,78 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 			return err
 		}
 	}
+	// A whole-bank archive carries the sections its scope selected even when
+	// they hold nothing: the reference writes `[]` for an empty one, so a reader
+	// can tell "selected and empty" from "not carried". A documents-only archive
+	// (and any section outside its scope) is written only when non-empty, which
+	// is exactly what the reference's document export does.
+	scopeData, scopeBankConfig, scopeHistory := true, true, false
+	if scope := archive.Manifest.Scope; scope != nil {
+		scopeData, scopeBankConfig, scopeHistory = scope.Data, scope.BankConfig, scope.History
+	}
+	bankArchive := archive.Manifest.ArchiveType == "bank"
+
+	writeRows := func(name string, rows []map[string]any, always bool) error {
+		if !always && len(rows) == 0 {
+			return nil
+		}
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		body, err := encode(rows)
+		if err != nil {
+			return err
+		}
+		return writeEntry(name, body)
+	}
+	writeSection := func(name string, value any, always bool, count int) error {
+		if !always && count == 0 {
+			return nil
+		}
+		// A selected section with nothing in it is written as `[]`, not `null`:
+		// the reference emits an empty list and every reader expects one.
+		body, err := encode(nonNilSlice(value))
+		if err != nil {
+			return err
+		}
+		return writeEntry(name, body)
+	}
 	sections := []struct {
-		name  string
-		value any
-		empty bool
+		name   string
+		value  any
+		count  int
+		always bool
 	}{
-		{ObservationsName, archive.Observations, len(archive.Observations) == 0},
-		{MentalModelsName, archive.MentalModels, len(archive.MentalModels) == 0},
+		// Observations travel only when non-empty, as the reference writes them.
+		{ObservationsName, archive.Observations, len(archive.Observations), false},
+		{MentalModelsName, archive.MentalModels, len(archive.MentalModels), bankArchive && scopeData},
 		// The knowledge tree is written even when empty for a whole-bank
 		// archive: an empty list distinguishes "no pages" from an archive
 		// produced before the tree existed.
-		{KnowledgePagesName, archive.KnowledgePages,
-			len(archive.KnowledgePages) == 0 && (archive.Manifest.Scope == nil || !archive.Manifest.Scope.Data)},
-		{BanksName, archive.Banks, len(archive.Banks) == 0},
-		{DirectivesName, archive.Directives, len(archive.Directives) == 0},
-		{WebhooksName, archive.Webhooks, len(archive.Webhooks) == 0},
-		{AttachmentsName, archive.Attachments, len(archive.Attachments) == 0},
-		{MentalModelHistoryName, archive.MentalModelHistory, len(archive.MentalModelHistory) == 0},
+		{KnowledgePagesName, archive.KnowledgePages, len(archive.KnowledgePages), bankArchive && scopeData},
+		{BanksName, archive.Banks, len(archive.Banks), bankArchive && scopeBankConfig},
+		{DirectivesName, archive.Directives, len(archive.Directives), bankArchive && scopeBankConfig},
+		{WebhooksName, archive.Webhooks, len(archive.Webhooks), bankArchive && scopeBankConfig},
+		// Attachments travel only when non-empty, as the reference writes them.
+		{AttachmentsName, archive.Attachments, len(archive.Attachments), false},
+		{MentalModelHistoryName, archive.MentalModelHistory, len(archive.MentalModelHistory), bankArchive && scopeData},
 	}
 	for _, section := range sections {
-		if section.empty {
-			continue
-		}
-		body, err := encode(section.value)
-		if err != nil {
-			return err
-		}
-		if err := writeEntry(section.name, body); err != nil {
+		if err := writeSection(section.name, section.value, section.always, section.count); err != nil {
 			return err
 		}
 	}
-	// Operational history is written only when the archive carries it, so an
-	// absent section means "not selected" rather than "empty".
+	// Operational history is written for every table the history section
+	// selected (empty or not), so an absent section means "not selected".
 	for _, table := range HistoryTables {
-		rows := archive.History[table]
-		if len(rows) == 0 {
-			continue
-		}
-		body, err := encode(rows)
-		if err != nil {
-			return err
-		}
-		if err := writeEntry(HistoryEntry(table), body); err != nil {
+		if err := writeRows(HistoryEntry(table), archive.History[table], bankArchive && scopeHistory); err != nil {
 			return err
 		}
 	}
+	// The bank-scoped state tables ride with the data section, each written even
+	// when empty, exactly as the reference's producer emits them.
 	for _, table := range DataTables {
-		rows := archive.Data[table]
-		if len(rows) == 0 {
-			continue
-		}
-		body, err := encode(rows)
-		if err != nil {
-			return err
-		}
-		if err := writeEntry(DataEntry(table), body); err != nil {
+		if err := writeRows(DataEntry(table), archive.Data[table], bankArchive && scopeData); err != nil {
 			return err
 		}
 	}
@@ -294,11 +352,16 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 			return err
 		}
 	}
-	manifest, err := encode(archive.Manifest)
-	if err != nil {
+	// The manifest is pretty-printed (two-space indent), matching the
+	// reference's producer; the payload and section entries are compact.
+	var manifestBuf bytes.Buffer
+	enc := json.NewEncoder(&manifestBuf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(archive.Manifest); err != nil {
 		return err
 	}
-	return writeEntry(ManifestName, manifest)
+	return writeEntry(ManifestName, bytes.TrimRight(manifestBuf.Bytes(), "\n"))
 }
 
 // DocumentNames lists the per-document payload entries of a filesystem in

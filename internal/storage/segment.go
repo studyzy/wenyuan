@@ -246,9 +246,12 @@ func splitRecursive(text string, maxChars int, separators []string) []string {
 	return out
 }
 
-// splitOnSeparator cuts text at every occurrence of separator, keeping the
-// separator at the start of the piece that follows it. An empty separator
-// degrades to one piece per character, which is the documented last resort.
+// splitOnSeparator cuts text at every occurrence of separator, keeping each
+// separator at the start of the piece that follows it — the reference's
+// RecursiveCharacterTextSplitter convention (re.split with keep_separator=True):
+// the piece before the first match comes first, then one piece per match
+// running from that match to the next. An empty separator degrades to one piece
+// per character, which is the documented last resort.
 func splitOnSeparator(text, separator string) []string {
 	if separator == "" {
 		runes := []rune(text)
@@ -258,12 +261,23 @@ func splitOnSeparator(text, separator string) []string {
 		}
 		return out
 	}
-	parts := strings.SplitAfter(text, separator)
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part != "" {
-			out = append(out, part)
+	out := make([]string, 0)
+	previous := 0
+	scan := 0
+	for {
+		index := strings.Index(text[scan:], separator)
+		if index < 0 {
+			break
 		}
+		match := scan + index
+		if piece := text[previous:match]; piece != "" {
+			out = append(out, piece)
+		}
+		previous = match
+		scan = match + len(separator)
+	}
+	if tail := text[previous:]; tail != "" {
+		out = append(out, tail)
 	}
 	return out
 }

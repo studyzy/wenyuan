@@ -355,20 +355,39 @@ func TestRetainPassesExtractionOptions(t *testing.T) {
 		t.Fatalf("options = %+v", got)
 	}
 
-	// With nothing configured the plain call is used, so an extractor that
-	// ignores configuration is never handed a call it cannot answer.
+	// An item that named no timestamp is still given the ingest clock as its
+	// reference time, because that is the date the prompt states and the anchor
+	// a relative phrase resolves against. Only an item that explicitly asked for
+	// no timestamp leaves the options bare, so an extractor that ignores
+	// configuration is never handed a call it cannot answer.
 	plain := &contextualExtraction{}
 	if _, err := store.RetainWrite(ctx, RetainRequest{
 		BankID: "b1", Extraction: plain,
-		Items: []RetainItem{{Content: "Alice decided to ship.", DocumentID: "doc-2"}},
+		Items: []RetainItem{{Content: "Alice decided to ship.", DocumentID: "doc-2", HasTimestamp: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(plain.options) != 0 {
-		t.Fatalf("an unconfigured request must not use the contextual call: %+v", plain.options)
+		t.Fatalf("a timeless item must not use the contextual call: %+v", plain.options)
 	}
 	if len(plain.calls) != 1 {
 		t.Fatalf("plain calls = %v", plain.calls)
+	}
+
+	// The ordinary case — no timestamp given — does carry the ingest clock.
+	dated := &contextualExtraction{}
+	before := time.Now().UTC().Add(-time.Minute)
+	if _, err := store.RetainWrite(ctx, RetainRequest{
+		BankID: "b1", Extraction: dated,
+		Items: []RetainItem{{Content: "Alice decided to ship.", DocumentID: "doc-3"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dated.options) != 1 {
+		t.Fatalf("contextual calls = %d, want the ingest clock to reach the extractor", len(dated.options))
+	}
+	if ref := dated.options[0].ReferenceTime; ref.Before(before) || ref.After(time.Now().UTC()) {
+		t.Fatalf("reference time = %v, want the write clock", ref)
 	}
 }
 
@@ -544,8 +563,13 @@ func TestRetainPassesCausalLinksSwitch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(defaulted.options) != 0 || len(defaulted.calls) != 1 {
-		t.Fatalf("a default store must keep the plain call: options=%d calls=%d",
-			len(defaulted.options), len(defaulted.calls))
+	// The contextual call is taken here because the retain supplies the ingest
+	// clock as the extraction's reference time; the causal switch itself stays
+	// nil, which is the reference's default (on).
+	if len(defaulted.options) != 1 {
+		t.Fatalf("contextual calls = %d, want one", len(defaulted.options))
+	}
+	if opt := defaulted.options[0].ExtractCausalLinks; opt != nil {
+		t.Fatalf("causal option = %v, want the shipped default left alone", *opt)
 	}
 }

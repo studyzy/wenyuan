@@ -103,6 +103,48 @@ func TestExtensionNamespaceDeclaresItsOwnParams(t *testing.T) {
 	}
 }
 
+// An unmatched path and a method mismatch are answered by the router, not by a
+// route handler, so the reference emits no ignored-parameter header for them
+// even though the query string carries an unknown name. A matched route still
+// reports.
+func TestIgnoredParamsOnlyOnDispatchedRoute(t *testing.T) {
+	router := NewRouter(RouterOptions{})
+	router.Handle(http.MethodGet, BankPath(SuffixStats), QueryParams(func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}, "refresh"))
+	handler := router.Service()
+
+	// Control: the route runs and reports the unknown parameter.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1/stats?bogus=1", nil))
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "bogus" {
+		t.Fatalf("matched route X-Ignored-Params = %q, want bogus", got)
+	}
+
+	// Unmatched path: the fallback's 404 carries no header.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/nope?bogus=1", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unmatched path status = %d", rec.Code)
+	}
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("unmatched path X-Ignored-Params = %q, want none", got)
+	}
+
+	// Method mismatch: the router's 405 carries no header.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/stats?bogus=1", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method mismatch status = %d", rec.Code)
+	}
+	if got := rec.Header().Get(HeaderIgnoredParams); got != "" {
+		t.Fatalf("method mismatch X-Ignored-Params = %q, want none", got)
+	}
+	if got := rec.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("method mismatch Allow = %q, want GET", got)
+	}
+}
+
 func TestBankPathHelpers(t *testing.T) {
 	if got := BankPath(SuffixMemories); got != "/v1/default/banks/{bank_id}/memories" {
 		t.Fatalf("memory write path = %q", got)

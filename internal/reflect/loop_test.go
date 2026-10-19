@@ -365,8 +365,9 @@ func TestEmptyAnswerIsReported(t *testing.T) {
 	}
 }
 
-// Every tool schema requires a reason, and the recall/read/expand schemas carry
-// the parameters the reference documents.
+// Every tool schema requires a reason, and the recall/read/expand/done schemas
+// carry the parameters the reference documents. `done` requires the answer it
+// is trusted for; `read_mental_models` requires the ids it exists to read.
 func TestToolSchemasMatchReference(t *testing.T) {
 	for _, name := range ToolNames() {
 		var schema map[string]any
@@ -396,12 +397,56 @@ func TestToolSchemasMatchReference(t *testing.T) {
 	if !strings.Contains(expand, "depth") {
 		t.Fatalf("expand schema must carry depth: %s", expand)
 	}
+	done := string(toolParameters(ToolDone))
+	if !strings.Contains(done, `"required":["reason","answer"]`) {
+		t.Fatalf("done schema must require the answer it is trusted for: %s", done)
+	}
+}
+
+// test-read-mental-models-requires-ids: the reference's read tool requires the
+// ids it exists to read, so a model cannot call it to read nothing.
+func TestReadMentalModelsRequiresIDs(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(toolParameters(ToolReadMentalModels), &schema); err != nil {
+		t.Fatal(err)
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 2 || required[1] != "mental_model_ids" {
+		t.Fatalf("read_mental_models required = %v, want reason and mental_model_ids", required)
+	}
+}
+
+// test-document-mode-done-schema: document mode swaps `done`'s answer field for
+// the document the stored answer is rendered from, the way the reference does.
+func TestDocumentModeDoneSchemaSwapsAnswerForDocument(t *testing.T) {
+	var offered map[string]any
+	for _, def := range ToolDefinitions(true) {
+		if def.Name == ToolDone {
+			if err := json.Unmarshal(def.Parameters, &offered); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if offered == nil {
+		t.Fatal("document mode offers no done tool")
+	}
+	properties, _ := offered["properties"].(map[string]any)
+	if _, ok := properties["document"]; !ok {
+		t.Fatalf("document-mode done schema has no document field: %v", properties)
+	}
+	required, _ := offered["required"].([]any)
+	if len(required) != 1 || required[0] != "reason" {
+		t.Fatalf("document-mode done required = %v, want reason alone", required)
+	}
 }
 
 // The final synthesis completion carries the deployment's reflect
-// completion-token cap as its transport MaxTokens when one is set; with none
-// set it keeps the caller's visible-length target, which is what the loop sent
-// before the cap existed.
+// completion-token cap as its transport MaxTokens when one is set. With none
+// set the transport level is left unset, never the caller's visible-length
+// target: that value is a page-length target enforced by the rewrite, and
+// sending it as the provider's output cap lets a thinking model spend it on
+// reasoning tokens and truncate the answer mid-word (the reference decouples
+// the two for exactly that reason).
 func TestSynthesisCarriesReflectMaxCompletionTokens(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -410,7 +455,7 @@ func TestSynthesisCarriesReflectMaxCompletionTokens(t *testing.T) {
 		wantCap int
 	}{
 		{name: "cap set wins", cap: 512, maxTok: 128, wantCap: 512},
-		{name: "unset keeps visible-length target", cap: 0, maxTok: 128, wantCap: 128},
+		{name: "unset leaves the transport level unset", cap: 0, maxTok: 128, wantCap: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -438,5 +483,129 @@ func TestSynthesisCarriesReflectMaxCompletionTokens(t *testing.T) {
 				t.Fatalf("synthesis MaxTokens = %d, want %d", synthesis, tc.wantCap)
 			}
 		})
+	}
+}
+
+// test-loop-sums-turn-usage: every retrieval turn's model call is billed, so
+// the run's usage must include them, not only the closing calls. The reference
+// reports the whole loop's tokens; a total that omits the agent turns
+// under-reports the run by everything the retrieval cost.
+func TestLoopSumsTurnUsage(t *testing.T) {
+	p := &scriptedProvider{name: "openai", script: []provider.CompletionResult{
+		{
+			ToolCalls: []provider.ToolCall{toolCall(ToolRecall, map[string]any{"query": "q"})},
+			Usage:     provider.Usage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120},
+		},
+		{
+			ToolCalls: []provider.ToolCall{toolCall(ToolDone, nil)},
+			Usage:     provider.Usage{InputTokens: 200, OutputTokens: 30, TotalTokens: 230},
+		},
+	}}
+	retrieval := &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}
+	outcome, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Usage.InputTokens != 300 || outcome.Usage.OutputTokens != 50 || outcome.Usage.TotalTokens != 350 {
+		t.Fatalf("usage = %+v, want input 300/output 50/total 350", outcome.Usage)
+	}
+}
+
+// test-done-answer-is-the-answer: a model that calls done with its answer has
+// answered. The loop returns that text verbatim — the reference trusts
+// done.answer — instead of paying for a second synthesis call that would
+// restate what the loop already has. The two tool turns are the whole run.
+func TestDoneAnswerIsTrustedWithoutSynthesis(t *testing.T) {
+	p := &scriptedProvider{name: "openai", script: turnScript(
+		toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
+		toolCall(ToolDone, map[string]any{"answer": "  the answer  "}),
+	)}
+	retrieval := &stubRetrieval{observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "fact"}}}
+	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 1000}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Answer != "the answer" {
+		t.Fatalf("answer = %q, want the done call's own answer", outcome.Answer)
+	}
+	if len(p.requests) != 2 {
+		t.Fatalf("provider saw %d calls, want only the two loop turns", len(p.requests))
+	}
+	for _, req := range p.requests {
+		if len(req.Tools) == 0 {
+			t.Fatalf("a tool-less synthesis call was made for a done answer")
+		}
+	}
+}
+
+// The done path is not a bypass of the post-answer work: an over-budget done
+// answer goes through the same length rewrite a composed one does, and the
+// rewrite's default template still reaches the provider.
+func TestDoneAnswerStillRewrittenToBudget(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("detail. ", 200))
+	p := &scriptedProvider{name: "stub", script: append(
+		turnScript(
+			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
+			toolCall(ToolDone, map[string]any{"answer": long}),
+		),
+		provider.CompletionResult{Content: "short"},
+	)}
+	retrieval := &stubRetrieval{observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "fact"}}}
+	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 20}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Answer != "short" {
+		t.Fatalf("answer = %q, want the shortened done answer", outcome.Answer)
+	}
+	if len(p.requests) != 3 {
+		t.Fatalf("provider saw %d calls, want the two loop turns plus the rewrite", len(p.requests))
+	}
+	if p.requests[2].Messages[0].Content != rewriteSystem {
+		t.Fatalf("third call is not the length rewrite: %#v", p.requests[2].Messages)
+	}
+}
+
+// truncatingProvider drives two tool turns and then answers the synthesis call
+// with a generation that stopped at its output limit, carrying the text it
+// wrote before stopping — the shape a small max_tokens produces.
+type truncatingProvider struct {
+	name     string
+	toolCall int
+	requests []provider.CompletionRequest
+}
+
+func (t *truncatingProvider) Complete(_ context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
+	t.requests = append(t.requests, req)
+	if len(req.Tools) > 0 {
+		t.toolCall++
+		if t.toolCall == 1 {
+			return provider.CompletionResult{ToolCalls: []provider.ToolCall{toolCall(ToolRecall, map[string]any{"query": "q"})}}, nil
+		}
+		return provider.CompletionResult{ToolCalls: []provider.ToolCall{toolCall(ToolDone, nil)}}, nil
+	}
+	return provider.CompletionResult{Content: "short syn", FinishReason: "length"}, &provider.OutputTooLongError{FinishReason: "length"}
+}
+
+func (t *truncatingProvider) Name() string { return t.name }
+func (t *truncatingProvider) Embed(context.Context, provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	return provider.EmbeddingResult{}, nil
+}
+func (t *truncatingProvider) VerifyConnection(context.Context) error { return nil }
+func (t *truncatingProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
+
+// test-output-limit-is-not-fatal: the synthesis call stopping at its output
+// limit is not a failure. The reference tolerates finish_reason=length and
+// answers with the returned content; treating it as fatal is what turned a
+// small max_tokens into a 500.
+func TestOutputLimitInSynthesisIsTolerated(t *testing.T) {
+	p := &truncatingProvider{name: "openai"}
+	retrieval := &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}
+	outcome, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Answer != "short syn" {
+		t.Fatalf("answer = %q, want the truncated synthesis text", outcome.Answer)
 	}
 }

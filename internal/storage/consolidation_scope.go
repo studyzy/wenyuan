@@ -227,3 +227,51 @@ func (s *PostgresStore) CreateObservationInScope(ctx context.Context, bankID, te
 	}
 	return stored.ID, nil
 }
+
+// EnqueueConsolidationScoped records a consolidation pass restricted to the
+// given observation scopes, never deduplicating it against a pending full-bank
+// pass. It exists for the one submit EnqueueConsolidation's variadic cannot
+// express: an explicit but empty scope list, which the reference submits as a
+// scoped (hence non-deduplicated) run matching no memory rather than folding
+// into a full-bank sweep. The scopes are carried in the task payload as sent.
+func (s *PostgresStore) EnqueueConsolidationScoped(ctx context.Context, bankID string, observationScopes [][]string) (Operation, bool, error) {
+	if observationScopes == nil {
+		observationScopes = [][]string{}
+	}
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bankID),
+		Payload: map[string]any{"observation_scopes": observationScopes},
+	}
+	op, err := s.PutOperation(ctx, op)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	return op, false, nil
+}
+
+// EnqueueConsolidationScoped is the in-process counterpart of the Postgres
+// implementation: a scoped submit, including an empty scope list, that never
+// deduplicates against an outstanding pass for the bank.
+func (s *MemoryStore) EnqueueConsolidationScoped(ctx context.Context, bankID string, observationScopes [][]string) (Operation, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Operation{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return Operation{}, false, s.writeErr
+	}
+	if observationScopes == nil {
+		observationScopes = [][]string{}
+	}
+	now := time.Now().UTC()
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
+		SerializationKey: ConsolidationSerializationKey(bankID),
+		Payload:          map[string]any{"observation_scopes": observationScopes},
+	}
+	s.operations[op.OperationID] = op
+	return op, false, nil
+}

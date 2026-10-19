@@ -331,3 +331,234 @@ func TestBankConfigReadRejectsInvalidResolvedConfig(t *testing.T) {
 		t.Fatalf("detail = %q, want the reference's message", body.Detail)
 	}
 }
+
+// A configuration value's type error names the value's kind the way the
+// framework's parser does: an integer literal is an int, a decimal or exponent
+// literal a float, and a float never satisfies an integer field — so `5.0` is
+// refused where the reference refuses it. The disposition traits report their
+// type before their 1-5 bound, and the bound message interpolates the value.
+func TestBankConfigWriteTypeAndTraitMessages(t *testing.T) {
+	mux, store := configServer(t)
+
+	cases := []struct {
+		name   string
+		body   string
+		status int
+		detail string
+	}{
+		{"trait out of range", `{"updates":{"disposition_skepticism":9}}`, 400,
+			"disposition_skepticism must be an integer between 1 and 5, got 9"},
+		{"trait zero", `{"updates":{"disposition_skepticism":0}}`, 400,
+			"disposition_skepticism must be an integer between 1 and 5, got 0"},
+		{"trait string", `{"updates":{"disposition_skepticism":"x"}}`, 400,
+			"disposition_skepticism must be an integer, got str"},
+		{"trait float literal", `{"updates":{"disposition_skepticism":9.5}}`, 400,
+			"disposition_skepticism must be an integer, got float"},
+		{"trait bool", `{"updates":{"disposition_skepticism":true}}`, 400,
+			"disposition_skepticism must be an integer, got bool"},
+		{"int literal for string field", `{"updates":{"retain_mission":5}}`, 400,
+			"retain_mission must be a string, got int"},
+		{"decimal literal for string field", `{"updates":{"retain_mission":5.0}}`, 400,
+			"retain_mission must be a string, got float"},
+		{"int literal for bool field", `{"updates":{"enable_observations":1}}`, 400,
+			"enable_observations must be a boolean, got int"},
+		{"decimal literal for int field", `{"updates":{"retain_chunk_size":5.0}}`, 400,
+			"retain_chunk_size must be an integer, got float"},
+		{"exponent literal for int field", `{"updates":{"retain_chunk_size":1e3}}`, 400,
+			"retain_chunk_size must be an integer, got float"},
+	}
+	for _, tc := range cases {
+		rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", tc.body)
+		if rec.Code != tc.status {
+			t.Fatalf("%s: status = %d, want %d (body %s)", tc.name, rec.Code, tc.status, rec.Body.String())
+		}
+		var body struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Detail != tc.detail {
+			t.Fatalf("%s: detail = %q, want %q", tc.name, body.Detail, tc.detail)
+		}
+	}
+	// None of the refused writes may have landed.
+	bank, err := store.GetBank(context.TODO(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bank.Config) != 0 {
+		t.Fatalf("config = %v, want nothing stored", bank.Config)
+	}
+}
+
+// An integer literal an integer field accepts is stored as a Go int, so the
+// value survives a JSON round trip and the resolved config reports it.
+func TestBankConfigWriteStoresIntegerLiteral(t *testing.T) {
+	mux, store := configServer(t)
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", `{"updates":{"retain_chunk_size":120}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	bank, err := store.GetBank(context.TODO(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := bank.Config["retain_chunk_size"].(int); !ok || value != 120 {
+		t.Fatalf("stored retain_chunk_size = %#v, want int 120", bank.Config["retain_chunk_size"])
+	}
+}
+
+// The consolidation-strategy write reports the offending member the way the
+// reference's pydantic model does: a list element that is not a string names
+// the element's own position (`tags.0`), and a rejected `tags_match` is the
+// model's field validator, whose message carries the framework's "Value error, "
+// prefix.
+func TestBankConfigWriteConsolidationStrategyLocations(t *testing.T) {
+	mux, _ := configServer(t)
+
+	cases := []struct {
+		name   string
+		body   string
+		detail string
+	}{
+		{
+			"non-string tag element",
+			`{"updates":{"consolidation_strategies":[{"scopes":[{"tags":[1]}]}]}}`,
+			"Invalid consolidation strategy at index 0: scopes.0.tags.0: Input should be a valid string",
+		},
+		{
+			"unknown tags_match",
+			`{"updates":{"consolidation_strategies":[{"scopes":[{"tags":["a"],"tags_match":"any"}]}]}}`,
+			"Invalid consolidation strategy at index 0: scopes.0.tags_match: Value error, must be one of all, exact",
+		},
+		{
+			"entry is not an object",
+			`{"updates":{"consolidation_strategies":[5]}}`,
+			"Invalid consolidation strategy at index 0: entry: Input should be a valid dictionary or instance of " +
+				"StrictConsolidationStrategySpec",
+		},
+		{
+			"setting of the wrong type",
+			`{"updates":{"consolidation_strategies":[{"max_observations_per_scope":"x"}]}}`,
+			"Invalid consolidation strategy at index 0: max_observations_per_scope: " +
+				"Input should be a valid integer, unable to parse string as an integer",
+		},
+	}
+	for _, tc := range cases {
+		rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body %s)", tc.name, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Detail != tc.detail {
+			t.Fatalf("%s: detail = %q, want %q", tc.name, body.Detail, tc.detail)
+		}
+	}
+}
+
+// knowledge_page_default_trigger is validated the way the reference validates
+// it: unknown members are rejected by name before anything else, and every
+// structured mistake is reported as one message naming the member and the
+// framework's reason, members ordered by name.
+func TestBankConfigWriteKnowledgePageTriggerMessages(t *testing.T) {
+	mux, store := configServer(t)
+
+	cases := []struct {
+		name   string
+		body   string
+		detail string
+	}{
+		{
+			"unknown member",
+			`{"updates":{"knowledge_page_default_trigger":{"bogus":1}}}`,
+			"knowledge_page_default_trigger has unknown fields: bogus",
+		},
+		{
+			"unknown member wins over a bad value",
+			`{"updates":{"knowledge_page_default_trigger":{"bogus":1,"mode":"nope"}}}`,
+			"knowledge_page_default_trigger has unknown fields: bogus",
+		},
+		{
+			"members in name order",
+			`{"updates":{"knowledge_page_default_trigger":{"keep_trace":"x","budget":"huge","fact_types":[]}}}`,
+			"Invalid knowledge_page_default_trigger: budget: Input should be 'low', 'mid' or 'high'; " +
+				"fact_types: Value error, fact_types must not be empty. Use null to include all fact types.; " +
+				"keep_trace: Input should be a valid boolean, unable to interpret input",
+		},
+		{
+			"fuzzy tag group",
+			`{"updates":{"knowledge_page_default_trigger":{"tag_groups":[{"tags":["a"],"resolve":"fuzzy"}]}}}`,
+			"Invalid knowledge_page_default_trigger: tag_groups: Value error, resolve='fuzzy' is not supported " +
+				"in a trigger's tag_groups. A stored scope must be exact; use it on a recall or reflect request instead.",
+		},
+		{
+			"the model-level exclusivity item",
+			`{"updates":{"knowledge_page_default_trigger":{"refresh_after_consolidation":true,"refresh_cron":"0 3 * * *"}}}`,
+			"Invalid knowledge_page_default_trigger: trigger: Value error, refresh_after_consolidation and " +
+				"refresh_cron are mutually exclusive: a mental model refreshes either after consolidation or on " +
+				"a cron schedule, not both.",
+		},
+		{
+			"response_schema of the wrong type",
+			`{"updates":{"knowledge_page_default_trigger":{"response_schema":5}}}`,
+			"Invalid knowledge_page_default_trigger: response_schema: Input should be a valid dictionary",
+		},
+		{
+			"response_schema with no properties",
+			`{"updates":{"knowledge_page_default_trigger":{"response_schema":{"type":"object"}}}}`,
+			"Invalid knowledge_page_default_trigger: response_schema: Value error, " +
+				"response_schema must define a non-empty 'properties' object",
+		},
+		{
+			"recall_max_tokens is an integer",
+			`{"updates":{"knowledge_page_default_trigger":{"recall_max_tokens":"x"}}}`,
+			"Invalid knowledge_page_default_trigger: recall_max_tokens: Input should be a valid integer, " +
+				"unable to parse string as an integer",
+		},
+		{
+			"exclude_mental_model_ids is a list",
+			`{"updates":{"knowledge_page_default_trigger":{"exclude_mental_model_ids":5}}}`,
+			"Invalid knowledge_page_default_trigger: exclude_mental_model_ids: Input should be a valid list",
+		},
+		{
+			"mode has no null member",
+			`{"updates":{"knowledge_page_default_trigger":{"mode":null}}}`,
+			"Invalid knowledge_page_default_trigger: mode: Input should be 'full' or 'delta'",
+		},
+	}
+	for _, tc := range cases {
+		rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body %s)", tc.name, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Detail != tc.detail {
+			t.Fatalf("%s: detail = %q, want %q", tc.name, body.Detail, tc.detail)
+		}
+	}
+	// A well-formed trigger is still stored.
+	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config",
+		`{"updates":{"knowledge_page_default_trigger":{"tags_match":"exact","recall_max_tokens":500}}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid trigger = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	bank, err := store.GetBank(context.TODO(), "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger, _ := bank.Config["knowledge_page_default_trigger"].(map[string]any)
+	if trigger["tags_match"] != "exact" {
+		t.Fatalf("stored trigger = %v", bank.Config["knowledge_page_default_trigger"])
+	}
+}

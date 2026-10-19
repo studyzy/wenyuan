@@ -75,7 +75,11 @@ func (h *Handlers) PromoteAlias(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "change the bank's aliases") {
 		return
 	}
-	bankID, ok := h.resolveCanonical(w, r)
+	// The body is validated before the bank is resolved, matching the
+	// framework's pre-handler validation: a malformed body wins over a missing
+	// bank. Only the canonical id is needed to report the result, so the
+	// existence check follows the body's validation.
+	bankID, ok := h.resolveAlias(w, r)
 	if !ok {
 		return
 	}

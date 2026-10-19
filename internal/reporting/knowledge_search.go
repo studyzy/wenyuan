@@ -84,10 +84,11 @@ func (h *Handlers) KnowledgeExport(w http.ResponseWriter, r *http.Request) {
 
 // KnowledgeSearch searches the bank's pages.
 func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
+	// Every parameter is validated before the bank is looked up: in the
+	// reference `q` and `limit` are `Query(...)` declarations and `tag_filter`
+	// is a `Depends` (api/http.py:7469-7475), so the framework reports a bad one
+	// as a 422 before the handler body — and therefore before the bank — is
+	// reached. `q` is checked first because it is declared first.
 	query, ok := knowledgeSearchQuery(w, r)
 	if !ok {
 		return
@@ -97,6 +98,10 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter, ok := knowledgeTagFilterFromRequest(w, r)
+	if !ok {
+		return
+	}
+	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
 	}

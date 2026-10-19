@@ -2,6 +2,7 @@ package memoryops
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -187,8 +188,94 @@ type IncludeSourceFactRequest struct {
 // TemporalWindowRequest is the caller-supplied temporal window. Bounds are
 // inclusive; a naive bound is read as UTC.
 type TemporalWindowRequest struct {
-	Start string `json:"start,omitempty"`
-	End   string `json:"end,omitempty"`
+	// Start and End hold the parsed bounds. The reference's window carries two
+	// required `datetime` fields, so both are always present when the window
+	// itself parsed; a missing or unparseable bound is reported as a field-level
+	// validation item rather than as a bad request (see ValidateRecall).
+	Start time.Time `json:"-"`
+	End   time.Time `json:"-"`
+
+	// members holds the window object's own key/value pairs, which is the input a
+	// missing bound reports; fields holds each bound's own decode outcome, so the
+	// validation pass can report both bounds of one window.
+	members map[string]any
+	fields  temporalWindowFields
+}
+
+// temporalWindowFields records what each bound of a window contributed: the item
+// for a bound that is missing or rejected, and the range check the window model
+// raises once both bounds parsed.
+type temporalWindowFields struct {
+	items    []httpx.ValidationError
+	inverted bool
+}
+
+// UnmarshalJSON decodes a window bound the way the reference's `datetime` field
+// does: an ISO date or datetime string, or a number read as a Unix timestamp.
+// A bound that is absent, null or unparseable is recorded as an item at its own
+// path instead of failing the whole body, because the reference reports both
+// bounds of a window in one response.
+func (w *TemporalWindowRequest) UnmarshalJSON(data []byte) error {
+	if w == nil {
+		return nil
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	w.members = nil
+	if err := json.Unmarshal(data, &w.members); err != nil {
+		w.members = map[string]any{}
+	}
+	if w.members == nil {
+		w.members = map[string]any{}
+	}
+	start, startFailure := decodeTemporalBound(w.members, members, "start")
+	end, endFailure := decodeTemporalBound(w.members, members, "end")
+	w.fields.items = nil
+	for _, failure := range []*httpx.ValidationError{startFailure, endFailure} {
+		if failure != nil {
+			w.fields.items = append(w.fields.items, *failure)
+		}
+	}
+	w.fields.inverted = startFailure == nil && endFailure == nil && end.Before(start)
+	w.Start, w.End = start, end
+	return nil
+}
+
+// decodeTemporalBound decodes one bound, returning the item for a bound that is
+// missing, null or unparseable.
+func decodeTemporalBound(window map[string]any, members map[string]json.RawMessage, name string) (time.Time, *httpx.ValidationError) {
+	loc := []string{"body", "temporal_window", name}
+	raw, present := members[name]
+	if !present {
+		return time.Time{}, &httpx.ValidationError{Type: "missing", Loc: loc, Msg: "Field required", Input: window}
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return time.Time{}, &httpx.ValidationError{Type: pythonDateTimeTypeKind, Loc: loc, Msg: pythonDateTimeTypeMessage}
+	}
+	switch typed := value.(type) {
+	case string:
+		parsed, err := parsePythonDateTime(typed)
+		if err != nil {
+			item := pythonDateTimeItem(loc, typed, err)
+			return time.Time{}, &item
+		}
+		return parsed, nil
+	case float64:
+		item := pythonDateTimeItem(loc, typed, formatUnixTimestampError(typed))
+		parsed := unixTimestampToTime(typed)
+		if !parsed.IsZero() {
+			// A numeric bound the range check accepts is the instant it names.
+			return parsed, nil
+		}
+		return time.Time{}, &item
+	default:
+		input := value
+		item := httpx.ValidationItem(pythonDateTimeTypeKind, loc, pythonDateTimeTypeMessage, input, nil)
+		return time.Time{}, &item
+	}
 }
 
 // TagGroupRequest is one compound tag-filter node. Its marshal/unmarshal shape
@@ -227,13 +314,15 @@ type RecallResultItem struct {
 }
 
 // RecallScoreObject separates the final ranking score from the reranker
-// relevance and the per-strategy retrieval scores. A stage that did not surface
-// the result reports no value.
+// relevance and the per-strategy retrieval scores. Every stage is present on
+// the wire: the reference keeps nulls for this route, so a stage that did not
+// surface the result reports null rather than disappearing — a client reading
+// `scores.semantic` unconditionally must not hit a missing key.
 type RecallScoreObject struct {
 	Final    float64  `json:"final"`
-	Reranker *float64 `json:"reranker,omitempty"`
-	Semantic *float64 `json:"semantic,omitempty"`
-	Keyword  *float64 `json:"keyword,omitempty"`
+	Reranker *float64 `json:"reranker"`
+	Semantic *float64 `json:"semantic"`
+	Keyword  *float64 `json:"keyword"`
 }
 
 // Attachment is an optional recall-result side value.

@@ -198,15 +198,20 @@ func TestReflectEmptyFactTypes(t *testing.T) {
 // alone is accepted.
 func TestReflectTagsAndTagGroupsMutualExclusion(t *testing.T) {
 	mux, _ := reflectServer(t)
-	both := `{"query":"q","tags":["a"],"tag_groups":{"tag":"b"}}`
+	both := `{"query":"q","tags":["a"],"tag_groups":[{"tags":["b"]}]}`
 	if code, _ := reflectBody(t, mux, "b1", both); code != http.StatusUnprocessableEntity {
 		t.Fatalf("tags plus tag_groups must be 422, got %d", code)
 	}
 	if code, _ := reflectBody(t, mux, "b1", `{"query":"q","tags":["a"]}`); code != http.StatusOK {
 		t.Fatalf("tags alone must be accepted, got %d", code)
 	}
-	if code, _ := reflectBody(t, mux, "b1", `{"query":"q","tag_groups":{"tag":"b"}}`); code != http.StatusOK {
-		t.Fatalf("tag_groups alone must be accepted, got %d", code)
+	if code, _ := reflectBody(t, mux, "b1", `{"query":"q","tag_groups":[{"tags":["b"]}]}`); code != http.StatusOK {
+		t.Fatalf("a tag_groups list must be accepted, got %d", code)
+	}
+	// Reflect's field is `list[TagGroup]`: a single object is a list-type
+	// failure, unlike recall whose field also reads the object form.
+	if code, body := reflectBody(t, mux, "b1", `{"query":"q","tag_groups":{"tags":["b"]}}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("tag_groups as one object must be 422, got %d: %s", code, body)
 	}
 }
 

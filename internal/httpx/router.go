@@ -175,6 +175,47 @@ func (r *Router) probePattern(req *http.Request) string {
 	return ""
 }
 
+// undeclaredMCPPath answers a path deeper than either MCP mount the reference
+// declares, before the mux can match it against the bank mount's trailing slash.
+// The reference's /mcp and /mcp/{bank_id} are whole paths, so /mcp/a/b matches
+// nothing and its 404 is plain text; a Go mux would instead let /mcp/{bank_id}/
+// swallow the deeper path and dispatch it to the MCP handler.
+func (r *Router) undeclaredMCPPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if r.undeclaredMCPDepth(req) {
+			// The reference's Router answers an unmatched path itself, as plain
+			// text, and never reaches the JSON error handler; the content type
+			// says text so the fallback passes this through rather than
+			// re-rendering it into the API's envelope.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("Not Found"))
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+// undeclaredMCPDepth reports whether a request matched an MCP mount only because
+// the mux let a pattern carry segments the reference does not register. The
+// reference's /mcp/{bank_id} is a whole path, so /mcp/a/b matches no route and
+// its 404 is plain text; the MCP server itself serves /mcp/{bank}/tools/list.
+func (r *Router) undeclaredMCPDepth(req *http.Request) bool {
+	path := req.URL.Path
+	if r.options.BasePath != "" {
+		path = strings.TrimPrefix(path, r.options.BasePath)
+	}
+	if !strings.HasPrefix(path, NamespaceMCP+"/") {
+		return false
+	}
+	// namespace, bank — then anything further is deeper than either mount the
+	// reference declares, whatever the extra segments spell. The reference's
+	// /mcp/{bank_id} is a whole path, so /mcp/a/tools/list is a 404 too.
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	return len(segments) > 2 && segments[1] != "" && segments[0] == strings.TrimPrefix(NamespaceMCP, "/")
+}
+
 // declared reports whether the router recorded the methods of a path template.
 // An extension route registers directly on the mux, so its methods are unknown
 // here and its method semantics are left to the mux.
@@ -264,6 +305,13 @@ func (r *Router) methodSemantics(next http.Handler) http.Handler {
 			// redirect or its 404 rather than dispatching to the handler.
 			pattern = ""
 		}
+		if pattern == "" {
+			// No route is dispatched to, so whatever answers the request (the
+			// slash redirect below, or the fallback's 404) is not the reporting
+			// route class and carries no ignored-parameter header, exactly as
+			// the reference's unmatched path does not.
+			SuppressIgnoredParams(req)
+		}
 		if pattern == "" && req.URL.Path != "/" && strings.HasSuffix(req.URL.Path, "/") {
 			// The reference's router retries the slash-stripped path against
 			// the routes and, when it matches, redirects to it — whatever the
@@ -292,6 +340,12 @@ func (r *Router) methodSemantics(next http.Handler) http.Handler {
 		if r.declared(pattern) == nil {
 			next.ServeHTTP(w, req)
 			return
+		}
+		if !r.allows(pattern, req.Method) {
+			// A method mismatch is answered by the router's own 405, before any
+			// route handler runs, so the reference emits no ignored-parameter
+			// header for it.
+			SuppressIgnoredParams(req)
 		}
 		if req.Method == http.MethodHead && !r.allows(pattern, http.MethodHead) {
 			w.Header().Set("Allow", r.allowHeader(pattern))
@@ -386,12 +440,13 @@ func (r *Router) Service() http.Handler {
 	r.finalize()
 	resolveEndpoint := newEndpointResolver(r.routePatterns)
 	chain := Chain(
-		r.mux,
+		r.undeclaredMCPPath(r.mux),
 		ProxyHeadersMiddleware(r.options.TrustedProxies),
 		BasePathMiddleware(r.options.BasePath),
 		rawPathMiddleware(),
 		TenantAuthMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled, r.options.MCPAuthToken, r.routeAllowed),
 		AccessLogMiddleware(r.options.AccessLog),
+		RecoveryMiddleware(),
 		RouteFallbackMiddleware(),
 		DisconnectCancelMiddleware(),
 		AdmissionMiddleware(r.options.Admission),

@@ -109,18 +109,19 @@ func (h *Handlers) dispatchDocumentMember(w http.ResponseWriter, r *http.Request
 // ListTags returns the bank's tags with usage counts. `source` selects the
 // table the histogram is read from: memory_units by default, or mental_models.
 func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
+	// `source`, `limit` and `offset` are `Query(...)` parameters in the
+	// reference, resolved ahead of the handler body, so they are validated
+	// before the bank is looked up — in declaration order, which puts `source`
+	// ahead of `limit`.
+	var query queryErrors
+	query.literal(r, "source", []string{"memories", "mental_models"}, "memories")
+	limit := query.int(r, "limit", defaultPageLimit, 0, -1)
+	offset := query.int(r, "offset", 0, 0, -1)
+	if !query.empty() {
+		query.flush(w)
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	if !literalParam(w, r, "source", []string{"memories", "mental_models"}) {
-		return
-	}
-	limit, ok := intParam(w, r, "limit", defaultPageLimit, 0, -1)
-	if !ok {
-		return
-	}
-	offset, ok := intParam(w, r, "offset", 0, 0, -1)
 	if !ok {
 		return
 	}
@@ -223,16 +224,20 @@ func pageItems[T any](items []T, offset, limit int) []T {
 
 // Graph returns the bank's memory graph.
 func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	// `limit` is the route's only `Query(...)` parameter and is bound before the
+	// handler body, so it is validated before the bank is looked up. The other
+	// parameters here are plain strings in the reference (`type`, `q`,
+	// `tags_match`, `document_id`, `chunk_id`) and are not validated at all.
+	params, bankID, ok := h.validateEntityQuery(w, r, entityParamSpec{
+		Page: true, LimitDefault: defaultGraphLimit, NoTagGroups: true,
+		TagsMatchDefault: storage.TagsMatchAllStrict,
+	})
 	if !ok {
 		return
 	}
-	limit, ok := intParam(w, r, "limit", defaultGraphLimit, 0, -1)
-	if !ok {
-		return
-	}
+	limit := params.Limit
 	tags := queryValues(r, "tags")
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
+	tagsMatch := httpx.Query(r, "tags_match")
 	if tagsMatch == "" {
 		tagsMatch = storage.TagsMatchAllStrict
 	}
@@ -243,13 +248,13 @@ func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
 	tagGroups, tags, tagsMatch := scopedTagFilter(r, nil, tags, tagsMatch)
 	graph, err := h.Store.Graph(r.Context(), storage.GraphQuery{
 		BankID:     bankID,
-		Type:       strings.TrimSpace(httpx.Query(r, "type")),
-		Query:      strings.TrimSpace(httpx.Query(r, "q")),
+		Type:       httpx.Query(r, "type"),
+		Query:      httpx.Query(r, "q"),
 		Tags:       tags,
 		TagsMatch:  tagsMatch,
 		TagGroups:  tagGroups,
-		DocumentID: strings.TrimSpace(httpx.Query(r, "document_id")),
-		ChunkID:    strings.TrimSpace(httpx.Query(r, "chunk_id")),
+		DocumentID: httpx.Query(r, "document_id"),
+		ChunkID:    httpx.Query(r, "chunk_id"),
 		Limit:      limit,
 	})
 	if err != nil {
@@ -439,33 +444,23 @@ func (h *Handlers) scopeGraphData(r *http.Request, bankID string, graph storage.
 
 // ListEntities returns one page of the bank's entities.
 func (h *Handlers) ListEntities(w http.ResponseWriter, r *http.Request) {
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
-		return
-	}
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
-	}
-	bankID, ok := h.requireBank(w, r)
+	params, bankID, ok := h.validateEntityQuery(w, r, entityParamSpec{
+		Page: true, Offset: true, LimitDefault: defaultPageLimit, TagsMatch: true, TagsMatchDefault: storage.TagsMatchAny,
+	})
 	if !ok {
 		return
 	}
-	limit, ok := intParam(w, r, "limit", defaultPageLimit, 0, -1)
-	if !ok {
-		return
-	}
-	offset, ok := intParam(w, r, "offset", 0, 0, -1)
-	if !ok {
-		return
-	}
-	tags := queryValues(r, "tags")
-	tagGroups, ok := tagGroupsQuery(w, r, tags)
-	if !ok {
-		return
-	}
+	limit, offset := params.Limit, params.Offset
+	tags, tagsMatch, tagGroups := params.Tags, params.TagsMatch, params.TagGroups
 	// The caller's resolved read scope narrows the listing: a scoped reader
 	// sees only the entities of the memories it may read.
 	tagGroups, tags, tagsMatch = scopedTagFilter(r, tagGroups, tags, tagsMatch)
+	// A fuzzy leaf is resolved above the store, as the reference resolves it, so
+	// the reader compares exact tags instead of a token that matches nothing.
+	tagGroups, ok = h.resolveFuzzyTagGroupsFor(w, r, bankID, tagGroups)
+	if !ok {
+		return
+	}
 	page, err := h.Store.ListEntities(r.Context(), storage.EntityQuery{
 		BankID:    bankID,
 		Tags:      tags,
@@ -492,12 +487,15 @@ func (h *Handlers) ListEntities(w http.ResponseWriter, r *http.Request) {
 // The bank is not pre-checked: an unknown bank answers the entity's own
 // not-found, the same detail an absent entity gets.
 func (h *Handlers) GetEntity(w http.ResponseWriter, r *http.Request) {
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
+	// The query parameters are bound before the handler body in the reference,
+	// and `tag_groups` is parsed before the id is touched, so both outrank the
+	// id's own 400. The bank is still not pre-checked here: an unknown bank
+	// answers the entity's not-found.
+	params, ok := h.readEntityParams(w, r, entityParamSpec{
+		TagsMatch: true, TagsMatchDefault: storage.TagsMatchAny,
+	})
+	if !ok {
 		return
-	}
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
 	}
 	entityID := strings.TrimSpace(r.PathValue("entity_id"))
 	if !validUUIDShape(entityID) {
@@ -506,14 +504,16 @@ func (h *Handlers) GetEntity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	tags := queryValues(r, "tags")
-	tagGroups, ok := tagGroupsQuery(w, r, tags)
-	if !ok {
-		return
-	}
+	tags, tagsMatch, tagGroups := params.Tags, params.TagsMatch, params.TagGroups
 	// A by-id read still honours the caller's resolved scope, so an entity only
 	// another scope names answers not-found rather than leaking its existence.
 	tagGroups, tags, tagsMatch = scopedTagFilter(r, tagGroups, tags, tagsMatch)
+	// A fuzzy leaf is resolved above the store, as the reference resolves it, so
+	// the reader compares exact tags instead of a token that matches nothing.
+	tagGroups, ok = h.resolveFuzzyTagGroupsFor(w, r, bankID, tagGroups)
+	if !ok {
+		return
+	}
 	page, err := h.Store.ListEntities(r.Context(), storage.EntityQuery{
 		BankID: bankID, ID: entityID,
 		Tags: tags, TagsMatch: tagsMatch, TagGroups: tagGroups,
@@ -540,31 +540,22 @@ func (h *Handlers) RegenerateEntity(w http.ResponseWriter, r *http.Request) {
 
 // EntityGraph returns the bank's entity graph.
 func (h *Handlers) EntityGraph(w http.ResponseWriter, r *http.Request) {
-	tagsMatch := strings.TrimSpace(httpx.Query(r, "tags_match"))
-	if tagsMatch != "" && !literalParam(w, r, "tags_match", storage.RecallTagMatchModes()) {
-		return
-	}
-	if tagsMatch == "" {
-		tagsMatch = storage.TagsMatchAny
-	}
-	bankID, ok := h.requireBank(w, r)
+	params, bankID, ok := h.validateEntityQuery(w, r, entityParamSpec{
+		Page: true, LimitDefault: defaultGraphLimit, MinCount: true,
+		TagsMatch: true, TagsMatchDefault: storage.TagsMatchAny,
+	})
 	if !ok {
 		return
 	}
-	limit, ok := intParam(w, r, "limit", defaultGraphLimit, 0, -1)
-	if !ok {
-		return
-	}
-	minCount, ok := freeIntParam(w, r, "min_count", 1)
-	if !ok {
-		return
-	}
-	tags := queryValues(r, "tags")
-	tagGroups, ok := tagGroupsQuery(w, r, tags)
-	if !ok {
-		return
-	}
+	limit, minCount := params.Limit, params.MinCount
+	tags, tagsMatch, tagGroups := params.Tags, params.TagsMatch, params.TagGroups
 	tagGroups, tags, tagsMatch = scopedTagFilter(r, tagGroups, tags, tagsMatch)
+	// A fuzzy leaf is resolved above the store, as the reference resolves it, so
+	// the reader compares exact tags instead of a token that matches nothing.
+	tagGroups, ok = h.resolveFuzzyTagGroupsFor(w, r, bankID, tagGroups)
+	if !ok {
+		return
+	}
 	graph, err := h.Store.EntityGraph(r.Context(), storage.EntityGraphQuery{
 		BankID: bankID, Limit: limit, MinCount: minCount,
 		Tags: tags, TagsMatch: tagsMatch, TagGroups: tagGroups,
@@ -658,16 +649,12 @@ func (h *Handlers) documentMember(w http.ResponseWriter, r *http.Request) (strin
 	return bankID, docID, true
 }
 
-// queryValues collects a repeatable query parameter.
+// queryValues collects a repeatable query parameter. The values are handed on
+// verbatim, the way the reference's list-valued query parameters arrive: a
+// padded or empty entry (`?tags=`) is a tag the caller asked to filter on, not
+// something to normalise away, and the reference's SQL matches it as written.
 func queryValues(r *http.Request, name string) []string {
-	values := httpx.QueryValues(r, name)
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
+	return httpx.QueryValues(r, name)
 }
 
 // parseDateParam reads an optional ISO-8601 query parameter. It writes a

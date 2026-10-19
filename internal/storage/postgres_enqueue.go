@@ -64,18 +64,71 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 		blockingStatuses = append(blockingStatuses, "processing")
 	}
 
-	table := quoteIdent(s.schema) + ".async_operations"
-	// The check and the insert must be atomic, and a bare NOT EXISTS is not: a
-	// data-modifying CTE still evaluates its predicate against a snapshot taken
-	// when the statement began, so two callers both see no queued row and both
-	// insert. Locking the bank row first serializes submits for that bank, and
-	// the lock releases when this transaction commits.
-	//
-	// FOR NO KEY UPDATE rather than FOR UPDATE, because asynchronous operations
-	// reference the bank row: every insert for this bank takes a FOR KEY SHARE
-	// lock on it, and FOR UPDATE conflicts with that and would block them all
-	// for the duration. FOR NO KEY UPDATE conflicts with itself, which is what
-	// serializes the submits, but not with FOR KEY SHARE.
+	return s.enqueueLockedBankTx(ctx, op.BankID, true, func(tx Tx) (EnqueueResult, error) {
+		table := quoteIdent(s.schema) + ".async_operations"
+		// A running operation is preferred over a merely queued one. Both
+		// suppress the insert, but the running one is the work actually under
+		// way, so it is the honest thing to report back — and preferring it
+		// makes the answer deterministic rather than dependent on row order.
+		var existingID string
+		err := tx.QueryRowContext(ctx,
+			`SELECT operation_id FROM `+table+`
+			 WHERE bank_id = $1 AND operation_type = $2
+			   AND status = ANY($3::text[])
+			   AND task_payload ->> $4 = $5
+			 ORDER BY (status = 'processing') DESC, created_at, operation_id
+			 LIMIT 1`,
+			op.BankID, op.OperationType, blockingStatuses, subjectKey, subjectValue(op.Payload, subjectKey)).Scan(&existingID)
+		switch {
+		case err == nil:
+			existing, readErr := getOperationTx(ctx, tx, s.schema, existingID)
+			if readErr != nil {
+				return EnqueueResult{}, readErr
+			}
+			return EnqueueResult{Operation: existing, Deduplicated: true}, nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return EnqueueResult{}, err
+		}
+
+		query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
+			"          (bank_id, operation_type, status, error_message, retry_count," +
+			"           result_metadata, task_payload, serialization_key)" +
+			"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +
+			"          RETURNING " + qualifiedColumns("")
+		stored, err := scanOperation(tx.QueryRowContext(ctx, query,
+			op.BankID, op.OperationType, string(op.Status), op.Error,
+			op.RetryCount, metadata, payload, op.SerializationKey))
+		if err != nil {
+			return EnqueueResult{}, err
+		}
+		return EnqueueResult{Operation: stored}, nil
+	})
+}
+
+// enqueueLockedBankTx runs one conditional enqueue inside a transaction that
+// first takes the bank row's FOR NO KEY UPDATE lock, so concurrent submits that
+// are conditional on what is already queued for the bank serialize. The check
+// and the insert are both performed on that transaction by submit, and the
+// transaction commits when submit returns without an error — releasing the lock,
+// and making the winner's row visible to the next submitter.
+//
+// The check-then-insert has to be atomic: a bare NOT EXISTS is not, because a
+// data-modifying CTE still evaluates its predicate against the snapshot taken
+// when the statement began, so two callers both see no queued row and both
+// insert — the defect the guard exists to prevent.
+//
+// FOR NO KEY UPDATE rather than FOR UPDATE, because asynchronous operations
+// reference the bank row: every insert for this bank takes a FOR KEY SHARE lock
+// on it, and FOR UPDATE conflicts with that and would block them all for the
+// duration. FOR NO KEY UPDATE conflicts with itself, which is what serializes
+// the submits, but not with FOR KEY SHARE.
+//
+// requireBank distinguishes the two bank-existence policies. A caller that
+// deduplicates by payload key fails on a missing bank (a FK violation would be
+// the only other answer, and the reference reports it as a clean error); a
+// caller that deduplicates by bank tolerates it here and lets the insert fail
+// its foreign key, which is what an unknown bank used to answer.
+func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, requireBank bool, submit func(tx Tx) (EnqueueResult, error)) (EnqueueResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return EnqueueResult{}, err
@@ -83,58 +136,99 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 	defer func() { _ = tx.Rollback() }()
 
 	var bankPresent int
-	if err := tx.QueryRowContext(ctx,
+	lockErr := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
-		op.BankID).Scan(&bankPresent); err != nil {
-		// A bank that is not present holds no queued work, and the insert would
-		// fail its foreign key anyway, so there is nothing to deduplicate
-		// against and no reason to hold the transaction open.
-		return EnqueueResult{}, err
+		bankID).Scan(&bankPresent)
+	// A bank that is not present holds no queued work, so there is nothing to
+	// deduplicate against; callers that require it stop, and callers that do not
+	// carry on to the insert, which fails its foreign key.
+	if lockErr != nil && (requireBank || !errors.Is(lockErr, sql.ErrNoRows)) {
+		return EnqueueResult{}, lockErr
 	}
 
-	// A running operation is preferred over a merely queued one. Both suppress
-	// the insert, but the running one is the work actually under way, so it is
-	// the honest thing to report back — and preferring it makes the answer
-	// deterministic rather than dependent on row order.
-	var existingID string
-	err = tx.QueryRowContext(ctx,
-		`SELECT operation_id FROM `+table+`
-		 WHERE bank_id = $1 AND operation_type = $2
-		   AND status = ANY($3::text[])
-		   AND task_payload ->> $4 = $5
-		 ORDER BY (status = 'processing') DESC, created_at, operation_id
-		 LIMIT 1`,
-		op.BankID, op.OperationType, blockingStatuses, subjectKey, subjectValue(op.Payload, subjectKey)).Scan(&existingID)
-	switch {
-	case err == nil:
-		existing, readErr := getOperationTx(ctx, tx, s.schema, existingID)
-		if readErr != nil {
-			return EnqueueResult{}, readErr
-		}
-		if commitErr := tx.Commit(); commitErr != nil {
-			return EnqueueResult{}, commitErr
-		}
-		return EnqueueResult{Operation: existing, Deduplicated: true}, nil
-	case !errors.Is(err, sql.ErrNoRows):
-		return EnqueueResult{}, err
-	}
-
-	query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
-		"          (bank_id, operation_type, status, error_message, retry_count," +
-		"           result_metadata, task_payload, serialization_key)" +
-		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +
-		"          RETURNING " + qualifiedColumns("")
-	var stored Operation
-	stored, err = scanOperation(tx.QueryRowContext(ctx, query,
-		op.BankID, op.OperationType, string(op.Status), op.Error,
-		op.RetryCount, metadata, payload, op.SerializationKey))
+	result, err := submit(tx)
 	if err != nil {
 		return EnqueueResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return EnqueueResult{}, err
 	}
-	return EnqueueResult{Operation: stored}, nil
+	return result, nil
+}
+
+// enqueueDedupeByBank inserts op unless the bank already has a non-terminal
+// operation of the same type, in which case it reports the existing one. It is
+// the reference's dedupe_by_bank submit — the guard used by bank-wide work
+// where any outstanding copy of the pass already covers the intent.
+//
+// The check-and-insert runs under the bank row lock (see enqueueLockedBankTx),
+// so two submits reaching it at the same instant cannot both see no queued row
+// and both insert. The reference states the same reasoning for its shared
+// submit path.
+//
+// unscopedOnly deduplicates against a bank-wide pass alone. A pending scoped
+// consolidation covers only its own tag subset, so it must not swallow a
+// full-bank sweep (the reference's "Dedup only against an existing unscoped
+// (full-bank) pending op", engine/memory_engine.py:22207-22211). It applies to
+// consolidation; graph maintenance has no scoped sibling.
+func (s *PostgresStore) enqueueDedupeByBank(ctx context.Context, op Operation, blockingStatuses []string, unscopedOnly bool) (EnqueueResult, error) {
+	if op.OperationID == "" {
+		op.OperationID = newID()
+	}
+	if op.Status == "" {
+		op.Status = StatusPending
+	}
+	metadata, err := marshalMetadata(op.ResultMetadata)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	payload, err := marshalMetadata(op.Payload)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	// An empty serialization key is NULL rather than an empty string, matching
+	// PutOperation: the claim's serialization check matches keys by equality and
+	// "" would make every keyless operation contend with every other one.
+	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
+	return s.enqueueLockedBankTx(ctx, op.BankID, false, func(tx Tx) (EnqueueResult, error) {
+		var existingID string
+		// A scoped consolidation carries observation_scopes in its payload; the
+		// JSON predicate is spelled out here rather than left to a portable
+		// helper because the reference keeps the same check in Python for the
+		// same reason (Oracle's JSON_VALUE returns NULL for the array form).
+		unscoped := ""
+		if unscopedOnly {
+			unscoped = ` AND task_payload->'observation_scopes' IS NULL`
+		}
+		err := tx.QueryRowContext(ctx,
+			`SELECT operation_id FROM `+quoteIdent(s.schema)+`.async_operations
+			 WHERE bank_id = $1 AND operation_type = $2 AND status = ANY($3::text[])`+unscoped+`
+			 ORDER BY created_at, operation_id
+			 LIMIT 1`,
+			op.BankID, op.OperationType, blockingStatuses).Scan(&existingID)
+		switch {
+		case err == nil:
+			existing, readErr := getOperationTx(ctx, tx, s.schema, existingID)
+			if readErr != nil {
+				return EnqueueResult{}, readErr
+			}
+			return EnqueueResult{Operation: existing, Deduplicated: true}, nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return EnqueueResult{}, err
+		}
+		query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
+			"          (operation_id, bank_id, operation_type, status, error_message, retry_count," +
+			"           result_metadata, task_payload, serialization_key)" +
+			"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)" +
+			"          RETURNING " + qualifiedColumns("")
+		stored, err := scanOperation(tx.QueryRowContext(ctx, query,
+			op.OperationID, op.BankID, op.OperationType, string(op.Status), op.Error,
+			op.RetryCount, metadata, payload, serializationKey))
+		if err != nil {
+			return EnqueueResult{}, err
+		}
+		return EnqueueResult{Operation: stored}, nil
+	})
 }
 
 // getOperationTx reads one operation inside a transaction.

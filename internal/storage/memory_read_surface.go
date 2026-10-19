@@ -112,8 +112,8 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 		if !documentWithinWindow(doc, query) {
 			continue
 		}
-		if term := strings.ToLower(strings.TrimSpace(query.Query)); term != "" &&
-			!strings.Contains(strings.ToLower(doc.ID), term) {
+		if query.Query != "" &&
+			!strings.Contains(strings.ToLower(doc.ID), strings.ToLower(query.Query)) {
 			continue
 		}
 		matched = append(matched, doc)
@@ -123,9 +123,11 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 	start, end := pageBounds(total, query.Offset, query.Limit)
 	page := matched[start:end]
 	// The list carries each document's current unit count, computed from the
-	// units actually stored rather than from a stale counter.
+	// units actually stored rather than from a stale counter, and its metadata
+	// as the same derivation the detail read serves.
 	for i := range page {
 		page[i].MemoryUnitCount = s.countUnitsForDocumentLocked(page[i].BankID, page[i].ID)
+		page[i].Metadata = DocumentMetadata(page[i].RetainParams)
 	}
 	return DocumentPage{Documents: page, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
 }
@@ -170,6 +172,21 @@ func (s *MemoryStore) GetChunk(ctx context.Context, bankID, chunkID string) (Chu
 	defer s.mu.RUnlock()
 	for _, chunk := range s.chunks {
 		if chunk.BankID == bankID && chunk.ChunkID == chunkID {
+			return chunk, nil
+		}
+	}
+	return Chunk{}, ErrChunkNotFound
+}
+
+// FindChunk returns one stored chunk by identifier, wherever it is stored.
+func (s *MemoryStore) FindChunk(ctx context.Context, chunkID string) (Chunk, error) {
+	if err := ctx.Err(); err != nil {
+		return Chunk{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, chunk := range s.chunks {
+		if chunk.ChunkID == chunkID {
 			return chunk, nil
 		}
 	}
@@ -317,6 +334,19 @@ func unitSeenAt(unit MemoryUnit) *time.Time {
 	return unit.EventDate
 }
 
+// UnitSeenAt reports when a memory unit was seen: its occurred start, else when
+// it was mentioned, else its event date. It reports the zero time for a unit
+// that carries no time at all, which a writer reads as "stamp the write time".
+//
+// It is the same time the entity graph's recency is read from, so a pair's
+// last-co-occurrence and the unit that witnessed it agree.
+func UnitSeenAt(unit MemoryUnit) time.Time {
+	if stamp := unitSeenAt(unit); stamp != nil {
+		return *stamp
+	}
+	return time.Time{}
+}
+
 // Graph returns the bank's memory graph for the query's filtered unit set. The
 // filters select the units that become nodes and table rows before the limit is
 // applied.
@@ -348,9 +378,9 @@ func (s *MemoryStore) Graph(ctx context.Context, query GraphQuery) (GraphData, e
 		if query.Type != "" && string(unit.FactType) != query.Type {
 			continue
 		}
-		if term := strings.ToLower(strings.TrimSpace(query.Query)); term != "" &&
-			!strings.Contains(strings.ToLower(unit.Text), term) &&
-			!strings.Contains(strings.ToLower(unit.Context), term) {
+		if query.Query != "" &&
+			!strings.Contains(strings.ToLower(unit.Text), strings.ToLower(query.Query)) &&
+			!strings.Contains(strings.ToLower(unit.Context), strings.ToLower(query.Query)) {
 			continue
 		}
 		if query.DocumentID != "" && !s.unitMatchesSourceFieldLocked(unit, "document_id", query.DocumentID) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,11 @@ func TestDescriptorSurface(t *testing.T) {
 		}
 		if got := rec.Header().Get("Content-Type"); got != tc.contentType {
 			t.Fatalf("GET %s: content type = %q, want %q", tc.path, got, tc.contentType)
+		}
+		// The reference's descriptor routes are plain responses, so they carry
+		// the body length rather than a chunked encoding.
+		if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
+			t.Fatalf("GET %s: content length = %q, body = %d", tc.path, got, rec.Body.Len())
 		}
 		if !strings.Contains(rec.Body.String(), tc.body) {
 			t.Fatalf("GET %s: body does not contain %q", tc.path, tc.body)

@@ -132,14 +132,22 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 		if err != nil {
 			return nil, err
 		}
-		if len(operations) > 0 || len(archived) > 0 {
-			archive.Data = map[string][]map[string]any{}
-			if len(operations) > 0 {
-				archive.Data[hindsightarchive.AsyncOperationsTable] = operations
-			}
-			if len(archived) > 0 {
-				archive.Data[hindsightarchive.InvalidatedMemoryTable] = archived
-			}
+		graphQueue, err := buildGraphMaintenance(ctx, store, bankID)
+		if err != nil {
+			return nil, err
+		}
+		entityQueue, err := buildEntityMaintenance(ctx, store, bankID)
+		if err != nil {
+			return nil, err
+		}
+		// Every data table is carried, empty or not: the reference writes each
+		// one on every whole-bank export, so a bank with no queued maintenance
+		// still emits `data/graph_maintenance_queue.json` as `[]`.
+		archive.Data = map[string][]map[string]any{
+			hindsightarchive.AsyncOperationsTable:        operations,
+			hindsightarchive.GraphMaintenanceQueueTable:  graphQueue,
+			hindsightarchive.EntityMaintenanceQueueTable: entityQueue,
+			hindsightarchive.InvalidatedMemoryTable:      archived,
 		}
 		archive.Manifest.OperationCount = len(operations)
 		archive.Manifest.InvalidatedMemoryCount = len(archived)
@@ -172,6 +180,10 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 			History:    opts.Scope.History,
 		}
 		archive.Manifest.ArchiveType = "bank"
+		// A whole-bank archive's bank/history row files carry each jsonb column
+		// as its JSON text, matching the reference's producer.
+		encoding := hindsightarchive.EncodingSerialized
+		archive.Manifest.BankRowsJSONEncoding = &encoding
 	} else {
 		archive.Manifest.ArchiveType = "documents"
 	}
@@ -185,11 +197,15 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	return archive, nil
 }
 
-// buildOperations reads the bank's finished operations as rows.
+// buildOperations reads the bank's operations log as rows.
 //
-// Only finished ones travel. An operation in flight names work the source
-// instance still owes, and a target that restored it would run work that was
-// never its own — the reference drops them for the same reason.
+// Every row travels, including the ones still in flight: the reference dumps
+// the table with `SELECT *` (`engine/transfer/export.py:431-440`) and defers
+// the choice to the receiving side, which drops the live ones on restore
+// (`engine/transfer/importer.py:775-793`) because a restored `pending` row is
+// work the target's worker would actually run. Filtering here instead would
+// make the archive disagree with the reference's for the same bank, and would
+// hide the fact from anyone comparing the two.
 func buildOperations(ctx context.Context, store storage.Store, bankID string) ([]map[string]any, error) {
 	var out []map[string]any
 	for offset := 0; ; offset += pageSize {
@@ -200,9 +216,6 @@ func buildOperations(ctx context.Context, store storage.Store, bankID string) ([
 			return nil, err
 		}
 		for _, op := range page.Operations {
-			if !op.Status.Terminal() {
-				continue
-			}
 			out = append(out, operationRow(op))
 		}
 		if len(page.Operations) < pageSize {
@@ -211,30 +224,58 @@ func buildOperations(ctx context.Context, store storage.Store, bankID string) ([
 	}
 }
 
-// operationRow renders one operation under the table's column names. The
-// identifier is not carried: the target's own log is about the target, and an
-// id the source minted would only be re-used by accident.
+// operationRow renders one operation under the table's own column names, which
+// is what the reference's `SELECT *` dump produces: an archived row is the row,
+// not a projection of it, so an importer written against the reference reads
+// the same keys.
+//
+// The two jsonb columns travel as JSON text, matching the archive's
+// `bank_rows_json_encoding: "serialized"` -- the reference's asyncpg
+// connection hands back a string for them and the dump keeps it.
 func operationRow(op storage.Operation) map[string]any {
 	row := map[string]any{
+		"operation_id":      op.OperationID,
 		"bank_id":           op.BankID,
 		"operation_type":    op.OperationType,
 		"status":            string(op.Status),
-		"error":             op.Error,
+		"error_message":     errorOrNil(op.Error),
 		"created_at":        timeOrNil(op.CreatedAt),
 		"updated_at":        timeOrNil(op.UpdatedAt),
 		"completed_at":      timeOrNil2(op.CompletedAt),
 		"retry_count":       op.RetryCount,
 		"next_retry_at":     timeOrNil2(op.NextRetryAt),
-		"serialization_key": op.SerializationKey,
-		"is_parent":         op.IsParent,
+		"serialization_key": nullableString(op.SerializationKey),
+		"worker_id":         nullableString(op.WorkerID),
+		"claimed_at":        timeOrNil2(op.ClaimedAt),
 	}
-	if len(op.Payload) > 0 {
-		row["payload"] = op.Payload
+	if op.Payload != nil {
+		row["task_payload"] = jsonText(op.Payload)
+	} else {
+		row["task_payload"] = nil
 	}
-	if len(op.ResultMetadata) > 0 {
-		row["result_metadata"] = op.ResultMetadata
+	if op.ResultMetadata != nil {
+		row["result_metadata"] = jsonText(op.ResultMetadata)
+	} else {
+		row["result_metadata"] = jsonText(nil)
 	}
 	return row
+}
+
+// nullableString renders an empty string as the NULL the column holds, which is
+// how the reference's dump distinguishes "no value" from the empty string.
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+// errorOrNil renders an empty error column as NULL rather than "".
+func errorOrNil(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // buildInvalidatedMemories reads the bank's curation archive, when the backend
@@ -246,6 +287,62 @@ func buildInvalidatedMemories(ctx context.Context, store storage.Store, bankID s
 		return nil, nil
 	}
 	return archived.ListArchivedMemories(ctx, bankID)
+}
+
+// maintenanceQueueStore is the backend capability the transfer uses to carry the
+// two maintenance work queues. A backend that does not implement it exports
+// without them (empty segments) and imports none, which is what a store with no
+// such queue has to offer.
+type maintenanceQueueStore interface {
+	ExportGraphMaintenance(ctx context.Context, bankID string) ([]storage.MaintenanceQueueRow, error)
+	ImportGraphMaintenance(ctx context.Context, bankID string, rows []storage.MaintenanceQueueRow) (int, error)
+	ExportEntityMaintenance(ctx context.Context, bankID string) ([]storage.MaintenanceQueueRow, error)
+	ImportEntityMaintenance(ctx context.Context, bankID string, rows []storage.MaintenanceQueueRow) (int, error)
+}
+
+// buildGraphMaintenance reads the bank's queued graph-relink targets as archive
+// rows, so the target can re-point each onto its own unit.
+func buildGraphMaintenance(ctx context.Context, store storage.Store, bankID string) ([]map[string]any, error) {
+	queues, ok := store.(maintenanceQueueStore)
+	if !ok {
+		return nil, nil
+	}
+	rows, err := queues.ExportGraphMaintenance(ctx, bankID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"bank_id":     bankID,
+			"unit_id":     row.ID,
+			"enqueued_at": timeOrNil(row.EnqueuedAt),
+		})
+	}
+	return out, nil
+}
+
+// buildEntityMaintenance reads the bank's queued entity-prune targets as archive
+// rows. Each rides by its canonical name, because the target re-resolves the
+// entity against its own rows rather than reusing the source's id.
+func buildEntityMaintenance(ctx context.Context, store storage.Store, bankID string) ([]map[string]any, error) {
+	queues, ok := store.(maintenanceQueueStore)
+	if !ok {
+		return nil, nil
+	}
+	rows, err := queues.ExportEntityMaintenance(ctx, bankID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"bank_id":        bankID,
+			"canonical_name": row.CanonicalName,
+			"enqueued_at":    timeOrNil(row.EnqueuedAt),
+		})
+	}
+	return out, nil
 }
 
 // buildMentalModelHistory reads the refresh log of every mental model the
@@ -699,7 +796,22 @@ func buildBankConfig(ctx context.Context, store storage.Store, bankID string) ([
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	banks := []map[string]any{bankRow(bank)}
+	row := bankRow(bank)
+	// The reference dumps the bank row with every column, so the archive also
+	// names the internal identity and the two lifecycle timestamps the Bank
+	// projection does not hold.
+	if source, ok := store.(storage.BankLifecycleSource); ok {
+		life, err := source.BankLifecycle(ctx, bankID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if life.InternalID != "" {
+			row["internal_id"] = life.InternalID
+		}
+		row["last_consolidated_at"] = timeOrNil2(life.LastConsolidatedAt)
+		row["mission_changed_at"] = timeOrNil2(life.MissionChangedAt)
+	}
+	banks := []map[string]any{row}
 
 	directives, err := store.ListDirectives(ctx, bankID)
 	if err != nil {
@@ -793,18 +905,33 @@ func webhookRow(webhook storage.Webhook) map[string]any {
 // absent: they are routing identity, and carrying them would make the copy
 // claim the source's ids.
 func bankRow(bank storage.Bank) map[string]any {
-	row := map[string]any{
+	// The two jsonb columns travel as their JSON text, which is how the
+	// reference's producer writes every jsonb column of a bank/history row (its
+	// manifest declares bank_rows_json_encoding: "serialized"). config is
+	// always present, as an empty object when the bank overrides nothing.
+	return map[string]any{
 		"bank_id":     bank.BankID,
 		"name":        bank.Name,
-		"disposition": dispositionJSON(bank.Disposition),
+		"disposition": jsonText(dispositionJSON(bank.Disposition)),
 		"mission":     bank.Mission,
 		"created_at":  timeOrNil(bank.CreatedAt),
 		"updated_at":  timeOrNil(bank.UpdatedAt),
+		"config":      jsonText(bank.Config),
 	}
-	if len(bank.Config) > 0 {
-		row["config"] = bank.Config
+}
+
+// jsonText renders a jsonb column's value as the JSON text the reference's
+// connection returns for it. An absent or unencodable value becomes an empty
+// object, which is the column's not-null shape.
+func jsonText(value any) string {
+	if value == nil {
+		return "{}"
 	}
-	return row
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 // dispositionJSON renders the bank's graded traits as the object the archive

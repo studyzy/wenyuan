@@ -135,7 +135,9 @@ func (s *MemoryStore) ListMemories(ctx context.Context, query MemoryQuery) (Memo
 		if query.Type != "" && string(unit.FactType) != query.Type {
 			continue
 		}
-		if term := strings.ToLower(strings.TrimSpace(query.Q)); term != "" &&
+		// The search term is taken as given, like the reference's ILIKE pattern:
+		// only "" means no search, and a term nothing contains matches nothing.
+		if term := strings.ToLower(query.Q); term != "" &&
 			!strings.Contains(strings.ToLower(unit.Text), term) &&
 			!strings.Contains(strings.ToLower(unit.Context), term) {
 			continue
@@ -222,6 +224,37 @@ func (s *MemoryStore) ListMemories(ctx context.Context, query MemoryQuery) (Memo
 	start, end := pageBounds(total, query.Offset, query.Limit)
 	return MemoryPage{Memories: matched[start:end], Total: total,
 		Limit: query.Limit, Offset: query.Offset}, nil
+}
+
+// DirectUnitEntityNames returns the entities each unit mentions through its own
+// postings, keyed by unit id. It is the listing's read: the listing does not
+// inherit an observation's source memories' entities the way the detail read
+// does, matching the reference's list query, which joins unit_entities alone.
+// Units with no postings are absent from the map rather than mapped to an empty
+// slice.
+func (s *MemoryStore) DirectUnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	byUnit := make(map[string][]string, len(unitIDs))
+	for _, unitID := range unitIDs {
+		unit, ok := s.units[unitID]
+		if !ok {
+			unit, ok = s.invalidated[unitID]
+		}
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		if names := s.entityNamesForUnitLocked(unitID); len(names) > 0 {
+			byUnit[unitID] = names
+		}
+	}
+	return byUnit, nil
 }
 
 // MemoryAttachments returns each unit's attachments, keyed by unit id, for the
@@ -632,6 +665,14 @@ func (s *MemoryStore) setUnitEntitiesLocked(bankID, unitID string, names []strin
 		s.incrementEntityMentionLocked(entityID, now)
 	}
 	s.unitEntities[unitID] = wanted
+	// The set the unit now names witnesses its pairs, which is what the
+	// reference records when an edit re-links the unit. It counts the surviving
+	// links too, because the reference re-links the whole resolved set rather
+	// than only the additions; a pair no unit witnesses any more is left to the
+	// entity prune.
+	if len(wanted) > 1 {
+		s.upsertUnitCooccurrencesLocked(bankID, wanted)
+	}
 }
 
 // applyDatePatch applies a date/context patch: an absent value leaves the
@@ -929,12 +970,17 @@ func (s *MemoryStore) EnqueueConsolidation(ctx context.Context, bankID string, o
 		return Operation{}, false, s.writeErr
 	}
 	if len(observationScopes) == 0 {
-		// A second consolidation for the same bank while one is outstanding
-		// would do the same work twice, so the request is deduplicated.
-		for _, op := range s.operations {
-			if op.BankID == bankID && op.OperationType == OperationTypeConsolidate && !op.Status.Terminal() {
-				return op, true, nil
-			}
+		// A second full-bank consolidation for the same bank while one is
+		// outstanding would do the same work twice, so the request is
+		// deduplicated — but only against an outstanding *unscoped* pass. A
+		// scoped pass covers its own tag subset and must not swallow a full-bank
+		// sweep (engine/memory_engine.py:22207-22211, "Dedup only against an
+		// existing unscoped (full-bank) pending op"). Scanning a map makes the
+		// choice order-dependent where a scoped and an unscoped pass are both
+		// outstanding, so the test below isolates the unscoped ones rather than
+		// taking whichever the map yields first.
+		if op, ok := s.outstandingFullBankConsolidation(bankID); ok {
+			return op, true, nil
 		}
 	}
 	now := time.Now().UTC()
@@ -946,8 +992,26 @@ func (s *MemoryStore) EnqueueConsolidation(ctx context.Context, bankID string, o
 	if len(observationScopes) > 0 {
 		op.Payload = map[string]any{"observation_scopes": observationScopes}
 	}
+	op.Payload = executablePayload(op.Payload)
 	s.operations[op.OperationID] = op
 	return op, false, nil
+}
+
+// outstandingFullBankConsolidation returns a pending or running bank-wide
+// consolidation for the bank. A pass that carries observation scopes is skipped:
+// it covers only its own tag subset, so folding a full-bank sweep into it would
+// silently narrow the sweep.
+func (s *MemoryStore) outstandingFullBankConsolidation(bankID string) (Operation, bool) {
+	for _, op := range s.operations {
+		if op.BankID != bankID || op.OperationType != OperationTypeConsolidate || op.Status.Terminal() {
+			continue
+		}
+		if scopes, scoped := op.Payload["observation_scopes"]; scoped && scopes != nil {
+			continue
+		}
+		return op, true
+	}
+	return Operation{}, false
 }
 
 // EnqueueGraphMaintenance records a graph-maintenance pass for a bank, reusing
@@ -973,13 +1037,16 @@ func (s *MemoryStore) EnqueueGraphMaintenance(ctx context.Context, bankID string
 		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
 		SerializationKey: GraphMaintenanceSerializationKey(bankID),
 	}
+	op.Payload = executablePayload(op.Payload)
 	s.operations[op.OperationID] = op
 	return op, false, nil
 }
 
 // RecoverConsolidations returns a bank's permanently-failed sources to the
-// not-yet-consolidated state and reports how many, then queues a pass so the
-// recovery does not wait for the next sweep.
+// not-yet-consolidated state and reports how many. Only source facts
+// (world/experience) are eligible, and no pass is queued: the reference's retry
+// runs the requeue UPDATE and returns the count, leaving the next consolidation
+// to pick the sources up.
 func (s *MemoryStore) RecoverConsolidations(ctx context.Context, bankID string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -995,6 +1062,9 @@ func (s *MemoryStore) RecoverConsolidations(ctx context.Context, bankID string) 
 			if unit.BankID != bankID || unit.ConsolidationFailedAt == nil {
 				continue
 			}
+			if unit.FactType != TypeWorld && unit.FactType != TypeExperience {
+				continue
+			}
 			unit.ConsolidationFailedAt = nil
 			unit.ConsolidatedAt = nil
 			s.units[id] = unit
@@ -1002,12 +1072,6 @@ func (s *MemoryStore) RecoverConsolidations(ctx context.Context, bankID string) 
 			retried++
 		}
 	}()
-	if retried == 0 {
-		return 0, nil
-	}
-	if _, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
-		return retried, err
-	}
 	return retried, nil
 }
 

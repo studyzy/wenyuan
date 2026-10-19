@@ -121,17 +121,12 @@ func parseToolTemporalWindow(request *memoryops.TemporalWindowRequest) (*storage
 	if request == nil {
 		return nil, nil
 	}
-	if strings.TrimSpace(request.Start) == "" || strings.TrimSpace(request.End) == "" {
+	// The window model parses its own bounds (and records a rejected one as an
+	// item), so an incomplete window is the one whose bounds did not parse.
+	if request.Start.IsZero() || request.End.IsZero() {
 		return nil, errors.New("incomplete window")
 	}
-	start, err := parseToolISODate(request.Start)
-	if err != nil {
-		return nil, err
-	}
-	end, err := parseToolISODate(request.End)
-	if err != nil {
-		return nil, err
-	}
+	start, end := request.Start, request.End
 	if end.Before(start) {
 		return nil, errors.New("inverted window")
 	}

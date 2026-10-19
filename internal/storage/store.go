@@ -48,6 +48,14 @@ var ErrOperationNotFound = errors.New("operation not found")
 // are removable.
 var ErrOperationNotTerminal = errors.New("operation is not in a terminal state")
 
+// ErrBatchParentNoWork is returned when a retry targets a batch_retain parent
+// whose sub-batches can no longer be re-run — every child has completed, or it
+// has none. The parent is a payload-less status aggregator, so there is nothing
+// to re-queue, and reviving it alone would strand it pending with no child left
+// to promote it. The reference reports this as its own 409 with a message that
+// points the caller at resubmitting the source documents.
+var ErrBatchParentNoWork = errors.New("batch parent has no incomplete sub-batches to retry")
+
 // ErrOperationAborted is returned by long-running work when the operation it is
 // running stops existing — its bank was deleted — or was cancelled. It is the
 // signal that the work must end without settling the operation: there is no row
@@ -236,6 +244,18 @@ type Store interface {
 	// The reference orders the pair by identifier, so the caller supplies the
 	// lower identifier first.
 	UpsertEntityCooccurrence(ctx context.Context, bankID, entityID1, entityID2 string) error
+	// UpsertUnitCooccurrences records one co-occurrence for every unordered pair
+	// of the entities one memory unit mentions, which is the shape the entity
+	// graph reads and the resolution weighting counts. Pairing is per unit, so
+	// two entities a unit does not both mention are not neighbours; the caller
+	// passes the unit's entities already de-duplicated by identity, so a unit
+	// that names one entity twice counts its pairs once.
+	//
+	// seenAt is when the unit was seen, not when the row is written: a pair's
+	// last-co-occurrence is that time, so a corpus written in one session — an
+	// import, for instance — keeps its own timeline instead of collapsing onto
+	// the write moment. A zero time stamps the write time instead.
+	UpsertUnitCooccurrences(ctx context.Context, bankID string, entityIDs []string, seenAt time.Time) error
 	// UpsertLink persists one directed memory link.
 	UpsertLink(ctx context.Context, link MemoryLink) error
 
@@ -260,6 +280,11 @@ type Store interface {
 	// deciding to spend a model call. A model whose scope has not moved is up to
 	// date even if its clock is old.
 	IsStale(ctx context.Context, bankID string, model MentalModel) bool
+	// IsStaleBatch answers the same scope question for a listing, without the
+	// retraction check: a caller reading many models at once must not pay a
+	// grounding lookup per model, and the refresh that a retraction calls for
+	// is scheduled by the single-model path anyway.
+	IsStaleBatch(ctx context.Context, bankID string, model MentalModel) bool
 	// BankConfig returns a bank's configuration overrides, read fresh rather
 	// than through the process-local bank cache. A configuration change made by
 	// another server must take effect on the next request, so the paths that
@@ -281,6 +306,12 @@ type Store interface {
 
 	// PutOperation records an asynchronous operation in its initial state.
 	PutOperation(ctx context.Context, op Operation) (Operation, error)
+	// RestoreOperation records an operation keeping the timestamps it carries,
+	// for an import replaying history: the reference's importer inserts the
+	// exported row column for column (api/http.py transfer import), so a
+	// restored operation keeps when it was created, not when it was restored.
+	// PutOperation is the wrong tool there because it stamps the current time.
+	RestoreOperation(ctx context.Context, op Operation) (Operation, error)
 	// EnqueueOperation records a background operation, refusing to duplicate
 	// work already queued or running for the same subject. It is separate from
 	// PutOperation because the two are idempotent on different things: an
@@ -376,6 +407,12 @@ type Store interface {
 	PutKnowledgeNode(ctx context.Context, node KnowledgeNode) (KnowledgeNode, error)
 	// UpdateKnowledgeNode applies a partial update.
 	UpdateKnowledgeNode(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch) (KnowledgeNode, error)
+	// UpdateKnowledgeNodeWithModel applies a node patch and a patch to the model
+	// backing it in one transaction, so a patch that reaches both rows commits as
+	// a unit: a rename cannot survive the option update that failed after it, and
+	// no reader sees the pair disagree. modelPatch is nil for a patch that touches
+	// no page option.
+	UpdateKnowledgeNodeWithModel(ctx context.Context, bankID, nodeID string, patch KnowledgeNodePatch, modelPatch *MentalModelPatch) (KnowledgeNode, error)
 	// DeleteKnowledgeNode removes a node and its descendants.
 	DeleteKnowledgeNode(ctx context.Context, bankID, nodeID string) error
 	// SearchKnowledgeNodes searches a bank's pages by a hybrid of the text
@@ -452,6 +489,26 @@ type Store interface {
 	ListChunks(ctx context.Context, query ChunkQuery) (ChunkPage, error)
 	// GetChunk returns one stored chunk by identifier.
 	GetChunk(ctx context.Context, bankID, chunkID string) (Chunk, error)
+	// FindChunk returns one stored chunk by identifier alone, wherever it is
+	// stored. A chunk identifier is the chunks table's key and embeds the bank
+	// and document it was derived from, so the owner is resolved from the
+	// chunk rather than supplied by the caller — the addressed chunk route
+	// carries no bank in its path. It returns ErrChunkNotFound when no bank
+	// holds that identifier.
+	FindChunk(ctx context.Context, chunkID string) (Chunk, error)
+	// PutDocumentChunks upserts one document's chunks and reports the chunk
+	// identifier each index resolves to, which is what a fact's chunk reference
+	// and the addressed chunk route both address.
+	//
+	// The identities are derived from the (bank, document, index) triple, so a
+	// replay of the same document overwrites its own rows rather than
+	// duplicating them, and a row that belongs to another bank is refused
+	// instead of being overwritten.
+	//
+	// storeText keeps the chunk text itself: a deployment that does not keep
+	// source text stores an empty text and still records the content hash, so a
+	// delta retain recognises a chunk whose text it does not hold.
+	PutDocumentChunks(ctx context.Context, bankID, documentID string, chunks []DocumentChunk, storeText bool) (map[int]string, error)
 	// ListTags returns the bank's tags with their usage counts.
 	ListTags(ctx context.Context, bankID string) ([]TagCount, error)
 	// ListEntities returns one page of a bank's entities plus the total.
@@ -600,6 +657,12 @@ type BackendConfig struct {
 	// pg_search.
 	PGFunctionSchema string
 	PGTokenizer      string
+	// TextSearchNativeLanguage is the tsvector dictionary the native backend
+	// tokenizes with (the reference's
+	// HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE). It is embedded in the
+	// stored search_vector expression and in every keyword query, so it is a
+	// deployment-level choice. Empty means the reference's default, "english".
+	TextSearchNativeLanguage string
 	// MaxOpenConns and MaxIdleConns bound the connection pool. Zero leaves the
 	// driver's own default, which is unbounded for open connections.
 	MaxOpenConns int

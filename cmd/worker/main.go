@@ -118,7 +118,7 @@ func run(args []string) error {
 			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
 	}
 
-	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg)).
+	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg), !cfg.StoreDocumentText).
 		WithAuditor(app.NewAuditLogger(cfg, store))
 	startWorkerHTTP(ctx, cfg, store, consumer)
 	return runBoth(ctx, consumer, loop)
@@ -128,6 +128,19 @@ func run(args []string) error {
 type workerPinger struct{ store storage.Store }
 
 func (p workerPinger) Ping(r *http.Request) error { return p.store.Ready(r.Context()) }
+
+// PoolWaiting forwards the store's pooled-acquire waiter count, so the
+// worker's readiness payload carries db_pool_waiting exactly as the API's does
+// — both read the same pool instrumentation in the reference.
+func (p workerPinger) PoolWaiting() (int, bool) {
+	reporter, ok := p.store.(interface {
+		PoolWaiting() (int, bool)
+	})
+	if !ok {
+		return 0, false
+	}
+	return reporter.PoolWaiting()
+}
 
 // startWorkerHTTP serves the worker's HTTP surface on its own port: the root
 // info endpoint, the health probes, and the metrics exposition. An orchestrator

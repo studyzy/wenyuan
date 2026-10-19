@@ -107,7 +107,8 @@ func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx
 	if !present || len(values) == 0 {
 		return 0, false, nil
 	}
-	raw := values[0]
+	// The reference binds the LAST occurrence of a repeated scalar parameter.
+	raw := values[len(values)-1]
 	// The reference reports the raw string the client sent, not the coerced int.
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {

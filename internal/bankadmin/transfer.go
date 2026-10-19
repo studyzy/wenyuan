@@ -56,6 +56,11 @@ type ImportBankFlags struct {
 	Archive        string
 	TargetBank     string
 	IncludeHistory bool
+	// DiscardDocumentText is resolved by the caller from the deployment
+	// configuration, not parsed from the command line: the reference's import
+	// reads its process-level store_document_text setting for the chunk text it
+	// replays. The zero value keeps the text.
+	DiscardDocumentText bool
 }
 
 // ParseImportBank parses `import-bank --archive FILE [--target-bank ID] [--include-history]`.
@@ -126,7 +131,7 @@ func RunImportBank(ctx context.Context, store storage.Store, embeddings storage.
 	if err != nil {
 		return transfer.ImportReport{}, err
 	}
-	report, err := transfer.ImportApplier{Store: store, Embeddings: embeddings}.Apply(ctx, transfer.ImportRequest{
+	report, err := transfer.ImportApplier{Store: store, Embeddings: embeddings, DiscardDocumentText: flags.DiscardDocumentText}.Apply(ctx, transfer.ImportRequest{
 		Archive:      archive,
 		BankID:       archive.Manifest.SourceBankID,
 		TargetBankID: flags.TargetBank,

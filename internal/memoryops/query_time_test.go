@@ -326,9 +326,7 @@ func TestChineseLongerDayWordWins(t *testing.T) {
 // An explicit caller window must survive a temporal phrase in the question, so
 // the caller's stated range is authoritative.
 func TestExplicitWindowBeatsQueryText(t *testing.T) {
-	explicit, err := parseTemporalWindow(&TemporalWindowRequest{
-		Start: "2020-01-01T00:00:00Z", End: "2020-01-31T00:00:00Z",
-	})
+	explicit, err := parseTemporalWindow(windowFromJSON(t, `{"start":"2020-01-01T00:00:00Z","end":"2020-01-31T00:00:00Z"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

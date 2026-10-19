@@ -3,9 +3,11 @@ package memoryops
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -13,6 +15,24 @@ import (
 // boolean-node object form and the legacy list-of-tag-lists form.
 type TagGroupsField struct {
 	Groups []TagGroupRequest
+
+	// Present records whether the body stated the field at all (an explicit null
+	// counts as omitting it, as the reference's default-as-None field means).
+	Present bool
+
+	// singleObject records that the body stated the field as one object rather
+	// than a list: recall also reads that shape, while reflect's field is
+	// `list[TagGroup]` alone and reports it as a list-type failure. rawInput is
+	// the value the failure names.
+	singleObject bool
+	rawInput     any
+
+	// failures holds the items the reference's discriminated union reports for a
+	// group that matched none of its four branches (`TagGroupLeaf`, `…And`,
+	// `…Or`, `…Not`). They are field-level items at the group's own path, so they
+	// are reported before any body-level check — which is the order the framework
+	// walks a request in.
+	failures []httpx.ValidationError
 }
 
 // UnmarshalJSON accepts either an object, a single group, a list of groups or a
@@ -21,27 +41,33 @@ func (f *TagGroupsField) UnmarshalJSON(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "null" {
 		f.Groups = nil
+		f.Present = false
 		return nil
 	}
+	f.Present = true
 	// A list-of-lists or list-of-objects form.
 	if strings.HasPrefix(trimmed, "[") {
 		var rawItems []json.RawMessage
 		if err := json.Unmarshal(data, &rawItems); err != nil {
 			return err
 		}
-		for _, item := range rawItems {
+		for index, item := range rawItems {
 			group, err := decodeTagGroup(item)
 			if err != nil {
-				return err
+				f.failures = append(f.failures, tagGroupUnionItems(index, item)...)
+				continue
 			}
 			f.Groups = append(f.Groups, group)
 		}
 		return nil
 	}
 	// A single object form.
+	f.singleObject = true
+	_ = json.Unmarshal(data, &f.rawInput)
 	group, err := decodeTagGroup(data)
 	if err != nil {
-		return err
+		f.failures = append(f.failures, tagGroupUnionItems(0, data)...)
+		return nil
 	}
 	f.Groups = []TagGroupRequest{group}
 	return nil
@@ -94,14 +120,10 @@ func (c *TagGroupChildren) UnmarshalJSON(data []byte) error {
 func decodeTagGroup(item json.RawMessage) (TagGroupRequest, error) {
 	trimmed := strings.TrimSpace(string(item))
 	if strings.HasPrefix(trimmed, "[") {
-		var tags []string
-		if err := json.Unmarshal(item, &tags); err != nil {
-			return TagGroupRequest{}, ErrMalformedTagGroup
-		}
-		if len(tags) == 0 {
-			return TagGroupRequest{}, ErrMalformedTagGroup
-		}
-		return TagGroupRequest{Tags: tags}, nil
+		// The reference's union has no list branch: a group is a leaf object
+		// (`{tags, match, resolve}`) or a compound one, so a bare tag list is a
+		// decode failure reported at each branch, not a shorthand.
+		return TagGroupRequest{}, ErrMalformedTagGroup
 	}
 	var group TagGroupRequest
 	if err := json.Unmarshal(item, &group); err != nil {
@@ -113,10 +135,13 @@ func decodeTagGroup(item json.RawMessage) (TagGroupRequest, error) {
 	return group, nil
 }
 
-// constrains reports whether a tag-group node actually filters anything: a leaf
-// names tags, and a compound node names at least one child.
+// constrains reports whether a tag-group node is one of the reference's union
+// branches: the leaf's required `tags` (a bare `tag` is not a member the union
+// reads, so a group carrying only it matches no branch), or one of the compound
+// members. A node that is none of them would silently widen a filter, which is
+// the one direction a filter must never fail in.
 func (g TagGroupRequest) constrains() bool {
-	if strings.TrimSpace(g.Tag) != "" || len(g.Tags) > 0 {
+	if len(g.Tags) > 0 {
 		return true
 	}
 	return len(g.And) > 0 || len(g.Or) > 0 || len(g.Not) > 0
@@ -174,29 +199,20 @@ var ErrUnknownTemporalWindow = errors.New("invalid temporal window bound")
 // no tags, or an object with none of the boolean keys.
 var ErrMalformedTagGroup = errors.New("each tag group must be a non-empty list of tags or an object with and/or/not")
 
-// parseTemporalWindow parses the request window into the storage shape. A bound
-// that is present but malformed is a bad request; an empty window is ignored.
+// parseTemporalWindow renders the request window into the storage shape. A bound
+// the request could not parse never reaches here: the decode records it as a
+// field-level validation item, which is how the reference reports each bound of
+// a window at its own path. An unparseable window is ignored.
 func parseTemporalWindow(req *TemporalWindowRequest) (*storage.TemporalWindow, error) {
-	if req == nil {
+	if req == nil || len(req.fields.items) > 0 {
 		return nil, nil
 	}
 	// Both bounds are required and the range must be ordered, so an inverted or
-	// half-open window is rejected rather than silently matching nothing.
-	if strings.TrimSpace(req.Start) == "" || strings.TrimSpace(req.End) == "" {
+	// half-open window is rejected before the query is built.
+	if req.fields.inverted {
 		return nil, ErrUnknownTemporalWindow
 	}
-	start, err := parseISODate(req.Start)
-	if err != nil {
-		return nil, ErrUnknownTemporalWindow
-	}
-	end, err := parseISODate(req.End)
-	if err != nil {
-		return nil, ErrUnknownTemporalWindow
-	}
-	if end.Before(start) {
-		return nil, ErrUnknownTemporalWindow
-	}
-	return &storage.TemporalWindow{Start: start, End: end, HasStart: true, HasEnd: true}, nil
+	return &storage.TemporalWindow{Start: req.Start, End: req.End, HasStart: true, HasEnd: true}, nil
 }
 
 // parseISODate parses an ISO-8601 timestamp, reading a naive value as UTC.
@@ -214,4 +230,34 @@ func parseISODate(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, errors.New("not an ISO date")
+}
+
+// tagGroupUnionMember names one branch of the reference's discriminated union,
+// in the order it tries them, with the member each branch requires.
+var tagGroupUnionBranches = []struct{ name, member string }{
+	{"TagGroupLeaf", "tags"},
+	{"TagGroupAnd", "and"},
+	{"TagGroupOr", "or"},
+	{"TagGroupNot", "not"},
+}
+
+// tagGroupUnionItems builds the items the reference's union reports for a group
+// that matched none of its branches: a list-valued group cannot be read as any
+// branch's object, and an object is reported as missing each branch's own
+// required member.
+func tagGroupUnionItems(index int, raw json.RawMessage) []httpx.ValidationError {
+	var input any
+	_ = json.Unmarshal(raw, &input)
+	trimmed := strings.TrimSpace(string(raw))
+	items := make([]httpx.ValidationError, 0, len(tagGroupUnionBranches))
+	for _, branch := range tagGroupUnionBranches {
+		loc := []string{"body", "tag_groups", strconv.Itoa(index), branch.name}
+		if !strings.HasPrefix(trimmed, "{") {
+			items = append(items, httpx.ValidationItem("model_attributes_type", loc,
+				includeShapeMessage, input, nil))
+			continue
+		}
+		items = append(items, httpx.Missing(append(loc, branch.member), input))
+	}
+	return items
 }

@@ -1,6 +1,7 @@
 package bankapi
 
 import (
+	"errors"
 	"net/http"
 	"unicode/utf8"
 
@@ -40,14 +41,61 @@ func writeIdentifierError(w http.ResponseWriter, r *http.Request, id string) boo
 	return true
 }
 
-// ValidateCreate checks the create-or-replace body.
-func ValidateCreate(req BankRequest) *httpx.ValidationFailure {
-	return failureOrNil(traitErrors(req))
+// carriesValidationItems reports whether a decode failure already names the
+// body's own validation items, which the handler completes into its own list
+// rather than answering on its own.
+func carriesValidationItems(err error) bool {
+	var pending *BodyNeedsValidation
+	return errors.As(err, &pending)
 }
 
-// ValidatePatch checks the partial-update body.
-func ValidatePatch(req BankRequest) *httpx.ValidationFailure {
-	return failureOrNil(traitErrors(req))
+// ValidateCreate checks the create-or-replace body. fieldItems are the body's
+// own type items, reported at the fields they name.
+func ValidateCreate(req BankRequest, fieldItems []httpx.ValidationError) *httpx.ValidationFailure {
+	return failureOrNil(orderedValidationItems(req, fieldItems))
+}
+
+// ValidatePatch checks the partial-update body, the same way.
+func ValidatePatch(req BankRequest, fieldItems []httpx.ValidationError) *httpx.ValidationFailure {
+	return failureOrNil(orderedValidationItems(req, fieldItems))
+}
+
+// orderedValidationItems merges the body's type items with the rules this
+// package applies to the decoded values, in the model's field order — which is
+// the order the reference reports them in, because it validates every field of
+// its model (types and bounds together) before it runs a field validator.
+//
+// The rules are collected per declared field: the disposition object carries
+// its members' rules, each flat trait carries its own, and a type failure for
+// the member that field decodes from sits ahead of that field's rules. A rule
+// item whose field carries a type item is dropped, because the model never
+// reached that field: its value was never decoded, so no bound can be checked
+// against it.
+func orderedValidationItems(req BankRequest, fieldItems []httpx.ValidationError) []httpx.ValidationError {
+	rules := map[string][]httpx.ValidationError{}
+	for _, item := range traitErrors(req) {
+		field := "disposition"
+		if len(item.Loc) == 2 {
+			field = item.Loc[1]
+		}
+		rules[field] = append(rules[field], item)
+	}
+	types := map[string][]httpx.ValidationError{}
+	for _, item := range fieldItems {
+		if len(item.Loc) < 2 {
+			continue
+		}
+		types[item.Loc[1]] = append(types[item.Loc[1]], item)
+	}
+	var items []httpx.ValidationError
+	for _, field := range bankRequestFields() {
+		if typed := types[field]; len(typed) > 0 {
+			items = append(items, typed...)
+			continue
+		}
+		items = append(items, rules[field]...)
+	}
+	return items
 }
 
 // traitErrors reports out-of-range bounded disposition traits and incomplete
@@ -57,11 +105,12 @@ func ValidatePatch(req BankRequest) *httpx.ValidationFailure {
 // flat fields are: an out-of-range member of the `disposition` object is
 // rejected even when a flat `disposition_<trait>` field for the same trait
 // would win the storage precedence, and its item names the member's own path
-// (["body","disposition","skepticism"]). The object's missing members are
-// reported first, since the model declares it before the flat fields.
+// (["body","disposition","skepticism"]). The object is declared before the flat
+// fields, and its members are reported in their own declaration order, each at
+// the position it holds — the order the reference's single validation pass
+// produces.
 func traitErrors(req BankRequest) []httpx.ValidationError {
 	var items []httpx.ValidationError
-	items = append(items, missingTraitErrors(req)...)
 	if req.Disposition != nil {
 		for _, member := range []struct {
 			name  string
@@ -71,36 +120,17 @@ func traitErrors(req BankRequest) []httpx.ValidationError {
 			{"literalism", req.Disposition.Literalism},
 			{"empathy", req.Disposition.Empathy},
 		} {
-			items = append(items, traitError([]string{"body", "disposition", member.name}, member.value)...)
+			loc := []string{"body", "disposition", member.name}
+			if member.value == nil {
+				items = append(items, httpx.Missing(loc, dispositionInput(req.Disposition)))
+				continue
+			}
+			items = append(items, traitError(loc, member.value)...)
 		}
 	}
 	items = append(items, traitError([]string{"body", "disposition_skepticism"}, req.DispositionSkepticism)...)
 	items = append(items, traitError([]string{"body", "disposition_literalism"}, req.DispositionLiteralism)...)
 	items = append(items, traitError([]string{"body", "disposition_empathy"}, req.DispositionEmpathy)...)
-	return items
-}
-
-// missingTraitErrors reports the members a supplied disposition object left
-// out. Each is reported at the member's own path, as the reference does.
-func missingTraitErrors(req BankRequest) []httpx.ValidationError {
-	if req.Disposition == nil {
-		return nil
-	}
-	members := []struct {
-		name  string
-		value *int
-	}{
-		{"skepticism", req.Disposition.Skepticism},
-		{"literalism", req.Disposition.Literalism},
-		{"empathy", req.Disposition.Empathy},
-	}
-	var items []httpx.ValidationError
-	for _, member := range members {
-		if member.value != nil {
-			continue
-		}
-		items = append(items, httpx.Missing([]string{"body", "disposition", member.name}, dispositionInput(req.Disposition)))
-	}
 	return items
 }
 

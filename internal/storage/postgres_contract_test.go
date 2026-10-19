@@ -73,6 +73,25 @@ func TestPostgresContractAliasInsertRace(t *testing.T) {
 	}
 }
 
+// An alias that names an existing bank is refused: the two live in different
+// tables, so the conflict check has to read `banks` rather than rely on a
+// constraint (the reference's INSERT ... WHERE NOT EXISTS does the same).
+func TestPostgresContractAliasMatchesExistingBank(t *testing.T) {
+	store := postgresVectorStore(t)
+	ctx := context.Background()
+
+	if _, err := store.CreateBank(ctx, Bank{BankID: "vec-bank-2", Name: "two"}); err != nil {
+		t.Fatalf("create second bank: %v", err)
+	}
+	if _, err := store.AddAlias(ctx, "vec-bank", "vec-bank-2", false); !errors.Is(err, ErrAliasConflict) {
+		t.Fatalf("alias naming an existing bank = %v, want ErrAliasConflict", err)
+	}
+	// The bank keeps its own identity: the refused alias did not create a row.
+	if resolved, err := store.ResolveBankID(ctx, "vec-bank-2"); err != nil || resolved != "vec-bank-2" {
+		t.Fatalf("resolve = %q (err %v), want the bank's own id", resolved, err)
+	}
+}
+
 // The directive tags are stored byte-for-byte: the reference writes the
 // caller's list straight into the text[] column, with no trimming or dropping.
 func TestPostgresContractDirectiveTagsVerbatim(t *testing.T) {

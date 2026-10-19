@@ -110,12 +110,13 @@ func TestDeterministicFallbackInfersDates(t *testing.T) {
 }
 
 // The model path fills a missing date from the fact's own text, but never
-// overrides an explicit one.
+// overrides an explicit one. Both facts are events, which is the only kind the
+// pipeline keeps an occurred date for.
 func TestModelPathInfersMissingDateOnly(t *testing.T) {
 	ref := time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)
 	structured := map[string]any{"facts": []any{
-		map[string]any{"text": "The summit happened in March 2026."},
-		map[string]any{"text": "An explicit fact.", "occurred_start": "2020-01-02T00:00:00Z"},
+		map[string]any{"text": "The summit happened in March 2026.", "fact_kind": "event"},
+		map[string]any{"text": "An explicit fact.", "fact_kind": "event", "occurred_start": "2020-01-02T00:00:00Z"},
 	}}
 	stub := &stubProvider{name: "openai", structured: structured}
 	result, err := New(stub).ExtractWith(context.Background(), "text", Options{ReferenceTime: ref})
@@ -143,5 +144,45 @@ func TestNoReferenceDisablesInference(t *testing.T) {
 	}
 	if got := result.Facts[0].OccurredStart; got != "" {
 		t.Fatalf("a zero reference must not infer a date, got %q", got)
+	}
+}
+
+// Only an event keeps an occurred date, and a model that named no fact kind is
+// read as the reference reads it: the absent value defaults to "conversation",
+// so its dates are dropped rather than stored.
+func TestOnlyAnEventKeepsOccurredDates(t *testing.T) {
+	structured := map[string]any{"facts": []any{
+		map[string]any{"text": "A conversation fact.", "occurred_start": "2020-01-02T00:00:00Z"},
+		map[string]any{"text": "A classified non-event.", "fact_kind": "conversation", "occurred_start": "2020-01-02T00:00:00Z"},
+		map[string]any{"text": "An event.", "fact_kind": "event", "occurred_start": "2020-01-02T00:00:00Z"},
+	}}
+	stub := &stubProvider{name: "openai", structured: structured}
+	result, err := New(stub).ExtractWith(context.Background(), "text", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []int{0, 1} {
+		if got := result.Facts[index].OccurredStart; got != "" {
+			t.Fatalf("fact %d kept a date it does not own: %q", index, got)
+		}
+	}
+	if got := result.Facts[2].OccurredStart; got != "2020-01-02T00:00:00Z" {
+		t.Fatalf("an event lost its date: %q", got)
+	}
+}
+
+// A point event — a start with no end — ends when it starts, the way the
+// reference fills the missing end.
+func TestEventWithoutEndEndsWhenItStarts(t *testing.T) {
+	structured := map[string]any{"facts": []any{
+		map[string]any{"text": "A point event.", "fact_kind": "event", "occurred_start": "2020-01-02T00:00:00Z"},
+	}}
+	stub := &stubProvider{name: "openai", structured: structured}
+	result, err := New(stub).ExtractWith(context.Background(), "text", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Facts[0].OccurredEnd; got != "2020-01-02T00:00:00Z" {
+		t.Fatalf("occurred_end = %q, want the start", got)
 	}
 }

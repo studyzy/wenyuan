@@ -58,19 +58,37 @@ func index(haystack, needle string) int {
 // The reference keeps this column rather than generating it, so every write
 // that changes a unit's searched text has to set it; a row written without it
 // is invisible to the reference's full-text arm. The value folds the unit's
-// three searched sources under the default text-search language: its text, its
-// context, and its text_signals (entity names and spelled-out event dates).
-// Omitting any of them — and in particular building the vector from `text`
-// alone — leaves a unit invisible to the entity- and date-enriched matches the
-// keyword arm scores, so the published score comes out lower than the
-// reference's.
+// three searched sources under the configured native text-search dictionary
+// (`to_tsvector('<dictionary>', ...)`, the reference's
+// pg_search_vector_expr): its text, its context, and its text_signals (entity
+// names and spelled-out event dates). Omitting any of them — and in particular
+// building the vector from `text` alone — leaves a unit invisible to the
+// entity- and date-enriched matches the keyword arm scores, so the published
+// score comes out lower than the reference's.
+//
+// The dictionary is the deployment's configured one, not a constant: the
+// reference tokenizes each row when it writes it, so the vector a row carries
+// is the one its dictionary produced. Changing the dictionary therefore does
+// not retokenize existing rows — the reference neither rewrites nor reindexes
+// them — and it is the deployment that must reindex if it wants the old rows
+// searchable under the new dictionary.
 //
 // Each argument is the SQL for one source: a bind placeholder ($3), or a column
 // reference for a source the statement does not change. A literal ” leaves the
 // source out, which is what a write that carries no context or signals passes.
-func searchVectorExpr(textParam, contextParam, signalsParam string) string {
-	return "to_tsvector('english', COALESCE(" + textParam + ", '') || ' ' || COALESCE(" +
+func (s *PostgresStore) searchVectorExpr(textParam, contextParam, signalsParam string) string {
+	return "to_tsvector(" + sqlTextLiteral(s.nativeLanguage()) + ", COALESCE(" + textParam + ", '') || ' ' || COALESCE(" +
 		contextParam + ", '') || ' ' || COALESCE(" + signalsParam + ", ''))"
+}
+
+// nativeLanguage is the tsvector dictionary the native backend tokenizes with,
+// defaulting to the reference's own when the resolved backend carried none (a
+// store built directly rather than through the backend opener).
+func (s *PostgresStore) nativeLanguage() string {
+	if s.tsNativeLanguage == "" {
+		return defaultNativeLanguage
+	}
+	return s.tsNativeLanguage
 }
 
 // singleTagRename reports whether a retag is an unambiguous single-tag rename:

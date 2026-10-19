@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,13 @@ const bank = "b1"
 func newServer(t *testing.T) *http.ServeMux {
 	t.Helper()
 	store := storage.NewMemoryStore("public")
+	seedFixture(t, store)
+	return familyRoutes(store)
+}
+
+// seedFixture stores the one document the read routes are exercised against.
+func seedFixture(t *testing.T, store *storage.MemoryStore) {
+	t.Helper()
 	ctx := context.Background()
 	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
 		t.Fatal(err)
@@ -44,7 +52,11 @@ func newServer(t *testing.T) *http.ServeMux {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
 
+// familyRoutes builds the family's route table over a store, translating path
+// patterns into the path values the real router sets.
+func familyRoutes(store *storage.MemoryStore) *http.ServeMux {
 	mux := http.NewServeMux()
 	handlers := NewHandlers(store)
 	// The read surface delegates a reprocess to the write-side pipeline, which
@@ -317,6 +329,47 @@ func TestChunkIdentifierKeepsTrailingSlash(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Chunk not found") {
 		t.Fatalf("%s detail = %s", path, rec.Body.String())
+	}
+}
+
+// A chunk is addressed by its own identifier, which embeds the bank it belongs
+// to, so the read resolves it wherever it is stored. The route used to locate a
+// chunk by paging the bank listing, which made every chunk of a bank past the
+// first page unreachable (404).
+func TestChunkReadResolvesPastTheBankPageWindow(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	seedFixture(t, store)
+	page, err := store.ListChunks(ctx, storage.ChunkQuery{BankID: bank, DocumentID: "doc-1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Chunks) == 0 {
+		t.Fatal("the retained document has no chunks")
+	}
+	chunkID := page.Chunks[0].ChunkID
+
+	// Enough banks created after the fixture to push it out of the first page
+	// of the bank listing — the window the route used to scan.
+	for i := range 500 {
+		filler := fmt.Sprintf("filler-%03d", i)
+		if _, err := store.CreateBank(ctx, storage.Bank{BankID: filler, Name: "Filler"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	banks, err := store.ListBanks(ctx, storage.BankQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range banks.Banks {
+		if listed.BankID == bank {
+			t.Fatal("the fixture bank is still inside the first page of the bank listing")
+		}
+	}
+
+	rec := send(familyRoutes(store), http.MethodGet, "/v1/default/chunks/"+chunkID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chunk of a bank past the page window: %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1281,7 +1334,7 @@ func TestDocumentDetailObservationCountAndMetadata(t *testing.T) {
 	if doc.NodesByFactType["experience"] != 1 {
 		t.Fatalf("experience count = %d, want 1", doc.NodesByFactType["experience"])
 	}
-	if doc.Metadata["source"] != "slack" {
+	if metadata, ok := doc.Metadata.(map[string]any); !ok || metadata["source"] != "slack" {
 		t.Fatalf("document_metadata = %v, want the retain-time metadata", doc.Metadata)
 	}
 }
@@ -1522,5 +1575,67 @@ func TestDeleteDocumentHonorsTagScope(t *testing.T) {
 	rec = sendAs(t, handler, "dan", http.MethodDelete, base+"/dan-doc")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dan deleting his document = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// document_metadata is served as it stands: when a document's retain_params
+// carry a metadata member that is present but not an object, the detail and the
+// listing both return that value rather than reporting no metadata. The
+// reference reads the member through a truth test, so a member that is present
+// but empty ({} or []) reads as no metadata on either route.
+func TestDocumentMetadataServesNonObjectValue(t *testing.T) {
+	ctx := context.Background()
+	store := newBankStore(t)
+	cases := []struct {
+		id     string
+		retain map[string]any
+		want   string // the JSON the route must return for document_metadata
+	}{
+		{"meta-string", map[string]any{"metadata": "slack"}, `"slack"`},
+		{"meta-array", map[string]any{"metadata": []any{"a"}}, `["a"]`},
+		{"meta-empty-object", map[string]any{"metadata": map[string]any{}}, `null`},
+		{"meta-object", map[string]any{"metadata": map[string]any{"source": "slack"}}, `{"source":"slack"}`},
+	}
+	for _, tc := range cases {
+		if _, err := store.PutDocument(ctx, bank, tc.id, storage.Document{OriginalText: "body", RetainParams: tc.retain}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := serve(t, store)
+	for _, tc := range cases {
+		rec := send(mux, http.MethodGet, "/v1/default/banks/"+bank+"/documents/"+tc.id, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s detail: %d, body = %s", tc.id, rec.Code, rec.Body.String())
+		}
+		var doc DocumentResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(doc.Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != tc.want {
+			t.Fatalf("%s detail metadata = %s, want %s", tc.id, got, tc.want)
+		}
+
+		list := send(mux, http.MethodGet, "/v1/default/banks/"+bank+"/documents?q="+tc.id, "")
+		if list.Code != http.StatusOK {
+			t.Fatalf("%s list: %d, body = %s", tc.id, list.Code, list.Body.String())
+		}
+		var page DocumentListResponse
+		if err := json.Unmarshal(list.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 {
+			t.Fatalf("%s list returned %d items, want 1", tc.id, len(page.Items))
+		}
+		listed, err := json.Marshal(page.Items[0].Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(listed) != tc.want {
+			t.Fatalf("%s listed metadata = %s, want %s", tc.id, listed, tc.want)
+		}
 	}
 }

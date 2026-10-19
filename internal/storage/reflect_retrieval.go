@@ -270,9 +270,11 @@ func (s *PostgresStore) ReflectMentalModels(ctx context.Context, bankID, query s
 			break
 		}
 		out = append(out, ReflectCitation{
-			ID:    model.ID,
-			Text:  model.Content,
-			Fresh: !s.IsStale(ctx, bankID, model),
+			ID:   model.ID,
+			Text: model.Content,
+			// The reference's search tool answers with its batch staleness,
+			// which skips the retraction check the single-model read applies.
+			Fresh: !s.IsStaleBatch(ctx, bankID, model),
 		})
 	}
 	return out, nil

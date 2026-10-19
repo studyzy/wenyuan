@@ -34,7 +34,7 @@ func TestRecallRequestDecodesDocumentedFields(t *testing.T) {
 	if req.Include == nil || req.Include.Chunks == nil || req.Include.Chunks.MaxTokens == nil || *req.Include.Chunks.MaxTokens != 20 {
 		t.Fatalf("include = %+v", req.Include)
 	}
-	if req.TemporalWindow == nil || req.TemporalWindow.End == "" {
+	if req.TemporalWindow == nil || req.TemporalWindow.End.IsZero() {
 		t.Fatalf("temporal window = %+v", req.TemporalWindow)
 	}
 	if len(req.Types) != 2 || len(req.Tags) != 1 || req.TagsMatch != "all" {
@@ -43,9 +43,10 @@ func TestRecallRequestDecodesDocumentedFields(t *testing.T) {
 }
 
 // ts-0012: the compound tag-group shape nests leaf and boolean nodes and
-// accepts the legacy list-of-tag-lists form.
+// accepts the leaf/compound object forms; a bare tag list is not one of them
+// (the reference's union has no list branch).
 func TestTagGroupsFieldAcceptsNestedAndLegacy(t *testing.T) {
-	nested := `[{"and":[{"or":[{"tag":"a"},{"tag":"b"}]},{"not":[{"tag":"c"}]}]}]`
+	nested := `[{"and":[{"or":[{"tags":["a"]},{"tags":["b"]}]},{"not":[{"tags":["c"]}]}]}]`
 	var req RecallRequest
 	if err := json.Unmarshal([]byte(`{"query":"q","tag_groups":`+nested+`}`), &req); err != nil {
 		t.Fatal(err)
@@ -53,12 +54,14 @@ func TestTagGroupsFieldAcceptsNestedAndLegacy(t *testing.T) {
 	if len(req.TagGroups.Groups) != 1 || len(req.TagGroups.Groups[0].And) != 2 {
 		t.Fatalf("nested groups = %+v", req.TagGroups.Groups)
 	}
+	// A bare tag list is refused, as a union item at each branch.
 	var legacy RecallRequest
 	if err := json.Unmarshal([]byte(`{"query":"q","tag_groups":[["t1","t2"]]}`), &legacy); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the field must decode its own failure rather than the body: %v", err)
 	}
-	if len(legacy.TagGroups.Groups) != 1 || len(legacy.TagGroups.Groups[0].Tags) != 2 {
-		t.Fatalf("legacy groups = %+v", legacy.TagGroups.Groups)
+	if len(legacy.TagGroups.Groups) != 0 || len(legacy.TagGroups.failures) != 4 {
+		t.Fatalf("a bare tag list must be a union failure: groups=%+v failures=%+v",
+			legacy.TagGroups.Groups, legacy.TagGroups.failures)
 	}
 }
 

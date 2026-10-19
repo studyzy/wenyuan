@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 )
 
 // WriteJSON writes a JSON response. Callers that need an empty body (for
@@ -16,6 +17,11 @@ func WriteJSON(w http.ResponseWriter, status int, payload any) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	// The reference's JSON response sets Content-Length from the serialised
+	// body, so a large payload is framed with a length rather than chunked.
+	// Without this, writing the body after an explicit WriteHeader leaves the
+	// length unknown and the standard library falls back to chunked encoding.
+	w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
 	w.WriteHeader(status)
 	_, _ = w.Write(buf)
 }

@@ -120,7 +120,7 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 		db: db, schema: schema, vectorExtension: cfg.VectorExtension,
 		bankStatsCacheTTL: cfg.BankStatsCacheTTL, migrationDB: migrationDB, readDB: readDB,
 		textSearchExtension: textSearch.extension, pgFunctionSchema: textSearch.functionSchema,
-		pgTokenizer: textSearch.tokenizer, tuning: DefaultTuning(),
+		tsNativeLanguage: textSearch.nativeLanguage, pgTokenizer: textSearch.tokenizer, tuning: DefaultTuning(),
 	}, nil
 }
 
@@ -167,7 +167,11 @@ type PostgresStore struct {
 	// SQL.
 	textSearchExtension string
 	pgFunctionSchema    string
-	pgTokenizer         string
+	// tsNativeLanguage is the tsvector dictionary embedded in every stored
+	// search_vector and every keyword query the native backend builds. Changing
+	// it changes what those rows mean, so the deployment owns the reindex.
+	tsNativeLanguage string
+	pgTokenizer      string
 	// recallGate bounds concurrent recalls at the engine level, separately from
 	// admission control. A nil gate is unbounded.
 	recallGate chan struct{}
@@ -308,6 +312,18 @@ func (s *PostgresStore) PoolStats() (PoolStats, bool) {
 	}
 	return provider.PoolStats(), true
 }
+
+// PoolWaiting reports how many callers are blocked waiting for a pooled
+// connection. A PostgreSQL store is always backed by a counted pool, so the
+// readiness payload carries db_pool_waiting for it even on a database handle
+// that cannot report the pool's utilization — which is how the reference's
+// pool instrumentation behaves.
+func (s *PostgresStore) PoolWaiting() (int, bool) { return poolWaiterStat{}.PoolWaiting() }
+
+// PoolWaitingCount is the same count under the name the readiness adapter's
+// capability check uses. Both spellings are exposed so the counter is reachable
+// whichever way a caller forwards it.
+func (s *PostgresStore) PoolWaitingCount() (int, bool) { return poolWaiterStat{}.PoolWaiting() }
 
 // Ping satisfies the monitoring dependency contract.
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.Ready(ctx) }

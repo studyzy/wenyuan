@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
@@ -30,6 +31,11 @@ type Options struct {
 	Mode Mode
 	// DryRun parses and maps the archive and reports counts without writing.
 	DryRun bool
+	// DiscardDocumentText drops the replayed chunks' text, keeping only their
+	// content hashes. The reference's import reads its process-level default for
+	// this setting, so the caller resolves the deployment value; the zero value
+	// keeps the text, so an unwired caller loses nothing.
+	DiscardDocumentText bool
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }
@@ -76,7 +82,7 @@ func Run(ctx context.Context, store storage.Store, mapping Mapping, opts Options
 			report.Skipped++
 			continue
 		}
-		if err := writeDocument(ctx, store, bankID, doc); err != nil {
+		if err := writeDocument(ctx, store, bankID, doc, !opts.DiscardDocumentText); err != nil {
 			return Report{}, err
 		}
 		report.Written++
@@ -120,7 +126,7 @@ func ensureBank(ctx context.Context, store storage.Store, bankID string, opts Op
 	return nil
 }
 
-func writeDocument(ctx context.Context, store storage.Store, bankID string, doc hindsightarchive.Document) error {
+func writeDocument(ctx context.Context, store storage.Store, bankID string, doc hindsightarchive.Document, storeText bool) error {
 	created := time.Now().UTC()
 	if parsed := hindsightarchive.ParseTime(doc.CreatedAt); parsed != nil {
 		created = *parsed
@@ -136,19 +142,57 @@ func writeDocument(ctx context.Context, store storage.Store, bankID string, doc 
 		return fmt.Errorf("write document %s: %w", doc.ID, err)
 	}
 
+	// The document's chunks are replayed before its facts, because a fact names
+	// the chunk it came from: the archive carries that text and the target
+	// rebuilds the rows rather than importing them.
+	chunks := make([]storage.DocumentChunk, 0, len(doc.Chunks))
+	for _, chunk := range doc.Chunks {
+		chunks = append(chunks, storage.DocumentChunk{ChunkIndex: chunk.ChunkIndex, ChunkText: chunk.ChunkText})
+	}
+	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ChunkIndex < chunks[j].ChunkIndex })
+	chunkIDs, err := store.PutDocumentChunks(ctx, bankID, doc.ID, chunks, storeText)
+	if err != nil {
+		return fmt.Errorf("write chunks of %s: %w", doc.ID, err)
+	}
+
 	for index, fact := range doc.Facts {
 		unit := unitFromFact(bankID, doc.ID, index, fact)
-		if _, err := store.UpsertUnit(ctx, unit); err != nil {
+		// A fact that names a chunk is addressed by the identifier the row was
+		// just written under; a fact naming an index the archive carried no
+		// chunk for keeps no reference.
+		if fact.ChunkIndex != nil {
+			unit.ChunkID = chunkIDs[*fact.ChunkIndex]
+		}
+		stored, err := store.UpsertUnit(ctx, unit)
+		if err != nil {
 			return fmt.Errorf("write fact %d of %s: %w", index, doc.ID, err)
 		}
+		// The entities this fact mentions, de-duplicated by identity, so the
+		// co-occurrence cross-product counts each pair once for this unit.
+		mentioned := make([]string, 0, len(fact.Entities))
+		seen := map[string]bool{}
 		for _, name := range fact.Entities {
 			entity, err := store.ResolveEntity(ctx, bankID, name, storage.EntityKindRegular, true)
 			if err != nil {
 				return fmt.Errorf("resolve entity %q: %w", name, err)
 			}
+			if entity.ID == "" {
+				continue
+			}
 			if err := store.UpsertUnitEntity(ctx, unit.ID, entity.ID); err != nil {
 				return fmt.Errorf("link unit %s to entity %s: %w", unit.ID, entity.ID, err)
 			}
+			if !seen[entity.ID] {
+				seen[entity.ID] = true
+				mentioned = append(mentioned, entity.ID)
+			}
+		}
+		// Entity co-occurrences are derived data the archive does not carry, so
+		// the migration rebuilds them here, exactly as the retain path and the
+		// served import do: without this the entity graph of a migrated bank has
+		// no edges.
+		if err := store.UpsertUnitCooccurrences(ctx, bankID, mentioned, storage.UnitSeenAt(stored)); err != nil {
+			return fmt.Errorf("write co-occurrences of %s: %w", unit.ID, err)
 		}
 		for _, relation := range fact.CausalRelations {
 			if relation.TargetFactIndex < 0 || relation.TargetFactIndex >= len(doc.Facts) {

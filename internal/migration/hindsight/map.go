@@ -58,10 +58,6 @@ func factUnitID(bankID, documentID string, index int) string {
 	return stableID("unit", bankID, documentID, fmt.Sprintf("%d", index))
 }
 
-func chunkID(bankID, documentID string, index int) string {
-	return stableID("chunk", bankID, documentID, fmt.Sprintf("%d", index))
-}
-
 // stableID builds a deterministic uuid identifier from its parts. The
 // reference declares these identities as uuid, so the digest is laid out in the
 // canonical 8-4-4-4-12 form with the version and variant bits set; a textual
@@ -102,9 +98,9 @@ func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fa
 		ConsolidatedAt:        hindsightarchive.ParseTime(fact.ConsolidatedAt),
 		ConsolidationFailedAt: hindsightarchive.ParseTime(fact.ConsolidationFailedAt),
 	}
-	if fact.ChunkIndex != nil {
-		unit.ChunkID = chunkID(bankID, documentID, *fact.ChunkIndex)
-	}
+	// The chunk reference is the caller's to set: it only means anything once
+	// the document's chunks have been written, and the identifier comes from
+	// that write.
 	if unit.Metadata == nil {
 		unit.Metadata = map[string]any{}
 	}

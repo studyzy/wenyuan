@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,7 +46,54 @@ type PoolStats struct {
 	InUse int
 	Max   int
 	Idle  int
+	// Waiting is how many callers are currently blocked waiting for a pooled
+	// connection, which is what distinguishes a saturated pool from a busy one.
+	// A store that cannot count its waiters leaves it zero; the reference
+	// reports the same key either way.
+	Waiting int
 }
+
+// waitingAcquires counts the in-flight acquisitions that have not obtained a
+// connection yet. database/sql exposes the pool's size and idle counts but not
+// its queue depth, so the acquire path counts what is blocked in db.Conn: the
+// strict analogue of the reference's pool instrumentation, which increments
+// around pool.acquire() and never lets a failed acquire leak a waiter.
+var waitingAcquires atomic.Int64
+
+// PoolWaitingCount returns how many callers are currently waiting to acquire a
+// pooled connection, process-wide. The reference reports the same counter in
+// its readiness payload and its pool-waiting gauge whether or not the backend
+// can report its pool utilization.
+func PoolWaitingCount() int { return int(waitingAcquires.Load()) }
+
+// acquirePooledConnection takes a pooled connection through open, counted as a
+// waiter until it has one. Every acquisition this package makes goes through
+// here, so the counter measures exactly what the reference's instrumentation
+// wraps. A store that is not backed by a pool never calls it, which is what
+// makes the counter's presence in the readiness payload mean "this backend has
+// the instrumentation".
+func acquirePooledConnection(ctx context.Context, open func(context.Context) (connHandle, error)) (connHandle, error) {
+	waitingAcquires.Add(1)
+	defer waitingAcquires.Add(-1)
+	return open(ctx)
+}
+
+// PoolWaiter reports the process-wide pooled-acquire waiter count. It is the
+// capability a store implements when it is backed by a counted pool: the
+// readiness payload then carries db_pool_waiting whether or not the backend can
+// also report its utilization, as the reference's instrumentation does.
+type PoolWaiter interface {
+	PoolWaiting() (int, bool)
+}
+
+// poolWaiterStat is the value PoolWaiter is satisfied with; the counter is
+// process-wide, so any store that is backed by this package's pool reports the
+// same number.
+type poolWaiterStat struct{}
+
+// PoolWaiting reports the current waiter count. The counter always exists once
+// this package's pool is in use, so the report is never absent.
+func (poolWaiterStat) PoolWaiting() (int, bool) { return PoolWaitingCount(), true }
 
 // PoolStatter is the optional capability a store implements when it can report
 // its connection-pool utilization. A store with no pool does not implement it,
@@ -121,7 +169,7 @@ func (o acquireObserver) acquire(ctx context.Context, open func(context.Context)
 		// deadline's timer here does not take the connection back.
 		defer cancel()
 	}
-	conn, err := open(acquireCtx)
+	conn, err := acquirePooledConnection(acquireCtx, open)
 	if err != nil {
 		return nil, fmt.Errorf("waiting for a database connection: %w", err)
 	}

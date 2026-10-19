@@ -17,12 +17,12 @@ import (
 // engine left empty) stays null rather than disappearing.
 func BuildRecallResponse(result storage.RecallResult, req RecallRequest) RecallResponse {
 	selected := applyTokenCap(result.Matches, recallMaxTokens(req))
+	inc := resolveRecallInclude(req.Include)
 	items := make([]RecallResultItem, 0, len(selected))
 	for _, match := range selected {
-		items = append(items, toResultItem(match))
+		items = append(items, toResultItem(match, inc.sourceFacts))
 	}
 	response := RecallResponse{Results: items}
-	inc := resolveRecallInclude(req.Include)
 	if inc.entities {
 		response.Entities = capEntityChannel(buildEntityChannel(result), inc.entityTokens)
 	}
@@ -312,13 +312,15 @@ func renderReranked(entries []storage.TraceRerankedEntry) []any {
 
 // toResultItem maps a storage match into a public result item. An empty
 // optional value becomes a nil pointer or slice so the JSON encoder emits null,
-// matching the reference's null-keeping response.
-func toResultItem(match storage.RecallMatch) RecallResultItem {
-	return RecallResultItem{
+// matching the reference's null-keeping response. `source_fact_ids` is only
+// reported when the caller asked for source facts: the reference populates it
+// from the source-fact enrichment pass and leaves it null otherwise.
+func toResultItem(match storage.RecallMatch, includeSourceFacts bool) RecallResultItem {
+	item := RecallResultItem{
 		ID:            match.ID,
 		Text:          match.Text,
 		Type:          nullIfEmptyString(match.Type),
-		Entities:      orEmptySlice(match.Entities),
+		Entities:      nonEmptyStrings(match.Entities),
 		Context:       stringValue(match.Context),
 		OccurredStart: httpx.FormatTimestampPtr(match.OccurredStart),
 		OccurredEnd:   httpx.FormatTimestampPtr(match.OccurredEnd),
@@ -327,10 +329,13 @@ func toResultItem(match storage.RecallMatch) RecallResultItem {
 		Metadata:      nonNilMap(match.Metadata),
 		ChunkID:       nullIfEmptyString(match.ChunkID),
 		Tags:          orEmptySlice(match.Tags),
-		SourceFactIDs: nonEmptyStrings(match.SourceMemoryIDs),
 		Scores:        toScoreObject(match),
 		Attachments:   toAttachments(match.Attachments),
 	}
+	if includeSourceFacts {
+		item.SourceFactIDs = nonEmptyStrings(match.SourceMemoryIDs)
+	}
+	return item
 }
 
 // nullIfEmptyString returns a pointer to a non-empty string, or nil for an
@@ -430,16 +435,28 @@ func buildChunkChannel(result storage.RecallResult) map[string]ChunkEntry {
 
 // buildSourceFactChannel keys the source-fact map by source-fact id, carrying
 // the same result shape as the ranked list so a client can read a source
-// fact's text, type and scores rather than only its text.
+// fact's text, type and scores rather than only its text. The reference builds
+// each entry from the stored row alone, so entities are never resolved for one
+// and an empty tag list collapses to null.
 func buildSourceFactChannel(result storage.RecallResult) map[string]RecallResultItem {
 	if len(result.SourceFactMap) == 0 {
 		return nil
 	}
 	out := make(map[string]RecallResultItem, len(result.SourceFactMap))
 	for id, match := range result.SourceFactMap {
-		out[id] = toResultItem(match)
+		out[id] = sourceFactItem(match)
 	}
 	return out
+}
+
+// sourceFactItem maps one source fact into the entry the source-fact channel
+// carries: the ranked-result shape with the members the reference does not
+// hydrate for a source row cleared.
+func sourceFactItem(match storage.RecallMatch) RecallResultItem {
+	item := toResultItem(match, false)
+	item.Entities = nil
+	item.Tags = nonEmptyStrings(match.Tags)
+	return item
 }
 
 // applyTokenCap returns the highest-ranked facts that fit the token cap. A

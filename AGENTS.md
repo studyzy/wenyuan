@@ -237,21 +237,58 @@ PostgreSQL schema all match the reference — the served route surface and the
 schema alignment are pinned by tests and parity suites. What remains is the
 short list below. `docs/FUNCTIONAL-GAPS.md` and `docs/GAPS.md` carry the
 detailed ledger with evidence; keep them in sync when you close or open a gap.
+`docs/PARITY-OPEN-ITEMS.md` carries the per-route residual list from the
+2026-10-17 route-by-route comparison against the live reference (each item with
+its reference evidence, the file:line the fix belongs at, and how to verify it);
+work from that file when picking up route-level parity work, and strike items
+out of it as they close.
 
-- **Mental-model history content shape diverges from upstream.** The
-  `mental_model_history.content` jsonb stores this service's own keys rather
-  than the reference's `previous_content` shape; aligning it is a pending
-  API-layer decision, not a schema change.
-- **Mental-model patch cannot clear fields.** The CLI sends explicit `null` to
-  clear a field (cron, tags-match, ...), but the backend's
-  `nonNullMembers` (`internal/mentalmodels/trigger.go`) drops explicit-null
-  members, so the clear never lands. Known CLI↔backend contract divergence,
-  to be fixed on the backend side.
-- **Transfer archives carry fewer history segments than the reference.**
-  Full-bank export/import moves documents, chunks, facts, observations,
-  attachments, bank config, mental models, knowledge pages, directives and
-  webhooks, but the `audit_log` / `llm_requests` history segments and the
-  raw invalidated-memory / operation-queue data segments are not carried yet.
+- **Mental-model history content carries the reference's shape, in either JSON
+  encoding.** A row stores `{"previous_content": …, "previous_reflect_response":
+  …}` (plus the failure markers), the same keys the reference writes, so a
+  history read is identical on both sides. The defect found on 2026-10-17 was
+  narrower than this entry used to claim: the reference writes those values as
+  JSON *text* (`bank_rows_json_encoding: "serialized"`) while this service wrote
+  decoded objects, and the reader only understood the object form — so every
+  jsonb field of an imported reference archive (history content, a mental
+  model's trigger, a bank's config) silently fell back to its default. Both
+  encodings now read the same; `TestRestoreReadsSerializedRowJSON` pins it.
+- **Mental-model patches clear a member by nulling it, as the reference does.**
+  A patch that states `refresh_cron: null` (or `tags_match: null`) stores the
+  member as an explicit null, which is what the reference's dict merge produces
+  (`{**base, **supplied}`) and what every reader treats as unset, so the CLI's
+  clear lands. Re-checked 2026-10-17 — the `nonNullMembers` this entry used to
+  name no longer exists; `TestUpdateClearsTriggerMembersOnExplicitNull` pins the
+  behavior, including that unnamed members survive the patch.
+- **Transfer archives carry the whole bank, except its transient maintenance
+  markers.** Full-bank export/import moves the documents and their chunks,
+  facts, observations, attachments, bank config, mental models, knowledge
+  pages, directives and webhooks, plus the `audit_log` / `llm_requests` history
+  segments and the raw invalidated-memory / operation-queue data segments when
+  the caller selects them (the reference's `include_history` default is off, so
+  an archive that omits them is a caller's choice, not a gap). Re-checked
+  2026-10-17: chunks are rebuilt on import from the archive's own chunk text,
+  the history pair round-trips under `history/`, and the queue/invalidated rows
+  ride under `data/`.
+  The two maintenance-queue tables ride the same way: `graph_maintenance_queue`
+  and `entity_maintenance_queue` are carried under `data/` and restored by
+  remapping each row onto an id the target's own replay regenerated (graph rows
+  through its unit-id map, entity rows through `canonical_name`), dropping the
+  rows the target did not reproduce — which is what the reference does, verified
+  against the live service on 2026-10-17 (a seeded row in each table survives a
+  reference export/import round trip and raises
+  `maintenance_queue_rows_imported`). An earlier version of this entry claimed
+  those rows were deliberately dropped here and rederived by the target; that
+  was wrong on both sides and is fixed in
+  `internal/storage/maintenance_transfer.go` (`MaintenanceQueueTransfer`),
+  `internal/transfer/{export_build.go,import_apply.go}` and
+  `internal/hindsightarchive/sections.go`, pinned by
+  `TestRestoreRemapsMaintenanceQueues`. Also matching the reference's
+  reader: an archive's jsonb row values may arrive as JSON text (its
+  `bank_rows_json_encoding: "serialized"`) or as decoded objects (ours), and
+  both read the same — see `TestRestoreReadsSerializedRowJSON`, which caught a
+  real loss where every jsonb field of a reference archive fell back to its
+  default.
 - **Intentionally out of scope:** OAuth provider integration and GCS / Azure
   object stores (the S3-compatible backend covers object storage).
 - **Default listen ports are offset from the reference on purpose.** wenyuan

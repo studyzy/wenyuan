@@ -377,3 +377,43 @@ func TestLaxCoercionRejected(t *testing.T) {
 		})
 	}
 }
+
+// TestLaxWalkLeavesSelfDecodingFieldAlone pins the crash that a scalar sent for
+// a member whose type decodes itself used to cause. The memory routes carry
+// such members (the request item's content and its nested member objects), so
+// any body that needed one value rewritten — including bodies the reference
+// accepts outright, such as an `async` word — reached the walk, called the
+// coercion helpers for the self-decoding member, and panicked: the connection
+// was closed with no response at all instead of the request being answered.
+func TestLaxWalkLeavesSelfDecodingFieldAlone(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"scalar for a self-decoding member", `{"count":"5","custom":5}`},
+		{"array for a self-decoding member", `{"count":"5","custom":[1,2]}`},
+		{"string for a self-decoding member", `{"count":"5","custom":"x"}`},
+	}
+	served := laxServed(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := laxPost(t, served, tc.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("decode echo: %v (body %s)", err, rec.Body.String())
+			}
+			// The coercible sibling is still rewritten, which is what makes the
+			// walk run over the self-decoding member in the first place.
+			got, ok := pathValue(decoded, "count")
+			if !ok {
+				t.Fatalf("count absent from %s", rec.Body.String())
+			}
+			if string(got) != jsonValue(float64(5)) {
+				t.Fatalf("count = %s, want 5", got)
+			}
+		})
+	}
+}

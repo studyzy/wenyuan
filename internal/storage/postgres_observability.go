@@ -39,6 +39,16 @@ func (s *PostgresStore) BankStatsRefreshing(ctx context.Context, bankID string, 
 	return stats, nil
 }
 
+// InvalidateBankStats drops a bank's cached summary so the next read recomputes.
+// The reference invalidates the cache from every write that changes the counts
+// the summary reports, so a poll right after such a write cannot serve a stale
+// row for the rest of the cache's TTL. The write is best-effort: a cache that
+// cannot be cleared leaves the answer intact.
+func (s *PostgresStore) InvalidateBankStats(ctx context.Context, bankID string) {
+	_, _ = s.db.ExecContext(ctx,
+		`DELETE FROM `+quoteIdent(s.schema)+`.bank_stats_cache WHERE bank_id = $1`, bankID)
+}
+
 // entityLinkTotal derives the bank's entity-link total from unit_entities
 // membership: for each entity, LEAST(n-1, maxLinksPerEntity) over the n units
 // that mention it, summed — the same derivation the reference's link_counts

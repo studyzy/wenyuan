@@ -127,7 +127,7 @@ func TestWebhookDeliveryRecordsReceiverStatus(t *testing.T) {
 	consumer := NewQueueConsumer(store, nil, nil, nil, config.WorkerConfig{
 		ID: "w1", MaxRetries: 1, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
 		Lease: time.Minute, Concurrency: 1, PollInterval: time.Millisecond,
-	}, config.WorkerTuning{}, webhooks.NewGuard(webhooks.GuardConfig{AllowPrivateHosts: true, AllowInsecure: true}), ExtractionSettings{})
+	}, config.WorkerTuning{}, webhooks.NewGuard(webhooks.GuardConfig{AllowPrivateHosts: true, AllowInsecure: true}), ExtractionSettings{}, false)
 	// Drive the real consumer for long enough to settle the queued delivery,
 	// then stop it: the settlement path under test is the one a deployment runs.
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -141,7 +141,7 @@ func TestWebhookDeliveryRecordsReceiverStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(page.Deliveries) == 1 && page.Deliveries[0].Status == string(storage.StatusFailed) {
+		if len(page.Deliveries) == 1 && page.Deliveries[0].LastResponseStatus != nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -155,7 +155,15 @@ func TestWebhookDeliveryRecordsReceiverStatus(t *testing.T) {
 	if delivery.LastResponseStatus == nil || *delivery.LastResponseStatus != http.StatusTeapot {
 		t.Fatalf("status code = %v, want the receiver's %d", delivery.LastResponseStatus, http.StatusTeapot)
 	}
-	if delivery.Status != string(storage.StatusFailed) {
-		t.Fatalf("status = %q, want the refused delivery recorded as failed", delivery.Status)
+	// A receiver's rejection is retried on the reference's ladder, not failed on
+	// the spot: the attempt is spent and the next rung scheduled.
+	if delivery.Status != string(storage.StatusPending) {
+		t.Fatalf("status = %q, want a retried delivery still pending", delivery.Status)
+	}
+	if delivery.Attempts != 2 {
+		t.Fatalf("attempts = %d, want the attempt to have been spent", delivery.Attempts)
+	}
+	if delivery.NextRetryAt == nil {
+		t.Fatal("a retried delivery must carry its next attempt time")
 	}
 }

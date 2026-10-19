@@ -4,14 +4,12 @@ package directives
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -86,17 +84,19 @@ func NewHandlers(store storage.Store) *Handlers { return &Handlers{Store: store}
 // List returns the bank's directives, highest priority first, filtered by the
 // optional tags and active_only selectors and paged by limit/offset.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
-		return
-	}
-	activeOnly, failure := parseActiveOnly(httpx.Query(r, "active_only"))
+	// The query selectors are validated before the bank is looked up: in the
+	// reference they are `Query(...)` parameters and a `Depends`, which the
+	// framework resolves ahead of the handler body, so a bad selector is the 422
+	// even when the bank does not exist.
+	activeOnly, failure := parseActiveOnly(r)
 	if failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	mode := "any"
-	if raw := strings.TrimSpace(httpx.Query(r, "tags_match")); raw != "" {
+	if raw, present := queryParam(r, "tags_match"); present {
+		// A literal's members compare by exact string: the framework does not
+		// trim, so " any" is no more a member than "bogus" is.
 		if !containsString(directiveTagsMatch, raw) {
 			httpx.WriteValidationFailure(w, queryItem(httpx.Literal(
 				[]string{"query", "tags_match"}, raw, []string{"any", "all", "exact"})))
@@ -104,9 +104,13 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		}
 		mode = raw
 	}
-	limit, offset, failure := parsePage(httpx.Query(r, "limit"), httpx.Query(r, "offset"))
+	limit, offset, failure := parsePage(r)
 	if failure != nil {
 		httpx.WriteValidationFailure(w, failure)
+		return
+	}
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
 		return
 	}
 
@@ -193,7 +197,7 @@ func directiveMatchesTags(recordTags, want []string, mode string) bool {
 
 // Get returns one directive.
 func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
-	bankID, id, ok := h.member(w, r)
+	bankID, id, ok := h.uuidMember(w, r)
 	if !ok {
 		return
 	}
@@ -257,6 +261,12 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		Tags:     body.Tags,
 	})
 	if err != nil {
+		// An unknown bank surfaces here as the foreign-key rejection, which the
+		// reference reports in the driver's own wording as a 500.
+		if detail, rejected := foreignKeyReport(err, bankID); rejected {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, detail))
+			return
+		}
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
@@ -272,6 +282,19 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	var body UpdateRequest
 	if _, failure := decodeBody(r, &body); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
+		return
+	}
+	// The id's argument position follows the members the body supplied, so it
+	// can only be worked out once the body has been read — and a malformed body
+	// is the 422 above, before the id is ever bound.
+	if detail, bad := directiveUUIDReport(id, updateDirectiveArgNumber([5]bool{
+		body.Name != nil,
+		body.Content != nil,
+		body.Priority != nil,
+		body.IsActive != nil,
+		body.Tags != nil,
+	})); bad {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, detail))
 		return
 	}
 	record, err := h.Store.UpdateDirective(r.Context(), bankID, id, storage.DirectivePatch{
@@ -290,7 +313,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete removes a directive.
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
-	bankID, id, ok := h.member(w, r)
+	bankID, id, ok := h.uuidMember(w, r)
 	if !ok {
 		return
 	}
@@ -351,51 +374,6 @@ func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, 
 	return bankID, true
 }
 
-// parseActiveOnly reads the active_only selector, defaulting to true as the
-// reference does.
-func parseActiveOnly(raw string) (bool, *httpx.ValidationFailure) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return true, nil
-	}
-	parsed, err := strconv.ParseBool(trimmed)
-	if err != nil {
-		return false, queryItem(httpx.TypeMismatch("bool_parsing", []string{"query", "active_only"}, trimmed))
-	}
-	return parsed, nil
-}
-
-// parsePage reads limit and offset, validating them against the reference's
-// query bounds.
-func parsePage(rawLimit, rawOffset string) (int, int, *httpx.ValidationFailure) {
-	limit := defaultListLimit
-	if trimmed := strings.TrimSpace(rawLimit); trimmed != "" {
-		parsed, err := strconv.Atoi(trimmed)
-		if err != nil {
-			return 0, 0, queryItem(httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, trimmed))
-		}
-		if parsed < 1 {
-			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "limit"}, trimmed, 1))
-		}
-		if parsed > maxListLimit {
-			return 0, 0, queryItem(httpx.LessThanEqual([]string{"query", "limit"}, trimmed, maxListLimit))
-		}
-		limit = parsed
-	}
-	offset := 0
-	if trimmed := strings.TrimSpace(rawOffset); trimmed != "" {
-		parsed, err := strconv.Atoi(trimmed)
-		if err != nil {
-			return 0, 0, queryItem(httpx.TypeMismatch("int_parsing", []string{"query", "offset"}, trimmed))
-		}
-		if parsed < 0 {
-			return 0, 0, queryItem(httpx.GreaterThanEqual([]string{"query", "offset"}, trimmed, 0))
-		}
-		offset = parsed
-	}
-	return limit, offset, nil
-}
-
 // pageSlice applies offset and limit to a matched list, tolerating an offset
 // past the end.
 func pageSlice[T any](items []T, offset, limit int) []T {
@@ -414,8 +392,13 @@ func queryItem(item httpx.ValidationError) *httpx.ValidationFailure {
 	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
 }
 
-// decodeBody decodes a JSON body with a size bound, reporting a malformed body
-// as a request validation failure.
+// decodeBody decodes a JSON body with a size bound, reporting a rejected body
+// as the framework's structured items. The shared schema walk names every value
+// the reference's model refuses — a missing required field, a `null` on a field
+// that does not admit one, a wrong-typed value, and every bad member of a list —
+// in the model's declaration order, so anything it reports is the whole answer.
+// Go's own decoder stops at the first failure, so it is consulted only once the
+// walk has found nothing.
 func decodeBody(r *http.Request, target any) (map[string]any, *httpx.ValidationFailure) {
 	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	defer func() { _ = limited.Close() }()
@@ -423,24 +406,21 @@ func decodeBody(r *http.Request, target any) (map[string]any, *httpx.ValidationF
 	if err != nil {
 		return nil, httpx.BodyDecodeFailure(err, body)
 	}
-	decoded, err := httpx.DecodeLax(body, target)
-	httpx.RecordUnknownBodyFields(r, decoded, target)
-	trimmed := strings.TrimSpace(string(decoded))
-	// The framework's required-body field reports an absent body and the JSON
-	// literal null as the same missing item. A body that is only whitespace is
-	// not absent: the parser runs first and rejects it, so it falls through to
-	// the decode failure below.
-	if len(decoded) == 0 || trimmed == "null" {
-		return nil, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.Missing([]string{"body"}, nil),
-		}}
+	httpx.RecordUnknownBodyFields(r, body, target)
+	if len(strings.TrimSpace(string(body))) == 0 {
+		// An absent body is the framework's missing-field item whose input is
+		// null: there is no object for the field to be missing from.
+		return nil, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, body)
 	}
-	if err != nil {
-		return nil, httpx.BodyDecodeFailure(err, decoded)
+	if items := httpx.ValidationItemsAgainstRequest(r, target, body); len(items) > 0 {
+		return nil, &httpx.ValidationFailure{Errors: items}
+	}
+	if _, err := httpx.DecodeLax(body, target); err != nil {
+		return nil, httpx.BodyDecodeFailure(err, body)
 	}
 	object := map[string]any{}
-	if err := json.Unmarshal(decoded, &object); err != nil {
-		return nil, httpx.BodyDecodeFailure(err, decoded)
+	if err := json.Unmarshal(body, &object); err != nil {
+		return nil, httpx.BodyDecodeFailure(err, body)
 	}
 	return object, nil
 }
@@ -493,11 +473,15 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-// newID builds an opaque identifier.
+// newID builds the identifier of a new directive: a random UUID in the
+// canonical dashed form, which is what the reference's column default generates
+// and what every read renders it as.
 func newID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return fmt.Sprintf("dir-%d", time.Now().UnixNano())
 	}
-	return hex.EncodeToString(raw[:])
+	raw[6] = (raw[6] & 0x0f) | 0x40 // version 4
+	raw[8] = (raw[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }

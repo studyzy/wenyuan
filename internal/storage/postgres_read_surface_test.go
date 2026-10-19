@@ -4,8 +4,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -64,7 +66,7 @@ func TestPostgresDocumentListCarriesMetadata(t *testing.T) {
 	if len(doc.Tags) != 2 {
 		t.Fatalf("stored tags = %v, want two", doc.Tags)
 	}
-	if doc.Metadata["source"] != "slack" {
+	if metadata, ok := doc.Metadata.(map[string]any); !ok || metadata["source"] != "slack" {
 		t.Fatalf("metadata was not persisted: %v", doc.Metadata)
 	}
 	if doc.RetainParams["context"] != "standup" {
@@ -314,5 +316,111 @@ func TestPostgresGetDocumentCountsUnits(t *testing.T) {
 	}
 	if doc.MemoryUnitCount != 2 {
 		t.Fatalf("memory_unit_count = %d, want 2", doc.MemoryUnitCount)
+	}
+}
+
+// A chunk is resolved by its own identifier, wherever its bank sits in the
+// listing: the addressed chunk route carries no bank, so the lookup must not
+// depend on a page of the bank listing.
+func TestPostgresFindChunkIgnoresTheBankPageWindow(t *testing.T) {
+	store := postgresReadStore(t)
+	ctx := context.Background()
+
+	if _, err := store.CreateBank(ctx, Bank{BankID: "chunk-bank", Name: "chunk-bank"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutDocument(ctx, "chunk-bank", "doc-1", Document{OriginalText: "Alice moved to Berlin."}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.PutDocumentChunks(ctx, "chunk-bank", "doc-1",
+		[]DocumentChunk{{ChunkIndex: 0, ChunkText: "Alice moved to Berlin."}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkID := ids[0]
+
+	// Banks created after the fixture sort ahead of it, filling a
+	// ListBanks(Limit: 500) page of their own.
+	for i := range 500 {
+		filler := fmt.Sprintf("filler-%03d", i)
+		if _, err := store.CreateBank(ctx, Bank{BankID: filler, Name: "Filler"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	banks, err := store.ListBanks(ctx, BankQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(banks.Banks) != 500 {
+		t.Fatalf("bank page = %d rows, want the window to be full", len(banks.Banks))
+	}
+	for _, listed := range banks.Banks {
+		if listed.BankID == "chunk-bank" {
+			t.Fatal("the fixture bank is still inside the first page of the bank listing")
+		}
+	}
+
+	chunk, err := store.FindChunk(ctx, chunkID)
+	if err != nil {
+		t.Fatalf("find chunk %s: %v", chunkID, err)
+	}
+	if chunk.BankID != "chunk-bank" || chunk.DocumentID != "doc-1" || chunk.ChunkText != "Alice moved to Berlin." {
+		t.Fatalf("chunk = %+v, want its own bank, document and text", chunk)
+	}
+	if _, err := store.FindChunk(ctx, "no-such-chunk"); !errors.Is(err, ErrChunkNotFound) {
+		t.Fatalf("unknown chunk error = %v, want ErrChunkNotFound", err)
+	}
+}
+
+// document_metadata is the document's metadata value as it stands: the value
+// written into retain_params.metadata is echoed even when it is not an object,
+// a value supplied to the document write is merged into that member, and a
+// member that is present but empty reads as no metadata.
+func TestPostgresDocumentMetadataFollowsRetainParams(t *testing.T) {
+	store := postgresReadStore(t)
+	ctx := context.Background()
+	cases := []struct {
+		name   string
+		doc    Document
+		want   any
+		member any
+	}{
+		{"object", Document{RetainParams: map[string]any{"metadata": map[string]any{"source": "slack"}}},
+			map[string]any{"source": "slack"}, map[string]any{"source": "slack"}},
+		{"string", Document{RetainParams: map[string]any{"metadata": "slack"}}, "slack", "slack"},
+		{"array", Document{RetainParams: map[string]any{"metadata": []any{"a", "b"}}}, []any{"a", "b"}, []any{"a", "b"}},
+		{"merged", Document{Metadata: map[string]any{"source": "slack"}},
+			map[string]any{"source": "slack"}, map[string]any{"source": "slack"}},
+		{"empty object", Document{RetainParams: map[string]any{"metadata": map[string]any{}}}, nil, map[string]any{}},
+		{"empty array", Document{RetainParams: map[string]any{"metadata": []any{}}}, nil, []any{}},
+		{"absent", Document{RetainParams: map[string]any{"context": "notes"}}, nil, nil},
+	}
+	for i, tc := range cases {
+		docID := fmt.Sprintf("doc-metadata-%d", i)
+		doc := tc.doc
+		doc.OriginalText = "body"
+		if _, err := store.PutDocument(ctx, "read-bank", docID, doc); err != nil {
+			t.Fatalf("%s: put document: %v", tc.name, err)
+		}
+		stored, err := store.GetDocument(ctx, "read-bank", docID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(stored.Metadata, tc.want) {
+			t.Fatalf("%s: metadata = %#v, want %#v", tc.name, stored.Metadata, tc.want)
+		}
+		if !reflect.DeepEqual(stored.RetainParams["metadata"], tc.member) {
+			t.Fatalf("%s: retain_params member = %#v, want %#v", tc.name, stored.RetainParams["metadata"], tc.member)
+		}
+		page, err := store.ListDocuments(ctx, DocumentQuery{BankID: "read-bank", Query: docID, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Documents) != 1 {
+			t.Fatalf("%s: listed %d documents, want 1", tc.name, len(page.Documents))
+		}
+		if !reflect.DeepEqual(page.Documents[0].Metadata, tc.want) {
+			t.Fatalf("%s: listed metadata = %#v, want %#v", tc.name, page.Documents[0].Metadata, tc.want)
+		}
 	}
 }

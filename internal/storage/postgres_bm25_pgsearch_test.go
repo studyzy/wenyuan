@@ -167,19 +167,25 @@ func TestResolveTextSearchBackend(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "unset is native", cfg: BackendConfig{}, want: textSearchBackend{
-			extension: TextSearchNative, functionSchema: defaultPGFunctionSchema}},
+			extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, nativeLanguage: "english"}},
 		{name: "whitespace and case fold", cfg: BackendConfig{TextSearchExtension: "  PG_SEARCH ", PGTokenizer: " JIEBA "},
-			want: textSearchBackend{extension: TextSearchPGSearch, functionSchema: defaultPGFunctionSchema, tokenizer: "jieba"}},
+			want: textSearchBackend{extension: TextSearchPGSearch, functionSchema: defaultPGFunctionSchema, tokenizer: "jieba", nativeLanguage: "english"}},
 		{name: "custom schema", cfg: BackendConfig{TextSearchExtension: TextSearchPGSearch, PGFunctionSchema: "PgSearch"},
-			want: textSearchBackend{extension: TextSearchPGSearch, functionSchema: "pgsearch"}},
+			want: textSearchBackend{extension: TextSearchPGSearch, functionSchema: "pgsearch", nativeLanguage: "english"}},
 		{name: "lindera alias", cfg: BackendConfig{PGTokenizer: "chinese_lindera"},
-			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, tokenizer: "lindera(chinese)"}},
+			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, tokenizer: "lindera(chinese)", nativeLanguage: "english"}},
 		{name: "ngram canonicalized", cfg: BackendConfig{PGTokenizer: "ngram(3, 5)"},
-			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, tokenizer: "ngram(3,5)"}},
+			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, tokenizer: "ngram(3,5)", nativeLanguage: "english"}},
+		{name: "configured dictionary", cfg: BackendConfig{TextSearchNativeLanguage: "simple"},
+			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, nativeLanguage: "simple"}},
+		{name: "dictionary case folds", cfg: BackendConfig{TextSearchNativeLanguage: "  ZHParser "},
+			want: textSearchBackend{extension: TextSearchNative, functionSchema: defaultPGFunctionSchema, nativeLanguage: "zhparser"}},
 		{name: "invalid schema", cfg: BackendConfig{PGFunctionSchema: "paradedb; DROP TABLE x"}, wantErr: true},
 		{name: "invalid tokenizer", cfg: BackendConfig{PGTokenizer: "bogus"}, wantErr: true},
 		{name: "ngram min above max", cfg: BackendConfig{PGTokenizer: "ngram(5,3)"}, wantErr: true},
 		{name: "ngram zero min", cfg: BackendConfig{PGTokenizer: "ngram(0,3)"}, wantErr: true},
+		{name: "invalid dictionary", cfg: BackendConfig{TextSearchNativeLanguage: "english'; DROP TABLE x; --"}, wantErr: true},
+		{name: "dictionary starting with a digit", cfg: BackendConfig{TextSearchNativeLanguage: "3english"}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

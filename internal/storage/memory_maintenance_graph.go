@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
 )
 
 // The in-process store serves the graph-maintenance job from its own queue.
@@ -198,20 +199,58 @@ func (s *MemoryStore) RequeueEntityMaintenance(context.Context, []MaintenanceTar
 	return nil
 }
 
-// PruneEntity removes an entity no unit mentions any more.
+// PruneEntity removes an entity no unit mentions any more, and drops the
+// co-occurrence rows no current unit witnesses together — the stale-count case
+// a deleted entity's rows do not cover, because both endpoints are still there.
 func (s *MemoryStore) PruneEntity(ctx context.Context, bankID, entityID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	orphan := true
 	for _, entityIDs := range s.unitEntities {
 		if containsString(entityIDs, entityID) {
-			return nil
+			orphan = false
+			break
 		}
 	}
-	if entity, ok := s.entities[entityID]; ok && entity.BankID == bankID {
-		delete(s.entities, entityID)
+	if orphan {
+		if entity, ok := s.entities[entityID]; ok && entity.BankID == bankID {
+			delete(s.entities, entityID)
+		}
+	}
+	prefix := bankID + "\x00"
+	for key := range s.cooccurrences {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		pair := strings.SplitN(strings.TrimPrefix(key, prefix), "\x00", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		if pair[0] != entityID && pair[1] != entityID {
+			continue
+		}
+		if orphan || !s.pairWitnessedLocked(bankID, pair[0], pair[1]) {
+			delete(s.cooccurrences, key)
+		}
 	}
 	return nil
+}
+
+// pairWitnessedLocked reports whether any unit in the bank still mentions both
+// entities of a pair, which is what makes the recorded co-occurrence current.
+// The caller holds the lock.
+func (s *MemoryStore) pairWitnessedLocked(bankID, entityID1, entityID2 string) bool {
+	for unitID, entityIDs := range s.unitEntities {
+		unit, ok := s.units[unitID]
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		if containsString(entityIDs, entityID1) && containsString(entityIDs, entityID2) {
+			return true
+		}
+	}
+	return false
 }
