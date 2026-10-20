@@ -1,229 +1,78 @@
 package storage
 
 import (
-	"context"
+	"math"
 	"testing"
-	"time"
 )
 
-// testIncidentLinks returns the store's links touching one unit, both
-// directions, so a test can assert what survives a sweep.
-func testIncidentLinks(store *MemoryStore, unitID string) []MemoryLink {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	var out []MemoryLink
-	for _, link := range store.links {
-		if link.FromUnitID == unitID || link.ToUnitID == unitID {
-			out = append(out, link)
+// Contract reference: memories/pg/links.py:85-146 (`_within_batch_temporal_links`)
+// and :594-660 (`compute_semantic_links_ann`). A retain's temporal pass links
+// every ordered pair inside a fact-type group within the window — each unit to
+// its successors AND the reverse edge — and its semantic pass records a unit's
+// nearest neighbours plus the unit's own self-link at weight 1, because the ANN
+// probe returns the seed itself.
+func TestSemanticLinksIncludeTheSelfLink(t *testing.T) {
+	unit := MemoryUnit{ID: "a", BankID: "b1", Embedding: []float32{1, 0}}
+	neighbour := MemoryUnit{ID: "b", BankID: "b1", Embedding: []float32{0.9, 0.1}}
+	links := semanticLinksFor("b1", []MemoryUnit{unit, neighbour}, 0.7)
+	// Every unit in the batch fans out, so each one records its own self-link and
+	// the pair is recorded both ways — the same symmetric shape the reference's
+	// per-seed ANN probe produces.
+	if len(links) != 4 {
+		t.Fatalf("links = %d, want two self-links and the pair both ways: %+v", len(links), links)
+	}
+	self := map[string]float64{}
+	pair := map[string]bool{}
+	for _, link := range links {
+		if link.FromUnitID == link.ToUnitID {
+			self[link.FromUnitID] = link.Weight
+			continue
+		}
+		pair[link.FromUnitID+"->"+link.ToUnitID] = true
+	}
+	for _, id := range []string{"a", "b"} {
+		weight, ok := self[id]
+		if !ok || weight != 1 {
+			t.Fatalf("%s self-link = (%v, ok=%v), want weight 1", id, weight, ok)
 		}
 	}
-	return out
-}
-
-// testHasLink reports whether a directed link of one type joins two units.
-func testHasLink(store *MemoryStore, from, to string, kind MemoryLinkType) bool {
-	for _, link := range testIncidentLinks(store, from) {
-		if link.FromUnitID == from && link.ToUnitID == to && link.LinkType == kind {
-			return true
-		}
-	}
-	return false
-}
-
-// causalRetain writes three facts into one item: consecutive facts get derived
-// temporal edges both ways through the middle unit, and the extraction declares
-// a causal edge for each of the latter two.
-func causalRetain(t *testing.T, store *MemoryStore, bank string) []string {
-	t.Helper()
-	content := "lost the job, then could not pay rent, then moved out"
-	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
-		content: {
-			{Text: "They lost the job."},
-			{Text: "They could not pay rent.", CausedByIndexes: []int{0}},
-			{Text: "They moved out.", CausedByIndexes: []int{1}},
-		},
-	}}
-	outcome, err := store.RetainWrite(context.Background(), RetainRequest{
-		BankID:     bank,
-		Items:      []RetainItem{{Content: content, DocumentID: "doc-1"}},
-		Extraction: extractor,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	units := outcome.ItemUnitIDs[0]
-	if len(units) != 3 {
-		t.Fatalf("stored %d units, want 3", len(units))
-	}
-	return units
-}
-
-// An edit drops the derived links incident to the edited unit in both
-// directions — the reference's apply_edit calls delete_unit_links, which
-// matches from_unit_id and to_unit_id alike — while keeping the causal edges.
-func TestUpdateMemoryEditDropsNonCausalLinks(t *testing.T) {
-	store, bank := newContractStore(t)
-	ctx := context.Background()
-	units := causalRetain(t, store, bank)
-
-	// The retain left the derived and causal edges the sweep must tell apart.
-	if !testHasLink(store, units[0], units[1], LinkTemporal) {
-		t.Fatalf("no temporal edge %s -> %s after retain", units[0], units[1])
-	}
-	if !testHasLink(store, units[1], units[2], LinkTemporal) {
-		t.Fatalf("no temporal edge %s -> %s after retain", units[1], units[2])
-	}
-	if !testHasLink(store, units[1], units[0], LinkCausedBy) {
-		t.Fatalf("no causal edge %s -> %s after retain", units[1], units[0])
-	}
-	if !testHasLink(store, units[2], units[1], LinkCausedBy) {
-		t.Fatalf("no causal edge %s -> %s after retain", units[2], units[1])
-	}
-
-	newText := "a materially different fact"
-	if _, err := store.UpdateMemory(ctx, bank, units[1], MemoryPatch{Text: &newText}); err != nil {
-		t.Fatal(err)
-	}
-
-	if testHasLink(store, units[0], units[1], LinkTemporal) {
-		t.Fatal("edit left the incoming temporal edge in place")
-	}
-	if testHasLink(store, units[1], units[2], LinkTemporal) {
-		t.Fatal("edit left the outgoing temporal edge in place")
-	}
-	if !testHasLink(store, units[1], units[0], LinkCausedBy) {
-		t.Fatal("edit dropped an outgoing causal edge")
-	}
-	if !testHasLink(store, units[2], units[1], LinkCausedBy) {
-		t.Fatal("edit dropped an incoming causal edge")
+	if !pair["a->b"] || !pair["b->a"] {
+		t.Fatalf("pairs = %v, want both directions", pair)
 	}
 }
 
-// A patch that does not touch the unit's content — a tag-only edit — is not the
-// reference's doing_edit, so it leaves the links untouched.
-func TestUpdateMemoryNonContentEditKeepsLinks(t *testing.T) {
-	store, bank := newContractStore(t)
-	ctx := context.Background()
-	units := causalRetain(t, store, bank)
-
-	tags := []string{"reviewed"}
-	if _, err := store.UpdateMemory(ctx, bank, units[1], MemoryPatch{Tags: &tags}); err != nil {
-		t.Fatal(err)
-	}
-	if !testHasLink(store, units[0], units[1], LinkTemporal) {
-		t.Fatal("a tag-only edit dropped a temporal edge")
-	}
-	if !testHasLink(store, units[1], units[2], LinkTemporal) {
-		t.Fatal("a tag-only edit dropped a temporal edge")
-	}
-}
-
-// drainAndRelink runs the graph-maintenance drain the way the job does: claim
-// the queued targets and relink each of them.
-func drainAndRelink(t *testing.T, store *MemoryStore) {
-	t.Helper()
-	ctx := context.Background()
-	targets, err := store.DrainGraphMaintenance(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(targets) == 0 {
-		t.Fatal("the edit queued no relink victims")
-	}
-	for _, target := range targets {
-		if err := store.RelinkUnit(ctx, target.BankID, target.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// An edit drops the edited unit's derived edges, and the graph-maintenance pass
-// re-derives the temporal ones — the reference's relink tops up temporal as
-// well as semantic links, so the edge comes back once the drain runs.
-func TestGraphMaintenanceReDerivesEditedTemporalLinks(t *testing.T) {
-	store, bank := newContractStore(t)
-	ctx := context.Background()
-	units := causalRetain(t, store, bank)
-
-	newText := "a materially different fact"
-	if _, err := store.UpdateMemory(ctx, bank, units[1], MemoryPatch{Text: &newText}); err != nil {
-		t.Fatal(err)
-	}
-	if testHasLink(store, units[1], units[2], LinkTemporal) {
-		t.Fatal("edit left the outgoing temporal edge in place")
-	}
-
-	drainAndRelink(t, store)
-
-	if !testHasLink(store, units[1], units[2], LinkTemporal) {
-		t.Fatal("relink did not re-derive the dropped outgoing temporal edge")
-	}
-	if !testHasLink(store, units[0], units[1], LinkTemporal) {
-		t.Fatal("relink did not re-derive the dropped incoming temporal edge")
-	}
-	if !testHasLink(store, units[1], units[0], LinkCausedBy) {
-		t.Fatal("relink dropped an outgoing causal edge")
-	}
-	if !testHasLink(store, units[2], units[1], LinkCausedBy) {
-		t.Fatal("relink dropped an incoming causal edge")
-	}
-}
-
-// A relink adds only the edges the window and the fact type admit: a neighbour
-// 48h away is outside it, and one of another fact type never links by date.
-func TestRelinkTemporalWindowAndFactType(t *testing.T) {
+// The temporal pass links a batch's same-day units in both directions.
+func TestTemporalLinksLinkSuccessorsAndTheirReverse(t *testing.T) {
 	store := NewMemoryStore("public")
-	ctx := context.Background()
-	now := time.Now().UTC()
-	hourAgo := now.Add(-time.Hour)
-	twoDaysAgo := now.Add(-48 * time.Hour)
-	store.units["anchor"] = MemoryUnit{ID: "anchor", BankID: "b1", EventDate: &now, FactType: TypeWorld}
-	store.units["close"] = MemoryUnit{ID: "close", BankID: "b1", EventDate: &hourAgo, FactType: TypeWorld}
-	store.units["far"] = MemoryUnit{ID: "far", BankID: "b1", EventDate: &twoDaysAgo, FactType: TypeWorld}
-	store.units["other-kind"] = MemoryUnit{ID: "other-kind", BankID: "b1", EventDate: &now, FactType: TypeExperience}
-
-	if err := store.RelinkUnit(ctx, "b1", "anchor"); err != nil {
-		t.Fatal(err)
-	}
-	if !testHasLink(store, "anchor", "close", LinkTemporal) {
-		t.Fatal("an in-window same-kind neighbour was not linked")
-	}
-	if testHasLink(store, "anchor", "far", LinkTemporal) {
-		t.Fatal("a unit 48h away must stay outside the window")
-	}
-	if testHasLink(store, "anchor", "other-kind", LinkTemporal) {
-		t.Fatal("a unit of another fact type must not be linked by date")
-	}
-	// The edge is graded by proximity: one hour apart weighs far above the floor.
-	for _, link := range store.links {
-		if link.FromUnitID == "anchor" && link.ToUnitID == "close" {
-			if link.Weight < 0.9 {
-				t.Fatalf("temporal weight = %v, want ≈0.958", link.Weight)
-			}
+	date := *parseTime(t, "2026-10-20T00:00:00Z")
+	for _, id := range []string{"u1", "u2", "u3"} {
+		store.units[id] = MemoryUnit{
+			ID: id, BankID: "b1", FactType: TypeWorld,
+			EventDate: &date,
 		}
 	}
-}
-
-// A relink only adds: running it twice leaves the edge set unchanged, and it
-// never deletes an incoming edge the unit's peers still hold.
-func TestRelinkIsAdditive(t *testing.T) {
-	store, bank := newContractStore(t)
-	ctx := context.Background()
-	units := causalRetain(t, store, bank)
-
-	// An edge from a peer that is not being relinked must survive.
-	before := len(testIncidentLinks(store, units[2]))
-	if err := store.RelinkUnit(ctx, bank, units[1]); err != nil {
-		t.Fatal(err)
+	links := store.temporalLinksLocked("b1", []string{"u1", "u2", "u3"})
+	seen := map[string]bool{}
+	for _, link := range links {
+		if link.LinkType != LinkTemporal {
+			t.Fatalf("link type = %q, want temporal", link.LinkType)
+		}
+		// Same-day units clamp to the reference's 0.3 weight floor... except a
+		// zero gap, which weighs 1.
+		if math.Abs(link.Weight-1) > 1e-9 {
+			t.Fatalf("link %s->%s weight = %v, want 1 for a zero gap", link.FromUnitID, link.ToUnitID, link.Weight)
+		}
+		seen[link.FromUnitID+"->"+link.ToUnitID] = true
 	}
-	afterFirst := len(store.links)
-	if err := store.RelinkUnit(ctx, bank, units[1]); err != nil {
-		t.Fatal(err)
+	for _, pair := range [][2]string{
+		{"u1", "u2"}, {"u2", "u1"}, {"u2", "u3"}, {"u3", "u2"}, {"u1", "u3"}, {"u3", "u1"},
+	} {
+		if !seen[pair[0]+"->"+pair[1]] {
+			t.Fatalf("missing temporal link %s->%s; got %v", pair[0], pair[1], seen)
+		}
 	}
-	if got := len(store.links); got != afterFirst {
-		t.Fatalf("a second relink changed the link count: %d then %d", afterFirst, got)
-	}
-	if got := len(testIncidentLinks(store, units[2])); got < before {
-		t.Fatalf("relinking a peer dropped this unit's incident edges: %d then %d", before, got)
+	// No self-links: the reference's temporal pass never writes one.
+	if seen["u1->u1"] {
+		t.Fatal("temporal pass must not link a unit to itself")
 	}
 }

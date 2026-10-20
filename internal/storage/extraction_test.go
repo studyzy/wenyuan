@@ -116,15 +116,28 @@ func TestRetainLinksFactsFromOneItem(t *testing.T) {
 	if len(units) != 3 {
 		t.Fatalf("stored %d units, want 3", len(units))
 	}
-	if len(store.links) != 2 {
-		t.Fatalf("created %d links, want one between each consecutive pair", len(store.links))
-	}
-	for i, link := range store.links {
-		if link.FromUnitID != units[i] || link.ToUnitID != units[i+1] {
-			t.Fatalf("link %d joins %s->%s, want %s->%s", i, link.FromUnitID, link.ToUnitID, units[i], units[i+1])
+	// The three facts share a date, so the reference's within-batch temporal pass
+	// links every ordered pair of them, not only the consecutive ones
+	// (`memories/pg/links.py:85-146`: each unit links to its successors AND the
+	// reverse edge is written).
+	temporal := make([]MemoryLink, 0, len(store.links))
+	for _, link := range store.links {
+		if link.LinkType == LinkTemporal {
+			temporal = append(temporal, link)
 		}
-		if link.LinkType != LinkTemporal {
-			t.Fatalf("link %d type = %q, want temporal", i, link.LinkType)
+	}
+	forward := map[string]bool{}
+	for _, link := range temporal {
+		forward[link.FromUnitID+"->"+link.ToUnitID] = true
+	}
+	for i := range units {
+		for j := range units {
+			if i == j {
+				continue
+			}
+			if !forward[units[i]+"->"+units[j]] {
+				t.Fatalf("missing temporal link %s->%s", units[i], units[j])
+			}
 		}
 	}
 }

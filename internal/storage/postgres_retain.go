@@ -247,6 +247,9 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	if err := s.linkItemUnits(ctx, req.BankID, units, contents); err != nil {
 		return nil, err
 	}
+	if err := s.createTemporalLinks(ctx, req.BankID, units); err != nil {
+		return nil, err
+	}
 	if err := s.createSemanticLinks(ctx, req.BankID, units); err != nil {
 		return nil, err
 	}
@@ -293,26 +296,6 @@ func (s *PostgresStore) pruneEntitiesIfOrphaned(ctx context.Context, bankID stri
 		 WHERE e.bank_id = $1 AND e.id = ANY($2::uuid[])
 		   AND NOT EXISTS (SELECT 1 FROM `+qualified+`.unit_entities ue WHERE ue.entity_id = e.id)`,
 		bankID, entityIDs)
-	return err
-}
-
-// createSemanticLinks links each new unit to existing units whose embedding is
-// within the similarity floor, using the pgvector distance operator.
-func (s *PostgresStore) createSemanticLinks(ctx context.Context, bankID string, unitIDs []string) error {
-	if len(unitIDs) == 0 {
-		return nil
-	}
-	qualified := quoteIdent(s.schema)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO `+qualified+`.memory_links (bank_id, from_unit_id, to_unit_id, link_type, weight)
-		 SELECT u1.bank_id, u1.id, u2.id, 'semantic', 1 - (u1.embedding <=> u2.embedding)
-		 FROM `+qualified+`.memory_units u1
-		 JOIN `+qualified+`.memory_units u2
-		   ON u2.bank_id = u1.bank_id AND u2.id <> u1.id AND u2.embedding IS NOT NULL
-		 WHERE u1.bank_id = $1 AND u1.id = ANY($2::uuid[]) AND u1.embedding IS NOT NULL
-		   AND 1 - (u1.embedding <=> u2.embedding) >= $3
-		 ON CONFLICT DO NOTHING`,
-		bankID, unitIDs, s.tuning.SemanticLinkMinSimilarity)
 	return err
 }
 

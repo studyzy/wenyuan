@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -204,8 +205,10 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 	}
 	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
 	s.links = append(s.links, causalLinksFor(req.BankID, units, contents)...)
-	// Embedding-similar units are linked semantically, among this item's units
-	// and their nearest existing neighbours.
+	// Dated units are linked temporally to their nearest same-kind neighbours,
+	// then embedding-similar units semantically, among this item's units and
+	// their nearest existing neighbours — the reference's retain order.
+	s.links = append(s.links, s.temporalLinksLocked(req.BankID, units)...)
 	s.links = append(s.links, s.semanticLinksLocked(req.BankID, units)...)
 	if len(pruneCandidates) > 0 {
 		s.pruneEntitiesIfOrphanedLocked(req.BankID, pruneCandidates)
@@ -949,6 +952,102 @@ func (s *MemoryStore) UnitsForTest(bankID string) []MemoryUnit {
 		unit := s.units[id]
 		if unit.BankID == bankID {
 			out = append(out, unit)
+		}
+	}
+	return out
+}
+
+// temporalLinksLocked builds the temporal links a freshly written item gets,
+// with the reference's two shapes (`memories/pg/links.py:457-566`): each new
+// dated experience/world unit takes its nearest same-fact-type neighbours in
+// the bank inside the window, and the batch's own units link to each other
+// bidirectionally, nearest successors first. Both are bounded by the per-unit
+// cap, and the weight floors at the reference's 0.3.
+func (s *MemoryStore) temporalLinksLocked(bankID string, unitIDs []string) []MemoryLink {
+	type dated struct {
+		id        string
+		factType  MemoryUnitType
+		eventDate time.Time
+	}
+	fresh := make([]dated, 0, len(unitIDs))
+	freshIDs := make(map[string]bool, len(unitIDs))
+	for _, id := range unitIDs {
+		unit, ok := s.units[id]
+		if !ok || unit.EventDate == nil || !temporalEligibleFactType(unit.FactType) {
+			continue
+		}
+		fresh = append(fresh, dated{id: id, factType: unit.FactType, eventDate: *unit.EventDate})
+		freshIDs[id] = true
+	}
+	if len(fresh) == 0 {
+		return nil
+	}
+
+	// The batch's units against the rest of the bank: nearest first, same fact
+	// type, inside the window, capped per unit.
+	existing := make([]dated, 0, len(s.units))
+	for id, unit := range s.units {
+		if freshIDs[id] || unit.BankID != bankID || unit.EventDate == nil || !temporalEligibleFactType(unit.FactType) {
+			continue
+		}
+		existing = append(existing, dated{id: id, factType: unit.FactType, eventDate: *unit.EventDate})
+	}
+
+	out := make([]MemoryLink, 0, len(fresh)*maxTemporalLinksPerUnit)
+	link := func(from, to string, hours float64) {
+		out = append(out, MemoryLink{
+			BankID:     bankID,
+			FromUnitID: from,
+			ToUnitID:   to,
+			LinkType:   LinkTemporal,
+			Weight:     temporalLinkWeight(hours),
+		})
+	}
+	for _, unit := range fresh {
+		type neighbour struct {
+			id    string
+			hours float64
+		}
+		neighbours := make([]neighbour, 0, len(existing))
+		for _, other := range existing {
+			if other.factType != unit.factType {
+				continue
+			}
+			neighbours = append(neighbours, neighbour{
+				id:    other.id,
+				hours: math.Abs(other.eventDate.Sub(unit.eventDate).Hours()),
+			})
+		}
+		sort.Slice(neighbours, func(a, b int) bool {
+			if neighbours[a].hours != neighbours[b].hours {
+				return neighbours[a].hours < neighbours[b].hours
+			}
+			return neighbours[a].id < neighbours[b].id
+		})
+		if len(neighbours) > maxTemporalLinksPerUnit {
+			neighbours = neighbours[:maxTemporalLinksPerUnit]
+		}
+		for _, near := range neighbours {
+			if near.hours > temporalLinkWindowHours {
+				break
+			}
+			link(unit.id, near.id, near.hours)
+		}
+	}
+
+	// The batch against itself: every pair inside a fact-type group, both
+	// directions, which is the peak the per-unit cap then trims.
+	for i, unit := range fresh {
+		for _, other := range fresh[i+1:] {
+			if other.factType != unit.factType {
+				continue
+			}
+			hours := math.Abs(other.eventDate.Sub(unit.eventDate).Hours())
+			if hours > temporalLinkWindowHours {
+				continue
+			}
+			link(unit.id, other.id, hours)
+			link(other.id, unit.id, hours)
 		}
 	}
 	return out

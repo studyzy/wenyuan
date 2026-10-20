@@ -7,6 +7,12 @@ import "sort"
 // probing for more neighbours.
 const maxTemporalLinksPerUnit = 20
 
+// maxSemanticLinksPerUnit is the reference's MAX_SEMANTIC_LINKS_PER_UNIT: the
+// per-unit ceiling on semantic neighbours it keeps, which is both the ANN
+// probe's top_k at retain time and the budget the relink pass tops up to
+// (`memories/pg/graph.py:61`).
+const maxSemanticLinksPerUnit = 50
+
 // temporalLinkWindowHours is the window graph maintenance re-derives temporal
 // edges within, mirroring the 24h window retain enforces.
 const temporalLinkWindowHours = 24
@@ -107,7 +113,6 @@ func dropNonCausalLinksFor(links []MemoryLink, unitID string) []MemoryLink {
 // relink re-derives the edges of the unit it was queued for, not every pair in
 // the candidate window.
 func semanticLinksFrom(bankID string, unit MemoryUnit, others []MemoryUnit, minSimilarity float64) []MemoryLink {
-	const fanOut = 5
 	if len(unit.Embedding) == 0 {
 		return nil
 	}
@@ -131,10 +136,20 @@ func semanticLinksFrom(bankID string, unit MemoryUnit, others []MemoryUnit, minS
 		}
 		return neighbours[a].id < neighbours[b].id
 	})
-	if len(neighbours) > fanOut {
-		neighbours = neighbours[:fanOut]
+	if len(neighbours) > maxSemanticLinksPerUnit {
+		neighbours = neighbours[:maxSemanticLinksPerUnit]
 	}
-	links := make([]MemoryLink, 0, len(neighbours))
+	// A unit is its own nearest neighbour, so the reference records a self-link
+	// of weight 1 for every unit it probes; the statistics and the graph both
+	// count it, so leaving it out would undercount both.
+	links := make([]MemoryLink, 0, len(neighbours)+1)
+	links = append(links, MemoryLink{
+		BankID:     bankID,
+		FromUnitID: unit.ID,
+		ToUnitID:   unit.ID,
+		LinkType:   LinkSemantic,
+		Weight:     1,
+	})
 	for _, neighbour := range neighbours {
 		links = append(links, MemoryLink{
 			BankID:     bankID,

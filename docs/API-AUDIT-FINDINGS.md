@@ -941,3 +941,32 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 `httpx.ParseQueryInt` 的另一半职责是把“超出 int64 的 Python 整数”按**符号**判成 `less_than_equal` / `greater_than_equal`，而不是 `int_parsing` —— 参考把任意大的 Python 整数解析出来后与声明边界比较，本服务原先会在解析阶段就判成类型错误。`TestParseQueryIntReadsTheFrameworkGrammar` 覆盖 12 个用例。
 
 **复核第一轮**：webhooks 第一轮不在审计范围内（本轮新增单元）。
+
+## 第二轮 reporting-audit
+
+| API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #93 `GET .../stats` | ❌已修（根因在存储层的连边推导，见下） | `api/http.py:6620`；`memories/pg/counts.py:62-105`（`link_counts`：`memory_links` 按 `link_type` 分组 + `unit_entities` 派生的 `entity` 计数） | `internal/storage/postgres_observability.go:computeBankStats` | `/stats` 本身逐字段与参考一致（键序也一致）；数值差异来自 `memory_links` 里少了三种边，已在下面一并修复。修复后同一夹具上**两侧 `/stats` 逐字节相同** | 探针 SAME（含 `?refresh=true`、`?refresh=zz`→422） |
+| #94 `POST .../health/llm` | ✅一致 | `api/http.py:6678` | `internal/reporting/` | — | 未启用 provider 时两侧都是 404，SAME |
+| #95 `GET .../stats/memories-timeseries` | ✅一致 | `api/http.py:6713` | `internal/reporting/` | — | SAME；`?period=bogus` 也被接受（参考不校验该枚举） |
+| #96 `GET .../audit-logs` | ✅一致 | `api/http.py:10574` | `internal/reporting/` | — | SAME；`?period=bogus` 同样被接受 |
+| #97 `GET .../audit-logs/stats` | ✅一致 | `api/http.py:10615` | `internal/reporting/` | — | SAME（`period`/`trunc`/`start`/`buckets` 键序一致；`start` 是“现在减 7 天”，两次请求自然不同） |
+| #98 `GET .../llm-requests` | ✅一致 | `api/http.py:10648` | `internal/reporting/` | — | SAME；`?status=bogus`、`?period=30d` 都被接受 |
+| #99 `GET .../llm-requests/stats` | ✅一致 | `api/http.py:10706` | `internal/reporting/` | — | SAME（桶内 `time`/`statuses`/`total`/`tokens{input,output,cached,thoughts,total}` 键序一致） |
+
+### 本单元发现并修复的连边推导缺陷（影响 `/stats`、`/graph` 与召回图臂）
+
+参考库里直接读 `memory_links` 才知道真相：一个含 2 条 world 事实 + 2 条 observation 的夹具，参考是 `semantic 4 / temporal 2 / entity 1`，本服务是 `semantic 2 / temporal 0 / entity 1`。
+
+| 缺陷 | 参考证据 | 修复 |
+|---|---|---|
+| **semantic 自环边缺失**：参考的 ANN 探针把种子自己也算进最近邻，于是每个单位都有一条 `自身 → 自身`、`weight = 1` 的 semantic 边（`links.py:625` 明确写了 "Self-links are harmless (ON CONFLICT DO NOTHING handles duplicates)"）。本服务用 `u2.id <> u1.id` 把它排除了 | `memories/pg/links.py:594-660`；参考库 `memory_links` 里 `link_type='semantic' AND from_unit_id=to_unit_id` 真实存在（`audit-dt2` 2 条、`coding-agent::amaze` 48 条） | `postgres_retain.go:createSemanticLinks` 去掉自排除；`memory_links.go:semanticLinksFrom` 补上自环 |
+| **semantic 邻居上限错了**：本服务内存后端写死 `fanOut = 5`，参考是 `MAX_SEMANTIC_LINKS_PER_UNIT = 50` | `memories/pg/graph.py:61` | 改用新增的 `maxSemanticLinksPerUnit = 50` |
+| **semantic 边权重未夹取**：参考把相似度 clamp 到 `[0,1]`（反归一化向量的余弦可能越界）；本服务直接写 `1 - distance` | `links.py:655-657` | SQL 里加 `LEAST(1.0, GREATEST(0.0, …))` |
+| **temporal 边在 retain 时完全不写**：参考在 retain 的语义阶段之前先跑 `create_temporal_links_batch`，本服务只在 graph maintenance 的 relink 里补 | `retain/orchestrator.py:820` → `memories/pg/links.py:457-566` | 新增 `postgres_retain.go:createTemporalLinks` + `memory_retain.go:temporalLinksLocked`，在 `createSemanticLinks` 之前调用 |
+| **temporal 边只有单向**：参考的批内规则是"组内按日期排序后，每个单位与它之后 `K` 个后继**双向**连边"，本服务只写了 forward | `links.py:85-146`（`_within_batch_temporal_links`，注释明确 "Create bidirectional links"） | 两个后端都改为双向 |
+| 旧测试 `TestRetainLinksFactsFromOneItem` 断言"3 条同一天的事实只产生 2 条边"——**这个断言本身就是错的**（只是恰好与本服务的旧行为一致）；参考对 3 条同组事实产生 6 条有向边 | 同上 | 测试改为断言"每个有序对都有 temporal 边"，并显式断言不写 temporal 自环 |
+
+**两侧一致性（同一夹具、同一内容）**：修复后 `nodes_by_fact_type {observation:2, world:2}`、`links_by_link_type {semantic:4, temporal:2, entity:1}` 与参考完全相同，`/stats` 整份 JSON 逐字节相同。
+
+**复核第一轮**：reporting-audit 第一轮不在审计范围内（本轮新增单元）。
