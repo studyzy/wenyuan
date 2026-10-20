@@ -110,13 +110,8 @@ func anyGroupMatches(groups []TagGroup, present []string) bool {
 // carries.
 func groupMatches(group TagGroup, present []string) bool {
 	switch {
-	case len(group.Not) > 0:
-		for _, child := range group.Not {
-			if groupMatches(child, present) {
-				return false
-			}
-		}
-		return true
+	case group.Not != nil:
+		return !groupMatches(*group.Not, present)
 	case len(group.And) > 0:
 		for _, child := range group.And {
 			if !groupMatches(child, present) {
@@ -307,13 +302,18 @@ func ValidateTagScope(q RecallQuery, vocabulary []string) error {
 }
 
 // usesFuzzyTagResolution reports whether any leaf in the tree asks fuzzy
+// notUsesFuzzy reports whether this node's Not child asks for fuzzy resolution.
+func (group TagGroup) notUsesFuzzy() bool {
+	return group.Not != nil && usesFuzzyTagResolution([]TagGroup{*group.Not})
+}
+
 // resolution. Flat tags carry no resolution option, so only compound groups can.
 func usesFuzzyTagResolution(groups []TagGroup) bool {
 	for _, group := range groups {
 		if group.Resolve == TagResolveFuzzy {
 			return true
 		}
-		if usesFuzzyTagResolution(group.And) || usesFuzzyTagResolution(group.Or) || usesFuzzyTagResolution(group.Not) {
+		if usesFuzzyTagResolution(group.And) || usesFuzzyTagResolution(group.Or) || group.notUsesFuzzy() {
 			return true
 		}
 	}
@@ -349,8 +349,8 @@ func checkLeafCombinations(group TagGroup, vocabulary []string) error {
 			return err
 		}
 	}
-	for _, child := range group.Not {
-		if err := checkLeafCombinations(child, vocabulary); err != nil {
+	if group.Not != nil {
+		if err := checkLeafCombinations(*group.Not, vocabulary); err != nil {
 			return err
 		}
 	}

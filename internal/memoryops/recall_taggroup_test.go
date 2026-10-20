@@ -50,7 +50,7 @@ func TestTagGroupsAcceptContractShapes(t *testing.T) {
 		`[{"tags":["ops"],"match":"all","resolve":"exact"}]`,
 		`[{"and":[{"tags":["ops"]},{"tags":["eu"]}]}]`,
 		`[{"or":[{"tags":["ops"]}]}]`,
-		`[{"not":[{"tags":["secret"]}]}]`,
+		`[{"not":{"tags":["secret"]}}]`,
 		`{"tags":["ops"]}`,
 	}
 	for _, body := range cases {
@@ -118,5 +118,74 @@ func TestExplicitMatchModes(t *testing.T) {
 	}
 	if len(leafResponse.Results) != 2 {
 		t.Fatalf("an explicit non-strict leaf mode includes untagged memories: %s", leafAny.Body.String())
+	}
+}
+
+// A `not` given as a list is refused, and reported the way the reference does:
+// the list satisfies the NOT branch's own shape check, so the four items land
+// on that branch's child union rather than as a missing `not` member. The
+// reference emits seven items for this body — the three members the other
+// branches require plus these four (verified against the live service).
+func TestTagGroupNotRefusesAList(t *testing.T) {
+	var field TagGroupsField
+	if err := json.Unmarshal([]byte(`[{"not":[{"tags":["secret"]}]}]`), &field); err != nil {
+		t.Fatalf("the field must decode its own failure: %v", err)
+	}
+	if len(field.Groups) != 0 {
+		t.Fatalf("a list-shaped not decoded to %+v, want no groups", field.Groups)
+	}
+	if len(field.failures) != 7 {
+		t.Fatalf("produced %d items, want 7", len(field.failures))
+	}
+	for _, want := range []string{"TagGroupLeaf", "TagGroupAnd", "TagGroupOr", "TagGroupNot"} {
+		found := false
+		for _, item := range field.failures {
+			if len(item.Loc) == 6 && item.Loc[3] == "TagGroupNot" && item.Loc[5] == want {
+				found = true
+				if item.Type != "model_attributes_type" {
+					t.Fatalf("item for %s is %q, want model_attributes_type", want, item.Type)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no item reports the not's %s child", want)
+		}
+	}
+}
+
+// One node is what `not` takes, and it decodes and negates.
+func TestTagGroupNotAcceptsASingleNode(t *testing.T) {
+	var field TagGroupsField
+	if err := json.Unmarshal([]byte(`[{"not":{"tags":["secret"]}}]`), &field); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(field.Groups) != 1 || field.Groups[0].Not.Child == nil {
+		t.Fatalf("groups = %+v, want one group with a not child", field.Groups)
+	}
+	if got := field.Groups[0].Not.Child.Tags; len(got) != 1 || got[0] != "secret" {
+		t.Fatalf("not child tags = %v", got)
+	}
+}
+
+// The served endpoint reports the list-shaped `not` as a 422 whose envelope
+// matches the reference's, rather than silently dropping the filter.
+func TestRecallRefusesAListShapedNot(t *testing.T) {
+	mux, _ := newServer(t)
+	rec := post(t, mux, "/v1/default/banks/b1/memories/recall",
+		`{"query":"deploy","tag_groups":[{"not":[{"tags":["secret"]}]}]}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Detail []struct {
+			Type string `json:"type"`
+			Loc  []any  `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(envelope.Detail) != 7 {
+		t.Fatalf("detail has %d items, want 7 (body %s)", len(envelope.Detail), rec.Body.String())
 	}
 }

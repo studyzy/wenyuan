@@ -98,8 +98,9 @@ func toStorageScopeGroup(group httpx.TagGroup) storage.TagGroup {
 	if len(group.Or) > 0 {
 		converted.Or = toStorageScope(group.Or)
 	}
-	if len(group.Not) > 0 {
-		converted.Not = toStorageScope(group.Not)
+	if group.Not != nil {
+		child := toStorageScopeGroup(*group.Not)
+		converted.Not = &child
 	}
 	return converted
 }

@@ -276,13 +276,9 @@ func recallTagPredicate(q RecallQuery) string {
 // tagGroupClause renders one group node.
 func tagGroupClause(group TagGroup) string {
 	switch {
-	case len(group.Not) > 0:
-		// Not matches when no child does, which is the negation of their union.
-		clauses := make([]string, 0, len(group.Not))
-		for _, child := range group.Not {
-			clauses = append(clauses, tagGroupClause(child))
-		}
-		return "NOT (" + strings.Join(clauses, " OR ") + ")"
+	case group.Not != nil:
+		// Not matches when its one child does not, which is that child negated.
+		return "NOT (" + tagGroupClause(*group.Not) + ")"
 	case len(group.And) > 0:
 		clauses := make([]string, 0, len(group.And))
 		for _, child := range group.And {

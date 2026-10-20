@@ -121,7 +121,7 @@ func TestTagGroupClauseRendersCompoundGroups(t *testing.T) {
 	if ori != "(tags::text[] && ARRAY['a']::text[] OR tags::text[] && ARRAY['b']::text[])" {
 		t.Fatalf("or = %s", ori)
 	}
-	not := tagGroupClause(TagGroup{Not: []TagGroup{{Tags: []string{"a"}}}})
+	not := tagGroupClause(TagGroup{Not: &TagGroup{Tags: []string{"a"}}})
 	if not != "NOT (tags::text[] && ARRAY['a']::text[])" {
 		t.Fatalf("not = %s", not)
 	}

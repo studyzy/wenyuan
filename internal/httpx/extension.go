@@ -19,9 +19,12 @@ const (
 // filter shape so a scope can be AND-ed into any tag-scoped read without httpx
 // depending on the storage area.
 type TagGroup struct {
-	And     []TagGroup
-	Or      []TagGroup
-	Not     []TagGroup
+	And []TagGroup
+	Or  []TagGroup
+	// Not is the one child of a negation. The reference's TagGroupNot holds a
+	// single node (engine/search/tags.py:333-337) and refuses a list, so this
+	// carries one rather than a list.
+	Not     *TagGroup
 	Tag     string
 	Tags    []string
 	Resolve string

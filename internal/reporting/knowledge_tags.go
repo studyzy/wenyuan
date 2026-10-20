@@ -278,12 +278,9 @@ func toStorageTagGroups(groups []knowledgeTagGroup) []storage.TagGroup {
 	}
 	out := make([]storage.TagGroup, 0, len(groups))
 	for _, group := range groups {
-		// storage.TagGroup models `not` as a list while the reference (and this
-		// filter) model it as one negated child, so the single child crosses as
-		// a one-element list and comes back the same way.
-		var not []storage.TagGroup
+		var not *storage.TagGroup
 		if group.Not != nil {
-			not = toStorageTagGroups([]knowledgeTagGroup{*group.Not})
+			not = toStorageTagGroup(group.Not)
 		}
 		out = append(out, storage.TagGroup{
 			And:     toStorageTagGroups(group.And),
@@ -298,15 +295,27 @@ func toStorageTagGroups(groups []knowledgeTagGroup) []storage.TagGroup {
 	return out
 }
 
+// toStorageTagGroup adapts one knowledge filter node to the storage shape.
+func toStorageTagGroup(group *knowledgeTagGroup) *storage.TagGroup {
+	converted := toStorageTagGroups([]knowledgeTagGroup{*group})[0]
+	return &converted
+}
+
+// fromStorageTagGroup adapts one resolved storage node back to the shape the
+// knowledge filter evaluates.
+func fromStorageTagGroup(group *storage.TagGroup) *knowledgeTagGroup {
+	converted := fromStorageTagGroups([]storage.TagGroup{*group})[0]
+	return &converted
+}
+
 // fromStorageTagGroups adapts a resolved storage tag-group tree back to the
 // shape the knowledge filter evaluates.
 func fromStorageTagGroups(groups []storage.TagGroup) []knowledgeTagGroup {
 	out := make([]knowledgeTagGroup, 0, len(groups))
 	for _, group := range groups {
 		var not *knowledgeTagGroup
-		if len(group.Not) > 0 {
-			child := fromStorageTagGroups(group.Not)[0]
-			not = &child
+		if group.Not != nil {
+			not = fromStorageTagGroup(group.Not)
 		}
 		out = append(out, knowledgeTagGroup{
 			And:     fromStorageTagGroups(group.And),

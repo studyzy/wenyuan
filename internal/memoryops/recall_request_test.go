@@ -46,7 +46,7 @@ func TestRecallRequestDecodesDocumentedFields(t *testing.T) {
 // accepts the leaf/compound object forms; a bare tag list is not one of them
 // (the reference's union has no list branch).
 func TestTagGroupsFieldAcceptsNestedAndLegacy(t *testing.T) {
-	nested := `[{"and":[{"or":[{"tags":["a"]},{"tags":["b"]}]},{"not":[{"tags":["c"]}]}]}]`
+	nested := `[{"and":[{"or":[{"tags":["a"]},{"tags":["b"]}]},{"not":{"tags":["c"]}}]}]`
 	var req RecallRequest
 	if err := json.Unmarshal([]byte(`{"query":"q","tag_groups":`+nested+`}`), &req); err != nil {
 		t.Fatal(err)

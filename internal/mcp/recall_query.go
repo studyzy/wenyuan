@@ -80,6 +80,15 @@ func buildRecallQuery(bankID string, request memoryops.RecallRequest) (storage.R
 	}, nil
 }
 
+// toStorageTagNot converts a not member, which holds at most one node.
+func toStorageTagNot(n memoryops.TagGroupNot) *storage.TagGroup {
+	if n.Child == nil {
+		return nil
+	}
+	converted := toStorageTagGroups([]memoryops.TagGroupRequest{*n.Child})[0]
+	return &converted
+}
+
 // toStorageTagGroups converts the decoded tag-filter nodes into the storage
 // shape, preserving the boolean nesting.
 func toStorageTagGroups(groups []memoryops.TagGroupRequest) []storage.TagGroup {
@@ -91,7 +100,7 @@ func toStorageTagGroups(groups []memoryops.TagGroupRequest) []storage.TagGroup {
 		out = append(out, storage.TagGroup{
 			And:     toStorageTagGroups(group.And),
 			Or:      toStorageTagGroups(group.Or),
-			Not:     toStorageTagGroups(group.Not),
+			Not:     toStorageTagNot(group.Not),
 			Tag:     group.Tag,
 			Tags:    group.Tags,
 			Resolve: group.Resolve,

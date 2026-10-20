@@ -238,10 +238,15 @@ func (e *PartialRerankError) Error() string {
 // set) or a leaf with one tag and its resolution/match mode.
 type TagGroup struct {
 	// And matches every child; Or matches any child; Not matches none of its
-	// single child's leaves.
+	// one child's leaves.
+	//
+	// Not holds a single node, not a list: the reference's TagGroupNot has
+	// `filter: TagGroup` (engine/search/tags.py:333-337), and a list sent for it
+	// is a validation error there, so this mirrors that shape rather than
+	// leaving a silently-accepted list form no client can rely on.
 	And []TagGroup
 	Or  []TagGroup
-	Not []TagGroup
+	Not *TagGroup
 	// Leaf fields.
 	Tag     string
 	Tags    []string

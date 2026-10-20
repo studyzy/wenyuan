@@ -441,9 +441,7 @@ python3 scripts/parity_check.py DELETE /v1/default/banks/audit-f-fx/memories/not
   `return len(groups) > 0`，而空 `and` 落到 `default:` 用空 `wanted` 调 `matchFlatTags`。
   参考此处返 500（`syntax error at or near ")"`，空 `and` 生成坏 SQL）——**该缺陷不复制**，
   但也**不把任一后端的偶然结果钉成契约**；仅以测试钉住「不崩、200、body 结构完好」。
-- **遗留横切项（尚未归组）**：`storage.TagGroup.Not` 是 `[]TagGroup`，参考为**单节点**
-  `filter: TagGroup`（`engine/search/tags.py:333-337`）。影响 recall / knowledge 两处的 `not` 语义，
-  待 recall 或知识库后续轮次处理。
+- ~~**遗留横切项（尚未归组）**：`storage.TagGroup.Not` 是 `[]TagGroup`~~ → **已修，见下节**。
 
 ## 组长收尾裁决：组 O/P/Q 之后的横切修复
 
@@ -563,3 +561,34 @@ build」。实测**不是**——两侧 `(total: 51 fields)` 与拒绝措辞完�
 
 **遗留观察（未改动）**：系统测试库里有 6277 个 bank / 15118 条孤儿 `memory_units`，是历次
 中断的测试运行留下的；第 3 条修复后扫描不再受它们影响，未清理。
+
+## 收尾：`tag_groups` 的 `not` 改为单节点
+
+组 L/M 留下的最后一项横切差异。参考的 `TagGroupNot` 是 `filter: TagGroup`
+（`engine/search/tags.py:333-337`）——**单个节点**，而 `TagGroupAnd`/`TagGroupOr` 才是 `list[TagGroup]`。
+本服务在 `storage.TagGroup` / `httpx.TagGroup` / `memoryops.TagGroupRequest` 三处都把它写成了列表。
+
+语义差异本身不大（单元素列表的否定与单节点的否定等价），真正的差异在**契约**：
+实测线上参考对 `{"not":[{"tags":["x"]}]}` 返回 **422**，7 个错误项——
+
+```
+missing   … TagGroupLeaf  tags          model_attributes_type … TagGroupNot not TagGroupLeaf
+missing   … TagGroupAnd   and           model_attributes_type … TagGroupNot not TagGroupAnd
+missing   … TagGroupOr    or           model_attributes_type … TagGroupNot not TagGroupOr
+                                       model_attributes_type … TagGroupNot not TagGroupNot
+```
+
+注意 NOT 分支自己**没有** `missing` 项：列表让该分支的 `model_attributes_type` 检查通过，错误落进它自己的子联合。
+改成单节点后本服务的 envelope 与之逐项相同（`TestTagGroupNotRefusesAList`、
+`TestRecallRefusesAListShapedNot` 守 422 与 7 项）。
+
+三处类型改为 `*TagGroup`，随之收紧了若干处：`memory_recall_tags` / `mental_model_staleness` /
+`postgres_recall` / `tag_resolution` 的取值从「遍历列表」变成「取一个子节点取反」；
+`reporting/knowledge_tags.go` 里 `knowledgeTagGroup` ↔ `storage.TagGroup` 的往返不再需要「单元素列表」
+这个中间态；`readsurface` 本来就是单节点（现在与其余各层一致）。
+
+**保持不变的**：`and`/`or` 仍接受单对象或列表两种写法（参考的 lax 行为）。`NewResponse` 的
+`{"tag_groups":[{"not":{"tags":[...]}}]}` 这一形状在两个后端仍产出与之前相同的匹配结果——
+`TestTagGroupsAcceptContractShapes` 已改为对象形，`TestTagGroupNotAcceptsASingleNode` 钉住解码与取反。
+
+验收：`make check` 全绿；`make parity` **339 passed, 1 skipped, 0 failed**。

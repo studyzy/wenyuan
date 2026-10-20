@@ -75,12 +75,12 @@ func ResolveRecallTagScope(q RecallQuery, vocabulary []string) (RecallQuery, err
 // inside or outside the negation, so a wider match excludes more.
 func resolveTagGroup(group TagGroup, vocabulary []string) (TagGroup, error) {
 	switch {
-	case len(group.Not) > 0:
-		children, err := resolveTagChildren(group.Not, vocabulary)
+	case group.Not != nil:
+		child, err := resolveTagGroup(*group.Not, vocabulary)
 		if err != nil {
 			return TagGroup{}, err
 		}
-		return TagGroup{Not: children}, nil
+		return TagGroup{Not: &child}, nil
 	case len(group.And) > 0:
 		children, err := resolveTagChildren(group.And, vocabulary)
 		if err != nil {

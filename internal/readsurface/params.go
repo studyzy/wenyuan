@@ -137,7 +137,8 @@ func (n tagGroupNode) toStorage() storage.TagGroup {
 		group.Or = append(group.Or, child.toStorage())
 	}
 	if n.Not != nil {
-		group.Not = append(group.Not, n.Not.toStorage())
+		child := n.Not.toStorage()
+		group.Not = &child
 	}
 	return group
 }

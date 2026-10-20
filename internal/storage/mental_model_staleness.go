@@ -240,13 +240,8 @@ func matchTagGroup(unitTags []string, group TagGroup) bool {
 			}
 		}
 		return false
-	case len(group.Not) > 0:
-		for _, child := range group.Not {
-			if matchTagGroup(unitTags, child) {
-				return false
-			}
-		}
-		return true
+	case group.Not != nil:
+		return !matchTagGroup(unitTags, *group.Not)
 	default:
 		wanted := group.Tags
 		if group.Tag != "" {
@@ -319,6 +314,17 @@ func stringFromTrigger(trigger map[string]any, key string) string {
 
 // tagGroupsFromTrigger decodes a compound tag filter from the trigger bag,
 // which is stored as plain JSON with no schema guarantee.
+// tagGroupFromTrigger reads a single group node, which is how the reference
+// stores a NOT's child (`filter: TagGroup`, engine/search/tags.py:333-337).
+func tagGroupFromTrigger(raw any) *TagGroup {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	group := tagGroupFromMap(object)
+	return &group
+}
+
 func tagGroupsFromTrigger(raw any) []TagGroup {
 	items, ok := raw.([]any)
 	if !ok {
@@ -345,7 +351,7 @@ func tagGroupFromMap(object map[string]any) TagGroup {
 	group.Tag = stringFromTrigger(object, "tag")
 	group.And = tagGroupsFromTrigger(object["and"])
 	group.Or = tagGroupsFromTrigger(object["or"])
-	group.Not = tagGroupsFromTrigger(object["not"])
+	group.Not = tagGroupFromTrigger(object["not"])
 	if group.Match == "" {
 		group.Match = TagsMatchAny
 	}
@@ -478,8 +484,8 @@ func renderTagGroup(group TagGroup, used int) (string, []any) {
 		return joinTagChildren(group.And, " AND ", used)
 	case len(group.Or) > 0:
 		return joinTagChildren(group.Or, " OR ", used)
-	case len(group.Not) > 0:
-		inner, args := joinTagChildren(group.Not, " OR ", used)
+	case group.Not != nil:
+		inner, args := renderTagGroup(*group.Not, used)
 		if inner == "" {
 			return "", nil
 		}

@@ -284,7 +284,7 @@ func decodeTemporalBound(window map[string]any, members map[string]json.RawMessa
 type TagGroupRequest struct {
 	And     TagGroupChildren `json:"and,omitempty"`
 	Or      TagGroupChildren `json:"or,omitempty"`
-	Not     TagGroupChildren `json:"not,omitempty"`
+	Not     TagGroupNot      `json:"not,omitempty"`
 	Tag     string           `json:"tag,omitempty"`
 	Tags    []string         `json:"tags,omitempty"`
 	Resolve string           `json:"resolve,omitempty"`
