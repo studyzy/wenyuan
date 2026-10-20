@@ -191,16 +191,98 @@ func TestDryRunRecordedAtUsesTheReferenceRendering(t *testing.T) {
 		t.Fatal("a dry run always records when it ran")
 	}
 	stamp := *result.Trace.RecordedAt
-	// Python's isoformat writes either bare seconds or exactly six digits.
-	bare := len("2006-01-02T15:04:05") + len("+00:00")
-	withMicros := len("2006-01-02T15:04:05") + len(".000000") + len("+00:00")
+	// The framework's serializer writes either bare seconds or exactly six digits,
+	// always with the Z suffix for a UTC instant.
+	if _, err := time.Parse("2006-01-02T15:04:05.000000Z07:00", stamp); err != nil {
+		t.Fatalf("recorded_at = %q does not parse as the reference's rendering: %v", stamp, err)
+	}
+	bare := len("2006-01-02T15:04:05") + len("Z")
+	withMicros := len("2006-01-02T15:04:05") + len(".000000") + len("Z")
 	if len(stamp) != withMicros && len(stamp) != bare {
 		t.Fatalf("recorded_at = %q (len %d), want six fractional digits or none", stamp, len(stamp))
 	}
-	if _, err := time.Parse("2006-01-02T15:04:05.000000+00:00", stamp); err != nil {
-		t.Fatalf("recorded_at = %q does not parse as the reference's rendering: %v", stamp, err)
+	if !strings.HasSuffix(stamp, "Z") {
+		t.Fatalf("recorded_at = %q, want the framework's Z suffix", stamp)
 	}
-	if !strings.HasSuffix(stamp, "+00:00") {
-		t.Fatalf("recorded_at = %q, want Python's +00:00 offset rather than Z", stamp)
+}
+
+// The dry run's window reports two different instants, and confusing them is
+// invisible on a bank that has just been written: created_before is the
+// database-time snapshot a real refresh bounds its reads with (the reference's
+// `_mental_model_refresh_cutoff`), while watermark is the newest in-scope memory
+// a real refresh would persist. A quiet bank separates them — the snapshot is
+// still now, the watermark stays at the last write — so a preview whose
+// created_before was taken from the data watermark reports yesterday as "as of
+// when this ran".
+func TestDryRunWindowSnapshotIsNotTheDataWatermark(t *testing.T) {
+	store, modelID := noSourceFixture(t)
+	ctx := context.Background()
+	// One write an hour ago, so the bank's write watermark is old while the
+	// snapshot this run takes is not.
+	planted := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	store.SeedUnit(storage.MemoryUnit{
+		BankID: "b1", ID: "u1", FactType: storage.TypeWorld, Text: "secret",
+		UpdatedAt: &planted, CreatedAt: &planted,
+	})
+	if _, err := store.RecordWrite(ctx, storage.WriteRequest{BankID: "b1", Content: "secret"}); err != nil {
+		t.Fatalf("stamp the bank write watermark: %v", err)
+	}
+	// The watermarks therefore begin to differ: the bank's write watermark is
+	// older than the snapshot this run takes.
+	bankWrite := store.BankWriteWatermark(ctx, "b1").UTC()
+	if bankWrite.IsZero() {
+		t.Fatal("bank write watermark: a write must stamp it")
+	}
+
+	runner := newMentalModelRefresh(store, nil, nil)
+	before := time.Now().UTC()
+	result, err := runner.dryRun(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	after := time.Now().UTC()
+
+	createdBefore, err := time.Parse(time.RFC3339Nano, result.Window.CreatedBefore)
+	if err != nil {
+		t.Fatalf("created_before = %q: %v", result.Window.CreatedBefore, err)
+	}
+	if createdBefore.Before(before.Add(-time.Second)) || createdBefore.After(after) {
+		t.Fatalf("created_before = %v, want the snapshot taken during this run (%v..%v), not the data watermark %v",
+			createdBefore, before, after, planted)
+	}
+	if result.Window.Watermark == nil {
+		t.Fatal("watermark = null, want the newest in-scope memory")
+	}
+	watermark, err := time.Parse(time.RFC3339Nano, *result.Window.Watermark)
+	if err != nil {
+		t.Fatalf("watermark = %q: %v", *result.Window.Watermark, err)
+	}
+	// The report renders microseconds, so compare at that resolution.
+	if !watermark.Truncate(time.Microsecond).Equal(bankWrite.Truncate(time.Microsecond)) {
+		t.Fatalf("watermark = %v, want the bank's newest write %v", watermark, bankWrite)
+	}
+	// The two instants stay distinct, which is the whole point: a preview that
+	// reused one for the other would report them equal.
+	if watermark.Equal(createdBefore) {
+		t.Fatalf("watermark = created_before = %v: the snapshot and the data watermark are separate readings",
+			watermark)
+	}
+}
+
+// A dry run over a scope with nothing in it reports a null watermark: nothing
+// was seen, so there is no "newest in-scope memory" to name. Reporting the bank
+// write clock instead would claim the document had read a memory that does not
+// exist.
+func TestDryRunWatermarkIsNullWhenTheScopeIsEmpty(t *testing.T) {
+	store, modelID := noSourceFixture(t)
+	result, err := newMentalModelRefresh(store, nil, nil).dryRun(context.Background(), "b1", modelID)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if result.Window.Watermark != nil {
+		t.Fatalf("watermark = %q, want null for an empty scope", *result.Window.Watermark)
+	}
+	if result.Window.CreatedBefore == "" {
+		t.Fatal("created_before is required and must always be reported")
 	}
 }

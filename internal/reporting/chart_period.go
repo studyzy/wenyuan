@@ -25,7 +25,7 @@ import (
 // so the read is recorded for the route's declaration audit: a parameter this
 // handler acts on must be declared, and a silent direct read would hide it.
 func chartPeriod(r *http.Request) string {
-	if _, present := r.URL.Query()["period"]; !present {
+	if _, present := httpx.QueryParamsOf(r)["period"]; !present {
 		return "7d"
 	}
 	return httpx.Query(r, "period")

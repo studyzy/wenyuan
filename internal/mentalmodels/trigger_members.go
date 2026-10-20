@@ -2,6 +2,7 @@ package mentalmodels
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -340,6 +341,25 @@ func appendMember(loc []string, member string) []string {
 	out := make([]string, len(loc), len(loc)+1)
 	copy(out, loc)
 	return append(out, member)
+}
+
+// triggerBoolItem is the framework's item for a boolean member it could not read.
+// The two kinds it distinguishes come from where the refusal happened: a string
+// and a number get as far as the lax conversion's word/number reading and fail
+// *parsing*, every other kind never does and is the wrong *type*.
+func triggerBoolItem(member string, raw any) httpx.ValidationError {
+	switch typed := raw.(type) {
+	case string:
+		return httpx.ScalarTypeMismatch("bool", triggerLoc(member), typed)
+	case float64:
+		// An integer outside 0/1 is a *parsing* failure — the framework reads the
+		// numeric spelling before giving up — while a number carrying a fraction
+		// is the plain type mismatch.
+		if typed == math.Trunc(typed) {
+			return httpx.TypeMismatch("bool_parsing", triggerLoc(member), typed)
+		}
+	}
+	return httpx.TypeMismatch("bool_type", triggerLoc(member), raw)
 }
 
 // The property types the structured-output extractor can build a field for.

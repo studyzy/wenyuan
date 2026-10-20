@@ -143,6 +143,9 @@ func (s *MemoryStore) CreateObservationInScope(ctx context.Context, bankID, text
 		BankID: bankID, Text: text, FactType: TypeObservation,
 		Tags: scope, Metadata: scopeMetadata(scope),
 		Embedding: embedObservation(ctx, s.observationEmbedderRef(), text),
+		// An observation has no context column value of its own; see
+		// CreateObservation.
+		ContextAbsent: true,
 	})
 	if err != nil {
 		return "", err
@@ -216,6 +219,9 @@ func (s *PostgresStore) CreateObservationInScope(ctx context.Context, bankID, te
 	unit := MemoryUnit{
 		BankID: bankID, Text: text, FactType: TypeObservation,
 		Tags: scope, Metadata: scopeMetadata(scope),
+		// An observation has no context column value of its own; see
+		// CreateObservation.
+		ContextAbsent: true,
 	}
 	unit.Embedding = embedObservation(ctx, s.observationEmbedder, text)
 	stored, err := s.UpsertUnit(ctx, unit)

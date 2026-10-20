@@ -298,6 +298,13 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		applyFileMetadata(&item, meta)
+		// A file upload always carries a metadata dict: the reference builds the
+		// item as `file_meta.metadata or {}` and its content dict records that
+		// value unconditionally, so a document retained from an upload with no
+		// metadata stores `{"metadata": {}}` rather than an empty retain_params.
+		if item.Metadata == nil {
+			item.Metadata = map[string]any{}
+		}
 		items = append(items, item)
 	}
 	// One operation per file: the reference submits each file as its own
@@ -553,6 +560,16 @@ func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, he
 		}); err != nil {
 			return RetainItem{}, err
 		}
+	}
+	// A converted document keeps no attachment row: its text is the content, and
+	// the reference stores no bytes and no attachment for one, so the document
+	// read reports `attachments: null` for it. An image is the exception — its
+	// bytes are the attachment the intended text refers to.
+	if !image {
+		return RetainItem{
+			Content:    Content{Text: text},
+			DocumentID: documentID,
+		}, nil
 	}
 	if err := h.Store.PutAttachment(r.Context(), storage.Attachment{
 		BankID:         bankID,

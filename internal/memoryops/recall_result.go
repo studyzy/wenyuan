@@ -321,7 +321,7 @@ func toResultItem(match storage.RecallMatch, includeSourceFacts bool) RecallResu
 		Text:          match.Text,
 		Type:          nullIfEmptyString(match.Type),
 		Entities:      nonEmptyStrings(match.Entities),
-		Context:       stringValue(match.Context),
+		Context:       contextValue(match),
 		OccurredStart: httpx.FormatTimestampPtr(match.OccurredStart),
 		OccurredEnd:   httpx.FormatTimestampPtr(match.OccurredEnd),
 		MentionedAt:   httpx.FormatTimestampPtr(match.MentionedAt),
@@ -344,6 +344,18 @@ func toResultItem(match storage.RecallMatch, includeSourceFacts bool) RecallResu
 // stored string keeps an empty string an empty string rather than collapsing it
 // to null (a fact retained without a context carries "").
 func stringValue(value string) *string { return &value }
+
+// contextValue renders a result's context: null for a unit whose context column
+// is NULL — an observation, which the reference's insert never gives one — and
+// the stored string otherwise, including the empty one a fact with no context
+// carries. The two are different values on the wire, which is why the absence is
+// tracked rather than inferred from the string.
+func contextValue(match storage.RecallMatch) *string {
+	if match.ContextAbsent {
+		return nil
+	}
+	return stringValue(match.Context)
+}
 
 // orEmptySlice returns the slice unchanged, or an empty (non-nil) slice, so a
 // collection the reference declares as a list serializes as [] rather than null.

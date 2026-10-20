@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"reflect"
 	"strings"
@@ -45,6 +46,10 @@ func decodeRequest(r *http.Request, target any) (map[string]any, error) {
 // decodeBankBody decodes a create-or-replace or partial-update body into req and
 // reports the body's own validation items alongside it.
 //
+// The second result is the raw body, so a caller can tell a body the decoder
+// refused for a value the reference's parser could not render from one it
+// simply rejected as invalid.
+//
 // The reference answers one item per field its model rejects, in field order, so
 // a body carrying several wrong values is answered with several items; the
 // shared decoder stops at the first one. Once it has rejected the body, the
@@ -55,10 +60,10 @@ func decodeRequest(r *http.Request, target any) (map[string]any, error) {
 // A rejection the walk cannot describe — a syntax failure, an unreadable body,
 // a whole-body shape the request layer refused before any model saw it — keeps
 // the decoder's answer.
-func decodeBankBody(r *http.Request) (BankRequest, []httpx.ValidationError, error) {
+func decodeBankBody(r *http.Request) (BankRequest, []byte, []httpx.ValidationError, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBankBodyBytes))
 	if err != nil {
-		return BankRequest{}, nil, httpx.BodyDecodeFailure(err, body)
+		return BankRequest{}, body, nil, httpx.BodyDecodeFailure(err, body)
 	}
 	// The body is restored so the shared decoder — which reads the request
 	// itself, and records the fields the model does not declare — sees the same
@@ -67,26 +72,33 @@ func decodeBankBody(r *http.Request) (BankRequest, []httpx.ValidationError, erro
 	var req BankRequest
 	decodeErr := httpx.DecodeBody(r, &req)
 	if decodeErr == nil {
-		return req, bankFieldTypeItems(body), nil
+		// The disposition object is still read member by member: its members
+		// are validated individually and echoed as the caller wrote them, which
+		// the shared decode does not keep.
+		req.DispositionRaw = bankMemberRawValues(body)[dispositionField]
+		if _, present := bankBodyMembers(body)[dispositionField]; present {
+			req.Disposition = decodeDispositionLeniently(bankBodyMembers(body)[dispositionField])
+		}
+		return req, body, bankFieldTypeItems(body), nil
 	}
 	var failure *httpx.ValidationFailure
 	if !errors.As(decodeErr, &failure) || failure.Detail != "" {
 		// Not an item list — an unreadable body, or one the request layer
 		// refused before any model saw it.
-		return BankRequest{}, nil, decodeErr
+		return BankRequest{}, body, nil, decodeErr
 	}
 	// The walk answers a whole-body shape failure (a body that is not an
 	// object) with the framework's own item for the body parameter, which is
 	// the one the decoder already produced.
 	if !bankBodyIsObject(body) {
-		return BankRequest{}, nil, decodeErr
+		return BankRequest{}, body, nil, decodeErr
 	}
 	items := httpx.ValidationItemsAgainstRequest(r, &BankRequest{}, body)
 	if len(items) == 0 {
-		return BankRequest{}, nil, decodeErr
+		return BankRequest{}, body, nil, decodeErr
 	}
 	fillBankDecodedMembers(body, &req)
-	return req, items, &BodyNeedsValidation{Items: items}
+	return req, body, items, &BodyNeedsValidation{Items: items}
 }
 
 // BodyNeedsValidation reports an item list the handler still has to complete:
@@ -103,6 +115,84 @@ func (e *BodyNeedsValidation) Error() string {
 		return "validation failed"
 	}
 	return e.Items[0].Msg
+}
+
+// bodyCarriesNonFiniteNumber reports whether a body would parse as JSON except
+// for a number no float64 can hold, or for one of CPython's NaN/Infinity
+// literals. Both are values the reference's parser produces, so its model is
+// handed them and its response writer then fails on them.
+func bodyCarriesNonFiniteNumber(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err == nil && !decoder.More() {
+		return valueHasNonFiniteNumber(value)
+	}
+	return containsNonFiniteLiteral(trimmed)
+}
+
+// valueHasNonFiniteNumber walks a decoded JSON value looking for a number
+// literal that reads as a non-finite float.
+func valueHasNonFiniteNumber(value any) bool {
+	switch typed := value.(type) {
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return true
+		}
+		return math.IsInf(parsed, 0) || math.IsNaN(parsed)
+	case []any:
+		for _, item := range typed {
+			if valueHasNonFiniteNumber(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if valueHasNonFiniteNumber(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsNonFiniteLiteral reports whether the text carries one of the tokens
+// Go's decoder refuses and CPython's accepts. It is only consulted for a body
+// Go could not decode at all, and it counts the token only where a value may
+// begin, so a string that spells one is not a number.
+func containsNonFiniteLiteral(body []byte) bool {
+	for index := 0; index < len(body); index++ {
+		switch ch := body[index]; ch {
+		case '"':
+			// Skip the string so a token inside one is not counted.
+			index++
+			for index < len(body) {
+				if body[index] == '\\' {
+					index += 2
+					continue
+				}
+				if body[index] == '"' {
+					break
+				}
+				index++
+			}
+		case 'N', 'I':
+			rest := string(body[index:])
+			if strings.HasPrefix(rest, "NaN") || strings.HasPrefix(rest, "Infinity") {
+				return true
+			}
+		case '-':
+			if strings.HasPrefix(string(body[index:]), "-Infinity") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // bankMemberBody is one top-level member of a bank request body: its name and
@@ -126,6 +216,15 @@ func bankMemberBodies(body []byte) ([]bankMemberBody, bool) {
 		out = append(out, bankMemberBody{name: name, body: raw})
 	}
 	return out, true
+}
+
+// bankBodyMembers indexes a body's top-level members by name.
+func bankBodyMembers(body []byte) map[string]json.RawMessage {
+	members := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &members); err != nil || members == nil {
+		return map[string]json.RawMessage{}
+	}
+	return members
 }
 
 // bankFieldSource returns the top-level member whose name a field decodes from
@@ -161,11 +260,88 @@ func fillBankDecodedMembers(body []byte, req *BankRequest) {
 			continue
 		}
 		holder := reflect.New(field.Type)
+		if name == dispositionField {
+			// The object is read member by member either way: its members are
+			// validated individually, and a member that failed still leaves the
+			// others' values — and the member names the body carried — known.
+			req.Disposition = decodeDispositionLeniently(raw)
+			req.DispositionRaw = bankMemberRawValues(body)[dispositionField]
+			continue
+		}
 		if _, err := httpx.DecodeLax(raw, holder.Interface()); err != nil {
+			// The member did not decode as a whole, so a bound cannot be
+			// checked against it.
 			continue
 		}
 		target.Field(i).Set(holder.Elem())
 	}
+}
+
+// decodeDispositionLeniently decodes a disposition object one member at a time:
+// the members that decode are kept, and every member the body named is recorded
+// whether it decoded or not. The reference validates the nested model in one
+// pass over its members, so a member that failed still leaves the others'
+// values known to the rest of that pass.
+func decodeDispositionLeniently(raw json.RawMessage) *DispositionInput {
+	values, ok := bankMemberBodies(raw)
+	if !ok {
+		return nil
+	}
+	out := &DispositionInput{}
+	for _, member := range values {
+		out.markSupplied(member.name)
+		switch member.name {
+		case "skepticism":
+			out.Skepticism = decodeTrait(member.body)
+		case "literalism":
+			out.Literalism = decodeTrait(member.body)
+		case "empathy":
+			out.Empathy = decodeTrait(member.body)
+		}
+	}
+	return out
+}
+
+// decodeTrait decodes one disposition member, or reports nil when the value is
+// not a number the model could take.
+func decodeTrait(raw json.RawMessage) *int {
+	var value int
+	if _, err := httpx.DecodeLax(raw, &value); err != nil {
+		return nil
+	}
+	return &value
+}
+
+// bankMemberRawValues decodes a body's top-level members into the generic values
+// an item echoes as its input, with numbers kept in their own spelling so a
+// value the model rejected is reported the way it was sent.
+func bankMemberRawValues(body []byte) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	values, ok := bankMemberBodies(body)
+	if !ok {
+		return out
+	}
+	for _, member := range values {
+		if member.name != dispositionField {
+			continue
+		}
+		decoder := json.NewDecoder(bytes.NewReader(member.body))
+		decoder.UseNumber()
+		var nested map[string]any
+		if err := decoder.Decode(&nested); err != nil || nested == nil {
+			continue
+		}
+		for key, value := range nested {
+			if _, ok := value.(json.Number); !ok {
+				continue
+			}
+			if number, err := value.(json.Number).Float64(); err == nil {
+				nested[key] = number
+			}
+		}
+		out[member.name] = nested
+	}
+	return out
 }
 
 // bankBodyIsObject reports whether the body's top-level JSON value is an
@@ -238,6 +414,11 @@ func bankFieldTypeItems(body []byte) []httpx.ValidationError {
 		// The member is decoded on its own and its failure rebased onto the
 		// request body, so the item names the field's own path
 		// (["body","name"]) exactly as the shared decoder's would.
+		if source == dispositionField {
+			// The object is described and decoded member by member, so the
+			// member rules apply to it whatever the outer decode managed.
+			continue
+		}
 		holder := reflect.New(field.Type)
 		coerced, err := httpx.DecodeLax(raw, holder.Interface())
 		if err == nil {

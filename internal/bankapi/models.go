@@ -24,6 +24,38 @@ type DispositionInput struct {
 	Skepticism *int `json:"skepticism"`
 	Literalism *int `json:"literalism"`
 	Empathy    *int `json:"empathy"`
+
+	// Supplied records which members the body actually named. It is not part of
+	// the wire model: a member whose value did not decode keeps a nil value, and
+	// the reference still reports the object as the caller wrote it in a
+	// missing-member item, so the two cases have to stay distinguishable.
+	Supplied map[string]bool `json:"-"`
+}
+
+// markSupplied records the member names a body carried, so an item that names
+// the object can render every member the caller wrote rather than only the
+// ones that decoded.
+func (d *DispositionInput) markSupplied(names ...string) {
+	if d.Supplied == nil {
+		d.Supplied = map[string]bool{}
+	}
+	for _, name := range names {
+		d.Supplied[name] = true
+	}
+}
+
+// renderedMembers renders the object as the caller wrote it, which is what a
+// missing-member item echoes. A member that did not decode keeps the raw value
+// the body carried, so an item about a different member still names it.
+func (d *DispositionInput) renderedMembers(raw map[string]any) map[string]any {
+	out := map[string]any{}
+	if d == nil {
+		return out
+	}
+	for name := range d.Supplied {
+		out[name] = raw[name]
+	}
+	return out
 }
 
 // BankResponse is the public bank profile representation. Every field name
@@ -59,10 +91,13 @@ type BankListRow struct {
 
 // BankListResponse is the collection envelope for the bank listing route.
 type BankListResponse struct {
-	Banks  []BankListRow `json:"banks"`
-	Total  int           `json:"total"`
-	Limit  int           `json:"limit"`
-	Offset int           `json:"offset"`
+	Banks []BankListRow `json:"banks"`
+	Total int           `json:"total"`
+	// Limit and Offset are what the request asked for, echoed as the caller
+	// wrote it: the reference's parameters are unbounded Python ints, so a
+	// number wider than a machine int is reported back unchanged.
+	Limit  any `json:"limit"`
+	Offset any `json:"offset"`
 }
 
 // BankRequest is the create-or-replace and partial-update body. The individual
@@ -77,6 +112,10 @@ type BankRequest struct {
 	Name *string `json:"name"`
 
 	Disposition *DispositionInput `json:"disposition"`
+
+	// DispositionRaw is the disposition object as the body wrote it, in the
+	// generic values a missing-member item echoes. It is not a wire member.
+	DispositionRaw map[string]any `json:"-"`
 
 	DispositionSkepticism *int `json:"disposition_skepticism"`
 	DispositionLiteralism *int `json:"disposition_literalism"`
@@ -104,15 +143,22 @@ type BankRequest struct {
 // configUpdates returns only the operational configuration fields the request
 // explicitly set, in the same map form the config write route accepts. It
 // mirrors the reference's get_config_updates for these fields.
+//
+// Only the string members that are not falsy are kept. The reference resolves
+// the reflect mission with `or` — reflect_mission, then mission, then
+// background — so a supplied empty string counts as "not given" and leaves an
+// earlier override alone, and its `if value is not None` loop is only reached
+// for the remaining members. An empty yield is the same as supplied-null: the
+// handler turns an empty map into "no config change at all".
 func (r BankRequest) configUpdates() map[string]any {
 	updates := map[string]any{}
-	if r.RetainMission != nil {
+	if r.RetainMission != nil && *r.RetainMission != "" {
 		updates["retain_mission"] = *r.RetainMission
 	}
-	if r.RetainExtractionMode != nil {
+	if r.RetainExtractionMode != nil && *r.RetainExtractionMode != "" {
 		updates["retain_extraction_mode"] = *r.RetainExtractionMode
 	}
-	if r.RetainCustomInstructions != nil {
+	if r.RetainCustomInstructions != nil && *r.RetainCustomInstructions != "" {
 		updates["retain_custom_instructions"] = *r.RetainCustomInstructions
 	}
 	if r.RetainChunkSize != nil {
@@ -127,7 +173,7 @@ func (r BankRequest) configUpdates() map[string]any {
 	if r.EnableObservations != nil {
 		updates["enable_observations"] = *r.EnableObservations
 	}
-	if r.ObservationsMission != nil {
+	if r.ObservationsMission != nil && *r.ObservationsMission != "" {
 		updates["observations_mission"] = *r.ObservationsMission
 	}
 	if r.EnableTextSearch != nil {
@@ -147,8 +193,8 @@ func (r BankRequest) configUpdates() map[string]any {
 	// get_config_updates, so `GET /config` reports them in `overrides` and the
 	// resolved config carries them. Each is resolved the same way the patch
 	// resolves it (flat field over the deprecated object member).
-	if mission := r.missionValuePtr(); mission != nil {
-		updates["reflect_mission"] = *mission
+	if mission := r.resolvedMission(); mission != "" {
+		updates["reflect_mission"] = mission
 	}
 	if value := r.traitPtr(r.DispositionSkepticism, func(d DispositionInput) *int { return d.Skepticism }); value != nil {
 		updates["disposition_skepticism"] = *value
@@ -160,6 +206,18 @@ func (r BankRequest) configUpdates() map[string]any {
 		updates["disposition_empathy"] = *value
 	}
 	return updates
+}
+
+// resolvedMission picks the mission the reference's `or` chain yields:
+// reflect_mission, then the deprecated mission, then background. An empty
+// string is treated as absent, because that is what `or` does.
+func (r BankRequest) resolvedMission() string {
+	for _, candidate := range []*string{r.ReflectMission, r.Mission, r.Background} {
+		if candidate != nil && *candidate != "" {
+			return *candidate
+		}
+	}
+	return ""
 }
 
 // AliasEntry is one alias in an alias response.
@@ -306,16 +364,6 @@ func (r BankRequest) ToPatch() storage.BankPatch {
 		patch.Name = r.Name
 	}
 	return patch
-}
-
-func (r BankRequest) missionValuePtr() *string {
-	if r.ReflectMission != nil {
-		return r.ReflectMission
-	}
-	if r.Mission != nil {
-		return r.Mission
-	}
-	return r.Background
 }
 
 // traitPtr resolves a trait with the explicit individual field taking

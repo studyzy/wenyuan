@@ -629,3 +629,63 @@ func TestAppendRefusedWhenTextStorageDisabled(t *testing.T) {
 		t.Fatalf("append with text storage off = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// A submission with nothing to extract queues no work, and the reference reports
+// that as an absent operation rather than an id nothing will ever advance.
+// Verified against the live reference: `{"async":true,"items":[]}` answers
+// `operation_id: null` while a one-item submission answers a UUID.
+func TestAsyncWriteWithNoItemsReportsNoOperation(t *testing.T) {
+	mux, _ := newServer(t)
+	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"async":true,"items":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["operation_id"] != nil {
+		t.Fatalf("operation_id = %v, want null for a submission with no items", got["operation_id"])
+	}
+	if got["async"] != true || got["items_count"] != float64(0) || got["success"] != true {
+		t.Fatalf("acceptance body = %v", got)
+	}
+}
+
+// An upload with no metadata still records an empty metadata object in the
+// document's retain_params: the reference builds the file item as
+// `file_meta.metadata or {}` (api/http.py:10494) and its content dict records
+// that value unconditionally (:4179, then orchestrator.py:598-628), so a
+// document retained from a plain upload stores `{"metadata": {}}` rather than
+// omitting the key — which a document read echoes back verbatim.
+func TestFileRetainRecordsEmptyMetadata(t *testing.T) {
+	mux, store := newServer(t)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("files", "notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("file body"))
+	_ = w.WriteField("request", `{"files_metadata":[{"document_id":"doc-upload"}]}`)
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/files/retain", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	doc, err := store.GetDocument(context.Background(), "b1", "doc-upload")
+	if err != nil {
+		t.Fatalf("the upload stored no document: %v", err)
+	}
+	metadata, present := doc.RetainParams["metadata"]
+	if !present {
+		t.Fatalf("retain_params = %#v, want a metadata key", doc.RetainParams)
+	}
+	object, ok := metadata.(map[string]any)
+	if !ok || len(object) != 0 {
+		t.Fatalf("retain_params[metadata] = %#v, want an empty object", metadata)
+	}
+}

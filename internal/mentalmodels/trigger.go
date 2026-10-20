@@ -102,9 +102,12 @@ func triggerLoc(member string) []string { return []string{"body", "trigger", mem
 // are returned, so the caller can overlay them on the model's current trigger.
 //
 // A nil raw (member absent) yields the full default trigger for a create and
-// nil for a patch, which leaves the model's current trigger untouched.
+// nil for a patch, which leaves the model's current trigger untouched. A raw
+// that holds JSON null is not an absence: the framework reads a supplied null
+// as a value it cannot extract members from, so it is the same model-shape
+// failure as any other non-object.
 func parseTrigger(raw json.RawMessage, create bool) (map[string]any, *httpx.ValidationFailure) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 {
 		if create {
 			return cloneTrigger(triggerDefaultMap), nil
 		}
@@ -118,6 +121,11 @@ func parseTrigger(raw json.RawMessage, create bool) (map[string]any, *httpx.Vali
 	if !isObject {
 		// The framework extracts the trigger's members from an object; any other
 		// value is its model-shape failure, reported with the value as input.
+		// A trigger member left absent takes the model's default — that is what
+		// `parseTrigger` handles above — but one the client sent as a JSON null is
+		// not an absence: the framework tries to read the members out of the null
+		// and files this same failure, so an explicit null is a 422 on both the
+		// create and the patch route.
 		return nil, triggerFailure(httpx.TypeMismatch("model_attributes_type", []string{"body", "trigger"}, decoded))
 	}
 	supplied, failure := validTriggerMembers(object)
@@ -203,10 +211,11 @@ func validTriggerMembers(object map[string]any) (map[string]any, *httpx.Validati
 			continue
 		}
 		if _, coerced := httpx.LaxBoolean(raw); !coerced {
-			// A value the coercion cannot interpret is always a parsing failure —
-			// including a number outside 0/1 — because the framework tries the
-			// declared bool first and only then the lax conversion.
-			report(member, httpx.TypeMismatch("bool_parsing", triggerLoc(member), raw))
+			// A value the coercion cannot interpret: a string is a *parsing* failure,
+			// while a null, an object, a list or a fractional number is simply the
+			// wrong type — the framework reaches its lax string conversion only for
+			// a value of that kind, and files a bare mismatch for every other.
+			report(member, triggerBoolItem(member, raw))
 		}
 	}
 	if raw, ok := object["budget"]; ok && raw != nil {
@@ -339,18 +348,41 @@ func validCron(expression string) bool {
 // it, and only a whole number reaches the member's inclusive lower bound.
 func triggerIntItem(member string, raw any) (httpx.ValidationError, bool) {
 	loc := triggerLoc(member)
-	value, ok := httpx.LaxFloat(raw)
+	value, ok := triggerIntValue(raw)
 	if !ok {
 		return httpx.ScalarTypeMismatch("int", loc, raw), true
 	}
-	bound := 1
-	if member == "min_refresh_interval_seconds" {
-		bound = 0
-	}
-	if value < bound {
-		return httpx.GreaterThanEqual(loc, raw, bound), true
+	if value < triggerIntLowerBound(member) {
+		return httpx.GreaterThanEqual(loc, raw, triggerIntLowerBound(member)), true
 	}
 	return httpx.ValidationError{}, false
+}
+
+// triggerIntValue reads a trigger integer the way the reference's model declares
+// it: a plain `int` field, not a lax-converted one. The difference is the site:
+// the model is declared without strict mode, so a bare `int` annotation takes a
+// JSON number, a numeric string and a JSON boolean (true is 1, false is 0) —
+// which is why `min_refresh_interval_seconds: true` is accepted as 1, and why a
+// `bool` was the one kind the shared lax reader refused and the reference did
+// not. A fractional number is the framework's int_from_float and anything else
+// is a parse/type failure, both reported by ScalarTypeMismatch.
+func triggerIntValue(raw any) (int, bool) {
+	if flag, isBool := raw.(bool); isBool {
+		if flag {
+			return 1, true
+		}
+		return 0, true
+	}
+	return httpx.LaxFloat(raw)
+}
+
+// triggerIntLowerBound is the inclusive floor each integer member declares
+// (`ge=0` on the refresh interval, `ge=1` on the token budgets).
+func triggerIntLowerBound(member string) int {
+	if member == "min_refresh_interval_seconds" {
+		return 0
+	}
+	return 1
 }
 
 // coerceTriggerMember renders a validated member as its model holds it: a member
@@ -359,7 +391,7 @@ func triggerIntItem(member string, raw any) (httpx.ValidationError, bool) {
 // other member is stored exactly as the client sent it.
 func coerceTriggerMember(member string, value any) any {
 	if contains(triggerIntMembers, member) {
-		if number, ok := httpx.LaxFloat(value); ok {
+		if number, ok := triggerIntValue(value); ok {
 			return number
 		}
 		return value
@@ -395,9 +427,13 @@ var KnowledgePageDefaultTrigger = map[string]any{
 // trigger patches rather than replaces. An absent base means the built-in
 // knowledge-page default; otherwise it is whatever the previous layer resolved.
 //
-// The two refresh-scheduling members are exclusive: naming one drops the other,
-// so a page moved onto a cron schedule stops refreshing after consolidation and
-// vice versa. A caller that names neither keeps the base's.
+// The two refresh-scheduling members are exclusive, and the reference's rule is
+// directional rather than symmetric: a supplied `refresh_cron` drops the base's
+// `refresh_after_consolidation`, while a supplied `refresh_after_consolidation`
+// alone is a plain overlay — the base's `refresh_cron` survives. The create route
+// never sends both, so it is not what this protects; a *patch* is, where the
+// stored trigger is the base and a client turning auto-refresh on must not have
+// the schedule it never mentioned silently preserved beside it.
 func MergeTrigger(supplied, base map[string]any) map[string]any {
 	if base == nil {
 		base = KnowledgePageDefaultTrigger
@@ -406,19 +442,28 @@ func MergeTrigger(supplied, base map[string]any) map[string]any {
 	if merged == nil {
 		merged = map[string]any{}
 	}
+	// Every supplied member overwrites, and an explicit null overwrites with a
+	// null: the reference merges `{**base, **supplied}`, so stating a member as
+	// null is how a client clears it.
 	for key, value := range supplied {
-		if value == nil {
-			continue
-		}
 		merged[key] = value
 	}
-	_, namesRefresh := supplied["refresh_after_consolidation"]
-	_, namesCron := supplied["refresh_cron"]
-	if refreshAfter, _ := supplied["refresh_after_consolidation"].(bool); refreshAfter && !namesCron {
-		delete(merged, "refresh_cron")
-	}
-	if namesCron && !namesRefresh {
-		delete(merged, "refresh_after_consolidation")
+	// The two schedule members are exclusive, and a stated one wins: a supplied
+	// refresh_cron clears a stale refresh_after_consolidation, and enabling
+	// consolidation clears a configured cron. The reference tests `supplied`
+	// rather than the merged map, so only a member the patch actually stated can
+	// clear the other — a patch that names neither leaves both as they were.
+	//
+	// A member stated as null does not count as stated here: null is how the
+	// client clears a member, not a request to turn the other one off.
+	if _, statesFlag := supplied["refresh_after_consolidation"]; !statesFlag {
+		if supplied["refresh_cron"] != nil {
+			delete(merged, "refresh_after_consolidation")
+		}
+	} else if after, _ := supplied["refresh_after_consolidation"].(bool); after {
+		if _, statesCron := supplied["refresh_cron"]; !statesCron {
+			delete(merged, "refresh_cron")
+		}
 	}
 	return merged
 }
@@ -439,40 +484,12 @@ func cloneTrigger(in map[string]any) map[string]any {
 	return out
 }
 
-// mergeTrigger overlays a patch's set members onto an existing trigger, matching
-// the reference's _merge_trigger: an explicit null in the patch clears the
-// stored member, and the two refresh-scheduling members stay mutually exclusive.
-// Naming one without the other drops the other, so moving a model onto a cron
-// schedule clears the auto-refresh it had and vice versa.
+// mergeTrigger overlays a patch's set members onto an existing trigger by
+// delegating to MergeTrigger, so the patch route and the knowledge-page routes
+// share one implementation: an explicit null in the patch clears the stored
+// member, and the two refresh-scheduling members stay mutually exclusive.
 func mergeTrigger(current map[string]any, patch map[string]any) map[string]any {
-	out := cloneTrigger(current)
-	if out == nil {
-		out = map[string]any{}
-	}
-	for key, value := range patch {
-		out[key] = value
-	}
-	_, namesConsolidation := patch["refresh_after_consolidation"]
-	_, namesCron := patch["refresh_cron"]
-	if triggerTruthy(patch["refresh_cron"]) && !namesConsolidation {
-		delete(out, "refresh_after_consolidation")
-	}
-	if triggerTruthy(patch["refresh_after_consolidation"]) && !namesCron {
-		delete(out, "refresh_cron")
-	}
-	return out
-}
-
-// triggerTruthy reports whether a scheduling member was stated as enabled: a
-// false bool, an empty string and null all read as "not stated".
-func triggerTruthy(value any) bool {
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return typed != ""
-	}
-	return false
+	return MergeTrigger(patch, current)
 }
 
 func contains(values []string, want string) bool {

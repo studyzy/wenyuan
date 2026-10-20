@@ -10,7 +10,7 @@ import (
 // lastQueryValue returns the last value of a repeated query parameter, which is
 // the value the reference's framework binds for a scalar query parameter.
 func lastQueryValue(r *http.Request, name string) string {
-	values, ok := r.URL.Query()[name]
+	values, ok := httpx.QueryParamsOf(r)[name]
 	if !ok || len(values) == 0 {
 		return ""
 	}

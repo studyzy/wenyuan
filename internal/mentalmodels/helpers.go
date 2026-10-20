@@ -1,6 +1,7 @@
 package mentalmodels
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -255,8 +256,13 @@ func requestItems(r *http.Request, target any) (map[string]any, []httpx.Validati
 			httpx.Missing([]string{"body"}, nil),
 		}}
 	}
+	// Numbers are kept as json.Number so a member's wire form (an integer, a
+	// fraction, an exponent) is still knowable when the trigger walk types it; a
+	// plain decode would render every one as float64 and lose the distinction.
 	var object map[string]any
-	if err := json.Unmarshal(body, &object); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&object); err != nil {
 		return nil, nil, httpx.BodyDecodeFailure(err, body)
 	}
 	// The trigger's items come from the trigger walk, which knows the custom
@@ -278,13 +284,23 @@ func triggerLocBelow(loc []string) bool {
 }
 
 // decodeInto decodes the already-read body object into the request struct. The
-// object came from the same body, and every member whose JSON kind does not fit
-// the struct is one the shared walk has already filed as an item — so a decode
-// failure here is expected and carries nothing the caller has not been told.
-// The refused members are left at their zero value.
+// object came from the same body and its numbers are json.Number, which a decoder
+// reads exactly as it reads the digits in the original text — an integer member
+// stays exact rather than being rounded through a float. Every member whose JSON
+// kind does not fit the struct is one the shared walk has already filed as an
+// item, so a decode failure here is expected and carries nothing the caller has
+// not been told. The refused members are left at their zero value.
 func decodeInto(object map[string]any, target any) {
 	raw, err := json.Marshal(object)
 	if err == nil {
 		_ = json.Unmarshal(raw, target)
 	}
+}
+
+// isJSONNull reports whether a raw member holds the JSON literal null. A member
+// the body states as null is a value the model sees, which for a declared
+// optional member means "not supplied" — not the same as its key being absent
+// from a nested object.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }

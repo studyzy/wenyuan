@@ -169,7 +169,7 @@ func batchChildrenFinished(children []storage.ChildOperation) bool {
 // insensitive) is accepted. Any other value — including an empty one — is the
 // framework's bool_parsing failure.
 func queryBool(r *http.Request, key string) (bool, *httpx.ValidationError) {
-	values, present := r.URL.Query()[key]
+	values, present := httpx.QueryParamsOf(r)[key]
 	if !present || len(values) == 0 {
 		return false, nil
 	}

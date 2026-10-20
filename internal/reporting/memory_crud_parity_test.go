@@ -283,3 +283,60 @@ func TestClearObservationsSubmitsConsolidationWhenAutoEnabled(t *testing.T) {
 		})
 	}
 }
+
+// The listing joins `unit_entities` alone, without an observation's inherited
+// postings, and the reference's SQL there orders by `ue.unit_id` only
+// (engine/memories/pg/curation.py:303-311), so within one unit the names arrive
+// in whatever order the engine produced them rather than alphabetically. This
+// pins the listing to that rule: an observation carries no entities, and a unit
+// whose names are not in alphabetical order keeps its own order instead of being
+// re-sorted into one the reference never produces.
+func TestMemoryListEntitiesAreTheUnitsOwnUnsortedPostings(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	const unit = "66666666-6666-6666-6666-666666666666"
+	const source = "77777777-7777-7777-7777-777777777777"
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: source, BankID: bank, Text: "the migration window opens at midnight", FactType: storage.TypeWorld,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately not alphabetical: "Migration" sorts after "Deployment".
+	if err := store.SetUnitEntities(ctx, bank, source, []string{"Deployment", "Migration"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: unit, BankID: bank, Text: "migrations follow deployments", FactType: storage.TypeObservation,
+		SourceMemoryIDs: []string{source},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := reportingMux(store)
+	cases := []struct {
+		path string
+		want string
+	}{
+		// The posting's own order survives; an alphabetical sort would flip it.
+		{path: "/v1/default/banks/" + bank + "/memories/list?type=world", want: "Deployment, Migration"},
+		// An observation has no postings, so the listing shows no entities even
+		// though its detail view inherits its source's.
+		{path: "/v1/default/banks/" + bank + "/memories/list?type=observation", want: ""},
+	}
+	for _, testCase := range cases {
+		rec := send(mux, http.MethodGet, testCase.path, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d: %s", testCase.path, rec.Code, rec.Body.String())
+		}
+		items, _ := decodeObject(t, rec)["items"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("%s listed %d items, want 1", testCase.path, len(items))
+		}
+		item, _ := items[0].(map[string]any)
+		if got, _ := item["entities"].(string); got != testCase.want {
+			t.Fatalf("%s entities = %q, want %q", testCase.path, got, testCase.want)
+		}
+	}
+}

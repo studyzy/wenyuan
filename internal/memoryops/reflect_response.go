@@ -22,8 +22,6 @@ func buildReflectResponse(req ReflectRequest, outcome storage.ReflectOutcome) (R
 	}
 	if req.Include != nil && req.Include.ToolCalls != nil {
 		response.Trace = buildTrace(outcome, toolOutputEnabled(req.Include.ToolCalls.Output))
-	} else if req.Trace {
-		response.Trace = buildTrace(outcome, true)
 	}
 	usage := ReflectUsage{
 		InputTokens:    outcome.Usage.InputTokens,

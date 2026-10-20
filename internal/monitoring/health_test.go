@@ -171,25 +171,21 @@ func TestProbeFloatRendering(t *testing.T) {
 	}
 }
 
-// poolPinger reports pool utilization, which the readiness body surfaces on
-// success when the dependency can.
-type poolPinger struct{ *fakePinger }
-
-func (p poolPinger) PoolStats() (PoolStats, bool) {
-	return PoolStats{InUse: 3, Max: 10, Idle: 7}, true
-}
-
-// waitingPinger reports the pooled-acquire waiter count through the capability
-// a dependency backed by a counted pool exposes.
+// waitingPinger is a dependency backed by a counted pool: it reports both the
+// pooled-acquire waiter count and the utilization snapshot, which the one
+// pool reporter exposes together.
 type waitingPinger struct {
 	*fakePinger
 	waiting int
 	present bool
+	stats   PoolStats
 }
 
-func (p waitingPinger) PoolWaitingCount() (int, bool) { return p.waiting, p.present }
+func (p waitingPinger) PoolWaiting() (int, bool)     { return p.waiting, p.present }
+func (p waitingPinger) PoolStats() (PoolStats, bool) { return p.stats, p.present }
 
-// poolStatsPinger reports utilization only; it has no waiter counter.
+// poolStatsPinger reports utilization only; it has no waiter counter, so it is
+// not a pool reporter at all (see PoolReporter).
 type poolStatsPinger struct{ *fakePinger }
 
 func (p poolStatsPinger) PoolStats() (PoolStats, bool) {
@@ -209,7 +205,7 @@ func TestHealthReportsPoolWaiting(t *testing.T) {
 		value float64
 	}{
 		{name: "no waiter counter omits the key", db: &fakePinger{}, want: false},
-		{name: "utilization without a counter omits the key", db: poolStatsPinger{&fakePinger{}}, want: false},
+		{name: "utilization without a counter reports no pool at all", db: poolStatsPinger{&fakePinger{}}, want: false},
 		{name: "zero waiters writes 0", db: waitingPinger{fakePinger: &fakePinger{}, present: true}, want: true, value: 0},
 		{name: "waiters are reported", db: waitingPinger{fakePinger: &fakePinger{}, waiting: 4, present: true}, want: true, value: 4},
 		{name: "an absent count omits the key", db: waitingPinger{fakePinger: &fakePinger{}, present: false}, want: false},
@@ -239,9 +235,9 @@ func TestHealthReportsPoolWaiting(t *testing.T) {
 	}
 }
 
-// A dependency that forwards the count itself takes precedence over the pool
-// handle, and a failing probe never reports pool keys — the reference returns
-// its error payload before gathering them.
+// A pool reporting its waiters reports the count in the payload, and a failing
+// probe never reports pool keys — the reference returns its error payload before
+// gathering them (engine/memory_engine.py:6210-6215).
 func TestHealthPoolWaitingForwardingAndFailure(t *testing.T) {
 	forwarding := &forwardingPinger{fakePinger: &fakePinger{}, waiting: 2}
 	mux := bindHealth(&HealthHandler{DB: forwarding})
@@ -271,15 +267,17 @@ func TestHealthPoolWaitingForwardingAndFailure(t *testing.T) {
 	}
 }
 
-// forwardingPinger reports the waiter count directly rather than through a pool
-// handle, and also answers through the pool handle so the precedence between
-// the two is observable.
+// forwardingPinger is a counted pool: it reports its waiter count and its
+// utilization together, as the one pool reporter does.
 type forwardingPinger struct {
 	*fakePinger
 	waiting int
 }
 
 func (p *forwardingPinger) PoolWaiting() (int, bool) { return p.waiting, true }
+func (p *forwardingPinger) PoolStats() (PoolStats, bool) {
+	return PoolStats{InUse: 0, Max: 100, Idle: 2}, true
+}
 
 // Before anything is wired to probe, readiness reports not-initialized rather
 // than a database error, as the reference does.
@@ -332,17 +330,17 @@ type errNoMessage struct{}
 
 func (errNoMessage) Error() string { return "" }
 
-// On success, a dependency that can report pool utilization contributes the
-// pool keys, and one that cannot omits them.
+// On success, a dependency that can report its pool contributes the pool keys,
+// and one that cannot omits them.
 func TestReadinessPoolStats(t *testing.T) {
-	mux := bindHealth(&HealthHandler{DB: poolPinger{fakePinger: &fakePinger{}}})
+	mux := bindHealth(&HealthHandler{DB: &forwardingPinger{fakePinger: &fakePinger{}, waiting: 0}})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathReady, nil))
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["db_pool_in_use"].(float64) != 3 || body["db_pool_max"].(float64) != 10 || body["db_pool_idle"].(float64) != 7 {
+	if body["db_pool_in_use"].(float64) != 0 || body["db_pool_max"].(float64) != 100 || body["db_pool_idle"].(float64) != 2 {
 		t.Fatalf("pool stats = %v", body)
 	}
 
@@ -517,5 +515,47 @@ func TestHealthPoolKeyOrder(t *testing.T) {
 		if !strings.HasSuffix(body, want) {
 			t.Fatalf("%s body = %s, want suffix %s", path, body, want)
 		}
+	}
+}
+
+// The readiness payload's db_pool_waiting must agree with the gauge /metrics
+// exposes for the same counter: one caller is waiting, so both report it. A
+// dependency handed to the readiness probe is an adapter around a counted pool
+// — the reference gathers the count from its pool instrumentation and receives
+// its utilization snapshot from the backend (engine/memory_engine.py:6218-6236),
+// so the two halves of the same health surface never disagree about a pool that
+// reported its utilization. This pins the agreement as a property of the
+// exported type: an adapter that forwards one must forward the other.
+func TestHealthPoolWaitCountAgreesWithMetricsGauge(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		db   Pinger
+		want int
+	}{
+		{name: "waiter is queued", db: combinedPinger{fakePinger: &fakePinger{}, waiting: 1}, want: 1},
+		{name: "no waiter is queued", db: combinedPinger{fakePinger: &fakePinger{}, waiting: 0}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := bindHealth(&HealthHandler{DB: tc.db})
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathHealth, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := body["db_pool_waiting"]; !ok || got.(float64) != float64(tc.want) {
+				t.Fatalf("db_pool_waiting = %v (present %v), want %d: %s", got, ok, tc.want, rec.Body.String())
+			}
+		})
+	}
+
+	// guard: the helpers the assertion above relies on must keep being
+	// recognized as a pool reporter, or this test would pass vacuously.
+	var db Pinger = combinedPinger{fakePinger: &fakePinger{}}
+	if _, ok := db.(PoolStatsReporter); !ok {
+		t.Fatal("combinedPinger must report pool stats")
 	}
 }

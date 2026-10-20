@@ -7,18 +7,25 @@ import (
 )
 
 // bankMatches reports whether a bank matches the search filter against its
-// identifier, display name or any alias.
-func bankMatches(bank Bank, aliases []string, search string) bool {
+// identifier, display name or any alias. A filter the caller did not supply
+// matches everything; a supplied one filters even when it is empty, because the
+// reference tests its query parameter for truthiness and " " is a search for a
+// space (engine/retain/bank_utils.py:708).
+func bankMatches(bank Bank, aliases []string, search string, given bool) bool {
+	if !given {
+		return true
+	}
 	if matchesSearch(bank.BankID, search) || matchesSearch(bank.Name, search) {
 		return true
 	}
 	return len(aliasHits(aliases, search)) > 0
 }
 
-// aliasHits returns the aliases that matched the search filter. An empty
-// search produces no hits, so a row matched on its own fields reports none.
+// aliasHits returns the aliases that matched the search filter. An alias list
+// only explains a filter the caller supplied, and only as far as the aliases
+// themselves match it.
 func aliasHits(aliases []string, search string) []string {
-	if search == "" {
+	if search == "" && len(aliases) == 0 {
 		return nil
 	}
 	hits := make([]string, 0, len(aliases))
@@ -36,6 +43,9 @@ func aliasHits(aliases []string, search string) []string {
 // results", so a row that explains itself needs no footnote. The list is sorted
 // by alias text, matching the reference's ORDER BY alias.
 func aliasesExplaining(bankID, name string, aliases []string, search string) []string {
+	// The reference guards with `if not search_query` (bank_utils.py:672), not
+	// with a check for having received one: an empty search explains nothing,
+	// while a blank one filters and can still be explained by an alias.
 	if search == "" {
 		return nil
 	}

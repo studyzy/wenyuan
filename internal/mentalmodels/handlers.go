@@ -264,7 +264,12 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	bodyErrors = insertBeforeLoc(bodyErrors, []string{"body", "tags"},
 		maxTokensItems(body.MaxTokens, object["max_tokens"]))
 	var triggerPatch map[string]any
-	hasTrigger := len(body.Trigger) > 0 && string(body.Trigger) != "null"
+	// Unlike the create route, a trigger member the body states as JSON null is not
+	// a supplied value here: the patch model makes the whole member optional, and a
+	// null reads as "not supplied", so only the members a trigger object carries can
+	// change anything. `{"trigger": null}` alone is therefore a patch that names no
+	// column — the reference answers that with 404 on the model, exactly like `{}`.
+	hasTrigger := len(body.Trigger) > 0 && !isJSONNull(body.Trigger)
 	if hasTrigger {
 		parsed, failure := parseTrigger(body.Trigger, false)
 		if failure != nil {
@@ -337,6 +342,9 @@ func (h *Handlers) Clear(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, h.modelError(id, err))
 		return
 	}
+	// The clear leaves the rest of the row alone — including reflect_response,
+	// which the reference's clear does not touch either — so the answer carries
+	// the same detail level its update and refresh do.
 	model := toModel(record)
 	applyDetail(&model, "full")
 	httpx.WriteJSON(w, http.StatusOK, model)

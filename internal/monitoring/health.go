@@ -63,22 +63,27 @@ type PoolStatsReporter interface {
 	PoolStats() (PoolStats, bool)
 }
 
-// PoolWaitingReporter reports how many callers are queued for a pooled
-// connection. The reference gathers that count from its pool instrumentation
-// rather than from the backend's own snapshot, so it is a separate capability:
-// the readiness payload carries db_pool_waiting whenever this is implemented,
-// even when the utilization keys are omitted.
-type PoolWaitingReporter interface {
+// PoolReporter is the whole pool picture the readiness payload reports: the
+// waiter count and the utilization snapshot.
+//
+// The reference fills that payload from two sources that always exist together —
+// the process-wide pool instrumentation for the count (engine/memory_engine.py:6224,
+// engine/db/pool_instrumentation.py:35,43) and the backend's `_pool_stats` for
+// the utilization (engine/memory_engine.py:6228, engine/db/postgresql.py:338) —
+// and the gauge /metrics exposes for the very same counter
+// (`hindsight.db.pool.waiting`, metrics.py:1104-1127) is produced by that same
+// instrumentation. Within one process the readiness payload and that gauge
+// therefore always report the same number. Keeping the two as independent
+// capabilities let a dependency forward one and drop the other, which produced a
+// /health with no db_pool_waiting beside a /metrics with a waiting gauge — a
+// pair the reference cannot emit. Requiring both keeps the halves of the health
+// surface consistent, and the exporter makes that agreement observable.
+type PoolReporter interface {
+	PoolStatsReporter
+	// PoolWaiting reports the callers blocked waiting for a pooled connection,
+	// and whether the counter exists at all. Off a counted pool nothing is
+	// reported, and then no utilization is reported either.
 	PoolWaiting() (int, bool)
-}
-
-// PoolWaiter is the database handle's own waiter counter, the process-wide
-// count of callers blocked in a pooled acquire. A dependency that is backed by
-// such a pool reports it through this method instead of PoolWaitingReporter;
-// the readiness probe then writes db_pool_waiting even though the adapter it is
-// handed does not forward the counter itself.
-type PoolWaiter interface {
-	PoolWaitingCount() (int, bool)
 }
 
 // HealthBody is the JSON status object returned by the readiness routes. It
@@ -149,35 +154,22 @@ func (h *HealthHandler) readyBody(r *http.Request) (HealthBody, int) {
 		Database:    "connected",
 		DBAcquireMS: &acquireMS,
 	}
-	if reporter, ok := h.DB.(PoolStatsReporter); ok {
+	// The waiter count and the utilization are two readings of one pool, so they
+	// are taken together from one reporter: the reference writes
+	// db_pool_waiting first (`_pool_health_stats` inserts it before
+	// in_use/max/idle, engine/memory_engine.py:6223-6233) and the response
+	// bytes carry that order.
+	if reporter, ok := h.DB.(PoolReporter); ok {
+		if waiting, ok := reporter.PoolWaiting(); ok {
+			body.PoolWaiting = &waiting
+		}
 		if stats, ok := reporter.PoolStats(); ok {
 			body.PoolInUse = &stats.InUse
 			body.PoolMax = &stats.Max
 			body.PoolIdle = &stats.Idle
 		}
 	}
-	// The waiter count comes from the instrumentation, not the backend's
-	// snapshot, so it is gathered on its own and written whenever the
-	// dependency can count: the reference reports 0 explicitly when nothing is
-	// waiting, and omits the key only when it has no counter at all.
-	if waiting, ok := h.poolWaiting(); ok {
-		body.PoolWaiting = &waiting
-	}
 	return body, http.StatusOK
-}
-
-// poolWaiting reads the dependency's pooled-acquire waiter count. The reference
-// takes it from its own pool instrumentation, so a dependency may report it
-// directly (PoolWaitingReporter) or expose the pool's handle that holds it
-// (PoolWaiter); neither reports the key at all.
-func (h *HealthHandler) poolWaiting() (int, bool) {
-	if reporter, ok := h.DB.(PoolWaitingReporter); ok {
-		return reporter.PoolWaiting()
-	}
-	if waiter, ok := h.DB.(PoolWaiter); ok {
-		return waiter.PoolWaitingCount()
-	}
-	return 0, false
 }
 
 // errorText renders a probe failure the way the reference does: the message

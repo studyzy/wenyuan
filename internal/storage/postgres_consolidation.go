@@ -170,7 +170,10 @@ func (s *PostgresStore) ObservationDuplicates(ctx context.Context, bankID string
 
 // CreateObservation records a new observation resting on the given facts.
 func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text string, sourceIDs []string) (string, error) {
-	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
+	// An observation has no context of its own: the reference's insert never
+	// names the column (engine/memories/pg/consolidation.py:268-320), so the row
+	// carries NULL and a recall result reports `context: null` rather than "".
+	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation, ContextAbsent: true}
 	unit.Embedding = embedObservation(ctx, s.observationEmbedder, text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
@@ -439,7 +442,10 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 	}
 	// The history is keyed by observation_id and does not cascade from
 	// memory_units, so drop the deleted observations' snapshots explicitly
-	// rather than leaving them to accumulate unreachable.
+	// rather than leaving them to accumulate unreachable — and rather than
+	// letting an observation that later reuses the id inherit a history it never
+	// had. The reference deletes them in the same order, right after the units
+	// (engine/memories/pg/writes.py:317-322).
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.observation_history WHERE bank_id = $1 AND observation_id = ANY($2::uuid[])`,
 		bankID, doomed); err != nil {

@@ -435,18 +435,25 @@ func ValidateRecall(req RecallRequest, body map[string]any) *httpx.ValidationFai
 		items = append(items, httpx.Enum([]string{"body", "budget"}, req.Budget, storageBudgetLevels()))
 	}
 	items = append(items, includeMemberErrors(body, req.Include, recallIncludeMembers)...)
+	// The selection is a `list[str]`: an element of another JSON kind is a
+	// field-level failure, and a model whose field failed skips its validator,
+	// so the route's own "not a fact type" rule does not run alongside it.
+	typeItems := recallTypeElements(body)
+	items = append(items, typeItems...)
+	if len(typeItems) == 0 {
+		if unsupported := unsupportedTypes(req.Types); len(unsupported) > 0 {
+			items = append(items, httpx.ValueError([]string{"body", "types"}, unsupported,
+				"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
+		}
+	}
 	if req.TagsMatch != "" && !containsToken(storageTagMatchModes(), req.TagsMatch) {
 		items = append(items, httpx.Literal([]string{"body", "tags_match"}, req.TagsMatch, storageTagMatchModes()))
 	}
-	if unsupported := unsupportedTypes(req.Types); len(unsupported) > 0 {
-		items = append(items, httpx.ValueError([]string{"body", "types"}, unsupported,
-			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
-	}
-	// A group the union could not read is reported at its own path before the
-	// body-level rules: the framework walks the fields before the request model
-	// validates, so a malformed group outranks the mutual-exclusion check.
-	if len(req.TagGroups.failures) > 0 {
-		return &httpx.ValidationFailure{Errors: req.TagGroups.failures}
+	// The tag filter is reported at its own paths before the body-level rules:
+	// the framework walks the fields before the request model validates, so a
+	// group the union could not read outranks the mutual-exclusion check.
+	if groupItems := req.TagGroups.Items(); len(groupItems) > 0 {
+		return &httpx.ValidationFailure{Errors: groupItems}
 	}
 	// The reference's rule is presence, not content: `tags: []` beside a
 	// `tag_groups` list is refused just as a populated one is, because the model
@@ -487,13 +494,6 @@ func temporalWindowErrors(window *TemporalWindowRequest, body map[string]any) []
 	input, _ := body["temporal_window"].(map[string]any)
 	return []httpx.ValidationError{httpx.ValueError([]string{"body", "temporal_window"}, input,
 		"temporal_window.end must not be earlier than temporal_window.start")}
-}
-
-// tagGroupFailure reports a tag-group filter that would constrain nothing.
-func tagGroupFailure() *httpx.ValidationFailure {
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-		httpx.ValueError([]string{"body", "tag_groups"}, nil, ErrMalformedTagGroup.Error()),
-	}}
 }
 
 // hasWordCharacter reports whether a query carries at least one searchable word

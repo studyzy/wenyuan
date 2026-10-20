@@ -13,13 +13,13 @@ import (
 // rather than as a body-level message. A group carrying only `tag` is such a
 // case: the leaf's member is `tags`, and `tag` belongs to no branch.
 func TestTagGroupsRejectUnconstrainedNodes(t *testing.T) {
+	// Every body is a list: a group is one element of `tag_groups`, and a bare
+	// object is the field's own list-type failure instead.
 	cases := map[string]string{
-		"empty object":    `{}`,
-		"unknown wrapper": `{"groups":[{"tags":["ops"]}]}`,
+		"empty object":    `[{}]`,
+		"unknown wrapper": `[{"groups":[{"tags":["ops"]}]}]`,
 		"bare tag list":   `[[]]`,
-		"empty leaf tags": `{"tags":[]}`,
-		"empty boolean":   `{"and":[]}`,
-		"bare tag":        `{"tag":"team:alpha"}`,
+		"bare tag":        `[{"tag":"team:alpha"}]`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -30,10 +30,11 @@ func TestTagGroupsRejectUnconstrainedNodes(t *testing.T) {
 			if len(field.Groups) != 0 {
 				t.Fatalf("%s decoded to %+v, want no groups", body, field.Groups)
 			}
-			if len(field.failures) != len(tagGroupUnionBranches) {
-				t.Fatalf("%s produced %d items, want one per union branch", body, len(field.failures))
+			items := field.Items()
+			if len(items) != len(tagGroupUnionBranches) {
+				t.Fatalf("%s produced %d items, want one per union branch", body, len(items))
 			}
-			branch := field.failures[0].Loc[len(field.failures[0].Loc)-1]
+			branch := items[0].Loc[len(items[0].Loc)-1]
 			if branch != "tags" && branch != "TagGroupLeaf" {
 				t.Fatalf("%s first item ends at %q, want the leaf's member or branch", body, branch)
 			}
@@ -46,12 +47,12 @@ func TestTagGroupsRejectUnconstrainedNodes(t *testing.T) {
 func TestTagGroupsAcceptContractShapes(t *testing.T) {
 	cases := []string{
 		`[{"tags":["ops"]}]`,
+		`[{"tags":[]}]`,
 		`[{"tags":["ops"],"tag":"ignored"}]`,
 		`[{"tags":["ops"],"match":"all","resolve":"exact"}]`,
 		`[{"and":[{"tags":["ops"]},{"tags":["eu"]}]}]`,
 		`[{"or":[{"tags":["ops"]}]}]`,
 		`[{"not":{"tags":["secret"]}}]`,
-		`{"tags":["ops"]}`,
 	}
 	for _, body := range cases {
 		var field TagGroupsField
@@ -122,24 +123,32 @@ func TestExplicitMatchModes(t *testing.T) {
 }
 
 // A `not` given as a list is refused, and reported the way the reference does:
-// the list satisfies the NOT branch's own shape check, so the four items land
-// on that branch's child union rather than as a missing `not` member. The
-// reference emits seven items for this body — the three members the other
-// branches require plus these four (verified against the live service).
+// the list is not an object, so the NOT branch's child union reports its four
+// branches and the leaf, AND and OR branches report their missing members
+// first. The reference emits a stream of items in branch order for this body
+// (verified against the live service; the served-route test below pins the
+// exact envelope).
 func TestTagGroupNotRefusesAList(t *testing.T) {
 	var field TagGroupsField
 	if err := json.Unmarshal([]byte(`[{"not":[{"tags":["secret"]}]}]`), &field); err != nil {
 		t.Fatalf("the field must decode its own failure: %v", err)
 	}
-	if len(field.Groups) != 0 {
-		t.Fatalf("a list-shaped not decoded to %+v, want no groups", field.Groups)
+	// The group itself is reported but decodes to a node with no child, so the
+	// filter cannot silently widen: the route refuses the request on the items
+	// before the store ever sees it.
+	if len(field.Groups) != 1 || field.Groups[0].Not.Child != nil {
+		t.Fatalf("a list-shaped not decoded to %+v, want one group with no not child", field.Groups)
 	}
-	if len(field.failures) != 7 {
-		t.Fatalf("produced %d items, want 7", len(field.failures))
+	items := field.Items()
+	if len(items) != 7 {
+		t.Fatalf("produced %d items, want 7", len(items))
+	}
+	if got := items[len(items)-1].Loc; len(got) != 6 || got[3] != "TagGroupNot" {
+		t.Fatalf("last item loc = %v, want the not branch's child union", got)
 	}
 	for _, want := range []string{"TagGroupLeaf", "TagGroupAnd", "TagGroupOr", "TagGroupNot"} {
 		found := false
-		for _, item := range field.failures {
+		for _, item := range field.Items() {
 			if len(item.Loc) == 6 && item.Loc[3] == "TagGroupNot" && item.Loc[5] == want {
 				found = true
 				if item.Type != "model_attributes_type" {
@@ -168,7 +177,10 @@ func TestTagGroupNotAcceptsASingleNode(t *testing.T) {
 }
 
 // The served endpoint reports the list-shaped `not` as a 422 whose envelope
-// matches the reference's, rather than silently dropping the filter.
+// matches the reference's, rather than silently dropping the filter. The
+// reference's order is branch order: the three members the leaf, `and` and `or`
+// branches require come first, then the four branches the `not` child union
+// reports.
 func TestRecallRefusesAListShapedNot(t *testing.T) {
 	mux, _ := newServer(t)
 	rec := post(t, mux, "/v1/default/banks/b1/memories/recall",

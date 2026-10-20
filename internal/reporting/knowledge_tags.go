@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -201,35 +200,66 @@ var knowledgeTagMatchModes = []string{
 }
 
 // knowledgeTagFilterFromRequest reads the `tags`, `tags_match` and `tag_groups`
-// query parameters into a filter. A `tags_match` outside the enum, or a
-// `tag_groups` that is not a JSON tag-group tree, writes the reference's 422
-// envelope and reports false.
+// query parameters into a filter, writing the reference's 422 and reporting
+// false when one is rejected. It is the single-parameter form used by the tree;
+// the search route collects the whole run instead.
 func knowledgeTagFilterFromRequest(w http.ResponseWriter, r *http.Request) (knowledgeTagFilter, bool) {
-	filter := knowledgeTagFilter{tags: httpx.QueryValues(r, "tags"), tagsMatch: strings.TrimSpace(httpx.Query(r, "tags_match"))}
-	if filter.tagsMatch == "" {
-		filter.tagsMatch = storage.TagsMatchAny
-	}
-	if !containsKnowledgeString(knowledgeTagMatchModes, filter.tagsMatch) {
-		writeKnowledgeItem(w, r, httpx.Literal([]string{"query", "tags_match"}, filter.tagsMatch, knowledgeTagMatchModes))
-		return knowledgeTagFilter{}, false
-	}
-	rawGroups := strings.TrimSpace(httpx.Query(r, "tag_groups"))
-	if rawGroups == "" {
-		return filter, true
-	}
-	// The reference validates this parameter through a Pydantic TypeAdapter
-	// (`_TAG_GROUPS_ADAPTER`, api/http.py:3712-3720), so a document that parses
-	// but is not a well-formed tag-group tree is refused too — not only one that
-	// fails to parse. The detail carries the whole rendered validation report.
-	groups, detail, ok := decodeKnowledgeTagGroups(rawGroups)
-	if !ok {
-		// The reference raises a plain HTTPException(422, detail="Invalid tag_groups: …"),
-		// so the envelope carries a string, not a validation-item list.
+	filter, items, detail := knowledgeTagFilterItems(r)
+	if detail != "" {
+		// The reference raises the dependency's own HTTPException, whose detail is
+		// the rendered report string rather than an item list.
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, detail))
 		return knowledgeTagFilter{}, false
 	}
-	filter.groups = groups
+	if len(items) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
+		return knowledgeTagFilter{}, false
+	}
 	return filter, true
+}
+
+// knowledgeTagFilterItems reads the three tag parameters without writing a
+// response: the rejection items of an out-of-enum `tags_match`, and the
+// rendered report `detail` of a `tag_groups` the adapter refused.
+//
+// `tags_match` is validated before `tag_groups` because the reference declares
+// it first: a bad enum and a bad tree in one request report only the enum, the
+// tree's failure arriving from a dependency that never runs.
+func knowledgeTagFilterItems(r *http.Request) (knowledgeTagFilter, []httpx.ValidationError, string) {
+	// Neither value is trimmed: the reference hands the raw strings to its enum
+	// and its JSON adapter, so `tags_match=` is a literal error naming "" and
+	// `tag_groups=%20` is a JSON parse failure, not an absent parameter.
+	filter := knowledgeTagFilter{tags: httpx.QueryValues(r, "tags"), tagsMatch: httpx.Query(r, "tags_match")}
+	if filter.tagsMatch == "" && !queryHas(r, "tags_match") {
+		filter.tagsMatch = storage.TagsMatchAny
+	}
+	if !containsKnowledgeString(knowledgeTagMatchModes, filter.tagsMatch) {
+		return knowledgeTagFilter{}, []httpx.ValidationError{
+			httpx.Literal([]string{"query", "tags_match"}, filter.tagsMatch, knowledgeTagMatchModes),
+		}, ""
+	}
+	// An empty `tag_groups` is treated as absent: the reference's dependency reads
+	// the parameter as `adapter.validate_json(raw) if raw else None`
+	// (api/http.py:3712), so `tag_groups=` yields no groups at all rather than a
+	// parse failure. A whitespace-only value is not empty there, so it still reaches
+	// the adapter and fails to parse.
+	rawGroups := httpx.Query(r, "tag_groups")
+	if rawGroups == "" {
+		return filter, nil, ""
+	}
+	groups, detail, ok := decodeKnowledgeTagGroups(rawGroups)
+	if !ok {
+		return knowledgeTagFilter{}, nil, detail
+	}
+	filter.groups = groups
+	return filter, nil, ""
+}
+
+// queryHas reports whether the request carries the parameter at all, which
+// distinguishes an absent one from an explicit empty value.
+func queryHas(r *http.Request, name string) bool {
+	_, present := httpx.QueryPresent(r, name)
+	return present
 }
 
 // resolveKnowledgeFilter resolves a filter's fuzzy tag leaves against the bank's
@@ -338,9 +368,4 @@ func containsKnowledgeString(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-// writeKnowledgeItem emits one structured item in the framework's 422 body.
-func writeKnowledgeItem(w http.ResponseWriter, r *http.Request, item httpx.ValidationError) {
-	httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
 }

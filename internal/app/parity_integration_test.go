@@ -312,8 +312,10 @@ func mustJSON(t *testing.T, value any) []byte {
 
 // Contract reference: public HTTP behavior for this case.
 // The retired profile/background routes answer 410 Gone without a credential:
-// the reference raises the retirement status before any authenticated call.
-// They must not create a bank as a side effect.
+// the reference raises the retirement status before any authenticated call, but
+// only once the request body has validated — a body it refuses is a 422 first,
+// because its framework validates the model before the handler that raises the
+// retirement runs. They must not create a bank as a side effect.
 func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 	a := parityApp(t)
 
@@ -323,8 +325,11 @@ func TestParityRetiredBankProfileRoutesAreGone(t *testing.T) {
 		body   string
 	}{
 		{http.MethodGet, "/v1/default/banks/retired_bank/profile", ""},
-		{http.MethodPut, "/v1/default/banks/retired_bank/profile", `{"name":"x"}`},
-		{http.MethodPost, "/v1/default/banks/retired_bank/background", `{}`},
+		// The profile update takes a `disposition` object and the background write a
+		// `content` string, so a body that names neither is refused before the
+		// route's retirement status is reached.
+		{http.MethodPut, "/v1/default/banks/retired_bank/profile", `{"disposition":{"skepticism":3,"literalism":3,"empathy":3}}`},
+		{http.MethodPost, "/v1/default/banks/retired_bank/background", `{"content":"x"}`},
 	}
 	for _, tc := range cases {
 		var req *http.Request

@@ -191,6 +191,13 @@ func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string)
 	// content behind would keep the cleared page ranking in semantic recall on a
 	// body it no longer has. A deployment with no embedding model writes NULL,
 	// which is what the reference's rebuild stores when it has no vector.
+	//
+	// reflect_response is deliberately not reset — the reference's UPDATE does not
+	// name the column, so a cleared model still reports the reflect that produced
+	// the content it has since discarded, and a client reading the clear's reply
+	// sees the same payload it saw just before (verified against the live service
+	// on 2026-10-20). mental_model_history is not touched either: the clear writes
+	// no history row on either side.
 	embedding, err := mentalModelEmbeddingArg(ctx, s.observationEmbedder, current.Name, "")
 	if err != nil {
 		return MentalModel{}, err

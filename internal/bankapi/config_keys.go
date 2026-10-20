@@ -203,6 +203,14 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 		if err := validateConfigValue(normalized, raw); err != nil {
 			return storage.BankPatch{}, err
 		}
+		if normalized == "entity_labels" {
+			// The reference stores the parsed model, which its serialiser writes in
+			// field-declaration order (a `type` the legacy migration supplies lands
+			// between `description` and `optional`, and members a default covers are
+			// omitted). Storing the canonical shape keeps a read-back identical.
+			configValues[normalized] = entitylabels.Canonical(raw)
+			continue
+		}
 		configValues[normalized] = normalizeConfigNumber(kind, raw)
 	}
 
@@ -237,6 +245,14 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 		// for `{"attributes": []}`), so it is stored as the empty vocabulary.
 		if isEntityLabelsEmpty(raw) {
 			break
+		}
+		// The reference's own gate is its pydantic model (config_resolver.py:601-607
+		// wraps the library's report verbatim), so its verdict comes first: a
+		// group carrying, say, a non-boolean `optional` is rejected there even
+		// though nothing downstream reads the member.
+		if report := entitylabels.ShapeProblems(raw); len(report) > 0 {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				"Invalid entity_labels format: "+strings.Join(report, "\n"))
 		}
 		if _, err := entitylabels.Parse(raw); err != nil {
 			return httpx.NewHTTPError(httpx.KindBadRequest, "Invalid entity_labels format: "+err.Error())

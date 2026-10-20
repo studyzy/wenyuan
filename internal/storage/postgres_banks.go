@@ -21,7 +21,7 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 	qualified := quoteIdent(s.schema)
 	where := ""
 	args := []any{}
-	if query.Search != "" {
+	if query.SearchGiven {
 		where = ` WHERE (b.bank_id ILIKE $1 OR b.name ILIKE $1 OR EXISTS (
 		    SELECT 1 FROM ` + qualified + `.bank_aliases a
 		    WHERE a.bank_id = b.bank_id AND a.alias ILIKE $1))`

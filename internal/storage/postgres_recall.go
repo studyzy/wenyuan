@@ -306,7 +306,17 @@ func tagLeafClause(group TagGroup) string {
 		requested = append([]string{group.Tag}, requested...)
 	}
 	if len(requested) == 0 {
-		return "TRUE"
+		// A leaf naming no tag still filters: the reference renders an empty leaf
+		// under `exact` as "untagged rows only" and under every other mode as "at
+		// least one tag" (engine/search/tags.py:390-403). Rendering TRUE would
+		// turn the filter off, the one direction a filter must never fail in, so
+		// both readings are spelled out. The model layer accepts an empty `tags`
+		// array — only an absent one is refused — so this branch is reachable from
+		// an ordinary request.
+		if leafMatchMode(group.Match) == TagsMatchExact {
+			return "(tags IS NULL OR tags = '{}')"
+		}
+		return "(tags IS NOT NULL AND tags != '{}')"
 	}
 	// A leaf's own default differs from the flat field's: a compound filter is
 	// written to narrow, so an unset mode excludes untagged rows rather than
@@ -401,7 +411,12 @@ func (s *PostgresStore) keywordArm(ctx context.Context, q RecallQuery, term stri
 func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []string, limit int) ([]recallHit, error) {
 	// The score column is part of the shared arm-row shape the scanner reads; a
 	// list hit carries no lexical relevance, so its score is 0.
-	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
+	//
+	// The context is NULLIF-ed to an empty string the same way the semantic and
+	// keyword arms do it: an observation is written without one, and the
+	// reference's fact object is built straight from its column, so an empty
+	// string there is only ever the fact type's default showing through.
+	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, NULLIF(context, ''), metadata, tags,
 	                 COALESCE(source_memory_ids, '{}'::uuid[])::text,
 	                 0::float8 AS score
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
@@ -611,7 +626,10 @@ func scanRecallHits(rows *sql.Rows) ([]recallHit, error) {
 		m.MentionedAt = utcTimePtr(nullTimePtr(mentionedAt))
 		m.ChunkID = chunkID.String
 		m.DocumentID = documentID.String
-		m.Context = context.String
+		// A NULL context is the observation's "no context of its own"; an empty
+		// string is a fact whose context is genuinely empty. They render
+		// differently, so the absence is carried, not folded away.
+		m.Context, m.ContextAbsent = context.String, !context.Valid
 		m.Metadata = decodeJSONMap(metadataRaw)
 		m.Tags = decodePostgresTextArray(tagsRaw)
 		m.SourceMemoryIDs = decodePostgresTextArray(sourceRaw)

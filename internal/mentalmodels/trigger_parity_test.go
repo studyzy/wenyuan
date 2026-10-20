@@ -174,7 +174,9 @@ func TestTriggerExclusivityIsSkippedWhenAFieldFailed(t *testing.T) {
 
 // A boolean member takes the framework's lax coercion: the accepted words and
 // 0/1 are booleans, and the model stores what they mean, not the text. A word it
-// does not know and any other number are the framework's bool_parsing item.
+// does not know (and a number outside 0/1) is the framework's bool_parsing item,
+// because a string and a number both reach its lax conversion; every other kind
+// is the plain bool_type mismatch, because it never does.
 func TestTriggerBooleanMembersTakeLaxCoercion(t *testing.T) {
 	mux := newTriggerServer(t)
 	accepted := []struct {
@@ -205,10 +207,22 @@ func TestTriggerBooleanMembersTakeLaxCoercion(t *testing.T) {
 		})
 	}
 
-	for _, body := range []string{`{"trigger":{"keep_trace":2}}`, `{"trigger":{"keep_trace":-1}}`} {
+	// Numbers outside 0/1 and unknown words reach the lax conversion and fail to
+	// parse; a null, an object, a list and a fractional number never do, so they
+	// are the framework's plain type mismatch instead. The split is observable and
+	// was checked against the live reference on 2026-10-20.
+	for body, wantType := range map[string]string{
+		`{"trigger":{"keep_trace":2}}`:       "bool_parsing",
+		`{"trigger":{"keep_trace":-1}}`:      "bool_parsing",
+		`{"trigger":{"keep_trace":"maybe"}}`: "bool_parsing",
+		`{"trigger":{"keep_trace":null}}`:    "bool_type",
+		`{"trigger":{"keep_trace":{}}}`:      "bool_type",
+		`{"trigger":{"keep_trace":[]}}`:      "bool_type",
+		`{"trigger":{"keep_trace":1.5}}`:     "bool_type",
+	} {
 		detail := triggerDetail(t, mux, body)
-		if len(detail) != 1 || detail[0].Type != "bool_parsing" {
-			t.Fatalf("%s: detail = %+v, want one bool_parsing item", body, detail)
+		if len(detail) != 1 || detail[0].Type != wantType {
+			t.Fatalf("%s: detail = %+v, want one %s item", body, detail, wantType)
 		}
 	}
 }
@@ -340,5 +354,134 @@ func TestTriggerExcludeMentalModelIdsShape(t *testing.T) {
 	detail = triggerDetail(t, mux, `{"trigger":{"exclude_mental_model_ids":"a"}}`)
 	if len(detail) != 1 || detail[0].Type != "list_type" {
 		t.Fatalf("detail = %+v, want one list_type item", detail)
+	}
+}
+
+// A boolean sent for an integer member is the integer it coerces to, because the
+// framework's integer type takes a bool through its lax path — so `true` stores
+// 1 and `false` stores 0 rather than being refused or read as "not supplied".
+// The distinction matters downstream: a stored 0 is a real bound (refresh every
+// tick), while a missing member means the default.
+func TestTriggerIntegerMembersReadBooleansAsNumbers(t *testing.T) {
+	mux := newTriggerServer(t)
+	for raw, want := range map[string]float64{"true": 1, "false": 0} {
+		rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+			`{"trigger":{"min_refresh_interval_seconds":`+raw+`}}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (%s)", raw, rec.Code, rec.Body.String())
+		}
+		var model Model
+		if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := model.Trigger["min_refresh_interval_seconds"].(float64)
+		if got != want {
+			t.Fatalf("min_refresh_interval_seconds from %s = %#v, want %v",
+				raw, model.Trigger["min_refresh_interval_seconds"], want)
+		}
+	}
+}
+
+// An integer member sent as a number keeps that number. Reading the body into
+// map[string]any and then re-encoding the object for the patch used to turn a
+// whole number into a float and lose it, storing null where the client had set a
+// value; the reference stores what it was sent.
+func TestTriggerIntegerMembersKeepLargeValues(t *testing.T) {
+	mux := newTriggerServer(t)
+	rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"trigger":{"min_refresh_interval_seconds":2048}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := model.Trigger["min_refresh_interval_seconds"].(float64); got != 2048 {
+		t.Fatalf("min_refresh_interval_seconds = %#v, want 2048", model.Trigger["min_refresh_interval_seconds"])
+	}
+}
+
+// The two schedule members are exclusive whichever order they are stated in: a
+// supplied refresh_cron clears a stale refresh_after_consolidation, and enabling
+// consolidation clears a configured cron. A model is either driven by a schedule
+// or refreshed with each consolidation, never both — verified against the live
+// reference on 2026-10-20, where setting the flag on a cron-scheduled model
+// answered with `refresh_cron: null`.
+func TestTriggerScheduleMembersAreExclusive(t *testing.T) {
+	mux := newTriggerServer(t)
+	for _, step := range []string{
+		`{"trigger":{"refresh_cron":"9 9 * * *"}}`,
+		`{"trigger":{"refresh_after_consolidation":true}}`,
+	} {
+		if rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1", step); rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d (%s)", step, rec.Code, rec.Body.String())
+		}
+	}
+	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/mental-models/mm-1", "")
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	if model.Trigger["refresh_cron"] != nil {
+		t.Fatalf("refresh_cron = %#v, want null: enabling consolidation replaces a schedule",
+			model.Trigger["refresh_cron"])
+	}
+	if model.Trigger["refresh_after_consolidation"] != true {
+		t.Fatalf("refresh_after_consolidation = %#v, want true", model.Trigger["refresh_after_consolidation"])
+	}
+}
+
+// A patch body whose trigger member is JSON null supplies no trigger: the model
+// cannot read members out of a null, and an optional member stated as null is
+// read as absent, so the patch names no column and the reference answers with its
+// not-found (the same reply `{}` gets). Only a non-null, non-object value is the
+// framework's model_attributes_type failure.
+func TestUpdateTreatsNullTriggerAsNoColumn(t *testing.T) {
+	mux := newTriggerServer(t)
+	// The trigger was stored as null at creation, so the merge would state
+	// nothing either way — the reply must still be 200, not the 422 a
+	// model_attributes_type failure produces.
+	rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"name":"renamed","trigger":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with the null trigger ignored (%s)", rec.Code, rec.Body.String())
+	}
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	if model.Name != "renamed" {
+		t.Fatalf("name = %q, want renamed", model.Name)
+	}
+}
+
+// A member stated as JSON null is stored as a null, because the reference merges
+// `{**base, **supplied}` — the null is the value the client supplied, and it is
+// how a member is cleared. Dropping null members from the merge instead would
+// leave the old value in place, so a patch could never clear one.
+func TestTriggerMergeStoresExplicitNulls(t *testing.T) {
+	mux := newTriggerServer(t)
+	if rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"trigger":{"refresh_cron":"9 9 * * *","fact_types":["world"]}}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"trigger":{"refresh_cron":null,"fact_types":null}}`); rec.Code != http.StatusOK {
+		t.Fatalf("clear: %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/mental-models/mm-1", "")
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{"refresh_cron", "fact_types"} {
+		value, present := model.Trigger[member]
+		if !present {
+			t.Fatalf("%s is absent, want an explicit null: the merge states it", member)
+		}
+		if value != nil {
+			t.Fatalf("%s = %#v, want null", member, value)
+		}
 	}
 }

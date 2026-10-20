@@ -35,10 +35,10 @@ var dryRunMediaTypeRe = regexp.MustCompile(`^[\w.+-]+/[\w.+-]+$`)
 //
 // raw is the content field's raw JSON: nil when the field was absent, the
 // literal `null` when it was sent as JSON null.
-func dryRunContentFailure(raw json.RawMessage) (*httpx.ValidationFailure, string) {
+func dryRunContentFailure(raw json.RawMessage, requestBody any) (*httpx.ValidationFailure, string) {
 	if raw == nil {
 		return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.Missing([]string{"body", "content"}, map[string]any{}),
+			httpx.Missing([]string{"body", "content"}, requestBody),
 		}}, ""
 	}
 	var value any

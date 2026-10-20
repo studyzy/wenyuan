@@ -261,8 +261,13 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	previousContent := model.Content
 	previousReflect := model.ReflectResult
 	// The grounding is recorded with the content it supports, so a later
-	// staleness check can ask which of these facts still exist.
-	reflectResult := map[string]any{"based_on": map[string]any{"memories": renderFacts(outcome)}}
+	// staleness check can ask which of these facts still exist. The payload is
+	// the reference's — text, based_on keyed by fact type, and an empty
+	// mental_models list, because a cited model appears under based_on's
+	// "mental-models" key rather than twice — and it is what a GET reports as
+	// reflect_response, so the shape is observable.
+	refreshOutcome := refreshedOutcome(content, model.Content)
+	reflectResult := storedReflectResponse(outcome.Answer, refreshOutcome, outcome)
 	// The query this refresh ran is recorded with the content it produced: a
 	// later delta refresh compares it against the model's current source query
 	// and reads the whole scope when the topic has moved.
@@ -289,7 +294,7 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	if err := r.store.MarkMentalModelSeen(ctx, bankID, modelID, seenAt); err != nil {
 		return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
 	}
-	report.outcome = refreshedOutcome(content, model.Content)
+	report.outcome = refreshOutcome
 	return updated, report, nil
 }
 
@@ -487,4 +492,63 @@ func renderFacts(outcome storage.ReflectOutcome) []any {
 		facts = append(facts, map[string]any{"id": fact.ID, "text": fact.Text, "type": fact.Type})
 	}
 	return facts
+}
+
+// reflectResponseFactTypes is the fixed key set of a stored reflect_response's
+// based_on: the reference declares every arm of the union up front and appends
+// into them, so a type with no cited fact is an empty list rather than a missing
+// key. "mental-models" is hyphenated so it reads like the recall type it names.
+var reflectResponseFactTypes = []string{
+	"world", "experience", "opinion", "observation", "mental-models", "directives",
+}
+
+// storedReflectResponse builds the reflect_response payload a refresh stores: the
+// answer it produced, the evidence that grounded it keyed by fact type, an empty
+// mental_models list, and the outcome that says what the write did.
+//
+// The mental_models list stays empty on purpose. The reference fills based_on's
+// "mental-models" key with the pages the run cited and keeps this list as a
+// compatibility placeholder, so a model cited as evidence appears once, under
+// the key that names its type.
+func storedReflectResponse(text, outcomeName string, outcome storage.ReflectOutcome) map[string]any {
+	return map[string]any{
+		"text":          text,
+		"based_on":      renderFactsByType(outcome),
+		"mental_models": []any{},
+		"outcome":       outcomeName,
+	}
+}
+
+// renderFactsByType groups the run's cited evidence into the reference's stored
+// based_on shape: one list per fact type, every key present, each entry carrying
+// the fact's id, text, type and context.
+func renderFactsByType(outcome storage.ReflectOutcome) map[string][]any {
+	based := make(map[string][]any, len(reflectResponseFactTypes))
+	for _, factType := range reflectResponseFactTypes {
+		based[factType] = []any{}
+	}
+	appendFact := func(factType string, entry map[string]any) {
+		if _, known := based[factType]; !known {
+			// A type outside the fixed set has no arm to append into; the
+			// reference's dict lookup drops it the same way.
+			return
+		}
+		based[factType] = append(based[factType], entry)
+	}
+	for _, fact := range outcome.Facts {
+		appendFact(fact.Type, map[string]any{
+			"id": fact.ID, "text": fact.Text, "type": fact.Type, "context": fact.Context,
+		})
+	}
+	for _, model := range outcome.MentalModels {
+		appendFact("mental-models", map[string]any{
+			"id": model.ID, "text": model.Text, "type": "mental-models", "context": model.Context,
+		})
+	}
+	for _, directive := range outcome.Directives {
+		appendFact("directives", map[string]any{
+			"id": directive.ID, "text": directive.Content, "type": "directives", "context": nil,
+		})
+	}
+	return based
 }

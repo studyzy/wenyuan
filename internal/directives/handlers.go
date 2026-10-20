@@ -88,27 +88,20 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	// reference they are `Query(...)` parameters and a `Depends`, which the
 	// framework resolves ahead of the handler body, so a bad selector is the 422
 	// even when the bank does not exist.
-	activeOnly, failure := parseActiveOnly(r)
-	if failure != nil {
-		httpx.WriteValidationFailure(w, failure)
+	// The reference's framework resolves every query parameter in one pass, so a
+	// request with several bad selectors reports all of them in a single 422 — in
+	// the order the endpoint declares them: tags_match, active_only, limit,
+	// offset. Reporting only the first would tell the caller half the story.
+	selectors, items, unrepresentable := parseListSelectors(r)
+	if unrepresentable != nil {
+		httpx.WriteValidationFailure(w, unrepresentable)
 		return
 	}
-	mode := "any"
-	if raw, present := queryParam(r, "tags_match"); present {
-		// A literal's members compare by exact string: the framework does not
-		// trim, so " any" is no more a member than "bogus" is.
-		if !containsString(directiveTagsMatch, raw) {
-			httpx.WriteValidationFailure(w, queryItem(httpx.Literal(
-				[]string{"query", "tags_match"}, raw, []string{"any", "all", "exact"})))
-			return
-		}
-		mode = raw
-	}
-	limit, offset, failure := parsePage(r)
-	if failure != nil {
-		httpx.WriteValidationFailure(w, failure)
+	if len(items) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
 		return
 	}
+	activeOnly, mode, limit, offset := selectors.activeOnly, selectors.mode, selectors.limit, selectors.offset
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -251,6 +244,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	if body.IsActive != nil {
 		active = *body.IsActive
 	}
+	if failure := priorityRangeFailure(createDirectivePriorityArg, body.Priority); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
+		return
+	}
 	record, err := h.Store.PutDirective(r.Context(), storage.Directive{
 		ID:       newID(),
 		BankID:   bankID,
@@ -296,6 +293,13 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	})); bad {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, detail))
 		return
+	}
+	if body.Priority != nil {
+		arg := updateDirectivePriorityArg(body.Name != nil, body.Content != nil)
+		if failure := priorityRangeFailure(arg, *body.Priority); failure != nil {
+			httpx.WriteValidationFailure(w, failure)
+			return
+		}
 	}
 	record, err := h.Store.UpdateDirective(r.Context(), bankID, id, storage.DirectivePatch{
 		Name:     body.Name,

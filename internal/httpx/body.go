@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -39,6 +40,189 @@ func checkBodyText(body []byte) ([]byte, error) {
 // rule lives beside the decoder rather than in every handler.
 var ErrEmptyBody = errors.New("empty request body")
 
+// A validation item echoes the body it was raised for — `{"input": {...}}` — and
+// the reference's report keeps that body as an insertion-ordered mapping, so its
+// members appear in the order the client wrote them. A Go map sorts its keys, so
+// the decoder records the order here and the writer replays it.
+
+// RecordBodyOrder parses the top-level object's member names in document order
+// and stores them on the request's context. DecodeBody calls it; a handler that
+// reads its own body calls it too, so the failure it raises echoes the body the
+// way the client wrote it.
+func RecordBodyOrder(r *http.Request, body []byte) {
+	body = bytes.TrimPrefix(body, utf8BOM)
+	body = bytes.TrimLeft(body, " \t\r\n")
+	if r == nil || len(body) == 0 || body[0] != '{' {
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return
+	}
+	members := make([]orderedEntry, 0, 8)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			// The decoder refuses the body itself from here on (an out-of-range
+			// literal, say), and the request ends as that failure rather than as an
+			// item list, so no echo is needed.
+			return
+		}
+		members = append(members, orderedEntry{key: key, value: orderNested(value)})
+	}
+	// The order rides on the request's context, so any caller holding the same
+	// request can echo the body the way the client wrote it.
+	*r = *r.WithContext(context.WithValue(r.Context(), bodyOrderKey{}, orderMap(members)))
+}
+
+// orderedEntry is one member of the request body, with its value kept in the
+// member order it was written in.
+type orderedEntry struct {
+	key   string
+	value orderedValue
+}
+
+// orderedValue marshals a JSON value with its own objects' members in document
+// order.
+type orderedValue struct {
+	raw any
+}
+
+// MarshalJSON writes the value as recorded.
+func (o orderedValue) MarshalJSON() ([]byte, error) {
+	return json.Marshal(o.raw)
+}
+
+// orderNested re-reads a raw JSON value so every object in it keeps its member
+// order: a decoded map would sort its keys.
+func orderNested(raw []byte) orderedValue {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	value, ok := orderValue(decoder)
+	if !ok {
+		return orderedValue{raw: json.RawMessage(raw)}
+	}
+	return orderedValue{raw: value}
+}
+
+// orderMap is a JSON object whose members marshal in the recorded order.
+type orderMap []orderedEntry
+
+// MarshalJSON writes the object's members in the order they were read.
+func (m orderMap) MarshalJSON() ([]byte, error) {
+	buffer := bytes.NewBuffer(make([]byte, 0, 64))
+	buffer.WriteByte('{')
+	for i, entry := range m {
+		if i > 0 {
+			buffer.WriteByte(',')
+		}
+		key, err := json.Marshal(entry.key)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(key)
+		buffer.WriteByte(':')
+		value, err := json.Marshal(entry.value)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(value)
+	}
+	buffer.WriteByte('}')
+	return buffer.Bytes(), nil
+}
+
+// orderValue reads one JSON value from a decoder, keeping every object's member
+// order.
+func orderValue(decoder *json.Decoder) (any, bool) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, false
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return token, true
+	}
+	switch delim {
+	case '{':
+		var members orderMap
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, false
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, false
+			}
+			value, ok := orderValue(decoder)
+			if !ok {
+				return nil, false
+			}
+			members = append(members, orderedEntry{key: key, value: orderedValue{raw: value}})
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return members, true
+	case '[':
+		var list []any
+		for decoder.More() {
+			value, ok := orderValue(decoder)
+			if !ok {
+				return nil, false
+			}
+			list = append(list, orderedValue{raw: value})
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return list, true
+	}
+	return nil, false
+}
+
+// bodyOrderKey types the context key, so a value stored under it cannot collide
+// with another package's.
+type bodyOrderKey struct{}
+
+// OrderWholeBodyFailure gives a failure whose items echo the whole request body
+// — a `missing` required member carries the body as its `input` — the recorded
+// member order, so the response renders that body the way the client wrote it.
+// The recorder is filled in as well, for an item that echoes a member whose own
+// value is an object.
+func OrderWholeBodyFailure(r *http.Request, failure *ValidationFailure) *ValidationFailure {
+	if failure == nil {
+		return nil
+	}
+	if failure.BodyOrder == nil {
+		order, ok := BodyOrder(r)
+		if !ok {
+			return failure
+		}
+		copied := *failure
+		copied.BodyOrder = order
+		failure = &copied
+	}
+	return failure
+}
+
+// BodyOrder returns the recorded member order of the request's body, if the
+// decoder captured one.
+func BodyOrder(r *http.Request) (orderMap, bool) {
+	members, ok := r.Context().Value(bodyOrderKey{}).(orderMap)
+	return members, ok
+}
+
 // DecodeBody reads and decodes a JSON request body, recording the body fields
 // the target does not declare, and reports a body the reference's framework
 // would reject as a 422 validation failure rather than a 400.
@@ -69,7 +253,15 @@ func DecodeBody(r *http.Request, target any) error {
 	// machinery builds for its original text).
 	decoded, err := decodeLaxSchema(body, target, schemaForRequest(r, target))
 	if err != nil {
-		return BodyDecodeFailure(err, decoded)
+		if failure := BodyDecodeFailure(err, decoded); failure != nil {
+			// The items echo the body as the client wrote it, so the recorded member
+			// order rides along with the failure.
+			if order, ok := BodyOrder(r); ok {
+				failure.BodyOrder = order
+			}
+			return failure
+		}
+		return err
 	}
 	return nil
 }
@@ -298,6 +490,26 @@ func bodyFailure(err error, body []byte) *ValidationFailure {
 		ValidationItem("json_invalid", []string{"body"}, "JSON decode error", nil,
 			map[string]any{"error": err.Error()}),
 	}}
+}
+
+// JSONDecodeFailure reports whether the JSON text carries a value no decoder of
+// the standard library accepts at all — a numeric literal that overflows to
+// infinity, such as `1e999`. CPython's parser reads that literal as an `inf`
+// float, which then fails to serialize, so the reference's own error handler
+// breaks and the client gets a bare 500 ("Internal Server Error") rather than a
+// validation item. Callers that decode a body themselves use this before
+// rendering a decode failure, because the Go decoder's own message for such a
+// body ("cannot unmarshal number into Go struct field …") names the wrong
+// problem: the failure is in the text, not in the model. The report is true only
+// when the text is otherwise valid, so a genuinely malformed body keeps the
+// parser's item.
+func JSONDecodeFailure(body []byte) bool {
+	text := bytes.TrimPrefix(body, utf8BOM)
+	if !json.Valid(text) {
+		return false
+	}
+	var probe any
+	return json.Unmarshal(text, &probe) != nil
 }
 
 // pythonJSONFailure renders body as the item the reference's framework emits for

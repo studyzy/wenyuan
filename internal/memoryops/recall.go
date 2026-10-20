@@ -186,19 +186,33 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		query.Rerank = nil
 		query.RerankDepth = 0
 	}
-	result, err := h.Store.Recall(r.Context(), query)
+	// The retrieval and its response assembly are one observed operation: the
+	// reference's block wraps both (api/http.py:6243-6367), so a request that
+	// fails in the engine counts as a failure and an abandoned one does not
+	// count at all. Validation has already run, so a refused request is never
+	// recorded here — the reference refuses those before the block opens.
+	budget, maxTokens := recallOperationLabels(req)
+	var response RecallResponse
+	err = serveOperation(r.Context(), operationRecall, budget, maxTokens, func() error {
+		result, err := h.Store.Recall(r.Context(), query)
+		if err != nil {
+			return err
+		}
+		// A non-positive token budget asks for no facts (the documented way to
+		// want chunks without them), and the reference's entity channel is
+		// resolved from the returned facts — so with nothing to resolve it
+		// reports null rather than the entities of a list that was cut away.
+		if recallMaxTokens(req) <= 0 {
+			result.EntityStates = nil
+		}
+		response = BuildRecallResponse(result, req)
+		return nil
+	})
 	if err != nil {
 		h.writeReadError(w, r, err)
 		return
 	}
-	// A non-positive token budget asks for no facts (the documented way to want
-	// chunks without them), and the reference's entity channel is resolved from
-	// the returned facts — so with nothing to resolve it reports null rather
-	// than the entities of a list that was cut away.
-	if recallMaxTokens(req) <= 0 {
-		result.EntityStates = nil
-	}
-	httpx.WriteJSON(w, http.StatusOK, BuildRecallResponse(result, req))
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // buildRecallQuery resolves a validated request into the storage recall query,

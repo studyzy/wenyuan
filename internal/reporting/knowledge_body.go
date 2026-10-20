@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"sync"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
@@ -19,29 +21,93 @@ import (
 // or wrong-typed in the target is reported as a structured validation failure
 // (422), never a bare 400.
 func decodeKnowledgeBody(r *http.Request, target any) (map[string]any, *httpx.ValidationFailure) {
+	_, object, failure := decodeKnowledgeBodyRaw(r, target)
+	return object, failure
+}
+
+// decodeKnowledgeBodyRaw is decodeKnowledgeBody with the body's own decoded
+// values as well as the object the target's lax coercion produced. The raw view
+// is what the reference echoes as a validation item's `input`: its framework
+// reports the JSON it received, before any coercion turned "500" into a number.
+func decodeKnowledgeBodyRaw(r *http.Request, target any) (map[string]any, map[string]any, *httpx.ValidationFailure) {
 	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	defer func() { _ = limited.Close() }()
 	raw, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, httpx.BodyDecodeFailure(err, raw)
+		return nil, nil, httpx.BodyDecodeFailure(err, raw)
 	}
+	// The body's own view is read first and kept: the typed decode below consumes
+	// members it cannot coerce, while the reference's model reports every wrong
+	// member in one run, and a `missing` item names the body as it was written.
+	verbatim := map[string]any{}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&verbatim); err != nil {
+		verbatim = nil
+	}
+	if verbatim != nil {
+		bodyObjects.Store(r, verbatim)
+	}
+	// The member order is recorded too, so a failure's `input` echoes the body the
+	// way the client wrote it.
+	httpx.RecordBodyOrder(r, raw)
 	decoded, err := httpx.DecodeLax(raw, target)
 	httpx.RecordUnknownBodyFields(r, decoded, target)
 	if len(bytes.TrimSpace(decoded)) == 0 {
-		return nil, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, decoded)
+		return verbatim, nil, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, decoded)
 	}
 	if err != nil {
-		return nil, httpx.BodyDecodeFailure(err, decoded)
+		return verbatim, nil, httpx.BodyDecodeFailure(err, decoded)
 	}
 	object := map[string]any{}
 	if err := json.Unmarshal(decoded, &object); err != nil {
-		return nil, httpx.BodyDecodeFailure(err, decoded)
+		return verbatim, nil, httpx.BodyDecodeFailure(err, decoded)
 	}
-	return object, nil
+	if verbatim == nil {
+		verbatim = object
+	}
+	return verbatim, object, nil
 }
 
-// knowledgeCreateRequiredNames the create body's required members, which differ
-// between the two forms: a page also has to state the question it answers.
+// bodyObjects carries a request body's verbatim decoded object from the read to
+// the validator that runs right after it, keyed by the request.
+var bodyObjects sync.Map
+
+// readKnowledgeBodyObject returns the verbatim object decodeKnowledgeBodyRaw read
+// for this request, and whether there was one.
+func readKnowledgeBodyObject(r *http.Request) (map[string]any, bool) {
+	value, ok := bodyObjects.LoadAndDelete(r)
+	if !ok {
+		return nil, false
+	}
+	object, isObject := value.(map[string]any)
+	return object, isObject
+}
+
+// knowledgeVerbatimObject returns the body's own decoded object. The typed
+// decode consumes a body whose members it could not coerce without keeping the
+// object it read, so the request-scoped copy is consulted first and the object
+// the raw decode returned — which the same call produced — answers otherwise.
+func knowledgeVerbatimObject(r *http.Request, decoded map[string]any) (map[string]any, bool) {
+	if object, ok := readKnowledgeBodyObject(r); ok && len(object) > 0 {
+		return object, true
+	}
+	if len(decoded) > 0 {
+		return decoded, true
+	}
+	return nil, false
+}
+
+// knowledgeCreateFieldOrder is the create body's declaration order. The
+// reference's model declares name, parent_id, source_query, tags, max_tokens and
+// trigger, and its field checks run in that order regardless of the order the
+// client wrote the members in — so a body with two bad values reports them in
+// this order, not the body's.
+var knowledgeCreateFieldOrder = []string{"name", "parent_id", "source_query", "tags", "max_tokens", "trigger"}
+
+// knowledgeCreateRequiredNames name the create body's required members, which
+// differ between the two forms: a page also has to state the question it
+// answers.
 func knowledgeCreateRequiredNames(kind storage.KnowledgeKind) []string {
 	if kind == knowledgeKindPage {
 		return []string{"name", "source_query"}
@@ -49,28 +115,172 @@ func knowledgeCreateRequiredNames(kind storage.KnowledgeKind) []string {
 	return []string{"name"}
 }
 
-// decodeKnowledgeCreateBody decodes a create body and validates its required
-// members the way the reference's model does: an absent member is a `missing`
-// item and an explicit null a `string_type` one, in declaration order.
-func decodeKnowledgeCreateBody(r *http.Request, target *CreateKnowledgeNodeRequest, kind storage.KnowledgeKind) *httpx.ValidationFailure {
-	object, failure := decodeKnowledgeBody(r, target)
-	if failure != nil {
-		return failure
-	}
-	items := make([]httpx.ValidationError, 0, 2)
-	for _, field := range knowledgeCreateRequiredNames(kind) {
-		value, present := object[field]
-		switch {
-		case !present:
-			items = append(items, httpx.Missing([]string{"body", field}, object))
-		case value == nil:
-			items = append(items, httpx.TypeMismatch("string_type", []string{"body", field}, nil))
+// knowledgeCreateFieldRequired reports whether a member is required by the form
+// the body belongs to.
+func knowledgeCreateFieldRequired(field string, kind storage.KnowledgeKind) bool {
+	for _, required := range knowledgeCreateRequiredNames(kind) {
+		if required == field {
+			return true
 		}
 	}
+	return false
+}
+
+// decodeKnowledgeCreateBody decodes a create body and validates it the way the
+// reference's model does.
+//
+// The reference validates the whole model in one pass and reports the items in
+// stages: the members it found missing or null, then each declared field's own
+// check, then the nested models'. Since it validates before it ever asks whether
+// a member is required, a body naming no question *and* carrying a wrongly typed
+// tag list reports both — the shape a "required check first" implementation gets
+// wrong by reporting only one.
+func decodeKnowledgeCreateBody(r *http.Request, target any, kind storage.KnowledgeKind) *httpx.ValidationFailure {
+	verbatim, object, failure := decodeKnowledgeBodyRaw(r, target)
+	if failure != nil && !knowledgeDecodeRejectedAField(failure) {
+		// Not a body the model can be read from at all — absent, not JSON, not text,
+		// too large. The framework's parser speaks before the model does, so its
+		// item is the whole answer rather than one item among several. A member the
+		// lax decode refused is a different matter: the model still had a body to
+		// read, and reports the other members' problems alongside that item.
+		return failure
+	}
+	// The fields are checked against the body's own view. The typed decode drops a
+	// value it could not coerce, and the reference's model reports every wrong
+	// member in one run rather than stopping at the first.
+	fields := object
+	if rawObject, ok := knowledgeVerbatimObject(r, verbatim); ok {
+		fields = rawObject
+	}
+	// The reference reports a model's items in declaration order, one stage per
+	// member: a member it found missing or received as null is reported where that
+	// member is declared, and its own value checks follow at the same position.
+	// That is why `{"tags":1,"name":2}` reports name before source_query, and why a
+	// body naming no question but carrying a bad tag list reports both.
+	var items []httpx.ValidationError
+	nulled := make(map[string]bool, 2)
+	// A folder body declares `name` then `parent_id`; a page body declares both
+	// plus the page options, so the loop covers every member either form has.
+	order := knowledgeCreateFieldOrder
+	for _, field := range order {
+		if kind == knowledgeKindFolder && field != "name" && field != "parent_id" {
+			// The folder model does not declare the page options, so it never looks
+			// at them.
+			continue
+		}
+		required := knowledgeCreateFieldRequired(field, kind)
+		value, present := fields[field]
+		switch {
+		case required && !present:
+			items = append(items, httpx.Missing([]string{"body", field}, fields))
+			continue
+		case required && value == nil:
+			items = append(items, httpx.TypeMismatch("string_type", []string{"body", field}, nil))
+			nulled[field] = true
+			continue
+		}
+		if nulled[field] {
+			continue
+		}
+		items = append(items, knowledgeCreateFieldItems(field, fields, fields)...)
+	}
 	if len(items) > 0 {
-		return &httpx.ValidationFailure{Errors: items}
+		// A `missing` item echoes the body, which the reference reports in the order
+		// the client wrote it.
+		return httpx.OrderWholeBodyFailure(r, &httpx.ValidationFailure{Errors: items})
 	}
 	return nil
+}
+
+// knowledgeDecodeRejectedAField reports whether a decode failure is one member
+// the lax decode refused — an item whose loc names a body member — rather than a
+// body the parser could not read at all.
+//
+// The two are told apart by the item's type: the framework's parser failure is
+// `json_invalid`, whichever position in the text it reports (a body that is not
+// JSON at all fails at position 0, which reaches here as the loc `["body", 0]`
+// and must not be mistaken for the member named "0"). Every other item is the
+// field's own check.
+func knowledgeDecodeRejectedAField(failure *httpx.ValidationFailure) bool {
+	for _, item := range failure.Errors {
+		if item.Type != "json_invalid" {
+			return true
+		}
+	}
+	return false
+}
+
+// knowledgeCreateFieldItems validates one create-body member against the
+// reference model's declaration for it and returns the items it was refused
+// with. An absent or null member is not a field failure — null is either the
+// member's own nullability or the required check above.
+func knowledgeCreateFieldItems(field string, object, verbatim map[string]any) []httpx.ValidationError {
+	raw, present := object[field]
+	if !present || raw == nil {
+		return nil
+	}
+	switch field {
+	case "name", "source_query":
+		if _, ok := raw.(string); !ok {
+			return []httpx.ValidationError{httpx.TypeMismatch("string_type", []string{"body", field}, verbatim[field])}
+		}
+	case "tags":
+		list, ok := raw.([]any)
+		if !ok {
+			return []httpx.ValidationError{httpx.TypeMismatch("list_type", []string{"body", "tags"}, raw)}
+		}
+		var items []httpx.ValidationError
+		for index, entry := range list {
+			if _, ok := entry.(string); !ok {
+				items = append(items, httpx.TypeMismatch("string_type",
+					[]string{"body", "tags", strconv.Itoa(index)}, entry))
+			}
+		}
+		return items
+	case "parent_id":
+		if _, ok := raw.(string); !ok {
+			return []httpx.ValidationError{httpx.TypeMismatch("string_type",
+				[]string{"body", "parent_id"}, verbatim[field])}
+		}
+	case "max_tokens":
+		// The reference's int field takes the framework's lax coercion and its
+		// unbounded Python range, so the parser the query parameters use answers
+		// here too: "500" and 500.0 are numbers, "abc" is not.
+		if _, ok := frameworkIntFromString(pythonIntegerRepr(raw)); !ok {
+			return []httpx.ValidationError{httpx.TypeMismatch("int_parsing",
+				[]string{"body", "max_tokens"}, verbatim[field])}
+		}
+	case "trigger":
+		// The trigger is a nested model, so its own checks produce its own items;
+		// the reference reports them after the required members and the sibling
+		// fields, in the same run.
+		trigger, ok := raw.(map[string]any)
+		if !ok {
+			// A nested model is announced by its own failure: the reference's
+			// model_attributes_type says the value is not an object to read fields
+			// from, which is a different item from a plain dict_type.
+			return []httpx.ValidationError{httpx.TypeMismatch("model_attributes_type",
+				[]string{"body", "trigger"}, verbatim[field])}
+		}
+		if failure := mentalmodels.ValidateTriggerObject(trigger); failure != nil {
+			return failure.Errors
+		}
+	}
+	return nil
+}
+
+// pythonIntegerRepr renders a decoded JSON value the way the reference's lax
+// integer coercion reads it: a number as its Python text form (so 500 and 500.0
+// both become a digit run) and anything else as the raw JSON text it arrived as.
+func pythonIntegerRepr(raw any) string {
+	if number, ok := raw.(json.Number); ok {
+		return number.String()
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // knowledgeParentFromBody reads a `parent_id` member. An absent member and an

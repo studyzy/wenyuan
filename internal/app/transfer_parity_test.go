@@ -120,9 +120,12 @@ func TestExistingRoutesUnchangedAfterTransferMount(t *testing.T) {
 	}{
 		{"banks collection", http.MethodGet, "/v1/default/banks", http.StatusOK},
 		// The retired routes raise the gone status before any authenticated
-		// call, so an unauthenticated caller still learns the route is gone.
+		// call, so an unauthenticated caller still learns the route is gone. A
+		// write route still validates its body first — the reference's framework
+		// runs the model before the handler — so a bodyless write is the 422 for the
+		// missing member rather than the retirement status.
 		{"retired profile read unauthenticated", http.MethodGet, "/v1/default/banks/any/profile", http.StatusGone},
-		{"retired background unauthenticated", http.MethodPost, "/v1/default/banks/any/background", http.StatusGone},
+		{"retired background unauthenticated", http.MethodPost, "/v1/default/banks/any/background", http.StatusUnprocessableEntity},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

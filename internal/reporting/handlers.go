@@ -445,7 +445,7 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's LLM requests") {
 		return
 	}
-	params := r.URL.Query()
+	params := httpx.QueryParamsOf(r)
 	_, documentIDSet := params["document_id"]
 	_, memoryIDSet := params["memory_id"]
 	group, ok := strictBoolParam(w, r, "group", false)
@@ -566,12 +566,9 @@ func (h *Handlers) DeleteObservations(w http.ResponseWriter, r *http.Request) {
 // ObservationScopes lists a bank's observation scopes.
 func (h *Handlers) ObservationScopes(w http.ResponseWriter, r *http.Request) {
 	// The reference validates the query before the handler runs, so an
-	// out-of-range limit/offset is a 422 even for an unknown bank.
-	limit, ok := boundedIntParam(w, r, "limit", 100, 0, 1000)
-	if !ok {
-		return
-	}
-	offset, ok := boundedIntParam(w, r, "offset", 0, 0, -1)
+	// out-of-range limit/offset is a 422 even for an unknown bank — and every
+	// rejected parameter is reported, not just the first.
+	limit, offset, ok := parseObservationScopeQuery(w, r)
 	if !ok {
 		return
 	}
@@ -797,7 +794,7 @@ func parseConsolidationRequest(w http.ResponseWriter, r *http.Request) ([][]stri
 // are accepted (a naive value is read as UTC), and an absent parameter is
 // nothing while a present-but-empty one is a bad request.
 func parseDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
-	if _, present := r.URL.Query()[key]; !present {
+	if _, present := httpx.QueryParamsOf(r)[key]; !present {
 		return nil, true
 	}
 	raw := httpx.Query(r, key)

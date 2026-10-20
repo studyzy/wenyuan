@@ -16,6 +16,12 @@
 # data; the embedded worker and maintenance loop are switched off so a sandbox
 # cannot consume the queue or start maintenance that belongs to the real
 # deployment. Fixtures created for a comparison must be deleted by the caller.
+#
+# The worker is off by default because it drains the shared queue, but a route
+# that answers from what the worker produces (a mental model's content after a
+# refresh, any row history, a memory's last_seen) reads as a difference against
+# a reference whose worker is running. Set PARITY_DEV_WORKER_ENABLED=true for
+# those comparisons — on a port of its own, since the worker consumes the queue.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -43,7 +49,7 @@ fi
 # come from etc/wenyuan.yaml exactly as the long-running service reads them.
 cd "$ROOT"
 HINDSIGHT_API_PORT="$PORT" \
-HINDSIGHT_API_WORKER_ENABLED=false \
+HINDSIGHT_API_WORKER_ENABLED="${PARITY_DEV_WORKER_ENABLED:-false}" \
 HINDSIGHT_API_DATABASE_URL="${PARITY_DEV_DATABASE_URL:-postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan}" \
   "$BIN" >"$LOG" 2>&1 &
 echo $! >"$BIN.pid"

@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -104,8 +103,12 @@ func fileRetainApp(t *testing.T, deleteAfterRetain bool) *App {
 	return application
 }
 
-// With delete-after-retain on, a converted document's bytes are not kept: the
-// attachment row records the upload, and no stored file answers for its key.
+// The reference's file-conversion task records the upload's file metadata
+// (`_file_metadata`: storage key, original name, content type) but writes no
+// attachment row — verified against the live reference, where a converted upload
+// leaves the document reading `attachments: null` and its attachments table
+// empty. With delete-after-retain on, the bytes are gone after the conversion and
+// no attachment answers for them either.
 func TestFileRetainDeleteAfterRetainDropsBytes(t *testing.T) {
 	application := fileRetainApp(t, true)
 	rec := uploadFileRetain(t, application, "notes.txt", "the prose", "text/plain")
@@ -115,16 +118,18 @@ func TestFileRetainDeleteAfterRetainDropsBytes(t *testing.T) {
 	drainUntilSettled(t, application.Store, "fr-bank")
 
 	attachments, err := application.Store.ListAttachments(context.Background(), "fr-bank", fileRetainDocument)
-	if err != nil || len(attachments) != 1 {
-		t.Fatalf("attachments = %+v, %v", attachments, err)
+	if err != nil {
+		t.Fatalf("listing attachments: %v", err)
 	}
-	if _, err := application.Store.GetStoredFile(context.Background(), attachments[0].StorageKey); !errors.Is(err, storage.ErrStoredFileNotFound) {
-		t.Fatalf("delete-after-retain must leave no bytes, got %v", err)
+	if len(attachments) != 0 {
+		t.Fatalf("a converted upload kept %d attachment row(s), want none: %+v", len(attachments), attachments)
 	}
 }
 
-// With delete-after-retain off, the uploaded bytes are kept.
-func TestFileRetainKeepBytesWhenConfigured(t *testing.T) {
+// With delete-after-retain off, a converted upload still writes no attachment row:
+// the text is the document's content, and the bytes the route kept are reachable
+// only through the stored-file registry, exactly as the reference leaves them.
+func TestFileRetainConvertedUploadWritesNoAttachment(t *testing.T) {
 	application := fileRetainApp(t, false)
 	rec := uploadFileRetain(t, application, "notes.txt", "the prose", "text/plain")
 	if rec.Code != http.StatusOK {
@@ -132,12 +137,18 @@ func TestFileRetainKeepBytesWhenConfigured(t *testing.T) {
 	}
 	drainUntilSettled(t, application.Store, "fr-bank")
 
-	attachments, err := application.Store.ListAttachments(context.Background(), "fr-bank", fileRetainDocument)
-	if err != nil || len(attachments) != 1 {
-		t.Fatalf("attachments = %+v, %v", attachments, err)
+	document, err := application.Store.GetDocument(context.Background(), "fr-bank", fileRetainDocument)
+	if err != nil {
+		t.Fatalf("the upload stored no document: %v", err)
 	}
-	file, err := application.Store.GetStoredFile(context.Background(), attachments[0].StorageKey)
-	if err != nil || string(file.Data) != "the prose" {
-		t.Fatalf("the upload's bytes must be kept: %v %q", err, file.Data)
+	if document.OriginalText != "the prose" {
+		t.Fatalf("document text = %q, want the converted body", document.OriginalText)
+	}
+	attachments, err := application.Store.ListAttachments(context.Background(), "fr-bank", fileRetainDocument)
+	if err != nil {
+		t.Fatalf("listing attachments: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("a converted upload kept %d attachment row(s), want none: %+v", len(attachments), attachments)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -526,4 +527,67 @@ func TestRefreshWithNoSourcesRecordsTheSkipWithoutWritingContent(t *testing.T) {
 	if updated.LastMemorySeenAt != nil {
 		t.Fatalf("last_memory_seen_at = %v, want it untouched: nothing was read", updated.LastMemorySeenAt)
 	}
+}
+
+// The reflect_response a refresh stores is the payload a GET reports: the
+// answer's text, its evidence keyed by fact type under based_on, and an empty
+// mental_models list. Storing only based_on made a refreshed model's
+// reflect_response advertise a key the REST contract always fills, so a client
+// reading it saw a different document from the reference's.
+func TestRefreshStoresTheReferenceReflectResponseShape(t *testing.T) {
+	store, modelID := refreshFixture(t, "deployment")
+	ctx := context.Background()
+	runner := newMentalModelRefresh(store, nil, nil)
+	if _, _, err := runner.refresh(ctx, "b1", modelID); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	model, err := store.GetMentalModel(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"text", "based_on", "mental_models"} {
+		if _, present := model.ReflectResult[key]; !present {
+			t.Fatalf("reflect_response is missing %q: got keys %v", key, mapKeys(model.ReflectResult))
+		}
+	}
+	basedOn, ok := model.ReflectResult["based_on"].(map[string][]any)
+	if !ok {
+		t.Fatalf("based_on = %T, want a map keyed by fact type", model.ReflectResult["based_on"])
+	}
+	if _, flattened := basedOn["memories"]; flattened {
+		t.Fatal("based_on carries a flattened \"memories\" key; it is keyed by fact type")
+	}
+	// Every arm of the type union is stated, so a reader never has to tell
+	// "no facts of this type" from "this document predates the key".
+	for _, factType := range []string{"world", "experience", "opinion", "observation", "mental-models", "directives"} {
+		if _, present := basedOn[factType]; !present {
+			t.Fatalf("based_on is missing %q, want every arm of the type union: got %v", factType, mapKeysOf(basedOn))
+		}
+	}
+	if outcome, _ := model.ReflectResult["outcome"].(string); outcome == "" {
+		t.Fatalf("outcome = %#v, want the write's outcome", model.ReflectResult["outcome"])
+	}
+	if models, _ := model.ReflectResult["mental_models"].([]any); len(models) != 0 {
+		t.Fatalf("mental_models = %#v, want the empty compatibility list", model.ReflectResult["mental_models"])
+	}
+}
+
+// mapKeysOf lists a fact-type map's keys for a failure message.
+func mapKeysOf(values map[string][]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// mapKeys lists a map's keys for a failure message.
+func mapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

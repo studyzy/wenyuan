@@ -141,7 +141,17 @@ func leafMatches(group TagGroup, present []string) bool {
 		requested = append([]string{group.Tag}, requested...)
 	}
 	if len(requested) == 0 {
-		return true
+		// A leaf naming no tag is not "no filter", so it cannot be handed to
+		// matchTags, which reads an empty request as matching everything. The
+		// reference spells the two readings out (engine/search/tags.py
+		// `_build_group_clause`): `exact` over no tags means "untagged only",
+		// and the default any_strict demands at least one tag, which excludes
+		// untagged memories. Both therefore turn on whether the memory carries
+		// tags at all.
+		if leafMatchMode(group.Match) == TagsMatchExact {
+			return len(present) == 0
+		}
+		return len(present) > 0
 	}
 	// A leaf's own default differs from the flat field's: a compound filter is
 	// written to narrow, so an unset mode excludes untagged memories rather than

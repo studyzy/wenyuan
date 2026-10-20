@@ -73,7 +73,10 @@ func (s *MemoryStore) EntityMentions(ctx context.Context, bankID, entityID strin
 }
 
 // UnitEntities returns the canonical names of the entities one memory unit
-// mentions, in name order.
+// mentions, in the order the unit's postings were linked. The reference does not
+// sort them: its UNION of direct and inherited rows has no ORDER BY
+// (engine/memories/pg/graph.py:440,464-465 dedupes per unit while preserving
+// arrival order), so neither does this one.
 func (s *MemoryStore) UnitEntities(ctx context.Context, bankID, unitID string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -803,7 +806,8 @@ func (s *MemoryStore) UnitEntityNames(ctx context.Context, bankID string, unitID
 }
 
 // inheritedEntityNamesLocked collects the entities of a unit's source memories,
-// deduped and ordered, for an observation that has none of its own.
+// deduped, in the order the reference's UNION returns them, for an observation
+// that has none of its own.
 func (s *MemoryStore) inheritedEntityNamesLocked(unit MemoryUnit, bankID string) []string {
 	inherited := make([]string, 0)
 	for _, sourceID := range unit.SourceMemoryIDs {
@@ -817,7 +821,6 @@ func (s *MemoryStore) inheritedEntityNamesLocked(unit MemoryUnit, bankID string)
 			}
 		}
 	}
-	sort.Strings(inherited)
 	return inherited
 }
 
@@ -833,6 +836,5 @@ func (s *MemoryStore) entityNamesForUnitLocked(unitID string) []string {
 			out = append(out, entity.CanonicalName)
 		}
 	}
-	sort.Strings(out)
 	return out
 }

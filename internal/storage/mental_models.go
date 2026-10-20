@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -24,6 +25,26 @@ var ErrMentalModelNotFound = errors.New("mental model not found")
 // ErrDirectiveNotFound is returned when a directive identifier is unknown to a
 // bank.
 var ErrDirectiveNotFound = errors.New("directive not found")
+
+// PriorityOutOfRangeError reports a directive priority the `priority` column
+// cannot hold. The reference's driver raises the same complaint when it binds
+// the value (`invalid input for query argument $N: … (value out of int32
+// range)`), and the endpoint turns any driver failure into a 500, so the text
+// is the caller-visible answer — including the argument's position, which is
+// what the driver names.
+type PriorityOutOfRangeError struct {
+	Arg    int
+	Value  int
+	Source error
+}
+
+// Error renders the driver's wording.
+func (e *PriorityOutOfRangeError) Error() string {
+	return fmt.Sprintf("invalid input for query argument $%d: %d (value out of int32 range)", e.Arg, e.Value)
+}
+
+// Unwrap exposes the underlying driver failure, if any.
+func (e *PriorityOutOfRangeError) Unwrap() error { return e.Source }
 
 // ErrInvalidMentalModelSubtype is returned when a subtype is outside the set the
 // column accepts, so the rejection happens before the database refuses it.

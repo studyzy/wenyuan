@@ -49,7 +49,7 @@ func TestPostgresListBanksFillsFactCount(t *testing.T) {
 
 	// A page that does not include the counted bank must not count it either —
 	// the query is scoped to the page, not aggregated over the table.
-	narrow, err := pg.ListBanks(ctx, BankQuery{Search: "empty", Limit: 10})
+	narrow, err := pg.ListBanks(ctx, BankQuery{Search: "empty", SearchGiven: true, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

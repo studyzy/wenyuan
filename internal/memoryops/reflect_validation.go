@@ -142,17 +142,20 @@ func ValidateReflect(req ReflectRequest, body map[string]any, schemaValidator Re
 		items = append(items, httpx.ValueError([]string{"body", "fact_types"}, []any{},
 			"fact_types must not be empty. Use null to include all fact types."))
 	}
-	if unsupported := unsupportedTypes(req.FactTypes); len(unsupported) > 0 {
-		items = append(items, httpx.ValueError([]string{"body", "fact_types"}, unsupported,
-			"unsupported fact type; accepted types are "+joinTokens(acceptedFactTypes)))
+	// Every element is a literal, so a value outside the accepted set is a
+	// per-element literal failure at that element's own index (the value it
+	// carries included), from wherever the element starts.
+	for _, item := range reflectFactTypeItems(body) {
+		if !locationCovered(item.Loc, items) {
+			items = append(items, item)
+		}
 	}
-	// Reflect's field is `list[TagGroup]`, so an object where a list belongs is a
-	// list-type failure reported before the union's own items.
-	if req.TagGroups.singleObject {
-		items = append(items, httpx.TypeMismatch("list_type", []string{"body", "tag_groups"}, req.TagGroups.rawInput))
-	} else if len(req.TagGroups.failures) > 0 {
-		items = append(items, req.TagGroups.failures...)
-	} else if tagsSupplied(body) && req.TagGroups.Present {
+	// The field is `list[TagGroup]`, so a value that is not a list is the
+	// reference's list-type failure; otherwise every branch item the left-to-
+	// right union raised is reported. Either way the items are field-level, so
+	// they appear beside (not instead of) the body-level rules.
+	items = append(items, req.TagGroups.Items()...)
+	if len(req.TagGroups.Items()) == 0 && tagsSupplied(body) && req.TagGroups.Present {
 		items = append(items, httpx.ValueError([]string{"body"}, body,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}

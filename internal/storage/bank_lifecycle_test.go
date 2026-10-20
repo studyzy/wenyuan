@@ -55,14 +55,14 @@ func TestMemoryListMatchedAliases(t *testing.T) {
 	if _, err := store.AddAlias(context.TODO(), "owner", "nickname", false); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.ListBanks(context.TODO(), BankQuery{Search: "nickname"})
+	page, err := store.ListBanks(context.TODO(), BankQuery{Search: "nickname", SearchGiven: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 1 || len(page.MatchedAliases["owner"]) != 1 {
 		t.Fatalf("alias match not attributed: %+v", page)
 	}
-	page, _ = store.ListBanks(context.TODO(), BankQuery{Search: "owner"})
+	page, _ = store.ListBanks(context.TODO(), BankQuery{Search: "owner", SearchGiven: true})
 	if len(page.MatchedAliases["owner"]) != 0 {
 		t.Fatalf("direct match must report no matched aliases: %+v", page.MatchedAliases)
 	}

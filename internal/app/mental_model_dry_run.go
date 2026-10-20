@@ -27,7 +27,15 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		return nil, err
 	}
 
-	seenAt := r.store.BankWriteWatermark(ctx, bankID)
+	// The snapshot a real refresh bounds its reads with is the database clock at
+	// the moment the run starts, read from the model row itself — not the newest
+	// data watermark. The two are different answers: the snapshot says "whatever
+	// is committed at this instant", while the newest row says "how far through
+	// the bank memory has got", and the reference reports the first as the
+	// window's upper bound and the second as the watermark a refresh would
+	// persist. A quiet bank demonstrates it: its snapshot is still now, its
+	// watermark stays where the last write left it.
+	refreshCutoff := r.snapshotFor(ctx, bankID, modelID)
 	retraction := r.retractionFor(ctx, bankID, model)
 
 	requestedMode := refreshMode(model)
@@ -124,14 +132,28 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 		previewContent = model.Content
 	}
 
-	createdBefore := seenAt
-	if createdBefore.IsZero() {
-		createdBefore = time.Now().UTC()
+	if refreshCutoff.IsZero() {
+		// The row vanished between the read above and the snapshot; a preview of
+		// a model that no longer exists has nothing to report either way, so the
+		// wall clock stands in rather than emitting the zero time.
+		refreshCutoff = time.Now().UTC()
 	}
-	window := mentalmodels.DryRunWindow{CreatedBefore: createdBefore.UTC().Format(time.RFC3339Nano)}
-	if !seenAt.IsZero() {
-		watermark := seenAt.UTC().Format(time.RFC3339Nano)
-		window.Watermark = &watermark
+	// The window reports the watermark a real refresh would persist: the newest
+	// in-scope memory visible at the snapshot, never the wall clock — a clock
+	// reading can sit ahead of a row that has not committed yet, and reading it
+	// back would stamp that row as already seen.
+	//
+	// Which reading answers that is the backend's, and the difference is
+	// observable: the PostgreSQL backend asks the full scope query (tags,
+	// tag_groups, fact_types, the delta window), while the in-memory one has only
+	// the bank write watermark. That is exactly what a real refresh persists
+	// there, so the preview and the refresh agree on every backend even where the
+	// answer is coarser than the reference's.
+	watermark := r.inScopeWatermark(ctx, bankID, model, refreshCutoff)
+	window := mentalmodels.DryRunWindow{CreatedBefore: refreshCutoff.UTC().Format(time.RFC3339Nano)}
+	if !watermark.IsZero() {
+		formatted := watermark.UTC().Format(time.RFC3339Nano)
+		window.Watermark = &formatted
 	}
 	if useDelta && createdAfter != nil {
 		after := createdAfter.UTC().Format(time.RFC3339Nano)
@@ -162,10 +184,13 @@ func (r mentalModelRefresh) dryRun(ctx context.Context, bankID, modelID string) 
 
 	durationMS := int(time.Since(started).Milliseconds())
 	// The reference renders the trace's timestamp through Python's
-	// datetime.isoformat(), which always writes six fractional digits and drops
-	// them only when they are all zero; RFC3339Nano would trim trailing zeros
-	// and emit a different string for the same instant.
-	recordedAt := timefmt.FormatTimestamp(time.Now().UTC())
+	// A pydantic datetime is rendered in the `...Z` form here, not Python's
+	// `datetime.isoformat()` offset form: the trace's recorded_at is a member of a
+	// response model, so the framework serializes it and writes Z for UTC. The
+	// live reference answers `2026-10-20T16:06:57.624805Z` (checked 2026-10-20) —
+	// six fractional digits with a Z suffix, which is FormatZuluTimestamp rather
+	// than the `+00:00` spelling FormatTimestamp produces for the same instant.
+	recordedAt := timefmt.FormatZuluTimestamp(time.Now().UTC())
 	retractionReport := retractionReportFor(retraction)
 	warnings := []string{}
 	if !hasSources {
@@ -506,4 +531,39 @@ func triggerSlice(trigger map[string]any, key string) []any {
 	}
 	raw, _ := trigger[key].([]any)
 	return raw
+}
+
+// snapshotFor reads the database-time snapshot a refresh bounds its reads with:
+// the current timestamp, read through the model row so a model that no longer
+// exists yields the zero time. A store without the capability (the in-memory
+// backend) has no database clock to ask, so its own clock answers.
+func (r mentalModelRefresh) snapshotFor(ctx context.Context, bankID, modelID string) time.Time {
+	if reader, ok := r.store.(mentalModelSnapshotReader); ok {
+		return reader.MentalModelRefreshSnapshot(ctx, bankID, modelID)
+	}
+	return time.Now().UTC()
+}
+
+// inScopeWatermark is the newest in-scope memory visible at the snapshot: the
+// value a successful refresh would persist as last_memory_seen_at. The zero time
+// means the scope holds no memory at all.
+func (r mentalModelRefresh) inScopeWatermark(ctx context.Context, bankID string, model storage.MentalModel, cutoff time.Time) time.Time {
+	reader, ok := r.store.(mentalModelScopeWatermarkReader)
+	if !ok {
+		return time.Time{}
+	}
+	return reader.MentalModelScopeWatermark(ctx, bankID, model, cutoff)
+}
+
+// mentalModelSnapshotReader is the capability a backend implements to answer the
+// database-time snapshot a refresh bounds its reads with. It is optional so the
+// in-memory backend — which has no database clock — can fall back to its own.
+type mentalModelSnapshotReader interface {
+	MentalModelRefreshSnapshot(ctx context.Context, bankID, modelID string) time.Time
+}
+
+// mentalModelScopeWatermarkReader is the capability a backend implements to
+// answer the newest in-scope memory at a snapshot.
+type mentalModelScopeWatermarkReader interface {
+	MentalModelScopeWatermark(ctx context.Context, bankID string, model storage.MentalModel, cutoff time.Time) time.Time
 }

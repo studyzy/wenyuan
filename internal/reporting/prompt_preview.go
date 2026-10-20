@@ -808,3 +808,24 @@ func writeLiteralOperationFailure(w http.ResponseWriter, input any) {
 		httpx.Literal([]string{"body", "operation"}, input, promptPreviewOperations),
 	}})
 }
+
+// previewStrategyFailure reports the item the reference's model produces for a
+// `strategy` that is neither absent, null, nor a string.
+func previewStrategyFailure(obj map[string]json.RawMessage) *httpx.ValidationFailure {
+	raw, present := obj["strategy"]
+	if !present {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	switch value.(type) {
+	case nil, string:
+		return nil
+	}
+	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+		httpx.ValidationItem("string_type", []string{"body", "strategy"},
+			"Input should be a valid string", value, nil),
+	}}
+}

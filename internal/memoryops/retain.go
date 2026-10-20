@@ -452,7 +452,17 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		h.submitAsyncRetain(r, w, bankID, req, write)
 		return
 	}
-	result, bank, err := h.executeRetain(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
+	// The synchronous write is the reference's observed retain (api/http.py:10279),
+	// and it carries neither a budget nor a token count. The observed block is
+	// the write itself: the reference opens it after the items have been
+	// screened and converted, so a request refused before that is not counted.
+	budget, maxTokens := retainOperationLabels()
+	var result storage.RetainOutcome
+	var bank storage.Bank
+	err = serveOperation(r.Context(), operationRetain, budget, maxTokens, func() error {
+		result, bank, err = h.executeRetain(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
+		return err
+	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
@@ -615,6 +625,13 @@ func (h *Handlers) resolveBankConfig(ctx context.Context, overrides map[string]a
 // the queue's — so the response reports an item count and an operation id and
 // no usage, because none has happened yet.
 func (h *Handlers) submitAsyncRetain(r *http.Request, w http.ResponseWriter, bankID string, req RetainRequest, write storage.RetainRequest) {
+	// A submission with nothing to extract queues no work, and the reference
+	// reports that as an absent operation rather than an id nothing will ever
+	// advance: `items: []` with `async` answers `operation_id: null`.
+	if len(req.Items) == 0 {
+		httpx.WriteJSON(w, http.StatusOK, BuildRetainResponse(bankID, req, storage.RetainOutcome{ProcessedContentTokens: -1}))
+		return
+	}
 	result, err := h.queueRetainAsync(r.Context(), bankID, httpx.TenantOverridesFrom(r), write)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))

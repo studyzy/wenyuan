@@ -1,8 +1,8 @@
 package reporting
 
 import (
+	"math/big"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -88,21 +88,23 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 	// reference `q` and `limit` are `Query(...)` declarations and `tag_filter`
 	// is a `Depends` (api/http.py:7469-7475), so the framework reports a bad one
 	// as a 422 before the handler body — and therefore before the bank — is
-	// reached. `q` is checked first because it is declared first.
-	query, ok := knowledgeSearchQuery(w, r)
-	if !ok {
+	// reached. All three are declared in one run, so every bad one is reported in
+	// one response, in declaration order; the tag filter's own `tag_groups`
+	// failure is the exception, raised as an HTTPException from inside the
+	// dependency and replacing the collected list.
+	query, limit, filter, items, groupsDetail := knowledgeSearchParams(r)
+	if groupsDetail != "" {
+		// The tag-filter dependency raised its own HTTPException, so its string
+		// detail is the whole response.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, groupsDetail))
 		return
 	}
-	limit, ok := knowledgeSearchLimit(w, r)
-	if !ok {
+	if len(items) > 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
 		return
 	}
-	filter, ok := knowledgeTagFilterFromRequest(w, r)
-	if !ok {
-		return
-	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	bankID, bankOK := h.requireBank(w, r)
+	if !bankOK {
 		return
 	}
 	filter, err := h.resolveKnowledgeFilter(r.Context(), bankID, filter)
@@ -167,7 +169,7 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 				MentalModelID: optionalString(hit.Node.MentalModelID),
 				SourceQuery:   sourceQuery,
 				Snippet:       knowledgeSnippet(hit.Node.Text),
-				Score:         hit.Score,
+				Score:         httpx.PythonFloat(hit.Score),
 				UpdatedAt:     updatedAt,
 			})
 		}
@@ -195,56 +197,92 @@ func (h *Handlers) knowledgeTextSearchEnabled(r *http.Request, bankID string) bo
 	return true
 }
 
+// knowledgeSearchParams reads every declared parameter of the search route and
+// returns the ones that were accepted together with the rejection items of the
+// ones that were not. The caller reports all of them at once: the reference
+// declares `q`, `limit` and the tag filter in a single run, so a request with
+// three bad values is one response with three items in declaration order.
+//
+// `tag_groups` is the exception: the reference's dependency raises an
+// HTTPException from inside itself, which replaces the collected items with the
+// single string detail, so that failure is reported on its own.
+// The third result is the dependency's rendered report detail, which replaces
+// the collected items; it is returned so the caller can write it verbatim.
+func knowledgeSearchParams(r *http.Request) (string, int, knowledgeTagFilter, []httpx.ValidationError, string) {
+	// The tag filter is appended first because it is assembled by a dependency,
+	// which the reference runs before the endpoint's own parameters; within the
+	// endpoint `q` and `limit` then follow their declaration order.
+	var items []httpx.ValidationError
+	filter, filterItems, treeDetail := knowledgeTagFilterItems(r)
+	if treeDetail != "" {
+		// The dependency raised its own HTTPException, so its string detail is
+		// the whole response and the collected items never render.
+		return "", 0, knowledgeTagFilter{}, nil, treeDetail
+	}
+	items = append(items, filterItems...)
+	query, item := knowledgeSearchQuery(r)
+	if item != nil {
+		items = append(items, *item)
+	}
+	values, present := httpx.QueryPresent(r, "limit")
+	raw := ""
+	if present && len(values) > 0 {
+		raw = values[len(values)-1]
+	}
+	limit, item := knowledgeSearchLimit(raw, present)
+	if item != nil {
+		items = append(items, *item)
+	}
+	if len(items) > 0 {
+		return "", 0, knowledgeTagFilter{}, items, ""
+	}
+	return query, limit, filter, nil, ""
+}
+
 // knowledgeSearchQuery reads the required `q` parameter. A missing or empty
 // value is the reference's 422, never an empty query.
-func knowledgeSearchQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
+func knowledgeSearchQuery(r *http.Request) (string, *httpx.ValidationError) {
 	values, present := httpx.QueryPresent(r, "q")
 	if !present || len(values) == 0 {
 		// A missing query parameter has no value to report, so its input is null.
-		writeKnowledgeItem(w, r, httpx.Missing([]string{"query", "q"}, nil))
-		return "", false
+		return "", itemPtr(httpx.Missing([]string{"query", "q"}, nil))
 	}
 	// A scalar query parameter comes from the reference's multimap, whose lookup
 	// returns the LAST occurrence, so a repeated `q` binds its final value.
 	value := values[len(values)-1]
 	if value == "" {
-		writeKnowledgeItem(w, r, httpx.StringTooShort([]string{"query", "q"}, "", 1))
-		return "", false
+		return "", itemPtr(httpx.StringTooShort([]string{"query", "q"}, "", 1))
 	}
-	return value, true
+	return value, nil
 }
 
-// knowledgeSearchLimit reads the `limit` parameter: default 10, range 1..50. An
-// explicitly empty value is not the same as an absent one — the reference parses
-// the raw string, so `limit=` fails to parse and is its `int_parsing` 422.
-func knowledgeSearchLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
-	// The reference reads the scalar from a multimap, so a repeated `limit` binds
-	// its LAST occurrence; an explicitly empty value is not the same as an absent
-	// one — the raw string is parsed, so `limit=` is its `int_parsing` 422.
-	values, present := httpx.QueryPresent(r, "limit")
-	raw := ""
-	if present && len(values) > 0 {
-		raw = strings.TrimSpace(values[len(values)-1])
+// knowledgeSearchLimit reads the `limit` parameter: default 10, range 1..50.
+//
+// The value is parsed the way the reference's framework parses an integer: an
+// unbounded Python int, so a value past 64 bits is still a number and reports
+// the range violation rather than a parse failure, and a value written as a
+// float with a zero fraction ("5.0") is accepted. The raw text is what the
+// rejection echoes back, as the framework echoes the string it was given.
+func knowledgeSearchLimit(raw string, present bool) (int, *httpx.ValidationError) {
+	if !present {
+		return 10, nil
 	}
-	if raw == "" {
-		if !present {
-			return 10, true
-		}
-		writeKnowledgeItem(w, r, httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, ""))
-		return 0, false
+	if strings.TrimSpace(raw) == "" {
+		return 0, itemPtr(httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, raw))
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		writeKnowledgeItem(w, r, httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, raw))
-		return 0, false
+	value, ok := frameworkIntFromString(raw)
+	if !ok {
+		return 0, itemPtr(httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, raw))
 	}
-	if value < 1 {
-		writeKnowledgeItem(w, r, httpx.GreaterThanEqual([]string{"query", "limit"}, raw, 1))
-		return 0, false
+	if value.Sign() <= 0 {
+		return 0, itemPtr(httpx.GreaterThanEqual([]string{"query", "limit"}, raw, 1))
 	}
-	if value > 50 {
-		writeKnowledgeItem(w, r, httpx.LessThanEqual([]string{"query", "limit"}, raw, 50))
-		return 0, false
+	if value.Cmp(big.NewInt(50)) > 0 {
+		return 0, itemPtr(httpx.LessThanEqual([]string{"query", "limit"}, raw, 50))
 	}
-	return value, true
+	return int(value.Int64()), nil
 }
+
+// itemPtr returns a pointer to one validation item, the shape the accumulating
+// validators collect.
+func itemPtr(item httpx.ValidationError) *httpx.ValidationError { return &item }

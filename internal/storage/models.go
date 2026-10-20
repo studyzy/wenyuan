@@ -153,8 +153,15 @@ type BankAlias struct {
 // and a non-negative page window applied after matching.
 type BankQuery struct {
 	Search string
-	Limit  int
-	Offset int
+	// SearchGiven records that the caller supplied a search value at all, which
+	// a bare Search cannot: the reference tests the query parameter for Python
+	// truthiness (engine/retain/bank_utils.py:708), so " " is a search for a
+	// space and matches nothing, while an absent one matches everything. An
+	// empty Search with SearchGiven set is the caller's explicit "" — also a
+	// filter — so the flag carries what the string cannot.
+	SearchGiven bool
+	Limit       int
+	Offset      int
 }
 
 // BankPage is one page of list results together with the pre-paging match
@@ -226,10 +233,16 @@ type RecallRequest struct {
 
 // RecallMatch is one recall result row before envelope assembly.
 type RecallMatch struct {
-	ID              string
-	Text            string
-	Type            string
-	Context         string
+	ID      string
+	Text    string
+	Type    string
+	Context string
+	// ContextAbsent marks a match whose context column is NULL rather than an
+	// empty string. An observation has no context of its own — the reference's
+	// insert never names the column — and its recall result therefore reports
+	// `context: null`, while a fact with no context reports "". The distinction
+	// has to reach the reader, or both render the same way.
+	ContextAbsent   bool
 	OccurredStart   *time.Time
 	OccurredEnd     *time.Time
 	MentionedAt     *time.Time
@@ -496,11 +509,18 @@ type Entity struct {
 
 // MemoryUnit is one extracted fact to persist.
 type MemoryUnit struct {
-	ID            string
-	BankID        string
-	Text          string
-	Embedding     []float32
-	Context       string
+	ID        string
+	BankID    string
+	Text      string
+	Embedding []float32
+	Context   string
+	// ContextAbsent marks a unit whose context column is NULL rather than an
+	// empty string. The reference's observation insert never names the column
+	// (engine/memories/pg/consolidation.py:268-320), so an observation carries
+	// NULL and its recall result reports `context: null`, while a fact carries
+	// the caller's context and an absent one reads as "". The two are different
+	// values on the wire, so the distinction has to survive the write.
+	ContextAbsent bool
 	EventDate     *time.Time
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time

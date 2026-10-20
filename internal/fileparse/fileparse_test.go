@@ -62,9 +62,43 @@ func TestMarkitdownTextAndUnsupported(t *testing.T) {
 	if parser.Supports("legacy.doc", "") {
 		t.Fatal("a legacy .doc must not be advertised as supported")
 	}
-	_, err = parser.Convert([]byte("binary"), "legacy.doc")
+	// Bytes that are not text are refused for an extension no converter claims:
+	// the reference reports exactly this for a binary upload it cannot read.
+	_, err = parser.Convert([]byte{0x00, 0x01, 0x02, 0xff}, "legacy.doc")
 	if !IsUnsupported(err) {
-		t.Fatalf("converting a .doc should report unsupported, got %v", err)
+		t.Fatalf("converting a binary .doc should report unsupported, got %v", err)
+	}
+}
+
+// The reference's markitdown reads an unrecognized extension as plain text when
+// the bytes are text, and refuses only bytes that are not. Verified against the
+// live reference: a .xyz upload of "plain words here" is retained verbatim,
+// while a binary .bin upload fails its operation with "No converter attempted a
+// conversion".
+func TestMarkitdownReadsUnrecognizedTextFormats(t *testing.T) {
+	parser := NewMarkitdownParser()
+	cases := []struct{ name, filename, content string }{
+		{"plain text under an unknown extension", "notes.xyz", "plain words here"},
+		{"plain text with no extension", "README", "hello"},
+		{"utf-8 text under a binary-looking extension", "data.bin", "héllo wörld"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			out, err := parser.Convert([]byte(testCase.content), testCase.filename)
+			if err != nil {
+				t.Fatalf("convert = %v, want the text back", err)
+			}
+			if out != testCase.content {
+				t.Fatalf("convert = %q, want %q", out, testCase.content)
+			}
+		})
+	}
+	// A NUL byte or an invalid UTF-8 sequence marks a binary file; either is
+	// refused rather than stored as memory text.
+	for _, data := range [][]byte{{0x41, 0x00, 0x42}, {0x41, 0xff, 0x42}} {
+		if _, err := parser.Convert(data, "blob.xyz"); !IsUnsupported(err) {
+			t.Fatalf("convert(%v) = %v, want unsupported", data, err)
+		}
 	}
 }
 

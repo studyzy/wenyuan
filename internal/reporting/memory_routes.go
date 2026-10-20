@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/entitylabels"
@@ -26,7 +26,7 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	// The reference validates the typed query before the handler (and its bank
 	// lookup) runs, so an out-of-enum or malformed parameter is the answer even
 	// when the bank is unknown.
-	query := r.URL.Query()
+	query := httpx.QueryParamsOf(r)
 	if _, present := query["tags_match"]; present {
 		tagsMatch := queryLast(r, "tags_match")
 		if !containsString(tagsMatchModes, tagsMatch) {
@@ -187,27 +187,37 @@ var consolidationStates = []string{"failed", "pending", "done"}
 // nonNegativeIntParam reads an optional integer query parameter with a default,
 // rejecting a malformed or negative value with the framework's 422 body.
 func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, def int) (int, bool) {
-	raw := queryLast(r, name)
-	if raw == "" {
+	values, present := httpx.QueryPresent(r, name)
+	if !present || len(values) == 0 {
 		return def, true
 	}
-	value64, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil && errors.Is(err, strconv.ErrRange) {
-		// The reference's request model parses the parameter as a Python int,
-		// which is unbounded, so an out-of-int64 value passes validation and
-		// only fails when the driver binds it as the query's integer argument.
-		// The route answers 500 with that driver error rather than a 422.
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, fmt.Sprintf(
-			"invalid input for query argument $2: %s (value out of int64 range)", raw)))
-		return 0, false
-	}
-	if err != nil {
+	// The reference binds the LAST occurrence of a repeated scalar parameter.
+	raw := values[len(values)-1]
+	// The reference's model declares an unbounded Python int and the coercion is
+	// its own (a zero fraction and single underscores allowed), so the shared
+	// helper reads the value and this route only applies its bound.
+	parsed, ok := frameworkIntFromString(raw)
+	if !ok {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.TypeMismatch("int_parsing", []string{"query", name}, raw),
 		}})
 		return 0, false
 	}
-	value := int(value64)
+	if parsed.Sign() < 0 {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.GreaterThanEqual([]string{"query", name}, raw, 0),
+		}})
+		return 0, false
+	}
+	if !parsed.IsInt64() {
+		// The framework's model keeps the value as an unbounded Python int, so
+		// it validates; only the driver's binding narrows it, and the route
+		// answers 500 with that driver error rather than a 422.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, fmt.Sprintf(
+			"invalid input for query argument $2: %s (value out of int64 range)", raw)))
+		return 0, false
+	}
+	value := int(parsed.Int64())
 	if value < 0 {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.GreaterThanEqual([]string{"query", name}, raw, 0),
@@ -232,11 +242,11 @@ func queryLast(r *http.Request, name string) string {
 // a repeated start_date/end_date binds its final value. An absent parameter is
 // nothing; a present-but-unparseable one is the reference's bad request.
 func lastDateParam(w http.ResponseWriter, r *http.Request, key string) (*time.Time, bool) {
-	if _, present := r.URL.Query()[key]; !present {
+	if _, present := httpx.QueryParamsOf(r)[key]; !present {
 		return nil, true
 	}
 	raw := queryLast(r, key)
-	parsed, err := parseISODateTime(raw)
+	parsed, err := pythonISODateTime(raw)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			fmt.Sprintf("Invalid %s: '%s' is not an ISO-8601 datetime.", key, raw)))
@@ -259,14 +269,13 @@ func containsString(values []string, target string) bool {
 // uuidAnyForm reports whether value is a UUID in any form the reference's
 // uuid.UUID() accepts: 32 hex digits, the 8-4-4-4-12 hyphenated form, either of
 // those wrapped in braces, and the urn:uuid: prefixed form (case-insensitive).
+// This is the validity test only; memoryUnitID is the exact port of CPython's
+// rule and additionally produces the canonical spelling for the store.
 func uuidAnyForm(value string) bool {
-	s := value
-	if len(s) >= 9 && strings.EqualFold(s[:9], "urn:uuid:") {
-		s = s[9:]
-	}
-	if len(s) >= 2 && s[0] == '{' && s[len(s)-1] == '}' {
-		s = s[1 : len(s)-1]
-	}
+	s := strings.ToLower(value)
+	s = strings.ReplaceAll(s, "urn:", "")
+	s = strings.ReplaceAll(s, "uuid:", "")
+	s = strings.Trim(s, "{}")
 	s = strings.ReplaceAll(s, "-", "")
 	if len(s) != 32 {
 		return false
@@ -284,25 +293,68 @@ func isHexRune(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
+// memoryUnitID normalizes a path identifier the way the reference's by-id
+// memory methods do before they touch the store — `str(uuid.UUID(memory_id))`
+// in engine/memory_engine.py (`get_memory_unit`, `update_memory_unit`,
+// `get_observation_history`). A value that is not a UUID is the reference's 400
+// "Invalid memory_id: …", naming the identifier exactly as the client sent it.
+//
+// The acceptance rule is CPython's, which is what the reference runs, and it is
+// looser than a strict 8-4-4-4-12 parse in ways a client can hit:
+//
+//	hex = hex.replace('urn:', '').replace('uuid:', '')
+//	hex = hex.strip('{}').replace('-', '')
+//
+// So the two prefixes are removed wherever they appear and in any case, every
+// leading and trailing brace is stripped (not just one pair), and hyphens are
+// dropped wherever they are — `urn:uuid:`- and brace-wrapped forms, an
+// all-hex 32-character form and a mis-grouped hyphenated form all reach the
+// query as the same canonical UUID. Whitespace is NOT trimmed: it is part of
+// the identifier and fails the check, with the untrimmed value echoed back.
+// Handing one of these to the driver instead answers a 500, which the reference
+// never does on these routes.
+func memoryUnitID(memoryID string) (string, *httpx.HTTPError) {
+	s := strings.ReplaceAll(memoryID, "urn:", "")
+	s = strings.ReplaceAll(s, "uuid:", "")
+	s = strings.Trim(s, "{}")
+	s = strings.ReplaceAll(s, "-", "")
+	if len(s) != 32 {
+		return "", memoryIDInvalid(memoryID)
+	}
+	var canonical strings.Builder
+	canonical.Grow(36)
+	for i, r := range s {
+		if !isHexRune(r) {
+			return "", memoryIDInvalid(memoryID)
+		}
+		if i == 8 || i == 12 || i == 16 || i == 20 {
+			canonical.WriteByte('-')
+		}
+		canonical.WriteRune(unicode.ToLower(r))
+	}
+	return canonical.String(), nil
+}
+
 // GetMemory returns one memory unit's detail.
 func (h *Handlers) GetMemory(w http.ResponseWriter, r *http.Request) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
+	sentID := r.PathValue("memory_id")
 	// The reference rejects a malformed id before touching the store; a missing
 	// bank is not checked at all, so an unknown bank reads as a missing unit.
-	if !uuidAnyForm(memoryID) {
-		httpx.WriteErrorFor(w, r, memoryIDInvalid(memoryID))
+	memoryID, invalid := memoryUnitID(sentID)
+	if invalid != nil {
+		httpx.WriteErrorFor(w, r, invalid)
 		return
 	}
 	unit, err := h.Store.GetMemory(r.Context(), bankID, memoryID)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, memoryLookupError(err, memoryID))
+		httpx.WriteErrorFor(w, r, memoryLookupError(err, sentID))
 		return
 	}
 	// A memory outside the caller's read scope reads as not-found, so the answer
 	// never confirms the id exists.
 	if !storage.TagsVisibleUnderScope(unit.Tags, memoryops.ScopeFromRequest(r)) {
-		httpx.WriteErrorFor(w, r, memoryUnitNotFound(memoryID))
+		httpx.WriteErrorFor(w, r, memoryUnitNotFound(sentID))
 		return
 	}
 	detail, err := h.memoryDetail(r.Context(), bankID, unit)
@@ -422,7 +474,7 @@ func memoryLookupError(err error, memoryID string) *httpx.HTTPError {
 // UpdateMemory applies a partial update to one memory unit.
 func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
+	sentID := r.PathValue("memory_id")
 	var body MemoryUpdateRequest
 	raw, err := readOptionalBody(r)
 	if err != nil {
@@ -438,6 +490,18 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := httpx.DecodeLax(raw, &body); err != nil {
+		// A body carrying a numeric literal that overflows to infinity is not
+		// one the framework's model ever sees: CPython parses it as `inf`, then
+		// fails to serialize its own error, so the reference answers a bare 500
+		// (api/http.py:6078-6132 escapes into the server's handler). Rendering
+		// the Go decoder's message instead would name the model field, which is
+		// not what the client would have received.
+		if httpx.JSONDecodeFailure(raw) {
+			unhandled := httpx.NewHTTPError(httpx.KindInternal, "")
+			unhandled.Plain = true
+			httpx.WriteErrorFor(w, r, unhandled)
+			return
+		}
 		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, raw))
 		return
 	}
@@ -447,8 +511,9 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
-	if !uuidAnyForm(memoryID) {
-		httpx.WriteErrorFor(w, r, memoryIDInvalid(memoryID))
+	memoryID, invalid := memoryUnitID(sentID)
+	if invalid != nil {
+		httpx.WriteErrorFor(w, r, invalid)
 		return
 	}
 	if body.Text != nil && strings.TrimSpace(*body.Text) == "" {
@@ -460,13 +525,13 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	// write is refused with 403 rather than a lie about its existence.
 	existing, err := h.Store.GetMemory(r.Context(), bankID, memoryID)
 	if err != nil {
-		httpx.WriteErrorFor(w, r, memoryLookupError(err, memoryID))
+		httpx.WriteErrorFor(w, r, memoryLookupError(err, sentID))
 		return
 	}
 	if existing.FactType != storage.TypeWorld && existing.FactType != storage.TypeExperience {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			fmt.Sprintf("Memory '%s' is a %s; only world/experience facts can be curated. "+
-				"Observations are derived and regenerate from their sources.", memoryID, existing.FactType)))
+				"Observations are derived and regenerate from their sources.", sentID, existing.FactType)))
 		return
 	}
 	doingEdit := body.Text != nil || body.Context != nil || fields["occurred_start"] || fields["occurred_end"] ||
@@ -478,13 +543,13 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	if !storage.TagsVisibleUnderScope(existing.Tags, memoryops.ScopeFromRequest(r)) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
-			fmt.Sprintf("Memory '%s' not found", memoryID)))
+			fmt.Sprintf("Memory '%s' not found", sentID)))
 		return
 	}
 	if writeTags, confined := memoryops.WriteScopeFromRequest(r); !writableUnderScope(existing.Tags, writeTags, confined) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindForbidden,
 			fmt.Sprintf("You can't write memory '%s' tagged %s",
-				memoryID, strings.Join(unwritableTags(existing.Tags, writeTags), ", "))))
+				sentID, strings.Join(unwritableTags(existing.Tags, writeTags), ", "))))
 		return
 	}
 	// The dates are parsed after the scope checks, as the reference does: a
@@ -638,20 +703,33 @@ func validateMemoryUpdate(body MemoryUpdateRequest, fields map[string]bool, inpu
 // array the reference emits.
 func (h *Handlers) MemoryHistory(w http.ResponseWriter, r *http.Request) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
-	if !uuidAnyForm(memoryID) {
-		httpx.WriteErrorFor(w, r, memoryIDInvalid(memoryID))
+	sentID := r.PathValue("memory_id")
+	// Both the reference's `get_observation_history` and the engine's own
+	// `get_memory_unit` alias the fact type first and the unit read second, and
+	// only then reach for the history rows (engine/memory_engine.py:13363-13460,
+	// 13247-13362). A unit that has left the live table for the archive is a
+	// miss there — the archive read is the detail route's, not this one's — so
+	// its history answers 404 even though the unit still exists.
+	memoryID, invalid := memoryUnitID(sentID)
+	if invalid != nil {
+		httpx.WriteErrorFor(w, r, invalid)
 		return
 	}
 	unit, err := h.Store.GetMemory(r.Context(), bankID, memoryID)
-	if err != nil {
-		httpx.WriteErrorFor(w, r, memoryLookupError(err, memoryID))
+	if err != nil || unit.InvalidatedAt != nil {
+		var failure *httpx.HTTPError
+		if err == nil || errors.Is(err, storage.ErrMemoryNotFound) {
+			failure = memoryUnitNotFound(sentID)
+		} else {
+			failure = asHTTPError(err)
+		}
+		httpx.WriteErrorFor(w, r, failure)
 		return
 	}
 	// A memory outside the caller's read scope reads as not-found, so the answer
 	// never confirms the id exists.
 	if !storage.TagsVisibleUnderScope(unit.Tags, memoryops.ScopeFromRequest(r)) {
-		httpx.WriteErrorFor(w, r, memoryUnitNotFound(memoryID))
+		httpx.WriteErrorFor(w, r, memoryUnitNotFound(sentID))
 		return
 	}
 	// Only observations carry a history; a source fact reports an empty array.
@@ -914,7 +992,7 @@ func sourceMemoryType(factType string) any {
 type dryRunExtractRequest struct {
 	Content                  json.RawMessage  `json:"content"`
 	Context                  string           `json:"context"`
-	Timestamp                *string          `json:"timestamp"`
+	Timestamp                json.RawMessage  `json:"timestamp"`
 	AgentName                *string          `json:"agent_name"`
 	Strategy                 *string          `json:"strategy"`
 	RetainMission            *string          `json:"retain_mission"`
@@ -975,14 +1053,16 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.RecordUnknownBodyFields(r, raw, dryRunExtractRequest{})
 	var body dryRunExtractRequest
-	if _, err := httpx.DecodeLax(raw, &body); err != nil {
-		writeRequiredBodyFailure(w, r, err)
+	if decoded, err := httpx.DecodeLax(raw, &body); err != nil {
+		// The decoder reports the value it refused as the item's input, so its
+		// own rendering is used rather than one rebuilt from the error alone.
+		httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, decoded))
 		return
 	}
 	// The content value is validated the way the reference's request model does,
 	// before any extraction runs: a blank value, a malformed block or a bad
 	// payload is refused here rather than degrading into a quieter answer.
-	if failure, badRequest := dryRunContentFailure(body.Content); failure != nil {
+	if failure, badRequest := dryRunContentFailure(body.Content, decodedRequestBody(raw)); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	} else if badRequest != "" {
@@ -1061,8 +1141,11 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	} else if h.RetainExtractCausalLinks != nil {
 		options.ExtractCausalLinks = h.RetainExtractCausalLinks
 	}
-	if body.Timestamp != nil {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*body.Timestamp)); err == nil {
+	if value, present, failure := dryRunTimestamp(body.Timestamp); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
+		return
+	} else if present {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
 			options.ReferenceTime = parsed
 		}
 	}
@@ -1204,6 +1287,12 @@ func (h *Handlers) PromptPreview(w http.ResponseWriter, r *http.Request) {
 	operation, input, ok := previewOperation(fields)
 	if !ok {
 		writeLiteralOperationFailure(w, input)
+		return
+	}
+	// The model refuses a member of the wrong type before the route runs at all,
+	// so a bad `strategy` is a 422 whatever bank the path names.
+	if failure := previewStrategyFailure(fields); failure != nil {
+		httpx.WriteValidationFailure(w, failure)
 		return
 	}
 	// The reference's preview route is the one bank-scoped route that does NOT

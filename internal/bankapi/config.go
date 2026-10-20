@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -233,8 +234,10 @@ func bankOverrides(bank storage.Bank) map[string]any {
 		if !configurable || value == nil {
 			continue
 		}
-		if kindMatches(kind, value) {
-			overrides[key] = value
+		// The stored value may be an ordered object (see orderRevealingValue);
+		// what decides whether it matches the field's kind is the object itself.
+		if kindMatches(kind, unwrapOrdered(value)) {
+			overrides[key] = orderRevealingValue(key, value)
 			continue
 		}
 		// A string field whose stored value is a container keeps the author's
@@ -247,6 +250,27 @@ func bankOverrides(bank storage.Bank) map[string]any {
 		}
 	}
 	return overrides
+}
+
+// orderRevealingValue re-states the member order of the one config value a
+// reference model declares. The bank's config column is jsonb, which carries no
+// member order, so a value read back is a sorted map; the reference's response
+// lists the model's members in declaration order instead. Wrapping it in an
+// ordered object makes whichever serialiser writes the response agree.
+func orderRevealingValue(key string, value any) any {
+	if key != "entity_labels" {
+		return value
+	}
+	return entitylabels.Reorder(value)
+}
+
+// unwrapOrdered reads the members of an ordered object, and returns any other
+// value unchanged.
+func unwrapOrdered(value any) any {
+	if ordered, ok := value.(entitylabels.OrderedObject); ok {
+		return ordered.Members
+	}
+	return value
 }
 
 // overlayDispositionMission resolves the disposition and mission a bank reports:

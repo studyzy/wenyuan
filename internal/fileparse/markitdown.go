@@ -1,8 +1,10 @@
 package fileparse
 
 import (
+	"bytes"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/studyzy/wenyuan/internal/provider/vlm"
 )
@@ -127,6 +129,19 @@ func (p markitdownParser) Convert(data []byte, filename string) (string, error) 
 }
 
 // convertLocal runs the standard-library converter for a document format.
+// plainText returns the bytes as text when they are UTF-8 text, and reports
+// false when they are not: a NUL byte or a sequence that is not valid UTF-8 marks
+// a binary file the way the reference's converter does.
+func plainText(data []byte) (string, bool) {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return "", false
+	}
+	if !utf8.Valid(data) {
+		return "", false
+	}
+	return string(data), true
+}
+
 func convertLocal(data []byte, filename string) (string, error) {
 	switch extOf(filename) {
 	case ".pdf":
@@ -148,7 +163,15 @@ func convertLocal(data []byte, filename string) (string, error) {
 	case ".txt", ".text", ".md", ".markdown":
 		return string(data), nil
 	default:
+		// The reference's markitdown reads a file it has no converter for as
+		// plain text when the bytes are text, and refuses only bytes that are not
+		// (documented by "No converter attempted a conversion, suggesting that
+		// the filetype is simply not supported" from a binary upload).
+		if text, ok := plainText(data); ok {
+			return text, nil
+		}
 		return "", unsupported("markitdown", filename,
-			"the "+formatNameOf(filename)+" format needs a file parser this build does not ship")
+			"Could not convert stream to Markdown. No converter attempted a conversion, "+
+				"suggesting that the filetype is simply not supported")
 	}
 }

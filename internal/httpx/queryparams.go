@@ -140,7 +140,7 @@ func ensureIgnoredCollector(r *http.Request) *http.Request {
 // repeats as a sequence is read through QueryValues instead.
 func Query(r *http.Request, name string) string {
 	recordQueryRead(r, name)
-	values, present := r.URL.Query()[name]
+	values, present := queryValues(r.URL)[name]
 	if !present || len(values) == 0 {
 		return ""
 	}
@@ -151,15 +151,48 @@ func Query(r *http.Request, name string) string {
 // the multi-value counterpart of Query.
 func QueryValues(r *http.Request, name string) []string {
 	recordQueryRead(r, name)
-	return r.URL.Query()[name]
+	return queryValues(r.URL)[name]
 }
 
 // QueryPresent reads a repeatable query parameter and reports whether it was
 // present at all, so a caller can tell an absent parameter from an empty one.
 func QueryPresent(r *http.Request, name string) (values []string, present bool) {
 	recordQueryRead(r, name)
-	values, present = r.URL.Query()[name]
+	values, present = queryValues(r.URL)[name]
 	return values, present
+}
+
+// QueryParamsOf parses a request's query string for a caller that needs the
+// whole map rather than one declared parameter.
+func QueryParamsOf(r *http.Request) url.Values {
+	return queryValues(r.URL)
+}
+
+// queryValues parses a URL's query the way the reference's framework does.
+//
+// Go's own parser REFUSES a query in which an unescaped `;` appears as a
+// field separator: `url.ParseValues` reports `invalid semicolon separator in
+// query` and `url.URL.Query` silently drops every pair whose value contains
+// one, so `?limit=5;6` reads as "no limit at all". The reference (Starlette
+// over the standard library's `parse_qsl`) has never separated fields on `;` —
+// it only ever splits on `&`, so the semicolon is an ordinary character of the
+// value and `?limit=5;6` is the string "5;6", which the integer binder then
+// refuses. A handler reading through Query, QueryValues or QueryPresent
+// therefore gets the reference's reading.
+func queryValues(u *url.URL) url.Values {
+	values, err := url.ParseQuery(u.RawQuery)
+	if err == nil || !strings.Contains(u.RawQuery, ";") {
+		return values
+	}
+	// The only parse failure that matters here is the semicolon one: keep that
+	// character literal and parse again, so every other pair is decoded exactly
+	// as the standard library would decode it.
+	replaced := strings.ReplaceAll(u.RawQuery, ";", "%3B")
+	values, err = url.ParseQuery(replaced)
+	if err != nil {
+		return url.Values{}
+	}
+	return values
 }
 
 func recordQueryRead(r *http.Request, name string) {

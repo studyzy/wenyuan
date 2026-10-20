@@ -52,6 +52,14 @@ func WriteError(w http.ResponseWriter, err error) {
 			w.Header().Add(name, v)
 		}
 	}
+	if httpErr.Plain {
+		// The reference's unhandled-exception fallback: the ASGI server answers the
+		// reason phrase as text, not through the API's error envelope.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(httpErr.Status)
+		_, _ = w.Write([]byte(http.StatusText(httpErr.Status)))
+		return
+	}
 	if httpErr.Payload != nil {
 		WriteJSON(w, httpErr.Status, PayloadEnvelope{Detail: httpErr.Payload})
 		return
@@ -68,7 +76,42 @@ func WriteValidationFailure(w http.ResponseWriter, failure *ValidationFailure) {
 	if status == 0 {
 		status = KindUnprocessable
 	}
-	WriteJSON(w, status, failure)
+	WriteJSON(w, status, orderValidationInputs(failure))
+}
+
+// orderValidationInputs rewrites a failure's items so the body they echo renders
+// in the order the client wrote its members.
+//
+// The reference's framework reports `input` as the request body it received, an
+// insertion-ordered mapping, so `{"b":1,"a":2}` comes back as written. Go's map
+// sorts its keys on the way out, which would report a body in an order the client
+// never sent — visible to anyone comparing two responses byte for byte.
+func orderValidationInputs(failure *ValidationFailure) *ValidationFailure {
+	if failure == nil || failure.BodyOrder == nil || len(failure.Errors) == 0 {
+		return failure
+	}
+	if failure.Detail != "" {
+		// A failure that answers with a plain detail carries no items to echo.
+		return failure
+	}
+	if failure.Status == KindInternal {
+		return failure
+	}
+	ordered := *failure
+	ordered.Errors = make([]ValidationError, len(failure.Errors))
+	copy(ordered.Errors, failure.Errors)
+	patched := false
+	for i, item := range ordered.Errors {
+		if _, isObject := item.Input.(map[string]any); !isObject {
+			continue
+		}
+		ordered.Errors[i].Input = failure.BodyOrder
+		patched = true
+	}
+	if !patched {
+		return failure
+	}
+	return &ordered
 }
 
 func asHTTPError(err error) *HTTPError {

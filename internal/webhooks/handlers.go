@@ -298,7 +298,7 @@ func parseListQuery(r *http.Request) (int, int, *httpx.ValidationFailure) {
 // parseDeliveryLimit reads the delivery page size: default 50, upper bound 200,
 // and no lower bound (the reference declares only le=200).
 func parseDeliveryLimit(r *http.Request) (int, *httpx.ValidationFailure) {
-	values, present := r.URL.Query()["limit"]
+	values, present := httpx.QueryParamsOf(r)["limit"]
 	if !present || len(values) == 0 {
 		return 50, nil
 	}
@@ -318,7 +318,7 @@ func parseDeliveryLimit(r *http.Request) (int, *httpx.ValidationFailure) {
 // queryIntParam parses a bounded integer query parameter. max of 0 means no
 // upper bound. The structured item names the raw value the client sent.
 func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx.ValidationError) {
-	values, present := r.URL.Query()[key]
+	values, present := httpx.QueryParamsOf(r)[key]
 	if !present || len(values) == 0 {
 		return 0, false, nil
 	}

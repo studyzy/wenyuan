@@ -109,7 +109,14 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 	// operation, so a trace listing shows the run rather than only the calls
 	// that happened to be attributed by their caller.
 	ctx = provider.WithTraceContext(ctx, provider.TraceContext{BankID: bankID, Operation: "reflect"})
-	outcome, err := h.Store.Reflect(ctx, query)
+	// The reflection and the answer built from it are one observed operation,
+	// with the reference's own budget label and no token count (api/http.py:6442).
+	budget, maxTokens := reflectOperationLabels(req)
+	var outcome storage.ReflectOutcome
+	err = serveOperation(ctx, operationReflect, budget, maxTokens, func() error {
+		outcome, err = h.Store.Reflect(ctx, query)
+		return err
+	})
 	if err != nil {
 		// A wall-clock budget that elapsed is a gateway timeout; a client
 		// disconnect cancels cooperatively and is not misreported.
@@ -134,6 +141,9 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 // query, appending the deprecated context field and resolving the two per-bank
 // defaults as explicit-request over bank default over shipped default.
 func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.ReflectQuery {
+	// Only the include block turns the side channels on. The reference's
+	// reflection request has no top-level trace flag, so a body that sends one
+	// gets the same answer as one that omits it: no evidence and no trace.
 	include := storage.ReflectInclude{}
 	if req.Include != nil {
 		if req.Include.Facts != nil {
@@ -143,8 +153,6 @@ func (h *Handlers) buildReflectQuery(bankID string, req ReflectRequest) storage.
 			include.ToolCalls = true
 			include.ToolOutput = req.Include.ToolCalls.Output
 		}
-	} else if req.Trace {
-		include.ToolCalls = true
 	}
 	query := storage.ReflectQuery{
 		BankID:                            bankID,

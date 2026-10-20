@@ -295,3 +295,32 @@ func uploadWithRequest(t *testing.T, mux *http.ServeMux, filename, body, request
 	mux.ServeHTTP(rec, req)
 	return rec
 }
+
+// A converted upload stores its text as the document's content and no attachment
+// row: verified against the live reference, where a text upload's document reads
+// `attachments: null` and no row is written to its attachments table. Only an
+// image keeps its bytes as an attachment.
+func TestFileRetainConvertedUploadKeepsNoAttachment(t *testing.T) {
+	mux, store := configuredServer(t, nil)
+	rec := uploadWithRequest(t, mux, "notes.txt", "Alice likes tea.",
+		`{"async":false,"files_metadata":[{"document_id":"converted-doc"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	// The upload names its document through files_metadata, so the id the route
+	// was told to use is the one to read back; the async retain creates it.
+	document, err := store.GetDocument(context.TODO(), "b1", "converted-doc")
+	if err != nil {
+		t.Fatalf("the converted upload stored no document: %v", err)
+	}
+	if document.OriginalText != "Alice likes tea." {
+		t.Fatalf("document text = %q, want the converted body", document.OriginalText)
+	}
+	attachments, err := store.ListAttachments(context.TODO(), "b1", document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("a converted upload kept %d attachment row(s), want none: %+v", len(attachments), attachments)
+	}
+}

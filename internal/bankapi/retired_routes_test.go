@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -24,7 +25,11 @@ func TestRetiredRoutesRemainRoutable(t *testing.T) {
 	for _, route := range RetiredRoutes {
 		path := replaceBankID(route.Pattern)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(route.Method, path, nil))
+		// A retired route that declares a request body needs that body to be
+		// acceptable before it answers the retirement status; a route without one
+		// answers it directly.
+		body := acceptableRetiredBody(route)
+		mux.ServeHTTP(rec, httptest.NewRequest(route.Method, path, strings.NewReader(body)))
 		if rec.Code != http.StatusGone {
 			t.Fatalf("retired %s %s status = %d, want 410", route.Method, path, rec.Code)
 		}
@@ -123,3 +128,15 @@ func indexBytes(haystack, needle []byte) int {
 }
 
 var _ storage.Bank
+
+// acceptableRetiredBody is the body a retired write route's declared model
+// accepts, so the route reaches its retirement status.
+func acceptableRetiredBody(route RetiredRoute) string {
+	switch retiredRouteKey(route.Method, route.Pattern) {
+	case "PUT /v1/default/banks/{bank_id}/profile":
+		return `{"disposition":{"skepticism":3,"literalism":3,"empathy":3}}`
+	case "POST /v1/default/banks/{bank_id}/background":
+		return `{"content":"x"}`
+	}
+	return ""
+}

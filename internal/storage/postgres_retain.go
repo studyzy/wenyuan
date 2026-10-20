@@ -932,7 +932,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	if len(unit.ObservationScopes) > 0 {
 		scopes = string(unit.ObservationScopes)
 	}
-	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, unit.Context,
+	if _, err := s.db.ExecContext(ctx, insert, unit.ID, unit.BankID, unit.Text, nullableContext(unit.Context, unit.ContextAbsent),
 		string(unit.FactType), metadata, unit.EventDate, unit.OccurredStart, unit.OccurredEnd,
 		unit.MentionedAt, nullString(unit.DocumentID), nullString(unit.ChunkID), tags, embedding,
 		sourceMemoryIDs, scopes, unit.ConsolidatedAt, unit.ConsolidationFailedAt, attachmentIDs,
@@ -1143,8 +1143,7 @@ func (s *PostgresStore) UnitEntityNames(ctx context.Context, bankID string, unit
 		WHERE obs.id = ANY($1::uuid[]) AND obs.fact_type = 'observation'
 		  AND obs.source_memory_ids IS NOT NULL
 		  AND e.bank_id = $2
-		  AND NOT EXISTS (SELECT 1 FROM ` + qualified + `.unit_entities d WHERE d.unit_id = obs.id)
-		ORDER BY 2`
+		  AND NOT EXISTS (SELECT 1 FROM ` + qualified + `.unit_entities d WHERE d.unit_id = obs.id)`
 	rows, err := s.db.QueryContext(ctx, query, unitIDs, bankID)
 	if err != nil {
 		return nil, err
@@ -1227,4 +1226,15 @@ func (s *PostgresStore) UpsertLink(ctx context.Context, link MemoryLink) error {
 	_, err := s.db.ExecContext(ctx, query, link.BankID, link.FromUnitID, link.ToUnitID,
 		string(link.LinkType), nullString(link.EntityID), link.Weight)
 	return err
+}
+
+// nullableContext renders a unit's context column: NULL for a unit whose context
+// is absent (an observation, which the reference's insert never names the column
+// for) and the string itself otherwise, including the empty one a fact with no
+// context stores.
+func nullableContext(context string, absent bool) any {
+	if absent {
+		return nil
+	}
+	return context
 }

@@ -97,9 +97,15 @@ func (s *PostgresStore) BankWriteWatermark(ctx context.Context, bankID string) t
 }
 
 // MarkMentalModelSeen stamps the observed watermark and clears any park.
+//
+// A zero seenAt records the run as having seen nothing new: it keeps the
+// watermark where it was and leaves `last_memory_seen_at` NULL when it was NULL
+// rather than materializing a value there. The reference writes the watermark it
+// read on a run that found no sources exactly when that read has one, so a model
+// whose refreshes keep finding an empty scope keeps reporting a null watermark.
 func (s *PostgresStore) MarkMentalModelSeen(ctx context.Context, bankID, id string, seenAt time.Time) error {
 	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
-	          SET last_memory_seen_at = COALESCE($3, last_memory_seen_at),
+	          SET last_memory_seen_at = COALESCE($3::timestamptz, last_memory_seen_at),
 	              last_refreshed_at = now(),
 	              last_refresh_failed_at = NULL,
 	              last_updated = now()

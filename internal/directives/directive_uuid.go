@@ -134,6 +134,8 @@ func quoteRune(c byte) string {
 // body omitted it or set it to null, which is why `{}` and a fully populated
 // body number the id differently.
 func updateDirectiveArgNumber(supplied [5]bool) int {
+	// See updateDirectivePriorityArg: the number counts the supplied members, so
+	// the fifth supplied member lands on $7 and the first on $3.
 	position := 2
 	for _, present := range supplied {
 		if present {

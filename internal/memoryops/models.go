@@ -280,15 +280,29 @@ func decodeTemporalBound(window map[string]any, members map[string]json.RawMessa
 
 // TagGroupRequest is one compound tag-filter node. Its marshal/unmarshal shape
 // nests boolean nodes under and/or/not and leaves under tag(s), resolve and
-// match.
+// match. A member's *presence* matters to the union (`and`, `or` and `not` are
+// required members of their branches), so each container is a pointer: an
+// omitted member must not decode to the same empty value a supplied one does.
 type TagGroupRequest struct {
-	And     TagGroupChildren `json:"and,omitempty"`
-	Or      TagGroupChildren `json:"or,omitempty"`
-	Not     TagGroupNot      `json:"not,omitempty"`
-	Tag     string           `json:"tag,omitempty"`
-	Tags    []string         `json:"tags,omitempty"`
-	Resolve string           `json:"resolve,omitempty"`
-	Match   string           `json:"match,omitempty"`
+	And TagGroupChildren `json:"and,omitempty"`
+	Or  TagGroupChildren `json:"or,omitempty"`
+	Not TagGroupNot      `json:"not,omitempty"`
+
+	// andGiven and orGiven record that the body stated the member, which a nil
+	// slice cannot: `null` supplies the member while `[]` and a bare object both
+	// decode to an empty list.
+	andGiven bool
+	orGiven  bool
+
+	// tagsGiven records that the body stated `tags`, which an empty slice cannot:
+	// `"tags": []` is a leaf that names no tag and still filters, whereas a node
+	// without `tags` is not a leaf at all.
+	tagsGiven bool
+
+	Tag     string   `json:"tag,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+	Resolve string   `json:"resolve,omitempty"`
+	Match   string   `json:"match,omitempty"`
 }
 
 // RecallResultItem is one recall result object. Every field name is public
@@ -415,9 +429,6 @@ type ReflectRequest struct {
 	ExcludeMentalModelIDs                    []string               `json:"exclude_mental_model_ids,omitempty"`
 	ReflectSearchObservationsMaxTokens       *int                   `json:"reflect_search_observations_max_tokens,omitempty"`
 	ReflectSearchObservationsIncludeEntities *bool                  `json:"reflect_search_observations_include_entities,omitempty"`
-	// Trace is the deprecated top-level trace toggle; the include block takes
-	// precedence when present.
-	Trace bool `json:"trace,omitempty"`
 }
 
 // ReflectIncludeRequest is the reflection include sub-object. The facts member

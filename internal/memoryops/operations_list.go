@@ -103,7 +103,7 @@ func parseOperationListQuery(r *http.Request) (int, int, bool, *httpx.Validation
 // structured item for a value that failed to parse or fell outside its bounds;
 // when it is non-nil the other results are unset.
 func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx.ValidationError) {
-	values, present := r.URL.Query()[key]
+	values, present := httpx.QueryParamsOf(r)[key]
 	if !present || len(values) == 0 {
 		return 0, false, nil
 	}

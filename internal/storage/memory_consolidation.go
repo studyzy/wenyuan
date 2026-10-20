@@ -183,7 +183,7 @@ func (s *MemoryStore) CreateObservation(ctx context.Context, bankID, text string
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation}
+	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation, ContextAbsent: true}
 	unit.Embedding = embedObservation(ctx, s.observationEmbedderRef(), text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {

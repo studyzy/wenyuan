@@ -497,6 +497,11 @@ func retainParamsFor(item RetainItem) map[string]any {
 		// so the persisted text is part of the contract.
 		params["event_date"] = timefmt.FormatTimestamp(*item.Timestamp)
 	}
+	// A file upload always carries a metadata dict — the reference fills in
+	// `file_meta.metadata or {}`, and an item with none is `{}` rather than
+	// absent — so the key is recorded even when empty. An inline retain item
+	// that names no metadata then differs from a file upload exactly as the two
+	// do in the reference.
 	if item.Metadata != nil {
 		params["metadata"] = item.Metadata
 	}
@@ -595,6 +600,7 @@ func recallMatchFromUnit(unit MemoryUnit) RecallMatch {
 		Text:            unit.Text,
 		Type:            string(unit.FactType),
 		Context:         unit.Context,
+		ContextAbsent:   unit.ContextAbsent,
 		OccurredStart:   unit.OccurredStart,
 		OccurredEnd:     unit.OccurredEnd,
 		MentionedAt:     unit.MentionedAt,

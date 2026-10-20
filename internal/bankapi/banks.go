@@ -1,9 +1,11 @@
 package bankapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -51,10 +53,23 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}
+	// An offset wider than any page starts past the end, so the page is empty
+	// however many banks there are. The store bounds an offset to the match
+	// count, which would return the tail instead.
+	namedLimit := query.Limit
+	beyondEnd := query.Offset < 0
+	if beyondEnd {
+		query.Offset = 0
+		query.Limit = 0
+	}
 	page, err := h.Store.ListBanks(r.Context(), query)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal))
 		return
+	}
+	if beyondEnd {
+		// The count is still the whole match set; the page itself is empty.
+		page.Banks = nil
 	}
 	rows := make([]BankListRow, 0, len(page.Banks))
 	for _, bank := range page.Banks {
@@ -68,9 +83,43 @@ func (h *Handlers) ListBanks(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, BankListResponse{
 		Banks:  rows,
 		Total:  page.Total,
-		Limit:  page.Limit,
-		Offset: page.Offset,
+		Limit:  echoedLimit(query, r, namedLimit),
+		Offset: echoedOffset(query, r),
 	})
+}
+
+// echoedLimit renders the limit the response reports: the number the caller
+// named, which is what the reference echoes even when it is wider than a page,
+// and the service's default page size when the request named none.
+func echoedLimit(query storage.BankQuery, r *http.Request, named int) any {
+	if _, present := httpx.QueryPresent(r, "limit"); !present {
+		return named
+	}
+	return echoedPageParam("limit", query.Limit, r)
+}
+
+// echoedOffset renders the offset the response reports, the same way.
+func echoedOffset(query storage.BankQuery, r *http.Request) any {
+	return echoedPageParam("offset", query.Offset, r)
+}
+
+// echoedPageParam reads the number a page parameter was given back in its own
+// spelling, so a value wider than a page is echoed as the caller wrote it.
+func echoedPageParam(name string, stored int, r *http.Request) any {
+	raw, ok := httpx.QueryPresent(r, name)
+	if !ok {
+		return stored
+	}
+	trimmed := strings.TrimSpace(raw[len(raw)-1])
+	if value, err := strconv.Atoi(trimmed); err == nil && value >= 0 {
+		return value
+	}
+	if isDecimalInteger(trimmed) && !strings.HasPrefix(trimmed, "-") {
+		// A number wider than a machine int: the reference reports the same
+		// digits back, so the response carries them as written.
+		return json.Number(trimmed)
+	}
+	return stored
 }
 
 // ReplaceBank serves the create-or-replace route. A name that already names a
@@ -84,7 +133,17 @@ func (h *Handlers) ReplaceBank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawID := r.PathValue("bank_id")
-	req, fieldItems, err := decodeBankBody(r)
+	req, body, fieldItems, err := decodeBankBody(r)
+	// A value the reference's parser produces but no JSON writer can render
+	// (a number too large for a float) makes its handler raise rather than
+	// answer a validation failure: the model is handed the value, the field
+	// rejects it, and the framework's own error response then fails to encode
+	// the rejected value. The reference answers its bare server error there, so
+	// this reports the same status and body instead of the item list.
+	if err != nil && bodyCarriesNonFiniteNumber(body) {
+		writeServerError(w)
+		return
+	}
 	if err != nil && !carriesValidationItems(err) {
 		httpx.WriteErrorFor(w, r, err)
 		return
@@ -167,7 +226,13 @@ func (h *Handlers) UpdateBank(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, fieldItems, err := decodeBankBody(r)
+	req, body, fieldItems, err := decodeBankBody(r)
+	// Same as the create path: a value no JSON writer can render is the
+	// reference's server error, not a validation failure.
+	if err != nil && bodyCarriesNonFiniteNumber(body) {
+		writeServerError(w)
+		return
+	}
 	if err != nil && !carriesValidationItems(err) {
 		httpx.WriteErrorFor(w, r, err)
 		return
@@ -295,6 +360,16 @@ func validateBankExists(err error) error {
 	return err
 }
 
+// writeServerError emits the framework's own unhandled-error response: the bare
+// text "Internal Server Error", not this service's JSON error envelope. The
+// reference's framework answers from outside its route handlers, so nothing
+// that would turn it into {"detail": ...} runs there.
+func writeServerError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte("Internal Server Error"))
+}
+
 // parseBankQuery reads the list query. An absent limit uses the reference's
 // default page size; an absent offset is zero. A named limit or offset must be
 // a non-negative integer, and a value that is not is a validation failure, the
@@ -304,8 +379,13 @@ func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailur
 	// The reference declares scalar query parameters, and the framework keeps
 	// the last occurrence of a repeated key. Read the last value of each name
 	// rather than the first so a repeated q/limit/offset behaves the same.
+	// A supplied q filters even when it is empty or blank: the reference tests
+	// the parameter for truthiness, not for emptiness
+	// (engine/retain/bank_utils.py:708), so " " searches for a space and finds
+	// nothing rather than turning the filter off.
 	if raw, ok := httpx.QueryPresent(r, "q"); ok {
 		query.Search = raw[len(raw)-1]
+		query.SearchGiven = true
 	}
 	var items []httpx.ValidationError
 	if raw, ok := httpx.QueryPresent(r, "limit"); ok {
@@ -313,6 +393,9 @@ func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailur
 		if failure != nil {
 			items = append(items, *failure)
 		} else {
+			// A limit wider than any page keeps every match, which is what the
+			// reference's own unbounded slice does with a Python int; the
+			// response still reports the number the caller asked for.
 			query.Limit = value
 		}
 	}
@@ -333,9 +416,34 @@ func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailur
 // parseNonNegativeParam parses one required non-negative integer query value,
 // reporting a parse failure and a range failure distinctly, as the reference
 // does.
+//
+// The reference parses these with its framework's integer coercer, which
+// trims surrounding whitespace and honors an explicit sign before the
+// `ge=0` bound is checked, so ` 1` and `+1` are the same request as `1`.
+// A value beyond that bound is still the framework's item, reported against
+// the raw query text.
+//
+// The second result reports an unusable value the reference does not refuse:
+// an integer too large for its own 64-bit comparison then reaches its bounded
+// page slice, which Python answers as an empty page rather than an error. It
+// reports -1 for that case, and the caller leaves the page size at the
+// reference's own default.
 func parseNonNegativeParam(name, raw string) (int, *httpx.ValidationError) {
-	parsed, err := strconv.Atoi(raw)
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := strconv.Atoi(trimmed)
 	if err != nil {
+		// A syntactically valid integer that does not fit an int is not a
+		// parse failure for the reference: it is a number its `ge=0` check
+		// passes and its page slice tolerates.
+		if isDecimalInteger(trimmed) && !strings.HasPrefix(trimmed, "-") {
+			// Wider than any page: a limit that wide keeps every match, an
+			// offset that wide starts past the end. The reference's own slice
+			// does exactly that with a Python int.
+			if name == "offset" {
+				return -2, nil
+			}
+			return -1, nil
+		}
 		item := httpx.TypeMismatch("int_parsing", []string{"query", name}, raw)
 		return 0, &item
 	}
@@ -345,6 +453,27 @@ func parseNonNegativeParam(name, raw string) (int, *httpx.ValidationError) {
 		return 0, &item
 	}
 	return parsed, nil
+}
+
+// isDecimalInteger reports whether text is an optionally signed run of decimal
+// digits, which is the shape that overflows an int rather than failing to
+// parse.
+func isDecimalInteger(text string) bool {
+	if text == "" {
+		return false
+	}
+	if text[0] == '+' || text[0] == '-' {
+		text = text[1:]
+	}
+	if text == "" {
+		return false
+	}
+	for _, ch := range text {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeConfig layers a validated configuration patch over a bank's existing

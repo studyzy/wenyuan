@@ -66,6 +66,11 @@ type ValidationFailure struct {
 	// the same path as a rejected body because every caller already reports one.
 	Status int
 	Detail string
+	// BodyOrder is the request body the items echo as their `input`, kept in the
+	// member order the client wrote it in. The reference reports that body as an
+	// insertion-ordered mapping; an empty order means the items render from their
+	// maps, whose keys sort.
+	BodyOrder any
 }
 
 // MarshalJSON emits the shared envelope so a validation failure is wire
@@ -124,6 +129,13 @@ type HTTPError struct {
 	// what logging and Go callers read.
 	Payload any
 	Header  http.Header
+	// Plain, when set, renders the error the way the reference's own ASGI
+	// server does for an exception no route caught: a bare text/plain body with
+	// just the reason phrase ("Internal Server Error"), no envelope. Only a
+	// failure the reference cannot serialize takes that path — its error handler
+	// re-raises while building the JSON detail, so the client sees the server's
+	// fallback rather than {"detail": …}.
+	Plain bool
 }
 
 func (e *HTTPError) Error() string { return e.Detail }

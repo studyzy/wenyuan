@@ -3,7 +3,6 @@ package memoryops
 import (
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -11,8 +10,9 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// TagGroupsField decodes the compound tag-filter field, accepting both the
-// boolean-node object form and the legacy list-of-tag-lists form.
+// TagGroupsField decodes the compound tag-filter field: the reference's
+// `list[TagGroup]`, whose groups are decoded best effort so a filter the union
+// accepts still reaches the store.
 type TagGroupsField struct {
 	Groups []TagGroupRequest
 
@@ -20,57 +20,85 @@ type TagGroupsField struct {
 	// counts as omitting it, as the reference's default-as-None field means).
 	Present bool
 
-	// singleObject records that the body stated the field as one object rather
-	// than a list: recall also reads that shape, while reflect's field is
-	// `list[TagGroup]` alone and reports it as a list-type failure. rawInput is
-	// the value the failure names.
-	singleObject bool
-	rawInput     any
+	// diagnosed carries the union's own items plus the few facts about the raw
+	// value a Go decoder cannot report: whether the field arrived as a list at
+	// all, and the value itself for the list-type failure to name. It is what
+	// the route reports when it holds any item.
+	diagnosed tagGroupTree
 
-	// failures holds the items the reference's discriminated union reports for a
-	// group that matched none of its four branches (`TagGroupLeaf`, `…And`,
+	// failures holds the items the reference's left-to-right union reports for
+	// the groups that matched none of its branches (`TagGroupLeaf`, `…And`,
 	// `…Or`, `…Not`). They are field-level items at the group's own path, so they
-	// are reported before any body-level check — which is the order the framework
-	// walks a request in.
+	// are reported before any body-level check — the order the framework walks a
+	// request in.
 	failures []httpx.ValidationError
 }
 
-// UnmarshalJSON accepts either an object, a single group, a list of groups or a
-// list of tag lists.
+// UnmarshalJSON decodes the field's raw value. The value is kept for the
+// diagnostic pass, which the route runs once it knows the field's placement in
+// the request (a body the decoder already refused is reported from the walk
+// instead). The decoder itself never fails: a value that is not a list decodes
+// to no groups and is reported by the diagnostic as the reference's list-type
+// failure.
 func (f *TagGroupsField) UnmarshalJSON(data []byte) error {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" || trimmed == "null" {
-		f.Groups = nil
-		f.Present = false
+	f.diagnosed = diagnoseTagGroups(data)
+	f.Present = f.diagnosed.present
+	f.failures = f.diagnosed.items
+	if !f.diagnosed.list {
 		return nil
 	}
-	f.Present = true
-	// A list-of-lists or list-of-objects form.
-	if strings.HasPrefix(trimmed, "[") {
-		var rawItems []json.RawMessage
-		if err := json.Unmarshal(data, &rawItems); err != nil {
-			return err
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(data, &rawItems); err != nil {
+		return nil
+	}
+	for _, item := range rawItems {
+		group, err := decodeTagGroup(item)
+		if err != nil {
+			continue
 		}
-		for index, item := range rawItems {
-			group, err := decodeTagGroup(item)
-			if err != nil {
-				f.failures = append(f.failures, tagGroupUnionItems(index, item)...)
-				continue
-			}
-			f.Groups = append(f.Groups, group)
-		}
-		return nil
+		f.Groups = append(f.Groups, group)
 	}
-	// A single object form.
-	f.singleObject = true
-	_ = json.Unmarshal(data, &f.rawInput)
-	group, err := decodeTagGroup(data)
-	if err != nil {
-		f.failures = append(f.failures, tagGroupUnionItems(0, data)...)
-		return nil
-	}
-	f.Groups = []TagGroupRequest{group}
 	return nil
+}
+
+// UnmarshalJSON decodes one group, recording which boolean members the body
+// stated so the union's constraints can tell a supplied member from an omitted
+// one.
+func (g *TagGroupRequest) UnmarshalJSON(data []byte) error {
+	type plain TagGroupRequest
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*g = TagGroupRequest(decoded)
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	g.andGiven = hasMember(members, "and")
+	g.orGiven = hasMember(members, "or")
+	g.tagsGiven = hasMember(members, "tags")
+	return nil
+}
+
+// hasMember reports whether a decoded member map states the named key.
+func hasMember(members map[string]json.RawMessage, name string) bool {
+	_, present := members[name]
+	return present
+}
+
+// Items reports every validation item the field's value raises: the
+// reference's list-type failure when the value was not a list, otherwise the
+// union's own items. Both are field-level items, so they are reported before
+// the body-level rules the request model raises after its fields validate.
+func (f TagGroupsField) Items() []httpx.ValidationError {
+	if !f.Present {
+		return nil
+	}
+	if !f.diagnosed.list {
+		return []httpx.ValidationError{httpx.TypeMismatch("list_type", []string{"body", "tag_groups"}, f.diagnosed.input)}
+	}
+	return f.failures
 }
 
 // TagGroupChildren decodes a node's and/or member. The reference accepts both a
@@ -96,9 +124,12 @@ func (c *TagGroupChildren) UnmarshalJSON(data []byte) error {
 		}
 		out := make(TagGroupChildren, 0, len(items))
 		for _, item := range items {
+			// A child the union cannot read is dropped rather than failing the
+			// whole field: the diagnostic has already reported it at that
+			// child's own path, and the field's decoder never fails.
 			group, err := decodeTagGroup(item)
 			if err != nil {
-				return err
+				continue
 			}
 			out = append(out, group)
 		}
@@ -107,7 +138,8 @@ func (c *TagGroupChildren) UnmarshalJSON(data []byte) error {
 	}
 	group, err := decodeTagGroup(data)
 	if err != nil {
-		return err
+		*c = nil
+		return nil
 	}
 	*c = TagGroupChildren{group}
 	return nil
@@ -120,10 +152,9 @@ func (c *TagGroupChildren) UnmarshalJSON(data []byte) error {
 // mean something the reference rejects outright.
 type TagGroupNot struct {
 	Child *TagGroupRequest
-	// listItems holds the children of a list form, which the reference refuses.
-	// It is kept so the union branch can report one item per child, the way the
-	// reference's does, instead of the whole group failing as unconstrained.
-	listItems []json.RawMessage
+	// given records that the body stated the member, which a nil Child also
+	// reports for an explicit null.
+	given bool
 }
 
 // UnmarshalJSON accepts one child object and refuses a list.
@@ -133,87 +164,33 @@ func (n *TagGroupNot) UnmarshalJSON(data []byte) error {
 		n.Child = nil
 		return nil
 	}
+	n.given = true
 	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal(data, &n.listItems); err != nil {
-			return err
-		}
 		return nil
 	}
 	group, err := decodeTagGroup(data)
 	if err != nil {
-		return err
+		// The diagnostic reports what the union refused; the store simply gets
+		// no child, so the group cannot silently widen the filter.
+		n.Child = nil
+		return nil
 	}
 	n.Child = &group
 	return nil
 }
 
-// decodeTagGroup decodes one tag-group item, which may be a tag list or a
-// boolean/leaf object.
-//
-// An object carrying neither a tag set nor one of the boolean keys is rejected.
-// Accepting it would decode to a node that constrains nothing, so a client that
-// meant to narrow the search would silently get a wider answer than it asked
-// for — the one direction a filter must never fail in.
+// decodeTagGroup decodes one tag-group item best effort for the store: a group
+// is a leaf object (`{tags, match, resolve}`) or a compound one, and anything
+// else the union cannot read is reported by the diagnostic instead.
 func decodeTagGroup(item json.RawMessage) (TagGroupRequest, error) {
-	trimmed := strings.TrimSpace(string(item))
-	if strings.HasPrefix(trimmed, "[") {
-		// The reference's union has no list branch: a group is a leaf object
-		// (`{tags, match, resolve}`) or a compound one, so a bare tag list is a
-		// decode failure reported at each branch, not a shorthand.
-		return TagGroupRequest{}, ErrMalformedTagGroup
-	}
 	var group TagGroupRequest
 	if err := json.Unmarshal(item, &group); err != nil {
-		return TagGroupRequest{}, ErrMalformedTagGroup
-	}
-	// A `not` given as a list is not a branch the reference reads: it reports
-	// the list as a shape error at every member of the NOT's child union.
-	if group.Not.listItems != nil {
 		return TagGroupRequest{}, ErrMalformedTagGroup
 	}
 	if !group.constrains() {
 		return TagGroupRequest{}, ErrMalformedTagGroup
 	}
 	return group, nil
-}
-
-// constrains reports whether a tag-group node is one of the reference's union
-// branches: the leaf's required `tags` (a bare `tag` is not a member the union
-// reads, so a group carrying only it matches no branch), or one of the compound
-// members. A node that is none of them would silently widen a filter, which is
-// the one direction a filter must never fail in.
-func (g TagGroupRequest) constrains() bool {
-	if len(g.Tags) > 0 {
-		return true
-	}
-	return len(g.And) > 0 || len(g.Or) > 0 || g.Not.Child != nil
-}
-
-// toStorageTagNot converts a not member, which holds at most one node.
-func toStorageTagNot(n TagGroupNot) *storage.TagGroup {
-	if n.Child == nil {
-		return nil
-	}
-	converted := toStorageTagGroups([]TagGroupRequest{*n.Child})[0]
-	return &converted
-}
-
-// toStorageTagGroups converts the decoded request groups into the storage
-// shape.
-func toStorageTagGroups(groups []TagGroupRequest) []storage.TagGroup {
-	out := make([]storage.TagGroup, 0, len(groups))
-	for _, g := range groups {
-		out = append(out, storage.TagGroup{
-			And:     toStorageTagGroups(g.And),
-			Or:      toStorageTagGroups(g.Or),
-			Not:     toStorageTagNot(g.Not),
-			Tag:     g.Tag,
-			Tags:    g.Tags,
-			Resolve: g.Resolve,
-			Match:   g.Match,
-		})
-	}
-	return out
 }
 
 // acceptedFactTypes are the fact-type values a recall selection accepts.
@@ -281,70 +258,4 @@ func parseISODate(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, errors.New("not an ISO date")
-}
-
-// tagGroupUnionMember names one branch of the reference's discriminated union,
-// in the order it tries them, with the member each branch requires.
-var tagGroupUnionBranches = []struct{ name, member string }{
-	{"TagGroupLeaf", "tags"},
-	{"TagGroupAnd", "and"},
-	{"TagGroupOr", "or"},
-	{"TagGroupNot", "not"},
-}
-
-// tagGroupUnionItems builds the items the reference's union reports for a group
-// that matched none of its branches: a list-valued group cannot be read as any
-// branch's object, and an object is reported as missing each branch's own
-// required member.
-func tagGroupUnionItems(index int, raw json.RawMessage) []httpx.ValidationError {
-	var input any
-	_ = json.Unmarshal(raw, &input)
-	trimmed := strings.TrimSpace(string(raw))
-	items := make([]httpx.ValidationError, 0, len(tagGroupUnionBranches))
-	for _, branch := range tagGroupUnionBranches {
-		loc := []string{"body", "tag_groups", strconv.Itoa(index), branch.name}
-		if !strings.HasPrefix(trimmed, "{") {
-			items = append(items, httpx.ValidationItem("model_attributes_type", loc,
-				includeShapeMessage, input, nil))
-			continue
-		}
-		// A `not` given as a list satisfies the NOT branch's shape check, so that
-		// branch reports its children's shape errors instead of a missing member.
-		if branch.name == "TagGroupNot" && tagGroupNotIsList(raw) {
-			items = append(items, tagGroupNotListItems(index, raw)...)
-			continue
-		}
-		items = append(items, httpx.Missing(append(loc, branch.member), input))
-	}
-	return items
-}
-
-// tagGroupNotIsList reports whether a group carries `not` as a list, which the
-// reference refuses.
-func tagGroupNotIsList(raw json.RawMessage) bool {
-	var probe struct {
-		Not json.RawMessage `json:"not"`
-	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return false
-	}
-	return strings.HasPrefix(strings.TrimSpace(string(probe.Not)), "[")
-}
-
-// tagGroupNotListItems reports a `not` given as a list the way the reference
-// does: the list matched the NOT branch's shape check, so the error lands on
-// each member of the NOT's own child union rather than on the branch itself.
-func tagGroupNotListItems(index int, raw json.RawMessage) []httpx.ValidationError {
-	var input any
-	_ = json.Unmarshal(raw, &input)
-	var child any
-	_ = json.Unmarshal(raw, &struct {
-		Not any `json:"not"`
-	}{Not: &child})
-	items := make([]httpx.ValidationError, 0, len(tagGroupUnionBranches))
-	for _, branch := range tagGroupUnionBranches {
-		loc := []string{"body", "tag_groups", strconv.Itoa(index), "TagGroupNot", "not", branch.name}
-		items = append(items, httpx.ValidationItem("model_attributes_type", loc, includeShapeMessage, child, nil))
-	}
-	return items
 }

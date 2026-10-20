@@ -124,3 +124,36 @@ func TestPutMentalModelEmbedsFromNameAndContent(t *testing.T) {
 		t.Fatalf("embedding without a generator = %v, want none", plain.Embedding)
 	}
 }
+
+// test-clear-keeps-reflect-response: the reference's clear UPDATE names only
+// content, structured_content, last_refreshed_source_query, last_refresh_failed_at
+// and embedding, so the reflect_response that produced the discarded content
+// survives — and a client reading the clear's reply sees it, as the live
+// reference does. Clearing it here would make the clear silently different from
+// every other read of the same model.
+func TestClearMentalModelKeepsTheReflectResponse(t *testing.T) {
+	store, bank := newContractStore(t)
+	ctx := context.Background()
+
+	model, err := store.PutMentalModel(ctx, MentalModel{
+		ID: "m1", BankID: bank, Subtype: SubtypePinned, Name: "Clear me",
+		Content:       "an older synthesis",
+		ReflectResult: map[string]any{"outcome": "content_written", "text": "an older synthesis"},
+	})
+	if err != nil {
+		t.Fatalf("put model: %v", err)
+	}
+	cleared, err := store.ClearMentalModel(ctx, bank, model.ID)
+	if err != nil {
+		t.Fatalf("clear model: %v", err)
+	}
+	if cleared.Content != "" {
+		t.Fatalf("content = %q, want empty", cleared.Content)
+	}
+	if len(cleared.ReflectResult) == 0 {
+		t.Fatal("reflect_response was cleared; the reference's clear does not touch that column")
+	}
+	if cleared.ReflectResult["outcome"] != "content_written" {
+		t.Fatalf("reflect_response = %#v, want the payload stored before the clear", cleared.ReflectResult)
+	}
+}

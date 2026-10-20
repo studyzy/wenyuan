@@ -100,13 +100,27 @@ func (h *Handlers) createKnowledgeNode(w http.ResponseWriter, r *http.Request, k
 	if !ok {
 		return
 	}
+	var target any
 	var body CreateKnowledgeNodeRequest
-	if failure := decodeKnowledgeCreateBody(r, &body, kind); failure != nil {
+	var folder CreateKnowledgeFolderRequest
+	if kind == knowledgeKindFolder {
+		target = &folder
+	} else {
+		target = &body
+	}
+	if failure := decodeKnowledgeCreateBody(r, target, kind); failure != nil {
 		httpx.WriteErrorFor(w, r, failure)
 		return
 	}
-	name := *body.Name
-	parentID, failure := knowledgeParentFromBody(body.ParentID)
+	var name *string
+	parentRaw := folder.ParentID
+	if kind == knowledgeKindFolder {
+		name = folder.Name
+	} else {
+		name = body.Name
+		parentRaw = body.ParentID
+	}
+	parentID, failure := knowledgeParentFromBody(parentRaw)
 	if failure != nil {
 		httpx.WriteErrorFor(w, r, failure)
 		return
@@ -123,15 +137,15 @@ func (h *Handlers) createKnowledgeNode(w http.ResponseWriter, r *http.Request, k
 		// A page name is unique within its folder, compared case-insensitively:
 		// the reference refuses a second page of the same name rather than letting
 		// two nodes shadow each other.
-		if err := h.rejectDuplicatePage(r, bankID, derefString(parentID), name); err != nil {
+		if err := h.rejectDuplicatePage(r, bankID, derefString(parentID), *name); err != nil {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
-		h.createKnowledgePageNode(w, r, bankID, parentID, name, body)
+		h.createKnowledgePageNode(w, r, bankID, parentID, *name, body)
 		return
 	}
 	node, err := h.Store.PutKnowledgeNode(r.Context(), storage.KnowledgeNode{
-		ID: "kf-" + newID(), BankID: bankID, ParentID: derefString(parentID), Kind: kind, Title: name,
+		ID: knowledgeFolderID(), BankID: bankID, ParentID: derefString(parentID), Kind: kind, Title: *name,
 	})
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -160,7 +174,7 @@ func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Reques
 	if body.MaxTokens != nil {
 		maxTokens = *body.MaxTokens
 	}
-	modelID := "mm-" + newID()
+	modelID := knowledgeMentalModelID()
 	model, err := h.Store.PutMentalModel(ctx, storage.MentalModel{
 		ID: modelID, BankID: bankID, Subtype: storage.SubtypePinned,
 		Name: name, SourceQuery: sourceQuery, Content: "",
@@ -172,7 +186,7 @@ func (h *Handlers) createKnowledgePageNode(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	node, err := h.Store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
-		ID: "kp-" + newID(), BankID: bankID, ParentID: derefString(parentID), Kind: knowledgeKindPage,
+		ID: knowledgePageID(), BankID: bankID, ParentID: derefString(parentID), Kind: knowledgeKindPage,
 		Title: name, MentalModelID: model.ID, Tags: tags,
 	})
 	if err != nil {
@@ -390,7 +404,11 @@ func (h *Handlers) UpdateKnowledgeNode(w http.ResponseWriter, r *http.Request) {
 		if triggerSupplied {
 			// The trigger patches: the members the client stated are updated and
 			// the rest keep the page's current values, so moving a page onto a
-			// schedule does not reset how it refreshes.
+			// schedule does not reset how it refreshes. The merge is the same one
+			// a mental-model patch uses, so the reference's directional
+			// exclusivity holds here too: a stated cron clears a stale
+			// refresh_after_consolidation, while enabling consolidation leaves a
+			// configured cron in place.
 			merged := mentalmodels.MergeTrigger(trigger, current.Trigger)
 			pending.Trigger = &merged
 		}
@@ -452,3 +470,16 @@ func (h *Handlers) Version(w http.ResponseWriter, r *http.Request) {
 		Features:   features,
 	})
 }
+
+// The reference's node identifiers are its mental-model convention with a kind
+// prefix: `kf-` and `kp-` followed by a bare 32-character uuid4 hex
+// (engine/memory_engine.py:19303,19361,19375). newID renders them the same way,
+// so an identifier minted here is the length and shape a client parsing the
+// reference's ids expects.
+func knowledgeFolderID() string { return "kf-" + newID() }
+
+// knowledgePageID is the page node's identifier; see knowledgeFolderID.
+func knowledgePageID() string { return "kp-" + newID() }
+
+// knowledgeMentalModelID is the identifier of the mental model backing a page.
+func knowledgeMentalModelID() string { return "mm-" + newID() }

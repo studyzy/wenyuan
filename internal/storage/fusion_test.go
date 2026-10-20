@@ -133,9 +133,15 @@ func TestTagGroupClauseRendersCompoundGroups(t *testing.T) {
 	if got := tagGroupClause(TagGroup{Tags: []string{"a"}, Match: TagsMatchAllStrict}); got != "tags::text[] @> ARRAY['a']::text[]" {
 		t.Fatalf("all_strict leaf = %s", got)
 	}
-	// An empty leaf constrains nothing rather than matching nothing.
-	if got := tagGroupClause(TagGroup{}); got != "TRUE" {
+	// A leaf naming no tag still filters: `exact` keeps the untagged rows and
+	// every other mode keeps the tagged ones (engine/search/tags.py:390-403).
+	// Neither TRUE nor an empty paren: one would widen the filter away, the other
+	// would turn the request into a server error.
+	if got := tagGroupClause(TagGroup{}); got != "(tags IS NOT NULL AND tags != '{}')" {
 		t.Fatalf("empty leaf = %s", got)
+	}
+	if got := tagGroupClause(TagGroup{Match: TagsMatchExact}); got != "(tags IS NULL OR tags = '{}')" {
+		t.Fatalf("empty exact leaf = %s", got)
 	}
 }
 

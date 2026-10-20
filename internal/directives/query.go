@@ -28,19 +28,63 @@ func queryParam(r *http.Request, name string) (string, bool) {
 	return values[len(values)-1], true
 }
 
-// parseActiveOnly reads the active_only selector, defaulting to true when the
-// parameter is absent as the reference does. A present value goes through the
-// framework's boolean coercion, which accepts a fixed word list
-// case-insensitively and never trims: "Yes" is a boolean and " yes" is not.
-func parseActiveOnly(r *http.Request) (bool, *httpx.ValidationFailure) {
-	raw, present := queryParam(r, "active_only")
-	if !present {
-		return true, nil
+// listSelectors is the list route's resolved query selectors.
+type listSelectors struct {
+	activeOnly bool
+	mode       string
+	limit      int
+	offset     int
+}
+
+// parseListSelectors reads every query selector the list route declares and
+// returns the resolved values alongside the items the framework would reject.
+// Each selector is validated whether or not an earlier one failed, because the
+// reference's framework validates the whole request in one pass; the items come
+// back in declaration order, which is the order the endpoint's parameters have.
+func parseListSelectors(r *http.Request) (listSelectors, []httpx.ValidationError, *httpx.ValidationFailure) {
+	resolved := listSelectors{activeOnly: true, mode: "any", limit: defaultListLimit}
+	var items []httpx.ValidationError
+	if raw, present := queryParam(r, "tags_match"); present {
+		// A literal's members compare by exact string: the framework does not
+		// trim, so " any" is no more a member than "bogus" is.
+		if !containsString(directiveTagsMatch, raw) {
+			items = append(items, httpx.Literal(
+				[]string{"query", "tags_match"}, raw, []string{"any", "all", "exact"}))
+		} else {
+			resolved.mode = raw
+		}
 	}
-	if parsed, ok := boolWord(raw); ok {
-		return parsed, nil
+	if raw, present := queryParam(r, "active_only"); present {
+		if parsed, ok := boolWord(raw); ok {
+			resolved.activeOnly = parsed
+		} else {
+			items = append(items, httpx.TypeMismatch("bool_parsing", []string{"query", "active_only"}, raw))
+		}
 	}
-	return false, queryItem(httpx.TypeMismatch("bool_parsing", []string{"query", "active_only"}, raw))
+	if raw, present := queryParam(r, "limit"); present {
+		if value, failure := boundedQueryInt(raw, "limit", 1, maxListLimit); failure != nil {
+			items = append(items, failure.Errors...)
+		} else {
+			resolved.limit = value
+		}
+	}
+	if raw, present := queryParam(r, "offset"); present {
+		if value, failure := boundedQueryInt(raw, "offset", 0, -1); failure != nil {
+			// An integer past int64 has no bound to violate: the framework hands it
+			// to the storage layer, which cannot carry it, and the reference answers
+			// that failure with a 500 rather than an item. It therefore cannot be
+			// collected alongside other items — it is the whole answer, and the
+			// items gathered so far go with it. An ordinary bound violation is one
+			// item among the rest.
+			if len(failure.Errors) == 0 {
+				return resolved, nil, failure
+			}
+			items = append(items, failure.Errors...)
+		} else {
+			resolved.offset = value
+		}
+	}
+	return resolved, items, nil
 }
 
 // boolWord reads the words the reference's boolean coercion accepts for a query
@@ -54,29 +98,6 @@ func boolWord(text string) (bool, bool) {
 		return false, true
 	}
 	return false, false
-}
-
-// parsePage reads limit and offset, validating them against the reference's
-// query bounds. Both default when absent; a present value must read as an
-// integer inside its bounds.
-func parsePage(r *http.Request) (int, int, *httpx.ValidationFailure) {
-	limit := defaultListLimit
-	if raw, present := queryParam(r, "limit"); present {
-		value, failure := boundedQueryInt(raw, "limit", 1, maxListLimit)
-		if failure != nil {
-			return 0, 0, failure
-		}
-		limit = value
-	}
-	offset := 0
-	if raw, present := queryParam(r, "offset"); present {
-		value, failure := boundedQueryInt(raw, "offset", 0, -1)
-		if failure != nil {
-			return 0, 0, failure
-		}
-		offset = value
-	}
-	return limit, offset, nil
 }
 
 // boundedQueryInt parses an integer query parameter the way the reference's

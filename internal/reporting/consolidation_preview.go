@@ -472,10 +472,17 @@ func strategyActive(entry consolidationStrategySpec) bool {
 		entry.SourceFactsMaxTokensPerObservation != nil
 }
 
+// countTakenAway counts a rule's matching scopes that another strategy applies
+// to — the scopes where this rule has no effect. It is `sum(1 for k in hits if
+// winners[k] != i)` in the reference (consolidator.py:3603), so a scope no
+// strategy claims (winners[k] is nil) counts as taken away too: the rule matches
+// it but this strategy does not handle it, which is exactly what "an earlier
+// strategy wins" means to the editor. Only an *inactive* strategy can see that
+// case, because an active one would have claimed every scope its rule matched.
 func countTakenAway(hits []int, winners []*int, strategy int) int {
 	taken := 0
 	for _, k := range hits {
-		if winners[k] != nil && *winners[k] != strategy {
+		if winners[k] == nil || *winners[k] != strategy {
 			taken++
 		}
 	}

@@ -864,7 +864,7 @@ func (s *PostgresStore) DirectUnitEntityNames(ctx context.Context, bankID string
 		 FROM `+qualified+`.unit_entities ue
 		 JOIN `+qualified+`.entities e ON e.id = ue.entity_id
 		 WHERE ue.unit_id = ANY($1::uuid[]) AND e.bank_id = $2
-		 ORDER BY 2`, unitIDs, bankID)
+		 ORDER BY 1, 2`, unitIDs, bankID)
 	if err != nil {
 		return nil, err
 	}

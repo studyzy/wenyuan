@@ -45,7 +45,7 @@ func (s *MemoryStore) ListBanks(ctx context.Context, query BankQuery) (BankPage,
 	for _, id := range s.order {
 		bank := s.banks[id]
 		aliases := s.aliasNamesLocked(id)
-		if !bankMatches(bank, aliases, query.Search) {
+		if !bankMatches(bank, aliases, query.Search, query.SearchGiven) {
 			continue
 		}
 		bank.FactCount = len(s.memories[id])

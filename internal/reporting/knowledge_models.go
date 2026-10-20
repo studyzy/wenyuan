@@ -1,6 +1,10 @@
 package reporting
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/studyzy/wenyuan/internal/httpx"
+)
 
 // KnowledgeNode is one node of the bank's knowledge tree: a folder grouping
 // pages, or a page carrying text. The field set mirrors the reference's node
@@ -43,6 +47,15 @@ type CreateKnowledgeNodeRequest struct {
 	Trigger     map[string]any  `json:"trigger"`
 }
 
+// CreateKnowledgeFolderRequest is the folder form's body. The reference's folder
+// model declares only these two members, so an option a page accepts is not part
+// of a folder body at all: it is ignored rather than validated, which is why the
+// folder create decodes into its own type instead of the page one.
+type CreateKnowledgeFolderRequest struct {
+	Name     *string         `json:"name"`
+	ParentID json.RawMessage `json:"parent_id"`
+}
+
 // CreateKnowledgePageResponse is the page-create result: the page is generated
 // in the background, so the caller polls the operation. The backing mental
 // model id is always present, because every page has one.
@@ -81,13 +94,13 @@ type KnowledgePageBundleResponse struct {
 // KnowledgeSearchResult is one search result. Every member is always on the
 // wire; the three optional ones carry null rather than being dropped.
 type KnowledgeSearchResult struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	MentalModelID *string `json:"mental_model_id"`
-	SourceQuery   *string `json:"source_query"`
-	Snippet       string  `json:"snippet"`
-	Score         float64 `json:"score"`
-	UpdatedAt     *string `json:"updated_at"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	MentalModelID *string           `json:"mental_model_id"`
+	SourceQuery   *string           `json:"source_query"`
+	Snippet       string            `json:"snippet"`
+	Score         httpx.PythonFloat `json:"score"`
+	UpdatedAt     *string           `json:"updated_at"`
 }
 
 // KnowledgePageSearchResponse is the search envelope.

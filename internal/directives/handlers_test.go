@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -453,6 +454,96 @@ func TestDirectiveCreateAccumulatesFieldErrors(t *testing.T) {
 	for i := range want {
 		if !reflect.DeepEqual(failure.Detail[i].Loc, want[i]) {
 			t.Fatalf("item %d loc = %v, want %v", i, failure.Detail[i].Loc, want[i])
+		}
+	}
+}
+
+// Contract reference: api/http.py:7620 (list_directives). The reference's
+// framework resolves every query parameter in one pass, so a request carrying
+// several bad selectors reports all of them in one 422, in the endpoint's
+// declaration order — tags_match, active_only, limit, offset. Reporting only the
+// first would tell the caller about one problem where there are four.
+func TestDirectiveListReportsEveryBadSelector(t *testing.T) {
+	mux, _ := newServer(t)
+	rec := send(mux, http.MethodGet,
+		"/v1/default/banks/b1/directives?limit=0&tags_match=bogus&offset=-3&active_only=zz", "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Detail []struct {
+			Type string   `json:"type"`
+			Loc  []string `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`literal_error query.tags_match`,
+		`bool_parsing query.active_only`,
+		`greater_than_equal query.limit`,
+		`greater_than_equal query.offset`,
+	}
+	if len(envelope.Detail) != len(want) {
+		t.Fatalf("items = %s, want %d", rec.Body.String(), len(want))
+	}
+	for i, item := range envelope.Detail {
+		got := item.Type + " " + strings.Join(item.Loc, ".")
+		if got != want[i] {
+			t.Fatalf("item %d = %q, want %q (%s)", i, got, want[i], rec.Body.String())
+		}
+	}
+}
+
+// Contract reference: api/http.py:7699 (create_directive) and :7734
+// (update_directive). `priority` is an unconstrained Python int but the column
+// is int4, so a larger value reaches the driver, whose complaint the endpoint
+// turns into a 500 — the detail is the driver's text, including the argument
+// position. Create binds priority as $5 and update as $1, so the two routes
+// differ in exactly that number.
+func TestDirectivePriorityOutsideTheColumnRangeIsADriverFailure(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/directives"
+
+	created := send(mux, http.MethodPost, base, `{"name":"a","content":"c"}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	var directive struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &directive); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   string
+		arg    int
+	}{
+		// The insert binds priority as $4: id, bank_id, name, content, priority.
+		{"create", http.MethodPost, `{"name":"x","content":"y","priority":2147483648}`, 4},
+		// The update's number counts only the supplied members ahead of priority
+		// in declaration order; the members after it and the row's own keys are
+		// not part of it.
+		{"patch priority alone", http.MethodPatch, `{"priority":2147483648}`, 1},
+		{"patch name and priority", http.MethodPatch, `{"name":"z","priority":2147483648}`, 2},
+		{"patch content and priority", http.MethodPatch, `{"content":"c","priority":2147483648}`, 2},
+		{"patch name, content and priority", http.MethodPatch,
+			`{"name":"z","content":"c","priority":2147483648}`, 3},
+		{"patch every member", http.MethodPatch,
+			`{"name":"z","content":"c","priority":2147483648,"is_active":true,"tags":[]}`, 3},
+	} {
+		path := base
+		if tc.method == http.MethodPatch {
+			path = base + "/" + directive.ID
+		}
+		rec := send(mux, tc.method, path, tc.body)
+		want := fmt.Sprintf(`"detail":"invalid input for query argument $%d: 2147483648 (value out of int32 range)"`, tc.arg)
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("%s: %d %s, want 500 %s", tc.name, rec.Code, rec.Body.String(), want)
 		}
 	}
 }

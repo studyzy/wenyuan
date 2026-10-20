@@ -51,3 +51,47 @@ func TestQueryValuesCollectsAllInOrder(t *testing.T) {
 		t.Fatalf("Query(q) = %q, want the empty last occurrence", got)
 	}
 }
+
+// An unescaped semicolon inside a query value is an ordinary character, not a
+// field separator: the reference's parser only ever splits fields on `&`, so
+// `?limit=5;6` binds the string "5;6" (which an integer binder then refuses)
+// rather than reading as "no limit at all". Go's parser rejects the whole query
+// when a `;` appears as a separator, and url.URL.Query silently drops the pair,
+// which is the defect this pins: without the fallback every one of these reads
+// as absent.
+func TestQueryKeepsSemicolonsInValues(t *testing.T) {
+	cases := []struct {
+		target string
+		name   string
+		want   string
+		values []string
+	}{
+		{target: "/?limit=5;6", name: "limit", want: "5;6", values: []string{"5;6"}},
+		{target: "/?a=1;2&b=3", name: "a", want: "1;2", values: []string{"1;2"}},
+		{target: "/?a=1;2&b=3", name: "b", want: "3", values: []string{"3"}},
+		{target: "/?tag=x%3By&tag=z;w", name: "tag", want: "z;w", values: []string{"x;y", "z;w"}},
+		// A trailing separator after `&` is an empty pair, not a value.
+		{target: "/?q=a&r=b;", name: "r", want: "b;", values: []string{"b;"}},
+	}
+	for _, testCase := range cases {
+		req := httptest.NewRequest(http.MethodGet, testCase.target, nil)
+		if got := Query(req, testCase.name); got != testCase.want {
+			t.Fatalf("%s: Query(%s) = %q, want %q", testCase.target, testCase.name, got, testCase.want)
+		}
+		values, present := QueryPresent(req, testCase.name)
+		if !present || len(values) != len(testCase.values) {
+			t.Fatalf("%s: QueryPresent(%s) = %v,%v, want %v,true", testCase.target, testCase.name, values, present, testCase.values)
+		}
+		for i := range testCase.values {
+			if values[i] != testCase.values[i] {
+				t.Fatalf("%s: QueryValues(%s)[%d] = %q, want %q", testCase.target, testCase.name, i, values[i], testCase.values[i])
+			}
+		}
+	}
+	// The fallback must not disturb a query without semicolons, including one
+	// whose pairs the standard library decodes from escapes.
+	plain := httptest.NewRequest(http.MethodGet, "/?q=a%26b&limit=5", nil)
+	if got := Query(plain, "q"); got != "a&b" {
+		t.Fatalf("Query(q) = %q, want the decoded %q", got, "a&b")
+	}
+}
