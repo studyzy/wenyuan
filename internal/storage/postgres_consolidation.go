@@ -28,6 +28,7 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	                 COALESCE(tags, '{}'::text[])::text, observation_scopes::text
 	          FROM ` + quoteIdent(s.schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type <> $2 AND consolidated_at IS NULL
+	                AND consolidation_failed_at IS NULL
 	          ORDER BY created_at DESC
 	          LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, bankID, string(TypeObservation), limit)

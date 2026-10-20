@@ -81,16 +81,26 @@ func (s *PostgresStore) purgeChunk(ctx context.Context, qualified, column string
 // answers "is there work", and the caller filters by configuration before
 // queueing.
 func (s *PostgresStore) BanksNeedingConsolidation(ctx context.Context, schema string) ([]string, error) {
-	query := `SELECT DISTINCT m.bank_id
-	          FROM ` + quoteIdent(schema) + `.memory_units m
-	          WHERE m.consolidated_at IS NULL
-	            AND m.consolidation_failed_at IS NULL
-	            AND m.fact_type IN ('experience', 'world')
-	            AND NOT EXISTS (
+	// Driven from `banks`, not from `memory_units`: the reference's discovery
+	// routine is `FROM banks b WHERE ... AND EXISTS (SELECT 1 FROM memory_units
+	// m WHERE m.bank_id = b.bank_id ...)` (migrations/0005_reference_functions.sql),
+	// so a unit whose bank row is gone is not a bank with work — it is debris
+	// left by an interrupted delete, and naming it here would only queue
+	// consolidations for banks that cannot exist.
+	query := `SELECT b.bank_id
+	          FROM ` + quoteIdent(schema) + `.banks b
+	          WHERE NOT EXISTS (
 	                SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations o
-	                WHERE o.bank_id = m.bank_id
+	                WHERE o.bank_id = b.bank_id
 	                  AND o.operation_type = $1
 	                  AND o.status IN ('pending', 'processing')
+	            )
+	            AND EXISTS (
+	                SELECT 1 FROM ` + quoteIdent(schema) + `.memory_units m
+	                WHERE m.bank_id = b.bank_id
+	                  AND m.consolidated_at IS NULL
+	                  AND m.consolidation_failed_at IS NULL
+	                  AND m.fact_type IN ('experience', 'world')
 	            )`
 	rows, err := s.db.QueryContext(ctx, query, OperationTypeConsolidate)
 	if err != nil {

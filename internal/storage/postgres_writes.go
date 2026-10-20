@@ -188,7 +188,17 @@ func (s *PostgresStore) RestoreOperation(ctx context.Context, op Operation) (Ope
 	row := s.db.QueryRowContext(ctx, query, op.OperationID, op.BankID, op.OperationType,
 		string(op.Status), op.Error, op.RetryCount, metadata, payload, serializationKey,
 		createdAt, updatedAt)
-	return scanOperation(row)
+	restored, err := scanOperation(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		// DO NOTHING returned no row, so the id was already present and this
+		// replay changed nothing. Report the row that is there: a restore is
+		// idempotent, and the caller reads the result rather than discarding it.
+		// Looked up by id alone: an import remaps the archived row onto the
+		// target bank, so a second clone of the same archive collides with the
+		// first clone's copy, whose bank_id is a different target.
+		return s.getOperation(ctx, op.OperationID)
+	}
+	return restored, err
 }
 
 // operationColumns is the column list every statement that returns an

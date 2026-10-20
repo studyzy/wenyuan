@@ -39,6 +39,13 @@ func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, lim
 		if _, folded := s.consolidated[unit.ID]; folded {
 			continue
 		}
+		// A memory that already failed consolidation is not retried: the
+		// reference's candidate query excludes it (consolidation_failed_at IS
+		// NULL, pg/reads.py:383-387) so one poison input is not re-fed forever.
+		// recovery is the explicit door back in.
+		if unit.ConsolidationFailedAt != nil {
+			continue
+		}
 		candidates = append(candidates, ConsolidationFact{
 			ID: unit.ID, Text: unit.Text,
 			OccurredStart: unit.OccurredStart, OccurredEnd: unit.OccurredEnd,

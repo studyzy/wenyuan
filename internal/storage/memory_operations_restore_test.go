@@ -78,3 +78,33 @@ func TestFullBankConsolidationIsNotDeduplicatedIntoAScopedOne(t *testing.T) {
 		t.Fatalf("second full-bank submit = %+v deduped=%v, want the first", again, deduped)
 	}
 }
+
+// A fact that already failed consolidation is not a candidate again: the
+// reference's query excludes it (consolidation_failed_at IS NULL,
+// pg/reads.py:383-387) so one poison input is not re-fed forever.
+// RecoverConsolidations is the explicit door back in.
+func TestFailedConsolidationIsNotRetriedAsACandidate(t *testing.T) {
+	store := NewMemoryStore("b1")
+	ctx := context.Background()
+	if _, err := store.UpsertUnit(ctx, MemoryUnit{
+		ID: "f1", BankID: "b1", FactType: TypeWorld, Text: "Alice moved to Berlin",
+	}); err != nil {
+		t.Fatalf("seed unit: %v", err)
+	}
+	if facts, err := store.ConsolidationFacts(ctx, "b1", 10); err != nil || len(facts) != 1 {
+		t.Fatalf("facts = %v (err %v), want the unconsolidated unit", facts, err)
+	}
+	if err := store.MarkConsolidationFailed(ctx, "b1", []string{"f1"}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	if facts, err := store.ConsolidationFacts(ctx, "b1", 10); err != nil || len(facts) != 0 {
+		t.Fatalf("facts after a failed round = %v (err %v), want none", facts, err)
+	}
+	// Recovery puts it back in the queue.
+	if _, err := store.RecoverConsolidations(ctx, "b1"); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if facts, err := store.ConsolidationFacts(ctx, "b1", 10); err != nil || len(facts) != 1 {
+		t.Fatalf("facts after recovery = %v (err %v), want the unit back", facts, err)
+	}
+}

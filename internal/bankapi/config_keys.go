@@ -3,6 +3,7 @@ package bankapi
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -627,6 +628,13 @@ func validateConsolidationStrategies(raw any) *httpx.HTTPError {
 		} {
 			value, present := object[key]
 			if !present || value == nil {
+				continue
+			}
+			// A JSON number decodes to float64, and the framework's lax int
+			// accepts one with no fractional part (50.0 is 50), rejecting only
+			// a real fraction. Passing float64 to ScalarTypeMismatch would
+			// report int_type for a value the reference stores.
+			if number, isNumber := value.(float64); isNumber && number == math.Trunc(number) {
 				continue
 			}
 			if failure := httpx.ScalarTypeMismatch("int", nil, value); failure.Type != "" {

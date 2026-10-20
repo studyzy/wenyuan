@@ -523,3 +523,43 @@ build」。实测**不是**——两侧 `(total: 51 fields)` 与拒绝措辞完�
 参考写的是 `sorted(list(a_set)[:10])`，Python str 集合的迭代序受**哈希随机化**支配：同一份代码
 三次启动给出三组不同的名字，`PYTHONHASHSEED=0` 也不等于字典序前十。这是**不可复现的输出**，不是契约；
 本服务取字典序前十个是同一事实的确定性呈现。该条 known-difference 的说明已据实改写。
+
+## 复验：参考实现的 77 个系统测试故事（`make parity`）
+
+`make check` 只覆盖 HTTP 面，覆盖面之外还有参考实现自己的黑盒故事。2026-10-20 首次全量跑：
+**14 failed / 325 passed** → 修完后 **339 passed / 1 skipped / 0 failed**。四处根因，全部是本服务的缺陷：
+
+### 1. `RestoreOperation` 撞上已存在的行就失败（组 N 修复的回归）
+
+`ON CONFLICT (operation_id) DO NOTHING` 命中时 `RETURNING` 什么都不返回，`scanOperation` 把
+`sql.ErrNoRows` 当成错误抛出 → 导入报 `write operation: sql: no rows in result set`。
+改为落回按 id 读取那一行（还原是幂等的，调用方要的是结果不是"我插了没有"）。
+
+**同一处还有第二个错**：回退用的 `GetOperation(ctx, bankID, id)` 会按 bank 过滤，而导入会把归档行
+重映射到目标 bank——同一份归档克隆第二次时，撞上的是第一次克隆的行，bank_id 不同，于是
+`operation not found`。改用不带 bank 过滤的 `getOperation`。影响 `test_53_bank_transfer`
+全部 8 个故事。
+
+### 2. consolidation 候选把「已标记失败」的 fact 又捡了回来
+
+`ConsolidationFacts` 的 WHERE 少了 `consolidation_failed_at IS NULL`。参考的候选查询明确排除
+（`pg/reads.py:383-387`："a memory the LLM could not handle must not be retried forever"）。
+后果是一个毒输入每轮都被重喂——正是这个字段存在的理由。两个后端都修了。
+
+### 3. reconcile 扫描的发现查询从错误的表出发
+
+`BanksNeedingConsolidation` 是从 `memory_units` 出发的；参考的例行函数从 `banks` 出发再
+`EXISTS (memory_units ...)`（`migrations/0005_reference_functions.sql`）。差别在于**孤儿 unit**
+（bank 行已删、unit 残留）：我们的查询会把它们当成"有工作的 bank"报上来，随后插入撞外键失败。
+
+### 4. reconcile 一处失败就放弃整轮
+
+`reconcileConsolidation` 遇到第一个 enqueue 错误直接 `return`，同 schema 里后面的 bank 再也轮不到。
+参考是**逐个 bank 捕获并继续**（`engine/maintenance.py:479-482`）。改为记 WARN 并继续（`ctx`
+取消仍然中止）。
+
+用例：`TestFailedConsolidationIsNotRetriedAsACandidate`、
+`TestReconcileContinuesPastABankThatCannotBeQueued`（均验证过去掉修复即 FAIL）。
+
+**遗留观察（未改动）**：系统测试库里有 6277 个 bank / 15118 条孤儿 `memory_units`，是历次
+中断的测试运行留下的；第 3 条修复后扫描不再受它们影响，未清理。

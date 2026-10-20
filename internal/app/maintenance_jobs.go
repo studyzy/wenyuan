@@ -256,8 +256,14 @@ func reconcileConsolidation(ctx context.Context, store storage.Store, tenants te
 			if strings.TrimSpace(bankID) == "" {
 				continue
 			}
-			// The enqueue is idempotent inside the database, which is what
-			// keeps every process in a fleet from queueing its own copy.
+			// One bank's failure must not strand the rest: discovery answers
+			// across the whole schema, and a bank deleted between the scan and
+			// the insert (or any other refusal) would otherwise abort the sweep
+			// before every later bank is reached. The reference catches per
+			// target for the same reason (engine/maintenance.py:479-482).
+			//
+			// The enqueue is idempotent inside the database, which is what keeps
+			// every process in a fleet from queueing its own copy.
 			if _, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
 				Operation: storage.Operation{
 					BankID:           bankID,
@@ -265,7 +271,11 @@ func reconcileConsolidation(ctx context.Context, store storage.Store, tenants te
 					SerializationKey: storage.ConsolidationSerializationKey(bankID),
 				},
 			}); err != nil {
-				return fmt.Errorf("schedule consolidation for %s: %w", bankID, err)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				slog.Default().Warn("could not schedule consolidation for a bank",
+					"bank_id", bankID, "schema", schema, "error", err)
 			}
 		}
 	}

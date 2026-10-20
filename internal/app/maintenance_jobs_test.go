@@ -352,3 +352,46 @@ func TestGraphMaintenanceReportsNoFailureWhenAllSucceed(t *testing.T) {
 		t.Fatalf("requeued %v, want nothing on success", stub.requeued)
 	}
 }
+
+// reconcileRejectingStore reports several stranded banks and refuses one of
+// them, which is what a bank deleted between the discovery query and the insert
+// looks like from the sweep's side.
+type reconcileRejectingStore struct {
+	storage.Store
+	reject string
+}
+
+func (s reconcileRejectingStore) BanksNeedingConsolidation(ctx context.Context, _ string) ([]string, error) {
+	return []string{s.reject, "recoverable"}, nil
+}
+
+func (s reconcileRejectingStore) EnqueueOperation(ctx context.Context, req storage.EnqueueRequest) (storage.EnqueueResult, error) {
+	if req.Operation.BankID == s.reject {
+		return storage.EnqueueResult{}, errors.New("bank vanished")
+	}
+	return s.Store.EnqueueOperation(ctx, req)
+}
+
+// One bank whose enqueue fails must not strand the banks discovered after it.
+// The reference catches per target (engine/maintenance.py:479-482): a sweep that
+// returned on the first error would never reach the rest.
+func TestReconcileContinuesPastABankThatCannotBeQueued(t *testing.T) {
+	store := newJobStore(t)
+	ctx := context.Background()
+	for _, bank := range []string{"gone", "recoverable"} {
+		if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: bank}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reconcileConsolidation(ctx, reconcileRejectingStore{Store: store, reject: "gone"},
+		tenant.NewDefault("public")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	page, err := store.ListOperations(ctx, storage.OperationQuery{BankID: "recoverable", Type: storage.OperationTypeConsolidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("the bank after the failing one was never scheduled (total %d)", page.Total)
+	}
+}
