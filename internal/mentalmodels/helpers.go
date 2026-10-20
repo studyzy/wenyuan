@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -97,19 +96,16 @@ func boundedQueryInt(w http.ResponseWriter, r *http.Request, name string, def, m
 	if !present {
 		return def, true
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		writeQueryItem(w, httpx.TypeMismatch("int_parsing", []string{"query", name}, raw))
-		return 0, false
-	}
 	// The framework reports the raw query string as the item's input, not the
-	// parsed integer.
-	if value < min {
-		writeQueryItem(w, httpx.GreaterThanEqual([]string{"query", name}, raw, min))
-		return 0, false
+	// parsed integer. A max below min means no upper bound, which the shared
+	// reader spells as max 0.
+	bound := max
+	if max < min {
+		bound = 0
 	}
-	if max >= min && value > max {
-		writeQueryItem(w, httpx.LessThanEqual([]string{"query", name}, raw, max))
+	value, item, ok := httpx.ParseQueryInt(raw, name, min, bound)
+	if !ok {
+		writeQueryItem(w, item)
 		return 0, false
 	}
 	return value, true

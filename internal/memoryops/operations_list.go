@@ -108,38 +108,8 @@ func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx
 	}
 	// The reference binds the LAST occurrence of a repeated scalar parameter.
 	raw := values[len(values)-1]
-	// The reference reports the raw string the client sent, not the coerced int.
-	// The grammar is the framework's, not Go's: surrounding whitespace, an
-	// optional sign, underscores between digits and a fractional part only when
-	// every digit is zero, so `1.0` reads as 1 and `1_0` as 10.
-	parsed, ok := httpx.LaxInteger(raw)
+	parsed, item, ok := httpx.ParseQueryInt(raw, key, min, max)
 	if !ok {
-		// A Python integer past the machine's range is still parsed losslessly by
-		// the framework, so only its sign decides which bound it is outside of.
-		sign, valid := httpx.BigintSign(raw)
-		switch {
-		case !valid:
-			item := httpx.TypeMismatch("int_parsing", []string{"query", key}, raw)
-			return 0, false, &item
-		case sign < 0:
-			item := httpx.GreaterThanEqual([]string{"query", key}, raw, min)
-			return 0, false, &item
-		case max != 0:
-			item := httpx.LessThanEqual([]string{"query", key}, raw, max)
-			return 0, false, &item
-		default:
-			// No upper bound to violate: the framework hands the value to the
-			// store, which cannot carry it and fails — the reference answers that
-			// as the internal failure it is.
-			return 0, false, nil
-		}
-	}
-	if parsed < min {
-		item := httpx.GreaterThanEqual([]string{"query", key}, raw, min)
-		return 0, false, &item
-	}
-	if max != 0 && parsed > max {
-		item := httpx.LessThanEqual([]string{"query", key}, raw, max)
 		return 0, false, &item
 	}
 	return parsed, true, nil

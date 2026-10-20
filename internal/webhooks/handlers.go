@@ -2,7 +2,6 @@ package webhooks
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -303,13 +302,10 @@ func parseDeliveryLimit(r *http.Request) (int, *httpx.ValidationFailure) {
 		return 50, nil
 	}
 	raw := lastQueryValue(values)
-	parsed, err := strconv.Atoi(raw)
-	if err != nil {
-		item := httpx.TypeMismatch("int_parsing", []string{"query", "limit"}, raw)
-		return 0, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
-	}
-	if parsed > 200 {
-		item := httpx.LessThanEqual([]string{"query", "limit"}, values[0], 200)
+	// The reference declares only le=200 on this parameter, so there is no
+	// lower bound to check.
+	parsed, item, ok := httpx.ParseQueryInt(raw, "limit", 0, 200)
+	if !ok {
 		return 0, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
 	}
 	return parsed, nil
@@ -323,17 +319,8 @@ func queryIntParam(r *http.Request, key string, min, max int) (int, bool, *httpx
 		return 0, false, nil
 	}
 	raw := lastQueryValue(values)
-	parsed, err := strconv.Atoi(raw)
-	if err != nil {
-		item := httpx.TypeMismatch("int_parsing", []string{"query", key}, raw)
-		return 0, false, &item
-	}
-	if parsed < min {
-		item := httpx.GreaterThanEqual([]string{"query", key}, raw, min)
-		return 0, false, &item
-	}
-	if max != 0 && parsed > max {
-		item := httpx.LessThanEqual([]string{"query", key}, raw, max)
+	parsed, item, ok := httpx.ParseQueryInt(raw, key, min, max)
+	if !ok {
 		return 0, false, &item
 	}
 	return parsed, true, nil

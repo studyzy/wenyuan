@@ -2,9 +2,9 @@ package readsurface
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -48,17 +48,13 @@ func intParam(w http.ResponseWriter, r *http.Request, name string, def, min, max
 	if raw == "" {
 		return def, true
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		writeQueryItem(w, r, httpx.TypeMismatch("int_parsing", []string{"query", name}, raw))
-		return 0, false
+	bound := max
+	if max < min {
+		bound = 0
 	}
-	if value < min {
-		writeQueryItem(w, r, httpx.GreaterThanEqual([]string{"query", name}, raw, min))
-		return 0, false
-	}
-	if max >= min && value > max {
-		writeQueryItem(w, r, httpx.LessThanEqual([]string{"query", name}, raw, max))
+	value, item, ok := httpx.ParseQueryInt(raw, name, min, bound)
+	if !ok {
+		writeQueryItem(w, r, item)
 		return 0, false
 	}
 	return value, true
@@ -210,17 +206,13 @@ func (q *queryErrors) int(r *http.Request, name string, def, min, max int) int {
 	if raw == "" {
 		return def
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		q.add(httpx.TypeMismatch("int_parsing", []string{"query", name}, raw))
-		return def
+	bound := max
+	if max < min {
+		bound = 0
 	}
-	if value < min {
-		q.add(httpx.GreaterThanEqual([]string{"query", name}, raw, min))
-		return def
-	}
-	if max >= min && value > max {
-		q.add(httpx.LessThanEqual([]string{"query", name}, raw, max))
+	value, item, ok := httpx.ParseQueryInt(raw, name, min, bound)
+	if !ok {
+		q.add(item)
 		return def
 	}
 	return value
@@ -234,9 +226,9 @@ func (q *queryErrors) unboundedInt(r *http.Request, name string, def int) int {
 	if raw == "" {
 		return def
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		q.add(httpx.TypeMismatch("int_parsing", []string{"query", name}, raw))
+	value, item, ok := httpx.ParseQueryInt(raw, name, math.MinInt, 0)
+	if !ok {
+		q.add(item)
 		return def
 	}
 	return value

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -898,23 +897,14 @@ func boundedIntParam(w http.ResponseWriter, r *http.Request, name string, def, m
 	if raw == "" {
 		return def, true
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.TypeMismatch("int_parsing", []string{"query", name}, raw),
-		}})
-		return 0, false
+	// A negative max means unbounded above, which the shared reader spells 0.
+	bound := max
+	if max < 0 {
+		bound = 0
 	}
-	if value < min {
-		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.GreaterThanEqual([]string{"query", name}, raw, min),
-		}})
-		return 0, false
-	}
-	if max >= 0 && value > max {
-		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-			httpx.LessThanEqual([]string{"query", name}, raw, max),
-		}})
+	value, item, ok := httpx.ParseQueryInt(raw, name, min, bound)
+	if !ok {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}})
 		return 0, false
 	}
 	return value, true

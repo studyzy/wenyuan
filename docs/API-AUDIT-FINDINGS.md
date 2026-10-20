@@ -914,3 +914,30 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 - `transfer/import` 的 `include_data` 等开关是 `bool | None`（区分“没传”与“传了默认值”），merge 模式下传 scope 开关会被拒成 400；两侧探针 SAME。
 
 **复核第一轮**：transfer 第一轮不在审计范围内（本轮新增单元）。
+
+## 第二轮 webhooks
+
+| API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #88 `POST .../webhooks` | ✅一致 | `api/http.py:9768` | `internal/webhooks/` | — | 键序 `id,bank_id,url,secret,event_types,enabled,http_config,created_at,updated_at` 与取值逐字段相同；默认 `event_types=["consolidation.completed"]`、`http_config` 默认 `POST/30/{}`/`{}`；未知事件名被原样接收（不校验）；`secret` 只写不读（响应恒 `null`）；`ftp://` → 400；`event_types` 传字符串 → 422 |
+| #89 `GET .../webhooks` | ❌已修 | `api/http.py:9829`（`limit` 0..1000 默认 100、`offset` ge=0） | `internal/webhooks/handlers.go:queryIntParam`、`parseDeliveryLimit` | 原先用 `strconv.Atoi` 严格解析，`limit=1.0`/`1_0`/` 1 ` 报 422；参考按框架语法读成 1/10/1。改走新增的 `httpx.ParseQueryInt` | 探针 8 个用例全 SAME（含 `limit=1.5`→422、`limit=1001`→422 `le:1000`、`offset=-1`→422） |
+| #89 | ✅一致 | 同上 | `internal/webhooks/` | — | 包络 `items,total,limit,offset`（默认 `limit=100`）；列表项时间戳两侧都是 `2026-10-20 17:59:31.874508+00`（参考此处直接用 `str(datetime)`，非模型字段，所以是空格分隔、无 `Z`），逐字节相同 |
+| #90 `DELETE .../webhooks/{id}` | ✅一致 | `api/http.py:9892` | `internal/webhooks/` | — | 未知 UUID → 404；`GET /webhooks/{id}` 本身未注册 → 405，两侧同 |
+| #91 `PATCH .../webhooks/{id}` | ✅一致 | `api/http.py:9923` | `internal/webhooks/` | — | 空体 → 422；真实 patch（`enabled`+`event_types`）→ 200，键序与取值逐字段相同 |
+| #92 `GET .../webhooks/{id}/deliveries` | ✅一致（参考侧校验先于 404） | `api/http.py:10006` | `internal/webhooks/` | — | `limit=201`→422 `le:200`、`limit=abc`→422；未知 UUID → 404；非 UUID → 422 |
+
+### 顺带修复：跨包重复的“严格整数解析”缺陷
+
+同一种缺陷在四个包里各写了一份，都已改为共用 `httpx.ParseQueryInt`（新增，`internal/httpx/queryint.go`）：
+
+| 落点 | 影响的路由 | 现状 |
+|---|---|---|
+| `internal/webhooks/handlers.go` | `#89` 的 `limit`/`offset`、`#92` 的 `limit` | 已修，探针 SAME |
+| `internal/readsurface/params.go`（`intParam`、`queryErrors.int`、`queryErrors` 的无界整数） | `#60`–`#72` 的单整数分页/上限参数 | 已修，`documents?limit=1.0`、`entities?limit=1.0`、`chunks?limit=1.0` 等探针 SAME |
+| `internal/mentalmodels/helpers.go`（`boundedQueryInt`） | `mental-models` 单元的整数参数 | 已修，`mental-models?limit=1.0` SAME |
+| `internal/reporting/handlers.go`（`boundedIntParam`） | `llm-requests` / `audit-logs` 等分页参数 | 已修，`llm-requests?limit=1.0` SAME |
+| `internal/memoryops/operations_list.go` | `#73` 的 `limit`/`offset` | 上一提交已修，现也收敛到同一助手 |
+
+`httpx.ParseQueryInt` 的另一半职责是把“超出 int64 的 Python 整数”按**符号**判成 `less_than_equal` / `greater_than_equal`，而不是 `int_parsing` —— 参考把任意大的 Python 整数解析出来后与声明边界比较，本服务原先会在解析阶段就判成类型错误。`TestParseQueryIntReadsTheFrameworkGrammar` 覆盖 12 个用例。
+
+**复核第一轮**：webhooks 第一轮不在审计范围内（本轮新增单元）。
