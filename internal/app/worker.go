@@ -587,6 +587,9 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 	if !consolidator.Available() {
 		return worker.Permanent(consolidation.ErrNoModel)
 	}
+	// The pass reports its phases to the operation running it, so a poller sees
+	// the work advancing; a store without the capability simply runs unreported.
+	consolidator.WithOperation(op.OperationID, p.operationProgressReporter())
 	if result, err := consolidator.Run(ctx, op.BankID); err != nil {
 		if errors.Is(err, consolidation.ErrNoModel) {
 			return worker.Permanent(err)
@@ -1209,4 +1212,23 @@ func RunQueueConsumer(ctx context.Context, consumer *worker.Consumer) error {
 		return err
 	}
 	return nil
+}
+
+// operationProgressReporter builds the consolidator's progress sink: it writes
+// each snapshot to the operation's record through the store's own writer. The
+// write is a heartbeat, so a failure is logged and dropped rather than failing
+// the job it reports on — the reference's `_write_operation_progress` swallows
+// its errors for the same reason (`memory_engine.py:5156-5178`).
+func (p archiveProcessor) operationProgressReporter() consolidation.ProgressReporter {
+	writer, ok := p.store.(storage.OperationProgressWriter)
+	if !ok {
+		return nil
+	}
+	return func(operationID string, snapshot map[string]any) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := writer.RecordOperationProgress(ctx, operationID, snapshot); err != nil {
+			slog.Debug("record operation progress", "operation", operationID, "error", err)
+		}
+	}
 }

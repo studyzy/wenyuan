@@ -101,3 +101,26 @@ var (
 	_ OperationLiveness = (*MemoryStore)(nil)
 	_ OperationLiveness = (*PostgresStore)(nil)
 )
+
+// OperationProgressWriter is the optional capability a backend implements when
+// it can record a progress snapshot for a running operation.
+//
+// The reference writes these at coarse phase and batch boundaries —
+// `_write_operation_progress` merges a `progress` object into
+// `async_operations.result_metadata` and bumps `updated_at` — so an operator
+// polling the status route can tell a healthy long-running job (the counters
+// advancing across polls) from a frozen one (the same numbers, a stale `at`).
+// The write is best-effort by construction: a heartbeat that fails must never
+// fail the job it is reporting on, so a caller logs the failure and carries on.
+type OperationProgressWriter interface {
+	// RecordOperationProgress merges snapshot into the operation's
+	// `result_metadata.progress`, leaving sibling metadata keys alone.
+	RecordOperationProgress(ctx context.Context, opID string, snapshot map[string]any) error
+}
+
+// Both backends carry the capability, so a worker never has to ask whether the
+// store it holds can be reported to.
+var (
+	_ OperationProgressWriter = (*MemoryStore)(nil)
+	_ OperationProgressWriter = (*PostgresStore)(nil)
+)

@@ -44,7 +44,7 @@ type Operation struct {
 	ErrorMessage *string        `json:"error_message"`
 	RetryCount   int            `json:"retry_count"`
 	NextRetryAt  *string        `json:"next_retry_at"`
-	Progress     map[string]any `json:"progress"`
+	Progress     any            `json:"progress"`
 }
 
 // ChildOperationStatus is one child entry of a parent batch operation,
@@ -77,7 +77,7 @@ type OperationStatus struct {
 	ErrorMessage    *string                `json:"error_message"`
 	RetryCount      *int                   `json:"retry_count"`
 	NextRetryAt     *string                `json:"next_retry_at"`
-	Progress        map[string]any         `json:"progress"`
+	Progress        any                    `json:"progress"`
 	ResultMetadata  map[string]any         `json:"result_metadata"`
 	Details         map[string]any         `json:"details"`
 	ChildOperations []ChildOperationStatus `json:"child_operations"`

@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -230,7 +231,20 @@ type Consolidator struct {
 	// settings are the bank-wide defaults a pass starts from; Run overrides
 	// them with the bank's own configuration.
 	settings Settings
+	// progress, when set, receives the pass's phase and batch snapshots for the
+	// operation running it. A pass started outside a worker (a test, a
+	// maintenance job) has none, and every write is skipped.
+	progress ProgressReporter
+	// operationID names the operation a worker is running, so a snapshot can be
+	// attributed to it. It is empty for the same reason progress is nil.
+	operationID string
 }
+
+// ProgressReporter records a progress snapshot for a running operation. The
+// worker passes the store's own writer; nothing a reporter does may fail the
+// pass, which is the caller's contract and the reason this is a narrow
+// interface rather than an error-returning hook.
+type ProgressReporter func(operationID string, snapshot map[string]any)
 
 // New builds a consolidator over the provider and store. When the store carries
 // the deployment's consolidation tuning, the pass adopts it; otherwise it runs
@@ -249,6 +263,43 @@ func New(p provider.Provider, store Store) *Consolidator {
 		c.tuning = tuned.ConsolidationTuning()
 	}
 	return c
+}
+
+// WithOperation attributes the pass to a worker operation, so its phase and
+// batch snapshots land on that operation's record and an operator polling the
+// status route can see the pass advancing. A nil reporter leaves the pass
+// unreported, which is what a pass outside a worker does.
+func (c *Consolidator) WithOperation(operationID string, report ProgressReporter) *Consolidator {
+	c.operationID = operationID
+	c.progress = report
+	return c
+}
+
+// reportProgress writes one snapshot, dropping it when the pass is unreported.
+// The reference's heartbeat swallows its own failures so a reporting problem
+// never fails the job; the same holds here, where the reporter is expected to
+// have logged whatever went wrong.
+func (c *Consolidator) reportProgress(stage string, processed, total int, detail map[string]int) {
+	if c.progress == nil || c.operationID == "" {
+		return
+	}
+	// The timestamp is the reference's `datetime.now(UTC).isoformat()`: a
+	// dict-valued member, so it carries the `+00:00` offset rather than the `Z`
+	// a model field renders. `detail` is always present, null when the stage
+	// reports no counters — the reference's snapshot only omits it for a stage
+	// that passed none, and every stage here passes the model field through.
+	snapshot := map[string]any{
+		"stage":     stage,
+		"at":        time.Now().UTC().Format("2006-01-02T15:04:05.999999+00:00"),
+		"processed": processed,
+		"total":     total,
+	}
+	if len(detail) > 0 {
+		snapshot["detail"] = detail
+	} else {
+		snapshot["detail"] = nil
+	}
+	c.progress(c.operationID, snapshot)
 }
 
 // Available reports whether a model is configured.
@@ -299,15 +350,51 @@ func (c *Consolidator) Run(ctx context.Context, bankID string) (Result, error) {
 	if len(facts) == 0 {
 		return Result{}, nil
 	}
+	// An initial durable snapshot, so an operator polling the status route sees
+	// the pass has started and how much work it found before the first batch of
+	// model calls completes — which can take minutes on a dense bank. The
+	// reference writes it at the same point with the same "consolidating" stage
+	// (`consolidator.py:1585-1586`), so the pass reads as one phase advancing
+	// 0/N to N/N rather than an opaque start.
+	totalUnits := len(facts)
+	c.reportProgress("consolidating", 0, totalUnits, nil)
 	var total Result
 	for _, group := range groupFactsByScope(facts) {
 		result, err := c.runScope(ctx, bankID, group.scope, group.facts, settings.forScope(group.scope))
 		total.add(result)
+		// The heartbeat an operator polls: one snapshot per scope, carrying the
+		// running counters, so `processed` advances as each scope commits rather
+		// than sitting at the pre-pass count through the whole model phase.
+		c.reportProgress("consolidating", total.Processed(), totalUnits,
+			total.progressDetail())
 		if err != nil {
 			return total, err
 		}
 	}
+	// The final phase, written once the chain has drained: the observations are
+	// in and what remains is the mental-model refreshes the pass triggers.
+	c.reportProgress("refreshing_mental_models", total.Processed(), totalUnits, nil)
 	return total, nil
+}
+
+// Processed is how many memories the pass has folded so far: everything it
+// created, updated or deleted an observation for, plus the ones it skipped and
+// the ones it failed on. Counting the failures keeps the bar advancing on a
+// bank whose facts the model cannot handle, which is what the reference's own
+// `memories_processed` does.
+func (r Result) Processed() int {
+	return r.Created + r.Updated + r.Deleted + r.Skipped + r.Failed
+}
+
+// progressDetail renders the pass's counters as the reference's per-batch
+// detail object, so a poller sees how many observations each outcome produced.
+func (r Result) progressDetail() map[string]int {
+	return map[string]int{
+		"observations_created": r.Created,
+		"observations_updated": r.Updated,
+		"observations_deleted": r.Deleted,
+		"memories_failed":      r.Failed,
+	}
 }
 
 // add folds one scope's counts into the running total.

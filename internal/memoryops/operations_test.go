@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -610,5 +611,67 @@ func TestOperationPayloadPassesThroughStoredEnvelopeKeys(t *testing.T) {
 	// The stored value wins: the submitter's own type string, not the column's.
 	if got.TaskPayload["type"] != "batch_retain" {
 		t.Fatalf("type = %v, want the stored batch_retain", got.TaskPayload["type"])
+	}
+}
+
+// Contract reference: api/http.py:4618 (`progress: OperationProgress | None`)
+// and engine/memory_engine.py:5170-5179. The snapshot is the reference's
+// insertion-ordered mapping, so its members reach the wire as stage, at,
+// processed, total, detail — not in a Go map's sorted order, which a byte-level
+// comparison would catch.
+func TestOperationProgressRendersInTheReferenceMemberOrder(t *testing.T) {
+	mux, store := newServer(t)
+	rec := post(t, mux, "/v1/default/banks/b1/memories", `{"items":[{"content":"async"}],"async":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	opID := decodeOpID(t, rec)
+	if err := store.RecordOperationProgress(context.Background(), opID, map[string]any{
+		"stage":     "consolidating",
+		"at":        "2026-10-20T17:00:00+00:00",
+		"processed": 2,
+		"total":     4,
+		"detail":    map[string]int{"observations_created": 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations/"+opID).Body.String()
+	want := `"progress":{"stage":"consolidating","at":"2026-10-20T17:00:00+00:00",` +
+		`"processed":2,"total":4,"detail":{"observations_created":3}}`
+	if !strings.Contains(body, want) {
+		t.Fatalf("body = %s, want %s", body, want)
+	}
+	// A sibling metadata key survives the merge, which is the reference's
+	// top-level `||`.
+	if !strings.Contains(body, `"progress"`) {
+		t.Fatalf("body = %s, want the progress member", body)
+	}
+}
+
+// Contract reference: api/http.py:8230-8234 (list_operations' `limit`/`offset`).
+// The reference binds these through the framework's lax integer grammar — not
+// Go's strict one — so `1.0` reads as 1, `1_0` as 10 and a padded ` 1 ` as 1,
+// while a real fraction stays a parse failure.
+func TestOperationListLimitUsesTheFrameworkIntegerGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		limit string
+		code  int
+	}{
+		{"limit=1.0", `"limit":1`, http.StatusOK},
+		{"limit=1_0", `"limit":10`, http.StatusOK},
+		{"limit=%201%20", `"limit":1`, http.StatusOK},
+		{"limit=+1", `"limit":1`, http.StatusOK},
+		{"limit=1.5", `"type":"int_parsing"`, http.StatusUnprocessableEntity},
+		{"limit=99999999999999999999", `"type":"less_than_equal"`, http.StatusUnprocessableEntity},
+	} {
+		mux, _ := newServer(t)
+		rec := do(t, mux, http.MethodGet, "/v1/default/banks/b1/operations?"+tc.query)
+		if rec.Code != tc.code {
+			t.Fatalf("%s = %d, want %d: %s", tc.query, rec.Code, tc.code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tc.limit) {
+			t.Fatalf("%s = %s, want %s", tc.query, rec.Body.String(), tc.limit)
+		}
 	}
 }

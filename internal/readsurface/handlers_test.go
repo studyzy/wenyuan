@@ -1,6 +1,7 @@
 package readsurface
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1638,4 +1639,134 @@ func TestDocumentMetadataServesNonObjectValue(t *testing.T) {
 			t.Fatalf("%s listed metadata = %s, want %s", tc.id, listed, tc.want)
 		}
 	}
+}
+
+// Contract reference: api/http.py:750-780 (EntityGraphNodeData /
+// EntityGraphEdgeData) and :2220 (the memory graph's float weight). A response's
+// keys come back in the model's declaration order, so that order is contract:
+// the reference declares mentionCount before color on a node, and linkType
+// before weight on an edge.
+func TestGraphPayloadsCarryTheReferenceMemberOrder(t *testing.T) {
+	store := seededStore(t)
+	mux := serve(t, store)
+	base := "/v1/default/banks/" + bank
+
+	graphBody := send(mux, http.MethodGet, base+"/entities/graph", "").Body.Bytes()
+	node, ok := firstMemberKeys(graphBody, "nodes")
+	if !ok {
+		t.Fatalf("entity graph has no node: %s", graphBody)
+	}
+	if want := []string{"id", "label", "mentionCount", "color"}; !sameStrings(node, want) {
+		t.Fatalf("entity node keys = %v, want %v", node, want)
+	}
+	edge, ok := firstMemberKeys(graphBody, "edges")
+	if !ok {
+		t.Fatalf("entity graph has no edge: %s", graphBody)
+	}
+	if want := []string{"id", "source", "target", "linkType", "weight", "color", "lineStyle", "lastCooccurred"}; !sameStrings(edge, want) {
+		t.Fatalf("entity edge keys = %v, want %v", edge, want)
+	}
+}
+
+// The memory graph's edge weight is a Python float in the reference's model, so
+// a whole weight is `1.0` rather than Go's `1`. Asserted on the model rather
+// than through the route: the route's edges depend on which memories the store
+// relates, which is not what this pins.
+func TestMemoryGraphEdgeWeightIsAPythonFloat(t *testing.T) {
+	body, err := json.Marshal(GraphEdge{Data: GraphEdgeData{
+		ID: "a-b-temporal", Source: "a", Target: "b", LinkType: "temporal",
+		Weight: 1, EntityName: "", Color: "#00bcd4", LineStyle: "dashed",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"weight":1.0`) {
+		t.Fatalf("edge = %s, want a 1.0 weight", body)
+	}
+}
+
+// firstMemberKeys returns the keys of the first entry's `data` member, in the
+// order the wire spelled them. A decode into a map would lose that order, so the
+// payload is walked with a streaming decoder that keeps it.
+func firstMemberKeys(body []byte, name string) ([]string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, false
+		}
+		if key != name {
+			var skipped json.RawMessage
+			if err := decoder.Decode(&skipped); err != nil {
+				return nil, false
+			}
+			continue
+		}
+		if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
+			return nil, false
+		}
+		if !decoder.More() {
+			return nil, false
+		}
+		if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+			return nil, false
+		}
+		for decoder.More() {
+			entryKey, err := decoder.Token()
+			if err != nil {
+				return nil, false
+			}
+			var value json.RawMessage
+			if err := decoder.Decode(&value); err != nil {
+				return nil, false
+			}
+			if entryKey == "data" {
+				return orderedObjectKeys(value)
+			}
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// orderedObjectKeys returns an object's keys in the order they appear.
+func orderedObjectKeys(body []byte) ([]string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	var keys []string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, false
+		}
+		text, ok := key.(string)
+		if !ok {
+			return nil, false
+		}
+		keys = append(keys, text)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false
+		}
+	}
+	return keys, true
+}
+
+// sameStrings reports whether two string lists hold the same members in the
+// same positions.
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

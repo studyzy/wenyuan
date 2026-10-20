@@ -84,6 +84,42 @@ func RecordBodyOrder(r *http.Request, body []byte) {
 	*r = *r.WithContext(context.WithValue(r.Context(), bodyOrderKey{}, orderMap(members)))
 }
 
+// OrderedObject is a JSON object whose members are written in the order they
+// were added. The reference's mappings are insertion-ordered, so an object it
+// builds member by member reaches the wire in that order rather than in a Go
+// map's sorted one; a value that has to be reproduced verbatim is built here.
+type OrderedObject []OrderedMember
+
+// OrderedMember is one member of an OrderedObject.
+type OrderedMember struct {
+	Key   string
+	Value any
+}
+
+// MarshalJSON writes the members in the order they were added.
+func (o OrderedObject) MarshalJSON() ([]byte, error) {
+	var buffer bytes.Buffer
+	buffer.WriteByte('{')
+	for i, member := range o {
+		if i > 0 {
+			buffer.WriteByte(',')
+		}
+		key, err := json.Marshal(member.Key)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(key)
+		buffer.WriteByte(':')
+		value, err := json.Marshal(member.Value)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(value)
+	}
+	buffer.WriteByte('}')
+	return buffer.Bytes(), nil
+}
+
 // orderedEntry is one member of the request body, with its value kept in the
 // member order it was written in.
 type orderedEntry struct {

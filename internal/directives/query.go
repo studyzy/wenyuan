@@ -116,7 +116,7 @@ func boundedQueryInt(raw, name string, min, max int) (int, *httpx.ValidationFail
 		// A valid Python integer too large for int64 is still parsed losslessly
 		// by the framework, so only its sign decides which bound it is outside
 		// of; anything else is a value the parser refuses.
-		sign, valid := pythonIntSign(raw)
+		sign, valid := httpx.BigintSign(raw)
 		if !valid {
 			return 0, queryItem(httpx.TypeMismatch("int_parsing", loc, raw))
 		}
@@ -141,54 +141,4 @@ func boundedQueryInt(raw, name string, min, max int) (int, *httpx.ValidationFail
 		return 0, queryItem(httpx.LessThanEqual(loc, raw, max))
 	}
 	return value, nil
-}
-
-// pythonIntSign reports whether text is an integer literal Python's int()
-// accepts but that does not fit int64, and the literal's sign (+1 or -1). It
-// mirrors the parser's grammar: surrounding whitespace, an optional sign,
-// digits with single underscores between them, and a fractional part only when
-// every one of its digits is zero.
-func pythonIntSign(text string) (int, bool) {
-	trimmed := strings.TrimSpace(text)
-	sign := 1
-	switch {
-	case strings.HasPrefix(trimmed, "+"):
-		trimmed = trimmed[1:]
-	case strings.HasPrefix(trimmed, "-"):
-		sign = -1
-		trimmed = trimmed[1:]
-	}
-	whole := trimmed
-	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 {
-		whole = trimmed[:dot]
-		fraction := trimmed[dot+1:]
-		if fraction == "" {
-			return 0, false
-		}
-		for i := range len(fraction) {
-			if fraction[i] != '0' {
-				return 0, false
-			}
-		}
-	}
-	if whole == "" {
-		return 0, false
-	}
-	digits := 0
-	for i := range len(whole) {
-		switch {
-		case whole[i] >= '0' && whole[i] <= '9':
-			digits++
-		case whole[i] == '_':
-			if digits == 0 || i+1 == len(whole) || whole[i+1] == '_' {
-				return 0, false
-			}
-		default:
-			return 0, false
-		}
-	}
-	if digits == 0 {
-		return 0, false
-	}
-	return sign, true
 }

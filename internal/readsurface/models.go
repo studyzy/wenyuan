@@ -3,10 +3,10 @@
 package readsurface
 
 import (
+	"unicode/utf8"
+
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
-
-	"unicode/utf8"
 )
 
 // DocumentListItem is one document as the listing renders it.
@@ -190,14 +190,16 @@ type GraphNode struct {
 // GraphEdgeData is the payload of a memory-graph edge. Every key is always
 // present.
 type GraphEdgeData struct {
-	ID         string  `json:"id"`
-	Source     string  `json:"source"`
-	Target     string  `json:"target"`
-	LinkType   string  `json:"linkType"`
-	Weight     float64 `json:"weight"`
-	EntityName string  `json:"entityName"`
-	Color      string  `json:"color"`
-	LineStyle  string  `json:"lineStyle"`
+	ID       string `json:"id"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	LinkType string `json:"linkType"`
+	// The reference models this as a Python float, so a whole weight renders
+	// `1.0` — the entity graph's is an int and stays `int`.
+	Weight     httpx.PythonFloat `json:"weight"`
+	EntityName string            `json:"entityName"`
+	Color      string            `json:"color"`
+	LineStyle  string            `json:"lineStyle"`
 }
 
 // GraphEdge wraps an edge payload.
@@ -233,12 +235,13 @@ type GraphResponse struct {
 	Limit      int             `json:"limit"`
 }
 
-// EntityGraphNodeData is one entity-graph node.
+// EntityGraphNodeData is one entity-graph node. The member order is the
+// reference model's, which is observable: a response's keys come back in it.
 type EntityGraphNodeData struct {
 	ID           string `json:"id"`
 	Label        string `json:"label"`
-	Color        string `json:"color,omitempty"`
 	MentionCount int    `json:"mentionCount"`
+	Color        string `json:"color,omitempty"`
 }
 
 // EntityGraphNode wraps an entity-graph node.
@@ -246,14 +249,15 @@ type EntityGraphNode struct {
 	Data EntityGraphNodeData `json:"data"`
 }
 
-// EntityGraphEdgeData is one entity-graph relation.
+// EntityGraphEdgeData is one entity-graph relation, in the reference model's
+// member order.
 type EntityGraphEdgeData struct {
 	ID             string  `json:"id"`
 	Source         string  `json:"source"`
 	Target         string  `json:"target"`
+	LinkType       string  `json:"linkType,omitempty"`
 	Weight         int     `json:"weight"`
 	Color          string  `json:"color,omitempty"`
-	LinkType       string  `json:"linkType,omitempty"`
 	LineStyle      string  `json:"lineStyle,omitempty"`
 	LastCooccurred *string `json:"lastCooccurred"`
 }

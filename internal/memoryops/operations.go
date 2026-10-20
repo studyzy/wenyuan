@@ -458,11 +458,28 @@ func resultMetadataOf(metadata map[string]any) map[string]any {
 // progressOf projects the last-known progress snapshot out of result_metadata.
 // The reference emits whatever object a producer wrote under "progress", or null
 // when none was recorded.
-func progressOf(metadata map[string]any) map[string]any {
-	if snapshot, ok := metadata["progress"].(map[string]any); ok {
-		return snapshot
+//
+// The reference's snapshot is an insertion-ordered mapping, so its members reach
+// the wire in the order the producer wrote them — stage, at, processed, total,
+// detail — rather than in a Go map's sorted order.
+func progressOf(metadata map[string]any) any {
+	snapshot, ok := metadata["progress"].(map[string]any)
+	if !ok {
+		return nil
 	}
-	return nil
+	// The producers write these members in this order; a snapshot that lacks one
+	// simply omits it, which is what the reference's own optional fields do.
+	order := []string{"stage", "at", "processed", "total", "detail"}
+	ordered := make(httpx.OrderedObject, 0, len(order))
+	for _, key := range order {
+		if value, present := snapshot[key]; present {
+			ordered = append(ordered, httpx.OrderedMember{Key: key, Value: value})
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	return ordered
 }
 
 // refreshOutcomes and refreshFailureReasons are the reference's typed outcome

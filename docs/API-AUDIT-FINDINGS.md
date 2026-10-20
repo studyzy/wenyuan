@@ -849,3 +849,44 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 **参数位说明**：参考的 `$N` 不是 SQL 占位序号而是"该语句里 `priority` 之前绑定的参数个数"，且 insert 与 update 的计数起点不同（insert 从表列序算起得 `$4`，update 不把行标识算进去）。这两条都不是能从代码结构推出来的，全部靠对活服务逐条实测固定。
 
 **复核第一轮**：directives 在第一轮不在审计范围内（本轮新增单元），无历史结论需要推翻。
+
+## 第二轮 read-surface
+
+| API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #60 `GET .../graph` | ❌已修 | `api/http.py:5774`、`:2220`（`weight: float`） | `internal/readsurface/models.go:GraphEdgeData`、`handlers.go` | 记忆图边的 `weight` 是参考模型里的 Python float，整数值应渲染 `1.0`；原先渲染成 `1` | `TestMemoryGraphEdgeWeightIsAPythonFloat` |
+| #60 | ✅一致 | `:5774` 的 `type`/`limit`/`q`/`tags`/`tags_match`/`document_id`/`chunk_id` | `readsurface/handlers.go` | — | 探针全 SAME（含 `limit=-1` 的 422、`type=bogus` 不过滤、`tag_groups` 在 graph 上不生效） |
+| #61 `GET .../entities` | ✅一致 | `api/http.py:6748` | `readsurface/handlers.go` | — | 探针全 SAME（`limit=0`、`limit=-1`、`tags_match=bogus`、未知 bank） |
+| #62 `GET .../entities/graph` | ❌已修 | `api/http.py:750-780`（`EntityGraphNodeData`/`EntityGraphEdgeData` 的成员顺序） | `readsurface/models.go` | 响应键序就是契约：参考的节点是 `id,label,mentionCount,color`、边是 `id,source,target,linkType,weight,color,lineStyle,lastCooccurred`；本服务原先把 `color` 排在 `mentionCount` 之前、`weight` 排在 `linkType` 之前。两者都已按参考重排 | `TestGraphPayloadsCarryTheReferenceMemberOrder`（用流式解码读出真实键序，map 解码会丢序） |
+| #62 | ✅一致 | `:6796` 的 `limit`/`min_count`/`tags`/`tags_match`/`tag_groups` | `readsurface/handlers.go` | — | 探针全 SAME（`min_count=-5`/`x`/`999`、`tag_groups=` 与 `{{` 都是 400、`tags`+`tag_groups` 并存 400）。注：`min_mentions` 不是声明过的参数，两侧都忽略 |
+| #63 `GET .../entities/{entity_id}` | ✅一致 | `api/http.py:6838` | `readsurface/handlers.go` | — | 键集合与参考一致（`id,canonical_name,mention_count,first_seen,last_seen,metadata,observations`）；非 UUID 报 400、未知 id 报 404，两侧同为 |
+| #64 `POST .../entities/{entity_id}/regenerate` | ✅一致 | 退休路由，恒 410 | `readsurface/handlers.go` | — | 探针 SAME |
+| #65 `GET .../documents` | ✅一致 | `api/http.py:7801`；`pg/documents.py:641` 的 `ORDER BY updated_at DESC, created_at DESC, id` | `internal/storage/postgres_read_surface.go:148` | — | 探针全 SAME；排序两侧同为 `updated_at DESC, created_at DESC, id ASC`，列表次序的差异来自两侧写入时刻不同（夹具差异） |
+| #66 `GET .../documents/{document_id}/chunks` | ✅一致 | `api/http.py:7873` | `readsurface/handlers.go` | — | 探针全 SAME（含 `limit=0` 的 422、未知文档 404） |
+| #67 `POST .../documents/{document_id}/reprocess` | ✅一致 | `api/http.py:7929` | `readsurface/handlers.go` | — | 未知文档 404，SAME |
+| #68 `GET .../documents/{document_id}` | ✅一致 | `api/http.py:7972` | `readsurface/handlers.go` | — | 键集合与 `nodes_by_fact_type` 的三键（`experience`/`observation`/`world`）两侧一致；`observation` 计数差异来自参考侧 LLM 生成了 observation 行而本服务未配置模型（夹具差异） |
+| #69 `GET .../tags` | ✅一致 | `api/http.py:8009`；`memories/pg/reads.py:346-355` 的 `COUNT(*)` over `unnest(tags)`、`ORDER BY count DESC, tag ASC` | `internal/storage/postgres_read_surface.go:265` | — | 探针全 SAME（`q=team*` 通配、大小写不敏感 `q=TEAM:A`、`source=mental_models`、`source=bogus` 422、`limit=x` 422）；计数差异同样来自行集合（参考 6 行 / 本服务 3 行） |
+| #70 `GET /v1/default/chunks/{chunk_id}` | ✅一致 | `api/http.py:8076` | `readsurface/handlers.go` | — | 键序与内容逐字节一致（仅 `created_at` 不同）；未知 chunk 404，SAME |
+| #71 `PATCH .../documents/{document_id}` | ✅一致 | `api/http.py:8115` | `readsurface/handlers.go` | — | 探针全 SAME（`{}` → 400「At least one field (tags) must be provided」、`tags`/`metadata` 类型错 422、非 JSON 422、未知文档 404、`tags` 更新生效） |
+| #72 `DELETE .../documents/{document_id}` | ✅一致 | `api/http.py:8167` | `readsurface/handlers.go` | — | 探针 SAME（删除后读取 404） |
+
+**夹具差异（非缺陷）**：`audit-rs` 两侧保存的行集合不同——参考侧配了 LLM，retain 时会额外生成 `observation` 行（6 行 vs 3 行），因此 `tags` 计数（4/2 vs 2/1）、`graph` 的 `nodes`/`edges`/`table_rows`、文档的 `nodes_by_fact_type.observation` 都对不上。两侧 `entities` 的名字集合也不同（参考侧抽出中文「咖啡/茶/柏林办公室」，本服务抽出英文）。这些都属于 MANIFEST §3 的夹具差异。为了把"计数语义"和"行集合"分开，已逐条读了参考的 `list_tags` SQL 与本文 `postgres_read_surface.go` 的对应语句：两边的 `COUNT(*)` over 展开后的 tag 列、`ORDER BY count DESC, tag ASC` 完全一致。
+
+**复核第一轮**：read-surface 第一轮只有 #60/#61/#65 判为 ✅，本轮把它们连同 #62 一起重验，#62 的键序缺陷与 #60 的 `weight` 浮点是新发现的。
+
+## 第二轮 operations
+
+| API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #73 `GET .../operations` | ❌已修 | `api/http.py:8210`、`:8230-8234`（`limit`/`offset` 走框架整数语法） | `internal/memoryops/operations_list.go:queryIntParam`、`internal/httpx/bigint.go` | `limit`/`offset` 原先用 Go 的 `strconv.Atoi` 严格解析，`limit=1.0`、`limit=1_0`、`limit=%201%20`、`limit=+1` 都报 `int_parsing`；参考按框架语法读成 1/10/1/1。改用 `httpx.LaxInteger`，并把"超出 int64 的 Python 整数"判定抽到 `httpx.BigintSign`（directives 单元原本私有实现，现两处共用） | `TestOperationListLimitUsesTheFrameworkIntegerGrammar`（六个用例） |
+| #73 | ✅一致 | `:8210` 的 `status`/`type`/`exclude_parents` 与分页包络 | `operations_list.go` | — | 包络键序 `bank_id,total,limit,offset,operations` 两侧一致；单条操作键序 16 键逐位一致；`limit=0`/`101`/`offset=-1`/`exclude_parents=zz` 都是 422；未知 bank 404 |
+| #74 `GET .../operations/{operation_id}` | ✅一致 | `api/http.py:8258` | `memoryops/operations.go` | — | 探针全 SAME（非 UUID 400、未知 UUID 200 + `status:null`) |
+| #75 `DELETE .../operations/{operation_id}` | ✅一致 | `api/http.py:8296` | `memoryops/operations.go` | — | 探针全 SAME（非 UUID 400、未知 404） |
+| #76 `POST .../operations/{operation_id}/retry` | ✅一致 | `api/http.py:8333` | `memoryops/operations.go` | — | 未知 404，SAME |
+| #77 `DELETE .../operations/{operation_id}/delete` | ✅一致 | `api/http.py:8363` | `memoryops/operations.go` | — | 未知 404，SAME |
+| #73/#74 | ❌已修 | `api/http.py:4618`（`progress: OperationProgress \| None`）、`engine/memory_engine.py:5139-5179`（`_write_operation_progress`，jsonb `\|\|` 合并 + 更新 `updated_at`）、`consolidation/consolidator.py:1585-1586,1965-1990,2169-2175` | `internal/storage/operation_result.go`（`OperationProgressWriter`）、`postgres_operation_progress.go`、`memory_operation_progress.go`、`internal/consolidation/consolidator.go`（`WithOperation`/`reportProgress`）、`internal/app/worker.go` | **progress 快照原先从不写入**：读路径（`progressOf`）早就存在，但没有任何生产者，所以每次轮询都拿到 `null`；参考在 consolidation 的三个点写入（起手 `consolidating 0/N`、每个 scope 一批带 `detail` 计数、收尾 `refreshing_mental_models N/N`）。已按同样的阶段名与字段补齐，并通过存储层新增的 `RecordOperationProgress` 落盘（两后端都实现） | `TestConsolidatorReportsPhaseSnapshots`、`TestConsolidatorWithoutOperationReportsNothing` |
+| #73/#74 | ❌已修 | 同上；参考的 `snapshot` 是插入序映射，`at` 是 `datetime.now(UTC).isoformat()` | `internal/httpx/body.go`（`OrderedObject`）、`internal/memoryops/operations.go:progressOf` | ①`at` 原先渲染 `…Z`，参考是 dict 值 → `+00:00` ②Go map 会把 progress 的键排序，参考按写入序 `stage,at,processed,total,detail`；新增 `httpx.OrderedObject` 按插入序序列化，`progressOf` 按该顺序投影 ③`detail` 恒在（无计数时 `null`） | `TestOperationProgressRendersInTheReferenceMemberOrder` |
+
+**环境相关的夹具差异（非缺陷）**：本服务默认不启用 worker，操作会一直停在 `pending`（`status`/`progress` 都与参考不同）；用 `PARITY_DEV_WORKER_ENABLED=true` 启动后两侧都进入 `completed`，`progress` 形状与键序逐字节一致。操作条数（4 vs 4、`type=consolidation` 的 3 vs 2）差异来自两侧执行过的任务数不同。
+
+**复核第一轮**：operations 第一轮不在审计范围内（本轮新增单元）。

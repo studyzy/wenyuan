@@ -420,3 +420,71 @@ func TestConsolidatorStopsAtAttemptBudget(t *testing.T) {
 		t.Fatalf("failed = %d, want the batch recorded as failed", result.Failed)
 	}
 }
+
+// Contract reference: engine/memory_engine.py:5139-5179
+// (_write_operation_progress) and consolidation/consolidator.py:1585-1586,
+// 2169-2175. A pass reports coarse snapshots — an initial "consolidating" 0/N
+// with no counters, one per scope carrying the running counters and the
+// per-outcome detail, then "refreshing_mental_models" — so an operator polling
+// the status route can tell a healthy long-running job from a frozen one.
+func TestConsolidatorReportsPhaseSnapshots(t *testing.T) {
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
+		observations: []Observation{},
+	}
+	model := &stubProvider{
+		name: "openai",
+		response: provider.CompletionResult{Structured: map[string]any{
+			"creates": []any{map[string]any{"text": "Alice owns a Honda", "source_fact_ids": []any{"f1"}}},
+		}},
+	}
+	var snapshots []map[string]any
+	consolidator := New(model, store).WithOperation("op-1", func(_ string, snapshot map[string]any) {
+		snapshots = append(snapshots, snapshot)
+	})
+	if _, err := consolidator.Run(context.Background(), "b1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(snapshots) < 3 {
+		t.Fatalf("snapshots = %d, want the initial, per-scope and final ones: %v", len(snapshots), snapshots)
+	}
+
+	first := snapshots[0]
+	if first["stage"] != "consolidating" || first["processed"] != 0 || first["total"] != 1 {
+		t.Fatalf("first snapshot = %v, want consolidating 0/1", first)
+	}
+	if first["detail"] != nil {
+		t.Fatalf("first snapshot detail = %v, want null", first["detail"])
+	}
+	// The timestamp is the reference's `datetime.now(UTC).isoformat()`: a
+	// dict-valued member, so `+00:00` rather than a model field's `Z`.
+	if at, _ := first["at"].(string); !strings.HasSuffix(at, "+00:00") {
+		t.Fatalf("at = %q, want a +00:00 offset", at)
+	}
+
+	scope := snapshots[1]
+	detail, ok := scope["detail"].(map[string]int)
+	if !ok || detail["observations_created"] != 1 {
+		t.Fatalf("scope snapshot detail = %v, want observations_created 1", scope["detail"])
+	}
+
+	last := snapshots[len(snapshots)-1]
+	if last["stage"] != "refreshing_mental_models" || last["processed"] != 1 || last["total"] != 1 {
+		t.Fatalf("last snapshot = %v, want refreshing_mental_models 1/1", last)
+	}
+}
+
+// A pass with no operation to report to writes nothing, which is what a
+// maintenance job or a test runs as.
+func TestConsolidatorWithoutOperationReportsNothing(t *testing.T) {
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
+		observations: []Observation{},
+	}
+	model := &stubProvider{name: "openai", response: provider.CompletionResult{Structured: map[string]any{}}}
+	if _, err := New(model, store).WithOperation("", func(string, map[string]any) {
+		t.Fatal("an unattributed pass must not report")
+	}).Run(context.Background(), "b1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}

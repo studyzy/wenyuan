@@ -279,7 +279,7 @@ func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
 		color, lineStyle := graphEdgeStyle(edge.Type)
 		edges = append(edges, GraphEdge{Data: GraphEdgeData{
 			ID: edge.From + "-" + edge.To + "-" + edge.Type, Source: edge.From, Target: edge.To,
-			LinkType: edge.Type, Weight: edge.Weight, EntityName: edge.Entity,
+			LinkType: edge.Type, Weight: httpx.PythonFloat(edge.Weight), EntityName: edge.Entity,
 			Color: color, LineStyle: lineStyle,
 		}})
 	}
