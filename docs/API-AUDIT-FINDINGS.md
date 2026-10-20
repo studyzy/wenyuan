@@ -890,3 +890,27 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 **环境相关的夹具差异（非缺陷）**：本服务默认不启用 worker，操作会一直停在 `pending`（`status`/`progress` 都与参考不同）；用 `PARITY_DEV_WORKER_ENABLED=true` 启动后两侧都进入 `completed`，`progress` 形状与键序逐字节一致。操作条数（4 vs 4、`type=consolidation` 的 3 vs 2）差异来自两侧执行过的任务数不同。
 
 **复核第一轮**：operations 第一轮不在审计范围内（本轮新增单元）。
+
+## 第二轮 transfer
+
+| API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #78 `POST .../import` | ✅一致 | `api/http.py:8716` | `internal/transfer/` | — | `{}`→400、带 `bank` 的包→400、未知 bank→400，探针全 SAME |
+| #79 `GET .../export` | ✅一致 | `api/http.py:8803` | `internal/transfer/` | — | 探针 SAME |
+| #80 `GET .../document-transfer` | ✅一致 | `api/http.py:8894` | `internal/transfer/` | — | 410（已下线），两侧同；未知 bank 也 410（先于 404 判定） |
+| #81 `POST .../document-transfer/export` | ✅一致 | `api/http.py:8924`（无请求体，参数全在 query） | `internal/transfer/` | — | `include_observations=zz`→422；`include_observations=true`+`document_id`→400（互斥）；`include_observations=1`→202；未知 bank→404 |
+| #82 `POST .../document-transfer` | ✅一致 | `api/http.py:8988` | `internal/transfer/` | — | `{}`/`notjson` 都是 422，SAME |
+| #83 `POST .../transfer/export` | ✅一致 | `api/http.py:9062` | `internal/transfer/` | — | 202 提交；完成后的 `result_metadata` 键集 `filename,byte_size,storage_key,download_url` 与键序一致 |
+| #84 `POST .../transfer/import` | ✅一致 | `api/http.py:9146`（`mode`/`target_bank_id`/`document_conflict`/三个 include 开关全在 query，文件走 multipart） | `internal/transfer/` | — | `mode=bogus`/`document_conflict=bogus`/`include_data`+merge/非 zip/空 `target_bank_id` 全 SAME；真实归档 restore 到新 bank 后 `result_metadata` 的 15 个计数逐项相同（`operations_imported` 差异由两侧操作条数不同导致） |
+| #85 `POST .../clone` | ✅一致 | `api/http.py:9252` | `internal/transfer/` | — | `target_bank_id` 是 query 参数（缺→422 `loc:["query","target_bank_id"]`）；`{}` 空体 + query 提交→202 `{operation_id,status}`，两侧一致 |
+| #86 `GET .../attachments/{attachment_id}` | ✅一致 | `api/http.py:9335` | `internal/transfer/` | — | 非 UUID→404、未知 UUID→404，SAME |
+| #87 `GET .../files/download/{key}` | ✅一致 | `api/http.py:9389` | `internal/transfer/` | — | 未知 key→404；真实导出归档可下载（200 `application/zip`） |
+| #79/#81/#83 | ❌已修 | `transfer/export.py:916-969`：参考用 `zipfile.writestr(name, data)` 写每个条目，时间戳是**当前本地时间** | `internal/hindsightarchive/sections.go:writeArchive` | 归档条目原先用 `zip.Writer.Create`，修改时间留零 → 解压显示 `1979-11-30`/`1980-01-01`，同一个 bank 每次导出的字节都不同，且解压工具按时间排序时与参考不一致。改为带 `Modified: now()` 的 `CreateHeader` | `TestWriteStampsEntriesWithTheCurrentTime` |
+
+**已核实的“假差异”（非缺陷）**：
+- `202` 提交响应里的 `operation_id` 每次不同 —— 每次提交新生成的 UUID。
+- 导出归档的 `documents/*.json` 条数不同 —— 两侧 bank 里的文档数不同（夹具）。
+- 导出/导入的 `result_metadata` **键序**：参考写的顺序是 `storage_key,download_url,byte_size,filename`，但 API 读回来是 `filename,byte_size,storage_key,download_url` —— 这是 PostgreSQL `jsonb` 自身的键序（按 key 长度再按字典序），不是生产者的插入序。本服务读的也是 jsonb，实测在同一个 PG 上把生产者的 dict 写进去再读出来得到完全相同的键序，因此**键序天然一致**，不需要也不会去“修复”。
+- `transfer/import` 的 `include_data` 等开关是 `bool | None`（区分“没传”与“传了默认值”），merge 模式下传 scope 开关会被拒成 400；两侧探针 SAME。
+
+**复核第一轮**：transfer 第一轮不在审计范围内（本轮新增单元）。

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"reflect"
+	"time"
 )
 
 // Archive entry names beyond the manifest and the per-document payloads. A
@@ -225,8 +226,15 @@ func Write(archive *Archive) ([]byte, error) {
 // entries into an already-open zip writer, so a caller that owns the writer
 // keeps control of where the bytes go.
 func writeArchive(zw *zip.Writer, archive *Archive) error {
+	// The reference writes each entry with `zipfile.writestr(name, data)`
+	// (`transfer/export.py:916-969`), which stamps the entry with the current
+	// local time. `zip.Writer.Create` leaves the modification time zero, which
+	// renders as 1980-01-01 — a different archive for the same bank, and one an
+	// extractor sorts differently.
+	stamp := time.Now()
 	writeEntry := func(name string, body []byte) error {
-		w, err := zw.Create(name)
+		header := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: stamp}
+		w, err := zw.CreateHeader(header)
 		if err != nil {
 			return err
 		}
