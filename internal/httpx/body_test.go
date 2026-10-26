@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -131,5 +133,51 @@ func TestValidationLocPositionsAreNumbers(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `["body","items",0,"text"]`) {
 		t.Fatalf("loc = %s", body)
+	}
+}
+
+// A body echoed back as an item's `input` keeps an empty list as a list: the
+// recorder used to build arrays from a nil slice, and a nil slice marshals as
+// null, so `{"tags":[]}` came back as `{"tags":null}` — a body the client never
+// sent.
+func TestRecordedBodyOrderKeepsAnEmptyList(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/x", nil)
+	RecordBodyOrder(req, []byte(`{"name":"x","tags":[],"nested":{"a":[]}}`))
+	order, ok := BodyOrder(req)
+	if !ok {
+		t.Fatal("the recorder captured no order")
+	}
+	encoded, err := json.Marshal(order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"name":"x","tags":[],"nested":{"a":[]}}`; got != want {
+		t.Fatalf("recorded body = %s, want %s", got, want)
+	}
+}
+
+// Only an item that echoes the whole body takes the body's member order. A
+// rejected member's item carries that member's own value, which the client
+// wrote in its own order and which the response must not replace.
+func TestBodyOrderRewritesOnlyTheWholeBodyEcho(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/x", nil)
+	RecordBodyOrder(req, []byte(`{"z":"x","a":{"p":0,"q":[]}}`))
+	body := map[string]any{"z": "x", "a": map[string]any{"p": 0, "q": []any{}}}
+	failure := OrderWholeBodyFailure(req, &ValidationFailure{
+		Echo: body,
+		Errors: []ValidationError{
+			{Type: "missing", Loc: []string{"body", "m"}, Input: body},
+			{Type: "string_type", Loc: []string{"body", "a"}, Input: map[string]any{"p": 0, "q": []any{}}},
+		},
+	})
+	encoded, err := json.Marshal(orderValidationInputs(failure))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"detail":[` +
+		`{"type":"missing","loc":["body","m"],"msg":"","input":{"z":"x","a":{"p":0,"q":[]}}},` +
+		`{"type":"string_type","loc":["body","a"],"msg":"","input":{"p":0,"q":[]}}]}`
+	if string(encoded) != want {
+		t.Fatalf("rendered = %s\nwant      %s", encoded, want)
 	}
 }

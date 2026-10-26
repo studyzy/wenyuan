@@ -75,11 +75,19 @@ func knowledgeSnippet(content string) string {
 }
 
 // knowledgeField is one ordered frontmatter entry: either a scalar or a list.
+//
+// A scalar is either a string or `present` — a value the caller supplied that
+// happens to be the empty string. The distinction is the reference's None
+// versus "": `title` is the page's name, which a page may legitimately carry as
+// "", and the reference renders that as `title: ""` because only None is
+// dropped. Folding "" into "absent" silently deleted the key from a page whose
+// name is empty.
 type knowledgeField struct {
-	key    string
-	value  string
-	list   []string
-	isList bool
+	key     string
+	value   string
+	list    []string
+	isList  bool
+	present bool
 }
 
 // renderKnowledgeFrontmatter renders an ordered frontmatter mapping into a
@@ -98,7 +106,7 @@ func renderKnowledgeFrontmatter(fields []knowledgeField) string {
 			}
 			continue
 		}
-		if field.value == "" {
+		if field.value == "" && !field.present {
 			continue
 		}
 		lines = append(lines, field.key+": "+knowledgeScalar(field.value))
@@ -119,15 +127,38 @@ func knowledgeScalar(value string) string {
 
 // knowledgeDocumentFields builds the ordered frontmatter of a page document:
 // id, type, title, description, tags, timestamp.
-func knowledgeDocumentFields(id, pageType, title, description, timestamp string, tags []string) []knowledgeField {
+//
+// Which of them are present follows the reference's `frontmatter` mapping
+// (api/page_markdown.py:frontmatter/render_frontmatter): `id` and `type` are
+// always there, while `title`, `description` and `timestamp` are dropped only
+// when they are None — a page with an empty name or an empty source query still
+// carries the key, rendered as "".
+func knowledgeDocumentFields(id, pageType, title string, description knowledgeOptional, timestamp string, tags []string) []knowledgeField {
 	return []knowledgeField{
-		{key: "id", value: id},
-		{key: "type", value: pageType},
-		{key: "title", value: title},
-		{key: "description", value: description},
+		{key: "id", value: id, present: true},
+		{key: "type", value: pageType, present: true},
+		{key: "title", value: title, present: true},
+		{key: "description", value: description.text, present: description.known},
 		{key: "tags", list: tags, isList: true},
 		{key: "timestamp", value: timestamp},
 	}
+}
+
+// knowledgeOptional is a frontmatter scalar that may be absent altogether: the
+// reference's mapping carries None for a member it has no value for, and
+// render_frontmatter drops exactly those keys. A value that is present and
+// empty is not None, so it still renders.
+type knowledgeOptional struct {
+	text  string
+	known bool
+}
+
+// knowledgeOptionalString carries a non-nil Go string as a present scalar.
+func knowledgeOptionalString(value *string) knowledgeOptional {
+	if value == nil {
+		return knowledgeOptional{}
+	}
+	return knowledgeOptional{text: *value, known: true}
 }
 
 // renderKnowledgeDocument renders a page as a markdown document: frontmatter
@@ -151,8 +182,8 @@ func renderKnowledgeDocument(fields []knowledgeField, body string, noticeWhenEmp
 // document and name the question they answer.
 func renderKnowledgeIndex(roots []KnowledgeNode) string {
 	frontmatter := renderKnowledgeFrontmatter([]knowledgeField{
-		{key: "type", value: "index"},
-		{key: "title", value: "Knowledge base"},
+		{key: "type", value: "index", present: true},
+		{key: "title", value: "Knowledge base", present: true},
 	})
 	lines := []string{frontmatter, "", "# Knowledge base", ""}
 	var walk func(nodes []KnowledgeNode, depth int)
@@ -185,8 +216,8 @@ func renderKnowledgeIndex(roots []KnowledgeNode) string {
 // never carries an empty history.
 func renderKnowledgeLog(title string, entries []storage.MentalModelHistoryEntry) string {
 	frontmatter := renderKnowledgeFrontmatter([]knowledgeField{
-		{key: "type", value: "log"},
-		{key: "title", value: title + " \u2014 history"},
+		{key: "type", value: "log", present: true},
+		{key: "title", value: title + " \u2014 history", present: true},
 	})
 	lines := []string{frontmatter, "", "# " + title + " \u2014 history", ""}
 	if len(entries) == 0 {

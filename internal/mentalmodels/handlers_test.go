@@ -254,7 +254,10 @@ func TestMentalModelTriggerValidationAndEcho(t *testing.T) {
 	if err := json.Unmarshal(got.Body.Bytes(), &model); err != nil {
 		t.Fatal(err)
 	}
-	if model.Trigger["mode"] != "delta" || model.Trigger["keep_trace"] != true {
+	if mode, _ := model.Trigger.Value("mode"); mode != "delta" {
+		t.Fatalf("trigger not echoed: %+v", model.Trigger)
+	}
+	if keepTrace, _ := model.Trigger.Value("keep_trace"); keepTrace != true {
 		t.Fatalf("trigger not echoed: %+v", model.Trigger)
 	}
 
@@ -279,7 +282,10 @@ func TestMentalModelTriggerValidationAndEcho(t *testing.T) {
 	if err := json.Unmarshal(patched.Body.Bytes(), &model); err != nil {
 		t.Fatal(err)
 	}
-	if model.Trigger["mode"] != "delta" || model.Trigger["refresh_after_consolidation"] != true {
+	if mode, _ := model.Trigger.Value("mode"); mode != "delta" {
+		t.Fatalf("trigger patch did not overlay: %+v", model.Trigger)
+	}
+	if after, _ := model.Trigger.Value("refresh_after_consolidation"); after != true {
 		t.Fatalf("trigger patch did not overlay: %+v", model.Trigger)
 	}
 }

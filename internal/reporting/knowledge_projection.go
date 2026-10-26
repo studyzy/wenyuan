@@ -216,7 +216,12 @@ func knowledgeDocFields(node storage.KnowledgeNode, model storage.MentalModel) [
 	if !model.LastRefreshedAt.IsZero() {
 		timestamp = httpx.FormatTimestamp(model.LastRefreshedAt)
 	}
-	return knowledgeDocumentFields(node.ID, pageType.Type, node.Title, model.SourceQuery, timestamp, pageType.DisplayTags)
+	// The description is the mental model's source_query, which the store hands
+	// back as a string: absent and empty are the same thing at this layer. The
+	// reference renders the key for both (its mapping carries "" rather than
+	// None), and the schema records no separate "unset" state to distinguish.
+	description := knowledgeOptional{text: model.SourceQuery, known: true}
+	return knowledgeDocumentFields(node.ID, pageType.Type, node.Title, description, timestamp, pageType.DisplayTags)
 }
 
 // writeKnowledgePage renders a page as a markdown document, adding the
@@ -232,7 +237,7 @@ func writeKnowledgePage(w http.ResponseWriter, r *http.Request, node storage.Kno
 		ID: node.ID, Name: node.Title, Type: pageType.Type,
 		Description: description, Tags: pageType.DisplayTags, Timestamp: timestamp,
 		Body:     body,
-		Markdown: renderKnowledgeDocument(knowledgeDocumentFields(node.ID, pageType.Type, node.Title, derefString(description), derefString(timestamp), pageType.DisplayTags), bodyText, true),
+		Markdown: renderKnowledgeDocument(knowledgeDocumentFields(node.ID, pageType.Type, node.Title, knowledgeOptionalString(description), derefString(timestamp), pageType.DisplayTags), bodyText, true),
 	})
 }
 

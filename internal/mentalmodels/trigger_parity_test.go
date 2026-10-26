@@ -1,6 +1,7 @@
 package mentalmodels
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -201,7 +202,7 @@ func TestTriggerBooleanMembersTakeLaxCoercion(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
 				t.Fatal(err)
 			}
-			if got := model.Trigger[tc.member]; got != tc.want {
+			if got, _ := model.Trigger.Value(tc.member); got != tc.want {
 				t.Fatalf("%s = %#v, want %#v", tc.member, got, tc.want)
 			}
 		})
@@ -246,8 +247,9 @@ func TestTriggerIntegerMembersTakeNumericStrings(t *testing.T) {
 		"recall_max_tokens":                      7,
 		"reflect_search_observations_max_tokens": 9,
 	} {
-		if got, _ := model.Trigger[member].(float64); got != want {
-			t.Fatalf("%s = %#v, want %v", member, model.Trigger[member], want)
+		value, _ := model.Trigger.Value(member)
+		if got, _ := value.(float64); got != want {
+			t.Fatalf("%s = %#v, want %v", member, value, want)
 		}
 	}
 }
@@ -374,10 +376,10 @@ func TestTriggerIntegerMembersReadBooleansAsNumbers(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
 			t.Fatal(err)
 		}
-		got, _ := model.Trigger["min_refresh_interval_seconds"].(float64)
+		value, _ := model.Trigger.Value("min_refresh_interval_seconds")
+		got, _ := value.(float64)
 		if got != want {
-			t.Fatalf("min_refresh_interval_seconds from %s = %#v, want %v",
-				raw, model.Trigger["min_refresh_interval_seconds"], want)
+			t.Fatalf("min_refresh_interval_seconds from %s = %#v, want %v", raw, value, want)
 		}
 	}
 }
@@ -397,8 +399,9 @@ func TestTriggerIntegerMembersKeepLargeValues(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := model.Trigger["min_refresh_interval_seconds"].(float64); got != 2048 {
-		t.Fatalf("min_refresh_interval_seconds = %#v, want 2048", model.Trigger["min_refresh_interval_seconds"])
+	value, _ := model.Trigger.Value("min_refresh_interval_seconds")
+	if got, _ := value.(float64); got != 2048 {
+		t.Fatalf("min_refresh_interval_seconds = %#v, want 2048", value)
 	}
 }
 
@@ -423,12 +426,11 @@ func TestTriggerScheduleMembersAreExclusive(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
 		t.Fatal(err)
 	}
-	if model.Trigger["refresh_cron"] != nil {
-		t.Fatalf("refresh_cron = %#v, want null: enabling consolidation replaces a schedule",
-			model.Trigger["refresh_cron"])
+	if cron, _ := model.Trigger.Value("refresh_cron"); cron != nil {
+		t.Fatalf("refresh_cron = %#v, want null: enabling consolidation replaces a schedule", cron)
 	}
-	if model.Trigger["refresh_after_consolidation"] != true {
-		t.Fatalf("refresh_after_consolidation = %#v, want true", model.Trigger["refresh_after_consolidation"])
+	if after, _ := model.Trigger.Value("refresh_after_consolidation"); after != true {
+		t.Fatalf("refresh_after_consolidation = %#v, want true", after)
 	}
 }
 
@@ -476,12 +478,133 @@ func TestTriggerMergeStoresExplicitNulls(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, member := range []string{"refresh_cron", "fact_types"} {
-		value, present := model.Trigger[member]
+		value, present := model.Trigger.Value(member)
 		if !present {
 			t.Fatalf("%s is absent, want an explicit null: the merge states it", member)
 		}
 		if value != nil {
 			t.Fatalf("%s = %#v, want null", member, value)
 		}
+	}
+}
+
+// The trigger reaches the wire with its seventeen members in the order the
+// reference's model declares them, not in a Go map's sorted order. The reference
+// hands its response model to the framework, which serializes fields in
+// declaration order, so a byte comparison of the two answers differed on every
+// trigger key before this was pinned.
+func TestTriggerRendersInDeclarationOrder(t *testing.T) {
+	mux := newTriggerServer(t)
+	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/mental-models/mm-1", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Trigger json.RawMessage `json:"trigger"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var members []struct{ name string }
+	decoder := json.NewDecoder(bytes.NewReader(envelope.Trigger))
+	if _, err := decoder.Token(); err != nil {
+		t.Fatalf("trigger is not an object: %s", envelope.Trigger)
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		name, _ := key.(string)
+		members = append(members, struct{ name string }{name})
+	}
+	want := []string{
+		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
+		"min_refresh_interval_seconds", "fact_types", "exclude_mental_models",
+		"exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks",
+		"recall_max_tokens", "recall_chunks_max_tokens",
+		"reflect_search_observations_max_tokens",
+		"reflect_search_observations_include_entities", "response_schema", "keep_trace",
+	}
+	if len(members) != len(want) {
+		t.Fatalf("trigger has %d members, want %d: %s", len(members), len(want), envelope.Trigger)
+	}
+	for i, wantName := range want {
+		if members[i].name != wantName {
+			t.Fatalf("trigger member %d = %q, want %q (full: %s)", i, members[i].name, wantName, envelope.Trigger)
+		}
+	}
+}
+
+// The model's own field validators rewrite what they accept before it is stored,
+// so the read-back is not always what was written: refresh_cron is stripped (a
+// whitespace-only expression becomes null) and every tag_groups leaf gains the
+// `match`/`resolve` defaults it declares. Verified against the live reference on
+// 2026-10-26.
+func TestTriggerMembersAreProjectedThroughTheirValidators(t *testing.T) {
+	mux := newTriggerServer(t)
+	if rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"trigger":{"refresh_cron":"  0 3 * * *  ",`+
+			`"tag_groups":[{"tags":["a"]},{"not":{"tags":["x"],"match":"all"}}]}}`); rec.Code != http.StatusOK {
+		t.Fatalf("patch: %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/mental-models/mm-1", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: %d (%s)", rec.Code, rec.Body.String())
+	}
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	if cron, _ := model.Trigger.Value("refresh_cron"); cron != "0 3 * * *" {
+		t.Fatalf("refresh_cron = %#v, want the stripped expression", cron)
+	}
+	groups, _ := model.Trigger.Value("tag_groups")
+	list, ok := groups.([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("tag_groups = %#v", groups)
+	}
+	leaf, _ := list[0].(map[string]any)
+	if leaf["match"] != "any_strict" || leaf["resolve"] != "exact" {
+		t.Fatalf("a leaf must carry its declared defaults, got %#v", leaf)
+	}
+	compound, _ := list[1].(map[string]any)
+	inner, _ := compound["not"].(map[string]any)
+	if inner["match"] != "all" || inner["resolve"] != "exact" {
+		t.Fatalf("a nested leaf must carry its stated mode and default resolution, got %#v", inner)
+	}
+	// The wire spelling of a compound group is its alias, never the field name.
+	encoded, err := json.Marshal(compound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(encoded, []byte(`{"not":`)) {
+		t.Fatalf("compound group rendered as %s, want the `not` alias", encoded)
+	}
+}
+
+// A trigger member written as JSON null reads back as that member's default, not
+// as null: the reference validates the stored object into its model, whose
+// non-optional fields substitute their declared default for a null.
+func TestTriggerNullMembersReadBackAsDefaults(t *testing.T) {
+	mux := newTriggerServer(t)
+	if rec := send(mux, http.MethodPatch, "/v1/default/banks/b1/mental-models/mm-1",
+		`{"trigger":{"refresh_cron":"9 9 * * *"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec := send(mux, http.MethodGet, "/v1/default/banks/b1/mental-models/mm-1", "")
+	var model Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatal(err)
+	}
+	if mode, _ := model.Trigger.Value("mode"); mode != "full" {
+		t.Fatalf("mode = %#v, want the default %q", mode, "full")
+	}
+	if keep, _ := model.Trigger.Value("keep_trace"); keep != false {
+		t.Fatalf("keep_trace = %#v, want the default false", keep)
 	}
 }

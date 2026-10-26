@@ -423,36 +423,22 @@ func parseBankQuery(r *http.Request) (storage.BankQuery, *httpx.ValidationFailur
 // A value beyond that bound is still the framework's item, reported against
 // the raw query text.
 //
-// The second result reports an unusable value the reference does not refuse:
-// an integer too large for its own 64-bit comparison then reaches its bounded
-// page slice, which Python answers as an empty page rather than an error. It
-// reports -1 for that case, and the caller leaves the page size at the
-// reference's own default.
+// An integer wider than int64 is not refused: it saturates, which is the
+// reference's own answer — a limit that wide keeps every match and an offset
+// that wide starts past the end, because its slice does exactly that with a
+// Python int. The response still reports the number the caller asked for.
 func parseNonNegativeParam(name, raw string) (int, *httpx.ValidationError) {
-	trimmed := strings.TrimSpace(raw)
-	parsed, err := strconv.Atoi(trimmed)
-	if err != nil {
-		// A syntactically valid integer that does not fit an int is not a
-		// parse failure for the reference: it is a number its `ge=0` check
-		// passes and its page slice tolerates.
-		if isDecimalInteger(trimmed) && !strings.HasPrefix(trimmed, "-") {
-			// Wider than any page: a limit that wide keeps every match, an
-			// offset that wide starts past the end. The reference's own slice
-			// does exactly that with a Python int.
-			if name == "offset" {
-				return -2, nil
-			}
-			return -1, nil
-		}
-		item := httpx.TypeMismatch("int_parsing", []string{"query", name}, raw)
-		return 0, &item
+	// The grammar is the framework's, so it goes through the shared reader
+	// rather than strconv: `1_0`, `5.0` and `" 1 "` are 10, 5 and 1 to the
+	// reference, and a negative value too large for int64 is a `ge` violation
+	// rather than a parse failure. Both were wrong here — `1_0` was refused and
+	// `-99999999999999999999` reported `int_parsing`.
+	value, item, ok := httpx.ParseQueryInt(raw, name, 0, 0)
+	if !ok {
+		failure := item
+		return 0, &failure
 	}
-	if parsed < 0 {
-		// The framework reports the raw query string as the item's input.
-		item := httpx.GreaterThanEqual([]string{"query", name}, raw, 0)
-		return 0, &item
-	}
-	return parsed, nil
+	return value, nil
 }
 
 // isDecimalInteger reports whether text is an optionally signed run of decimal

@@ -191,8 +191,14 @@ func itemContentErrors(index int, item RetainItem) []httpx.ValidationError {
 		return []httpx.ValidationError{httpx.Missing(contentLoc, item.rawObject())}
 	}
 	if len(content.blockIssues) > 0 {
+		// The string arm's item echoes the body the caller wrote, member order
+		// included, the way the reference's own decoder carries it.
+		stringArmInput := content.rawValue()
+		if len(content.rawJSON) > 0 {
+			stringArmInput = content.rawJSON
+		}
 		items := []httpx.ValidationError{httpx.TypeMismatch("string_type",
-			append(clonePath(contentLoc), "str"), content.rawValue())}
+			append(clonePath(contentLoc), "str"), stringArmInput)}
 		for _, issue := range content.blockIssues {
 			loc := append(clonePath(contentLoc), issue.Loc...)
 			items = append(items, httpx.ValidationItem(issue.Kind, loc, issue.Msg, issue.Input, issue.Ctx))
@@ -205,7 +211,12 @@ func itemContentErrors(index int, item RetainItem) []httpx.ValidationError {
 		return []httpx.ValidationError{httpx.ValueError(contentLoc, []any{}, "content cannot be empty")}
 	}
 	if !content.CarriesContent() {
-		return []httpx.ValidationError{httpx.ValueError(contentLoc, content.rawValue(), "content cannot be empty")}
+		// The item echoes the value the caller wrote, member order included.
+		blankInput := content.rawValue()
+		if len(content.rawJSON) > 0 {
+			blankInput = content.rawJSON
+		}
+		return []httpx.ValidationError{httpx.ValueError(contentLoc, blankInput, "content cannot be empty")}
 	}
 	return nil
 }
@@ -259,33 +270,6 @@ func itemFieldErrors(index int, item RetainItem) []httpx.ValidationError {
 		items = append(items, httpx.Literal(path("update_mode"), item.updateModeInput, updateModeLiteral))
 	}
 	return items
-}
-
-// blockedWriteFailure reports the unprocessable-entity failure for a write that
-// carries inline image content against a write model that cannot read images.
-//
-// Failing before a byte is written is deliberate: extracting from the caption
-// and quietly ignoring the image would store a document that looks retained
-// while the information the caller cared about is gone. A vision-capable write
-// model accepts the images and returns nil.
-func blockedWriteFailure(req RetainRequest, visionEnabled bool) *httpx.ValidationFailure {
-	if visionEnabled {
-		return nil
-	}
-	carriesImage := false
-	for _, item := range req.Items {
-		if item.Content.HasImage() {
-			carriesImage = true
-			break
-		}
-	}
-	if !carriesImage {
-		return nil
-	}
-	return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
-		httpx.ValueError([]string{"body", "items", "content"}, nil,
-			"image content is not supported by the configured write model"),
-	}}
 }
 
 // strategyGroupCount counts the distinct named strategies across items; an

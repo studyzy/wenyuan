@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,3 +103,46 @@ func TestDisabledLLMHealthOutranksMissingBank(t *testing.T) {
 		}
 	}
 }
+
+// An enabled LLM health check answers for a bank that does not exist.
+//
+// The reference's check_bank_llm (engine/memory_engine.py:16346-16392) probes
+// the three deployment-level LLM configurations and never calls
+// _require_bank_exists — the configs are process settings, not bank rows — so
+// an unknown bank gets the same 200 body a known one does. Answering 404 there
+// (which this route used to do) contradicts the reference; only the empty bank
+// id is still the shared missing-bank 404.
+func TestEnabledLLMHealthAnswersForAnUnknownBank(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	h := NewHandlers(store)
+	h.BankLLMHealthEnabled = true
+	h.Prober = stubProber{}
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/no-such-bank/health/llm", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown bank: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"bank_id":"no-such-bank"`) {
+		t.Fatalf("body = %s, want the requested bank id echoed", body)
+	}
+	for _, operation := range []string{"retain", "consolidation", "reflect"} {
+		if !strings.Contains(body, `"operation":"`+operation+`"`) {
+			t.Fatalf("body = %s, want operation %q", body, operation)
+		}
+	}
+	// Probing must not create the bank as a side effect.
+	if _, err := store.GetBank(context.Background(), "no-such-bank"); err == nil {
+		t.Fatal("the health probe created the bank")
+	}
+}
+
+// stubProber reports a healthy model path without calling a provider.
+type stubProber struct{}
+
+func (stubProber) Probe(context.Context) error { return nil }

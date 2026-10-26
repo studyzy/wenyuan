@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -18,8 +17,11 @@ import (
 // observation at its scope.
 //
 // The scope is stored as the observation's own tags, which is the reference's
-// representation and what recall already filters on, plus a metadata mirror so
-// the observation-scope listing can report it.
+// representation and what recall already filters on. Nothing else carries it:
+// the reference's observation insert names only id, bank_id, text, fact_type,
+// embedding, proof_count, source_memory_ids, tags and the temporal columns
+// (engine/memories/pg/consolidation.py:268-352), so a produced observation's
+// metadata is the column default `{}` and the scope listing reads the tags.
 
 // ConsolidationScopeStore is the optional capability a store provides to
 // support observation scoping. The base Store interface's consolidation methods
@@ -64,16 +66,6 @@ func sameScope(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// scopeMetadata mirrors an observation's scope into the metadata key the
-// observation-scope listing reads. An untagged scope records nothing, which the
-// listing reports as "default".
-func scopeMetadata(scope []string) map[string]any {
-	if len(scope) == 0 {
-		return nil
-	}
-	return map[string]any{"scope": strings.Join(scope, ",")}
 }
 
 // ConsolidationObservationsInScope returns the observations whose tag scope
@@ -139,14 +131,16 @@ func (s *MemoryStore) CreateObservationInScope(ctx context.Context, bankID, text
 		return "", err
 	}
 	scope = canonicalScope(scope)
-	unit, err := s.UpsertUnit(ctx, MemoryUnit{
+	observation := MemoryUnit{
 		BankID: bankID, Text: text, FactType: TypeObservation,
-		Tags: scope, Metadata: scopeMetadata(scope),
-		Embedding: embedObservation(ctx, s.observationEmbedderRef(), text),
+		Tags: scope,
 		// An observation has no context column value of its own; see
 		// CreateObservation.
 		ContextAbsent: true,
-	})
+	}
+	s.sourceObservationBoundsLocked(bankID, sourceIDs).ApplyTo(&observation)
+	observation.Embedding = embedObservation(ctx, s.observationEmbedderRef(), text)
+	unit, err := s.UpsertUnit(ctx, observation)
 	if err != nil {
 		return "", err
 	}
@@ -218,11 +212,16 @@ func (s *PostgresStore) CreateObservationInScope(ctx context.Context, bankID, te
 	scope = canonicalScope(scope)
 	unit := MemoryUnit{
 		BankID: bankID, Text: text, FactType: TypeObservation,
-		Tags: scope, Metadata: scopeMetadata(scope),
+		Tags: scope,
 		// An observation has no context column value of its own; see
 		// CreateObservation.
 		ContextAbsent: true,
 	}
+	bounds, err := s.sourceObservationBounds(ctx, bankID, sourceIDs)
+	if err != nil {
+		return "", err
+	}
+	bounds.ApplyTo(&unit)
 	unit.Embedding = embedObservation(ctx, s.observationEmbedder, text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {

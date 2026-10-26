@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,9 +24,15 @@ import (
 
 // ListMemories returns one page of a bank's memory units.
 func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
-	// The reference validates the typed query before the handler (and its bank
-	// lookup) runs, so an out-of-enum or malformed parameter is the answer even
-	// when the bank is unknown.
+	// The framework validates the typed query members before the handler runs,
+	// and the handler's own first act is the bank lookup
+	// (engine/memory_engine.py:13216-13217). The store's validations of `state`,
+	// `entity_id`, `consolidation_state` and the time window are only reached
+	// after it, so an unknown bank answers 404 ahead of every store-side
+	// complaint — while the two framework-side members (`tags_match`,
+	// `time_field`, both `Literal`s), the two date parsers (evaluated with the
+	// handler's arguments, api/http.py:5892-5893) and the two bound integers
+	// answer first.
 	query := httpx.QueryParamsOf(r)
 	if _, present := query["tags_match"]; present {
 		tagsMatch := queryLast(r, "tags_match")
@@ -40,6 +47,26 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 			writeQueryEnumFailure(w, r, "time_field", timeField, memoryTimeFields)
 			return
 		}
+	}
+	start, ok := lastDateParam(w, r, "start_date")
+	if !ok {
+		return
+	}
+	end, ok := lastDateParam(w, r, "end_date")
+	if !ok {
+		return
+	}
+	limit, ok := nonNegativeIntParam(w, r, "limit", 100, memoryListLimitPlaceholder)
+	if !ok {
+		return
+	}
+	offset, ok := nonNegativeIntParam(w, r, "offset", 0, memoryListOffsetPlaceholder)
+	if !ok {
+		return
+	}
+	bankID, ok := h.requireBank(w, r)
+	if !ok {
+		return
 	}
 	if _, present := query["state"]; present {
 		state := queryLast(r, "state")
@@ -62,31 +89,11 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Invalid entity_id: '%s' is not a valid UUID", entityID)))
 		return
 	}
-	start, ok := lastDateParam(w, r, "start_date")
-	if !ok {
-		return
-	}
-	end, ok := lastDateParam(w, r, "end_date")
-	if !ok {
-		return
-	}
 	// The window is half-open [start, end): an inverted window is a bad request,
 	// not a silently empty page.
 	if start != nil && end != nil && !end.After(*start) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			"Invalid time window: end_date must be after start_date."))
-		return
-	}
-	limit, ok := nonNegativeIntParam(w, r, "limit", 100)
-	if !ok {
-		return
-	}
-	offset, ok := nonNegativeIntParam(w, r, "offset", 0)
-	if !ok {
-		return
-	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
 		return
 	}
 	tagsMatch := queryLast(r, "tags_match")
@@ -184,9 +191,18 @@ var memoryTimeFields = []string{"created_at", "updated_at", "mentioned_at", "occ
 // consolidationStates are the accepted consolidation_state values.
 var consolidationStates = []string{"failed", "pending", "done"}
 
+// The page bounds' placeholder numbers in the list query. The reference binds
+// bank_id, then limit, then offset (engine/memories/pg/curation.py:284-292), so
+// a value only the driver can reject is named by the position it occupies —
+// `$2` for limit, `$3` for offset.
+const (
+	memoryListLimitPlaceholder  = 2
+	memoryListOffsetPlaceholder = 3
+)
+
 // nonNegativeIntParam reads an optional integer query parameter with a default,
 // rejecting a malformed or negative value with the framework's 422 body.
-func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, def int) (int, bool) {
+func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, def, placeholder int) (int, bool) {
 	values, present := httpx.QueryPresent(r, name)
 	if !present || len(values) == 0 {
 		return def, true
@@ -214,7 +230,7 @@ func nonNegativeIntParam(w http.ResponseWriter, r *http.Request, name string, de
 		// it validates; only the driver's binding narrows it, and the route
 		// answers 500 with that driver error rather than a 422.
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, fmt.Sprintf(
-			"invalid input for query argument $2: %s (value out of int64 range)", raw)))
+			"invalid input for query argument $%d: %s (value out of int64 range)", placeholder, raw)))
 		return 0, false
 	}
 	value := int(parsed.Int64())
@@ -1069,6 +1085,16 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, badRequest))
 		return
 	}
+	// The request model declares entity_labels as a list of LabelGroups, so the
+	// framework validates it in the same pass as the content and refuses an
+	// invalid one before the handler runs. An empty `[]` is accepted and an
+	// absent member is absent, so only a supplied, non-empty list can fail.
+	if len(body.EntityLabels) > 0 {
+		if failure := dryRunEntityLabelFailure(body.EntityLabels); failure != nil {
+			httpx.WriteValidationFailure(w, failure)
+			return
+		}
+	}
 	contentValue := body.content()
 	contentText := contentValue.Flatten()
 
@@ -1275,8 +1301,19 @@ func (h *Handlers) PromptPreview(w http.ResponseWriter, r *http.Request) {
 		writeRequiredBodyFailure(w, r, err)
 		return
 	}
-	if len(raw) == 0 {
+	// A JSON `null` body is the same failure as no body at all: the reference's
+	// framework answers a required `body: Model` with the `missing` item whether
+	// the client sent nothing or sent `null`, and it does so before the handler
+	// runs.
+	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
 		writeRequiredBodyFailure(w, r, httpx.ErrEmptyBody)
+		return
+	}
+	// The reference declares this route's body as a pydantic model, so a
+	// non-object body is the framework's model_attributes_type item rather than
+	// a plain dict_type the Go decoder would name.
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
+		httpx.WriteValidationFailure(w, httpx.ModelAttributesFailure(raw))
 		return
 	}
 	var fields map[string]json.RawMessage

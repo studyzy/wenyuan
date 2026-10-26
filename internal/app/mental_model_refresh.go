@@ -139,9 +139,14 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	if err != nil {
 		return storage.MentalModel{}, failedRefresh(reasonUnexpectedError), err
 	}
-	if strings.TrimSpace(model.SourceQuery) == "" {
-		return storage.MentalModel{}, failedRefresh(reasonUnexpectedError), fmt.Errorf("%w: the mental model has no source query to re-run", errRefreshUnavailable)
-	}
+	// An empty source query is not a refusal. The reference binds whatever the
+	// model stores into the reflect call that drives a refresh
+	// (engine/memory_engine.py:17358 `source_query = mental_model["source_query"]`,
+	// passed as `query=` at :17420) with no emptiness guard anywhere on the path,
+	// and a knowledge page created with `source_query: ""` refreshes to
+	// completion there. Failing it instead records `last_refresh_failed_at` on the
+	// model, which the tree and the page read both show, and the operation stays
+	// failed forever.
 
 	// The watermark is captured before the run, not after: it records what this
 	// refresh could have seen, so a memory written while the run was in flight
@@ -193,16 +198,13 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 		// advances so a reader can tell a refresh that ran from one that never
 		// did. The memory watermark is deliberately left alone — the window was
 		// never read, so nothing has been seen.
-		reflectResult := map[string]any{
-			"text":            "",
-			"based_on":        map[string]any{},
-			"mental_models":   []any{},
-			"reflect_skipped": "no_sources_in_scope",
-			"outcome":         outcomeContentPreservedNoNewFacts,
-		}
+		//
+		// The payload is ordered the way the reference's is: text, outcome,
+		// based_on, the skip reason, then the empty mental_models placeholder.
+		reflectResult := storedReflectResponse("", outcomeContentPreservedNoNewFacts, "no_sources_in_scope", storage.ReflectOutcome{})
 		sourceQuery := model.SourceQuery
 		updated, err := r.store.UpdateMentalModel(ctx, bankID, modelID, storage.MentalModelPatch{
-			ReflectResult:            &reflectResult,
+			ReflectResult:            reflectResult,
 			LastRefreshedSourceQuery: &sourceQuery,
 		})
 		if err != nil {
@@ -259,7 +261,7 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	// The history snapshot carries what the write replaces, so a reader can
 	// diff the document against the version this refresh superseded.
 	previousContent := model.Content
-	previousReflect := model.ReflectResult
+	previousReflect := slimReflectResponse(model.ReflectResult)
 	// The grounding is recorded with the content it supports, so a later
 	// staleness check can ask which of these facts still exist. The payload is
 	// the reference's — text, based_on keyed by fact type, and an empty
@@ -267,7 +269,7 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	// "mental-models" key rather than twice — and it is what a GET reports as
 	// reflect_response, so the shape is observable.
 	refreshOutcome := refreshedOutcome(content, model.Content)
-	reflectResult := storedReflectResponse(outcome.Answer, refreshOutcome, outcome)
+	reflectResult := storedReflectResponse(outcome.Answer, refreshOutcome, "", outcome)
 	// The query this refresh ran is recorded with the content it produced: a
 	// later delta refresh compares it against the model's current source query
 	// and reads the whole scope when the topic has moved.
@@ -275,7 +277,7 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	updated, err := r.store.UpdateMentalModel(ctx, bankID, modelID, storage.MentalModelPatch{
 		Content:                  &content,
 		Observations:             &observations,
-		ReflectResult:            &reflectResult,
+		ReflectResult:            reflectResult,
 		LastRefreshedSourceQuery: &sourceQuery,
 	})
 	if err != nil {
@@ -494,46 +496,59 @@ func renderFacts(outcome storage.ReflectOutcome) []any {
 	return facts
 }
 
-// reflectResponseFactTypes is the fixed key set of a stored reflect_response's
-// based_on: the reference declares every arm of the union up front and appends
-// into them, so a type with no cited fact is an empty list rather than a missing
-// key. "mental-models" is hyphenated so it reads like the recall type it names.
+// reflectResponseFactTypes is the order a stored reflect_response's based_on
+// lists the fact types it ground the document on in. The reference builds the
+// map from what the reflect run cited — a type with no cited fact contributes no
+// key at all — and the framework serializes it with insertion order, which is
+// the order the run's own `based_on` dict was built in. These six are the
+// reference's, in its order, and "mental-models" is hyphenated so it reads like
+// the recall type it names.
 var reflectResponseFactTypes = []string{
-	"world", "experience", "opinion", "observation", "mental-models", "directives",
+	"world", "opinion", "directives", "experience", "observation", "mental-models",
 }
 
 // storedReflectResponse builds the reflect_response payload a refresh stores: the
 // answer it produced, the evidence that grounded it keyed by fact type, an empty
-// mental_models list, and the outcome that says what the write did.
+// mental_models list, and the outcome that says what the write did — plus the
+// skip reason when the run read nothing.
 //
 // The mental_models list stays empty on purpose. The reference fills based_on's
 // "mental-models" key with the pages the run cited and keeps this list as a
 // compatibility placeholder, so a model cited as evidence appears once, under
 // the key that names its type.
-func storedReflectResponse(text, outcomeName string, outcome storage.ReflectOutcome) map[string]any {
-	return map[string]any{
-		"text":          text,
-		"based_on":      renderFactsByType(outcome),
-		"mental_models": []any{},
-		"outcome":       outcomeName,
+func storedReflectResponse(text, outcomeName, skip string, outcome storage.ReflectOutcome) *map[string]any {
+	based := make(map[string]any, len(reflectResponseFactTypes))
+	for _, group := range renderFactsByType(outcome) {
+		based[group.factType] = group.facts
 	}
+	stored := map[string]any{
+		"text":          text,
+		"outcome":       outcomeName,
+		"based_on":      based,
+		"mental_models": []any{},
+	}
+	if skip != "" {
+		stored["reflect_skipped"] = skip
+	}
+	return &stored
+}
+
+// reflectFactGroup is one fact type's cited evidence, before it is folded into
+// the stored map.
+type reflectFactGroup struct {
+	factType string
+	facts    []any
 }
 
 // renderFactsByType groups the run's cited evidence into the reference's stored
-// based_on shape: one list per fact type, every key present, each entry carrying
-// the fact's id, text, type and context.
-func renderFactsByType(outcome storage.ReflectOutcome) map[string][]any {
-	based := make(map[string][]any, len(reflectResponseFactTypes))
-	for _, factType := range reflectResponseFactTypes {
-		based[factType] = []any{}
-	}
+// based_on shape: one list per fact type the run cited, in the reference's
+// declaration order, each entry carrying the fact's id, text, type and context.
+// A fact type the run cited nothing from contributes no key at all — the
+// reference builds this dict from what the reflect run returned.
+func renderFactsByType(outcome storage.ReflectOutcome) []reflectFactGroup {
+	byType := make(map[string][]any, len(reflectResponseFactTypes))
 	appendFact := func(factType string, entry map[string]any) {
-		if _, known := based[factType]; !known {
-			// A type outside the fixed set has no arm to append into; the
-			// reference's dict lookup drops it the same way.
-			return
-		}
-		based[factType] = append(based[factType], entry)
+		byType[factType] = append(byType[factType], entry)
 	}
 	for _, fact := range outcome.Facts {
 		appendFact(fact.Type, map[string]any{
@@ -550,5 +565,41 @@ func renderFactsByType(outcome storage.ReflectOutcome) map[string][]any {
 			"id": directive.ID, "text": directive.Content, "type": "directives", "context": nil,
 		})
 	}
-	return based
+	out := make([]reflectFactGroup, 0, len(byType))
+	for _, factType := range reflectResponseFactTypes {
+		if facts, present := byType[factType]; present {
+			out = append(out, reflectFactGroup{factType: factType, facts: facts})
+		}
+	}
+	return out
+}
+
+// historyReflectKeys are the two members the reference keeps in a history
+// snapshot's previous_reflect_response: the evidence that grounded the version
+// (based_on), and how that version was produced (trace, present only when
+// trigger.keep_trace was on).
+var historyReflectKeys = []string{"based_on", "trace"}
+
+// slimReflectResponse is the slice of a reflect_response the reference writes
+// into a mental model's history entry (memory_engine.py:18674-18695): only
+// `based_on` and `trace` survive, because the full payload — text, fact bodies,
+// scoring, embeddings — can be hundreds of kilobytes and is persisted per entry.
+//
+// The slice is observable: a history read reports exactly the members this
+// returns. An entry with neither member is stored as null, which is what the
+// reference's `slim or None` produces.
+func slimReflectResponse(previous map[string]any) map[string]any {
+	if previous == nil {
+		return nil
+	}
+	slim := make(map[string]any, len(historyReflectKeys))
+	for _, key := range historyReflectKeys {
+		if value, present := previous[key]; present && value != nil {
+			slim[key] = value
+		}
+	}
+	if len(slim) == 0 {
+		return nil
+	}
+	return slim
 }

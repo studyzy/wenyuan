@@ -101,6 +101,22 @@ type Outcome struct {
 	// StructuredOutputError reports why an asked-for extraction produced no
 	// output, so a failed reshape cannot read as an empty one.
 	StructuredOutputError string
+	// LLMCalls is one entry per model call the run made, in the order they
+	// happened, each with the scope that identifies it and the wall time it
+	// took. The reference records the same list as `trace.llm_calls`
+	// (engine/reflect/agent.py, `ReflectLLMCall(scope=..., duration_ms=...)`),
+	// so a caller can see where a slow reflection spent its time.
+	LLMCalls []LLMCall
+}
+
+// LLMCall is one model call the reflection made.
+type LLMCall struct {
+	// Scope names the phase the call belongs to. The reference's own scopes are
+	// `agent_<n>` for the nth loop turn, `final` for the synthesis call, and a
+	// dedicated scope for each auxiliary reshape.
+	Scope string
+	// DurationMs is the call's wall time in whole milliseconds.
+	DurationMs int
 }
 
 // Retrieval is what the loop needs from the store. It is an interface so the
@@ -202,6 +218,9 @@ type Loop struct {
 	// a later text-only turn a legitimate stop rather than a provider that
 	// cannot drive the loop at all.
 	sawToolCall bool
+	// llmCalls records every model call the run made, in order, for the trace's
+	// `llm_calls` list.
+	llmCalls []LLMCall
 	// documentAnswer is the markdown a document-mode `done` call produced, held
 	// until the loop stops.
 	documentAnswer string
@@ -277,6 +296,7 @@ func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 		}
 	}
 	outcome.Evidence = append([]Evidence(nil), l.evidence...)
+	outcome.LLMCalls = append([]LLMCall(nil), l.llmCalls...)
 	// In document mode the `done` call already carried the answer as a
 	// structure, so there is nothing to compose or extend: reading markdown
 	// back out of free text would be exactly the round trip this mode exists
@@ -350,10 +370,21 @@ func choiceLabel(choice *provider.ToolSelectionPolicy) string {
 	return choice.Mode
 }
 
+// callModel runs one provider call, timing it and recording the scope it ran
+// under. Every model call the loop makes goes through here, so the trace's
+// `llm_calls` list is exactly the set of calls that happened rather than a
+// subset someone remembered to instrument.
+func (l *Loop) callModel(ctx context.Context, scope string, request provider.CompletionRequest) (provider.CompletionResult, error) {
+	started := time.Now()
+	response, err := l.provider.Complete(ctx, request)
+	l.llmCalls = append(l.llmCalls, LLMCall{Scope: scope, DurationMs: int(time.Since(started).Milliseconds())})
+	return response, err
+}
+
 // step runs one turn: ask the model what to do, then do it.
 func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	turn := Turn{Iteration: iteration}
-	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
+	response, err := l.callModel(ctx, fmt.Sprintf("agent_%d", iteration), provider.CompletionRequest{
 		Messages:   l.messages(ctx),
 		Tools:      l.offeredTools(),
 		ToolChoice: l.toolChoice(),
@@ -772,7 +803,7 @@ func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 		{Role: "system", Content: buildFinalSystemPrompt(l.retrieval.Directives(ctx), l.profile())},
 		{Role: "user", Content: buildFinalPrompt(l.cfg.Question, l.renderEvidence(), l.cfg.MaxTokens)},
 	}
-	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
+	response, err := l.callModel(ctx, "final", provider.CompletionRequest{
 		Messages:  messages,
 		Scope:     "reflect",
 		MaxTokens: l.synthesisMaxTokens(),
@@ -854,7 +885,7 @@ func (l *Loop) extractStructured(ctx context.Context, outcome *Outcome, answer s
 		outcome.StructuredOutputError = err.Error()
 		return nil
 	}
-	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
+	response, err := l.callModel(ctx, "structured", provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: structuredExtractionSystemPrompt},
 			{Role: provider.RoleUser, Content: prompt},
@@ -906,7 +937,7 @@ func (l *Loop) rewriteToLength(ctx context.Context, outcome *Outcome, answer str
 	if l.cfg.MaxTokens <= 0 || storage.CountTokens(answer) <= l.cfg.MaxTokens {
 		return answer, nil
 	}
-	response, err := l.provider.Complete(ctx, provider.CompletionRequest{
+	response, err := l.callModel(ctx, "rewrite", provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: rewriteSystem},
 			{Role: provider.RoleUser, Content: fmt.Sprintf("Target budget: %d tokens.\n\nText to rewrite:\n%s", l.cfg.MaxTokens, answer)},

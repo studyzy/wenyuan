@@ -179,7 +179,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 			delivery.LastResponseBody = &value
 		}
 		if lastAttempt.Valid {
-			if parsed, err := parseDeliveryCursor(lastAttempt.String); err == nil {
+			if parsed, err := parseDeliveryTimestamp(lastAttempt.String); err == nil {
 				delivery.LastAttemptAt = &parsed
 			}
 		}

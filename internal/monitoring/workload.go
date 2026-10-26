@@ -341,16 +341,18 @@ func (r *WorkloadRegistry) ObserveLoopStall(seconds float64) {
 	r.observe(EventLoopStallDurationName, helpEventLoopStallDuration, SDKDefaultBuckets, nil, seconds)
 }
 
-// declareLoopStall creates the stall counter's zero-valued series without
-// recording a stall. It is what makes the family visible on a loop that never
-// stalled: the reference declares the stall instruments when it builds its
-// collector, before any stall happens, so its exposition carries
-// `hindsight_event_loop_stalls_total 0.0`. Without the declaration the family
-// is absent from a healthy scrape altogether — a missing series rather than a
-// zero one, so a rule reading it sees no data where the reference reports no
-// stalls.
+// declareLoopStall creates the stall instruments' zero-valued series without
+// recording a stall. It is what makes the families visible on a loop that never
+// stalled: the reference declares the stall counter and its duration histogram
+// together when it builds its collector (metrics.py:623-632), before any stall
+// happens, so its exposition carries `hindsight_event_loop_stalls_total 0.0` and
+// the histogram's all-zero bucket/count/sum series. Without the declaration the
+// families are absent from a healthy scrape altogether — a missing series rather
+// than a zero one, so a rule reading them sees no data where the reference
+// reports none.
 func (r *WorkloadRegistry) declareLoopStall() {
 	r.add(EventLoopStallsName, helpEventLoopStalls, nil, 0)
+	r.observe(EventLoopStallDurationName, helpEventLoopStallDuration, SDKDefaultBuckets, nil, 0)
 }
 
 // DeclareEventLoopStall publishes the stall counter's zero-valued series on the

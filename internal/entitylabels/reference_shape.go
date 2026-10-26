@@ -912,3 +912,106 @@ func reorderFields(fields any) any {
 	}
 	return out
 }
+
+// Problem is one entry of the reference's validation report for an
+// entity_labels value, with the pieces a route renders as a framework
+// validation item: the model's member path, the error kind, the message the
+// library words, the value it refused, and the `ctx` a Literal mismatch
+// carries.
+type Problem struct {
+	// Path is the member path inside the rejected model, dot-separated
+	// ("values.0.value"); empty when the model itself was rejected.
+	Path string
+	// Kind is the reference's error type ("missing", "literal_error", ...).
+	Kind string
+	// Msg is the message the reference prints for the error.
+	Msg string
+	// Input is the value the caller supplied.
+	Input any
+	// Ctx is the error's context object, when the reference carries one.
+	Ctx map[string]any
+}
+
+// Problems returns the reference's validation report for a raw entity_labels
+// value as structured problems, or nil when the model accepts it. It is the
+// item-level counterpart of ShapeProblems: a route whose request model declares
+// entity_labels validates it in the same single pass as its other members, and
+// reports each problem at the model's own path.
+func Problems(raw any) []Problem {
+	parsed, ok := Normalize(raw)
+	if !ok || parsed == nil {
+		return nil
+	}
+	groups, _ := parsed.([]any)
+	var problems []problem
+	for _, entry := range groups {
+		object, isObject := entry.(map[string]any)
+		if !isObject {
+			problems = append(problems, problem{
+				loc:   "",
+				kind:  "model_type",
+				msg:   "Input should be a valid dictionary or instance of LabelGroup",
+				input: entry,
+			})
+			break
+		}
+		_, groupProblems := checkGroup(migrate(object))
+		if len(groupProblems) > 0 {
+			problems = append(problems, groupProblems...)
+			break
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	out := make([]Problem, 0, len(problems))
+	for _, p := range problems {
+		out = append(out, Problem{
+			Path: p.loc,
+			Kind: p.kind,
+			Msg:  p.msg,
+			// A `missing` item echoes the object the member was missing from,
+			// which the reference's model has already migrated and serialised:
+			// its declared members in order, with the legacy migration's
+			// `type` filled in.
+			Input: problemInput(p),
+			Ctx:   problemContext(p),
+		})
+	}
+	return out
+}
+
+// problemInput is the value a problem's item carries. A `missing` member reports
+// the model instance the member was missing from rather than the raw object, so
+// it is the migrated group with its declared members present, in declaration
+// order.
+func problemInput(p problem) any {
+	if p.kind != "missing" {
+		return p.input
+	}
+	object, ok := p.input.(map[string]any)
+	if !ok {
+		return p.input
+	}
+	group, problems := checkGroup(migrate(object))
+	if group == nil || len(problems) > 0 {
+		return p.input
+	}
+	return group.render()
+}
+
+// problemContext is the `ctx` object the reference attaches to a problem, which
+// only a Literal mismatch carries.
+func problemContext(p problem) map[string]any {
+	if p.kind != "literal_error" {
+		return nil
+	}
+	expected := ""
+	if _, msg, found := strings.Cut(p.msg, "Input should be "); found {
+		expected = msg
+	}
+	if expected == "" {
+		return nil
+	}
+	return map[string]any{"expected": expected}
+}

@@ -456,11 +456,21 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string)
 	if current.BankID != bankID {
 		return Operation{}, ErrOperationNotFound
 	}
+	// A payload-less batch_retain parent is decided before the status gate. The
+	// reference branches on `operation_type == 'batch_retain' and task_payload is
+	// None` first (engine/memory_engine.py:21510-21567); this store marks such a
+	// parent with `result_metadata.is_parent`, so that is the test here: retrying such a parent
+	// means re-queuing its failed or cancelled children and reviving it over them,
+	// and when there is nothing to revive it answers its own 409 pointing at
+	// resubmission. Its `status is 'completed', expected 'failed' or 'cancelled'`
+	// message is only reached by operations that are NOT payload-less batch
+	// parents — so gating on status first answered the wrong 409 for a completed
+	// batch parent.
+	if current.OperationType == AsyncRetainType && operationIsParent(current.ResultMetadata) {
+		return s.retryBatchParent(ctx, current)
+	}
 	if current.Status != StatusFailed && current.Status != StatusCancelled {
 		return current, ErrOperationConflict
-	}
-	if current.OperationType == AsyncRetainType {
-		return s.retryBatchParent(ctx, current)
 	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
 	          SET status=$2, error_message=NULL, completed_at=NULL, next_retry_at=NULL,
@@ -600,6 +610,7 @@ func scanOperation(row rowScanner) (Operation, error) {
 	op.ResultMetadata = rest
 	op.Payload = decodeJSONObject(payload)
 	op.IsParent = operationIsParent(rest)
+	op.Progress = operationProgress(rest)
 	return op, nil
 }
 

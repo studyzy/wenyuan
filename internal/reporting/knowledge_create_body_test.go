@@ -3,6 +3,7 @@ package reporting
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -281,5 +282,99 @@ func TestKnowledgeSearchRendersScoreAsAPythonFloat(t *testing.T) {
 	}
 	if got := envelope.Results[0].Score.String(); got != "1.0" {
 		t.Fatalf("score = %s, want 1.0 (%s)", got, rec.Body.String())
+	}
+}
+
+// A body missing required members reports them "late", together at the last
+// required member's slot: pydantic 2 answers `{"parent_id":5}` with missing
+// name, missing source_query, then the string_type of parent_id — so an absent
+// member never comes before a present member's own value check. Held as its own
+// case because the expected order is what the reference returns, not what a
+// declaration-order walk would produce.
+func TestKnowledgeCreateReportsMissingMembersLate(t *testing.T) {
+	mux := newServer(t)
+	base := "/v1/default/banks/" + bank + "/knowledge-base/pages"
+	for _, tc := range []struct{ body, want string }{
+		{
+			body: `{"parent_id":5}`,
+			want: `missing ["body","name"]|missing ["body","source_query"]|string_type ["body","parent_id"]`,
+		},
+		{
+			body: `{"name":"x","parent_id":5}`,
+			want: `missing ["body","source_query"]|string_type ["body","parent_id"]`,
+		},
+	} {
+		rec := send(mux, http.MethodPost, base, tc.body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s = %d, want 422: %s", tc.body, rec.Code, rec.Body.String())
+		}
+		items := knowledgeCreateDetail(t, rec.Body.Bytes())
+		got := ""
+		for i, item := range items {
+			if i > 0 {
+				got += "|"
+			}
+			got += item["type"].(string) + " " + knowledgeItemLoc(t, item)
+		}
+		if got != tc.want {
+			t.Fatalf("%s = %q, want %q (%s)", tc.body, got, tc.want, rec.Body.String())
+		}
+	}
+}
+
+// The absent-required group's position, member values echoed as the caller wrote
+// them, and the empty list that stays a list. Each expectation is the reference's
+// own answer for that body (measured against the live service); the cases share
+// one test because they all come out of the same validation pass.
+func TestKnowledgeCreateItemOrderMatchesTheReference(t *testing.T) {
+	mux := newServer(t)
+	base := "/v1/default/banks/" + bank + "/knowledge-base/pages"
+	for _, tc := range []struct{ body, want string }{
+		{
+			// The group sits after the first required member's own item.
+			body: `{"tags":1,"name":2}`,
+			want: `string_type ["body","name"]|missing ["body","source_query"]|list_type ["body","tags"]`,
+		},
+		{
+			// …and ahead of the second required member's item.
+			body: `{"source_query":{"a":0}}`,
+			want: `missing ["body","name"]|string_type ["body","source_query"]`,
+		},
+		{
+			// An optional member's item always comes last.
+			body: `{"name":"x","trigger":"a"}`,
+			want: `missing ["body","source_query"]|model_attributes_type ["body","trigger"]`,
+		},
+	} {
+		rec := send(mux, http.MethodPost, base, tc.body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s = %d, want 422: %s", tc.body, rec.Code, rec.Body.String())
+		}
+		items := knowledgeCreateDetail(t, rec.Body.Bytes())
+		got := ""
+		for i, item := range items {
+			if i > 0 {
+				got += "|"
+			}
+			got += item["type"].(string) + " " + knowledgeItemLoc(t, item)
+		}
+		if got != tc.want {
+			t.Fatalf("%s = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+
+	// A rejected object keeps the member order the client wrote, while the
+	// missing member's item echoes the whole body.
+	rec := send(mux, http.MethodPost, base, `{"name":{"z":1,"a":2}}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("object name = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"input":{"z":1,"a":2}`) {
+		t.Fatalf("the rejected member must echo its own members: %s", rec.Body.String())
+	}
+	// An empty list echoes back as a list, not as null.
+	rec = send(mux, http.MethodPost, base, `{"name":"x","tags":[]}`)
+	if !strings.Contains(rec.Body.String(), `"input":{"name":"x","tags":[]}`) {
+		t.Fatalf("the echoed body must keep an empty list: %s", rec.Body.String())
 	}
 }

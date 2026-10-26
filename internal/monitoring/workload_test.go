@@ -330,9 +330,48 @@ func TestWorkloadLoopStallsDeclaredAtZero(t *testing.T) {
 	if value := findSample(t, registry.Samples(), EventLoopStallsName).Value; value != 1 {
 		t.Fatalf("stalls after one recorded stall = %v, want 1", value)
 	}
-	// The duration histogram stays absent until a stall is observed: the
-	// reference renders a histogram family only from its observations.
+	// The duration histogram is declared beside the counter, so exactly one
+	// duration series renders: the one the declaration created.
 	if len(registry.Histograms()) != 1 {
-		t.Fatalf("only the observed duration family may render, got %v", registry.Histograms())
+		t.Fatalf("only the declared duration family may render, got %v", registry.Histograms())
+	}
+}
+
+// The stall duration histogram is declared together with the stall counter, so a
+// healthy scrape carries its all-zero series. The reference builds both
+// instruments in one collector (metrics.py:623-632) and its exposition renders
+// every declared instrument, so a loop that never stalled still reports
+// hindsight_event_loop_stall_duration_seconds with each bucket at 0 plus a count
+// and a sum; declaring only the counter leaves the family out of the scrape
+// altogether.
+func TestWorkloadLoopStallDurationDeclaredAtZero(t *testing.T) {
+	registry := NewWorkloadRegistry()
+	if registry.Histograms() != nil {
+		t.Fatal("fresh registry must emit no histograms")
+	}
+	registry.declareLoopStall()
+	duration := findHistogram(t, registry.Histograms(), EventLoopStallDurationName)
+	if duration.Count != 1 || duration.Sum != 0 {
+		t.Fatalf("declared duration = %d/%v, want the declaration's own zero observation", duration.Count, duration.Sum)
+	}
+	if len(duration.Buckets) != len(SDKDefaultBuckets) || len(duration.Counts) != len(SDKDefaultBuckets) {
+		t.Fatalf("declared duration buckets = %d/%d, want the SDK defaults",
+			len(duration.Buckets), len(duration.Counts))
+	}
+	for i, bound := range SDKDefaultBuckets {
+		if duration.Buckets[i] != bound {
+			t.Fatalf("bucket %d bound = %v, want %v", i, duration.Buckets[i], bound)
+		}
+	}
+	body := string((&MetricsHandler{Extra: registry.Samples, Histograms: registry.Histograms}).Exposition())
+	for _, want := range []string{
+		`hindsight_event_loop_stalls_total{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
+		`hindsight_event_loop_stall_duration_seconds_bucket{le="+Inf",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
+		`hindsight_event_loop_stall_duration_seconds_count{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
+		`hindsight_event_loop_stall_duration_seconds_sum{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in exposition:\n%s", want, body)
+		}
 	}
 }

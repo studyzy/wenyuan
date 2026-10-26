@@ -292,6 +292,67 @@ type RecallTraceDetail struct {
 	RRFMerged []TraceRRFEntry
 	// Reranked is the ranked result list with the components behind each score.
 	Reranked []TraceRerankedEntry
+	// QueryEmbedding is the vector the semantic arm ranked against, reported by
+	// the trace's query block (the reference keeps it there, engine/search/
+	// trace.py:29-35). Empty when the deployment has no embedder.
+	QueryEmbedding []float64
+	// EntryPoints and Visits are the trace's legacy graph payload: the semantic
+	// arm's first ten hits, and one record per scored result with the components
+	// behind its weight (engine/search/tracer.py:118-198, 1185-1204).
+	EntryPoints []TraceEntryPoint
+	Visits      []TraceVisit
+	// PhaseMetrics is the reference's ordered phase list: one entry per phase
+	// that ran, with the seconds it took (engine/search/tracer.py:203-236).
+	PhaseMetrics []TracePhaseMetric
+	// FinalResults is one record per returned result carrying every score the
+	// pipeline computed for it (engine/search/types.py:206-257). It is a list of
+	// ordered key/value rows rather than a map so the reference's key order
+	// survives to the wire.
+	FinalResults []TraceResultRow
+	// ArmDurations is the per-arm-and-fact-type duration in seconds the
+	// retrieval_results entries report, keyed by "method/fact_type".
+	ArmDurations map[string]float64
+	// TotalDurationSeconds is the search duration the summary reports.
+	TotalDurationSeconds float64
+}
+
+// TraceEntryPoint is one entry point of the legacy graph payload.
+type TraceEntryPoint struct {
+	NodeID          string
+	Text            string
+	SimilarityScore float64
+	Rank            int
+}
+
+// TraceVisit is one node visited during the search, with the components behind
+// its weight.
+type TraceVisit struct {
+	Step               int
+	NodeID             string
+	Text               string
+	Context            string
+	EventDate          *time.Time
+	IsEntryPoint       bool
+	Activation         float64
+	SemanticSimilarity float64
+	Recency            float64
+	Frequency          float64
+	FinalWeight        float64
+	FinalRank          *int
+}
+
+// TracePhaseMetric is one phase's timing.
+type TracePhaseMetric struct {
+	Name    string
+	Seconds float64
+	Details map[string]any
+}
+
+// TraceResultRow is one final result's ordered score record: the reference
+// emits a dict whose keys are insertion-ordered, so the row keeps that order.
+type TraceResultRow struct {
+	Keys   []string
+	Values []any
 }
 
 // TraceArmResults is one retrieval arm's results for one fact type.

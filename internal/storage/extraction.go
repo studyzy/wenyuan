@@ -221,9 +221,27 @@ func extractItemFacts(ctx context.Context, extractor FactExtraction, item Retain
 	// Extraction runs one call per chunk, so every piece of a long document is
 	// asked about exactly once and a fact names the piece it came from. A chunk
 	// that produces nothing simply contributes no facts.
-	segments := SegmentWith(item.Content, segmentOptionsFor(req))
+	//
+	// The item's content blocks are cut separately and numbered from 0, the way
+	// the reference cuts and numbers each content dict (orchestrator.py:1968-1987,
+	// fact_extraction.py:2985), and blocks after the first continue the numbering
+	// the way the chunk rows do (see RetainItem.Parts), so a fact's ChunkIndex
+	// still names the chunk it came from.
+	type piece struct {
+		text  string
+		index int
+	}
+	pieces := make([]piece, 0)
+	next := 0
+	for _, part := range item.ContentParts() {
+		for _, segment := range segmentsPerContent(part, segmentOptionsFor(req)) {
+			pieces = append(pieces, piece{text: segment, index: next})
+			next++
+		}
+	}
 	usable := make([]ExtractedFact, 0)
-	for chunkIndex, segment := range segments {
+	for _, chunk := range pieces {
+		chunkIndex, segment := chunk.index, chunk.text
 		var (
 			facts []ExtractedFact
 			err   error

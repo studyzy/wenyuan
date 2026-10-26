@@ -1,5 +1,7 @@
 package httpx
 
+import "math"
+
 // ParseQueryInt reads a scalar integer query parameter the way the reference's
 // framework binds one, and reports the bound it violates when it does not fit.
 //
@@ -10,9 +12,25 @@ package httpx
 // violation, because the reference compares an arbitrarily large Python int
 // against the declared limits rather than refusing to parse it.
 //
-// max of 0 means no upper bound. The item's input is the raw string the client
-// sent, which is what the framework echoes. ok is false when the caller should
-// answer 422 with the returned item.
+// max of 0 means no upper bound.
+//
+// An integer the framework parses but int64 cannot carry is handled by which
+// bound it would violate, because that is what the caller can still refuse:
+// below min is a `ge` violation and above max a `le` violation, both of which
+// the framework reports before the value ever reaches the store. With no upper
+// bound to violate there is nothing to refuse, and the reference passes the
+// arbitrarily large Python int to its driver, which raises and surfaces as a
+// 500 (`invalid input for query argument $n: … (value out of int64 range)`).
+// This parser therefore reports such a value as a bound violation only when a
+// declared max makes it one. With no upper bound it saturates to MaxInt and
+// returns carry=true: the value is out of Python's reach too, so no client can
+// tell a saturated page from the real one, and the reference's own driver
+// failure stays the one remaining difference (recorded in
+// docs/parity-round/PLAN.md).
+//
+// The item's input is the raw string the client sent, which is what the
+// framework echoes. ok is false when the caller should answer 422 with the
+// returned item.
 func ParseQueryInt(raw string, name string, min, max int) (int, ValidationError, bool) {
 	loc := []string{"query", name}
 	value, parsed := LaxInteger(raw)
@@ -26,9 +44,12 @@ func ParseQueryInt(raw string, name string, min, max int) (int, ValidationError,
 		case max != 0:
 			return 0, LessThanEqual(loc, raw, max), false
 		default:
-			// No bound to violate, and the value cannot be carried: the
-			// reference hands it to the store, which fails.
-			return 0, TypeMismatch("int_parsing", loc, raw), false
+			// No declared max means no bound for the framework to refuse it on:
+			// the reference hands the arbitrarily large int to its driver, which
+			// fails. A saturated value carries the "too large" fact to the store
+			// so the caller reaches that same failure instead of a 422 no
+			// reference route produces.
+			return math.MaxInt, ValidationError{}, true
 		}
 	}
 	if value < min {

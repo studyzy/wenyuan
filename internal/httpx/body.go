@@ -211,7 +211,9 @@ func orderValue(decoder *json.Decoder) (any, bool) {
 		}
 		return members, true
 	case '[':
-		var list []any
+		// Initialised, not a nil slice: an empty list is still a list, and a nil
+		// one marshals as null — so a body echoing `[]` would report `null`.
+		list := make([]any, 0, 8)
 		for decoder.More() {
 			value, ok := orderValue(decoder)
 			if !ok {
@@ -306,6 +308,14 @@ func DecodeBody(r *http.Request, target any) error {
 // the framework's structured item. A handler that reads the body itself — to
 // report the fields it does not know, for instance — reports a rejected body the
 // same way the shared decoder does.
+// ModelAttributesFailure builds the item the framework reports when a body sent
+// for a declared pydantic model is not a JSON object. A handler that decodes its
+// own body (rather than through DecodeBody) uses this so its envelope matches
+// every other model-bodied route.
+func ModelAttributesFailure(body []byte) *ValidationFailure {
+	return &ValidationFailure{Errors: []ValidationError{modelAttributesType(body)}}
+}
+
 func BodyDecodeFailure(err error, body []byte) *ValidationFailure {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {

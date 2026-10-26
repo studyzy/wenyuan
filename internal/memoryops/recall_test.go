@@ -227,14 +227,18 @@ func TestRecallIncludeDefaults(t *testing.T) {
 	// postings, so the entity-bearing fixture is a real unit with a real
 	// posting. The observation-shaped row is seeded as a recall projection, the
 	// way a unit that cites sources is read back.
+	// Source facts are resolved for OBSERVATION results only — the reference
+	// builds `source_fact_ids` from an observation's consolidated-from set and
+	// leaves a raw fact's null (engine/memory_engine.py:10552-10566).
 	store.SeedMemory("b1", storage.RecallMatch{
-		ID: "m1", Text: "alpha beta", Type: "world",
+		ID: "m1", Text: "alpha beta", Type: "observation",
 		ChunkID: "c1", SourceMemoryIDs: []string{"f1"},
 	})
 	store.SeedUnit(storage.MemoryUnit{ID: "m2", BankID: "b1", Text: "alpha beta", FactType: storage.TypeWorld})
 	if err := store.SetUnitEntities(context.TODO(), "b1", "m2", []string{"e1"}, true); err != nil {
 		t.Fatal(err)
 	}
+	store.SeedUnit(storage.MemoryUnit{ID: "f1", BankID: "b1", Text: "the source fact", FactType: storage.TypeWorld})
 	def := post(t, mux, "/v1/default/banks/b1/memories/recall", `{"query":"alpha","max_tokens":100}`)
 	var defResp RecallResponse
 	if err := json.Unmarshal(def.Body.Bytes(), &defResp); err != nil {

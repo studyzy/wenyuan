@@ -77,8 +77,13 @@ func TestLoopLagProbeDeclaresStallCounter(t *testing.T) {
 	if value := findSample(t, Workload.Samples(), EventLoopStallsName).Value; value != 0 {
 		t.Fatalf("declared stall counter = %v, want 0", value)
 	}
-	if len(Workload.Histograms()) != 0 {
-		t.Fatalf("declaring the counter must not fabricate a duration observation: %v", Workload.Histograms())
+	// The duration histogram is declared with the counter (the reference builds
+	// both instruments in one collector, metrics.py:623-632), so exactly one
+	// duration series renders, still empty.
+	if hists := Workload.Histograms(); len(hists) != 1 {
+		t.Fatalf("declaring the stall instruments must publish exactly the duration family: %v", hists)
+	} else if hists[0].Sum != 0 {
+		t.Fatalf("declared duration sum = %v, want no measured stall", hists[0].Sum)
 	}
 }
 

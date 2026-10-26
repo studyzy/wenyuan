@@ -395,10 +395,6 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, retainBatchDisabledMessage))
 		return
 	}
-	if blocked := blockedWriteFailure(req, h.VisionEnabled); blocked != nil {
-		httpx.WriteValidationFailure(w, blocked)
-		return
-	}
 	// The reference canonicalizes each item's content after the model validated
 	// it, and a block whose payload cannot be decoded there is a 400 naming the
 	// item and the block rather than a quietly degraded write.
@@ -407,6 +403,14 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, failure))
 			return
 		}
+	}
+	// Whether the deployment's write model reads images decides what the
+	// canonical text of an image-bearing item is: a vision model sees the
+	// picture where its placeholder stands, while a text-only one gets the prose
+	// with every attachment block dropped — the reference's canonicalizer
+	// applies the same rule, and it is not an error either way.
+	for index := range req.Items {
+		req.Items[index].visionEnabled = h.VisionEnabled
 	}
 	// Inline attachments are decoded and stored before the retain is submitted,
 	// so the canonical text carries only placeholders and the bytes never enter
@@ -674,6 +678,10 @@ func (h *Handlers) queueRetainAsync(ctx context.Context, bankID string, override
 	}, nil
 }
 
+// errAppendWithoutDocumentID refuses an append on an item that named no
+// document. The reference's sentence is character for character its own.
+var errAppendWithoutDocumentID = errors.New("update_mode='append' requires a document_id")
+
 // errAppendWithoutStoredText refuses an append when the bank stores no document
 // text, because there is nothing to append to. It is refused as a client error
 // rather than silently degrading to a replace.
@@ -736,6 +744,17 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 		optionalDimensions: h.DefaultOptionalFactDimensions,
 		strategy:           h.DefaultRetainStrategy,
 	})
+	// An append needs a document to append to. The reference checks that only on
+	// the synchronous path, before it reads the bank's store_document_text
+	// setting, so the more specific refusal is this one; a queued append reaches
+	// the worker and fails there instead, which is what the caller polls.
+	if !write.Async {
+		for _, item := range write.Items {
+			if item.UpdateMode == "append" && item.DocumentID == "" {
+				return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutDocumentID
+			}
+		}
+	}
 	if applyStoreDocumentText(&write, bank, h.DiscardDocumentText) {
 		return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutStoredText
 	}
@@ -1110,6 +1129,8 @@ func (h *Handlers) mapWriteError(err error) error {
 			WithHeader(httpx.HeaderRetryAfter, itoa(h.DefaultRetryAfterSeconds))
 	case errors.Is(err, errAppendWithoutStoredText):
 		return httpx.NewHTTPError(httpx.KindBadRequest, errAppendWithoutStoredText.Error())
+	case errors.Is(err, errAppendWithoutDocumentID):
+		return httpx.NewHTTPError(httpx.KindBadRequest, errAppendWithoutDocumentID.Error())
 	case errors.As(err, new(*MemoryDefenseAllBlockedError)):
 		// Every item was blocked, so nothing was written. The reference answers 422
 		// with the violations under `detail`, which is an object rather than the
@@ -1217,7 +1238,8 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		// carries, so scrubbing it would store the bytes and drop the reference
 		// to them. Authored text carrying someone else's token is still
 		// scrubbed.
-		Content:             item.Content.FlattenKeepingAttachments(item.AttachmentIDs),
+		Content:             canonicalItemText(item),
+		Parts:               storageItemParts(item),
 		Context:             item.Context,
 		Metadata:            DropNullValues(item.Metadata),
 		DocumentID:          item.DocumentID,
@@ -1236,6 +1258,55 @@ func toStorageRetainItem(item RetainItem) storage.RetainItem {
 		stored.Timestamp = item.Timestamp.Value
 	}
 	return stored
+}
+
+// canonicalItemText renders the text a write stores for one item, which is what
+// the reference's canonicalize_item_content produces: a model that reads images
+// keeps each attachment as a placeholder in position, and one that does not keeps
+// only the prose, with the attachment's position left as a paragraph break.
+//
+// The text a write *stores* and the text the *extractor* is asked about may
+// differ once an attachment is already a flat string rather than a block: a
+// placeholder the reference's canonicalizer minted (from a block form, or from
+// an upload that carries the bytes) is resolved back into the picture at prompt
+// time, so it stays. A placeholder no canonicalizer minted — an upload whose
+// model cannot read images — is not a reference to anything the model can be
+// shown, so the prose is what it reads.
+func canonicalItemText(item RetainItem) string {
+	return canonicalText(item)
+}
+
+// canonicalText is canonicalItemText's body, shared with the per-block
+// canonicalization a folded item's Parts go through.
+func canonicalText(item RetainItem) string {
+	if item.textIsCanonical && !item.Content.IsList {
+		if item.visionEnabled {
+			return item.Content.Text
+		}
+		// A text-only model is handed the prose only, so the document stores
+		// the prose only — whether the placeholder came from a block form or
+		// from an upload that carries its own bytes.
+		return stripPlaceholders(item.Content.Text)
+	}
+	if !item.visionEnabled {
+		return item.Content.FlattenDecliningAttachments(item.AttachmentIDs)
+	}
+	return item.Content.FlattenKeepingAttachments(item.AttachmentIDs)
+}
+
+// storageItemParts carries a folded item's content blocks to the storage layer.
+// Each block is canonicalized the way the item's own text is, so the blocks the
+// write chunks from are the blocks the extraction was handed. A single-block
+// item reports none: its Parts would only restate its Content.
+func storageItemParts(item RetainItem) []string {
+	if len(item.Parts) <= 1 {
+		return nil
+	}
+	parts := make([]string, 0, len(item.Parts))
+	for _, part := range item.Parts {
+		parts = append(parts, canonicalText(RetainItem{Content: Content{Text: part}, textIsCanonical: item.textIsCanonical, visionEnabled: item.visionEnabled, AttachmentIDs: item.AttachmentIDs}))
+	}
+	return parts
 }
 
 // resolveEntitiesOrDefault returns the entity-resolution switch, defaulting an

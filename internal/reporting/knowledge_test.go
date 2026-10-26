@@ -1108,3 +1108,127 @@ func TestKnowledgeSearchRepeatedParamLastWins(t *testing.T) {
 		t.Fatalf("repeated q = %d, want 422: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// The frontmatter keeps a key whose value is present but empty. The reference
+// builds its mapping with a page's name and source query and drops only the
+// None members (api/page_markdown.py:frontmatter/render_frontmatter), so a page
+// created with an empty name renders `title: ""` — treating "" as absent deleted
+// the line, which is what the export bundle and the page read showed.
+func TestKnowledgeFrontmatterKeepsPresentButEmptyScalars(t *testing.T) {
+	fields := knowledgeDocumentFields("kp-1", "knowledge-page", "", knowledgeOptional{text: "", known: true},
+		"2026-01-01T00:00:00+00:00", nil)
+	block := renderKnowledgeFrontmatter(fields)
+	for _, want := range []string{
+		`id: "kp-1"`,
+		`type: "knowledge-page"`,
+		`title: ""`,
+		`description: ""`,
+		`timestamp: "2026-01-01T00:00:00+00:00"`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("frontmatter lacks %q:\n%s", want, block)
+		}
+	}
+	// The tags list stays dropped when empty, as the reference does for [].
+	if strings.Contains(block, "tags:") {
+		t.Fatalf("empty tags list must not render:\n%s", block)
+	}
+	// A member the reference has as None is still dropped.
+	absent := renderKnowledgeFrontmatter(knowledgeDocumentFields("kp-1", "knowledge-page", "n",
+		knowledgeOptional{}, "", nil))
+	if strings.Contains(absent, "description:") || strings.Contains(absent, "timestamp:") {
+		t.Fatalf("null members must not render:\n%s", absent)
+	}
+}
+
+// The path parameters a knowledge read binds are the client's text, verbatim:
+// the reference declares them as plain strings, so surrounding whitespace names
+// nothing (and the not-found detail echoes it back) instead of being trimmed
+// into a name that exists.
+func TestKnowledgePageIDIsBoundVerbatim(t *testing.T) {
+	mux := newServer(t)
+	base := "/v1/default/banks/" + bank
+	created := createKnowledgePage(t, mux, base, `{"name":"Deploy","source_query":"q"}`)
+
+	rec := send(mux, http.MethodGet, base+"/knowledge-base/pages/%20"+created.PageID, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("padded page id = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `Knowledge page ' `+created.PageID+`' not found`) {
+		t.Fatalf("not-found detail must echo the id verbatim: %s", rec.Body.String())
+	}
+	// A space alone is a page id too, and the detail echoes it rather than "".
+	rec = send(mux, http.MethodGet, base+"/knowledge-base/pages/%20", "")
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `Knowledge page ' ' not found`) {
+		t.Fatalf("space page id = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A padded bank identifier is not the bank: the reference binds the path
+// parameter verbatim, so ` rt-b ` is a bank nobody created and a read answers
+// 404 rather than silently succeeding against `rt-b`.
+func TestKnowledgeBankIDIsBoundVerbatim(t *testing.T) {
+	// The mux is the served one rather than the recording harness: the harness
+	// overwrites {bank_id} with the fixture name to keep its route matches
+	// simple, which is exactly the value this case has to observe.
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	base := "/v1/default/banks/" + bank
+	if rec := send(mux, http.MethodPost, base+"/knowledge-base/folders", `{"name":"Ops"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("folder = %d: %s", rec.Code, rec.Body.String())
+	}
+	padded := "/v1/default/banks/%20" + bank + "%20/knowledge-base"
+	for _, path := range []string{padded + "/tree", padded + "/export", padded + "/search?q=x"} {
+		rec := send(mux, http.MethodGet, path, "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s = %d, want 404: %s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `Bank ' `+bank+` ' not found`) {
+			t.Fatalf("%s detail must echo the id verbatim: %s", path, rec.Body.String())
+		}
+	}
+}
+
+// An empty `trigger` object is a supplied page option, not an absent one.
+//
+// The reference passes the body's trigger through `model_dump(exclude_unset=True)`,
+// which turns `{"trigger": {}}` into `{}` rather than None, and its no-op guard
+// tests `trigger is not None` (engine/memory_engine.py:19917-19918). So
+// `{"trigger": {}}` is a real (empty) patch: it passes the guard and reaches the
+// node lookup, answering the node's own answer. Treating the empty object as
+// "not supplied" answered the "nothing to update" 400 instead — a status the
+// reference never sends for that body.
+func TestKnowledgeNodeEmptyTriggerObjectIsSupplied(t *testing.T) {
+	mux := newServer(t)
+	base := "/v1/default/banks/" + bank
+	folder := send(mux, http.MethodPost, base+"/knowledge-base/folders", `{"name":"OpsT"}`)
+	var folderNode KnowledgeNode
+	if err := json.Unmarshal(folder.Body.Bytes(), &folderNode); err != nil {
+		t.Fatal(err)
+	}
+
+	// An existing node accepts it (nothing to change, so the response is the node).
+	rec := send(mux, http.MethodPatch, base+"/knowledge-base/nodes/"+folderNode.ID, `{"trigger":{}}`)
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "Provide name, parent_id") {
+		t.Fatalf("empty trigger object = %d: %s; it is a supplied option, not a no-op",
+			rec.Code, rec.Body.String())
+	}
+	// An unknown node now reports the node's own answer instead of the no-op 400.
+	rec = send(mux, http.MethodPatch, base+"/knowledge-base/nodes/kf-unknown", `{"trigger":{}}`)
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "Provide name, parent_id") {
+		t.Fatalf("empty trigger object on an unknown node = %d: %s; the no-op guard must not fire",
+			rec.Code, rec.Body.String())
+	}
+	// A truly empty body is still the no-op 400.
+	rec = send(mux, http.MethodPatch, base+"/knowledge-base/nodes/"+folderNode.ID, `{}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Provide name, parent_id") {
+		t.Fatalf("empty body = %d: %s", rec.Code, rec.Body.String())
+	}
+}

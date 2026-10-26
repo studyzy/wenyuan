@@ -297,8 +297,13 @@ func (h *Handlers) rejectDuplicatePage(r *http.Request, bankID, parentID, name s
 // KnowledgePage returns one page as a markdown document. The bank is not
 // pre-checked: a page in an unknown bank answers the page's own not-found.
 func (h *Handlers) KnowledgePage(w http.ResponseWriter, r *http.Request) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	pageID := strings.TrimSpace(r.PathValue("page_id"))
+	bankID := PathBankID(r)
+	// The identifier is read exactly as it arrived: the reference declares the path
+	// parameter as a plain string and binds it straight into the query, so a value
+	// with surrounding whitespace names no page (and its not-found detail echoes
+	// the whitespace back), and `%2F` stays part of the identifier rather than
+	// becoming a path separator.
+	pageID := pathID(r, "page_id")
 	node, err := h.Store.GetKnowledgeNode(r.Context(), bankID, pageID)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, knowledgeNotFound(err, knowledgePageNotFound(pageID)))
@@ -327,8 +332,8 @@ func (h *Handlers) KnowledgePage(w http.ResponseWriter, r *http.Request) {
 // UpdateKnowledgeNode applies a partial update to one node. The bank is not
 // pre-checked: an unknown bank answers the node's own not-found.
 func (h *Handlers) UpdateKnowledgeNode(w http.ResponseWriter, r *http.Request) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	nodeID := strings.TrimSpace(r.PathValue("node_id"))
+	bankID := PathBankID(r)
+	nodeID := pathID(r, "node_id")
 	var body UpdateKnowledgeNodeRequest
 	if _, failure := decodeKnowledgeBody(r, &body); failure != nil {
 		httpx.WriteErrorFor(w, r, failure)
@@ -437,8 +442,8 @@ func (h *Handlers) UpdateKnowledgeNode(w http.ResponseWriter, r *http.Request) {
 // DeleteKnowledgeNode removes one node and its descendants. The bank is not
 // pre-checked: an unknown bank answers the node's own not-found.
 func (h *Handlers) DeleteKnowledgeNode(w http.ResponseWriter, r *http.Request) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
-	nodeID := strings.TrimSpace(r.PathValue("node_id"))
+	bankID := PathBankID(r)
+	nodeID := pathID(r, "node_id")
 	if _, err := h.Store.GetKnowledgeNode(r.Context(), bankID, nodeID); err != nil {
 		httpx.WriteErrorFor(w, r, knowledgeNotFound(err, knowledgeNodeNotFound(nodeID)))
 		return

@@ -26,14 +26,10 @@ func (s *MemoryStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]
 			out = append(out, cloneKnowledgeNode(node))
 		}
 	}
+	// The reference's two-key order, with no identifier tiebreak; see
+	// knowledgeTreeLess.
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].SortOrder != out[j].SortOrder {
-			return out[i].SortOrder < out[j].SortOrder
-		}
-		if out[i].Title != out[j].Title {
-			return out[i].Title < out[j].Title
-		}
-		return out[i].ID < out[j].ID
+		return knowledgeTreeLess(out[i], out[j])
 	})
 	return out, nil
 }

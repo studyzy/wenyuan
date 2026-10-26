@@ -178,7 +178,15 @@ func (w *laxWalker) object(target reflect.Type) {
 			return
 		}
 		w.i++
-		if member, ok := laxMemberType(target, key); ok {
+		// A member the reference's model declares as a container of values it
+		// receives as they are (`list[str]`, `dict[str, Any]` or a nested model)
+		// owns its own decoding: nothing inside it is a scalar the lax mode
+		// rewrites, so the null pass is what validates it. The walk must not
+		// replace its value with a coercion target's zero, which is how an empty
+		// list once reached the decoder as null.
+		if laxJSONContainerType(target, key) {
+			w.skip()
+		} else if member, ok := laxMemberType(target, key); ok {
 			w.value(member)
 		} else {
 			w.skip()
@@ -412,6 +420,30 @@ func (w *laxWalker) ws() {
 // laxMemberType resolves an object member's name to the Go type the decoder
 // would decode it into: the struct field the name selects (exact match first,
 // then the decoder's case-insensitive fallback) or a string-keyed map's value.
+// laxJSONContainerType reports whether a struct member's declared type is JSON
+// that decodes untouched (a json.RawMessage), so the lax walk should skip over
+// its value instead of replacing it: the walk has no scalar type to coerce it to,
+// and writing a zero there turned an empty list into null on the way to the
+// decoder.
+func laxJSONContainerType(target reflect.Type, key string) bool {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if target.Kind() != reflect.Struct {
+		return false
+	}
+	field, ok := structField(target, key, true)
+	if !ok {
+		if field, ok = structField(target, key, false); !ok {
+			return false
+		}
+	}
+	for field.Kind() == reflect.Pointer {
+		field = field.Elem()
+	}
+	return field == reflect.TypeOf(json.RawMessage(nil))
+}
+
 func laxMemberType(target reflect.Type, key string) (reflect.Type, bool) {
 	for target.Kind() == reflect.Pointer {
 		target = target.Elem()

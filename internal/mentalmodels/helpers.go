@@ -192,8 +192,21 @@ func maxTokensFailureFor(value int, sent any) *httpx.ValidationFailure {
 	return nil
 }
 
+// coerceMaxTokens reads a max_tokens value the way the reference's model does.
+//
+// The member is declared as a plain `int` with `ge`/`le` bounds on a model with
+// no strict mode, so the framework's lax coercion applies before the bound is
+// checked: a JSON number (a whole one), a numeric string the way Python's int()
+// reads it ("300", " 300 ", "300.0") and a JSON boolean (true is 1, false 0) all
+// bind, while a fractional number is int_from_float and any other string is
+// int_parsing. A value the coercion refuses has no bound to report — the
+// reference files that one item and never reaches the bound.
+//
+// The bound item echoes the value the CLIENT sent, not the integer it coerced
+// to, because the framework reports the input it received.
 // maxTokensItems is the item a max_tokens value outside the model's range
-// reports, or nil when it is in range.
+// reports, or nil when it is in range. value is the integer the coercion
+// produced; sent is the value the client wrote, which the bound echoes.
 func maxTokensItems(value *int, sent any) []httpx.ValidationError {
 	if value == nil {
 		return nil
@@ -255,11 +268,22 @@ func requestItems(r *http.Request, target any) (map[string]any, []httpx.Validati
 	// Numbers are kept as json.Number so a member's wire form (an integer, a
 	// fraction, an exponent) is still knowable when the trigger walk types it; a
 	// plain decode would render every one as float64 and lose the distinction.
-	var object map[string]any
+	//
+	// The body is decoded into `any`, not into a map: a JSON document that is not
+	// an object is not a decode failure — the framework reads it, finds no
+	// members to extract, and files its model-shape item
+	// (`model_attributes_type`, located at `body`, echoing the value itself).
+	var decoded any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	if err := decoder.Decode(&object); err != nil {
+	if err := decoder.Decode(&decoded); err != nil {
 		return nil, nil, httpx.BodyDecodeFailure(err, body)
+	}
+	object, isObject := decoded.(map[string]any)
+	if !isObject {
+		return nil, nil, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.TypeMismatch("model_attributes_type", []string{"body"}, decodeTriggerNumbers(decoded)),
+		}}
 	}
 	// The trigger's items come from the trigger walk, which knows the custom
 	// validators the request model's contract cannot express, so the shared
@@ -299,4 +323,36 @@ func decodeInto(object map[string]any, target any) {
 // from a nested object.
 func isJSONNull(raw json.RawMessage) bool {
 	return string(bytes.TrimSpace(raw)) == "null"
+}
+
+// rawMaxTokens reads the max_tokens member's JSON value for the lax integer
+// coercion, or nil when the member is absent or null (both of which leave the
+// model's default in place). A value that does not coerce is reported to the
+// caller, so a nil here always means "not supplied".
+func rawMaxTokens(raw json.RawMessage) *int {
+	if len(raw) == 0 || isJSONNull(raw) {
+		return nil
+	}
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil
+	}
+	number := decodeTriggerNumbers(decoded)
+	// A JSON boolean coerces the way the framework's lax integer does: true is 1
+	// and false is 0. The bound item still echoes the true/false the client
+	// wrote, which is the value the framework received.
+	if flag, isBool := number.(bool); isBool {
+		value := 0
+		if flag {
+			value = 1
+		}
+		return &value
+	}
+	value, ok := httpx.LaxFloat(number)
+	if !ok {
+		return nil
+	}
+	return &value
 }

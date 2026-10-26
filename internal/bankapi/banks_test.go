@@ -604,3 +604,56 @@ func TestCreatedBankStoresTheNeutralDisposition(t *testing.T) {
 		}
 	}
 }
+
+// The bank list's limit and offset are bound with the framework's own integer
+// grammar, not strconv.
+//
+// The reference declares them as `int = Query(…)`, so `1_0`, `5.0` and `" 1 "`
+// are the integers 10, 5 and 1, and the response echoes the *parsed* number
+// rather than the raw text (`?limit=1_0` answers `"limit": 10`). This parser
+// used strconv.Atoi, which refused `1_0` and `5.0` with 422 and reported a
+// negative value past int64 as `int_parsing` where the reference reports its
+// `ge` violation.
+func TestBankListIntegerGrammarIsTheFramework(t *testing.T) {
+	mux, store := newTestServer(t)
+	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
+
+	for _, tc := range []struct {
+		query      string
+		wantStatus int
+		wantLimit  int
+		wantKind   string // the rejected item's type when wantStatus is 422
+	}{
+		{query: "limit=1_0", wantStatus: http.StatusOK, wantLimit: 10},
+		{query: "limit=5.0", wantStatus: http.StatusOK, wantLimit: 5},
+		{query: "limit=%201", wantStatus: http.StatusOK, wantLimit: 1},
+		{query: "limit=+5", wantStatus: http.StatusOK, wantLimit: 5},
+		{query: "limit=5.", wantStatus: http.StatusUnprocessableEntity, wantKind: "int_parsing"},
+		{query: "limit=1__0", wantStatus: http.StatusUnprocessableEntity, wantKind: "int_parsing"},
+		// A negative value past int64 still fails the declared bound, so it is a
+		// `ge` violation and not a parse failure.
+		{query: "offset=-99999999999999999999", wantStatus: http.StatusUnprocessableEntity, wantKind: "greater_than_equal"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			rec := doJSON(t, mux, http.MethodGet, "/v1/default/banks?"+tc.query, "")
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantKind != "" {
+				if !strings.Contains(rec.Body.String(), tc.wantKind) {
+					t.Fatalf("body = %s, want the %s item", rec.Body.String(), tc.wantKind)
+				}
+				return
+			}
+			var envelope struct {
+				Limit int `json:"limit"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Limit != tc.wantLimit {
+				t.Fatalf("limit = %d, want the parsed %d", envelope.Limit, tc.wantLimit)
+			}
+		})
+	}
+}

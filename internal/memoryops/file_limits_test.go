@@ -132,3 +132,25 @@ func TestUploadBodyLimit(t *testing.T) {
 		t.Fatalf("an unconfigured deployment leaves the body unbounded: %d", bound)
 	}
 }
+
+// The file route refuses an unknown bank: the reference's submission path
+// raises `Bank '<id>' not found`, which the handler answers with a 404. The
+// route's earlier behaviour declared the bank from a converted upload, which
+// the reference never does.
+func TestFileRetainRefusesAnUnknownBank(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	h := NewHandlers(store, 5, 30000)
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	req, _ := uploadFiles(t, map[string]string{"a.txt": "hello"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+	if want := `{"detail":"Bank 'b1' not found"}`; rec.Body.String() != want {
+		t.Fatalf("body = %s, want %s", rec.Body.String(), want)
+	}
+}

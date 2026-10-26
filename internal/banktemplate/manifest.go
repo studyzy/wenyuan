@@ -8,9 +8,9 @@ package banktemplate
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -167,19 +167,27 @@ func Validate(manifest Manifest) (structural, semantic []string) {
 	// directives — because the framework reports every failure it found in that
 	// order rather than stopping at the first.
 	version := strings.TrimSpace(manifest.Version)
-	parsed, err := strconv.Atoi(version)
-	switch {
-	case version == "":
+	if version == "" {
 		structural = append(structural, "version: Field required")
-	case err != nil:
-		structural = append(structural,
-			fmt.Sprintf("version: Value error, version must be a numeric string, got '%s'", version))
-	case parsed < 1:
-		structural = append(structural, "version: Value error, version must be >= 1")
-	case parsed > atoiVersion(CurrentTemplateVersion):
-		structural = append(structural, fmt.Sprintf(
-			"version: Value error, version '%s' is not supported by this server (max supported: %s). Please upgrade Wenyuan.",
-			version, CurrentTemplateVersion))
+	} else {
+		// The reference validates this field with `int(v)` — a Python integer,
+		// which has no width — and compares the value it produced with the two
+		// bounds. The version is therefore parsed at arbitrary precision: a value
+		// past int64 is still a number there, so it falls to the upper-bound arm
+		// rather than being reported as non-numeric, and the message quotes the
+		// digits as the caller sent them.
+		parsed, ok := new(big.Int).SetString(version, 10)
+		switch {
+		case !ok:
+			structural = append(structural,
+				fmt.Sprintf("version: Value error, version must be a numeric string, got '%s'", version))
+		case parsed.Cmp(big.NewInt(1)) < 0:
+			structural = append(structural, "version: Value error, version must be >= 1")
+		case parsed.Cmp(big.NewInt(int64(atoiVersion(CurrentTemplateVersion)))) > 0:
+			structural = append(structural, fmt.Sprintf(
+				"version: Value error, version '%s' is not supported by this server (max supported: %s). Please upgrade Hindsight.",
+				version, CurrentTemplateVersion))
+		}
 	}
 
 	structural = append(structural, bankConfigStructural(manifest.Bank)...)

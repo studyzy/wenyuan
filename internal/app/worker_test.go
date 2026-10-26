@@ -278,7 +278,7 @@ func TestFormatOptionalTime(t *testing.T) {
 // The queue consumer is constructed with the resolved worker configuration.
 func TestNewQueueConsumer(t *testing.T) {
 	store := storage.NewMemoryStore("public")
-	consumer := NewQueueConsumer(store, none.New(), nil, nil, config.WorkerConfig{ID: "w1", Concurrency: 2}, config.WorkerTuning{}, nil, ExtractionSettings{}, false)
+	consumer := NewQueueConsumer(store, none.New(), nil, nil, config.WorkerConfig{ID: "w1", Concurrency: 2}, config.WorkerTuning{}, nil, ExtractionSettings{}, false, "public")
 	if consumer == nil {
 		t.Fatal("the consumer must be constructed")
 	}

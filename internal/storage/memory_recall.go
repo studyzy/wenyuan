@@ -125,6 +125,12 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	ranked := scoreCandidates(ctx, candidates, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
+	// The trace reports the SCORED list, which is what the reference hands its
+	// tracer (`scored_results` after the post-rank floors,
+	// engine/memory_engine.py:10060-10076); the dedup and the budget below are
+	// the narrowing the returned list gets, and the reference keeps the
+	// narrower list in its own `[5]`/`[6]` steps only.
+	scored := append([]*recallCandidate(nil), ranked...)
 	ranked = preferObservations(ranked, q)
 	ranked = capCandidates(ranked, limit)
 	stop()
@@ -156,8 +162,9 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 		stop()
 	}
 	stop = phases.measure("trace", false)
-	result.Trace = buildRecallTrace(candidates, ranked, armTraces, q, limit)
+	result.Trace = buildRecallTrace(candidates, scored, ranked, armTraces, q, limit)
 	stop()
+	attachRecallTracePhases(&result.Trace, phases, q)
 	return result, nil
 }
 
@@ -175,7 +182,7 @@ func capCandidates(ranked []*recallCandidate, limit int) []*recallCandidate {
 // report it without re-deriving the counts from the ranked list. It also
 // assembles the reference-shaped retrieval detail from the arm lists the
 // pipeline fanned out to.
-func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCandidate, armTraces []recallArmTrace, q RecallQuery, limit int) RecallTrace {
+func buildRecallTrace(candidates map[string]*recallCandidate, scored, ranked []*recallCandidate, armTraces []recallArmTrace, q RecallQuery, limit int) RecallTrace {
 	// Every arm a candidate was surfaced by is counted, so the trace reports
 	// which retrieval paths actually contributed rather than a fixed subset.
 	stageCounts := map[string]int{}
@@ -189,7 +196,7 @@ func buildRecallTrace(candidates map[string]*recallCandidate, ranked []*recallCa
 		BudgetUsed:      len(ranked),
 		CandidatesFound: len(candidates),
 		StageCounts:     stageCounts,
-		Detail:          buildRecallTraceDetail(candidates, ranked, armTraces, q, limit),
+		Detail:          buildRecallTraceDetail(candidates, scored, ranked, armTraces, q, limit),
 	}
 }
 

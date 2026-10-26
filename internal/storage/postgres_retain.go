@@ -79,6 +79,15 @@ func (s *PostgresStore) RetainWrite(ctx context.Context, req RetainRequest) (Ret
 		// write must not create a second one for itself.
 		return outcome, nil
 	}
+	if !req.Async {
+		// A synchronous retain writes no operation row. The reference's
+		// `retain_batch_async` never touches `async_operations`, and the
+		// synchronous branch says so outright: "A sync retain has no operation row
+		// and no ack, so nothing else can stop it once it starts"
+		// (api/http.py:10280). Writing one here left an extra completed row that
+		// `GET /stats` reported in `operations_by_status`.
+		return outcome, nil
+	}
 	if _, err := s.PutOperation(ctx, Operation{
 		OperationID: opID, BankID: req.BankID, OperationType: OperationTypeRetain,
 		Status: status, Run: 1, CreatedAt: now, UpdatedAt: now, CompletedAt: completedAt,
@@ -199,7 +208,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	if err := s.SyncDocumentAttachments(ctx, req.BankID, docID, item.Content); err != nil {
 		return nil, err
 	}
-	chunkBySegment, err := s.putItemChunks(ctx, req.BankID, docID, item.Content, storeText, sizes, baseIndex, existingHashes)
+	chunkBySegment, err := s.putItemParts(ctx, req.BankID, docID, item.ContentParts(), storeText, sizes, baseIndex, existingHashes)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +231,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 		mentioned := make([]string, 0, len(content.entities))
 		seen := map[string]bool{}
 		for _, entity := range content.entities {
-			resolved, err := s.ResolveRetainEntity(ctx, req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities)
+			resolved, err := s.resolveRetainEntityOn(ctx, req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities, unitEventDateOf(stored))
 			if err != nil {
 				return nil, err
 			}
@@ -231,7 +240,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 			if resolved.ID == "" {
 				continue
 			}
-			if err := s.UpsertUnitEntity(ctx, stored.ID, resolved.ID); err != nil {
+			if err := s.upsertUnitEntitySeenAt(ctx, stored.ID, resolved.ID, unitEventDateOf(stored)); err != nil {
 				return nil, err
 			}
 			if !seen[resolved.ID] {
@@ -357,20 +366,40 @@ func (s *PostgresStore) clearDocumentUnits(ctx context.Context, bankID, docID st
 	return nil
 }
 
-// putItemChunks stores one item's segments, starting at baseIndex so an append
-// continues a document's chunk numbering instead of colliding with it. When
-// storeText is false the raw chunk text is not kept, but the content hash is
-// still computed from it.
+// putItemParts stores one item's content blocks — one per content dict the
+// caller sent, or the fold of several — starting at baseIndex so a second block
+// continues the document's chunk numbering instead of colliding with the first.
 //
-// A segment whose content hash is already in existing is skipped — an append
-// whose tail the document already holds stores nothing new — and the returned
-// map omits it, so no unit is built from it. The map is keyed by the segment's
-// position in the item.
-func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, content string, storeText bool, sizes SegmentOptions, baseIndex int, existing map[string]bool) (map[int]string, error) {
-	chunks := SegmentWith(content, sizes)
-	bySegment := make(map[int]string, len(chunks))
+// Every block is cut on its own boundaries and numbered from 0 locally, so the
+// chunk a fact came from is the block's own chunk (the reference cuts and
+// numbers each content dict separately, engine/retain/orchestrator.py:1968-1987
+// and engine/retain/fact_extraction.py:2985). The blocks share one document here,
+// so the second block's chunk 0 lands after the first block's last chunk rather
+// than overwriting it — the collision that once left a document with a single
+// chunk (engine/retain/orchestrator.py:1455-1470, #1888).
+func (s *PostgresStore) putItemParts(ctx context.Context, bankID, docID string, parts []string, storeText bool, sizes SegmentOptions, baseIndex int, existing map[string]bool) (map[int]string, error) {
+	bySegment := make(map[int]string)
 	next := baseIndex
-	for i, chunk := range chunks {
+	for _, content := range parts {
+		if err := s.putPartChunks(ctx, bankID, docID, content, storeText, sizes, &next, existing, bySegment); err != nil {
+			return nil, err
+		}
+	}
+	return bySegment, nil
+}
+
+// putPartChunks stores one content block's chunks from *next onwards,
+// advancing *next past what it wrote. The returned keys are the block's
+// positions.
+func (s *PostgresStore) putPartChunks(ctx context.Context, bankID, docID, content string, storeText bool, sizes SegmentOptions, next *int, existing map[string]bool, bySegment map[int]string) error {
+	chunks := segmentsPerContent(content, sizes)
+	// The block is keyed by the index its first stored chunk is written at, plus
+	// how many chunks of it were written before this one, so a position stays
+	// tied to the chunk index extraction later names even when a chunk the
+	// document already held is skipped.
+	start := *next
+	written := 0
+	for _, chunk := range chunks {
 		if existing[ContentHash(chunk)] {
 			continue
 		}
@@ -385,23 +414,24 @@ func (s *PostgresStore) putItemChunks(ctx context.Context, bankID, docID, conten
 		// be the wrong trade, and the indices only ever grow.
 		var chunkID string
 		for attempt := 0; ; attempt++ {
-			chunkID = BuildChunkID(bankID, docID, next)
+			chunkID = BuildChunkID(bankID, docID, *next)
 			_, err := s.db.ExecContext(ctx,
 				`INSERT INTO `+quoteIdent(s.schema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
 				 VALUES ($1,$2,$3,$4,$5,$6)`,
-				chunkID, bankID, docID, next, text, ContentHash(chunk))
+				chunkID, bankID, docID, *next, text, ContentHash(chunk))
 			if err == nil {
 				break
 			}
 			if !isUniqueViolation(err) || attempt >= chunkIndexAttempts {
-				return nil, err
+				return err
 			}
-			next++
+			*next++
 		}
-		next++
-		bySegment[i] = chunkID
+		*next++
+		bySegment[start+written] = chunkID
+		written++
 	}
-	return bySegment, nil
+	return nil
 }
 
 // PutDocumentChunks upserts one document's chunks in a single statement and
@@ -675,6 +705,23 @@ func (s *PostgresStore) ResolveRetainEntity(ctx context.Context, bankID string, 
 	return s.resolveEntityWithKind(ctx, bankID, entityMatchKey(entity.Text), EntityKindRegular, resolve)
 }
 
+// resolveRetainEntityOn resolves an entity named by a memory that was seen at
+// the given event time, so a row this write creates starts its date stamps
+// there.
+//
+// The reference seeds a new entity from the memory's own event date —
+// `INSERT … SELECT $1, name, COALESCE(event_date, now()), COALESCE(event_date,
+// now()), 0, kind` (engine/db/ops_postgresql.py:399-409) — because first_seen
+// and last_seen are meant to say when the bank knew of the entity, which is
+// what its memories say, not when the row happened to be inserted. Stamping
+// `now()` instead made both columns differ from the reference on every write
+// and, because the entity list orders by `mention_count DESC, last_seen DESC,
+// id ASC` (engine/memories/pg/curation.py:545), reordered entities that share a
+// mention count.
+func (s *PostgresStore) resolveRetainEntityOn(ctx context.Context, bankID string, entity RetainEntity, resolve bool, seenAt time.Time) (Entity, error) {
+	return s.resolveEntityWithKindOn(ctx, bankID, entityMatchKey(entity.Text), EntityKindRegular, resolve, seenAt)
+}
+
 // resolveEntityWithKind finds or creates the entity named by a normalized name.
 //
 // Resolution on treats the name as a guess: the exact case-insensitive match
@@ -683,6 +730,13 @@ func (s *PostgresStore) ResolveRetainEntity(ctx context.Context, bankID string, 
 // ordered by score so the closest match wins. Resolution off takes the name
 // literally and reuses an entity only on a case-insensitive exact match.
 func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
+	return s.resolveEntityWithKindOn(ctx, bankID, name, kind, resolve, time.Time{})
+}
+
+// resolveEntityWithKindOn is resolveEntityWithKind with the event time a row it
+// creates should start its date stamps at. A zero seenAt keeps the previous
+// behaviour (the write clock).
+func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, name string, kind EntityKind, resolve bool, seenAt time.Time) (Entity, error) {
 	if name == "" {
 		return Entity{}, nil
 	}
@@ -699,9 +753,16 @@ func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name 
 	// first unit is what bumps it, through UpsertUnitEntity, so the count is the
 	// number of mentions rather than the number of entities.
 	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.entities (id, bank_id, canonical_name, entity_kind, mention_count, first_seen, last_seen)
-	           VALUES ($1,$2,$3,$4,0,now(),now())
+	           VALUES ($1,$2,$3,$4,0,COALESCE($5, now()),COALESCE($5, now()))
 	           ON CONFLICT (id) DO NOTHING`
-	if _, err := s.db.ExecContext(ctx, insert, entity.ID, bankID, name, string(kind)); err != nil {
+	// The reference seeds a new entity's stamps from the memory's event_date and
+	// falls back to now() when it has none; a zero seenAt binds NULL so the SQL
+	// keeps that fallback.
+	var eventDate any
+	if !seenAt.IsZero() {
+		eventDate = seenAt
+	}
+	if _, err := s.db.ExecContext(ctx, insert, entity.ID, bankID, name, string(kind), eventDate); err != nil {
 		// The read above and this insert are two statements: a concurrent writer
 		// can create the same entity — the table holds one row per bank and
 		// lower-cased name — between them. Losing that race is not a failure of
@@ -925,8 +986,21 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	return unit, nil
 }
 
-// UpsertUnitEntity links a memory unit to an entity identity.
+// UpsertUnitEntity links a memory unit to an entity identity, dating the
+// mention by the write clock. Retain uses upsertUnitEntitySeenAt instead.
 func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID string) error {
+	return s.upsertUnitEntitySeenAt(ctx, unitID, entityID, time.Time{})
+}
+
+// upsertUnitEntitySeenAt links a memory unit to an entity identity and widens
+// the entity's last_seen to the memory's own event time.
+//
+// The reference credits a mention with `last_seen = GREATEST(last_seen, $3)`
+// where `$3` is the source memory's event_date
+// (engine/memories/pg/entity_resolver.py:550-562), so an entity named by an old
+// memory is last seen when that memory happened. A zero seenAt binds NULL and
+// the stamp falls back to the write clock.
+func (s *PostgresStore) upsertUnitEntitySeenAt(ctx context.Context, unitID, entityID string, seenAt time.Time) error {
 	result, err := s.db.ExecContext(ctx, `INSERT INTO `+quoteIdent(s.schema)+`.unit_entities (unit_id, entity_id)
 	          VALUES ($1,$2) ON CONFLICT DO NOTHING`, unitID, entityID)
 	if err != nil {
@@ -942,9 +1016,13 @@ func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID s
 	if inserted == 0 {
 		return nil
 	}
+	var eventDate any
+	if !seenAt.IsZero() {
+		eventDate = seenAt
+	}
 	_, err = s.db.ExecContext(ctx, `UPDATE `+quoteIdent(s.schema)+`.entities
-	          SET mention_count = mention_count + 1, last_seen = GREATEST(last_seen, now())
-	          WHERE id = $1::uuid`, entityID)
+	          SET mention_count = mention_count + 1, last_seen = GREATEST(last_seen, COALESCE($2, now()))
+	          WHERE id = $1::uuid`, entityID, eventDate)
 	return err
 }
 

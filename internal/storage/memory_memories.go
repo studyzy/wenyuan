@@ -486,32 +486,51 @@ func (s *MemoryStore) updateMemoryLocked(bankID, memoryID string, patch MemoryPa
 	if patch.Entities != nil {
 		s.setUnitEntitiesLocked(bankID, unit.ID, *patch.Entities, patch.ResolveEntities == nil || *patch.ResolveEntities)
 	}
+	// The stamps the reference's apply_edit writes belong to a patch that names
+	// an editable column; a state-only write leaves them alone.
+	columnsEdited := editsColumns(patch)
 
 	now := time.Now().UTC()
 	action := curationNone
+	// The move follows the edit, as the reference orders it: its phase 2
+	// applies the edit to the live row first and only then invalidates or
+	// reverts (engine/memory_engine.py:12194-12260 edit, then :12350-12380).
+	// An edit on an archived row is refused there, so a body that both edits
+	// and reverts drops the edit and only reverts; a body that edits and
+	// invalidates archives the edited row.
+	if !archived && editTouchesContent(patch) {
+		// A content edit resets the consolidation markers, so the fact is
+		// folded again with its new text, exactly as the reference's
+		// apply_edit does.
+		unit.ConsolidatedAt = nil
+		unit.ConsolidationFailedAt = nil
+		delete(s.consolidated, memoryID)
+		// The edit also drops the derived links, so a stale temporal or
+		// semantic edge does not survive it; graph maintenance rebuilds the
+		// ones that still hold, and the causal edges stay (#2864). The
+		// survivors that pointed here, and the edited unit itself, are
+		// queued for that rebuild before the rows go.
+		s.enqueueRelinkVictimsLocked(bankID, []string{memoryID}, true)
+		s.links = dropNonCausalLinksFor(s.links, memoryID)
+		action = curationEdit
+	}
+	if columnsEdited {
+		unit.UpdatedAt = &now
+		if action == curationEdit {
+			unit.EditedAt = &now
+		}
+	}
 	switch {
 	case patch.State == nil:
-		if editTouchesContent(patch) {
-			// A content edit resets the consolidation markers, so the fact is
-			// folded again with its new text, exactly as the reference's
-			// apply_edit does.
-			unit.ConsolidatedAt = nil
-			unit.ConsolidationFailedAt = nil
-			delete(s.consolidated, memoryID)
-			// The edit also drops the derived links, so a stale temporal or
-			// semantic edge does not survive it; graph maintenance rebuilds the
-			// ones that still hold, and the causal edges stay (#2864). The
-			// survivors that pointed here, and the edited unit itself, are
-			// queued for that rebuild before the rows go.
-			s.enqueueRelinkVictimsLocked(bankID, []string{memoryID}, true)
-			s.links = dropNonCausalLinksFor(s.links, memoryID)
-			action = curationEdit
-		}
 		s.putUnitLocked(memoryID, unit)
 	case *patch.State == "invalidated":
 		if archived {
-			// Already retired: a new reason is the only thing the repeat
-			// changes; the invalidation time stands.
+			// Already retired: the reason is the only thing the repeat can
+			// change — a repeat that names none leaves the recorded one in place
+			// (the reference's `do_reason_update` needs a reason to have been
+			// sent) — and the invalidation time stands. That holds after an edit
+			// too: an edit does not touch the reason, so the stored row still
+			// has to be written for the edit to land.
 			if patch.Reason != nil {
 				unit.InvalidationReason = patch.Reason
 			}

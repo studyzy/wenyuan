@@ -63,6 +63,10 @@ type archiveProcessor struct {
 	// fact is embedded with the target bank's model exactly as a retained one
 	// is; a deployment with no embedding model leaves it nil.
 	embeddings storage.EmbeddingGenerator
+	// storeSchema is the tenant schema the worker serves (HINDSIGHT_API_DATABASE_SCHEMA).
+	// The document export keys its archive under `tenants/{schema}/banks/...`,
+	// the reference's own layout, so the published storage_key carries it.
+	storeSchema string
 }
 
 // guard returns the delivery URL guard, defaulting to the strict policy when
@@ -1182,7 +1186,8 @@ func formatOptionalTime(value *time.Time) string {
 // archive import re-embeds with, exactly as the retain write path does.
 func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
 	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, tuning config.WorkerTuning,
-	guard *webhooks.Guard, extraction ExtractionSettings, discardDocumentText bool) *worker.Consumer {
+	guard *webhooks.Guard, extraction ExtractionSettings, discardDocumentText bool,
+	storeSchema string) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
 		recallPerSourceCap:  cfg.RecallMaxCandidatesPerSource,
@@ -1190,6 +1195,7 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 		embeddings:          embeddings,
 		extraction:          extraction,
 		discardDocumentText: discardDocumentText,
+		storeSchema:         storeSchema,
 	}, worker.Config{
 		WorkerID:            cfg.ID,
 		MaxRetries:          cfg.MaxRetries,

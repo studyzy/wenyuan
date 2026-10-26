@@ -69,6 +69,45 @@ var templateBankFieldOrder = []string{
 	"memory_defense",
 }
 
+// templateTriggerFieldOrder is the order the reference's MentalModelTrigger
+// declares its fields in (api/http.py:3199-3300). A trigger travels as a plain
+// object, and Go serialises a map in sorted key order, so an exported template
+// would list `budget, exclude_mental_model_ids, exclude_mental_models, …` where
+// the reference lists `budget, mode, refresh_after_consolidation, …`. The
+// contract is the rendered document, so the export emits the declaration order.
+//
+// Only the keys a trigger already carries are reordered: the table neither adds
+// a member the stored value lacks nor drops one it has. A key it does not name
+// is written after the known ones, sorted, so a member added to the reference's
+// model later is still carried.
+var templateTriggerFieldOrder = []string{
+	"budget",
+	"mode",
+	"refresh_after_consolidation",
+	"refresh_cron",
+	"min_refresh_interval_seconds",
+	"fact_types",
+	"exclude_mental_models",
+	"exclude_mental_model_ids",
+	"tags_match",
+	"tag_groups",
+	"include_chunks",
+	"recall_max_tokens",
+	"recall_chunks_max_tokens",
+	"reflect_search_observations_max_tokens",
+	"reflect_search_observations_include_entities",
+	"response_schema",
+	"keep_trace",
+}
+
+// orderedTrigger renders a trigger object in the reference's declaration order.
+func orderedTrigger(trigger map[string]any) (json.RawMessage, error) {
+	if trigger == nil {
+		return json.RawMessage("null"), nil
+	}
+	return orderedObject(trigger, templateTriggerFieldOrder)
+}
+
 // MarshalJSON renders the manifest with the bank section in the reference's
 // field order. Every other member keeps its own declaration order from the
 // struct tags; only the map needs help, because encoding/json sorts map keys.
@@ -83,16 +122,52 @@ func (m Manifest) MarshalJSON() ([]byte, error) {
 	} else {
 		bank = json.RawMessage("null")
 	}
+	models, err := orderedMentalModels(m.MentalModels)
+	if err != nil {
+		return nil, err
+	}
 	type inner struct {
 		Version      string          `json:"version"`
 		Bank         json.RawMessage `json:"bank"`
-		MentalModels []MentalModel   `json:"mental_models"`
+		MentalModels json.RawMessage `json:"mental_models"`
 		Directives   []Directive     `json:"directives"`
 	}
 	return json.Marshal(inner{
 		Version: m.Version, Bank: bank,
-		MentalModels: m.MentalModels, Directives: m.Directives,
+		MentalModels: models, Directives: m.Directives,
 	})
+}
+
+// orderedMentalModels renders the mental-model list with each trigger object in
+// the reference's declaration order. A nil list renders as null, which is what
+// the reference sends for a manifest that carries no models.
+func orderedMentalModels(models []MentalModel) (json.RawMessage, error) {
+	if models == nil {
+		return json.RawMessage("null"), nil
+	}
+	rendered := make([]json.RawMessage, 0, len(models))
+	for _, model := range models {
+		trigger, err := orderedTrigger(model.Trigger)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(struct {
+			ID          string          `json:"id"`
+			Name        string          `json:"name"`
+			SourceQuery string          `json:"source_query"`
+			Tags        []string        `json:"tags"`
+			MaxTokens   int             `json:"max_tokens"`
+			Trigger     json.RawMessage `json:"trigger"`
+		}{
+			ID: model.ID, Name: model.Name, SourceQuery: model.SourceQuery,
+			Tags: model.Tags, MaxTokens: model.MaxTokens, Trigger: trigger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rendered = append(rendered, encoded)
+	}
+	return json.Marshal(rendered)
 }
 
 // orderedObject renders a decoded JSON object with the named keys first, in the

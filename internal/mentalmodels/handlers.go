@@ -145,7 +145,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	// name, source_query, tags, then the trigger. The shared walk files no numeric
 	// bound, so max_tokens' range is checked here and appended after those and
 	// before the trigger's items, which is where the reference puts it.
-	if items := maxTokensItems(body.MaxTokens, object["max_tokens"]); len(items) > 0 {
+	maxTokens := rawMaxTokens(body.MaxTokens)
+	// The bound check runs on the value the coercion produced but NAMES the value
+	// the client sent, so the message does not report true as 1.
+	if items := maxTokensItems(maxTokens, object["max_tokens"]); len(items) > 0 {
 		bodyErrors = append(bodyErrors, items...)
 	}
 	trigger, triggerFailure := parseTrigger(body.Trigger, true)
@@ -156,9 +159,9 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: bodyErrors})
 		return
 	}
-	maxTokens := defaultMentalModelTokens
-	if body.MaxTokens != nil {
-		maxTokens = *body.MaxTokens
+	tokens := defaultMentalModelTokens
+	if maxTokens != nil {
+		tokens = *maxTokens
 	}
 	id := newID()
 	if body.ID != nil && strings.TrimSpace(*body.ID) != "" {
@@ -189,7 +192,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		SourceQuery: *body.SourceQuery,
 		Content:     "",
 		Tags:        derefTags(body.Tags),
-		MaxTokens:   maxTokens,
+		MaxTokens:   tokens,
 		Trigger:     trigger,
 	})
 	if err != nil {
@@ -261,8 +264,9 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	// Unlike the create route, a patch files its items in strict declaration
 	// order — name, source_query, max_tokens, tags, trigger — so the bound is
 	// placed ahead of the walk's tags item.
+	updateTokens := rawMaxTokens(body.MaxTokens)
 	bodyErrors = insertBeforeLoc(bodyErrors, []string{"body", "tags"},
-		maxTokensItems(body.MaxTokens, object["max_tokens"]))
+		maxTokensItems(updateTokens, object["max_tokens"]))
 	var triggerPatch map[string]any
 	// Unlike the create route, a trigger member the body states as JSON null is not
 	// a supplied value here: the patch model makes the whole member optional, and a
@@ -285,7 +289,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		Name:        body.Name,
 		SourceQuery: body.SourceQuery,
 		Tags:        body.Tags,
-		MaxTokens:   body.MaxTokens,
+		MaxTokens:   updateTokens,
 	}
 	if hasTrigger {
 		current, err := h.Store.GetMentalModel(r.Context(), bankID, id)

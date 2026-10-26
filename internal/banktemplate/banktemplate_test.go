@@ -2,6 +2,8 @@ package banktemplate
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -317,5 +319,99 @@ func TestValidateExtractionModeMessageMatchesReference(t *testing.T) {
 	want := "bank.retain_extraction_mode: must be one of ('concise', 'verbose', 'custom', 'verbatim', 'chunks'), got 'bogus'"
 	if len(semantic) != 1 || semantic[0] != want {
 		t.Fatalf("semantic = %q, want [%q]", semantic, want)
+	}
+}
+
+// A version past the supported one is reported with the reference's own wording
+// — the product name included, because that string is what a client shows its
+// operator. The reference interpolates "Hindsight" there
+// (api/http.py:4096-4097), so this service does too; "Wenyuan" would be a
+// different message for the same request.
+func TestValidateUnsupportedVersionNamesTheReference(t *testing.T) {
+	structural, _ := Validate(Manifest{Version: "2"})
+	want := "version: Value error, version '2' is not supported by this server (max supported: 1). Please upgrade Hindsight."
+	if len(structural) != 1 || structural[0] != want {
+		t.Fatalf("structural = %q, want [%q]", structural, want)
+	}
+}
+
+// `int(v)` in the reference is a Python integer, which has no width: a version
+// whose digits overflow int64 is still a number there, so it reaches the
+// upper-bound check and is reported as unsupported rather than as non-numeric.
+// Parsing it with strconv.Atoi reports "must be a numeric string" instead.
+func TestValidateVersionIsParsedAtArbitraryPrecision(t *testing.T) {
+	cases := []struct {
+		version string
+		want    string
+	}{
+		{"99999999999999999999",
+			"version: Value error, version '99999999999999999999' is not supported by this server (max supported: 1). Please upgrade Hindsight."},
+		{"9223372036854775808",
+			"version: Value error, version '9223372036854775808' is not supported by this server (max supported: 1). Please upgrade Hindsight."},
+		{"-99999999999999999999", "version: Value error, version must be >= 1"},
+	}
+	for _, tc := range cases {
+		structural, _ := Validate(Manifest{Version: tc.version})
+		if len(structural) != 1 || structural[0] != tc.want {
+			t.Errorf("version %q: structural = %q, want [%q]", tc.version, structural, tc.want)
+		}
+	}
+}
+
+// The trigger object is serialised in the reference's declaration order, not in
+// Go's sorted map order: `GET /v1/default/banks/{id}/export` renders this object
+// verbatim in its response body, so the key order is observable bytes.
+//
+// The table lists the fields of the reference's MentalModelTrigger
+// (api/http.py:3199-3300), which is live-verified against the reference service.
+// Losing the ordering fails this case: encoding/json sorts a map, so the trigger
+// comes back as `budget, exclude_mental_model_ids, exclude_mental_models, …`.
+func TestManifestRendersTriggerInDeclarationOrder(t *testing.T) {
+	want := []string{
+		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
+		"min_refresh_interval_seconds", "fact_types", "exclude_mental_models",
+		"exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks",
+		"recall_max_tokens", "recall_chunks_max_tokens",
+		"reflect_search_observations_max_tokens",
+		"reflect_search_observations_include_entities", "response_schema", "keep_trace",
+	}
+	if len(templateTriggerFieldOrder) != len(want) {
+		t.Fatalf("trigger order = %v, want %v", templateTriggerFieldOrder, want)
+	}
+	for index, field := range want {
+		if templateTriggerFieldOrder[index] != field {
+			t.Fatalf("position %d = %q, want %q", index, templateTriggerFieldOrder[index], field)
+		}
+	}
+
+	// The order is applied on the wire, and only to the keys present.
+	trigger := map[string]any{"mode": "full", "keep_trace": false, "budget": nil}
+	manifest := Manifest{
+		Version:      "1",
+		MentalModels: []MentalModel{{ID: "mm-x", Name: "n", SourceQuery: "q", MaxTokens: 2048, Trigger: trigger}},
+	}
+	encoded, err := manifest.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		MentalModels []struct {
+			Trigger map[string]json.RawMessage `json:"trigger"`
+		} `json:"mental_models"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	// Re-read the order from the raw bytes, because a map loses it.
+	text := string(encoded)
+	budget := strings.Index(text, `"budget"`)
+	mode := strings.Index(text, `"mode"`)
+	keep := strings.Index(text, `"keep_trace"`)
+	if budget < 0 || budget >= mode || mode >= keep {
+		t.Fatalf("trigger keys out of declaration order: budget=%d mode=%d keep_trace=%d in %s", budget, mode, keep, text)
+	}
+	// No key is invented or dropped.
+	if len(decoded.MentalModels) != 1 || len(decoded.MentalModels[0].Trigger) != 3 {
+		t.Fatalf("trigger = %+v, want exactly the three supplied keys", decoded.MentalModels[0].Trigger)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/monitoring"
@@ -56,6 +57,16 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	worker.ReportOutcome(ctx, map[string]any{
 		"unit_ids_count":          countUnitIDs(outcome),
 		"extraction_errors_count": 0,
+		// The reference leaves the last durable progress snapshot on the
+		// operation when its batch commits: `stage="storing"`,
+		// `processed=chunks_committed`, `total=total_chunks`,
+		// `detail={"facts_committed": len(all_unit_ids)}`, stamped with an
+		// `at` the heartbeat records
+		// (engine/retain/orchestrator.py:2866-2879,
+		// engine/memory_engine.py:5163). A row that never recorded one reads as
+		// `progress: null`, which is what this service answered for every
+		// finished retain before.
+		"progress": retainProgressSnapshot(countUnitIDs(outcome), time.Now().UTC()),
 	})
 	return nil
 }
@@ -108,4 +119,19 @@ func countUnitIDs(outcome storage.RetainOutcome) int {
 		total += len(ids)
 	}
 	return total
+}
+
+// retainProgressSnapshot renders the `progress` object a finished retain leaves
+// on its operation, in the reference's own shape. `processed` and `total` are
+// the chunks the submission stored: a queued retain is published after its write
+// commits, so the snapshot it leaves behind is the final one, and
+// `facts_committed` is the units that write produced.
+func retainProgressSnapshot(units int, at time.Time) map[string]any {
+	return map[string]any{
+		"stage":     "storing",
+		"at":        at.Format("2006-01-02T15:04:05.999999+00:00"),
+		"processed": units,
+		"total":     units,
+		"detail":    map[string]any{"facts_committed": units},
+	}
 }

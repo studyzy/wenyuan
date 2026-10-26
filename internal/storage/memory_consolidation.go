@@ -184,6 +184,7 @@ func (s *MemoryStore) CreateObservation(ctx context.Context, bankID, text string
 		return "", err
 	}
 	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation, ContextAbsent: true}
+	s.sourceObservationBoundsLocked(bankID, sourceIDs).ApplyTo(&unit)
 	unit.Embedding = embedObservation(ctx, s.observationEmbedderRef(), text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
@@ -221,8 +222,18 @@ func (s *MemoryStore) UpdateObservation(ctx context.Context, bankID, observation
 		s.recordObservationHistoryLocked(unit, sourceIDs)
 	}
 	unit.Text = text
-	now := time.Now().UTC()
-	unit.MentionedAt = &now
+	// The temporal columns widen with the sources instead of being stamped with
+	// the write clock: the reference merges the new sources' bounds into the
+	// observation's (`_TemporalBounds.merged_with`, consolidator.py:257-262),
+	// which keeps an observation that rests on an old fact an old observation.
+	current := ObservationBounds{
+		EventDate:     unit.EventDate,
+		OccurredStart: unit.OccurredStart,
+		OccurredEnd:   unit.OccurredEnd,
+		MentionedAt:   unit.MentionedAt,
+	}
+	bounds := current.MergedWith(s.sourceObservationBoundsLocked(bankID, sourceIDs))
+	bounds.ApplyTo(&unit)
 	s.units[observationID] = unit
 	for _, sourceID := range sourceIDs {
 		if !containsString(s.observationSources[observationID], sourceID) {
@@ -391,4 +402,20 @@ func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []str
 		}
 	}
 	return len(doomed), nil
+}
+
+// sourceObservationBoundsLocked aggregates the temporal bounds a fact set
+// hands to an observation it is folded into. A source that no longer exists is
+// skipped, as the reference's missing member contributes nothing. The caller
+// holds the read or write lock.
+func (s *MemoryStore) sourceObservationBoundsLocked(bankID string, sourceIDs []string) ObservationBounds {
+	sources := make([]MemoryUnit, 0, len(sourceIDs))
+	for _, id := range sourceIDs {
+		unit, ok := s.units[id]
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		sources = append(sources, unit)
+	}
+	return AggregatedObservationBounds(sources)
 }

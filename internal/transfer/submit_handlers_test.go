@@ -950,3 +950,70 @@ func TestMissingUploadFileIsValidationFailure(t *testing.T) {
 		}
 	}
 }
+
+// The reference declares a required `file` body part and its query parameters on
+// one signature, so its framework binds ALL of them before the handler runs and
+// reports every failure together, in declaration order. Three shapes follow from
+// that, and each of them was wrong before: the file part must be settled before a
+// handler-side vocabulary check, and every failing flag must be listed rather
+// than only the first.
+func TestRequestShapeFailuresAreReportedTogether(t *testing.T) {
+	h, _ := newTestHandlers(t)
+
+	// A missing file with an unparseable on_conflict reports the missing file —
+	// the body part is a binding failure, the vocabulary is a handler-body check
+	// that never runs.
+	rec := httptest.NewRecorder()
+	h.SubmitDocumentImport(rec, routeRequest(http.MethodPost,
+		"/v1/default/banks/b1/document-transfer?on_conflict=zz", nil, map[string]string{"bank_id": "b1"}))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != `{"detail":[{"type":"missing","loc":["body","file"],"msg":"Field required","input":null}]}` {
+		t.Fatalf("body = %s", got)
+	}
+
+	// Two unparseable flags are BOTH reported, then the missing file.
+	rec = httptest.NewRecorder()
+	h.SubmitTransferImport(rec, routeRequest(http.MethodPost,
+		"/v1/default/banks/b1/transfer/import?include_data=bogus&include_history=bogus", nil,
+		map[string]string{"bank_id": "b1"}))
+	var failure struct {
+		Detail []struct {
+			Loc []string `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&failure); err != nil {
+		t.Fatal(err)
+	}
+	wantLocs := [][]string{{"query", "include_data"}, {"query", "include_history"}, {"body", "file"}}
+	if len(failure.Detail) != len(wantLocs) {
+		t.Fatalf("detail = %+v, want %d items", failure.Detail, len(wantLocs))
+	}
+	for index, want := range wantLocs {
+		got := failure.Detail[index].Loc
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("item %d loc = %v, want %v", index, got, want)
+		}
+	}
+
+	// The clone route declares target_bank_id before the three flags, so a
+	// missing target is reported before an unparseable flag.
+	rec = httptest.NewRecorder()
+	h.SubmitClone(rec, routeRequest(http.MethodPost,
+		"/v1/default/banks/b1/clone?include_data=bogus", nil, map[string]string{"bank_id": "b1"}))
+	failure.Detail = nil
+	if err := json.NewDecoder(rec.Body).Decode(&failure); err != nil {
+		t.Fatal(err)
+	}
+	wantLocs = [][]string{{"query", "target_bank_id"}, {"query", "include_data"}}
+	if len(failure.Detail) != len(wantLocs) {
+		t.Fatalf("clone detail = %+v, want %d items", failure.Detail, len(wantLocs))
+	}
+	for index, want := range wantLocs {
+		got := failure.Detail[index].Loc
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("clone item %d loc = %v, want %v", index, got, want)
+		}
+	}
+}

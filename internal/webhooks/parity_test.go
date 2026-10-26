@@ -263,6 +263,51 @@ func errorDetail(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return envelope.Detail
 }
 
+// The deliveries limit declares only `le=200` in the reference — there is no
+// `ge` — so a negative value is valid input that reaches the statement:
+// `limit + 1` rows are asked for, so -1 asks for zero and answers an empty page,
+// while anything below -1 hands PostgreSQL a negative LIMIT and is its own
+// refusal, surfacing as the reference's 500. Refusing a negative limit with 422
+// (the natural Go instinct, and what this route used to do) contradicts the
+// reference, which accepts the value.
+func TestWebhookDeliveriesNegativeLimitMatchesTheReference(t *testing.T) {
+	mux, _ := newServer(t)
+	webhook := createBody(t, mux, `{"url":"https://example.test/neg"}`)
+	base := "/v1/default/banks/b1/webhooks/" + webhook.ID + "/deliveries"
+
+	// -1: valid, and the fetch asks for zero rows.
+	rec := send(mux, http.MethodGet, base+"?limit=-1", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("limit=-1: %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items      []json.RawMessage `json:"items"`
+		NextCursor *string           `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 || page.NextCursor != nil {
+		t.Fatalf("limit=-1 page = %+v, want an empty page", page)
+	}
+
+	// Below -1: the reference's own failure, not a validation rejection.
+	for _, limit := range []string{"-2", "-3", "-200"} {
+		rec := send(mux, http.MethodGet, base+"?limit="+limit, "")
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("limit=%s: %d, want 500 (body %s)", limit, rec.Code, rec.Body.String())
+		}
+		if detail := errorDetail(t, rec); detail != "LIMIT must not be negative" {
+			t.Fatalf("limit=%s detail = %q", limit, detail)
+		}
+	}
+
+	// The declared upper bound is still a 422, because that one IS declared.
+	if rec := send(mux, http.MethodGet, base+"?limit=201", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("limit=201: %d, want 422", rec.Code)
+	}
+}
+
 // The deliveries route rejects an out-of-range limit and an unparseable cursor
 // the way the reference does.
 func TestWebhookDeliveriesValidation(t *testing.T) {

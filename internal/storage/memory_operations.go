@@ -76,6 +76,7 @@ func (s *MemoryStore) getOperation(ctx context.Context, opID string) (Operation,
 		return Operation{}, ErrOperationNotFound
 	}
 	op.IsParent = operationIsParent(op.ResultMetadata)
+	op.Progress = operationProgress(op.ResultMetadata)
 	return op, nil
 }
 
@@ -231,11 +232,15 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (
 	if !ok || (bankID != "" && op.BankID != bankID) {
 		return Operation{}, ErrOperationNotFound
 	}
+	// The payload-less batch parent is decided first, as the Postgres twin does
+	// and as the reference branches (engine/memory_engine.py:21510-21567): a
+	// completed batch parent with no children left answers the batch-parent 409,
+	// not the generic status one.
+	if op.OperationType == AsyncRetainType && operationIsParent(op.ResultMetadata) {
+		return s.retryBatchParentLocked(op)
+	}
 	if op.Status != StatusFailed && op.Status != StatusCancelled {
 		return op, ErrOperationConflict
-	}
-	if op.OperationType == AsyncRetainType {
-		return s.retryBatchParentLocked(op)
 	}
 	op.Status = StatusPending
 	op.Error = ""
@@ -319,6 +324,7 @@ func (s *MemoryStore) ListOperations(ctx context.Context, query OperationQuery) 
 			continue
 		}
 		op.IsParent = operationIsParent(op.ResultMetadata)
+		op.Progress = operationProgress(op.ResultMetadata)
 		matched = append(matched, op)
 	}
 	sort.SliceStable(matched, func(i, j int) bool {

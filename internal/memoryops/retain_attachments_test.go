@@ -73,7 +73,7 @@ func TestContentFlattenKeepsTextAndFallsBackWithoutShortID(t *testing.T) {
 // B1.14: an image uploaded through the file route is stored as an attachment
 // and referenced from the retained text by its placeholder.
 func TestFileRetainImageUploadUsesPlaceholder(t *testing.T) {
-	mux, store := newServer(t)
+	mux, store := newServerWithVision(t)
 	rec := uploadFile(t, mux, "pic.png", "png bytes", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())

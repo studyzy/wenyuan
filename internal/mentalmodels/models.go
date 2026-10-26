@@ -26,8 +26,10 @@ type Model struct {
 	Tags      []string `json:"tags"`
 	MaxTokens *int     `json:"max_tokens"`
 	// Trigger is the model's refresh trigger, null at metadata detail and the
-	// normalized object otherwise.
-	Trigger map[string]any `json:"trigger"`
+	// projected object otherwise. The projection carries all seventeen declared
+	// members in declaration order — not a Go map's sorted order — because that
+	// is what the reference's response model serializes.
+	Trigger Trigger `json:"trigger"`
 	// LastRefreshedAt is when a refresh last finished.
 	LastRefreshedAt *string `json:"last_refreshed_at"`
 	// LastMemorySeenAt is the bank write watermark the last refresh observed.
@@ -36,7 +38,11 @@ type Model struct {
 	LastRefreshFailedAt *string `json:"last_refresh_failed_at"`
 	CreatedAt           string  `json:"created_at"`
 	// ReflectResponse is the stored reflect payload, populated only at full.
-	ReflectResponse map[string]any `json:"reflect_response"`
+	// ReflectResponse is the stored reflect payload, populated only at full. It is
+	// an any because the stored jsonb has no member order and the reference's
+	// payload does: the projection hands back an OrderedObject when the column
+	// holds one, and nil otherwise.
+	ReflectResponse any `json:"reflect_response"`
 	// IsStale reports whether a write inside the model's scope is newer than
 	// the last refresh observed. Null when the route did not compute it (a
 	// single read below full detail).
@@ -47,12 +53,16 @@ type Model struct {
 // CreateMentalModelRequest fields: id, name, source_query, tags, max_tokens and
 // trigger. Any other key a client sends is reported through the ignored-params
 // channel, never honoured.
+//
+// MaxTokens stays a raw member and is bound through the framework's lax integer
+// coercion by the handler: a plain `int` member here would read a numeric string
+// as a decode failure instead of the integer the reference coerces it to.
 type CreateRequest struct {
 	ID          *string         `json:"id"`
 	Name        *string         `json:"name"`
 	SourceQuery *string         `json:"source_query"`
 	Tags        *[]string       `json:"tags"`
-	MaxTokens   *int            `json:"max_tokens"`
+	MaxTokens   json.RawMessage `json:"max_tokens"`
 	Trigger     json.RawMessage `json:"trigger"`
 }
 
@@ -62,7 +72,7 @@ type CreateRequest struct {
 type UpdateRequest struct {
 	Name        *string         `json:"name"`
 	SourceQuery *string         `json:"source_query"`
-	MaxTokens   *int            `json:"max_tokens"`
+	MaxTokens   json.RawMessage `json:"max_tokens"`
 	Tags        *[]string       `json:"tags"`
 	Trigger     json.RawMessage `json:"trigger"`
 }
@@ -131,13 +141,26 @@ func toModel(record storage.MentalModel) Model {
 		Content:             &content,
 		Tags:                tags,
 		MaxTokens:           maxTokens,
-		Trigger:             normalizeTrigger(record.Trigger),
+		Trigger:             projectTrigger(record.Trigger),
 		LastRefreshedAt:     timestampPtr(record.LastRefreshedAt),
 		LastMemorySeenAt:    httpx.FormatTimestampPtr(record.LastMemorySeenAt),
 		LastRefreshFailedAt: httpx.FormatTimestampPtr(record.LastRefreshFailedAt),
 		CreatedAt:           httpx.FormatTimestamp(record.CreatedAt),
-		ReflectResponse:     record.ReflectResult,
+		ReflectResponse:     reorderReflectResponseForWire(record.ReflectResult),
 	}
+}
+
+// reorderReflectResponseForWire projects a stored reflect_response for the wire.
+//
+// The column is jsonb, which carries no member order, so a value read back is a
+// sorted map; the reference's response, though, lists the payload's members in
+// the insertion order its own dict was built in. An ordered object makes
+// whichever serialiser writes the response agree with it.
+func reorderReflectResponseForWire(stored map[string]any) any {
+	if stored == nil {
+		return nil
+	}
+	return ReorderReflectResponse(stored)
 }
 
 // timestampPtr renders a time as the reference's isoformat, or nil when it is

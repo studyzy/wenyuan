@@ -162,17 +162,26 @@ func (h *Handlers) SubmitDocumentImport(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
 	}
-	// The conflict vocabulary is validated before any body work, and the value
-	// is taken verbatim: the reference's default applies only when the
-	// parameter is absent, never to a present empty or padded one.
-	conflict, ok := queryEnum(r, "on_conflict", ConflictSkip, ConflictSkip, ConflictReplace, ConflictNewID)
-	if !ok {
-		h.submitRejected(w, r, fmt.Sprintf("Invalid on_conflict '%s' (expected skip|replace|new-id)", conflict))
-		return
-	}
+	// The required `file` part is read BEFORE the query parameter is examined.
+	//
+	// The reference declares the archive as `file: UploadFile = File(...)`, so the
+	// framework settles the request's shape — a missing or unparseable file — while
+	// binding parameters, before the handler body (which is where `on_conflict` is
+	// checked, api/http.py:9020) ever runs. Reading the body first therefore reports
+	// "422 missing body.file" for a request that names neither a file nor a valid
+	// `on_conflict`, which is exactly what the reference answers; validating the
+	// parameter first would answer 400 and hide the shape failure.
 	data, err := readMultipartArchive(r)
 	if err != nil {
 		h.rejectUploadError(w, r, err)
+		return
+	}
+	// The conflict vocabulary is checked with the body in hand, and the value is
+	// taken verbatim: the reference's default applies only when the parameter is
+	// absent, never to a present empty or padded one.
+	conflict, ok := queryEnum(r, "on_conflict", ConflictSkip, ConflictSkip, ConflictReplace, ConflictNewID)
+	if !ok {
+		h.submitRejected(w, r, fmt.Sprintf("Invalid on_conflict '%s' (expected skip|replace|new-id)", conflict))
 		return
 	}
 	// The archive is validated synchronously, so a malformed payload or an
@@ -286,9 +295,19 @@ func (h *Handlers) SubmitTransferExport(w http.ResponseWriter, r *http.Request) 
 // merge folds the archive's documents into the named bank, creating it when it
 // does not exist.
 func (h *Handlers) SubmitTransferImport(w http.ResponseWriter, r *http.Request) {
-	scope, failure := scopeFromQuery(r)
-	if failure != nil {
-		writeValidationFailure(w, r, failure)
+	// The request's shape is settled first, and the two halves of it are
+	// reported together.
+	//
+	// The reference declares this route as `file: UploadFile = File(...)` plus
+	// its query parameters, so its framework binds BOTH before the handler body
+	// runs: a request that names an unparseable `include_history` AND omits the
+	// archive comes back with two items in `detail`, not just the first. The
+	// query failures are therefore collected here and merged with the missing
+	// `file` item rather than short-circuiting on the first one.
+	scope, queryFailure := scopeFromQuery(r)
+	uploadPresent := hasMultipartFile(r)
+	if queryFailure != nil || !uploadPresent {
+		writeValidationFailure(w, r, mergeShapeFailure(queryFailure, uploadPresent))
 		return
 	}
 	if !h.DocumentImportEnabled {
@@ -386,18 +405,31 @@ func (h *Handlers) SubmitTransferImport(w http.ResponseWriter, r *http.Request) 
 // gated on both flags: with either half disabled the operator has turned off
 // bulk bank copying.
 func (h *Handlers) SubmitClone(w http.ResponseWriter, r *http.Request) {
-	scope, failure := scopeFromQuery(r)
-	if failure != nil {
-		writeValidationFailure(w, r, failure)
-		return
-	}
-	// target_bank_id is a required query parameter, so its absence is a
-	// request-validation failure rather than a caller error.
+	// The request's whole query signature is settled at once, in the reference's
+	// declaration order: `target_bank_id` (required) is declared before the three
+	// include flags, so `?include_data=x` with no target answers with the missing
+	// target FIRST and the flag failure second, which is what the reference's
+	// framework emits.
 	values, present := httpx.QueryPresent(r, "target_bank_id")
-	if !present || len(values) == 0 {
+	targetMissing := !present || len(values) == 0
+	scope, failure := scopeFromQuery(r)
+	switch {
+	case failure != nil && targetMissing:
+		merged := &httpx.ValidationFailure{
+			Errors: []httpx.ValidationError{httpx.Missing([]string{"query", "target_bank_id"}, nil)},
+		}
+		merged.Errors = append(merged.Errors, failure.Errors...)
+		writeValidationFailure(w, r, merged)
+		return
+	case targetMissing:
+		// target_bank_id is a required query parameter, so its absence is a
+		// request-validation failure rather than a caller error.
 		writeValidationFailure(w, r, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.Missing([]string{"query", "target_bank_id"}, nil),
 		}})
+		return
+	case failure != nil:
+		writeValidationFailure(w, r, failure)
 		return
 	}
 	targetBankID := lastQueryValue(values)
@@ -456,4 +488,36 @@ const (
 // a caller cannot distinguish an absent attachment from an invisible bank.
 func attachmentNotFound(w http.ResponseWriter, r *http.Request) {
 	writeNotFound(w, r, detailAttachmentNotFound)
+}
+
+// hasMultipartFile reports whether the request carries a readable `file` part.
+// It is the same check readMultipartArchive performs, factored out so the
+// shape of a request can be settled before any query parameter is examined.
+func hasMultipartFile(r *http.Request) bool {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return false
+	}
+	if err := r.ParseMultipartForm(multipartMemoryBound); err != nil {
+		return false
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		return false
+	}
+	_ = file.Close()
+	return true
+}
+
+// mergeShapeFailure renders the request-shape failures a route reports together,
+// in the order the reference's framework lists them: the query parameters it
+// bound (in declaration order) first, then the required `file` body part.
+func mergeShapeFailure(queryFailure *httpx.ValidationFailure, uploadPresent bool) *httpx.ValidationFailure {
+	merged := &httpx.ValidationFailure{}
+	if queryFailure != nil {
+		merged.Errors = append(merged.Errors, queryFailure.Errors...)
+	}
+	if !uploadPresent {
+		merged.Errors = append(merged.Errors, httpx.Missing([]string{"body", "file"}, nil))
+	}
+	return merged
 }

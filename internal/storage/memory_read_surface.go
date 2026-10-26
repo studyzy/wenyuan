@@ -337,6 +337,19 @@ func unitSeenAt(unit MemoryUnit) *time.Time {
 	return unit.EventDate
 }
 
+// entityEventDate is the date an entity mention is stamped with, which the
+// reference takes from the fact's own event time and falls back to the mention
+// time: `fact.occurred_start if fact.occurred_start is not None else
+// fact.mentioned_at` (engine/retain/entity_processing.py:107). It is narrower
+// than unitSeenAt — `event_date` is never used — because a fact with neither an
+// occurred start nor a mention time leaves the stamp to the write clock.
+func entityEventDate(unit MemoryUnit) *time.Time {
+	if unit.OccurredStart != nil {
+		return unit.OccurredStart
+	}
+	return unit.MentionedAt
+}
+
 // UnitSeenAt reports when a memory unit was seen: its occurred start, else when
 // it was mentioned, else its event date. It reports the zero time for a unit
 // that carries no time at all, which a writer reads as "stamp the write time".
@@ -837,4 +850,13 @@ func (s *MemoryStore) entityNamesForUnitLocked(unitID string) []string {
 		}
 	}
 	return out
+}
+
+// unitEventDateOf narrows entityEventDate to the value form the entity writers
+// take; a unit with no event time yields the zero time.
+func unitEventDateOf(unit MemoryUnit) time.Time {
+	if stamp := entityEventDate(unit); stamp != nil {
+		return *stamp
+	}
+	return time.Time{}
 }

@@ -48,12 +48,20 @@ func TestBuildRecallResponseTracePresentWhenRequested(t *testing.T) {
 	if !ok {
 		t.Fatalf("trace must carry a summary: %+v", response.Trace)
 	}
-	if summary["candidates_found"] != 4 || summary["results_returned"] != 1 {
+	// The summary is the reference's SearchSummary (engine/search/trace.py:133-148):
+	// the visit counts, the search duration and the ordered phase list — there is
+	// no `candidates_found` or `stage_counts` member.
+	if summary["results_returned"] != 1 {
 		t.Fatalf("summary counts = %+v", summary)
 	}
-	stages, _ := summary["stage_counts"].(map[string]any)
-	if stages["semantic"] != 1 {
-		t.Fatalf("stage counts = %+v, want the semantic stage to report one match", stages)
+	for _, member := range []string{"total_nodes_visited", "entry_points_found", "budget_used",
+		"budget_remaining", "total_duration_seconds", "results_returned", "phase_metrics"} {
+		if _, ok := summary[member]; !ok {
+			t.Fatalf("summary must carry %q: %+v", member, summary)
+		}
+	}
+	if _, ok := summary["phase_metrics"].([]any); !ok {
+		t.Fatalf("phase_metrics must be a list, got %T", summary["phase_metrics"])
 	}
 }
 

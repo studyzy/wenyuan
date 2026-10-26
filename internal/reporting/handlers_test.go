@@ -1084,3 +1084,39 @@ func TestListMemoriesCarriesAttachments(t *testing.T) {
 		t.Fatalf("plain item carries attachments: %+v", plain.Attachments)
 	}
 }
+
+// A prompt preview's body is a declared model, so the reference's framework
+// answers a body that is not an object with its `model_attributes_type` item,
+// and an absent body — or the JSON literal `null`, which is how a model with no
+// required members decodes when nothing was sent — with the `missing` item.
+//
+// Both shapes were wrong here: a list body produced the decoder's plain
+// `dict_type` ("Input should be a valid dictionary"), and a `null` body got past
+// the empty-body guard and rendered a real preview with 200 where the reference
+// answers 422.
+func TestPromptPreviewBodyShapesMatchTheReference(t *testing.T) {
+	mux := newServer(t)
+	preview := "/v1/default/banks/" + bank + "/prompts/preview"
+	for _, tc := range []struct {
+		name string
+		body string
+		want []string // every substring the body must carry
+	}{
+		{name: "list", body: `[]`, want: []string{"model_attributes_type", "Input should be a valid dictionary or object to extract fields from"}},
+		{name: "number", body: `5`, want: []string{"model_attributes_type", "Input should be a valid dictionary or object to extract fields from"}},
+		{name: "string", body: `"x"`, want: []string{"model_attributes_type", "Input should be a valid dictionary or object to extract fields from"}},
+		{name: "null", body: `null`, want: []string{"missing", "Field required"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := send(mux, http.MethodPost, preview, tc.body)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422: %s", rec.Code, rec.Body.String())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Fatalf("body = %s, want it to contain %q", rec.Body.String(), want)
+				}
+			}
+		})
+	}
+}

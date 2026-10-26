@@ -90,29 +90,21 @@ func (s *MemoryStore) RetainWrite(ctx context.Context, req RetainRequest) (Retai
 		// record, so the write leaves the queue alone.
 		return outcome, nil
 	}
-	if req.Async {
-		s.operations[opID] = Operation{
-			OperationID:   opID,
-			BankID:        req.BankID,
-			OperationType: OperationTypeRetain,
-			Status:        StatusPending,
-			Run:           1,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-			Payload:       map[string]any{},
-		}
-	} else {
-		s.operations[opID] = Operation{
-			OperationID:   opID,
-			BankID:        req.BankID,
-			OperationType: OperationTypeRetain,
-			Status:        StatusCompleted,
-			Run:           1,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-			CompletedAt:   &now,
-			Payload:       map[string]any{},
-		}
+	if !req.Async {
+		// A synchronous retain writes no operation row; see the Postgres twin for
+		// the reference's own statement of that (api/http.py:10280). The outcome
+		// still carries the operation id the response reports.
+		return outcome, nil
+	}
+	s.operations[opID] = Operation{
+		OperationID:   opID,
+		BankID:        req.BankID,
+		OperationType: OperationTypeRetain,
+		Status:        StatusPending,
+		Run:           1,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Payload:       map[string]any{},
 	}
 	return outcome, nil
 }
@@ -167,7 +159,7 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 	s.syncDocumentAttachmentsLocked(req.BankID, docID, item.Content)
 	tags := mergeTags(item.Tags, req.DocumentTags)
 
-	chunkBySegment := s.putItemChunksLocked(req.BankID, docID, item.Content, !req.DiscardDocumentText, segmentOptionsFor(req), baseIndex, existingHashes)
+	chunkBySegment := s.putItemPartsLocked(req.BankID, docID, item.ContentParts(), !req.DiscardDocumentText, segmentOptionsFor(req), baseIndex, existingHashes)
 	contents := itemContents(req.BankID, docID, chunkBySegment, item, facts, tags, segmentOptionsFor(req), modelExtractionEnabled(req))
 	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
 		return nil, err
@@ -436,14 +428,31 @@ func (s *MemoryStore) putChunkLocked(chunk Chunk) {
 	s.chunks = append(s.chunks, chunk)
 }
 
-// putItemChunksLocked stores one item's segments and returns their identifiers
-// in order. When storeText is false the raw chunk text is not kept, but the
-// content hash is still computed from it so delta dedup is unaffected.
-func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string, storeText bool, sizes SegmentOptions, baseIndex int, existing map[string]bool) map[int]string {
-	chunks := SegmentWith(content, sizes)
-	bySegment := make(map[int]string, len(chunks))
+// putItemPartsLocked stores one item's content blocks — one per content dict the
+// caller sent, or the fold of several — starting at baseIndex so a second block
+// continues the document's chunk numbering instead of colliding with the first.
+// Each block is cut on its own boundaries (see PostgresStore.putItemParts).
+func (s *MemoryStore) putItemPartsLocked(bankID, docID string, parts []string, storeText bool, sizes SegmentOptions, baseIndex int, existing map[string]bool) map[int]string {
+	bySegment := make(map[int]string)
 	next := baseIndex
-	for i, chunk := range chunks {
+	for _, content := range parts {
+		start := next
+		next = s.putPartChunksLocked(bankID, docID, content, storeText, sizes, start, existing, bySegment)
+	}
+	return bySegment
+}
+
+// putPartChunksLocked stores one content block's chunks from next onwards and
+// returns the index that follows them.
+func (s *MemoryStore) putPartChunksLocked(bankID, docID, content string, storeText bool, sizes SegmentOptions, next int, existing map[string]bool, bySegment map[int]string) int {
+	chunks := segmentsPerContent(content, sizes)
+	// The block is keyed by the index its first stored chunk is written at,
+	// plus how many chunks of it were written before this one, so a position
+	// stays tied to the chunk index extraction later names even when a chunk the
+	// document already held is skipped.
+	start := next
+	written := 0
+	for _, chunk := range chunks {
 		if existing[ContentHash(chunk)] {
 			continue
 		}
@@ -455,10 +464,11 @@ func (s *MemoryStore) putItemChunksLocked(bankID, docID, content string, storeTe
 		s.chunks = append(s.chunks, Chunk{
 			ChunkID: chunkID, BankID: bankID, DocumentID: docID, ChunkIndex: next, ChunkText: text, ContentHash: ContentHash(chunk),
 		})
-		bySegment[i] = chunkID
+		bySegment[start+written] = chunkID
+		written++
 		next++
 	}
-	return bySegment
+	return next
 }
 
 // documentChunkStateLocked returns a document's stored chunk content hashes and

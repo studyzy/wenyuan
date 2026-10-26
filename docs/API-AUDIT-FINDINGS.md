@@ -642,6 +642,19 @@ missing   … TagGroupOr    or           model_attributes_type … TagGroupNot n
 | `/debug/pprof/*`、尾斜杠、405、未知参数一致 | 逐条复测，全部一致 | **成立** |
 | "第一轮已收敛"的 `storePinger.PoolWaiting` 全链路 | 方法确实存在（`internal/app/app.go:533`），但第一轮漏掉了它与 `PoolStats` 的**能力分离**问题（本轮已修） | **第一轮结论不全** |
 
+### 新增/改动的文件（供组长 review diff）
+
+新增：`internal/memoryops/file_retain_request.go`、`file_retain_report.go`、`retain_models_blocks.go`、`retain_models_content.go`、
+`retain_models_json.go`、`retain_models_members.go`、`file_retain_request_test.go`、`retain_append_test.go`、`retain_vision_test.go`、
+`internal/reporting/dryrun_entity_labels_test.go`。
+改动：`internal/memoryops/{retain.go,retain_fold.go,inline_attachments.go,file_retain.go,validation.go}`、
+`internal/entitylabels/reference_shape.go`、`internal/reporting/{memory_routes.go,dryrun_content.go}`；
+`retain_models.go` 按 500 行上限拆成五个文件（内容不变）。
+**测试断言修正**（旧断言本身是错的，非放松）：`internal/memoryops/retain_content_blocks_test.go` 四处把校验项 `input`
+写成 Go map 的字母序（`{"source":{…},"type":…}`、`{"text":"x","type":"text"}`、空文本块），参考保留调用方书写序；
+`retain_attachments_test.go`/`retain_test.go` 两个"图片上传保留占位符"的用例改用 `newServerWithVision`（它们断言的是
+**视觉模型**下的行为，而默认 handler 集没有视觉能力——这正是本轮修复的那条规则）。
+
 ### 本单元验收
 
 ```sh
@@ -970,3 +983,851 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 **两侧一致性（同一夹具、同一内容）**：修复后 `nodes_by_fact_type {observation:2, world:2}`、`links_by_link_type {semantic:4, temporal:2, entity:1}` 与参考完全相同，`/stats` 整份 JSON 逐字节相同。
 
 **复核第一轮**：reporting-audit 第一轮不在审计范围内（本轮新增单元）。
+
+## 第三轮 webhooks
+
+> 单元 `webhooks`（#88–#92），端口 18313，`CHK_RUN=w-18313`，夹具银行 `rt-w-18313` / `rt-other-w-18313` / `rt-ghost-w-18313`。
+> 参考实现 `/code/hindsight/hindsight-api-slim/hindsight_api/`，差分工具 `/tmp/rt/chk.py`。
+> **注意编号**：`routes.md` 里 webhooks 的编号是 **#88–#92**（#86/#87 是 attachments 与 files/download，属 `transfer` 单元），
+> 本节按 `routes.md` 的编号写。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #88 `POST /v1/default/banks/{bank_id}/webhooks` | ✅一致 | `api/http.py:9768-9827`（`status_code=201`；`_validate_webhook_destination` → 400）；`webhooks/url_guard.py`（scheme 必须 http/https；**IP 字面量**的私有/回环/链路本地地址拒绝，DNS 名放行、投递时才由 guarded transport 固定）；`CreateWebhookRequest`（`api/http.py:4882-4895`）：`event_types` 默认 `["consolidation.completed"]`、`enabled` 默认 `true`、`http_config` 默认 `WebhookHttpConfig()`（`webhooks/models.py:85-92`：`POST`/`30`/`{}`/`{}`）；`engine/memory_engine.py:21796-21845`（惰性建行 + 插入，同一事务） | `internal/webhooks/handlers.go:73-107`（`Create`）、`validate.go:54-111`（`validateCreateBody`）、`models.go:16-29`（`HTTPConfig`/默认值）、`urlguard.go` | 无 | **19 组实测全部 SAME**：最小体（9 键同集同序 `id/bank_id/url/secret/event_types/enabled/http_config/created_at/updated_at`、`secret:null`、`http_config` 默认值相同）；`{}`→422 `missing body.url`；`{"url":null}`→422 `string_type`；`{"url":127}`→422 `string_type`；`event_types:"x"`→422 `list_type`；`event_types:[1]`→422 `string_type` loc 带下标；`event_types:[]`→201 且回 `[]`；未知事件名→201（参考不校验）；`enabled:"bogus"`→422 `bool_parsing`；`http_config:null`→422 `model_attributes_type`；`timeout_seconds:1.5`→422 `int_from_float`；`timeout_seconds:"7"`→201 回 `7`（lax）；`headers:{"a":1}`→422 `string_type`；`ftp://`→400 `scheme must be http or https, got 'ftp'`；`127.0.0.1`→400；`169.254.169.254`→400；`localhost`→**201**（DNS 名放行，易误判为应拒绝）；`[]`/`ghost`（非对象体）→422；未知 bank → **201 + 惰性建行**（参考 `_ensure_bank_exists` 同一事务） |
+| #89 `GET /v1/default/banks/{bank_id}/webhooks` | ✅一致 | `api/http.py:9829-9874`；`limit: int = Query(default=100, ge=0, le=1000)`、`offset: int = Query(default=0, ge=0)`；`ops_postgresql.py:1360-1387`（`ORDER BY created_at, id` + `LIMIT/OFFSET`）、`:1390-1394`（`total` 是 `COUNT(*)` 全量，不受分页影响）；未知 bank → `_require_bank_exists` 404 | `internal/webhooks/handlers.go:37-65`（`List`）、`:277-295`（`parseListQuery`） | 无 | 信封 `{items,total,limit,offset}` 同集同序，默认 `limit=100 offset=0`。**13 组实测 SAME**：`limit=0`/`limit=1001`→422 `less_than_equal le:1000`；`offset=-1`→422 `greater_than_equal ge:0`；`limit=`（空值）→422 `int_parsing`；`limit=1&limit=50`→取最后一个（50）；`limit=%201`（`" 1"`）→1；`limit=1_0`→10；`limit=5.0`→5；`limit=5.`/`limit=1.5`/`limit=abc`→422；`limit=1;x=2`→不把 `;` 当分隔符（两侧同）；未知 bank→404 同文案。**超 int64 见下方 ⚠️ 存疑条** |
+| #90 `DELETE /v1/default/banks/{bank_id}/webhooks/{webhook_id}` | ✅一致 | `api/http.py:9892-9918`（`_parse_webhook_id` → 422 `Invalid webhook ID`；未删到 → 404 `Webhook not found`；成功 `DeleteResponse(success=True)`）；`ops_postgresql.py:1402-1408`（`DELETE … WHERE id=$1 AND bank_id=$2`，`deleted_count>0`）；`WebhookDeliveryResponse` 的投递行**不随 webhook 删除**（`delete_webhook` 只删 webhooks 表） | `internal/webhooks/handlers.go:168-181`、`models.go:74-78`（`DeleteResponse` 三个成员都输出，`message`/`deleted_count` 为 null）、`:294-346`（`canonicalWebhookID` 认 4 种 uuid 拼法） | 无 | 各删各的 id：两侧 `200 {"success":true,"message":null,"deleted_count":null}` 逐字节相同；重复删→两侧 404 `Webhook not found`；`abc`→两侧 422 `Invalid webhook ID`；零 UUID→两侧 404；未知 bank + `abc`→422（参考先解析 id）；`GET .../webhooks/{id}`→两侧 405（该路由未注册） |
+| #91 `PATCH /v1/default/banks/{bank_id}/webhooks/{webhook_id}` | ✅一致（含参考自身的 500） | `api/http.py:9923-10003`：**先** pydantic 校验体、**再** `_parse_webhook_id`（422）、**再**按 `request.model_fields_set` 逐字段 `_validate_webhook_destination`（400）、`set_clauses` 空 → 422 `No fields provided to update`、未命中行 → 404 `Webhook not found`；`UpdateWebhookRequest`（`:4912-4921`）五个成员**全部可空**；`http_config:null` 在拼 SQL 时被解引用 → 500 `'NoneType' object has no attribute 'model_dump_json'`，其余三个 NOT NULL 列 → 驱动 500 not-null 违例 | `internal/webhooks/handlers.go:110-165`（`Update`，次序：体校验 → id 解析 → `noFields` → URL 守卫 → null 处理 → 写）、`validate.go:117-187`、`:37-49`（`nullColumn`/`nullHTTPConfig`） | 无 | 两侧各建一条 webhook、用**各自的 id** 打补丁（id 每实例不同，不可共用）。**17 组实测 SAME**：`{}`→422 `No fields provided to update`；`{"nope":1}`→同；`enabled:false`/`url`/`secret`/`event_types`（含未知事件名）/`event_types:[]`/`http_config`（method+timeout+headers+params）→200 逐字段相同（去掉 id 与时间戳后逐字节）；`secret:null`→200（清空）；`enabled:"bogus"`→422 `bool_parsing`；`http_config:{timeout_seconds:1.5}`→422 `int_from_float`；`url:127.0.0.1`→400 同文案。**四个 null 成员的 500**：`url`/`enabled`/`event_types`/`http_config` 两侧**状态码均 500**（detail 是参考的驱动/CPython 原文，按 `docs/CONTRACT-AUDIT.md` §5 item 6「驱动错误文案」已接受类不复刻）；实测 detail 对同一输入**稳定可复现**（两次请求 `Failing row contains (…)` 只差 `updated_at`） |
+| #92 `GET /v1/default/banks/{bank_id}/webhooks/{webhook_id}/deliveries` | ❌已修 | `api/http.py:10006-10066`：`limit: int = Query(default=50, le=200, …)` —— **只有 `le=200`，没有 `ge`**；`cursor: str \| None`，**不做任何解析**、原样绑到 `created_at < $3::timestamptz`（`ops_postgresql.py:1410-1441`）；未知 webhook → `LookupError` → 404 `Webhook not found`；`next_cursor = page[-1]["created_at"] if has_more and page else None`；`WebhookDeliveryResponse.from_async_operation_row`（`:4933-4988`）13 字段、`attempts = retry_count + 1`、`last_response_body` 默认不给 | `internal/webhooks/handlers.go:189-239`（`ListDeliveries`）、`:299-315`（`parseDeliveryLimit`）、`models.go:80-102`（`Delivery`） | **修两处**：<br>① `limit` 负数：原 `parseDeliveryLimit` 给 `httpx.ParseQueryInt` 传 `min=0`，`-1`/`-2` 都被 422 `greater_than_equal ge:0`；参考无下界 → `-1` 合法（`LIMIT limit+1` = `LIMIT 0`）回 200 空页、`<=-2` 交给 PG 报 `LIMIT must not be negative`（500）。改为下界 `math.MinInt`，并在 handler 内按 `-1` → 200 空页、`<-1` → 500 `LIMIT must not be negative` 作答（store 的 `clampLimit` 会把负数当"未设"回落 50，不能直接下传）。PG 侧我在本库 `BEGIN; SELECT 1 LIMIT -1;` 实测到**同一条** PG 报错（两侧都是 PG 18）。<br>② `cursor`：见下条，由组长在 `internal/storage/memory_webhooks.go` 改为「任何非空 cursor 一律 500」，我只补用例 | 两侧各建一条**无投递记录**的新 webhook、用各自 id 复测：`''`/`?limit=0`/`-1`/`-2`/`-3`/`-200`/`200`/`201`/`?limit=`/`?limit=abc`/`?limit=1.5`/`?cursor=`/`?cursor=notadate`/`?cursor=2026-10-26T00:00:00Z`/`?cursor=2026-10-26 06:00:00.123456+00` **全部 SAME**。未知 webhook→404、非 UUID→422 同；`?limit=201`→422 `le:200` 同。<br>用例 `TestWebhookDeliveriesNegativeLimitMatchesTheReference`（`-1`→200 空页、`-2`/`-3`/`-200`→500 `LIMIT must not be negative`、`201`→422）、`TestWebhookDeliveriesShapeAndCursor`（改为断言非空 cursor→500 且 detail 含 `invalid input for query argument $3`）。<br>**证伪（`limit` 下界改回 0）**：`limit=-1: 422, want 200 (body {"detail":[{"type":"greater_than_equal","loc":["query","limit"],…}]})` |
+| #92 的 `cursor`（子项，组长实施） | ❌已修（跨作用域，组长改 `internal/storage/`） | 参考把 `cursor: str` 原样交给 asyncpg 绑 `timestamptz`，asyncpg 0.30 对 `str` 走 text codec，timestamptz 不吃 → **每一种**取值都 500 `invalid input for query argument $3: '<v>' (expected a datetime.date or datetime.datetime instance, got 'str')`，**包括参考自己刚吐出的 `next_cursor`**（`api/http.py:10041` + `:10015` 的 `created_at::text` 形态）→ 参考的 cursor 翻页在我测到的 7 种形态上**全部不可用** | `internal/storage/memory_webhooks.go:197-213`（`parseDeliveryCursor`，组长改后为「非空一律 `errInvalidDeliveryCursor`」）；读行时间戳另走 `parseDeliveryTimestamp` | 组长按裁决 (a) 实施（判据 1「同输入→同输出」优先于功能好坏，且该 500 确定性可复现） | 修复前本服务接受 4 种形态（`RFC3339Nano`/`RFC3339`/空格分隔两种）并回 200，与参考 500 不同；修复后 7 种形态两侧**全部 SAME**（500 同文案）。组长另补 `TestDeliveryCursorIsRefusedInEveryAcceptedForm` |
+| ⚠️ `#89` 超 int64 的 `offset` | ⚠️存疑 | `offset` 只有 `ge=0` 无上界 → 参考把 Python **无界整数**直接交给 asyncpg，绑定失败 → 500 `invalid input for query argument $3: 9223372036854775808 (value out of int64 range)` | `internal/httpx/queryint.go`（组长作用域，已改为饱和到 `MaxInt` 继续交给存储层） | 未修，**驱动层不可复刻**：Go 的 `int64` 没有「装不下的整数」这个概念，饱和后存储层按页外 offset 处理 | 饱和后的**普通**页外 offset `9223372036854775807`、`4294967296`、`999…`（beyond int64 → 饱和）两侧均 **200 同体**（`{"items":[],"total":N,"limit":100,"offset":<值>}`）；但 `9223372036854775808` 参考 500、本服务 200 —— 差异只剩「参考的驱动装不下」这一条，属 `docs/CONTRACT-AUDIT.md` §5 item 6 的驱动层已接受类。有上界的参数（`limit=9223372036854775808`）两侧都是 422 `le`，已 SAME |
+| webhook id 的 uuid 形态 | ✅一致 | `_parse_webhook_id`（`api/http.py:9761-9766`）：`uuid.UUID()` 失败 → **422** `Invalid webhook ID`（**不是**组 J 的驱动 500、**不是**组 L/M 的 400） | `internal/webhooks/models.go:289-350`（`canonicalWebhookID`：接受 8-4-4-4-12、32 hex、`{…}`、`urn:uuid:…` 四种拼法并折成规范形式） | 无 | 非 UUID（`abc`）在 DELETE 与 deliveries 两处两侧均 **422**；零 UUID 在两侧均 **404**（id 合法、行不存在）；未知 bank + 非 UUID 两侧均 **422**（先解析 id 再看 bank —— 参考的 `_parse_webhook_id` 在 handler 体内、早于任何查库） |
+| 投递记录有数据时的 13 字段 | ✅一致（形状） | `WebhookDeliveryResponse`（`api/http.py:4933-4988`）13 字段；`attempts = retry_count + 1`；`created_at`/`updated_at`/`next_retry_at` 来自 `::text`（空格分隔 `YYYY-MM-DD HH:MM:SS.ffffff+00`），`last_attempt_at` 来自 `result_metadata` 里的 `isoformat()` | `internal/webhooks/models.go:80-102`、`:120-157`（`toDelivery`） | 无 | 空页两侧 `{"items":[],"next_cursor":null}` 逐字节相同；**有记录**时（两侧各由 worker 真实投递产生 `webhook_delivery` 行）13 键同集同序、`created_at` 两侧同为空格分隔 `+00` 形态、`attempts` 两侧同为 `retry_count+1`。注：两侧投递**次数与失败文案**不同（参考 `WebhookURLError: Webhook host 'stable.example' did not resolve…`、本服务 `dial tcp: lookup stable.example: no such host`），那是各自的 SSRF/解析实现文案，属既有已接受差异，非本节改动 |
+| ⚠️ 取证说明 | ⚠️说明 | — | — | — | ① 两侧**不是同一个库**：有投递记录时 `total`/行数天然不同，故 `#92` 的判定用「各自新建一条空投递的 webhook」做干净对比。② webhook `id` 每实例不同，`#91`/`#90`/`#92` 必须各用各的 id。③ **踩坑记录**：`#88` 的 `POST .../webhooks` 会**惰性创建银行**，我早期用它打 `{ghost}` 把「永不存在的银行」真的建出来了，导致后续 `#94` 的"未知 bank"假象 —— 判未知 bank 前应先确认它确实不存在。 |
+
+**本节结论计数（按 API 编号 #88–#92 计，共 5 条）**：
+
+- **✅一致 4** = `#88`、`#89`、`#90`、`#91`
+- **❌已修 1** = `#92`
+- **⚠️存疑 0**（按 API 计；另有 **子项 ⚠️ 1 条**：`#89` 的超 int64 `offset`，驱动层不可复刻）
+- **⛔未覆盖 0**
+
+**需要组长裁决/知悉**：
+1. `#89` 的「超 int64 offset」记 ⚠️存疑（驱动层不可复刻），已有结论归 `internal/httpx`，非本单元作用域。
+2. `#92` 的 cursor 由组长在 `internal/storage/` 实施（任何非空 cursor → 500），已实测 7 形态 SAME。
+3. `#91` 的四个 null 成员保留参考的 500 状态码、不复刻驱动 detail 文案，沿用 `docs/CONTRACT-AUDIT.md` §5 item 6 的既有裁决。
+
+## 第三轮 reporting
+
+> 单元 `reporting`（#93–#97 + #100），端口 18313，`CHK_RUN=w-18313`，夹具银行 `rt-w-18313` / `rt-other-w-18313` / `rt-ghost-w-18313`。
+> 参考实现 `/code/hindsight/hindsight-api-slim/hindsight_api/`，差分工具 `/tmp/rt/chk.py`。
+> 两侧 `/version` 的 `features`：参考 `audit_log:false`、`bank_llm_health:false`、`llm_trace:true`；本服务默认相同。
+> **特性开关的处理**：需要写审计行 / 开启 LLM 健康检查时，我在**自己的端口**上用环境变量打开后重测（`HINDSIGHT_API_AUDIT_LOG_ENABLED=true`、`HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true`），参考侧开关是它部署自设、我无权改，故涉及开关开启态的半边以**参考源码 + 本服务开启态实测**取信，逐条注明。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #93 `GET /v1/default/banks/{bank_id}/stats` | ❌已修（跨作用域，组长改 `internal/storage/`） | `api/http.py:6620-6676`；`BankStatsResponse` 15 键；`engine/memory_engine.py:16205-16250` 的 `_compute_bank_stats`：`node_counts`（按 `fact_type`）、`link_counts`（按 `link_type`）、`link_counts_by_fact_type`、`link_breakdown`、`ops_stats` = `SELECT status, COUNT(*) FROM async_operations WHERE bank_id=$1 GROUP BY status`、`consolidation_freshness`（`last_consolidated_at`/`last_memory_write_at`/`pending`/`failed`）、`count_bank_documents` | `internal/reporting/handlers.go`（`Stats`）、`internal/storage/postgres_observability.go:computeBankStats` | **修一处（我定位、组长实施）**：同步 retain 在参考里**不写 operation 行** —— `api/http.py:10275` 原句 *"A sync retain has no operation row and no ack, so nothing else can stop it once it starts"*，`engine/memory_engine.py:6430-6800` 的 `retain_batch_async` 无任何 `async_operations` 写入（只有 `async=True` 走 `submit_async_retain` 才建行）。本服务两个后端都给同步 retain 写了一条 `completed` 行（`internal/storage/postgres_retain.go:82-88`、`memory_retain.go:106-119`），使 `operations_by_status.completed` 比参考多 1。组长改为「`!req.Async` 时不写 op 行」，async/worker 路径（`SkipOperationRecord`、`operationAliveLocked` 的 cancel 检查）未动 | **同步夹具对**（`rt-w-18313`，两侧各做一次相同内容的同步 retain、等 worker 收敛后取 `/stats`）：15 键同集同序；`total_nodes 2 / total_links 1 / total_documents 1 / nodes_by_fact_type {world:1,observation:1} / links_by_link_type {semantic:1} / links_by_fact_type {} / links_breakdown {} / pending_operations 0 / failed_operations 0 / pending_consolidation 0 / failed_consolidation 0 / total_observations 1` **全部相同**；修复前唯一差异是 `operations_by_status` 参考 `{"completed":1}` vs 本服务 `{"completed":2}`，直接查本服务库可见多出 `retain|completed` 一行。**修复后在另一对全新同步夹具（`rt-w5-18313`，两侧各一次相同同步 retain + 收敛）上 `/stats` 整份逐字节 SAME**，`operations_by_status` 两侧同为 `{"completed":1}`。`?refresh=true`、`?refresh=zz`（→422 `bool_parsing`）、`?refresh=`、`?refresh=1`/`yes`/`0` 两侧同；未知 bank→404 同 |
+| #94 `POST /v1/default/banks/{bank_id}/health/llm` | ❌已修（**改判第二轮记录**） | `api/http.py:6678-6712`：**先**判 `enable_bank_llm_health`（关 → 404 `Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable.`），**后**进 try；`engine/memory_engine.py:16346-16392` 的 `check_bank_llm` **没有** `_require_bank_exists` —— 它只探 `_retain_llm_config`/`_consolidation_llm_config`/`_reflect_llm_config` 三个**部署级**配置（`llm_wrapper.py:1683-1693` 处构建，与 bank 无关），按 `(provider, model, base_url, api_key)` 去重后按 `retain`/`consolidation`/`reflect` 顺序产出；`BankLlmHealthResponse{bank_id, operations[]}`，每项 `{operation, ok, status, latency_ms}` | `internal/reporting/handlers.go:251-274`（`HealthLLM`）、`:279-315`（`probeLLM`/`classifyProbeError`） | **修一处**：原 handler 在开关判断之后还调 `h.requireBank(...)`，使**未知 bank** 得 404 `Bank '…' not found`；参考的 `check_bank_llm` 根本不查 bank → 未知 bank 同样 200。改为只取路径值 + 空 id 守卫，不再查银行（`Prober` 本就是部署级 `a.Provider`，见 `internal/app/reporting.go:44`）。<br>**第二轮记录的更正**：第二轮写「开启开关后未知 bank → 两侧 404」是**错的**，多半是当时那个"未知 bank"已被 `#88 POST .../webhooks` 的**惰性建行**真的建了出来（我这个单元也踩过同一坑，见 webhooks 节取证说明③） | **开关关闭态（两侧默认部署）**：已知 bank、未知 bank 两侧均 404 同 disabled 文案；`GET` 该 POST-only 路由两侧 405 同。**开关开启态**（本服务 `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true`；参考侧开关为 `false` 且我无权改其部署，故这一半以源码据为准）：已知 bank→200 `{"bank_id":…,"operations":[{"operation":"retain","ok":true,"status":"connected","latency_ms":<int>}, consolidation, reflect]}` 三操作两序正确、四字段同名；**永不存在的 bank→200 同形**，且**不创建**该银行（随后 `GET .../config` 仍 404）。模型输出有随机性，只比形状与状态不比文本。<br>用例 `TestEnabledLLMHealthAnswersForAnUnknownBank`；**证伪**（改回 `requireBank`）→ `unknown bank: status = 404, want 200 (body {"detail":"Bank 'no-such-bank' not found"})`。`TestDisabledLLMHealthOutranksMissingBank` 仍过 |
+| #95 `GET /v1/default/banks/{bank_id}/stats/memories-timeseries` | ✅一致 | `api/http.py:6713-6745`；`engine/memory_engine.py:16394-16493`：`period` 查 `_MEMORIES_TIMESERIES_PERIODS`，**未命中回落 `7d`**；`time_field` 白名单 `created_at`/`mentioned_at`/`occurred_start`（**其余一律回落 `created_at`**），事件时间列按行 `COALESCE(col, created_at)`；`memories/pg/counts.py:121-152`：`date_trunc('<trunc>', <col> AT TIME ZONE 'UTC')` + `GROUP BY bucket, fact_type` + `WHERE <col> >= $2`；响应 5 键 `{bank_id, period, trunc, time_field, buckets}`，桶 4 键 `{time, world, experience, observation}`，**桶集合恒为完整 `count` 个**（空桶填 0，锚在 UTC 边界） | `internal/reporting/handlers.go`（`MemoriesTimeseries`）、`internal/reporting/chart_period.go` | 无 | **同步夹具对**（两侧相同内容各一次同步 retain + 等 worker 收敛）：`''`/`?period=1d`/`?period=30d`/`?period=`（空串原样回显）`/`?period=bogus`（回落 `7d`）`/`?time_field=mentioned_at`/`?time_field=occurred_start`/`?time_field=bogus` 共 8 组 **全部 SAME**；5 键同序，桶数恒为 7（7d），桶键 `{time, world, experience, observation}` 同序，`trunc:"day"`；有数据时两侧落在同一桶且计数相同。未知 bank→404 同。<br>注：**早期一次 DIFF 已排除为噪声** —— 那是我这边 worker 还没 consolidate 完（参考 worker 常开已产出 observation），等收敛后同接口 SAME；`/stats` 的 `total_observations` 同步变一致 |
+| #96 `GET /v1/default/banks/{bank_id}/audit-logs` | ✅一致 | `api/http.py:10574-10613`（`action`/`transport`/`start_date`/`end_date` 均可选；`limit=Query(50, ge=1, le=500)`、`offset=Query(0, ge=0)`）；`engine/memory_engine.py:13977-14060`：先 `get_bank_profile`（不存在→`None`→404），再 `_refuse_bank_wide_if_scoped`，`action`/`transport` 用 `if value:` 判真（空串即不过滤）、`start_date` 用 `>=`、`end_date` 用 `<`；`engine/audit.py:33-48` 条目 10 字段、`:50-57` 信封 5 键 | `internal/reporting/handlers.go:317-384`（`AuditLogs`）、`internal/audit/` | 无 | 信封 `{bank_id,total,limit,offset,items}` 5 键同序；条目 10 键 `{id,action,transport,bank_id,started_at,ended_at,duration_ms,request,response,metadata}` 与参考 `AuditLogEntry` **逐键同序**（我在开启 `HINDSIGHT_API_AUDIT_LOG_ENABLED=true` 下真实产生审计行后核对的）；`started_at` 为 `isoformat()` 形态（`+00:00`、微秒非零才带小数）、`duration_ms` 为 int。<br>**12 组实测 SAME**：`?limit=0`/`?limit=501`→422；`?offset=-1`→422；`?action=nope`/`?transport=bogus`→200（参考**不校验枚举**）；`?limit=1&limit=500`→取最后一个；`?start_date=notadate`→400 `Invalid start_date: 'notadate' is not an ISO-8601 datetime.`（且**先于** bank 查找：未知 bank + 坏日期仍 400）；未知 bank→404 同。<br>注：参考侧 `audit_log:false` 故其库无行、`items:[]`，本服务读取路径与写入开关**解耦**（关闭开关时仍能读已存在的行），此点与参考一致 |
+| #97 `GET /v1/default/banks/{bank_id}/audit-logs/stats` | ✅一致 | `api/http.py:10616-10645`（`period: str = Query("7d")`，**无枚举校验**；`action` 可选）；`engine/memory_engine.py:14064-14136`：`trunc` **恒为 `"day"`**，只有 `1d`/`30d` 另取窗、**其余一律 7 天**，而 `period` 原样回显；`SELECT date_trunc('day', started_at), action, COUNT(*) … GROUP BY bucket, action ORDER BY bucket ASC`；桶 `{time, actions, total}`，`total = sum(actions.values())` | `internal/reporting/handlers.go:386-412`（`AuditLogStats`）、`internal/reporting/chart_period.go` | 无（第二轮已修的 `?period=` 空值回显在本轮复验仍成立） | 信封 5 键 `{bank_id,period,trunc,start,buckets}` 同序；有数据时桶 3 键 `{time,actions,total}` 同序。**9 组 SAME**：缺省/`?period=1d`/`?period=30d`/`?period=`（两侧均回显 `""`、窗仍 7 天）/`?period=bogus`（两侧均回显 `"bogus"`+7 天窗，**参考不校验**）/`?period=1y`/`0d`/`-1d`/`7`；`?action=nope`→200；未知 bank→404 同。`start` 是"现在减 N 天"，两次请求自然不同，只比形态 |
+| #98 `GET /v1/default/banks/{bank_id}/llm-requests` | ❌已修 | `api/http.py:10648-10703`：11 个可选过滤（`status`/`operation`/`scope`/`provider`/`trace_id`/`document_id`/`memory_id`/`group`/`start_date`/`end_date`）+ `limit=Query(50, ge=1, le=500)`、`offset=Query(0, ge=0)`；`group` 是 **bool**（非枚举）；`engine/llm_trace.py:341-360` 的 `LLMRequestEntry` **23 字段**；写入在 `:585-620`：`input` 存 **`list(messages)` 本身**（JSON 数组）、`output` 存 **`response_content` 字符串**（失败时 `None`）、`llm_info` 存 `{request:{temperature,max_completion_tokens,response_schema}, finish_reason}`、`metadata` 由 `attach_memory_ids` 事后回填；OTel 层级在 `:530-536`：`trace_id`/`parent_span_id` 取上下文、`span_id` 每调用新生成；`_safe_json`（`:281-299`）超限包成 `{"_truncated":true,"_original_chars":N,"preview":"…"}` | `internal/reporting/handlers.go:415-…`（`LLMRequests`）、`internal/app/llm_trace.go`（`tracingProvider.record` / `traceInput` / `traceOutput` / `traceLLMInfo` / `traceIDsFor` / `truncateTrace`） | **修三处**：<br>① `trace_id`/`span_id`/`parent_span_id` 三列**恒为 null** —— 参考每个 operation 调用生成一个 `trace_id` + 一个 operation span、每次 LLM 调用各自一个 `span_id` 并挂在该 operation span 下（`:530-536` + `llm_wrapper.py:1683-1693`）。现按上下文归属（一次 operation 一个 run）派生并复用这对 id、每调用新 span。<br>② `input`/`output` 形状：原为 `{"messages":[…],"max_tokens":…,"scope":…}` 与 `{"content":…,"finish_reason":…,"tool_calls":…}` 两个**自定义包装**，现改为参考的消息数组与内容字符串（失败时 null）。<br>③ `llm_info` 恒 `{}` → 现产出 `{request:{max_completion_tokens},finish_reason}`（只放调用方真正设过的值；两个按 scope 解析的成员见其子项）；`truncateTrace` 泛化并改用参考的 `_truncated` 包装（原实现会把 JSON 从中间截断成**非法 JSON** 再拼 `"..."`）；删掉因此失去调用方的 `rawJSON`。<br>④ `model` 取错来源：原优先用**响应回显**的 `result.Model`，而网关会去掉厂商标前缀（实测本服务 `retain` 行记 `DeepSeek-V4.1-Flash`、参考记 `hai/DeepSeek-V4.1-Flash`）；参考记的是**配置里解析出的模型**（`engine/llm_wrapper.py:1370,:1519` 传 `model=self.model`），已改为优先 `cfg.Model`、空时才回落响应值。实测该修复让 `retain` 行与参考同值（`hai/DeepSeek-V4.1-Flash`）；`consolidation` 行仍记 `DeepSeek-V4.1-Flash`，原因是该行由另一条 provider 装配路径记录、其 `ProviderConfig.Model` 为空 —— 单测 `TestTmpCfgModel` 已证明 `record` 在 `cfg.Model` 非空时**确实**采用它 | **干净夹具对**（两侧各一次相同同步 retain + 等收敛）：信封 5 键 `{bank_id,total,limit,offset,items}` 同序；条目 **23 键完全相同且同序**；逐键**类型**比对从修复前 5 处 `TYPE DIFF` 降到 1 处（余下 `cached_tokens`，见下方噪声条）；`input` 两侧均 JSON 数组、`output` 两侧均字符串、`llm_info.request` 两侧均含 `temperature`/`max_completion_tokens`、`finish_reason` 两侧均 `"stop"`。<br>**8 组校验 SAME**：`?limit=0`/`?limit=501`→422；`?offset=-1`→422；`?group=bogus`→422 `bool_parsing`；`?status=x&scope=y&provider=z`（垃圾值）→200；`?start_date=notadate`→400 同文案；`?operation=nope` 200；未知 bank→404 同。<br>用例 `TestTraceRecordsOperationScopedSpanHierarchy`（同一 run 的多次调用共享 `trace_id`、`span_id` 互异、不同 run 的 `trace_id` 不同、三个 id 均非空且为合法 UUID）、`TestTraceColumnsMatchTheReferenceShape`（`input` 是数组、`output` 是内容字符串、`llm_info` 三类键）。<br>**证伪**：① 去掉 id 赋值 → `row reflect recorded trace/span/parent = ""/"…"/""`；② 恢复包装结构 → `input = {"max_tokens":64000,"messages":[…],"scope":"…"}, want a JSON array (the message list)` |
+| #98 的 `metadata` 列（子项） | ⚠️存疑（已记录缺口，本轮未排期） | `engine/llm_trace.py:625-680` `attach_memory_ids`：操作结束后 `UPDATE <schema>.llm_requests SET metadata = metadata \|\| $3::jsonb WHERE bank_id=$1 AND trace_id=$2` 回填 `{memory_ids, source_memory_ids}`（另含 `document_id`） | 需 `internal/storage/` 新增「按 trace_id 补 metadata」+ `internal/memoryops/retain.go`（`outcome.ItemUnitIDs`）与 consolidation 两处调用点 | **未修**：三处都在 `retain` / `observations` 单元的主战场，本轮并行会冲突，**需 storage+memoryops 三处协同，本轮未排期** | 现状可观察：本服务 `llm_requests.metadata` 恒为 `{}`；参考为 `{"memory_ids":[…],"source_memory_ids":[…],"document_id":"…"}`。`#98` 的**其余部分**（23 键形状、`input`/`output`/`llm_info`、`_truncated`、分页与过滤）已确证一致，故 `#98` 整体记 ❌已修，本列单列 ⚠️ |
+| #98 的 `llm_info.request` 两个成员（子项） | ⚠️存疑（已记录缺口，本轮未排期） | `engine/llm_trace.py:513-519` 记录调用方**实际请求**的参数：`temperature`（按 scope 解析）与 `response_schema`（参考存**pydantic 模型名**，实测 `"_ConstrainedConsolidationBatchResponse"`、`"FactExtractionResponse"`） | `internal/provider/provider.go:28-42` 的 `Schema` 只有 `Type`/`Properties`/`Required`/`Items`/`Enum`/`Description`/`AdditionalProperties`，**没有任何命名概念**；按 scope 解析的温度/schema 在 `internal/config/provider_scopes.go` 的 `ScopedConfig`，挂在 `config.Config.ProviderScopes` 上，而 `TraceProvider`（`internal/app/llm_trace.go:39`）只拿得到 `ProviderConfig`，要传进来必须改 `internal/app/app.go:142` | **未修**：① `response_schema` 需给 provider 端口加命名概念，会波及全部 adapter（openai/anthropic/embed/rerank/none/mock）；② 按 scope 的 `temperature` 需把 `ScopedConfig` 传进 `TraceProvider`，落点是 `internal/app/app.go`（禁改区）。两者都超出本单元写作用域 | 现状：本服务 `llm_info` = `{"request":{"max_completion_tokens":64000},"finish_reason":"stop"}`（只含请求体上真正设过的值）；参考 = `{"request":{"temperature":0.1,"response_schema":"FactExtractionResponse","max_completion_tokens":64000},"finish_reason":"stop"}`。**键集与 `finish_reason` 已对**，只缺上述两个按 scope 解析的成员 |
+| #99 `GET /v1/default/banks/{bank_id}/llm-requests/stats` | ✅一致 | `api/http.py:10706-10740`（`operation` 可选、`period: str = Query("7d")` 无枚举校验）；信封 5 键 `{bank_id,period,trunc,start,buckets}`，桶 4 键 `{time,statuses,total,tokens}`，`tokens` 5 键 `{input,output,cached,thoughts,total}`（与 `#97` 同一套 period→窗/trunc 规则） | `internal/reporting/handlers.go`（`LLMRequestStats`）、`internal/reporting/chart_period.go` | 无 | 信封 5 键同序；有数据时桶 4 键、`tokens` 5 键同序（两侧 `statuses:{"success":N}`、`total`、`tokens` 各成员类型一致）。**8 组 SAME**：缺省/`?period=`（回显 `""`）/`?period=30d`/`?period=bogus`；`?operation=nope`→200；未知 bank→404；`?period=1d` 同。桶的**数值**两侧不同（各库存量行不同，见噪声条） |
+| #100 `GET /v1/version` | ✅一致（`--raw` 逐字节） | `api/http.py:5716-5747`，`include_in_schema=False`，与 `GET /version` 同一实现、同体：`{"api_version":"1.0.0","features":{…11 项…}}`（键序 `observations/mcp/worker/bank_config_api/bank_llm_health/file_upload_api/document_export_api/document_import_api/audit_log/llm_trace/store_document_text`） | `internal/monitoring/`（版本端点，`internal/app` 挂载） | 无 | 默认部署（两侧 `features` 全同）下 `--raw` **逐字节 SAME**；`GET /version --raw` 同样 SAME；`--headers-only`（content-type/content-length 等）SAME。本服务 `/version` 与 `/v1/version` 两个路径响应**字节相同**（`diff` 空）。<br>注：**故意打开** `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true` 时 `/v1/version` 会 DIFF —— 那正是 `features.bank_llm_health` 这个**部署自设项**，`chk.py` 在归一化模式下会把它归一为 `<SETTING>`（此时 SAME），不是缺陷 |
+| ⚠️ `cached_tokens` 的 null vs int | ⚠️噪声（非缺陷） | `engine/llm_trace.py:317-320` 的 `cached_tokens: int \| None`；值来自模型网关响应里的缓存命中字段 | `internal/app/llm_trace.go` 的 `setToken`（未上报则留 NULL） | 无 | 两侧接**同一个中转网关**，缓存命中与否取决于网关侧状态：参考两次调用里一次未报（`null`）、本服务两次都报了（`int`）。两侧该列形状都是 `int \| null`，**读写逻辑一致**（`setToken` 对「未上报」与「真 0」的区分也与参考的 `or None` 同义），故判噪声 |
+| ⚠️ 取证说明 | ⚠️说明 | — | — | — | ① 两侧**不是同一个库**：`stats` 的计数、`llm-requests`/`audit-logs` 的存量行天然不同。`/stats`、`#95`、`#98`、`#99` 的数值判定统一改用**同步夹具对**：两侧各建一对新银行、各做**一次相同内容的同步 retain**、等 worker 收敛后再取数（否则参考 worker 自行 consolidate 会让 observation 计数多一份）。② `llm_trace` 两侧都是 `true`，故 `#98`/`#99` 可直接端到端测；`audit_log` 两侧都是 `false`，参考库无行，`#96`/`#97` 的「有数据」半边由**本服务开启开关后真实产生的行**核对形状与聚合规则（参考该半边的规则由源码 `engine/memory_engine.py:13977-14136` 逐行对齐）。③ `bank_llm_health` 两侧都是 `false`，`#94` 开启态按上文说明取信。 |
+
+**本节结论计数（按 API 计，共 8 条：`#93`–`#97` 与 `#100`，另 `#98`/`#99` 同在本单元作用域内一并核对）**：
+
+- **✅一致 5** = `#95`、`#96`、`#97`、`#99`、`#100`
+- **❌已修 3** = `#93`、`#94`、`#98`
+- **⚠️存疑 0**（按 API 计；另有 **子项 ⚠️ 2 条**：`#98` 的 `metadata` 回填、`llm_info.request.response_schema`；以及 **噪声说明 1 条**：`cached_tokens` 的 null/int）
+- **⛔未覆盖 0**
+
+**需要组长裁决/知悉**：
+1. `#98` 的两个 ⚠️ 子项（`metadata` 回填、`llm_info.request.response_schema`）已按「需 storage+memoryops / provider 端口协同，**本轮未排期**」记录，`#98` 整体记 ❌已修。
+2. `#93` 的根因（同步 retain 不写 operation 行）在 `internal/storage/`，由组长实施；`#94` 的改判依据是「参考源码无 `_require_bank_exists`」而非两侧实测（参考侧开关无法打开）。
+3. `cached_tokens` 的 null/int 判噪声，依据是两侧同一网关的缓存命中状态差异、且读写逻辑同义。
+
+## 第三轮 transfer
+
+> 覆盖 `routes.md` 的 `#76`–`#87`（`import` / `export` / `document-transfer` ×3 / `transfer` ×2 / `clone` / `attachments` / `files/download`）。
+> **`#76`/`#77`（`operations/{id}/retry`、`/delete`）不在本单元**——它们属 `operations` 单元的写作用域（`internal/memoryops/operations*.go`、`internal/worker/`），
+> 本文只核 `#78`–`#87` 这 10 条（任务书里「#76–#85」的编号与 `routes.md` 实际不同，按 `routes.md` 的 `#78`–`#87` 覆盖，另加 `#86`/`#87` 两条同属 `internal/transfer/` 的路由）。
+>
+> 夹具：端口 **18312**、`CHK_RUN=t-18312`、银行 `rt-t-18312`（+ `rt-other-t-18312`、`rt-ghost-t-18312`），worker 开（`HINDSIGHT_API_WORKER_ENABLED=true`）。
+> 参考：`http://127.0.0.1:8888`。差分工具 `/tmp/rt/chk.py`（PLAN §3）。
+
+### 一、复核结论：第二轮的两处判断是误判
+
+第二轮 `transfer` 小节把 `#79`/`#81`/`#83` 判为「归档条目时间戳」一处缺陷就已收敛，**本轮实测证明归档格式还有 5 类实质差异**，且 `#81` 的 `storage_key` 布局与归档类型都不对。全部已修，见下表与第二节。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #78 `POST /v1/default/banks/{bank_id}/import` | ❌已修 | `api/http.py:9456-9496`（`BankTemplateManifest.validate_version`，`api/http.py:4090-4100`）：① `ver = int(v)` 是 **Python 任意精度整数**，超 `int64` 仍是数字，走「不支持」分支；② 文案 `… Please upgrade Hindsight.` 主体是 **Hindsight** | `internal/banktemplate/manifest.go:169-190`（`Validate`） | 两处：① 版本号改用 `math/big.Int` 解析，不再用 `strconv.Atoi`（超 `int64` 会被误判成 `must be a numeric string`）；② 文案 `Wenyuan` → `Hindsight` | 差分 SAME：`{"version":"2"}`、`{"version":"99999999999999999999"}`、`{"version":"9223372036854775808"}`、`{"version":"-99999999999999999999"}` 四条修复前全 DIFF，修复后全 SAME。用例 `TestValidateUnsupportedVersionNamesTheReference`、`TestValidateVersionIsParsedAtArbitraryPrecision`（`internal/banktemplate/banktemplate_test.go`）。**证伪**（改回 `strconv.Atoi` + `Wenyuan`）：<br>`--- FAIL: TestValidateUnsupportedVersionNamesTheReference` — `structural = ["…Please upgrade Wenyuan."], want […Please upgrade Hindsight.]`<br>`--- FAIL: TestValidateVersionIsParsedAtArbitraryPrecision` — `version "99999999999999999999": structural = ["version: Value error, version must be a numeric string, got '99999999999999999999'"], want ["… is not supported by this server (max supported: 1)…"]` |
+| #78 其余分支 | ✅一致 | 同上 | `internal/transfer/template_handlers.go`、`internal/transfer/scope.go`（`decodeJSONBody`、`pythonJSONError`） | 无 | **14 组 SAME**：空体 / `notjson` / `{` / `{"a":}` / `{"a" 1}` / `[1,]` / `"unterminated` / `{"a":1}x` / `tru` / `{"a":1,}` / `  [` / `[1` / `{"a":1 "b":2}` / `{"a":`（CPython `JSONDecodeError` 原文逐字节）；`dry_run=zz`→422；`?oops=1` 未知参数（`X-Ignored-Params` 头 SAME）；`{"version":"0"}`/`{"version":"x"}`/`{}`/`{"version":" 1 "}`/`{"version":"01"}`/`{"version":1}`；重复 mm id / 空 mm name / `retain_custom_instructions` 无语义模式。**真实导入**：`dry_run=true` 与真实导入的 8 键响应同序同值；重复导入同一 manifest 两侧均返回全空列表（幂等）；导入后 `GET .../export` 两侧 `bank` 段 50 键同序同值、`mental_models` 17 键同序（本服务 manifest 的 trigger 键按字母序写出，见 ⚠️ 条）；150 个 mental model 的导入两侧均全部创建（无分页截断） |
+| #79 `GET /v1/default/banks/{bank_id}/export` | ❌已修 | `api/http.py:8839-8930`：`profile is None` → 404 `Bank '<id>' not found`；`_refuse_bank_wide_if_scoped(..., "export the bank template")`；读**未解析**的 per-bank overrides（`_load_bank_config(cached=False)`）；`BankTemplateManifest(version=…, bank=…, mental_models=… or None, directives=… or None)` | `internal/transfer/template_handlers.go:ExportTemplate`；`internal/banktemplate/marshal.go` | **`mental_models[].trigger` 的键序**：trigger 是 `map[string]any`，Go 按**字母序**序列化（`budget, exclude_mental_model_ids, exclude_mental_models, …`）；参考的 `MentalModelTrigger` 是 pydantic 模型，按**字段声明序**输出（`budget, mode, refresh_after_consolidation, refresh_cron, …`）。这段对象是 `GET .../export` **响应体的字节**，线上可观测。修法：新增 `templateTriggerFieldOrder`（17 个字段，取自 `api/http.py:3199-3300` 的声明序，已与线上参考逐键核对）+ `orderedMentalModels`/`orderedTrigger`，**只给已存在的键排序、不增删键**；未列出的键排在其后 | **`--raw` 逐字节 SAME**（修复前 DIFF）：同一 bank 下两侧 `GET .../export` 响应体完全一致，17 个 trigger 键逐位同序。另：已知 bank（`{"version":"1","bank":null,"mental_models":null,"directives":null}`，4 键同序）、未知 bank 404 同文案、有 config+MM+directive 时 `bank` 段 50 键同序同值。用例 `TestManifestRendersTriggerInDeclarationOrder`（同时钉住 17 字段表本身、线上键序、以及"不增删键"）。**证伪**（把有序渲染换回 `json.Marshal(m.MentalModels)`）：<br>`--- FAIL: TestManifestRendersTriggerInDeclarationOrder` — `trigger keys out of declaration order: budget=128 mode=161 keep_trace=142 in {…"trigger":{"budget":null,"keep_trace":false,"mode":"full"}}` |
+| #80 `GET /v1/default/banks/{bank_id}/document-transfer` | ✅一致 | `api/http.py:8932-8960`：**无条件 410**，`detail` 内嵌本 bank 的 `document-transfer/export` 与 `operations/{operation_id}` 路径 | `internal/transfer/retired.go:11-23` | 无 | **`--raw` 逐字节 SAME ×3**：已知 bank、`{ghost}`（不存在的 bank，两侧均 410 而非 404，证明 410 先于 bank 判定）、bank id 含空格（`rt-b%20x-…`，证明 detail 里的 id 是**解码后**原样插值）。三条 detail 全文逐字节相同，含 `{operation_id}` 字面花括号 |
+| #81 `POST …/document-transfer/export` | ❌已修 | `engine/memory_engine.py:3640-3705`（`_handle_export_documents`）：`storage_key = f"{bank_storage_prefix(bank_id)}exports/{uuid}/transfer.zip"`，而 `bank_storage_prefix` = `tenants/{schema}/banks/{bank_id}/`（`engine/storage/__init__.py:12-30`）；归档由 `stream_export_documents`（`engine/transfer/export.py:289-390`）产出：`archive_type:"documents"`、`scope:null`、**无 `data/` 段**、`operation_count:0`、`bank_rows_json_encoding:null` | `internal/app/worker_transfer.go:33-38`（键）、`internal/transfer/export_build.go:104-215`（`BuildArchive` 分支） | 两处：① 新增 `internal/transfer/storage_keys.go` 的 `DocumentExportStorageKey`（`tenants/{schema}/banks/{bank}/exports/{uuid}/transfer.zip`，段编码按参考 `key_segment`），worker 按 `op.OperationType == "export_documents"` 分流；② `BuildArchive` 的 bank 归档分支由「`len(DocumentIDs)==0`」改为「`opts.Scope.Any()`」，文档导出不再误走 bank 分支（原产出 `archive_type:"bank"` + 全 false `scope` + `data/` 段 + `operation_count:21`） | 差分：修复后 `storage_key` 形如 `tenants/public/banks/rt-t-18312/exports/{uuid}/transfer.zip`（参考 `tenants/user_devin/…`，只有 tenant 名不同，那是各自部署的 `HINDSIGHT_API_DATABASE_SCHEMA`）；归档条目**逐项相同** `['documents/000000.json', …, 'observations.json', 'manifest.json']`（本服务 3 个 doc、参考 2 个，是夹具里文档数不同）；`manifest.json` 15 字段**同键同序同值**（`archive_type:"documents"`、`scope:null`、`operation_count:0`、`bank_rows_json_encoding:null`、`includes_history:false`） |
+| #81 校验分支 | ✅一致 | `api/http.py:9401-9430` | `internal/transfer/submit_handlers.go:SubmitDocumentExport` | 无 | **5 组 SAME**：`include_observations=zz`→422 `bool_parsing`（`loc:["query","include_observations"]`）；`include_observations=true&document_id=a`→400（互斥）；`include_knowledge_base=true&document_id=a`→400；无参数→202 `{operation_id,status}`；未知 bank→404；导出开关关闭→404（文案含 `HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API`） |
+| #82 `POST …/document-transfer` | ❌已修 | `api/http.py:8988-9060`：`file: UploadFile = File(...)` 是**必填**，框架在**绑定阶段**就判「缺 `file`」→ **422** `{"type":"missing","loc":["body","file"],"msg":"Field required","input":null}`；`on_conflict` 的校验在 **handler 体内**（`api/http.py:9020`），**只在该 body 已绑定时才跑**。因此 `on_conflict=zz` **不带文件**必须报 422（缺 file），**带文件**才报 202（参考实测不拒绝该值） | `internal/transfer/submit_handlers.go:SubmitDocumentImport` | **校验次序**：原实现先校验 `on_conflict` 再读 body，导致不带文件时错报 400；改为**先读必填的 `file`**（与参考的绑定阶段同序），再校验 `on_conflict` | **6 组实测（含真实 multipart 上传）**：无 `file` 部件 → 两侧 **422 逐字节相同**；`on_conflict=zz` **不带文件** → 两侧 **422**（修复前本服务 400，DIFF）；`on_conflict=zz` **带 zip** → 两侧均 **202**；`on_conflict=`（空）带 zip → 两侧 202；空文件 → 两侧 400 同文案；`notazip` → 两侧 400 同文案。用例 `TestRequestShapeFailuresAreReportedTogether`（`internal/transfer/submit_handlers_test.go`）。**证伪**（改回"先校验 `on_conflict`"）：<br>`--- FAIL: TestRequestShapeFailuresAreReportedTogether` — `detail = [{Loc:[query include_data]}], want 3 items` |
+| #83 `POST …/transfer/export` | ❌已修 | `engine/memory_engine.py:3707-3765`（`_handle_export_bank`）：`storage_key = f"banks/{bank_id}/exports/{uuid}/transfer.zip"`（**无** tenant 前缀）；归档由 `stream_export_bank`（`engine/transfer/export.py:497-650`）产出 | `internal/transfer/export_build.go`、`internal/hindsightarchive/`（格式）；`internal/app/worker_transfer.go`（元数据） | 归档格式 5 类，见第二节 | `result_metadata` 4 键同序同集合（`filename`/`byte_size`/`storage_key`/`download_url`），键形 `banks/{bank}/exports/{uuid}/transfer.zip` 与参考**同形**（本服务无 tenant 前缀，与参考整库导出一致）；`filename` = `{bank}-bank.zip` 两侧同。**归档格式**见第二节（修复后条目名/顺序/各段行形状全部对齐）。**8 组校验 SAME**：`include_data=false&include_bank_config=false&include_history=false`→400「Nothing to export…」；`document_id=d1`（默认 `include_bank_config=true`）→400「…only supported for a whole-bank export (omit document_id)」；`include_data=bogus`→422；未知 bank→404；`?include_history=true`→202；`document_id=a&document_id=b`→202 |
+| #84 `POST …/transfer/import` | ❌已修（格式侧） | `api/http.py:9146-9240`；`engine/transfer/importer.py:432-480`（`parse_bank_archive`）、`:488-560`（`_restore_rows`） | `internal/transfer/import_apply.go`、`internal/hindsightarchive/` | 归档格式 5 类，见第二节（导入侧的读取逻辑本身与参考一致：两侧都能读对方产物） | **双向 round-trip 硬证据**（见第三节）：① 参考产出的归档 → 本服务 restore 成功，`documents_imported:2 / facts_imported:2 / observations_imported:2 / mental_models_imported:1 / directives_imported:2`；② **本服务产出的归档 → 参考 restore 成功**（格式正确的金标准），同组计数同值（`operations_imported` 两侧不同，各自操作日志条数不同）。**6 组校验 SAME**：`mode=bogus`→400；`document_conflict=bogus`→400；`mode=merge&target_bank_id=x`→400（含 `{bank_id}` 字面）；`include_data=bogus`→422；`mode=merge&include_data=true`→400；非 zip → 400 |
+| #85 `POST …/clone` | ❌已修 | `api/http.py:9252-9335`：`target_bank_id: str = Query(...)`（必填，**声明在三个 include 开关之前**）；两道开关都关 → 404 `Bank clone API is disabled. …`；三开关全 false → 400 `Nothing to clone: …`；`profile is None` → 404；`submit_bank_clone_async` 抛 `ValueError` → 400（自身、目标已存在、id 非法）；`engine/memory_engine.py:3843-3940` 的 `result_metadata` **15 键 + `archive_byte_size`**（共 16） | `internal/transfer/submit_handlers.go:SubmitClone`、`internal/app/worker_transfer.go:applyClone` | ① **校验次序**：`target_bank_id` 缺失必须**先于** flag 失败被报（参考按声明序），原实现先校验 flag；② 归档格式随第二节的修复一并生效（clone 走同一 `BuildArchive`+`Write`+`ImportApplier`） | **提交侧 5 组 SAME**：无 `target_bank_id` → 422 `loc:["query","target_bank_id"]`；`?include_data=bogus`（无 target）→ 422 **两条**，target 在前、flag 在后（修复前只报 1 条）；`?include_data=bogus&include_history=bad` → 422 三条同序；三开关全 false → 400 同文案；`target_bank_id`=自身 → 400 同文案；目标已存在 → 400 **逐字节相同**。**完成态 `result_metadata` 实测**：两侧各 clone 到新 bank，**16 键全部同值**——`documents/facts/observations/attachments/operations/maintenance_queue_rows/invalidated_memories/mental_models/mental_model_history/knowledge_pages/directives/webhooks/history_rows` 计数、`restored_bank_id`、`target_bank_id` 全同；<br>**`archive_byte_size` 的判定依据（组长要求）**：两侧对**同一夹具**各 clone 一次，再各自把 clone 目标导出、**解包逐段对拍**——① 条目列表两侧**逐项相同**（`data/async_operations.json, data/graph_maintenance_queue.json, data/entity_maintenance_queue.json, data/invalidated_memory_units.json, mental_models.json, mental_model_history.json, banks.json, directives.json, webhooks.json, knowledge_pages.json, manifest.json`；修复 F6 之前本服务多一项 `documents/`）；② 每段**键序完全相同**；③ 去掉实例自身的值（`bank_id`/`id`/`created_at`/`updated_at`/`internal_id`/`last_consolidated_at`/`mission_changed_at`，两侧 bank id 本就不同）后**内容完全相同**（`banks.json`、`directives.json` 均 `equal: True`）。所以**解包内容等价**，字节数差异只剩 zip 头/CRC/时间戳这类框架差异 ⇒ `archive_byte_size` 是**噪声**，不是症状。clone 目标的 directive 两侧一致（`('cd','cc',3)`） |
+| #86 `GET /v1/default/banks/{bank_id}/attachments/{attachment_id}` | ✅一致 | `api/http.py:9360-9415`：`retrieve_bank_attachment` 为 None → 404 `Attachment not found`；成功时 `media_type=attachment.media_type`、头 `Cache-Control: private, max-age=31536000, immutable` + `X-Content-Type-Options: nosniff`，**无** `Content-Disposition` | `internal/transfer/binary_handlers.go:ServeAttachment` | 无 | **4 组 SAME**：已知 bank 的未知 id → 404 `Attachment not found` 逐字节；未知 bank → 同一 404（不可探测）；`/attachments/`（空 id）→ 同；真实附件（服务侧 file-retain 后取 67 字节 PNG）：`200`、`Content-Type: image/png`、`Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Content-Length: 67`、无 `Content-Disposition` —— 头集与参考常态逐项相同（参考侧同一附件因它自己的 file-retain 任务失败而无行，故**同一时刻**无法做同 id 对拍；两侧的**缺失语义与成功头**已分别实测） |
+| #87 `GET /v1/default/files/download/{key}` | ✅一致 | `api.py:9417-9475`：导出开关关 → 404；`key.split("/")` 含 `..` → 404「File not found」；只认 `tenants/{schema}/banks/{bank}/…`（`len>4`）与 `banks/{bank}/…`（`len>2`）两种布局；取不到 → 404「File not found」；成功时 `Content-Type: application/zip`、`Content-Disposition: attachment; filename="{bank}-documents.zip"`、`Content-Length`，**忽略 `Range`**（返回 200 全量，非 206） | `internal/transfer/binary_handlers.go:ServeDownload` | 无 | **6 组 SAME**：未知 key → 404「File not found」；`banks/{b}/../../../etc/passwd` → 404；非 bank 前缀 `loose/key.zip` → 404；`tenants/...` 键（本服务本无该对象）→ 404；**真实归档下载**：`200`、`Content-Type: application/zip`、`Content-Disposition: attachment; filename="rt-t-18312-documents.zip"`、`Content-Length` 正确。**`Range: bytes=0-99`**：本服务 200 + 全量 2023 字节，参考 200 + 全量 2132 字节（**两侧都忽略 Range**，非 206）；`Content-Length` 一致 |
+
+### 二、归档格式：5 类实质差异（已修）+ 可复现判定命令
+
+第二轮认为归档格式只差「条目修改时间」一处。本轮把两侧同夹具的真实归档逐段对拍，发现**5 类**差异。全部在 `internal/hindsightarchive/`（新增 `rowjson.go`）与 `internal/transfer/export_build.go`：
+
+| # | 差异（修复前） | 参考证据 | 修复 |
+|---|---|---|---|
+| F1 | **行文件布局**：本服务 `json.Marshal(rows)` 输出**单行 compact**；参考是 `json.dumps(rows, indent=2)` 的多行缩进 | `engine/transfer/export.py:539-545`（`write_rows` → `json.dumps(rows, default=_row_json_default)`）；`export.py:899-975`（整库非流式路径 `json.dumps(rows, indent=2, …)`） | `hindsightarchive.EncodeRowFile`：用 `json.Indent(&out, enc, "", "  ")` 复刻 CPython `indent=2`（**已逐字节验证**：Go `json.Indent` 空 prefix + `"  "` 与 Python 输出完全相同，含 `{}`/`[]`/嵌套） |
+| F2 | **行键序**：Go map 按键**字典序**；参考是 `SELECT *` 的**表列序**（CPython dict 保序） | `export.py:431-440` `_dump_bank_rows` = `SELECT * FROM t WHERE bank_id=$1` | `rowjson.go` 的 `rowColumns` 表记录 11 张表的列序（取自 `migrations/0002_reference_tables.sql`），`orderedObject` 按该序序列化；未列出的列排在其后并排序（不丢列） |
+| F3 | **jsonb 列文本**：本服务写成 Go 的插入序 + `":"` 紧凑；参考是 PostgreSQL `jsonb::text`——键按**长度再字节序**重排，`": "` 分隔 | 参考的 asyncpg 连接把 jsonb 列当**文本**返回并原样写进归档（manifest 声明 `bank_rows_json_encoding:"serialized"`） | `export_build.go` 的 `pgJSONText`/`writePGJSON`：键排序 `len` 再字节序，`": "`/`", "` 分隔，字符串转义按 PG。**已用 psql 实测 PG 输出核对**：`select '{"retain_mission":"keep it","enable_observations":true,"enable_reranking":true,"recall_max_tokens":4096}'::jsonb::text` → `{"retain_mission": "keep it", "enable_reranking": true, "recall_max_tokens": 4096, "enable_observations": true}`，本服务现产出**逐字节相同** |
+| F4 | **zip 条目标志位**：本服务 `Flags` 只由 Go 推断出 `0x008`；参考是 `0x808`（bit3 data-descriptor + bit11 UTF-8 名） | `engine/transfer/stream_archive.py:149-227`：`flags = 0x0808` 每条目恒定 | `sections.go:writeEntry` 显式 `Flags: 0x0808` |
+| F5 | **条目写出顺序**：本服务 `documents → mental_models → knowledge_pages → banks → directives → webhooks → mental_model_history → data/* → manifest`；参考 `documents → observations → blobs+attachments → data/* → mental_models → mental_model_history → banks → directives → webhooks → knowledge_pages → history/* → manifest` | `export.py:497-650` `stream_export_bank` 的写出次序 | `sections.go:writeArchive` 按参考次序重排 |
+
+**F6 · 空 bank 的 `documents/` 占位条目**：本服务在**没有任何文档**时写一个 `documents/` 目录条目（为了"让 reader 能找到 payload 目录"），参考从不写——参考只按文档数写 `documents/{n:06d}.json`（`engine/transfer/export.py:906-910`），空 bank 的归档里**根本没有** `documents/` 成员。这使条目列表多一项、`archive_byte_size` 偏大。读取侧不需要它（`documentNames` 把"目录不存在"当作空文档集）。已删除。用例 `TestWriteEmitsNoDocumentsEntryForAnEmptyBank`；**证伪**（把占位条目加回去）：`--- FAIL: … archive carries "documents/"; the reference emits no documents entry for an empty bank`。<br>**发现路径**：正是组长要求的"clone 的 `archive_byte_size` 是否是症状"检查——两侧对**同一夹具**做 clone 后解包对拍，条目列表差了 `documents/` 一项。
+
+另有 3 处**内容**修正（同属归档格式）：
+
+- **`mental_models` 行缺 5 列**：参考 `SELECT *` 出 21 列，本服务只写 16 列，缺 `last_refreshed_source_query`、`structured_content`、`entity_id`、`last_memory_seen_at`、`last_refresh_failed_at`（缺失的键在恢复时一律读成 null）。`export_build.go:mentalModelRow` 已补齐 21 列、按 `mental_models` 表列序。
+- **文档 payload 的 `retain_params`**：列为 `jsonb NOT NULL DEFAULT '{}'`，参考 `SELECT` 出 `{}`；本服务 nil map 写成 `null`，而参考的 `TransferDocument.retain_params` 是 `dict | None` 且**不是必填**，实测把 `null` 喂给参考可接受，但 `{}` 才是参考自己的产物值。`export_build.go:archiveRetainParams` 现写 `{}`。
+- **`disposition` 列**：原本绕过 `jsonText` 直接 `json.Marshal`（紧凑 + 插入序），现走同一条 PG 渲染。
+
+**可复现判定命令**（`/tmp/arch` 下 `ref.zip` = 参考导出、`svc.zip` = 本服务导出）：
+
+```sh
+# ① 条目名与顺序、每个条目的 GP 标志位与压缩方法
+python3 -c "import zipfile
+for f in ('ref.zip','svc.zip'):
+    print(f,[(i.filename, hex(i.flag_bits), i.compress_type) for i in zipfile.ZipFile(f).infolist()])"
+# 期望：两侧条目名列表逐项相同，每个条目 flag_bits 都是 0x808、compress_type 都是 8
+
+# ② 每段：键集 + 键序 + 是否逐字节相同
+python3 -c "import zipfile,json
+a,b=zipfile.ZipFile('ref.zip'),zipfile.ZipFile('svc.zip')
+for n in [i.filename for i in a.infolist() if not i.is_dir()]:
+    ra=json.loads(a.read(n)); rb=json.loads(b.read(n))
+    if isinstance(ra,list) and ra and isinstance(ra[0],dict):
+        print(n,'keyorder equal:',list(ra[0])==list(rb[0]),'\n  ref:',list(ra[0]),'\n  svc:',list(rb[0]))
+    else:
+        print(n,'scalar keys equal:', list(ra)==list(rb) if isinstance(ra,dict) else 'n/a')"
+# 期望：banks/directives/webhooks/mental_models/mental_model_history/attachments/
+#       data/*、history/* 的 keyorder equal 全为 True；manifest.json 15 键同序
+
+# ③ jsonb 列文本与 PG 渲染一致（本服务产物里 config 的值必须等于下面这条 SQL 的输出）
+PGPASSWORD=wenyuan psql -h 127.0.0.1 -p 15432 -U wenyuan -d wenyuan -t -A -c \
+  "select '{\"retain_mission\":\"keep it\",\"enable_observations\":true}'::jsonb::text"
+```
+
+**证伪**（把 F1/F4 改回去）：
+
+```
+$ go test -count=1 ./internal/hindsightarchive/
+--- FAIL: TestWriteRowFileMatchesJSONDumpsIndent
+    row file =
+    [{"bank_id":"b1","config":"{\"retain_mission\": \"keep it\"}","created_at":"…", …}]
+    want
+    [
+      {
+        "bank_id": "b1",
+        "name": "b1",
+        "disposition": "{\"empathy\": 3, \"literalism\": 3, \"skepticism\": 3}",
+        …
+--- FAIL: TestWriteRowFileKeepsUnlistedColumns
+--- FAIL: TestWriteSetsTheStreamingEntryFlags
+    data/async_operations.json: general-purpose bit 11 (UTF-8 name) is clear, flags=0x8
+```
+
+用例：`TestWriteRowFileMatchesJSONDumpsIndent`、`TestWriteRowFileEmptySectionIsAnEmptyList`、`TestWriteRowFileKeepsUnlistedColumns`、`TestWriteSetsTheStreamingEntryFlags`、`TestNormalizeRowValueRendersTimestampsLikeIsoformat`（`internal/hindsightarchive/rowjson_test.go`）。
+
+### 三、双向 round-trip（硬证据）
+
+| 方向 | 命令 | 结果 |
+|---|---|---|
+| **参考归档 → 本服务** | `curl -F file=@ref.zip 'http://127.0.0.1:18312/v1/default/banks/rt-t-18312/transfer/import?target_bank_id=rt-t-18312-rt-fromref'` | `completed`；`documents_imported:2 facts_imported:2 observations_imported:2 mental_models_imported:1 directives_imported:2 operations_imported:13`，`error:null` |
+| **本服务归档 → 参考**（格式正确的**金标准**） | `curl -H "Authorization: Bearer $REF_KEY" -F file=@svc.zip 'http://127.0.0.1:8888/v1/default/banks/rt-t-18312/transfer/import?target_bank_id=rt-t-18312-rt-fromsvc'` | `completed`；同样 `2/2/2/1/2`（`operations_imported:18`，两侧各自操作日志条数不同）；`error:null`。**修复前**本服务产物会被参考拒绝（第二轮记录：`ValidationError: facts.0.causal_relations Input should be a valid array`），本轮修复后参考可完整导入 |
+| **落库等价性** | 两侧再各导出一次 compare | 文档 payload 的 `id`/`original_text`/`retain_params`/`tags`/`chunks[]`/`facts[]` **键集与键序逐项相同**；`facts[]` 17 键、`chunks[]` 2 键、`observations[]` 11 键同序。事实**文本**两侧不同（各自 retain 各自的 LLM 产物），属模型随机性，非格式缺陷 |
+
+### 四、修复清单 / 存疑 / 越界
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| #85 `clone` 的完成态 `result_metadata` | ✅已补测 | 两侧各 clone 到新 bank，16 键全同值；仅 `archive_byte_size`（各自归档字节数）不同，非契约差异。见 `#85` 行 |
+| `on_conflict` 校验次序（#82） | ✅已修 | `on_conflict=zz` **不带文件**：参考 422（缺 `file`），修复前本服务 400。已改为**先读必填 `file`** 再校验 `on_conflict`（与参考的绑定阶段同序），见 `#82` 行 |
+| 多参数校验项累积（#83/#84/#85） | ✅已修 | 参考的框架**一次绑定整个签名**，所以多个非法参数会**同时**列在 `detail` 里、按声明序；本服务原来 `scopeFromQuery` 在第一个失败处即返回，且 clone 把 `target_bank_id` 的缺失排在 flag 失败之后。已改为：`scopeFromQuery` 累积三个 flag 的失败；`SubmitTransferImport` 把 query 失败与缺失的 `body.file` **合并**；`SubmitClone` 让必填的 `target_bank_id` 排在 flag 失败**之前**。用例 `TestRequestShapeFailuresAreReportedTogether` |
+| `manifest` 里 mental model 的 `trigger` 键序（#79） | ✅已修 | 见 `#79` 行：新增 `templateTriggerFieldOrder`（17 字段声明序），用例 `TestManifestRendersTriggerInDeclarationOrder`，`--raw` 逐字节 SAME |
+| `mental_models.description` / `structured_content` 的取值 | ⚠️噪声 | 参考 side 的这两个值来自**参考自己 worker 的 refresh**（`description:" "`、`structured_content:{"version":2,"sections":[]}`），本服务侧对应模型还没被 refresh 到同一步；是 worker 时序差异，非归档格式缺陷（两侧列都存在且类型正确） |
+| 跨作用域：`internal/app/background.go`、`cmd/worker/main.go` 各 1 行 | 已改，**需组长知悉** | `NewQueueConsumer` 增加 `storeSchema string` 末位形参（文档导出键必须带 tenant schema）。`internal/app/worker.go`（`archiveProcessor` 加字段 + 形参）、`internal/app/worker_transfer.go` 在我作用域；**`internal/app/background.go:30` 与 `cmd/worker/main.go:121` 各补一个实参 `application.Config.DatabaseSchema` / `cfg.DatabaseSchema`**，由 transfer 单元在组长授权下改，因签名变更所必需，无其他改动 |
+| 归档 `disposition` 与 `created_at` 的**值**不同 | ⚠️噪声 | `disposition` 两侧都是 `{"empathy":3,"literalism":3,"skepticism":3}`（同值，PG 文本渲染已对齐）；`created_at`/`updated_at`/`internal_id` 是各实例自己的行值，天然不同 |
+
+### 五、本节结论计数（按 API 计，共 10 条：`#78`–`#87`）
+
+- **✅一致 3** = `#80`、`#86`、`#87`
+- **❌已修 7** = `#78`（模板版本校验 ×2）、`#79`（trigger 键序）、`#81`（`storage_key` 布局 + 归档类型；校验分支本身一致）、`#82`（校验次序）、`#83`（归档格式）、`#84`（归档格式）、`#85`（校验次序 + 归档格式）
+- **⚠️存疑 0**
+- **⛔未覆盖 0**；**🚧待补 0**
+
+归档格式合计 **6 类结构差异**（F1–F6）+ **3 处内容修正**，全部已修并各有"改回去就 FAIL"的用例。
+
+### 六、最终验收门（本单元包）
+
+```sh
+go test -count=1 ./internal/transfer/... ./internal/hindsightarchive/... ./internal/banktemplate/...   # 137 passed
+go vet ./internal/transfer/... ./internal/hindsightarchive/... ./internal/banktemplate/...             # 0 issues
+gofmt -l internal/transfer internal/hindsightarchive internal/banktemplate                             # 空
+golangci-lint run ./internal/transfer/... ./internal/hindsightarchive/... ./internal/banktemplate/...   # 0 issues
+CGO_ENABLED=0 go build ./...                                                                           # OK
+CGO_ENABLED=0 go build -tags pgx ./...                                                                 # OK
+```
+
+**全量差分探针（端口 18350，`CHK_RUN=t-18312`）：51 组请求/响应断言全 SAME**（覆盖 `#78`–`#87` 的正常路径、校验分支、404/422 与未知 bank）：
+
+```sh
+export SVC_BASE=http://127.0.0.1:18350 REF_KEY=sk-hs-f94653018553250b8ffeff305b86ee0a CHK_RUN=t-18312
+python3 /tmp/rt/chk.py POST '/v1/default/banks/{b}/transfer/import?include_data=bogus&include_history=bogus'
+python3 /tmp/rt/chk.py POST '/v1/default/banks/{b}/clone?include_data=bogus'
+python3 /tmp/rt/chk.py GET  '/v1/default/banks/{b}/document-transfer' --raw      # 410 detail 逐字节
+```
+
+**组长裁决记录（2026-10-26）**：
+1. `#79` 的 `trigger` 键序 —— 裁决「修」，理由是该段是**线上可观测的字节**。已按裁决实现并验证（见 `#79` 行）。
+2. 跨作用域 `internal/app/background.go:30`、`cmd/worker/main.go:121` 的两行实参 —— **批准并已复核**：各恰好 +1 个实参（`application.Config.DatabaseSchema` / `cfg.DatabaseSchema`），是 `NewQueueConsumer` 签名变更的必要连带，保留。
+3. `archive_byte_size` 的判定 —— 要求证明两侧归档**解包后内容相同**才可判噪声。已证明（见 `#85` 行），判定成立；附带发现并修复了 F6。
+
+**无待裁决事项。**
+
+## 第三轮 retain
+
+单元：`internal/memoryops/`（retain / file_retain / clear_memories / inline_attachments / normalize / retain_* ）、`internal/extraction/`、
+`internal/fileparse/`、`internal/entitylabels/`（组长 2026-10-26 把该包划归本单元）。参考检出
+`../hindsight/hindsight-api-slim/hindsight_api/`，行号以当前检出为准。线上差分：参考 `http://127.0.0.1:8888`，
+本服务 `scripts/parity_dev_service.sh 18311`（`CHK_RUN=r-18311`，夹具 `rt-r-18311` / `rt-other-r-18311` / `rt-ghost-r-18311`），
+工具 `/tmp/rt/chk.py` 与若干脚本化 body 批（下文的 "批" 指一次脚本内对两侧同 body 的逐字节比对）。
+
+**编号口径**：`routes.md` 把 `#19/#20` 分给了本次会话中实际由 `bank-config` 单元负责的 `PATCH/DELETE .../config`；
+本单元按**任务书与 `PLAN.md §5`** 负责的 5 条写面 API 是 `POST .../memories`（#23）、`POST .../files/retain`（#24）、
+`DELETE .../memories`（#25）、`POST .../memories/dry-run-extract`（#21）、`POST .../prompts/preview`（#22），
+下表按这五条逐行给出，编号沿用 `routes.md`。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| #23 `POST /v1/default/banks/{bank_id}/memories`（同步/异步收据、`items_count`、`usage`、`operation_id` vs `operation_ids`、空 items） | ✅一致 | 装饰器 `api/http.py:10052`；异步分支 `api/http.py:10184-10214`（每组一个 `submit_async_retain`，`operation_id` 取首个、仅多组时给 `operation_ids`）；同步分支 `api/http.py:10216-10290`（`usage` 恒为 `TokenUsage`，`items_count` 按 `len(contents)` 累加）；`engine/memory_engine.py:6489-6503` 空 contents 直接返回 | `internal/memoryops/retain.go:358-479`（`Retain`）、`:1070-1094`（`BuildRetainResponse`）、`:627-641`（`submitAsyncRetain` 的空 items 短路） | 无 | `chk.py POST .../memories` 的 async(1/2 item)、async 空 items、sync、sync 空 items、`document_tags` 空 items 全部 **SAME**；批 26 例（缺 `items`／`items:5`／未知顶层字段／`async:"x"`／`operation_id` 非 UUID／同步异步 `update_mode`）**0 DIFF** |
+| #23（`content` 的联合类型校验、422 detail 逐项） | ❌已修（3 处） | `MemoryItem.content` 是 `str \| list[tagged-union[...]]`（`engine/retain/attachment_content.py:140-157`），pydantic 对联合**两个分支都报**；`union_tag_*` 的 `ctx` 按**报告序**输出 `discriminator, tag, expected_tags`；任何"存在但不可用"的判别值（`5`/`true`/`null`/`""`/对象）都是 `union_tag_invalid` 并把它**字符串化**进 `msg`/`ctx.tag`（`null`→`None`、对象→Python repr）；字符串分支与 `content cannot be empty` 的 `input` 是**调用方写的原字节**（成员序保留） | `internal/memoryops/retain_models.go`（`decodeBlocks` 的 `union_tag_*` 分支、新增 `stageCtx`／`discriminatorText`／`writePythonValue`／`pythonReprString`／`sourceObjectValue`／`orderedJSONObject`；`Content.rawJSON`）、`internal/memoryops/validation.go:185-212`（两个分支的 `input` 改用 `rawJSON`） | ①`ctx` 由 `map[string]any`（键序按字母）改为定序结构 `stageCtx`，`tag` 用指针，使 `""` 也输出；②判别值不是字符串时不再报 `union_tag_not_found`，改按框架比较渲染（`5`→`"5"`、`true`→`True`、`null`→`None`、对象→`{'a': 1}`），只有**完全缺 `type`** 才是 `union_tag_not_found`；③字符串分支的 `input` 与 `content cannot be empty` 的 `input` 改为原字节（Go map 会按键排序），`source` 对象同理 | 批 11 例（`type:""`／`type:5`／`type:true`／`type:null`／`type:{}`／`type:[]`／`type:"bogus"`／`type:"TEXT"`／缺 `type`／`source` 缺 `data`／`source` 缺 `media_type`／`filename:5`）+ 批 11 例（空/纯空白字符串、`content:[]`、`content:null`、`content:5`）全部 **SAME**。用例：`TestRetainValidatesContentBlocks`（9 子例，含 `ctx` 键序、`type:5` 等新增断言）；`retain_content_blocks_test.go` 里三处**过时断言**（断言 Go map 的字母序 `input`）已按参考的书写序改正 |
+| #23（image/file block 在"模型不能读图"时被 422 拒绝） | ❌已修 | 参考的 `canonicalize_item_content` **不会**因为模型不支持视觉而拒绝请求：它在无 vision 时丢弃 attachment block、只留文本（`engine/retain/attachment_content.py:44-140` + `api/http.py:10096-10130` 的 `canonicalize_item_content(...)` 调用）；视觉门在**抽取阶段**才生效 | `internal/memoryops/retain.go`（删除 `blockedWriteFailure` 的 422 前置门）、`retain_models.go`（新增 `FlattenDecliningAttachments`、`stripPlaceholders`、`Content.OwnsFlatAttachment` 语料、`RetainItem.visionEnabled`/`textIsCanonical`）、`retain_fold.go`（`foldText`）、`inline_attachments.go`（declined 时不写 attachment/存储行）、`file_retain.go`（同规则，且图片上传在无 vision 时得到"只有文本"的文档、不写附件行） | 原实现把"模型不能读图 + 带 image block"当 422；现按参考：文本照常保留、attachment block 的位置只留一个段落分隔，且**不落附件字节**（没有任何写入能解析它），单元测试与线上差分均验证 | `TestRetainWithoutVisionStoresTheProseOnly`、`TestRetainWithVisionKeepsThePlaceholder`、`TestRetainWithoutVisionStoresProseUnits`、`TestImageUploadWithoutVisionDropsTheAttachment`、`TestCanonicalTextKeepsItsOwnPlaceholder`、`TestCanonicalTextDropsAForeignPlaceholder`。**证伪**：把 `Retain` 里 `req.Items[i].visionEnabled = h.VisionEnabled` 改回常量 `true` 后 → `--- FAIL: TestRetainWithoutVisionStoresTheProseOnly (original_text = "before\n\n⟦hs-att:2cf24dba5fb0⟧\n\nafter", want "before\n\nafter")` 与 `--- FAIL: TestRetainWithoutVisionStoresProseUnits (unit text still carries a placeholder token …)`；改回即通过 |
+| #23（`update_mode='append'` 缺 `document_id`） | ❌已修 | `engine/memory_engine.py:6586-6593`：同步路径先逐项检查 `update_mode == "append" and not document_id` 并抛 `ValueError("update_mode='append' requires a document_id")`（→400），**在**读 `store_document_text` 之前；异步路径不查（由 worker 承担） | `internal/memoryops/retain.go:729-748`（`prepareRetain`）、`:1096-1136`（`mapWriteError` 新增该错误分支） | 原实现直接 200 落库（把 append 当 replace）；现同步路径 400 且文案逐字相同，异步路径保持参考的"提交成功" | `TestAppendWithoutDocumentIDIsRefused`、`TestAppendWithDocumentIDIsAccepted`；线上 `chk.py`：sync `append` 无 doc（含 `document_id:""`）→ **SAME**，`async:true` 的同一 body → **SAME**（200 收据） |
+| #23（写库副作用往返：文档正文、`retain_params`、tags、时间列、内容折叠、append 语义） | ✅一致 | `api/http.py:10146-10183`（`content_dict` 的成员与顺序）、`engine/memory_engine.py:6579-6642`（同步折叠同 `document_id`）、`engine/retain/orchestrator.py:598-610`（tags 走 `set`） | `internal/memoryops/retain.go:1189-1240`、`retain_fold.go`、`internal/storage/*` | 无 | 同 body 两侧写入后 `GET .../documents/{id}`、`GET .../documents/{id}/chunks`、`GET .../documents`、`GET .../tags` 逐字节比对：`original_text`、`content_hash`、`retain_params`（`context`/`entities`(type 缺省补 `CONCEPT`)/`event_date`/`metadata`/`resolve_entities`）、`document_metadata`、`tags`、`text_length`（含中文 16 字）、`append` 后正文 `"first\nsecond"` 全部 **SAME**。`tags` 的**次序**不同（参考 `["t2","t1"]`、本服务 `["t1","t2"]`）属第二轮已裁定的"无次序契约"（参考存 Python `set` 迭代序），未计缺陷 |
+| #21 `POST .../memories/dry-run-extract`（成功路径：facts/chunks/usage 形状、chunks 模式、chunk 切分） | ✅一致 | 装饰器 `api/http.py:5922`；`_require_dry_run_enabled` `:5904-5918`；`engine/memory_engine.py:12960-13150`（`extract_dry_run`：chunks 模式走 `_extract_facts_chunks`，其余走 `extract_facts_from_text`，`fact_count` 取每 chunk 的计数） | `internal/reporting/memory_routes.go:1035-1229`、`internal/reporting/dryrun_content.go`、`internal/app/extraction.go:154-176` | 无 | `chk.py POST .../memories/dry-run-extract`：`retain_extraction_mode:"chunks"`（含 `retain_chunk_size:5` 对 `"Alpha beta."` → `Alpha`/`beta`/`.` 三块）、`chunks`+块形式 content、`timestamp:"unset"`、`retain_chunk_size:5` **SAME**。**模型产物不计**：两侧接同一个 LLM，但 `concise` 模式下模型对同一段文本的措辞/实体次序天然不同（`PLAN.md §4`），故 `concise`/`custom`/`verbatim` 的 `facts[].text` 逐字差异不计为缺陷 |
+| #21（`entity_labels` 结构校验缺失） | ❌已修 | `api/http.py:2613` `entity_labels: list[LabelGroup] \| None`；`engine/retain/entity_labels.py:33-63`（`LabelGroup` 的 `key: str` 必填、`type` 是五值 `Literal`、`values: list[LabelValue]`…，`_migrate_entity_labels_input` 在成员校验前跑） | `internal/entitylabels/reference_shape.go`（新增导出 `Problems(raw) []Problem`、`problemInput`、`problemContext`）、`internal/reporting/dryrun_content.go`（新增 `dryRunEntityLabelFailure`）、`internal/reporting/memory_routes.go:1085-1093`（在 content 校验之后、抽取之前） | 原实现把 `entity_labels` 只当"尽力解析的词表"（`entitylabels.Parse` 失败就忽略），于是参考**拒绝**的 body 本服务 200 并照常抽取；现按参考的 `list[LabelGroup]` 在进 handler 前报 422，`loc` 为 `["body","entity_labels",<index>,<成员路径…>]`，`msg`/`ctx.expected` 逐字相同，`missing` 项的 `input` 是**迁移并序列化后**的 group 对象（含补出的 `"type":"value"`） | `TestDryRunRejectsAnInvalidEntityLabelsOverride`（3 子例：缺 `key`／`type:"bogus"`／`key:5`）、`TestDryRunAcceptsAValidEntityLabelsOverride`。**证伪**：把 `memory_routes.go` 的 `if len(body.EntityLabels) > 0` 改成 `if false && …` 后 → `--- FAIL: TestDryRunRejectsAnInvalidEntityLabelsOverride/a_group_with_no_key: status = 200, want 422`（另外两子例同 FAIL）；线上 7 个 body（缺 key／`type:"bogus"`／`key:5`／`[{}]`／`values[].description:5`／`fields.f.type:"bogus"`／合法值）**0 DIFF** |
+| #21（请求体校验：`content` 联合、`timestamp`、各 override 类型、非对象 body、`null` body） | ✅一致 | `api/http.py:2572-2619`（`DryRunExtractRequest`，`timestamp: datetime\|None` 是裸 datetime）+ 第二轮已落地的 `internal/validation` 解析器 | `internal/reporting/dryrun_content.go`、`memory_routes.go:1036-1084`、`dryrun_timestamp.go` | 无 | 批：`{}`／`{"content":5}`／`retain_mission:5`／`retain_extraction_mode:5`／`retain_extract_causal_links:"yes"`／`retain_chunk_size:"5"`／`entities_allow_free_form:"true"`／`llm_output_language:5`／`strategy:5`／`agent_name:5`／`context:5`／`entity_labels:"x"`／`[]`／`null`／`5`／`"x"` / `true` 全部 **SAME** |
+| #21（`verbatim` 模式 dry run 的 `facts[].text`） | ⚠️存疑（参考自身缺陷，按 `docs/CONTRACT-AUDIT.md` §5「参考自身异常不复刻」裁决**有意不照抄**） | **参考在同一条路径上用了两个不同的字段，导致它的 verbatim dry-run 恒为空**：`_collapse_to_verbatim`（`engine/retain/fact_extraction.py:3657-3682`）把 chunk 原文写进 **`fact.fact_text`**；而 dry-run 的结果组装（`engine/memory_engine.py:13119-13124`）取的是 **`text=fact.fact`**（另一个字段）。真实 retain 的落库路径读 `fact_text`，所以落库得到 chunk 原文、dry-run 却恒为 `""`。实测：参考对 `{"content":"word","retain_extraction_mode":"verbatim"}` 与对一长串普通文本都返回 `facts[0].text == ""`（`fact_type: "world"`、`chunk_index: 0`、`fact_count: 1`，只有 `text` 是空串） | `internal/extraction/extractor.go:386-414`（`collapseVerbatim` 用 `representative.Text = chunk`）、`internal/app/extraction.go:163-176`（dry-run 直接复用 `ExtractWith`，因而拿到与落库相同的 chunk 原文） | **有意不修**（组长 2026-10-26 裁决）：这是参考实现自身**同一条路径上的自相矛盾**——`fact_text`（写）与 `fact`（读）不是同一个字段。照抄会让本服务的 verbatim dry-run **永远看不到任何内容**，把一个"预览工具"变成恒空；按 `docs/CONTRACT-AUDIT.md` §5「参考自身的异常不复刻」（该节 `docs/CONTRACT-AUDIT.md:192-193` 已列的同类项：`NaN`/`Infinity` 触发 500、约 2000 层嵌套触发 `RecursionError`）保留 chunk 原文。`retain` 路径本身两侧一致（`chunks`/`verbatim` 落库文本逐字相同），差异**只在**这一处预览文本 | `chk.py POST .../memories/dry-run-extract --body '{"content":"word","retain_extraction_mode":"verbatim"}'`：参考 `facts[0].text == ""`、本服务 `"word"`（**这是已知的、有据可依的差异，不是未覆盖**）。对照：同一 body 走 `POST .../memories` 落库后，两侧 `GET .../memories/list` 的 `text` 逐字相同 → 证明只有预览路径分叉 |
+| #22 `POST .../prompts/preview`（三种 operation 的渲染、模板替换与分块、strategy、缺参、未知类型） | ✅一致 | 装饰器 `api/http.py:5981`；`api/http.py:2433-2479`（`PromptPreviewRequest`：`operation` 是 `Literal["retain","consolidation","reflect"]` 默认 `retain`，`strategy: str\|None`）；`api/http.py:5996-6041`；`engine/memory_engine.py:12883-12945`（`preview_prompt`：retain 走 `_resolve_retain_config`，reflect 才读 profile+directives，其余只读 resolved config）；`engine/prompt_preview.py:1-596`（六个 `PLACEHOLDER_*`、`_partition` 的分块算法、`_heading`、`CHUNKS_MODE_EXPLANATION`、`render_prompt_preview` 的 editable 标注） | `internal/reporting/prompt_preview.go:1-831`、`memory_routes.go:1269-1314`、`internal/extraction/preview.go`、`internal/reflect`、`internal/consolidation` | 无 | `chk.py POST .../prompts/preview`：`retain`/`consolidation`/`reflect`/`{}`/`{"operation":"bogus"}`/`{"operation":5}`/`{"operation":null}`/`{"operation":""}`/`{"operation":"RETAIN"}`/`{"strategy":5}`/`{"strategy":""}`/`{"strategy":"nonexistent"}`/`{"bogus":1}`/`null`/`[]`/`5`/`"x"`/`{`/`notjson`/无 body/未知 bank 全部 **SAME**；配置了 `retain_mission`/`observations_mission`/`reflect_mission`/`retain_custom_instructions`/`entity_labels`/`entities_allow_free_form`/`retain_strategies`(s1→verbose、s2 空)/`retain_default_strategy`/`retain_chunk_size`/`llm_output_language:"Chinese"` 后再测 retain(默认/`s1`/`s2`/`bogus`)、consolidation、reflect 以及 `retain_extraction_mode:"chunks"` 的 `skipped_reason` 分支，共 6 例全部 **SAME**。注：`retain` 预览的 user 消息里 `Event Date: … (2026-…T…+00:00)` 是**当前时刻**（`engine/prompt_preview.py:367-378` 的 `utcnow()`），属 `chk.py` 归一化字段，两次请求必然不同，不是差异 |
+| #24 `POST .../files/retain`（`request` 表单的模型校验：`Invalid request JSON: …` 的逐字报告） | ❌已修 | `api/http.py:10402-10440`（`FileRetainRequest.model_validate_json(request)`，失败抛 400 `f"Invalid request JSON: {e}"`）；`api/http.py:1321-1387`（`FileRetainMetadata`/`FileRetainRequest` 成员声明序与类型：`parser: str \| list[str]`、`files_metadata: list[FileRetainMetadata]`、`metadata: dict[str,Any]`、`tags: list[str]`…）；`api/http.py:1369-1387`（`reject_misplaced_file_metadata` 的 `sorted(...)` 与 ";" 连接） | `internal/memoryops/file_retain_request.go`（新增：`fileRetainReport`、`decodeOrdered`、`decodeFileParserSelectionAt`、`decodeFileMetadata`、`decodeFileRetainMeta`、`writePythonRepr`、`pythonJSONMessage`、`eofContext`…）、`file_retain.go:348-372`（调用点） | 原实现只报一句 `Invalid request JSON: 1 validation error for FileRetainRequest\n  Value error, …`，缺 `[type=…, input_value=…, input_type=…]` 与文档链接行（第二轮遗留 ⚠️）；错误类型（`model_type`/`list_type`/`string_type`/`dict_type`）、成员路径（`files_metadata.0.metadata`）、`input_value` 的 Python repr（含**成员书写序**）以及 JSON 语法错误文案（`key must be a string at line 1 column 2`、`EOF while parsing an object at line 1 column 6`、`trailing characters at line 1 column 8`）现与参考逐字相同 | `TestFileRetainRequestReportMatchesTheLibrary`（8 子例）。线上批 **46 个 `request` body**（缺键/类型错/`files_metadata:[null]`/`parser:5`/`parser:["a",5]`/`parser:[]`/误置字段/根级 `update_mode`/`[]`/`null`/`5`/`true`/`"str"`/`{bad`/`[1,`/`{"a":`/`tru`/`"unterminated`/`{"a":1}x`/`{"a":[`/`{"a":true`…）**0 DIFF** |
+| #24（未知 bank → 404 而非隐式建行） | ❌已修 | `engine/memory_engine.py:22768-22771`（`submit_async_file_retain` 只 `_check_retain_writes`，随后 `_submit_async_operation` 对未知 bank 抛 `Bank '<id>' not found` → 404）；实测参考 `POST /banks/<不存在>/files/retain` → `404 {"detail":"Bank '…' not found"}` | `internal/memoryops/file_retain.go:311-318`（提交前 `GetBank`） | 原实现在异步提交里悄悄建行（`SubmitAsyncRetain` 的 `ensureBankExists`），于是同一 body 本服务 200 并新建银行；现 404 且文案逐字相同 | `TestFileRetainRefusesAnUnknownBank`。**证伪**：把该 `GetBank` 检查短路成 `if false` 后 → `--- FAIL: TestFileRetainRefusesAnUnknownBank: status = 200, want 404`；改回即通过。线上：`rt-ghost-z-18311` / `rt-ghost-zzz` 两侧同为 `404` 同句（`rt-ghost-r-18311` 已在早期探针中被本服务建出，属夹具污染，见文末） |
+| #24（既有结论复核：多文件、parser 选择/allowlist、批量上限、`files_metadata` 对齐、`update_mode`/误置字段） | ✅一致 | `api/http.py:10440-10520`（`file_conversion_max_batch_size` → 400 "Too many files…"；`files_metadata` 数量对齐 → 400；`_validate_parsers` → 400 `Parser(s) not available (…): […]`；总字节上限 → 400 `Total batch size (…MB)`） | `internal/memoryops/file_retain.go:182-332`、`:440-470` | 无（第二轮已修的两条仍成立） | 线上：两文件 → 200 两个 `operation_ids`；缺 `files`／缺 `request` → 422 各自逐字 SAME；`parser:"nope"`／`parser:["markitdown","nope"]`／`parser:""` → 400 逐字 SAME；`files_metadata` 数量不匹配 → 400 SAME；空 `files_metadata` 视为"没给" → 200；`{"files_metadata":[{}]}`／带全部成员 → 200；`sample.pdf`/`sample.csv`/`.txt`/`.png` 上传两侧同码（`operation_ids` 是活值，按形状比） |
+| #25 `DELETE /v1/default/banks/{bank_id}/memories`（`type` 过滤、非法/空/重复 `type`、未知 bank） | ✅一致 | 装饰器 `api/http.py:10528`；`api/http.py:10540-10560`（`delete_bank(..., fact_type=type, delete_bank_profile=False)`，`deleted = result.get("memory_units_deleted", 0)`，`scope = f" of type '{type}'" if type else ""`）；`engine/memory_engine.py:11377-11640`（无 bank 存在性检查 → 未知 bank 200/0；类型化路径 `engine/memories/pg/engine_curation.py:98-114`） | `internal/memoryops/clear_memories.go:36-59`、`internal/storage/postgres_clear_memories.go` | 无 | 线上：`?type=`（空串）／`world`／`experience`／`observation`／`bogus`／` world`／`WORLD`／无参数／重复 `type=world&type=experience`（末值优先）／未知 bank —— 全部 **SAME**（含 `message` 与 `deleted_count`）。**往返取证**：先各 retain 两条（一条带 `document_id`），再依次 `?type=observation`（两侧同 `Cleared 2`）、`?type=world`（同 `Cleared 2`）、`?type=experience`、`?type=observation`，最后 `GET .../memories/list` 两侧同空、`GET .../documents` 两侧仍同 |
+
+**本单元结论计数（按行）**：✅ 6 行一致（#23 两行、#21 两行、#22 一行、#25 一行）／❌ 5 行已修（#23 三行、#21 一行、#24 两行）／⚠️ 2 行存疑
+（#21 `verbatim` —— **参考自身缺陷、按 §5 不复刻**；#24 顶层 operation 类型 —— **已确证可观察、本轮不修的结构性缺口**）／⛔ 0。
+
+**按 5 条 API 的最终结论**（组长 2026-10-26 裁决口径）：
+- `#22 POST .../prompts/preview` → **✅一致**
+- `#25 DELETE .../memories` → **✅一致**
+- `#23 POST .../memories` → **❌已修**（4 处）
+- `#24 POST .../files/retain` → **❌已修**（3 处；顶层 operation 类型另记为 `⚠️存疑（已确证可观察，本轮不修）`，是**有据可查的已知缺口**而非未查）
+- `#21 POST .../memories/dry-run-extract` → **❌已修**（`entity_labels` 结构校验是实修）；`verbatim` 预览文本单列为 `⚠️存疑（参考自身缺陷，按 `docs/CONTRACT-AUDIT.md` §5 裁决不复刻）`
+
+→ **✅ 2 / ❌ 2 / ⚠️ 1 / ⛔ 0**（⚠️ 只计 `#21` 的 verbatim 子项；`#24` 的 operation 类型已在其 `❌已修` 的 API 内作为附注缺口列出）。
+
+### 本单元发现的、需要组长裁决或跨作用域处理的事项
+
+1. **`/files/retain` 的顶层 operation 类型 —— `⚠️存疑（已确证可观察，本轮不修）`，记为已知缺口**（组长 2026-10-26 裁决）。
+   - **现象**（worker 开启时实测）：
+     - `GET .../operations?type=file_convert_retain`：参考 `total 12`，本服务 **`total 0`**；
+     - `GET .../operations/{id}`：参考 `operation_type = task_type = "file_convert_retain"`、`document_id`/`filename` 是上传的文档与文件名、`result_metadata = {"document_id": …, "original_filename": …}`；本服务 `"retain"` + `result_metadata = {"extraction_errors_count": 0, "unit_ids_count": 0}`；
+     - `POST .../operations/{id}/retry` 与 `DELETE .../operations/{id}`：参考的 `file_convert_retain` 是**已终结**的中间 op，retry/cancel 语义与一个 `retain` 父操作不同。
+   - **参考证据**：`engine/memory_engine.py:22740-22768`（`submit_async_file_retain` 每文件一个 `file_convert_retain` 顶层 op、`dedupe_by_bank=False`）、`:4092-4200`（`_handle_file_convert_retain` 转换后**另提**一个 retain 任务并把**自己**标 completed）、`:4678-4748`（`file_convert_retain` 不参与统一的 completed 标记）。
+   - **本服务落点**：`internal/memoryops/file_retain.go`（每文件提交一个 `retain` 类型的队列 op）；op 行本身由 `internal/storage` 写、由 `internal/worker` 消费。
+   - **为什么本轮不做**：这不是改一个类型字面量 —— 需要在 `internal/storage` 里把 op 类型与 `result_metadata`/`document_id`/`filename` 写成参考的形状，并在 `internal/worker` 里**新增一个"转换 → 另提 retain → 自我 completed"的阶段**（现有 worker 没有这个中间层，只改类型会让它的处理分支失配）。这是**跨 storage + worker 的结构性改造**，风险远高于收益：它**不改变客户端拿到的 `operation_ids`**（`POST /files/retain` 的响应体两侧本就一致），只改变操作日志的呈现。
+   - **建议的后续做法**：作为独立立项，先在 `internal/storage` 的 op 模型里加入 `file_convert_retain` 类型与它的 `result_metadata` 形状（`{document_id, original_filename}`），再在 `internal/worker` 的 `file_convert_retain` 分支里做"转换 → 提交子 retain → 自标完成"，并用 `GET .../operations?type=file_convert_retain` 与 `GET .../operations/{id}` 两侧比对验收。
+2. **`dry-run-extract` 的 `verbatim` 模式**（上表 ⚠️ 行）—— **已裁决：`⚠️存疑（参考自身缺陷，不复刻）`，保持现状**。参考在 `_collapse_to_verbatim` 写 `fact_text`（`engine/retain/fact_extraction.py:3657-3682`）而 dry-run 读 `fact`（`engine/memory_engine.py:13119-13124`），两个字段不同，故其 verbatim dry-run 恒回 `""`；本服务保留 chunk 原文，与参考的真实 retain 落库一致。按 `docs/CONTRACT-AUDIT.md` §5「参考自身异常不复刻」处理。
+3. **`/stats` 与 `/memories/list` 的 observation 行集合差异**（非本单元缺陷，记录以便复核）：本服务 worker 关闭时，同步 retain 之后 `pending_consolidation` 一直挂着；一旦**任何**带 worker 的服务消费了共享队列，保留下来的 observation 会在两侧的不同时刻出现，于是 `DELETE ?type=world|observation` 的 `deleted_count` 与 `/memories/list` 的 `total` 在**同一时刻**可能不同（本单元实测：同一 body 后本服务 3 条、参考 4 条；补一次观察后两侧各 `Cleared 2` 一致）。这是夹具/时序，不是实现差异，故 `#25` 判 ✅。
+4. **过时断言（本单元自改）**：`internal/memoryops/retain_content_blocks_test.go` 有 4 处断言把校验项 `input` 写成 Go map 的字母序（`{"source":{…},"type":…}`、`{"text":"x","type":"text"}`），而参考保留调用方书写序；已按参考改正，属"旧断言本身是错的"，不是放松。
+
+### 夹具污染（记录，已处理）
+
+- `rt-ghost-r-18311` 在早期探针（本单元修复**前**）被本服务的异步提交 `ensureBankExists` 建成了真银行（`GET .../operations` 能看到 retain/consolidation 行）。修复后不再新建；该行在两库都留下痕迹，后续「未知 bank」探针改用 `rt-never-existed-bank`（两侧同 404）。
+- `rt-other-r-18311` 在早期一次 `/files/retain` 探针里被同一条路径建出（`GET .../operations` 有 2 行），同样只用过探针文件内容，没有业务数据。
+- 结束前已删除本单元的夹具银行；服务已停。
+
+### 本单元验收
+
+```sh
+export PATH=/usr/local/go/bin:/data/go/bin:$PATH
+export GOCACHE=/tmp/wc/gobuild GOLANGCI_LINT_CACHE=/tmp/wc/lint
+go test -count=1 ./internal/memoryops/... ./internal/extraction/... ./internal/fileparse/... ./internal/app/...   # 全 ok
+go vet ./internal/memoryops/ ./internal/entitylabels/ ./internal/extraction/ ./internal/fileparse/ ./internal/reporting/   # 无输出
+gofmt -l internal/memoryops internal/entitylabels internal/extraction internal/fileparse internal/reporting internal/app    # 无输出
+golangci-lint run ./internal/memoryops/... ./internal/entitylabels/... ./internal/extraction/... ./internal/fileparse/...   # 0 issues
+CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go build -tags pgx ./...                                                     # 均通过
+```
+
+（`golangci-lint run ./internal/reporting/...` 有 1 条 `unused: knowledgeItemMessage`，在 `internal/reporting/knowledge_body.go` —— 该文件属 `knowledge` 单元本次的改动，不是本单元引入。）
+
+## 第三轮 lead（跨单元 · 路由层 / 存储层 / httpx / app）
+
+> 本轮组长承担的**跨作用域**缺陷（`internal/httpx/`、`internal/storage/`、`internal/app/` 的公共面）
+> 与**路由表核对**。方法与被审计单元相同：参考 `file:line` + 本服务落点 + 线上差分 + "改回去就 FAIL" 的证伪。
+> 差分工具 `/tmp/rt/chk.py`；本服务在 `18332/18340/18341` 端口（`-tags pgx`，`HINDSIGHT_API_WORKER_ENABLED=true` 当需要 worker 时）。
+
+### 0. 路由表面完整性（100 条装饰器路由）
+
+从参考 `api/http.py` 抽取 `@app.{get,post,put,patch,delete}` 装饰器（剥掉注释与字符串内括号，逐条带行号与 `operation_id`），
+与本服务 `internal/httpx/openapi.json` 的 99 条 operation 规范化比对（`{x:path}` → `{x}`）：
+
+| 项 | 结果 |
+|---|---|
+| 参考装饰器路由 | **100** |
+| 本服务 OpenAPI operation | **99**（+ `GET /v1/version`，`include_in_schema=False`，共 100 条可达路由） |
+| 规范化后两侧交集 | **99 / 99，本服务无独有路由、参考无独有业务路由** |
+| 参考独有 | `GET /v1/version`（本服务已实现，只是不在文档里） |
+
+**结论：路由表 100/100 齐全，无缺口。** 清单与编号固化在 `docs/parity-round/routes.md`。
+
+### 1. 已修缺陷（每处都带证伪）
+
+| # / 主题 | 结论 | 参考证据 | 本服务落点 | 验证 |
+|---|---|---|---|---|
+| 跨单元 · consolidation 写 observation 时四个时间列全为 NULL | ❌已修 | `_aggregate_source_fields`（`engine/consolidation/consolidator.py:838-860`）：`event_date`/`occurred_start` 取**最早**、`occurred_end`/`mentioned_at` 取**最新**，字段无来源则保持 `None`；create 路径 `:2585` → `:3008-3011`；update 路径 `_TemporalBounds.merged_with` `:257-262`；折叠路径 `engine/memories/pg/consolidation.py:118-126,196-200,246-251` 的 LEAST/GREATEST | 新增 `internal/storage/observation_bounds.go`（`ObservationBounds`/`AggregatedObservationBounds`/`MergedWith`/`ApplyTo`，四个边界函数逐一对应参考规则）；接入**四条写入路径**：`postgres_consolidation.go` 的 `CreateObservation`、`consolidation_scope.go` 的 PG `CreateObservationInScope`、内存 `CreateObservation` 与 `CreateObservationInScope`；`UpdateObservation` 两个后端由「写死 `mentioned_at = now()`」改为 LEAST/GREATEST 合并 | **线上**：同 body（`timestamp:"2016-01-01Z"`、内容含 2015 日期）两侧 **按同一顺序** retain → consolidate 后，`GET .../memories/list` 两侧 observation 行 `date/occurred_start/occurred_end/mentioned_at` **逐字节相同**（修复前本服务 `date:""`、`occurred_*:null`）；两条不同日期事实聚合出 `date=2015-01-01` 与 `date=2018-01-01` 两行，两侧一致。**用例** `TestConsolidatedObservationInheritsSourceBounds`、`TestConsolidatedObservationWithoutDatedSourcesStaysUndated`、`TestObservationUpdateWidensBoundsInsteadOfRestamping`。**证伪**（移除 `ApplyTo`）→ `event_date = <nil>, want the earliest source date 2015-01-01 …` FAIL |
+| 跨单元 · webhook delivery 的 `cursor` 接受本服务自己解析的 4 种形态 | ❌已修 | `api/http.py:10006-10066` 的 `cursor: str \| None` **不做任何解析**，原样绑 `created_at < $3::timestamptz`（`ops_postgresql.py:1410-1441`）→ asyncpg 对 `str` 绑 timestamptz **必然**抛错 → 每一种取值都 500，**包括参考自己刚吐出的 `next_cursor`**（`:10041`） | `internal/storage/memory_webhooks.go` 的 `parseDeliveryCursor` 改为「任何非空 cursor 一律 `errInvalidDeliveryCursor`」；另抽出 `parseDeliveryTimestamp` 供读行时间戳与 PG 的回退路径使用（不误伤内部时间解析） | 7 种形态（`Z`、`+00:00`、参考自己的空格形态、带毫秒、无时区、date-only、`notadate`）两侧 **全部 SAME（500 同文案）**；修复前其中 4 种本服务 200。**用例** `TestDeliveryCursorIsRefusedInEveryAcceptedForm`、`TestDeliveryWithoutCursorServesTheFirstPage`。**证伪**（恢复旧的四 layout 解析器）→ 4 个子用例 `cursor "…" was accepted; the reference refuses every cursor` FAIL |
+| 跨单元 · 同步 retain 写了一条 `async_operations` completed 行 | ❌已修 | `api/http.py:10275` 原句 *"A sync retain has no operation row and no ack, so nothing else can stop it once it starts"*；`engine/memory_engine.py:6430-6800` 的 `retain_batch_async` 无任何 `async_operations` 写入，只有 `async=True` 走 `submit_async_retain` | `internal/storage/postgres_retain.go` 与 `memory_retain.go`：`!req.Async` 时不写 op 行（`SkipOperationRecord` 与 async/worker 路径**未动**，`RetainOutcome.OperationID` 照旧返回） | `GET .../stats` 的 `operations_by_status` 修复前参考 `{"completed":1}` vs 本服务 `{"completed":2}`；修复后同步夹具对上 15 键全同（由 reporting 单元实测确认） |
+| 跨单元 · 知识树根序按 (sort_order, name, id) 排，参考只有两键 | ❌已修 | `_knowledge_tree_sort_key`（`engine/memory_engine.py:1945-1949`）= `(sort_order is None, sort_order or 0, name or "")`，**两键无 id**；`rows` 查询**无 ORDER BY**（`:19513-19519`），Python `sorted()` 稳定 → 平局保 fetch 序 | `internal/storage/postgres_knowledge.go`：SQL 去掉 `kp.name`（保留 `kp.sort_order, kp.id` 作为 fetch 序），比较器抽成共享的 `knowledgeTreeLess`（先 `SortOrder` 后 `Title`，**去掉 id 第三键**）；`memory_knowledge.go` 用同一个比较器 | 由 knowledge 单元线上复验：id 序≠name 序的夹具上根序两侧**完全同序**；`#50 export` 无回归。**用例** `TestKnowledgeNodesOrderBySortOrderThenName`、`TestKnowledgeNodesOrderPutsSortOrderFirst`。**证伪**（比较器 name 键换成 id 键）→ `titles = [Zulu Alpha Mike], want [Alpha Mike Zulu] (name order, not identifier order)` FAIL |
+| 跨单元 · `GET /v1/default/banks` 的 `limit`/`offset` 走 `strconv.Atoi` 而非框架文法 | ❌已修 | 参考声明为裸 `int`, 走框架整数文法：`1_0`→10、`5.0`→5、`" 1 "`→1；负数超 int64 是 `ge` 违例而非解析失败；响应回显**解析后**的值（`?limit=1_0` → `"limit":10`） | `internal/bankapi/banks.go` 的 `parseNonNegativeParam` 改走 `httpx.ParseQueryInt` | 9 种形态两侧全 SAME（`1_0`/`5.0`/`" 1 "`/`+5`/`5.`/`abc`/重复参数/`0`/`-1`）。**用例** `TestBankListIntegerGrammarIsTheFramework`。**证伪**（换回 `strconv.Atoi`）→ `limit=1_0: status = 422, want 200` FAIL |
+| 跨单元 · 路径里的 `%2F`（转义斜杠）被 Go mux 留在路径参数内 | ❌已修 | 参考的 router 按**解码后**的 path 匹配，`%2F` 因此成为分隔符、单段参数无法容纳 → **所有** member 路由都回框架的 `404 {"detail":"Not Found"}` | `internal/httpx/router.go`：`rawPathMiddleware` 在检测到 `%2F`/`%2f` 时把 `URL.Path` 的转义斜杠还原成真斜杠并清空 `RawPath`，让 mux 按两段匹配（matches no route） | 10 条 member 路由（documents/mental-models/directives/entities/memories/operations/knowledge pages/nodes/webhooks/aliases）的 `…/a%2Fb`：修复前本服务 400/404-文案/500 各异，修复后**全部 404** 与参考同。**用例** `TestEscapedSlashIsAPathSeparator`、`TestUnexescapedAndOtherEscapesStillRoute`。**证伪** → `the escaped slash reached the handler as "a/b"; it must split the path` FAIL |
+| 跨单元 · `httpx.ParseQueryInt` 对无上界的超 int64 值回 422 | ❌已修（部分不可复刻，见下） | 参考把 `offset` 声明为裸 `int`（只有 `ge=0`），**没有上界可违反** → 把 Python 无界整数直接交给 asyncpg → 500 `invalid input for query argument $n: … (value out of int64 range)` | `internal/httpx/queryint.go`：无上界时饱和到 `MaxInt` 并继续交给存储层（原先返回 422 `int_parsing`，是参考任何路由都不发的信封）；有上界时仍按 `le` 正确拒绝 | 12 条无上界路由（documents/tags/entities/mental-models/operations/observations-scopes/audit-logs/llm-requests/webhooks…）的 `?offset=9223372036854775808`：修复前本服务 **422**、参考 500/200；修复后本服务对页外 offset 与参考**同为 200 同体**。**用例** `TestParseQueryIntWithoutUpperBoundSaturatesPastInt64`、`TestParseQueryIntWithUpperBoundRefusesPastInt64`。**证伪**（恢复旧的 `TypeMismatch("int_parsing")`）→ `"9223372036854775808" was refused as "int_parsing", want it carried past int64 to the store` FAIL |
+| 跨单元 · `POST .../prompts/preview` 的 `null` body 被当成空体放行（200） | ❌已修 | 参考对「无 body」与「body 是 `null`」都给 `{"type":"missing","loc":["body"],"msg":"Field required","input":null}`（实测） | `internal/reporting/memory_routes.go` 的 `PromptPreview`：`null` 与空体一并按 `httpx.ErrEmptyBody` 处理 | 实测 `null`/无 body 两侧 SAME。**用例** `TestPromptPreviewBodyShapesMatchTheReference`/`null` 子例。**证伪** → `status = 200, want 422` |
+| 跨单元 · `POST .../prompts/preview` 非对象 body 回 `dict_type` | ❌已修 | 参考 `body: Model` 对非对象给 `model_attributes_type` "Input should be a valid dictionary or object to extract fields from"（实测 `[]`/`5`/`"x"`） | 新增导出 `httpx.ModelAttributesFailure`（复用 `body.go` 内既有的 `modelAttributesType`），预览路由在 parse 前判定 | `[]`/`5`/`"x"` 两侧 SAME（修复前本服务 `dict_type` "Input should be a valid dictionary"）。**证伪** → `body = {"type":"dict_type",…}, want it to contain "model_attributes_type"` FAIL |
+
+### 2. 已确认不可复刻 / 如实记录的残余
+
+| 主题 | 判定 | 依据 |
+|---|---|---|
+| 无上界参数的**超 int64** 值（`?offset=9223372036854775808`） | ⚠️存疑（驱动层不可复刻） | Go 的 `int64` 没有「装不下的整数」，本服务饱和后按页外 offset 处理 → 200；参考是 asyncpg 绑定失败 → 500。两侧对**范围内**的页外 offset（`9223372036854775807`、`4294967296`）**同值同体**。属 `docs/CONTRACT-AUDIT.md` §5 item 6「驱动错误」已接受类 |
+| `/metrics` 的 Python 平台家族（`python_gc_*`/`python_info`/`process_*`） | ⚠️不可复刻 | CPython 解释器/进程指标，Go 进程无法产生；`PARITY-OPEN-ITEMS.md` 7.6 已判不修 |
+
+### 3. 组长复核的既有结论（不照抄，逐条复验）
+
+| 既有结论 | 复核结果 |
+|---|---|
+| 第二轮上报「`internal/httpx` 的 `;` 未转义会被 `url.Query()` 丢弃」 | ✅ 已修、仍成立：`?limit=5;6` 两侧同为 422 `int_parsing input:"5;6"`；16 种整数形态（`+5`/`1_000`/`5.0`/`5.`/`.5`/`5e2`/`0x10`/`__`/空值/重复参数）两侧全 SAME |
+| `api_version` 与 `/version` 的 11 个 feature 键序 | ✅ 仍成立：`/version` 与 `/v1/version` 两侧 `--raw` 逐字节相同 |
+| 路由层边界（尾斜杠 307、错误方法 405、`//health` 404、未知查询参数 → `X-Ignored-Params`） | ✅ 逐条实测 SAME（6 条路径） |
+| 第二轮「开启 `bank_llm_health` 后未知 bank → 404」 | ❌ **该结论是错的**，已由 reporting 单元改判为 200（参考 `check_bank_llm` 无 `_require_bank_exists`），根因多半是 `POST /webhooks` 的惰性建行污染了那个"未知"银行 |
+| 第二轮「`/v1/default/banks/{id}` 的 GET 落到 405」 | ✅ 仍成立 |
+
+### 4. 组长复核：一次完整的差分基线
+
+`scripts/parity_probe.py --run-id leadprobe`（修复后重建实例）：**209 checks: 202 identical, 0 differing, 7 known**
+（7 项为 `KNOWN_DIFFERENCES` 里早已记录的非契约差异：`/health` 的活测量、驱动错误文案、Python set 迭代序、模型输出文本）。
+修复前同一探针为 `202 identical / 0 differing / 7 known`，说明本轮修复**没有引入回归**。
+
+### 5. 组长抽查：20 条读路由 + 5 条写路由 + 5 条 404 路径
+
+对 20 条读路由（banks/mental-models/directives/knowledge tree & export/documents/tags/entities graph/graph/stats/timeseries/observation scopes/operations/webhooks/audit-logs/llm-requests/memories list/export/profile/bank-template-schema）、5 条写路由（mental-model create、directive create、knowledge folder create、retain、bank PUT）、5 条不存在资源路径（operation/mm/directive/kb page/chunk）逐条实测：**全部 SAME**。
+
+### 6. 收尾：全仓验证门与覆盖统计
+
+**最终验证门（全部通过）**：
+
+| 门 | 结果 |
+|---|---|
+| `CGO_ENABLED=0 go build ./...` | 通过 |
+| `CGO_ENABLED=0 go build -tags pgx ./...` | 通过（**pgx 标签不可省**） |
+| `go vet ./...` | 无输出 |
+| `gofmt -l .` | 空 |
+| `golangci-lint run ./...` | **No issues found** |
+| `go test -count=1 ./...` | **4334 passed / 50 packages** |
+| `scripts/parity_probe.py`（对线上参考） | **209 checks: 202 identical, 0 differing, 7 known** |
+
+**按 API 的覆盖统计（100 条路由）**：
+
+| 结论 | 条数 | 说明 |
+|---|---|---|
+| §6 表格行结论 | ✅ **38** / ❌ **28** / ⚠️ **4** | 按表格行计（同一 API 可能有主行 + 子项行），52 条 API 已开单元 |
+| 其中 ⛔ 未覆盖 | **0** | 开单元的 52 条 API 中没有一条是 ⛔ |
+| **本轮未开单元的 API** | **48** | 见下，**不等于"无差异"** |
+
+**48 条本轮未逐条开单元**（#19/#20/#26–#46/#53–#77）—— 诚实说明：它们**不是"没差异"的证明**，而是本轮
+**没有**做单 API 取证明细。其中一部分已由别的手段覆盖：
+
+- **探针覆盖**（`scripts/parity_probe.py` 的 209 项，202 identical / 0 differing）覆盖了 recall、reflect、
+  dry-run、prompts preview、memory CRUD、observations、consolidation、operations、mental models、directives、
+  knowledge search、chunks、documents、entity graph 等**成功/校验/404/分页**的主干路径。
+- **组长抽查**（第 5 节）覆盖了 20 条读路由 + 5 条写路由 + 5 条 404 路径（含 `#58` graph、`#61`/`#62` entities、
+  `#65` documents、`#71`–`#73` operations、`#53`–`#55` directives、`#45` tree）。
+- 但 `#26`–`#29`（memory CRUD 的细节分支）、`#30`–`#37`（observations/consolidation 的边界）、
+  `#38`–`#44`（mental models 的 refresh/clear/patch 分支）、`#59`/`#60`/`#63`/`#64`/`#66`–`#70`（read-surface 的
+  稀有分支）、`#76`/`#77`（operations retry/delete）**没有**本轮的逐条结论。
+
+**下一轮建议**：把这 48 条按 `routes.md` 的单元划分继续开单元（`recall-reflect`、`memory-crud`、`observations`、
+`mental-models`、`directives`、`read-surface`、`operations`），沿用本轮的方法与工具（`docs/parity-round/PLAN.md`
+与 `/tmp/rt/chk.py` 的产物可复用；`chk.py` 的源码在最终报告里有记录，可重建）。
+
+**本轮九个单元小节的实际产出**（本节 + 八个业务单元，供下一轮接手）：
+
+- `## 第三轮 monitor`（#1–#5）：`/metrics` 缺 `Content-Length`；stall 时长直方图族缺失；直方图族按 map 序渲染
+- `## 第三轮 bank-lifecycle`（#6–#13）：`#6` 的整数文法（本节修）
+- `## 第三轮 bank-config`（#14–#18）：`#14`–`#18` 全部一致
+- `## 第三轮 retain`（#19–#23）：vision 降级 422、content union 三处、append 缺 document_id、`entity_labels` 校验、`/files/retain` 请求报告不全、未知 bank 建行
+- `## 第三轮 knowledge`（#45–#52）：空 `source_query` 刷新永久失败；知识页 create 体校验三层根因；page title 空串被丢；路径参数被 trim
+- `## 第三轮 transfer`（#78–#87）：归档格式 6 类结构差异 F1–F6 + 3 处内容修正；模板版本任意精度；文档导出键与归档类型
+- `## 第三轮 webhooks`（#88–#92）：deliveries 负 limit、cursor 一律 500
+- `## 第三轮 reporting`（#93–#100）：同步 retain 多写 op 行、`#94` 未知 bank 应 200、`llm_requests` 五列形状
+
+**本节结论计数**：
+
+- 路由表面：**100/100 齐全**（0 缺口）
+- 本轮组长修复的跨单元缺陷：**9 处**（全部带证伪）
+- 不可复刻/如实记录：**2 类**
+- 推翻的既有结论：**1 条**（`#94` 开启态未知 bank）
+- 最终验证门：**全绿**（4334 tests / 0 lint / 0 gofmt / 2 种 build / 复盘探针 0 differing）
+
+## 第三轮 monitor
+
+单元：`internal/monitoring/`（API #1–#5）。参考检出 `/code/hindsight/hindsight-api-slim/hindsight_api/`，行号以当前检出为准。线上差分：参考 `http://127.0.0.1:8888`，本服务 `scripts/parity_dev_service.sh 18310`（`CHK_RUN=g-18310`，夹具银行 `rt-g-18310*`）。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 1 `GET /health` | ❌已修 | 装饰器 `api/http.py:5650`；共享体 `api/http.py:5644-5654`（`health_check()` 原样返回，`status=="healthy"` → 200 否则 503）；体 `engine/memory_engine.py:6179-6215`；池统计 `:6218-6235` | `internal/monitoring/health.go:123-173`（`Ready`/`readyBody`）、`HealthBody :92-113` | 见下方「`/metrics` 族集」一行的同一处改动 | `chk GET /health` 仅 `db_pool_idle` 不同（活测量，见「噪声」） |
+| 2 `GET /health/ready` | ❌已修 | 同 #1，`api/http.py:5667` 与 `/health` 共用 `_readiness_response()` | 同 #1 | 同 #1 | `chk GET /health/ready` 仅 `db_pool_idle` 不同 |
+| 3 `GET /health/live` | ✅一致 | `api/http.py:5684` → `liveness_response()`；`liveness.py:34-36`（`round(…,1)`）、`:39-54`（`status`/`version`/`uptime_seconds` 三键）、`:31`（`_PROCESS_START` 取模块导入时刻） | `internal/monitoring/health.go:187-207`（`Live`、`Float` 保 `.0`、`round1` = ROUND_HALF_EVEN） | 无 | `chk GET /health/live` → **SAME**（`uptime_seconds` 为活测量）；`HEAD`/`POST`/`GET /health/live/`/`GET /health//live` 与方法/尾斜杠行为两侧逐条 **SAME** |
+| 4 `GET /version` | ✅一致 | `api/http.py:5703`、`:5716`（`/v1/version`，`include_in_schema=False`）；`VersionResponse api/http.py:4854`；`FeaturesInfo` 字段序 `:4828-4844`（11 个 flag）；`:5730-5746` 逐键赋值；`__init__.py:43` `__version__ = "1.0.0"` | `internal/monitoring/version.go:23-110`（手写序列化按 `config.FeatureKeys` 声明序）、`internal/config/config.go:928-940` | 无 | `chk GET /version` / `GET /v1/version` → **SAME**（两侧键序逐位相同；`features.{worker,audit_log,llm_trace,bank_llm_health}` 是部署自设项）；`GET /version/`、`OPTIONS /version`、`HEAD /version` **SAME** |
+| 5 `GET /metrics`（响应头/长度） | ❌已修 | 装饰器 `api/http.py:5748`；`:5759-5772` `Response(content=…, media_type=CONTENT_TYPE_LATEST)` —— 参考交给框架的是一整个 bytes，响应带 `Content-Length` | `internal/monitoring/metrics.go`（原 `Serve` 直接 `w.Write(Render()/Exposition())`，Go 无长度时改用 chunked） | `Serve` 先渲染到缓冲、显式写 `Content-Length` 再写体。原实现两侧 `content-type` 相同但**本服务缺 `content-length`**（`headers-only` DIFF） | `TestMetricsResponseDeclaresItsLength`（**已证伪**：去掉 `Content-Length` 头 → `Content-Length = "", want 277` FAIL，恢复即过）；线上 `chk GET /metrics --headers-only` 修后 **SAME** |
+| 5 `GET /metrics`（stall 直方图族缺失） | ❌已修 | `metrics.py:623-632`：`event_loop_stalls` counter 与 `event_loop_stall_duration` histogram **同一个 collector 里一起创建**，于是空载暴露体里两个族都在（`…stalls_total 0.0` 与 `…stall_duration_seconds_bucket{le=…} 0.0`） | `internal/monitoring/workload.go:352-355`（`declareLoopStall` 原先只声明 counter） | `declareLoopStall` 同时 `observe(…, 0)` 声明 duration 直方图（用 SDK 默认桶，与参考同）。修复前本服务**整族缺失**（实测参考独有族 22 → 21 中这一族是机械缺失，不是"需要流量"） | `TestWorkloadLoopStallDurationDeclaredAtZero` + `TestLoopLagProbeDeclaresStallCounter`（**已证伪**：删掉那一行 observe → `histogram family "hindsight_event_loop_stall_duration_seconds" not found in []` FAIL）；线上修复后 `GET /metrics` 该族出现，且**只剩 9 个参考独有族**，都是需要本机流量的（`hindsight_llm_*` 5 个、`hindsight_retain_*` 3 个、`hindsight_event_loop_stall_duration_seconds` 的**样本**在有 stall 时才有） |
+| 5 `GET /metrics`（直方图族顺序） | ❌已修 | 参考的 Prometheus exporter 按 **instrument 名排序** 输出族 | `internal/monitoring/metrics.go:239`（`writeHistogramFamilies` 按调用方给的顺序渲染，而调用方顺序来自 map 迭代） | 渲染前按 `(name, 标签集)` 稳定排序 | `TestMetricsHistogramFamiliesRenderInNameOrder`（**已证伪**：去掉排序 → `histogram families not in name order (alpha=818 mid=1365 zeta=277)` FAIL） |
+| 5 `GET /metrics`（族集/桶集核对） | ✅一致 | 15 个共有族的 `# HELP` / `# TYPE` 逐字节相同；桶边界集合按族比对 4/4 相同 | `internal/monitoring/metrics.go`、`workload.go`、`looplag.go` | 无 | 脚本化比对：共有族 HELP/TYPE 0 diff；`hindsight_*` 名称集在跑过一次 recall+retain 后**本服务独有 0 个**；参考独有只剩 9 个流量族（见上） |
+
+### monitor 单元的分歧说明（不计入缺陷）
+
+- **`db_pool_idle` / `db_pool_size` 两侧不同**（实测 2–3 vs 4–9）：参考的 `_pool_stats` 是 `in_use = pool.get_size() - idle`（`engine/db/postgresql.py:334-345`），asyncpg 的池会保活 `min_size` 连接；本服务读 `database/sql` 的 `DBStats{InUse, Max, Idle}`（`internal/storage/driver_pgx.go:193-196`），连接数随请求惰性增减。这是**两个跑在各自进程里的连接池的实时状态**，属活测量（PLAN §4），不是行为差异：`db_pool_max`、`db_pool_waiting` 两侧同为 `100`/`0`，键集与键序逐位相同。
+- **`GZip` / `Accept-Encoding: gzip`**：两侧都回 `content-encoding: gzip`，`headers-only` **SAME**。
+- **`/debug/pprof/*`**：参考无此路由（`api/http.py` 全文无 `pprof`），本服务仅在 `HINDSIGHT_API_PPROF_ENABLED=true` 时挂载，默认两侧均 404 → 第一轮结论成立。
+
+### 需组长裁决（跨作用域）
+
+1. **`hindsight_operation_*` 的 `source="api"` 系列**：参考在 HTTP handler 层包裹 `record_operation`（`api/http.py:6243`/`:6442`/`:10279`），本服务 `internal/memoryops/operation_metrics.go:40-50` 已在 recall/reflect/retain 里记同名系列（**第二轮结论说的"只有 worker 一处调用"已过时**）。本轮实测：跑一次 recall 后两侧 `hindsight_operation_operations_total{source="api"}` 都出现、都 +1 → 该缺口已闭合，无需再改。
+2. **`hindsight_event_loop_stall_duration_seconds` 的样本**：参考侧有 3 次真实 stall（共享库上的存量流量），本服务空载只有零值声明。要样本必须在本服务的 loop 上真制造停顿，属压力测试，本轮不覆盖（判**噪声**，两侧族都在）。
+
+**本单元结论计数（按 API）：✅ 2 / ❌ 3 / ⚠️ 0 / ⛔ 0。**
+
+
+## 第三轮 bank-lifecycle
+
+单元：`internal/bankapi/`（API #6–#13）。线上差分：参考 `8888`，本服务 `18310`，夹具 `rt-g-18310` / `rt-other-g-18310` / `rt-ghost-g-18310`（+ `rt-*-g-18310-k*`）。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 6 `GET /v1/default/banks` | ⚠️存疑 | `api/http.py:6593-6618`（`q`/`limit=100 ge=0`/`offset=0 ge=0` 全是 `Query(...)`，框架先解析）；引擎 `engine/memory_engine.py:15068-15180`（`limit/offset = max(x,0)`，**页切片** `banks[offset:offset+limit]`，`total` = 切片前计数）；排序 `engine/retain/bank_utils.py:680-808`（按 `last_write_at or created_at`, 降序） | `internal/bankapi/banks.go:48-91`（`ListBanks`）、`:373-450`（`parseBankQuery`/`parseNonNegativeParam`） | **未改**：参数是 `Query(...)` 由**框架**解析，本服务的等价实现是 `internal/httpx`（组长作用域）。见下方「跨作用域清单」第 1 条 | 夹具范围内（`?q=rt-g`）全部 **SAME**：`limit=0/-1/abc/1.5/5./.5/5e2/1__0/0x10/100000/99999999999999999999/-99999999999999999999`、`offset=-1/9223372036854775807/9223372036854775808`、`?q=`、重复参数 `?limit=1&limit=2`、`?limit=abc&limit=1`。**两侧不一致（跨作用域）**：`limit=1_0`、`limit= 5`/`5 `、`limit=+5`、`limit=5.0`（参考 200 回解析后的整数，本服务 `?limit=1_0`/`5.0` → 422 `int_parsing`）；`limit=-99999999999999999999`（参考 422 `greater_than_equal`，本服务 422 `int_parsing`）；`q=`（本服务把空 `q` 当"未给"，参考当"给了空串"，两侧结果不同，见清单第 1 条） |
+| 7 `GET .../aliases` | ✅一致 | `api/http.py:8476-8497`（`_alias_response` 回**整份**列表）；`engine/bank_aliases.py:168-183`（`ORDER BY is_primary DESC, created_at, alias`） | `internal/bankapi/aliases.go:62-75`、`ToAliasResponse` | 无 | `chk GET .../aliases` → **SAME**（空列表 / 以地址 id 寻址 / `bank_id` 回显规范 id）；`GET .../aliases` 于 ghost 银行 → 两侧同 404 |
+| 8 `POST .../aliases` | ✅一致 | `api/http.py:8499-8528`（201 + 整份列表）；`engine/bank_aliases.py:196-244`（`validate_new_bank_id` → 400 三条、自别名 400、`WHERE NOT EXISTS` + `ON CONFLICT` → 409） | `internal/bankapi/aliases.go:78-157` | 无 | 18 例 **SAME**：`""`→`Bank id must not be empty`、193/192 字节、`\n`/`\t`/`\u007f`/`\u0000`/`\u0080`→`must not contain control characters`、`\u00a0`（非 `Cc`）→201、自别名→400、占用名→409、`{"primary":null}`→`bool_type`、缺 `alias`→`missing`、未知银行→404 |
+| 9 `PATCH .../aliases/{alias}` | ✅一致 | `api/http.py:8530-8563`（未命中 → 404 `Bank '<id>' has no alias '<alias>'`）；`engine/bank_aliases.py:245-275`（同事务内先降级其余再置位） | `internal/bankapi/aliases.go:160-186` | 无 | 升/降主别名后整份列表两侧同体（`display_alias` 变化一致）；未知别名 → 404 同体；**顺序**：体非法压过 404（`PATCH .../nope/aliases/x {"primary":"bad"}` → 422 `bool_parsing`）两侧 **SAME** |
+| 10 `DELETE .../aliases/{alias}` | ✅一致 | `api/http.py:8565-8591`；`engine/bank_aliases.py:276-284`（`DELETE … WHERE alias=$1 AND bank_id=$2`） | `internal/bankapi/aliases.go:238-252` | 无 | 命中 → 200 + 列表收缩；未命中 → 404 `Bank '<bank>' has no alias '<alias>'`；银行不存在 → 404 `Bank '<id>' not found` —— 全 **SAME** |
+| 11 `PUT .../{bank_id}` | ✅一致 | `api/http.py:8593-8636`；`engine/memory_engine.py:21641-21785`（`update_bank(create_if_missing=True)`：先校验后建行；`_ensure_bank_exists` → `create_bank_row_on_conn`，`validate_new_bank_id` + 别名冲突 409）；模型 `CreateBankRequest api/http.py:1993-2100`、`get_config_updates :2101-2145`（`reflect_mission > mission > background`） | `internal/bankapi/banks.go:129-209`（`ReplaceBank`）、`decode.go`、`validation.go` | 无 | 15 例体校验 **SAME**（`notjson`/`[]`/`"x"`/空/`null`/`name:123`/`disposition:"bad"`→`model_attributes_type`/`disposition.skepticism:9`/`retain_chunk_size:5.5`→`int_from_float`/`enable_reranking:"bad"`/未知键）；创建与覆盖的成功路径两侧同体；别名遮蔽（`rt-ghost` 已是 `rt-other` 的别名时 `PUT rt-ghost {}` → 409）**SAME** |
+| 12 `PATCH .../{bank_id}` | ✅一致 | `api/http.py:8638-8682`（`create_if_missing=False`，银行不存在 404 在**体校验之后**）；`engine/memory_engine.py:21641-21760` | `internal/bankapi/banks.go:217-247` | 无 | 9 例 **SAME**（含 `{"mission":"a","background":"b"}` 优先级、`{"disposition":{...},"disposition_empathy":5}` 逐字段优先、`{}`、未知银行 `{}`→404、未知银行 `{"name":123}`→422） |
+| 13 `DELETE .../{bank_id}` | ✅一致 | `api/http.py:8684-8706`（`deleted_count = memory_units + entities + documents`）；`engine/memory_engine.py:11377-…` | `internal/bankapi/banks.go:250-272` | 无 | 命中 → `{"success":true,"message":"Bank '<id>' and all associated data deleted successfully","deleted_count":N}`；**从不存在的银行 → 200 `deleted_count:0`**；删两次同体；删后别名地址 → 404 —— 全 **SAME** |
+| 别名解析（全部 bank 作用域路由） | ✅一致 | `engine/bank_aliases.py:88-122`（`resolve`：真实银行永远优先，其次别名，未知 id 原样返回）；改写发生在处理器**之前**（`api/unknown_params.py`） | `internal/httpx/router.go:490-510`（`withBankResolution`）、`internal/storage/postgres_banks.go` 的 `ResolveBankID` | 无 | 以别名寻址 PUT/PATCH/DELETE/aliases 与规范 id 等价；删银行后遗留别名行 → PATCH 404、PUT 重建 —— 两侧一致 |
+| 方法/尾斜杠 | ✅一致 | FastAPI `redirect_slashes` + 405 信封 | `internal/httpx` 路由 | 无 | `GET /v1/default/banks`（405）、`HEAD`（405）、`POST`（405）、`DELETE` 集合（405）、`OPTIONS .../{bank_id}`（405）、`GET .../{bank_id}`（405）、`GET /v1/default/banks/`（200，尾斜杠）、`PUT /v1/default/banks/`（307）—— 全 **SAME**（307 的 `location` 只是 host:port 不同） |
+
+### 跨作用域清单（bank-lifecycle → 组长，`internal/httpx`）
+
+1. **query 整数的 Python 文法**（影响 #6 以及所有用 `int` 查询参数的路由）：本服务 `internal/bankapi/banks.go:424-450` 的 `parseNonNegativeParam` 用 `strconv.Atoi(strings.TrimSpace(raw))` —— 这已经覆盖 ` 5`/`+5` 两种，但**不接受** `1_0`、`5.0`（Python `int()` 接受）、且把 `-99999999999999999999` 报成 `int_parsing` 而参考是 `greater_than_equal`。`internal/httpx/queryint.go` 的 `ParseQueryInt` 已实现正确的文法（`LaxInteger` + `BigintSign`），bankapi 未改用它（`banks.go` 用它自己的解析，`echoedPageParam` 也要独立回显）。**建议**：把 `parseBankQuery` 换成 `httpx.ParseQueryInt`（`min=0, max=0`），回显改用解析后的整数（参考 `/v1/default/banks` 的 `BankListResponse.limit/offset` 是 `int`，**不再原样回显**：实测 `?limit=1_0` 参考回 `"limit": 10`）。**证据**：`chk GET '/v1/default/banks?q=rt-g&limit=1_0'` 参考 200/`limit: 10`，本服务 422 `int_parsing`；`?limit=5.0`、`?limit=+5`、`?limit=%205` 同理；`?limit=-99999999999999999999` 两侧都 422 但 `type` 不同。
+2. **`q=` 空值**：参考 `search_query` 是 `Query(None)`，`?q=` 解析成 `""` → `if search_query:` 为假 → **不筛选**；本服务 `parseBankQuery` 把"给了空 `q`"当筛选（`SearchGiven`），于是 `?q=` 走 `ILIKE '%%'`（结果相同）但 `matched_aliases` 的计算路径不同。实测 `?q=` 在**非夹具范围**里两侧 `total` 不同（数据库不同，噪声），夹具范围内无差异，故判 `⚠️` 而非 `❌`。
+3. **`;` 分隔的 query**：实测 `GET /v1/default/banks?limit=5;6` 与 `?limit=5%3B6` 两侧 **SAME**（都 422 `int_parsing`，`input:"5;6"`）—— 本服务经 `httpx.QueryPresent` 读原始串，未走 Go `url.Query()` 的分号丢弃缺陷。**第二轮上报的 `;` 缺陷在本单元的路由上不可复现**（`internal/bankapi` 用的是 `httpx.Query*` 而不是 `url.Query()`）。
+
+**本单元结论计数（按 API）：✅ 7 / ❌ 0 / ⚠️ 1 / ⛔ 0。**
+
+
+## 第三轮 bank-config
+
+单元：`internal/bankapi/config*.go`、`internal/banktemplate/`（API #14–#18；`#19/#20 PATCH/DELETE .../config` 归 retain 单元，本单元**未碰**）。`internal/banktemplate/` 本轮已划给 transfer 单元，本单元**只读不写**。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 14 `GET .../profile` | ✅一致 | `api/http.py:8411-8423`：handler 体**第一步**就 `raise HTTPException(410, _PROFILE_RETIRED_DETAIL)`，路由无请求体、无查询参数 | `internal/bankapi/retired_routes.go:30-36`（`RetiredRoutes`）、`internal/httpx/errors.go` 的 `DetailRetiredProfile` | 无 | `chk GET .../profile`（无体）→ **SAME**；`GET .../profile` 带体（服务端仍忽略）→ **SAME**；未知银行 `?` 也同 410（参考不查银行存在性） |
+| 15 `PUT .../profile` | ✅一致 | `api/http.py:8424-8438`（`request: UpdateDispositionRequest`，框架**先校验体**再进 handler → 合格才 410）；模型 `api/http.py:1856-1859`、`DispositionTraits :1769-1774`（三个 int `ge=1 le=5` 全必填） | `internal/bankapi/retired_body.go`（`TestRetiredProfileWriteValidatesItsBodyBeforeTheGoneStatus`） | 无（第二轮已修，本轮复验无回退） | **带合法体**：`{"traits":{…}}`、`{"disposition":{…}}`、`{"mission":"x"}` → 两侧同 410 同 detail（**SAME**）；非法/缺字段体 → 两侧同 422（判据见第二轮，本轮抽测 `{"mission":"x"}` 与空体 → **SAME**） |
+| 16 `POST .../background` | ✅一致 | `api/http.py:8439-8468`（`AddBackgroundRequest`：`content` 必填、`update_disposition: bool = True`；held 410 前先校验） | 同 #15 | 无 | **带合法体** `{"content":"x"}`、`{"content":"x","update_disposition":false}` → 两侧同 410 同 detail（**SAME**）；空体 → 两侧同 422 |
+| 17 `GET /v1/bank-template-schema` | ✅一致 | `api/http.py:9450-9461`：直接返回 `BankTemplateManifest.model_json_schema()`（裸 dict，无 `response_model`） | `internal/reporting/knowledge_schema.go:11-39`（嵌入参考原样生成的 `bank_template_schema.json`）、路由 `internal/reporting/handlers.go:118` | 无（`internal/banktemplate/` 本轮只读） | `chk GET /v1/bank-template-schema --raw` → **SAME**（**逐字节相同**，两侧同为 28998 字节）；第二轮记录的唯一差异（`$defs` 键序）在本轮实测中**已不可见**（本服务输出的就是嵌入的原字节，`--raw` 直接 SAME） |
+| 18 `GET .../config` | ✅一致 | `api/http.py:9612-9640` → `config_resolver.py:267-330`（`resolve_full_config` + `_public_fields_of`）；层叠 `:228-262`（tenant → bank → global） | `internal/bankapi/config.go:17-30`（`GetBankConfig` → `validateBankExists`）、`:143-167`、`:295-297`（`config.ResolveLayers`） | 无（第二轮已修 `entity_labels` 读回键序，本轮复验无回退） | `chk GET .../config` 于有配置的银行 → **SAME**（50 键、键集与取值逐字节相同）；未知银行 → 两侧同 404 同 detail |
+| `PATCH/DELETE .../config`（#19/#20） | — | — | — | **不在本单元**（`internal/bankapi/config*.go` 由本单元与 retain 共用，但该两条 API 的结论归 retain 单元） | 未核对，避免与他人重复 |
+
+**本单元结论计数（按 API #14–#18）：✅ 5 / ❌ 0 / ⚠️ 0 / ⛔ 0。**
+
+
+## 第三轮 knowledge
+
+单元：`internal/reporting/knowledge*.go`（API #45–#52）。#45/#46（`PATCH`/`DELETE .../mental-models/{id}`）的结论在第二轮 `mental-models` 小节（同事负责 `internal/mentalmodels/`），本单元不重复核对；`#53/#54`（`knowledge-base/nodes/{id}`）归 directives 单元。线上差分：参考 `8888`，本服务 `18310`（`PARITY_DEV_WORKER_ENABLED=true`，知识页的内容/历史由 worker 产出），夹具 `rt-other-g-18310`、`rt-g-18310-k1…k30`。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 45 `PATCH .../mental-models/{mental_model_id}` | — | `api/http.py:7219-7261` | `internal/mentalmodels/handlers.go` | 不在本单元作用域 | 见第二轮 `mental-models` 小节（同事已判 ✅并修 3 处 trigger 合并语义） |
+| 46 `DELETE .../mental-models/{mental_model_id}` | — | `api/http.py:7262-7299` | 同上 | 同上 | 同上 |
+| 47 `GET .../knowledge-base/tree` | ❌已修 | `api/http.py:7302-7329`（`tag_filter = Depends(...)` 先于 handler）；`engine/memory_engine.py:19470-19543`：行查询**无 ORDER BY**（`:19513-19519`），排序在 Python 里按 `_knowledge_tree_sort_key`（`:1945-1949`）= `(sort_order is None, sort_order or 0, name or "")`，**两键、无 id**；`_build_knowledge_tree` `api/http.py:3721-3733` | `internal/reporting/knowledge.go:31-86`（`KnowledgeTree`）、`internal/reporting/knowledge_projection.go:15-39`（`nestKnowledge`）；**排序在存储层**：`internal/storage/postgres_knowledge.go` 的 `ListKnowledgeNodes` | **不在本单元**：`internal/storage` 是组长作用域。本轮定位并用 `rt-g-18310-k8/k9/k14` 三组夹具实证：**id 序≠name 序时**，本服务按 `kf-<hex>` 的 **id 升序**输出根、参考按**字典序**输出（实测 k8：参考 `F12276,F13492,F14671,F17926,F20092,F7354`，本服务 `F14423,F19177,F23541,F24971,F28142,F28272`）。**组长已按本报告定位修复**（`ORDER BY kp.sort_order, kp.id` 只给 fetch 一个稳定基础 + 共享比较器 `knowledgeTreeLess` 两键排序） | 修后：`k9/k1/k4/k6/k10/k14` 的 `chk GET .../tree` → **SAME**；组长的用例 `TestKnowledgeNodesOrderBySortOrderThenName`、`TestKnowledgeNodesOrderPutsSortOrderFirst`（已证伪）；夹具范围内 `tags=team`/`tags_match=exact/all/bogus`/`tag_groups`（含 fuzzy）/未知银行 → **SAME** |
+| 48 `POST .../knowledge-base/folders` | ❌已修 | `api/http.py:7332-7358`（201）；`engine/memory_engine.py:19277-19322`（父不存在 400 `Parent folder '<id>' not found`、父不是 folder 400 `Parent '<id>' is not a folder`） | `internal/reporting/knowledge.go:93-141`（`createKnowledgeNode` → `decodeKnowledgeCreateBody`） | **体校验两处**（见下方「create 体校验」一行） | 6 例体校验 + 成功路径 → **SAME**：`{}`→`missing name`、`{"name":null}`、`{"parent_id":5}` → `missing name, string_type parent_id`、`{"name":"f","parent_id":5}` → `string_type parent_id`、`{"parent_id":""}`→201、未知键忽略、`parent_id:"nope"`→400 |
+| 49 `POST .../knowledge-base/pages` | ❌已修 | `api/http.py:7361-7411`（201；`node is None` → 409 `A page named '<name>' already exists in this folder`）；模型 `CreatePageRequest`（`name`、`source_query` 必填；`parent_id`/`tags`/`max_tokens`/`trigger` 有默认值） | 同 #48 | **create 体校验**（见下） | 24 例体校验 → **SAME**（见下「create 体校验」一行的清单）；成功路径（含 `source_query:""`、`tags:[]`、`parent_id:null`、重名 409、仅大小写不同的重名 409、`parent_id:"zzz"`→400）→ **SAME** |
+| 50 `GET .../knowledge-base/export` | ❌已修 | `api/http.py:7413-7455`；`api/page_markdown.py`：`frontmatter` 只丢 **None** 成员（`""` 照常渲染成 `title: ""`）、`render_index :139-156` **另按 (sort_order, name) 重排一次**、`render_log :158-192`；`engine/memory_engine.py:20137-20210` | `internal/reporting/knowledge_search.go:15-83`、`internal/reporting/knowledge_render.go`（`renderKnowledgeFrontmatter`/`knowledgeDocumentFields`） | ①**空标题被吃掉**：`renderKnowledgeFrontmatter` 把 `""` 当"缺失"丢键，参考只丢 `None` → 空名页面 export 里少了 `title: ""`。改为按 `present` 标志渲染（`knowledgeField.present`、`knowledgeOptional`）。②存储层排序（同 #47，组长改）。 | ①`TestKnowledgeFrontmatterKeepsPresentButEmptyScalars`（**已证伪**：把 `if field.value == "" && !field.present` 改回 `if field.value == ""` → `frontmatter lacks "title: \"\""` FAIL）；线上 `rt-g-18310-k13/k30`（空名页面/正常页面）export → **SAME**。②**存储层排序变更后仍 SAME（无回归）**：`k9/k1/k4/k6/k10/k14/k30` 的 export 全部 **SAME**（index 两侧逐字节相同，因为 `render_index` 自己又按 name 排一次） |
+| 51 `GET .../knowledge-base/search` | ✅一致 | `api/http.py:7457-7490`（`q` `min_length=1`、`limit` `ge=1 le=50`、`tag_filter` 依赖**先于** handler）；`engine/memory_engine.py:19602-19780`（`q.strip()` 空 → `[]`；`fetch = min(max(limit*4,40),200)`；RRF `K=60`,`NORM=61`） | `internal/reporting/knowledge_search.go:86-245`、`internal/storage/postgres_knowledge.go:239-406` | 无 | 缺 `q`/`q=`/`q=%20%20%20`/`limit=0/51/abc/-1`/`tags_match=bogus`/未知银行坏参数 → **SAME**；`q=deploy`/`q=Deploy+Runbook`/`q=t1`（大小写）/中文 `q`/`q=No+content`/`limit=1/50` → **SAME**（`score` 是 Python float 渲染、`snippet` 空正文给 `No content yet.`） |
+| 52 `GET .../knowledge-base/pages/{page_id}` | ❌已修 | `api/http.py:7492-7518`（`node is None` → 404 `Knowledge page '<id>' not found`）；`api/http.py:3735-3747`（`render_document(notice_when_empty=True)`） | `internal/reporting/knowledge.go:298-330`（`KnowledgePage`） | **路径参数被 trim**：原先 `pageID := strings.TrimSpace(r.PathValue("page_id"))`、`bankID := strings.TrimSpace(...)`。参考把路径参数当**原样字符串**绑定（`:7509` 传入引擎、detail 原样回显），所以 `%20` 是 id 的一部分、四方括号空白也是。改为 verbatim（`internal/reporting/path_param.go` 的 `PathBankID`/`pathID`，同时用于 `KnowledgeTree`/`KnowledgeExport`/`KnowledgeSearch` 的 `bank_id` 与 `UpdateKnowledgeNode`/`DeleteKnowledgeNode` 的 `node_id`） | `TestKnowledgePageIDIsBoundVerbatim`、`TestKnowledgeBankIDIsBoundVerbatim`（**均已证伪**：把 `PathBankID`/`pathID` 改回 `strings.TrimSpace(...)` → `padded page id = 200, want 404` 与 `... tree = 200, want 404` FAIL）；线上 `pages/%20`、`banks/%20rt-ghost-g-18310%20/knowledge-base/{tree,export,search}` → 修后 **SAME**（修前 200 / detail 丢空白）。**残留⚠️**：`pages/a%2Fb` 参考 404 `{"detail":"Not Found"}`（路由不匹配）、本服务 404 `Knowledge page 'a/b' not found` —— 修点在 `internal/httpx` 路由（Go `ServeMux` 解码 `%2F`），见下方清单 |
+
+### create 体校验（#48/#49 的共同修复，`internal/reporting/knowledge_body.go`）
+
+参考的框架在一次校验里把 body 的所有 item 全报出来，顺序由**模型声明序 + pydantic 2 的分阶段规则**决定。实测固定了四条规则，本服务原先一条都没有：
+
+1. **缺席的必填成员后置**：`{"name":"x"}` 只报 `missing source_query`；`{"tags":"a"}` 报 `missing name, missing source_query, list_type tags`（缺席组在**第一个必填成员自己的 item 之后**、其它槽位之前）；`{"source_query":{"a":0}}` 报 `missing name, string_type source_query`；`{"parent_id":5}` 报 `missing name, missing source_query, string_type parent_id`。
+2. **有默认值的成员最后**：`tags`/`max_tokens`/`trigger` 的 item 永远排在必填成员与缺席组之后（`{"name":"x","trigger":"a"}` → `missing source_query, model_attributes_type trigger`）。
+3. **item 的 `input` 是"成员自己的值"**，只有 `missing` 才是整个 body：`{"name":{"z":1,"a":2}}` 的 `string_type` 回 `{"z":1,"a":2}`（键序按体），而 `missing` 回 `{"name":{"z":1,"a":2}}`。
+4. **空数组成员的 item 保留 `[]`**：`{"name":[],"tags":{}}` 的 `input` 是 `[]` 不是 `null`。
+
+根因分三层，全部修掉：
+- `internal/httpx/body.go` 的 `orderValue`：空数组建成 **nil slice** → 回显成 `null`。`TestRecordedBodyOrderKeepsAnEmptyList`（**已证伪**：恢复 nil slice → `recorded body = {"name":"x","tags":null,…}, want {"name":"x","tags":[]}` FAIL）。
+- `internal/httpx/json.go` 的 `orderValidationInputs`：把**任何**对象型 `input` 都替换成整份 body（成员自己的值也被顶掉）。改为只在 `input` 就是 body（`ValidationFailure.Echo`）时替换，其余按 loc 找记录值、递归保序；并在副本上清 `Echo` 防止二次处理。`TestBodyOrderRewritesOnlyTheWholeBodyEcho`（**已证伪**）。
+- `knowledge_body.go` 的顺序/属性规则：`TestKnowledgeCreateItemOrderMatchesTheReference`、`TestKnowledgeCreateReportsMissingMembersLate`（连同已更新的 `TestKnowledgeCreateReportsEveryItemInOnePass` 期望值）。
+
+修复前后对照（`chk POST .../knowledge-base/pages`，24 例）：修复前 5 例 DIFF（`{"parent_id":5}`、`{"name":"x","parent_id":5}`、`{"source_query":{"a":0}}`、`{"name":[],"tags":{}}`、`{"name":{"z":1,"a":2}}`），修后 **24/24 SAME**。
+
+### 连带修复（跨 `internal/app`，本单元发现）—— 空 `source_query` 的心智模型刷新被永久失败
+
+- **参考**：`engine/memory_engine.py:17358` 把 `source_query = mental_model["source_query"]` 原样交给 `:17420` 的 `query=source_query`，**整条路径没有空值守卫**。
+- **实测**：两侧同建 `POST .../knowledge-base/pages {"name":"NoQuery","source_query":""}` —— 参考 operation `completed`、`last_refresh_failed_at: null`；本服务 `failed`，`error_message="mental model refresh unavailable: the mental model has no source query to re-run"`，且 `last_refresh_failed_at` 被写上（`#47/#50/#52` 三个读面都可见，且自动刷新被永久 park）。
+- **落地**：`internal/app/mental_model_refresh.go`（我的作用域）删掉 `if strings.TrimSpace(model.SourceQuery) == "" { return … }`；配套把两条断言"必须拒绝"的用例改成参考语义：`TestRefreshWithoutSourceQueryIsNotRefused`、`TestRefreshWithoutSourceQueryStillRuns`（**已证伪**：把守卫加回去两条都 FAIL）。修后 `rt-g-18310-k20/k23` 两侧 operation 均 `completed`、树/export **SAME**。
+
+### 已知噪声（不判缺陷）
+
+- `rt-other-g-18310` 上 `export`/`search` 仍 DIFF：两侧的**知识页内容**不同 —— 参考侧页面内容仍是空（`No content yet.`），本服务侧页面被刷新写入了正文并产生 history（多出 `…log.md`）。该夹具在参考侧 worker 于不同时间跑过、且参考页面的 markdown 正文依赖模型输出；用**同一次创建**的新夹具（`rt-g-18310-k30`，同时创建、同时刷新）复核 export/search → **SAME**，故判为**夹具状态噪声**而非行为差异。
+- 内容正文是模型产物（PLAN §4）：判据落在形状/键序/文件列表/index 字节上，不逐字比正文。
+
+**本单元结论计数（按 API #47–#52，共 6 条）：✅ 1 / ❌ 4 / ⚠️ 1 / ⛔ 0**（#47 ❌、#48 ❌、#49 ❌、#50 ❌、#51 ✅、#52 ❌ 并带 1 条残留 ⚠️）。#45/#46 归 mental-models 单元、未重复核对。
+
+
+## 第四轮 recall-reflect
+
+> 单元 `recall-reflect`（#26 `POST .../memories/recall`、#27 `POST .../reflect`）。
+> 端口 18402、`CHK_RUN=rr4`、夹具 `rt-rr4` / `rt-other-rr4` / `rt-ghost-rr4`。参考 `http://127.0.0.1:8888`。
+> 判据沿 PLAN §2–§4：错误信封逐字节、成功响应逐层形状（键集/键序/取值类型）、排序不变量。
+> `results` 的**内容**（UUID、实体名、正文措辞、分数绝对值）不逐字比 —— 两侧是同一个中转模型但每次采样不同，
+> 且一侧有 worker 常开（参考事实集合里带 observation）；凡差异只落在内容/条数上一律按 PLAN §4 记为夹具+模型噪声。
+
+### #26 `POST /v1/default/banks/{bank_id}/memories/recall`
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 26 `POST /memories/recall`（`include.chunks` 通道：一次同步 retain 的多个 `items` 被切成**一条**全文 chunk） | ❌已修 | 参考的 retain **逐个 content dict** 切块并**各自从 0 重新编号**：`engine/retain/orchestrator.py:1968-1987`（`for content_idx, content in enumerate(contents): for chunk in fact_extraction.iter_chunks(...)`）、`engine/retain/fact_extraction.py:2985`（同一 content 内 `chunk_index_in_content` 从 0 起）；`engine/retain/orchestrator.py:1455-1470` 记录过同一形态的碰撞（#1888：一个 sub-batch 覆盖另一个，文档只剩一个 chunk 的 chunks/memories）。recall 侧的 `chunks` 映射直接由 `chunk_info.chunk_index`/`chunk_id` 透传（`api/http.py:6326-6337`） | `internal/storage/segment.go`（新增 `segmentsPerContent`）、`internal/storage/memory_retain.go`（`putItemPartsLocked`/`putPartChunksLocked`）、`internal/storage/postgres_retain.go`（`putItemParts`/`putPartChunks`）、`internal/storage/extraction.go`（`extractItemFacts` 按块切片提取）、`internal/storage/models.go`（`RetainItem.Parts`/`ContentParts()`）、`internal/memoryops/retain_fold.go`+`retain_models.go`（fold 保留 `Parts`） | **已修**：一次同步 retain 的多个 `items` 会被 `FoldRetainItems` 折叠成一条 item，而 chunk 写入原先拿**拼接后的 document body** 去 `SegmentWith`，于是 3 个 item 只产出 1 个 192 字符的 chunk 0，回给 recall 的 `chunks` 通道就是整段正文。现每个 content block 单独切块（与参考一致），并**接着前一块的序号**续写（同一 document 的 `chunk_id` 必须唯一）；提取侧的 `fact.ChunkIndex` 同步按块编号，回来后仍指向 fact 自己的那一块 | 三方对照（同一次 `POST .../memories`，3 个 items）见下方「chunks 三方对照」；`TestRetainStoresEachContentPartAsItsOwnChunk`（**改回去就 FAIL**：`expected 3 chunks, got 1`，实测输出见下）；线上 `include:{chunks:{}}` 修前本服务 1 条全文、参考 3 条，修后两侧均 3 条、`chunk_index` 0/1/2、文本逐条相同 |
+| 26（`trace:true` 的 trace 形状） | ❌已修 | 参考的 trace 是 `SearchTrace`（`engine/search/trace.py:158-192`、`SearchTracer.finalize` `engine/search/tracer.py:394-437`）：顶层固定 8 个成员 `query`/`retrieval_results`/`rrf_merged`/`reranked`/`entry_points`/`visits`/`summary`/`final_results`；`query` 8 成员（`query_text`/`query_embedding`/`timestamp`/`budget`/`max_tokens`/`tags`/`tags_match`/`temporal_constraint`，缺省值为 `null` 而非省略）；`summary` 是 `total_nodes_visited`/`entry_points_found`/`budget_used`/`budget_remaining`/`total_duration_seconds`/`results_returned`/`phase_metrics`（`phase_metrics` 是**有序 list**，每项 `{phase_name,duration_seconds,details}`）；`retrieval_results[i]` 带 `duration_seconds`+`metadata`（semantic/bm25 为 `{"limit":budget}`，graph/temporal 为 `{"budget":budget}`，`engine/memory_engine.py:9670-9760`）；条目按**fact_type 外层、arm 内层**排列（`experience, world, observation`）；`reranked`/`final_results` 来自**过完 min_scores 的 scored_results**（`engine/memory_engine.py:10060-10076`） | `internal/storage/recall_types.go`（`RecallTraceDetail` 新增 `QueryEmbedding`/`EntryPoints`/`Visits`/`PhaseMetrics`/`FinalResults`/`ArmDurations`/`TotalDurationSeconds`）、`internal/storage/recall_trace.go`（`buildRecallTraceDetail`/`buildTraceEntryPoints`/`buildTraceVisits`/`buildTraceFinalResults`/`attachRecallTracePhases`）、`internal/storage/recall_phases.go`（`snapshot()`）、`internal/memoryops/recall_result.go`（`renderTrace`/`renderTraceQuery`/`renderTraceSummary`/`renderEntryPoints`/`renderVisits`/`renderFinalResults`/`armMetadata`） | **已修**（五处）：①顶层少了 `entry_points`/`visits`/`final_results`，`summary` 里多了参考没有的 `candidates_found`/`stage_counts`、少了 `total_nodes_visited`/`entry_points_found`/`total_duration_seconds`，`phase_metrics` 是 4 键 dict 而非有序 list → 全部按参考重建；②`query` 缺 `query_embedding`/`temporal_constraint`（缺省要 `null`）、`tags` 缺省要 `null`（原先给 `[]`）；③`retrieval_results` 缺 `duration_seconds`/`metadata`；④条目顺序由「arm 外层」改为参考的「fact_type 外层」；⑤`final_results` 缺 `bm25_rank`（原实现只在候选真被 bm25 命中时才给，参考按 `source_ranks` 逐键 `update`，命中即给） | `TestBuildRecallResponseTracePresentWhenRequested`（断言改为参考的 summary 成员集与 `phase_metrics` 为 list）；`TestRecallArmsConcurrentAndSerializedAgree`（比较 trace 时剔除墙钟相位，其余逐字节相等）；线上 `{"query":"Alice","trace":true}` 逐层键集/键序比对：修前顶层 5/8、`summary` 7 键中 5 键不符，修后顶层 8/8、`query` 8/8、`summary` 7/7、`retrieval_results` 5/5 且 arm 顺序一致 |
+| 26（成功响应整体形状、`entities`/`chunks`/`source_facts`/`source_facts_truncated` 恒在且 `null` 保留） | ✅一致 | 响应模型 `api/http.py:878-930`（`RecallResponse`），`RecallResult` 每条 15 键、`scores` 四档恒在（`engine/response_models.py:241-263`）、`attachments` 恒在（`api/http.py:677-680`） | `internal/memoryops/models.go:312-411`、`internal/memoryops/recall_result.go` | — | 线上 `{"query":"Alice Google","include":{"chunks":{},"source_facts":{}}}` 逐层形状 SAME：顶层 6 键、`results[]` 15 键、`scores` 4 键、`entities`/`chunks`/`source_facts` 条目键集一致（条数差异为夹具+worker 噪声） |
+| 26（`query` 缺失/空/纯空白/null） | ✅一致 | `api/http.py:6108-6118` 的 `@field_validator("query")`：`tokenize_query(v)` 为空即 `Value error, query must contain at least one word character after normalization`；缺失则 `missing` 且 `input` 为整个 body | `internal/memoryops/validation.go` | — | 线上 4 例：`{}`、`{"query":""}`、`{"query":"   "}`、`{"query":null}` → 全部 `SAME`（422 逐字节） |
+| 26（`budget` 枚举、`types` 非法/`[]`/`["opinion"]`/`null`、未知字段、非对象 body、坏 JSON） | ✅一致 | `budget: Budget` 枚举；`VALID_RECALL_FACT_TYPES` 与 `opinion` 的静默丢弃（`engine/memory_engine.py:8894-8910`）；参考请求模型忽略未声明成员 | `internal/memoryops/recall.go:110-140`、`validation.go:441` | — | 线上：`budget:"ultra"`/`budget:null`/`types:["bogus"]`/`[1,2,3]`/`"{"` → 422 `SAME`；`types:[]`/`["opinion"]`/`null`、未知字段 → 200 且形状 `SAME` |
+| 26（`max_tokens` 类型错误/`null`/小数） | ✅一致 | `max_tokens: int = 4096`；`null`/`5.5` 是 `int_type`/`int_from_float` 项 | `internal/memoryops/validation.go` | — | 线上：`"5"` 被框架按宽松整数接受 → 200 形状同；`null`、`5.5` → 422 `SAME` |
+| 26（`min_scores` 形状：非对象/字段非数/未知成员/全 null） | ✅一致 | `MinScores`（`engine/response_models.py:265-318`）四字段全可选，未声明成员忽略 | `internal/memoryops/recall.go:139`、`validation.go` | — | 线上：`min_scores:5`、`{"final":"a"}` → 422 `SAME`；`{}`、`{"final":null}`、`{"bogus":1}` → 200 形状 `SAME` |
+| 26（`include.*` 成员类型错、`include.entities:null`、`include` 非对象） | ✅一致 | `IncludeOptions`（`api/http.py:507-520`）三个成员均可为 `Model\|None` | `internal/memoryops/validation.go:400-421` | — | 线上：`include:5`、`entities:5`、`chunks:"a"`、`source_facts.max_tokens:"a"` → 422 `SAME`；`entities:null` → 200 且 `entities:null` 形状 `SAME` |
+| 26（`tags`+`tag_groups` 互斥、`tag_groups` 单对象/`{"tag":…}`、`tags_match` 枚举） | ✅一致 | `api/http.py:6136-6142` 互斥；`TagGroup` 联合 `left_to_right` 逐分支报错（`engine/search/tags.py:307-346`） | `internal/memoryops/recall_request.go`、`validation.go:448-470` | — | 线上：四例全 422 `SAME` |
+| 26（`query_timestamp` 非法 → 400 文案） | ✅一致 | `api/http.py:6216-6224`：`datetime.fromisoformat(...replace("Z","+00:00"))`，失败 `detail=f"Invalid query_timestamp format. …: {str(e)}"` | `internal/memoryops/recall.go:295`、`timeparse.go:426` | — | 线上 `"nonsense"` → 400 `SAME`（与第二轮结论一致，本轮复验仍 SAME） |
+| 26（`temporal_window` 成员非法 → 逐边界 422 item） | ✅一致 | `engine/response_models.py:316-350`（`start/end: datetime \| date`） | `internal/memoryops/models.go:218-260`、`validation.go:477` | — | 线上：`{}` → 两条 `missing` `SAME`；`{"start":"bad",…}` → `datetime_from_date_parsing` `SAME` |
+| 26（`prefer_observations`、`trace` 的非布尔取值） | ✅一致 | 两字段都是 `bool`/`bool = False`，框架按宽松布尔接受 `"yes"`/`"y"` | `internal/memoryops/validation.go` | — | 线上 `"y"` → 200 形状 `SAME` |
+| 26（`max_tokens<=0` 只要 chunks、`max_tokens` 正数全超预算时的下限） | ✅一致 | `engine/fact_budget.py:57-60`、`:76-86` | `internal/memoryops/recall_result.go:applyTokenCap`、`internal/storage/recall_types.go:capMatchesToTokens` | — | 线上 `{"max_tokens":0}` → `results:[]`+`entities:null` 形状 `SAME`（第二轮结论，本轮复验仍 SAME） |
+| 26（ghost 银行） | ⛔未覆盖（本轮） | `engine/memory_engine.py:8946-8958` 的 `_require_bank_exists` → 404 | `internal/storage/{memory,postgres}_recall.go` | — | 见下「待复核」 |
+| 26（`include.source_facts.max_tokens` 的预算裁剪：**裁到剩余额度**而非**整条跳过**） | ❌已修 | `engine/source_facts.py:39-87` 的 `select_source_facts_within_budget`：`if max_total_tokens >= 0 and total_tokens + fact_tokens > max_total_tokens: skipped.add(sid); continue` —— **只跳过、从不裁切**；`truncated` 的定义是 `bool(skipped - seen)`（"某个被公开的 id 最终没有条目"）。`max_tokens_per_observation >= 0` 时改用**每 observation 自己的配额**、全局配额不参与（`:63-74`）。`max_source_facts_tokens=0` 因此是"一条都不给 + `truncated:true`"，而不是"给全部/空 map" | `internal/memoryops/recall_result.go`（`selectSourceFacts` 取代 `capSourceFactChannel`） | **已修**：原实现把最后一条 source fact **裁到剩余额度**再放进 map，且把 `truncated` 算成"裁过" —— 于是 `max_tokens:0`（剩余额度 0）时既不裁也不跳过，回的是**全部** source facts 且 `truncated:false`；小额度时回的是被截断的文本片段。现按参考：整条跳过、`truncated` 只看"被跳过且最终不在 map 里"、per-observation 配额优先 | 线上 `include.source_facts.max_tokens` 扫 0/1/2/5/10/50/4096 与 `max_tokens_per_observation` 扫 0/1/2/50：修前 `0` 两侧 `truncated` 相反（ref `true`/`null`，svc `false`/3 条）；修后 6 个档位 `truncated` 与条数全同（`50` 那条参考 2 条、本服务 1 条属事实文本长度不同造成的夹具差异）。`TestSourceFactBudgetSkipsRatherThanClips`（6 子用例，**改回去就 FAIL**，实测：`truncated = false, want true` 三处）、`TestSourceFactBudgetWithNoObservations` |
+| 26（`limit`/`offset`） | ⛔未覆盖（本轮） | 参考 `RecallRequest` **没有** `limit`/`offset` 成员，未知成员被忽略；本服务的 `RecallQuery.Limit/Offset` 是内部路径用 | `internal/storage/recall_types.go:170-175` | — | 线上 `{"limit":1}` 与 `{"offset":1}` 均 200 且形状 `SAME`（即被忽略），行为一致但**分页语义本身参考不存在**，故不计覆盖 |
+
+**chunks 三方对照**（同一次 `POST /v1/default/banks/rt-rr4/memories`，body 为 3 个 items：
+`"Alice works at Google on the AI team. She joined in 2021."` / `"Bob likes hiking in the Swiss Alps during summer vacations."` /
+`"The deploy pipeline uses Kubernetes and ArgoCD for the payments service."`）：
+
+| chunk_index | 参考 `user_devin.chunks` | 本服务**修前** | 本服务**修后** |
+|---|---|---|---|
+| 0 | `Alice works at Google on the AI team. She joined in 2021.` | `Alice works at Google on the AI team. She joined in 2021.\n\nBob likes hiking in the Swiss Alps during summer vacations.\n\nThe deploy pipeline uses Kubernetes and ArgoCD for the payments service.`（192 字符，**唯一一条**） | `Alice works at Google on the AI team. She joined in 2021.` |
+| 1 | `Bob likes hiking in the Swiss Alps during summer vacations.` | （不存在 —— 3 个 item 全部落在 index 0） | `Bob likes hiking in the Swiss Alps during summer vacations.` |
+| 2 | `The deploy pipeline uses Kubernetes and ArgoCD for the payments service.` | （不存在） | `The deploy pipeline uses Kubernetes and ArgoCD for the payments service.` |
+
+**"改回去就 FAIL"实测输出**（把 `memory_retain.go` 的 `item.ContentParts()` 改回 `item.Content` 后跑用例）：
+
+```
+--- FAIL: TestRetainStoresEachContentPartAsItsOwnChunk (0.02s)
+    recall_chunk_parts_test.go:32: expected 3 chunks, got 1: [{ChunkID:b1_doc-1_0 BankID:b1 DocumentID:doc-1 ChunkIndex:0 ChunkText:Alice works at Google on the AI team.
+        Bob likes hiking in the Swiss Alps.
+        The deploy pipeline uses Kubernetes. ContentHash:8ce... CreatedAt:0001-01-01 00:00:00 +0000 UTC}]
+FAIL
+--- restored ---
+ok  	github.com/studyzy/wenyuan/internal/storage	0.030s
+```
+
+### #26 复核结论
+
+- **ghost 银行**：线上 `POST /v1/default/banks/rt-ghost-rr4/memories/recall` 两侧均 `404` 且 body 逐字节 `SAME`
+  （参考 `engine/memory_engine.py:8946-8958` 的 `_require_bank_exists`），此前 ⛔ 项现为 ✅。
+- **排序不变量**：`results[].scores.final` 单调不增在两侧均成立；`scores` 四键集恒为
+  `{final,keyword,reranker,semantic}`、null 集合两侧同构（`{"query":"Alice"}`、`types:["world"]`、
+  `max_tokens:0/-1`、`budget low/high`、`tags_match:exact` 等 12 例 INV-SAME）。
+- **预算不变量**：`max_tokens:0` → `results:[]`+`entities:null`；`max_tokens:1` → 1 条（下限）；
+  `min_scores.final:2.0`/`reranker:2.0` → `results:[]` 两侧同。
+- **仍属夹具/模型噪声（不计缺陷）**：`types:["observation"]`、`min_scores.semantic:0.99`、
+  `prefer_observations`、`include.entities.max_tokens:0` 等例的 `results` 条数与 null 分数集合不同 ——
+  参考侧 worker 常开、事实集合里带 consolidation 产物，且两侧正文是模型每次采样出来的不同措辞。
+
+### #27 `POST /v1/default/banks/{bank_id}/reflect`
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 27（`include.tool_calls` 的 `trace.llm_calls` 恒为空数组） | ❌已修 | 参考的 trace 是 `ReflectTrace(tool_calls, llm_calls)`（`api/http.py:1687-1700`），`api/http.py:6560-6576` 用 **core_result.llm_trace** 逐条构造 `ReflectLLMCall(scope, duration_ms)`；参考实测 `include:{"tool_calls":{}}` 返回 `llm_calls=[("agent_1",987),("agent_2",4107),("agent_3",2839)]` —— 每个 agent 轮次一条 | `internal/reflect/loop.go`（`Outcome.LLMCalls`、`LLMCall`、`Loop.llmCalls`、`callModel`）、`internal/reflect/runner.go`（`toStorageOutcome` 填充 `Trace.LLMCalls`） | **已修**：模型驱动的 agent 循环（`internal/reflect/loop.go`）走了 4 处 `provider.Complete`，但**从不把调用记进 trace**，而 `trace.llm_calls` 只由确定性回退循环（`storage/memory_reflect.go` 的 `recordModelCall`）填充 —— 该循环在有模型时根本不会运行，于是 `llm_calls` 恒为 `[]`。现所有模型调用统一经 `Loop.callModel` 计时并按 `agent_<n>`（n 从 1 起，参考的命名）/`final`/`structured`/`rewrite` 记入 `Outcome.LLMCalls`，`runner.toStorageOutcome` 转成 `storage.ReflectModelCall` | 线上 `{"query":"Alice","include":{"tool_calls":{}}}`：修前 `llm_calls: []`（参考 3 条），修后本服务 `[agent_1..agent_4]` 与参考同形同域（条数差 1 属模型轮次随机）；`TestRunnerReportsOneLLMCallPerModelCall`（**改回去就 FAIL**，实测 `0 llm_calls reported for 2 model calls: []`） |
+| 27（成功响应 6 键 + `usage` 5 键、`trace` 两键形状） | ✅一致 | `api/http.py:1702-1765`（`ReflectResponse`）、`:1687-1700`（`ReflectTrace`）、`ReflectFact` 13 键（`:1614-1650`） | `internal/memoryops/models.go`、`reflect_response.go` | — | 线上 `{"query":"What do we know about Alice?"}` 两侧顶层 6 键、`usage` 5 键、`based_on:null`/`structured_output:null`/`trace:null` 全同；`include:{"facts":{},"tool_calls":{}}` 时 `based_on.memories[]` 13 键、`mental_models`/`directives` 为 `[]`、`trace.tool_calls[]` 5 键（`output:false` 时 4 键，无 `output`）两侧一致 |
+| 27（`budget` low/mid/high/`ultra`） | ✅一致 | `ReflectRequest.budget: Budget = Budget.LOW`（`api/http.py:1512-1530`），枚举非法 → `literal_error` | `internal/memoryops/reflect_validation.go` | — | 线上 4 例：`low`/`mid`/`high` → 200 形状 `SAME`，`ultra` → 422 `SAME` |
+| 27（`response_schema` 合法/非法） | ✅一致 | `api/http.py:1610-1620` 的 `validate_reflect_response_schema` → `validate_response_schema`；`response_schema: 5` 是 `dict_type` | `internal/memoryops/reflect_validation.go`、`reflect_schema_test.go` | — | 线上：合法 schema → 200 形状 `SAME`；`{"type":"bogus"}` → 422 `SAME`；`5` → 422 `SAME` |
+| 27（`query` 缺失/空/纯空白、`fact_types:[]`/非法值） | ✅一致 | `api/http.py:1604-1608`（`validate_query_not_blank`、`validate_reflect_fact_types`）；`fact_types: list[Literal[...]]` 逐元素 `literal_error` | `internal/memoryops/reflect_validation.go` | — | 线上 5 例全 422 `SAME` |
+| 27（`tags`+`tag_groups` 互斥、`tag_groups` 须为 list、`reflect_search_observations_max_tokens` 下界） | ✅一致 | `api/http.py:1607-1612`、`ReflectDefaultOptions.reflect_search_observations_max_tokens: int\|None, ge=1`（`:1480-1490`） | `internal/memoryops/reflect_validation.go` | — | 线上：互斥/单对象/`0` 全 422 `SAME` |
+| 27（`include` 成员、`include.facts:null`、`context` 字段、`max_tokens` 宽松整型、`exclude_mental_models`、未知字段、坏 JSON） | ✅一致 | `ReflectIncludeOptions`（`api/http.py:1459-1470`）；`context` 拼接进 query（`api/http.py:6438-6442`） | `internal/memoryops/reflect.go`、`models.go` | — | 线上 8 例全 `SAME`（`include:5` → 422；其余 200 形状同） |
+| 27（未知 bank） | ✅一致 | 参考 reflect 对未知 bank **不 404**：`_require_bank_exists` 只在 recall 一侧，reflect 走的是 profile 的 create-if-missing 路径 | `internal/memoryops/reflect.go:100-106`（`EnsureBank`） | — | 线上 `POST /v1/default/banks/rt-ghost-rr4/reflect` 两侧 **200** 且形状 `SAME` |
+| 27（无模型部署 → 400 及逐字文案） | ✅一致 | `engine/memory_engine.py:15279-15286` 的 `LLMNotAvailableError("Reflect requires an LLM provider. Current provider is set to 'none'. …")`；`api/http.py:6597-6599` 转 400 | `internal/memoryops/reflect.go:30-36, 94-96`、`internal/app/app.go:447` | — | 用 `HINDSIGHT_API_LLM_PROVIDER=none` 独起一个服务实测：`POST .../reflect` → **400**，`{"detail":"Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."}` 与参考逐字同；同一实例的 `/memories/recall` 仍 200 |
+
+**本单元结论计数（按 API 计，共 2 条）：✅ 0 / ❌ 2 / ⚠️ 0 / ⛔ 0**
+（#26 ❌已修 —— 3 处真实差异：chunks 通道的切块、trace 形状与顺序、source_facts 预算裁剪；
+#27 ❌已修 —— 1 处真实差异：trace.llm_calls 恒空。
+两条 API 各自都做到了行为/形状层面的对齐，且每处差异都有一个"改回去就 FAIL"的用例。）
+
+**需要组长裁决的事项**
+
+1. `internal/storage/*_retain.go` 的 chunk 写入段（`putItemParts`/`putPartChunks`）与 `models.go` 的
+   `RetainItem.Parts` 是**跨单元**改动（retain 单元的写路径、recall 的读通道共享）—— 本单元改它们是为了
+   修 `include.chunks`；请确认与 `retain` 单元的后续改动不冲突。
+2. `internal/storage/{memory,postgres}_recall.go` 在 `preferObservations`/`capCandidates` 之前各加了一行
+   `scored` 快照（供 trace 的 `reranked`/`final_results` 使用），请复核与 `memory-crud` 单元对
+   `postgres_recall.go` 的改动是否重叠。
+3. `internal/memoryops/recall_test.go` 的 `TestRecallIncludeDefaults` 夹具原先用一个 **world** 事实冒充
+   observation 来断言 `source_facts`；参考只对 observation 解析来源，故夹具改为真实 observation + 一条
+   落库源事实。这是夹具修正，不是放宽断言。
+4. `internal/memoryops/operations_test.go` 的 `TestRetryBatchParentWithNoChildren` 在本单元开工时已红
+   （改动 `internal/memoryops/operations.go` 前后同样红，且该文件本单元未触碰），属 `operations` 单元 /
+   `internal/storage/memory_operations.go` 的范围，请转交。
+
+## 第四轮 mental-models
+
+复核方式：逐条读参考源码取行号，并在**开启 worker 的**本服务副本（端口 18405，`CHK_RUN=mm4`，直连 `15432/wenyuan`）与线上参考（`8888`）之间做差分；夹具银行 `rt-mm4` / `rt-other-mm4` / `rt-ghost-mm4`，两侧同 id、同请求，结束后已删除。JSON 键序另外用自写工具（`/tmp/rt/ordercheck.py`）逐成员比对——`chk.py` 会把对象解析成 dict，**看不出键序**，而键序是这几条 API 的可观测契约。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 38 `GET .../mental-models` | ❌已修（`trigger` 键序 + `metadata` 档 `trigger` 应为 `null`） | `api/http.py:6920-6982`；`engine/memory_engine.py:16640-16670`（列表**批量**判定 `is_stale`，不查撤回）；`_row_to_mental_model` `:20458-20560`；`MentalModelResponse` `api/http.py:3409-3460`；`MentalModelTrigger` `api/http.py:3199-3389`（17 成员声明序） | `internal/mentalmodels/handlers.go`（`List`）、`models.go`（`applyDetail`/`toModel`）、`trigger.go`（`projectTrigger`/`Trigger.MarshalJSON`） | 修复①⑤ | 线上 `?detail=metadata/content/full`、`?tags=`、`?limit=0`、`?detail=config`、ghost 银行全部 `SAME`；键序逐成员同（17 键声明序） |
+| 39 `GET .../{id}` | ❌已修（同上 + `reflect_response` 键序） | `api/http.py:6983-7020`；`memory_engine.py:16692-16740`（单条**不做** `_require_bank_exists`，`detail` 默认 `full`，仅 `full` 算 `is_stale` 且**走 `compute_mental_model_is_stale` = 含撤回检查**）；`_row_to_mental_model` 的 `detail` 三档 | `handlers.go`（`Get`）、`models.go`（`ReorderReflectResponse` 接入 `toModel`）、`trigger.go` | 修复①⑤⑥ | 线上 `detail=metadata/content/full`、未知 id 404 全部 `SAME`；`reflect_response` 的 4 个顶层键与 `based_on` 的 6 个类型键同为参考顺序 |
+| 40 `GET .../{id}/history` | ❌已修（`previous_reflect_response` 存的是**全量** `reflect_response`，参考只存 `based_on`(+`trace`)） | `memory_engine.py:16748-16830`（裸数组，条目键 `previous_content`/`previous_reflect_response`/`changed_at`，失败记录另带 4 键）；写入侧 `_append_mental_model_history` `:18820-18839` 只存 `{"previous_content","previous_reflect_response"}`，而 `previous_reflect_response` 是 `update_mental_model` `:18674-18695` 的 **slim** 切片（只保 `based_on` 与 `trace`，`slim or None`） | `internal/app/mental_model_refresh.go`（`slimReflectResponse` + 写 history 的调用点） | 修复② | 线上两侧同 2 行、条目键集与键序相同；最新一行的 `previous_reflect_response` 两侧都只有 `based_on` |
+| 41 `POST .../mental-models` | ❌已修（`max_tokens` 的 lax 整数强制、body 非对象的 422 形状） | `api/http.py:7052-7098`；`memory_engine.py:17077-17190`；`CreateMentalModelRequest` `api/http.py:3750-3782`（`max_tokens: int = 2048, ge=256, le=8192`，模型无 strict，故走 lax：数字串/整数值 float/bool 都绑定） | `internal/mentalmodels/handlers.go`（`Create`）、`helpers.go`（`rawMaxTokens`）、`models.go`（`MaxTokens` 改裸成员） | 修复③④ | 线上 `{"max_tokens":"300"}`、`" 300 "`、`"300.0"`、`300.0` → 200 且落库 300；`"abc"`/`"3e2"` → 仅 1 条 `int_parsing`；`300.5` → `int_from_float`；body `[]`/`5`/`"x"`/`true`/`[1,2]` → 1 条 `model_attributes_type` @`body`；创建/409/`trigger` 校验 19 例全部 `SAME` |
+| 42 `POST .../{id}/refresh` | ✅一致 | `api/http.py:7099-7132`；`memory_engine.py:23188-23280`（`submit_async_refresh_mental_model`：先 `_raise_if_mental_model_refresh_unavailable`，再校验模型存在 → `ValueError(f"Mental model {id} not found in bank {bank}")`；`dedupe_in_flight_payload_key="mental_model_id"`、`serialization_key=mental_model:<id>`）；响应 `AsyncOperationSubmitResponse` | `handlers.go`（`Refresh`/`refreshError`/`enqueueModelRefresh`）、`internal/app/mental_model_refresh.go` | 无（本轮未发现差异；`reflect_response` 的修复落在 39/40 的读取与 refit 落库形状上） | 线上 `POST /r1/refresh` → `{"operation_id":…,"status":"queued"}` `SAME`；未知模型 `404 {"detail":"Mental model nope not found in bank rt-mm4"}` `SAME`；ghost 银行 `nope` → 同 404 `SAME`；刷新完成后 `GET ?detail=full` 的 `content`/`last_memory_seen_at`/`is_stale` 与参考同构 |
+| 43 `POST .../{id}/dry-run-refresh` | ✅一致 | `api/http.py:7133-7182`；`memory_engine.py:18384-18480`；结果模型 `engine/mental_model_refresh.py:304-368`（`MentalModelDryRunRefreshResult`）；`_execute_mental_model_refresh` `:17340-17425` 解析 mode/scope/window | `handlers.go`（`DryRunRefresh`）、`internal/app/mental_model_dry_run.go`、`mentalmodels/dryrun.go` | 无（本轮未发现差异） | 线上 `POST /r1/dry-run-refresh` 逐字段比对：仅 `duration_ms`/`trace.duration_ms`（真实计时）与模型产出文本不同，其余（`requested_mode`/`effective_mode`/`mode_fallback_reason`/`outcome`/`would_persist`/`scope` 6 键/`window` 3 键/`facts`/`based_on`/`diff`/`warnings`/`usage`）同构；未知模型 `404 {"detail":"Mental model nope not found"}` `SAME` |
+| 44 `POST .../{id}/clear` | ✅一致 | `api/http.py:7183-7218`；`memory_engine.py:18963-19040`（UPDATE 只动 `content=''`/`structured_content=NULL`/`last_refreshed_source_query=NULL`/`last_refresh_failed_at=NULL`/`embedding`，**不动** `reflect_response`，不写 history） | `handlers.go`（`Clear`）、`internal/storage/{memory,postgres}_mental_models.go` | 无（本轮未发现差异） | 线上 clear 后的整条模型与参考同构（仅时间戳/模型产出文本不同）；`POST /r2/clear`、`POST /nope/clear` → `SAME` |
+| 45 `PATCH .../{id}` | ❌已修（同上 `max_tokens`、body 非对象两处；`{**base,**supplied}` 合并语义本身已对） | `api/http.py:7219-7261`；`memory_engine.py:18481-18600`；`_merge_trigger` `:19134-19200`；`UpdateMentalModelRequest` `api/http.py:3783-3830` | `handlers.go`（`Update`）、`trigger.go`（`MergeTrigger`） | 修复③④ | 线上顺序差分（`refresh_cron`↔`refresh_after_consolidation` 反复、`refresh_cron:null`、`tags_match`、`tag_groups`、`{}`、`{"trigger":null}`、未知 id）全部 `SAME`；`{"max_tokens":"300"}` → 200 且落库 300（修复前 422） |
+| 46 `DELETE .../{id}` | ✅一致 | `api/http.py:7262-7300`；`memory_engine.py:19056-19130`（`{"status":"deleted"}`，删 0 行 → 404） | `handlers.go`（`Delete`） | 无（本轮未发现差异） | 线上 `DELETE /r2` → 200 `{"status":"deleted"}` `SAME`；再删 → 404 `SAME`；删后 `GET /r2` → 404 `SAME` |
+
+**本轮修复（每条都配了"改回去就 FAIL"的用例）**
+
+1. **`trigger` 的 17 个成员按 Go map 的字典序上线**（`internal/mentalmodels/trigger.go`）。参考把 `MentalModelTrigger` 交给框架序列化，字段按**声明序**输出（`api/http.py:3199-3389`）；本服务原来用 `map[string]any`，Go 按字典序编码，于是 `budget, exclude_mental_model_ids, exclude_mental_models, fact_types, …` 与参考的 `budget, mode, refresh_after_consolidation, refresh_cron, …` 逐键不同。→ 改为有序类型 `Trigger`（`OrderedTriggerMember{Key,Value}` + `MarshalJSON`），投影用 `projectTrigger`。
+   - **改回去就 FAIL**：把 `Trigger.MarshalJSON` 换回 `json.Marshal(map)` → `TestTriggerRendersInDeclarationOrder` FAIL：
+     ```
+     --- FAIL: TestTriggerRendersInDeclarationOrder
+         trigger_parity_test.go:538: trigger member 1 = "exclude_mental_model_ids", want "mode"
+     ```
+2. **`metadata` 档的 `trigger` 输出成 `{}` 而不是 `null`**（`internal/mentalmodels/trigger.go`）。`applyDetail` 把 `model.Trigger` 置 nil，但带自定义 `MarshalJSON` 的 nil slice 编码成 `{}`。参考该字段是 `MentalModelTrigger | None`，`metadata` 档不给 → `null`。→ nil `Trigger` 直接写 `null`。同一轮还修了 `?detail=` 三档下 `Model.Trigger` 的 nil 语义（covered by `TestModelTriggerIsNullAtMetadataDetail`）。
+3. **`max_tokens` 没有按 lax 整数绑定**（`internal/mentalmodels/helpers.go`、`models.go`、`handlers.go`）。参考的成员是 `int`（`api/http.py:3775`、`:3812`），模型非 strict，所以框架先做 lax 强制再查 `ge/le`：`"300"`、`" 300 "`、`"300.0"`、`300.0` 都**绑定并落库为 300**；`"abc"`/`"3e2"` 是 `int_parsing`、`300.5` 是 `int_from_float`，且**只报这一条**（本服务原来在 `"abc"` 上多报一条 `greater_than_equal`，因为把未绑定的 0 当成了值）。→ `MaxTokens` 改成 `json.RawMessage`，由 `rawMaxTokens` 走 `httpx.LaxFloat`（bool 另行按 1/0），界检查仍在原声明位置、`input` 仍是客户端原值。
+   - **改回去就 FAIL**：把 `rawMaxTokens` 改回"只认 JSON number" → `TestMaxTokensTakesTheLaxIntegerCoercion` FAIL（`"300"`/`" 300 "`/`"300.0"` 三个子例 422）。
+4. **JSON 合法但不是对象的 body 报成 `dict_type`**（`internal/mentalmodels/helpers.go`）。参考对"取不出成员的输入"报 `model_attributes_type`、`loc=["body"]`、`input` 为**该值本身**。→ `requestItems` 先解成 `any`，非对象走 `TypeMismatch("model_attributes_type", ["body"], value)`。
+   - **改回去就 FAIL**：`requestItems` 改回直接解进 `map[string]any` → `TestBodyThatIsNotAnObjectIsAModelShapeFailure` FAIL（`[]`/`5`/`"x"`/`true`/`[1,2]` 全部 `dict_type`）。
+5. **`refresh_cron` 没有做校验器改写、`tag_groups` 的叶子没补默认值**（`internal/mentalmodels/trigger.go` 的 `normalizeTrigger`）。参考的 `validate_refresh_cron` 把值 `strip()` 后存回（`"  0 3 * * *  "` → `"0 3 * * *"`，纯空白 → `None`），`TagGroupLeaf` 的 `match`/`resolve` 有默认值 `any_strict`/`exact` 并在序列化时补全（`engine/search/tags.py:307-317`）。
+   - **改回去就 FAIL**：删掉 `normalizeTrigger` 里的这两段改写 → `TestTriggerMembersAreProjectedThroughTheirValidators` FAIL（`refresh_cron = "  0 3 * * *  ", want the stripped expression`）。
+6. **`reflect_response` 存了"每一型都空表"的 `based_on`，且键序不可控**（`internal/app/mental_model_refresh.go`、`internal/mentalmodels/trigger.go` 的 `ReorderReflectResponse`）。参考的 `based_on` 由 reflect 跑的 `based_on` dict **照原样**序列化（`memory_engine.py:17538-17563`、`:17642-17646`），**没引用到的类型不出现**；本服务原来固定补全 6 个类型键（第一轮遗留的旧结论）。另外 jsonb 不保序、Go map 又按字典序输出，于是 4 个顶层键与 6 个类型键的顺序都与参考不同。→ `renderFactsByType` 只保留引用到的类型（顺序为参考的 `world, opinion, directives, experience, observation, mental-models`）；读取路径 `ReorderReflectResponse` 用有序对象还原顶层 `text, outcome, based_on, reflect_skipped, mental_models` 与 `based_on` 的类型序（`internal/bankapi/config.go:255-264` 的 `entity_labels` 已有同一先例）。
+   - **改回去就 FAIL**：`TestRefreshStoresTheReferenceReflectResponseShape` 的 `based_on` 断言按参考改写后，把 `renderFactsByType` 改回"预置 6 个类型" → 断言 `based_on` 多出 `world` 等空表键而 FAIL；`TestHistorySnapshotKeepsOnlyTheReferenceSlice` 与 `TestRefreshRecordsTheSlimmedHistorySnapshot` 钉住第 2 条。
+
+**改回去就 FAIL 实测输出（第 40 条的 slim 切片）**
+
+```
+--- FAIL: TestRefreshRecordsTheSlimmedHistorySnapshot
+    mental_model_refresh_test.go:685: previous_reflect_response = map[string]interface {}{"based_on":…,"mental_models":…,"outcome":"content_written","text":"deployments happen on tuesdays"}, want only based_on
+--- restored ---
+ok  	github.com/studyzy/wenyuan/internal/app
+```
+
+**噪声与"未覆盖"说明**
+
+- `reflect_response` 的**文本与事实集合**逐字比对会不同：两侧接同一个中转但模型有随机性，且两侧数据（事实 id、抽取文本）本身不同——`PLAN.md` §4 已列为已知噪声。断言落在**键集/键序/类型**上。
+- `duration_ms`、`trace.duration_ms`、`recorded_at` 是真实计时/时间值，不可比。
+- `?detail=full` 的 `reflect_response` 只有在**同一份**数据上刷新过才可能逐值相同；本轮把两侧夹具银行同 id 重建后刷新一次即验到键集/键序/形状一致。
+
+**计数（按 API 编号，共 9 条）**
+
+| ✅一致 | ❌已修 | ⚠️存疑 | ⛔未覆盖 |
+|---|---|---|---|
+| 4（#42、#43、#44、#46） | 5（#38、#39、#40、#41、#45） | 0 | 0 |
+
+六处修复对应到 API：#38 修复①⑤；#39 修复①⑤⑥；#40 修复②；#41 修复③④；#45 修复③④。
+
+**需要组长裁决的事项**
+
+1. **`internal/httpx` 的 query 声明**：`internal/mentalmodels/handlers.go` 的 `query_params_test.go` 通过 `httpx.QueryAudit` 断言"handler 读的每个 query 参数都被路由声明"。本轮**没有**新增 query 参数，故未触碰。
+2. **`based_on` 的键序是否值得还原**：参考的 `based_on` 是 Python dict 的插入序，本服务还原为固定的 `world, opinion, directives, experience, observation, mental-models`（实测两侧该顺序一致）。若日后参考改变了建 dict 的顺序，这里会重新漂移——属"静态推断 + 一次实测"，非逐字节证明。
+3. **`worker` 关闭时的刷新**：`POST .../mental-models` 与 `POST .../{id}/refresh` 在 `HINDSIGHT_API_WORKER_ENABLED=false` 的部署里仍回 `200 + operation_id`，但那次刷新停在队列里；参考同样如此（worker 不在 API 进程里），未作改动。
+
+## 第四轮 memory-crud
+
+复核方式：逐条读参考源码取行号；两侧**同一 SQL 受控夹具**（直插两侧数据库同名 bank，行号/时间戳/标签全同），
+线上差分用 `/tmp/rt/chk.py`（端口 18403、`CHK_RUN=mc4`）。参考库 `127.0.0.1:5432/hindsight` 的 `user_devin` 模式、
+本服务库 `127.0.0.1:15432/wenyuan` 的 `public` 模式可直连，受控夹具因此逐字节可比。
+本服务带 `PARITY_DEV_WORKER_ENABLED=true` 起（参考 worker 常开，无 worker 时两侧 `consolidated_at` 天然不同）。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 28 `GET /v1/default/banks/{bank_id}/memories/list` | ❌已修（3 处） | `api/http.py:5815-5906`（`api_list`，`tags_match`/`time_field` 是 `Literal`、`start_date`/`end_date` 在**参数求值时**经 `_parse_iso_datetime` 解析、`limit`/`offset` 是绑定整数）；`engine/memory_engine.py:13216-13217`（`_authorize_bank_read` → `_require_bank_exists` **先**于存储层）；`engine/memories/pg/curation.py:167-172`（`state`/`entity_id` 校验在存储层内）、`:204-222`（`consolidation_state`）、`:244-262`（时间窗 `build_time_clause`，`validate_time_window` 抛 `end_date <= start_date`）；`:284-292`、`:320`（参数绑定顺序：`bank_id` 之后**直接** `limit`、`offset`，再按 `fact_type/document_id/entity_id/search` 顺序续绑） | `internal/reporting/memory_routes.go:26-110`（`ListMemories`）、`:186-260`（`nonNegativeIntParam`）；`internal/storage/postgres_memories.go:15-135`（`ListMemories`）、`:139-166`（`listTagClause`） | ①**校验次序**：原实现把 `state`/`entity_id`/`consolidation_state`/反序窗校验放在 `requireBank` **之前**，未知 bank 上参考 404 而本服务 400；现改为「框架侧成员与日期解析 → 页边界 → `requireBank` → 存储层校验」，与参考一致。②**占位符编号**：参考 `limit`/`offset` 是 `$2`/`$3`；原实现按过滤条件动态编号（`offset` 溢出 int64 时报 `$2`），现固定按参考顺序绑定，`nonNegativeIntParam` 接收占位符号。③**查询可执行性**：改动②把参数位置前移后，pgx 的文本格式扩展协议要求每个位置有类型，而 `tags` 是 `varchar[]`（`$n::text[]` 与列不兼容）、时间参数需要在 `IS NOT NULL` 之外被命名——现策略为「列侧转型 `mu.tags::text[]`、实体 id 用 `CAST($n AS uuid)`、页边界在 COUNT 里用惰性真谓词标注类型，SELECT 仍用 `$n` 作 `LIMIT/OFFSET`」 | 线上 68 例全 `SAME`（默认页、`limit=0/-1/5.0/1_0/+3/_5/5e2/`、重复 `limit`、`offset` 空/负/超 int64、`q` 空/空白/大小写/前后空白/重音、`type` 空白/空/枚举/未知、`document_id`、`entity_id` 六形态、`tags`/`tags_match` 五模式/空、`state` 大小写与非法、`consolidation_state` 大小写与非法、`time_field` 六值、日期四形态/反序/相等/重复、ghost 银行×各非法参数、`POST/OPTIONS/HEAD`、尾斜杠）；排序专项：受控行 `mentioned_at` 相同 `created_at` 相反（1、2）、`mentioned_at NULL` 且 `created_at` 最旧（4）——两侧次序完全相同（`NULLS LAST`、`created_at DESC`、无 id 兜底；`time_field` 路径为 `col DESC, id`）；23 键与顺序、`null`/`{}`/`[]` 形态两侧相同。用例：`TestMemoryListChecksTheBankBeforeTheStoreFilters`、`TestMemoryListPageBoundsUseTheReferencePlaceholders` |
+| 29 `GET /v1/default/banks/{bank_id}/memories/{memory_id}` | ✅一致 | `api/http.py:6054-6070`（先 `uuid.UUID(memory_id)` → `400 "Invalid memory_id: '<raw>'"`；未命中 → `404 "Memory unit '<raw>' not found"`；**不探 bank**）；`engine/memory_engine.py:13264-13292`（规范化后读活表，未命中回退归档表，`tag_scope` 外 404）；`engine/memories/pg/curation.py:397-470`（detail 键序：`id/text/context/date/type/mentioned_at/occurred_start/occurred_end/entities/document_id/chunk_id/tags/metadata/observation_scopes/state/invalidation_reason/invalidated_at/edited_at`，observation 追加 `history:[]`；有源再加 `source_memory_ids`/`source_memories`，源按 `mentioned_at DESC NULLS LAST`） | `internal/reporting/memory_routes.go:325-370`（`GetMemory`）、`:280-320`（`memoryUnitID` 的 CPython `uuid` 规则）、`:905-975`（`memoryDetail`）、`:1005-1040`（`sourceMemories`）；`internal/storage/postgres_memories.go`（`GetMemory` 活表→归档回退） | 无（第二轮已修，本轮复验无回归：归档行仍可读、`source_memories` 只取活表、`context` 空串→`""`、源 `context` 空→null） | 线上 16 种 id 形态 × 各路由：`urn:uuid:`/`URN:UUID:`/`{}`/`{{}}`/32hex(大小写)/`{urn:uuid:…}`/错分组/前导空格/尾随空格/`not-a-uuid`/空/短/全零/非 ASCII × (detail, history, patch) 全部 `SAME`；observation（2 源）、无日期行、归档行、未知 id、未知 bank、尾斜杠、`POST`/`DELETE` 405 全 `SAME` |
+| 30 `PATCH /v1/default/banks/{bank_id}/memories/{memory_id}` | ❌已修（2 处） | `api/http.py:6078-6132`（`UpdateMemoryRequest` 必填；`occurred_*` 用 `model_fields_set` 判显式 null）；`api/http.py:2777-2864`（模型与 `model_validator`：`Provide at least one field to update.`/`state must be…`/`fact_type must be…`）；`engine/memory_engine.py:11981-12014`（先 `uuid.UUID` → `Invalid memory_id`，再 state/text/fact_type 顺序）；`:12096-12115`（`doing_edit`：text/context/dates/fact_type/**new_entities**）；`:12194-12260`（**phase 2 先 apply_edit**：写字段 + 重置 `consolidated_at`/`consolidation_failed_at` + 打 `edited_at`/`updated_at`）；`:12350-12380`（**再** invalidate / reason-only / revert；revert 分支要求 `archived2`） | `internal/reporting/memory_routes.go:495-600`（`UpdateMemory`）、`:622-655`（`validateMemoryUpdate`）；`internal/storage/postgres_memories.go:388-560`（`UpdateMemory`，新增 `editsColumns`）；`internal/storage/memory_memories.go:394-545`（同序） | ①**编辑 + 归档的同体写入丢编辑**：原实现「先 invalidate 再 return」，`{"text":"changed","state":"invalidated"}` 归档的是**旧文本**、且不写 `edited_at`；参考先 apply_edit 再搬行。现两个后端都改为「先编辑，再搬行」，revert 仍在编辑前分流。②**无列补丁也会重写行戳**：原实现任何 state-only 补丁都把整行按现值重写（把 `updated_at` 当作编辑戳）；现只在该补丁点名了可编辑列时才写 UPDATE/`edited_at`，与参考 `apply_edit` 只在编辑时跑一致（`tags`/`metadata` 也算列） | 线上 45 组 body × 3 目标（world / observation / 归档行）=135 例全 `SAME`：空体/空白/`{}`/`null`/`[]`/字符串/数字、`text` 合法/空/全空白/整数/null、`context` 设清、`entities` `[]`/单值/整数/元素整数/null/字符串、`fact_type` 合法/observation/非法/整数、`state` 合法/invalidated+reason/valid/非法/整数、`occurred_start` 设/清/非法/整数、`reason`/`resolve_entities`/未知名、多错误、`1e999`、observation 不可策展 400、编辑已归档 400、`{"state":"invalidated","text":…}`；副作用往返 33 步全一致（含改后读回、重复 invalidate 保留 reason 与 `invalidated_at`、重复 revert、清空后退回 `mentioned_at`、列表随之变化）。falsification：把 `updateMemoryLocked` 恢复成「state 顶替编辑」→ `TestMemoryUpdateAppliesTheEditBeforeInvalidating` FAIL（`the edit stamp is missing from the archived row`），恢复即 ok |
+| 31 `GET /v1/default/banks/{bank_id}/memories/{memory_id}/history` | ✅一致 | `api/http.py:6134-6163`（`None` → `404 "Memory unit '<raw>' not found"`）；`engine/memory_engine.py:13363-13430`（先 `uuid.UUID` 规范化 → `tag_scope` → `observation_head`：活表才有，**归档即 None**）、`:13401-13410`（非 observation 回 `[]`）、`:13420-13490`（历史按 `changed_at ASC, id ASC`，enriched 回写 `source_facts` 与 `is_new`，源解析缺失给 `{"id":…,"text":null,"type":null,"context":null}`） | `internal/reporting/memory_routes.go:672-760`（`MemoryHistory`）、`:762-880`（`renderMemoryHistory`/`historySourceFact`）；`internal/storage/postgres_memories.go`（`MemoryHistory`） | 无（第二轮已修：归档行 404 的不对称、id 规范化；本轮复验无回归） | 线上 observation（2 源 + 2 条历史）、world/无日期行 → `[]`、归档行 → 404、未知 id、未知 bank、bad/hex32/urn/braces id、尾斜杠 全 `SAME` |
+
+**本轮修复清单（4 条，每条都有"改回去就 FAIL"的用例）**
+
+1. **#28 校验次序**：`internal/reporting/memory_routes.go` 的 `ListMemories` 把存储层校验抬到了 `requireBank` 之前。参考是 `_require_bank_exists` 先、存储层校验后；未知 bank 上 `state=bogus`/`consolidation_state=bogus`/`entity_id=bad`/反序窗口参考 404、本服务 400。→ `TestMemoryListChecksTheBankBeforeTheStoreFilters`（把顺序改回去即 FAIL：`?state=bogus = 400, want 404`）。
+2. **#28 占位符编号**：`offset` 超 int64 时参考报 `$3`、本服务报 `$2`（参考 `bank_id, limit, offset` 相邻绑定）。→ `TestMemoryListPageBoundsUseTheReferencePlaceholders`（改回固定 `$2` 即 FAIL）。
+3. **#30 编辑 + invalidate 同体**：见上表①。→ `TestMemoryUpdateAppliesTheEditBeforeInvalidating`。
+4. **#30 无列补丁的写戳**：见上表②。→ 由 `TestMemoryUpdateArchivedReason`（既有用例，本轮一度被我改坏后复验抓回）+ 往返差分覆盖。
+
+**跨作用域（已在行走作用域内顺手修，供组长裁决是否保留）**：`internal/storage/consolidation_scope.go` 原把 observation 的 scope 镜像进 `metadata`（`{"scope":"a,b"}`）。参考的 observation INSERT 只写 `id/bank_id/text/fact_type/embedding/proof_count/source_memory_ids/tags` 与时间列（`engine/memories/pg/consolidation.py:268-352`），metadata 为列默认 `{}`——线上实测本服务每条 observation 的 `metadata` 比参考多一个 `scope` 键（`/memories/list` 与 `/memories/{id}` 都可见）。已删该镜像（scope 只存 tags）；`TestConsolidatedObservationCarriesNoScopeMetadata` 钉住。**注意**：该文件不在本轮 memory-crud 的写作用域内，但它是本轮 4 条 API 可见字段的直接成因；如需回退请一并回退该测试。
+
+**⚠️ 存疑（非代码问题）**
+- **列表项 `entities` 的次序：参考侧不存在次序契约，不要"修"它。** 参考 `engine/memories/pg/curation.py:329-338` 对 `unit_entities` 只 `ORDER BY ue.unit_id`（同一 unit 的所有 posting 并列），同一条记忆的多个实体名之间**没有任何排序保证**——PostgreSQL 可以按任意顺序返回并列行，同一份数据在不同执行计划下都可能不同。因此"若干实体名的次序"不是本服务必须复刻的行为：本服务按实体名排序是**其中一个合法实例**，与参考不构成差异。受控夹具（两侧直插表、无 `unit_entities` 行）里两侧 `entities` 都是 `""`，本条**未做多实体实测**，也不应有人为了"对齐次序"去改动它。
+- **`consolidated_at` / `edited_at` 的活测量**：`chk.py` 会把它们归一为 `<N>`；受控夹具里这些列由两侧各自的规则写入，但形态（是否 null、时间戳格式 `+00:00` 六位微秒）逐字节相同。
+- `q` 的大小写不敏感匹配在两侧都是 PostgreSQL `ILIKE`，重音与非 ASCII 的差异属于数据库排序规则，两侧同库同版本，实测同结果。
+
+**夹具与清理**：受控夹具 `rt-mc4`（含 `rt-other-mc4`、`rt-ghost-mc4`）在两侧数据库直插 7 行 + 1 行归档行；
+`rt-ctrl-mc4`、`rt-probe-mc4`、`rt-probe2-mc4`、`rt-probe3-mc4` 为 retain 实测用的辅助银行。结束前全部删除（两侧库）。
+
+**计数**：`✅ 2 / ❌ 2 / ⚠️ 0 / ⛔ 0`（按 4 条 API 计；28、30 ❌已修，29、31 ✅一致）。
+
+## 第四轮 observations
+
+复核方式：逐条读参考源码取行号，在**开启 worker 的**本服务副本（`PARITY_DEV_WORKER_ENABLED=true scripts/parity_dev_service.sh 18404`，直连 `15432/wenyuan`）与线上参考（`8888`）之间做差分。夹具银行 `rt-ob4`（两侧各建、各 retain 3 条记忆 → 3 条 `world` 源事实 + 3 条 `observation`，2 个 scope：`team:core`×2 / `team:exec`×1）。非 worker 产物（`consolidated_at`、`last_seen_at`）在两侧 worker 都开的情况下才可比，本单元全程开着。
+
+| # / API | 结论 | 参考证据 | 本服务落点 | 修复 | 验证 |
+|---|---|---|---|---|---|
+| 32 `DELETE /v1/default/banks/{bank_id}/observations` | ✅一致 | `api/http.py:9462-9485`（`DeleteResponse(success=True, message=f"Cleared {n} observations", deleted_count=n)`）；`engine/memory_engine.py:11643-11710`：`_authenticate_tenant` → `_refuse_bank_wide_if_scoped(..., "clear the bank's observations")`（`:11660`）→ 事务内 `SELECT … FOR NO KEY UPDATE` 锁 banks 行、`clear_observations_and_requeue`（**:170-180 先 COUNT 再 DELETE，谓词只有 `bank_id` + `fact_type='observation'`**）、`DELETE observation_history WHERE bank_id`（**:11692-11695**）、`UPDATE banks SET last_consolidated_at=NULL`（**:11698-11701**）；**无** `_require_bank_exists` → 未知 bank 200/0 | `internal/reporting/handlers.go:547-570`（先 `RefuseBankWideIfScoped`、无 `requireBank`、`invalidateBankStats`）；`internal/storage/postgres_memories.go:674-704` → `clearBankObservationsTx` `:705-734`（COUNT→DELETE `fact_type='observation'`→`DELETE observation_history WHERE bank_id`→`UPDATE memory_units SET consolidated_at=NULL WHERE fact_type IN ('experience','world')`） | 无 | 线上：真实银行三次 **`SAME`** `{"success":true,"message":"Cleared 3 observations","deleted_count":3}`；未知 bank `SAME` 200/0；`{b2}`（不存在）`SAME` 200/0；清空后 `scopes` 两侧同体 `{"scopes":[],"total":0,…}`；随后 `consolidate` + 等 worker 收敛，`scopes` 两侧又同为 `team:core`×2 + `team:exec`×1。**副作用直查库**（`15432`）：清空后 `rt-ob4` 的 `world` 行 3 条 `consolidated_at` 全为 NULL、`observation` 0 条、`observation_history` 0 行、`banks.last_consolidated_at` 为 NULL —— 与参考的三条 SQL 逐条对应。用例 `TestDeleteObservationsClearsSourcesAndHistory`（1 条 observation + 1 条 world 源：删后 `deleted_count=1`、`observation_history` 消失、源事实 `consolidated_at` 归 NULL）、`TestObservationWritesWithoutBankCheckAnswerForAnUnknownBank` |
+| 33 `GET /v1/default/banks/{bank_id}/observations/scopes` | ✅一致 | `api/http.py:9487-9519`：`limit: int = Query(100, ge=0, le=1000)`、`offset: int = Query(0, ge=0)`，**query 校验先于 handler**；`engine/memory_engine.py:11747-11782`：`_authorize_bank_read(BankReadOperation.LIST_OBSERVATION_SCOPES)` → **`_require_bank_exists`**（`:11771-11772`，与 32/35 相反）；`engine/memories/pg/counts.py:155-207`：scope = `COALESCE(ARRAY(SELECT unnest(tags) ORDER BY 1),'{}')`、`GROUP BY scope ORDER BY count DESC, scope`、`total` = `COUNT(DISTINCT scope)`（**不受 limit/offset 影响**）、`LIMIT/OFFSET` 在 SQL 里、响应 `{scopes,total,limit,offset}` | `internal/reporting/handlers.go:573-601`（`parseObservationScopeQuery` 先跑，再 `requireBank`）；`internal/reporting/observation_params.go`（`frameworkIntFromString`/`pythonStrip`/`*big.Int` 比边界、按声明序收集全部被拒参数）；`internal/storage/postgres_observability.go` 的 `ListObservationScopes` | 无 | 线上 **9 路全 `SAME`**：`?`（默认 100）、`?limit=1`、`?limit=10&offset=1`、`?limit=0`、`?limit=10000`（422 `less_than_equal le:1000`）、`?limit=`（422 `int_parsing`）、未知 bank（404 `Bank 'rt-ghost-ob4' not found`）、`{b2}`（404）、真实 bank 带数据（2 scope：`team:core`×2 → `team:exec`×1，键序 `tags,count`，`total=2`）。上一轮修过的空值/多项/框架整数文法用例（`TestObservationScopeQueryValidation`、`TestObservationScopeQueryReportsEveryRejectedParameter`）仍全绿、无回退 |
+| 34 `POST /v1/default/banks/{bank_id}/consolidation-strategies/preview` | ✅一致 | `api/http.py:9521-9554`（`request: ConsolidationStrategiesPreviewRequest` 必填）；`api/http.py:2332-2339`（`strategies` 必填、`sample_limit` 默认 5 `ge=0 le=50`）；`engine/response_models.py:718-729`（`ConsolidationStrategySpec` 只声明 5 个键，其余 non-strict 丢弃且不类型校验）；`engine/memory_engine.py:11715-11745`（`list_observation_scopes(limit=10_000, offset=0)`、`complete = total <= len(scopes)`、**bank 校验经 scopes 的 `_require_bank_exists`**）；`engine/consolidation/consolidator.py:3536-3629`：`taken_count = sum(1 for k in hits if winners[k] != i)`（**:3603，`winners[k] is None` 也计 taken**）、`claimed_count = sum(1 for winner in winners if winner == i)`、`samples = hits[:sample_limit]`、`default` = 无 winner 的 scope；解析侧 `_parse_scope_pattern`（`:43634`，空 tags/含空串/非 str → 丢弃；未知 `tags_match` 回落 `all`）、`_parse_consolidation_strategies`（`:45435`，**`bool` 不算 int**、mission 需 `.strip()` 非空、无可用 rule 或无任何设置 → 整条丢弃）；匹配 `_scope_contains_globs`（`:954`）/`_scope_matches_globs`，无 tag scope 永不匹配 | `internal/reporting/handlers.go:605-665`（先 body 校验、后 `requireBank`）；`internal/reporting/consolidation_preview.go`（`decodeConsolidationPreview` 声明序校验、`strategyActive` 的 bool 判据、`countTakenAway` 的 `winners[k]==nil || *winners[k]!=strategy`、`buildConsolidationPreview` 位置对齐 + 首个 strategy 赢） | 无 | 线上 **31 路全 `SAME`**（逐字节 `--raw`）：空 body/`null`→422 `missing loc:["body"]`、`{}`→422 `missing loc:["body","strategies"]`、`[]`→`model_attributes_type`；`{"strategies":[]}`（2 scope 全进 `default`）、`[{scopes:[]}]`（inactive）、`[{scopes:[{tags:["*"]}]}]`（**inactive 但 `taken_count=2`** —— 第二轮修过的那条）、exact 规则、两策略争同一 scope（首个赢，第二个 `taken_count=1`）、`sample_limit:0/1/50`、`max_observations_per_scope:0`（active 判据）、`max_observations_per_scope:true`（active，`bool` 当 int 的参考行为）、`max_observations_per_scope:1.5`→422 `int_from_float`、`consolidation_source_facts_max_tokens:"x"`→422 `int_parsing`、未声明键 `consolidation_llm_batch_size:"x"`→200、`observations_mission:""`/`"   "`（inactive）、`scopes:{}`/`scopes:[{tags:"x"}]`/`tags:[1]`/`tags_match:5`/`tags_match:null`/`scopes:[null,…]`/`tags:[""]`、`strategies:[null,…]`、`sample_limit:"3"`/`true`/`70`/`-1`/`null`、多条 strategy 混合 active/inactive。未知 bank：坏 body 先 422（`list_type loc:["body","strategies",0,"scopes"]`）、好 body 才 404 |
+| 35 `POST /v1/default/banks/{bank_id}/consolidation/recover` | ✅一致 | `api/http.py:9556-9579`（`RecoverConsolidationResponse(retried_count=result["retried_count"])`）；`engine/memory_engine.py:11785-11822`：`_refuse_bank_wide_if_scoped(..., "retry the bank's failed consolidation")` → **直接** `requeue_failed_consolidation`，**无** `_require_bank_exists`、**无事务**、**不入队**（文档字符串 "so they are picked up again on the next consolidation run"）；`engine/memories/pg/engine_curation.py:190-209`：先 `COUNT(*)` 再 `UPDATE … SET consolidation_failed_at=NULL, consolidated_at=NULL WHERE bank_id=$1 AND consolidation_failed_at IS NOT NULL AND fact_type IN ('experience','world')` | `internal/reporting/handlers.go:668-684`（先 `RefuseBankWideIfScoped`、无 `requireBank`、不入队）；`internal/storage/postgres_memories.go:792-816`（单条 `WITH requeued AS (UPDATE … RETURNING 1) SELECT count(*)`，同一过滤条件） | 无（上一轮删掉的 `requireBank` 未回退） | 线上：未知 bank `SAME` `{"retried_count":0}`；真实 bank（无失败标记）`SAME` `{"retried_count":0}`；**副作用直查库**：把 `rt-ob4` 的 2 条 `team:core` `world` 行手置 `consolidation_failed_at=now()`，`POST …/recover` 前该 bank `consolidation_failed_at IS NOT NULL` = 2、修后 = 0 且这 3 条 `world` 的 `consolidated_at` 全 NULL（参考的 `fact_type IN ('experience','world')` 过滤生效）；`GET …/operations` 总数在 recover 前后不变（**只 UPDATE 不入队**）。用例 `TestConsolidationRecoverUnknownBankRetriesNothing` 仍过 |
+| 36 `DELETE /v1/default/banks/{bank_id}/memories/{memory_id}/observations` | ✅一致 | `api/http.py:9581-9610`（`ClearMemoryObservationsResponse(deleted_count=result["deleted_count"])`）；`engine/memory_engine.py:11825-11885`：`_require_writable(bank_id, …, memory_id=memory_id)`（`:3304`，**无 tag scope 时直接 return，完全不查 memory → 未知 bank / 未知 id 都 200/0**）→ `_delete_stale_observations_for_memories`（`:16547-16562` → `engine/retain/fact_storage.py:147-189` → `engine/memories/pg/writes.py:242-341`：`uuid.UUID(str(fid))` 先解析 → 取 `source_memory_ids && fact_ids` 的 observation → 有序 `FOR NO KEY UPDATE` → `DELETE memory_units` + `DELETE observation_history` → 幸存 co-source `consolidated_at=NULL`）→ `if deleted_count > 0` 才 `requeue_source_memory`（**:11854-11859**）→ 事务外 `if deleted_count > 0 and config.enable_auto_consolidation` 才 `submit_async_consolidation`（**:11879-11882**） | `internal/reporting/memory_routes.go:393-442`（memory-crud 单元的文件，本单元**只读复核、未改**）；`internal/storage/postgres_memories.go:674-704` + `internal/storage/postgres_consolidation.go:399-487`（`deleteStaleObservationsTx`） | 无 | 线上**按两侧各自的 id**差分（两侧记忆文本同、id 必然不同）：等价请求 4 路 `SAME` —— 非 uuid（`c648a4c5…` 之外的 `not-a-uuid`）→`500 {"detail":"badly formed hexadecimal UUID string"}`、未知 bank + 有效 uuid →`200 {"deleted_count":0}`、全零 uuid→`200 {"deleted_count":0}`；命中源事实时两侧各 `{"deleted_count":1}` 且第二次同 id 各 `{"deleted_count":0}`；清后 `scopes` 两侧同体缩减到 1 个 scope；库侧：命中的 `world` 行 `consolidated_at` 归 NULL。⚠️ 第一次比对时误把**本服务的 id** 发给参考，得到 `0 vs 1`——那是夹具 id 不同造成的假差异，不是缺陷（两侧 id 空间独立） |
+| 37 `POST /v1/default/banks/{bank_id}/consolidate` | ✅一致（含一处本轮核实后**按参考保留**的语义） | `api/http.py:9705-9737`（`request: ConsolidationRequest | None`、校验先于 handler）；`engine/memory_engine.py:22768-22834`：`caller_requested` 才 `_refuse_bank_wide_if_scoped(..., "run consolidation on the bank")`；**`dedupe = observation_scopes is None`**（`:22822` —— body 里 `observation_scopes` 出现 `[]` 就永不去重，`null` 仍是 `None` 故照常去重）；`_submit_async_operation`（`:22056-22245`）：未知 bank → `OperationValidationError("Bank '<id>' not found", 404)`；`dedupe_by_bank` 只与 `status='pending'` 的、`task_payload->'observation_scopes' IS NULL` 的行去重（**scoped 的 pending 不吞全库**） | `internal/reporting/handlers.go:687-718`（校验 → `RefuseBankWideIfScoped` → `requireBank` → scoped/全库分派）、`:766-795`（`parseConsolidationRequest`）；`internal/storage/postgres_enqueue.go:187-204`（`task_payload->'observation_scopes' IS NULL`）、`internal/storage/consolidation_scope.go:244-290` | **无代码改动（复核）**：`{"observation_scopes": null}` 与省略该成员同档（`deduplicated:true`，折叠进 pending 全库 pass），`{"observation_scopes": []}` 恒 `false`，两侧一致。**第二轮措辞更正**：第二轮把「显式 null 成员」归入「每次都新 op」一档是错的——参考的判据是 `dedupe = observation_scopes is None`（`engine/memory_engine.py:22822`），显式 null 解码后同样是 `None`，因此与省略同档、照常去重；只有**非 null 列表**（含 `[]`）才永不去重。本轮曾试加一处 `consolidationBodyNamesScopes` 的防御判据，实测在全部可达输入上都被 `!= nil` 覆盖、无任何可观测变化，按「最小正确 diff」与「改动必须可证伪」两条已**回退**，现实现保持原样 | 线上**逐字节 `SAME`**：未知 bank 空 body/`{}`/`null`/scoped → 404 `Bank 'rt-ghost-ob4' not found`；422 逐字节同体（`[[1]]`/`[1]`/`"x"`/`[]`/`5`→`model_attributes_type loc:["body"]`；`{"observation_scopes":[["a"],"b"]}`→`list_type loc:[…,1]`；`{"observation_scopes":[["a",1]]}`→`string_type loc:[…,0,1]`）；真实 bank：`[]` 三次连打两侧都 `deduplicated:false` 且各有新 op；空 body/`{}`/`null`/`{"bogus":1}`/`{"observation_scopes":null}` 在**同一银行、无别的 pending** 时两侧都把同一次提交折叠进前一次的 pending（`{"observation_scopes":null}` 实测：参考 `deduplicated:true` 且 `operation_id` 与上一次全库提交相同，本服务同）。⚠️ **去重的对照实验只能在同一银行、同一 pending 生命周期内做**：我最初把「全库 ×2 连打」当作对照，得到两侧布尔序列错位（`true/false` vs `false/true`），追查后确认是两侧 worker 消费 pending 的毫秒级时序差异（PLAN §4 的噪声），不是缺陷——改成「先造一条 pending、再发一次请求、看是否折叠」后两侧稳定 `SAME` |
+
+**本单元结论计数（按 API）：✅ 6 / ❌ 0 / ⚠️ 0 / ⛔ 0。**
+
+### 需要组长裁决 / 跨作用域事项
+
+1. **#37 曾试加的一处防御判据已回退（组长裁决）**。`parseConsolidationRequest` 里曾加过
+   `|| consolidationBodyNamesScopes(body)`，让「body 里 `observation_scopes` 是非 null 列表 → scoped」不再依赖
+   nil 切片。实测该判据在**全部可达输入上都被 `req.ObservationScopes != nil` 覆盖**：`{"observation_scopes": null}` 仍
+   `scoped=false`（→ 全库 `EnqueueConsolidation` → 折叠进 pending → `deduplicated:true`，正是参考的行为），`[]` 仍
+   `scoped=true`（`DecodeLax` 给空数组分配非 nil 切片 → scoped 路径 → 恒 `false`）。没有任何可观测行为改变、也拿不到
+   「改回去就 FAIL」的证伪，按 AGENTS.md「最小正确 diff」与「改动必须可证伪」两条**已回退**，`internal/reporting/handlers.go`
+   的 `parseConsolidationRequest` 回到原样，报告里这一条按「复核」记，不记为改动。
+
+2. **第二轮 #37 的记录需要更正**：第二轮写「`{"observation_scopes":[]}` 与 `{"observation_scopes":[["user:bob"]]}` 每次都新 op」✅，但同表把「`null` 成员」归到 `{"bogus":1}` 一档只在「body 无该成员」时成立；本轮实测参考对 **显式 null** 与 **无该成员** 都是 `None`（都去重）。本轮表格已按参考重写，第二轮的布尔序列结论（去重表）仍成立，只是措辞需要以本轮为准。
+3. **#36 的落点不在本单元写作用域**（`internal/reporting/memory_routes.go` 归 memory-crud）。本轮只读复核 + 线上差分，**未改**；其实现与参考对齐（`_require_writable` 无 scope 时不查 memory、`deleted_count > 0` 才 requeue/提交、`enable_auto_consolidation` 才提交）。
+4. **参考侧数据库不可直连**（`5432` 的 `user_devin` 密码未知、参考进程未设 `HINDSIGHT_API_DATABASE_URL`，用的是嵌入式 pg0），所以 #32/#35 的「写库行与列」只在**本服务侧**直查 `15432` 取证，参考侧只能看 HTTP 响应；两侧库不同本身是 PLAN §4 的已知噪声。
+5. **噪声提醒（不是缺陷）**：worker 常开时，`GET …/stats` 的 `total_links`/`total_documents`/`links_by_link_type` 两侧天然不同（我造了 3 个同名文档、参考合并成 1 个），`operations_by_status.completed` 累计值也不同；这些不在本单元 6 条 API 的契约里，未计入差异。
+
+
+## 第四轮 lead（补齐剩余 48 条：路由层 / 存储层 / app / 组长自证）
+
+> 第三轮只开了 52 条单元，剩余 **48 条**未做逐条取证。本轮把这 48 条按 `docs/parity-round/ROUND4.md`
+> 拆成 9 组查完（#19/#20、#26/#27、#28–#31、#32–#37、#38–#46、#53–#54、#55–#59、#60–#72、#73–#77）。
+> 方法、工具与噪声清单沿用 `docs/parity-round/PLAN.md`。
+
+### 0. 本轮补上的一条方法论缺陷：键序盲区
+
+第三轮与第四轮前期用的差分工具 `/tmp/rt/chk.py` 会**把 JSON 解析成 dict 再比较**，于是
+「成员相同、次序不同」被当成 `SAME`。**参考实现用 pydantic 响应模型，成员按声明序输出；本服务多处用
+`map[string]any`，Go 的 map 是乱序的**——这一整类差异都被漏掉了。
+
+修复：`chk.py` 改为 `object_pairs_hook=OrderedDict` 并保留迭代序比较（自测：同成员不同序 → 判为不同）。
+本轮 **6 处差异**正是靠这个才被发现（mental-models 单元的 5 处 + 组长复核的 1 处）。
+
+> 教训：**"一致"必须建立在能看见被比对象的工具上**。凡是拿 `map[string]any` 渲染响应的地方，
+> 都要单独确认键序。
+
+### 1. 组长自证（#19–#20、#53–#54、#55–#59、#60–#72、#73–#77）
+
+| # | API | 结论 | 参考证据 | 修复 / 验证 |
+|---|---|---|---|---|
+| 19 | `PATCH .../config` | ✅一致 | `api/http.py:9641` | 11 组 body（合法键、未知键、null/[]、`updates` 非对象、类型错、`recall_budget` 反转、`CHUNKS`/`bogus`、`disposition` 越界、`retain_chunk_size` 0/-1）两侧全 SAME |
+| 20 | `DELETE .../config` | ✅一致 | `api/http.py:9678` | 正常/未知 bank/重复删 全 SAME |
+| 53 | `PATCH .../knowledge-base/nodes/{id}` | ❌已修 | 参考的 no-op 守卫是 `trigger is not None`（`engine/memory_engine.py:19917-19918`），而 HTTP 层传的是 `model_dump(exclude_unset=True)`——`{"trigger": {}}` 得到 `{}`（非 None），是**已提供**的 page option | `internal/reporting/knowledge_body.go` 的 `knowledgeUpdateTrigger`：空对象返回 supplied=true。实测 `{"trigger":{}}` 两侧同为「节点不存在」、`{}` 两侧同为 400 no-op。用例 `TestKnowledgeNodeEmptyTriggerObjectIsSupplied`；**证伪** → `empty trigger object = 400: {"detail":"Provide name, parent_id, ..."}` FAIL |
+| 54 | `DELETE .../knowledge-base/nodes/{id}` | ✅一致 | `api/http.py:7589` | 幻影 id / 未知 bank 全 SAME |
+| 55 | `GET .../directives` | ✅一致 | `api/http.py:7620`；排序 `priority DESC, created_at DESC, id DESC`（`engine/memory_engine.py:20812`） | 4 条受控 priority 的指令两侧**同序**；`limit=0/1001/abc/`空值、`offset=-1`、`active_only=false/bogus`、`tags_match=bogus`、`tags=a`、重复参数、未知 bank 共 11 组全 SAME |
+| 56 | `GET .../directives/{id}` | ✅一致 | `api/http.py:7669` | 幻影 id / 非 UUID / urn 形式 全 SAME |
+| 57 | `POST .../directives` | ✅一致 | `api/http.py:7699` + `CreateDirectiveRequest` | 12 组校验全 SAME |
+| 58 | `PATCH .../directives/{id}` | ✅一致 | `api/http.py:7734` + `UpdateDirectiveRequest`（五成员全可空） | 各字段单改、`tags:[]`/`tags:null` 清除、`priority:null` 不改、`{}`、类型错 全 SAME |
+| 59 | `DELETE .../directives/{id}` | ✅一致 | `api/http.py:7771` | 正常删（`{"status":"deleted"}`）、重复删 404、非 UUID、未知 bank 全 SAME |
+| 60 | `GET .../graph` | ✅一致（结构） | `engine/memory_engine.py:12527-12860` | nodes/edges/table_rows 计数与键结构一致；`limit=0`、`type=bogus` SAME。**内容差异来自模型随机产出** |
+| 61 | `GET .../entities` | ❌已修 | 排序 `mention_count DESC, last_seen DESC, id ASC`（`engine/memories/pg/curation.py:545`）；新实体日期 `COALESCE(event_date, now())`（`engine/db/ops_postgresql.py:399-409`）、记账 `GREATEST(last_seen, $3)`（`entity_resolver.py:550-562`），日期取 `occurred_start ?? mentioned_at`（`engine/retain/entity_processing.py:107`） | `internal/storage/postgres_retain.go`：新建实体按来源事实事件日期写 `first_seen/last_seen`（原为写入时钟 `now()`）；新增 `upsertUnitEntitySeenAt` 按事件日期推进 `last_seen`；`memory_read_surface.go` 新增 `entityEventDate`/`unitEventDateOf`。实测同内容两侧 `first_seen/last_seen` **逐字相同**，按 `mention_count` 排序两侧同序（Bob 3 → Ann 1） |
+| 62 | `GET .../entities/graph` | ✅一致（结构） | `api/http.py:6796` | 节点/边结构与参考同形 |
+| 63 | `GET .../entities/{id}` | ✅一致 | `api/http.py:6838` | 两侧各取自己的 id：字段集与键序**完全相同**；幻影/非 UUID SAME |
+| 64 | `POST .../entities/{id}/regenerate` | ✅一致 | `api/http.py:6895` | 幻影实体 SAME |
+| 65 | `GET .../documents` | ✅一致 | `api/http.py:7801` | 有数据时逐字节 SAME；未知 bank、`limit=abc` SAME |
+| 66 | `GET .../documents/{id}/chunks` | ✅一致 | `api/http.py:7873` | 幻影文档 SAME |
+| 67 | `POST .../{id}/reprocess` | ✅一致 | `api/http.py:7929` | 幻影文档 SAME |
+| 68 | `GET .../documents/{id}` | ✅一致 | `api/http.py:7972` | 幻影文档 SAME |
+| 69 | `GET .../tags` | ✅一致 | `api/http.py:8009` | 有数据 / `q=x` 全 SAME |
+| 70 | `GET /v1/default/chunks/{chunk_id}` | ✅一致 | `api/http.py:8076` | 未知 chunk SAME |
+| 71 | `PATCH .../documents/{id}` | ✅一致 | `api/http.py:8115` | 幻影文档 SAME |
+| 72 | `DELETE .../documents/{id}` | ✅一致 | `api/http.py:8167` | 幻影文档 SAME |
+| 73 | `GET .../operations` | ❌已修（`progress`） | 参考在批次提交后留一条 durable `progress`：`stage="storing"`、`processed`/`total`、`detail={"facts_committed":n}`、带 `at`（`engine/retain/orchestrator.py:2866-2879` 写、`engine/memory_engine.py:5160-5179` 合并） | `internal/app/worker_retain.go` 通过 `ReportOutcome` 写该快照；`internal/storage/{enums,postgres_writes,memory_operations}.go` 的 `operationProgress` 从 `result_metadata.progress` 投影到 `Operation.Progress`。实测两侧 `progress` 对象**成员与序完全一致**（含 `at`）。用例 `TestQueuedRetainRecordsTheStoringProgress`；**证伪**（键改名）→ `result_metadata has no progress object` FAIL |
+| 73 | `GET .../operations`（其余） | ✅一致 | `api/http.py:8210` | 16 键**同序**；`type=`/`status=` 过滤、`limit`/`offset`、未知 bank、`limit=abc` 全 SAME |
+| 74 | `GET .../operations/{id}` | ✅一致 | `api/http.py:8258` | 详情 17 键**同序**（`operation_id, status, operation_type, id, task_type, …`）；幻影/非 UUID SAME |
+| 75 | `DELETE .../operations/{id}`（cancel） | ✅一致 | `api/http.py:8296` | 已完成的操作两侧同为 409 同文案；幻影/非 UUID SAME |
+| 76 | `POST .../{id}/retry` | ❌已修 | 参考**先**判 `operation_type == 'batch_retain' and task_payload is None`（`engine/memory_engine.py:21510-21567`），再到通用状态门；已完成且无未完成子批的父操作给「batch parent 无子任务」409，**不是**通用状态 409 | `internal/storage/{postgres_writes,memory_operations}.go` 的 `RetryOperation` 把 batch-parent 判据提到状态门之前（用 `operationIsParent(ResultMetadata)`，与参考的 payload-less parent 等价）。用例 `TestRetryCompletedBatchParentUsesTheBatchParentMessage`（**证伪** → `cannot be retried: status is 'completed'` FAIL）、`TestRetryCompletedRetainKeepsTheGenericConflict` |
+| 77 | `DELETE .../{id}/delete` | ✅一致 | `api/http.py:8363` | 已完成的操作两侧同为 200 `{"success":true,…,operation_id}`；幻影/非 UUID SAME |
+
+### 2. 本轮修掉的跨单元回归（由组长定位并修复）
+
+`internal/storage` 的 `RetryOperation` 判据一度写成 `OperationType == AsyncRetainType && Payload == nil`：
+`PutOperation` 会把 nil payload 归一成 `{}`，且 `IsParent` 在 `PutOperation` 里不填，于是**子操作也被当成
+batch parent** 走 batch 分支，`TestRetryBatchParentRequeuesFailedChildren` 稳定 FAIL。
+改为 `operationIsParent(ResultMetadata)` 后两个后端一致，该用例恢复通过。**这条是组长自己引入的回归，
+记在此处以免下一轮误以为是他人改动。**
+
+### 3. 本轮验证门（全绿）
+
+| 门 | 结果 |
+|---|---|
+| `CGO_ENABLED=0 go build ./...` | 通过 |
+| `CGO_ENABLED=0 go build -tags pgx ./...` | 通过 |
+| `go vet ./...` | 无输出 |
+| `gofmt -l .` | 空 |
+| `golangci-lint run ./...` | **No issues found** |
+| `go test -count=1 ./...` | **4392 passed / 50 packages** |
+
+### 4. 第四轮覆盖统计（48 条全部有结论）
+
+| 单元 | 条数 | 结论 |
+|---|---|---|
+| `monitor/bank-config`（#19–#20，组长） | 2 | ✅ 2 |
+| `recall-reflect`（#26–#27） | 2 | ❌ 2（4 处差异） |
+| `memory-crud`（#28–#31） | 4 | ✅ 2 / ❌ 2（4 处差异） |
+| `observations`（#32–#37） | 6 | ✅ 6（零差异） |
+| `mental-models`（#38–#46） | 9 | ✅ 4 / ❌ 5（6 处差异） |
+| `knowledge-extra`（#53–#54，组长） | 2 | ✅ 1 / ❌ 1 |
+| `directives`（#55–#59，组长） | 5 | ✅ 5 |
+| `read-surface`（#60–#72，组长） | 13 | ✅ 12 / ❌ 1 |
+| `operations`（#73–#77，组长） | 5 | ✅ 3 / ❌ 2 |
+
+**48 条：✅ 35 / ❌ 13 / ⚠️ 0 / ⛔ 0。** 累计本轮发现并修复的真实差异 **17 处**（每组内的多处差异见对应小节）。
+
+### 5. 第四轮之后仍存疑的（仅剩 4 条，均为"已定性"而非"未查"）
+
+1. `POST .../files/retain` 的顶层操作类型 `file_convert_retain`（需 storage + worker 结构性改造，不改变客户端契约）
+2. `dry-run-extract` 的 `verbatim` 模式（**参考自身缺陷**：`fact_text` 写、`fact` 读，照抄会让预览永远为空）
+3. `GET .../llm-requests` 的 `metadata` 回填与 `llm_info` 两成员（需 storage+memoryops+app.go 协同 / provider 端口加命名）
+4. `PATCH .../config` 的并发行锁（无线上证据，需并发压测）
+
+其余"存疑"均为**跨语言不可复刻**（无界整数驱动层、`python_*` 平台指标）或**参考缺陷**（空 `and` 子滤器 500）。

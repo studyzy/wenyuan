@@ -194,11 +194,25 @@ func errInvalidDeliveryCursor(cursor string) error {
 		cursor)
 }
 
-// parseDeliveryCursor reads a delivery pagination cursor. The cursor is the
-// created_at of the last row of the previous page, emitted in the reference's
-// PostgreSQL text form ("2006-01-02 15:04:05.999999+00"); RFC 3339 is also
-// accepted so a cursor minted by an older build keeps working.
+// parseDeliveryCursor reads a delivery pagination cursor.
+//
+// The reference accepts no cursor at all. Its handler declares the parameter as
+// a bare `str` and passes it straight to `created_at < $3::timestamptz`
+// (api/http.py:10006-10060, ops_postgresql.py:1410-1441), so asyncpg is asked
+// to bind a `str` for a timestamptz column and refuses every value — including
+// the `next_cursor` the reference's own response just minted
+// (api/http.py:10041), which makes its cursor paging impossible past the first
+// page. That is the observable contract, so this service answers the same way:
+// any non-empty cursor is refused with the adapter's error.
 func parseDeliveryCursor(cursor string) (time.Time, error) {
+	_ = cursor
+	return time.Time{}, errInvalidDeliveryCursor(cursor)
+}
+
+// parseDeliveryTimestamp reads a stored delivery timestamp, the cursor's
+// *source* rather than the cursor itself. It stays tolerant of the reference's
+// PostgreSQL text form and RFC 3339 for the rows already on disk.
+func parseDeliveryTimestamp(cursor string) (time.Time, error) {
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
@@ -259,7 +273,7 @@ func deliveryFromOperation(op Operation) WebhookDelivery {
 			delivery.LastResponseBody = &body
 		}
 		if attempt, ok := op.ResultMetadata["last_attempt_at"].(string); ok {
-			if parsed, err := parseDeliveryCursor(attempt); err == nil {
+			if parsed, err := parseDeliveryTimestamp(attempt); err == nil {
 				delivery.LastAttemptAt = &parsed
 			}
 		}

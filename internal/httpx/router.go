@@ -248,12 +248,36 @@ func rawPathMiddleware() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			escaped := req.URL.EscapedPath()
-			if raw := unrestrainedRawPath(escaped); raw != escaped {
+			if hasEscapedSlash(escaped) {
+				// The reference's router matches on the decoded path, so an
+				// escaped slash becomes a real separator and the path matches no
+				// route (a single-segment parameter cannot contain one). Go's mux
+				// matches on segments instead, so "%2F" would stay inside the
+				// captured value and reach the handler: a knowledge page id of
+				// "a/b" answered "not found" here where the reference answers the
+				// framework's 404. Letting the mux split it restores that.
+				req.URL.Path = unescapeEscapedSlashes(req.URL.Path)
+				req.URL.RawPath = ""
+			} else if raw := unrestrainedRawPath(escaped); raw != escaped {
 				req.URL.RawPath = raw
 			}
 			next.ServeHTTP(w, req)
 		})
 	}
+}
+
+// hasEscapedSlash reports whether the escaped path carries a %2F or %2f, the one
+// escape that changes how many segments the path has.
+func hasEscapedSlash(escapedPath string) bool {
+	return strings.Contains(escapedPath, "%2F") || strings.Contains(escapedPath, "%2f")
+}
+
+// unescapeEscapedSlashes turns "%2F"/"%2f" into "/" in an already-decoded path
+// that lost the information through double-encoding, leaving every other
+// character alone.
+func unescapeEscapedSlashes(decodedPath string) string {
+	decodedPath = strings.ReplaceAll(decodedPath, "%2F", "/")
+	return strings.ReplaceAll(decodedPath, "%2f", "/")
 }
 
 // unrestrainedRawPath escapes the elements the mux's path cleaning would

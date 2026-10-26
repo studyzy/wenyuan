@@ -178,25 +178,31 @@ func (s scope) resolved() (data, bankConfig, history bool) {
 // failure rather than a silent false.
 func scopeFromQuery(r *http.Request) (scope, *httpx.ValidationFailure) {
 	s := scope{Present: map[string]bool{}}
-	read := func(name string) (bool, *httpx.ValidationFailure) {
+	// Every present flag is validated, and EVERY failure is reported together in
+	// declaration order. The reference's framework binds the whole signature
+	// before the handler runs, so `?include_data=x&include_history=y` answers with
+	// two items, not one; stopping at the first would under-report. The
+	// declaration order here is the reference's parameter order
+	// (`include_data`, then `include_bank_config`, then `include_history`).
+	merged := &httpx.ValidationFailure{}
+	failed := false
+	read := func(name string) bool {
 		value, present, failure := queryBool(r, name)
 		if failure != nil {
-			return false, failure
+			failed = true
+			merged.Errors = append(merged.Errors, failure.Errors...)
+			return false
 		}
 		if present {
 			s.Present[name] = true
 		}
-		return value, nil
+		return value
 	}
-	var failure *httpx.ValidationFailure
-	if s.Data, failure = read("include_data"); failure != nil {
-		return scope{}, failure
-	}
-	if s.BankConfig, failure = read("include_bank_config"); failure != nil {
-		return scope{}, failure
-	}
-	if s.History, failure = read("include_history"); failure != nil {
-		return scope{}, failure
+	s.Data = read("include_data")
+	s.BankConfig = read("include_bank_config")
+	s.History = read("include_history")
+	if failed {
+		return scope{}, merged
 	}
 	return s, nil
 }

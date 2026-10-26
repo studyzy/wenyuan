@@ -278,20 +278,19 @@ func TestWebhookDeliveriesShapeAndCursor(t *testing.T) {
 		}
 	}
 
-	// The cursor is the last row's created_at as the reference reports it — the
-	// PostgreSQL text form, which contains a space — so a caller must
-	// URL-encode it before putting it in a query string.
+	// A non-empty cursor is the reference's own driver failure: it hands the raw
+	// string to asyncpg, which cannot bind it to the timestamptz parameter, so
+	// `created_at < $3` never runs and the client sees a 500. That includes
+	// echoing back the next_cursor the route just minted — the reference's cursor
+	// pagination is unusable for every caller. The status and the driver-error
+	// shape are contract; the exact driver sentence is not (see
+	// docs/CONTRACT-AUDIT.md §5 item 6), so only the envelope is asserted here.
 	next := send(mux, http.MethodGet, base+"/"+webhook.ID+"/deliveries?limit=2&cursor="+url.QueryEscape(*page.NextCursor), "")
-	var second struct {
-		Items []struct {
-			ID string `json:"id"`
-		} `json:"items"`
+	if next.Code != http.StatusInternalServerError {
+		t.Fatalf("cursor=%q: %d, want 500 (body %s)", *page.NextCursor, next.Code, next.Body.String())
 	}
-	if err := json.Unmarshal(next.Body.Bytes(), &second); err != nil {
-		t.Fatal(err)
-	}
-	if len(second.Items) != 1 || second.Items[0].ID != "op-1" {
-		t.Fatalf("second page = %+v (status %d, body %s)", second.Items, next.Code, next.Body.String())
+	if detail := errorDetail(t, next); !strings.Contains(detail, "invalid input for query argument $3") {
+		t.Fatalf("cursor detail = %q, want the query-argument driver error", detail)
 	}
 }
 

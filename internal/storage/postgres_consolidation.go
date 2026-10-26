@@ -174,6 +174,11 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 	// names the column (engine/memories/pg/consolidation.py:268-320), so the row
 	// carries NULL and a recall result reports `context: null` rather than "".
 	unit := MemoryUnit{BankID: bankID, Text: text, FactType: TypeObservation, ContextAbsent: true}
+	bounds, err := s.sourceObservationBounds(ctx, bankID, sourceIDs)
+	if err != nil {
+		return "", err
+	}
+	bounds.ApplyTo(&unit)
 	unit.Embedding = embedObservation(ctx, s.observationEmbedder, text)
 	stored, err := s.UpsertUnit(ctx, unit)
 	if err != nil {
@@ -198,10 +203,25 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 			return err
 		}
 	}
+	// The temporal columns widen with the new sources rather than being stamped
+	// with the write clock. The reference merges the sources' bounds into the
+	// observation's (consolidator.py:257-262, whose comment names the
+	// LEAST/GREATEST used here), keeping the earliest event/start and the latest
+	// end/mention; PostgreSQL's LEAST/GREATEST already ignore NULL arguments,
+	// which is the "a missing value on either side is ignored" half of the rule.
+	sources, err := s.sourceObservationBounds(ctx, bankID, sourceIDs)
+	if err != nil {
+		return err
+	}
 	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
-	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "''", "''") + `, mentioned_at = now()
+	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "''", "''") + `,
+	              event_date = LEAST(event_date, $5),
+	              occurred_start = LEAST(occurred_start, $6),
+	              occurred_end = GREATEST(occurred_end, $7),
+	              mentioned_at = GREATEST(mentioned_at, $8)
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $4`
-	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation))
+	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation),
+		sources.EventDate, sources.OccurredStart, sources.OccurredEnd, sources.MentionedAt)
 	if err != nil {
 		return err
 	}
@@ -492,4 +512,39 @@ func (s *PostgresStore) linkObservationSources(ctx context.Context, observationI
 // decoder so every array column is read the same way.
 func decodeTextArray(encoded string) []string {
 	return decodePostgresTextArray([]byte(encoded))
+}
+
+// sourceObservationBounds aggregates the temporal bounds a fact set hands to the
+// observation it is folded into, reading the facts' own columns. The reference's
+// rule is `_aggregate_source_fields` (consolidator.py:838-860): earliest
+// event_date and occurred_start, latest occurred_end and mentioned_at.
+func (s *PostgresStore) sourceObservationBounds(ctx context.Context, bankID string, sourceIDs []string) (ObservationBounds, error) {
+	if len(sourceIDs) == 0 {
+		return ObservationBounds{}, nil
+	}
+	query := `SELECT event_date, occurred_start, occurred_end, mentioned_at
+	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
+	rows, err := s.db.QueryContext(ctx, query, bankID, sourceIDs)
+	if err != nil {
+		return ObservationBounds{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	sources := make([]MemoryUnit, 0, len(sourceIDs))
+	for rows.Next() {
+		var unit MemoryUnit
+		var eventDate, occurredStart, occurredEnd, mentionedAt sql.NullTime
+		if err := rows.Scan(&eventDate, &occurredStart, &occurredEnd, &mentionedAt); err != nil {
+			return ObservationBounds{}, err
+		}
+		unit.EventDate = nullTimePtr(eventDate)
+		unit.OccurredStart = nullTimePtr(occurredStart)
+		unit.OccurredEnd = nullTimePtr(occurredEnd)
+		unit.MentionedAt = nullTimePtr(mentionedAt)
+		sources = append(sources, unit)
+	}
+	if err := rows.Err(); err != nil {
+		return ObservationBounds{}, err
+	}
+	return AggregatedObservationBounds(sources), nil
 }

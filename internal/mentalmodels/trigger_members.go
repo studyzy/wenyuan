@@ -14,7 +14,12 @@ import (
 // reports one member's items before the next one's, whatever order the client
 // sent them in.
 var (
-	// triggerMemberOrder is every declared member, in declaration order.
+	// triggerMemberOrder is every declared member, in declaration order — the
+	// order the reference's `MentalModelTrigger` declares them
+	// (api/http.py:3199-3389), which is also the order a rendered trigger
+	// reaches the wire in. It is exported-in-package as `triggerMemberOrder`
+	// and reused by normalizeTrigger so the projection and the validation walk
+	// cannot disagree about the member set or its order.
 	triggerMemberOrder = []string{
 		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
 		"min_refresh_interval_seconds", "fact_types", "exclude_mental_models",

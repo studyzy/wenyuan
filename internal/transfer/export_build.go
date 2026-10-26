@@ -1,10 +1,13 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/hindsightarchive"
@@ -100,10 +103,22 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	archive.Attachments = attachments
 	archive.Blobs = blobs
 
-	// A document subset carries no bank-level sections: observations can span
-	// documents outside the subset, and the bank's configuration describes the
-	// whole of it.
-	if len(opts.DocumentIDs) == 0 {
+	// Two producers write an archive here, and they write different things.
+	//
+	// A whole-bank export (opts.Scope.Any()) is engine/transfer/export.py's
+	// stream_export_bank: the documents, the observations, the attachment bytes,
+	// the data tables, the synthesized knowledge and the bank config, each
+	// selected by scope. A document export (a document subset, or the older
+	// document-transfer route with no scope at all) is stream_export_documents:
+	// documents only, plus observations and the knowledge base when asked for —
+	// and its manifest declares `archive_type: "documents"` with `scope: null`.
+	//
+	// Deciding by `opts.Scope.Any()` rather than by "are there document ids"
+	// matters: a whole-bank export with every scope flag off is refused by the
+	// route before it reaches here, while a document export legitimately carries
+	// no scope — and used to be written as a bank archive with an all-false
+	// scope and a data section, which the reference's document export never has.
+	if opts.Scope.Any() {
 		if opts.Scope.Data || opts.IncludeObservations || opts.IncludeKnowledgeBase {
 			if opts.IncludeObservations {
 				observations, err := buildObservations(ctx, store, bankID, unitLocations)
@@ -591,7 +606,7 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 	built := hindsightarchive.Document{
 		ID:           document.ID,
 		OriginalText: document.OriginalText,
-		RetainParams: document.RetainParams,
+		RetainParams: archiveRetainParams(document.RetainParams),
 		Tags:         document.Tags,
 	}
 	if !document.CreatedAt.IsZero() {
@@ -646,6 +661,22 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 		locations[unit.ID] = hindsightarchive.ObservationSource{DocumentID: document.ID, FactIndex: ordinal}
 	}
 	return built, locations, nil
+}
+
+// archiveRetainParams renders a stored document's retain parameters the way the
+// reference's payload carries them.
+//
+// The column is `jsonb NOT NULL DEFAULT '{}'`, so the reference's `SELECT *`
+// hands back a dict: an empty one for a document retained without parameters.
+// This service keeps the same column, but reads an empty object back as a nil
+// map, so a document with no parameters must still be written as `{}` — a
+// `null` there is a value the reference's model refuses for the field, and its
+// reader validates every document payload before replaying it.
+func archiveRetainParams(params map[string]any) map[string]any {
+	if params == nil {
+		return map[string]any{}
+	}
+	return params
 }
 
 // loadChunks reads every chunk of a document in index order.
@@ -833,37 +864,72 @@ func buildBankConfig(ctx context.Context, store storage.Store, bankID string) ([
 }
 
 // mentalModelRow renders a mental model as the row shape the archive carries.
-// The field names mirror the stored column names, so an archive produced here
-// and one produced by the reference describe the same model the same way.
+//
+// The reference dumps the table with `SELECT *` (engine/transfer/export.py:431),
+// so the row is the whole table row minus the two derived columns it strips
+// (`embedding`, `search_vector`): every declared column appears, explicitly
+// null when the column holds nothing. An archive that named only the columns
+// this service happens to project would drop the fields the reference's own
+// columns carry — `last_refreshed_source_query`, `entity_id`,
+// `last_memory_seen_at`, `last_refresh_failed_at` — and every missing key would
+// read back as null on a restore.
 func mentalModelRow(model storage.MentalModel) map[string]any {
 	row := map[string]any{
-		"id":                model.ID,
-		"bank_id":           model.BankID,
-		"subtype":           string(model.Subtype),
-		"name":              model.Name,
-		"description":       model.Description,
-		"source_query":      model.SourceQuery,
-		"content":           model.Content,
-		"tags":              nonNilStrings(model.Tags),
-		"max_tokens":        model.MaxTokens,
-		"links":             nonNilStrings(model.Links),
-		"last_refreshed_at": timeOrNil(model.LastRefreshedAt),
-		"last_updated":      timeOrNil(model.LastUpdated),
-		"created_at":        timeOrNil(model.CreatedAt),
-	}
-	if model.Observations != nil {
-		row["observations"] = model.Observations
-	}
-	if model.Trigger != nil {
-		row["trigger"] = model.Trigger
-	}
-	if model.Structured != nil {
-		row["structured_content"] = model.Structured
-	}
-	if model.ReflectResult != nil {
-		row["reflect_response"] = model.ReflectResult
+		"id":                          model.ID,
+		"bank_id":                     model.BankID,
+		"name":                        model.Name,
+		"source_query":                model.SourceQuery,
+		"content":                     model.Content,
+		"tags":                        nonNilStrings(model.Tags),
+		"last_refreshed_at":           nullableTime(model.LastRefreshedAt),
+		"created_at":                  nullableTime(model.CreatedAt),
+		"reflect_response":            jsonTextPtr(model.ReflectResult),
+		"max_tokens":                  model.MaxTokens,
+		"trigger":                     jsonTextPtr(model.Trigger),
+		"last_refreshed_source_query": nullableString(model.LastRefreshedSourceQuery),
+		"structured_content":          jsonTextPtr(model.Structured),
+		"subtype":                     string(model.Subtype),
+		"description":                 model.Description,
+		"entity_id":                   nullableString(model.EntityID),
+		"observations":                jsonTextPtr(model.Observations),
+		"links":                       nullableStrings(model.Links),
+		"last_updated":                nullableTime(model.LastUpdated),
+		"last_memory_seen_at":         nullableTimePtr(model.LastMemorySeenAt),
+		"last_refresh_failed_at":      nullableTimePtr(model.LastRefreshFailedAt),
 	}
 	return row
+}
+
+// jsonTextPtr renders a jsonb column's value as its JSON text, or null when the
+// column holds nothing. The row files travel as `bank_rows_json_encoding:
+// "serialized"`, so every jsonb member is text rather than a decoded object.
+func jsonTextPtr(value map[string]any) any {
+	if value == nil {
+		return nil
+	}
+	return jsonText(value)
+}
+
+// nullableTime renders a timestamp column, or null when it was never set.
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return timeOrNil(value)
+}
+
+// nullableTimePtr renders an optional timestamp column, or null when unset.
+func nullableTimePtr(value *time.Time) any { return timeOrNil2(value) }
+
+// nullableStrings renders a text[] column, or null when the column holds NULL.
+// The reference distinguishes an empty array from NULL on this column (its
+// default is no array at all), so the distinction is carried rather than
+// collapsed.
+func nullableStrings(values []string) any {
+	if values == nil {
+		return nil
+	}
+	return values
 }
 
 // directiveRow renders a directive as the archive's row shape.
@@ -927,20 +993,167 @@ func jsonText(value any) string {
 	if value == nil {
 		return "{}"
 	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "{}"
+	// The reference's connection hands back a jsonb column as the text the
+	// database stores it in, and PostgreSQL renders that text its own way (see
+	// pgJSONText): keys ordered by length then bytewise, and a space after every
+	// ':'. Go's encoder writes `{"a":1,"b":[1,2]}` in insertion order, so the
+	// value is re-rendered here rather than passed through.
+	return pgJSONText(value)
+}
+
+// pgJSONText renders a value the way PostgreSQL renders a jsonb column as text.
+//
+// jsonb does not preserve the order an object was written in: it stores the
+// pairs sorted by key length and then bytewise (jsonb_object_ordering), and its
+// text output puts `": "` and `", "` between members and items. Reproducing both
+// here is what makes an archive's jsonb members compare equal to the
+// reference's — the archive carries the column's TEXT, so the text is the value.
+func pgJSONText(value any) string {
+	var out bytes.Buffer
+	writePGJSON(&out, value)
+	return out.String()
+}
+
+// writePGJSON writes one value in PostgreSQL's jsonb text form.
+func writePGJSON(out *bytes.Buffer, value any) {
+	switch typed := value.(type) {
+	case nil:
+		out.WriteString("null")
+	case bool:
+		if typed {
+			out.WriteString("true")
+		} else {
+			out.WriteString("false")
+		}
+	case json.Number:
+		out.WriteString(typed.String())
+	case float64:
+		out.WriteString(strconv.FormatFloat(typed, 'g', -1, 64))
+	case int:
+		out.WriteString(strconv.Itoa(typed))
+	case int64:
+		out.WriteString(strconv.FormatInt(typed, 10))
+	case string:
+		writePGJSONString(out, typed)
+	case []string:
+		items := make([]any, len(typed))
+		for index, item := range typed {
+			items[index] = item
+		}
+		writePGJSON(out, items)
+	case []any:
+		out.WriteByte('[')
+		for index, item := range typed {
+			if index > 0 {
+				out.WriteString(", ")
+			}
+			writePGJSON(out, item)
+		}
+		out.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if len(keys[i]) != len(keys[j]) {
+				return len(keys[i]) < len(keys[j])
+			}
+			return keys[i] < keys[j]
+		})
+		out.WriteByte('{')
+		for index, key := range keys {
+			if index > 0 {
+				out.WriteString(", ")
+			}
+			writePGJSONString(out, key)
+			out.WriteString(": ")
+			writePGJSON(out, typed[key])
+		}
+		out.WriteByte('}')
+	default:
+		// Anything else (a struct, a decoded numeric type) is rendered by the
+		// standard encoder and then re-spaced, which keeps the function total
+		// without inventing an order for a type jsonb never receives.
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			out.WriteString("null")
+			return
+		}
+		out.WriteString(pyJSONSpacing(encoded))
 	}
-	return string(encoded)
+}
+
+// writePGJSONString writes a JSON string with the escapes PostgreSQL uses: the
+// two-character sequences, and control characters as \uXXXX in lower case hex.
+func writePGJSONString(out *bytes.Buffer, value string) {
+	out.WriteByte('"')
+	for _, char := range value {
+		switch char {
+		case '"':
+			out.WriteString(`\"`)
+		case '\\':
+			out.WriteString(`\\`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\b':
+			out.WriteString(`\b`)
+		case '\f':
+			out.WriteString(`\f`)
+		default:
+			if char < 0x20 {
+				fmt.Fprintf(out, `\u%04x`, char)
+				continue
+			}
+			out.WriteRune(char)
+		}
+	}
+	out.WriteByte('"')
+}
+
+// pyJSONSpacing inserts the space PostgreSQL's jsonb output puts after every
+// object-level ':' and removes the one a comma may carry. String literals are
+// copied verbatim, so a ':' inside a value is never touched.
+func pyJSONSpacing(encoded []byte) string {
+	out := make([]byte, 0, len(encoded)+8)
+	inString := false
+	escaped := false
+	for index := 0; index < len(encoded); index++ {
+		ch := encoded[index]
+		switch {
+		case escaped:
+			escaped = false
+			out = append(out, ch)
+		case inString && ch == '\\':
+			escaped = true
+			out = append(out, ch)
+		case ch == '"':
+			inString = !inString
+			out = append(out, ch)
+		case !inString && ch == ':':
+			out = append(out, ':', ' ')
+		case !inString && ch == ' ':
+			// A space outside a string is layout the database never emits.
+		default:
+			out = append(out, ch)
+		}
+	}
+	return string(out)
 }
 
 // dispositionJSON renders the bank's graded traits as the object the archive
-// carries.
-func dispositionJSON(disposition map[string]int) map[string]int {
-	if disposition == nil {
-		return map[string]int{}
+// carries, in the general-purpose map shape jsonText knows how to render the way
+// PostgreSQL would.
+func dispositionJSON(disposition map[string]int) map[string]any {
+	out := make(map[string]any, len(disposition))
+	for key, value := range disposition {
+		out[key] = value
 	}
-	return disposition
+	return out
 }
 
 // archiveScopeList carries a stored observation scope onto the archive

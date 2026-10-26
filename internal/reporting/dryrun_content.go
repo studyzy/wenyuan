@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/entitylabels"
 	"github.com/studyzy/wenyuan/internal/httpx"
 )
 
@@ -235,4 +236,44 @@ func dryRunAttachmentErrors(prefix []string, tag string, block map[string]any) [
 			append(append([]string{}, sourceLoc...), "data"), "Input should be a valid string", rawData, nil))
 	}
 	return errors
+}
+
+// dryRunEntityLabelFailure reports each problem the reference's LabelGroup model
+// finds in a supplied entity_labels override, filed at the path the framework
+// names it at: body, entity_labels, then the group's index and the member path.
+// The reference validates the list as `list[LabelGroup]`, so the index is the
+// group's position in what the caller sent; a group that is not an object is
+// reported at its own index with the model-shape failure.
+func dryRunEntityLabelFailure(labels []map[string]any) *httpx.ValidationFailure {
+	groups := make([]any, 0, len(labels))
+	for _, group := range labels {
+		groups = append(groups, group)
+	}
+	problems := entitylabels.Problems(groups)
+	if len(problems) == 0 {
+		return nil
+	}
+	// A report is produced for the first rejected group only (the reference
+	// validates the group list with a comprehension), so its index is the first
+	// group the model refuses.
+	index := 0
+	for position, group := range labels {
+		if entitylabels.Problems([]any{group}) != nil {
+			index = position
+			break
+		}
+	}
+	errors := make([]httpx.ValidationError, 0, len(problems))
+	for _, problem := range problems {
+		loc := []string{"body", "entity_labels", strconv.Itoa(index)}
+		if problem.Path != "" {
+			loc = append(loc, strings.Split(problem.Path, ".")...)
+		}
+		var ctx any
+		if problem.Ctx != nil {
+			ctx = problem.Ctx
+		}
+		errors = append(errors, httpx.ValidationItem(problem.Kind, loc, problem.Msg, problem.Input, ctx))
+	}
+	return &httpx.ValidationFailure{Errors: errors}
 }

@@ -170,3 +170,67 @@ func TestAsyncRetainRaisesNoEventWhenTheWriteFails(t *testing.T) {
 		t.Fatalf("a failed write raised %d events, want none", len(events))
 	}
 }
+
+// A finished queued retain leaves the reference's `progress` object on its
+// operation.
+//
+// The reference's heartbeat merges a `progress` member into the operation's
+// result_metadata, and the snapshot its retain leaves after the batch commits is
+// `stage="storing"`, `processed`/`total`, `detail={"facts_committed": n}` with an
+// `at` timestamp (engine/retain/orchestrator.py:2866-2879, written by
+// engine/memory_engine.py:5160-5179). This service recorded no progress at all
+// for a retain, so the operation list answered `progress: null` where the
+// reference answers an object.
+func TestQueuedRetainRecordsTheStoringProgress(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore("public")
+	application, err := New(ctx, testConfig(), Dependencies{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "prog-bank", Name: "prog-bank"}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"items":[{"content":"Alice moved to Berlin."}],"async":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/default/banks/prog-bank/memories", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	application.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	drainUntilSettled(t, store, "prog-bank")
+
+	page, err := store.ListOperations(ctx, storage.OperationQuery{BankID: "prog-bank", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retain *storage.Operation
+	for i := range page.Operations {
+		if page.Operations[i].OperationType == storage.OperationTypeRetain {
+			retain = &page.Operations[i]
+		}
+	}
+	if retain == nil {
+		t.Fatal("no retain operation ran the queued write")
+	}
+	progress, ok := retain.ResultMetadata["progress"].(map[string]any)
+	if !ok {
+		t.Fatalf("result_metadata has no progress object: %v", retain.ResultMetadata)
+	}
+	for _, key := range []string{"stage", "at", "processed", "total", "detail"} {
+		if _, present := progress[key]; !present {
+			t.Fatalf("progress = %v, want the reference's %q member", progress, key)
+		}
+	}
+	if progress["stage"] != "storing" {
+		t.Fatalf("stage = %v, want storing", progress["stage"])
+	}
+	detail, ok := progress["detail"].(map[string]any)
+	if !ok {
+		t.Fatalf("detail = %v, want an object", progress["detail"])
+	}
+	if _, present := detail["facts_committed"]; !present {
+		t.Fatalf("detail = %v, want facts_committed", detail)
+	}
+}

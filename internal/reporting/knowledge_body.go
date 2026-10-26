@@ -84,20 +84,6 @@ func readKnowledgeBodyObject(r *http.Request) (map[string]any, bool) {
 	return object, isObject
 }
 
-// knowledgeVerbatimObject returns the body's own decoded object. The typed
-// decode consumes a body whose members it could not coerce without keeping the
-// object it read, so the request-scoped copy is consulted first and the object
-// the raw decode returned — which the same call produced — answers otherwise.
-func knowledgeVerbatimObject(r *http.Request, decoded map[string]any) (map[string]any, bool) {
-	if object, ok := readKnowledgeBodyObject(r); ok && len(object) > 0 {
-		return object, true
-	}
-	if len(decoded) > 0 {
-		return decoded, true
-	}
-	return nil, false
-}
-
 // knowledgeCreateFieldOrder is the create body's declaration order. The
 // reference's model declares name, parent_id, source_query, tags, max_tokens and
 // trigger, and its field checks run in that order regardless of the order the
@@ -148,16 +134,31 @@ func decodeKnowledgeCreateBody(r *http.Request, target any, kind storage.Knowled
 	// The fields are checked against the body's own view. The typed decode drops a
 	// value it could not coerce, and the reference's model reports every wrong
 	// member in one run rather than stopping at the first.
-	fields := object
-	if rawObject, ok := knowledgeVerbatimObject(r, verbatim); ok {
-		fields = rawObject
+	fields := map[string]any{}
+	for name, value := range object {
+		fields[name] = value
+	}
+	if rawObject, ok := readKnowledgeBodyObject(r); ok {
+		for name, value := range rawObject {
+			fields[name] = value
+		}
+	} else if len(verbatim) > 0 {
+		for name, value := range verbatim {
+			fields[name] = value
+		}
 	}
 	// The reference reports a model's items in declaration order, one stage per
 	// member: a member it found missing or received as null is reported where that
 	// member is declared, and its own value checks follow at the same position.
 	// That is why `{"tags":1,"name":2}` reports name before source_query, and why a
 	// body naming no question but carrying a bad tag list reports both.
+	required := knowledgeCreateRequiredNames(kind)
+	// firstSlotAfter is where the late absent-required group starts: right after
+	// the first required member's own items, when it has any. -1 until one is
+	// recorded.
+	firstSlotAfter := -1
 	var items []httpx.ValidationError
+	var missing []string
 	nulled := make(map[string]bool, 2)
 	// A folder body declares `name` then `parent_id`; a page body declares both
 	// plus the page options, so the loop covers every member either form has.
@@ -168,28 +169,109 @@ func decodeKnowledgeCreateBody(r *http.Request, target any, kind storage.Knowled
 			// at them.
 			continue
 		}
-		required := knowledgeCreateFieldRequired(field, kind)
+		isRequired := knowledgeCreateFieldRequired(field, kind)
 		value, present := fields[field]
-		switch {
-		case required && !present:
-			items = append(items, httpx.Missing([]string{"body", field}, fields))
+		// pydantic 2 does not report a body's absent required members at their own
+		// slot: they are collected and reported after the present members have
+		// been validated (see the splice below). A member present but null is an
+		// ordinary item in its own slot (`string_type`), not one of them.
+		if isRequired && !present {
+			missing = append(missing, field)
 			continue
-		case required && value == nil:
+		}
+		if isRequired && value == nil {
 			items = append(items, httpx.TypeMismatch("string_type", []string{"body", field}, nil))
+			// A null required member is a value item like any other, so the late
+			// group anchors after it.
+			if len(required) > 0 && field == required[0] {
+				firstSlotAfter = len(items)
+			}
 			nulled[field] = true
 			continue
 		}
 		if nulled[field] {
 			continue
 		}
+		// The item echoes the rejected value itself, not the whole body (see the
+		// Echo note on the failure below).
+		before := len(items)
 		items = append(items, knowledgeCreateFieldItems(field, fields, fields)...)
+		if firstSlotAfter < 0 && len(items) > before && field == required[0] {
+			firstSlotAfter = len(items)
+		}
 	}
+	// The absent required members are spliced in after the present members have
+	// been checked. Two measured positions bound where: `{"tags":"a"}` answers
+	// missing name, missing source_query, list_type tags — the group starts at the
+	// last required member's slot (source_query); and `{"parent_id":5}` answers
+	// missing name, missing source_query, string_type parent_id — the group still
+	// comes before the first required member that IS present.
+	late := make([]httpx.ValidationError, 0, len(missing))
+	for _, absent := range missing {
+		late = append(late, httpx.Missing([]string{"body", absent}, fields))
+	}
+	if len(late) > 0 {
+		// Position (five measured shapes): at the first required member's slot. The
+		// group goes AFTER that slot's own item when it has one — `{"tags":1,"name":2}`
+		// answers string_type name, missing source_query, list_type tags — and
+		// ahead of every later slot: `{"parent_id":5}` answers missing name, missing
+		// source_query, string_type parent_id, and `{"source_query":{"a":0}}`
+		// answers missing name, string_type source_query. A bad optional member
+		// always comes last (`{"tags":"a"}`, `{"name":"x","trigger":"a"}`).
+		at := len(items)
+		if firstSlotAfter >= 0 {
+			at = firstSlotAfter
+		} else {
+			for i, item := range items {
+				if len(item.Loc) >= 2 && knowledgeCreateFieldRequired(item.Loc[1], kind) {
+					at = i
+					break
+				}
+			}
+		}
+		if at > len(items) {
+			at = len(items)
+		}
+		items = append(items[:at], append(late, items[at:]...)...)
+	}
+	items = hoistKnowledgeOptionalItems(items)
 	if len(items) > 0 {
 		// A `missing` item echoes the body, which the reference reports in the order
 		// the client wrote it.
-		return httpx.OrderWholeBodyFailure(r, &httpx.ValidationFailure{Errors: items})
+		// A `missing` item echoes the whole body; every other item echoes the value
+		// it rejected, and only the former takes the body's member order.
+		return httpx.OrderWholeBodyFailure(r, &httpx.ValidationFailure{Errors: items, Echo: verbatim})
 	}
 	return nil
+}
+
+// knowledgeOptionalMembers are the page body's members the reference's model
+// declares with a default, so a bad value of theirs is reported after the
+// required members' items and after the missing-member group.
+var knowledgeOptionalMembers = map[string]bool{"parent_id": true, "tags": true, "max_tokens": true, "trigger": true}
+
+// knowledgeOptionalField reports whether an item belongs to one of those members.
+func knowledgeOptionalField(loc []string) bool {
+	return len(loc) >= 2 && loc[0] == "body" && knowledgeOptionalMembers[loc[1]]
+}
+
+// hoistKnowledgeOptionalItems moves the items of members declared with a default
+// to the end of the list. See knowledgeOptionalMembers for why the order is this
+// one.
+func hoistKnowledgeOptionalItems(items []httpx.ValidationError) []httpx.ValidationError {
+	if len(items) == 0 {
+		return items
+	}
+	required := make([]httpx.ValidationError, 0, len(items))
+	optional := make([]httpx.ValidationError, 0, len(items))
+	for _, item := range items {
+		if knowledgeOptionalField(item.Loc) {
+			optional = append(optional, item)
+			continue
+		}
+		required = append(required, item)
+	}
+	return append(required, optional...)
 }
 
 // knowledgeDecodeRejectedAField reports whether a decode failure is one member
@@ -210,6 +292,17 @@ func knowledgeDecodeRejectedAField(failure *httpx.ValidationFailure) bool {
 	return false
 }
 
+// knowledgeOptionalItem is a validation item of a member the reference's model
+// declares with a default. It is hoisted to the end of the list when written:
+// pydantic reports a bad optional member after the required members' items
+// whatever order the fields are declared in, and also after the missing-member
+// group (`{"tags":"a"}` answers missing name, missing source_query, then
+// list_type tags; `{"name":"x","trigger":"a"}` answers missing source_query,
+// then model_attributes_type trigger).
+func knowledgeOptionalItem(itemType string, loc []string, input any) httpx.ValidationError {
+	return httpx.TypeMismatch(itemType, loc, input)
+}
+
 // knowledgeCreateFieldItems validates one create-body member against the
 // reference model's declaration for it and returns the items it was refused
 // with. An absent or null member is not a field failure — null is either the
@@ -227,28 +320,29 @@ func knowledgeCreateFieldItems(field string, object, verbatim map[string]any) []
 	case "tags":
 		list, ok := raw.([]any)
 		if !ok {
-			return []httpx.ValidationError{httpx.TypeMismatch("list_type", []string{"body", "tags"}, raw)}
+			// A bad optional member is the last item pydantic reports.
+			return []httpx.ValidationError{knowledgeOptionalItem("list_type", []string{"body", "tags"}, raw)}
 		}
 		var items []httpx.ValidationError
 		for index, entry := range list {
 			if _, ok := entry.(string); !ok {
-				items = append(items, httpx.TypeMismatch("string_type",
+				// An element of an optional member's list is still that member's
+				// item, so it is hoisted with the member.
+				items = append(items, knowledgeOptionalItem("string_type",
 					[]string{"body", "tags", strconv.Itoa(index)}, entry))
 			}
 		}
 		return items
 	case "parent_id":
 		if _, ok := raw.(string); !ok {
-			return []httpx.ValidationError{httpx.TypeMismatch("string_type",
-				[]string{"body", "parent_id"}, verbatim[field])}
+			return []httpx.ValidationError{knowledgeOptionalItem("string_type", []string{"body", "parent_id"}, verbatim[field])}
 		}
 	case "max_tokens":
 		// The reference's int field takes the framework's lax coercion and its
 		// unbounded Python range, so the parser the query parameters use answers
 		// here too: "500" and 500.0 are numbers, "abc" is not.
 		if _, ok := frameworkIntFromString(pythonIntegerRepr(raw)); !ok {
-			return []httpx.ValidationError{httpx.TypeMismatch("int_parsing",
-				[]string{"body", "max_tokens"}, verbatim[field])}
+			return []httpx.ValidationError{knowledgeOptionalItem("int_parsing", []string{"body", "max_tokens"}, verbatim[field])}
 		}
 	case "trigger":
 		// The trigger is a nested model, so its own checks produce its own items;
@@ -301,10 +395,15 @@ func knowledgeParentFromBody(raw json.RawMessage) (*string, *httpx.ValidationFai
 	return &value, nil
 }
 
-// knowledgeUpdateTrigger reads a `trigger` member of an update body. The
-// reference treats an absent member, an explicit null and an empty object alike
-// — none of them is a page option — so only a non-empty object is returned as a
-// supplied patch.
+// knowledgeUpdateTrigger reads a `trigger` member of an update body.
+//
+// An absent member and an explicit null are "not supplied"; a supplied object is
+// a page option even when it is empty. The reference passes the body's trigger
+// through `model_dump(exclude_unset=True)`, which is `{}` (not None) for an empty
+// object, and its no-op guard tests `trigger is not None` — so `{"trigger": {}}`
+// is a real, empty patch that reaches the node lookup and answers the node's own
+// 404/lookup rather than the "nothing to update" 400. Treating `{}` as absent
+// answered that 400 instead.
 func knowledgeUpdateTrigger(raw json.RawMessage) (map[string]any, bool, *httpx.ValidationFailure) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, false, nil
@@ -315,7 +414,7 @@ func knowledgeUpdateTrigger(raw json.RawMessage) (map[string]any, bool, *httpx.V
 			httpx.TypeMismatch("dict_type", []string{"body", "trigger"}, nil)}}
 	}
 	if len(object) == 0 {
-		return nil, false, nil
+		return nil, true, nil
 	}
 	if failure := mentalmodels.ValidateTriggerObject(object); failure != nil {
 		return nil, false, failure

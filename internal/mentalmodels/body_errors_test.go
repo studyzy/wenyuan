@@ -110,3 +110,80 @@ func TestMaxTokensBoundEchoesTheSentValue(t *testing.T) {
 		})
 	}
 }
+
+// max_tokens is declared as a plain `int` on a model with no strict mode, so the
+// framework's lax coercion binds it before the `ge`/`le` bound is checked: a
+// numeric string the way Python's int() reads one ("300", " 300 ", "300.0") and
+// a whole JSON float are all in range and accepted, while a value the coercion
+// refuses is the only item reported — never a bound failure on top of it.
+// Verified against the live reference on 2026-10-26, where `"300"` created the
+// model and `"abc"` answered one int_parsing item.
+func TestMaxTokensTakesTheLaxIntegerCoercion(t *testing.T) {
+	mux, _ := newServer(t)
+	const base = "/v1/default/banks/b1/mental-models"
+	for _, body := range []string{
+		`{"name":"a","source_query":"q","max_tokens":"300"}`,
+		`{"name":"b","source_query":"q","max_tokens":" 300 "}`,
+		`{"name":"c","source_query":"q","max_tokens":"300.0"}`,
+		`{"name":"d","source_query":"q","max_tokens":300.0}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			rec := send(mux, http.MethodPost, base, body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+			}
+			var created CreateResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+				t.Fatal(err)
+			}
+			got := send(mux, http.MethodGet, base+"/"+created.MentalModelID, "")
+			var model Model
+			if err := json.Unmarshal(got.Body.Bytes(), &model); err != nil {
+				t.Fatal(err)
+			}
+			if model.MaxTokens == nil || *model.MaxTokens != 300 {
+				t.Fatalf("stored max_tokens = %v, want the coerced 300", model.MaxTokens)
+			}
+		})
+	}
+
+	// A value the coercion refuses is that one item; the bound never runs on it.
+	for body, wantType := range map[string]string{
+		`{"name":"e","source_query":"q","max_tokens":"abc"}`: "int_parsing",
+		`{"name":"f","source_query":"q","max_tokens":"3e2"}`: "int_parsing",
+		`{"name":"g","source_query":"q","max_tokens":300.5}`: "int_from_float",
+	} {
+		detail := decodeValidationFailure(t, send(mux, http.MethodPost, base, body))
+		if len(detail) != 1 || detail[0].Type != wantType {
+			t.Fatalf("%s: detail = %+v, want one %s item", body, detail, wantType)
+		}
+	}
+}
+
+// A body that is valid JSON but not an object is the framework's model-shape
+// failure, not a decode failure and not a dict_type: the framework reads the
+// document, finds no members to extract, and files one `model_attributes_type`
+// item located at `body` that echoes the value it received. Verified against the
+// live reference on 2026-10-26 for []、5、"x"、true and [1,2] on both routes.
+func TestBodyThatIsNotAnObjectIsAModelShapeFailure(t *testing.T) {
+	mux, _ := newServer(t)
+	for _, body := range []string{`[]`, `5`, `"x"`, `true`, `[1,2]`} {
+		t.Run(body, func(t *testing.T) {
+			for _, route := range []struct{ method, path string }{
+				{http.MethodPost, "/v1/default/banks/b1/mental-models"},
+				{http.MethodPatch, "/v1/default/banks/b1/mental-models/x"},
+			} {
+				detail := decodeValidationFailure(t, send(mux, route.method, route.path, body))
+				if len(detail) != 1 {
+					t.Fatalf("%s %s: detail = %+v, want one item", route.method, body, detail)
+				}
+				if detail[0].Type != "model_attributes_type" {
+					t.Fatalf("%s %s: type = %q, want model_attributes_type", route.method, body, detail[0].Type)
+				}
+				if got := locString(detail[0].Loc); got != "body" {
+					t.Fatalf("%s %s: loc = %q, want body", route.method, body, got)
+				}
+			}
+		})
+	}
+}

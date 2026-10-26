@@ -20,78 +20,93 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 		table = qualified + `.invalidated_memory_units`
 		invalidatedCols = `mu.invalidated_at, mu.invalidation_reason`
 	}
+	// The parameters are bound in the reference's positions, not in whichever
+	// order the SQL happens to mention them: `bank_id` is $1, then the filters in
+	// the reference's build order — fact_type, document_id, entity_id, then the
+	// search term its builder appends last — and the page bounds after them, as
+	// limit and offset (engine/memories/pg/curation.py:176-292). A bound only the
+	// driver can reject is therefore reported under the reference's number.
 	conditions := []string{"mu.bank_id = $1"}
 	args := []any{query.BankID}
-	if query.Type != "" {
-		args = append(args, query.Type)
-		conditions = append(conditions, "mu.fact_type = $"+itoa(len(args)))
+	var optional []string
+	var optionalArgs []any
+	next := func(value any) string {
+		optionalArgs = append(optionalArgs, value)
+		return "$" + itoa(1+len(optionalArgs))
 	}
-	if search := query.Q; search != "" {
-		// The search reads both the fact's text and its context. The query is
-		// taken as given — the reference only tests it for emptiness, so
-		// whitespace is a search term that matches nothing, not an absent one.
-		args = append(args, "%"+search+"%")
-		placeholder := "$" + itoa(len(args))
-		conditions = append(conditions, "(mu.text ILIKE "+placeholder+" OR mu.context ILIKE "+placeholder+")")
+	if query.Type != "" {
+		optional = append(optional, "mu.fact_type = "+next(query.Type))
 	}
 	if query.DocumentID != "" {
-		args = append(args, query.DocumentID)
-		conditions = append(conditions, "mu.document_id = $"+itoa(len(args)))
+		optional = append(optional, "mu.document_id = "+next(query.DocumentID))
 	}
 	if query.EntityID != "" {
 		// A reverse lookup through the stored entity links, which is what makes a
 		// `state=invalidated` list with an entity filter return nothing (the
-		// archive carries no links).
-		args = append(args, query.EntityID)
-		conditions = append(conditions, "mu.id IN (SELECT unit_id FROM "+qualified+
-			".unit_entities WHERE entity_id = $"+itoa(len(args))+"::uuid)")
+		// archive carries no links). The two spellings of the cast are not
+		// interchangeable here: `= $n::uuid` leaves the scalar parameter untyped
+		// under this driver (PostgreSQL reads `= $n` against several candidate
+		// operators before the cast is seen), while `CAST(… AS uuid)` declares
+		// the type on the expression and resolves. It selects exactly the rows
+		// the reference's `= $n::uuid` selects.
+		optional = append(optional, "mu.id IN (SELECT unit_id FROM "+qualified+
+			".unit_entities WHERE entity_id = CAST("+next(query.EntityID)+" AS uuid))")
 	}
 	if state := query.ConsolidationState; state != "" {
 		switch state {
 		case "failed":
-			conditions = append(conditions, "mu.consolidation_failed_at IS NOT NULL")
+			optional = append(optional, "mu.consolidation_failed_at IS NOT NULL AND mu.fact_type IN ('experience', 'world')")
 		case "pending":
-			conditions = append(conditions, "mu.consolidated_at IS NULL AND mu.consolidation_failed_at IS NULL")
+			optional = append(optional, "mu.consolidated_at IS NULL AND mu.consolidation_failed_at IS NULL "+
+				"AND mu.fact_type IN ('experience', 'world')")
 		case "done":
-			conditions = append(conditions, "mu.consolidated_at IS NOT NULL")
+			optional = append(optional, "mu.consolidated_at IS NOT NULL AND mu.fact_type IN ('experience', 'world')")
 		}
-		// Only world/experience facts are consolidated; observations are derived.
-		conditions = append(conditions, "mu.fact_type IN ('experience', 'world')")
 	}
-	if clause, tagArgs := listTagClause(query.TagsMatch, query.Tags, len(args)+1); clause != "" {
-		args = append(args, tagArgs...)
-		conditions = append(conditions, clause)
+	// The search term is bound where the reference appends it — after every
+	// other filter and before the window — reading both the fact's text and its
+	// context. The query is taken as given: the reference only tests it for
+	// emptiness, so whitespace is a search term that matches nothing.
+	if search := query.Q; search != "" {
+		placeholder := next("%" + search + "%")
+		optional = append(optional, "(mu.text ILIKE "+placeholder+" OR mu.context ILIKE "+placeholder+")")
+	}
+	if clause, tagArgs := listTagClause(query.TagsMatch, query.Tags, 1+len(optionalArgs)+1); clause != "" {
+		optional = append(optional, clause)
+		optionalArgs = append(optionalArgs, tagArgs...)
 	}
 	// A compound filter — the caller's resolved read scope — is AND-ed in as an
 	// extra predicate, so a scoped reader pages over the memories it may read
 	// without replacing the request's own tag filter.
-	if groupClause, groupArgs := renderTagGroups(query.TagGroups, len(args)); groupClause != "" {
-		args = append(args, groupArgs...)
-		conditions = append(conditions, "("+groupClause+")")
+	if groupClause, groupArgs := renderTagGroups(query.TagGroups, 1+len(optionalArgs)); groupClause != "" {
+		optional = append(optional, "("+groupClause+")")
+		optionalArgs = append(optionalArgs, groupArgs...)
 	}
 	// A time window replaces the default ordering and drops the rows with no
 	// value on the axis it names, so the ordering it drives is total.
 	orderBy := "mu.mentioned_at DESC NULLS LAST, mu.created_at DESC"
 	if query.TimeField != "" || query.TimeStart != nil || query.TimeEnd != nil {
 		column := "mu." + windowColumn(query.TimeField)
-		conditions = append(conditions, column+" IS NOT NULL")
+		optional = append(optional, column+" IS NOT NULL")
 		if query.TimeStart != nil {
-			args = append(args, query.TimeStart)
-			conditions = append(conditions, column+" >= $"+itoa(len(args)))
+			optional = append(optional, column+" >= "+next(query.TimeStart))
 		}
 		if query.TimeEnd != nil {
-			args = append(args, query.TimeEnd)
-			conditions = append(conditions, column+" < $"+itoa(len(args)))
+			optional = append(optional, column+" < "+next(query.TimeEnd))
 		}
 		orderBy = column + " DESC, mu.id"
 	}
+	conditions = append(conditions, optional...)
+	narrow := append(append([]any{}, args...), optionalArgs...)
+	// The reference's trailing LIMIT/OFFSET bind after every filter
+	// (engine/memories/pg/curation.py:284-292).
+	limitPlaceholder := "$" + itoa(len(narrow)+1)
+	offsetPlaceholder := "$" + itoa(len(narrow)+2)
 	filter := strings.Join(conditions, " AND ")
-	limitParam := "$" + itoa(len(args)+1)
-	offsetParam := "$" + itoa(len(args)+2)
-	limit := query.Limit
+	args = append(narrow, query.Limit, query.Offset)
 	var total int
 	if err := s.reader().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+table+` mu WHERE `+filter, args...).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM `+table+` mu WHERE `+filter+pageBoundsInFilter(limitPlaceholder, offsetPlaceholder), args...).Scan(&total); err != nil {
 		return MemoryPage{}, err
 	}
 	rows, err := s.reader().QueryContext(ctx,
@@ -103,8 +118,8 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 		        mu.consolidated_at, mu.consolidation_failed_at,
 		        COALESCE(mu.observation_scopes, 'null'::jsonb)::text, `+invalidatedCols+`
 		 FROM `+table+` mu WHERE `+filter+`
-		 ORDER BY `+orderBy+` LIMIT `+limitParam+` OFFSET `+offsetParam,
-		append(args, limit, query.Offset)...)
+		 ORDER BY `+orderBy+` LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder,
+		args...)
 	if err != nil {
 		return MemoryPage{}, err
 	}
@@ -132,18 +147,26 @@ func listTagClause(mode string, tags []string, paramOffset int) (string, []any) 
 		}
 		return "", nil
 	}
+	// The column is cast, not the parameter: PostgreSQL resolves a parameter's
+	// type from its context, and `tags` is varchar[], so a bare `$n` under `&&`
+	// is left untyped. The reference's own `$n::text[]` names a type this
+	// column does not have (`character varying[] && text[]` does not resolve),
+	// and its driver has already typed the array by then; casting the column
+	// keeps the predicate — membership and strictness — identical while leaving
+	// PostgreSQL nothing to infer from the parameter's position.
+	column := "mu.tags::text[]"
 	placeholder := "$" + itoa(paramOffset)
 	switch mode {
 	case TagsMatchExact:
-		return "(mu.tags @> " + placeholder + " AND mu.tags <@ " + placeholder + ")", []any{tags}
+		return "(" + column + " @> " + placeholder + " AND " + column + " <@ " + placeholder + ")", []any{tags}
 	case TagsMatchAll:
-		return "(mu.tags IS NULL OR mu.tags = '{}' OR mu.tags @> " + placeholder + ")", []any{tags}
+		return "(mu.tags IS NULL OR mu.tags = '{}' OR " + column + " @> " + placeholder + ")", []any{tags}
 	case TagsMatchAllStrict:
-		return "(mu.tags IS NOT NULL AND mu.tags != '{}' AND mu.tags @> " + placeholder + ")", []any{tags}
+		return "(mu.tags IS NOT NULL AND mu.tags != '{}' AND " + column + " @> " + placeholder + ")", []any{tags}
 	case TagsMatchAnyStrict:
-		return "(mu.tags IS NOT NULL AND mu.tags != '{}' AND mu.tags && " + placeholder + ")", []any{tags}
+		return "(mu.tags IS NOT NULL AND mu.tags != '{}' AND " + column + " && " + placeholder + ")", []any{tags}
 	default: // any
-		return "(mu.tags IS NULL OR mu.tags = '{}' OR mu.tags && " + placeholder + ")", []any{tags}
+		return "(mu.tags IS NULL OR mu.tags = '{}' OR " + column + " && " + placeholder + ")", []any{tags}
 	}
 }
 
@@ -371,33 +394,31 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 		return MemoryUnit{}, err
 	}
 	qualified := quoteIdent(s.schema)
+	// An invalidate/revert is applied AFTER the edit fields, never instead of
+	// them: the reference's phase 2 applies the edit to the live row first and
+	// only then moves the row (engine/memory_engine.py:12194-12260 edit, then
+	// :12350-12380 invalidate), so a body carrying both stores the edited text
+	// and then archives it, and a body that both edits and reverts archives
+	// first — an edit on an archived row is refused, so the edit is dropped —
+	// leaving only the revert. A revert therefore stops here, while an
+	// invalidation lets the edit run and moves the row afterwards.
+	doRevert := false
 	if patch.State != nil {
 		switch *patch.State {
 		case "invalidated":
-			// Invalidating an already-archived row ("keep it retired, but change
-			// why") only rewrites the reason, as the reference does, and leaves
-			// the background work alone.
-			alreadyArchived := current.InvalidatedAt != nil
-			if err := s.invalidateMemory(ctx, bankID, memoryID, patch.Reason); err != nil {
-				return MemoryUnit{}, err
-			}
-			if !alreadyArchived {
-				// The row just left the live view, so the observations it was
-				// evidence for are stale now, and the entities it named may be
-				// orphaned; both are swept and the follow-ups queued.
-				if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
-					return MemoryUnit{}, err
-				}
-				s.submitEditFollowUps(ctx, bankID)
-			}
-			return s.GetMemory(ctx, bankID, memoryID)
+			// Nothing to classify here: the move itself recognises an
+			// already-archived row ("keep it retired, but change why") and only
+			// rewrites the reason then, as the reference does.
 		case "valid":
-			if err := s.revertMemory(ctx, bankID, memoryID); err != nil {
-				return MemoryUnit{}, err
-			}
-			s.submitEditFollowUps(ctx, bankID)
-			return s.GetMemory(ctx, bankID, memoryID)
+			doRevert = true
 		}
+	}
+	if doRevert {
+		if err := s.revertMemory(ctx, bankID, memoryID); err != nil {
+			return MemoryUnit{}, err
+		}
+		s.submitEditFollowUps(ctx, bankID)
+		return s.GetMemory(ctx, bankID, memoryID)
 	}
 	if patch.Text != nil {
 		current.Text = *patch.Text
@@ -471,15 +492,19 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 	}
 	// The column set is the reference's apply_edit: the edited fields, the
 	// re-embedded vector, a reset of both consolidation markers (the fact must
-	// be folded again with its new text) and both edit stamps.
-	query := `UPDATE ` + qualified + `.memory_units
-	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "$6", "text_signals") + `, tags = $4, metadata = $5::jsonb,
-	              context = $6, fact_type = $7, occurred_start = $8, occurred_end = $9, event_date = $10,
-	              consolidated_at = NULL, consolidation_failed_at = NULL, edited_at = now(), updated_at = now()` +
-		embeddingClause + `
-	          WHERE bank_id = $1 AND id = $2`
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-		return MemoryUnit{}, err
+	// be folded again with its new text) and both edit stamps. A patch that
+	// names no editable column (only a state, say) leaves the row's own values
+	// in place rather than rewriting them with the unchanged ones.
+	if editsColumns(patch) {
+		query := `UPDATE ` + qualified + `.memory_units
+		          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "$6", "text_signals") + `, tags = $4, metadata = $5::jsonb,
+		              context = $6, fact_type = $7, occurred_start = $8, occurred_end = $9, event_date = $10,
+		              consolidated_at = NULL, consolidation_failed_at = NULL, edited_at = now(), updated_at = now()` +
+			embeddingClause + `
+		          WHERE bank_id = $1 AND id = $2`
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			return MemoryUnit{}, err
+		}
 	}
 	if edit {
 		// The edit drops the derived links, so a stale temporal or semantic
@@ -493,9 +518,36 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 		if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
 			return MemoryUnit{}, err
 		}
+	}
+	// The move happens after the edit, as the reference orders it.
+	if patch.State != nil && *patch.State == "invalidated" {
+		alreadyArchived := current.InvalidatedAt != nil
+		if err := s.invalidateMemory(ctx, bankID, memoryID, patch.Reason); err != nil {
+			return MemoryUnit{}, err
+		}
+		if !alreadyArchived {
+			// The row just left the live view, so the observations it was
+			// evidence for are stale now, and the entities it named may be
+			// orphaned; both are swept and the follow-ups queued.
+			if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
+				return MemoryUnit{}, err
+			}
+			s.submitEditFollowUps(ctx, bankID)
+		}
+	} else if edit {
 		s.submitEditFollowUps(ctx, bankID)
 	}
 	return s.GetMemory(ctx, bankID, memoryID)
+}
+
+// editsColumns reports whether a patch names any of the memory-unit columns the
+// edit UPDATE writes: text, context, a date, the fact type, tags or metadata.
+// Entities are a relation rather than a column and are written separately.
+func editsColumns(patch MemoryPatch) bool {
+	return patch.Text != nil || patch.Context != nil || patch.FactType != nil ||
+		patch.OccurredStart != nil || patch.ClearOccurredStart ||
+		patch.OccurredEnd != nil || patch.ClearOccurredEnd ||
+		patch.Tags != nil || patch.Metadata != nil
 }
 
 // editTouchesContent reports whether a patch changes the unit's own content in
@@ -882,3 +934,17 @@ func (s *PostgresStore) DirectUnitEntityNames(ctx context.Context, bankID string
 
 // ensure strings is used by the knowledge search.
 var _ = strings.TrimSpace
+
+// pageBoundsInFilter gives the page-bound parameters a type without changing a
+// row. The reference's SQL mentions them only in its trailing `LIMIT $n OFFSET
+// $n+1` (engine/memories/pg/curation.py:284-292, 320) and never has to go
+// further: asyncpg resolves positional parameters by their bound value. This
+// driver hands PostgreSQL a text-format statement whose parameters all arrive
+// as text, so a position the statement does not otherwise mention has no type
+// to be parsed as. An inert predicate does that job — the positions are named
+// with the type they will be bound with, and the predicate is unconditionally
+// true.
+func pageBoundsInFilter(limitPlaceholder, offsetPlaceholder string) string {
+	return " AND " + limitPlaceholder + "::bigint IS NOT NULL AND " +
+		offsetPlaceholder + "::bigint IS NOT NULL"
+}

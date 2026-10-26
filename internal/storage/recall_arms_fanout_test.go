@@ -262,11 +262,29 @@ func TestRecallArmsConcurrentAndSerializedAgree(t *testing.T) {
 					concurrentMatch.Scores, concurrentMatch.Final)
 			}
 		}
-		if !reflect.DeepEqual(serialResult.Trace, concurrentResult.Trace) {
+		// The trace's phase list is a wall-clock measurement, so it differs run to
+		// run by construction; the deterministic half is the candidate payload.
+		serialTrace, concurrentTrace := serialResult.Trace, concurrentResult.Trace
+		serialTrace.Detail, concurrentTrace.Detail = copyTraceDetail(serialTrace.Detail), copyTraceDetail(concurrentTrace.Detail)
+		if !reflect.DeepEqual(serialTrace, concurrentTrace) || !reflect.DeepEqual(serialTrace.Detail, concurrentTrace.Detail) {
 			t.Fatalf("query %q: the trace (candidate counts and recorded ranks) must not depend on the arm concurrency:\nserial %+v\nconcurrent %+v",
 				query.Query, serialResult.Trace, concurrentResult.Trace)
 		}
 	}
+}
+
+// copyTraceDetail drops the wall-clock measurements (each phase's seconds and
+// the search's total duration) so two traces can be compared on the payload
+// they actually describe.
+func copyTraceDetail(detail *RecallTraceDetail) *RecallTraceDetail {
+	if detail == nil {
+		return nil
+	}
+	clone := *detail
+	clone.PhaseMetrics = nil
+	clone.TotalDurationSeconds = 0
+	clone.ArmDurations = nil
+	return &clone
 }
 
 // A concurrent fan-out still measures every arm's phase exactly once, so the

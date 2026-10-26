@@ -29,8 +29,13 @@ func (p archiveProcessor) applyExport(ctx context.Context, op storage.Operation)
 		return err
 	}
 	// A fresh key per export keeps two concurrent exports of the same bank from
-	// clobbering each other's archive.
+	// clobbering each other's archive. The two export routes key their archives
+	// differently in the reference, and the key is published in the operation's
+	// result_metadata, so the difference is observable.
 	key := storage.ExportStorageKey(op.BankID, op.OperationID)
+	if op.OperationType == storage.OperationTypeDocumentExport {
+		key = transfer.DocumentExportStorageKey(p.storeSchema, op.BankID, op.OperationID)
+	}
 	if err := p.store.PutStoredFile(ctx, storage.StoredFile{
 		Key:         key,
 		ContentType: "application/zip",

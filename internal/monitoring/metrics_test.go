@@ -3,6 +3,7 @@ package monitoring
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -261,6 +262,30 @@ func TestExpositionFloatFormatting(t *testing.T) {
 	}
 }
 
+// The exposition is answered as one complete body with its length declared.
+// The reference's framework receives a finished bytes object from the metrics
+// handler, so its response carries Content-Length; streaming the exposition
+// straight to the ResponseWriter instead makes Go answer chunked with no
+// length header, which is a different response for the same bytes.
+func TestMetricsResponseDeclaresItsLength(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		h    *MetricsHandler
+	}{
+		{"plain", &MetricsHandler{}},
+		{"worker", &MetricsHandler{Workers: &WorkerMetrics{render: func() []byte { return []byte("worker_family 1.0\n") }}}},
+	} {
+		rec := serveMetrics(tc.h)
+		body := rec.Body.String()
+		if body == "" {
+			t.Fatalf("%s: empty exposition", tc.name)
+		}
+		if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+			t.Fatalf("%s: Content-Length = %q, want %d", tc.name, got, len(body))
+		}
+	}
+}
+
 // A histogram bound is a label value, so its text must match the reference's
 // byte for byte: a whole bound keeps its ".0", which is what keeps "1.0" and
 // "1" from being two different series.
@@ -280,5 +305,29 @@ func TestHistogramBoundaryFormatting(t *testing.T) {
 		if got := formatBoundary(tc.in); got != tc.want {
 			t.Errorf("formatBoundary(%v) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Histogram families render in sorted name order however the caller collected
+// them, the way the reference's registry walks its sorted instrument names.
+// Insertion order is not stable across scrapes, so an unsorted body makes the
+// exposition's layout depend on map iteration.
+func TestMetricsHistogramFamiliesRenderInNameOrder(t *testing.T) {
+	h := &MetricsHandler{Histograms: func() []Histogram {
+		return []Histogram{
+			{Name: "zeta_seconds", Buckets: []float64{1}, Counts: []uint64{1}, Count: 1},
+			{Name: "alpha_seconds", Buckets: []float64{1}, Counts: []uint64{1}, Count: 1},
+			{Name: "mid_seconds", Buckets: []float64{1}, Counts: []uint64{1}, Count: 1},
+		}
+	}}
+	body := serveMetrics(h).Body.String()
+	alpha := strings.Index(body, "# HELP alpha_seconds")
+	mid := strings.Index(body, "# HELP mid_seconds")
+	zeta := strings.Index(body, "# HELP zeta_seconds")
+	if alpha < 0 || mid < 0 || zeta < 0 {
+		t.Fatalf("a family is missing (alpha=%d mid=%d zeta=%d):\n%s", alpha, mid, zeta, body)
+	}
+	if alpha >= mid || mid >= zeta {
+		t.Fatalf("histogram families not in name order (alpha=%d mid=%d zeta=%d):\n%s", alpha, mid, zeta, body)
 	}
 }

@@ -37,6 +37,19 @@ func (o SegmentOptions) normalized() SegmentOptions {
 	return o
 }
 
+// segmentsPerContent cuts one content part into its own chunks, numbered from 0
+// the way the reference's retain numbers every content block it is handed: it
+// cuts each content separately (engine/retain/orchestrator.py:1968-1987) and
+// restarts `chunk_index` at 0 for each (engine/retain/fact_extraction.py:2985).
+//
+// Chunk rows are written per item, not from the whole document body. Segmenting
+// the body instead makes a second content block land on index 0, which is the
+// collision that once left a document with a single chunk (the shape
+// engine/retain/orchestrator.py:1455-1470 warns about, #1888).
+func segmentsPerContent(content string, opts SegmentOptions) []string {
+	return SegmentWith(content, opts)
+}
+
 // chunkSeparators are the split points, ordered most to least preferred. The
 // final empty separator lets the splitter break mid-word as a last resort, so a
 // chunk can never exceed the budget.

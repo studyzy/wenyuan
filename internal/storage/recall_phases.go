@@ -127,6 +127,35 @@ func (p *recallPhases) measure(name string, diagnostic bool) func() {
 	}
 }
 
+// snapshot returns the measured phases in the order they ran, plus the
+// wall-clock seconds the whole recall took. It is how the reference's trace
+// reports its `summary.phase_metrics` list (engine/search/tracer.py:203-236,
+// 406-418): one entry per phase that ran, each with the seconds it took.
+//
+// A nil recorder — the accounting off, or a recall the sampler passed over —
+// returns an empty list, which is the accurate answer: nothing was measured.
+func (p *recallPhases) snapshot() ([]TracePhaseMetric, float64) {
+	if p == nil {
+		return []TracePhaseMetric{}, 0
+	}
+	p.mu.Lock()
+	entries := make([]recallPhaseEntry, len(p.entries))
+	copy(entries, p.entries)
+	p.mu.Unlock()
+	out := make([]TracePhaseMetric, 0, len(entries))
+	for _, entry := range entries {
+		details := map[string]any{}
+		if entry.diagnostic {
+			// The reference marks a phase whose time is a SUBSET of another's
+			// `{"diagnostic": true}` so the coverage sum does not double-count
+			// it (engine/search/tracer.py:203-236, memory_engine.py:9960).
+			details["diagnostic"] = true
+		}
+		out = append(out, TracePhaseMetric{Name: entry.name, Seconds: entry.seconds, Details: details})
+	}
+	return out, time.Since(p.started).Seconds()
+}
+
 // finish reports the collected phases, as one observation per phase to the
 // store's observer and as the reference's own accounting line. It is a no-op on
 // a nil recorder and on a recall that measured nothing.

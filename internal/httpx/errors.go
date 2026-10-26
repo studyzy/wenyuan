@@ -71,6 +71,11 @@ type ValidationFailure struct {
 	// insertion-ordered mapping; an empty order means the items render from their
 	// maps, whose keys sort.
 	BodyOrder any
+	// Echo is the request body the items name, rendered as the reference's
+	// framework does: the whole body for an absent required member, the member's
+	// own value otherwise. BodyOrder replaces a rendered map only when that map
+	// is this one. Nil means "every rendered map is the body".
+	Echo map[string]any
 }
 
 // MarshalJSON emits the shared envelope so a validation failure is wire

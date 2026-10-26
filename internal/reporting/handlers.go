@@ -259,15 +259,22 @@ func (h *Handlers) HealthLLM(w http.ResponseWriter, r *http.Request) {
 			"Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable."))
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
-	if !ok {
+	// The bank need not exist: the reference's check_bank_llm
+	// (engine/memory_engine.py:16346-16392) probes the three deployment-level
+	// LLM configurations and never calls _require_bank_exists, so an unknown
+	// bank answers 200 with the same operation list a known one does. What the
+	// probe reads is process configuration, not bank data. An empty bank id is
+	// still the shared missing-bank 404.
+	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	if bankID == "" {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
 	}
-	status, ok, latencyMS := h.probeLLM(r.Context())
+	status, probedOK, latencyMS := h.probeLLM(r.Context())
 	operations := make([]LLMHealthOperation, 0, len(llmHealthOperations))
 	for _, name := range llmHealthOperations {
 		operations = append(operations, LLMHealthOperation{
-			Operation: name, OK: ok, Status: status, LatencyMS: latencyMS,
+			Operation: name, OK: probedOK, Status: status, LatencyMS: latencyMS,
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, BankLLMHealthResponse{BankID: bankID, Operations: operations})
@@ -859,7 +866,7 @@ func strictBoolParam(w http.ResponseWriter, r *http.Request, name string, def bo
 
 // requireBank reports not-found for an unknown bank.
 func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, bool) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	bankID := PathBankID(r)
 	if bankID == "" {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", false
@@ -875,7 +882,7 @@ func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, 
 // reference's knowledge-node create paths do this, so a page can be the first
 // thing a bank holds without the caller creating the bank beforehand.
 func (h *Handlers) requireOrCreateBank(w http.ResponseWriter, r *http.Request) (string, bool) {
-	bankID := strings.TrimSpace(r.PathValue("bank_id"))
+	bankID := PathBankID(r)
 	if bankID == "" {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return "", false

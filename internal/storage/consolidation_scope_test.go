@@ -93,3 +93,31 @@ func TestConsolidationFactsCarryScope(t *testing.T) {
 		t.Fatalf("observation scopes = %s", facts[0].ObservationScopes)
 	}
 }
+
+// The reference's observation insert names no metadata column
+// (engine/memories/pg/consolidation.py:268-352), so a produced observation's
+// metadata is the column default `{}`. The scope lives in the tags alone; a
+// producer that mirrored it into metadata would surface that mirror in every
+// memory read.
+func TestConsolidatedObservationCarriesNoScopeMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore("public")
+	scoped, ok := any(store).(ConsolidationScopeStore)
+	if !ok {
+		t.Fatal("the memory store must provide the consolidation scope capability")
+	}
+	id, err := scoped.CreateObservationInScope(ctx, "b1", "conclusion", nil, []string{"b", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := store.GetMemory(ctx, "b1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unit.Metadata) != 0 {
+		t.Fatalf("observation metadata = %v, want the empty default", unit.Metadata)
+	}
+	if len(unit.Tags) != 2 || unit.Tags[0] != "a" || unit.Tags[1] != "b" {
+		t.Fatalf("observation tags = %v, want the canonical scope [a b]", unit.Tags)
+	}
+}

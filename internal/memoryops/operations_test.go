@@ -675,3 +675,54 @@ func TestOperationListLimitUsesTheFrameworkIntegerGrammar(t *testing.T) {
 		}
 	}
 }
+
+// A completed batch_retain parent is retried through the batch-parent path, not
+// the generic status gate.
+//
+// The reference branches on the operation being a payload-less batch parent
+// before it looks at the status (engine/memory_engine.py:21510-21567): retrying
+// such a parent re-queues its failed/cancelled children and revives it over
+// them, and when its children have all completed it answers the batch-parent
+// 409 pointing at resubmission. The `status is 'completed', expected 'failed'
+// or 'cancelled'` message is only for operations that are not batch parents.
+// Gating on status first answered that generic message for a completed batch
+// parent, which is a 409 with the wrong text.
+func TestRetryCompletedBatchParentUsesTheBatchParentMessage(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType,
+		Status:         storage.StatusCompleted,
+		ResultMetadata: map[string]any{"is_parent": true, "items_count": 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodPost, "/v1/default/banks/b1/operations/"+validOpID+"/retry")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "is a batch_retain parent with no incomplete sub-batches to retry") {
+		t.Fatalf("body = %s, want the batch-parent message", body)
+	}
+	if strings.Contains(body, "expected 'failed' or 'cancelled'") {
+		t.Fatalf("body = %s, want it NOT to be the generic status conflict", body)
+	}
+}
+
+// A non-parent operation keeps the generic status conflict.
+func TestRetryCompletedRetainKeepsTheGenericConflict(t *testing.T) {
+	mux, store := newServer(t)
+	if _, err := store.PutOperation(context.TODO(), storage.Operation{
+		OperationID: validOpID, BankID: "b1", OperationType: storage.AsyncRetainType,
+		Status: storage.StatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, mux, http.MethodPost, "/v1/default/banks/b1/operations/"+validOpID+"/retry")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "expected 'failed' or 'cancelled'") {
+		t.Fatalf("body = %s, want the generic status conflict", rec.Body.String())
+	}
+}

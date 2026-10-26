@@ -27,6 +27,26 @@ func newServer(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
 	return mux, store
 }
 
+// newServerWithVision is newServer for a deployment whose write model reads
+// images. A picture can only keep its placeholder position in the stored text
+// when the model will be handed the bytes; a text-only model canonicalizes the
+// prose alone, which is what the reference does and what newServer's default
+// models.
+func newServerWithVision(t *testing.T) (*http.ServeMux, *storage.MemoryStore) {
+	t.Helper()
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlers(store, 5, 30000)
+	h.VisionEnabled = true
+	mux := http.NewServeMux()
+	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, handler)
+	})
+	return mux, store
+}
+
 func post(t *testing.T, mux *http.ServeMux, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -354,7 +374,7 @@ func TestFileRetainIsAsync(t *testing.T) {
 // A6: the file route records the uploaded bytes content-addressed and gives
 // the units it writes the attachment's short id, so provenance survives.
 func TestFileRetainPersistsAttachment(t *testing.T) {
-	mux, store := newServer(t)
+	mux, store := newServerWithVision(t)
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	part, err := w.CreateFormFile("files", "diagram.png")

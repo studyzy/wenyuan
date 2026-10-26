@@ -371,6 +371,24 @@ type RetainItem struct {
 	// carried so the extractor can put each image into the prompt where its
 	// placeholder stands. The ids here match AttachmentIDs.
 	Attachments []RetainAttachment
+	// Parts are the distinct content blocks this item folded together, in the
+	// order the caller sent them. Empty or a single entry means Content is one
+	// block. Each block is chunked on its own and numbered from 0, the way the
+	// reference's retain cuts and numbers every content dict it is handed
+	// (engine/retain/orchestrator.py:1968-1987,
+	// engine/retain/fact_extraction.py:2985); the blocks after the first are
+	// stored after the earlier ones' chunks, so one document's chunk ids stay
+	// unique while every block still owns its chunk boundaries.
+	Parts []string
+}
+
+// ContentParts returns the content blocks an item is chunked from: its Parts
+// when it was folded from several content dicts, otherwise Content alone.
+func (item RetainItem) ContentParts() []string {
+	if len(item.Parts) > 0 {
+		return item.Parts
+	}
+	return []string{item.Content}
 }
 
 // RetainAttachment is one inline attachment's decoded bytes, carried from the

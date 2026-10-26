@@ -61,18 +61,20 @@ func TestRefreshWritesContentAndWatermark(t *testing.T) {
 	}
 }
 
-// A model with no source query has nothing to re-run, so the refresh refuses
-// rather than inventing content or wiping what is there.
-func TestRefreshWithoutSourceQueryIsRefused(t *testing.T) {
+// A model with no source query is refreshed like any other. The reference hands
+// the stored (empty) source query to reflect without checking it
+// (engine/memory_engine.py:17358, :17420), so refusing here made a page created
+// with `source_query: ""` fail permanently instead of completing.
+func TestRefreshWithoutSourceQueryIsNotRefused(t *testing.T) {
 	store, modelID := refreshFixture(t, "   ")
 	runner := newMentalModelRefresh(store, nil, nil)
 
-	_, _, err := runner.refresh(context.Background(), "b1", modelID)
-	if err == nil {
-		t.Fatal("a model with no source query must refuse")
+	model, _, err := runner.refresh(context.Background(), "b1", modelID)
+	if err != nil {
+		t.Fatalf("refresh of a source-queryless model failed: %v", err)
 	}
-	if !permanentRefreshFailure(err) {
-		t.Errorf("err = %v, must classify as permanent so it is not retried forever", err)
+	if model.LastRefreshFailedAt != nil {
+		t.Fatalf("the refresh must not park the model: %v", *model.LastRefreshFailedAt)
 	}
 }
 
@@ -336,20 +338,31 @@ func TestFailedRefreshOperationRecordsFailureReason(t *testing.T) {
 	}
 }
 
-// A refusal that happens before the window is captured still records its
-// outcome and reason, with no window to report.
-func TestRefreshWithoutWindowRecordsFailure(t *testing.T) {
-	store, modelID := refreshFixture(t, "   ")
+// A model whose source query is empty or blank is refreshed, not refused. The
+// reference binds the stored source query straight into the reflect call that
+// drives the refresh (engine/memory_engine.py:17358 and :17420) and guards
+// nothing about its length, so a knowledge page created with `source_query: ""`
+// completes there. Refusing it instead stamped `last_refresh_failed_at` on the
+// model — visible in the tree and on the page read — and left the operation
+// failed for good.
+func TestRefreshWithoutSourceQueryStillRuns(t *testing.T) {
+	for _, query := range []string{"", "   "} {
+		store, modelID := refreshFixture(t, query)
 
-	final := runRefreshOperation(t, store, archiveProcessor{store: store}, modelID)
-	if final.Status != storage.StatusFailed {
-		t.Fatalf("operation status = %s, want failed", final.Status)
-	}
-	if final.ResultMetadata["outcome"] != outcomeFailedError {
-		t.Fatalf("result metadata = %+v, want a failure outcome", final.ResultMetadata)
-	}
-	if final.ResultMetadata["failure_reason"] != reasonUnexpectedError {
-		t.Fatalf("result metadata = %+v, want the unexpected-error reason", final.ResultMetadata)
+		final := runRefreshOperation(t, store, archiveProcessor{store: store}, modelID)
+		if final.Status != storage.StatusCompleted {
+			t.Fatalf("query %q: operation status = %s, want completed: %s", query, final.Status, final.Error)
+		}
+		if final.ResultMetadata["failure_reason"] != nil {
+			t.Fatalf("query %q: a completed refresh must not report a failure: %+v", query, final.ResultMetadata)
+		}
+		model, err := store.GetMentalModel(context.Background(), "b1", modelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.LastRefreshFailedAt != nil {
+			t.Fatalf("query %q: a completed refresh must not park the model: %v", query, *model.LastRefreshFailedAt)
+		}
 	}
 }
 
@@ -518,8 +531,19 @@ func TestRefreshWithNoSourcesRecordsTheSkipWithoutWritingContent(t *testing.T) {
 	if got, _ := updated.ReflectResult["outcome"].(string); got != outcomeContentPreservedNoNewFacts {
 		t.Fatalf("recorded outcome = %q, want %q", got, outcomeContentPreservedNoNewFacts)
 	}
-	if basedOn, ok := updated.ReflectResult["based_on"].(map[string]any); !ok || len(basedOn) != 0 {
-		t.Fatalf("based_on = %#v, want an empty map", updated.ReflectResult["based_on"])
+	// Nothing was read, so no fact type was cited: the reference's based_on is
+	// the empty object a run with no evidence produces.
+	switch basedOn := updated.ReflectResult["based_on"].(type) {
+	case map[string]any:
+		if len(basedOn) != 0 {
+			t.Fatalf("based_on = %#v, want an empty object", basedOn)
+		}
+	case map[string][]any:
+		if len(basedOn) != 0 {
+			t.Fatalf("based_on = %#v, want an empty object", basedOn)
+		}
+	default:
+		t.Fatalf("based_on = %#v, want an empty object", updated.ReflectResult["based_on"])
 	}
 	if !updated.LastRefreshedAt.After(planted) {
 		t.Fatalf("last_refreshed_at = %v, want it advanced past %v", updated.LastRefreshedAt, planted)
@@ -550,18 +574,28 @@ func TestRefreshStoresTheReferenceReflectResponseShape(t *testing.T) {
 			t.Fatalf("reflect_response is missing %q: got keys %v", key, mapKeys(model.ReflectResult))
 		}
 	}
-	basedOn, ok := model.ReflectResult["based_on"].(map[string][]any)
+	basedOn, ok := model.ReflectResult["based_on"].(map[string]any)
 	if !ok {
 		t.Fatalf("based_on = %T, want a map keyed by fact type", model.ReflectResult["based_on"])
 	}
 	if _, flattened := basedOn["memories"]; flattened {
 		t.Fatal("based_on carries a flattened \"memories\" key; it is keyed by fact type")
 	}
-	// Every arm of the type union is stated, so a reader never has to tell
-	// "no facts of this type" from "this document predates the key".
-	for _, factType := range []string{"world", "experience", "opinion", "observation", "mental-models", "directives"} {
-		if _, present := basedOn[factType]; !present {
-			t.Fatalf("based_on is missing %q, want every arm of the type union: got %v", factType, mapKeysOf(basedOn))
+	// Only the fact types the run actually cited appear: the reference builds
+	// based_on from what the reflect run returned, so a type with no cited fact
+	// contributes no key at all — verified against the live reference on
+	// 2026-10-26, where a run citing two facts and one sibling page answered
+	// with {world, opinion, directives, experience, observation, mental-models}
+	// and a run citing nothing answered with {}.
+	for _, factType := range mapKeysOf(basedOn) {
+		known := false
+		for _, candidate := range []string{"world", "experience", "opinion", "observation", "mental-models", "directives"} {
+			if factType == candidate {
+				known = true
+			}
+		}
+		if !known {
+			t.Fatalf("based_on carries %q, which is not a fact type", factType)
 		}
 	}
 	if outcome, _ := model.ReflectResult["outcome"].(string); outcome == "" {
@@ -573,7 +607,7 @@ func TestRefreshStoresTheReferenceReflectResponseShape(t *testing.T) {
 }
 
 // mapKeysOf lists a fact-type map's keys for a failure message.
-func mapKeysOf(values map[string][]any) []string {
+func mapKeysOf(values map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -590,4 +624,88 @@ func mapKeys(values map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// A history snapshot carries only the two members the reference keeps from the
+// reflect response it replaced — the grounding (`based_on`) and, when it was
+// recorded, the trace. The rest of the payload is dropped: a read of the model's
+// history reports exactly this slice, and a stored full payload made the two
+// answers differ.
+func TestHistorySnapshotKeepsOnlyTheReferenceSlice(t *testing.T) {
+	full := map[string]any{
+		"text":              "the document as it stood",
+		"outcome":           "content_written",
+		"mental_models":     []any{},
+		"reflect_skipped":   nil,
+		"based_on":          map[string]any{"world": []any{}},
+		"structured_output": map[string]any{"x": 1},
+	}
+	slim := slimReflectResponse(full)
+	if len(slim) != 1 {
+		t.Fatalf("slim = %#v, want only based_on (there is no trace)", slim)
+	}
+	if _, ok := slim["based_on"]; !ok {
+		t.Fatalf("slim = %#v, want based_on kept", slim)
+	}
+	for _, dropped := range []string{"text", "outcome", "mental_models", "structured_output"} {
+		if _, ok := slim[dropped]; ok {
+			t.Fatalf("slim kept %q, which the reference never stores", dropped)
+		}
+	}
+
+	// A trace rides along when the previous version recorded one.
+	withTrace := map[string]any{"based_on": map[string]any{}, "trace": map[string]any{"outcome": "content_written"}}
+	if slim := slimReflectResponse(withTrace); len(slim) != 2 {
+		t.Fatalf("slim = %#v, want both based_on and trace", slim)
+	}
+
+	// Nothing to keep is stored as null, which is the reference's `slim or None`.
+	if slim := slimReflectResponse(map[string]any{"text": "x"}); slim != nil {
+		t.Fatalf("slim = %#v, want nil", slim)
+	}
+	if slim := slimReflectResponse(nil); slim != nil {
+		t.Fatalf("slim = %#v, want nil", slim)
+	}
+}
+
+// A refresh's history row stores the reference's slice of the payload it
+// replaced, not the whole payload: a read of the model's history reports exactly
+// `previous_reflect_response` as stored, so a full payload here reached the wire
+// where the reference reports only based_on (and trace, when it recorded one).
+func TestRefreshRecordsTheSlimmedHistorySnapshot(t *testing.T) {
+	store, modelID := refreshFixture(t, "deployment")
+	ctx := context.Background()
+	existing := "deployments happen on tuesdays"
+	// Seed a version whose reflect_response is a full payload, the shape a real
+	// refresh writes.
+	previous := map[string]any{
+		"text":          "deployments happen on tuesdays",
+		"outcome":       "content_written",
+		"based_on":      map[string]any{"world": []any{}},
+		"mental_models": []any{},
+	}
+	if _, err := store.UpdateMentalModel(ctx, "b1", modelID, storage.MentalModelPatch{
+		Content:       &existing,
+		ReflectResult: &previous,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := newMentalModelRefresh(store, nil, nil)
+	if _, _, err := runner.refresh(ctx, "b1", modelID); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.MentalModelHistory(ctx, "b1", modelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) == 0 {
+		t.Fatal("the refresh must record a history row")
+	}
+	snapshot := history[0].PreviousReflectResponse
+	if len(snapshot) != 1 {
+		t.Fatalf("previous_reflect_response = %#v, want only based_on", snapshot)
+	}
+	if _, ok := snapshot["based_on"]; !ok {
+		t.Fatalf("previous_reflect_response = %#v, want based_on kept", snapshot)
+	}
 }

@@ -38,7 +38,7 @@ func (s *PostgresStore) knowledgeFrom() string {
 func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
 	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
 	          WHERE kp.bank_id = $1
-	          ORDER BY kp.sort_order, kp.name, kp.id`
+	          ORDER BY kp.sort_order, kp.id`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
 		return nil, err
@@ -55,16 +55,31 @@ func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// The reference's key is `(sort_order is None, sort_order or 0, name or "")`
+	// (_knowledge_tree_sort_key, engine/memory_engine.py:1945-1949) — two keys,
+	// no identifier. Python's sorted() is stable, so a tie keeps the order the
+	// rows were fetched in; adding an id third key here reordered siblings the
+	// reference leaves alone, which showed up as a tree listed in `kf-<hex>` id
+	// order instead of name order whenever the two disagreed.
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].SortOrder != out[j].SortOrder {
-			return out[i].SortOrder < out[j].SortOrder
-		}
-		if out[i].Title != out[j].Title {
-			return out[i].Title < out[j].Title
-		}
-		return out[i].ID < out[j].ID
+		return knowledgeTreeLess(out[i], out[j])
 	})
 	return out, nil
+}
+
+// knowledgeTreeLess is the reference's `_knowledge_tree_sort_key` comparison:
+// sort_order first, then name. The stored sort_order is already coalesced to 0,
+// so a row without one sorts with the zeroes exactly as the reference's
+// `sort_order or 0` does.
+//
+// Python's sorted() is stable, so rows tying on both keys keep their fetched
+// order; there is deliberately no identifier third key, because the reference
+// has none.
+func knowledgeTreeLess(left, right KnowledgeNode) bool {
+	if left.SortOrder != right.SortOrder {
+		return left.SortOrder < right.SortOrder
+	}
+	return left.Title < right.Title
 }
 
 // GetKnowledgeNode returns one knowledge node by identifier.

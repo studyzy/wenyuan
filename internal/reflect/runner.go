@@ -144,6 +144,17 @@ func (r *Runner) toStorageOutcome(outcome Outcome) storage.ReflectOutcome {
 		})
 	}
 	converted.Trace = buildTrace(outcome)
+	// The reference's trace carries one `llm_calls` entry per model call the run
+	// made — the loop turns, the final synthesis and each auxiliary reshape —
+	// with the scope that names it and the milliseconds it took
+	// (ReflectLLMCall in engine/memory_engine.py's reflect result). Reporting an
+	// empty list for a run that made model calls reads as "no model was used".
+	for _, call := range outcome.LLMCalls {
+		converted.Trace.LLMCalls = append(converted.Trace.LLMCalls, storage.ReflectModelCall{
+			Scope:      call.Scope,
+			DurationMs: call.DurationMs,
+		})
+	}
 	return converted
 }
 

@@ -226,14 +226,28 @@ func Write(archive *Archive) ([]byte, error) {
 // entries into an already-open zip writer, so a caller that owns the writer
 // keeps control of where the bytes go.
 func writeArchive(zw *zip.Writer, archive *Archive) error {
-	// The reference writes each entry with `zipfile.writestr(name, data)`
-	// (`transfer/export.py:916-969`), which stamps the entry with the current
-	// local time. `zip.Writer.Create` leaves the modification time zero, which
-	// renders as 1980-01-01 — a different archive for the same bank, and one an
-	// extractor sorts differently.
+	// Every entry is written the way the reference's streaming writer emits it
+	// (engine/transfer/stream_archive.py:150-227): the current time as the DOS
+	// timestamp, and PKZIP's "data descriptor" flag (general-purpose bit 3) set,
+	// so the sizes and CRC follow the payload instead of being patched into the
+	// local header. The reference's writer never seeks back, so its local headers
+	// carry zeroed sizes and bit 3 is set on every entry; an archive this service
+	// produces has to declare the same flags or a byte comparison of the two
+	// differs on every entry header.
 	stamp := time.Now()
 	writeEntry := func(name string, body []byte) error {
-		header := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: stamp}
+		// Flag 0x0008 (bit 3) makes archive/zip emit a data descriptor: it
+		// writes zero sizes and CRC into the local header and appends the real
+		// values after the payload, which is exactly the streaming form the
+		// reference's writer produces. Flag 0x0800 (bit 11) is the UTF-8 name
+		// marker the reference sets on every entry; Go would compute it from the
+		// name and leave it clear for an ASCII one, so it is set explicitly here.
+		header := &zip.FileHeader{
+			Name:     name,
+			Method:   zip.Deflate,
+			Modified: stamp,
+			Flags:    0x0808,
+		}
 		w, err := zw.CreateHeader(header)
 		if err != nil {
 			return err
@@ -253,45 +267,29 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 		return bytes.TrimRight(out.Bytes(), "\n"), nil
 	}
 
-	for index, document := range archive.Documents {
-		body, err := encode(document)
-		if err != nil {
-			return err
-		}
-		if err := writeEntry(fmt.Sprintf("%s/%06d.json", DocumentsDir, index), body); err != nil {
-			return err
-		}
-	}
-	// The documents directory must exist even for an archive with no documents,
-	// because the reader locates the payloads through it.
-	if len(archive.Documents) == 0 {
-		if err := writeEntry(DocumentsDir+"/", nil); err != nil {
-			return err
-		}
-	}
-	// A whole-bank archive carries the sections its scope selected even when
-	// they hold nothing: the reference writes `[]` for an empty one, so a reader
-	// can tell "selected and empty" from "not carried". A documents-only archive
-	// (and any section outside its scope) is written only when non-empty, which
-	// is exactly what the reference's document export does.
-	scopeData, scopeBankConfig, scopeHistory := true, true, false
-	if scope := archive.Manifest.Scope; scope != nil {
-		scopeData, scopeBankConfig, scopeHistory = scope.Data, scope.BankConfig, scope.History
-	}
-	bankArchive := archive.Manifest.ArchiveType == "bank"
-
-	writeRows := func(name string, rows []map[string]any, always bool) error {
+	// Rows are written the way the reference's producer writes a row file:
+	// `json.dumps(rows, indent=2, default=_row_json_default)`
+	// (transfer/export.py:918), so a row's keys follow the table's column order
+	// and the list is drawn at two-space indent. A row whose values are rebuilt
+	// from the archive's own text is normalised first, because the reference
+	// renders a datetime through Python's isoformat().
+	writeRowFile := func(name string, rows []map[string]any, always bool) error {
 		if !always && len(rows) == 0 {
 			return nil
 		}
-		if rows == nil {
-			rows = []map[string]any{}
+		normalised := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			out := make(map[string]any, len(row))
+			for key, value := range row {
+				out[key] = NormalizeRowValue(value)
+			}
+			normalised = append(normalised, out)
 		}
-		body, err := encode(rows)
+		encoded, err := EncodeRowFile(normalised, ColumnOrder(name))
 		if err != nil {
 			return err
 		}
-		return writeEntry(name, body)
+		return writeEntry(name, encoded)
 	}
 	writeSection := func(name string, value any, always bool, count int) error {
 		if !always && count == 0 {
@@ -305,58 +303,112 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 		}
 		return writeEntry(name, body)
 	}
-	sections := []struct {
-		name   string
-		value  any
-		count  int
-		always bool
-	}{
-		// Observations travel only when non-empty, as the reference writes them.
-		{ObservationsName, archive.Observations, len(archive.Observations), false},
-		{MentalModelsName, archive.MentalModels, len(archive.MentalModels), bankArchive && scopeData},
-		// The knowledge tree is written even when empty for a whole-bank
-		// archive: an empty list distinguishes "no pages" from an archive
-		// produced before the tree existed.
-		{KnowledgePagesName, archive.KnowledgePages, len(archive.KnowledgePages), bankArchive && scopeData},
-		{BanksName, archive.Banks, len(archive.Banks), bankArchive && scopeBankConfig},
-		{DirectivesName, archive.Directives, len(archive.Directives), bankArchive && scopeBankConfig},
-		{WebhooksName, archive.Webhooks, len(archive.Webhooks), bankArchive && scopeBankConfig},
-		// Attachments travel only when non-empty, as the reference writes them.
-		{AttachmentsName, archive.Attachments, len(archive.Attachments), false},
-		{MentalModelHistoryName, archive.MentalModelHistory, len(archive.MentalModelHistory), bankArchive && scopeData},
-	}
-	for _, section := range sections {
-		if err := writeSection(section.name, section.value, section.always, section.count); err != nil {
+
+	// The entries are written in the reference's own order
+	// (engine/transfer/export.py:497-610): the documents, then the observations
+	// it wrote when it found any, then the attachment bytes and their rows, then
+	// the data tables, then the bank/history rows, then the knowledge-page tree
+	// (written even when empty, which is how a reader tells "no pages" from a
+	// pre-tree archive), then the operational history, then the manifest.
+	for index, document := range archive.Documents {
+		body, err := encode(document)
+		if err != nil {
+			return err
+		}
+		if err := writeEntry(fmt.Sprintf("%s/%06d.json", DocumentsDir, index), body); err != nil {
 			return err
 		}
 	}
-	// Operational history is written for every table the history section
-	// selected (empty or not), so an absent section means "not selected".
-	for _, table := range HistoryTables {
-		if err := writeRows(HistoryEntry(table), archive.History[table], bankArchive && scopeHistory); err != nil {
+	// A bank with no documents gets NO documents entry at all.
+	//
+	// The reference writes a `documents/{n:06d}.json` entry per document and
+	// nothing else (engine/transfer/export.py:906-910): an archive of an empty
+	// bank has no `documents/` member, not an empty one. A placeholder directory
+	// entry would be an entry the reference's archive never carries, and a
+	// reader does not need it — documentNames treats an absent directory as an
+	// empty archive.
+	// A whole-bank archive carries the sections its scope selected even when
+	// they hold nothing: the reference writes `[]` for an empty one, so a reader
+	// can tell "selected and empty" from "not carried". A documents-only archive
+	// (and any section outside its scope) is written only when non-empty, which
+	// is exactly what the reference's document export does.
+	scopeData, scopeBankConfig, scopeHistory := true, true, false
+	if scope := archive.Manifest.Scope; scope != nil {
+		scopeData, scopeBankConfig, scopeHistory = scope.Data, scope.BankConfig, scope.History
+	}
+	bankArchive := archive.Manifest.ArchiveType == "bank"
+
+	// Observations and attachments travel only when non-empty, as the
+	// reference writes them.
+	if err := writeSection(ObservationsName, archive.Observations, false, len(archive.Observations)); err != nil {
+		return err
+	}
+	// The bytes follow their rows, one entry per attachment, under the entry
+	// name the row carries. A row without its bytes is refused rather than
+	// written as a dangling name: the archive would claim to carry an
+	// attachment it does not, which no importer can tell from an empty one.
+	if len(archive.Attachments) > 0 {
+		for _, attachment := range archive.Attachments {
+			if attachment.Entry == "" {
+				return fmt.Errorf("attachment %s/%s names no blob entry", attachment.DocumentID, attachment.ShortID)
+			}
+			data, ok := archive.Blobs[attachment.Entry]
+			if !ok {
+				return fmt.Errorf("attachment %s/%s names %s, which holds no bytes", attachment.DocumentID, attachment.ShortID, attachment.Entry)
+			}
+			if err := writeEntry(attachment.Entry, data); err != nil {
+				return err
+			}
+		}
+		// The rows the entries belong to follow the bytes they name.
+		if err := writeRowFile(AttachmentsName, attachmentRows(archive.Attachments), false); err != nil {
 			return err
 		}
 	}
 	// The bank-scoped state tables ride with the data section, each written even
 	// when empty, exactly as the reference's producer emits them.
 	for _, table := range DataTables {
-		if err := writeRows(DataEntry(table), archive.Data[table], bankArchive && scopeData); err != nil {
+		if err := writeRowFile(DataEntry(table), archive.Data[table], bankArchive && scopeData); err != nil {
 			return err
 		}
 	}
-	// The bytes follow their rows, one entry per attachment, under the entry
-	// name the row carries. A row without its bytes is refused rather than
-	// written as a dangling name: the archive would claim to carry an
-	// attachment it does not, which no importer can tell from an empty one.
-	for _, attachment := range archive.Attachments {
-		if attachment.Entry == "" {
-			return fmt.Errorf("attachment %s/%s names no blob entry", attachment.DocumentID, attachment.ShortID)
+	// The synthesized knowledge rides with the data it was derived from; the
+	// bank's configuration and its own row ride with the bank-config section.
+	if bankArchive && scopeData {
+		if err := writeRowFile(MentalModelsName, archive.MentalModels, true); err != nil {
+			return err
 		}
-		data, ok := archive.Blobs[attachment.Entry]
-		if !ok {
-			return fmt.Errorf("attachment %s/%s names %s, which holds no bytes", attachment.DocumentID, attachment.ShortID, attachment.Entry)
+		if err := writeRowFile(MentalModelHistoryName, archive.MentalModelHistory, true); err != nil {
+			return err
 		}
-		if err := writeEntry(attachment.Entry, data); err != nil {
+	}
+	if bankArchive && scopeBankConfig {
+		// _CONFIG_ROW_TABLES, in the reference's own order.
+		for _, section := range []struct {
+			name string
+			rows []map[string]any
+		}{
+			{BanksName, archive.Banks},
+			{DirectivesName, archive.Directives},
+			{WebhooksName, archive.Webhooks},
+		} {
+			if err := writeRowFile(section.name, section.rows, true); err != nil {
+				return err
+			}
+		}
+	}
+	if bankArchive && scopeData {
+		// The knowledge tree is written even when empty for a whole-bank
+		// archive: an empty list distinguishes "no pages" from an archive
+		// produced before the tree existed.
+		if err := writeSection(KnowledgePagesName, archive.KnowledgePages, true, len(archive.KnowledgePages)); err != nil {
+			return err
+		}
+	}
+	// Operational history is written for every table the history section
+	// selected (empty or not), so an absent section means "not selected".
+	for _, table := range HistoryTables {
+		if err := writeRowFile(HistoryEntry(table), archive.History[table], bankArchive && scopeHistory); err != nil {
 			return err
 		}
 	}
@@ -370,6 +422,30 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 		return err
 	}
 	return writeEntry(ManifestName, bytes.TrimRight(manifestBuf.Bytes(), "\n"))
+}
+
+// attachmentRows renders the carried attachment rows as the row objects the
+// archive's attachments.json holds. The row is written from an Attachment
+// rather than a map so its members keep the declaration order the reference's
+// model writes them in; the blob entry name is added last, which is where the
+// reference's TransferAttachment declares it.
+func attachmentRows(attachments []Attachment) []map[string]any {
+	rows := make([]map[string]any, 0, len(attachments))
+	for _, attachment := range attachments {
+		rows = append(rows, map[string]any{
+			"bank_id":         attachment.BankID,
+			"document_id":     attachment.DocumentID,
+			"attachment_hash": attachment.AttachmentHash,
+			"short_id":        attachment.ShortID,
+			"media_type":      attachment.MediaType,
+			"byte_size":       attachment.ByteSize,
+			"kind":            attachment.Kind,
+			"filename":        attachment.Filename,
+			"created_at":      attachment.CreatedAt,
+			"entry":           attachment.Entry,
+		})
+	}
+	return rows
 }
 
 // DocumentNames lists the per-document payload entries of a filesystem in

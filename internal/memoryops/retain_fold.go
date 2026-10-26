@@ -53,7 +53,7 @@ func foldable(prev, next RetainItem) bool {
 	if len(prev.Attachments) > 0 || len(next.Attachments) > 0 {
 		return false
 	}
-	prevText, nextText := prev.Content.Flatten(), next.Content.Flatten()
+	prevText, nextText := foldText(prev), foldText(next)
 	if prevText == "" || nextText == "" {
 		return false
 	}
@@ -92,17 +92,41 @@ func foldable(prev, next RetainItem) bool {
 // than becoming two arrays separated by a newline. Anything else is joined by a
 // blank line, the chunker's preferred prose boundary.
 func mergeFoldedItems(prev, next RetainItem) RetainItem {
-	prevText, nextText := prev.Content.Flatten(), next.Content.Flatten()
+	prevText, nextText := foldText(prev), foldText(next)
 	merged := ""
 	if combined, ok := mergeJSONArrayParts(prevText, nextText); ok {
 		merged = combined
 	} else {
 		merged = prevText + foldSeparator + nextText
 	}
+	// The blocks stay identifiable so each is still cut and numbered on its own
+	// boundaries: the join only decides the document body.
+	prev.Parts = append(foldParts(prev), nextText)
 	prev.Content = Content{Text: merged}
 	prev.Entities = mergeEntities(prev.Entities, next.Entities)
 	prev.AttachmentIDs = mergeStrings(prev.AttachmentIDs, next.AttachmentIDs)
 	return prev
+}
+
+// foldParts returns the content blocks a fold has accumulated, so appending
+// another item's text keeps each block's own boundaries. An item that carries
+// no Parts is one block: its canonical text.
+func foldParts(item RetainItem) []string {
+	if len(item.Parts) > 0 {
+		return item.Parts
+	}
+	return []string{foldText(item)}
+}
+
+// foldText is the item's text as a fold measures and joins it. A text this build
+// assembled itself — an upload's converted document — is already canonical, so it
+// is taken as it stands; canonicalizing it here would apply the placeholder
+// scrub to a reference the upload minted for its own attachment.
+func foldText(item RetainItem) string {
+	if item.textIsCanonical && !item.Content.IsList {
+		return item.Content.Text
+	}
+	return item.Content.Flatten()
 }
 
 // mergeJSONArrayParts concatenates JSON array bodies into one array, preserving

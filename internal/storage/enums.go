@@ -87,6 +87,21 @@ type ChildOperation struct {
 	ErrorMessage  *string
 }
 
+// operationProgress is the `progress` object an operation recorded in its result
+// metadata. The reference's heartbeat merges it there under a top-level
+// `progress` key (`_write_operation_progress`, memory_engine.py:5160-5179, whose
+// snapshot always carries `stage` and an `at` timestamp), and the operation
+// surfaces project it back out of that metadata
+// (memory_engine.py:21180, :21312, :21334). A row that never recorded one reads
+// as nil, which renders as `null`.
+func operationProgress(metadata map[string]any) map[string]any {
+	value, ok := metadata["progress"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return value
+}
+
 // operationIsParent reports whether a stored result metadata marks the
 // operation as a parent batch operation.
 func operationIsParent(metadata map[string]any) bool {

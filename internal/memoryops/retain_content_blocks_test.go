@@ -42,7 +42,7 @@ func TestRetainValidatesContentBlocks(t *testing.T) {
 			`{"items":[{"content":[{"type":"text","text":"  "}]}]}`,
 			`{"detail":[{"type":"value_error","loc":["body","items",0,"content"],` +
 				`"msg":"Value error, content cannot be empty",` +
-				`"input":[{"text":"  ","type":"text"}],"ctx":{"error":{}}}]}`,
+				`"input":[{"type":"text","text":"  "}],"ctx":{"error":{}}}]}`,
 		},
 		{
 			"a block with no discriminator",
@@ -65,14 +65,15 @@ func TestRetainValidatesContentBlocks(t *testing.T) {
 				`"list[tagged-union[TextContentBlock,ImageContentBlock,FileContentBlock]]",0],` +
 				`"msg":"Input tag 'bogus' found using 'type' does not match any of the expected tags: ` +
 				`'text', 'image', 'file'","input":{"type":"bogus"},` +
-				`"ctx":{"discriminator":"'type'","expected_tags":"'text', 'image', 'file'","tag":"bogus"}}]}`,
+				`"ctx":{"discriminator":"'type'","tag":"bogus",` +
+				`"expected_tags":"'text', 'image', 'file'"}}]}`,
 		},
 		{
 			"a text block with no text",
 			`{"items":[{"content":[{"type":"text","text":"x"},{"type":"text"}]}]}`,
 			`{"detail":[` +
 				`{"type":"string_type","loc":["body","items",0,"content","str"],` +
-				`"msg":"Input should be a valid string","input":[{"text":"x","type":"text"},{"type":"text"}]},` +
+				`"msg":"Input should be a valid string","input":[{"type":"text","text":"x"},{"type":"text"}]},` +
 				`{"type":"missing","loc":["body","items",0,"content",` +
 				`"list[tagged-union[TextContentBlock,ImageContentBlock,FileContentBlock]]",1,"text","text"],` +
 				`"msg":"Field required","input":{"type":"text"}}]}`,
@@ -92,8 +93,10 @@ func TestRetainValidatesContentBlocks(t *testing.T) {
 			`{"items":[{"content":[{"type":"image","source":{"type":"base64","media_type":"bad","data":"aGk="}}]}]}`,
 			`{"detail":[` +
 				`{"type":"string_type","loc":["body","items",0,"content","str"],` +
-				`"msg":"Input should be a valid string","input":[{"source":{"data":"aGk=",` +
-				`"media_type":"bad","type":"base64"},"type":"image"}]},` +
+				// The item echoes the body the caller wrote: the reference's
+				// decoder preserves member order, so `type` comes first here.
+				`"msg":"Input should be a valid string","input":[{"type":"image","source":{` +
+				`"type":"base64","media_type":"bad","data":"aGk="}}]},` +
 				`{"type":"value_error","loc":["body","items",0,"content",` +
 				`"list[tagged-union[TextContentBlock,ImageContentBlock,FileContentBlock]]",0,"image",` +
 				`"source","media_type"],` +

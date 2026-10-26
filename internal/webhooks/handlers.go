@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"math"
 	"net/http"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -204,9 +205,24 @@ func (h *Handlers) ListDeliveries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cursor := httpx.Query(r, "cursor")
-	if limit <= 0 {
-		// The reference slices the fetched rows to `[:limit]`, so a non-positive
-		// limit yields an empty page while `total` is unaffected.
+	if limit < 0 {
+		// The reference declares no lower bound on this limit, so a negative value
+		// is valid and reaches its fetch, which asks for `limit + 1` rows: -1
+		// therefore asks for zero rows and answers an empty page, while anything
+		// below -1 hands the database a negative LIMIT and is its own refusal —
+		// the reference surfaces that as a 500. The webhook lookup above has
+		// already decided the 404 for an unknown webhook, so both are answered
+		// here rather than being clamped by the store.
+		if limit == -1 {
+			httpx.WriteJSON(w, http.StatusOK, DeliveryListResponse{Items: []Delivery{}, NextCursor: nil})
+			return
+		}
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindInternal, "LIMIT must not be negative"))
+		return
+	}
+	if limit == 0 {
+		// The reference slices the fetched rows to `[:limit]`, so a zero limit
+		// yields an empty page.
 		httpx.WriteJSON(w, http.StatusOK, DeliveryListResponse{Items: []Delivery{}, NextCursor: nil})
 		return
 	}
@@ -295,16 +311,21 @@ func parseListQuery(r *http.Request) (int, int, *httpx.ValidationFailure) {
 }
 
 // parseDeliveryLimit reads the delivery page size: default 50, upper bound 200,
-// and no lower bound (the reference declares only le=200).
+// and no lower bound.
+//
+// The reference declares only `le=200` on this parameter — there is no `ge` —
+// so a negative value is *valid* and reaches the statement, where the database
+// refuses it: `-1` yields an empty page (the reference's fetch is `LIMIT
+// limit + 1`, i.e. `LIMIT 0`) and anything below that is the database's own
+// `LIMIT must not be negative` 500. Refusing a negative limit here would answer
+// 422 where the reference answers 200, so the bound is left to the store.
 func parseDeliveryLimit(r *http.Request) (int, *httpx.ValidationFailure) {
 	values, present := httpx.QueryParamsOf(r)["limit"]
 	if !present || len(values) == 0 {
 		return 50, nil
 	}
 	raw := lastQueryValue(values)
-	// The reference declares only le=200 on this parameter, so there is no
-	// lower bound to check.
-	parsed, item, ok := httpx.ParseQueryInt(raw, "limit", 0, 200)
+	parsed, item, ok := httpx.ParseQueryInt(raw, "limit", math.MinInt, 200)
 	if !ok {
 		return 0, &httpx.ValidationFailure{Errors: []httpx.ValidationError{item}}
 	}

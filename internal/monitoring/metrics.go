@@ -86,15 +86,22 @@ type MetricsHandler struct {
 }
 
 // Serve writes the metrics body in text exposition format.
+//
+// The body is rendered into one buffer and written with a length: the
+// reference hands its framework a complete bytes object, so the response
+// declares Content-Length. Writing the slices straight to the ResponseWriter
+// streams them instead, and Go then answers with chunked transfer encoding and
+// no length header — a scraping client that reads the length (or a proxy that
+// buffers on it) sees a different response for the same bytes.
 func (h *MetricsHandler) Serve(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", PrometheusContentType)
-	w.WriteHeader(http.StatusOK)
-
+	body := h.Exposition()
 	if h.Workers != nil {
-		_, _ = w.Write(h.Workers.Render())
-		return
+		body = h.Workers.Render()
 	}
-	_, _ = w.Write(h.Exposition())
+	w.Header().Set("Content-Type", PrometheusContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // Exposition renders this process's own metrics body in text exposition
@@ -231,7 +238,19 @@ func writeSamples(b *strings.Builder, samples []Metric, tenant string) {
 // repeating it before every series.
 func writeHistogramFamilies(b *strings.Builder, families []Histogram, tenant string) {
 	last := ""
-	for _, family := range families {
+	// The reference's registry renders its histogram families in name order (the
+	// Prometheus exporter walks sorted instrument names), whatever order the
+	// caller collected them in. Sorting by name and then by rendered label set
+	// reproduces that order and keeps it stable across scrapes.
+	ordered := make([]Histogram, len(families))
+	copy(ordered, families)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Name != ordered[j].Name {
+			return ordered[i].Name < ordered[j].Name
+		}
+		return requestLabelStringMap(ordered[i].Labels) < requestLabelStringMap(ordered[j].Labels)
+	})
+	for _, family := range ordered {
 		if family.Name != last {
 			writeHelpType(b, family.Name, helpOr(family.Help), "histogram")
 			last = family.Name

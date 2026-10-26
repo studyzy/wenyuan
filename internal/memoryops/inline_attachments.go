@@ -43,6 +43,13 @@ func (h *Handlers) storeInlineAttachments(ctx context.Context, bankID string, re
 		if len(inline) == 0 {
 			continue
 		}
+		if !h.VisionEnabled {
+			// The model cannot read images, so the canonicalizer drops the
+			// blocks and the item keeps only its prose. Storing bytes no write
+			// could ever resolve would leave an orphan attachment row behind.
+			item.attachmentsDeclined = true
+			continue
+		}
 		// The bank row is created first because the attachment table references
 		// it; the retain path lazily creates the same bank moments later.
 		if err := h.Store.EnsureBank(ctx, bankID); err != nil {

@@ -3,6 +3,7 @@ package mentalmodels
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,27 +21,44 @@ var (
 	triggerFactTypes = []string{"world", "experience", "observation"}
 )
 
-// triggerDefaultMap is the reference's MentalModelTrigger at its defaults: the
-// four non-nullable members carry their declared default, the rest null.
-var triggerDefaultMap = map[string]any{
-	"budget":                                 nil,
-	"mode":                                   "full",
-	"refresh_after_consolidation":            false,
-	"refresh_cron":                           nil,
-	"min_refresh_interval_seconds":           nil,
-	"fact_types":                             nil,
-	"exclude_mental_models":                  false,
-	"exclude_mental_model_ids":               nil,
-	"tags_match":                             nil,
-	"tag_groups":                             nil,
-	"include_chunks":                         nil,
-	"recall_max_tokens":                      nil,
-	"recall_chunks_max_tokens":               nil,
-	"reflect_search_observations_max_tokens": nil,
-	"reflect_search_observations_include_entities": nil,
-	"response_schema": nil,
-	"keep_trace":      false,
+// triggerDefaults is the reference's MentalModelTrigger at its defaults, in the
+// model's declaration order: the four non-nullable members carry their declared
+// default, the rest null.
+//
+// It is a list rather than a map because its order is observable: the reference
+// hands its response model to the framework, which serializes the fields in
+// declaration order, so a trigger always reaches the wire —
+// `{"budget":…,"mode":…,"refresh_after_consolidation":…,…,"keep_trace":…}` — and
+// a Go map would sort the seventeen keys alphabetically instead.
+var triggerDefaults = []OrderedTriggerMember{
+	{"budget", nil},
+	{"mode", "full"},
+	{"refresh_after_consolidation", false},
+	{"refresh_cron", nil},
+	{"min_refresh_interval_seconds", nil},
+	{"fact_types", nil},
+	{"exclude_mental_models", false},
+	{"exclude_mental_model_ids", nil},
+	{"tags_match", nil},
+	{"tag_groups", nil},
+	{"include_chunks", nil},
+	{"recall_max_tokens", nil},
+	{"recall_chunks_max_tokens", nil},
+	{"reflect_search_observations_max_tokens", nil},
+	{"reflect_search_observations_include_entities", nil},
+	{"response_schema", nil},
+	{"keep_trace", false},
 }
+
+// triggerDefaultMap is triggerDefaults keyed by member, for the lookups that
+// only care about the member set and each member's default value.
+var triggerDefaultMap = func() map[string]any {
+	out := make(map[string]any, len(triggerDefaults))
+	for _, member := range triggerDefaults {
+		out[member.Key] = member.Value
+	}
+	return out
+}()
 
 // triggerKnownMember reports whether a member is part of the reference's
 // trigger model, so a projection keeps exactly that set.
@@ -72,20 +90,323 @@ func TriggerErrors(object map[string]any) []httpx.ValidationError {
 // default, drops members the model does not declare, and leaves nil nil.
 func NormalizeTrigger(stored map[string]any) map[string]any { return normalizeTrigger(stored) }
 
-// normalizeTrigger projects a stored trigger through the reference's model: it
-// fills every unset member with its default and drops any member the model does
-// not declare. A nil stored trigger stays nil (the reference's null).
-func normalizeTrigger(stored map[string]any) map[string]any {
-	if stored == nil {
+// Trigger is a projected trigger: the reference's MentalModelTrigger members in
+// declaration order, so the seventeen keys reach the wire in the order the model
+// declares them rather than in a Go map's sorted one.
+type Trigger []OrderedTriggerMember
+
+// OrderedTriggerMember is one member of a projected Trigger.
+type OrderedTriggerMember struct {
+	Key   string
+	Value any
+}
+
+// UnmarshalJSON reads a trigger object back into its ordered form, keeping the
+// declared members in the model's order and any undeclared one after them (in
+// document order, so nothing is lost when a stored trigger carries a member this
+// build does not know). A JSON null yields the empty projection, which is the
+// model's `None`.
+func (t *Trigger) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*t = nil
 		return nil
 	}
-	out := cloneTrigger(triggerDefaultMap)
+	var object map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := decoder.Decode(&object); err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(object))
+	out := make(Trigger, 0, len(object))
+	for _, member := range triggerDefaults {
+		value, present := object[member.Key]
+		if !present {
+			continue
+		}
+		seen[member.Key] = true
+		out = append(out, OrderedTriggerMember{Key: member.Key, Value: decodeTriggerNumbers(value)})
+	}
+	for _, member := range documentMemberOrder(trimmed) {
+		if seen[member] {
+			continue
+		}
+		out = append(out, OrderedTriggerMember{Key: member, Value: decodeTriggerNumbers(object[member])})
+	}
+	*t = out
+	return nil
+}
+
+// documentMemberOrder returns an object's members in the order the document
+// spells them, so an undeclared member keeps the position it was written in.
+func documentMemberOrder(data []byte) []string {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	// The opening brace is already known to be there: the caller decoded this.
+	if _, err := decoder.Token(); err != nil {
+		return nil
+	}
+	var members []string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return members
+		}
+		name, ok := key.(string)
+		if !ok {
+			return members
+		}
+		members = append(members, name)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return members
+		}
+	}
+	return members
+}
+
+// Value returns one projected member, and whether the projection carries it.
+// It is the read side of the ordered form, for callers that ask a trigger for a
+// member by name rather than ranging over its declaration order.
+func (t Trigger) Value(member string) (any, bool) {
+	for _, entry := range t {
+		if entry.Key == member {
+			return entry.Value, true
+		}
+	}
+	return nil, false
+}
+
+// MarshalJSON writes the members in the order the model declares them. An empty
+// Trigger is the reference's null, not an empty object: a nil slice marshals as
+// `[]` through a custom encoder, and the detail level that drops the trigger
+// (metadata) reports null there.
+func (t Trigger) MarshalJSON() ([]byte, error) {
+	if t == nil {
+		return []byte("null"), nil
+	}
+	var buffer bytes.Buffer
+	buffer.WriteByte('{')
+	for index, member := range t {
+		if index > 0 {
+			buffer.WriteByte(',')
+		}
+		key, err := json.Marshal(member.Key)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(key)
+		buffer.WriteByte(':')
+		value, err := json.Marshal(member.Value)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(value)
+	}
+	buffer.WriteByte('}')
+	return buffer.Bytes(), nil
+}
+
+// normalizeTrigger projects a stored trigger through the reference's model: it
+// emits every declared member in declaration order, filling the unset ones with
+// their default and dropping any member the model does not declare. A nil stored
+// trigger projects to the model's defaults — the reference reaches that object
+// by validating the absent member into a `MentalModelTrigger`, so a row whose
+// column holds `{}` or NULL still answers with the full seventeen-key object
+// rather than null.
+//
+// Normalization is not just a fill: the reference's own field validators rewrite
+// the value they accept, so `refresh_cron` is stored and read back stripped (a
+// whitespace-only expression becomes null), and every `tag_groups` leaf is
+// expanded with the `match`/`resolve` defaults it declares. Both are applied
+// here, because this is the projection that decides what a client sees.
+func normalizeTrigger(stored map[string]any) map[string]any {
+	out := make(map[string]any, len(triggerDefaults))
+	for _, member := range triggerDefaults {
+		out[member.Key] = member.Value
+	}
 	for key, value := range stored {
+		if value == nil {
+			// The reference fills a null member with its default rather than
+			// carrying the null: `mode: null` reads back as "full", not null.
+			continue
+		}
 		if triggerKnownMember(key) {
 			out[key] = value
 		}
 	}
+	if expression, ok := out["refresh_cron"].(string); ok {
+		if trimmed := strings.TrimSpace(expression); trimmed != "" {
+			out["refresh_cron"] = trimmed
+		} else {
+			out["refresh_cron"] = nil
+		}
+	}
+	if groups, ok := out["tag_groups"].([]any); ok {
+		out["tag_groups"] = normalizeTagGroups(groups)
+	}
 	return out
+}
+
+// OrderedObject is a JSON object whose members render in the order it holds
+// them. Reordering a Go map cannot do that — the encoder sorts a map's keys
+// whatever order it was built in — so a value that has to reach the wire in a
+// particular order is carried as this type, whose MarshalJSON writes the members
+// as it finds them.
+type OrderedObject []OrderedTriggerMember
+
+// MarshalJSON writes the members in the order the object holds them.
+func (o OrderedObject) MarshalJSON() ([]byte, error) {
+	var buffer bytes.Buffer
+	buffer.WriteByte('{')
+	for index, member := range o {
+		if index > 0 {
+			buffer.WriteByte(',')
+		}
+		key, err := json.Marshal(member.Key)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(key)
+		buffer.WriteByte(':')
+		value, err := json.Marshal(member.Value)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(value)
+	}
+	buffer.WriteByte('}')
+	return buffer.Bytes(), nil
+}
+
+// orderedObject renders a map with its named members first, in the given order,
+// then any remaining key in its own sorted order.
+func orderedObject(order []string, stored map[string]any) OrderedObject {
+	members := make(OrderedObject, 0, len(stored))
+	named := make(map[string]bool, len(order))
+	for _, key := range order {
+		named[key] = true
+		if value, present := stored[key]; present {
+			members = append(members, OrderedTriggerMember{Key: key, Value: value})
+		}
+	}
+	rest := make([]string, 0, len(stored))
+	for key := range stored {
+		if !named[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	for _, key := range rest {
+		members = append(members, OrderedTriggerMember{Key: key, Value: stored[key]})
+	}
+	return members
+}
+
+// reflectResponseOrder is the member order a mental model's stored
+// reflect_response reaches the wire in. The reference's payload is an
+// insertion-ordered dict — text, outcome, based_on, then mental_models, with
+// reflect_skipped landing between them when the refresh read nothing — and the
+// jsonb column it is stored in carries no order back, so the read path restores
+// it here. Any member this list does not name follows, in the stored map's own
+// (sorted) order, so nothing is dropped.
+var reflectResponseOrder = []string{
+	"text", "outcome", "based_on", "reflect_skipped", "mental_models",
+}
+
+// basedOnOrder is the order the fact types inside based_on are listed in: the
+// order the reference's own `based_on` dict is built in.
+var basedOnOrder = []string{
+	"world", "opinion", "directives", "experience", "observation", "mental-models",
+}
+
+// ReorderReflectResponse renders a stored reflect_response as the ordered object
+// the reference serializes, so a reader sees its members in the order the
+// reference's model declares rather than a jsonb round trip's sorted one. The
+// result is an OrderedObject, not a map: only a type of its own can pin the
+// member order on the wire.
+func ReorderReflectResponse(stored map[string]any) any {
+	if stored == nil {
+		return nil
+	}
+	out := make(map[string]any, len(stored))
+	for key, value := range stored {
+		if key == "based_on" {
+			if based, isMap := value.(map[string]any); isMap {
+				out[key] = orderedObject(basedOnOrder, based)
+				continue
+			}
+		}
+		out[key] = value
+	}
+	return orderedObject(reflectResponseOrder, out)
+}
+
+// projectTrigger renders a stored trigger as the ordered wire value: its
+// seventeen declared members in declaration order.
+func projectTrigger(stored map[string]any) Trigger {
+	normalized := normalizeTrigger(stored)
+	out := make(Trigger, 0, len(triggerDefaults))
+	for _, member := range triggerDefaults {
+		out = append(out, OrderedTriggerMember{Key: member.Key, Value: normalized[member.Key]})
+	}
+	return out
+}
+
+// normalizeTagGroups projects each stored tag-group node through the union's
+// models, which fill the leaf's `match`/`resolve` defaults and serialize their
+// members in declaration order. A node the model does not recognise is kept as
+// stored, so a projection never drops a scope it cannot read.
+func normalizeTagGroups(groups []any) []any {
+	out := make([]any, len(groups))
+	for index, group := range groups {
+		out[index] = normalizeTagGroup(group)
+	}
+	return out
+}
+
+// normalizeTagGroup projects one tag-group node.
+func normalizeTagGroup(node any) any {
+	object, ok := node.(map[string]any)
+	if !ok {
+		return node
+	}
+	if raw, present := object["tags"]; present {
+		// A leaf: `tags`, then the two optional members with their declared
+		// defaults (TagsMatch "any_strict", TagResolution "exact").
+		leaf := make(map[string]any, 3)
+		leaf["tags"] = raw
+		leaf["match"] = tagLeafMemberDefault(object, "match", "any_strict")
+		leaf["resolve"] = tagLeafMemberDefault(object, "resolve", "exact")
+		return leaf
+	}
+	for _, member := range []struct{ alias, name string }{{"and", "filters"}, {"or", "filters"}, {"not", "filter"}} {
+		raw, present := tagGroupMember(object, member.alias, member.name)
+		if !present {
+			continue
+		}
+		// The compound groups serialize by alias, so the wire key is the one the
+		// client wrote either way.
+		if member.name == "filters" {
+			list, isList := raw.([]any)
+			if !isList {
+				return node
+			}
+			return map[string]any{member.alias: normalizeTagGroups(list)}
+		}
+		return map[string]any{member.alias: normalizeTagGroup(raw)}
+	}
+	return node
+}
+
+// tagLeafMemberDefault reads one optional leaf member, substituting the model's
+// default when the member is absent or null.
+func tagLeafMemberDefault(object map[string]any, name, fallback string) any {
+	value, present := object[name]
+	if !present || value == nil {
+		return fallback
+	}
+	return value
 }
 
 // triggerFailure wraps one or more structured items for a trigger member.

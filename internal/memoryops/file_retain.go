@@ -298,6 +298,7 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		applyFileMetadata(&item, meta)
+		item.visionEnabled = h.VisionEnabled
 		// A file upload always carries a metadata dict: the reference builds the
 		// item as `file_meta.metadata or {}` and its content dict records that
 		// value unconditionally, so a document retained from an upload with no
@@ -306,6 +307,14 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 			item.Metadata = map[string]any{}
 		}
 		items = append(items, item)
+	}
+	// The reference's submission path refuses an unknown bank rather than
+	// declaring one: `_submit_async_operation` raises `Bank '<id>' not found`,
+	// which the handler turns into a 404. The upload is never stored, so the
+	// bytes do not outlive the refusal.
+	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+		return
 	}
 	// One operation per file: the reference submits each file as its own
 	// conversion operation, so a caller tracks each upload separately.
@@ -380,67 +389,11 @@ func resolveParserChain(perFile, requestLevel ParserSelection, fallback []string
 	return fallback
 }
 
-// parseFileRetainRequest decodes the required `request` form field. The field
-// is a validated JSON string on the reference, so a JSON or shape error is its
-// 400 "Invalid request JSON" refusal rather than a nested-model validation
-// item, and per-file fields placed at the JSON root are refused the same way.
-func (h *Handlers) parseFileRetainRequest(raw string) (parsedFileRetainRequest, *httpx.HTTPError) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &root); err != nil {
-		return parsedFileRetainRequest{}, invalidRequestJSONError("Invalid JSON", err.Error())
-	}
-	if root == nil {
-		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error",
-			"Input should be a valid dictionary or instance of FileRetainRequest")
-	}
-	if message := misplacedFileFieldMessage(root); message != "" {
-		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error", message)
-	}
-	var body FileRetainRequest
-	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		return parsedFileRetainRequest{}, invalidRequestJSONError("Value error", err.Error())
-	}
-	return parsedFileRetainRequest{parser: body.Parser, metadata: body.FilesMetadata}, nil
-}
-
 // fileRetainPerFileFields are the FileRetainMetadata members that are not
 // members of FileRetainRequest: naming one at the request's JSON root is a
 // misplaced per-file field. `parser` belongs to both models, so it is legal in
 // either position.
 var fileRetainPerFileFields = []string{"context", "document_id", "metadata", "strategy", "tags", "timestamp"}
-
-// misplacedFileFieldMessage reports the per-file fields a request JSON placed at
-// its root, in the reference's message shape, or "" when the root is clean.
-func misplacedFileFieldMessage(root map[string]json.RawMessage) string {
-	misplaced := make([]string, 0, len(fileRetainPerFileFields))
-	for _, name := range fileRetainPerFileFields {
-		if raw, ok := root[name]; ok && !isJSONNull(raw) {
-			misplaced = append(misplaced, name)
-		}
-	}
-	problems := make([]string, 0, 2)
-	if len(misplaced) > 0 {
-		problems = append(problems, fmt.Sprintf(
-			"Per-file fields (%s) must be placed in the corresponding 'files_metadata' entry",
-			strings.Join(misplaced, ", ")))
-	}
-	if raw, ok := root["update_mode"]; ok && !isJSONNull(raw) {
-		problems = append(problems, "'update_mode' is not supported by /files/retain, which always processes asynchronously")
-	}
-	return strings.Join(problems, "; ")
-}
-
-// isJSONNull reports whether a raw JSON value is the literal null.
-func isJSONNull(raw json.RawMessage) bool {
-	return strings.TrimSpace(string(raw)) == "null"
-}
-
-// invalidRequestJSONError renders the reference's refusal for the `request`
-// form field: a pydantic validation error string wrapped in a 400 detail.
-func invalidRequestJSONError(kind, message string) *httpx.HTTPError {
-	return httpx.NewHTTPError(httpx.KindBadRequest,
-		"Invalid request JSON: 1 validation error for FileRetainRequest\n  "+kind+", "+message)
-}
 
 // validateParserChain refuses a parser chain naming a parser the deployment does
 // not offer, in the reference's 400 shape: the scope the chain came from and the
@@ -561,14 +514,25 @@ func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, he
 			return RetainItem{}, err
 		}
 	}
+	if image && !h.VisionEnabled {
+		// The model cannot read images, so the canonical text is the prose the
+		// picture stood beside — none here — and no attachment row is written:
+		// bytes no write could ever resolve would be an orphan.
+		return RetainItem{
+			Content:         Content{Text: ""},
+			DocumentID:      documentID,
+			textIsCanonical: true,
+		}, nil
+	}
 	// A converted document keeps no attachment row: its text is the content, and
 	// the reference stores no bytes and no attachment for one, so the document
 	// read reports `attachments: null` for it. An image is the exception — its
 	// bytes are the attachment the intended text refers to.
 	if !image {
 		return RetainItem{
-			Content:    Content{Text: text},
-			DocumentID: documentID,
+			Content:         Content{Text: text},
+			DocumentID:      documentID,
+			textIsCanonical: true,
 		}, nil
 	}
 	if err := h.Store.PutAttachment(r.Context(), storage.Attachment{
@@ -585,9 +549,10 @@ func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, he
 		return RetainItem{}, err
 	}
 	return RetainItem{
-		Content:       Content{Text: text},
-		DocumentID:    documentID,
-		AttachmentIDs: []string{shortID},
+		Content:         Content{Text: text},
+		DocumentID:      documentID,
+		AttachmentIDs:   []string{shortID},
+		textIsCanonical: true,
 	}, nil
 }
 
