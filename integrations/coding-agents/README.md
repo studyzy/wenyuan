@@ -40,10 +40,10 @@ Flags:
 Connection parameters resolve in one fixed order: an explicit flag, then the
 stored configuration file, then the deployment environment override, then the
 built-in default. The stored configuration lives at `~/.wenyuan/config.json`
-and is relocated by `HINDSIGHT_CONFIG`. Its keys are `serverMode`, `apiUrl`,
+and is relocated by `WENYUAN_CONFIG`. Its keys are `serverMode`, `apiUrl`,
 `apiToken`, `bankId` and `apiPort`; the environment overrides it honors are
-`HINDSIGHT_API_URL`, `HINDSIGHT_API_TOKEN`, `HINDSIGHT_BANK_ID` and
-`HINDSIGHT_API_PORT`. Nothing prompts without a terminal.
+`WENYUAN_API_URL`, `WENYUAN_API_TOKEN`, `WENYUAN_BANK_ID` and
+`WENYUAN_API_PORT`. Nothing prompts without a terminal.
 
 ## Layout
 

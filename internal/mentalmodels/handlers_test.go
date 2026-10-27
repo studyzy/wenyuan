@@ -504,7 +504,7 @@ func TestRefreshRefusesWithoutModelConfigured(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	const want = "Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
+	const want = "Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set WENYUAN_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
 	if body["detail"] != want {
 		t.Fatalf("detail = %v, want %q", body["detail"], want)
 	}

@@ -3,8 +3,8 @@
  * https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
  */
 export async function register() {
-  const dataplaneUrl = process.env.HINDSIGHT_CP_DATAPLANE_API_URL || "http://localhost:18888";
-  const apiKey = process.env.HINDSIGHT_CP_DATAPLANE_API_KEY || "";
+  const dataplaneUrl = process.env.WENYUAN_CP_DATAPLANE_API_URL || "http://localhost:18888";
+  const apiKey = process.env.WENYUAN_CP_DATAPLANE_API_KEY || "";
 
   console.log(`[Control Plane] Connecting to dataplane at: ${dataplaneUrl}`);
   if (apiKey) {

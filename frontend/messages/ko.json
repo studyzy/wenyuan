@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "선택된 뱅크 없음",
     "apiDisabledTitle": "뱅크 구성 API가 활성화되지 않았습니다",
-    "apiDisabledDescription": "뱅크별 구성을 활성화하려면 서버에서 <code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code>로 설정하세요.",
+    "apiDisabledDescription": "뱅크별 구성을 활성화하려면 서버에서 <code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code>로 설정하세요.",
     "resetToInherited": "상속된 값으로 초기화",
     "failedToReset": "초기화에 실패했습니다",
     "overrideBadge": "뱅크 재정의",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "현재 뱅크에 문서 추가",
     "templateManifestHelp": "템플릿 매니페스트 JSON을 붙여넣어 설정, 멘탈 모델 및 디렉티브로 뱅크를 미리 구성합니다.",
     "fileUploadDisabledMessage": "이 서버에서는 파일 업로드가 활성화되어 있지 않습니다.",
-    "fileUploadEnableHint": "활성화하려면 <code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code>를 설정하세요",
+    "fileUploadEnableHint": "활성화하려면 <code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code>를 설정하세요",
     "fileTagsHelp": "쉼표로 구분 — recall/reflect 중에 메모리를 필터링하는 데 사용됩니다",
     "strategyHelpText": "이 문서에 대해 뱅크의 기본 추출 전략을 재정의합니다.",
     "observationScopePerTag": "태그별",

@@ -26,7 +26,7 @@ func TestOutputLanguageForcesThePrompt(t *testing.T) {
 func TestVisionRefusalMessages(t *testing.T) {
 	no := false
 	unknown := New(&stubProvider{name: "gateway"})
-	if err := unknown.VisionRefusal(); err == nil || !strings.Contains(err.Error(), "HINDSIGHT_API_LLM_VISION=true") {
+	if err := unknown.VisionRefusal(); err == nil || !strings.Contains(err.Error(), "WENYUAN_API_LLM_VISION=true") {
 		t.Fatalf("unknown-provider refusal = %v", err)
 	}
 	cannot := New(&stubProvider{name: "gateway"})

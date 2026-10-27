@@ -18,7 +18,7 @@ func TestProviderFamilyKeysAreDisjointAndWellFormed(t *testing.T) {
 			t.Fatalf("family %q has no keys; the generated contract is empty", family)
 		}
 		for _, key := range keys {
-			if !strings.HasPrefix(key, "HINDSIGHT_API_") {
+			if !strings.HasPrefix(key, "WENYUAN_API_") {
 				t.Fatalf("family %q carries a non-contract name %q", family, key)
 			}
 			if other, dup := seen[key]; dup {

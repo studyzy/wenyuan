@@ -51,8 +51,8 @@ const (
 )
 
 // Member is one entry in the reranker chain. Member 0 is the primary
-// (the unindexed HINDSIGHT_API_RERANKER_* settings); members 1..N come from the
-// indexed HINDSIGHT_API_RERANKER_<n>_* settings and inherit nothing from the
+// (the unindexed WENYUAN_API_RERANKER_* settings); members 1..N come from the
+// indexed WENYUAN_API_RERANKER_<n>_* settings and inherit nothing from the
 // primary.
 type Member struct {
 	// Index is the member's position; 0 is the primary.
@@ -221,9 +221,9 @@ func buildMember(cfg Config, member Member) (provider.Reranker, error) {
 // bare name for the primary, the index-prefixed name for a fallback.
 func (m Member) envName(suffix string) string {
 	if m.Index == 0 {
-		return "HINDSIGHT_API_RERANKER_" + suffix
+		return "WENYUAN_API_RERANKER_" + suffix
 	}
-	return fmt.Sprintf("HINDSIGHT_API_RERANKER_%d_%s", m.Index, suffix)
+	return fmt.Sprintf("WENYUAN_API_RERANKER_%d_%s", m.Index, suffix)
 }
 
 // refusedMembers are the provider names this build has no adapter for, with the

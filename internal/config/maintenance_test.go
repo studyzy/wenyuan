@@ -114,14 +114,14 @@ func TestCleanupBatchSizeFallsBack(t *testing.T) {
 // reference verbatim, so an operator's existing configuration keeps working.
 func TestMaintenanceEnvNamesMatchTheContract(t *testing.T) {
 	want := map[string]string{
-		"HINDSIGHT_API_RETENTION_SWEEP_INTERVAL_SECONDS":         EnvRetentionSweepIntervalSeconds,
-		"HINDSIGHT_API_AUDIT_LOG_RETENTION_DAYS":                 EnvAuditLogRetentionDays,
-		"HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS": EnvConsolidationReconcileIntervalSeconds,
-		"HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS":        EnvMentalModelRefreshTickSeconds,
-		"HINDSIGHT_API_OPERATION_CLEANUP_INTERVAL_SECONDS":       EnvOperationCleanupIntervalSeconds,
-		"HINDSIGHT_API_OPERATION_RETENTION_DAYS":                 EnvOperationRetentionDays,
-		"HINDSIGHT_API_OPERATION_CLEANUP_BATCH_SIZE":             EnvOperationCleanupBatchSize,
-		"HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS":         EnvMaintenanceStartJitterSeconds,
+		"WENYUAN_API_RETENTION_SWEEP_INTERVAL_SECONDS":         EnvRetentionSweepIntervalSeconds,
+		"WENYUAN_API_AUDIT_LOG_RETENTION_DAYS":                 EnvAuditLogRetentionDays,
+		"WENYUAN_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS": EnvConsolidationReconcileIntervalSeconds,
+		"WENYUAN_API_MENTAL_MODEL_REFRESH_TICK_SECONDS":        EnvMentalModelRefreshTickSeconds,
+		"WENYUAN_API_OPERATION_CLEANUP_INTERVAL_SECONDS":       EnvOperationCleanupIntervalSeconds,
+		"WENYUAN_API_OPERATION_RETENTION_DAYS":                 EnvOperationRetentionDays,
+		"WENYUAN_API_OPERATION_CLEANUP_BATCH_SIZE":             EnvOperationCleanupBatchSize,
+		"WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS":         EnvMaintenanceStartJitterSeconds,
 	}
 	for name, actual := range want {
 		if actual != name {

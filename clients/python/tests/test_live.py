@@ -1,12 +1,12 @@
 """End-to-end tests against a running server.
 
-The suite is gated on ``HINDSIGHT_API_URL``: without it every test is skipped,
+The suite is gated on ``WENYUAN_API_URL``: without it every test is skipped,
 so the offline gate stays green on a machine that has no server. With it set,
 each test talks to a real service over HTTP:
 
-    HINDSIGHT_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests
+    WENYUAN_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests
 
-A server started with ``HINDSIGHT_API_DATABASE_URL=memory`` is enough — no model
+A server started with ``WENYUAN_API_DATABASE_URL=memory`` is enough — no model
 provider is configured, so the assertions are structural (an operation
 succeeded, an id round-tripped, a list carries what was written) rather than
 about extracted facts or synthesised prose, which need a retention model.
@@ -31,10 +31,10 @@ from wenyuan_client_api.models.include_options import IncludeOptions  # noqa: E4
 
 
 def _live_url():
-    return os.environ.get("HINDSIGHT_API_URL")
+    return os.environ.get("WENYUAN_API_URL")
 
 
-@unittest.skipUnless(_live_url(), "HINDSIGHT_API_URL is not set: no server to test against")
+@unittest.skipUnless(_live_url(), "WENYUAN_API_URL is not set: no server to test against")
 class LiveServerTestCase(unittest.IsolatedAsyncioTestCase):
     """Base case that owns a unique bank per test and cleans it up."""
 

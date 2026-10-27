@@ -75,7 +75,7 @@ func knownResolverKeys(t *testing.T) map[string]bool {
 // extractor keeps an indentation path stack and reconstructs the flat key
 // every commented line answers. A line qualifies as a template line only when
 // its value is a plain scalar or empty, which excludes the header prose
-// ("lowercased: HINDSIGHT_API_PORT is `port` here" carries a sentence, and
+// ("lowercased: WENYUAN_API_PORT is `port` here" carries a sentence, and
 // "Quote a value..." starts with an uppercase word).
 func newNestedYAMLKeyReader() func(string) []string {
 	type frame struct {
@@ -112,9 +112,9 @@ func newNestedYAMLKeyReader() func(string) []string {
 
 var nestedKeyLine = regexp.MustCompile(`^(\s*)#(?:\s*)([a-z][a-z0-9_]*)\s*:\s*("[^"]*"|[A-Za-z0-9_.\-/:]*)\s*(#.*)?$`)
 
-var envKeyLine = regexp.MustCompile(`^#?\s*(HINDSIGHT_API_[A-Z0-9_]+)=`)
+var envKeyLine = regexp.MustCompile(`^#?\s*(WENYUAN_API_[A-Z0-9_]+)=`)
 
-var docKeyCell = regexp.MustCompile(`\|( ` + "`HINDSIGHT_API_[A-Z0-9_]+`" + `) `)
+var docKeyCell = regexp.MustCompile(`\|( ` + "`WENYUAN_API_[A-Z0-9_]+`" + `) `)
 
 func checkArtifactKeys(t *testing.T, path string, extract func(string) []string, known map[string]bool) {
 	t.Helper()

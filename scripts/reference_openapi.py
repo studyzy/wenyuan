@@ -17,7 +17,7 @@ Output: internal/httpx/openapi.json (the embedded copy the binary serves).
 
 Only the document is captured. The `servers` entry is not: the reference adds it
 per response from its configured root path, and so does this service, from
-HINDSIGHT_API_BASE_PATH.
+WENYUAN_API_BASE_PATH.
 """
 
 import argparse

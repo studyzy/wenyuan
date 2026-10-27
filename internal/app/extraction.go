@@ -85,7 +85,7 @@ func ExtractionSettingsFrom(cfg config.Config) ExtractionSettings {
 
 // retainVisionCapability resolves the retain model's image-reading capability as
 // a tri-state, mirroring the reference's supports_vision(): an explicit
-// HINDSIGHT_API_LLM_VISION wins, otherwise the provider's own answer — OpenAI
+// WENYUAN_API_LLM_VISION wins, otherwise the provider's own answer — OpenAI
 // and Anthropic claim they read images, and every gateway or proxy is unknown
 // (nil), which an attachment-bearing call refuses rather than silently dropping
 // the image.

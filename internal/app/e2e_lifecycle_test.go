@@ -119,7 +119,7 @@ func TestStoreDocumentTextSwitchEndToEnd(t *testing.T) {
 	if appendRec.Code != http.StatusBadRequest {
 		t.Fatalf("append with text storage off = %d, want 400 (body %s)", appendRec.Code, appendRec.Body.String())
 	}
-	if detail, _ := decodeJSON(t, appendRec)["detail"].(string); !strings.Contains(detail, "HINDSIGHT_API_STORE_DOCUMENT_TEXT") {
+	if detail, _ := decodeJSON(t, appendRec)["detail"].(string); !strings.Contains(detail, "WENYUAN_API_STORE_DOCUMENT_TEXT") {
 		t.Fatalf("append refusal detail = %q, want the reference's wording", detail)
 	}
 }

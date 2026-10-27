@@ -1,13 +1,13 @@
 //! The client against a real deployment.
 //!
 //! Every test here talks to a running server over HTTP, so the suite skips
-//! unless `HINDSIGHT_API_URL` names one:
+//! unless `WENYUAN_API_URL` names one:
 //!
 //! ```sh
-//! HINDSIGHT_API_URL=http://127.0.0.1:18888 cargo test --test live
+//! WENYUAN_API_URL=http://127.0.0.1:18888 cargo test --test live
 //! ```
 //!
-//! A server started with `HINDSIGHT_API_DATABASE_URL=memory` is enough: no
+//! A server started with `WENYUAN_API_DATABASE_URL=memory` is enough: no
 //! model provider is configured, so the assertions are structural — an
 //! operation succeeded, an id round-tripped, a list carries what was written,
 //! a tag filter selects its own write back out, a retired route reports that
@@ -23,7 +23,7 @@ use wenyuan_client::{types, Error, Wenyuan};
 
 /// The variable naming the deployment to test against; the same spelling the
 /// server and this crate's other clients read.
-const ENV_BASE_URL: &str = "HINDSIGHT_API_URL";
+const ENV_BASE_URL: &str = "WENYUAN_API_URL";
 
 /// The base URL to test against, or `None` when the suite should skip.
 fn live_base_url() -> Option<String> {

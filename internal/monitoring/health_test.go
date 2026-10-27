@@ -476,7 +476,7 @@ func TestMetricsExtraSeries(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathMetrics, nil))
-	if !strings.Contains(rec.Body.String(), "wenyuan_async_operations_pending{otel_scope_name=\"hindsight_api.metrics\",otel_scope_schema_url=\"\",otel_scope_version=\"\"} 3") {
+	if !strings.Contains(rec.Body.String(), "wenyuan_async_operations_pending{otel_scope_name=\"wenyuan_api.metrics\",otel_scope_schema_url=\"\",otel_scope_version=\"\"} 3") {
 		t.Fatalf("metrics body = %q", rec.Body.String())
 	}
 }

@@ -153,7 +153,7 @@
 | ✅ 1.7 | 图臂的种子在**没有 embedding 时**回落到 keyword 分数（`internal/storage/postgres_recall.go:581` 的 `candidateSimilarity` 取关键字分作相似度），参考只用语义密集命中作种子（`engine/memories/pg/recall.py:299-304`、`memory_engine.py:9766`）。可观察：与关键字命中共享实体的单元被本服务拉进结果，参考没有 | 同左 | `internal/storage/postgres_recall.go`（种子选择） | 无 embedding 的夹具上两侧比对图臂结果集 |
 | ✅ 1.8 | 缺席的评分通道被**省略**，参考发出 `"semantic": null`（`internal/memoryops/models.go:234-236`） | 参考 recall 响应模型 | `internal/memoryops/models.go` | 同请求两侧比对 `scores` 键集 |
 | ✅ 1.9 | 中文（CJK）文本的 BM25 命中为空：同一夹具上参考给 `keyword: 1.7`，本服务 BM25 找不到（W15 构造夹具时发现，查询文本为中文）——**复核为不可复现**：分词器（`internal/storage/bm25_terms.go:33` 对 `engine/search/retrieval.py:28-34`）、`search_vector` 表达式与 tsquery/`ts_rank_cd` 形状（`internal/storage/util.go:71`、`postgres_bm25_pgsearch.go:72,79`）三处逐项一致，两侧 DB 上同一段中文的 `search_vector` 逐字节相同，参考自己的 `pg_stats` 词项选择 SQL 在两侧选出同样的 16 个词；同一夹具 15 个中文查询的 `keyword` 通道全部 SAME。原观察属夹具/构造问题 | 同左 | — | 用例 `TestPostgresKeywordArmMatchesCJKQuery`（pgx）钉住 CJK 词项不被丢 |
-| ✅ 1.10 | 原文字典被**硬编码为 `english`**，参考读 `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE`（该键已注册并镜像，但没有任何存储字段读它）：`internal/storage/util.go:71`、`postgres_bm25_pgsearch.go:72,79`、`bm25_terms.go:105`。默认部署下两者等价（`etc/example.wenyuan.yaml:265` 也只声明 english），但部署一旦换词典即分歧 | `engine/db/ops_postgresql.py:25-59`、`config.py:1480` | `internal/storage/textsearch_backend.go`（解析该键）+ 上述三处调用点 + `internal/config/config.go` | 两侧用非 english 词典部署同夹具比对 keyword 通道 |
+| ✅ 1.10 | 原文字典被**硬编码为 `english`**，参考读 `WENYUAN_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE`（该键已注册并镜像，但没有任何存储字段读它）：`internal/storage/util.go:71`、`postgres_bm25_pgsearch.go:72,79`、`bm25_terms.go:105`。默认部署下两者等价（`etc/example.wenyuan.yaml:265` 也只声明 english），但部署一旦换词典即分歧 | `engine/db/ops_postgresql.py:25-59`、`config.py:1480` | `internal/storage/textsearch_backend.go`（解析该键）+ 上述三处调用点 + `internal/config/config.go` | 两侧用非 english 词典部署同夹具比对 keyword 通道 |
 
 ## 2. 通讯契约与中间件（`internal/httpx/`）
 
@@ -362,7 +362,7 @@
 | # | 现象 | 参考证据 | 落点 | 验收 |
 |---|---|---|---|---|
 | ✅ 6.1 | **工具返回体**普遍被裁剪（不是原样返回引擎载荷）：`list_memories`/`list_documents`/`list_tags` 缺 `limit`/`offset` 与瘦身条目；`list_mental_models`/`list_directives` 缺 `total`；`list_operations` 形状完全不同；`get_bank_stats` 只有 4 个键（参考 12 个）；`create_bank` 撞名时用 driver 错误而非「更新并返回 profile」；**未找到在参考里是正常结果**（`{"error": "… not found"}`，`isError:false`），本服务走 `toolError` 报错；字符串型工具返回参考是 `indent=2` 的美化 JSON，本服务是紧凑 JSON | 参考 `mcp_tools.py` 各工具实现 | `internal/mcp/tools.go`（`listMemories`/`getMemory`/`getBank`/`createBank`）、`tools_more.go`、`tools_knowledge.go`、`server.go`（`callTool`） | 逐工具两侧 `tools/call` 结果逐字段比对 |
-| ✅ 6.2 | `HINDSIGHT_API_MCP_ENABLED=false` 路径只有源码比对，**未做行为验证**（线上参考是开启态） | — | `internal/app/app.go:191-198`、`internal/httpx/router.go` | 关掉 MCP 起服务，比对 404/行为 |
+| ✅ 6.2 | `WENYUAN_API_MCP_ENABLED=false` 路径只有源码比对，**未做行为验证**（线上参考是开启态） | — | `internal/app/app.go:191-198`、`internal/httpx/router.go` | 关掉 MCP 起服务，比对 404/行为 |
 
 ## 7. 银行族 / 指令 / 其他契约小项
 
@@ -400,7 +400,7 @@
 ## 8. 本轮未做的验证
 
 - `/metrics` 全文对比已由 A5 手工做过一次（修掉 4 处文本差异后除 `target_info` 外为空），但**没有进探针**，属于一次性证据。
-- `MCP_ENABLED=false`、`HINDSIGHT_API_BASE_PATH` 与准入（admission）在真实负载下的行为未复测（源码比对已做过）。
+- `MCP_ENABLED=false`、`WENYUAN_API_BASE_PATH` 与准入（admission）在真实负载下的行为未复测（源码比对已做过）。
 - 参考自身的两处异常**不复刻**：`NaN`/`Infinity` 触发 500、约 2000 层嵌套触发 `RecursionError` 500（已记录）。
 - 本轮所有夹具银行（`parity-*`）与临时库（`wenyuan_parity`、`whparity`）已清理；临时服务（18100/182xx）已停。
 

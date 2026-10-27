@@ -18,7 +18,7 @@ CMDCLI    ?= ./cmd/wenyuan
 CMDWORKER ?= ./cmd/worker
 GOLANGCI_LINT ?= golangci-lint
 # The frontend's BFF proxies to the API on this URL (frontend/lib/server/config.ts).
-HINDSIGHT_CP_DATAPLANE_API_URL ?= http://127.0.0.1:18888
+WENYUAN_CP_DATAPLANE_API_URL ?= http://127.0.0.1:18888
 # The Go client SDK's live suite talks to a server on this URL.
 SDK_API_URL ?= http://127.0.0.1:18888
 
@@ -166,7 +166,7 @@ frontend-build:
 ## environment, which leaves the dashboard reloading forever on an empty list.
 frontend-run: frontend-standalone
 	cd frontend/.next/standalone && PORT=19999 HOSTNAME=127.0.0.1 \
-		HINDSIGHT_CP_DATAPLANE_API_URL=$(HINDSIGHT_CP_DATAPLANE_API_URL) \
+		WENYUAN_CP_DATAPLANE_API_URL=$(WENYUAN_CP_DATAPLANE_API_URL) \
 		node server.js
 
 ## frontend-standalone: stage the standalone output for `frontend-run` —
@@ -193,9 +193,9 @@ clients-check:
 
 ## test-sdk-go-integration: run the Go client SDK's live suite against a
 ## running server. Point SDK_API_URL at it; a memory-backed one is enough:
-##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
+##   WENYUAN_API_DATABASE_URL=memory make run    # in another shell
 test-sdk-go-integration:
-	cd clients/go && HINDSIGHT_API_URL="$(SDK_API_URL)" $(GO) test -tags integration -count=1 $(GOFLAGS) ./...
+	cd clients/go && WENYUAN_API_URL="$(SDK_API_URL)" $(GO) test -tags integration -count=1 $(GOFLAGS) ./...
 
 ## test-sdk: run every client SDK's offline suite (no server, no network)
 test-sdk: test-sdk-go test-sdk-python test-sdk-typescript test-sdk-rust
@@ -218,13 +218,13 @@ test-sdk-rust:
 
 ## test-sdk-integration: run every client SDK's live suite against a running
 ## server (SDK_API_URL, default http://127.0.0.1:18888). Each language's live
-## tests are gated on HINDSIGHT_API_URL, so a suite that finds no server is
+## tests are gated on WENYUAN_API_URL, so a suite that finds no server is
 ## skipped rather than failed — start one with
-##   HINDSIGHT_API_DATABASE_URL=memory make run    # in another shell
+##   WENYUAN_API_DATABASE_URL=memory make run    # in another shell
 test-sdk-integration: test-sdk-go-integration
-	cd clients/python && HINDSIGHT_API_URL="$(SDK_API_URL)" python3 -m unittest discover -s tests
-	cd clients/typescript && HINDSIGHT_API_URL="$(SDK_API_URL)" npm test
-	cd clients/rust && HINDSIGHT_API_URL="$(SDK_API_URL)" cargo test
+	cd clients/python && WENYUAN_API_URL="$(SDK_API_URL)" python3 -m unittest discover -s tests
+	cd clients/typescript && WENYUAN_API_URL="$(SDK_API_URL)" npm test
+	cd clients/rust && WENYUAN_API_URL="$(SDK_API_URL)" cargo test
 
 ## help: list targets
 help:

@@ -5,7 +5,7 @@ package provider
 //
 // The value is the reference implementation's column width — both its own
 // migration and a live reference database declare `vector(384)`, and the
-// reference resolves the width from HINDSIGHT_API_EMBEDDING_DIMENSION, whose
+// reference resolves the width from WENYUAN_API_EMBEDDING_DIMENSION, whose
 // default is 384 — so this service can read and write an existing database's
 // vectors rather than only its own. It is deliberately a compile-time constant
 // rather than a configuration key: the vector column must agree with the width

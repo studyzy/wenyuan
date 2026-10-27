@@ -10,12 +10,12 @@ import (
 )
 
 // Environment variable names of the client-facing connection contract. The
-// HINDSIGHT_* spellings are the repository's established convention for these
+// WENYUAN_* spellings are the repository's established convention for these
 // keys and are the only sanctioned use of the token.
 const (
-	EnvAPIURL  = "HINDSIGHT_API_URL"
-	EnvAPIKey  = "HINDSIGHT_API_KEY"
-	EnvProfile = "HINDSIGHT_PROFILE"
+	EnvAPIURL  = "WENYUAN_API_URL"
+	EnvAPIKey  = "WENYUAN_API_KEY"
+	EnvProfile = "WENYUAN_PROFILE"
 )
 
 // DefaultAPIURL is applied when no level of the priority chain resolves one.

@@ -631,7 +631,7 @@ func TestDryRunExtractDisabledAnswersTheReferenceNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=true") {
+	if !strings.Contains(rec.Body.String(), "WENYUAN_API_ENABLE_DRY_RUN_EXTRACT=true") {
 		t.Fatalf("the refusal does not name the key that re-enables it: %s", rec.Body.String())
 	}
 }

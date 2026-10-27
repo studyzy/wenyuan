@@ -14,7 +14,7 @@
  * spelling because operators and CI already set it to disable the hooks. It is
  * spelled here, once, and every hook path consults it before it reads anything.
  */
-export const DISABLE_HOOKS_ENV = "HINDSIGHT_DISABLE_HOOKS";
+export const DISABLE_HOOKS_ENV = "WENYUAN_DISABLE_HOOKS";
 
 /** The truthy spellings the guard accepts; any other value leaves hooks on. */
 const ENABLED_VALUES = new Set(["", "0", "false", "no", "off"]);

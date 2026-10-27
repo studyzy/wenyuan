@@ -36,11 +36,11 @@ describe("environment contract", () => {
 
   it("honors configured values", () => {
     const config = resolveServerConfig({
-      HINDSIGHT_CP_ACCESS_KEY: "secret",
-      HINDSIGHT_CP_DATAPLANE_API_URL: "http://api.internal:9000/",
-      HINDSIGHT_CP_DATAPLANE_API_KEY: "upstream-key",
+      WENYUAN_CP_ACCESS_KEY: "secret",
+      WENYUAN_CP_DATAPLANE_API_URL: "http://api.internal:9000/",
+      WENYUAN_CP_DATAPLANE_API_KEY: "upstream-key",
       NEXT_PUBLIC_BASE_PATH: "/frontend/",
-      HINDSIGHT_CP_MAX_UPLOAD_SIZE: "1024",
+      WENYUAN_CP_MAX_UPLOAD_SIZE: "1024",
     });
     expect(config.accessKey).toBe("secret");
     expect(config.dataplaneUrl).toBe("http://api.internal:9000");
@@ -51,11 +51,11 @@ describe("environment contract", () => {
 
   it("uses the documented environment variable names verbatim", () => {
     const names = [
-      "HINDSIGHT_CP_ACCESS_KEY",
-      "HINDSIGHT_CP_DATAPLANE_API_URL",
-      "HINDSIGHT_CP_DATAPLANE_API_KEY",
+      "WENYUAN_CP_ACCESS_KEY",
+      "WENYUAN_CP_DATAPLANE_API_URL",
+      "WENYUAN_CP_DATAPLANE_API_KEY",
       "NEXT_PUBLIC_BASE_PATH",
-      "HINDSIGHT_CP_MAX_UPLOAD_SIZE",
+      "WENYUAN_CP_MAX_UPLOAD_SIZE",
     ];
     for (const name of names) expect(name).toMatch(/^[A-Z_]+$/);
   });

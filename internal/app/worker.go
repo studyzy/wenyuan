@@ -63,7 +63,7 @@ type archiveProcessor struct {
 	// fact is embedded with the target bank's model exactly as a retained one
 	// is; a deployment with no embedding model leaves it nil.
 	embeddings storage.EmbeddingGenerator
-	// storeSchema is the tenant schema the worker serves (HINDSIGHT_API_DATABASE_SCHEMA).
+	// storeSchema is the tenant schema the worker serves (WENYUAN_API_DATABASE_SCHEMA).
 	// The document export keys its archive under `tenants/{schema}/banks/...`,
 	// the reference's own layout, so the published storage_key carries it.
 	storeSchema string

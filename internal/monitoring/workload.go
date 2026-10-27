@@ -13,31 +13,31 @@ import (
 // before the unit suffix is appended (and re-added by the exposition), and the
 // unit is appended as its own suffix unless the name already carries it.
 const (
-	OperationDurationName = "hindsight_operation_duration_seconds"
-	OperationTotalName    = "hindsight_operation_operations_total"
+	OperationDurationName = "wenyuan_operation_duration_seconds"
+	OperationTotalName    = "wenyuan_operation_operations_total"
 
-	LLMDurationName       = "hindsight_llm_duration_seconds"
-	LLMCallsName          = "hindsight_llm_calls_total"
-	LLMTokensInputName    = "hindsight_llm_tokens_input_tokens_total"
-	LLMTokensOutputName   = "hindsight_llm_tokens_output_tokens_total"
-	LLMTokensCachedName   = "hindsight_llm_tokens_cached_input_tokens_total"
-	LLMTokensThoughtsName = "hindsight_llm_tokens_thoughts_tokens_total"
+	LLMDurationName       = "wenyuan_llm_duration_seconds"
+	LLMCallsName          = "wenyuan_llm_calls_total"
+	LLMTokensInputName    = "wenyuan_llm_tokens_input_tokens_total"
+	LLMTokensOutputName   = "wenyuan_llm_tokens_output_tokens_total"
+	LLMTokensCachedName   = "wenyuan_llm_tokens_cached_input_tokens_total"
+	LLMTokensThoughtsName = "wenyuan_llm_tokens_thoughts_tokens_total"
 
-	RetainDocumentsName = "hindsight_retain_documents_total"
+	RetainDocumentsName = "wenyuan_retain_documents_total"
 
-	DBAcquireWaitName = "hindsight_db_pool_acquire_wait_seconds"
+	DBAcquireWaitName = "wenyuan_db_pool_acquire_wait_seconds"
 
-	RecallPhaseDurationName = "hindsight_recall_phase_duration_seconds"
+	RecallPhaseDurationName = "wenyuan_recall_phase_duration_seconds"
 
-	RetainPhaseDurationName = "hindsight_retain_phase_duration_seconds"
-	RetainPhaseCallsName    = "hindsight_retain_phase_calls_total"
+	RetainPhaseDurationName = "wenyuan_retain_phase_duration_seconds"
+	RetainPhaseCallsName    = "wenyuan_retain_phase_calls_total"
 
-	ValidatorPhaseDurationName = "hindsight_validator_phase_duration_seconds"
+	ValidatorPhaseDurationName = "wenyuan_validator_phase_duration_seconds"
 
-	ConsolidationBatchFailuresName = "hindsight_consolidation_batch_failures_calls_total"
+	ConsolidationBatchFailuresName = "wenyuan_consolidation_batch_failures_calls_total"
 
-	EventLoopStallsName        = "hindsight_event_loop_stalls_total"
-	EventLoopStallDurationName = "hindsight_event_loop_stall_duration_seconds"
+	EventLoopStallsName        = "wenyuan_event_loop_stalls_total"
+	EventLoopStallDurationName = "wenyuan_event_loop_stall_duration_seconds"
 )
 
 // The HELP text for each family, copied verbatim from the reference's
@@ -345,7 +345,7 @@ func (r *WorkloadRegistry) ObserveLoopStall(seconds float64) {
 // recording a stall. It is what makes the families visible on a loop that never
 // stalled: the reference declares the stall counter and its duration histogram
 // together when it builds its collector (metrics.py:623-632), before any stall
-// happens, so its exposition carries `hindsight_event_loop_stalls_total 0.0` and
+// happens, so its exposition carries `wenyuan_event_loop_stalls_total 0.0` and
 // the histogram's all-zero bucket/count/sum series. Without the declaration the
 // families are absent from a healthy scrape altogether — a missing series rather
 // than a zero one, so a rule reading them sees no data where the reference

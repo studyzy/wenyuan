@@ -13,20 +13,20 @@ import (
 // The OCR keys are owned by the vision adapter that consumes them, so the
 // setting a validation error names is the key the adapter resolves.
 const (
-	EnvFileParser                     = "HINDSIGHT_API_FILE_PARSER"
-	EnvFileParserAllowlist            = "HINDSIGHT_API_FILE_PARSER_ALLOWLIST"
+	EnvFileParser                     = "WENYUAN_API_FILE_PARSER"
+	EnvFileParserAllowlist            = "WENYUAN_API_FILE_PARSER_ALLOWLIST"
 	EnvFileParserMarkitdownOCREnabled = vlm.EnvOCREnabled
 	EnvFileParserMarkitdownOCRAPIKey  = vlm.EnvOCRAPIKey
 	EnvFileParserMarkitdownOCRBaseURL = vlm.EnvOCRBaseURL
 	EnvFileParserMarkitdownOCRModel   = vlm.EnvOCRModel
 	EnvFileParserMarkitdownOCRPrompt  = vlm.EnvOCRPrompt
 	EnvFileParserMarkitdownOCRHeaders = vlm.EnvOCRHeaders
-	EnvFileParserIrisToken            = "HINDSIGHT_API_FILE_PARSER_IRIS_TOKEN"
-	EnvFileParserIrisOrgID            = "HINDSIGHT_API_FILE_PARSER_IRIS_ORG_ID"
-	EnvFileParserLlamaParseAPIKey     = "HINDSIGHT_API_FILE_PARSER_LLAMA_PARSE_API_KEY"
-	EnvFileConversionMaxBatchSizeMB   = "HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB"
-	EnvFileConversionMaxBatchSize     = "HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE"
-	EnvFileDeleteAfterRetain          = "HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN"
+	EnvFileParserIrisToken            = "WENYUAN_API_FILE_PARSER_IRIS_TOKEN"
+	EnvFileParserIrisOrgID            = "WENYUAN_API_FILE_PARSER_IRIS_ORG_ID"
+	EnvFileParserLlamaParseAPIKey     = "WENYUAN_API_FILE_PARSER_LLAMA_PARSE_API_KEY"
+	EnvFileConversionMaxBatchSizeMB   = "WENYUAN_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB"
+	EnvFileConversionMaxBatchSize     = "WENYUAN_API_FILE_CONVERSION_MAX_BATCH_SIZE"
+	EnvFileDeleteAfterRetain          = "WENYUAN_API_FILE_DELETE_AFTER_RETAIN"
 )
 
 // Reference defaults for the file-conversion settings.

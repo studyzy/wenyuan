@@ -1054,7 +1054,7 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		// The reference keeps the route registered and answers 404, naming the
 		// key that re-enables it.
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
-			"Dry-run extraction is disabled. Set HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=true to re-enable."))
+			"Dry-run extraction is disabled. Set WENYUAN_API_ENABLE_DRY_RUN_EXTRACT=true to re-enable."))
 		return
 	}
 	// The reference neither requires nor creates the bank: an unknown bank is

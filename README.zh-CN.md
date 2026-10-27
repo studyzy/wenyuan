@@ -71,7 +71,7 @@ make install   # 构建 server、worker、bankctl 与 wenyuan-admin 到 bin/（�
 
 ```sh
 make db-up                              # 本项目专用的 PostgreSQL，127.0.0.1:15432
-export HINDSIGHT_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
+export WENYUAN_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
 go run -tags pgx ./cmd/server           # 使用配置的监听地址启动
 go run -tags pgx ./cmd/server --host 0.0.0.0 --port 18888
 go run -tags pgx ./cmd/worker           # 异步操作消费者
@@ -97,7 +97,7 @@ make frontend-build                     # frontend/ 的生产构建
 make frontend-run                       # 19999 端口（Next.js 生产模式）
 ```
 
-前端通过 BFF 路由访问 API，BFF 读取 `HINDSIGHT_CP_DATAPLANE_API_URL`
+前端通过 BFF 路由访问 API，BFF 读取 `WENYUAN_CP_DATAPLANE_API_URL`
 （默认 `http://127.0.0.1:8000`；请指向 wenyuan API，例如
 `http://127.0.0.1:18888`）。请使用生产构建：本环境下 dev 模式的 HMR
 会挂起带 Origin 的 WebSocket 升级，dashboard 会一直加载不出数据。
@@ -143,34 +143,34 @@ bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--ban
 
 ```sh
 wenyuan                                  # 依次读取 ./.env、./etc/wenyuan.yaml
-HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # 指定文件，必须存在
+WENYUAN_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # 指定文件，必须存在
 ```
 
 配置文件为 YAML，默认从工作目录下的 `etc/wenyuan.yaml` 读取（容器镜像内即
-`/etc/wenyuan.yaml`）。它能提供环境变量能提供的任何键，写法是去掉 `HINDSIGHT_API_`
+`/etc/wenyuan.yaml`）。它能提供环境变量能提供的任何键，写法是去掉 `WENYUAN_API_`
 前缀并转为小写；嵌套键会在启动时报错而不会被静默忽略——`llm: {provider: openai}`
 是错误写法，`llm_provider: openai` 才是该键。仓库自带的 `etc/wenyuan.yaml` 是全部
 注释掉的模板：取消某行注释，该键即以此文件作为环境变量之后的兜底。由
-`HINDSIGHT_API_CONFIG_FILE` 指定的文件必须存在且可解析；`etc/wenyuan.yaml` 不存在
+`WENYUAN_API_CONFIG_FILE` 指定的文件必须存在且可解析；`etc/wenyuan.yaml` 不存在
 时什么都不改变。
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `HINDSIGHT_API_CONFIG_FILE` | YAML 配置文件路径（默认 `etc/wenyuan.yaml`） |
-| `HINDSIGHT_API_HOST` | 监听地址 |
-| `HINDSIGHT_API_PORT` | 监听端口 |
-| `HINDSIGHT_API_DATABASE_URL` | PostgreSQL 连接串 |
-| `HINDSIGHT_API_DATABASE_SCHEMA` | 数据库 schema 名 |
-| `HINDSIGHT_API_VECTOR_EXTENSION` | 向量扩展名 |
-| `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` | 全文检索扩展名 |
-| `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` | 启动时执行迁移 |
-| `HINDSIGHT_API_MCP_ENABLED` | 启用 MCP 命名空间 |
-| `HINDSIGHT_API_ENABLE_BANK_CONFIG_API` | 开放按库配置写入路由 |
-| `HINDSIGHT_API_GZIP_MIN_SIZE` | 响应体 gzip 体积下限（负值关闭） |
-| `HINDSIGHT_API_RETAIN_BATCH_ENABLED` | 开启批量写入闸门 |
-| `HINDSIGHT_API_RECALL_STRATEGY_BOOSTS` | 各召回路策略加权 |
-| `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | 反思观察默认值 |
-| `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | 反思观察 token 默认值 |
+| `WENYUAN_API_CONFIG_FILE` | YAML 配置文件路径（默认 `etc/wenyuan.yaml`） |
+| `WENYUAN_API_HOST` | 监听地址 |
+| `WENYUAN_API_PORT` | 监听端口 |
+| `WENYUAN_API_DATABASE_URL` | PostgreSQL 连接串 |
+| `WENYUAN_API_DATABASE_SCHEMA` | 数据库 schema 名 |
+| `WENYUAN_API_VECTOR_EXTENSION` | 向量扩展名 |
+| `WENYUAN_API_TEXT_SEARCH_EXTENSION` | 全文检索扩展名 |
+| `WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP` | 启动时执行迁移 |
+| `WENYUAN_API_MCP_ENABLED` | 启用 MCP 命名空间 |
+| `WENYUAN_API_ENABLE_BANK_CONFIG_API` | 开放按库配置写入路由 |
+| `WENYUAN_API_GZIP_MIN_SIZE` | 响应体 gzip 体积下限（负值关闭） |
+| `WENYUAN_API_RETAIN_BATCH_ENABLED` | 开启批量写入闸门 |
+| `WENYUAN_API_RECALL_STRATEGY_BOOSTS` | 各召回路策略加权 |
+| `WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | 反思观察默认值 |
+| `WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | 反思观察 token 默认值 |
 
 > 环境变量名保持不变，属于参考实现 API 的**公开兼容面**。
 
@@ -178,11 +178,11 @@ HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # 指定文件，必�
 
 模型访问按作用域配置，环境变量沿用参考实现的命名，上游文档可直接套用：
 
-- 对话：`HINDSIGHT_API_RETAIN_LLM_*`、`HINDSIGHT_API_REFLECT_LLM_*`、
-  `HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_*`（`_PROVIDER`、`_API_KEY`、`_MODEL`、
+- 对话：`WENYUAN_API_RETAIN_LLM_*`、`WENYUAN_API_REFLECT_LLM_*`、
+  `WENYUAN_API_MENTAL_MODEL_REFRESH_LLM_*`（`_PROVIDER`、`_API_KEY`、`_MODEL`、
   `_BASE_URL`、重试 / 退避参数等）。
-- 向量：`HINDSIGHT_API_EMBEDDINGS_<VENDOR>_*`（openai、cohere、gemini、tei、onnx 等）。
-- 重排：`HINDSIGHT_API_RERANKER_*`（cohere、openrouter 等）。
+- 向量：`WENYUAN_API_EMBEDDINGS_<VENDOR>_*`（openai、cohere、gemini、tei、onnx 等）。
+- 重排：`WENYUAN_API_RERANKER_*`（cohere、openrouter 等）。
 
 不配置即使用确定性的无模型选择，记忆写入与反思照常离线工作。完整键名清单见
 `internal/config/provider_env_keys.go`。
@@ -209,7 +209,7 @@ HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # 指定文件，必�
 | 报表 | `GET .../stats`、`GET .../stats/memories-timeseries`、`POST .../health/llm`、`GET .../audit-logs`（+`/stats`）、`GET .../llm-requests`（+`/stats`） |
 | Webhook | `GET/POST .../webhooks`、`GET/PATCH/DELETE .../webhooks/{id}`、`GET .../webhooks/{id}/deliveries` |
 | 传输 | `POST .../import`、`GET .../export`、`POST .../transfer/export`、`POST .../transfer/import`、`POST .../document-transfer`（+`/export`）、`POST .../clone`、`GET .../attachments/{id}`、`GET /v1/default/files/download/{...}` |
-| MCP | `POST /mcp`（JSON-RPC，`HINDSIGHT_API_MCP_ENABLED` 控制） |
+| MCP | `POST /mcp`（JSON-RPC，`WENYUAN_API_MCP_ENABLED` 控制） |
 | 契约 | `GET /v1/bank-template-schema`、`GET /v1/version` |
 
 `GET/PUT /v1/default/banks/{bank_id}/profile` 与

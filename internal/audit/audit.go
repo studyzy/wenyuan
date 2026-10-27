@@ -127,7 +127,7 @@ type Logger struct {
 }
 
 // NewLogger builds an audit logger. enabled is the deployment-wide switch (the
-// reference's HINDSIGHT_API_AUDIT_LOG_ENABLED); allowedActions is the optional
+// reference's WENYUAN_API_AUDIT_LOG_ENABLED); allowedActions is the optional
 // allowlist (empty means every action); the store is where rows land.
 func NewLogger(store storage.Store, enabled bool, allowedActions []string) *Logger {
 	logger := &Logger{store: store, enabled: enabled}

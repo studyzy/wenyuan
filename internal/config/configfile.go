@@ -14,7 +14,7 @@ import (
 
 // EnvConfigFile names the environment variable that points at the YAML
 // configuration file. Unset, the conventional path is read instead.
-const EnvConfigFile = "HINDSIGHT_API_CONFIG_FILE"
+const EnvConfigFile = "WENYUAN_API_CONFIG_FILE"
 
 // The conventional configuration file: etc/wenyuan.yaml, relative to the
 // process working directory — the same convention the .env file follows.
@@ -25,9 +25,9 @@ const (
 )
 
 // envPrefix is the prefix every configuration key carries. The environment
-// spells it HINDSIGHT_API_LLM_PROVIDER; the configuration file spells the same
+// spells it WENYUAN_API_LLM_PROVIDER; the configuration file spells the same
 // key llm_provider — the environment name, lowercased, without the prefix.
-const envPrefix = "HINDSIGHT_API"
+const envPrefix = "WENYUAN_API"
 
 // configSource is the configuration file as it was read, with the path it was
 // read from, or nil when no file was loaded. It is package state because the

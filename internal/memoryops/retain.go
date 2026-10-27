@@ -72,9 +72,9 @@ type Handlers struct {
 	// the vector recall arm and its ANN index have vectors to rank.
 	Embeddings storage.EmbeddingGenerator
 	// FileUploadDisabled makes the file retain route report not-found, matching
-	// the reference's HINDSIGHT_API_ENABLE_FILE_UPLOAD_API gate when it is off.
+	// the reference's WENYUAN_API_ENABLE_FILE_UPLOAD_API gate when it is off.
 	FileUploadDisabled bool
-	// RetainBatchEnabled is the reference's HINDSIGHT_API_RETAIN_BATCH_ENABLED.
+	// RetainBatchEnabled is the reference's WENYUAN_API_RETAIN_BATCH_ENABLED.
 	// When it is on a synchronous retain is refused, because a batch retain can
 	// run for hours and cannot complete inside a synchronous request.
 	RetainBatchEnabled bool
@@ -98,7 +98,7 @@ type Handlers struct {
 	Reflection storage.ReflectRunner
 	// RefuseWithoutReflectModel makes the reflect route refuse with the
 	// reference's message when the deployment is configured with no reflect
-	// model (HINDSIGHT_API_LLM_PROVIDER=none). The reference answers 400 rather
+	// model (WENYUAN_API_LLM_PROVIDER=none). The reference answers 400 rather
 	// than synthesizing an answer, so a deployment with no model behaves like
 	// the reference instead of falling back to the deterministic loop. False
 	// (the zero value) leaves the route serving, which is what a handler set
@@ -134,12 +134,12 @@ type Handlers struct {
 	ParserAllowlist []string
 	// MaxFileBatchCount and MaxFileBatchBytes bound one /files/retain request
 	// overall; zero leaves that bound off. They are the reference's
-	// HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE and _MB.
+	// WENYUAN_API_FILE_CONVERSION_MAX_BATCH_SIZE and _MB.
 	MaxFileBatchCount int
 	MaxFileBatchBytes int64
 	// DeleteAfterRetain keeps only the converted text of an upload, leaving its
 	// stored bytes out of file storage once it has been retained. It is the
-	// reference's HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN (default on).
+	// reference's WENYUAN_API_FILE_DELETE_AFTER_RETAIN (default on).
 	DeleteAfterRetain bool
 	// Webhooks enqueues webhook deliveries for the events this route family
 	// raises. memoryops cannot reach the worker's queue directly, so the
@@ -208,10 +208,10 @@ var retainBodyFields = map[string]struct{}{
 // character — it names the setting to change.
 //
 //nolint:staticcheck // the reference's own wording, period included
-var retainBatchDisabledMessage = "Batch API is enabled (HINDSIGHT_API_RETAIN_BATCH_ENABLED=true) but async=false. " +
+var retainBatchDisabledMessage = "Batch API is enabled (WENYUAN_API_RETAIN_BATCH_ENABLED=true) but async=false. " +
 	"Batch operations can take several minutes to hours and will timeout in synchronous mode. " +
 	"Please set async=true in your request to use background processing, or disable batch API by setting " +
-	"HINDSIGHT_API_RETAIN_BATCH_ENABLED=false in your environment."
+	"WENYUAN_API_RETAIN_BATCH_ENABLED=false in your environment."
 
 // retainWriteScopeFailure refuses a retain that would write a tag outside the
 // caller's write scope, answering 403. Every item's tags (with the batch's
@@ -691,7 +691,7 @@ var errAppendWithoutDocumentID = errors.New("update_mode='append' requires a doc
 // otherwise flag. Contract fidelity wins over the style rule here.
 //
 //nolint:staticcheck // the reference's own wording, period included
-var errAppendWithoutStoredText = errors.New("update_mode='append' is not supported when document text storage (store_document_text / HINDSIGHT_API_STORE_DOCUMENT_TEXT) is disabled: the prior document text is not stored and cannot be appended to. Use update_mode='replace' instead.")
+var errAppendWithoutStoredText = errors.New("update_mode='append' is not supported when document text storage (store_document_text / WENYUAN_API_STORE_DOCUMENT_TEXT) is disabled: the prior document text is not stored and cannot be appended to. Use update_mode='replace' instead.")
 
 // executeRetain resolves the bank configuration onto the write and runs it. It
 // is the one path the write route and a document reprocess both take, so the

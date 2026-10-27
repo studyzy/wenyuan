@@ -18,9 +18,9 @@ import (
 const PrometheusContentType = "text/plain; version=1.0.0; charset=utf-8"
 
 // MetricsScopeName is the OpenTelemetry instrumentation-scope name every
-// hindsight_* series carries as its otel_scope_name label, matching the
+// wenyuan_* series carries as its otel_scope_name label, matching the
 // reference's meter name.
-const MetricsScopeName = "hindsight_api.metrics"
+const MetricsScopeName = "wenyuan_api.metrics"
 
 // ServiceName and ServiceVersion identify this process in target_info, the
 // metadata gauge the reference's exporter emits from its resource attributes.
@@ -176,27 +176,27 @@ func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant st
 	// does: before the first request the whole HTTP trio is absent rather than
 	// declared with no series.
 	if len(snap.Requests) > 0 {
-		writeHelpType(b, "hindsight_http_requests_total", "Total number of HTTP requests", "counter")
+		writeHelpType(b, "wenyuan_http_requests_total", "Total number of HTTP requests", "counter")
 		for _, series := range snap.Requests {
 			labels := requestLabels(series, true, tenant)
-			fmt.Fprintf(b, "hindsight_http_requests_total%s %s\n", labels, formatValue(series.Count))
+			fmt.Fprintf(b, "wenyuan_http_requests_total%s %s\n", labels, formatValue(series.Count))
 		}
 	}
 
 	// The in-progress counter's exposed name gains the unit suffix the
 	// reference's instrument name takes from its declared unit "requests".
 	if len(snap.InProgress) > 0 {
-		writeHelpType(b, "hindsight_http_requests_in_progress_requests", "Number of HTTP requests in progress", "gauge")
+		writeHelpType(b, "wenyuan_http_requests_in_progress_requests", "Number of HTTP requests in progress", "gauge")
 		for _, series := range snap.InProgress {
 			labels := methodEndpointLabels(series.Method, series.Endpoint, tenant)
-			fmt.Fprintf(b, "hindsight_http_requests_in_progress_requests%s %s\n", labels, formatValue(float64(series.Count)))
+			fmt.Fprintf(b, "wenyuan_http_requests_in_progress_requests%s %s\n", labels, formatValue(float64(series.Count)))
 		}
 	}
 
 	if len(snap.Requests) == 0 {
 		return
 	}
-	writeHelpType(b, "hindsight_http_duration_seconds", "Duration of HTTP requests in seconds", "histogram")
+	writeHelpType(b, "wenyuan_http_duration_seconds", "Duration of HTTP requests in seconds", "histogram")
 	for _, series := range snap.Requests {
 		labels := requestLabels(series, true, tenant)
 		for i, boundary := range httpx.HTTPDurationBuckets {
@@ -204,13 +204,13 @@ func writeHTTPRequests(b *strings.Builder, snap httpx.MetricsSnapshot, tenant st
 			if i < len(series.Buckets) {
 				count = series.Buckets[i]
 			}
-			fmt.Fprintf(b, "hindsight_http_duration_seconds_bucket%s %s\n",
+			fmt.Fprintf(b, "wenyuan_http_duration_seconds_bucket%s %s\n",
 				requestLabelsWithLe(series, formatBoundary(boundary), tenant), formatValue(count))
 		}
-		fmt.Fprintf(b, "hindsight_http_duration_seconds_bucket%s %s\n",
+		fmt.Fprintf(b, "wenyuan_http_duration_seconds_bucket%s %s\n",
 			requestLabelsWithLe(series, "+Inf", tenant), formatValue(float64(series.DurationCount)))
-		fmt.Fprintf(b, "hindsight_http_duration_seconds_count%s %s\n", labels, formatValue(float64(series.DurationCount)))
-		fmt.Fprintf(b, "hindsight_http_duration_seconds_sum%s %s\n", labels, formatValue(series.DurationSum))
+		fmt.Fprintf(b, "wenyuan_http_duration_seconds_count%s %s\n", labels, formatValue(float64(series.DurationCount)))
+		fmt.Fprintf(b, "wenyuan_http_duration_seconds_sum%s %s\n", labels, formatValue(series.DurationSum))
 	}
 }
 
@@ -341,7 +341,7 @@ func withLabel(labels map[string]string, name, value string) map[string]string {
 }
 
 // withScope returns the labels with the OpenTelemetry instrumentation-scope
-// labels every hindsight_* series carries, never mutating the input. The
+// labels every wenyuan_* series carries, never mutating the input. The
 // reference's Prometheus exporter stamps otel_scope_name (the meter's module),
 // otel_scope_version and otel_scope_schema_url onto each rendered series.
 func withScope(labels map[string]string) map[string]string {

@@ -244,7 +244,7 @@ func TestClassifyInvariants(t *testing.T) {
 			name:     "404 disabled bank configuration API",
 			err:      apiErrText("404 Not Found", "Bank configuration API is disabled"),
 			wantKind: KindNotFound, wantTitle: "Bank configuration API is disabled",
-			contains: []string{"HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true", "This allows per-bank LLM configuration overrides via API"},
+			contains: []string{"WENYUAN_API_ENABLE_BANK_CONFIG_API=true", "This allows per-bank LLM configuration overrides via API"},
 			omits:    []string{"Not found (404):"},
 		},
 		{
@@ -283,13 +283,13 @@ func TestClassifyInvariants(t *testing.T) {
 			name:     "go dns shape classifies as dns",
 			err:      errors.New(`Get "http://api:8888/x": dial tcp: lookup api.invalid: no such host`),
 			wantKind: KindDNS, wantTitle: "Cannot resolve API hostname",
-			contains: []string{"Check the HINDSIGHT_API_URL environment variable"},
+			contains: []string{"Check the WENYUAN_API_URL environment variable"},
 		},
 		{
 			name:     "invalid url shape",
 			err:      errors.New(`invalid URL: parse "http://": missing protocol scheme`),
 			wantKind: KindInvalidURL, wantTitle: "Invalid API URL",
-			contains: []string{"export HINDSIGHT_API_URL=http://localhost:18888"},
+			contains: []string{"export WENYUAN_API_URL=http://localhost:18888"},
 		},
 		{
 			name:     "parenthetical with a non-digit status is not split",

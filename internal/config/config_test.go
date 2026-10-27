@@ -233,11 +233,11 @@ func TestFeatureMapHasReferenceKeys(t *testing.T) {
 func TestWorkerReferenceKeyAliases(t *testing.T) {
 	environ := func(key string) (string, bool) {
 		switch key {
-		case "HINDSIGHT_API_WORKER_POLL_INTERVAL_MS":
+		case "WENYUAN_API_WORKER_POLL_INTERVAL_MS":
 			return "250", true
-		case "HINDSIGHT_API_WORKER_MAX_SLOTS":
+		case "WENYUAN_API_WORKER_MAX_SLOTS":
 			return "12", true
-		case "HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS":
+		case "WENYUAN_API_WORKER_TASK_RETRY_BACKOFF_SECONDS":
 			return "7", true
 		}
 		return "", false
@@ -328,6 +328,6 @@ func TestLoopWatchdogKeysDriveTheProbe(t *testing.T) {
 	// Disabling the watchdog stops the probe even with an interval configured.
 	off := FromEnv(envMap(map[string]string{EnvLoopWatchdogEnabled: "false", EnvLoopLagReportSeconds: "30"}))
 	if off.MetricsTuning.LoopWatchdog {
-		t.Fatal("HINDSIGHT_API_LOOP_WATCHDOG_ENABLED=false did not disable the probe")
+		t.Fatal("WENYUAN_API_LOOP_WATCHDOG_ENABLED=false did not disable the probe")
 	}
 }

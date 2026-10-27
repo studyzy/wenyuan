@@ -157,7 +157,7 @@ func TestDownloadIsGated(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
-	if got := rec.Body.String(); !strings.Contains(got, "HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API") {
+	if got := rec.Body.String(); !strings.Contains(got, "WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API") {
 		t.Fatalf("disabled detail must name the flag: %s", got)
 	}
 }

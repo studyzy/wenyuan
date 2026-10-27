@@ -8,16 +8,16 @@ import (
 
 // Strict-schema and temperature configuration keys.
 const (
-	EnvLLMStrictSchema              = "HINDSIGHT_API_LLM_STRICT_SCHEMA"
-	EnvLLMStrictSchemaConsolidation = "HINDSIGHT_API_LLM_STRICT_SCHEMA_CONSOLIDATION"
-	EnvLLMStrictSchemaReflect       = "HINDSIGHT_API_LLM_STRICT_SCHEMA_REFLECT"
-	EnvLLMStrictSchemaRetain        = "HINDSIGHT_API_LLM_STRICT_SCHEMA_RETAIN"
+	EnvLLMStrictSchema              = "WENYUAN_API_LLM_STRICT_SCHEMA"
+	EnvLLMStrictSchemaConsolidation = "WENYUAN_API_LLM_STRICT_SCHEMA_CONSOLIDATION"
+	EnvLLMStrictSchemaReflect       = "WENYUAN_API_LLM_STRICT_SCHEMA_REFLECT"
+	EnvLLMStrictSchemaRetain        = "WENYUAN_API_LLM_STRICT_SCHEMA_RETAIN"
 
-	EnvLLMTemperature              = "HINDSIGHT_API_LLM_TEMPERATURE"
-	EnvLLMTemperatureConsolidation = "HINDSIGHT_API_LLM_TEMPERATURE_CONSOLIDATION"
-	EnvLLMTemperatureReflect       = "HINDSIGHT_API_LLM_TEMPERATURE_REFLECT"
-	EnvLLMTemperatureRetain        = "HINDSIGHT_API_LLM_TEMPERATURE_RETAIN"
-	EnvLLMTemperatureVerification  = "HINDSIGHT_API_LLM_TEMPERATURE_VERIFICATION"
+	EnvLLMTemperature              = "WENYUAN_API_LLM_TEMPERATURE"
+	EnvLLMTemperatureConsolidation = "WENYUAN_API_LLM_TEMPERATURE_CONSOLIDATION"
+	EnvLLMTemperatureReflect       = "WENYUAN_API_LLM_TEMPERATURE_REFLECT"
+	EnvLLMTemperatureRetain        = "WENYUAN_API_LLM_TEMPERATURE_RETAIN"
+	EnvLLMTemperatureVerification  = "WENYUAN_API_LLM_TEMPERATURE_VERIFICATION"
 )
 
 // TemperatureOmit is the documented sentinel that removes the temperature

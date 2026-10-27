@@ -23,7 +23,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
 });
 
 const bank = (bankId: string) => ({ params: Promise.resolve({ bankId }) });
@@ -66,7 +66,7 @@ describe("delete returns a small success payload", () => {
   it("directive delete returns a success object rather than the upstream body", async () => {
     const stub = stubFetch([{ status: 200, body: { deleted: "upstream-body" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await directive.DELETE(
         makeRequest("http://localhost/api/banks/acme/directives/d1", { method: "DELETE" }),
         { params: Promise.resolve({ bankId: "acme", directiveId: "d1" }) },
@@ -79,7 +79,7 @@ describe("delete returns a small success payload", () => {
   it("mental-model delete returns a success object", async () => {
     const stub = stubFetch([{ status: 200, body: { deleted: "upstream-body" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await mentalModel.DELETE(
         makeRequest("http://localhost/api/banks/acme/mental-models/m1", { method: "DELETE" }),
         model("acme", "m1"),
@@ -93,7 +93,7 @@ describe("child-resource 404 translation", () => {
   it("maps an upstream 404 on mental-model history to a localized 404", async () => {
     const stub = stubFetch([{ status: 404, body: { detail: "missing" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await history.GET(
         makeRequest("http://localhost/api/banks/acme/mental-models/m1/history"),
         model("acme", "m1"),
@@ -108,7 +108,7 @@ describe("child-resource 404 translation", () => {
   it("maps another upstream failure on mental-model history to a localized 500", async () => {
     const stub = stubFetch([{ status: 502, body: { detail: "bad gateway" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await history.GET(
         makeRequest("http://localhost/api/banks/acme/mental-models/m1/history"),
         model("acme", "m1"),
@@ -123,7 +123,7 @@ describe("content routes proxy at their catalogued paths", () => {
   it("webhook deliveries forwards its limit and cursor, ignoring other paging params", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await deliveries.GET(
         makeRequest("http://localhost/api/banks/acme/webhooks/w1/deliveries?limit=10&cursor=c1&offset=20"),
         webhookCtx("acme", "w1"),
@@ -138,7 +138,7 @@ describe("content routes proxy at their catalogued paths", () => {
   it("webhook deliveries substitutes a default limit when the caller omits it", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await deliveries.GET(
         makeRequest("http://localhost/api/banks/acme/webhooks/w1/deliveries"),
         webhookCtx("acme", "w1"),
@@ -150,7 +150,7 @@ describe("content routes proxy at their catalogued paths", () => {
   it("observations/[modelId] reads the bank memory member", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await observation.GET(makeRequest("http://localhost/api/banks/acme/observations/m1"), {
         params: Promise.resolve({ bankId: "acme", modelId: "m1" }),
       });
@@ -161,7 +161,7 @@ describe("content routes proxy at their catalogued paths", () => {
   it("observation scopes reads at its catalogued path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await scopes.GET(makeRequest("http://localhost/api/banks/acme/observations/scopes"), bank("acme"));
       expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/observations/scopes");
     });
@@ -170,7 +170,7 @@ describe("content routes proxy at their catalogued paths", () => {
   it("prompt preview posts at its catalogued path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await promptPreview.POST(
         makeRequest("http://localhost/api/banks/acme/prompts/preview", { method: "POST", body: "{}" }),
         bank("acme"),
@@ -199,7 +199,7 @@ describe("content success statuses follow the contract", () => {
     ] as const) {
       const stub = stubFetch([{ status: 200, body: { ok: true } }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status, `${label} should report 201`).toBe(201);
       });
@@ -209,7 +209,7 @@ describe("content success statuses follow the contract", () => {
   it("returns 202 for mental-model create", async () => {
     const stub = stubFetch([{ status: 200, body: { operation_id: "op-1" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await mentalModels.POST(
         makeRequest("http://localhost/api/banks/acme/mental-models", { method: "POST", body: "{}" }),
         { params: Promise.resolve({ bankId: "acme" }) },
@@ -244,7 +244,7 @@ describe("content success statuses follow the contract", () => {
     ] as const) {
       const stub = stubFetch([{ status: 201, body: {} }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status, `${label} should report 200`).toBe(200);
       });
@@ -263,7 +263,7 @@ describe("observations collection reshapes memories", () => {
       },
     ]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await observations.GET(makeRequest("http://localhost/api/banks/acme/observations"), {
         params: Promise.resolve({ bankId: "acme" }),
       });
@@ -290,7 +290,7 @@ describe("observations collection reshapes memories", () => {
   it("maps an upstream failure to 500 rather than passing the status through", async () => {
     const stub = stubFetch([{ status: 422, body: { detail: "nope" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await observations.GET(
         makeRequest("http://localhost/api/banks/acme/observations", { acceptLanguage: "en" }),
         { params: Promise.resolve({ bankId: "acme" }) },
@@ -311,7 +311,7 @@ describe("tag filter forwarding", () => {
     ] as const) {
       const stub = stubFetch([{ status: 200, body: {} }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         await entities.GET(makeRequest(`http://localhost/api/entities?bank_id=acme&${query}`));
         const called = stub.calls[0] ?? "";
         expect(called.includes("tags_match="), `${query} -> tags_match forwarded?`).toBe(expectMode);
@@ -322,7 +322,7 @@ describe("tag filter forwarding", () => {
   it("forwards tags_match verbatim on the routes that accept the caller's filter", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await directives.GET(makeRequest("http://localhost/api/banks/acme/directives?tags_match=all"), {
         params: Promise.resolve({ bankId: "acme" }),
       });
@@ -335,7 +335,7 @@ describe("content failures use the localized envelope", () => {
   it("keeps the upstream status on a 4xx failure and strips the internal key", async () => {
     const stub = stubFetch([{ status: 403, body: { detail: "forbidden" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await directives.POST(
         makeRequest("http://localhost/api/banks/acme/directives", {
           method: "POST",

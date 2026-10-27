@@ -13,15 +13,15 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_KEY;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_KEY;
 });
 
 describe("bank proxy encoding", () => {
   it("percent-encodes the bank id in the upstream URL", async () => {
     const stub = stubFetch([{ status: 200, body: { bank_id: "team:alpha" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await bankDetail.PATCH(
         makeRequest("http://localhost/api/banks/team%3Aalpha", { method: "PATCH", body: "{}" }),
         { params: Promise.resolve({ bankId: "team:alpha" }) },
@@ -34,7 +34,7 @@ describe("bank proxy encoding", () => {
   it("builds sub-resource paths with the encoded bank id", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await config.GET(makeRequest("http://localhost/api/banks/a%2Fb/config"), {
         params: Promise.resolve({ bankId: "a/b" }),
       });
@@ -47,7 +47,7 @@ describe("upstream status passthrough", () => {
   it("returns the upstream status code on failure", async () => {
     const stub = stubFetch([{ status: 404, body: { error: "not found" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await bankDetail.PATCH(
         makeRequest("http://localhost/api/banks/acme", { method: "PATCH", body: "{}" }),
         { params: Promise.resolve({ bankId: "acme" }) },
@@ -63,7 +63,7 @@ describe("upstream status passthrough", () => {
   it("returns the upstream payload on success", async () => {
     const stub = stubFetch([{ status: 200, body: { bank_id: "acme", name: "Acme" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await banksCollection.GET(makeRequest("http://localhost/api/banks"));
       expect(response.status).toBe(200);
       expect(await readJson(response)).toEqual({ bank_id: "acme", name: "Acme" });
@@ -101,7 +101,7 @@ describe("bank collection and detail follow the contract", () => {
     // meaningful in a path segment.
     const stub = stubFetch([{ status: 200, body: { bank_id: "team:alpha" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const created = await banksCollection.POST(
         makeRequest("http://localhost/api/banks", {
           method: "POST",
@@ -151,7 +151,7 @@ describe("bank collection and detail follow the contract", () => {
     ]) {
       const stub = stubFetch([{ status: 201, body: {} }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status).toBe(200);
       });

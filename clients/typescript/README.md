@@ -39,8 +39,8 @@ import {
   retainFiles,
 } from "wenyuan-client";
 
-// Reads the base URL from HINDSIGHT_API_URL (default http://localhost:18888)
-// and the bearer key from HINDSIGHT_API_KEY, when one is set.
+// Reads the base URL from WENYUAN_API_URL (default http://localhost:18888)
+// and the bearer key from WENYUAN_API_KEY, when one is set.
 const api = new WenYuanClient();
 
 // Store a memory, then search the bank.
@@ -115,8 +115,8 @@ documented default budget (`mid` / `low`) the way the API's own client does.
 
 ```ts
 const api = new WenYuanClient({
-  baseUrl: "https://wenyuan.example.com", // otherwise HINDSIGHT_API_URL, otherwise http://localhost:18888
-  apiKey: "…",                             // otherwise HINDSIGHT_API_KEY; omitted entirely when neither is set
+  baseUrl: "https://wenyuan.example.com", // otherwise WENYUAN_API_URL, otherwise http://localhost:18888
+  apiKey: "…",                             // otherwise WENYUAN_API_KEY; omitted entirely when neither is set
   userAgent: "acme-app/1.2.0",             // prefixed in front of wenyuan-client/<version>
   headers: { "x-request-id": "abc" },
   maxAttempts: 3,                          // retry budget for recall/reflect (default 3; 1 disables)
@@ -129,7 +129,7 @@ environment the same way; `baseUrl` is therefore optional on both rather than
 required. The class always consumes the generated client's
 `{ data, error, response }` result shape, whatever `responseStyle` a caller sets.
 
-`HINDSIGHT_API_URL` and `HINDSIGHT_API_KEY` are the deployment's spelling for the
+`WENYUAN_API_URL` and `WENYUAN_API_KEY` are the deployment's spelling for the
 API endpoint and key; the same names the command-line tool reads.
 
 ### Retries
@@ -182,19 +182,19 @@ not available.
 npm install
 npm run generate    # rebuild generated/ from ../openapi.json
 npm run typecheck   # tsc --noEmit
-npm test            # vitest, offline: the live suite is skipped unless HINDSIGHT_API_URL is set
+npm test            # vitest, offline: the live suite is skipped unless WENYUAN_API_URL is set
 npm run build       # bundle dist/ (ESM + CJS + type declarations)
 ```
 
-The live suite (`tests/live.test.ts`) runs only when `HINDSIGHT_API_URL` is set,
+The live suite (`tests/live.test.ts`) runs only when `WENYUAN_API_URL` is set,
 so the default run needs no server. Besides the core memory operations it covers
 the convenience client: a bank's config round trip, its mission and its delete, a
 directive and a mental model created and listed, and an export→download round trip
 that checks the archive is a ZIP whose manifest names the bank:
 
 ```bash
-# Against a server started with HINDSIGHT_API_DATABASE_URL=memory
-HINDSIGHT_API_URL=http://127.0.0.1:18888 npm test
+# Against a server started with WENYUAN_API_DATABASE_URL=memory
+WENYUAN_API_URL=http://127.0.0.1:18888 npm test
 ```
 
 `npm run build` bundles through `tsup`, because `tsc` alone cannot produce a

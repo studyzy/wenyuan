@@ -4,7 +4,7 @@
 # container image that is /etc/wenyuan.yaml); that file carries a deployment's
 # real values and is deliberately not checked in. Copy this example there and
 # uncomment what the deployment needs. Point the process elsewhere with
-# HINDSIGHT_API_CONFIG_FILE=/path/to/file.yaml, which must exist.
+# WENYUAN_API_CONFIG_FILE=/path/to/file.yaml, which must exist.
 #
 # Precedence, highest first:
 #
@@ -15,8 +15,8 @@
 #   4. this file
 #   5. the built-in defaults
 #
-# A key is the environment variable's name without the HINDSIGHT_API_ prefix:
-# HINDSIGHT_API_PORT is `port` here. A first word that carries several settings
+# A key is the environment variable's name without the WENYUAN_API_ prefix:
+# WENYUAN_API_PORT is `port` here. A first word that carries several settings
 # becomes a group — worker: {max_retries: 3} answers worker_max_retries — while
 # a single-setting name stays flat (access_log). Either spelling answers the
 # same key; if both appear with different values, startup names the

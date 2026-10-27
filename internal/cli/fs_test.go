@@ -63,9 +63,9 @@ func withFSHooks(t *testing.T, h fsDaemonHooks) {
 // fsClearEnv pins the fs environment variables to unset for isolation.
 func fsClearEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("HINDSIGHT_FS_DIR", "")
-	t.Setenv("HINDSIGHT_BANK_ID", "")
-	t.Setenv("HINDSIGHT_FS_INTERVAL", "")
+	t.Setenv("WENYUAN_FS_DIR", "")
+	t.Setenv("WENYUAN_BANK_ID", "")
+	t.Setenv("WENYUAN_FS_INTERVAL", "")
 }
 
 func TestFSConfigResolution(t *testing.T) {
@@ -110,8 +110,8 @@ func TestFSConfigResolution(t *testing.T) {
 	}
 
 	// The environment provides the bank and interval below the saved file.
-	t.Setenv("HINDSIGHT_BANK_ID", "env-bank")
-	t.Setenv("HINDSIGHT_FS_INTERVAL", "90")
+	t.Setenv("WENYUAN_BANK_ID", "env-bank")
+	t.Setenv("WENYUAN_FS_INTERVAL", "90")
 	empty := t.TempDir()
 	r = fsResolve(base(), empty, fc("", "", "", 0, false, false))
 	if r.BankID != "env-bank" || r.Interval != 90 {
@@ -119,12 +119,12 @@ func TestFSConfigResolution(t *testing.T) {
 	}
 
 	// An interval below 1 falls through at every level.
-	t.Setenv("HINDSIGHT_FS_INTERVAL", "0")
+	t.Setenv("WENYUAN_FS_INTERVAL", "0")
 	r = fsResolve(base(), empty, fc("", "", "", 0, true, false))
 	if r.Interval != 30 {
 		t.Fatalf("zero flag interval = %+v", r)
 	}
-	t.Setenv("HINDSIGHT_FS_INTERVAL", "notanumber")
+	t.Setenv("WENYUAN_FS_INTERVAL", "notanumber")
 	r = fsResolve(base(), empty, fc("", "", "", 0, false, false))
 	if r.Interval != 30 {
 		t.Fatalf("garbage env interval = %+v", r)
@@ -143,12 +143,12 @@ func TestFSDirArg(t *testing.T) {
 	}
 
 	// The environment and the positional override it.
-	t.Setenv("HINDSIGHT_FS_DIR", "from-env")
+	t.Setenv("WENYUAN_FS_DIR", "from-env")
 	dir, _ = fsDirArg(&Deps{})
 	if dir != filepath.Join(tmp, "from-env") {
 		t.Fatalf("env dir = %q", dir)
 	}
-	t.Setenv("HINDSIGHT_FS_DIR", "")
+	t.Setenv("WENYUAN_FS_DIR", "")
 	dir, _ = fsDirArg(&Deps{Args: []string{"/abs/dir"}})
 	if dir != "/abs/dir" {
 		t.Fatalf("positional dir = %q", dir)
@@ -160,7 +160,7 @@ func TestFSDirArg(t *testing.T) {
 
 func TestFSRequireBank(t *testing.T) {
 	err := fsRequireBank(fsResolved{})
-	if err == nil || !strings.Contains(err.Error(), "HINDSIGHT_BANK_ID") {
+	if err == nil || !strings.Contains(err.Error(), "WENYUAN_BANK_ID") {
 		t.Fatalf("err = %v", err)
 	}
 	if err := fsRequireBank(fsResolved{BankID: "b"}); err != nil {

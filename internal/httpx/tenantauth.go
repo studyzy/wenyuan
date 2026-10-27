@@ -11,7 +11,7 @@ import (
 const DetailAuthenticationFailed = "Authentication failed: Invalid API key"
 
 // The legacy MCP token's refusals, word for word as the reference sends them
-// when HINDSIGHT_API_MCP_AUTH_TOKEN is configured.
+// when WENYUAN_API_MCP_AUTH_TOKEN is configured.
 const (
 	DetailMCPAuthorizationRequired = "Authorization header required"
 	DetailMCPInvalidToken          = "Invalid authentication token"

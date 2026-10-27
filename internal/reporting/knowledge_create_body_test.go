@@ -8,7 +8,7 @@ import (
 )
 
 // Contract reference: the reference's create-body model
-// (hindsight-api-slim/hindsight_api/api/http.py create-page / create-folder) and
+// (the reference implementation's http.py create-page / create-folder) and
 // its framework's single validation pass.
 //
 // The framework validates the whole model before it asks whether a member is

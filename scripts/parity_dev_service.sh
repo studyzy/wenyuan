@@ -48,9 +48,9 @@ fi
 # The reference's own keys are the contract, so the deployment-shaped settings
 # come from etc/wenyuan.yaml exactly as the long-running service reads them.
 cd "$ROOT"
-HINDSIGHT_API_PORT="$PORT" \
-HINDSIGHT_API_WORKER_ENABLED="${PARITY_DEV_WORKER_ENABLED:-false}" \
-HINDSIGHT_API_DATABASE_URL="${PARITY_DEV_DATABASE_URL:-postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan}" \
+WENYUAN_API_PORT="$PORT" \
+WENYUAN_API_WORKER_ENABLED="${PARITY_DEV_WORKER_ENABLED:-false}" \
+WENYUAN_API_DATABASE_URL="${PARITY_DEV_DATABASE_URL:-postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan}" \
   "$BIN" >"$LOG" 2>&1 &
 echo $! >"$BIN.pid"
 

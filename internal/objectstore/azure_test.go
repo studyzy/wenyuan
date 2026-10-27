@@ -279,7 +279,7 @@ func TestAzure_EncodedKeyRoundTrips(t *testing.T) {
 // operator has to set.
 func TestAzure_MissingContainerRefused(t *testing.T) {
 	_, err := NewAzure(AzureConfig{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "HINDSIGHT_API_FILE_STORAGE_AZURE_CONTAINER") {
+	if err == nil || !strings.Contains(err.Error(), "WENYUAN_API_FILE_STORAGE_AZURE_CONTAINER") {
 		t.Fatalf("err = %v", err)
 	}
 }

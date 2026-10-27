@@ -14,7 +14,7 @@ import (
 func TestReferenceRuntimeKeysAreWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, k := range referenceRuntimeKeys {
-		if !strings.HasPrefix(k.Name, "HINDSIGHT_API_") {
+		if !strings.HasPrefix(k.Name, "WENYUAN_API_") {
 			t.Fatalf("reference key %q is not spelled as a reference key", k.Name)
 		}
 		if seen[k.Name] {

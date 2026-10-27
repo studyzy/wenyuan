@@ -7,12 +7,12 @@ import (
 )
 
 // ProfileSpec is the reference's profiling request, parsed from
-// HINDSIGHT_API_PROFILE.
+// WENYUAN_API_PROFILE.
 //
 // The variable holds JSON, the shape this codebase uses for structured env
 // config:
 //
-//	HINDSIGHT_API_PROFILE='{"every": 60, "top": 20}'
+//	WENYUAN_API_PROFILE='{"every": 60, "top": 20}'
 //
 // every  seconds between emissions (default 60)
 // top    rows per emission (default 20)

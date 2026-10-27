@@ -28,14 +28,14 @@ func main() {
 func run() error {
 	schema := flag.String("schema", "", "schema to create or drop")
 	drop := flag.Bool("drop", false, "drop the schema instead of creating it")
-	url := flag.String("url", os.Getenv("HINDSIGHT_API_DATABASE_URL"), "database URL")
+	url := flag.String("url", os.Getenv("WENYUAN_API_DATABASE_URL"), "database URL")
 	flag.Parse()
 
 	if *schema == "" {
 		return fmt.Errorf("--schema is required")
 	}
 	if *url == "" {
-		return fmt.Errorf("--url or HINDSIGHT_API_DATABASE_URL is required")
+		return fmt.Errorf("--url or WENYUAN_API_DATABASE_URL is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

@@ -24,7 +24,7 @@ var LogSink io.Writer = os.Stdout
 //     severity, message, timestamp and logger — with severity spelled the way
 //     the reference spells it ("WARNING", not slog's "WARN"), so a log pipeline
 //     configured for the reference parses ours unchanged. An explicit
-//     HINDSIGHT_API_LOG_JSON_FIELDS allowlist narrows which keys appear.
+//     WENYUAN_API_LOG_JSON_FIELDS allowlist narrows which keys appear.
 //   - "text": the reference's own line shape,
 //     `asctime - LEVEL name message`.
 func NewLogHandler(cfg config.Config) slog.Handler {

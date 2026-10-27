@@ -14,9 +14,9 @@ import (
 // exposes the async-operation queue as one series per operation type and status,
 // and the consolidation backlog as one pair per tenant (or per bank).
 const (
-	metricAsyncOperations      = "hindsight_async_operations"
-	metricConsolidationBacklog = "hindsight_consolidation_backlog"
-	metricConsolidationFailed  = "hindsight_consolidation_failed"
+	metricAsyncOperations      = "wenyuan_async_operations"
+	metricConsolidationBacklog = "wenyuan_consolidation_backlog"
+	metricConsolidationFailed  = "wenyuan_consolidation_failed"
 )
 
 // The backlog HELP text, copied from the reference's instrument descriptions.
@@ -28,13 +28,13 @@ const (
 
 // The database-pool gauge names, matching the reference's instruments.
 const (
-	metricDBPoolSize = "hindsight_db_pool_size"
-	metricDBPoolIdle = "hindsight_db_pool_idle"
-	metricDBPoolMin  = "hindsight_db_pool_min"
-	metricDBPoolMax  = "hindsight_db_pool_max"
+	metricDBPoolSize = "wenyuan_db_pool_size"
+	metricDBPoolIdle = "wenyuan_db_pool_idle"
+	metricDBPoolMin  = "wenyuan_db_pool_min"
+	metricDBPoolMax  = "wenyuan_db_pool_max"
 	// metricDBPoolWaiting is the callers-queued gauge. The reference reports it
 	// from its pool instrumentation, so it is present even at zero.
-	metricDBPoolWaiting = "hindsight_db_pool_waiting"
+	metricDBPoolWaiting = "wenyuan_db_pool_waiting"
 )
 
 // expositionExtras composes every family the exposition renders beyond the HTTP

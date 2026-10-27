@@ -207,7 +207,7 @@ func TestConfigHelpBlock(t *testing.T) {
 		"Configuration:",
 		"  wenyuan-admin configure",
 		"  wenyuan-admin configure --api-url http://your-api:18888",
-		"    1. Environment variable (HINDSIGHT_API_URL) - highest priority",
+		"    1. Environment variable (WENYUAN_API_URL) - highest priority",
 		"    2. Config file (~/.wenyuan/config)",
 		"    3. Default (http://localhost:18888)",
 	} {

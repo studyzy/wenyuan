@@ -5,11 +5,11 @@ and keeps the reference's own branding: a client that fetches it must see the
 same document a reference deployment serves. The SDKs under `clients/` are this
 project's own artifacts, so the generator reads a derived copy in which the
 branding is replaced — every occurrence of the reference's name becomes this
-project's name with the original's case (`Hindsight` -> `WenYuan`, `HINDSIGHT`
--> `WENYUAN`, `hindsight` -> `wenyuan`). Object keys are rewritten too, so a
-`$ref` or a schema name cannot smuggle the old branding through.
+project's name with the original's case (`Hindsight` -> `WenYuan`,
+`HINDSIGHT` -> `WENYUAN`, `hindsight` -> `wenyuan`). Object keys are rewritten
+too, so a `$ref` or a schema name cannot smuggle the old branding through.
 
-One carve-out: `HINDSIGHT_API_*` environment-variable names are the deployment
+One carve-out: `WENYUAN_API_*` environment-variable names are the deployment
 contract this service reads, so they are preserved verbatim. A client document
 that renamed them would name keys no deployment answers.
 
@@ -28,7 +28,7 @@ SOURCE = os.path.join(ROOT, "internal", "httpx", "openapi.json")
 TARGET = os.path.join(ROOT, "clients", "openapi.json")
 
 # Environment names the deployment answers; never rewritten.
-ENV_NAME = re.compile(r"HINDSIGHT_API_[A-Z0-9_]*")
+ENV_NAME = re.compile(r"WENYUAN_API_[A-Z0-9_]*")
 BRAND = re.compile(r"(?i)hindsight")
 
 

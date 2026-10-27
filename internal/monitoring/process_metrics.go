@@ -11,10 +11,10 @@ import (
 // observable gauges, which the OpenTelemetry Prometheus exporter exposes with
 // the instrument name's dots replaced by underscores.
 const (
-	processCPUName     = "hindsight_process_cpu_seconds"
-	processMemoryName  = "hindsight_process_memory_bytes"
-	processOpenFDsName = "hindsight_process_open_fds"
-	processThreadsName = "hindsight_process_threads"
+	processCPUName     = "wenyuan_process_cpu_seconds"
+	processMemoryName  = "wenyuan_process_memory_bytes"
+	processOpenFDsName = "wenyuan_process_open_fds"
+	processThreadsName = "wenyuan_process_threads"
 )
 
 // linuxClockTicks is the kernel's USER_HZ, the unit /proc/self/stat reports CPU

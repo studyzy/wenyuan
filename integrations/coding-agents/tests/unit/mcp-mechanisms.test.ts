@@ -74,7 +74,7 @@ describe("the shared entry member names", () => {
   });
 
   it("names the harness variable and the server name once", () => {
-    expect(MCP_HARNESS_ENV).toBe("HINDSIGHT_MCP_HARNESS");
+    expect(MCP_HARNESS_ENV).toBe("WENYUAN_MCP_HARNESS");
     expect(MCP_SERVER_NAME).toBe(OWNERSHIP_MARKER);
   });
 });

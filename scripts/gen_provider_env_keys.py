@@ -13,28 +13,39 @@ Usage: gen_provider_env_keys.py <path-to-contract-config.py> [out.go]
 The contract document is the module that declares the ``ENV_*`` string
 constants; the script only reads declarations whose value contains one of the
 family markers below.
+
+The reference document spells its keys with the reference's prefix and this
+service spells the same keys with its own: SOURCE_PREFIX is what the document
+is read with, TARGET_PREFIX is what is emitted, and the rename between them is
+exactly the prefix — the key body is the contract and never changes.
 """
 
 import re
 import sys
 
+# The prefix the reference document declares its keys with, and the prefix
+# this service spells them with. The contract is the key body; only the
+# namespace belongs to whoever serves it.
+SOURCE_PREFIX = "HINDSIGHT_API_"
+TARGET_PREFIX = "WENYUAN_API_"
+
 # Family markers, as they appear in the key name itself. Order matters: the
 # first matching marker wins, and the scoped roles are tested before the bare
 # "LLM" marker.
 FAMILIES = [
-    ("retain_llm", ("HINDSIGHT_API_RETAIN_LLM_",)),
-    ("reflect_llm", ("HINDSIGHT_API_REFLECT_LLM_",)),
-    ("consolidation_llm", ("HINDSIGHT_API_CONSOLIDATION_LLM_",)),
-    ("mental_model_refresh_llm", ("HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_",)),
-    ("embeddings", ("HINDSIGHT_API_EMBEDDING_", "HINDSIGHT_API_EMBEDDINGS_")),
-    ("reranker", ("HINDSIGHT_API_RERANKER_",)),
-    ("litellm", ("HINDSIGHT_API_LITELLM_",)),
-    ("llm", ("HINDSIGHT_API_LLM_", "HINDSIGHT_API_SKIP_LLM_VERIFICATION")),
+    ("retain_llm", (SOURCE_PREFIX + "RETAIN_LLM_",)),
+    ("reflect_llm", (SOURCE_PREFIX + "REFLECT_LLM_",)),
+    ("consolidation_llm", (SOURCE_PREFIX + "CONSOLIDATION_LLM_",)),
+    ("mental_model_refresh_llm", (SOURCE_PREFIX + "MENTAL_MODEL_REFRESH_LLM_",)),
+    ("embeddings", (SOURCE_PREFIX + "EMBEDDING_", SOURCE_PREFIX + "EMBEDDINGS_")),
+    ("reranker", (SOURCE_PREFIX + "RERANKER_",)),
+    ("litellm", (SOURCE_PREFIX + "LITELLM_",)),
+    ("llm", (SOURCE_PREFIX + "LLM_", SOURCE_PREFIX + "SKIP_LLM_VERIFICATION")),
 ]
 
 # Keys owned by another family group; excluded here so the families do not
 # overlap.
-EXCLUDED = ("HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH",)
+EXCLUDED = (SOURCE_PREFIX + "ENABLE_BANK_LLM_HEALTH",)
 
 # Tokens that keep their conventional spelling when name-mangling a key.
 TOKEN_CASE = {
@@ -53,11 +64,16 @@ TOKEN_CASE = {
 
 
 def const_name(key: str) -> str:
-    body = key[len("HINDSIGHT_API_"):]
+    body = key[len(TARGET_PREFIX):]
     parts = []
     for token in body.split("_"):
         parts.append(TOKEN_CASE.get(token, token.capitalize()))
     return "Env" + "".join(parts)
+
+
+def target_key(key: str) -> str:
+    """The key as this service spells it: same body, our own namespace."""
+    return TARGET_PREFIX + key[len(SOURCE_PREFIX):]
 
 
 def family_of(key: str):
@@ -79,7 +95,7 @@ def main() -> int:
     families: dict[str, list[str]] = {name: [] for name, _ in FAMILIES}
     seen: set[str] = set()
     for _, value in declared:
-        if not value.startswith("HINDSIGHT_API_"):
+        if not value.startswith(SOURCE_PREFIX):
             continue
         if value in EXCLUDED:
             continue
@@ -87,7 +103,7 @@ def main() -> int:
         if family is None or value in seen:
             continue
         seen.add(value)
-        families[family].append(value)
+        families[family].append(target_key(value))
 
     # Existing constants already declared in the package, so generated names
     # never collide with a hand-written one.

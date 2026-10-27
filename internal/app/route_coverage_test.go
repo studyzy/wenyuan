@@ -21,7 +21,7 @@ func TestEveryGAPSRouteIsMounted(t *testing.T) {
 	// way a deployment would rather than assuming the default.
 	environ := func(key string) (string, bool) {
 		switch key {
-		case "HINDSIGHT_API_MCP_ENABLED", "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH":
+		case "WENYUAN_API_MCP_ENABLED", "WENYUAN_API_ENABLE_BANK_LLM_HEALTH":
 			return "true", true
 		}
 		return "", false

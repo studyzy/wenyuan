@@ -107,9 +107,9 @@ if [ -z "$BIN" ]; then
   }
 fi
 
-setsid env HINDSIGHT_API_DATABASE_URL="$DB_URL" \
-  HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true \
-  HINDSIGHT_API_PORT=$DATAPLANE_PORT \
+setsid env WENYUAN_API_DATABASE_URL="$DB_URL" \
+  WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true \
+  WENYUAN_API_PORT=$DATAPLANE_PORT \
   "$BIN" >"$WORK/dataplane.log" 2>&1 &
 PIDS+=($!)
 
@@ -137,8 +137,8 @@ fi
 # setsid gives the frontend its own process group: `npm run start` spawns the
 # Next server as a child, and killing only npm leaves the server holding the port.
 (cd "$FRONTEND" && setsid env \
-  HINDSIGHT_CP_DATAPLANE_API_URL="$DATAPLANE" \
-  HINDSIGHT_CP_ACCESS_KEY="$ACCESS_KEY" \
+  WENYUAN_CP_DATAPLANE_API_URL="$DATAPLANE" \
+  WENYUAN_CP_ACCESS_KEY="$ACCESS_KEY" \
   PORT=$FRONTEND_PORT \
   npm run start >"$WORK/frontend.log" 2>&1) &
 PIDS+=($!)

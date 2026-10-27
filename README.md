@@ -90,7 +90,7 @@ system-test stories against this build.
 
 ```sh
 make db-up                              # this project's own PostgreSQL on 127.0.0.1:15432
-export HINDSIGHT_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
+export WENYUAN_API_DATABASE_URL=postgresql://wenyuan:wenyuan@127.0.0.1:15432/wenyuan
 go run -tags pgx ./cmd/server           # serves on the configured address
 go run -tags pgx ./cmd/server --host 0.0.0.0 --port 18888
 go run -tags pgx ./cmd/worker           # async operation consumer
@@ -118,7 +118,7 @@ make frontend-run                       # serves on 19999 (Next.js production mo
 ```
 
 The frontend talks to the API through its BFF routes, which read
-`HINDSIGHT_CP_DATAPLANE_API_URL` (default `http://127.0.0.1:8000`; point it at
+`WENYUAN_CP_DATAPLANE_API_URL` (default `http://127.0.0.1:8000`; point it at
 the wenyuan API, e.g. `http://127.0.0.1:18888`). Run the production build:
 dev-mode HMR hangs Origin-bearing WebSocket upgrades in this environment and
 the dashboard never finishes loading.
@@ -178,7 +178,7 @@ wenyuan-admin ui                                 # launch the web frontend
 
 Output is `pretty` by default; `-o json` / `-o yaml` switch to machine
 formats. Configuration lives in `~/.wenyuan/config` with named profiles in
-`~/.wenyuan/cli-profiles/`; `HINDSIGHT_API_URL` and `HINDSIGHT_API_KEY`
+`~/.wenyuan/cli-profiles/`; `WENYUAN_API_URL` and `WENYUAN_API_KEY`
 override both.
 
 ## Configuration
@@ -190,50 +190,50 @@ defaults.
 
 ```sh
 wenyuan                                  # reads ./.env, then ./etc/wenyuan.yaml
-HINDSIGHT_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # named file, must exist
+WENYUAN_API_CONFIG_FILE=/etc/wenyuan/prod.yaml wenyuan   # named file, must exist
 ```
 
 The configuration file is YAML, read from `etc/wenyuan.yaml` relative to the
 working directory — `/etc/wenyuan.yaml` inside the container image. It answers
-any key the environment answers, spelled without the `HINDSIGHT_API_` prefix and
+any key the environment answers, spelled without the `WENYUAN_API_` prefix and
 lowercased; a nested spelling is accepted and flattened to the same key (`llm:
 {provider: openai}` *is* `llm_provider: openai`), both spellings must agree if
 both appear, and a list value is refused because an environment value cannot
 carry one. The checked-in template is `etc/example.wenyuan.yaml`: copy it to
 `etc/wenyuan.yaml` and uncomment what the deployment needs — the real file
 carries real values and is not checked in. A file named by
-`HINDSIGHT_API_CONFIG_FILE` must exist and parse; an absent `etc/wenyuan.yaml`
+`WENYUAN_API_CONFIG_FILE` must exist and parse; an absent `etc/wenyuan.yaml`
 changes nothing.
 
 | Variable | Purpose |
 | --- | --- |
-| `HINDSIGHT_API_CONFIG_FILE` | Path of the YAML configuration file (default `etc/wenyuan.yaml`) |
-| `HINDSIGHT_API_HOST` | Listen host |
-| `HINDSIGHT_API_PORT` | Listen port |
-| `HINDSIGHT_API_DATABASE_URL` | PostgreSQL connection string |
-| `HINDSIGHT_API_DATABASE_SCHEMA` | Database schema name |
-| `HINDSIGHT_API_VECTOR_EXTENSION` | Vector extension name |
-| `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` | Text-search extension name |
-| `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` | Apply migrations at boot |
-| `HINDSIGHT_API_MCP_ENABLED` | Enable the MCP namespace |
-| `HINDSIGHT_API_ENABLE_BANK_CONFIG_API` | Serve the bank-config write route |
-| `HINDSIGHT_API_GZIP_MIN_SIZE` | Response-body gzip size floor (negative disables) |
-| `HINDSIGHT_API_RETAIN_BATCH_ENABLED` | Enables the batch retain gate |
-| `HINDSIGHT_API_RECALL_STRATEGY_BOOSTS` | Per-arm recall strategy boosts |
-| `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | Reflect observation default |
-| `HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | Reflect observation token default |
+| `WENYUAN_API_CONFIG_FILE` | Path of the YAML configuration file (default `etc/wenyuan.yaml`) |
+| `WENYUAN_API_HOST` | Listen host |
+| `WENYUAN_API_PORT` | Listen port |
+| `WENYUAN_API_DATABASE_URL` | PostgreSQL connection string |
+| `WENYUAN_API_DATABASE_SCHEMA` | Database schema name |
+| `WENYUAN_API_VECTOR_EXTENSION` | Vector extension name |
+| `WENYUAN_API_TEXT_SEARCH_EXTENSION` | Text-search extension name |
+| `WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP` | Apply migrations at boot |
+| `WENYUAN_API_MCP_ENABLED` | Enable the MCP namespace |
+| `WENYUAN_API_ENABLE_BANK_CONFIG_API` | Serve the bank-config write route |
+| `WENYUAN_API_GZIP_MIN_SIZE` | Response-body gzip size floor (negative disables) |
+| `WENYUAN_API_RETAIN_BATCH_ENABLED` | Enables the batch retain gate |
+| `WENYUAN_API_RECALL_STRATEGY_BOOSTS` | Per-arm recall strategy boosts |
+| `WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES` | Reflect observation default |
+| `WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS` | Reflect observation token default |
 
 ### Model providers
 
 Model access is configured per scope with environment variables that follow
 the reference's naming, so upstream documentation applies unchanged:
 
-- Chat: `HINDSIGHT_API_RETAIN_LLM_*`, `HINDSIGHT_API_REFLECT_LLM_*`,
-  `HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_*` (`_PROVIDER`, `_API_KEY`,
+- Chat: `WENYUAN_API_RETAIN_LLM_*`, `WENYUAN_API_REFLECT_LLM_*`,
+  `WENYUAN_API_MENTAL_MODEL_REFRESH_LLM_*` (`_PROVIDER`, `_API_KEY`,
   `_MODEL`, `_BASE_URL`, retry/backoff knobs, ...).
-- Embeddings: `HINDSIGHT_API_EMBEDDINGS_<VENDOR>_*` (openai, cohere, gemini,
+- Embeddings: `WENYUAN_API_EMBEDDINGS_<VENDOR>_*` (openai, cohere, gemini,
   tei, onnx, ...).
-- Reranking: `HINDSIGHT_API_RERANKER_*` (cohere, openrouter, ...).
+- Reranking: `WENYUAN_API_RERANKER_*` (cohere, openrouter, ...).
 
 Unset means the deterministic no-model selection is used, which keeps memory
 writes and reflection working offline. `docs/CONFIGURATION.md` is the
@@ -264,7 +264,7 @@ and matches the reference 100/100; the machine-readable contract is
 | Reporting | `GET .../stats`, `GET .../stats/memories-timeseries`, `POST .../health/llm`, `GET .../audit-logs` (+`/stats`), `GET .../llm-requests` (+`/stats`) |
 | Webhooks | `GET/POST .../webhooks`, `GET/PATCH/DELETE .../webhooks/{id}`, `GET .../webhooks/{id}/deliveries` |
 | Transfer | `POST .../import`, `GET .../export`, `POST .../transfer/export`, `POST .../transfer/import`, `POST .../document-transfer` (+`/export`), `POST .../clone`, `GET .../attachments/{id}`, `GET /v1/default/files/download/{...}` |
-| MCP | `POST /mcp` (JSON-RPC, gated by `HINDSIGHT_API_MCP_ENABLED`) |
+| MCP | `POST /mcp` (JSON-RPC, gated by `WENYUAN_API_MCP_ENABLED`) |
 | Contract | `GET /v1/bank-template-schema`, `GET /v1/version` |
 
 `GET/PUT /v1/default/banks/{bank_id}/profile` and

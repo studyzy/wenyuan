@@ -33,13 +33,13 @@ const defaultReflectSearchObservationsIncludeEntities = true
 // message is the reference's, verbatim.
 //
 //nolint:staticcheck // the reference's own wording, capitalised and sentence-final
-var ErrNoReflectModel = errors.New("Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
+var ErrNoReflectModel = errors.New("Reflect requires an LLM provider. Current provider is set to 'none'. Set WENYUAN_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
 
 // ReflectDefaultOptions is the deployment's process-level default for a bank's
 // reflect_default_options object: the reflect options applied wherever neither
 // the request nor the bank's own value sets the matching field, e.g.
 // {"reflect_search_observations_max_tokens": 3000}. The composition root wires
-// it from HINDSIGHT_API_REFLECT_DEFAULT_OPTIONS; nil means the deployment set
+// it from WENYUAN_API_REFLECT_DEFAULT_OPTIONS; nil means the deployment set
 // nothing, so every option keeps its shipped default. The bank's own
 // reflect_default_options always wins over it.
 var ReflectDefaultOptions map[string]any

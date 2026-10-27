@@ -20,7 +20,7 @@ import {
 
 describe("the disable guard", () => {
   it("keeps its legacy deployment-contract spelling", () => {
-    expect(DISABLE_HOOKS_ENV).toBe("HINDSIGHT_DISABLE_HOOKS");
+    expect(DISABLE_HOOKS_ENV).toBe("WENYUAN_DISABLE_HOOKS");
   });
 
   it("treats an absent variable, and the usual off spellings, as enabled", () => {

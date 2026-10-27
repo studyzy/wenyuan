@@ -193,7 +193,7 @@ func TestRefusedMembersNameProviderKey(t *testing.T) {
 		if !strings.Contains(err.Error(), "not supported by this build") {
 			t.Fatalf("%s: error %q does not say it is unsupported", name, err)
 		}
-		if !strings.Contains(err.Error(), "HINDSIGHT_API_EMBEDDINGS_PROVIDER") {
+		if !strings.Contains(err.Error(), "WENYUAN_API_EMBEDDINGS_PROVIDER") {
 			t.Fatalf("%s: error %q does not name the provider key", name, err)
 		}
 	}
@@ -203,12 +203,12 @@ func TestRefusedMembersNameProviderKey(t *testing.T) {
 // the key when it is absent.
 func TestMissingCredentialNamesKey(t *testing.T) {
 	cases := map[string]string{
-		"openai":      "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
-		"cohere":      "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY",
-		"zeroentropy": "HINDSIGHT_API_EMBEDDINGS_ZEROENTROPY_API_KEY",
-		"gemini":      "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY",
-		"openrouter":  "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY",
-		"requesty":    "HINDSIGHT_API_EMBEDDINGS_REQUESTY_API_KEY",
+		"openai":      "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY",
+		"cohere":      "WENYUAN_API_EMBEDDINGS_COHERE_API_KEY",
+		"zeroentropy": "WENYUAN_API_EMBEDDINGS_ZEROENTROPY_API_KEY",
+		"gemini":      "WENYUAN_API_EMBEDDINGS_GEMINI_API_KEY",
+		"openrouter":  "WENYUAN_API_EMBEDDINGS_OPENROUTER_API_KEY",
+		"requesty":    "WENYUAN_API_EMBEDDINGS_REQUESTY_API_KEY",
 	}
 	for name, key := range cases {
 		_, err := New(Config{Provider: name})

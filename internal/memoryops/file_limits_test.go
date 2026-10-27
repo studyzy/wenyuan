@@ -76,7 +76,7 @@ func TestUploadHasNoPerFileSizeCap(t *testing.T) {
 }
 
 // The file route's count bound is the conversion batch size
-// (HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE), not the retention attachment
+// (WENYUAN_API_FILE_CONVERSION_MAX_BATCH_SIZE), not the retention attachment
 // count: a request above the latter but within the former is accepted.
 func TestUploadCountBoundIsConversionBatchSize(t *testing.T) {
 	store := storage.NewMemoryStore("public")

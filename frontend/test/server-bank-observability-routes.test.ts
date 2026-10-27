@@ -12,7 +12,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
 });
 
 const VALID_ID = "a".repeat(64);
@@ -35,7 +35,7 @@ describe("observability query passthrough", () => {
   it("passes audit-log query parameters upstream", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await auditLogs.GET(makeRequest("http://localhost/api/banks/acme/audit-logs?limit=5"), {
         params: Promise.resolve({ bankId: "acme" }),
       });
@@ -47,7 +47,7 @@ describe("observability query passthrough", () => {
   it("passes llm-request stats query parameters upstream", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await llmStats.GET(makeRequest("http://localhost/api/banks/acme/llm-requests/stats?period=7d"), {
         params: Promise.resolve({ bankId: "acme" }),
       });
@@ -91,7 +91,7 @@ describe("observability success statuses follow the contract", () => {
     ] as const) {
       const stub = stubFetch([{ status: 201, body: { ok: true } }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status, `${label} should report 200`).toBe(200);
       });
@@ -123,7 +123,7 @@ describe("observability failures use the localized envelope", () => {
     ] as const) {
       const stub = stubFetch([{ status: 429, body: { detail: "rate limited" } }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status, `${label} passes the upstream status`).toBe(429);
         const payload = await readJson(response);
@@ -138,7 +138,7 @@ describe("observability failures use the localized envelope", () => {
   it("reports 502 when the upstream is unreachable", async () => {
     const stub = stubFetch([{ reject: true }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await llmRequests.GET(
         makeRequest("http://localhost/api/banks/acme/llm-requests", { acceptLanguage: "en" }),
         { params: Promise.resolve({ bankId: "acme" }) },
@@ -155,7 +155,7 @@ describe("attachment proxy guard", () => {
   it("streams upstream bytes with the upstream content type and a no-sniff header", async () => {
     const stub = stubFetch([{ status: 200, body: "binary", contentType: "image/png" }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await attachment.GET(
         makeRequest(`http://localhost/api/banks/acme/attachments/${VALID_ID}`),
         { params: Promise.resolve({ bankId: "acme", attachmentId: VALID_ID }) },
@@ -194,7 +194,7 @@ describe("per-operation route", () => {
   it("reads, retries and deletes at the catalogued path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }, { status: 200, body: {} }, { status: 200, body: { deleted: true } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const context = { params: Promise.resolve({ bankId: "acme", operationId: "op:1" }) };
       await operation.GET(makeRequest("http://localhost/api/banks/acme/operations/op%3A1"), context);
       await operation.POST(makeRequest("http://localhost/api/banks/acme/operations/op%3A1", { method: "POST", body: "{}" }), context);

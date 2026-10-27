@@ -98,7 +98,7 @@ func ResolveProvider(cfg config.Config) (provider.Provider, error) {
 //
 // The probe is bounded by the model-init timeout, which defaults to the
 // reference's 300s; a non-positive value leaves the probe unbounded rather than
-// expiring it immediately. HINDSIGHT_API_SKIP_LLM_VERIFICATION turns the probe
+// expiring it immediately. WENYUAN_API_SKIP_LLM_VERIFICATION turns the probe
 // off entirely — an operator running against a provider that is temporarily
 // down can still start the server and let it recover — and a skipped probe
 // reports no failure.
@@ -139,7 +139,7 @@ func probeableProvider(name string) bool {
 
 // SupportsVision resolves whether the configured write model can read inline
 // image content, mirroring the reference's supports_vision(): an explicit
-// HINDSIGHT_API_LLM_VISION wins, otherwise the provider's own answer — the
+// WENYUAN_API_LLM_VISION wins, otherwise the provider's own answer — the
 // OpenAI adapter claims support only for OpenAI itself, the native Anthropic
 // adapter claims it, and every gateway or proxy is unknown, which a retain
 // refuses rather than silently dropping the image.
@@ -225,7 +225,7 @@ func unsupportedProviderKeys(cfg config.Config) error {
 
 // reflectModelConfigured reports whether the deployment has a model for the
 // reflect pipeline. The reference refuses reflect and mental-model refresh when
-// the provider is "none" (HINDSIGHT_API_LLM_PROVIDER=none), so the composition
+// the provider is "none" (WENYUAN_API_LLM_PROVIDER=none), so the composition
 // root uses this to arm both availability gates; a deployment with no model
 // therefore behaves like the reference rather than falling back to the
 // deterministic loop.

@@ -11,7 +11,7 @@
  * ```ts
  * import { createClient, recall, reflect, retain } from "wenyuan-client";
  *
- * const client = createClient(); // reads HINDSIGHT_API_URL / HINDSIGHT_API_KEY
+ * const client = createClient(); // reads WENYUAN_API_URL / WENYUAN_API_KEY
  * await retain(client, "alice", "Alice works at the observatory.");
  * const hits = await recall(client, "alice", "Where does Alice work?");
  * const answer = await reflect(client, "alice", "Summarise Alice's work.");
@@ -89,10 +89,10 @@ export type {
 } from "../generated/client";
 
 /** Environment variable holding the API base URL. */
-export const ENV_BASE_URL = "HINDSIGHT_API_URL";
+export const ENV_BASE_URL = "WENYUAN_API_URL";
 
 /** Environment variable holding the bearer key, when the deployment requires one. */
-export const ENV_API_KEY = "HINDSIGHT_API_KEY";
+export const ENV_API_KEY = "WENYUAN_API_KEY";
 
 /** Base URL used when neither an option nor {@link ENV_BASE_URL} is set. */
 export const DEFAULT_BASE_URL = "http://localhost:18888";
@@ -278,10 +278,10 @@ const maxAttemptsByClient = new WeakMap<Client, number>();
 /**
  * Build a client pointed at WenYuan.
  *
- * The base URL comes from `options.baseUrl`, else `HINDSIGHT_API_URL`, else
+ * The base URL comes from `options.baseUrl`, else `WENYUAN_API_URL`, else
  * `http://localhost:18888`; the bearer key (used only when present, so an open
  * deployment needs no configuration) comes from `options.apiKey`, else
- * `HINDSIGHT_API_KEY`.
+ * `WENYUAN_API_KEY`.
  */
 export function createClient(options: WenYuanClientOptions = {}): Client {
   const apiKey = options.apiKey ?? env(ENV_API_KEY);

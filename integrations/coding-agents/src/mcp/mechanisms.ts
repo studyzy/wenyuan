@@ -17,7 +17,7 @@ import type {
  */
 
 /** Wire contract: the server reads this to attribute the caller. */
-export const MCP_HARNESS_ENV = "HINDSIGHT_MCP_HARNESS";
+export const MCP_HARNESS_ENV = "WENYUAN_MCP_HARNESS";
 
 /** This package's server name, which doubles as the ownership marker. */
 export const MCP_SERVER_NAME = OWNERSHIP_MARKER;

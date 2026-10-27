@@ -8,7 +8,7 @@ import (
 )
 
 // The text-search backends the serve path knows about. The reference switches
-// its whole lexical implementation on HINDSIGHT_API_TEXT_SEARCH_EXTENSION; this
+// its whole lexical implementation on WENYUAN_API_TEXT_SEARCH_EXTENSION; this
 // build implements the native tsvector backend and ParadeDB's pg_search, which
 // is the backend an operator reaches for when the corpus is not English.
 const (

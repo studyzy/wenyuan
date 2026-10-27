@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "Ningún banco seleccionado",
     "apiDisabledTitle": "La API de configuración del banco no está habilitada",
-    "apiDisabledDescription": "Establece <code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code> en el servidor para habilitar la configuración por banco.",
+    "apiDisabledDescription": "Establece <code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code> en el servidor para habilitar la configuración por banco.",
     "resetToInherited": "Restablecer al valor heredado",
     "failedToReset": "Error al restablecer",
     "overrideBadge": "Anulación del banco",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "Añadir documento al banco actual",
     "templateManifestHelp": "Pega un manifiesto de plantilla JSON para preconfigurar el banco con ajustes, modelos mentales y directivas.",
     "fileUploadDisabledMessage": "La carga de archivos no está habilitada en este servidor.",
-    "fileUploadEnableHint": "Para habilitar, establece <code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code>",
+    "fileUploadEnableHint": "Para habilitar, establece <code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code>",
     "fileTagsHelp": "Separadas por comas — usadas para filtrar memorias durante recall/reflect",
     "strategyHelpText": "Anula la estrategia de extracción predeterminada del banco para este documento.",
     "observationScopePerTag": "Por etiqueta",

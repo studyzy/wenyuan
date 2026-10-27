@@ -51,7 +51,7 @@
   `127.0.0.1:15432/wenyuan`，**不是同一个库**。带计数/聚合的响应（`stats`、`scopes`、
   `list` 的 `total`、列表长度）在那种配置下必然不同，**那是夹具差异，不是缺陷**。
 - **可行且有说服力的做法**：在同一个 PostgreSQL 实例上建**自己的兄弟 schema**（把
-  `HINDSIGHT_API_CONFIG_FILE` 指到一个 `database_schema: audit_<组>` 的临时 yaml），本服务会正常
+  `WENYUAN_API_CONFIG_FILE` 指到一个 `database_schema: audit_<组>` 的临时 yaml），本服务会正常
   迁移它；把同一份夹具**逐行播到两侧**再比较两份夹具。用完 `DROP SCHEMA … CASCADE`。
   不要把本服务直接指到 `user_devin`：`internal/storage/postgres_adoption.go` 的
   `partialSchemaError` 会拒绝部分匹配的 schema。
@@ -60,7 +60,7 @@
 - 已知夹具噪声（掩掉即可，不要据此改代码）：参考 worker 自己 consolidate（`consolidated_at`
   被填、可能多出新观测）、`edited_at`/`updated_at` 是各自请求时刻、
   `db_acquire_ms`/`uptime_seconds`/`seconds_since_last_poll` 是活测量、`/version` 的
-  `features.worker`（`parity_dev_service.sh` 固定 `HINDSIGHT_API_WORKER_ENABLED=false`）。
+  `features.worker`（`parity_dev_service.sh` 固定 `WENYUAN_API_WORKER_ENABLED=false`）。
 - **不要在仓库内建 `git worktree`** 做隔离：`internal/storage/boundary_test.go` 会扫描全仓 `.go`，
   会让它误报。**严禁迁就性修改**：只在"库不同/进程状态不同"的条件下成立的差异不要改代码。
 

@@ -11,22 +11,22 @@ import (
 // and falls back to the corresponding global value, so leaving the scope
 // untouched reproduces the single-provider behaviour exactly.
 const (
-	EnvConsolidationProvider            = "HINDSIGHT_API_CONSOLIDATION_LLM_PROVIDER"
-	EnvConsolidationAPIKey              = "HINDSIGHT_API_CONSOLIDATION_LLM_API_KEY"
-	EnvConsolidationModel               = "HINDSIGHT_API_CONSOLIDATION_LLM_MODEL"
-	EnvConsolidationBaseURL             = "HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL"
-	EnvConsolidationMaxConcurrent       = "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT"
-	EnvConsolidationMaxRetries          = "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_RETRIES"
-	EnvConsolidationInitialBackoff      = "HINDSIGHT_API_CONSOLIDATION_LLM_INITIAL_BACKOFF"
-	EnvConsolidationMaxBackoff          = "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_BACKOFF"
-	EnvConsolidationTimeout             = "HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT"
-	EnvConsolidationStrategy            = "HINDSIGHT_API_CONSOLIDATION_LLM_STRATEGY"
-	EnvConsolidationLiteLLMRouterConfig = "HINDSIGHT_API_CONSOLIDATION_LLM_LITELLMROUTER_CONFIG"
-	EnvConsolidationReasoningEffort     = "HINDSIGHT_API_CONSOLIDATION_LLM_REASONING_EFFORT"
-	EnvConsolidationExtraBody           = "HINDSIGHT_API_CONSOLIDATION_LLM_EXTRA_BODY"
-	EnvConsolidationCacheAffinity       = "HINDSIGHT_API_CONSOLIDATION_LLM_CACHE_AFFINITY"
-	EnvConsolidationBatchSize           = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
-	EnvConsolidationParallelism         = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
+	EnvConsolidationProvider            = "WENYUAN_API_CONSOLIDATION_LLM_PROVIDER"
+	EnvConsolidationAPIKey              = "WENYUAN_API_CONSOLIDATION_LLM_API_KEY"
+	EnvConsolidationModel               = "WENYUAN_API_CONSOLIDATION_LLM_MODEL"
+	EnvConsolidationBaseURL             = "WENYUAN_API_CONSOLIDATION_LLM_BASE_URL"
+	EnvConsolidationMaxConcurrent       = "WENYUAN_API_CONSOLIDATION_LLM_MAX_CONCURRENT"
+	EnvConsolidationMaxRetries          = "WENYUAN_API_CONSOLIDATION_LLM_MAX_RETRIES"
+	EnvConsolidationInitialBackoff      = "WENYUAN_API_CONSOLIDATION_LLM_INITIAL_BACKOFF"
+	EnvConsolidationMaxBackoff          = "WENYUAN_API_CONSOLIDATION_LLM_MAX_BACKOFF"
+	EnvConsolidationTimeout             = "WENYUAN_API_CONSOLIDATION_LLM_TIMEOUT"
+	EnvConsolidationStrategy            = "WENYUAN_API_CONSOLIDATION_LLM_STRATEGY"
+	EnvConsolidationLiteLLMRouterConfig = "WENYUAN_API_CONSOLIDATION_LLM_LITELLMROUTER_CONFIG"
+	EnvConsolidationReasoningEffort     = "WENYUAN_API_CONSOLIDATION_LLM_REASONING_EFFORT"
+	EnvConsolidationExtraBody           = "WENYUAN_API_CONSOLIDATION_LLM_EXTRA_BODY"
+	EnvConsolidationCacheAffinity       = "WENYUAN_API_CONSOLIDATION_LLM_CACHE_AFFINITY"
+	EnvConsolidationBatchSize           = "WENYUAN_API_CONSOLIDATION_LLM_BATCH_SIZE"
+	EnvConsolidationParallelism         = "WENYUAN_API_CONSOLIDATION_LLM_PARALLELISM"
 )
 
 // llmScopeSuffixes are the per-role chat-scope key suffixes every role shares.
@@ -38,7 +38,7 @@ var llmScopeSuffixes = []string{
 
 // llmScopeExtraSuffixes are the role-specific keys the contract carries.
 var llmScopeExtraSuffixes = map[string][]string{
-	"HINDSIGHT_API_CONSOLIDATION_LLM": {"BATCH_SIZE", "PARALLELISM"},
+	"WENYUAN_API_CONSOLIDATION_LLM": {"BATCH_SIZE", "PARALLELISM"},
 }
 
 // llmScopeKeys returns the resolved key list for a role's chat scope.
@@ -131,7 +131,7 @@ func ResolveLLMScope(lookup func(string) (string, bool), prefix string) LLMScope
 
 // ResolveConsolidation resolves the consolidation provider scope.
 func ResolveConsolidation(lookup func(string) (string, bool)) ConsolidationScope {
-	return ResolveLLMScope(lookup, "HINDSIGHT_API_CONSOLIDATION_LLM")
+	return ResolveLLMScope(lookup, "WENYUAN_API_CONSOLIDATION_LLM")
 }
 
 // EffectiveProvider returns the scope's provider, falling back to the global

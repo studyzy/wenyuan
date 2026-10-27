@@ -81,7 +81,7 @@ func fsDirArg(d *Deps) (string, error) {
 		return "", NewUsageError("fs accepts at most one <dir> argument")
 	}
 	if raw == "" {
-		raw = os.Getenv("HINDSIGHT_FS_DIR")
+		raw = os.Getenv("WENYUAN_FS_DIR")
 	}
 	if raw == "" {
 		raw = "./wenyuan-fs"
@@ -97,7 +97,7 @@ func fsResolve(d *Deps, dir string, fc *fsCommon) fsResolved {
 	r := fsResolved{Dir: dir}
 	r.APIURL = strings.TrimRight(firstNonEmpty(derefOr(fc.apiURL, ""), saved.APIURL, d.Config.APIURL), "/")
 	r.Token = firstNonEmpty(derefOr(fc.token, ""), saved.APIToken, d.Config.APIKey)
-	r.BankID = firstNonEmpty(derefOr(fc.bank, ""), saved.BankID, os.Getenv("HINDSIGHT_BANK_ID"))
+	r.BankID = firstNonEmpty(derefOr(fc.bank, ""), saved.BankID, os.Getenv("WENYUAN_BANK_ID"))
 	r.Interval = fsInterval(derefOr(fc.interval, 0), fc.intervalUsed, saved.IntervalSeconds)
 	r.Writable = derefOr(fc.writable, false) || saved.Writable
 	return r
@@ -112,7 +112,7 @@ func fsInterval(flagValue int, flagUsed bool, saved int) int {
 	if saved >= 1 {
 		return saved
 	}
-	if env, err := strconv.ParseUint(os.Getenv("HINDSIGHT_FS_INTERVAL"), 10, 32); err == nil && env >= 1 {
+	if env, err := strconv.ParseUint(os.Getenv("WENYUAN_FS_INTERVAL"), 10, 32); err == nil && env >= 1 {
 		return int(env)
 	}
 	return 30
@@ -122,7 +122,7 @@ func fsInterval(flagValue int, flagUsed bool, saved int) int {
 // fsNoBank is the exact wording; the sentence-final period is part of the
 // contract, so it is a variable to keep the literal from tripping the
 // error-string lint.
-var fsNoBank = "No bank specified. Pass --bank <id>, set HINDSIGHT_BANK_ID, or run inside an already-mounted folder."
+var fsNoBank = "No bank specified. Pass --bank <id>, set WENYUAN_BANK_ID, or run inside an already-mounted folder."
 
 // subcommands.
 func fsRequireBank(r fsResolved) error {

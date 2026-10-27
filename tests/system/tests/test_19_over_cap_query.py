@@ -1,6 +1,6 @@
 """A recall query over the token cap is cut to the cap, not rejected.
 
-`HINDSIGHT_API_RECALL_MAX_QUERY_TOKENS` (default 500) used to answer an over-cap
+`WENYUAN_API_RECALL_MAX_QUERY_TOKENS` (default 500) used to answer an over-cap
 REST recall with HTTP 400. A client cannot reliably stay under a *token* cap by
 cutting characters: the coding-agents plugin sends the first 2000 characters of a
 prompt, and code packs far more tokens per character than prose, so a pasted

@@ -35,16 +35,16 @@ wenyuan-client = { path = "clients/rust", features = ["rustls-tls"] }
 ```rust
 use wenyuan_client::Wenyuan;
 
-// Base URL from HINDSIGHT_API_URL, falling back to http://localhost:18888.
+// Base URL from WENYUAN_API_URL, falling back to http://localhost:18888.
 let client = Wenyuan::new()?;
 ```
 
-`HINDSIGHT_API_URL` is the deployment contract's spelling for the service URL,
+`WENYUAN_API_URL` is the deployment contract's spelling for the service URL,
 so it keeps that name. The other constructors are:
 
 | Call | Use |
 | --- | --- |
-| `Wenyuan::new()` | `HINDSIGHT_API_URL`, else `http://localhost:18888` |
+| `Wenyuan::new()` | `WENYUAN_API_URL`, else `http://localhost:18888` |
 | `Wenyuan::with_base_url(url)` | an explicit URL |
 | `Wenyuan::with_base_url_and_user_agent(url, ua)` | as above, identifying your program to the server |
 | `.with_api_key(key)` | send `Authorization: <key>` on every request |
@@ -221,15 +221,15 @@ that the documented responses decode.
 A second suite exercises the client against a real deployment:
 
 ```sh
-HINDSIGHT_API_URL=http://127.0.0.1:18888 cargo test --test live
+WENYUAN_API_URL=http://127.0.0.1:18888 cargo test --test live
 ```
 
 It covers the bank lifecycle, a retain followed by a recall that finds it,
 reflect, a tagged write whose tag selects it back out (and an unwritten tag that
 selects nothing), an async retain whose operation appears in the bank's queue,
 and the `410` the retired profile route answers. It skips, with a printed
-notice, unless `HINDSIGHT_API_URL` is set, so `cargo test` stays offline. A
-server started with `HINDSIGHT_API_DATABASE_URL=memory` is enough: without a
+notice, unless `WENYUAN_API_URL` is set, so `cargo test` stays offline. A
+server started with `WENYUAN_API_DATABASE_URL=memory` is enough: without a
 model provider the assertions are structural (an operation succeeded, an id
 round-tripped), never about extracted facts or synthesized prose.
 

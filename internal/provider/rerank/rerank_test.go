@@ -357,8 +357,8 @@ func TestUnsupportedMembersAreRefusedByName(t *testing.T) {
 			if !strings.Contains(err.Error(), "not supported by this build") {
 				t.Errorf("error %q does not say it is unsupported by this build", err)
 			}
-			if !strings.Contains(err.Error(), "HINDSIGHT_API_RERANKER_PROVIDER") {
-				t.Errorf("error %q does not name HINDSIGHT_API_RERANKER_PROVIDER", err)
+			if !strings.Contains(err.Error(), "WENYUAN_API_RERANKER_PROVIDER") {
+				t.Errorf("error %q does not name WENYUAN_API_RERANKER_PROVIDER", err)
 			}
 			if !strings.Contains(err.Error(), name) {
 				t.Errorf("error %q does not name the member %q", err, name)
@@ -376,37 +376,37 @@ func TestMissingCredentialAndEndpointErrorsNameTheirKeys(t *testing.T) {
 		{
 			name:    "siliconflow key",
 			member:  Member{Provider: "siliconflow"},
-			wantKey: "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
+			wantKey: "WENYUAN_API_RERANKER_SILICONFLOW_API_KEY",
 		},
 		{
 			name:    "zeroentropy key",
 			member:  Member{Provider: "zeroentropy"},
-			wantKey: "HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY",
+			wantKey: "WENYUAN_API_RERANKER_ZEROENTROPY_API_KEY",
 		},
 		{
 			name:    "openrouter key",
 			member:  Member{Provider: "openrouter"},
-			wantKey: "HINDSIGHT_API_RERANKER_OPENROUTER_API_KEY",
+			wantKey: "WENYUAN_API_RERANKER_OPENROUTER_API_KEY",
 		},
 		{
 			name:    "typesafe key",
 			member:  Member{Provider: "typesafe"},
-			wantKey: "HINDSIGHT_API_RERANKER_TYPESAFE_API_KEY",
+			wantKey: "WENYUAN_API_RERANKER_TYPESAFE_API_KEY",
 		},
 		{
 			name:    "cohere key",
 			member:  Member{Provider: "cohere"},
-			wantKey: "HINDSIGHT_API_RERANKER_COHERE_API_KEY",
+			wantKey: "WENYUAN_API_RERANKER_COHERE_API_KEY",
 		},
 		{
 			name:    "cohere base url",
 			member:  Member{Provider: "cohere", APIKey: "key"},
-			wantKey: "HINDSIGHT_API_RERANKER_COHERE_BASE_URL",
+			wantKey: "WENYUAN_API_RERANKER_COHERE_BASE_URL",
 		},
 		{
 			name:    "tei url",
 			member:  Member{Provider: "tei"},
-			wantKey: "HINDSIGHT_API_RERANKER_TEI_URL",
+			wantKey: "WENYUAN_API_RERANKER_TEI_URL",
 		},
 	}
 	for _, testCase := range cases {
@@ -431,7 +431,7 @@ func TestIndexedMemberErrorsNameIndexedKeys(t *testing.T) {
 	if err == nil {
 		t.Fatal("New succeeded, want a missing-key error for member 1")
 	}
-	if !strings.Contains(err.Error(), "HINDSIGHT_API_RERANKER_1_ZEROENTROPY_API_KEY") {
+	if !strings.Contains(err.Error(), "WENYUAN_API_RERANKER_1_ZEROENTROPY_API_KEY") {
 		t.Errorf("error %q does not name the indexed member's key", err)
 	}
 }

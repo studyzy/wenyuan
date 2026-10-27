@@ -2111,7 +2111,7 @@ export class ControlPlaneClient {
   /**
    * Upload files for retain (uses file conversion API)
    * Requires file_upload_api feature flag to be enabled
-   * Converter is configured server-side via HINDSIGHT_API_FILE_CONVERTER
+   * Converter is configured server-side via WENYUAN_API_FILE_CONVERTER
    */
   async uploadFiles(params: {
     bank_id: string;

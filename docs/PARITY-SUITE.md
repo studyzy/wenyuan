@@ -51,8 +51,8 @@ harness 最初在 `pytest_configure` 里替换启动函数，而上游的 `tests
 
 1. **构建必须带 `-tags pgx`**（story 用真实 PostgreSQL；默认构建没有数据库驱动，启动即退出）。
    运行脚本已改。
-2. **启动即失败**：套件环境设置了 `HINDSIGHT_API_RERANKER_*` 与
-   `HINDSIGHT_API_BANK_STATS_CACHE_TTL_SECONDS`，当时被“已解析但不支持 → 启动拒绝”拦下。
+2. **启动即失败**：套件环境设置了 `WENYUAN_API_RERANKER_*` 与
+   `WENYUAN_API_BANK_STATS_CACHE_TTL_SECONDS`，当时被“已解析但不支持 → 启动拒绝”拦下。
    前者是当时尚缺的独立 reranker provider 子系统（已实现），后者只是漏进参考键表（已修）。
 3. **PostgreSQL 标签算子类型错误**：`read observations: operator does not exist:
    character varying[] @> text[]`。参考 schema 的 tag 列是 `character varying[]`，而查询里
@@ -88,7 +88,7 @@ make parity PARITY_ARGS=tests/test_90_multilingual.py
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `HINDSIGHT_REPO` | 上游 checkout 路径 | `/code/hindsight` |
+| `REFERENCE_REPO` | 上游 checkout 路径 | `/code/hindsight` |
 | `PARITY_DB_URL` | 直接指定 `postgresql://` 数据库，跳过 pg0 解析 | 空（用 pg0 解析） |
 | `PG0_URL` | 需要解析的 pg0 URL | `pg0://hindsight-systest:15499` |
 | `PARITY_BIN` | 用已有二进制，跳过 `go build` | 空（现构建） |
@@ -102,10 +102,10 @@ make parity PARITY_ARGS=tests/test_90_multilingual.py
 `scripts/system_parity_plugin.py` 是一个 pytest 插件，在 fixture 运行前把
 `start_hindsight_server` 换成启动**本服务二进制**的那个，并做两处环境翻译：
 
-1. `HINDSIGHT_API_DATABASE_URL` 上游给的是 `pg0://<instance>:<port>`（它自带的嵌入式 PostgreSQL）。
+1. `WENYUAN_API_DATABASE_URL` 上游给的是 `pg0://<instance>:<port>`（它自带的嵌入式 PostgreSQL）。
    运行脚本先用上游自己的 `hindsight_api.pg0.resolve_database_url` 解析出真实的
    `postgresql://` URL，再交给本服务；两者因此共用一个数据库。
-2. 本服务自己跑迁移，所以补上 `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true`。
+2. 本服务自己跑迁移，所以补上 `WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true`。
 
 其余环境**原样透传**——这正是重点：本服务不认识的配置名是一条发现，而不是在这里抹平。
 

@@ -278,7 +278,7 @@ func TestGCS_AnonymousHasNoSignedURL(t *testing.T) {
 // operator has to set.
 func TestGCS_MissingBucketRefused(t *testing.T) {
 	_, err := NewGCS(GCSConfig{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET") {
+	if err == nil || !strings.Contains(err.Error(), "WENYUAN_API_FILE_STORAGE_GCS_BUCKET") {
 		t.Fatalf("err = %v", err)
 	}
 }

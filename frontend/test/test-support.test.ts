@@ -27,7 +27,7 @@ describe("test support helpers", () => {
   });
 
   it("applies and restores environment overrides", async () => {
-    const key = "HINDSIGHT_CP_ACCESS_KEY";
+    const key = "WENYUAN_CP_ACCESS_KEY";
     const before = process.env[key];
     await withEnv({ [key]: "secret" }, () => {
       expect(process.env[key]).toBe("secret");

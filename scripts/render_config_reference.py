@@ -14,7 +14,7 @@ Regenerate with:
     python3 scripts/render_config_reference.py
 
 A key is spelled in the files as its environment name lowercased without the
-HINDSIGHT_API_ prefix. Every template line is commented out, so copying either
+WENYUAN_API_ prefix. Every template line is commented out, so copying either
 template changes nothing until a line is uncommented.
 """
 
@@ -23,7 +23,7 @@ import pathlib
 import re
 import sys
 
-PREFIX = "HINDSIGHT_API_"
+PREFIX = "WENYUAN_API_"
 DEFAULT_INVENTORY = "/tmp/wenyuan_inventory.json"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -34,7 +34,7 @@ YAML_HEADER = """\
 # container image that is /etc/wenyuan.yaml); that file carries a deployment's
 # real values and is deliberately not checked in. Copy this example there and
 # uncomment what the deployment needs. Point the process elsewhere with
-# HINDSIGHT_API_CONFIG_FILE=/path/to/file.yaml, which must exist.
+# WENYUAN_API_CONFIG_FILE=/path/to/file.yaml, which must exist.
 #
 # Precedence, highest first:
 #
@@ -45,8 +45,8 @@ YAML_HEADER = """\
 #   4. this file
 #   5. the built-in defaults
 #
-# A key is the environment variable's name without the HINDSIGHT_API_ prefix:
-# HINDSIGHT_API_PORT is `port` here. A first word that carries several settings
+# A key is the environment variable's name without the WENYUAN_API_ prefix:
+# WENYUAN_API_PORT is `port` here. A first word that carries several settings
 # becomes a group — worker: {max_retries: 3} answers worker_max_retries — while
 # a single-setting name stays flat (access_log). Either spelling answers the
 # same key; if both appear with different values, startup names the
@@ -73,7 +73,7 @@ ENV_HEADER = """\
 # commented out, so copying the file changes nothing until you edit it.
 #
 # The same keys can be set in the YAML configuration file etc/wenyuan.yaml
-# (spelled lowercased without the HINDSIGHT_API_ prefix, behind the process
+# (spelled lowercased without the WENYUAN_API_ prefix, behind the process
 # environment). docs/CONFIGURATION.md is the generated reference: every key
 # with its reference default, and why a refused one is refused.
 
@@ -90,7 +90,7 @@ DOC_HEADER = """\
 # Configuration reference
 
 Every environment variable the resolver reads, the YAML configuration file
-spelling of the same key (lowercased, without the `HINDSIGHT_API_` prefix),
+spelling of the same key (lowercased, without the `WENYUAN_API_` prefix),
 the reference's recorded default, and the key's status in this build. The same
 surface ships as `etc/example.wenyuan.yaml` and `.env.example`, both fully
 commented out.

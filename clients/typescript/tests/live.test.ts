@@ -1,14 +1,14 @@
 /**
  * End-to-end tests against a running WenYuan server.
  *
- * The whole file is skipped unless `HINDSIGHT_API_URL` is set, so the default
+ * The whole file is skipped unless `WENYUAN_API_URL` is set, so the default
  * `npm test` run stays offline. Point it at a server started with
- * `HINDSIGHT_API_DATABASE_URL=memory` — no model provider — and the assertions
+ * `WENYUAN_API_DATABASE_URL=memory` — no model provider — and the assertions
  * stay structural: an operation succeeded, an id round-tripped, a list carries
  * what was written. Nothing here depends on extracted facts or synthesised
  * prose.
  *
- *   HINDSIGHT_API_URL=http://127.0.0.1:18888 npm test
+ *   WENYUAN_API_URL=http://127.0.0.1:18888 npm test
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { inflateRawSync } from "node:zlib";
@@ -25,7 +25,7 @@ import {
 } from "../src/index";
 import type { Client } from "../src/index";
 
-const API_URL = process.env.HINDSIGHT_API_URL;
+const API_URL = process.env.WENYUAN_API_URL;
 
 /** A live server needs real time: reflect may wait on a model call. */
 const TIMEOUT = 120_000;

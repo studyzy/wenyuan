@@ -2,7 +2,7 @@ package config
 
 import "strings"
 
-// File-storage backend names accepted by HINDSIGHT_API_FILE_STORAGE_TYPE.
+// File-storage backend names accepted by WENYUAN_API_FILE_STORAGE_TYPE.
 const (
 	// FileStoragePostgres keeps attachment payloads in the database, which is
 	// the default and needs no object store.

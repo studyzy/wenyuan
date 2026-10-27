@@ -17,14 +17,14 @@ import (
 // Configuration keys named in the errors these adapters return, so an operator
 // is told which key to set rather than which member refused.
 const (
-	keyProvider          = "HINDSIGHT_API_EMBEDDINGS_PROVIDER"
-	keyOpenAIAPIKey      = "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"
-	keyOpenRouterAPIKey  = "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"
-	keyRequestyAPIKey    = "HINDSIGHT_API_EMBEDDINGS_REQUESTY_API_KEY"
-	keyCohereAPIKey      = "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY"
-	keyZeroEntropyAPIKey = "HINDSIGHT_API_EMBEDDINGS_ZEROENTROPY_API_KEY"
-	keyGeminiAPIKey      = "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY"
-	keyTEIURL            = "HINDSIGHT_API_EMBEDDINGS_TEI_URL"
+	keyProvider          = "WENYUAN_API_EMBEDDINGS_PROVIDER"
+	keyOpenAIAPIKey      = "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY"
+	keyOpenRouterAPIKey  = "WENYUAN_API_EMBEDDINGS_OPENROUTER_API_KEY"
+	keyRequestyAPIKey    = "WENYUAN_API_EMBEDDINGS_REQUESTY_API_KEY"
+	keyCohereAPIKey      = "WENYUAN_API_EMBEDDINGS_COHERE_API_KEY"
+	keyZeroEntropyAPIKey = "WENYUAN_API_EMBEDDINGS_ZEROENTROPY_API_KEY"
+	keyGeminiAPIKey      = "WENYUAN_API_EMBEDDINGS_GEMINI_API_KEY"
+	keyTEIURL            = "WENYUAN_API_EMBEDDINGS_TEI_URL"
 )
 
 // DefaultTimeout bounds one embedding request when the configuration names no

@@ -11,7 +11,7 @@ describe("file download SSRF guard", () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await filesDownload.GET(
           makeRequest("http://localhost/api/files/download?path=/etc/passwd"),
         );
@@ -28,7 +28,7 @@ describe("file download SSRF guard", () => {
     const stub = stubFetch([{ status: 200, body: "binary", contentType: "application/octet-stream" }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await filesDownload.GET(
           makeRequest("http://localhost/api/files/download?path=/v1/default/files/download/a.txt"),
         );
@@ -70,7 +70,7 @@ describe("file retain takes the bank from the multipart request part", () => {
     const stub = stubFetch([{ status: 200, body: { retained: 1 } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await filesRetain.POST(
           makeRequest("http://localhost/api/files/retain", {
             method: "POST",
@@ -90,7 +90,7 @@ describe("file retain takes the bank from the multipart request part", () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await filesRetain.POST(
           makeRequest("http://localhost/api/files/retain", {
             method: "POST",
@@ -111,7 +111,7 @@ describe("file retain takes the bank from the multipart request part", () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await filesRetain.POST(
           makeRequest("http://localhost/api/files/retain", {
             method: "POST",

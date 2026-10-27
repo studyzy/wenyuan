@@ -64,8 +64,8 @@ func TestNewObjectStoreSelectsBackend(t *testing.T) {
 		{"s3", config.FileStorageConfig{Type: config.FileStorageS3, S3: config.S3Config{Bucket: "b"}}, ""},
 		{"gcs", config.FileStorageConfig{Type: config.FileStorageGCS, GCS: config.GCSConfig{Bucket: "b"}}, ""},
 		{"azure", config.FileStorageConfig{Type: config.FileStorageAzure, Azure: config.AzureConfig{Container: "c"}}, ""},
-		{"gcs without bucket", config.FileStorageConfig{Type: config.FileStorageGCS}, "HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET"},
-		{"azure without container", config.FileStorageConfig{Type: config.FileStorageAzure}, "HINDSIGHT_API_FILE_STORAGE_AZURE_CONTAINER"},
+		{"gcs without bucket", config.FileStorageConfig{Type: config.FileStorageGCS}, "WENYUAN_API_FILE_STORAGE_GCS_BUCKET"},
+		{"azure without container", config.FileStorageConfig{Type: config.FileStorageAzure}, "WENYUAN_API_FILE_STORAGE_AZURE_CONTAINER"},
 		{"unknown", config.FileStorageConfig{Type: "sftp"}, "sftp"},
 	}
 	for _, tc := range cases {
@@ -93,7 +93,7 @@ func TestAttachObjectStorePropagatesConstructionError(t *testing.T) {
 	pg := &storage.PostgresStore{}
 	cfg := config.Config{FileStorage: config.FileStorageConfig{Type: config.FileStorageGCS}}
 	got, err := attachObjectStore(pg, cfg)
-	if err == nil || !strings.Contains(err.Error(), "HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET") {
+	if err == nil || !strings.Contains(err.Error(), "WENYUAN_API_FILE_STORAGE_GCS_BUCKET") {
 		t.Fatalf("err = %v", err)
 	}
 	if got != nil {

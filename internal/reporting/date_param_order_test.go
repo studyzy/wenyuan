@@ -86,7 +86,7 @@ func TestDisabledLLMHealthOutranksMissingBank(t *testing.T) {
 	h.BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(method+" "+pattern, handler)
 	})
-	const want = "Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable."
+	const want = "Bank LLM health check is disabled. Set WENYUAN_API_ENABLE_BANK_LLM_HEALTH=true to enable."
 	for _, path := range []string{
 		"/v1/default/banks/no-such-bank/health/llm",
 		"/v1/default/banks/whatever/health/llm",

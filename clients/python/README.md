@@ -28,7 +28,7 @@ pip install clients/python
 
 | variable | meaning |
 | --- | --- |
-| `HINDSIGHT_API_URL` | Root URL of the server. Part of the deployment contract; read verbatim. Defaults to `http://localhost:18888` when unset. |
+| `WENYUAN_API_URL` | Root URL of the server. Part of the deployment contract; read verbatim. Defaults to `http://localhost:18888` when unset. |
 
 A trailing slash is tolerated. `api_key` is sent as a bearer token on every
 request.
@@ -37,7 +37,7 @@ request.
 
 | argument | default | meaning |
 | --- | --- | --- |
-| `base_url` | `HINDSIGHT_API_URL`, else `http://localhost:18888` | Server root. |
+| `base_url` | `WENYUAN_API_URL`, else `http://localhost:18888` | Server root. |
 | `api_key` | `None` | Bearer token sent with every request. |
 | `timeout` | `300.0` | Per-request timeout in seconds. |
 | `user_agent` | `None` | Extra product token placed in front of this client's own in `User-Agent`. |
@@ -48,7 +48,7 @@ request.
 ```python
 from wenyuan_client import WenYuan
 
-with WenYuan() as client:  # HINDSIGHT_API_URL, else http://localhost:18888
+with WenYuan() as client:  # WENYUAN_API_URL, else http://localhost:18888
     client.create_bank("ops", name="Operations")
 
     # retain: a plain string, or an ordered list of content blocks
@@ -380,7 +380,7 @@ cd clients/python
 python3 -m unittest discover -s tests -v
 ```
 
-The live suite in `tests/test_live.py` is gated on `HINDSIGHT_API_URL`: unset,
+The live suite in `tests/test_live.py` is gated on `WENYUAN_API_URL`: unset,
 those tests skip (so the command above stays green with no server); set, they
 run against a real service — bank lifecycle, retain then document/chunk reads, a
 tagged write selected back by its own tag and skipped by an unwritten one, an
@@ -391,10 +391,10 @@ transfer flows (whole-bank export then import of the archive, document export,
 and clone).
 
 ```
-HINDSIGHT_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests -v
+WENYUAN_API_URL=http://127.0.0.1:18888 python3 -m unittest discover -s tests -v
 ```
 
-A server started with `HINDSIGHT_API_DATABASE_URL=memory` is enough: with no
+A server started with `WENYUAN_API_DATABASE_URL=memory` is enough: with no
 model provider the assertions are structural, not about extracted facts or
 synthesised prose.
 

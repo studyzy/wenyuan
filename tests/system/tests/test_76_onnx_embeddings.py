@@ -1,7 +1,7 @@
 """Real ONNX embeddings across retain, background work, recall and replacement.
 
-Opt in with a local multilingual-e5-small snapshot via HINDSIGHT_TEST_ONNX_MODEL_DIR.
-Set HINDSIGHT_TEST_ONNX_CUDA=1 to also exercise CUDA. Explicit GPU runs fail when
+Opt in with a local multilingual-e5-small snapshot via WENYUAN_TEST_ONNX_MODEL_DIR.
+Set WENYUAN_TEST_ONNX_CUDA=1 to also exercise CUDA. Explicit GPU runs fail when
 unusable; they never silently skip a missing provider. Only the LLM/reranker are
 scripted through the existing HTTP stub; the tokenizer, ORT, DB and API are real.
 """
@@ -19,8 +19,8 @@ from hindsight_system_tests import start_hindsight_server, wait_until_settled
 from hindsight_system_tests.payloads import consolidation, extracted, fact
 from hindsight_system_tests.server import HindsightServer
 
-MODEL_DIR = os.environ.get("HINDSIGHT_TEST_ONNX_MODEL_DIR")
-DEVICES = ["cpu", "cuda"] if os.environ.get("HINDSIGHT_TEST_ONNX_CUDA") == "1" else ["cpu"]
+MODEL_DIR = os.environ.get("WENYUAN_TEST_ONNX_MODEL_DIR")
+DEVICES = ["cpu", "cuda"] if os.environ.get("WENYUAN_TEST_ONNX_CUDA") == "1" else ["cpu"]
 pytestmark = pytest.mark.skipif(not MODEL_DIR, reason="requires local E5 ONNX model; see CUDA ONNX recipe README")
 
 
@@ -32,13 +32,13 @@ def onnx_server(request, stub_server, tmp_path) -> Iterator[HindsightServer]:
         log_path=tmp_path / "onnx-server.log",
         extra_env={
             "UV_NO_SYNC": "1",
-            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH": str(root / "onnx/model.onnx"),
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_TOKENIZER_NAME_OR_PATH": str(root),
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE": request.param,
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_CUDA_DEVICE_ID": "0",
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_BATCH_SIZE": "2",
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS": "384",
+            "WENYUAN_API_EMBEDDINGS_PROVIDER": "onnx",
+            "WENYUAN_API_EMBEDDINGS_ONNX_MODEL_PATH": str(root / "onnx/model.onnx"),
+            "WENYUAN_API_EMBEDDINGS_ONNX_TOKENIZER_NAME_OR_PATH": str(root),
+            "WENYUAN_API_EMBEDDINGS_ONNX_DEVICE": request.param,
+            "WENYUAN_API_EMBEDDINGS_ONNX_CUDA_DEVICE_ID": "0",
+            "WENYUAN_API_EMBEDDINGS_ONNX_BATCH_SIZE": "2",
+            "WENYUAN_API_EMBEDDINGS_ONNX_DIMENSIONS": "384",
         },
     )
     try:

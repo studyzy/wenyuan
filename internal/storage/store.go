@@ -651,7 +651,7 @@ type BackendConfig struct {
 	ReadPoolMin int
 	ReadPoolMax int
 	// PGFunctionSchema and PGTokenizer configure the ParadeDB pg_search BM25
-	// backend (the reference's HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*):
+	// backend (the reference's WENYUAN_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*):
 	// the schema its score/match functions live in and the tokenizer its index
 	// is built with. They are read only when TextSearchExtension selects
 	// pg_search.
@@ -659,7 +659,7 @@ type BackendConfig struct {
 	PGTokenizer      string
 	// TextSearchNativeLanguage is the tsvector dictionary the native backend
 	// tokenizes with (the reference's
-	// HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE). It is embedded in the
+	// WENYUAN_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE). It is embedded in the
 	// stored search_vector expression and in every keyword query, so it is a
 	// deployment-level choice. Empty means the reference's default, "english".
 	TextSearchNativeLanguage string

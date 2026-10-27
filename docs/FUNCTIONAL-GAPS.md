@@ -132,7 +132,7 @@ existing memories"），所以"我方导入的 bank"与"上游长期积累的 li
 | 2 | `retain_extraction_mode` 空转 | **闭合**。`internal/extraction/options.go:18-20` 声明 concise/verbose/custom/verbatim/chunks 各自选提示词与响应 schema；verbatim 走 metadata-only 读取与折叠（`internal/extraction/extractor.go:208-335`）；bank 配置经 `memoryops/retain.go` 传入 `extraction.Options`；`modes_test.go` 钉住「verbose 与 concise 不得共用提示词」等 |
 | 3 | 多路 LLM 路由缺失 | **闭合**。`internal/provider/routing/`：failover / round-robin / metadata 三种模式（`routing.go`）+ smooth weighted round-robin（`swrr.go`），按策略选成员并逐成员重试/退避；embedding 明确委派 primary（`routing.go:125`）；不可达成员不阻断启动（`routing.go:135`），有 `routing_test.go` |
 | 4 | 知识库搜索是 ILIKE | **闭合**。`internal/storage/postgres_knowledge.go:269+`：`ts_rank_cd` 文本臂（`search_vector` = name + content）+ 向量臂，RRF 融合并归一到 [0,1]；无 embedding 的页只由文本臂命中 |
-| 5 | embedding 后端与宽度 | **闭合（余按名拒绝项）**。家族 accept：`openai/openrouter/requesty/litellm/cohere/tei/zeroentropy/gemini`（`internal/provider/embed/embed.go:77-82`）；refuse-by-name：`onnx/local/openai-codex/litellm-sdk/google`（同文件 `:84-92`）与 `HINDSIGHT_API_LLM_VERTEXAI`（`internal/config/provider_contract.go:375`）。宽度：`internal/provider/dimension.go` 声明 384，`internal/storage/embedding_dimension.go` 在迁移事务内按部署宽度对齐（相同即 no-op；已有向量而宽度不符则报错并点名两个宽度与行数；空表则丢索引→改列→按捕获定义重建） |
+| 5 | embedding 后端与宽度 | **闭合（余按名拒绝项）**。家族 accept：`openai/openrouter/requesty/litellm/cohere/tei/zeroentropy/gemini`（`internal/provider/embed/embed.go:77-82`）；refuse-by-name：`onnx/local/openai-codex/litellm-sdk/google`（同文件 `:84-92`）与 `WENYUAN_API_LLM_VERTEXAI`（`internal/config/provider_contract.go:375`）。宽度：`internal/provider/dimension.go` 声明 384，`internal/storage/embedding_dimension.go` 在迁移事务内按部署宽度对齐（相同即 no-op；已有向量而宽度不符则报错并点名两个宽度与行数；空表则丢索引→改列→按捕获定义重建） |
 
 ### 1.2 MED（8 项）
 
@@ -141,7 +141,7 @@ existing memories"），所以"我方导入的 bank"与"上游长期积累的 li
 | 文本检索（BM25 词项选择 / pg_search / statement_timeout 兜底） | **闭合**：`internal/storage/bm25_terms.go`（词项选择，`BM25_MAX_QUERY_TERMS`）、`postgres_bm25_pgsearch.go`（ParadeDB `paradedb.score` + tokenizer 白名单）、`session.go`（`DB_STATEMENT_TIMEOUT` 走连接参数） |
 | tokenizer 词表硬编码 `cl100k_base` | **闭合**：`internal/storage/tokens.go` 默认 `o200k_base`，`cl100k_base` 仍可选 |
 | 文件解析链 | **闭合**：`internal/fileparse/`（PDF/DOCX/XLSX/PPTX/HTML/CSV/JSON/文本 + 内嵌图转写），远程 parser `remote.go`（llama_parse/iris） |
-| 对象存储 GCS/Azure 与预签名下载 | **闭合**：`internal/objectstore/{backend,gcs,azure,s3,s3_presign,signing}.go`，由 `HINDSIGHT_API_FILE_STORAGE_TYPE` 选后端 |
+| 对象存储 GCS/Azure 与预签名下载 | **闭合**：`internal/objectstore/{backend,gcs,azure,s3,s3_presign,signing}.go`，由 `WENYUAN_API_FILE_STORAGE_TYPE` 选后端 |
 | 中文/英文时间解析（原写「缺中文数词」） | **闭合**：`internal/memoryops/query_time.go:170-237`（数词、上/中/下旬与月初月底、半、模糊「前几天」、假阳性守卫） |
 | 实体解析（原写「缺批内归并」） | **闭合**：`ENTITY_INTRABATCH_MERGE_SIMILARITY` → `internal/storage/{postgres_retain,retain_contents}.go` |
 | 巩固设置空转 | **闭合**：`internal/consolidation/settings.go`（mission / strategies / 预算 / 批次 / 并行度） |
@@ -173,12 +173,12 @@ DB 池等待计数与慢获取告警（`internal/storage/driver_pgx.go:99`、`po
 | # | 缺口 | 影响 | 状态 |
 |---|---|---|---|
 | 1 | 默认绑定与端口 | 容器端口映射、健康检查、客户端默认 URL | **已闭合**：默认 `0.0.0.0:18888`（`internal/config/config.go` `DefaultHost`/`DefaultPort`；端口为**有意分歧**——上游 8888 加 10000 偏移，使 wenyuan 与上游可并行启动对比，env 名与其余默认值不变） |
-| 2 | 未配置数据库时上游用内嵌 PG（持久），此处退化为内存后端 | 重启即丢数据 | **有意分歧**：此处**拒绝启动**并点名 `HINDSIGHT_API_DATABASE_URL`，或显式设 `memory` 才用内存后端（比"静默丢失"更安全，已写入 `reference.go` 的 `Divergent`） |
-| 3 | `--workers N` / `HINDSIGHT_API_WORKERS` 被解析后从未使用 | 请求 N 个 worker 只得到 1 个 | **已闭合**：`internal/app/process.go` 的 `Supervise`——父进程绑定一次监听 socket，通过 `ExtraFiles` 继承给 N 个子进程（与 uvicorn 的 supervisor/worker 同构：`ss` 中 N+1 个进程共享同一 socket inode），子进程 `HINDSIGHT_API_WORKERS=N`；任一 worker 退出即停掉整组；`SIGTERM` 向整组转发（实测 4 个进程共享 inode `210875770`，`kill -TERM` 后全部退出） |
-| 4 | `--daemon` 除改默认 host 外无行为 | 期望后台化的启动器仍被阻塞 | **已闭合**：`app.Daemonize` 复刻上游语义——先在前台父进程做端口预检（占用则报 `cannot bind host:port` 并以 1 退出），剥离 `--daemon` 后 `setsid` 重执行子进程，stdio 追加到 `HINDSIGHT_API_DAEMON_LOG`（默认 `~/.hindsight/daemon.log`），父进程 exit 0；daemon 的 host 默认 `127.0.0.1`（除非显式配置），port 默认 `18888`（**忽略** `HINDSIGHT_API_PORT` 的机制与上游 `resolve_daemon_host_port` 一致；数值为上述有意偏移） |
+| 2 | 未配置数据库时上游用内嵌 PG（持久），此处退化为内存后端 | 重启即丢数据 | **有意分歧**：此处**拒绝启动**并点名 `WENYUAN_API_DATABASE_URL`，或显式设 `memory` 才用内存后端（比"静默丢失"更安全，已写入 `reference.go` 的 `Divergent`） |
+| 3 | `--workers N` / `WENYUAN_API_WORKERS` 被解析后从未使用 | 请求 N 个 worker 只得到 1 个 | **已闭合**：`internal/app/process.go` 的 `Supervise`——父进程绑定一次监听 socket，通过 `ExtraFiles` 继承给 N 个子进程（与 uvicorn 的 supervisor/worker 同构：`ss` 中 N+1 个进程共享同一 socket inode），子进程 `WENYUAN_API_WORKERS=N`；任一 worker 退出即停掉整组；`SIGTERM` 向整组转发（实测 4 个进程共享 inode `210875770`，`kill -TERM` 后全部退出） |
+| 4 | `--daemon` 除改默认 host 外无行为 | 期望后台化的启动器仍被阻塞 | **已闭合**：`app.Daemonize` 复刻上游语义——先在前台父进程做端口预检（占用则报 `cannot bind host:port` 并以 1 退出），剥离 `--daemon` 后 `setsid` 重执行子进程，stdio 追加到 `WENYUAN_API_DAEMON_LOG`（默认 `~/.hindsight/daemon.log`），父进程 exit 0；daemon 的 host 默认 `127.0.0.1`（除非显式配置），port 默认 `18888`（**忽略** `WENYUAN_API_PORT` 的机制与上游 `resolve_daemon_host_port` 一致；数值为上述有意偏移） |
 | 5 | 备份/恢复格式 | 上游 `.zip` 能否恢复进来 | **本轮未复核**（见 2.4） |
 | 6 | `--access-log` 空转 | 无访问日志 | **已闭合**：`internal/httpx/accesslog.go` 出货时即已接线；本轮补 `--no-access-log`（与 `--access-log` 共用目标、后出现的赢，同上游 argparse 语义） |
-| 7 | 无 `HINDSIGHT_API_LOG_FORMAT=json` | JSON 采集管道失效 | **已闭合**：`monitoring.NewLogHandler` 按 `cfg.JSONLogs()` 切换（`internal/config/config.go:JSONLogs`） |
+| 7 | 无 `WENYUAN_API_LOG_FORMAT=json` | JSON 采集管道失效 | **已闭合**：`monitoring.NewLogHandler` 按 `cfg.JSONLogs()` 切换（`internal/config/config.go:JSONLogs`） |
 
 ### 2.1 CLI 旗标面（本轮补齐）
 
@@ -217,7 +217,7 @@ not defined`）。现在 13 个全部接受，语义对齐上游：
 | 巩固 | `OBSERVATIONS_MISSION` / `MAX_OBSERVATIONS_PER_SCOPE` / `OBSERVATION_SCOPE_LIMITS` / `CONSOLIDATION_STRATEGIES` / `CONSOLIDATION_MAX_MEMORIES_PER_ROUND` / `CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS[_PER_OBSERVATION]` / `CONSOLIDATION_LLM_BATCH_SIZE` / `CONSOLIDATION_LLM_PARALLELISM` | 银行配置 → `consolidation/settings.go` |
 | 反思 | `REFLECT_MISSION` / `REFLECT_SOURCE_FACTS_MAX_TOKENS` | 银行配置 → reflect 画像 |
 | 心智模型 | `MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS` | 银行配置 |
-| 进程/进程形状 | `HINDSIGHT_API_WORKERS` / `HINDSIGHT_API_DAEMON_LOG` | `internal/app/process.go` |
+| 进程/进程形状 | `WENYUAN_API_WORKERS` / `WENYUAN_API_DAEMON_LOG` | `internal/app/process.go` |
 | 写入 dry-run 开关 | `ENABLE_DRY_RUN_EXTRACT` | `reporting/memory_routes.go`：关闭时按上游返回 404 与同一句话（路由照旧注册） |
 | worker 槽位保留 | `WORKER_*_RESERVED_SLOTS`（10 键） | `config/worker.go` 的 `ReservedSlots` → `worker/consumer.go` 的 `preferredTypes`（每键对应同名操作类型） |
 | 事件循环看门狗 | `LOOP_WATCHDOG_ENABLED` / `_STALL_THRESHOLD_MS` / `_POLL_INTERVAL_MS` | `monitoring/looplag.go` 探针：默认开启（250ms 轮询、1000ms 阈值，与上游一致）；`LOOP_LAG_REPORT_SECONDS` 设置时仍可覆盖采样间隔 |
@@ -265,13 +265,13 @@ CONSOLIDATION_LLM_BATCH_SIZE=16` 启动后，`GET /v1/default/banks/<id>/config`
 ## 3. 扩展体系（来自扩展面复核）
 
 **2026-10-16 收口：按上游的 6 个插槽逐项判定。** 上游的加载器把
-`HINDSIGHT_API_<PREFIX>_EXTENSION=<module:Class>` 当作类路径导入，并按 `HINDSIGHT_API_<PREFIX>_*`
+`WENYUAN_API_<PREFIX>_EXTENSION=<module:Class>` 当作类路径导入，并按 `WENYUAN_API_<PREFIX>_*`
 收集该扩展的配置键（`extensions/loader.py` 的 `EXTENSION_KINDS`：`TENANT`、`MEMORIES`、
 `OPERATION_VALIDATOR`、`MEMORY_DEFENSE`、`HTTP`、`MCP`）。
 
 | 插槽 | 现状 | 证据 |
 |---|---|---|
-| `TENANT` | 接受键，只认内置类路径，其余取值启动即拒 | `internal/config/config.go:170`（键）、`:1329` `ResolveTenantAuth`（只放行 `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension`，需 `HINDSIGHT_API_TENANT_API_KEY`） |
+| `TENANT` | 接受键，只认内置类路径，其余取值启动即拒 | `internal/config/config.go:170`（键）、`:1329` `ResolveTenantAuth`（只放行 `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension`，需 `WENYUAN_API_TENANT_API_KEY`） |
 | `OPERATION_VALIDATOR` | 接受键，按类名匹配原生实现，其余按名拒绝 | `internal/app/validation.go`（只放行 `UserTagScope`，即上游系统套件配置的 tag-scope 校验器）；接口 `httpx.OperationValidator`（`ValidateOperation` + `ResolveTagScope`），闸门在 body 解析之前（`internal/httpx/operation.go:15`），门住 retain(memories+file_retain)/recall/reflect，外加所有 bank 写路径（`BankWriteGate`，`bankscope.go`）与读侧 tag scope 解析；上游那种带体积提示的 `precheck` 钩子无对应 |
 | `MEMORY_DEFENSE` | 语义原生实现，但由 bank/tenant **配置**驱动而非类插槽 | `internal/memoryops/retain_defense.go`（`DefensePolicy`/`PolicyRule`/`ParseDefensePolicy`/`screenContent`/`applyRedaction`，与上游同名 API 同义），配置校验在 `internal/bankapi/config_keys.go:195`，动作进审计（`audit.ActionMemoryDefense`） |
 | `HTTP` | 编译期注册：`httpx.ExtensionHost.Register` + `MountExtensions` 挂到固定前缀，无 env 类路径 | `internal/httpx/extension.go:84-249` |
@@ -280,7 +280,7 @@ CONSOLIDATION_LLM_BATCH_SIZE=16` 启动后，`GET /v1/default/banks/<id>/config`
 | bank 级扩展表 + 扩展自带的迁移版本 | 无 | 上游 `extensions/bank_tables.py` 与 `collect_alembic_version_locations` 无对应；`internal/transfer/` 只迁移参考自己的表 |
 
 另有开关与透传头两个横切断面已实现：`EnableFeature`/`FeatureEnabled`（功能标志）与
-`HINDSIGHT_API_EXTENSION_PASSTHROUGH_HEADERS` 允许列表（`internal/httpx/extension.go`、
+`WENYUAN_API_EXTENSION_PASSTHROUGH_HEADERS` 允许列表（`internal/httpx/extension.go`、
 `internal/config/reference.go:83`）。
 
 **结构性限制**：Go 二进制无法 `import` 一个 Python 类。可复刻的是**契约**（同名环境变量、

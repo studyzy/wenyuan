@@ -18,7 +18,7 @@ import (
 const (
 	// BaseURLEnvVar names the environment variable the default constructor
 	// reads the server base URL from.
-	BaseURLEnvVar = "HINDSIGHT_API_URL"
+	BaseURLEnvVar = "WENYUAN_API_URL"
 
 	// DefaultBaseURL is used when BaseURLEnvVar is unset.
 	DefaultBaseURL = "http://localhost:18888"

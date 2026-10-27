@@ -209,7 +209,7 @@ func (e *ClassifiedError) appendSections(b *strings.Builder) {
 		tries(b, "Check if the API server is healthy", "Try again with a better network connection")
 	case KindDNS:
 		causes(b, "The hostname in the API URL is incorrect", "DNS server is not responding")
-		tries(b, "Check the HINDSIGHT_API_URL environment variable")
+		tries(b, "Check the WENYUAN_API_URL environment variable")
 	case KindNotFound:
 		e.appendNotFound(b)
 	case KindAuth:
@@ -231,13 +231,13 @@ func (e *ClassifiedError) appendSections(b *strings.Builder) {
 	case KindInvalidURL:
 		b.WriteString("\nThe API URL format is invalid.\n")
 		b.WriteString("Ensure it starts with http:// or https://\n")
-		block(b, "Example:", "export HINDSIGHT_API_URL=http://localhost:18888")
+		block(b, "Example:", "export WENYUAN_API_URL=http://localhost:18888")
 	case KindDecode:
 		e.appendDecode(b)
 	default:
 		block(b, "Error:", e.text)
 		tries(b,
-			"Check that HINDSIGHT_API_URL is set correctly",
+			"Check that WENYUAN_API_URL is set correctly",
 			"Ensure the API server is running",
 			"Verify network connectivity to the API server")
 	}
@@ -246,7 +246,7 @@ func (e *ClassifiedError) appendSections(b *strings.Builder) {
 func (e *ClassifiedError) appendNotFound(b *strings.Builder) {
 	if strings.Contains(e.text, "Bank configuration API is disabled") {
 		b.WriteString("\nThis feature has been disabled on the server.\n")
-		b.WriteString("To enable, set HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true on the API server\n")
+		b.WriteString("To enable, set WENYUAN_API_ENABLE_BANK_CONFIG_API=true on the API server\n")
 		block(b, "Note:", "This allows per-bank LLM configuration overrides via API")
 		return
 	}

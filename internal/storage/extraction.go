@@ -168,7 +168,7 @@ func extractForItems(ctx context.Context, req RetainRequest, extractCausalLinks 
 		facts, err := extractItemFacts(ctx, req.Extraction, item, req, extractCausalLinks)
 		if err != nil {
 			// A failed extraction fails the write. The reference's
-			// HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API*
+			// WENYUAN_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API*
 			// extraction errors, where a single request cannot be re-asked; this
 			// build has no batch path, and the streaming path it does have
 			// surfaces the failure here so the operation records it.

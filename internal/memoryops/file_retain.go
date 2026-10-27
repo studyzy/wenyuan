@@ -183,7 +183,7 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
 	if h.FileUploadDisabled {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
-			"File upload API is disabled. Set HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true to enable."))
+			"File upload API is disabled. Set WENYUAN_API_ENABLE_FILE_UPLOAD_API=true to enable."))
 		return
 	}
 	// A body that is not multipart cannot carry the two required parts, which
@@ -502,7 +502,7 @@ func (h *Handlers) itemFromUpload(r *http.Request, bankID, documentID string, he
 
 	key := storage.AttachmentStorageKey(bankID, documentID, hash)
 	// The reference deletes the original file from file storage once it has been
-	// converted and retained (HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN), keeping
+	// converted and retained (WENYUAN_API_FILE_DELETE_AFTER_RETAIN), keeping
 	// only the retained text; with the setting on this build never writes the
 	// bytes in the first place, which reaches the same state without a
 	// store-then-delete round trip. An image's bytes are its content, so they

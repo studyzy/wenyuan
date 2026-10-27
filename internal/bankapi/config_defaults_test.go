@@ -15,13 +15,13 @@ import (
 // and a key they did not set must stay at the reference's shipped default.
 func TestPublicConfigDefaultsResolveProcessKeys(t *testing.T) {
 	values := map[string]string{
-		"HINDSIGHT_API_RETAIN_CHUNK_SIZE":                     "1500",
-		"HINDSIGHT_API_OBSERVATIONS_MISSION":                  "Track decisions",
-		"HINDSIGHT_API_ENABLE_GRAPH_RETRIEVAL":                "false",
-		"HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE":          "16",
-		"HINDSIGHT_API_MAX_OBSERVATIONS_PER_SCOPE":            "7",
-		"HINDSIGHT_API_REFLECT_MISSION":                       "Be precise",
-		"HINDSIGHT_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS": "2048",
+		"WENYUAN_API_RETAIN_CHUNK_SIZE":                     "1500",
+		"WENYUAN_API_OBSERVATIONS_MISSION":                  "Track decisions",
+		"WENYUAN_API_ENABLE_GRAPH_RETRIEVAL":                "false",
+		"WENYUAN_API_CONSOLIDATION_LLM_BATCH_SIZE":          "16",
+		"WENYUAN_API_MAX_OBSERVATIONS_PER_SCOPE":            "7",
+		"WENYUAN_API_REFLECT_MISSION":                       "Be precise",
+		"WENYUAN_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS": "2048",
 	}
 	cfg := config.FromEnv(func(key string) (string, bool) {
 		value, ok := values[key]
@@ -79,7 +79,7 @@ func TestConfigReadUsesProcessDefaults(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 	cfg := config.FromEnv(func(key string) (string, bool) {
-		if key == "HINDSIGHT_API_RETAIN_CHUNK_SIZE" {
+		if key == "WENYUAN_API_RETAIN_CHUNK_SIZE" {
 			return "1500", true
 		}
 		return "", false
@@ -110,9 +110,9 @@ func TestListRowReportsResolvedDispositionAndMission(t *testing.T) {
 	mustCreate(t, store, storage.Bank{BankID: "b1", Name: "One"})
 	cfg := config.FromEnv(func(key string) (string, bool) {
 		switch key {
-		case "HINDSIGHT_API_DISPOSITION_SKEPTICISM":
+		case "WENYUAN_API_DISPOSITION_SKEPTICISM":
 			return "5", true
-		case "HINDSIGHT_API_REFLECT_MISSION":
+		case "WENYUAN_API_REFLECT_MISSION":
 			return "Be careful", true
 		}
 		return "", false
@@ -157,7 +157,7 @@ func TestListRowPrefersTheBanksOwnConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.FromEnv(func(key string) (string, bool) {
-		if key == "HINDSIGHT_API_DISPOSITION_SKEPTICISM" {
+		if key == "WENYUAN_API_DISPOSITION_SKEPTICISM" {
 			return "5", true
 		}
 		return "", false
@@ -227,11 +227,11 @@ func TestProfileResponseOverlaysConfigDispositionAndMission(t *testing.T) {
 // stores after json.loads.
 func TestPublicConfigDefaultsParseJSONProcessKeys(t *testing.T) {
 	values := map[string]string{
-		"HINDSIGHT_API_MCP_ENABLED_TOOLS":              "recall, retain ,",
-		"HINDSIGHT_API_OBSERVATION_SCOPE_LIMITS":       `[{"scope":"shared","limit":5}]`,
-		"HINDSIGHT_API_CONSOLIDATION_STRATEGIES":       `[{"name":"s1"}]`,
-		"HINDSIGHT_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER": `{"min_facts":3}`,
-		"HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS":     `[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_NONE"}]`,
+		"WENYUAN_API_MCP_ENABLED_TOOLS":              "recall, retain ,",
+		"WENYUAN_API_OBSERVATION_SCOPE_LIMITS":       `[{"scope":"shared","limit":5}]`,
+		"WENYUAN_API_CONSOLIDATION_STRATEGIES":       `[{"name":"s1"}]`,
+		"WENYUAN_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER": `{"min_facts":3}`,
+		"WENYUAN_API_LLM_GEMINI_SAFETY_SETTINGS":     `[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_NONE"}]`,
 	}
 	cfg := config.FromEnv(func(key string) (string, bool) {
 		value, ok := values[key]

@@ -30,7 +30,7 @@ func (h *Handlers) GetBankConfig(w http.ResponseWriter, r *http.Request) {
 
 // configAPIDisabledDetail is the reference's body for a config write while the
 // enable flag is off.
-const configAPIDisabledDetail = "Bank configuration API is disabled. Set HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true to re-enable."
+const configAPIDisabledDetail = "Bank configuration API is disabled. Set WENYUAN_API_ENABLE_BANK_CONFIG_API=true to re-enable."
 
 // UpdateBankConfig serves the configuration write route, gated by the bank
 // configuration feature flag. The retired-route messages direct clients here.

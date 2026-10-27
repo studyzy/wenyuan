@@ -143,7 +143,7 @@ func TestRouteInventoryIsMounted(t *testing.T) {
 }
 
 // ts-0017 / neg-0002: the configuration read is always available while the
-// write is gated by HINDSIGHT_API_ENABLE_BANK_CONFIG_API.
+// write is gated by WENYUAN_API_ENABLE_BANK_CONFIG_API.
 func TestBankConfigGateAtCompositionRoot(t *testing.T) {
 	cfg := testConfig()
 	cfg.EnableBankConfigAPI = false

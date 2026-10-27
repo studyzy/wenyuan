@@ -594,7 +594,7 @@ export const getAgentStats = <ThrowOnError extends boolean = false>(
 /**
  * Test the bank's LLM connectivity
  *
- * Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.
+ * Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with WENYUAN_API_ENABLE_BANK_LLM_HEALTH=false.
  */
 export const testBankLlm = <ThrowOnError extends boolean = false>(
   options: Options<TestBankLlmData, ThrowOnError>,
@@ -1790,7 +1790,7 @@ export const resetBankConfig = <ThrowOnError extends boolean = false>(
 /**
  * Get bank configuration
  *
- * Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: HINDSIGHT_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
+ * Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: WENYUAN_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
  */
 export const getBankConfig = <ThrowOnError extends boolean = false>(
   options: Options<GetBankConfigData, ThrowOnError>,
@@ -1804,7 +1804,7 @@ export const getBankConfig = <ThrowOnError extends boolean = false>(
 /**
  * Update bank configuration
  *
- * Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE).
+ * Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE).
  */
 export const updateBankConfig = <ThrowOnError extends boolean = false>(
   options: Options<UpdateBankConfigData, ThrowOnError>,
@@ -2018,7 +2018,7 @@ export const retainMemories = <ThrowOnError extends boolean = false>(
  * - Set `parser` in the request body to override the server default for all files.
  * - Set `parser` inside a `files_metadata` entry for per-file control.
  * - Pass a list (e.g. `['iris', 'markitdown']`) to define an ordered fallback chain — each parser is tried in sequence until one succeeds.
- * - Falls back to the server default (`HINDSIGHT_API_FILE_PARSER`) if not specified.
+ * - Falls back to the server default (`WENYUAN_API_FILE_PARSER`) if not specified.
  * - Only parsers enabled on the server may be requested; others return HTTP 400.
  */
 export const fileRetain = <ThrowOnError extends boolean = false>(
@@ -2069,7 +2069,7 @@ export const auditLogStats = <ThrowOnError extends boolean = false>(
 /**
  * List LLM request traces
  *
- * List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED).
+ * List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (WENYUAN_API_LLM_TRACE_ENABLED).
  */
 export const listLlmRequests = <ThrowOnError extends boolean = false>(
   options: Options<ListLlmRequestsData, ThrowOnError>,

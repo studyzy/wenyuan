@@ -16,7 +16,7 @@ import (
 )
 
 // ProfileEmitter logs a periodic CPU report, the diagnostic the reference emits
-// to its log stream under HINDSIGHT_API_PROFILE.
+// to its log stream under WENYUAN_API_PROFILE.
 //
 // The reference's report is a cProfile table: per-thread CPU read from /proc,
 // and the functions the process spent its time in. The per-thread table carries

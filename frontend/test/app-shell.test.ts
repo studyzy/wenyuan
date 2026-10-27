@@ -51,7 +51,7 @@ describe("application shell", () => {
 
   it("declares the startup instrumentation entrypoint", () => {
     const source = read("instrumentation.ts");
-    expect(source).toContain("HINDSIGHT_CP_DATAPLANE_API_URL");
+    expect(source).toContain("WENYUAN_CP_DATAPLANE_API_URL");
     expect(source).toContain("register");
   });
 });

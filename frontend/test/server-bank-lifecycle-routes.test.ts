@@ -13,7 +13,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
 });
 
 function ctx(bankId: string) {
@@ -61,7 +61,7 @@ describe("clone requires a string target-bank-id", () => {
   it("forwards the target and only the caller-set scope flags on the query string, returning 202 on acceptance", async () => {
     const stub = stubFetch([{ status: 202, body: { status: "accepted" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await clone.POST(
         makeRequest("http://localhost/api/banks/acme/clone", {
           method: "POST",
@@ -81,7 +81,7 @@ describe("lifecycle routes proxy at their catalogued paths", () => {
   it("consolidate posts to the bank path with the encoded id", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await consolidate.POST(makeRequest("http://localhost/api/banks/a%2Fb/consolidate", { method: "POST", body: "{}" }), ctx("a/b"));
       expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/a%2Fb/consolidate");
     });
@@ -90,7 +90,7 @@ describe("lifecycle routes proxy at their catalogued paths", () => {
   it("export gets the bank export path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await bankExport.GET(makeRequest("http://localhost/api/banks/acme/export"), ctx("acme"));
       expect(stub.calls[0]).toBe("http://upstream.local/v1/default/banks/acme/export");
     });
@@ -99,7 +99,7 @@ describe("lifecycle routes proxy at their catalogued paths", () => {
   it("import forwards the dry-run query flag", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await bankImport.POST(
         makeRequest("http://localhost/api/banks/acme/import?dry_run=true", { method: "POST", body: "{}" }),
         ctx("acme"),
@@ -154,7 +154,7 @@ describe("lifecycle success statuses follow the contract", () => {
     ] as const) {
       const stub = stubFetch([{ status: 201, body: { ok: true } }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await call();
         expect(response.status, `${label} should report its own success status`).toBe(200);
       });
@@ -173,7 +173,7 @@ describe("boolean query flags are strict", () => {
     ] as const) {
       const stub = stubFetch([{ status: 200, body: {} }]);
       restore = stub.restore;
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const url = `http://localhost/api/banks/acme/import${query ? `?${query}` : ""}`;
         await bankImport.POST(makeRequest(url, { method: "POST", body: "{}" }), ctx("acme"));
         const called = stub.calls[0] ?? "";
@@ -185,7 +185,7 @@ describe("boolean query flags are strict", () => {
   it("sets export section flags only when each raw value is exactly true", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await bankExport.GET(
         makeRequest(
           "http://localhost/api/banks/acme/export?include_observations=true&exclude_parents=yes&include_knowledge_base=true",
@@ -204,7 +204,7 @@ describe("lifecycle failures use the localized envelope", () => {
   it("maps an upstream failure to its status with the localized error and no internal key", async () => {
     const stub = stubFetch([{ status: 503, body: { detail: "upstream down" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await bankExport.GET(
         makeRequest("http://localhost/api/banks/acme/export", { acceptLanguage: "en" }),
         ctx("acme"),
@@ -221,7 +221,7 @@ describe("lifecycle failures use the localized envelope", () => {
   it("localizes a consolidate failure into the requested locale", async () => {
     const stub = stubFetch([{ status: 500, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await consolidate.POST(
         makeRequest("http://localhost/api/banks/acme/consolidate", {
           method: "POST",

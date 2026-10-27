@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "未選擇記憶庫",
     "apiDisabledTitle": "記憶庫設定 API 未啟用",
-    "apiDisabledDescription": "在伺服器上設定 <code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code> 以啟用逐庫設定。",
+    "apiDisabledDescription": "在伺服器上設定 <code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code> 以啟用逐庫設定。",
     "resetToInherited": "重設為繼承值",
     "failedToReset": "重設失敗",
     "overrideBadge": "記憶庫層級覆寫",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "向目前記憶庫新增文件",
     "templateManifestHelp": "貼上範本清單 JSON，以使用設定、心智模型和指令預先設定記憶庫。",
     "fileUploadDisabledMessage": "此伺服器未啟用檔案上傳。",
-    "fileUploadEnableHint": "要啟用，請設定 <code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code>",
+    "fileUploadEnableHint": "要啟用，請設定 <code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code>",
     "fileTagsHelp": "逗號分隔 — 用於在 recall/reflect 期間篩選記憶",
     "strategyHelpText": "為此文件覆寫記憶庫的預設擷取策略。",
     "observationScopePerTag": "按標籤",

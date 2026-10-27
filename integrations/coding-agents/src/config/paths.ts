@@ -15,7 +15,7 @@ export const USAGE_LOG_FILE_NAME = "usage.jsonl";
  * relocate the stored configuration file, so every read and every write
  * honors it.
  */
-export const CONFIG_RELOCATION_ENV = "HINDSIGHT_CONFIG";
+export const CONFIG_RELOCATION_ENV = "WENYUAN_CONFIG";
 
 export function homeDirectory(): string {
   const fromEnvironment: string | undefined =

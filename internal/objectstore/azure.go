@@ -55,7 +55,7 @@ func NewAzure(cfg AzureConfig, doer *http.Client) (*Azure, error) {
 	}
 	store := &Azure{cfg: cfg, http: doer, now: time.Now}
 	if strings.TrimSpace(cfg.Container) == "" {
-		return nil, errors.New("HINDSIGHT_API_FILE_STORAGE_AZURE_CONTAINER is required for Azure storage")
+		return nil, errors.New("WENYUAN_API_FILE_STORAGE_AZURE_CONTAINER is required for Azure storage")
 	}
 	if raw := strings.TrimSpace(cfg.AccountKey); raw != "" {
 		decoded, err := base64.StdEncoding.DecodeString(raw)

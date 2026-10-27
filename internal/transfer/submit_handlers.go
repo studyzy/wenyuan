@@ -58,11 +58,11 @@ func (h *Handlers) rejectUploadError(w http.ResponseWriter, r *http.Request, err
 // The disabled-route details, one per gated route, naming the environment flag
 // that turns the route back on.
 const (
-	detailDisabledDocumentExport = "Document export API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API=true to enable."
-	detailDisabledBankExport     = "Bank export API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API=true to enable."
-	detailDisabledDocumentImport = "Document import API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API=true to enable."
-	detailDisabledBankImport     = "Bank import API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API=true to enable."
-	detailDisabledClone          = "Bank clone API is disabled. It requires both HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API and HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API."
+	detailDisabledDocumentExport = "Document export API is disabled. Set WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API=true to enable."
+	detailDisabledBankExport     = "Bank export API is disabled. Set WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API=true to enable."
+	detailDisabledDocumentImport = "Document import API is disabled. Set WENYUAN_API_ENABLE_DOCUMENT_IMPORT_API=true to enable."
+	detailDisabledBankImport     = "Bank import API is disabled. Set WENYUAN_API_ENABLE_DOCUMENT_IMPORT_API=true to enable."
+	detailDisabledClone          = "Bank clone API is disabled. It requires both WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API and WENYUAN_API_ENABLE_DOCUMENT_IMPORT_API."
 )
 
 // writeValidationFailure reports a request-validation failure (the reference's

@@ -44,9 +44,9 @@ func TestMetricsContentTypeAndBody(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"hindsight_http_requests_total",
-		"hindsight_http_requests_in_progress_requests",
-		"hindsight_http_duration_seconds",
+		"wenyuan_http_requests_total",
+		"wenyuan_http_requests_in_progress_requests",
+		"wenyuan_http_duration_seconds",
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("family %q emitted with no sample:\n%s", unwanted, body)
@@ -70,7 +70,7 @@ func TestMetricsScopeLabelsAndInProgressName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, httpx.PathMetrics, nil))
 	body := rec.Body.String()
-	want := `hindsight_http_requests_in_progress_requests{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`
+	want := `wenyuan_http_requests_in_progress_requests{endpoint="/v1/x",method="GET",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("in-progress series missing:\n%s", body)
 	}
@@ -83,11 +83,11 @@ func TestMetricsRendersRequestSeries(t *testing.T) {
 	recorder.Observe(http.MethodGet, "/v1/default/banks/{bank_id}", http.StatusOK, 0)
 	rec := serveMetrics(&MetricsHandler{Recorder: recorder})
 	body := rec.Body.String()
-	want := `hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`
+	want := `wenyuan_http_requests_total{endpoint="/v1/default/banks/{bank_id}",method="GET",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("request total series missing:\n%s", body)
 	}
-	if !strings.Contains(body, "hindsight_http_duration_seconds_count{") {
+	if !strings.Contains(body, "wenyuan_http_duration_seconds_count{") {
 		t.Fatalf("duration histogram count missing:\n%s", body)
 	}
 	if !strings.Contains(body, "le=\"+Inf\"") {
@@ -121,9 +121,9 @@ func TestMetricsEndpointLabelEndToEnd(t *testing.T) {
 	body := rec.Body.String()
 
 	for _, want := range []string{
-		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`,
-		`hindsight_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="POST",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="405"} 1.0`,
-		`hindsight_http_requests_total{endpoint="unmatched",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="404"} 1.0`,
+		`wenyuan_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="GET",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200"} 1.0`,
+		`wenyuan_http_requests_total{endpoint="/v1/default/banks/{bank_id}/config",method="POST",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="405"} 1.0`,
+		`wenyuan_http_requests_total{endpoint="unmatched",method="GET",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="4xx",status_code="404"} 1.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing series %q in body:\n%s", want, body)
@@ -159,8 +159,8 @@ func TestMetricsTenantLabel(t *testing.T) {
 	}
 	body := serveMetrics(h).Body.String()
 	for _, want := range []string{
-		`hindsight_http_requests_total{endpoint="/v1/x",method="GET",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200",tenant="tenant_a"} 1.0`,
-		`wenyuan_gauge{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",tenant="tenant_a"} 1.0`,
+		`wenyuan_http_requests_total{endpoint="/v1/x",method="GET",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",status_class="2xx",status_code="200",tenant="tenant_a"} 1.0`,
+		`wenyuan_gauge{otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",tenant="tenant_a"} 1.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in body:\n%s", want, body)
@@ -184,20 +184,20 @@ func TestMetricsWithoutTenantHasNoTenantLabel(t *testing.T) {
 func TestMetricsLabelledSamples(t *testing.T) {
 	h := &MetricsHandler{Extra: func() []Metric {
 		return []Metric{
-			{Name: "hindsight_consolidation_backlog", Help: "queued", Value: 2, Labels: map[string]string{"bank_id": "b1"}},
-			{Name: "hindsight_consolidation_backlog", Help: "queued", Value: 5, Labels: map[string]string{"bank_id": "b2"}},
+			{Name: "wenyuan_consolidation_backlog", Help: "queued", Value: 2, Labels: map[string]string{"bank_id": "b1"}},
+			{Name: "wenyuan_consolidation_backlog", Help: "queued", Value: 5, Labels: map[string]string{"bank_id": "b2"}},
 		}
 	}}
 	body := serveMetrics(h).Body.String()
 	for _, want := range []string{
-		`hindsight_consolidation_backlog{bank_id="b1",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 2`,
-		`hindsight_consolidation_backlog{bank_id="b2",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 5`,
+		`wenyuan_consolidation_backlog{bank_id="b1",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 2`,
+		`wenyuan_consolidation_backlog{bank_id="b2",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 5`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in body:\n%s", want, body)
 		}
 	}
-	if got := strings.Count(body, "# HELP hindsight_consolidation_backlog"); got != 1 {
+	if got := strings.Count(body, "# HELP wenyuan_consolidation_backlog"); got != 1 {
 		t.Fatalf("HELP emitted %d times, want 1:\n%s", got, body)
 	}
 }
@@ -209,7 +209,7 @@ func TestMetricsLabelledSamples(t *testing.T) {
 func TestMetricsHistogramFamily(t *testing.T) {
 	h := &MetricsHandler{Histograms: func() []Histogram {
 		return []Histogram{{
-			Name:    "hindsight_event_loop_lag_seconds",
+			Name:    "wenyuan_event_loop_lag_seconds",
 			Buckets: []float64{0.001, 1.0},
 			Counts:  []uint64{1, 2},
 			Sum:     0.01,
@@ -217,14 +217,14 @@ func TestMetricsHistogramFamily(t *testing.T) {
 		}}
 	}}
 	body := serveMetrics(h).Body.String()
-	const scope = `otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""`
+	const scope = `otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""`
 	for _, want := range []string{
-		"# TYPE hindsight_event_loop_lag_seconds histogram",
-		`hindsight_event_loop_lag_seconds_bucket{le="0.001",` + scope + `} 1.0`,
-		`hindsight_event_loop_lag_seconds_bucket{le="1.0",` + scope + `} 2.0`,
-		`hindsight_event_loop_lag_seconds_bucket{le="+Inf",` + scope + `} 2.0`,
-		`hindsight_event_loop_lag_seconds_count{` + scope + `} 2.0`,
-		`hindsight_event_loop_lag_seconds_sum{` + scope + `} 0.01`,
+		"# TYPE wenyuan_event_loop_lag_seconds histogram",
+		`wenyuan_event_loop_lag_seconds_bucket{le="0.001",` + scope + `} 1.0`,
+		`wenyuan_event_loop_lag_seconds_bucket{le="1.0",` + scope + `} 2.0`,
+		`wenyuan_event_loop_lag_seconds_bucket{le="+Inf",` + scope + `} 2.0`,
+		`wenyuan_event_loop_lag_seconds_count{` + scope + `} 2.0`,
+		`wenyuan_event_loop_lag_seconds_sum{` + scope + `} 0.01`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in body:\n%s", want, body)

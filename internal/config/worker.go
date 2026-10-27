@@ -54,8 +54,8 @@ type WorkerConfig struct {
 // resolveWallTimeouts reads the per-operation wall ceilings. A key that is
 // absent leaves the operation bounded only by the claim's lease.
 //
-// The reference spells these HINDSIGHT_API_<OP>_WALL_TIMEOUT; this project
-// shipped the same knob earlier as HINDSIGHT_API_WORKER_<OP>_WALL_TIMEOUT_SECONDS.
+// The reference spells these WENYUAN_API_<OP>_WALL_TIMEOUT; this project
+// shipped the same knob earlier as WENYUAN_API_WORKER_<OP>_WALL_TIMEOUT_SECONDS.
 // The reference name is read first and the earlier name is honoured as a
 // fallback, so an environment written either way resolves the same ceiling.
 func resolveWallTimeouts(lookup func(string) (string, bool)) map[string]time.Duration {

@@ -43,7 +43,7 @@ separately.
 - **Message catalogs are paired.** Every locale in `i18n/locales.ts` needs a
   matching `messages/<locale>.json` with an identical key structure. The i18n
   test enforces parity.
-- **Upstream credential stays server-side.** `HINDSIGHT_CP_DATAPLANE_API_KEY` is
+- **Upstream credential stays server-side.** `WENYUAN_CP_DATAPLANE_API_KEY` is
   attached only by `lib/server/upstream.ts`; never reference it from
   `lib/client/` or any component.
 - **Route handlers are unit-tested as plain functions.** `test/support/harness.ts`
@@ -78,7 +78,7 @@ rather than re-derived, by the owner's decision: "前端可以复制". So:
   wiring.
 - **Brand**: product-visible text stays ours (`wenyuan`, `WenYuan`, `文渊`); the upstream product name
   never appears. **Contract strings stay byte-identical** and are never "cleaned up": environment
-  variable names (`HINDSIGHT_CP_*`), cookie names, and the health route's `SERVICE_NAME` — a
+  variable names (`WENYUAN_CP_*`), cookie names, and the health route's `SERVICE_NAME` — a
   deployment reads those.
 - **Do not fork the plumbing.** `lib/server/**` (the upstream proxy), `lib/middleware/**` (access gate
   and locale), `lib/server/session.ts`, `lib/client/**` and `lib/use-async-data.ts` are ours: the

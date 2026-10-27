@@ -27,7 +27,7 @@ project's name, keeping the original's case (`WenYuan` for a capitalized
 occurrence, `wenyuan` for a lowercase one, `WENYUAN` for an all-caps one) in
 every string *and* every object key.
 
-One carve-out: `HINDSIGHT_API_*` environment-variable names are preserved
+One carve-out: `WENYUAN_API_*` environment-variable names are preserved
 verbatim. They are the deployment contract this service reads, so a client
 document that renamed them would name keys no deployment answers. That is the
 only place the old name survives in this tree.
@@ -97,15 +97,15 @@ network) and a live one that talks to a running service.
 | SDK | Offline | Live |
 |---|---|---|
 | Go | `make test-sdk-go` | `make test-sdk-go-integration` |
-| Python | `cd clients/python && python3 -m unittest discover -s tests` | same, with `HINDSIGHT_API_URL` set |
-| TypeScript | `cd clients/typescript && npx tsc --noEmit && npm test` | same, with `HINDSIGHT_API_URL` set |
-| Rust | `cd clients/rust && cargo test` | same, with `HINDSIGHT_API_URL` set |
+| Python | `cd clients/python && python3 -m unittest discover -s tests` | same, with `WENYUAN_API_URL` set |
+| TypeScript | `cd clients/typescript && npx tsc --noEmit && npm test` | same, with `WENYUAN_API_URL` set |
+| Rust | `cd clients/rust && cargo test` | same, with `WENYUAN_API_URL` set |
 
 `make test-sdk` runs every offline suite; `make test-sdk-integration` runs every
 live suite against `SDK_API_URL` (default `http://127.0.0.1:18888`). A live
-suite that finds `HINDSIGHT_API_URL` unset skips itself rather than failing, so
+suite that finds `WENYUAN_API_URL` unset skips itself rather than failing, so
 the offline gate stays usable on a machine with no server. A server started with
-`HINDSIGHT_API_DATABASE_URL=memory` is enough for all of them: the assertions are
+`WENYUAN_API_DATABASE_URL=memory` is enough for all of them: the assertions are
 structural (an operation succeeded, an id round-tripped, a list carries what was
 written, a retired route answers 410, a tag filter selects its own write back
 out) rather than about extracted facts or synthesized prose, which need a

@@ -739,7 +739,7 @@ func TestWallCeilingsAreKeyedByClaimableOperationTypes(t *testing.T) {
 		return "", false
 	})
 	if got := resolved.Worker.WallTimeouts[storage.OperationTypeRefreshMentalModel]; got != 120*time.Second {
-		t.Errorf("HINDSIGHT_API_REFLECT_WALL_TIMEOUT set the refresh ceiling to %v, want 2m", got)
+		t.Errorf("WENYUAN_API_REFLECT_WALL_TIMEOUT set the refresh ceiling to %v, want 2m", got)
 	}
 }
 

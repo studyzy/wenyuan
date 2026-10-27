@@ -12,56 +12,56 @@ import (
 // and are resolved inside the existing environment source, so flags,
 // environment, .env, and defaults keep their existing precedence.
 const (
-	EnvLLMProvider             = "HINDSIGHT_API_LLM_PROVIDER"
-	EnvLLMAPIKey               = "HINDSIGHT_API_LLM_API_KEY"
-	EnvLLMBaseURL              = "HINDSIGHT_API_LLM_BASE_URL"
-	EnvLLMModel                = "HINDSIGHT_API_LLM_MODEL"
-	EnvLLMCacheAffinity        = "HINDSIGHT_API_LLM_CACHE_AFFINITY"
-	EnvLLMConnectTimeout       = "HINDSIGHT_API_LLM_CONNECT_TIMEOUT"
-	EnvLLMDebugDump4XX         = "HINDSIGHT_API_LLM_DEBUG_DUMP_4XX"
-	EnvLLMDefaultHeaders       = "HINDSIGHT_API_LLM_DEFAULT_HEADERS"
-	EnvLLMExtraBody            = "HINDSIGHT_API_LLM_EXTRA_BODY"
-	EnvLLMHTTPLogLevel         = "HINDSIGHT_API_LLM_HTTP_LOG_LEVEL"
-	EnvLLMInitialBackoff       = "HINDSIGHT_API_LLM_INITIAL_BACKOFF"
-	EnvLLMLiteLLMRouterConfig  = "HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG"
-	EnvLLMMaxBackoff           = "HINDSIGHT_API_LLM_MAX_BACKOFF"
-	EnvLLMMaxConcurrent        = "HINDSIGHT_API_LLM_MAX_CONCURRENT"
-	EnvLLMMaxRetries           = "HINDSIGHT_API_LLM_MAX_RETRIES"
-	EnvLLMOpenAIJSONMode       = "HINDSIGHT_API_LLM_OPENAI_COMPATIBLE_JSON_MODE"
-	EnvLLMOpenAIServiceTier    = "HINDSIGHT_API_LLM_OPENAI_SERVICE_TIER"
-	EnvLLMOutputLanguage       = "HINDSIGHT_API_LLM_OUTPUT_LANGUAGE"
-	EnvLLMPromptCacheEnabled   = "HINDSIGHT_API_LLM_PROMPT_CACHE_ENABLED"
-	EnvLLMReasoningEffort      = "HINDSIGHT_API_LLM_REASONING_EFFORT"
-	EnvLLMSendBankAsUser       = "HINDSIGHT_API_LLM_SEND_BANK_AS_USER"
-	EnvLLMStrategy             = "HINDSIGHT_API_LLM_STRATEGY"
-	EnvLLMForcedTool           = "HINDSIGHT_API_LLM_STRUCTURED_OUTPUT_FORCED_TOOL"
-	EnvLLMSupportsMaxItems     = "HINDSIGHT_API_LLM_SUPPORTS_MAX_ITEMS"
-	EnvLLMSupportsStringPattrn = "HINDSIGHT_API_LLM_SUPPORTS_STRING_PATTERN"
-	EnvLLMTimeout              = "HINDSIGHT_API_LLM_TIMEOUT"
-	EnvLLMTraceEnabled         = "HINDSIGHT_API_LLM_TRACE_ENABLED"
-	EnvLLMTraceMaxChars        = "HINDSIGHT_API_LLM_TRACE_MAX_CHARS"
-	EnvLLMTraceRetentionDays   = "HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS"
-	EnvLLMTraceScopes          = "HINDSIGHT_API_LLM_TRACE_SCOPES"
-	EnvLLMVision               = "HINDSIGHT_API_LLM_VISION"
+	EnvLLMProvider             = "WENYUAN_API_LLM_PROVIDER"
+	EnvLLMAPIKey               = "WENYUAN_API_LLM_API_KEY"
+	EnvLLMBaseURL              = "WENYUAN_API_LLM_BASE_URL"
+	EnvLLMModel                = "WENYUAN_API_LLM_MODEL"
+	EnvLLMCacheAffinity        = "WENYUAN_API_LLM_CACHE_AFFINITY"
+	EnvLLMConnectTimeout       = "WENYUAN_API_LLM_CONNECT_TIMEOUT"
+	EnvLLMDebugDump4XX         = "WENYUAN_API_LLM_DEBUG_DUMP_4XX"
+	EnvLLMDefaultHeaders       = "WENYUAN_API_LLM_DEFAULT_HEADERS"
+	EnvLLMExtraBody            = "WENYUAN_API_LLM_EXTRA_BODY"
+	EnvLLMHTTPLogLevel         = "WENYUAN_API_LLM_HTTP_LOG_LEVEL"
+	EnvLLMInitialBackoff       = "WENYUAN_API_LLM_INITIAL_BACKOFF"
+	EnvLLMLiteLLMRouterConfig  = "WENYUAN_API_LLM_LITELLMROUTER_CONFIG"
+	EnvLLMMaxBackoff           = "WENYUAN_API_LLM_MAX_BACKOFF"
+	EnvLLMMaxConcurrent        = "WENYUAN_API_LLM_MAX_CONCURRENT"
+	EnvLLMMaxRetries           = "WENYUAN_API_LLM_MAX_RETRIES"
+	EnvLLMOpenAIJSONMode       = "WENYUAN_API_LLM_OPENAI_COMPATIBLE_JSON_MODE"
+	EnvLLMOpenAIServiceTier    = "WENYUAN_API_LLM_OPENAI_SERVICE_TIER"
+	EnvLLMOutputLanguage       = "WENYUAN_API_LLM_OUTPUT_LANGUAGE"
+	EnvLLMPromptCacheEnabled   = "WENYUAN_API_LLM_PROMPT_CACHE_ENABLED"
+	EnvLLMReasoningEffort      = "WENYUAN_API_LLM_REASONING_EFFORT"
+	EnvLLMSendBankAsUser       = "WENYUAN_API_LLM_SEND_BANK_AS_USER"
+	EnvLLMStrategy             = "WENYUAN_API_LLM_STRATEGY"
+	EnvLLMForcedTool           = "WENYUAN_API_LLM_STRUCTURED_OUTPUT_FORCED_TOOL"
+	EnvLLMSupportsMaxItems     = "WENYUAN_API_LLM_SUPPORTS_MAX_ITEMS"
+	EnvLLMSupportsStringPattrn = "WENYUAN_API_LLM_SUPPORTS_STRING_PATTERN"
+	EnvLLMTimeout              = "WENYUAN_API_LLM_TIMEOUT"
+	EnvLLMTraceEnabled         = "WENYUAN_API_LLM_TRACE_ENABLED"
+	EnvLLMTraceMaxChars        = "WENYUAN_API_LLM_TRACE_MAX_CHARS"
+	EnvLLMTraceRetentionDays   = "WENYUAN_API_LLM_TRACE_RETENTION_DAYS"
+	EnvLLMTraceScopes          = "WENYUAN_API_LLM_TRACE_SCOPES"
+	EnvLLMVision               = "WENYUAN_API_LLM_VISION"
 
-	EnvEmbeddingsProvider        = "HINDSIGHT_API_EMBEDDINGS_PROVIDER"
-	EnvEmbeddingsInitialBackoff  = "HINDSIGHT_API_EMBEDDINGS_INITIAL_BACKOFF"
-	EnvEmbeddingsLocalAllowMPS   = "HINDSIGHT_API_EMBEDDINGS_LOCAL_ALLOW_MPS"
-	EnvEmbeddingsLocalForceCPU   = "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"
-	EnvEmbeddingsLocalModel      = "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"
-	EnvEmbeddingsLocalTrustCode  = "HINDSIGHT_API_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE"
-	EnvEmbeddingsMaxBackoff      = "HINDSIGHT_API_EMBEDDINGS_MAX_BACKOFF"
-	EnvEmbeddingsMaxConcurrent   = "HINDSIGHT_API_EMBEDDINGS_MAX_CONCURRENT_REQUESTS"
-	EnvEmbeddingsMaxInputTokens  = "HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS"
-	EnvEmbeddingsMaxRetries      = "HINDSIGHT_API_EMBEDDINGS_MAX_RETRIES"
-	EnvEmbeddingsOpenAIKey       = "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"
-	EnvEmbeddingsOpenAIBaseURL   = "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL"
-	EnvEmbeddingsOpenAIBatchSize = "HINDSIGHT_API_EMBEDDINGS_OPENAI_BATCH_SIZE"
-	EnvEmbeddingsOpenAIDims      = "HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS"
-	EnvEmbeddingsOpenAIModel     = "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL"
-	EnvEmbeddingsPassagePrefix   = "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX"
-	EnvEmbeddingsQueryPrefix     = "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX"
-	EnvEmbeddingsRetryBudget     = "HINDSIGHT_API_EMBEDDINGS_RETRY_BUDGET"
+	EnvEmbeddingsProvider        = "WENYUAN_API_EMBEDDINGS_PROVIDER"
+	EnvEmbeddingsInitialBackoff  = "WENYUAN_API_EMBEDDINGS_INITIAL_BACKOFF"
+	EnvEmbeddingsLocalAllowMPS   = "WENYUAN_API_EMBEDDINGS_LOCAL_ALLOW_MPS"
+	EnvEmbeddingsLocalForceCPU   = "WENYUAN_API_EMBEDDINGS_LOCAL_FORCE_CPU"
+	EnvEmbeddingsLocalModel      = "WENYUAN_API_EMBEDDINGS_LOCAL_MODEL"
+	EnvEmbeddingsLocalTrustCode  = "WENYUAN_API_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE"
+	EnvEmbeddingsMaxBackoff      = "WENYUAN_API_EMBEDDINGS_MAX_BACKOFF"
+	EnvEmbeddingsMaxConcurrent   = "WENYUAN_API_EMBEDDINGS_MAX_CONCURRENT_REQUESTS"
+	EnvEmbeddingsMaxInputTokens  = "WENYUAN_API_EMBEDDINGS_MAX_INPUT_TOKENS"
+	EnvEmbeddingsMaxRetries      = "WENYUAN_API_EMBEDDINGS_MAX_RETRIES"
+	EnvEmbeddingsOpenAIKey       = "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY"
+	EnvEmbeddingsOpenAIBaseURL   = "WENYUAN_API_EMBEDDINGS_OPENAI_BASE_URL"
+	EnvEmbeddingsOpenAIBatchSize = "WENYUAN_API_EMBEDDINGS_OPENAI_BATCH_SIZE"
+	EnvEmbeddingsOpenAIDims      = "WENYUAN_API_EMBEDDINGS_OPENAI_DIMENSIONS"
+	EnvEmbeddingsOpenAIModel     = "WENYUAN_API_EMBEDDINGS_OPENAI_MODEL"
+	EnvEmbeddingsPassagePrefix   = "WENYUAN_API_EMBEDDINGS_PASSAGE_PREFIX"
+	EnvEmbeddingsQueryPrefix     = "WENYUAN_API_EMBEDDINGS_QUERY_PREFIX"
+	EnvEmbeddingsRetryBudget     = "WENYUAN_API_EMBEDDINGS_RETRY_BUDGET"
 )
 
 // Provider defaults applied when a key resolves to nothing. They are the
@@ -188,19 +188,19 @@ type ProviderConfig struct {
 	StrictSchema bool
 
 	// Strategy is the resolved multi-LLM routing strategy for the global chat
-	// scope, parsed from HINDSIGHT_API_LLM_STRATEGY.
+	// scope, parsed from WENYUAN_API_LLM_STRATEGY.
 	Strategy StrategyConfig
 	// StrategyError records a malformed strategy document, in any scope, so
 	// startup can fail loudly instead of silently routing to the primary
 	// member. It is nil when every configured strategy is well-formed.
 	StrategyError error
 	// LLMMembers are the indexed extra members (1..N) of the global chain,
-	// read from HINDSIGHT_API_LLM_{n}_*. The unindexed settings are the
+	// read from WENYUAN_API_LLM_{n}_*. The unindexed settings are the
 	// primary member and stay in the fields above.
 	LLMMembers []LLMMemberConfig
 
 	// Per-role strategies and member chains mirror the global scope, read from
-	// the corresponding HINDSIGHT_API_{RETAIN,REFLECT,CONSOLIDATION,
+	// the corresponding WENYUAN_API_{RETAIN,REFLECT,CONSOLIDATION,
 	// MENTAL_MODEL_REFRESH}_LLM_* keys.
 	RetainStrategy               StrategyConfig
 	ReflectStrategy              StrategyConfig
@@ -255,8 +255,8 @@ type LLMMemberConfig struct {
 }
 
 // RerankerConfig is the resolved reranker chain: the primary member (index 0)
-// from the unindexed HINDSIGHT_API_RERANKER_* settings and any indexed fallback
-// members (1..N) from HINDSIGHT_API_RERANKER_{n}_*.
+// from the unindexed WENYUAN_API_RERANKER_* settings and any indexed fallback
+// members (1..N) from WENYUAN_API_RERANKER_{n}_*.
 type RerankerConfig struct {
 	Provider           string
 	Primary            RerankerMember
@@ -374,7 +374,7 @@ type EmbeddingConfig struct {
 	AllowMPS              bool
 
 	// Dimensions is the stored vector width, resolved from
-	// HINDSIGHT_API_EMBEDDING_DIMENSION and defaulting to the reference's
+	// WENYUAN_API_EMBEDDING_DIMENSION and defaulting to the reference's
 	// DEFAULT_EMBEDDING_DIMENSION when unset.
 	Dimensions int
 
@@ -541,11 +541,11 @@ func ResolveProvider(lookup func(string) (string, bool)) ProviderConfig {
 
 	// Multi-member routing: the indexed member lists come first because a
 	// round-robin weight vector is validated against its member count.
-	cfg.LLMMembers = resolveLLMMembers(lookup, "HINDSIGHT_API_LLM_")
-	cfg.RetainLLMMembers = resolveLLMMembers(lookup, "HINDSIGHT_API_RETAIN_LLM_")
-	cfg.ReflectLLMMembers = resolveLLMMembers(lookup, "HINDSIGHT_API_REFLECT_LLM_")
-	cfg.ConsolidationLLMMembers = resolveLLMMembers(lookup, "HINDSIGHT_API_CONSOLIDATION_LLM_")
-	cfg.MentalModelRefreshLLMMembers = resolveLLMMembers(lookup, "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_")
+	cfg.LLMMembers = resolveLLMMembers(lookup, "WENYUAN_API_LLM_")
+	cfg.RetainLLMMembers = resolveLLMMembers(lookup, "WENYUAN_API_RETAIN_LLM_")
+	cfg.ReflectLLMMembers = resolveLLMMembers(lookup, "WENYUAN_API_REFLECT_LLM_")
+	cfg.ConsolidationLLMMembers = resolveLLMMembers(lookup, "WENYUAN_API_CONSOLIDATION_LLM_")
+	cfg.MentalModelRefreshLLMMembers = resolveLLMMembers(lookup, "WENYUAN_API_MENTAL_MODEL_REFRESH_LLM_")
 
 	var errs []error
 	cfg.Strategy, errs = parseStrategy(str(EnvLLMStrategy), EnvLLMStrategy, len(cfg.LLMMembers), errs)
@@ -905,7 +905,7 @@ func parseStrategyConfig(raw, key string, memberCount int) (StrategyConfig, erro
 }
 
 // resolveLLMMembers reads the indexed extra members for one env prefix, which
-// ends in "LLM_" (e.g. "HINDSIGHT_API_LLM_"). Members are read from
+// ends in "LLM_" (e.g. "WENYUAN_API_LLM_"). Members are read from
 // <prefix><n>_PROVIDER for n = 1, 2, ... and scanning stops at the first index
 // whose _PROVIDER is unset, so indices must be contiguous from 1.
 func resolveLLMMembers(lookup func(string) (string, bool), prefix string) []LLMMemberConfig {
@@ -947,8 +947,8 @@ func resolveLLMMember(lookup func(string) (string, bool), base string, index int
 }
 
 // resolveReranker resolves the reranker chain: the shared chain-level keys, the
-// primary member from the unindexed HINDSIGHT_API_RERANKER_* settings, and the
-// indexed members from HINDSIGHT_API_RERANKER_{n}_*.
+// primary member from the unindexed WENYUAN_API_RERANKER_* settings, and the
+// indexed members from WENYUAN_API_RERANKER_{n}_*.
 func resolveReranker(lookup func(string) (string, bool)) RerankerConfig {
 	cfg := RerankerConfig{
 		MaxRetries:         DefaultRerankerMaxRetries,
@@ -961,7 +961,7 @@ func resolveReranker(lookup func(string) (string, bool)) RerankerConfig {
 		CandidateDepthHigh: 0,
 	}
 	cfg.Provider = stringFromEnv(lookup, EnvRerankerProvider)
-	cfg.Primary = resolveRerankerMember(lookup, "HINDSIGHT_API_RERANKER_", 0)
+	cfg.Primary = resolveRerankerMember(lookup, "WENYUAN_API_RERANKER_", 0)
 	cfg.Primary.Provider = cfg.Provider
 	cfg.SendBankAsHeader = boolValue(lookup, EnvRerankerSendBankAsHeader, false)
 	cfg.MaxRetries = positiveIntAllowZero(lookup, EnvRerankerMaxRetries, cfg.MaxRetries)
@@ -974,7 +974,7 @@ func resolveReranker(lookup func(string) (string, bool)) RerankerConfig {
 	cfg.CandidateDepthHigh = intFromEnv(lookup, EnvRerankerMaxCandidatesHigh, cfg.CandidateDepthHigh)
 
 	for index := 1; ; index++ {
-		base := fmt.Sprintf("HINDSIGHT_API_RERANKER_%d_", index)
+		base := fmt.Sprintf("WENYUAN_API_RERANKER_%d_", index)
 		if stringFromEnv(lookup, base+"PROVIDER") == "" {
 			break
 		}

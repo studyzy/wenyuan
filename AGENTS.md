@@ -20,21 +20,23 @@ disagreement is a bug.
 
 Everything this repository calls its own is `wenyuan` / `WenYuan`, and the
 service it replaces is "the reference implementation" (「参考实现」/「上游」 in the
-Chinese docs). A handful of strings still carry the old name on purpose, each
+Chinese docs). The environment variables and metric families are this
+service's own name too — `WENYUAN_API_*` and `wenyuan_http_requests_total`,
+renamed wholesale on 2026-10-27, with no compatibility alias for the old
+spelling. A handful of strings still carry the old name on purpose, each
 because it is a contract or a pointer at the counterpart rather than branding:
 
 | String | Why it stays |
 |---|---|
-| `HINDSIGHT_API_*`, `HINDSIGHT_CP_*`, `HINDSIGHT_PROFILE`, `HINDSIGHT_BANK_ID`, `HINDSIGHT_FS_*` | environment-variable and cookie names are the deployment contract (the key list is `internal/config/reference.go`); renaming them breaks every existing `.env`, compose file and chart that already sets them |
-| the document served at `/openapi.json`, `info.title` included | that document *is* the reference contract; `scripts/reference_openapi.py --check` compares it byte for byte |
-| `hindsight_http_requests_total`, `hindsight_event_loop_lag`, … | the Prometheus rendering of the reference's OTel metric names; dashboards and the parity comparison read them |
 | `X-Hindsight-Event` / `-Signature` / `-Signature-V2` / `-Bank-Id` | the webhook wire contract: a receiver verifying a signature reads these header names |
-| the MCP `serverInfo.name`, the OTEL default service name, the daemon log default `~/.hindsight/daemon.log` | observable values a client or a log pipeline reads |
-| `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` | a value deployments pass in `HINDSIGHT_API_TENANT_EXTENSION` |
+| the document served at `/openapi.json`, `info.title` included | that document *is* the reference contract; `scripts/reference_openapi.py --check` compares it byte for byte, so its prose cannot be re-worded on our side |
+| the MCP `serverInfo.name` and the OTEL default service name | observable values a client or a log pipeline reads |
+| the daemon log default `~/.hindsight/daemon.log` | a path an existing deployment's log pipeline already follows |
+| `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` | a value deployments pass in `WENYUAN_API_TENANT_EXTENSION` |
 | redaction labels naming the counterpart's credential formats (`hindsight_key` for its `hsk_…` keys) | the label says whose key the pattern catches; the reference's list carries the same name |
 | `internal/hindsightarchive`, `internal/migration/hindsight`, `bankctl … --from-hindsight` | named after what they handle: the reference's export format, and the direction of the import |
 | citations such as `engine/audit.py:1-5`, `hindsight_api/…`, `hindsight-docs/static/openapi.json` | evidence — a citation that cannot be followed is not evidence |
-| `tests/system/**` | the reference's own black-box suite, vendored verbatim |
+| `scripts/gen_provider_env_keys.py`'s `SOURCE_PREFIX` | the generator *reads* the reference's declaration, which spells its keys the old way, and emits this service's prefix |
 
 Adding a new identifier, log line, metric, header or document of our own must
 not use the old name; if something has to keep it, add it to this table with
@@ -297,8 +299,8 @@ out of it as they close.
   so the reference service and wenyuan can run side by side for comparison. The
   compose stack's own PostgreSQL publishes host port `15432` (5432 + 10000)
   and never touches the reference's instance on 5432. The
-  env var names (`HINDSIGHT_API_PORT`,
-  `HINDSIGHT_API_WORKER_HTTP_PORT`) and every other default still match; do
+  env var names (`WENYUAN_API_PORT`,
+  `WENYUAN_API_WORKER_HTTP_PORT`) and every other default still match; do
   not "fix" the port defaults back to 8888.
 
 ## Provider boundary
@@ -348,9 +350,9 @@ See `CONTRIBUTING.md` for the human-facing version of these rules.
   discovered `.env` is authoritative over the process environment, the
   reference's own entrypoint rule), then the rest of the process environment,
   then the YAML configuration file
-  (`etc/wenyuan.yaml`, or `HINDSIGHT_API_CONFIG_FILE`), then
+  (`etc/wenyuan.yaml`, or `WENYUAN_API_CONFIG_FILE`), then
   the built-in defaults. The file is read through Viper in
   `internal/config/configfile.go` and answers a key as the environment name
-  lowercased without the `HINDSIGHT_API_` prefix (`llm_provider`); a nested
+  lowercased without the `WENYUAN_API_` prefix (`llm_provider`); a nested
   key spelling is flattened to that flat form, and a list value is refused at
   load rather than ignored.

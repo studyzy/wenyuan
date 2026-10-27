@@ -121,7 +121,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	}
 	// Probe the configured model provider before serving, so an unreachable
 	// endpoint fails startup rather than the first model-dependent request. The
-	// probe is skipped when HINDSIGHT_API_SKIP_LLM_VERIFICATION is set, and for
+	// probe is skipped when WENYUAN_API_SKIP_LLM_VERIFICATION is set, and for
 	// the no-model selection there is nothing to reach.
 	if err := VerifyModelProvider(ctx, cfg, activeProvider); err != nil {
 		return nil, err
@@ -457,7 +457,7 @@ func (a *App) mount(router *httpx.Router) error {
 		SearchObservationsIncludeEntities: a.Config.ReflectSearchObservationsIncludeEntities,
 	}
 	// The reflect wall clock is the reference's own knob: the HTTP reflect route
-	// shares the refresh operation's budget (HINDSIGHT_API_REFLECT_WALL_TIMEOUT,
+	// shares the refresh operation's budget (WENYUAN_API_REFLECT_WALL_TIMEOUT,
 	// default 300s), not the generic HTTP read timeout a user request is expected
 	// to finish within.
 	memops.ReflectTimeout = a.Config.Worker.WallTimeouts["refresh_mental_model"]

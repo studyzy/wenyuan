@@ -16,7 +16,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
 });
 
 describe("memory-list delete is unsupported", () => {
@@ -45,7 +45,7 @@ describe("required query parameters", () => {
   it("requires bank_id on the entity collection and does not accept the agent-style alias there", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const accepted = await entities.GET(
         makeRequest("http://localhost/api/entities?bank_id=acme"),
       );
@@ -90,7 +90,7 @@ describe("recall and reflect take the bank from the request body", () => {
   it("routes recall to the bank named in the body and normalises a legacy fact type", async () => {
     const stub = stubFetch([{ status: 200, body: { memories: [] } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await recall.POST(
         makeRequest("http://localhost/api/recall", {
           method: "POST",
@@ -111,7 +111,7 @@ describe("recall and reflect take the bank from the request body", () => {
   it("falls back to the default bank when recall names none", async () => {
     const stub = stubFetch([{ status: 200, body: { memories: [] } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await recall.POST(
         makeRequest("http://localhost/api/recall", {
           method: "POST",
@@ -127,7 +127,7 @@ describe("recall and reflect take the bank from the request body", () => {
   it("routes reflect to the bank named in the body and keeps the id out of the upstream body", async () => {
     const stub = stubFetch([{ status: 200, body: { answer: "ok" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await reflect.POST(
         makeRequest("http://localhost/api/reflect", {
           method: "POST",
@@ -144,7 +144,7 @@ describe("recall and reflect take the bank from the request body", () => {
   it("falls back to the default bank when reflect names none", async () => {
     const stub = stubFetch([{ status: 200, body: { answer: "ok" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await reflect.POST(
         makeRequest("http://localhost/api/reflect", {
           method: "POST",

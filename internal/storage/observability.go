@@ -182,7 +182,7 @@ type AsyncOperationGroup struct {
 
 // AsyncOperationCounter is the optional capability a store implements to group
 // its non-terminal async operations by type and status, the shape the reference
-// renders as its hindsight_async_operations gauge. A store that does not
+// renders as its wenyuan_async_operations gauge. A store that does not
 // implement it reports no async-operation series.
 type AsyncOperationCounter interface {
 	CountAsyncOperations(ctx context.Context, perBank bool) ([]AsyncOperationGroup, error)

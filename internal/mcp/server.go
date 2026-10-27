@@ -77,7 +77,7 @@ type Server struct {
 	// means every tool, which is the reference's default.
 	enabledTools map[string]bool
 	// instructions is appended to the retain and recall tool descriptions, the
-	// reference's HINDSIGHT_API_MCP_INSTRUCTIONS.
+	// reference's WENYUAN_API_MCP_INSTRUCTIONS.
 	instructions string
 }
 

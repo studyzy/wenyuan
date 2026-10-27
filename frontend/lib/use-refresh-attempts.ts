@@ -16,7 +16,7 @@ const IN_FLIGHT = new Set(["pending", "processing"]);
  * The refreshes a bank has in flight, by mental-model id.
  *
  * A failed refresh is stamped on the model at the *first* failed attempt, while
- * the worker still has retries left (`HINDSIGHT_API_WORKER_MAX_RETRIES`, 60s
+ * the worker still has retries left (`WENYUAN_API_WORKER_MAX_RETRIES`, 60s
  * apart by default). Without this the UI called that model paused for the four
  * minutes it was still trying — true in the end, wrong at the time (#4532).
  *

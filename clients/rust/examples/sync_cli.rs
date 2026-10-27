@@ -4,7 +4,7 @@
 //! The wrapper holds the runtime and the handle together, so a command stays a
 //! plain call that blocks until the answer arrives. Build it with
 //! `cargo build --example sync_cli`; run it against a deployment with
-//! `HINDSIGHT_API_URL=http://localhost:18888 cargo run --example sync_cli`.
+//! `WENYUAN_API_URL=http://localhost:18888 cargo run --example sync_cli`.
 //!
 //! The cost of this shape is one runtime thread parked per client: work that
 //! is naturally a sequence of calls pays to switch runtimes on every one. If
@@ -21,7 +21,7 @@ struct ApiClient {
 impl ApiClient {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Runtime::new()?;
-        // Base URL from HINDSIGHT_API_URL, falling back to
+        // Base URL from WENYUAN_API_URL, falling back to
         // http://localhost:18888.
         let client = Wenyuan::new()?;
         Ok(Self { client, runtime })

@@ -86,7 +86,7 @@ func TestRateLimitResetCarriesRetryAt(t *testing.T) {
 }
 
 func TestNotAvailableNamesConfigKey(t *testing.T) {
-	err := &NotAvailableError{ConfigKey: "HINDSIGHT_API_LLM_PROVIDER", Scope: "chat"}
+	err := &NotAvailableError{ConfigKey: "WENYUAN_API_LLM_PROVIDER", Scope: "chat"}
 	if !IsNotAvailable(err) {
 		t.Fatal("not-available predicate failed")
 	}

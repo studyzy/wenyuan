@@ -18,7 +18,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
-  delete process.env.HINDSIGHT_CP_DATAPLANE_API_URL;
+  delete process.env.WENYUAN_CP_DATAPLANE_API_URL;
 });
 
 describe("memory and operation route method sets", () => {
@@ -72,7 +72,7 @@ describe("document member sub-resources travel in the path", () => {
   it("carries a slashed document id in the encoded member path", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await documentChunks.GET(
         makeRequest("http://localhost/api/documents/chunks?document_id=dir%2Ffile.md&bank_id=acme"),
       );
@@ -86,7 +86,7 @@ describe("entity id decoding", () => {
   it("decodes the entity id segment before forwarding upstream", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await entity.GET(makeRequest("http://localhost/api/entities/a%2Fb?bank_id=acme"), {
         params: Promise.resolve({ entityId: "a%2Fb" }),
       });
@@ -99,7 +99,7 @@ describe("memory history 404 translation", () => {
   it("maps an upstream 404 to a localized 404", async () => {
     const stub = stubFetch([{ status: 404, body: { detail: "missing" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await memoryHistory.GET(
         makeRequest("http://localhost/api/memories/mem1/history?bank_id=acme"),
         { params: Promise.resolve({ memoryId: "mem1" }) },
@@ -112,7 +112,7 @@ describe("memory history 404 translation", () => {
   it("maps another upstream failure to a localized 500", async () => {
     const stub = stubFetch([{ status: 500, body: { detail: "boom" } }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await memoryHistory.GET(
         makeRequest("http://localhost/api/memories/mem1/history?bank_id=acme"),
         { params: Promise.resolve({ memoryId: "mem1" }) },
@@ -130,7 +130,7 @@ describe("document transfer export orchestration", () => {
       { status: 200, body: "zip-bytes", contentType: "application/zip" },
     ]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await documentTransfer.GET(
         makeRequest("http://localhost/api/documents/transfer?bank_id=acme"),
       );
@@ -145,7 +145,7 @@ describe("stats timeseries forwards its documented parameters", () => {
   it("forwards period and time-field query parameters", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await timeseries.GET(
         makeRequest(
           "http://localhost/api/stats/acme/memories-timeseries?period=30d&undocumented=1",
@@ -162,7 +162,7 @@ describe("memory PATCH routing follows the contract", () => {
   it("takes the bank id from the body and excludes it from the forwarded body", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await memory.PATCH(
         makeRequest("http://localhost/api/memories/m1", {
           method: "PATCH",
@@ -180,7 +180,7 @@ describe("memory PATCH routing follows the contract", () => {
   it("returns 400 on an unparseable body", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       const response = await memory.PATCH(
         makeRequest("http://localhost/api/memories/m1", { method: "PATCH", body: "{not json" }),
         { params: Promise.resolve({ memoryId: "m1" }) },
@@ -205,7 +205,7 @@ describe("reflect translates the legacy include booleans", () => {
   it("builds an include object and defaults the budget", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await reflect.POST(
         makeRequest("http://localhost/api/reflect?bank_id=acme", {
           method: "POST",
@@ -223,7 +223,7 @@ describe("reflect translates the legacy include booleans", () => {
   it("defaults the budget to low with no thinking budget and omits include", async () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     restore = stub.restore;
-    await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
       await reflect.POST(
         makeRequest("http://localhost/api/reflect?bank_id=acme", {
           method: "POST",

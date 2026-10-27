@@ -47,23 +47,23 @@ describe("resolveBaseUrl", () => {
   });
 
   it("falls back to the documented default", () => {
-    const previous = process.env.HINDSIGHT_API_URL;
-    delete process.env.HINDSIGHT_API_URL;
+    const previous = process.env.WENYUAN_API_URL;
+    delete process.env.WENYUAN_API_URL;
     try {
       expect(resolveBaseUrl()).toBe(DEFAULT_BASE_URL);
     } finally {
-      if (previous !== undefined) process.env.HINDSIGHT_API_URL = previous;
+      if (previous !== undefined) process.env.WENYUAN_API_URL = previous;
     }
   });
 
   it("reads the deployment's environment variable when no option is given", () => {
-    const previous = process.env.HINDSIGHT_API_URL;
-    process.env.HINDSIGHT_API_URL = "http://env.test:1234/";
+    const previous = process.env.WENYUAN_API_URL;
+    process.env.WENYUAN_API_URL = "http://env.test:1234/";
     try {
       expect(resolveBaseUrl()).toBe("http://env.test:1234");
     } finally {
-      if (previous === undefined) delete process.env.HINDSIGHT_API_URL;
-      else process.env.HINDSIGHT_API_URL = previous;
+      if (previous === undefined) delete process.env.WENYUAN_API_URL;
+      else process.env.WENYUAN_API_URL = previous;
     }
   });
 });

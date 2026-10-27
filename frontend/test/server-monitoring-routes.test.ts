@@ -9,7 +9,7 @@ describe("health route", () => {
     const stub = stubFetch([{ status: 200, body: { banks: [] } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await health(makeRequest("http://localhost/api/health"));
         expect(response.status).toBe(200);
         const body = await readJson(response);
@@ -28,7 +28,7 @@ describe("health route", () => {
     const stub = stubFetch([{ status: 503, body: { error: "down" } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await health(makeRequest("http://localhost/api/health"));
         expect(response.status).toBe(200);
         const body = await readJson(response);
@@ -49,7 +49,7 @@ describe("version route", () => {
     const restore = stub.restore;
     try {
       await withEnv(
-        { HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local", HINDSIGHT_CP_ACCESS_KEY: "secret" },
+        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_ACCESS_KEY: "secret" },
         async () => {
           const response = await version(makeRequest("http://localhost/api/version"));
           expect(response.status).toBe(200);
@@ -68,7 +68,7 @@ describe("version route", () => {
     const restore = stub.restore;
     try {
       await withEnv(
-        { HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local", HINDSIGHT_CP_ACCESS_KEY: undefined },
+        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_ACCESS_KEY: undefined },
         async () => {
           const response = await version(makeRequest("http://localhost/api/version"));
           const body = await readJson(response);
@@ -85,7 +85,7 @@ describe("version route", () => {
     const stub = stubFetch([{ status: 500, body: { error: "boom" } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await version(makeRequest("http://localhost/api/version"));
         expect(response.status).toBe(500);
         const body = await readJson(response);

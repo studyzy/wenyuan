@@ -205,7 +205,7 @@ func TestHealthEndToEnd(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, out, errOut := runForTest([]string{"-o", "json", "health"}, "")
 	if code != 0 {
@@ -221,7 +221,7 @@ func TestHealthConnectionRefusedIsClassified(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", url)
+	t.Setenv("WENYUAN_API_URL", url)
 
 	code, _, errOut := runForTest([]string{"health"}, "")
 	if code != 1 {
@@ -238,7 +238,7 @@ func TestVerboseDumpsRequests(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, _, errOut := runForTest([]string{"-v", "version"}, "")
 	if code != 0 {
@@ -255,7 +255,7 @@ func TestMetricsPassesTextThrough(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, out, _ := runForTest([]string{"metrics"}, "")
 	if code != 0 || !strings.Contains(out, "go_goroutines 1") {
@@ -286,7 +286,7 @@ func TestHealthPrettyMatchesReferenceLayout(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, out, errOut := runForTest([]string{"health"}, "")
 	if code != 0 {
@@ -306,7 +306,7 @@ func TestVersionPrettyShowsFeatures(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, out, errOut := runForTest([]string{"version"}, "")
 	if code != 0 {
@@ -327,7 +327,7 @@ func TestMetricsMachineWrapsText(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	code, out, _ := runForTest([]string{"metrics"}, "")
 	if code != 0 || !strings.Contains(out, "Prometheus Metrics") {
@@ -353,7 +353,7 @@ func TestMetricsMachineWrapsText(t *testing.T) {
 // raised after parsing exits 1, while an argument error exits 2.
 func TestCommandBodyErrorExitsOne(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", "http://127.0.0.1:1")
+	t.Setenv("WENYUAN_API_URL", "http://127.0.0.1:1")
 
 	code, _, errOut := runForTest([]string{"bank", "update", "b1"}, "")
 	if code != 1 {
@@ -392,7 +392,7 @@ func TestExportTemplateShortOutBeatsTheGlobalOutput(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	code, out, errOut := runForTest([]string{"bank", "export-template", "b1", "-o", path}, "")
@@ -528,7 +528,7 @@ func TestSpinnerCoversAPICommandOnTTY(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", srv.URL)
+	t.Setenv("WENYUAN_API_URL", srv.URL)
 	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
 
 	code, out, errOut := runForTest([]string{"health"}, "")
@@ -554,7 +554,7 @@ func TestSpinnerStopsBeforeErrorOutput(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("HINDSIGHT_API_URL", url)
+	t.Setenv("WENYUAN_API_URL", url)
 	withDecorations(t, cli.TTYEnv{IsTTY: true, Term: "xterm"})
 
 	code, _, errOut := runForTest([]string{"health"}, "")

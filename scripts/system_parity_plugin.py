@@ -11,12 +11,12 @@ What the plugin changes: the suite boots the reference server itself
 a process that starts this service's binary, translating the environment the
 suite sets into the configuration this service reads:
 
-* ``HINDSIGHT_API_DATABASE_URL`` arrives as ``pg0://<instance>:<port>`` (the
+* ``WENYUAN_API_DATABASE_URL`` arrives as ``pg0://<instance>:<port>`` (the
   suite's embedded PostgreSQL). Resolve it first with ``resolve_pg0`` and pass the
   result in ``WENYUAN_DATABASE_URL``; the plugin hands this service the resolved
   URL.
 * this service runs its own migrations at startup, so
-  ``HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true`` is set.
+  ``WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true`` is set.
 
 Everything else — the stub's provider configuration, the cache and worker
 tunables — is passed through untouched, which is the point: a name this service
@@ -70,17 +70,17 @@ def _start_service(*, stub_url, log_path, extra_env=None):
     _require_env()
     port = server_module.free_port()
 
-    env = {key: value for key, value in os.environ.items() if not key.startswith("HINDSIGHT_API_")}
+    env = {key: value for key, value in os.environ.items() if not key.startswith("WENYUAN_API_")}
     env.update(server_module.stub_environment(stub_url))
     env.update(extra_env or {})
     env.update(
         {
-            "HINDSIGHT_API_DATABASE_URL": os.environ["WENYUAN_DATABASE_URL"],
-            "HINDSIGHT_API_HOST": "127.0.0.1",
-            "HINDSIGHT_API_PORT": str(port),
-            "HINDSIGHT_API_LOG_LEVEL": "info",
+            "WENYUAN_API_DATABASE_URL": os.environ["WENYUAN_DATABASE_URL"],
+            "WENYUAN_API_HOST": "127.0.0.1",
+            "WENYUAN_API_PORT": str(port),
+            "WENYUAN_API_LOG_LEVEL": "info",
             # The reference's server migrates on startup; this one is asked to.
-            "HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP": "true",
+            "WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP": "true",
         }
     )
 

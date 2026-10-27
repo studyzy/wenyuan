@@ -31,7 +31,7 @@ type Handlers struct {
 	DryRun DryRunFunc
 	// RefuseWithoutRefreshModel makes the refresh route refuse with the
 	// reference's message when the deployment is configured with no LLM
-	// provider (HINDSIGHT_API_LLM_PROVIDER=none): the reference rejects refresh
+	// provider (WENYUAN_API_LLM_PROVIDER=none): the reference rejects refresh
 	// work before any lookup rather than queuing it. False (the zero value)
 	// leaves the route queuing, which is what a handler set assembled without a
 	// provider expects.
@@ -43,7 +43,7 @@ type Handlers struct {
 // verbatim.
 //
 //nolint:staticcheck // the reference's own wording, capitalised and sentence-final
-var ErrNoRefreshModel = errors.New("Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
+var ErrNoRefreshModel = errors.New("Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set WENYUAN_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini).")
 
 // NewHandlers builds the handlers over the store.
 func NewHandlers(store storage.Store) *Handlers {

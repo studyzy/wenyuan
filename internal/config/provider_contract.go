@@ -81,7 +81,7 @@ var resolvedProviderKeys = map[string]bool{
 	EnvLLMTraceScopes:          true,
 	EnvLLMVision:               true,
 	// Multi-LLM routing: the strategy document is parsed and validated, and
-	// indexed members resolve through HINDSIGHT_API_LLM_{n}_*.
+	// indexed members resolve through WENYUAN_API_LLM_{n}_*.
 	EnvLLMStrategy: true,
 
 	// Structured-output strictness and temperature, per operation and global.
@@ -232,10 +232,10 @@ var scopedLLMResolvedSuffixes = []string{
 
 // scopedLLMPrefixes are the per-role chat scopes, keyed by family name.
 var scopedLLMPrefixes = map[string]string{
-	"retain_llm":               "HINDSIGHT_API_RETAIN_LLM",
-	"reflect_llm":              "HINDSIGHT_API_REFLECT_LLM",
-	"consolidation_llm":        "HINDSIGHT_API_CONSOLIDATION_LLM",
-	"mental_model_refresh_llm": "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM",
+	"retain_llm":               "WENYUAN_API_RETAIN_LLM",
+	"reflect_llm":              "WENYUAN_API_REFLECT_LLM",
+	"consolidation_llm":        "WENYUAN_API_CONSOLIDATION_LLM",
+	"mental_model_refresh_llm": "WENYUAN_API_MENTAL_MODEL_REFRESH_LLM",
 }
 
 // consolidationOnlySuffixes are the two keys only the consolidation role
@@ -366,21 +366,21 @@ var providerRefusalReasons = []struct {
 	prefix string
 	reason string
 }{
-	{"HINDSIGHT_API_EMBEDDINGS_ONNX", "the ONNX embedding backend needs a native runtime this build does not ship"},
-	{"HINDSIGHT_API_EMBEDDINGS_LOCAL", "the in-process local embedding backend needs a native runtime this build does not ship"},
-	{"HINDSIGHT_API_LITELLM", "the litellm provider is not implemented"},
-	{"HINDSIGHT_API_LLM_GROQ_SERVICE_TIER", "the Groq service tier is not implemented"},
-	{"HINDSIGHT_API_LLM_BEDROCK_SERVICE_TIER", "the Bedrock service tier is not implemented"},
-	{"HINDSIGHT_API_LLM_GEMINI_SERVICE_TIER", "the Gemini service tier is not implemented"},
-	{"HINDSIGHT_API_LLM_GROQ", "the Groq service tier is not implemented"},
-	{"HINDSIGHT_API_LLM_OLLAMA", "the Ollama request tuning is not implemented"},
-	{"HINDSIGHT_API_LLM_CODEX_HOME", "the Codex CLI provider is not implemented"},
-	{"HINDSIGHT_API_LLM_VERTEXAI", "the Vertex AI provider is not implemented"},
-	{"HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
-	{"HINDSIGHT_API_RETAIN_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
-	{"HINDSIGHT_API_REFLECT_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
-	{"HINDSIGHT_API_CONSOLIDATION_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
-	{"HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
+	{"WENYUAN_API_EMBEDDINGS_ONNX", "the ONNX embedding backend needs a native runtime this build does not ship"},
+	{"WENYUAN_API_EMBEDDINGS_LOCAL", "the in-process local embedding backend needs a native runtime this build does not ship"},
+	{"WENYUAN_API_LITELLM", "the litellm provider is not implemented"},
+	{"WENYUAN_API_LLM_GROQ_SERVICE_TIER", "the Groq service tier is not implemented"},
+	{"WENYUAN_API_LLM_BEDROCK_SERVICE_TIER", "the Bedrock service tier is not implemented"},
+	{"WENYUAN_API_LLM_GEMINI_SERVICE_TIER", "the Gemini service tier is not implemented"},
+	{"WENYUAN_API_LLM_GROQ", "the Groq service tier is not implemented"},
+	{"WENYUAN_API_LLM_OLLAMA", "the Ollama request tuning is not implemented"},
+	{"WENYUAN_API_LLM_CODEX_HOME", "the Codex CLI provider is not implemented"},
+	{"WENYUAN_API_LLM_VERTEXAI", "the Vertex AI provider is not implemented"},
+	{"WENYUAN_API_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
+	{"WENYUAN_API_RETAIN_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
+	{"WENYUAN_API_REFLECT_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
+	{"WENYUAN_API_CONSOLIDATION_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
+	{"WENYUAN_API_MENTAL_MODEL_REFRESH_LLM_LITELLMROUTER_CONFIG", "the litellm router deployment is not implemented"},
 }
 
 // recordUnsupportedProviderKeys folds the family refusals into the shared

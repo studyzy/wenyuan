@@ -112,7 +112,7 @@ describe("the relocation variable", () => {
       // The relocated path lives inside the fake home, so it can only be named
       // once the fixture exists.
       const relocated: string = home.path("elsewhere", "config.json");
-      process.env.HINDSIGHT_CONFIG = relocated;
+      process.env.WENYUAN_CONFIG = relocated;
 
       const result = await runInstaller(["install", "claude-code", "--server", "local"]);
       expect(result.status).toBe(0);
@@ -127,7 +127,7 @@ describe("the relocation variable", () => {
 describe("the service address", () => {
   it("comes from the environment when nothing else names it", async () => {
     await withFakeHome(
-      { environment: { PATH: "", HINDSIGHT_API_URL: "http://env.example:9999" } },
+      { environment: { PATH: "", WENYUAN_API_URL: "http://env.example:9999" } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         expect((await home.readJson(STORED))[CONFIG_KEYS.apiUrl]).toBe("http://env.example:9999");
@@ -146,7 +146,7 @@ describe("the service address", () => {
 describe("the auth token", () => {
   it("is taken from the environment and stored under its key", async () => {
     await withFakeHome(
-      { environment: { PATH: "", HINDSIGHT_API_TOKEN: "token-from-env" } },
+      { environment: { PATH: "", WENYUAN_API_TOKEN: "token-from-env" } },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", "claude-code", "--server", "hosted"]);
         expect(result.status).toBe(0);
@@ -168,7 +168,7 @@ describe("the auth token", () => {
 
 describe("the bank identifier", () => {
   it.each([
-    ["the environment", { HINDSIGHT_BANK_ID: "bank-from-env" }, "bank-from-env"],
+    ["the environment", { WENYUAN_BANK_ID: "bank-from-env" }, "bank-from-env"],
     ["the built-in default", {}, DEFAULT_BANK_ID],
   ])("comes from %s", async (_name: string, extra: Record<string, string>, expected: string) => {
     await withFakeHome({ environment: { PATH: "", ...extra } }, async (home: FakeHome) => {
@@ -184,7 +184,7 @@ describe("the bank identifier", () => {
 describe("the locally managed mode", () => {
   it("stores the port, no explicit address, and warns about missing prerequisites", async () => {
     await withFakeHome(
-      { environment: { PATH: "", HINDSIGHT_API_PORT: "19999" } },
+      { environment: { PATH: "", WENYUAN_API_PORT: "19999" } },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", "claude-code", "--server", "local"]);
         expect(result.status).toBe(0);

@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "バンクが選択されていません",
     "apiDisabledTitle": "バンク設定APIが有効になっていません",
-    "apiDisabledDescription": "バンクごとの設定を有効にするには、サーバーで<code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code>を設定してください。",
+    "apiDisabledDescription": "バンクごとの設定を有効にするには、サーバーで<code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code>を設定してください。",
     "resetToInherited": "継承値にリセット",
     "failedToReset": "リセットに失敗しました",
     "overrideBadge": "バンクオーバーライド",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "現在のバンクにドキュメントを追加",
     "templateManifestHelp": "テンプレートマニフェストJSONを貼り付けて、設定、メンタルモデル、ディレクティブを使用してバンクを事前構成します。",
     "fileUploadDisabledMessage": "このサーバーではファイルアップロードが有効になっていません。",
-    "fileUploadEnableHint": "有効にするには、<code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code> を設定してください",
+    "fileUploadEnableHint": "有効にするには、<code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code> を設定してください",
     "fileTagsHelp": "カンマ区切り — Recall/Reflect中にメモリをフィルタリングするために使用されます",
     "strategyHelpText": "このドキュメントのバンクのデフォルト抽出戦略を上書きします。",
     "observationScopePerTag": "タグごと",

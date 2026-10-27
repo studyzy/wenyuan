@@ -71,7 +71,7 @@ func ApplyFlags(base Config, flags FlagValues) Config {
 	}
 	// Daemon mode resolves its own bind address, the way the reference does: the
 	// loopback default applies unless a host was configured explicitly (the flag
-	// here, or HINDSIGHT_API_HOST in the environment), and the daemon port
+	// here, or WENYUAN_API_HOST in the environment), and the daemon port
 	// applies unless --port was passed — a port exported for foreground runs
 	// does not move the daemon.
 	if cfg.Daemon {

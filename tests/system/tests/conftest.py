@@ -68,16 +68,16 @@ def typesafe_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> It
         stub_url=stub_server.url,
         log_path=log_path,
         extra_env={
-            "HINDSIGHT_API_RERANKER_PROVIDER": "typesafe",
-            "HINDSIGHT_API_RERANKER_TYPESAFE_API_KEY": "stub-key",
-            "HINDSIGHT_API_RERANKER_TYPESAFE_BASE_URL": stub_server.url,
-            "HINDSIGHT_API_RERANKER_TYPESAFE_PRUNE_CANDIDATES": "true",
+            "WENYUAN_API_RERANKER_PROVIDER": "typesafe",
+            "WENYUAN_API_RERANKER_TYPESAFE_API_KEY": "stub-key",
+            "WENYUAN_API_RERANKER_TYPESAFE_BASE_URL": stub_server.url,
+            "WENYUAN_API_RERANKER_TYPESAFE_PRUNE_CANDIDATES": "true",
             # HTTP only. Both servers share one database, so a worker here claims the OTHER
             # server's queued work — every story's consolidation and refreshes — and runs it with
             # this server's reranker, pruning by whatever cut level a TypeSafe story last set. The
             # story then reads a result its own server never produced, and fails one run in a few
             # depending on which worker polled first.
-            "HINDSIGHT_API_WORKER_ENABLED": "false",
+            "WENYUAN_API_WORKER_ENABLED": "false",
         },
     )
     yield server
@@ -96,7 +96,7 @@ def scoped_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iter
         stub_url=stub_server.url,
         log_path=log_path,
         extra_env={
-            "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION": "tag_scope_validator:UserTagScope",
+            "WENYUAN_API_OPERATION_VALIDATOR_EXTENSION": "tag_scope_validator:UserTagScope",
             "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
         },
     )
@@ -108,7 +108,7 @@ def scoped_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iter
 def retrying_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """A server that will actually re-ask the extraction model once.
 
-    ``stub_environment`` pins ``HINDSIGHT_API_LLM_MAX_RETRIES`` to 0 for every other
+    ``stub_environment`` pins ``WENYUAN_API_LLM_MAX_RETRIES`` to 0 for every other
     story, because a retry would double the stubbed calls and prove nothing. The
     schema-drift recovery in #5280 lives *entirely* in the retry — the correction is
     what the second attempt carries — so with no budget there is no second attempt and
@@ -124,7 +124,7 @@ def retrying_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> It
     server = start_hindsight_server(
         stub_url=stub_server.url,
         log_path=log_path,
-        extra_env={"HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES": "1"},
+        extra_env={"WENYUAN_API_RETAIN_LLM_MAX_RETRIES": "1"},
     )
     yield server
     server.stop()

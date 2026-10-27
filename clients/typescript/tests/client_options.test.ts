@@ -45,8 +45,8 @@ describe("WenYuanClient options", () => {
   });
 
   it("falls back to the deployment's environment, like the free helpers", async () => {
-    const previous = process.env.HINDSIGHT_API_URL;
-    process.env.HINDSIGHT_API_URL = "http://env.test:1234";
+    const previous = process.env.WENYUAN_API_URL;
+    process.env.WENYUAN_API_URL = "http://env.test:1234";
     try {
       const stub = stubFetch(() => ({ json: { api_version: "1.0.0" } }));
       const client = new WenYuanClient({ fetch: stub.fetch });
@@ -55,8 +55,8 @@ describe("WenYuanClient options", () => {
 
       expect(call(stub).url).toBe("http://env.test:1234/version");
     } finally {
-      if (previous === undefined) delete process.env.HINDSIGHT_API_URL;
-      else process.env.HINDSIGHT_API_URL = previous;
+      if (previous === undefined) delete process.env.WENYUAN_API_URL;
+      else process.env.WENYUAN_API_URL = previous;
     }
   });
 });

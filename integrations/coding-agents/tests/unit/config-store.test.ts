@@ -55,7 +55,7 @@ describe("the stored configuration file", () => {
 
   it("honors the relocation variable and leaves the default path alone", async () => {
     await withFakeHome({}, async (home) => {
-      process.env.HINDSIGHT_CONFIG = home.path("relocated", "config.json");
+      process.env.WENYUAN_CONFIG = home.path("relocated", "config.json");
       await writeStoredConfig({ bankId: "relocated" });
       expect(await home.exists("relocated/config.json")).toBe(true);
       expect(await home.exists(".wenyuan/config.json")).toBe(false);
@@ -135,7 +135,7 @@ describe("the precedence chain", () => {
 
   it("takes the address from the environment, then from the built-in default", async () => {
     await withFakeHome(
-      { environment: { HINDSIGHT_API_URL: "http://env:9200" } },
+      { environment: { WENYUAN_API_URL: "http://env:9200" } },
       async () => {
         const fromEnvironment = await resolveConnection();
         expect(fromEnvironment.ok).toBe(true);
@@ -156,7 +156,7 @@ describe("the precedence chain", () => {
 
   it("takes the bank identifier from the environment, then from the built-in default", async () => {
     await withFakeHome(
-      { environment: { HINDSIGHT_BANK_ID: "team-b" } },
+      { environment: { WENYUAN_BANK_ID: "team-b" } },
       async () => {
         const result = await resolveConnection();
         expect(result.ok).toBe(true);
@@ -176,7 +176,7 @@ describe("the precedence chain", () => {
 
   it("takes the hosted credential from the environment and writes it under its key", async () => {
     await withFakeHome(
-      { environment: { HINDSIGHT_API_TOKEN: "secret-token" } },
+      { environment: { WENYUAN_API_TOKEN: "secret-token" } },
       async () => {
         const result = await resolveConnection({ server: "hosted" });
         expect(result.ok).toBe(true);
@@ -190,7 +190,7 @@ describe("the precedence chain", () => {
 
   it("records the port and no explicit address in the locally managed mode", async () => {
     await withFakeHome(
-      { environment: { HINDSIGHT_API_PORT: "19999" } },
+      { environment: { WENYUAN_API_PORT: "19999" } },
       async () => {
         const result = await resolveConnection({ server: "local" });
         expect(result.ok).toBe(true);
@@ -217,23 +217,23 @@ describe("the precedence chain", () => {
   });
 
   it("spells the deployment environment names in the block the runtime reads", async () => {
-    await withFakeHome({ environment: { HINDSIGHT_BANK_ID: "team-d" } }, async () => {
+    await withFakeHome({ environment: { WENYUAN_BANK_ID: "team-d" } }, async () => {
       const result = await resolveConnection({ server: "self-hosted", apiUrl: "http://x:1" });
       expect(result.ok).toBe(true);
       if (result.ok) {
         const environment = runtimeEnvironment(result.connection);
-        expect(environment.HINDSIGHT_BANK_ID).toBe("team-d");
-        expect(environment.HINDSIGHT_API_URL).toBe("http://x:1");
-        expect(environment.HINDSIGHT_API_TOKEN).toBeUndefined();
+        expect(environment.WENYUAN_BANK_ID).toBe("team-d");
+        expect(environment.WENYUAN_API_URL).toBe("http://x:1");
+        expect(environment.WENYUAN_API_TOKEN).toBeUndefined();
       }
     });
   });
 
   it("names the deployment environment variables it honors", () => {
-    expect(DEPLOYMENT_ENV.apiUrl).toBe("HINDSIGHT_API_URL");
-    expect(DEPLOYMENT_ENV.apiToken).toBe("HINDSIGHT_API_TOKEN");
-    expect(DEPLOYMENT_ENV.bankId).toBe("HINDSIGHT_BANK_ID");
-    expect(DEPLOYMENT_ENV.apiPort).toBe("HINDSIGHT_API_PORT");
+    expect(DEPLOYMENT_ENV.apiUrl).toBe("WENYUAN_API_URL");
+    expect(DEPLOYMENT_ENV.apiToken).toBe("WENYUAN_API_TOKEN");
+    expect(DEPLOYMENT_ENV.bankId).toBe("WENYUAN_BANK_ID");
+    expect(DEPLOYMENT_ENV.apiPort).toBe("WENYUAN_API_PORT");
   });
 });
 

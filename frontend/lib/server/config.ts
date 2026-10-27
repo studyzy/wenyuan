@@ -5,11 +5,11 @@
  * Defaults: upstream URL to the local loopback port, upstream key empty,
  * base path empty, max upload size defaulted.
  */
-export const ACCESS_KEY_ENV = "HINDSIGHT_CP_ACCESS_KEY";
-export const DATAPLANE_URL_ENV = "HINDSIGHT_CP_DATAPLANE_API_URL";
-export const DATAPLANE_KEY_ENV = "HINDSIGHT_CP_DATAPLANE_API_KEY";
+export const ACCESS_KEY_ENV = "WENYUAN_CP_ACCESS_KEY";
+export const DATAPLANE_URL_ENV = "WENYUAN_CP_DATAPLANE_API_URL";
+export const DATAPLANE_KEY_ENV = "WENYUAN_CP_DATAPLANE_API_KEY";
 export const BASE_PATH_ENV = "NEXT_PUBLIC_BASE_PATH";
-export const MAX_UPLOAD_SIZE_ENV = "HINDSIGHT_CP_MAX_UPLOAD_SIZE";
+export const MAX_UPLOAD_SIZE_ENV = "WENYUAN_CP_MAX_UPLOAD_SIZE";
 
 export const DEFAULT_DATAPLANE_URL = "http://127.0.0.1:8000";
 export const DEFAULT_MAX_UPLOAD_SIZE = 25 * 1024 * 1024;

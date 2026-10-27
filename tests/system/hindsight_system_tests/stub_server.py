@@ -4,10 +4,10 @@ The whole point of standing this up as a *server* rather than monkeypatching a
 provider class in-process is that nothing in ``hindsight_api`` has to change or
 even know it exists. Three environment variables point the real server here:
 
-    HINDSIGHT_API_LLM_BASE_URL                  -> /v1/chat/completions
-    HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL    -> /v1/embeddings
-    HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL -> /rerank
-    HINDSIGHT_API_RERANKER_TYPESAFE_BASE_URL     -> /v1/systemone
+    WENYUAN_API_LLM_BASE_URL                  -> /v1/chat/completions
+    WENYUAN_API_EMBEDDINGS_OPENAI_BASE_URL    -> /v1/embeddings
+    WENYUAN_API_RERANKER_SILICONFLOW_BASE_URL -> /rerank
+    WENYUAN_API_RERANKER_TYPESAFE_BASE_URL     -> /v1/systemone
 
 Which means the tests exercise the production provider code for real — the
 OpenAI client, the JSON-repair path, the retry and rate-limit handling, the

@@ -5,10 +5,10 @@
 // They are behind the `integration` build tag so the default `go test ./...`
 // stays offline: every test here talks to a real service over HTTP.
 //
-//	HINDSIGHT_API_URL=http://127.0.0.1:18888 go test -tags integration ./...
+//	WENYUAN_API_URL=http://127.0.0.1:18888 go test -tags integration ./...
 //
 // `make test-sdk-go` runs exactly that. A server started with
-// `HINDSIGHT_API_DATABASE_URL=memory` is enough — no model provider is
+// `WENYUAN_API_DATABASE_URL=memory` is enough — no model provider is
 // configured, so assertions are structural (an operation succeeded, an id
 // round-tripped, a list contains what was written) rather than about extracted
 // facts or synthesized prose.

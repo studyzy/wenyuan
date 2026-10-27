@@ -382,7 +382,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
    `internal/storage/memory_recall.go`。
 2. ~~**融合与 boost 代数对齐**~~ — **已完成，并已补齐 `interleave_fusion`**。boost 为 rank-space
    提升（`1/(k + rank/divisor)`，divisor 2/4/8）加衰减式 rank 后置加项；recency 改为可配衰减曲线
-   （`HINDSIGHT_API_RECENCY_DECAY_FUNCTION`，linear/exponential/none）并对**粗粒度日期**从周期
+   （`WENYUAN_API_RECENCY_DECAY_FUNCTION`，linear/exponential/none）并对**粗粒度日期**从周期
    末端起算且封顶中性；证据强度为 proof-count 对数归一。`interleave_fusion` **已落地并有真实调用点**：
    `storage.RecallQuery.Fusion` + 按源预裁 `PerSourceCap`，由巩固的去重候选扩池
    （`Store.RelatedObservations`）实际使用，另补 rerank 前裁剪 `RerankDepth`。
@@ -399,7 +399,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
    （claude-code、codex、cursor、github-copilot、xai-oauth）——需交互式登录，
    本服务不承载；Gemini 原生协议、LiteLLM router、bedrock、llamacpp 亦未单独实现。
    此后已补 `volcano` 厂商与确定性 `mock` provider；且**不再静默**：
-   `HINDSIGHT_API_LLM_STRATEGY` / `..._LLM_LITELLMROUTER_CONFIG` / `..._EMBEDDINGS_LOCAL_MODEL`
+   `WENYUAN_API_LLM_STRATEGY` / `..._LLM_LITELLMROUTER_CONFIG` / `..._EMBEDDINGS_LOCAL_MODEL`
    一旦配置即**启动失败并点名该键**。
 6. ~~**causal 链接生成**~~ — **已完成**。抽取提示与 schema 增加 `causal_relations`
    （每 fact 至多 2 条、必须指向更早的 fact）；写入后解析为 `caused_by`
@@ -409,7 +409,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
    （无损切分需存储协议变更，仍为范围外）。
 8. ~~**外部对象存储后端**~~ — **已完成（S3 兼容）**。`internal/objectstore/` 实现
    S3 REST 子集并自签 SigV4（无厂商 SDK），经 `storage.ObjectStore` 边界接入；
-   环境键沿用上游（`HINDSIGHT_API_FILE_STORAGE_TYPE` 等）。**未实现**：
+   环境键沿用上游（`WENYUAN_API_FILE_STORAGE_TYPE` 等）。**未实现**：
    GCS / Azure——上游三者共用同一个 obstore 包装器，仅客户端配置不同；如需，
    可依同一 `ObjectStore` 边界补实现。
 
@@ -529,9 +529,9 @@ grep -c "CREATE OR REPLACE FUNCTION" migrations/0005_reference_functions.sql int
 
 # 真实运行维护循环（需要 pgx 构建 + 本地库）
 go build -tags pgx -o /tmp/worker ./cmd/worker
-HINDSIGHT_API_DATABASE_URL="postgresql://hindsight:hindsight@127.0.0.1:5432/wenyuan_test" \
-HINDSIGHT_API_DATABASE_SCHEMA=probe HINDSIGHT_API_AUDIT_LOG_RETENTION_DAYS=30 \
-HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS=0 \
+WENYUAN_API_DATABASE_URL="postgresql://hindsight:hindsight@127.0.0.1:5432/wenyuan_test" \
+WENYUAN_API_DATABASE_SCHEMA=probe WENYUAN_API_AUDIT_LOG_RETENTION_DAYS=30 \
+WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS=0 \
   timeout 10 /tmp/worker        # 应打印 maintenance enabled / job finished 各行
 
 # 门槛与实测覆盖率

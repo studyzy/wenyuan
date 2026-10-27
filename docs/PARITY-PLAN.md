@@ -116,7 +116,7 @@ sed -n '23,30p' internal/httpx/errors.go
 | A2.34 | `/banks/{id}/config` | 响应补 `bank_id`；create/update 请求接受履职配置键（retain_mission/…/enable_* 共 12+） | http:2166-2188,1990-2144 |
 | A2.35 | `/v1/bank-template-schema` | 上游返回模板清单真实 JSON Schema | http:9450-9460 |
 | A2.36 | retain 响应 | `usage` 对 async 为 null、`operation_id(s)` 仅 async；`usage` 为可空 | http:1388-1422 |
-| A2.37 | `/files/retain` | 请求 `{parser,files_metadata:[...]}`；响应 `{operation_ids}`；`HINDSIGHT_API_ENABLE_FILE_UPLOAD_API` 门控 + 批量/大小上限 | http:10360-10525,1341-1441 |
+| A2.37 | `/files/retain` | 请求 `{parser,files_metadata:[...]}`；响应 `{operation_ids}`；`WENYUAN_API_ENABLE_FILE_UPLOAD_API` 门控 + 批量/大小上限 | http:10360-10525,1341-1441 |
 
 ---
 
@@ -196,9 +196,9 @@ sed -n '23,30p' internal/httpx/errors.go
 | C2 | **Worker HTTP 面** | `cmd/worker` 无监听；`/health /ready /live /metrics /`（8889）缺失；无 worker liveness 字段 | 复用 `internal/monitoring` 挂载 |
 | C3 | **API 内嵌 Worker** | `app.Serve` 不启动 consumer/maintenance（上游单机默认内嵌） | `WORKER_ENABLED` 默认开时随 server 启动 |
 | C4 | **准入控制 + 499** | 见 A1.6/A1.7 | 每操作 lane + 有界等待 + 503 Retry-After + 断开 499 |
-| C5 | **LLM 请求追踪** | `llm_requests` 无 INSERT；`HINDSIGHT_API_LLM_TRACE_ENABLED` 清理空表 | provider 边界写行 |
+| C5 | **LLM 请求追踪** | `llm_requests` 无 INSERT；`WENYUAN_API_LLM_TRACE_ENABLED` 清理空表 | provider 边界写行 |
 | C6 | **MCP 工具集** | 9/38，缺 29（document/operation/mental-model/directive/knowledge-base CRUD 等） | 补齐 roster + 默认 bank/auth/filter |
-| C7 | **文档解析器** | 无 markitdown/llama_parse/iris、无 `HINDSIGHT_API_FILE_PARSER` 链、无上传门控 | markitdown 等价 + 解析链 + 400/门控 |
+| C7 | **文档解析器** | 无 markitdown/llama_parse/iris、无 `WENYUAN_API_FILE_PARSER` 链、无上传门控 | markitdown 等价 + 解析链 + 400/门控 |
 | C8 | **扩展框架** | 仅编译期 Go 接口；无 loader/context、OPERATION_VALIDATOR、MEMORY_DEFENSE、MCP/MEMORIES 扩展、tenant 富化、`bank_tables` | 按需扩展点（至少 memory_defense + validator） |
 | C9 | **对象存储** | 仅 S3（缺 prefix-delete/streaming/签名 URL）；无 GCS/Azure | 补 S3 能力；GCS/Azure 视需求 |
 | C10 | **Provider 适配** | 缺 gemini 原生/litellm/bedrock/llamacpp/mock/openai-responses/volcano；embeddings 仅 OpenAI 兼容；`LLM_STRATEGY`/`LITELLMROUTER_CONFIG`/`EMBEDDINGS_LOCAL_*` 静默忽略 | 补可离线实现者；不可实现者显式报错而非静默 |
@@ -212,7 +212,7 @@ sed -n '23,30p' internal/httpx/errors.go
 | ID | 缺口 | 证据 |
 |---|---|---|
 | D1 | 指标面只有 2 个计数器；缺操作/LLM/DB 池/async backlog 指标 | `monitoring/metrics.go:1-60` |
-| D2 | 无 OTel 追踪、无 `HINDSIGHT_API_OTEL_*`、无 GenAI span | `tracing.py` |
+| D2 | 无 OTel 追踪、无 `WENYUAN_API_OTEL_*`、无 GenAI span | `tracing.py` |
 | D3 | 无 CPU profiling 配置键 | `profiling.py` |
 | D4 | 无 loop-lag 探针 / stall watchdog / 多 worker metrics 标签 | `loop_lag.py`、`loop_watchdog.py`、`metrics_multiworker.py` |
 | D5 | worker 配置键名/单位与上游不同，上游 env 被静默忽略 | `config/config.go:42-54` |
@@ -275,7 +275,7 @@ sed -n '23,30p' internal/httpx/errors.go
   backup/restore/run-db-migration/decommission-worker(s)。
 - ~~**C7** 文档解析器。~~ 完成：`internal/fileparse` 提供解析链（`convert`/`supports`/`name` 接口、按序回退、
   远端 4xx 视为不支持而继续）；本地 markitdown 等价解析器用标准库读取 PDF/DOCX/PPTX/XLSX/HTML/CSV/TSV/
-  JSON/JSONL/文本，`llama_parse` 与 `iris` 走各自 HTTP API；`HINDSIGHT_API_FILE_PARSER` 链、
+  JSON/JSONL/文本，`llama_parse` 与 `iris` 走各自 HTTP API；`WENYUAN_API_FILE_PARSER` 链、
   `..._ALLOWLIST`、`..._CONVERSION_MAX_BATCH_SIZE(_MB)`、`..._DELETE_AFTER_RETAIN` 均已生效；
   上传门控（体/单文件/数量）与不可解析格式的显式 400 保留。OCR（`..._MARKITDOWN_OCR_*`）仍**明确范围外**，
   图片按附件处理。
@@ -341,7 +341,7 @@ sed -n '23,30p' internal/httpx/errors.go
 | 心智模型/知识库 | dry-run 与 refresh 的「无来源」短路与落库、列表与详情的陈旧判定分离（`IsStaleBatch`）、「任一引用消失即 stale」、知识节点 PATCH 与背后模型**同一事务** |
 | 队列/投递 | claim 只领 `task_payload IS NOT NULL`、`recover` 不再多入队、恢复谓词补 `fact_type IN ('experience','world')`、`retain.completed` 每内容项一条（同步与异步都发）、失败的巩固发 `status="failed"`、投递按阶梯重试并写回 `retry_count`/`last_error`、`http_config` 生效、事件体 `exclude_none` |
 | 传输/归档 | 导入保留文档 `created_at`、两个维护队列段的导出与重映射恢复、manifest/段形状与参考一致（并修掉会让参考拒收我们归档的 `null` 列表成员）、导出键布局、clone 的 `archive_byte_size` |
-| 银行/指令/其他 | 不再写参考从不写的遗留列、config 写入类型文案、指令列表查询语义与多字段错误累积、超 int64 offset 的状态、原文字典改读 `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` |
+| 银行/指令/其他 | 不再写参考从不写的遗留列、config 写入类型文案、指令列表查询语义与多字段错误累积、超 int64 offset 的状态、原文字典改读 `WENYUAN_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` |
 | MCP | 工具返回体改为参考的引擎载荷与 `json.dumps(indent=2)` 渲染、未找到是**正常结果**、未知工具文案、关闭 MCP 时的 404 |
 
 **判为非分歧/不可复现（未改代码，已留证）**：tag 落库次序（参考按 `set` 迭代序，无契约）、
@@ -357,7 +357,7 @@ sed -n '23,30p' internal/httpx/errors.go
   取 `DIFF→SAME` 证据（参考 `:8888` 与按端口起的工作树副本）。
 - **新工具**：`scripts/parity_check.py`（单请求双向差分，复用 `parity_probe.py` 的规范化；
   `--reference-only`/`--service-only` 用来先在两侧铺同一份夹具）与
-  `scripts/parity_dev_service.sh <port>`（按端口构建并起一份当前工作树，`HINDSIGHT_API_WORKER_ENABLED=false`
+  `scripts/parity_dev_service.sh <port>`（按端口构建并起一份当前工作树，`WENYUAN_API_WORKER_ENABLED=false`
   以免抢真实部署的队列，`--stop` 停）。
 - **验收**：`make check` 全绿（build / test / vet / pgx 构建 / gofmt / golangci-lint 0 issues）；
   终态差分探针 `199 checks: 189 identical, 0 differing, 10 known`（10 项为既有已记录差异）。
@@ -497,7 +497,7 @@ sed -n '23,30p' internal/httpx/errors.go
   读不了的格式（旧版 .doc/.ppt/.xls、图片、音频）报 `UnsupportedFileTypeError`，交由链回退，
   全部失败才拒绝。
 - 远端解析器 `llama_parse`、`iris` 走各自 HTTP API（上传/轮询/取结果；4xx 视为不支持、5xx 与网络错误视为硬失败）。
-- `HINDSIGHT_API_FILE_PARSER`（链）、`..._ALLOWLIST`、`..._CONVERSION_MAX_BATCH_SIZE(_MB)`、
+- `WENYUAN_API_FILE_PARSER`（链）、`..._ALLOWLIST`、`..._CONVERSION_MAX_BATCH_SIZE(_MB)`、
   `..._DELETE_AFTER_RETAIN` 经 `fileparse.FromEnv` 生效并在 `app.mount` 接线；配置侧改为 `Delegated`
   不再拒绝这些键。`FILE_DELETE_AFTER_RETAIN`（默认开）下，上传字节不做存储落盘（等价于上游"转换后删除原文"）；
   图片仍保留字节，因为其内容就是字节。
@@ -558,7 +558,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
     `postgres` → `postgresql`、`ssl=` → `sslmode=`）归一化，幂等，非 PG URL 原样返回；**在驱动打开前应用**，
     使从上游拷贝来的 URL 能直接连上而非因 scheme 报错。
   - 连接池预算 `PoolBudget{MaxOpenConns, MaxIdleConns}` 贯通 `BackendConfig` → 驱动注册 →
-    `SetMaxOpenConns/SetMaxIdleConns`；配置键 `HINDSIGHT_API_DB_POOL_MAX_SIZE`(100，对齐上游)/`_MIN_SIZE`(5)；
+    `SetMaxOpenConns/SetMaxIdleConns`；配置键 `WENYUAN_API_DB_POOL_MAX_SIZE`(100，对齐上游)/`_MIN_SIZE`(5)；
     server/worker、bankctl、schematool（小预算）均已接线。无上限的池会一直扩到数据库拒连，把负载尖峰
     变成对该库所有客户端的故障。
 - **D11** 配置**跨进程失效**：新增 `storage.BankConfig`，**绕过进程内银行行缓存**直读配置列；recall 的
@@ -577,7 +577,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   `document_id`/`items_count`/`unit_ids`/`operation_id`）；投递把接收方状态写入 operation 的
   `result_metadata.last_status_code`（传输失败写 `null`，与"对端拒绝"可分）；内存后端改为**从 operation
   派生投递记录**（此前是一个永远为空的切片，与 PG 语义不一致），删除该死字段。
-- **C7** 上传门控：新增进程级上限 `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB`(20) 与
+- **C7** 上传门控：新增进程级上限 `WENYUAN_API_RETAIN_ATTACHMENT_MAX_SIZE_MB`(20) 与
   `..._MAX_COUNT`(50)——请求体在解析前用 `MaxBytesReader` 封顶、单文件先查声明大小再按 limit 截读
   （谎报长度也越不过）、文件数超限即拒；三者都是 400 且消息点明具体限制。解析链本身（markitdown 等价）
   仍为**范围外**：无法离线实现的格式继续显式 400 提示先转文本（不再当二进制噪声存库）。
@@ -588,7 +588,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   全量 `ReadAll`（用例以字节计数证明返回时零字节已传输），两处字节服务路由优先流式、未知尺寸时省略
   `Content-Length`、头部与缓冲路径逐项一致；无该能力的后端保持原路径。**GCS/Azure 与预签名 URL 明确不做**
   （上游亦无预签名路由）。
-- **C10** 不可实现者**显式报错**：`HINDSIGHT_API_LLM_STRATEGY`/`..._LLM_LITELLMROUTER_CONFIG`/
+- **C10** 不可实现者**显式报错**：`WENYUAN_API_LLM_STRATEGY`/`..._LLM_LITELLMROUTER_CONFIG`/
   `..._EMBEDDINGS_LOCAL_MODEL` 一旦配置且本构建无法实现，**启动即失败**并点名该键（此前静默忽略）。
 - **C12** 管理 CLI：新增 `backup`/`restore`（zip + 每表 JSON，表集合**从迁移文件派生**并做拓扑排序，
   恢复前先整体校验再按逆序 TRUNCATE；内存后端明确拒绝）、`run-db-migration`、
@@ -666,7 +666,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 
 - **B2.12** recency 衰减可配：新增 `storage.RecencyDecayConfig` 与 `RecencyDecay`/`RecencyForUnit`/
   `SpansCalendarPeriod`；**粗粒度日期**（整月/整年）从**周期末端**起算并封顶于中性——否则
-  "2026 峰会"存成 2026-01-01 会读作过期。配置键 `HINDSIGHT_API_RECENCY_DECAY_FUNCTION`
+  "2026 峰会"存成 2026-01-01 会读作过期。配置键 `WENYUAN_API_RECENCY_DECAY_FUNCTION`
   （linear|exponential|none）+ `..._LINEAR_WINDOW_DAYS` + `..._HALFLIFE_DAYS`，经 app→memoryops→
   `RecallQuery.Recency` 贯通；未识别名回落默认（非法不启动失败）。
 - **B2.2**（Postgres 路径）**compound TagGroups 原本被静默忽略**：现渲染为 SQL 条件
@@ -697,7 +697,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   - **真实调用方**：巩固的去重候选扩池——`Store.RelatedObservations`（可选实现），
     由 `consolidationStore` 以 **interleave 融合 + 按源截断** 逐条 fact 文本召回 observation
     （`Types=[observation]`、`Budget=low`、去重、失败不致命——丢一个合并候选远好于整趟失败）。
-  - 配置：`HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE`（默认 0 关闭）。
+  - 配置：`WENYUAN_API_RECALL_MAX_CANDIDATES_PER_SOURCE`（默认 0 关闭）。
 - 加测试：轮转序、未排名候选保留、按源截断、去重扩池（相关 observation 恰好出现一次、池内不重复）。
 - 验证：`make check` 全绿。
 
@@ -762,7 +762,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
     （"Your response will be REJECTED if it violates…"），使后段轮次无法压制规则；规则去重/排序稳定渲染，
     无 directive 时两段均不出现。answer prompt 改为按短别名引用（配合 presentation 层）。
   - **输出语言注入**：新增 `WithOutputLanguage` provider 包裹层，把
-    `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE`（此前只解析从不使用）作为指令附加到 system 消息（无 system 则插入），
+    `WENYUAN_API_LLM_OUTPUT_LANGUAGE`（此前只解析从不使用）作为指令附加到 system 消息（无 system 则插入），
     覆盖 retain 抽取 / 巩固 / reflect / 心智模型全部产物。
 - 加测试：system 追加/插入/未设置不包裹、directive 段与提醒位置及排序、无 directive 不输出。
 - 验证：`make check` 全绿。
@@ -800,7 +800,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   - DDL 一律 **CONCURRENTLY**（`CREATE INDEX CONCURRENTLY IF NOT EXISTS ... WHERE fact_type/bank_id`、
     `DROP INDEX CONCURRENTLY IF EXISTS`），bank_id 字面量转义；`vector_extension` 决定访问方法。
   - PG 实现 `VectorIndexReconciler`（可选能力接口，内存后端不实现 → 跳过）：状态/候选银行/对账。
-  - 配置：`HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS`（默认 0）、`..._RECONCILE_INTERVAL_SECONDS`（默认 900）；
+  - 配置：`WENYUAN_API_VECTOR_INDEX_MIN_ROWS`（默认 0）、`..._RECONCILE_INTERVAL_SECONDS`（默认 900）；
     维护作业 `vector_index.reconcile`；CLI `bankctl bank repair-bank --vector-index-min-rows N`。
 - 加测试：命名/规划/DDL（含并发、转义、vchord）、作业门控与内存后端 no-op。
 - 验证：`make check` 全绿。
@@ -813,7 +813,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 - provider 包裹层 `TraceSpans` 为每次 completion 发一条 **GenAI span**
   （`gen_ai.system`/`gen_ai.request.max_tokens`/`temperature`/`gen_ai.response.model`/
   `gen_ai.usage.*`/`wenyuan.scope`），错误置 error 状态。
-- 配置键对齐上游：`HINDSIGHT_API_OTEL_TRACES_ENABLED`（默认关）、
+- 配置键对齐上游：`WENYUAN_API_OTEL_TRACES_ENABLED`（默认关）、
   `..._OTEL_EXPORTER_OTLP_ENDPOINT`、`..._HEADERS`、`..._SERVICE_NAME`、
   `..._DEPLOYMENT_ENVIRONMENT`；启用但无 endpoint 视作关闭。`Serve` 退出时 `App.Close()`
   冲刷。
@@ -845,7 +845,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 
 - **D6** worker 新增**按类型预留槽位**：`ClaimNextOperationForTypes`（两后端+接口），consumer
   在某预留类型在飞数低于下限时优先领取该类型，否则领取任意工作。配置
-  `HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`（默认 2，参照上游）。
+  `WENYUAN_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`（默认 2，参照上游）。
   加测试（预留类型优先于更旧的非预留工作）。
 - 验证：`make check` 全绿。
 
@@ -912,15 +912,15 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 
 ### 2026-10-14 — 阶段 4（per-type wall ceiling）
 
-- **D6(部分)** worker 每操作类型 wall ceiling：`HINDSIGHT_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`；
+- **D6(部分)** worker 每操作类型 wall ceiling：`WENYUAN_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`；
   任务预算取 `min(lease, ceiling)`，卡死任务在 ceiling 释放 slot 并重试，而非等到 lease。加测试。
 - 剩余：每类型 slot 预留（`WORKER_<TYPE>_RESERVED_SLOTS`）、共享池。
 - 验证：`make check` 全绿。
 
 ### 2026-10-14 — 阶段 4（loop-lag 探针）
 
-- **D4** `monitoring.LoopLagProbe`：按 `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS`（默认 5s）采样，
-  对超 `HINDSIGHT_API_LOOP_LAG_STALL_SECONDS`（默认 1s）的调度延迟记 `event loop lag` 日志；
+- **D4** `monitoring.LoopLagProbe`：按 `WENYUAN_API_LOOP_LAG_REPORT_SECONDS`（默认 5s）采样，
+  对超 `WENYUAN_API_LOOP_LAG_STALL_SECONDS`（默认 1s）的调度延迟记 `event loop lag` 日志；
   server 随请求循环启动；过迟的一次 tick 会重同步而非爆发补跑。加测试。
 - 验证：`make check` 全绿。
 
@@ -941,10 +941,10 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 
 ### 2026-10-14 — 阶段 4（worker 配置别名 / profiling）
 
-- **D5** worker 配置接受上游键名别名：`HINDSIGHT_API_WORKER_POLL_INTERVAL_MS`（毫秒）、
-  `HINDSIGHT_API_WORKER_MAX_SLOTS`、`HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS`，
+- **D5** worker 配置接受上游键名别名：`WENYUAN_API_WORKER_POLL_INTERVAL_MS`（毫秒）、
+  `WENYUAN_API_WORKER_MAX_SLOTS`、`WENYUAN_API_WORKER_TASK_RETRY_BACKOFF_SECONDS`，
   在本项目自有键未设时生效。加测试。
-- **D3** `HINDSIGHT_API_PROFILE=true` 时挂载 `/debug/pprof/*`（默认关闭）。加测试。
+- **D3** `WENYUAN_API_PROFILE=true` 时挂载 `/debug/pprof/*`（默认关闭）。加测试。
 - 验证：`make check` 全绿。
 
 ### 2026-10-14 — 阶段 1 结构残留（knowledge managed）
@@ -975,8 +975,8 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 ### 2026-10-14 — 阶段 3（准入控制 + 499）
 
 - **C4** `httpx.AdmissionMiddleware`：按路由后缀为 recall/retain/reflect 设并发 lane；
-  有界等待（`HINDSIGHT_API_ADMISSION_MAX_WAIT_SECONDS`，默认 5s），超时 → `503` + `Retry-After`；
-  等待期间客户端断开 → `499`。规则数由 `HINDSIGHT_API_ADMISSION_{RECALL,RETAIN,REFLECT}_LIMIT`
+  有界等待（`WENYUAN_API_ADMISSION_MAX_WAIT_SECONDS`，默认 5s），超时 → `503` + `Retry-After`；
+  等待期间客户端断开 → `499`。规则数由 `WENYUAN_API_ADMISSION_{RECALL,RETAIN,REFLECT}_LIMIT`
   （默认 8）控制。接入 router 链。`DisconnectCancelMiddleware` 简化为直通（Go 的
   `Request.Context` 已在断开时取消）。加测试。
 - 验证：`make check` 全绿。
@@ -991,7 +991,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 
 ### 2026-10-14 — 阶段 3（worker HTTP / webhook 投递）
 
-- **C2** worker 进程健康面：`HINDSIGHT_API_WORKER_HTTP_PORT`（默认 8889）上挂
+- **C2** worker 进程健康面：`WENYUAN_API_WORKER_HTTP_PORT`（默认 8889）上挂
   `/health` `/health/ready` `/health/live`；`monitoring.WorkerHandler` 的 liveness 载荷含
   `worker_id`/`is_shutdown`/`seconds_since_last_poll`。加测试。
 - **C1(部分)** webhook 投递管线：`consolidation.completed` 事件为订阅的 webhook 入队
@@ -1104,7 +1104,7 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
 - **A1.2** `X-Ignored-Params` 在提交状态时注入（原实现写在 `WriteHeader` 之后被丢弃）；
   名称按出现顺序、`", "` 连接、去重；body 未知字段进入同一 collector
   （`internal/httpx/{middleware,queryparams}.go`，`middleware_test.go`）。
-- **C3** `HINDSIGHT_API_WORKER_ENABLED`（默认 true）在 server 进程内启动 consumer +
+- **C3** `WENYUAN_API_WORKER_ENABLED`（默认 true）在 server 进程内启动 consumer +
   maintenance（`internal/app/background.go`、`config.go`、`entrypoint.go`）。
 - **C5** provider 边界写 `llm_requests`（`internal/app/llm_trace.go`、
   `storage.RecordLLMRequest`），`/llm-requests` 不再读空表。
@@ -1123,8 +1123,8 @@ transfer+webhooks / reporting×2 / readsurface / storage / bankapi / memoryops�
   liveness 体补 `version`/`uptime_seconds`；`/version` 与 `/v1/version` 报 11 个
   feature 键（`internal/monitoring/health.go`、`internal/reporting/knowledge.go`、
   `internal/app/reporting.go`）。
-- **A2.27（部分）** `/health/llm` 受 `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH` 门控（默认关→404）；
-  文件上传受 `HINDSIGHT_API_ENABLE_FILE_UPLOAD_API` 门控（默认开）。
+- **A2.27（部分）** `/health/llm` 受 `WENYUAN_API_ENABLE_BANK_LLM_HEALTH` 门控（默认关→404）；
+  文件上传受 `WENYUAN_API_ENABLE_FILE_UPLOAD_API` 门控（默认开）。
 - **A2.34（部分）** bank config 读/写/重置响应补 `bank_id`。
 - 验证：`make check` 全绿。
 

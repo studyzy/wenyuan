@@ -12,7 +12,7 @@ import { payloadString } from "./hook-contract";
  */
 
 /** The host-identifying environment variable the deployment harness sets. */
-export const HARNESS_ENV = "HINDSIGHT_MCP_HARNESS";
+export const HARNESS_ENV = "WENYUAN_MCP_HARNESS";
 
 /**
  * The host this firing belongs to. A payload member naming a declared host

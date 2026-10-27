@@ -76,7 +76,7 @@ func NewGCS(cfg GCSConfig, doer *http.Client) (*GCS, error) {
 	if strings.TrimSpace(cfg.Bucket) == "" {
 		// The key is named because the operator has to know which variable to
 		// set; the failure happens before any request is attempted.
-		return nil, errors.New("HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET is required for GCS storage")
+		return nil, errors.New("WENYUAN_API_FILE_STORAGE_GCS_BUCKET is required for GCS storage")
 	}
 	if strings.TrimSpace(cfg.ServiceAccountKey) != "" {
 		creds, err := parseGCSServiceAccount(cfg.ServiceAccountKey)

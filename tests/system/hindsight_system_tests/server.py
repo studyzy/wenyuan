@@ -116,59 +116,59 @@ def stub_environment(stub_url: str) -> dict[str, str]:
     """
     return {
         # LLM: the openai-compatible provider, aimed at the stub.
-        "HINDSIGHT_API_LLM_PROVIDER": "openai",
-        "HINDSIGHT_API_LLM_MODEL": "stub-model",
-        "HINDSIGHT_API_LLM_API_KEY": "stub-key",
-        "HINDSIGHT_API_LLM_BASE_URL": f"{stub_url}/v1",
+        "WENYUAN_API_LLM_PROVIDER": "openai",
+        "WENYUAN_API_LLM_MODEL": "stub-model",
+        "WENYUAN_API_LLM_API_KEY": "stub-key",
+        "WENYUAN_API_LLM_BASE_URL": f"{stub_url}/v1",
         # Embeddings: same trick, and it means no torch and no model download.
-        "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": "stub-key",
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": f"{stub_url}/v1",
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": "stub-embeddings",
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS": "384",
+        "WENYUAN_API_EMBEDDINGS_PROVIDER": "openai",
+        "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY": "stub-key",
+        "WENYUAN_API_EMBEDDINGS_OPENAI_BASE_URL": f"{stub_url}/v1",
+        "WENYUAN_API_EMBEDDINGS_OPENAI_MODEL": "stub-embeddings",
+        "WENYUAN_API_EMBEDDINGS_OPENAI_DIMENSIONS": "384",
         # Reranker: siliconflow is the plain Cohere-compatible POST {base}/rerank,
         # with no vendor SDK in the way.
-        "HINDSIGHT_API_RERANKER_PROVIDER": "siliconflow",
-        "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY": "stub-key",
-        "HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL": stub_url,
-        "HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL": "stub-reranker",
+        "WENYUAN_API_RERANKER_PROVIDER": "siliconflow",
+        "WENYUAN_API_RERANKER_SILICONFLOW_API_KEY": "stub-key",
+        "WENYUAN_API_RERANKER_SILICONFLOW_BASE_URL": stub_url,
+        "WENYUAN_API_RERANKER_SILICONFLOW_MODEL": "stub-reranker",
         # In production a retry earns its keep even on a 400: a model that
         # returned malformed JSON often gets it right the second time. Against a
         # deterministic stub it cannot — the same request gets the same answer —
         # so retries here would only turn an unstubbed call into several rounds
         # of exponential backoff before the same failure. Off, the "run, paste the
         # rule, run again" loop takes milliseconds.
-        "HINDSIGHT_API_LLM_MAX_RETRIES": "0",
-        "HINDSIGHT_API_EMBEDDINGS_MAX_RETRIES": "0",
-        "HINDSIGHT_API_RERANKER_MAX_RETRIES": "0",
+        "WENYUAN_API_LLM_MAX_RETRIES": "0",
+        "WENYUAN_API_EMBEDDINGS_MAX_RETRIES": "0",
+        "WENYUAN_API_RERANKER_MAX_RETRIES": "0",
         # Same reasoning one level up: the worker retries a failed operation on a
         # backoff schedule, so an unstubbed call inside background work would sit
         # in `pending` through several rounds before reaching `failed`. Against a
         # deterministic stub the retry cannot change the answer, and the wait
         # turns a fast loud-miss into a 90-second timeout.
-        "HINDSIGHT_API_WORKER_MAX_RETRIES": "0",
+        "WENYUAN_API_WORKER_MAX_RETRIES": "0",
         # Pinned, not inherited: story 33 waits a few poll intervals and then
         # asserts that queued work is still pending *because it cannot be claimed*.
         # A longer default would let that check pass without the worker ever
         # having looked.
-        "HINDSIGHT_API_WORKER_POLL_INTERVAL_MS": str(WORKER_POLL_INTERVAL_MS),
+        "WENYUAN_API_WORKER_POLL_INTERVAL_MS": str(WORKER_POLL_INTERVAL_MS),
         # Bank stats are cached for 60s by default. A test that changes the bank
         # and then asserts on a counter would be reading a value from before its
         # own action — racy at best, a minute of waiting at worst.
-        "HINDSIGHT_API_BANK_STATS_CACHE_TTL_SECONDS": "0",
+        "WENYUAN_API_BANK_STATS_CACHE_TTL_SECONDS": "0",
         # Maintenance sweeps are what pick up recovered consolidations, and the
         # default start jitter spreads them over a minute so a fleet of servers
         # does not stampede the database on boot. One server in a test has nobody
         # to stampede, and the jitter is otherwise a minute of a story waiting for
         # work it already asked for.
-        "HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS": "0",
+        "WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS": "0",
         # Webhook destinations are SSRF-checked, and loopback is refused — the
         # right default, and story 64 asserts it. But the only receiver a
         # hermetic test can offer *is* on loopback, so the stub's host is
         # allowlisted explicitly. Nothing else is: a webhook aimed anywhere else
         # private still fails, which is what keeps the guard under test.
-        "HINDSIGHT_API_WEBHOOK_ALLOWED_HOSTS": "127.0.0.1",
-        "HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS": "5",
+        "WENYUAN_API_WEBHOOK_ALLOWED_HOSTS": "127.0.0.1",
+        "WENYUAN_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS": "5",
     }
 
 
@@ -181,7 +181,7 @@ def start_hindsight_server(
     # The repo .env is for the developer's own server; a system test must depend
     # only on what it sets here, or it passes on one machine and fails on another.
     for key in list(env):
-        if key.startswith("HINDSIGHT_API_"):
+        if key.startswith("WENYUAN_API_"):
             del env[key]
 
     env.update(stub_environment(stub_url))
@@ -194,10 +194,10 @@ def start_hindsight_server(
 
     env.update(
         {
-            "HINDSIGHT_API_DATABASE_URL": f"pg0://{PG0_INSTANCE}:{PG0_PORT}",
-            "HINDSIGHT_API_HOST": "127.0.0.1",
-            "HINDSIGHT_API_PORT": str(port),
-            "HINDSIGHT_API_LOG_LEVEL": "info",
+            "WENYUAN_API_DATABASE_URL": f"pg0://{PG0_INSTANCE}:{PG0_PORT}",
+            "WENYUAN_API_HOST": "127.0.0.1",
+            "WENYUAN_API_PORT": str(port),
+            "WENYUAN_API_LOG_LEVEL": "info",
             # Everything the server does by default stays on, background work
             # included. A retain enqueues observation extraction and can trigger
             # consolidation, and those run in the worker after the request returns

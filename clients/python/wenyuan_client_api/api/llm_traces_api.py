@@ -72,7 +72,7 @@ class LLMTracesApi:
     ) -> LLMRequestListResponse:
         """List LLM request traces
 
-        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED).
+        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (WENYUAN_API_LLM_TRACE_ENABLED).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -193,7 +193,7 @@ class LLMTracesApi:
     ) -> ApiResponse[LLMRequestListResponse]:
         """List LLM request traces
 
-        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED).
+        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (WENYUAN_API_LLM_TRACE_ENABLED).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -314,7 +314,7 @@ class LLMTracesApi:
     ) -> RESTResponseType:
         """List LLM request traces
 
-        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED).
+        List traced LLM requests for a bank, ordered by most recent first. Requires LLM request tracing to be enabled (WENYUAN_API_LLM_TRACE_ENABLED).
 
         :param bank_id: (required)
         :type bank_id: str

@@ -175,7 +175,7 @@ func TestRetainStoresNoUnitWhenExtractionFindsNothing(t *testing.T) {
 
 // A failed extraction fails the write, which is what makes the failure visible
 // on the operation record. (The reference's
-// HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API* extraction
+// WENYUAN_API_FAIL_ON_EXTRACTION_ERRORS escalates *batch-API* extraction
 // errors; this build has no batch path, so the streaming path's failure is the
 // one that reaches the operation.)
 func TestRetainFailsWhenExtractionFails(t *testing.T) {

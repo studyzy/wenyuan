@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "Keine Bank ausgewählt",
     "apiDisabledTitle": "Die Bankkonfigurations-API ist nicht aktiviert",
-    "apiDisabledDescription": "Setzen Sie <code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code> auf dem Server, um die bankspezifische Konfiguration zu aktivieren.",
+    "apiDisabledDescription": "Setzen Sie <code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code> auf dem Server, um die bankspezifische Konfiguration zu aktivieren.",
     "resetToInherited": "Auf geerbten Wert zurücksetzen",
     "failedToReset": "Zurücksetzen fehlgeschlagen",
     "overrideBadge": "Bank-Überschreibung",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "Dokument zur aktuellen Bank hinzufügen",
     "templateManifestHelp": "Fügen Sie ein Vorlagen-Manifest-JSON ein, um die Bank mit Einstellungen, Mental Models und Direktiven vorzukonfigurieren.",
     "fileUploadDisabledMessage": "Datei-Upload ist auf diesem Server nicht aktiviert.",
-    "fileUploadEnableHint": "Zum Aktivieren setzen Sie <code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code>",
+    "fileUploadEnableHint": "Zum Aktivieren setzen Sie <code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code>",
     "fileTagsHelp": "Kommagetrennt — zum Filtern von Erinnerungen während Recall/Reflect",
     "strategyHelpText": "Überschreibt die Standard-Extraktionsstrategie der Bank für dieses Dokument.",
     "observationScopePerTag": "Pro Tag",

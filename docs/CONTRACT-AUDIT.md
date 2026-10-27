@@ -25,19 +25,19 @@
 | 项 | 内容 | 证据/实现 |
 |---|---|---|
 | 描述面缺失 | 上游作为 FastAPI 应用**默认**提供 `GET /openapi.json`、`/docs`、`/docs/oauth2-redirect`、`/redoc`（上游自带测试 `tests/test_base_path.py` 断言），wenyuan 此前全部 404 | `internal/httpx/openapi.go`：契约文档取自参考（`scripts/reference_openapi.py` 生成，嵌入 `internal/httpx/openapi.json`），文档页取自上游 FastAPI 生成结果，二者皆按 base path 改写 URL |
-| base path | `HINDSIGHT_API_BASE_PATH`（上游 `root_path`）此前完全不支持 | `internal/config`（解析 + 归一化）与 `internal/httpx.BasePathMiddleware`：带前缀与不带前缀**都**可路由（与上游 `get_route_path` 的剥离语义一致）；文档 `servers` 仅在配置前缀时注入 |
+| base path | `WENYUAN_API_BASE_PATH`（上游 `root_path`）此前完全不支持 | `internal/config`（解析 + 归一化）与 `internal/httpx.BasePathMiddleware`：带前缀与不带前缀**都**可路由（与上游 `get_route_path` 的剥离语义一致）；文档 `servers` 仅在配置前缀时注入 |
 | `/version` 版本号 | 报 `1.0.0`（wenyuan 自己的版本）；上游报自身发布版本 | `httpx.APIVersion = ReferenceAPIVersion = "1.0.0"`（随参考 v1.0.0 发布同步），并由测试钉住与所服务契约文档 `info.version` 一致 |
-| 特性开关默认值 | MCP/银行配置 API/文档导入/文档导出默认 false（上游 true）、audit_log 硬编码 true（上游 false）、llm_trace 默认 false（上游 true）、observations/store_document_text 硬编码 | `internal/config`：默认值对齐上游，新增 `HINDSIGHT_API_ENABLE_OBSERVATIONS`/`_AUDIT_LOG_ENABLED`/`_STORE_DOCUMENT_TEXT`，`FeatureMap` 改为字段驱动 |
-| 空值策略 | 曾以为上游按 `ExcludeNoneRoute` 分组丢弃 null 字段，遂引入 `HINDSIGHT_API_DROP_NULL_FIELDS` 开关 | 复核上游后确认该路由类被 `UnknownParamsRoute` 覆盖而失效，上游始终保留显式 null；开关与全部丢弃逻辑已移除，响应一律保留 null |
+| 特性开关默认值 | MCP/银行配置 API/文档导入/文档导出默认 false（上游 true）、audit_log 硬编码 true（上游 false）、llm_trace 默认 false（上游 true）、observations/store_document_text 硬编码 | `internal/config`：默认值对齐上游，新增 `WENYUAN_API_ENABLE_OBSERVATIONS`/`_AUDIT_LOG_ENABLED`/`_STORE_DOCUMENT_TEXT`，`FeatureMap` 改为字段驱动 |
+| 空值策略 | 曾以为上游按 `ExcludeNoneRoute` 分组丢弃 null 字段，遂引入 `WENYUAN_API_DROP_NULL_FIELDS` 开关 | 复核上游后确认该路由类被 `UnknownParamsRoute` 覆盖而失效，上游始终保留显式 null；开关与全部丢弃逻辑已移除，响应一律保留 null |
 | 未匹配路由响应 | 未命中路由/方法返回 Go 的纯文本 `404 page not found`/`405`；上游返回 JSON `{"detail":"Not Found"}`/`{"detail":"Method Not Allowed"}`（405 保留 `Allow` 头） | `internal/httpx/fallback.go`（仅改写路由器自身的拒绝，处理器自己写的 404/405 原样通过） |
-| 认证缺失 | 上游可经 `HINDSIGHT_API_TENANT_EXTENSION`+`_TENANT_API_KEY` 对**所有**引擎路由强制 API key（401 `{"detail":"Authentication failed: Invalid API key"}`）；wenyuan 此前只在 3 条 retired 路由上做「Authorization 头是否存在」的假校验 | `internal/config.ResolveTenantAuth`（仅支持内置 `ApiKeyTenantExtension`，其它选择启动即失败而不是静默无认证）+ `httpx.TenantAPIKeyMiddleware`（保护 `/v1/default/*` 与 `/mcp`，豁免 retired 路径） |
+| 认证缺失 | 上游可经 `WENYUAN_API_TENANT_EXTENSION`+`_TENANT_API_KEY` 对**所有**引擎路由强制 API key（401 `{"detail":"Authentication failed: Invalid API key"}`）；wenyuan 此前只在 3 条 retired 路由上做「Authorization 头是否存在」的假校验 | `internal/config.ResolveTenantAuth`（仅支持内置 `ApiKeyTenantExtension`，其它选择启动即失败而不是静默无认证）+ `httpx.TenantAPIKeyMiddleware`（保护 `/v1/default/*` 与 `/mcp`，豁免 retired 路径） |
 | 请求体校验状态码 | 非法/类型错误的 JSON 体返回 400 单句；上游是 422 结构化条目（`json_invalid`/`int_parsing`/`string_type`…） | `httpx.DecodeBody` 生成上游词汇表的 422 条目；`httpx.WriteError`/`WriteValidationFor` 直接渲染 `*ValidationFailure` |
 | 校验条目形状 | `loc` 中的列表下标是**字符串**；上游是整数 | `httpx.ValidationError.MarshalJSON` 将全数字段渲染为 JSON 数字 |
 | retired 文案 | 三条 retired 路由共用一句文案；上游 profile 与 background 是两句不同文案 | `httpx.DetailRetiredProfile` / `DetailRetiredBackground`（逐字对齐上游） |
 | 准入（admission）语义 | 保留车道按「后缀」匹配、**不看方法**，`DELETE /memories`（清空）会占用 retain 车道；上游只对 `POST` 三个写路由设限，且被拒文案不同 | `httpx.AdmissionRule` 增加 `Method`/`Lane`，文案改为上游的 `Server is at capacity for '<lane>' (N concurrent); try again shortly.`，499 文案改为 `client disconnected while queued` |
 | 文档成员路由 | `{document_id:path}` 允许文档 id 含 `/`；wenyuan 用单段 `{document_id}`，含斜杠的 id 直接 404 | 改为子树注册 + 手动切分（`SuffixDocumentMember = "/documents/"`），处理器仍读 `path value` |
-| 指标名 | **已闭合（本非分歧）**：导出 `hindsight_*`，与上游一致，无需改名 | `internal/monitoring/metrics.go:112` 直接导出 `hindsight_http_requests_total`（及 `hindsight_http_requests_in_progress`、`hindsight_http_duration_seconds`），正是上游 `hindsight_api/metrics.py:527` 的 OTel 名 `hindsight.http.requests.total` 在 Prometheus 下的渲染形式（`.` → `_`）；两侧同名同标签 |
-| 画像日志 | `HINDSIGHT_API_PROFILE` 被当作 bool 开关 pprof 端点；上游是 JSON（`{"every":60,"top":20}`），启动即校验并周期输出 `[profile]` 日志 | `internal/config.ResolveProfile`（同上游的校验与报错）+ `monitoring.ProfileEmitter`（`/proc` 逐线程 CPU + Go 运行时摘要）；Go 的 pprof 端点移到独立的 `HINDSIGHT_API_PPROF_ENABLED` |
+| 指标名 | **已闭合（本非分歧）**：导出 `hindsight_*`，与上游一致，无需改名 | `internal/monitoring/metrics.go:112` 直接导出 `wenyuan_http_requests_total`（及 `wenyuan_http_requests_in_progress`、`wenyuan_http_duration_seconds`），正是上游 `hindsight_api/metrics.py:527` 的 OTel 名 `hindsight.http.requests.total` 在 Prometheus 下的渲染形式（`.` → `_`）；两侧同名同标签 |
+| 画像日志 | `WENYUAN_API_PROFILE` 被当作 bool 开关 pprof 端点；上游是 JSON（`{"every":60,"top":20}`），启动即校验并周期输出 `[profile]` 日志 | `internal/config.ResolveProfile`（同上游的校验与报错）+ `monitoring.ProfileEmitter`（`/proc` 逐线程 CPU + Go 运行时摘要）；Go 的 pprof 端点移到独立的 `WENYUAN_API_PPROF_ENABLED` |
 
 ## 2. 本轮已修复（按包并行实施）
 
@@ -68,12 +68,12 @@
 | 4 | 审计与 LLM 请求的过滤器 | **已闭合**。两后端都暴露并在 SQL 生效：审计 `action`/`transport`/`start_date`/`end_date`/`limit`/`offset`；LLM 请求另加 `status`/`operation`/`scope`/`provider`/`trace_id`/`document_id`/`memory_id`/`group`（`internal/storage/observability.go:25-36,89-113`、`postgres_observability.go:263-470`、`memory_observability.go:181-360`）。本轮补了"不传过滤"与"组合过滤"两个测试缺口 |
 | 5 | 指标标签集与时长直方图 | **已闭合**：三个 instrument 与上游同名同标签（`internal/monitoring/metrics.go:57-133`），桶与上游 `HTTP_DURATION_BUCKETS` 相同。**真残留已修**：`endpoint` 标签曾原样带出 Go 的通配符（`{chunk_id...}`），上游是**转换器剥离后**的模板（`{chunk_id}`，其自有测试 `tests/test_http_observability_middleware.py:200` 钉住）——同一路由在两侧是两个 series。已改为剥离（注册用的 pattern 不动） |
 | 6 | 405 的指标 `endpoint` 标签 | **已闭合**：用不带方法段的模式解析，路径匹配/方法不匹配即该路由模板（`internal/httpx/router.go:170-190`、`metrics_test.go:47-51`）。上游 `observability.py:93-115` "首次完全匹配，否则首次仅路径匹配（405）" |
-| 7 | `/health` 未初始化态与连接池统计 | **已闭合**，且原前提有误：上游未初始化分支在**读池统计之前**就返回，因此那里**不该**有池键；成功分支才有 `db_acquire_ms`/`db_pool_in_use/max/idle`（`engine/memory_engine.py:6196-6240` ↔ `internal/monitoring/health.go:96-104`）。**原残留已于 2026-10-20 闭合**：`db_pool_waiting` 曾判为"Go 无法复刻"（`database/sql` 无等待者计数），这个前提不成立——上游的计数来自它自己的 acquire 插桩而非后端池快照，本服务同样在自己包住每次 acquire 的地方计数即可（`internal/storage/db.go` 的 `waitingAcquires` + `acquirePooledConnection`，失败路径 `defer` 回补，对应上游 `engine/db/pool_instrumentation.py:69-84`）。键的**存在性**与**键序**均已对齐：成功分支的键序为 `status,database,db_acquire_ms,db_pool_waiting,db_pool_in_use,db_pool_max,db_pool_idle`，与上游 `_pool_health_stats` 先插 waiting 再插 in_use/max/idle 相同；`/metrics` 的 `hindsight_db_pool_waiting` 一并补齐。用例 `TestHealthReportsPoolWaiting`、`TestHealthPoolKeyOrder` |
+| 7 | `/health` 未初始化态与连接池统计 | **已闭合**，且原前提有误：上游未初始化分支在**读池统计之前**就返回，因此那里**不该**有池键；成功分支才有 `db_acquire_ms`/`db_pool_in_use/max/idle`（`engine/memory_engine.py:6196-6240` ↔ `internal/monitoring/health.go:96-104`）。**原残留已于 2026-10-20 闭合**：`db_pool_waiting` 曾判为"Go 无法复刻"（`database/sql` 无等待者计数），这个前提不成立——上游的计数来自它自己的 acquire 插桩而非后端池快照，本服务同样在自己包住每次 acquire 的地方计数即可（`internal/storage/db.go` 的 `waitingAcquires` + `acquirePooledConnection`，失败路径 `defer` 回补，对应上游 `engine/db/pool_instrumentation.py:69-84`）。键的**存在性**与**键序**均已对齐：成功分支的键序为 `status,database,db_acquire_ms,db_pool_waiting,db_pool_in_use,db_pool_max,db_pool_idle`，与上游 `_pool_health_stats` 先插 waiting 再插 in_use/max/idle 相同；`/metrics` 的 `wenyuan_db_pool_waiting` 一并补齐。用例 `TestHealthReportsPoolWaiting`、`TestHealthPoolKeyOrder` |
 | 8 | 知识库 `tag_groups` 的 `resolve:"fuzzy"` | **确实开着，已修**。上游把 fuzzy 叶子对**银行的记忆标签词表**解析后改为精确匹配（`engine/memory_engine.py:19488` → `engine/search/tag_resolution.py`，`MIN_SIMILARITY=0.45`、`MAX_VOCABULARY=5000`、`MAX_EXACT_COMBINATIONS=32`）。旧实现是拿叶子和**每个页面自己的标签**比相似度，三个可观测差异：精确命中被放宽到相近标签、**词表为空时近似词仍命中**、两个上限未生效。现为 `internal/storage/tag_resolution.go`（精确大小写不敏感命中即胜；否则同命名空间 trigram ≥0.45；`any`=并、`all`=交、`exact`=去重组合的或且先查上限）+ `internal/reporting/knowledge_tags.go` 经 `ListTags` 取词表，超 5000 用上游的 422 文案 |
 | 9 | MCP 传输层 | **部分开着，已修**。上游会在 `Accept` 缺少 `text/event-stream` 时**改写**该头（`api/mcp.py:566-568`，注释明说是为了兼容不发 Accept 的客户端），因此契约是：缺 Accept / `application/json` / `*/*` **都放行**，只有"有 event-stream 而无 json"才 406。我们曾对 `application/json` 与 `*/*` 直接 406——**错拒了正确的客户端**。已实现通配符感知的判定、对齐 SDK 的错误信封（`id:null`、406、精确文案）与 GET 的 SSE 保活帧（`ping - <RFC3339>` + CRLF + `Cache-Control: no-cache, no-transform` + 回显 session） |
-| 10 | `HINDSIGHT_API_STORE_DOCUMENT_TEXT=false` | **确实开着，已修**。① 上游存 **NULL** 而非空串（PG 现绑 NULL；内存后端保持 `''` 但读面统一收敛为 null，两后端观测一致）；② 拒绝文案丢掉了设置名，现与上游逐字相同（该句以句号结尾，与 ST1005 冲突，已在声明处标注理由并保留上游原文）；③ `internal/storage/direct_reference.go` 把可空的 `original_text` 扫进 `string`——**一个选择不存文本的库会让读取失败**，已 COALESCE |
+| 10 | `WENYUAN_API_STORE_DOCUMENT_TEXT=false` | **确实开着，已修**。① 上游存 **NULL** 而非空串（PG 现绑 NULL；内存后端保持 `''` 但读面统一收敛为 null，两后端观测一致）；② 拒绝文案丢掉了设置名，现与上游逐字相同（该句以句号结尾，与 ST1005 冲突，已在声明处标注理由并保留上游原文）；③ `internal/storage/direct_reference.go` 把可空的 `original_text` 扫进 `string`——**一个选择不存文本的库会让读取失败**，已 COALESCE |
 | 11 | 非内置 tenant 扩展 | **范围外（刻意）**。上游可加载任意 Python 扩展类，Go 无法加载；选择非内置值**启动即失败并点名**，不是静默无认证 |
-| 12 | Go 画像报告的函数级表格 | **有意偏离**。上游是 cProfile 的 `tottime/cumtime/ncalls` 表，Go 标准库无等价汇总；改为逐线程 CPU + 运行时摘要，函数级归因走 `HINDSIGHT_API_PPROF_ENABLED` 的 pprof 端点 |
+| 12 | Go 画像报告的函数级表格 | **有意偏离**。上游是 cProfile 的 `tottime/cumtime/ncalls` 表，Go 标准库无等价汇总；改为逐线程 CPU + 运行时摘要，函数级归因走 `WENYUAN_API_PPROF_ENABLED` 的 pprof 端点 |
 | 13 | 嵌入契约文档与实现的偏差 | **文档侧已核**：`internal/httpx/openapi.json` 与上游 `hindsight-docs/static/openapi.json` **完全一致**（77 path / 99 操作 / 195 schema / `info` 逐字段相同，两方向差集皆空）。**运行时侧**：`scripts/contract_smoke.sh` 的 35 项线上事实全过（命令见 §4） |
 
 **收口时新发现、不在原清单的一项（已修）**：**recall 的 fuzzy 标签解析**当时仍是旧的"逐行相似度"
@@ -100,8 +100,8 @@ python3 scripts/reference_openapi.py --source <url 或本地 openapi.json>
 # 迁移由服务自己跑。用一次性数据库，别指向要保留的库。
 go build -tags pgx -o /tmp/wenyuan ./cmd/server
 createdb wenyuan_smoke
-HINDSIGHT_API_DATABASE_URL="postgresql://$USER@127.0.0.1:5432/wenyuan_smoke" \
-HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true \
+WENYUAN_API_DATABASE_URL="postgresql://$USER@127.0.0.1:5432/wenyuan_smoke" \
+WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true \
   PORT=19500 bash scripts/contract_smoke.sh /tmp/wenyuan
 
 # 全量验证门
@@ -128,7 +128,7 @@ make check        # build + test + vet + pgx 构建 + lint + gofmt
 
 | 项 | 修正 |
 |---|---|
-| 空值 | 删除 `HINDSIGHT_API_DROP_NULL_FIELDS` 与整套剪 null 机制，响应一律保留显式 null |
+| 空值 | 删除 `WENYUAN_API_DROP_NULL_FIELDS` 与整套剪 null 机制，响应一律保留显式 null |
 | 时间戳 | 统一 `isoformat()`（`+00:00`、微秒非零才带小数）；webhook 家族保留 `created_at::text` 形式；新增 `internal/timefmt` |
 | 未预期错误 | 未识别异常一律 500 `detail=str(exc)`（原为 400），存储不可写 503 |
 | JSON 转义 | 不再 HTML 转义 `<`/`>`/`&` |

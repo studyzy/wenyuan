@@ -218,7 +218,7 @@ func TestEmbeddingVendorDimensionsDoNotAffectStoredWidth(t *testing.T) {
 		t.Fatalf("vendor dims = %d", cfg.Provider.Embeddings.OpenAIDimensions)
 	}
 	// The stored width is the compile-time constant, exposed nowhere as a key.
-	if _, ok := envMap(nil)("HINDSIGHT_API_EMBEDDINGS_DIMENSIONS"); ok {
+	if _, ok := envMap(nil)("WENYUAN_API_EMBEDDINGS_DIMENSIONS"); ok {
 		t.Fatal("a generic dimensions key must not exist")
 	}
 }
@@ -265,10 +265,10 @@ func TestPositiveIntValidation(t *testing.T) {
 // metadata mode, and a malformed document recorded rather than ignored.
 func TestMultiLLMStrategyParsing(t *testing.T) {
 	cfg := FromEnv(envMap(map[string]string{
-		EnvLLMStrategy:                 `{"mode":"round-robin","weights":[1,3]}`,
-		"HINDSIGHT_API_LLM_1_PROVIDER": "openai",
-		"HINDSIGHT_API_LLM_2_PROVIDER": "cohere",
-		"HINDSIGHT_API_LLM_1_MODEL":    "gpt-4o-mini",
+		EnvLLMStrategy:               `{"mode":"round-robin","weights":[1,3]}`,
+		"WENYUAN_API_LLM_1_PROVIDER": "openai",
+		"WENYUAN_API_LLM_2_PROVIDER": "cohere",
+		"WENYUAN_API_LLM_1_MODEL":    "gpt-4o-mini",
 	}))
 	if cfg.Provider.StrategyError != nil {
 		t.Fatalf("a valid strategy raised %v", cfg.Provider.StrategyError)
@@ -281,8 +281,8 @@ func TestMultiLLMStrategyParsing(t *testing.T) {
 	}
 
 	routes := FromEnv(envMap(map[string]string{
-		EnvLLMStrategy:                 `{"mode":"metadata","routes":[{"key":"bank","value":"acme","member":1}]}`,
-		"HINDSIGHT_API_LLM_1_PROVIDER": "openai",
+		EnvLLMStrategy:               `{"mode":"metadata","routes":[{"key":"bank","value":"acme","member":1}]}`,
+		"WENYUAN_API_LLM_1_PROVIDER": "openai",
 	}))
 	if routes.Provider.StrategyError != nil {
 		t.Fatalf("a valid routes strategy raised %v", routes.Provider.StrategyError)
@@ -317,15 +317,15 @@ func TestMultiLLMStrategyParsing(t *testing.T) {
 }
 
 // test-indexed-llm-members: the indexed extra members of each role resolve from
-// HINDSIGHT_API_{ROLE}_LLM_{n}_*, stopping at the first missing provider.
+// WENYUAN_API_{ROLE}_LLM_{n}_*, stopping at the first missing provider.
 func TestIndexedLLMMembersResolve(t *testing.T) {
 	cfg := FromEnv(envMap(map[string]string{
-		"HINDSIGHT_API_LLM_1_PROVIDER":         "openai",
-		"HINDSIGHT_API_LLM_1_MODEL":            "gpt-4o",
-		"HINDSIGHT_API_LLM_1_MAX_RETRIES":      "0",
-		"HINDSIGHT_API_LLM_2_PROVIDER":         "cohere",
-		"HINDSIGHT_API_REFLECT_LLM_1_PROVIDER": "anthropic",
-		"HINDSIGHT_API_REFLECT_LLM_1_TIMEOUT":  "15",
+		"WENYUAN_API_LLM_1_PROVIDER":         "openai",
+		"WENYUAN_API_LLM_1_MODEL":            "gpt-4o",
+		"WENYUAN_API_LLM_1_MAX_RETRIES":      "0",
+		"WENYUAN_API_LLM_2_PROVIDER":         "cohere",
+		"WENYUAN_API_REFLECT_LLM_1_PROVIDER": "anthropic",
+		"WENYUAN_API_REFLECT_LLM_1_TIMEOUT":  "15",
 	}))
 	if len(cfg.Provider.LLMMembers) != 2 {
 		t.Fatalf("global members = %+v", cfg.Provider.LLMMembers)
@@ -354,15 +354,15 @@ func TestIndexedLLMMembersResolve(t *testing.T) {
 // filling anything left unset.
 func TestRerankerChainResolves(t *testing.T) {
 	cfg := FromEnv(envMap(map[string]string{
-		EnvRerankerProvider:                       "cohere",
-		EnvRerankerMaxCandidates:                  "25",
-		EnvRerankerMaxCandidatesLow:               "10",
-		EnvRerankerMaxCandidatesMid:               "20",
-		EnvRerankerMaxCandidatesHigh:              "40",
-		EnvRerankerSendBankAsHeader:               "true",
-		"HINDSIGHT_API_RERANKER_1_PROVIDER":       "tei",
-		"HINDSIGHT_API_RERANKER_1_TEI_URL":        "http://tei:8080",
-		"HINDSIGHT_API_RERANKER_1_TEI_BATCH_SIZE": "64",
+		EnvRerankerProvider:                     "cohere",
+		EnvRerankerMaxCandidates:                "25",
+		EnvRerankerMaxCandidatesLow:             "10",
+		EnvRerankerMaxCandidatesMid:             "20",
+		EnvRerankerMaxCandidatesHigh:            "40",
+		EnvRerankerSendBankAsHeader:             "true",
+		"WENYUAN_API_RERANKER_1_PROVIDER":       "tei",
+		"WENYUAN_API_RERANKER_1_TEI_URL":        "http://tei:8080",
+		"WENYUAN_API_RERANKER_1_TEI_BATCH_SIZE": "64",
 	}))
 	r := cfg.Provider.Rerank
 	if r.Provider != "cohere" || r.Primary.Provider != "cohere" {

@@ -12,7 +12,7 @@
 # being empty (a timeseries bucket counts the one memory this run writes, and a
 # knowledge page is created for the first time), so re-running against the same
 # database reports those two as failures that are state, not regressions. Point
-# HINDSIGHT_API_DATABASE_URL at a fresh database (or one you have just dropped and
+# WENYUAN_API_DATABASE_URL at a fresh database (or one you have just dropped and
 # recreated) and pass a binary built with -tags pgx.
 set -u
 
@@ -32,7 +32,7 @@ check() {
 }
 
 start() {
-  HINDSIGHT_API_PORT=$PORT "$@" "$BIN" >/tmp/contract_smoke_server.log 2>&1 &
+  WENYUAN_API_PORT=$PORT "$@" "$BIN" >/tmp/contract_smoke_server.log 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 40); do
     if curl -fsS -o /dev/null "${BASE}/health/live" 2>/dev/null; then return 0; fi
@@ -71,7 +71,7 @@ check "audit log flag default off" False "$(curl -sS "${BASE}/v1/version" | pyth
 stop
 
 # --- base path serves both spellings and names itself in the document --------
-start env HINDSIGHT_API_BASE_PATH=/wenyuan
+start env WENYUAN_API_BASE_PATH=/wenyuan
 check "prefixed route" 200 "$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/wenyuan/health/live")"
 check "root route beside the prefix" 200 "$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/health/live")"
 check "document names the base path" '/wenyuan' "$(curl -sS "${BASE}/wenyuan/openapi.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servers"][0]["url"])')"
@@ -79,7 +79,7 @@ check "docs page reads the contract under the prefix" True "$(curl -sS "${BASE}/
 stop
 
 # --- tenant authentication, when configured ---------------------------------
-start env HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension HINDSIGHT_API_TENANT_API_KEY=s3cret
+start env WENYUAN_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension WENYUAN_API_TENANT_API_KEY=s3cret
 check "bank route without a key" 401 "$(curl -sS -o /tmp/smoke_auth.json -w '%{http_code}' "${BASE}/v1/default/banks")"
 check "rejected body" '{"detail":"Authentication failed: Invalid API key"}' "$(cat /tmp/smoke_auth.json)"
 check "bank route with the key" 200 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer s3cret' "${BASE}/v1/default/banks")"
@@ -101,9 +101,9 @@ start env
 check "requests metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^hindsight_http_requests_total' && echo True || echo False)"
 check "in-progress metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^hindsight_http_requests_in_progress' && echo True || echo False)"
 stop
-HINDSIGHT_API_PROFILE='{"every":0}' HINDSIGHT_API_PORT=$((PORT + 100)) "$BIN" >/tmp/contract_smoke_profile.log 2>&1
+WENYUAN_API_PROFILE='{"every":0}' WENYUAN_API_PORT=$((PORT + 100)) "$BIN" >/tmp/contract_smoke_profile.log 2>&1
 check "a malformed profile request refuses startup" 1 "$?"
-check "the refusal names the variable" True "$(grep -q "HINDSIGHT_API_PROFILE" /tmp/contract_smoke_profile.log && echo True || echo False)"
+check "the refusal names the variable" True "$(grep -q "WENYUAN_API_PROFILE" /tmp/contract_smoke_profile.log && echo True || echo False)"
 
 # --- the shapes the audit found wrong, on a bank with one memory -------------
 start env

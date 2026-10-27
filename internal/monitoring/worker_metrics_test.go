@@ -262,7 +262,7 @@ func TestMetricsHandlerWithoutWorkersHasNoApiWorkerLabel(t *testing.T) {
 	if strings.Contains(body, WorkerLabel) {
 		t.Fatalf("single-process exposition carries %s: %s", WorkerLabel, body)
 	}
-	if !strings.Contains(body, `demo_gauge{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`) {
+	if !strings.Contains(body, `demo_gauge{otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`) {
 		t.Fatalf("own series missing: %s", body)
 	}
 }
@@ -288,7 +288,7 @@ func TestMetricsHandlerWithWorkersServesMergedBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.Serve(rec, httptest.NewRequest("GET", "/metrics", nil))
 	got := samples(t, rec.Body.String())
-	if got[`demo_requests_total{api_worker="0",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",route="/recall"}`] != "3.0" {
+	if got[`demo_requests_total{api_worker="0",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",route="/recall"}`] != "3.0" {
 		t.Fatalf("own labelled series missing: %v", got)
 	}
 	if got[`demo_requests_total{api_worker="1",route="/recall"}`] != "5" {

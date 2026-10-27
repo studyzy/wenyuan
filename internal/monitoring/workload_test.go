@@ -289,22 +289,22 @@ func TestWorkloadLoopStall(t *testing.T) {
 	}
 	// The instrument is hindsight.event_loop.stalls with unit "stalls", but the
 	// reference's exporter appends the unit suffix only when the name does not
-	// already end with it, so the exposition name is hindsight_event_loop_stalls_total.
-	if EventLoopStallsName != "hindsight_event_loop_stalls_total" {
+	// already end with it, so the exposition name is wenyuan_event_loop_stalls_total.
+	if EventLoopStallsName != "wenyuan_event_loop_stalls_total" {
 		t.Fatalf("stall counter name %q, want the reference's rendered name", EventLoopStallsName)
 	}
 }
 
 // ts-d8-exposition: a recorded family reaches the exposition body with the
-// instrumentation-scope labels every hindsight_* series carries.
+// instrumentation-scope labels every wenyuan_* series carries.
 func TestWorkloadFamiliesInExposition(t *testing.T) {
 	Workload.ObserveOperation("recall", "api", "mid", "4096", true, 0.5)
 	body := string((&MetricsHandler{}).Exposition())
-	want := `hindsight_operation_operations_total{budget="mid",max_tokens="4096",operation="recall",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version="",source="api",success="true"} 1.0`
+	want := `wenyuan_operation_operations_total{budget="mid",max_tokens="4096",operation="recall",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version="",source="api",success="true"} 1.0`
 	if !strings.Contains(body, want) {
 		t.Fatalf("operation total missing from exposition:\n%s", body)
 	}
-	if !strings.Contains(body, "# HELP hindsight_operation_duration_seconds Duration of Hindsight operations in seconds") {
+	if !strings.Contains(body, "# HELP wenyuan_operation_duration_seconds Duration of Hindsight operations in seconds") {
 		t.Fatalf("operation duration family missing:\n%s", body)
 	}
 }
@@ -312,7 +312,7 @@ func TestWorkloadFamiliesInExposition(t *testing.T) {
 // The stall counter is declared before any stall happens, so a healthy scrape
 // reports zero stalls rather than omitting the family. The reference declares
 // the instrument as it builds its collector (metrics.py:623), so its exposition
-// carries hindsight_event_loop_stalls_total 0.0 on a loop that never stalled;
+// carries wenyuan_event_loop_stalls_total 0.0 on a loop that never stalled;
 // a registry that only creates the series on the first stall reads as "no
 // data" where the reference reads "no stalls".
 func TestWorkloadLoopStallsDeclaredAtZero(t *testing.T) {
@@ -341,7 +341,7 @@ func TestWorkloadLoopStallsDeclaredAtZero(t *testing.T) {
 // healthy scrape carries its all-zero series. The reference builds both
 // instruments in one collector (metrics.py:623-632) and its exposition renders
 // every declared instrument, so a loop that never stalled still reports
-// hindsight_event_loop_stall_duration_seconds with each bucket at 0 plus a count
+// wenyuan_event_loop_stall_duration_seconds with each bucket at 0 plus a count
 // and a sum; declaring only the counter leaves the family out of the scrape
 // altogether.
 func TestWorkloadLoopStallDurationDeclaredAtZero(t *testing.T) {
@@ -365,10 +365,10 @@ func TestWorkloadLoopStallDurationDeclaredAtZero(t *testing.T) {
 	}
 	body := string((&MetricsHandler{Extra: registry.Samples, Histograms: registry.Histograms}).Exposition())
 	for _, want := range []string{
-		`hindsight_event_loop_stalls_total{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
-		`hindsight_event_loop_stall_duration_seconds_bucket{le="+Inf",otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
-		`hindsight_event_loop_stall_duration_seconds_count{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
-		`hindsight_event_loop_stall_duration_seconds_sum{otel_scope_name="hindsight_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
+		`wenyuan_event_loop_stalls_total{otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
+		`wenyuan_event_loop_stall_duration_seconds_bucket{le="+Inf",otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
+		`wenyuan_event_loop_stall_duration_seconds_count{otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 1.0`,
+		`wenyuan_event_loop_stall_duration_seconds_sum{otel_scope_name="wenyuan_api.metrics",otel_scope_schema_url="",otel_scope_version=""} 0.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in exposition:\n%s", want, body)

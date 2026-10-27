@@ -5,12 +5,12 @@ package provider
 // contract cannot drift apart.
 const (
 	// ConfigKeyProvider is the operator key that selects the active provider.
-	ConfigKeyProvider = "HINDSIGHT_API_LLM_PROVIDER"
+	ConfigKeyProvider = "WENYUAN_API_LLM_PROVIDER"
 	// ConfigKeyAPIKey is the operator key holding the chat credential.
-	ConfigKeyAPIKey = "HINDSIGHT_API_LLM_API_KEY"
+	ConfigKeyAPIKey = "WENYUAN_API_LLM_API_KEY"
 	// ConfigKeyEmbeddingProvider is the operator key that selects the
 	// embedding provider, which is configured independently of chat.
-	ConfigKeyEmbeddingProvider = "HINDSIGHT_API_EMBEDDINGS_PROVIDER"
+	ConfigKeyEmbeddingProvider = "WENYUAN_API_EMBEDDINGS_PROVIDER"
 )
 
 // Scope names used when reporting an unconfigured provider.

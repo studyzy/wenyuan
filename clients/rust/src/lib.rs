@@ -11,7 +11,7 @@
 //! use wenyuan_client::{types, Wenyuan};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Base URL from HINDSIGHT_API_URL, falling back to http://localhost:18888.
+//! // Base URL from WENYUAN_API_URL, falling back to http://localhost:18888.
 //! let client = Wenyuan::new()?.with_api_key("shared-secret");
 //!
 //! client
@@ -167,7 +167,7 @@ fn prefixed_user_agent(user_agent: &str) -> String {
 /// The spelling is part of the deployment contract -- it is the same variable
 /// this service's other clients and its own CLI read -- so it is deliberately
 /// not renamed to match the crate.
-pub const ENV_BASE_URL: &str = "HINDSIGHT_API_URL";
+pub const ENV_BASE_URL: &str = "WENYUAN_API_URL";
 
 /// Base URL used when [`ENV_BASE_URL`] is unset: the port the server listens on
 /// by default.

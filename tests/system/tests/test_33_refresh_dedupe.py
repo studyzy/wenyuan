@@ -41,7 +41,7 @@ ANSWER = "Alice lives in Berlin."
 
 #: Long enough for the worker to have tried, and failed, to claim what is queued.
 #:
-#: Three poll intervals (the server pins ``HINDSIGHT_API_WORKER_POLL_INTERVAL_MS``),
+#: Three poll intervals (the server pins ``WENYUAN_API_WORKER_POLL_INTERVAL_MS``),
 #: and the worker re-polls immediately after a successful claim, so anything still
 #: pending after this waited because it *cannot* be claimed — not because nobody has
 #: looked yet. Asserting without the wait would pass on either behaviour: a burst

@@ -217,7 +217,7 @@ func TestConfigFileRefusedKeyFailsValidation(t *testing.T) {
 }
 
 // A nested key spelling is accepted and flattened to the flat key the resolver
-// asks for, at any depth: llm: {provider: openai} answers HINDSIGHT_API_LLM_PROVIDER.
+// asks for, at any depth: llm: {provider: openai} answers WENYUAN_API_LLM_PROVIDER.
 func TestConfigFileAcceptsNestedKeys(t *testing.T) {
 	unloadConfigFile(t)
 	writeConfigFile(t,

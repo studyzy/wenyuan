@@ -21,8 +21,8 @@ import (
 // Environment variables the frontend reads; the CLI fills both from its own
 // configuration so the frontend talks to the same API as every other command.
 const (
-	frontendURLEnv = "HINDSIGHT_CP_DATAPLANE_API_URL"
-	frontendKeyEnv = "HINDSIGHT_CP_DATAPLANE_API_KEY"
+	frontendURLEnv = "WENYUAN_CP_DATAPLANE_API_URL"
+	frontendKeyEnv = "WENYUAN_CP_DATAPLANE_API_KEY"
 )
 
 // uiHooks bundles the process primitives; tests replace the variable.

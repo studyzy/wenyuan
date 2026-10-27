@@ -87,7 +87,7 @@ from wenyuan_client_api.models.version_response import VersionResponse
 
 #: Environment variable a deployment sets to point the client at its server.
 #: The name is part of the deployment contract and is read verbatim.
-BASE_URL_ENV_VAR = "HINDSIGHT_API_URL"
+BASE_URL_ENV_VAR = "WENYUAN_API_URL"
 
 #: Where the service listens when the environment names no server.
 DEFAULT_BASE_URL = "http://localhost:18888"
@@ -420,7 +420,7 @@ class WenYuan:
     """Client for a WenYuan agent-memory server.
 
     Args:
-        base_url: Server root. When omitted, ``HINDSIGHT_API_URL`` is read from
+        base_url: Server root. When omitted, ``WENYUAN_API_URL`` is read from
             the environment; when that is unset too, ``http://localhost:18888``
             is used. A trailing slash is tolerated.
         api_key: Optional bearer token sent with every request.

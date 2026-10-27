@@ -26,10 +26,10 @@ export const CONFIG_KEYS = {
 
 /** Deployment contract: the environment overrides a deployment already sets. */
 export const DEPLOYMENT_ENV = {
-  apiUrl: "HINDSIGHT_API_URL",
-  apiToken: "HINDSIGHT_API_TOKEN",
-  bankId: "HINDSIGHT_BANK_ID",
-  apiPort: "HINDSIGHT_API_PORT",
+  apiUrl: "WENYUAN_API_URL",
+  apiToken: "WENYUAN_API_TOKEN",
+  bankId: "WENYUAN_BANK_ID",
+  apiPort: "WENYUAN_API_PORT",
 } as const;
 
 /** Built-in defaults, kept together so they are easy to retarget. */

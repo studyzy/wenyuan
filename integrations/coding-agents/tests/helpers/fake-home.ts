@@ -13,11 +13,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  */
 
 export const DEPLOYMENT_ENV_VARS = [
-  "HINDSIGHT_CONFIG",
-  "HINDSIGHT_API_URL",
-  "HINDSIGHT_API_TOKEN",
-  "HINDSIGHT_BANK_ID",
-  "HINDSIGHT_API_PORT",
+  "WENYUAN_CONFIG",
+  "WENYUAN_API_URL",
+  "WENYUAN_API_TOKEN",
+  "WENYUAN_BANK_ID",
+  "WENYUAN_API_PORT",
 ] as const;
 
 export interface FakeHomeOptions {

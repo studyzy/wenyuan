@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Changed — BREAKING
+
+- **Every environment variable now spells this service's own name, and the old
+  spelling is no longer read.** All 552 `HINDSIGHT_*` keys are `WENYUAN_*`
+  (`WENYUAN_API_PORT`, `WENYUAN_API_LLM_PROVIDER`, …), together with the
+  non-api-prefixed pair `WENYUAN_FS_DIR`/`WENYUAN_FS_INTERVAL`,
+  `WENYUAN_BANK_ID`, `WENYUAN_PROFILE`, `WENYUAN_CP_DATAPLANE_API_URL`,
+  `WENYUAN_CP_DATAPLANE_API_KEY` and `_WENYUAN_DAEMON_CHILD`. There is no
+  compatibility alias: a deployment that still exports the old names starts on
+  its defaults, because no resolver asks for them any more. A configuration
+  file needs no edit — its keys are the environment name lowercased without the
+  prefix, and the key body did not change (`port`, `llm_provider`) — but it is
+  reached through `WENYUAN_API_CONFIG_FILE` now.
+- **The Prometheus metric families are renamed the same way**, from
+  `hindsight_http_requests_total` and its siblings to `wenyuan_http_requests_total`
+  etc., and the instrumentation scope from `hindsight_api.metrics` to
+  `wenyuan_api.metrics`. Dashboards and alert rules that name the old series
+  stop matching.
+
+  ```
+  sed -i 's/^HINDSIGHT_/WENYUAN_/' .env
+  sed -i 's/\bhindsight_/wenyuan_/g' alerts.yml dashboards/*.json
+  ```
+
+  Renaming an environment variable or a metric is not a change to the HTTP
+  surface: routes, JSON field names, status codes, the PostgreSQL schema, the
+  webhook signature headers (`X-Hindsight-*`), the `hindsight_key` redaction
+  label and the tenant-extension value are untouched, so clients and registered
+  webhooks keep working.
+
 ### Added
 
 - `scripts/parity_check.py` and `scripts/parity_dev_service.sh` make a single
@@ -18,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the reference service without editing the probe's fixed check list.
 - `/metrics` reports the reference's per-workload families, recorded at the site
   each one measures. **Operation** duration and count come from the worker's
-  terminal settle (`hindsight_operation_duration_seconds`,
-  `hindsight_operation_operations_total`, labelled operation/source/budget/
+  terminal settle (`wenyuan_operation_duration_seconds`,
+  `wenyuan_operation_operations_total`, labelled operation/source/budget/
   max_tokens/success, with the retain-shaped types collapsed to `retain`).
   **LLM** duration, call count and token classes (input, output, cached input,
   thoughts) come from the provider boundary, so every completion is counted with
@@ -56,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity response at or above the floor, `Content-Length` on the compressed
   body, and a substring test for `gzip` in `Accept-Encoding`.
 - Prometheus exposition matches the reference textually: the
-  `hindsight_event_loop_stalls_total` counter name (the exporter does not repeat
+  `wenyuan_event_loop_stalls_total` counter name (the exporter does not repeat
   a unit the instrument name already ends with), `le="1.0"`-style float bucket
   bounds, float-rendered sample values, the count-before-sum series order, an
   in-progress counter rendered as a float, and the `ready coroutine` help text.
@@ -64,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference's library-default `python_*`/`process_*` families.
 - A deployment with no LLM provider now refuses reflect and mental-model
   refresh instead of synthesizing a deterministic answer, matching the
-  reference for `HINDSIGHT_API_LLM_PROVIDER=none`. `POST .../reflect` answers
+  reference for `WENYUAN_API_LLM_PROVIDER=none`. `POST .../reflect` answers
   400 with the reference's message rather than falling back to the in-process
   deterministic loop, and a mental-model refresh is rejected with 400 **before
   any lookup**, so an unknown model is the same refusal rather than a 404. The
@@ -143,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     payloads (pretty-printed, with not-found as a normal result and the
     reference's unknown-tool and parse-error wording), and the native
     text-search dictionary is read from
-    `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` instead of being
+    `WENYUAN_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` instead of being
     hardcoded to `english`.
 - A per-route logic comparison against the live reference (and this checkout's
   source) closed the following divergences, each with a test that fails without
@@ -325,7 +355,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator input is `clients/openapi.json`, a derived copy of the document
   served at `/openapi.json`: the served document keeps the reference's branding
   because it *is* the contract, while the derived copy names this project (the
-  `HINDSIGHT_API_*` environment names are preserved there, since they are the
+  `WENYUAN_API_*` environment names are preserved there, since they are the
   deployment contract a client must name). `scripts/derive_client_spec.py`
   produces the copy (`make clients-check` fails when it goes stale), `make
   clients` regenerates every SDK with its pinned generator — openapi-generator
@@ -349,7 +379,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `examples/` for bridging a synchronous CLI onto the async client, and the
   no-retry contract stated where a caller looks for it.
   Every SDK ships two suites: an offline one (stubs only) and a live one gated
-  on `HINDSIGHT_API_URL` that skips itself when unset, so the offline gate stays
+  on `WENYUAN_API_URL` that skips itself when unset, so the offline gate stays
   usable without a server. `make test-sdk` runs all four offline suites,
   `make test-sdk-integration` runs all four live ones against `SDK_API_URL`
   (default `http://127.0.0.1:18888`); a memory-backed server is enough, since
@@ -367,8 +397,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A YAML configuration file answers any key the environment answers. It is read
   through Viper from `etc/wenyuan.yaml` relative to the working directory (also
   `/etc/wenyuan.yaml`, where the image puts the shipped template), or from the
-  path `HINDSIGHT_API_CONFIG_FILE` names, which must exist. Keys are the
-  environment names without the `HINDSIGHT_API_` prefix, lowercased; a nested
+  path `WENYUAN_API_CONFIG_FILE` names, which must exist. Keys are the
+  environment names without the `WENYUAN_API_` prefix, lowercased; a nested
   spelling is accepted and flattened to the same key, both spellings of one key
   must agree, and a list value is refused at startup naming the key rather than
   silently
@@ -390,10 +420,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The process entrypoint is a drop-in for the reference's launcher. `--daemon`
   now actually detaches: the foreground parent preflights the port (an occupied
   port fails in the terminal, not in a log), strips the flag, re-execs itself in
-  a new session with stdio appended to `HINDSIGHT_API_DAEMON_LOG` (default
+  a new session with stdio appended to `WENYUAN_API_DAEMON_LOG` (default
   `~/.hindsight/daemon.log`), and exits 0; the daemon binds loopback unless a
   host was configured and port 8888 unless `--port` was passed, which is the
-  reference's own resolution rule. `--workers N` (or `HINDSIGHT_API_WORKERS`)
+  reference's own resolution rule. `--workers N` (or `WENYUAN_API_WORKERS`)
   runs N worker processes instead of being parsed and ignored: the supervisor
   binds once and hands the socket to every worker, so the whole set shares one
   listening socket the way uvicorn's supervisor does, the first worker to stop
@@ -415,79 +445,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cap, source-fact budgets, strategies, scope limits and LLM batch size and
   parallelism, the reflect mission and source-fact budget, the bank-config
   process defaults those fields feed, the per-operation-type worker slot
-  reservations (`HINDSIGHT_API_WORKER_*_RESERVED_SLOTS`, each landing on the
+  reservations (`WENYUAN_API_WORKER_*_RESERVED_SLOTS`, each landing on the
   operation type it names), the event-loop watchdog
-  (`HINDSIGHT_API_LOOP_WATCHDOG_ENABLED` and its poll and stall intervals,
+  (`WENYUAN_API_LOOP_WATCHDOG_ENABLED` and its poll and stall intervals,
   which turn the stall probe on by default as the reference does), the dry-run
   extraction switch (off answers the reference's 404 and its sentence),
-  `HINDSIGHT_API_WORKERS` and `HINDSIGHT_API_DAEMON_LOG`. A copied reference
+  `WENYUAN_API_WORKERS` and `WENYUAN_API_DAEMON_LOG`. A copied reference
   `.env` now starts the service where it used to refuse startup. The retrieval,
-  write and reflection tuning follows: `HINDSIGHT_API_GRAPH_SEED_MIN_SIMILARITY`,
-  `HINDSIGHT_API_SEMANTIC_LINK_MIN_SIMILARITY`, `HINDSIGHT_API_BM25_MAX_QUERY_TERMS`,
+  write and reflection tuning follows: `WENYUAN_API_GRAPH_SEED_MIN_SIMILARITY`,
+  `WENYUAN_API_SEMANTIC_LINK_MIN_SIMILARITY`, `WENYUAN_API_BM25_MAX_QUERY_TERMS`,
   the fixed recall budget levels, the per-arm score floors
-  (`HINDSIGHT_API_SEMANTIC_MIN_SIMILARITY`,
-  `HINDSIGHT_API_TEMPORAL_SEMANTIC_MIN_SIMILARITY`,
-  `HINDSIGHT_API_BM25_MIN_SCORE`), `HINDSIGHT_API_REFLECT_MAX_ITERATIONS` and
-  `HINDSIGHT_API_REFLECT_MAX_CONTEXT_TOKENS` now reach a shared `storage.Tuning`
+  (`WENYUAN_API_SEMANTIC_MIN_SIMILARITY`,
+  `WENYUAN_API_TEMPORAL_SEMANTIC_MIN_SIMILARITY`,
+  `WENYUAN_API_BM25_MIN_SCORE`), `WENYUAN_API_REFLECT_MAX_ITERATIONS` and
+  `WENYUAN_API_REFLECT_MAX_CONTEXT_TOKENS` now reach a shared `storage.Tuning`
   both backends read (which also corrected two drifted defaults: semantic links
   0.75 → 0.7, the reflection loop's 4 iterations / 4000 tokens → 10 / 100000),
   the two history records honour their switches and entry bounds, admission
   waits are per lane, the retain path honours its completion-token cap,
   sub-batch budget, entity-lookup mode and candidate bound, and the database
-  session carries `HINDSIGHT_API_DB_STATEMENT_TIMEOUT`,
-  `HINDSIGHT_API_DB_MAX_PARALLEL_WORKERS_PER_GATHER`,
-  `HINDSIGHT_API_DB_SESSION_SETUP_ON_ACQUIRE` and
-  `HINDSIGHT_API_ENTITY_TRGM_SIMILARITY_THRESHOLD` as connection parameters, the
+  session carries `WENYUAN_API_DB_STATEMENT_TIMEOUT`,
+  `WENYUAN_API_DB_MAX_PARALLEL_WORKERS_PER_GATHER`,
+  `WENYUAN_API_DB_SESSION_SETUP_ON_ACQUIRE` and
+  `WENYUAN_API_ENTITY_TRGM_SIMILARITY_THRESHOLD` as connection parameters, the
   way the reference's per-connection callback does. The graph expansion honours
   its per-entity target cap and its own statement timeout
-  (`HINDSIGHT_API_LINK_EXPANSION_PER_ENTITY_LIMIT`,
-  `HINDSIGHT_API_LINK_EXPANSION_TIMEOUT`), and the per-process bank-row cache
-  honours `HINDSIGHT_API_BANK_INFO_CACHE_MAX_ENTRIES` by dropping expired
+  (`WENYUAN_API_LINK_EXPANSION_PER_ENTITY_LIMIT`,
+  `WENYUAN_API_LINK_EXPANSION_TIMEOUT`), and the per-process bank-row cache
+  honours `WENYUAN_API_BANK_INFO_CACHE_MAX_ENTRIES` by dropping expired
   entries before a live one. The MCP surface honours
-  `HINDSIGHT_API_MCP_AUTH_TOKEN` (a legacy bearer that replaces tenant auth for
+  `WENYUAN_API_MCP_AUTH_TOKEN` (a legacy bearer that replaces tenant auth for
   the MCP namespace, with the reference's two 401 sentences),
-  `HINDSIGHT_API_MCP_ENABLED_TOOLS` (a server-level allowlist that hides tools
+  `WENYUAN_API_MCP_ENABLED_TOOLS` (a server-level allowlist that hides tools
   from `tools/list` and refuses their invocation) and
-  `HINDSIGHT_API_MCP_INSTRUCTIONS` (appended to the retain and recall tool
+  `WENYUAN_API_MCP_INSTRUCTIONS` (appended to the retain and recall tool
   descriptions). The vector arm applies the deployment's pgvector tuning
-  (`HINDSIGHT_API_ANN_ITERATIVE_SCAN`, `HINDSIGHT_API_ANN_MAX_SCAN_TUPLES`)
+  (`WENYUAN_API_ANN_ITERATIVE_SCAN`, `WENYUAN_API_ANN_MAX_SCAN_TUPLES`)
   transaction-locally and remembers the settings a server refuses; the migration
   series can run over its own connection
-  (`HINDSIGHT_API_MIGRATION_DATABASE_URL`); a bank's list row reports its
+  (`WENYUAN_API_MIGRATION_DATABASE_URL`); a bank's list row reports its
   resolved disposition and mission
-  (`HINDSIGHT_API_DISPOSITION_{SKEPTICISM,LITERALISM,EMPATHY}`, the reference's
+  (`WENYUAN_API_DISPOSITION_{SKEPTICISM,LITERALISM,EMPATHY}`, the reference's
   overlay of configuration on the stored columns); and a new knowledge page's
   refresh policy layers the process, tenant and bank values of
-  `HINDSIGHT_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER` under the request's own.
+  `WENYUAN_API_KNOWLEDGE_PAGE_DEFAULT_TRIGGER` under the request's own.
   The deployment's server-level webhook
-  (`HINDSIGHT_API_WEBHOOK_URL` and its secret, event filter and
+  (`WENYUAN_API_WEBHOOK_URL` and its secret, event filter and
   response-body switch) now delivers alongside each bank's own registrations,
   the metrics surface honours its backlog, bank-id, tenant and event-loop-lag
   switches (the lag histogram carries the reference's buckets), extensions
   receive the allowlisted request headers
-  (`HINDSIGHT_API_EXTENSION_PASSTHROUGH_HEADERS`), a configured default bank
+  (`WENYUAN_API_EXTENSION_PASSTHROUGH_HEADERS`), a configured default bank
   template is applied from the single bank-creation hook on every path that
   creates a bank (with the create request's own fields winning), reads that
   tolerate a replica can run on one
-  (`HINDSIGHT_API_READ_DATABASE_URL` and its pool bounds), and the keyword arm
+  (`WENYUAN_API_READ_DATABASE_URL` and its pool bounds), and the keyword arm
   can run on ParadeDB pg_search
-  (`HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*`). Refusing keys went from
+  (`WENYUAN_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_*`). Refusing keys went from
   A second parallel pass closed the recall ingress and internal-recall knobs
-  (`HINDSIGHT_API_RECALL_MAX_QUERY_TOKENS`, `_MAX_CONCURRENT`, and the chunk and
+  (`WENYUAN_API_RECALL_MAX_QUERY_TOKENS`, `_MAX_CONCURRENT`, and the chunk and
   token budgets of the internal recall), the reflection completion cap and its
   default options, the write side's causal-extraction switch, its default retain
   strategy and the entity resolver's second trigram gate, and the worker /
-  consolidation family (`HINDSIGHT_API_BACKPRESSURE_DEFER_SECONDS`, the
+  consolidation family (`WENYUAN_API_BACKPRESSURE_DEFER_SECONDS`, the
   `bank-pattern:priority` consolidation claim order, the consolidation batch,
   attempt, budget and completion settings, and the stats-cache bound).
-  `HINDSIGHT_API_DATABASE_BACKEND` accepts the dialects this build implements and
+  `WENYUAN_API_DATABASE_BACKEND` accepts the dialects this build implements and
   names the one it does not. A fifth parallel pass closed the multi-worker
-  metrics label (`HINDSIGHT_API_METRICS_WORKER_LABEL`: slot claim, snapshots,
+  metrics label (`WENYUAN_API_METRICS_WORKER_LABEL`: slot claim, snapshots,
   per-worker series), the adaptive recall budget function and its ratio and clamp
   keys, the recall phase diagnostics,
-  `HINDSIGHT_API_ENTITY_INTRABATCH_MERGE_SIMILARITY`, the startup model
-  verification with `HINDSIGHT_API_MODEL_INIT_TIMEOUT` and
-  `HINDSIGHT_API_SKIP_LLM_VERIFICATION`, and the pool-acquire timeout and
+  `WENYUAN_API_ENTITY_INTRABATCH_MERGE_SIMILARITY`, the startup model
+  verification with `WENYUAN_API_MODEL_INIT_TIMEOUT` and
+  `WENYUAN_API_SKIP_LLM_VERIFICATION`, and the pool-acquire timeout and
   slow-acquire warnings. Four keys became partial support: the value this build
   implements is accepted and the rest are refused by name
   (`GRAPH_RETRIEVER=link_expansion`, `MIGRATION_ISOLATION=false`,
@@ -496,26 +526,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   been skipped while another editor's throwaway probe file hung the package)
   immediately found three real defects, all fixed: the pool slow-acquire
   threshold's reference default is a *fractional* second (0.05) and was being
-  parsed as an integer, `HINDSIGHT_API_SKIP_LLM_VERIFICATION` had no probe value
+  parsed as an integer, `WENYUAN_API_SKIP_LLM_VERIFICATION` had no probe value
   that proved it is read, and that key needed a resolvable value in the provider
   family contract. A sixth parallel pass closed the document-parser OCR chain
-  (`HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_*`: embedded images are transcribed
+  (`WENYUAN_API_FILE_PARSER_MARKITDOWN_OCR_*`: embedded images are transcribed
   through a new vision adapter and the transcription joins the parsed text, with
   the reference's construction-time validation), the alias-resolution cache
-  (`HINDSIGHT_API_BANK_ALIAS_CACHE_TTL_SECONDS` / `_MAX_ENTRIES`), the
-  consolidation near-duplicate threshold (`HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD`
+  (`WENYUAN_API_BANK_ALIAS_CACHE_TTL_SECONDS` / `_MAX_ENTRIES`), the
+  consolidation near-duplicate threshold (`WENYUAN_API_CONSOLIDATION_DEDUP_THRESHOLD`
   now decides by cosine similarity, with a documented no-embedding fallback) and
-  the recall connection budget (`HINDSIGHT_API_RECALL_CONNECTION_BUDGET`: the
+  the recall connection budget (`WENYUAN_API_RECALL_CONNECTION_BUDGET`: the
   retrieval arms now run concurrently under that budget, with identical ordering,
   ranks and phase accounting). The same pass fixed two semantic problems:
-  `HINDSIGHT_API_RETAIN_BATCH_ENABLED` meant "force async" here where the
+  `WENYUAN_API_RETAIN_BATCH_ENABLED` meant "force async" here where the
   reference routes extraction through the LLM Batch API (the invented rule is
   gone, the key now accepts `false` and refuses `true` with the reason), and the
   provider adapters now request prompt caching the way the reference does by
   default (Anthropic's system block carries `cache_control: ephemeral`; the
   OpenAI-compatible side sends `prompt_cache_key` and the host-specific session
   headers). An earlier attempt to wire
-  `HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS` was
+  `WENYUAN_API_FAIL_ON_EXTRACTION_ERRORS` was
   reverted it: the reference escalates *batch-API* extraction errors and this
   build has no batch path, so the key has no seam and stays refused rather than
   becoming a silent no-op), and
@@ -529,7 +559,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beside ours), the 14 lib modules the views need, and the merged message
   catalogs (2446 keys per locale, up from 471, with a coverage test that fails if
   a used key is missing). Product-visible strings stay ours; the deployment
-  contract — `HINDSIGHT_CP_*`, the session cookie names, the health route's
+  contract — `WENYUAN_CP_*`, the session cookie names, the health route's
   `SERVICE_NAME` — is byte-identical. `scripts/frontend_integration.sh` is the new
   cross-stack gate: it starts this service on a private database, builds and
   serves the frontend against it, and proves the access gate, the BFF read and
@@ -537,10 +567,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 - The log stream's shape is configurable the way the reference's is:
-  `HINDSIGHT_API_LOG_FORMAT=json` writes one JSON object per record with the
+  `WENYUAN_API_LOG_FORMAT=json` writes one JSON object per record with the
   reference's keys and spellings (`severity`, `message`, `timestamp`, `logger`,
-  with `WARN` reported as `WARNING`), `HINDSIGHT_API_LOG_JSON_FIELDS` narrows
-  those keys, and records go to stdout. `HINDSIGHT_API_ACCESS_LOG` (or
+  with `WARN` reported as `WARNING`), `WENYUAN_API_LOG_JSON_FIELDS` narrows
+  those keys, and records go to stdout. `WENYUAN_API_ACCESS_LOG` (or
   `--access-log`) writes the reference's per-request access line —
   `LEVEL:     <client> - "<request line>" <status>` — which the reference's JSON
   formatter does not touch either.
@@ -552,34 +582,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadlock against its own diagnostics again.
 
 - The default bind address and port are the reference's: `0.0.0.0:8888` (was
-  `127.0.0.1:8000`), and `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` defaults on.
+  `127.0.0.1:8000`), and `WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP` defaults on.
   A deployment that sets neither now binds all interfaces on the port a
   reference deployment uses.
-- An unset `HINDSIGHT_API_DATABASE_URL` refuses startup, naming both ways out: a
+- An unset `WENYUAN_API_DATABASE_URL` refuses startup, naming both ways out: a
   `postgresql://` URL, or the explicit `memory` opt-in for a non-persistent
   backend. The reference provisions an embedded PostgreSQL there, which this
   build cannot manage, and silently serving from memory would lose data on
   restart without saying so.
 - Document uploads are converted to text: the parser chain
-  (`HINDSIGHT_API_FILE_PARSER`, default `markitdown`) now has a local
+  (`WENYUAN_API_FILE_PARSER`, default `markitdown`) now has a local
   implementation covering PDF, DOCX, XLSX, PPTX, HTML, CSV/TSV, JSON/JSONL and
   plain text with no new dependencies, plus the remote `llama_parse` and `iris`
   parsers over their HTTP APIs. The allowlist, the batch limits
-  (`HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE(_MB)`) and
-  `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN` are honoured; a format nothing can
+  (`WENYUAN_API_FILE_CONVERSION_MAX_BATCH_SIZE(_MB)`) and
+  `WENYUAN_API_FILE_DELETE_AFTER_RETAIN` are honoured; a format nothing can
   convert is refused by name.
 - The separate reranker and embedding provider families exist:
-  `HINDSIGHT_API_RERANKER_PROVIDER` selects `siliconflow`, `cohere`,
+  `WENYUAN_API_RERANKER_PROVIDER` selects `siliconflow`, `cohere`,
   `zeroentropy`, `openrouter`, `tei`, `typesafe` or the in-process `rrf`
-  (failover chain supported), and `HINDSIGHT_API_EMBEDDINGS_PROVIDER` selects
+  (failover chain supported), and `WENYUAN_API_EMBEDDINGS_PROVIDER` selects
   `openai`, `openrouter`, `requesty`, `litellm`, `cohere`, `tei`, `zeroentropy`
   or `gemini`. Members needing a local runtime (`onnx`, `local`, `flashrank`,
   jina-mlx, litellm-sdk, google, alibaba) are refused at startup naming the key.
-  `HINDSIGHT_API_EMBEDDING_DIMENSION` resolves the width (default 384).
-- `HINDSIGHT_API_LLM_STRATEGY` and the per-role `*_LLM_STRATEGY` keys select
+  `WENYUAN_API_EMBEDDING_DIMENSION` resolves the width (default 384).
+- `WENYUAN_API_LLM_STRATEGY` and the per-role `*_LLM_STRATEGY` keys select
   multi-member chat routing: failover, weighted round-robin, or routing by a
   request's metadata, over members configured with the reference's
-  `HINDSIGHT_API_<ROLE>LLM_<n>_*` convention.
+  `WENYUAN_API_<ROLE>LLM_<n>_*` convention.
 - A reranker that marks a candidate 0.0 prunes it (the reference's
   `prunes_candidates`); unscored candidates survive.
 - The retain extraction mode selects the reference's prompt and schema:
@@ -593,12 +623,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the batch/parallelism knobs all reach the pass, so the preview reports what
   the pass does.
 - Token counts use the reference's vocabulary by default: `o200k_base`
-  (`HINDSIGHT_API_TOKENIZER_ENCODING` selects between it and `cl100k_base`).
+  (`WENYUAN_API_TOKENIZER_ENCODING` selects between it and `cl100k_base`).
 - The keyword arm selects its terms by document frequency from the planner's
   statistics instead of weighing every term in a long query, and the statement
   runs with a timeout, which is the reference's guard against a broad query
   ranking a whole bank.
-- `HINDSIGHT_API_PROFILE` is the reference's JSON profiling request, validated at
+- `WENYUAN_API_PROFILE` is the reference's JSON profiling request, validated at
   startup, and the periodic report is a real CPU profile: per-thread CPU plus a
   `tottime`/`cumtime`/`ncalls` table per window, parsed with the Go toolchain's
   own profile reader.
@@ -606,7 +636,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an HTTP middleware resolves the matched route to its action, the MCP dispatch
   records its auditable tools, and the worker records each processed operation.
   The global switch, the per-bank override and the action allowlist
-  (`HINDSIGHT_API_AUDIT_LOG_ACTIONS`) gate it, and a failing write never fails
+  (`WENYUAN_API_AUDIT_LOG_ACTIONS`) gate it, and a failing write never fails
   the operation it describes.
 
 - The server can be pointed at a database the reference service created and
@@ -620,9 +650,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index the database lacks is reported rather than built (the reference creates
   its vector indexes outside its migrations, so their names differ between
   databases at the same recorded revision).
-- `HINDSIGHT_API_FILE_STORAGE_TYPE` accepts `gcs` and `azure` in addition to
+- `WENYUAN_API_FILE_STORAGE_TYPE` accepts `gcs` and `azure` in addition to
   `s3`: the payload backend is now selectable across Google Cloud Storage
-  (`HINDSIGHT_API_FILE_STORAGE_GCS_BUCKET`, `..._GCS_SERVICE_ACCOUNT_KEY`) and
+  (`WENYUAN_API_FILE_STORAGE_GCS_BUCKET`, `..._GCS_SERVICE_ACCOUNT_KEY`) and
   Azure Blob Storage (`..._AZURE_CONTAINER`, `..._AZURE_ACCOUNT_NAME`,
   `..._AZURE_ACCOUNT_KEY`), each spoken over its own REST API with no vendor
   SDK, and each verified by its own stub-endpoint suite.
@@ -632,7 +662,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sign one, falling back to proxying the payload otherwise.
 - A database URL is normalized before the driver sees it
   (`postgresql+asyncpg://…?ssl=require` → `postgresql://…?sslmode=require`), and
-  the connection pool is bounded by `HINDSIGHT_API_DB_POOL_MAX_SIZE` (100) and
+  the connection pool is bounded by `WENYUAN_API_DB_POOL_MAX_SIZE` (100) and
   `..._MIN_SIZE` (5) instead of growing without limit.
 - A bank's configuration-dependent behaviour is read fresh rather than from the
   process-local bank cache, so a change written by another server takes effect
@@ -643,7 +673,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Webhook delivery is complete: a completed write raises `retain.completed`, and
   each delivery records the receiver's status (`last_status_code`) on its
   operation, so a refusing endpoint is distinguishable from an unreachable one.
-- Uploads are bounded: `HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB` (20) and
+- Uploads are bounded: `WENYUAN_API_RETAIN_ATTACHMENT_MAX_SIZE_MB` (20) and
   `..._MAX_COUNT` (50) cap one request's body, each file and the file count,
   each refusal naming the limit.
 - Byte serving streams: the S3 object store hands back its live response body
@@ -655,7 +685,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bankctl` gains `backup`, `restore`, `run-db-migration`,
   `decommission-worker` and `decommission-workers`.
 - A provider setting this build cannot honour
-  (`HINDSIGHT_API_LLM_STRATEGY`, `..._LLM_LITELLMROUTER_CONFIG`,
+  (`WENYUAN_API_LLM_STRATEGY`, `..._LLM_LITELLMROUTER_CONFIG`,
   `..._EMBEDDINGS_LOCAL_MODEL`) now fails startup by name instead of being
   silently ignored.
 - Retain configuration is now reachable: a bank's `retain_mission`,
@@ -681,7 +711,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a reflection records its grounding, and a reflection presents its evidence
   under short aliases with the forced retrieval hierarchy and the fresh-page
   short-circuit.
-- Recency decay is configurable (`HINDSIGHT_API_RECENCY_DECAY_FUNCTION` =
+- Recency decay is configurable (`WENYUAN_API_RECENCY_DECAY_FUNCTION` =
   `linear|exponential|none`, plus `..._LINEAR_WINDOW_DAYS`/`..._HALFLIFE_DAYS`),
   and a coarse date ("in 2015") ages from the end of its period, capped at
   neutral, instead of reading as stale from the first instant of the period.
@@ -694,7 +724,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than 512 characters is truncated instead of failing the write.
 - Recall fusion gains an interleave mode (round-robin across arms, so one arm's
   best hit is never averaged down) and an optional per-source cap
-  (`HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE`) applied before fusion.
+  (`WENYUAN_API_RECALL_MAX_CANDIDATES_PER_SOURCE`) applied before fusion.
   Consolidation now widens its merge-candidate pool with a near-duplicate lookup
   that uses both, so a near-identical twin the recency-ordered pool missed is
   still offered to the model.
@@ -721,7 +751,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventing one.
 - Reflection renders the bank's directives as a mandatory opening section and a
   numbered reminder closing the answering prompt, so a later turn cannot
-  out-rank them. `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is now actually applied —
+  out-rank them. `WENYUAN_API_LLM_OUTPUT_LANGUAGE` is now actually applied —
   as a directive on the system message of every completion, covering extracted
   facts, observations, reflections and mental-model bodies alike.
 - Reflection presents retrieved evidence under short aliases (`f1`, `o1`,
@@ -732,12 +762,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `fact_kind` fallback) and `from_attachments` (resolved to the units'
   attachment ids by position or identifier).
 - Per-`(bank, fact_type)` partial vector indexes with a row threshold
-  (`HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS`, default 0 = off): a partition above
+  (`WENYUAN_API_VECTOR_INDEX_MIN_ROWS`, default 0 = off): a partition above
   the threshold earns its own index, one below loses it, built and dropped
   `CONCURRENTLY`. Reconciled by a maintenance sweep and
   `bankctl bank repair-bank --vector-index-min-rows`.
-- OpenTelemetry tracing: with `HINDSIGHT_API_OTEL_TRACES_ENABLED=true` and an
-  `HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT`, every model call exports a GenAI
+- OpenTelemetry tracing: with `WENYUAN_API_OTEL_TRACES_ENABLED=true` and an
+  `WENYUAN_API_OTEL_EXPORTER_OTLP_ENDPOINT`, every model call exports a GenAI
   span over OTLP/HTTP JSON. Dependency-free, off the latency path, and shed
   rather than buffered when the collector stalls.
 - Document detail reports the retain-time `observation_scopes` spec, and chunk
@@ -749,7 +779,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two passes over one bank cannot read the same facts and create twin
   observations; different banks still run concurrently.
 - The worker reserves a concurrency floor per operation type
-  (`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`, default 2), so a bank
+  (`WENYUAN_API_WORKER_CONSOLIDATION_RESERVED_SLOTS`, default 2), so a bank
   mid-bulk-ingest cannot starve observation folding.
 - Consolidation drops a near-duplicate observation create (token Jaccard ≥ 0.7
   against existing or same-pass observations), not only an exact restatement.
@@ -770,11 +800,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/metrics` reports `wenyuan_async_operations_pending` and
   `wenyuan_async_operations_failed`, aggregated across banks at scrape time.
 - A per-operation-type wall ceiling
-  (`HINDSIGHT_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`)
+  (`WENYUAN_API_WORKER_{RETAIN,CONSOLIDATION,REFLECT}_WALL_TIMEOUT_SECONDS`)
   bounds a wedged task below the claim's lease, freeing its slot sooner.
 - A loop-lag probe reports a scheduler stall past
-  `HINDSIGHT_API_LOOP_LAG_STALL_SECONDS` at
-  `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS` cadence.
+  `WENYUAN_API_LOOP_LAG_STALL_SECONDS` at
+  `WENYUAN_API_LOOP_LAG_REPORT_SECONDS` cadence.
 - A mental-model refresh honours a `delta` trigger mode: it folds new evidence
   into the existing document (preserving unchanged sections) and falls back to
   the full answer when it cannot, recording `delta`/`delta_fallback` in history.
@@ -783,7 +813,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consuming its retry budget, so a sustained shed cannot permanently fail work.
 - Settings honour the reference's worker key names as aliases
   (`WORKER_POLL_INTERVAL_MS`, `WORKER_MAX_SLOTS`,
-  `WORKER_TASK_RETRY_BACKOFF_SECONDS`), and `HINDSIGHT_API_PROFILE=true` mounts
+  `WORKER_TASK_RETRY_BACKOFF_SECONDS`), and `WENYUAN_API_PROFILE=true` mounts
   the `/debug/pprof/*` endpoints.
 - A knowledge tree node reports `managed` (set for an API-created page) and its
   `sort_order` round-trips through storage; a page's body was already carried by
@@ -795,12 +825,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stranded consolidation) and `worker-status` (per-bank pending/failed counts).
 - Recall, retain and reflect are admitted through per-operation concurrency
   lanes: a saturated lane sheds with `503` and `Retry-After`, and a request that
-  goes away while queued is reported as `499` (`HINDSIGHT_API_ADMISSION_*`).
+  goes away while queued is reported as `499` (`WENYUAN_API_ADMISSION_*`).
 - The MCP tool roster covers the reference surface: bank lifecycle, memories and
   documents, operations, tags and stats, mental models, directives, the
   knowledge base, entities, consolidation, observation scopes and webhooks.
 - The worker process serves `/health`, `/health/ready` and `/health/live` on
-  `HINDSIGHT_API_WORKER_HTTP_PORT` (default 8889), with a liveness payload
+  `WENYUAN_API_WORKER_HTTP_PORT` (default 8889), with a liveness payload
   carrying `worker_id`, `is_shutdown` and `seconds_since_last_poll`.
 - Webhook delivery is wired: a `consolidation.completed` event queues a
   `webhook_delivery` operation for each subscribed webhook, and the worker
@@ -829,7 +859,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link-expansion graph arm, fused by reciprocity and scored through the shared
   path, honouring tags, the temporal window and per-arm floors.
 - The API process runs the queue consumer and the maintenance loop when
-  `HINDSIGHT_API_WORKER_ENABLED` is set (default true), matching the reference's
+  `WENYUAN_API_WORKER_ENABLED` is set (default true), matching the reference's
   standalone mode; the `worker` feature flag is reported by the version
   endpoint.
 - The retain write path honours `update_mode`: `replace` rebuilds a document's
@@ -840,7 +870,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when an embedding model is configured, so the vector recall arm and its ANN
   index have vectors to rank.
 - `llm_requests` is populated: each completion is recorded at the provider
-  boundary when `HINDSIGHT_API_LLM_TRACE_ENABLED` is set.
+  boundary when `WENYUAN_API_LLM_TRACE_ENABLED` is set.
 - `/version` and `/v1/version` report all eleven reference feature keys
   (`observations`, `mcp`, `worker`, `bank_config_api`, `bank_llm_health`,
   `file_upload_api`, `document_export_api`, `document_import_api`, `audit_log`,
@@ -850,8 +880,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names the database state and the connection-acquire latency, liveness reports
   the version and process uptime.
 - The per-bank `/health/llm` route is gated by
-  `HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH` (default off → 404) and the file retain
-  route by `HINDSIGHT_API_ENABLE_FILE_UPLOAD_API` (default on → 404 when off).
+  `WENYUAN_API_ENABLE_BANK_LLM_HEALTH` (default off → 404) and the file retain
+  route by `WENYUAN_API_ENABLE_FILE_UPLOAD_API` (default on → 404 when off).
 - The bank configuration read/write/reset responses include `bank_id`.
 
 ### Fixed
@@ -911,7 +941,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mentioned_at`) rather than the retain clock, a span renders as a range,
   entities are bracketed, and a unit with no date gets no date clause. Indexing a
   2021 fact with the month it was retained asserts a time the fact does not.
-- `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` is refused for the values this build
+- `WENYUAN_API_TEXT_SEARCH_EXTENSION` is refused for the values this build
   cannot honour (only the native tsvector backend is implemented) instead of
   being accepted and ignored, and its dictionary key is refused only for a
   dictionary other than `english` rather than for being set at all.
@@ -949,7 +979,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `text/event-stream` when it is absent, so a missing header, `application/json`
   and `*/*` are all served — this repo answered 406 for the last two. The 406
   envelope and the GET event-stream framing are the SDK's.
-- `HINDSIGHT_API_STORE_DOCUMENT_TEXT=false` stores no document text as NULL
+- `WENYUAN_API_STORE_DOCUMENT_TEXT=false` stores no document text as NULL
   rather than an empty string, its append refusal names the setting in the
   reference's words, and the reference-direct reader no longer scans the nullable
   column into a string (which failed outright on a bank that opted out).
@@ -970,10 +1000,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The refusal an append-mode retain gets when document-text storage is off
   carries the reference's wording verbatim, naming the setting
   (`update_mode='append' is not supported when document text storage
-  (store_document_text / HINDSIGHT_API_STORE_DOCUMENT_TEXT) is disabled: …`)
+  (store_document_text / WENYUAN_API_STORE_DOCUMENT_TEXT) is disabled: …`)
   rather than a paraphrase that dropped the setting's name.
 - The PostgreSQL write stores a withheld document body as `NULL original_text`
-  when `HINDSIGHT_API_STORE_DOCUMENT_TEXT=false`, which is the reference's own
+  when `WENYUAN_API_STORE_DOCUMENT_TEXT=false`, which is the reference's own
   representation (the in-memory backend reads back empty either way), and the
   archive reader that pulls a bank straight out of a reference database tolerates
   the same `NULL` rather than failing the scan.
@@ -1105,14 +1135,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the fixes below landed with it.
 - The reference's descriptive surface is served: `GET /openapi.json` (its own
   contract document, captured by `scripts/reference_openapi.py`), `/docs`,
-  `/docs/oauth2-redirect` and `/redoc`, each under `HINDSIGHT_API_BASE_PATH` when
+  `/docs/oauth2-redirect` and `/redoc`, each under `WENYUAN_API_BASE_PATH` when
   one is configured.
-- `HINDSIGHT_API_BASE_PATH` serves the whole surface under a prefix as well as at
+- `WENYUAN_API_BASE_PATH` serves the whole surface under a prefix as well as at
   the root, which is how a deployment moves behind a path-prefixing proxy.
 - `GET /version` reports the reference release and the reference's feature-flag
   defaults (MCP, bank-config API, document import/export on; audit log off;
-  llm_trace on), with `HINDSIGHT_API_ENABLE_OBSERVATIONS`,
-  `HINDSIGHT_API_AUDIT_LOG_ENABLED` and `HINDSIGHT_API_STORE_DOCUMENT_TEXT` now
+  llm_trace on), with `WENYUAN_API_ENABLE_OBSERVATIONS`,
+  `WENYUAN_API_AUDIT_LOG_ENABLED` and `WENYUAN_API_STORE_DOCUMENT_TEXT` now
   driving their flags.
 - Null fields are dropped by default, as the reference drops them, except for the
   models that must keep them (graph rows, memory/document list items, operations,
@@ -1120,11 +1150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unmatched path or method answers the reference's JSON envelope
   (`{"detail":"Not Found"}` / `{"detail":"Method Not Allowed"}`) instead of the
   router's plain text.
-- Tenant authentication is enforced when `HINDSIGHT_API_TENANT_EXTENSION` selects
+- Tenant authentication is enforced when `WENYUAN_API_TENANT_EXTENSION` selects
   the built-in API-key authenticator: every engine-backed route requires
-  `HINDSIGHT_API_TENANT_API_KEY` (401 `{"detail":"Authentication failed: Invalid
+  `WENYUAN_API_TENANT_API_KEY` (401 `{"detail":"Authentication failed: Invalid
   API key"}`), the MCP namespace is exempt under
-  `HINDSIGHT_API_TENANT_MCP_AUTH_DISABLED`, and any other extension class refuses
+  `WENYUAN_API_TENANT_MCP_AUTH_DISABLED`, and any other extension class refuses
   startup rather than serving unauthenticated.
 - A malformed or wrong-typed request body is the framework's structured 422 with a
   `json_invalid`/`*_parsing` item (`httpx.DecodeBody`), not a `400` sentence, and a
@@ -1133,9 +1163,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference's own message for the route.
 - Admission lanes name the operation and match one method, so clearing a bank no
   longer consumes the retain lane, and the shed messages are the reference's.
-- `HINDSIGHT_API_PROFILE` is the reference's JSON profiling request (validated at
+- `WENYUAN_API_PROFILE` is the reference's JSON profiling request (validated at
   startup, reported periodically on the log stream); the Go pprof endpoints moved
-  to `HINDSIGHT_API_PPROF_ENABLED`.
+  to `WENYUAN_API_PPROF_ENABLED`.
 - The knowledge-base routes match the reference: page and folder creation answer
   `201`, page creation returns its backing mental model, search results carry
   `snippet`, the export starts with `index.md`, `PATCH nodes/{id}` accepts the
@@ -1163,8 +1193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naive ISO timestamps), and the recall body accepts no pagination fields the
   reference does not declare.
 - A missing bank is reported as `Bank '<id>' not found`.
-- Exported metrics use the reference's names (`hindsight_http_requests_total`,
-  `hindsight_http_requests_in_progress`).
+- Exported metrics use the reference's names (`wenyuan_http_requests_total`,
+  `wenyuan_http_requests_in_progress`).
 - Postgres recall: the arm queries' parameter positions are contiguous again, and
   `tags_match=any_strict` matches by overlap (it required every requested tag),
   which had made a tag-scoped recall return too few rows.
@@ -1215,14 +1245,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `subtype`, `kind`, `document_id` and others were absent from the accepted
   set), and recall/reflect report an unknown JSON body field the same way an
   unknown query parameter is reported.
-- The provider families (`HINDSIGHT_API_LLM_*` and the four per-role
-  `*_LLM_*` scopes, `HINDSIGHT_API_EMBEDDINGS_*`, `HINDSIGHT_API_RERANKER_*`
+- The provider families (`WENYUAN_API_LLM_*` and the four per-role
+  `*_LLM_*` scopes, `WENYUAN_API_EMBEDDINGS_*`, `WENYUAN_API_RERANKER_*`
   and the global litellm credentials) are accepted key by key. A key this build
   implements resolves into configuration (the mixed-case scoped chat keys, the
   per-role scopes, and the chat/embeddings transport and retry envelope); a key
   for a backend this build does not ship — the reranker provider subsystem, the
   ONNX/TEI/Gemini/Cohere/OpenRouter/Requesty/ZeroEntropy/litellm embedding
-  backends, an in-process local embedder, `HINDSIGHT_API_EMBEDDING_DIMENSION`,
+  backends, an in-process local embedder, `WENYUAN_API_EMBEDDING_DIMENSION`,
   the multi-model routing strategies, or an unimplemented chat provider name —
   now fails startup and names the key instead of being silently ignored. The
   key list is enumerated from the reference's constants by

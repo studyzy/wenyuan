@@ -31,7 +31,7 @@ describe("knowledge-base upstream passthrough", () => {
     const stub = stubFetch([{ status: 200, body: { nodes: [] } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await tree.GET(makeRequest("http://localhost/api/knowledge-base/tree?bank_id=acme"));
         expect(response.status).toBe(200);
         expect(await readJson(response)).toEqual({ nodes: [] });
@@ -74,7 +74,7 @@ describe("knowledge-base routes are bank-scoped and require bank_id", () => {
     const stub = stubFetch([{ status: 200, body: { results: [{ id: "x" }], total: 1 } }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         const response = await search.GET(
           makeRequest("http://localhost/api/knowledge-base/search?bank_id=acme"),
         );
@@ -91,7 +91,7 @@ describe("knowledge-base routes are bank-scoped and require bank_id", () => {
     const stub = stubFetch([{ status: 200, body: {} }]);
     const restore = stub.restore;
     try {
-      await withEnv({ HINDSIGHT_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
         await search.GET(makeRequest("http://localhost/api/knowledge-base/search?bank_id=acme&q=hello"));
         expect(stub.calls[0]).toContain("q=hello");
         expect(stub.calls[0]).toContain("limit=10");

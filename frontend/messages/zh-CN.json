@@ -373,7 +373,7 @@
   "bankConfig": {
     "noBankSelected": "未选择记忆库",
     "apiDisabledTitle": "记忆库配置 API 未启用",
-    "apiDisabledDescription": "在服务器上设置 <code>HINDSIGHT_API_ENABLE_BANK_CONFIG_API=true</code> 以启用逐库配置。",
+    "apiDisabledDescription": "在服务器上设置 <code>WENYUAN_API_ENABLE_BANK_CONFIG_API=true</code> 以启用逐库配置。",
     "resetToInherited": "重置为继承值",
     "failedToReset": "重置失败",
     "overrideBadge": "库级覆盖",
@@ -1924,7 +1924,7 @@
     "addDocumentToCurrentBank": "向当前记忆库添加文档",
     "templateManifestHelp": "粘贴模板清单 JSON 以使用设置、心智模型和指令预配置记忆库。",
     "fileUploadDisabledMessage": "此服务器未启用文件上传。",
-    "fileUploadEnableHint": "要启用，请设置 <code>HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true</code>",
+    "fileUploadEnableHint": "要启用，请设置 <code>WENYUAN_API_ENABLE_FILE_UPLOAD_API=true</code>",
     "fileTagsHelp": "逗号分隔 — 用于在 recall/reflect 期间筛选记忆",
     "strategyHelpText": "为此文档覆盖记忆库的默认提取策略。",
     "observationScopePerTag": "按标签",

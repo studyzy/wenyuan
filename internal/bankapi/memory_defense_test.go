@@ -58,7 +58,7 @@ func TestConfigMemoryDefenseEnvSpelledKeySkipsPolicyCheck(t *testing.T) {
 	handlers.WithConfigAPI(true)
 	mux := newMux(handlers)
 
-	body := `{"updates":{"HINDSIGHT_API_MEMORY_DEFENSE":{"enabled":true,"rules":[{"on":"sensitive_data","action":"nope"}]}}}`
+	body := `{"updates":{"WENYUAN_API_MEMORY_DEFENSE":{"enabled":true,"rules":[{"on":"sensitive_data","action":"nope"}]}}}`
 	rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("env-spelled invalid memory_defense = %d, want 200, body = %s", rec.Code, rec.Body.String())

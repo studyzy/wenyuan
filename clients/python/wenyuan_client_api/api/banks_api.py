@@ -2146,7 +2146,7 @@ class BanksApi:
     ) -> BankConfigResponse:
         """Get bank configuration
 
-        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: HINDSIGHT_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
+        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: WENYUAN_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -2219,7 +2219,7 @@ class BanksApi:
     ) -> ApiResponse[BankConfigResponse]:
         """Get bank configuration
 
-        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: HINDSIGHT_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
+        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: WENYUAN_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -2292,7 +2292,7 @@ class BanksApi:
     ) -> RESTResponseType:
         """Get bank configuration
 
-        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: HINDSIGHT_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
+        Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides. Always available: WENYUAN_API_ENABLE_BANK_CONFIG_API gates only the write operations on this resource.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -4798,7 +4798,7 @@ class BanksApi:
     ) -> BankLlmHealthResponse:
         """Test the bank's LLM connectivity
 
-        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.
+        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with WENYUAN_API_ENABLE_BANK_LLM_HEALTH=false.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -4870,7 +4870,7 @@ class BanksApi:
     ) -> ApiResponse[BankLlmHealthResponse]:
         """Test the bank's LLM connectivity
 
-        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.
+        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with WENYUAN_API_ENABLE_BANK_LLM_HEALTH=false.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -4942,7 +4942,7 @@ class BanksApi:
     ) -> RESTResponseType:
         """Test the bank's LLM connectivity
 
-        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.
+        Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with WENYUAN_API_ENABLE_BANK_LLM_HEALTH=false.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -5689,7 +5689,7 @@ class BanksApi:
     ) -> BankConfigResponse:
         """Update bank configuration
 
-        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE).
+        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -5765,7 +5765,7 @@ class BanksApi:
     ) -> ApiResponse[BankConfigResponse]:
         """Update bank configuration
 
-        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE).
+        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -5841,7 +5841,7 @@ class BanksApi:
     ) -> RESTResponseType:
         """Update bank configuration
 
-        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE).
+        Update configuration overrides for a bank. Only hierarchical behavioral settings can be overridden (retention parameters, recall settings, etc.). Keys can be provided in Python field format (retain_extraction_mode) or environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE).
 
         :param bank_id: (required)
         :type bank_id: str

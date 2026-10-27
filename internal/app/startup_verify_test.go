@@ -152,11 +152,11 @@ func TestStartupProbeSkipsNoModelAndMock(t *testing.T) {
 }
 
 // A reference .env that turns the startup probe off is accepted rather than
-// refused: HINDSIGHT_API_SKIP_LLM_VERIFICATION is a setting this build honours.
+// refused: WENYUAN_API_SKIP_LLM_VERIFICATION is a setting this build honours.
 func TestSkipLLMVerificationIsAccepted(t *testing.T) {
 	cfg := config.FromEnv(func(key string) (string, bool) {
 		switch key {
-		case "HINDSIGHT_API_DATABASE_URL":
+		case "WENYUAN_API_DATABASE_URL":
 			return "memory", true
 		}
 		if key == config.EnvSkipLLMVerification {

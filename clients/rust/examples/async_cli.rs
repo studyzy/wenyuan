@@ -7,13 +7,13 @@
 //!
 //! Build it with `cargo build --example async_cli`; run it against a
 //! deployment with
-//! `HINDSIGHT_API_URL=http://localhost:18888 cargo run --example async_cli`.
+//! `WENYUAN_API_URL=http://localhost:18888 cargo run --example async_cli`.
 
 use wenyuan_client::{types, Wenyuan};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Base URL from HINDSIGHT_API_URL, falling back to
+    // Base URL from WENYUAN_API_URL, falling back to
     // http://localhost:18888.
     let client = Wenyuan::new()?;
 

@@ -10,7 +10,7 @@ import (
 // LoopLagMetricName is the exposition name of the event-loop lag histogram. The
 // reference declares its unit "s", so the exporter appends the "seconds" suffix
 // to the instrument name.
-const LoopLagMetricName = "hindsight_event_loop_lag_seconds"
+const LoopLagMetricName = "wenyuan_event_loop_lag_seconds"
 
 // LoopLagBuckets are the histogram boundaries for the event-loop lag metric, in
 // seconds. Lag is sub-millisecond on a healthy loop and reaches seconds only

@@ -12,8 +12,8 @@ builds `examples/sync_cli.rs` (Option 1) and `examples/async_cli.rs`
 (Option 2). Run either against a deployment with
 
 ```sh
-HINDSIGHT_API_URL=http://localhost:18888 cargo run --example sync_cli
-HINDSIGHT_API_URL=http://localhost:18888 cargo run --example async_cli
+WENYUAN_API_URL=http://localhost:18888 cargo run --example sync_cli
+WENYUAN_API_URL=http://localhost:18888 cargo run --example async_cli
 ```
 
 ## Option 1: a thin synchronous wrapper
@@ -32,7 +32,7 @@ struct ApiClient {
 impl ApiClient {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Runtime::new()?;
-        let client = Wenyuan::new()?; // HINDSIGHT_API_URL, else localhost:18888
+        let client = Wenyuan::new()?; // WENYUAN_API_URL, else localhost:18888
         Ok(Self { client, runtime })
     }
 

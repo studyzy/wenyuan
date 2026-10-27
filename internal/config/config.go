@@ -11,211 +11,211 @@ import (
 
 // Environment variable names that form the destination configuration contract.
 const (
-	EnvHost                   = "HINDSIGHT_API_HOST"
-	EnvPort                   = "HINDSIGHT_API_PORT"
-	EnvDatabaseURL            = "HINDSIGHT_API_DATABASE_URL"
-	EnvDatabaseSchema         = "HINDSIGHT_API_DATABASE_SCHEMA"
-	EnvVectorExtension        = "HINDSIGHT_API_VECTOR_EXTENSION"
-	EnvTextSearchExtension    = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION"
-	EnvRunMigrationsOnStartup = "HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP"
-	EnvMCPEnabled             = "HINDSIGHT_API_MCP_ENABLED"
-	EnvEnableBankConfigAPI    = "HINDSIGHT_API_ENABLE_BANK_CONFIG_API"
+	EnvHost                   = "WENYUAN_API_HOST"
+	EnvPort                   = "WENYUAN_API_PORT"
+	EnvDatabaseURL            = "WENYUAN_API_DATABASE_URL"
+	EnvDatabaseSchema         = "WENYUAN_API_DATABASE_SCHEMA"
+	EnvVectorExtension        = "WENYUAN_API_VECTOR_EXTENSION"
+	EnvTextSearchExtension    = "WENYUAN_API_TEXT_SEARCH_EXTENSION"
+	EnvRunMigrationsOnStartup = "WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP"
+	EnvMCPEnabled             = "WENYUAN_API_MCP_ENABLED"
+	EnvEnableBankConfigAPI    = "WENYUAN_API_ENABLE_BANK_CONFIG_API"
 	// EnvEnableBankLLMHealth gates the per-bank /health/llm route. It is off by
 	// default, matching the reference.
-	EnvEnableBankLLMHealth = "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH"
+	EnvEnableBankLLMHealth = "WENYUAN_API_ENABLE_BANK_LLM_HEALTH"
 	// EnvEnableFileUploadAPI gates the file retain route. It is on by default,
 	// matching the reference.
-	EnvEnableFileUploadAPI = "HINDSIGHT_API_ENABLE_FILE_UPLOAD_API"
+	EnvEnableFileUploadAPI = "WENYUAN_API_ENABLE_FILE_UPLOAD_API"
 	// EnvEnableDocumentExportAPI gates the document export routes of the
 	// archive transfer family.
-	EnvEnableDocumentExportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API"
+	EnvEnableDocumentExportAPI = "WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API"
 	// EnvEnableDocumentImportAPI gates the document import routes of the
 	// archive transfer family.
-	EnvEnableDocumentImportAPI = "HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API"
+	EnvEnableDocumentImportAPI = "WENYUAN_API_ENABLE_DOCUMENT_IMPORT_API"
 
 	// EnvWebhookAllowInsecure permits a plain-HTTP webhook target. Off by
 	// default so a delivery cannot be downgraded to cleartext.
-	EnvWebhookAllowInsecure = "HINDSIGHT_API_WEBHOOK_ALLOW_INSECURE"
+	EnvWebhookAllowInsecure = "WENYUAN_API_WEBHOOK_ALLOW_INSECURE"
 	// EnvWebhookAllowPrivateHosts permits a webhook target inside the private
 	// network. Off by default, because a registered URL is fetched by the
 	// server and an unchecked one is a server-side request forgery.
-	EnvWebhookAllowPrivateHosts = "HINDSIGHT_API_WEBHOOK_ALLOW_PRIVATE_HOSTS"
+	EnvWebhookAllowPrivateHosts = "WENYUAN_API_WEBHOOK_ALLOW_PRIVATE_HOSTS"
 	// EnvWebhookAllowedHosts narrows webhook targets to an explicit host set.
-	EnvWebhookAllowedHosts = "HINDSIGHT_API_WEBHOOK_ALLOWED_HOSTS"
+	EnvWebhookAllowedHosts = "WENYUAN_API_WEBHOOK_ALLOWED_HOSTS"
 
 	// EnvWorkerID identifies this queue consumer among consumers sharing one
 	// queue, so a claim can be traced back to its holder.
-	EnvWorkerID = "HINDSIGHT_API_WORKER_ID"
+	EnvWorkerID = "WENYUAN_API_WORKER_ID"
 	// EnvWorkerEnabled controls whether the API process also runs the queue
 	// consumer and the maintenance loop. It defaults to true, matching the
 	// reference's standalone mode where one process serves and drains.
-	EnvWorkerEnabled = "HINDSIGHT_API_WORKER_ENABLED"
+	EnvWorkerEnabled = "WENYUAN_API_WORKER_ENABLED"
 	// EnvWorkerMaxRetries is the attempt budget beyond the first try.
-	EnvWorkerMaxRetries = "HINDSIGHT_API_WORKER_MAX_RETRIES"
+	EnvWorkerMaxRetries = "WENYUAN_API_WORKER_MAX_RETRIES"
 	// EnvWorkerConcurrency is how many operations one consumer processes at once.
-	EnvWorkerConcurrency = "HINDSIGHT_API_WORKER_CONCURRENCY"
+	EnvWorkerConcurrency = "WENYUAN_API_WORKER_CONCURRENCY"
 	// EnvWorkerLeaseSeconds bounds how long a claim stays valid before another
 	// consumer may reclaim the work.
-	EnvWorkerLeaseSeconds = "HINDSIGHT_API_WORKER_LEASE_SECONDS"
+	EnvWorkerLeaseSeconds = "WENYUAN_API_WORKER_LEASE_SECONDS"
 	// EnvWorkerPollSeconds is how long to wait between empty claims.
-	EnvWorkerPollSeconds = "HINDSIGHT_API_WORKER_POLL_SECONDS"
+	EnvWorkerPollSeconds = "WENYUAN_API_WORKER_POLL_SECONDS"
 	// EnvWorkerHTTPPort is the port the worker's health/metrics surface binds.
-	EnvWorkerHTTPPort = "HINDSIGHT_API_WORKER_HTTP_PORT"
+	EnvWorkerHTTPPort = "WENYUAN_API_WORKER_HTTP_PORT"
 	// The following are the reference's worker key names, accepted as aliases
 	// alongside this project's own spellings so an existing deployment's env
 	// is honoured.
-	EnvWorkerPollIntervalMS       = "HINDSIGHT_API_WORKER_POLL_INTERVAL_MS"
-	EnvWorkerMaxSlots             = "HINDSIGHT_API_WORKER_MAX_SLOTS"
-	EnvWorkerTaskRetryBackoffSecs = "HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS"
+	EnvWorkerPollIntervalMS       = "WENYUAN_API_WORKER_POLL_INTERVAL_MS"
+	EnvWorkerMaxSlots             = "WENYUAN_API_WORKER_MAX_SLOTS"
+	EnvWorkerTaskRetryBackoffSecs = "WENYUAN_API_WORKER_TASK_RETRY_BACKOFF_SECONDS"
 	// Per-operation wall ceilings. A value of zero means the claim's lease is
 	// the only bound.
-	EnvWorkerRetainWallSeconds        = "HINDSIGHT_API_WORKER_RETAIN_WALL_TIMEOUT_SECONDS"
-	EnvWorkerConsolidationWallSeconds = "HINDSIGHT_API_WORKER_CONSOLIDATION_WALL_TIMEOUT_SECONDS"
+	EnvWorkerRetainWallSeconds        = "WENYUAN_API_WORKER_RETAIN_WALL_TIMEOUT_SECONDS"
+	EnvWorkerConsolidationWallSeconds = "WENYUAN_API_WORKER_CONSOLIDATION_WALL_TIMEOUT_SECONDS"
 	// EnvWorkerConsolidationReservedSlots floors the concurrency reserved for
 	// consolidation, so a bank mid-bulk-ingest cannot starve observation
 	// folding. Default 2.
-	EnvWorkerConsolidationReservedSlots = "HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS"
+	EnvWorkerConsolidationReservedSlots = "WENYUAN_API_WORKER_CONSOLIDATION_RESERVED_SLOTS"
 	// EnvDBPoolMaxSize bounds simultaneous database connections. The reference
 	// defaults it to 100; zero leaves the driver's own default.
-	EnvDBPoolMaxSize = "HINDSIGHT_API_DB_POOL_MAX_SIZE"
+	EnvDBPoolMaxSize = "WENYUAN_API_DB_POOL_MAX_SIZE"
 	// EnvDBPoolMinSize is the number of connections kept open when unused.
-	EnvDBPoolMinSize = "HINDSIGHT_API_DB_POOL_MIN_SIZE"
+	EnvDBPoolMinSize = "WENYUAN_API_DB_POOL_MIN_SIZE"
 	// EnvRetainAttachmentMaxSizeMB bounds one inline attachment or uploaded
 	// file, in megabytes. The reference's static server-level upload limit.
-	EnvRetainAttachmentMaxSizeMB = "HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_SIZE_MB"
+	EnvRetainAttachmentMaxSizeMB = "WENYUAN_API_RETAIN_ATTACHMENT_MAX_SIZE_MB"
 	// EnvRetainAttachmentMaxCount bounds how many attachments or files one
 	// request may carry.
-	EnvRetainAttachmentMaxCount = "HINDSIGHT_API_RETAIN_ATTACHMENT_MAX_COUNT"
+	EnvRetainAttachmentMaxCount = "WENYUAN_API_RETAIN_ATTACHMENT_MAX_COUNT"
 	// EnvRecencyDecayFunction selects the age-to-freshness curve
 	// (linear, exponential, none).
-	EnvRecencyDecayFunction = "HINDSIGHT_API_RECENCY_DECAY_FUNCTION"
+	EnvRecencyDecayFunction = "WENYUAN_API_RECENCY_DECAY_FUNCTION"
 	// EnvRecencyDecayLinearWindowDays is the age at which the linear curve
 	// reaches its floor.
-	EnvRecencyDecayLinearWindowDays = "HINDSIGHT_API_RECENCY_DECAY_LINEAR_WINDOW_DAYS"
+	EnvRecencyDecayLinearWindowDays = "WENYUAN_API_RECENCY_DECAY_LINEAR_WINDOW_DAYS"
 	// EnvRecencyDecayHalflifeDays is the exponential curve's half-life.
-	EnvRecencyDecayHalflifeDays = "HINDSIGHT_API_RECENCY_DECAY_HALFLIFE_DAYS"
+	EnvRecencyDecayHalflifeDays = "WENYUAN_API_RECENCY_DECAY_HALFLIFE_DAYS"
 	// EnvRecallMaxCandidatesPerSource caps each recall retrieval arm before
 	// fusion, so one over-expanding backend cannot crowd the others out of the
 	// merged pool. Zero disables the cap.
-	EnvRecallMaxCandidatesPerSource = "HINDSIGHT_API_RECALL_MAX_CANDIDATES_PER_SOURCE"
+	EnvRecallMaxCandidatesPerSource = "WENYUAN_API_RECALL_MAX_CANDIDATES_PER_SOURCE"
 	// EnvVectorIndexMinRows is the row count at which a (bank, fact_type)
 	// partition earns its own partial vector index. Zero disables reconciliation.
-	EnvVectorIndexMinRows = "HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS"
+	EnvVectorIndexMinRows = "WENYUAN_API_VECTOR_INDEX_MIN_ROWS"
 	// EnvVectorIndexReconcileInterval is the sweep interval in seconds. It is
 	// the reference's key, named as the reference names it.
-	EnvVectorIndexReconcileInterval = "HINDSIGHT_API_VECTOR_INDEX_MAINTENANCE_MIN_INTERVAL_SECONDS"
+	EnvVectorIndexReconcileInterval = "WENYUAN_API_VECTOR_INDEX_MAINTENANCE_MIN_INTERVAL_SECONDS"
 	// EnvOTELTracesEnabled turns OpenTelemetry span export on. Default off.
-	EnvOTELTracesEnabled = "HINDSIGHT_API_OTEL_TRACES_ENABLED"
+	EnvOTELTracesEnabled = "WENYUAN_API_OTEL_TRACES_ENABLED"
 	// EnvOTELExporterOTLPEndpoint is the OTLP/HTTP collector endpoint.
-	EnvOTELExporterOTLPEndpoint = "HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT"
+	EnvOTELExporterOTLPEndpoint = "WENYUAN_API_OTEL_EXPORTER_OTLP_ENDPOINT"
 	// EnvOTELExporterOTLPHeaders is the comma-separated key=value header list
 	// sent on every export request.
-	EnvOTELExporterOTLPHeaders = "HINDSIGHT_API_OTEL_EXPORTER_OTLP_HEADERS"
+	EnvOTELExporterOTLPHeaders = "WENYUAN_API_OTEL_EXPORTER_OTLP_HEADERS"
 	// EnvOTELServiceName is the service.name resource attribute.
-	EnvOTELServiceName = "HINDSIGHT_API_OTEL_SERVICE_NAME"
+	EnvOTELServiceName = "WENYUAN_API_OTEL_SERVICE_NAME"
 	// EnvOTELDeploymentEnvironment is the deployment.environment attribute.
-	EnvOTELDeploymentEnvironment = "HINDSIGHT_API_OTEL_DEPLOYMENT_ENVIRONMENT"
-	EnvWorkerReflectWallSeconds  = "HINDSIGHT_API_WORKER_REFLECT_WALL_TIMEOUT_SECONDS"
+	EnvOTELDeploymentEnvironment = "WENYUAN_API_OTEL_DEPLOYMENT_ENVIRONMENT"
+	EnvWorkerReflectWallSeconds  = "WENYUAN_API_WORKER_REFLECT_WALL_TIMEOUT_SECONDS"
 	// EnvWorkerInitialBackoffSeconds is the first retry delay.
-	EnvWorkerInitialBackoffSeconds = "HINDSIGHT_API_WORKER_INITIAL_BACKOFF_SECONDS"
+	EnvWorkerInitialBackoffSeconds = "WENYUAN_API_WORKER_INITIAL_BACKOFF_SECONDS"
 	// EnvWorkerMaxBackoffSeconds is the retry backoff ceiling.
-	EnvWorkerMaxBackoffSeconds = "HINDSIGHT_API_WORKER_MAX_BACKOFF_SECONDS"
+	EnvWorkerMaxBackoffSeconds = "WENYUAN_API_WORKER_MAX_BACKOFF_SECONDS"
 	// EnvRetentionSweepIntervalSeconds is how often the retention jobs run.
-	EnvRetentionSweepIntervalSeconds = "HINDSIGHT_API_RETENTION_SWEEP_INTERVAL_SECONDS"
+	EnvRetentionSweepIntervalSeconds = "WENYUAN_API_RETENTION_SWEEP_INTERVAL_SECONDS"
 	// EnvAuditLogRetentionDays is how long an audit row is kept; a negative
 	// value keeps them forever.
-	EnvAuditLogRetentionDays = "HINDSIGHT_API_AUDIT_LOG_RETENTION_DAYS"
+	EnvAuditLogRetentionDays = "WENYUAN_API_AUDIT_LOG_RETENTION_DAYS"
 	// EnvConsolidationReconcileIntervalSeconds is how often banks holding
 	// stranded consolidation facts are re-scheduled.
-	EnvConsolidationReconcileIntervalSeconds = "HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS"
+	EnvConsolidationReconcileIntervalSeconds = "WENYUAN_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS"
 	// EnvMentalModelRefreshTickSeconds is how often scheduled mental models are
 	// checked for due-ness.
-	EnvMentalModelRefreshTickSeconds = "HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS"
+	EnvMentalModelRefreshTickSeconds = "WENYUAN_API_MENTAL_MODEL_REFRESH_TICK_SECONDS"
 	// EnvOperationCleanupIntervalSeconds is how often terminal operations are
 	// pruned.
-	EnvOperationCleanupIntervalSeconds = "HINDSIGHT_API_OPERATION_CLEANUP_INTERVAL_SECONDS"
+	EnvOperationCleanupIntervalSeconds = "WENYUAN_API_OPERATION_CLEANUP_INTERVAL_SECONDS"
 	// EnvOperationRetentionDays is how long a terminal operation is kept; zero
 	// disables the prune.
-	EnvOperationRetentionDays = "HINDSIGHT_API_OPERATION_RETENTION_DAYS"
+	EnvOperationRetentionDays = "WENYUAN_API_OPERATION_RETENTION_DAYS"
 	// EnvOperationCleanupBatchSize bounds one prune per schema per run.
-	EnvOperationCleanupBatchSize = "HINDSIGHT_API_OPERATION_CLEANUP_BATCH_SIZE"
+	EnvOperationCleanupBatchSize = "WENYUAN_API_OPERATION_CLEANUP_BATCH_SIZE"
 	// EnvMaintenanceStartJitterSeconds spreads the first maintenance tick, so a
 	// fleet started together does not fire every probe at once.
-	EnvMaintenanceStartJitterSeconds = "HINDSIGHT_API_MAINTENANCE_START_JITTER_SECONDS"
+	EnvMaintenanceStartJitterSeconds = "WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS"
 	// EnvGzipMinSize bounds the response size above which a body is compressed.
-	EnvGzipMinSize = "HINDSIGHT_API_GZIP_MIN_SIZE"
+	EnvGzipMinSize = "WENYUAN_API_GZIP_MIN_SIZE"
 	// EnvProfile holds the reference's profiling request as raw JSON, e.g.
 	// {"every":60,"top":20}. The profile is emitted to the log stream; the
 	// reference exposes no profiling endpoint.
-	EnvProfile = "HINDSIGHT_API_PROFILE"
+	EnvProfile = "WENYUAN_API_PROFILE"
 	// EnvPprofEnabled is this project's own switch for the Go pprof endpoints
 	// under /debug/pprof. It is deliberately separate from EnvProfile, which
 	// the reference owns with a different meaning.
-	EnvPprofEnabled = "HINDSIGHT_API_PPROF_ENABLED"
+	EnvPprofEnabled = "WENYUAN_API_PPROF_ENABLED"
 	// EnvBasePath serves every route under a path prefix as well as at the
 	// root, mirroring the reference's FastAPI root_path.
-	EnvBasePath = "HINDSIGHT_API_BASE_PATH"
+	EnvBasePath = "WENYUAN_API_BASE_PATH"
 	// EnvEnableObservations gates observations (auto-consolidation). On by
 	// default, like the reference.
-	EnvEnableObservations = "HINDSIGHT_API_ENABLE_OBSERVATIONS"
+	EnvEnableObservations = "WENYUAN_API_ENABLE_OBSERVATIONS"
 	// EnvAuditLogEnabled gates audit logging by default; a bank may override.
 	// Off by default, like the reference.
-	EnvAuditLogEnabled = "HINDSIGHT_API_AUDIT_LOG_ENABLED"
+	EnvAuditLogEnabled = "WENYUAN_API_AUDIT_LOG_ENABLED"
 	// EnvStoreDocumentText controls whether raw source text is persisted. On
 	// by default, like the reference.
-	EnvStoreDocumentText = "HINDSIGHT_API_STORE_DOCUMENT_TEXT"
+	EnvStoreDocumentText = "WENYUAN_API_STORE_DOCUMENT_TEXT"
 	// EnvTenantExtension selects the tenant authenticator by its class path,
 	// the reference's extension convention. Unset means no authentication,
 	// which is the reference's single-tenant default.
-	EnvTenantExtension = "HINDSIGHT_API_TENANT_EXTENSION"
+	EnvTenantExtension = "WENYUAN_API_TENANT_EXTENSION"
 	// EnvTenantAPIKey is the credential the built-in API-key authenticator
 	// accepts.
-	EnvTenantAPIKey = "HINDSIGHT_API_TENANT_API_KEY"
+	EnvTenantAPIKey = "WENYUAN_API_TENANT_API_KEY"
 	// EnvTenantMCPAuthDisabled exempts the MCP namespace from tenant
 	// authentication, which a deployment that fronts MCP with its own gate
 	// needs.
-	EnvTenantMCPAuthDisabled = "HINDSIGHT_API_TENANT_MCP_AUTH_DISABLED"
+	EnvTenantMCPAuthDisabled = "WENYUAN_API_TENANT_MCP_AUTH_DISABLED"
 	// EnvOperationValidatorExtension selects the operation validator by its
 	// class path, the reference's extension convention. The one this build
 	// implements natively is the reference suite's tag-scope validator, which
 	// confines a "bank:<id>" API key to writing only its own bank.
-	EnvOperationValidatorExtension = "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION"
+	EnvOperationValidatorExtension = "WENYUAN_API_OPERATION_VALIDATOR_EXTENSION"
 	// EnvLoopLagReportSeconds is how often the loop-lag probe samples the
 	// scheduler; EnvLoopLagStallSeconds is the delay above which it reports a
 	// stall.
-	EnvLoopLagReportSeconds = "HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS"
-	EnvLoopLagStallSeconds  = "HINDSIGHT_API_LOOP_LAG_STALL_SECONDS"
+	EnvLoopLagReportSeconds = "WENYUAN_API_LOOP_LAG_REPORT_SECONDS"
+	EnvLoopLagStallSeconds  = "WENYUAN_API_LOOP_LAG_STALL_SECONDS"
 	// Admission keys bound how many expensive operations run at once.
-	EnvAdmissionMaxWaitSeconds = "HINDSIGHT_API_ADMISSION_MAX_WAIT_SECONDS"
-	EnvAdmissionRecallLimit    = "HINDSIGHT_API_ADMISSION_RECALL_LIMIT"
-	EnvAdmissionRetainLimit    = "HINDSIGHT_API_ADMISSION_RETAIN_LIMIT"
-	EnvAdmissionReflectLimit   = "HINDSIGHT_API_ADMISSION_REFLECT_LIMIT"
-	EnvRetainBatchEnabled      = "HINDSIGHT_API_RETAIN_BATCH_ENABLED"
+	EnvAdmissionMaxWaitSeconds = "WENYUAN_API_ADMISSION_MAX_WAIT_SECONDS"
+	EnvAdmissionRecallLimit    = "WENYUAN_API_ADMISSION_RECALL_LIMIT"
+	EnvAdmissionRetainLimit    = "WENYUAN_API_ADMISSION_RETAIN_LIMIT"
+	EnvAdmissionReflectLimit   = "WENYUAN_API_ADMISSION_REFLECT_LIMIT"
+	EnvRetainBatchEnabled      = "WENYUAN_API_RETAIN_BATCH_ENABLED"
 	// EnvFileStorageType selects the attachment storage backend. Empty or
 	// "postgresql" keeps payloads in the database, which is the default.
-	EnvFileStorageType = "HINDSIGHT_API_FILE_STORAGE_TYPE"
+	EnvFileStorageType = "WENYUAN_API_FILE_STORAGE_TYPE"
 	// The S3 family configures the S3-compatible backend, which also serves
 	// MinIO, Cloudflare R2, Tigris and any other S3-compliant endpoint.
-	EnvFileStorageS3Bucket          = "HINDSIGHT_API_FILE_STORAGE_S3_BUCKET"
-	EnvFileStorageS3Region          = "HINDSIGHT_API_FILE_STORAGE_S3_REGION"
-	EnvFileStorageS3Endpoint        = "HINDSIGHT_API_FILE_STORAGE_S3_ENDPOINT"
-	EnvFileStorageS3AccessKeyID     = "HINDSIGHT_API_FILE_STORAGE_S3_ACCESS_KEY_ID"
-	EnvFileStorageS3SecretAccessKey = "HINDSIGHT_API_FILE_STORAGE_S3_SECRET_ACCESS_KEY"
+	EnvFileStorageS3Bucket          = "WENYUAN_API_FILE_STORAGE_S3_BUCKET"
+	EnvFileStorageS3Region          = "WENYUAN_API_FILE_STORAGE_S3_REGION"
+	EnvFileStorageS3Endpoint        = "WENYUAN_API_FILE_STORAGE_S3_ENDPOINT"
+	EnvFileStorageS3AccessKeyID     = "WENYUAN_API_FILE_STORAGE_S3_ACCESS_KEY_ID"
+	EnvFileStorageS3SecretAccessKey = "WENYUAN_API_FILE_STORAGE_S3_SECRET_ACCESS_KEY"
 	// EnvRecallStrategyBoosts prioritises one or more recall retrieval arms
 	// over the others. The value is a comma-separated list of arm:level pairs
 	// where level is low, medium or high.
-	EnvRecallStrategyBoosts = "HINDSIGHT_API_RECALL_STRATEGY_BOOSTS"
+	EnvRecallStrategyBoosts = "WENYUAN_API_RECALL_STRATEGY_BOOSTS"
 
 	// EnvReflectSearchObservationsMaxTokens is the process-level default for
 	// the per-bank reflection observation-search token budget.
-	EnvReflectSearchObservationsMaxTokens = "HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS"
+	EnvReflectSearchObservationsMaxTokens = "WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_MAX_TOKENS"
 	// EnvReflectSearchObservationsIncludeEntities is the process-level default
 	// for the per-bank reflection observation entity-attachment flag.
-	EnvReflectSearchObservationsIncludeEntities = "HINDSIGHT_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES"
+	EnvReflectSearchObservationsIncludeEntities = "WENYUAN_API_REFLECT_SEARCH_OBSERVATIONS_INCLUDE_ENTITIES"
 
 	// EnvForwardedAllowIPs is the reference HTTP server's own variable for the
 	// peers whose X-Forwarded-* headers are trusted. It is deliberately not a
-	// HINDSIGHT_API_ key: it is resolved by the server, not by the application
+	// WENYUAN_API_ key: it is resolved by the server, not by the application
 	// configuration, and it is read here for the same reason.
 	EnvForwardedAllowIPs = "FORWARDED_ALLOW_IPS"
 )
@@ -247,19 +247,19 @@ const (
 	// DefaultPort is the API listen port. It is the reference's 8888 offset by
 	// 10000 on purpose: the reference implementation and wenyuan must be able
 	// to run side by side for comparison, so the out-of-the-box ports must not
-	// collide. HINDSIGHT_API_PORT still overrides, and every other default
+	// collide. WENYUAN_API_PORT still overrides, and every other default
 	// keeps matching the reference.
 	DefaultPort = 18888
 	// DefaultDaemonPort is the port daemon mode binds unless the operator passed
 	// --port explicitly: the reference resolves daemon mode from its own default
-	// rather than from a configured HINDSIGHT_API_PORT, so a launcher that
+	// rather than from a configured WENYUAN_API_PORT, so a launcher that
 	// exports a port for foreground runs does not move the daemon.
 	DefaultDaemonPort = 18888
 	// DefaultDaemonHost is the address daemon mode binds unless the operator
-	// explicitly configured a host (--host or HINDSIGHT_API_HOST).
+	// explicitly configured a host (--host or WENYUAN_API_HOST).
 	DefaultDaemonHost = "127.0.0.1"
 	// DefaultDaemonLogName is the file daemon mode appends its output to, under
-	// the operator's home directory, when HINDSIGHT_API_DAEMON_LOG is unset.
+	// the operator's home directory, when WENYUAN_API_DAEMON_LOG is unset.
 	DefaultDaemonLogName = ".hindsight/daemon.log"
 	// DefaultForwardedAllowIPs is the peer the proxy headers are trusted from
 	// when neither --forwarded-allow-ips nor FORWARDED_ALLOW_IPS names one. It
@@ -426,7 +426,7 @@ type Config struct {
 	TextSearchExtension string
 	// TextSearchExtensionNativeLanguage is the tsvector dictionary the native
 	// text-search backend tokenizes with (the reference's
-	// HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE).
+	// WENYUAN_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE).
 	TextSearchExtensionNativeLanguage string
 	RunMigrationsOnStartup            bool
 	MCPEnabled                        bool
@@ -976,13 +976,13 @@ const DatabaseURLMemory = "memory"
 // URL would otherwise select the in-memory backend — so a deployment that
 // configured no database would silently lose every write on restart while
 // believing it was persisted. That is refused instead: the operator sets
-// HINDSIGHT_API_DATABASE_URL to a postgresql:// URL, or opts into the
+// WENYUAN_API_DATABASE_URL to a postgresql:// URL, or opts into the
 // non-persistent backend by naming it explicitly as "memory".
 func (c Config) ResolveDatabaseTarget() (url string, inMemory bool, err error) {
 	trimmed := strings.TrimSpace(c.DatabaseURL)
 	if trimmed == "" {
 		return "", false, errors.New(
-			"HINDSIGHT_API_DATABASE_URL is not set: set it to a postgresql:// URL " +
+			"WENYUAN_API_DATABASE_URL is not set: set it to a postgresql:// URL " +
 				"to persist data, or set it to \"memory\" to run with a non-persistent " +
 				"in-memory backend")
 	}
@@ -1113,12 +1113,12 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.OperationValidatorExtension = stringFromEnv(lookup, EnvOperationValidatorExtension)
 	cfg.PprofEnabled = boolFromEnv(lookup, EnvPprofEnabled, false)
 	// The worker count and daemon log are the reference's own keys: a launcher
-	// that exports HINDSIGHT_API_WORKERS, or HINDSIGHT_API_DAEMON_LOG so the
+	// that exports WENYUAN_API_WORKERS, or WENYUAN_API_DAEMON_LOG so the
 	// detach writes somewhere it can read, gets the same resolution here.
 	cfg.Workers = intFromEnv(lookup, EnvWorkers, DefaultWorkers)
 	cfg.DaemonLog = strings.TrimSpace(stringFromEnv(lookup, EnvDaemonLog))
 	// FORWARDED_ALLOW_IPS is the reference's server's own variable (not a
-	// HINDSIGHT_API_ key): the trusted-proxy allow list is resolved there, in
+	// WENYUAN_API_ key): the trusted-proxy allow list is resolved there, in
 	// the HTTP server, and this build reads it from the same place.
 	cfg.ForwardedAllowIPs = forwardedAllowIPsFromEnv(lookup)
 	// The reference's tuning surface: each group is resolved here so a
@@ -1215,9 +1215,9 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.ProviderScopes = ResolveScopes(lookup)
 	cfg.Provider.StrictSchema = cfg.ProviderScopes.StrictSchema
 	cfg.Consolidation = ResolveConsolidation(lookup)
-	cfg.RetainLLM = ResolveLLMScope(lookup, "HINDSIGHT_API_RETAIN_LLM")
-	cfg.ReflectLLM = ResolveLLMScope(lookup, "HINDSIGHT_API_REFLECT_LLM")
-	cfg.MentalModelRefreshLLM = ResolveLLMScope(lookup, "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM")
+	cfg.RetainLLM = ResolveLLMScope(lookup, "WENYUAN_API_RETAIN_LLM")
+	cfg.ReflectLLM = ResolveLLMScope(lookup, "WENYUAN_API_REFLECT_LLM")
+	cfg.MentalModelRefreshLLM = ResolveLLMScope(lookup, "WENYUAN_API_MENTAL_MODEL_REFRESH_LLM")
 	cfg.rawEnv = rawEnv
 	cfg.Unsupported = collectUnsupportedRuntimeKeys(lookup)
 	cfg.recordUnsupportedProviderKeys(lookup)
@@ -1367,8 +1367,8 @@ func normalizeBasePath(value string) string {
 }
 
 // BuiltinAPIKeyTenantExtension is the reference's built-in tenant authenticator,
-// selected by HINDSIGHT_API_TENANT_EXTENSION from the package that ships it.
-// Selecting it requires HINDSIGHT_API_TENANT_API_KEY.
+// selected by WENYUAN_API_TENANT_EXTENSION from the package that ships it.
+// Selecting it requires WENYUAN_API_TENANT_API_KEY.
 const BuiltinAPIKeyTenantExtension = "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension"
 
 // TenantAuth is the resolved tenant authentication policy.

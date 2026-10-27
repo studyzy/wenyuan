@@ -21,26 +21,26 @@
 #   PARITY_DB_URL=postgresql://user@host/db scripts/run_parity_suite.sh -k recall
 #
 # Environment overrides:
-#   HINDSIGHT_REPO     the reference checkout (default /code/hindsight)
+#   WENYUAN_REPO     the reference checkout (default /code/hindsight)
 #   PARITY_DB_URL      a postgresql:// URL to use instead of resolving pg0
 #   PG0_URL            the pg0 URL to resolve (default pg0://hindsight-systest:15499)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HINDSIGHT_REPO=${HINDSIGHT_REPO:-/code/hindsight}
+WENYUAN_REPO=${WENYUAN_REPO:-/code/hindsight}
 # The suite is copied verbatim into tests/system; fall back to the reference
 # checkout when the copy is absent. The virtualenv always comes from the
 # reference checkout: it holds the editable hindsight-client the stories drive,
 # which the copy deliberately does not vendor.
 SUITE=${PARITY_SUITE:-$ROOT/tests/system}
-UPSTREAM_SUITE="$HINDSIGHT_REPO/hindsight-system-tests"
+UPSTREAM_SUITE="$WENYUAN_REPO/hindsight-system-tests"
 if [ ! -d "$SUITE/tests" ]; then
   SUITE="$UPSTREAM_SUITE"
 fi
 PG0_URL=${PG0_URL:-pg0://hindsight-systest:15499}
 
 if [ ! -d "$SUITE/tests" ]; then
-  echo "the system tests are not at $SUITE; set PARITY_SUITE or HINDSIGHT_REPO" >&2
+  echo "the system tests are not at $SUITE; set PARITY_SUITE or WENYUAN_REPO" >&2
   exit 2
 fi
 
@@ -65,13 +65,13 @@ fi
 # and silently overriding a caller's private database made that mistake easy.
 DB_URL=${PARITY_DB_URL:-${WENYUAN_DATABASE_URL:-}}
 if [ -z "$DB_URL" ]; then
-  if [ ! -x "$HINDSIGHT_REPO/.venv/bin/python" ]; then
+  if [ ! -x "$WENYUAN_REPO/.venv/bin/python" ]; then
     echo "set PARITY_DB_URL, or provide the reference venv so pg0 can be resolved" >&2
     exit 2
   fi
-  DB_URL=$("$HINDSIGHT_REPO/.venv/bin/python" -c "
+  DB_URL=$("$WENYUAN_REPO/.venv/bin/python" -c "
 import asyncio, sys
-sys.path.insert(0, '$HINDSIGHT_REPO/hindsight-api-slim')
+sys.path.insert(0, '$WENYUAN_REPO/hindsight-api-slim')
 from hindsight_api.pg0 import resolve_database_url
 print(asyncio.run(resolve_database_url('$PG0_URL')))
 ")

@@ -104,7 +104,7 @@ func TestReflectRefusesWithoutModel(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("reflect status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
-	const want = "Reflect requires an LLM provider. Current provider is set to 'none'. Set HINDSIGHT_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
+	const want = "Reflect requires an LLM provider. Current provider is set to 'none'. Set WENYUAN_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
 	if detail, _ := decodeJSON(t, rec)["detail"].(string); detail != want {
 		t.Fatalf("detail = %q, want %q", detail, want)
 	}

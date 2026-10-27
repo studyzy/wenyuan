@@ -121,7 +121,7 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 	// The policy check runs before everything else, matching the reference: an
 	// invalid memory_defense is a 422 regardless of what else the update names.
 	// It keys on the raw field name, as the reference's engine does: an
-	// environment-variable-spelled key (HINDSIGHT_API_MEMORY_DEFENSE) skips the
+	// environment-variable-spelled key (WENYUAN_API_MEMORY_DEFENSE) skips the
 	// policy check and is stored verbatim after only the base type check.
 	for key, raw := range updates {
 		if key == "memory_defense" && raw != nil {
@@ -828,9 +828,9 @@ func kindMatches(kind configValueKind, raw any) bool {
 
 // normalizeConfigKey converts an environment-variable-form key to its internal
 // field form, leaving an already-internal key unchanged. It mirrors the
-// reference: strip the HINDSIGHT_API_ prefix, then lowercase.
+// reference: strip the WENYUAN_API_ prefix, then lowercase.
 func normalizeConfigKey(key string) string {
-	return strings.ToLower(strings.TrimPrefix(key, "HINDSIGHT_API_"))
+	return strings.ToLower(strings.TrimPrefix(key, "WENYUAN_API_"))
 }
 
 // configFieldSample renders a sample of the configurable fields the way the

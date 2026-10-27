@@ -407,7 +407,7 @@ func TestTransferImportGateDisabledIsNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API") {
+	if !strings.Contains(rec.Body.String(), "WENYUAN_API_ENABLE_DOCUMENT_IMPORT_API") {
 		t.Fatalf("disabled detail must name the flag: %s", rec.Body.String())
 	}
 }
@@ -564,7 +564,7 @@ func TestGateDisabledDetails(t *testing.T) {
 	clone.SubmitClone(rec, routeRequest(http.MethodPost, "/v1/default/banks/bank-a/clone?target_bank_id=dst",
 		nil, map[string]string{"bank_id": "bank-a"}))
 	if !strings.Contains(rec.Body.String(), "Bank clone API is disabled") ||
-		!strings.Contains(rec.Body.String(), "HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API") {
+		!strings.Contains(rec.Body.String(), "WENYUAN_API_ENABLE_DOCUMENT_EXPORT_API") {
 		t.Fatalf("clone detail = %s", rec.Body.String())
 	}
 

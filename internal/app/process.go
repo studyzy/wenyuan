@@ -29,7 +29,7 @@ const (
 	// redirects its output and serves instead of detaching again. The name is
 	// the reference's own: a launcher that sets it (the reference's embed
 	// manager does) starts this build as a daemon without the flag.
-	DaemonChildEnv = "_HINDSIGHT_DAEMON_CHILD"
+	DaemonChildEnv = "_WENYUAN_DAEMON_CHILD"
 	// ListenFDEnv carries the inherited listening socket's descriptor to a
 	// worker process. uvicorn passes its socket the same way, which is why one
 	// bind serves every worker rather than one bind per worker.
@@ -50,7 +50,7 @@ func IsDaemonChild() bool { return os.Getenv(DaemonChildEnv) == "1" }
 func IsWorkerChild() bool { return os.Getenv(WorkerIndexEnv) != "" }
 
 // DaemonLogPath resolves the file a daemon appends its output to: the
-// configured HINDSIGHT_API_DAEMON_LOG, or the reference's fallback under the
+// configured WENYUAN_API_DAEMON_LOG, or the reference's fallback under the
 // operator's home directory.
 func DaemonLogPath(cfg config.Config) (string, error) {
 	if path := strings.TrimSpace(cfg.DaemonLog); path != "" {

@@ -87,10 +87,10 @@ func TestBacklogMetricsAggregate(t *testing.T) {
 	}
 	samples := backlogMetrics(store, backlogConfig())()
 	want := map[string]float64{
-		`hindsight_async_operations{operation_type="retain",status="pending",tenant="public"}`:         3,
-		`hindsight_async_operations{operation_type="consolidate",status="processing",tenant="public"}`: 2,
-		`hindsight_consolidation_backlog{tenant="public"}`:                                             7,
-		`hindsight_consolidation_failed{tenant="public"}`:                                              1,
+		`wenyuan_async_operations{operation_type="retain",status="pending",tenant="public"}`:         3,
+		`wenyuan_async_operations{operation_type="consolidate",status="processing",tenant="public"}`: 2,
+		`wenyuan_consolidation_backlog{tenant="public"}`:                                             7,
+		`wenyuan_consolidation_failed{tenant="public"}`:                                              1,
 	}
 	assertSeries(t, samples, want)
 }
@@ -112,11 +112,11 @@ func TestBacklogMetricsPerBank(t *testing.T) {
 	}
 	samples := backlogMetrics(store, cfg)()
 	want := map[string]float64{
-		`hindsight_async_operations{bank_id="b1",operation_type="retain",status="pending",tenant="public"}`: 2,
-		`hindsight_consolidation_backlog{bank_id="b1",tenant="public"}`:                                     3,
-		`hindsight_consolidation_failed{bank_id="b1",tenant="public"}`:                                      1,
-		`hindsight_consolidation_backlog{bank_id="b2",tenant="public"}`:                                     4,
-		`hindsight_consolidation_failed{bank_id="b2",tenant="public"}`:                                      0,
+		`wenyuan_async_operations{bank_id="b1",operation_type="retain",status="pending",tenant="public"}`: 2,
+		`wenyuan_consolidation_backlog{bank_id="b1",tenant="public"}`:                                     3,
+		`wenyuan_consolidation_failed{bank_id="b1",tenant="public"}`:                                      1,
+		`wenyuan_consolidation_backlog{bank_id="b2",tenant="public"}`:                                     4,
+		`wenyuan_consolidation_failed{bank_id="b2",tenant="public"}`:                                      0,
 	}
 	assertSeries(t, samples, want)
 }
@@ -139,10 +139,10 @@ func TestDBPoolMetrics(t *testing.T) {
 	store := poolStore{stats: storage.PoolStats{InUse: 2, Idle: 3, Max: 100}, ok: true}
 	samples := dbPoolMetrics(store, backlogConfig())()
 	want := map[string]float64{
-		`hindsight_db_pool_size{}`: 5,
-		`hindsight_db_pool_idle{}`: 3,
-		`hindsight_db_pool_min{}`:  5,
-		`hindsight_db_pool_max{}`:  100,
+		`wenyuan_db_pool_size{}`: 5,
+		`wenyuan_db_pool_idle{}`: 3,
+		`wenyuan_db_pool_min{}`:  5,
+		`wenyuan_db_pool_max{}`:  100,
 	}
 	assertSeries(t, samples, want)
 }
@@ -159,7 +159,7 @@ func TestExpositionExtrasComposes(t *testing.T) {
 	for _, sample := range samples {
 		names[sample.Name] = true
 	}
-	for _, want := range []string{"hindsight_db_pool_size", "hindsight_process_threads"} {
+	for _, want := range []string{"wenyuan_db_pool_size", "wenyuan_process_threads"} {
 		if !names[want] {
 			t.Fatalf("missing %q in %+v", want, samples)
 		}

@@ -825,7 +825,7 @@ paths:
         \ probed once), so you can discover 'not configured / unreachable' instead\
         \ of a silent stall. Deliberate action (makes a real provider call); not for\
         \ polling. Returns status only — never the provider, model, endpoint, API\
-        \ key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false."
+        \ key, or raw error. Disable with WENYUAN_API_ENABLE_BANK_LLM_HEALTH=false."
       operationId: test_bank_llm
       parameters:
       - explode: false
@@ -4759,7 +4759,7 @@ paths:
       description: "Get fully resolved configuration for a bank including all hierarchical\
         \ overrides (global → tenant → bank). The 'config' field contains all resolved\
         \ config values. The 'overrides' field shows only bank-specific overrides.\
-        \ Always available: HINDSIGHT_API_ENABLE_BANK_CONFIG_API gates only the write\
+        \ Always available: WENYUAN_API_ENABLE_BANK_CONFIG_API gates only the write\
         \ operations on this resource."
       operationId: get_bank_config
       parameters:
@@ -4801,7 +4801,7 @@ paths:
       description: "Update configuration overrides for a bank. Only hierarchical behavioral\
         \ settings can be overridden (retention parameters, recall settings, etc.).\
         \ Keys can be provided in Python field format (retain_extraction_mode) or\
-        \ environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE)."
+        \ environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE)."
       operationId: update_bank_config
       parameters:
       - explode: false
@@ -5300,7 +5300,7 @@ paths:
         - Set `parser` in the request body to override the server default for all files.
         - Set `parser` inside a `files_metadata` entry for per-file control.
         - Pass a list (e.g. `['iris', 'markitdown']`) to define an ordered fallback chain — each parser is tried in sequence until one succeeds.
-        - Falls back to the server default (`HINDSIGHT_API_FILE_PARSER`) if not specified.
+        - Falls back to the server default (`WENYUAN_API_FILE_PARSER`) if not specified.
         - Only parsers enabled on the server may be requested; others return HTTP 400.
       operationId: file_retain
       parameters:
@@ -5504,7 +5504,7 @@ paths:
   /v1/default/banks/{bank_id}/llm-requests:
     get:
       description: "List traced LLM requests for a bank, ordered by most recent first.\
-        \ Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED)."
+        \ Requires LLM request tracing to be enabled (WENYUAN_API_LLM_TRACE_ENABLED)."
       operationId: list_llm_requests
       parameters:
       - explode: false
@@ -6032,7 +6032,7 @@ components:
         updates:
           additionalProperties: {}
           description: Configuration overrides. Keys can be in Python field format
-            (retain_extraction_mode) or environment variable format (HINDSIGHT_API_RETAIN_EXTRACTION_MODE).
+            (retain_extraction_mode) or environment variable format (WENYUAN_API_RETAIN_EXTRACTION_MODE).
             Only hierarchical fields can be overridden per-bank.
           title: Updates
       required:

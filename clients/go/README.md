@@ -13,7 +13,7 @@ go get github.com/studyzy/wenyuan/clients/go
 ## Connect
 
 `NewClient` reads the server base URL from the environment variable
-`HINDSIGHT_API_URL` (default `http://localhost:18888`). Use one of the explicit
+`WENYUAN_API_URL` (default `http://localhost:18888`). Use one of the explicit
 constructors to set the URL (and an optional Bearer token) in code:
 
 ```go
@@ -23,7 +23,7 @@ import (
 	wenyuan "github.com/studyzy/wenyuan/clients/go"
 )
 
-client := wenyuan.NewClient()                                   // HINDSIGHT_API_URL
+client := wenyuan.NewClient()                                   // WENYUAN_API_URL
 client := wenyuan.NewClientWithBaseURL("http://localhost:18888")
 client := wenyuan.NewClientWithToken("http://localhost:18888", "token")
 client := wenyuan.NewClientWithTimeout("http://localhost:18888", "token", 30*time.Second)
@@ -110,13 +110,13 @@ Two suites, both in this package:
 
 ```
 go test ./...                                     # offline: httptest servers only
-HINDSIGHT_API_URL=http://127.0.0.1:18888 go test -tags integration ./...   # live server
+WENYUAN_API_URL=http://127.0.0.1:18888 go test -tags integration ./...   # live server
 ```
 
 From the repository root the same two are `make test-sdk-go` and
 `make test-sdk-go-integration` (the latter reads `SDK_API_URL`, default
 `http://127.0.0.1:18888`). A server started with
-`HINDSIGHT_API_DATABASE_URL=memory` is enough for the live suite: it asserts
+`WENYUAN_API_DATABASE_URL=memory` is enough for the live suite: it asserts
 what a client can rely on (an operation succeeded, an id round-tripped, a list
 carries what was written, a retired route answers 410, a tag filter selects the
 write back out) rather than about extracted facts or synthesized prose, which

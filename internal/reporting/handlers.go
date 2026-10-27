@@ -31,7 +31,7 @@ type Handlers struct {
 	// route reports not-found, matching the reference gate.
 	BankLLMHealthEnabled bool
 	// DryRunExtractDisabled turns the dry-run extraction route off, which the
-	// reference spells HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=false: the route
+	// reference spells WENYUAN_API_ENABLE_DRY_RUN_EXTRACT=false: the route
 	// answers 404 and its sentence. It is the negative form so a handler set
 	// built without wiring keeps the feature on, as the reference defaults it.
 	DryRunExtractDisabled bool
@@ -256,7 +256,7 @@ func (h *Handlers) HealthLLM(w http.ResponseWriter, r *http.Request) {
 	// "not found".
 	if !h.BankLLMHealthEnabled {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
-			"Bank LLM health check is disabled. Set HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=true to enable."))
+			"Bank LLM health check is disabled. Set WENYUAN_API_ENABLE_BANK_LLM_HEALTH=true to enable."))
 		return
 	}
 	// The bank need not exist: the reference's check_bank_llm

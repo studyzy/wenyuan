@@ -4,7 +4,7 @@ A thin, pythonic layer over the generated ``wenyuan_client_api`` package::
 
     from wenyuan_client import WenYuan
 
-    with WenYuan() as client:                 # reads HINDSIGHT_API_URL
+    with WenYuan() as client:                 # reads WENYUAN_API_URL
         client.retain("my-bank", "the deploy runs on Fridays")
         hits = client.recall("my-bank", "when do we deploy?")
         answer = client.reflect("my-bank", "summarise the deploy policy")
