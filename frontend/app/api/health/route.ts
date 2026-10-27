@@ -3,7 +3,7 @@ import { jsonResponse } from "../../../lib/server/http";
 import { buildUpstreamUrl, upstreamHeaders } from "../../../lib/server/upstream";
 
 const HEALTH_TIMEOUT_MS = 1500;
-const SERVICE_NAME = "hindsight-control-plane";
+const SERVICE_NAME = "wenyuan-control-plane";
 
 /**
  * Health probe.

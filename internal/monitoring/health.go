@@ -260,7 +260,7 @@ func (h *WorkerHandler) Ready(w http.ResponseWriter, r *http.Request) {
 
 // Root serves the worker's root info endpoint.
 func (h *WorkerHandler) Root(w http.ResponseWriter, _ *http.Request) {
-	info := WorkerInfoBody{Service: "hindsight-worker", WorkerID: h.WorkerID}
+	info := WorkerInfoBody{Service: "wenyuan-worker", WorkerID: h.WorkerID}
 	if h.IsShutdown != nil {
 		info.IsShutdown = h.IsShutdown()
 	}

@@ -118,8 +118,8 @@ func TestInitializeHandshake(t *testing.T) {
 		t.Fatalf("protocolVersion = %v, want the requested 2025-06-18", result["protocolVersion"])
 	}
 	info, _ := result["serverInfo"].(map[string]any)
-	if info["name"] != "hindsight-mcp-server" {
-		t.Fatalf("serverInfo.name = %v, want hindsight-mcp-server", info["name"])
+	if info["name"] != "wenyuan-mcp-server" {
+		t.Fatalf("serverInfo.name = %v, want wenyuan-mcp-server", info["name"])
 	}
 	if info["version"] != serverVersion {
 		t.Fatalf("serverInfo.version = %v, want %q", info["version"], serverVersion)

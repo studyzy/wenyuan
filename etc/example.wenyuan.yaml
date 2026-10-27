@@ -313,7 +313,7 @@
   # traces_enabled: "false"
   # exporter_otlp_endpoint: ""
   # exporter_otlp_headers: ""
-  # service_name: "hindsight-api"
+  # service_name: "wenyuan-api"
   # deployment_environment: "development"
 # metrics:
   # include_bank_id: "false"

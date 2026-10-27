@@ -36,7 +36,7 @@ func TestMetricsContentTypeAndBody(t *testing.T) {
 	for _, want := range []string{
 		"# HELP target_info Target metadata",
 		"# TYPE target_info gauge",
-		`service_name="hindsight-api"`,
+		`service_name="wenyuan-api"`,
 		`service_version="1.0.0"`,
 	} {
 		if !strings.Contains(body, want) {

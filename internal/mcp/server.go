@@ -745,7 +745,7 @@ func (s *Server) initialize(params json.RawMessage) (any, *rpcError) {
 	return map[string]any{
 		"protocolVersion": negotiated,
 		"capabilities":    serverCapabilities(),
-		"serverInfo":      map[string]any{"name": "hindsight-mcp-server", "version": serverVersion},
+		"serverInfo":      map[string]any{"name": "wenyuan-mcp-server", "version": serverVersion},
 	}, nil
 }
 

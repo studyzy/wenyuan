@@ -30,13 +30,20 @@ because it is a contract or a pointer at the counterpart rather than branding:
 |---|---|
 | `X-Hindsight-Event` / `-Signature` / `-Signature-V2` / `-Bank-Id` | the webhook wire contract: a receiver verifying a signature reads these header names |
 | the document served at `/openapi.json`, `info.title` included | that document *is* the reference contract; `scripts/reference_openapi.py --check` compares it byte for byte, so its prose cannot be re-worded on our side |
-| the MCP `serverInfo.name` and the OTEL default service name | observable values a client or a log pipeline reads |
 | the daemon log default `~/.hindsight/daemon.log` | a path an existing deployment's log pipeline already follows |
 | `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` | a value deployments pass in `WENYUAN_API_TENANT_EXTENSION` |
 | redaction labels naming the counterpart's credential formats (`hindsight_key` for its `hsk_…` keys) | the label says whose key the pattern catches; the reference's list carries the same name |
 | `internal/hindsightarchive`, `internal/migration/hindsight`, `bankctl … --from-hindsight` | named after what they handle: the reference's export format, and the direction of the import |
 | citations such as `engine/audit.py:1-5`, `hindsight_api/…`, `hindsight-docs/static/openapi.json` | evidence — a citation that cannot be followed is not evidence |
 | `scripts/gen_provider_env_keys.py`'s `SOURCE_PREFIX` | the generator *reads* the reference's declaration, which spells its keys the old way, and emits this service's prefix |
+
+What this process calls *itself* is its own too, so those moved on 2026-10-28
+along with the environment: the OTEL default service name and the Prometheus
+`target_info` `service_name` are both `wenyuan-api`, the worker's health body
+reports `wenyuan-worker`, the MCP `serverInfo.name` is `wenyuan-mcp-server`,
+and the control plane's health route reports `wenyuan-control-plane`. A
+deployment that scraped or grouped by the old names has to update its queries;
+`WENYUAN_API_OTEL_SERVICE_NAME` still overrides the service name outright.
 
 Adding a new identifier, log line, metric, header or document of our own must
 not use the old name; if something has to keep it, add it to this table with

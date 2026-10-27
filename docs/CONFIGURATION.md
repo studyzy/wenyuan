@@ -229,7 +229,7 @@ Status words:
 | `WENYUAN_API_OTEL_TRACES_ENABLED` | `otel_traces_enabled` | `false` | resolved |  |
 | `WENYUAN_API_OTEL_EXPORTER_OTLP_ENDPOINT` | `otel_exporter_otlp_endpoint` | `` | resolved |  |
 | `WENYUAN_API_OTEL_EXPORTER_OTLP_HEADERS` | `otel_exporter_otlp_headers` | `` | resolved |  |
-| `WENYUAN_API_OTEL_SERVICE_NAME` | `otel_service_name` | `hindsight-api` | resolved |  |
+| `WENYUAN_API_OTEL_SERVICE_NAME` | `otel_service_name` | `wenyuan-api` | resolved |  |
 | `WENYUAN_API_OTEL_DEPLOYMENT_ENVIRONMENT` | `otel_deployment_environment` | `development` | resolved |  |
 | `WENYUAN_API_METRICS_INCLUDE_BANK_ID` | `metrics_include_bank_id` | `false` | resolved |  |
 | `WENYUAN_API_METRICS_BACKLOG_ENABLED` | `metrics_backlog_enabled` | `false` | resolved |  |

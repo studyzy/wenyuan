@@ -21,7 +21,7 @@ type TracingConfig struct {
 }
 
 // DefaultTracingServiceName is the service name reported when none is set.
-const DefaultTracingServiceName = "hindsight-api"
+const DefaultTracingServiceName = "wenyuan-api"
 
 // DefaultTracingEnvironment is the deployment environment reported by default.
 const DefaultTracingEnvironment = "development"

@@ -24,8 +24,10 @@ const MetricsScopeName = "wenyuan_api.metrics"
 
 // ServiceName and ServiceVersion identify this process in target_info, the
 // metadata gauge the reference's exporter emits from its resource attributes.
+// The name is this service's own: it is what a dashboard groups by, and two
+// deployments side by side must not merge into one series.
 const (
-	ServiceName    = "hindsight-api"
+	ServiceName    = "wenyuan-api"
 	ServiceVersion = "1.0.0"
 )
 

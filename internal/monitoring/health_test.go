@@ -454,7 +454,7 @@ func TestWorkerRootInfoEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["service"] != "hindsight-worker" || body["worker_id"] != "w-test" || body["is_shutdown"] != false {
+	if body["service"] != "wenyuan-worker" || body["worker_id"] != "w-test" || body["is_shutdown"] != false {
 		t.Fatalf("root body = %v", body)
 	}
 
