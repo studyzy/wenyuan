@@ -1,6 +1,6 @@
 //go:build pgx
 
-package hindsight
+package archiveimport
 
 import (
 	"context"

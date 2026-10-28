@@ -8,7 +8,7 @@
  * implementation: base64url(payload) + "." + base64url(hmac).
  */
 
-export const SESSION_COOKIE = "hindsight_cp_access";
+export const SESSION_COOKIE = "wenyuan_cp_access";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24;
 
 type TokenPayload = {

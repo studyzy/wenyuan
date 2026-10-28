@@ -10,7 +10,7 @@ import { describe, it } from "vitest";
  * missing `document_id` is a 400 — is real and our route implements it; it is
  * covered by the `test/server-*` suite. Kept skipped so the gap stays visible.
  */
-describe.skip("GET /api/documents/chunks (mocks @/lib/hindsight-client, not shipped)", () => {
+describe.skip("GET /api/documents/chunks (mocks the reference's generated client package, not shipped)", () => {
   it("encodes a slash-bearing document id into the dataplane URL", () => {});
   it("rejects a request with no document_id", () => {});
 });

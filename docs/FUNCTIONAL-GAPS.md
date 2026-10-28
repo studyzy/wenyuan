@@ -59,7 +59,7 @@ directives、knowledge pages、mental models、webhooks）。后果是每次删�
 document/fact/observation payload through the import pipeline"），其导入把每个文档走一遍 retain 写路径
 （`engine/transfer/importer.py` 的 `_import_document_batch` → `engine/retain/orchestrator.py:815`
 的 `link_units_to_entities_batch`），因此共现在导入时被重建。wenyuan 的两个导入器
-（`internal/transfer/import_apply.go` 的服务路径、`internal/migration/hindsight/run.go` 的
+（`internal/transfer/import_apply.go` 的服务路径、`internal/migration/archiveimport/run.go` 的
 `bankctl bank migrate`）只写 `unit_entities` 链接，从不写配对行，于是 `/entities/graph` 的无过滤分支
 （读 `entity_cooccurrences`）返回 0 节点 0 边；后端解析权重也因此拿不到邻居计数。
 
@@ -92,7 +92,7 @@ re-link 语义）；后者已并入 entity prune（`PruneEntity` 在孤儿删除
 回归测试（均先证伪）：
 `internal/transfer/engine_test.go::TestRestoreRebuildsEntityCooccurrences`（修前 `graph nodes = 0`）、
 `TestRestoreRebuildsDocumentChunks` / `TestRestoreDiscardsChunkTextWhenConfigured`（修前 `chunks stored = 0`
-与 `chunk not found`）、`internal/migration/hindsight/postgres_integration_test.go`（修前 `entity graph
+与 `chunk not found`）、`internal/migration/archiveimport/postgres_integration_test.go`（修前 `entity graph
 edges = 0` / `chunks stored = 0`，并钉住边权、`last_cooccurred` = 事实自己的时间、fact 的 chunk 引用可解析）、
 `internal/storage/entity_cooccurrence_test.go` 与 `entity_cooccurrence_pgx_test.go`（编辑记配对、prune 删陈旧配对，
 两个后端各一份）。

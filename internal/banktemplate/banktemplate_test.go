@@ -324,12 +324,11 @@ func TestValidateExtractionModeMessageMatchesReference(t *testing.T) {
 
 // A version past the supported one is reported with the reference's own wording
 // — the product name included, because that string is what a client shows its
-// operator. The reference interpolates "Hindsight" there
-// (api/http.py:4096-4097), so this service does too; "Wenyuan" would be a
-// different message for the same request.
+// operator. The reference interpolates its own name there
+// (api/http.py:4096-4097); this service names itself instead.
 func TestValidateUnsupportedVersionNamesTheReference(t *testing.T) {
 	structural, _ := Validate(Manifest{Version: "2"})
-	want := "version: Value error, version '2' is not supported by this server (max supported: 1). Please upgrade Hindsight."
+	want := "version: Value error, version '2' is not supported by this server (max supported: 1). Please upgrade WenYuan."
 	if len(structural) != 1 || structural[0] != want {
 		t.Fatalf("structural = %q, want [%q]", structural, want)
 	}
@@ -345,9 +344,9 @@ func TestValidateVersionIsParsedAtArbitraryPrecision(t *testing.T) {
 		want    string
 	}{
 		{"99999999999999999999",
-			"version: Value error, version '99999999999999999999' is not supported by this server (max supported: 1). Please upgrade Hindsight."},
+			"version: Value error, version '99999999999999999999' is not supported by this server (max supported: 1). Please upgrade WenYuan."},
 		{"9223372036854775808",
-			"version: Value error, version '9223372036854775808' is not supported by this server (max supported: 1). Please upgrade Hindsight."},
+			"version: Value error, version '9223372036854775808' is not supported by this server (max supported: 1). Please upgrade WenYuan."},
 		{"-99999999999999999999", "version: Value error, version must be >= 1"},
 	}
 	for _, tc := range cases {

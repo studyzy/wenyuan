@@ -9,10 +9,10 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/consolidation"
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
@@ -61,9 +61,9 @@ func buildImportArchive(t *testing.T) []byte {
 			t.Fatal(err)
 		}
 	}
-	write(hindsightarchive.ManifestName,
+	write(transferarchive.ManifestName,
 		`{"schema_version":1,"source_bank_id":"b1","document_count":1,"fact_count":1,"archive_type":"bank"}`)
-	write(hindsightarchive.DocumentsDir+"/000000.json",
+	write(transferarchive.DocumentsDir+"/000000.json",
 		`{"id":"doc-a","original_text":"alpha",
 		  "chunks":[{"chunk_index":0,"chunk_text":"alpha"}],
 		  "facts":[{"text":"Alice works at Google","fact_type":"world","entities":["Alice"]}]}`)

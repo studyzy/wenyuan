@@ -31,9 +31,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Renaming an environment variable or a metric is not a change to the HTTP
   surface: routes, JSON field names, status codes, the PostgreSQL schema, the
-  webhook signature headers (`X-Hindsight-*`), the `hindsight_key` redaction
-  label and the tenant-extension value are untouched, so clients and registered
-  webhooks keep working.
+  webhook signature headers (`X-Hindsight-*`) and the tenant-extension value
+  are untouched, so clients and registered webhooks keep working.
+
+### Changed — BREAKING
+
+- **The control plane's browser-side keys carry this service's name.** The
+  session cookie, the locale cookie and the theme storage key are
+  `wenyuan_cp_access` / `wenyuan_cp_locale` / `wenyuan_cp_theme` (they carried
+  the old brand before). An operator with a live session is signed out once,
+  and a stored theme falls back to the default. Nothing on the HTTP API or the
+  webhook surface changes.
+- **The redaction label for the reference's own API keys is `reference_key`**
+  (it named the old brand before). The pattern still catches the same `hsk_…`
+  keys; only the label a retained text carries changes, so a pipeline that
+  greps for the old label has to follow.
+- **Packages named after the reference are renamed after what they handle:**
+  the archive reader is now `internal/transferarchive` (it reads the
+  reference's export format) and the import is `internal/migration/archiveimport`.
+  The archive format and the `bank migrate` command surface are unchanged.
+
+### Fixed
+
+- `scripts/contract_smoke.sh` still asserted the request-metric families under
+  the old brand, so both metric checks could only fail after the family rename;
+  they now assert `wenyuan_http_requests_*`. The consolidation-backlog and
+  operation-duration HELP texts were the last places naming the old brand to a
+  scraper; the operation-duration one now names no product at all.
 
 ### Added
 

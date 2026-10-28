@@ -53,7 +53,7 @@ type textSearchBackend struct {
 // setting by failing to start for a different reason.
 //
 // The native dictionary is checked the same way and for the same reason: the
-// reference validates it as a PostgreSQL identifier in HindsightConfig.validate
+// reference validates it as a PostgreSQL identifier in its config validator
 // before embedding it in to_tsvector(...), and raises at startup when it is not
 // one. Which dictionaries *exist* is
 // deliberately not checked — the reference is permissive there and lets the

@@ -49,8 +49,8 @@ cleanup() {
   done
   if [ -z "$KEEP" ]; then
     if [ -n "${CREATED_DB:-}" ]; then
-      PGPASSWORD=${PGPASSWORD:-hindsight} psql -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" \
-        -U "${PGUSER:-hindsight}" -c "DROP DATABASE IF EXISTS $CREATED_DB" postgres >/dev/null 2>&1 || true
+      PGPASSWORD=${PGPASSWORD:-postgres} psql -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" \
+        -U "${PGUSER:-postgres}" -c "DROP DATABASE IF EXISTS $CREATED_DB" postgres >/dev/null 2>&1 || true
     fi
     rm -rf "$WORK" "$COOKIE_JAR"
   else
@@ -91,12 +91,12 @@ body() { printf '%s' "$1" | head -c 600; }
 # ---------------------------------------------------------------------------
 if [ -z "$DB_URL" ]; then
   CREATED_DB="wenyuan_frontend_it_$$"
-  PGPASSWORD=${PGPASSWORD:-hindsight} psql -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" \
-    -U "${PGUSER:-hindsight}" -c "CREATE DATABASE $CREATED_DB" postgres >/dev/null 2>&1 || {
+  PGPASSWORD=${PGPASSWORD:-postgres} psql -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" \
+    -U "${PGUSER:-postgres}" -c "CREATE DATABASE $CREATED_DB" postgres >/dev/null 2>&1 || {
     echo "could not create $CREATED_DB; set FRONTEND_IT_DB_URL to a database to use" >&2
     exit 2
   }
-  DB_URL="postgresql://${PGUSER:-hindsight}:${PGPASSWORD:-hindsight}@${PGHOST:-127.0.0.1}:${PGPORT:-5432}/$CREATED_DB"
+  DB_URL="postgresql://${PGUSER:-postgres}:${PGPASSWORD:-postgres}@${PGHOST:-127.0.0.1}:${PGPORT:-5432}/$CREATED_DB"
 fi
 
 if [ -z "$BIN" ]; then

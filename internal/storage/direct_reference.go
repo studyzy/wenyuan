@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/timefmt"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // DirectSource reads a bank's rows straight out of a reference-shaped database
@@ -33,13 +33,13 @@ func NewDirectSource(db DB, bankID string) *DirectSource {
 // Read renders the bank as an archive. Documents, their chunks and their facts
 // are read in one pass each; a fact's causal relations are matched from the
 // links table by comparing the units they join.
-func (s *DirectSource) Read(ctx context.Context) (*hindsightarchive.Archive, error) {
+func (s *DirectSource) Read(ctx context.Context) (*transferarchive.Archive, error) {
 	documents, err := s.readDocuments(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byDocument := map[string]*hindsightarchive.Document{}
-	order := make([]*hindsightarchive.Document, 0, len(documents))
+	byDocument := map[string]*transferarchive.Document{}
+	order := make([]*transferarchive.Document, 0, len(documents))
 	for _, doc := range documents {
 		byDocument[doc.ID] = doc
 		order = append(order, doc)
@@ -51,15 +51,15 @@ func (s *DirectSource) Read(ctx context.Context) (*hindsightarchive.Archive, err
 	if err := s.attachFacts(ctx, byDocument); err != nil {
 		return nil, err
 	}
-	rendered := make([]hindsightarchive.Document, 0, len(order))
+	rendered := make([]transferarchive.Document, 0, len(order))
 	facts := 0
 	for _, doc := range order {
 		rendered = append(rendered, *doc)
 		facts += len(doc.Facts)
 	}
-	return &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	return &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  s.bankID,
 			ExportedAt:    exportTime(),
 			DocumentCount: len(rendered),
@@ -71,7 +71,7 @@ func (s *DirectSource) Read(ctx context.Context) (*hindsightarchive.Archive, err
 }
 
 // readDocuments reads the bank's documents.
-func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.Document, error) {
+func (s *DirectSource) readDocuments(ctx context.Context) ([]*transferarchive.Document, error) {
 	// original_text is nullable in the reference: a deployment that keeps no
 	// source text (store_document_text off) stores NULL. The archive carries
 	// the empty string in that case, the same value the reference's own export
@@ -83,7 +83,7 @@ func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.D
 		return nil, fmt.Errorf("read documents: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var documents []*hindsightarchive.Document
+	var documents []*transferarchive.Document
 	for rows.Next() {
 		var (
 			id, text   string
@@ -94,7 +94,7 @@ func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.D
 		if err := rows.Scan(&id, &text, &retainJSON, &tagsJSON, &created); err != nil {
 			return nil, err
 		}
-		documents = append(documents, &hindsightarchive.Document{
+		documents = append(documents, &transferarchive.Document{
 			ID:           id,
 			OriginalText: text,
 			RetainParams: decodeObject(retainJSON),
@@ -106,7 +106,7 @@ func (s *DirectSource) readDocuments(ctx context.Context) ([]*hindsightarchive.D
 }
 
 // attachChunks reads the bank's chunks and hangs each on its document.
-func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*hindsightarchive.Document) error {
+func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*transferarchive.Document) error {
 	query := `SELECT document_id, chunk_index, COALESCE(chunk_text, '')
 	          FROM chunks WHERE bank_id = $1 ORDER BY document_id, chunk_index`
 	rows, err := s.db.QueryContext(ctx, query, s.bankID)
@@ -123,7 +123,7 @@ func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*
 			return err
 		}
 		if doc, ok := byDocument[documentID]; ok {
-			doc.Chunks = append(doc.Chunks, hindsightarchive.Chunk{ChunkIndex: index, ChunkText: text})
+			doc.Chunks = append(doc.Chunks, transferarchive.Chunk{ChunkIndex: index, ChunkText: text})
 		}
 	}
 	return rows.Err()
@@ -132,7 +132,7 @@ func (s *DirectSource) attachChunks(ctx context.Context, byDocument map[string]*
 // attachFacts reads the bank's memory units and hangs each on its document. A
 // fact with no document is emitted under a synthetic document of its own so no
 // fact is lost.
-func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*hindsightarchive.Document) error {
+func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*transferarchive.Document) error {
 	query := `SELECT id, document_id, text, fact_type, context, event_date,
 	                 occurred_start, occurred_end, mentioned_at,
 	                 metadata, created_at
@@ -158,7 +158,7 @@ func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*h
 			&occurredStart, &occurredEnd, &mentionedAt, &metadataJSON, &createdAt); err != nil {
 			return err
 		}
-		fact := hindsightarchive.Fact{
+		fact := transferarchive.Fact{
 			Text:          text,
 			FactType:      factType,
 			Context:       context.String,
@@ -171,7 +171,7 @@ func (s *DirectSource) attachFacts(ctx context.Context, byDocument map[string]*h
 		}
 		target := byDocument[documentID.String]
 		if target == nil {
-			target = &hindsightarchive.Document{ID: documentID.String}
+			target = &transferarchive.Document{ID: documentID.String}
 			if target.ID == "" {
 				target.ID = "units-" + s.bankID
 			}

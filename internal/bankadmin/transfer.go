@@ -16,9 +16,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/transfer"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // ExportBankFlags is the parsed `export-bank` command surface: which bank, where
@@ -108,7 +108,7 @@ func RunExportBank(ctx context.Context, store storage.Store, flags ExportBankFla
 	if err != nil {
 		return 0, err
 	}
-	data, err := hindsightarchive.Write(archive)
+	data, err := transferarchive.Write(archive)
 	if err != nil {
 		return 0, err
 	}

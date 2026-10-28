@@ -98,8 +98,8 @@ stop
 
 # --- module: metrics names and the profile switch ---------------------------
 start env
-check "requests metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^hindsight_http_requests_total' && echo True || echo False)"
-check "in-progress metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^hindsight_http_requests_in_progress' && echo True || echo False)"
+check "requests metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^wenyuan_http_requests_total' && echo True || echo False)"
+check "in-progress metric name" True "$(curl -sS "${BASE}/metrics" | grep -q '^wenyuan_http_requests_in_progress' && echo True || echo False)"
 stop
 WENYUAN_API_PROFILE='{"every":0}' WENYUAN_API_PORT=$((PORT + 100)) "$BIN" >/tmp/contract_smoke_profile.log 2>&1
 check "a malformed profile request refuses startup" 1 "$?"

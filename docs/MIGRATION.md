@@ -203,7 +203,7 @@ curl -X DELETE "http://<wenyuan>:18888/v1/default/banks/<bank_id>" \
 |---|---|---|
 | `relation "async_operations" already exists` | 目标库已有一套 schema，但这版 Wenyuan 没识别它就直接跑了迁移系列 | 用带直接接管（§1.1）的版本；库若已被写进半截账本（例如只记到 `0001`），新版本会读目录后补齐记录，不会重复建表 |
 | `database is not the schema this build serves: ... the first missing one is ...` | 目标库的表/列/约束/函数与 Wenyuan 服务的这套 schema 不一致：可能是半截 schema，或上游版本比 Wenyuan 的系列更旧 | 用官方导出把数据搬到空库（§1.2）；不要用 `--replace` 之外的写操作去凑 schema |
-| `unsupported archive schema_version N` | 上游导出格式版本变了 | 升级 Wenyuan，同步 `internal/hindsightarchive/archive.go` 的 `SupportedSchemaVersion` 与类型 |
+| `unsupported archive schema_version N` | 上游导出格式版本变了 | 升级 Wenyuan，同步 `internal/transferarchive/archive.go` 的 `SupportedSchemaVersion` 与类型 |
 | `archive is missing manifest.json` | ZIP 不完整或不是整库导出 | 重新导出；确认用的是 `/export` 而非 `/document-transfer` |
 | 导入后 recall 为空 | 目标 bank id 与查询的不一致 | 确认 `--bank-id`；`GET /v1/default/banks` 列出实际 id |
 | 实体数量异常少 | 多个同名实体被合并 | 预期行为（见 §6.3）；如需区分，源侧需有不同 canonical name |
@@ -219,9 +219,9 @@ curl -X DELETE "http://<wenyuan>:18888/v1/default/banks/<bank_id>" \
   （从嵌入式 SQL 读回，不另写一份与之漂移）
 - 目录识别与接管：`internal/storage/postgres_adoption.go`
   （`readCatalogue`、`classifySchema`、`adoptSeries`）
-- 归档解析：`internal/hindsightarchive/archive.go`（类型与 `Read`）、`zip.go`（`OpenZip`）
-- 映射：`internal/migration/hindsight/map.go`（字段映射、id 派生、未映射清单）
-- 导入：`internal/migration/hindsight/run.go`（`Run`、`Replace`/`Append`、事务写入）
+- 归档解析：`internal/transferarchive/archive.go`（类型与 `Read`）、`zip.go`（`OpenZip`）
+- 映射：`internal/migration/archiveimport/map.go`（字段映射、id 派生、未映射清单）
+- 导入：`internal/migration/archiveimport/run.go`（`Run`、`Replace`/`Append`、事务写入）
 - CLI：`internal/bankadmin/migrate.go`、`cmd/bankctl/main.go`
-- 测试：`internal/hindsightarchive/archive_test.go`、
-  `internal/migration/hindsight/run_test.go`（含构造导出 ZIP 的端到端用例）
+- 测试：`internal/transferarchive/archive_test.go`、
+  `internal/migration/archiveimport/run_test.go`（含构造导出 ZIP 的端到端用例）

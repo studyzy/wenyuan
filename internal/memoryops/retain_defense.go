@@ -191,7 +191,7 @@ var redactionCatalog = []redactionPattern{
 	// The reference implementation's own API keys: hsk_<32 hex>, optionally
 	// _<hex signature>; hsk_sys_ marks a system key, anchored on the 32 hex
 	// characters.
-	{"hindsight_key", regexp.MustCompile(asciiToken(`hsk_(?:sys_)?[0-9a-f]{32}(?:_[0-9a-f]{8,})?`))},
+	{"reference_key", regexp.MustCompile(asciiToken(`hsk_(?:sys_)?[0-9a-f]{32}(?:_[0-9a-f]{8,})?`))},
 	{"huggingface_token", regexp.MustCompile(asciiToken(`hf_[A-Za-z0-9]{30,}`))},
 	{"replicate_token", regexp.MustCompile(asciiToken(`r8_[A-Za-z0-9]{30,}`))},
 	{"perplexity_key", regexp.MustCompile(asciiToken(`pplx-[A-Za-z0-9]{40,}`))},

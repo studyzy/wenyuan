@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // Archive preview and apply. The archive format itself is owned by the
@@ -25,7 +25,7 @@ const (
 // CLI reuse exactly the zip handling the HTTP routes validate with, instead of
 // duplicating it. Its malformed-archive error names the bank export endpoint,
 // which is the whole-bank path both callers drive.
-func ParseArchive(data []byte) (*hindsightarchive.Archive, error) {
+func ParseArchive(data []byte) (*transferarchive.Archive, error) {
 	return validateArchive(data, producedByBankExport)
 }
 
@@ -43,16 +43,16 @@ func ParseArchive(data []byte) (*hindsightarchive.Archive, error) {
 // ceiling, so a larger-than-64-MiB archive is a caller the reference accepts and
 // this route must accept too. The multipart parser spills the body to disk, so
 // the only copy held in memory is the one the archive reader makes.
-func validateArchive(data []byte, producedBy string) (*hindsightarchive.Archive, error) {
+func validateArchive(data []byte, producedBy string) (*transferarchive.Archive, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		//nolint:staticcheck // the reference's own wording, capitalised
 		return nil, errors.New(
 			"Invalid transfer archive: the uploaded file is not a readable .zip (File is not a zip file)")
 	}
-	archive, err := hindsightarchive.Read(reader)
+	archive, err := transferarchive.Read(reader)
 	if err != nil {
-		if errors.Is(err, hindsightarchive.ErrManifestMissing) {
+		if errors.Is(err, transferarchive.ErrManifestMissing) {
 			//nolint:staticcheck // the reference's own wording, capitalised and sentence-final
 			return nil, fmt.Errorf("Invalid transfer archive: manifest.json is missing. "+
 				"This endpoint only accepts a .zip produced by %s — it is not a way to upload a zip of ordinary "+

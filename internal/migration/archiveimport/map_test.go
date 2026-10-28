@@ -1,9 +1,9 @@
-package hindsight
+package archiveimport
 
 import (
 	"testing"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // The fact→unit mapping itself carries no chunk reference: the identifier only
@@ -12,7 +12,7 @@ import (
 // written with the reference the caller resolved, never one of its own.
 func TestUnitForFactLeavesTheChunkReferenceToTheWriter(t *testing.T) {
 	chunkIndex := 3
-	fact := hindsightarchive.Fact{
+	fact := transferarchive.Fact{
 		Text:       "The deployment runs on Tuesdays.",
 		FactType:   "world",
 		ChunkIndex: &chunkIndex,
@@ -31,7 +31,7 @@ func TestUnitForFactLeavesTheChunkReferenceToTheWriter(t *testing.T) {
 // A fact without a chunk reference is unaffected: the unit still carries its
 // text and its document, which is what recall reads.
 func TestUnitForFactWithoutChunkIndex(t *testing.T) {
-	fact := hindsightarchive.Fact{Text: "Alice leads the team.", FactType: "world"}
+	fact := transferarchive.Fact{Text: "Alice leads the team.", FactType: "world"}
 
 	unit := unitFromFact("bank-a", "doc-2", 1, fact)
 

@@ -49,7 +49,7 @@ func TestLoopLagProbeDisabled(t *testing.T) {
 
 // Starting the watchdog publishes the stall counter, so a scrape taken before
 // the first stall reports zero stalls. The reference declares
-// hindsight.event_loop.stalls as it builds its collector (metrics.py:623), so
+// the reference's event-loop stall counter as it builds its collector (metrics.py:623), so
 // its exposition carries the zero-valued series on a healthy loop.
 func TestLoopLagProbeDeclaresStallCounter(t *testing.T) {
 	// The registry is process-wide and a sibling test records a real stall into

@@ -75,14 +75,14 @@ internal/memoryops/retain_defense.go    （+ 对应 _test.go）
 
 | 消费方 | 位置 | 影响 |
 |---|---|---|
-| contract smoke 断言 | `scripts/contract_smoke.sh:101-102` 用 `grep '^hindsight_http_requests_total'` | **会失败，需同步改** |
+| contract smoke 断言 | `scripts/contract_smoke.sh:101-102` 断言旧的 `http_requests_*` 族名 | **曾会失败，2026-10-28 已改为 `wenyuan_http_requests_*`** |
 | 文档 | `docs/` 下 9 篇 + `CHANGELOG.md` | 需更新 |
 | 配置模板 | `etc/wenyuan.yaml` | 注释里的指标名 |
 | 外部仪表盘/告警 | 库外（Grafana 等） | **不在本仓库，需运维同步改** |
 
-> 注：`hindsight_key`（`internal/memoryops/retain_defense.go:194`）**不是指标**，
-> 是脱敏正则的**标签**，用于标记「被识别为上游 `hsk_...` 格式的密钥」。
-> 本次**不动**——它描述的是「谁的密钥」，不是本服务自己的名字。
+> 注：脱敏正则的**标签**（`internal/memoryops/retain_defense.go`）**不是指标**，
+> 用于标记「被识别为上游 `hsk_...` 格式的密钥」。本次指标改名**不涉及**它；
+> 标签后来在 2026-10-28 单独改名（见下节保留清单）。
 
 ### 1.4 明确不动的东西
 
@@ -90,10 +90,10 @@ internal/memoryops/retain_defense.go    （+ 对应 _test.go）
 |---|---|---|
 | HTTP 头 | `X-Hindsight-Event` / `-Signature` / `-Signature-V2` / `-Bank-Id` | **webhook 验签的线上契约**。接收方按这几个头名验签，改名会让所有已注册 webhook 失效 |
 | OpenAPI 文档 | `internal/httpx/openapi.json` | `scripts/reference_openapi.py --check` 做字节级比对；它描述的是参考实现的 HTTP 面 |
-| 脱敏标签 | `hindsight_key` | 描述的是「上游 `hsk_` 格式的密钥」，不是本服务名字 |
+| 脱敏标签 | `reference_key`（2026-10-28 由 `hindsight_key` 改名） | 描述的是「上游 `hsk_` 格式的密钥」；标签名本身不带品牌 |
 | Vendored 系统测试 | `tests/system/**` | AGENTS.md 记录为「参考实现黑盒套件原样 vendored」，是证据件。改了就不再是证据（见 §4.3 的替代方案） |
 | 客户端的 `HINDSIGHT_API_URL` | `clients/*/` 集成测试读的地址 | **需要你确认**：见 §5 问题 1 |
-| 前端 cookie | `hindsight_cp_access` / `hindsight_cp_locale` / `hindsight_cp_theme` | cookie 名属前端会话契约，且不在「后端服务环境变量/配置」范围 |
+| 前端 cookie | `wenyuan_cp_access` / `wenyuan_cp_locale` / `wenyuan_cp_theme`（2026-10-28 改名，浏览器侧一次性重新登录/主题重置） | 已改名 |
 | `tests/system` 的 `hindsight_api` 包名 | `scripts/system_parity_plugin.py` | 那是上游 Python 包名，不是我们的 |
 
 ---
@@ -242,8 +242,7 @@ P7 结束后追加：全库 `HINDSIGHT_API_` 残留扫描（白名单外必须�
 | 位置 | 原因 |
 |---|---|
 | `scripts/gen_provider_env_keys.py` 的 `SOURCE_PREFIX` | 生成器要**读取上游**声明（上游用 `HINDSIGHT_API_`），再按 `TARGET_PREFIX` 输出 |
-| `internal/httpx/openapi.json` 之外的契约串：`X-Hindsight-*` 头、`hindsight_key` 脱敏标签、`hindsight_api.extensions.builtin.tenant`、`~/.hindsight/daemon.log` | HTTP/webhook/脱敏/扩展部署契约，改了会破已注册 webhook 与既有部署 |
-| `internal/hindsightarchive`、`internal/migration/hindsight`、`bankctl --from-hindsight` | 包/参数名指向「参考实现的导出格式」与导入方向，是语义命名 |
+| `internal/httpx/openapi.json` 之外的契约串：`X-Hindsight-*` 头、`hindsight_api.extensions.builtin.tenant`、`~/.hindsight/daemon.log` | HTTP/webhook/扩展部署契约，改了会破已注册 webhook 与既有部署 |
 | 本文档 | 记录改名本身，必然出现旧名 |
 
 ### 验证门（全部通过）

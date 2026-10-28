@@ -68,7 +68,7 @@ internal/storage   one Store interface, memory + postgres backends (pgx tag)
 
 **Layering is real, not nominal.** The `go list` import graph shows no cycles
 and one consistent direction. `internal/storage` sits at the bottom (its only
-internal imports are `entitylabels` and `hindsightarchive`), `httpx` next, and
+internal imports are `entitylabels` and `transferarchive`), `httpx` next, and
 handlers never reach past the `storage.Store` interface. The composition root
 is the only package allowed to fan out wide (32 imports), which is exactly its
 job.

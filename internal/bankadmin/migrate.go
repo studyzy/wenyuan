@@ -7,9 +7,9 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
-	"github.com/studyzy/wenyuan/internal/migration/hindsight"
+	"github.com/studyzy/wenyuan/internal/migration/archiveimport"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // MigrateFlags is the parsed reference-migration command surface.
@@ -42,7 +42,7 @@ type MigrateFlags struct {
 	DiscardDocumentText bool
 }
 
-// ParseMigrate parses a `bank migrate --from-hindsight` command.
+// ParseMigrate parses a `bank migrate` command.
 func ParseMigrate(args []string) (MigrateFlags, error) {
 	fs := flag.NewFlagSet("bank migrate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -79,7 +79,7 @@ func ParseMigrate(args []string) (MigrateFlags, error) {
 
 // readDirectBank reads a bank straight out of a reference-shaped database. It
 // returns the archive and a close function the caller must run.
-func readDirectBank(ctx context.Context, flags MigrateFlags) (*hindsightarchive.Archive, func(), error) {
+func readDirectBank(ctx context.Context, flags MigrateFlags) (*transferarchive.Archive, func(), error) {
 	if !storage.DriverAvailable() {
 		return nil, func() {}, fmt.Errorf("a database driver is required to read --source-url; build with the pgx tag")
 	}
@@ -105,41 +105,41 @@ func readDirectBank(ctx context.Context, flags MigrateFlags) (*hindsightarchive.
 
 // RunMigrate reads a reference bank — from an export archive or straight out of
 // a reference-shaped database — and writes it into the store.
-func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, out io.Writer) (hindsight.Report, error) {
+func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, out io.Writer) (archiveimport.Report, error) {
 	var (
-		archive *hindsightarchive.Archive
+		archive *transferarchive.Archive
 		source  string
 	)
 	if flags.SourceURL != "" {
 		read, closeSource, err := readDirectBank(ctx, flags)
 		if err != nil {
-			return hindsight.Report{}, err
+			return archiveimport.Report{}, err
 		}
 		defer closeSource()
 		archive = read
 		source = "direct read of " + flags.SourceURL
 	} else {
-		opened, err := hindsightarchive.OpenZip(flags.Archive)
+		opened, err := transferarchive.OpenZip(flags.Archive)
 		if err != nil {
-			return hindsight.Report{}, err
+			return archiveimport.Report{}, err
 		}
 		archive = opened
 		source = filepath.Base(flags.Archive)
 	}
 
-	mode := hindsight.Replace
+	mode := archiveimport.Replace
 	switch {
 	case flags.Append:
-		mode = hindsight.Append
+		mode = archiveimport.Append
 	case flags.Incremental:
-		mode = hindsight.Incremental
+		mode = archiveimport.Incremental
 	}
-	report, err := hindsight.Run(ctx, store, hindsight.Mapping{
+	report, err := archiveimport.Run(ctx, store, archiveimport.Mapping{
 		Archive: archive,
 		BankID:  flags.BankID,
-	}, hindsight.Options{Mode: mode, DryRun: flags.DryRun, DiscardDocumentText: flags.DiscardDocumentText})
+	}, archiveimport.Options{Mode: mode, DryRun: flags.DryRun, DiscardDocumentText: flags.DiscardDocumentText})
 	if err != nil {
-		return hindsight.Report{}, err
+		return archiveimport.Report{}, err
 	}
 
 	verb := "migrated"
@@ -149,7 +149,7 @@ func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, ou
 	_, _ = fmt.Fprintf(out, "%s %s from %s (%s mode)\n", verb, report.BankID, source, mode)
 	_, _ = fmt.Fprintf(out, "  documents: %d\n  chunks: %d\n  facts: %d\n  entities: %d\n  links: %d\n",
 		report.Documents, report.Chunks, report.Facts, report.Entities, report.Links)
-	if mode == hindsight.Incremental {
+	if mode == archiveimport.Incremental {
 		_, _ = fmt.Fprintf(out, "  written: %d\n  skipped (already present): %d\n", report.Written, report.Skipped)
 	}
 	if len(report.Unmapped) > 0 {

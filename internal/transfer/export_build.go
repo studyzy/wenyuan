@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // pageSize is how many rows one read requests when a section is streamed. The
@@ -61,13 +61,13 @@ type ExportOptions struct {
 // Nothing here embeds a vector: an archive carries text and structure, and the
 // importing instance regenerates embeddings with its own model, which is what
 // makes an archive portable between instances configured differently.
-func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts ExportOptions) (*hindsightarchive.Archive, error) {
+func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts ExportOptions) (*transferarchive.Archive, error) {
 	now := time.Now().UTC()
 	if opts.Now != nil {
 		now = opts.Now()
 	}
-	archive := &hindsightarchive.Archive{}
-	archive.Manifest.SchemaVersion = hindsightarchive.SupportedSchemaVersion
+	archive := &transferarchive.Archive{}
+	archive.Manifest.SchemaVersion = transferarchive.SupportedSchemaVersion
 	archive.Manifest.SourceBankID = bankID
 	exportedAt := httpx.FormatZuluTimestamp(now)
 	archive.Manifest.ExportedAt = &exportedAt
@@ -79,7 +79,7 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	// unitLocations records where every exported fact sits, so an observation's
 	// source references can be expressed as (document, ordinal) — the only form
 	// that survives a transfer to a bank that mints fresh ids.
-	unitLocations := map[string]hindsightarchive.ObservationSource{}
+	unitLocations := map[string]transferarchive.ObservationSource{}
 	for _, document := range documents {
 		built, order, err := buildDocument(ctx, store, bankID, document)
 		if err != nil {
@@ -159,10 +159,10 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 		// one on every whole-bank export, so a bank with no queued maintenance
 		// still emits `data/graph_maintenance_queue.json` as `[]`.
 		archive.Data = map[string][]map[string]any{
-			hindsightarchive.AsyncOperationsTable:        operations,
-			hindsightarchive.GraphMaintenanceQueueTable:  graphQueue,
-			hindsightarchive.EntityMaintenanceQueueTable: entityQueue,
-			hindsightarchive.InvalidatedMemoryTable:      archived,
+			transferarchive.AsyncOperationsTable:        operations,
+			transferarchive.GraphMaintenanceQueueTable:  graphQueue,
+			transferarchive.EntityMaintenanceQueueTable: entityQueue,
+			transferarchive.InvalidatedMemoryTable:      archived,
 		}
 		archive.Manifest.OperationCount = len(operations)
 		archive.Manifest.InvalidatedMemoryCount = len(archived)
@@ -189,7 +189,7 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 			archive.Directives = directives
 			archive.Webhooks = webhooks
 		}
-		archive.Manifest.Scope = &hindsightarchive.Scope{
+		archive.Manifest.Scope = &transferarchive.Scope{
 			Data:       opts.Scope.Data,
 			BankConfig: opts.Scope.BankConfig,
 			History:    opts.Scope.History,
@@ -197,7 +197,7 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 		archive.Manifest.ArchiveType = "bank"
 		// A whole-bank archive's bank/history row files carry each jsonb column
 		// as its JSON text, matching the reference's producer.
-		encoding := hindsightarchive.EncodingSerialized
+		encoding := transferarchive.EncodingSerialized
 		archive.Manifest.BankRowsJSONEncoding = &encoding
 	} else {
 		archive.Manifest.ArchiveType = "documents"
@@ -405,10 +405,10 @@ func buildOperationalHistory(ctx context.Context, store storage.Store, bankID st
 	}
 	history := map[string][]map[string]any{}
 	if len(audit) > 0 {
-		history[hindsightarchive.AuditLogTable] = audit
+		history[transferarchive.AuditLogTable] = audit
 	}
 	if len(requests) > 0 {
-		history[hindsightarchive.LLMRequestsTable] = requests
+		history[transferarchive.LLMRequestsTable] = requests
 	}
 	if len(history) == 0 {
 		return nil, nil
@@ -522,8 +522,8 @@ func intOrNil(value *int) any {
 // An attachment whose bytes are absent from storage is skipped rather than
 // carried as an empty blob: the row would describe bytes the archive does not
 // hold, and an importer cannot tell that from a genuinely empty attachment.
-func buildAttachments(ctx context.Context, store storage.Store, bankID string, documents []hindsightarchive.Document) ([]hindsightarchive.Attachment, map[string][]byte, error) {
-	var attachments []hindsightarchive.Attachment
+func buildAttachments(ctx context.Context, store storage.Store, bankID string, documents []transferarchive.Document) ([]transferarchive.Attachment, map[string][]byte, error) {
+	var attachments []transferarchive.Attachment
 	var blobs map[string][]byte
 	for _, document := range documents {
 		rows, err := store.ListAttachments(ctx, bankID, document.ID)
@@ -538,12 +538,12 @@ func buildAttachments(ctx context.Context, store storage.Store, bankID string, d
 			if !ok {
 				continue
 			}
-			entry := hindsightarchive.BlobEntry(len(attachments))
+			entry := transferarchive.BlobEntry(len(attachments))
 			if blobs == nil {
 				blobs = map[string][]byte{}
 			}
 			blobs[entry] = data
-			attachments = append(attachments, hindsightarchive.Attachment{
+			attachments = append(attachments, transferarchive.Attachment{
 				BankID:         bankID,
 				DocumentID:     document.ID,
 				AttachmentHash: row.AttachmentHash,
@@ -602,8 +602,8 @@ func loadDocuments(ctx context.Context, store storage.Store, bankID string, ids 
 
 // buildDocument turns one stored document into its archive payload and reports
 // where each of its facts travelled.
-func buildDocument(ctx context.Context, store storage.Store, bankID string, document storage.Document) (hindsightarchive.Document, map[string]hindsightarchive.ObservationSource, error) {
-	built := hindsightarchive.Document{
+func buildDocument(ctx context.Context, store storage.Store, bankID string, document storage.Document) (transferarchive.Document, map[string]transferarchive.ObservationSource, error) {
+	built := transferarchive.Document{
 		ID:           document.ID,
 		OriginalText: document.OriginalText,
 		RetainParams: archiveRetainParams(document.RetainParams),
@@ -619,7 +619,7 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 	}
 	chunkOrdinals := map[string]int{}
 	for _, chunk := range chunks {
-		built.Chunks = append(built.Chunks, hindsightarchive.Chunk{
+		built.Chunks = append(built.Chunks, transferarchive.Chunk{
 			ChunkIndex: chunk.ChunkIndex,
 			ChunkText:  chunk.ChunkText,
 		})
@@ -629,9 +629,9 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 	if err != nil {
 		return built, nil, err
 	}
-	locations := make(map[string]hindsightarchive.ObservationSource, len(units))
+	locations := make(map[string]transferarchive.ObservationSource, len(units))
 	for ordinal, unit := range units {
-		fact := hindsightarchive.Fact{
+		fact := transferarchive.Fact{
 			Text:                  unit.Text,
 			SourceID:              unit.ID,
 			FactType:              string(unit.FactType),
@@ -658,7 +658,7 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 		}
 		fact.Entities = entities
 		built.Facts = append(built.Facts, fact)
-		locations[unit.ID] = hindsightarchive.ObservationSource{DocumentID: document.ID, FactIndex: ordinal}
+		locations[unit.ID] = transferarchive.ObservationSource{DocumentID: document.ID, FactIndex: ordinal}
 	}
 	return built, locations, nil
 }
@@ -727,14 +727,14 @@ func loadDocumentUnits(ctx context.Context, store storage.Store, bankID, documen
 // buildObservations reads the bank's observations. An observation whose source
 // facts are not all in the archive is dropped rather than carried with
 // dangling evidence, because the importing bank would resolve them to nothing.
-func buildObservations(ctx context.Context, store storage.Store, bankID string, locations map[string]hindsightarchive.ObservationSource) ([]hindsightarchive.Observation, error) {
+func buildObservations(ctx context.Context, store storage.Store, bankID string, locations map[string]transferarchive.ObservationSource) ([]transferarchive.Observation, error) {
 	units, err := loadUnitsByType(ctx, store, bankID, storage.TypeObservation)
 	if err != nil {
 		return nil, err
 	}
-	var out []hindsightarchive.Observation
+	var out []transferarchive.Observation
 	for _, unit := range units {
-		sources := make([]hindsightarchive.ObservationSource, 0, len(unit.SourceMemoryIDs))
+		sources := make([]transferarchive.ObservationSource, 0, len(unit.SourceMemoryIDs))
 		for _, sourceID := range unit.SourceMemoryIDs {
 			location, ok := locations[sourceID]
 			if !ok {
@@ -745,7 +745,7 @@ func buildObservations(ctx context.Context, store storage.Store, bankID string, 
 		if len(sources) == 0 {
 			continue
 		}
-		out = append(out, hindsightarchive.Observation{
+		out = append(out, transferarchive.Observation{
 			SourceID:          unit.ID,
 			Text:              unit.Text,
 			CreatedAt:         httpx.FormatZuluTimestampPtr(unit.CreatedAt),
@@ -784,7 +784,7 @@ func loadUnitsByType(ctx context.Context, store storage.Store, bankID string, fa
 // buildKnowledgeBase reads the mental models and the knowledge-page tree. The
 // pages travel as typed rows so the hierarchy, the managed flags and the
 // ordering survive; their backing models travel alongside them.
-func buildKnowledgeBase(ctx context.Context, store storage.Store, bankID string) ([]map[string]any, []hindsightarchive.KnowledgePage, error) {
+func buildKnowledgeBase(ctx context.Context, store storage.Store, bankID string) ([]map[string]any, []transferarchive.KnowledgePage, error) {
 	models, err := store.ListMentalModels(ctx, bankID, "")
 	if err != nil {
 		return nil, nil, err
@@ -797,9 +797,9 @@ func buildKnowledgeBase(ctx context.Context, store storage.Store, bankID string)
 	if err != nil {
 		return nil, nil, err
 	}
-	pages := make([]hindsightarchive.KnowledgePage, 0, len(nodes))
+	pages := make([]transferarchive.KnowledgePage, 0, len(nodes))
 	for _, node := range nodes {
-		page := hindsightarchive.KnowledgePage{
+		page := transferarchive.KnowledgePage{
 			ID:            node.ID,
 			ParentID:      node.ParentID,
 			Kind:          string(node.Kind),

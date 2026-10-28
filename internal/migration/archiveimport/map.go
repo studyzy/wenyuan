@@ -1,11 +1,11 @@
-// Package hindsight maps the reference implementation's export archive onto a
+// Package archiveimport maps the reference implementation's export archive onto a
 // Wenyuan store.
 //
 // It is the data-migration vehicle for replacing the reference server with
 // Wenyuan while keeping an existing bank's memories: the archive is the
 // official, versioned export format, and its facts carry no embedding, which
 // matches a Wenyuan bank that has none.
-package hindsight
+package archiveimport
 
 import (
 	"crypto/sha256"
@@ -13,14 +13,14 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // Mapping carries the archive plus the identity choices made when translating
 // it into a target bank.
 type Mapping struct {
-	Archive *hindsightarchive.Archive
+	Archive *transferarchive.Archive
 	// BankID is the target bank identifier. Empty means use the archive's
 	// source bank id.
 	BankID string
@@ -79,24 +79,24 @@ func stableID(kind string, parts ...string) string {
 }
 
 // unitFromFact converts one archive fact into a memory unit for the target bank.
-func unitFromFact(bankID, documentID string, index int, fact hindsightarchive.Fact) storage.MemoryUnit {
+func unitFromFact(bankID, documentID string, index int, fact transferarchive.Fact) storage.MemoryUnit {
 	unit := storage.MemoryUnit{
 		ID:                    factUnitID(bankID, documentID, index),
 		BankID:                bankID,
 		Text:                  fact.Text,
 		FactType:              storage.MemoryUnitType(fact.FactType),
 		Context:               fact.Context,
-		EventDate:             hindsightarchive.ParseTime(fact.EventDate),
-		OccurredStart:         hindsightarchive.ParseTime(fact.OccurredStart),
-		OccurredEnd:           hindsightarchive.ParseTime(fact.OccurredEnd),
-		MentionedAt:           hindsightarchive.ParseTime(fact.MentionedAt),
+		EventDate:             transferarchive.ParseTime(fact.EventDate),
+		OccurredStart:         transferarchive.ParseTime(fact.OccurredStart),
+		OccurredEnd:           transferarchive.ParseTime(fact.OccurredEnd),
+		MentionedAt:           transferarchive.ParseTime(fact.MentionedAt),
 		Metadata:              fact.Metadata,
 		DocumentID:            documentID,
 		Tags:                  fact.Tags,
 		SourceMemoryIDs:       sourceMemoryIDs(fact.SourceID),
 		ObservationScopes:     archiveScopes(fact.ObservationScopes),
-		ConsolidatedAt:        hindsightarchive.ParseTime(fact.ConsolidatedAt),
-		ConsolidationFailedAt: hindsightarchive.ParseTime(fact.ConsolidationFailedAt),
+		ConsolidatedAt:        transferarchive.ParseTime(fact.ConsolidatedAt),
+		ConsolidationFailedAt: transferarchive.ParseTime(fact.ConsolidationFailedAt),
 	}
 	// The chunk reference is the caller's to set: it only means anything once
 	// the document's chunks have been written, and the identifier comes from

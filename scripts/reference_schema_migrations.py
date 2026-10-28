@@ -39,7 +39,7 @@ DIRS = [os.path.join(ROOT, "migrations"),
 
 SOURCE = os.environ.get(
     "WENYUAN_REFERENCE_URL",
-    "postgresql://hindsight:hindsight@127.0.0.1:5432/hindsight")
+    "postgresql://postgres:postgres@127.0.0.1:5432/postgres")
 SCHEMA = os.environ.get("WENYUAN_REFERENCE_SCHEMA", "public")
 
 # Alembic's bookkeeping and this project's own are not the schema.

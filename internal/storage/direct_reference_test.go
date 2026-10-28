@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // referenceSchema is the shape the reference database actually has, narrowed
@@ -121,7 +121,7 @@ func TestDirectReadRendersArchive(t *testing.T) {
 	if len(archive.Documents) != 2 {
 		t.Fatalf("documents = %d, want 2", len(archive.Documents))
 	}
-	byID := map[string]hindsightarchive.Document{}
+	byID := map[string]transferarchive.Document{}
 	for _, rendered := range archive.Documents {
 		byID[rendered.ID] = rendered
 	}

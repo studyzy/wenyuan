@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // newTestHandlers builds handlers over an in-memory store with both document
@@ -68,8 +68,8 @@ func operationByID(store *storage.MemoryStore, bankID, opID string) (storage.Ope
 // archiveBytes builds a minimal valid archive payload.
 func archiveBytes(t *testing.T, sourceBank string) []byte {
 	t.Helper()
-	manifest := hindsightarchive.Manifest{
-		SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	manifest := transferarchive.Manifest{
+		SchemaVersion: transferarchive.SupportedSchemaVersion,
 		SourceBankID:  sourceBank,
 		ArchiveType:   "bank",
 	}
@@ -81,7 +81,7 @@ func archiveBytes(t *testing.T, sourceBank string) []byte {
 	}
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create(hindsightarchive.ManifestName)
+	w, err := zw.Create(transferarchive.ManifestName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,11 @@ func archiveBytes(t *testing.T, sourceBank string) []byte {
 	}
 	// The reader requires at least the documents directory to exist, so the
 	// fixture carries one document payload named by zero-padded ordinal.
-	doc, err := zw.Create(hindsightarchive.DocumentsDir + "/000000.json")
+	doc, err := zw.Create(transferarchive.DocumentsDir + "/000000.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	documentJSON, err := json.Marshal(hindsightarchive.Document{ID: "doc-1", OriginalText: "hello"})
+	documentJSON, err := json.Marshal(transferarchive.Document{ID: "doc-1", OriginalText: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}

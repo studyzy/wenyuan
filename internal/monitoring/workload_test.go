@@ -287,7 +287,7 @@ func TestWorkloadLoopStall(t *testing.T) {
 	if duration.Count != 1 || duration.Sum != 1.5 {
 		t.Fatalf("stall duration = %d/%v", duration.Count, duration.Sum)
 	}
-	// The instrument is hindsight.event_loop.stalls with unit "stalls", but the
+	// The instrument is the reference's event-loop stall counter (unit "stalls"), but the
 	// reference's exporter appends the unit suffix only when the name does not
 	// already end with it, so the exposition name is wenyuan_event_loop_stalls_total.
 	if EventLoopStallsName != "wenyuan_event_loop_stalls_total" {
@@ -304,7 +304,7 @@ func TestWorkloadFamiliesInExposition(t *testing.T) {
 	if !strings.Contains(body, want) {
 		t.Fatalf("operation total missing from exposition:\n%s", body)
 	}
-	if !strings.Contains(body, "# HELP wenyuan_operation_duration_seconds Duration of Hindsight operations in seconds") {
+	if !strings.Contains(body, "# HELP wenyuan_operation_duration_seconds Duration of operations in seconds") {
 		t.Fatalf("operation duration family missing:\n%s", body)
 	}
 }

@@ -1,4 +1,4 @@
-package hindsightarchive
+package transferarchive
 
 import (
 	"bytes"

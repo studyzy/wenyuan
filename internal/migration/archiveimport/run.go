@@ -1,4 +1,4 @@
-package hindsight
+package archiveimport
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // Mode selects how a migration treats a target bank that already has rows.
@@ -126,9 +126,9 @@ func ensureBank(ctx context.Context, store storage.Store, bankID string, opts Op
 	return nil
 }
 
-func writeDocument(ctx context.Context, store storage.Store, bankID string, doc hindsightarchive.Document, storeText bool) error {
+func writeDocument(ctx context.Context, store storage.Store, bankID string, doc transferarchive.Document, storeText bool) error {
 	created := time.Now().UTC()
-	if parsed := hindsightarchive.ParseTime(doc.CreatedAt); parsed != nil {
+	if parsed := transferarchive.ParseTime(doc.CreatedAt); parsed != nil {
 		created = *parsed
 	}
 	document := storage.Document{
@@ -213,7 +213,7 @@ func writeDocument(ctx context.Context, store storage.Store, bankID string, doc 
 	return nil
 }
 
-func countEntities(doc hindsightarchive.Document) int {
+func countEntities(doc transferarchive.Document) int {
 	seen := map[string]bool{}
 	for _, fact := range doc.Facts {
 		for _, name := range fact.Entities {
@@ -223,7 +223,7 @@ func countEntities(doc hindsightarchive.Document) int {
 	return len(seen)
 }
 
-func countLinks(doc hindsightarchive.Document) int {
+func countLinks(doc transferarchive.Document) int {
 	total := 0
 	for _, fact := range doc.Facts {
 		total += len(fact.CausalRelations)

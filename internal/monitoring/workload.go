@@ -43,7 +43,7 @@ const (
 // The HELP text for each family, copied verbatim from the reference's
 // instrument descriptions.
 const (
-	helpOperationDuration = "Duration of Hindsight operations in seconds"
+	helpOperationDuration = "Duration of operations in seconds"
 	helpOperationTotal    = "Total number of operations executed"
 
 	helpLLMDuration       = "Duration of LLM API calls in seconds"

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // ImportMode selects how an archive is applied to a bank.
@@ -43,7 +43,7 @@ const (
 // ImportRequest describes one archive application.
 type ImportRequest struct {
 	// Archive is the parsed archive to apply.
-	Archive *hindsightarchive.Archive
+	Archive *transferarchive.Archive
 	// BankID is the bank the operation is recorded against. In restore mode it
 	// names an existing bank; in merge mode it is the merge target.
 	BankID string
@@ -390,9 +390,9 @@ func (a ImportApplier) applyDocuments(ctx context.Context, req ImportRequest, ta
 }
 
 // writeDocument persists one document and its facts.
-func (a ImportApplier) writeDocument(ctx context.Context, target, documentID string, document hindsightarchive.Document) error {
+func (a ImportApplier) writeDocument(ctx context.Context, target, documentID string, document transferarchive.Document) error {
 	created := a.now()
-	if parsed := hindsightarchive.ParseTime(document.CreatedAt); parsed != nil {
+	if parsed := transferarchive.ParseTime(document.CreatedAt); parsed != nil {
 		created = *parsed
 	}
 	stored, err := a.Store.PutDocument(ctx, target, documentID, storage.Document{
@@ -490,23 +490,23 @@ func (a ImportApplier) writeDocument(ctx context.Context, target, documentID str
 }
 
 // unitForFact converts one archive fact into the target bank's memory unit.
-func (a ImportApplier) unitForFact(target, documentID string, document hindsightarchive.Document, ordinal int, fact hindsightarchive.Fact) storage.MemoryUnit {
+func (a ImportApplier) unitForFact(target, documentID string, document transferarchive.Document, ordinal int, fact transferarchive.Fact) storage.MemoryUnit {
 	unit := storage.MemoryUnit{
 		ID:                    archiveUnitID(target, documentID, ordinal),
 		BankID:                target,
 		Text:                  fact.Text,
 		FactType:              storage.MemoryUnitType(fact.FactType),
 		Context:               fact.Context,
-		EventDate:             hindsightarchive.ParseTime(fact.EventDate),
-		OccurredStart:         hindsightarchive.ParseTime(fact.OccurredStart),
-		OccurredEnd:           hindsightarchive.ParseTime(fact.OccurredEnd),
-		MentionedAt:           hindsightarchive.ParseTime(fact.MentionedAt),
+		EventDate:             transferarchive.ParseTime(fact.EventDate),
+		OccurredStart:         transferarchive.ParseTime(fact.OccurredStart),
+		OccurredEnd:           transferarchive.ParseTime(fact.OccurredEnd),
+		MentionedAt:           transferarchive.ParseTime(fact.MentionedAt),
 		Metadata:              fact.Metadata,
 		DocumentID:            documentID,
 		Tags:                  nonNilStrings(fact.Tags),
-		ConsolidatedAt:        hindsightarchive.ParseTime(fact.ConsolidatedAt),
-		ConsolidationFailedAt: hindsightarchive.ParseTime(fact.ConsolidationFailedAt),
-		CreatedAt:             hindsightarchive.ParseTime(fact.CreatedAt),
+		ConsolidatedAt:        transferarchive.ParseTime(fact.ConsolidatedAt),
+		ConsolidationFailedAt: transferarchive.ParseTime(fact.ConsolidationFailedAt),
+		CreatedAt:             transferarchive.ParseTime(fact.CreatedAt),
 	}
 	if unit.Metadata == nil {
 		unit.Metadata = map[string]any{}
@@ -520,7 +520,7 @@ func (a ImportApplier) unitForFact(target, documentID string, document hindsight
 
 // documentChunks renders the archive's chunks in index order, which is the
 // order the rows are written in.
-func documentChunks(document hindsightarchive.Document) []storage.DocumentChunk {
+func documentChunks(document transferarchive.Document) []storage.DocumentChunk {
 	chunks := make([]storage.DocumentChunk, 0, len(document.Chunks))
 	for _, chunk := range document.Chunks {
 		chunks = append(chunks, storage.DocumentChunk{ChunkIndex: chunk.ChunkIndex, ChunkText: chunk.ChunkText})
@@ -564,11 +564,11 @@ func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest,
 			Tags:              nonNilStrings(observation.Tags),
 			SourceMemoryIDs:   sources,
 			ProofCount:        proofCount(observation.ProofCount, len(sources)),
-			EventDate:         hindsightarchive.ParseTime(observation.EventDate),
-			OccurredStart:     hindsightarchive.ParseTime(observation.OccurredStart),
-			OccurredEnd:       hindsightarchive.ParseTime(observation.OccurredEnd),
-			MentionedAt:       hindsightarchive.ParseTime(observation.MentionedAt),
-			CreatedAt:         hindsightarchive.ParseTime(observation.CreatedAt),
+			EventDate:         transferarchive.ParseTime(observation.EventDate),
+			OccurredStart:     transferarchive.ParseTime(observation.OccurredStart),
+			OccurredEnd:       transferarchive.ParseTime(observation.OccurredEnd),
+			MentionedAt:       transferarchive.ParseTime(observation.MentionedAt),
+			CreatedAt:         transferarchive.ParseTime(observation.CreatedAt),
 			ObservationScopes: observation.ObservationScopes,
 			Metadata:          map[string]any{},
 		}
@@ -592,7 +592,7 @@ func (a ImportApplier) applyObservations(ctx context.Context, req ImportRequest,
 // arrived under a new identity still resolves its own facts; a document that
 // was not imported (a merge skip) contributes no mapping, so an observation
 // citing it is skipped rather than re-pointed at the target's own facts.
-func unitLocations(target string, archive *hindsightarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
+func unitLocations(target string, archive *transferarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
 	locations := map[string]string{}
 	for _, document := range archive.Documents {
 		if imported != nil && !imported[document.ID] {
@@ -677,7 +677,7 @@ func (a ImportApplier) applyKnowledgeBase(ctx context.Context, req ImportRequest
 //
 // The member names are the table's columns, which is what the archive holds.
 func (a ImportApplier) applyOperations(ctx context.Context, req ImportRequest, target string, report *ImportReport) error {
-	for _, row := range req.Archive.Data[hindsightarchive.AsyncOperationsTable] {
+	for _, row := range req.Archive.Data[transferarchive.AsyncOperationsTable] {
 		status := storage.OperationStatus(rowString(row, "status"))
 		if !status.Terminal() {
 			continue
@@ -735,7 +735,7 @@ func jsonbRowMap(row map[string]any, key string) map[string]any {
 // restore idempotent. A backend without an archive is not an error: the rows
 // have nowhere to go, and the bank itself restored fine.
 func (a ImportApplier) applyInvalidatedMemories(ctx context.Context, req ImportRequest, target string, report *ImportReport) error {
-	rows := req.Archive.Data[hindsightarchive.InvalidatedMemoryTable]
+	rows := req.Archive.Data[transferarchive.InvalidatedMemoryTable]
 	if len(rows) == 0 {
 		return nil
 	}
@@ -780,7 +780,7 @@ func (a ImportApplier) applyMaintenanceQueues(ctx context.Context, req ImportReq
 	units := archiveUnitMap(target, req.Archive, documentIDs, imported)
 
 	graphRows := make([]storage.MaintenanceQueueRow, 0)
-	for _, row := range req.Archive.Data[hindsightarchive.GraphMaintenanceQueueTable] {
+	for _, row := range req.Archive.Data[transferarchive.GraphMaintenanceQueueTable] {
 		mapped := units[rowString(row, "unit_id")]
 		if mapped == "" {
 			continue
@@ -797,7 +797,7 @@ func (a ImportApplier) applyMaintenanceQueues(ctx context.Context, req ImportReq
 	report.MaintenanceQueueRows += graphRestored
 
 	entityRows := make([]storage.MaintenanceQueueRow, 0)
-	for _, row := range req.Archive.Data[hindsightarchive.EntityMaintenanceQueueTable] {
+	for _, row := range req.Archive.Data[transferarchive.EntityMaintenanceQueueTable] {
 		name := rowString(row, "canonical_name")
 		if name == "" {
 			continue
@@ -821,7 +821,7 @@ func (a ImportApplier) applyMaintenanceQueues(ctx context.Context, req ImportReq
 // at the target's own unit; a document that was not imported contributes no
 // mapping, so a row naming one of its units is dropped rather than admitted
 // against an id the target does not hold.
-func archiveUnitMap(target string, archive *hindsightarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
+func archiveUnitMap(target string, archive *transferarchive.Archive, documentIDs map[string]string, imported map[string]bool) map[string]string {
 	out := map[string]string{}
 	for _, document := range archive.Documents {
 		if !imported[document.ID] {
@@ -876,7 +876,7 @@ func (a ImportApplier) applyOperationalHistory(ctx context.Context, req ImportRe
 	if !req.Scope.History || len(req.Archive.History) == 0 {
 		return nil
 	}
-	for _, row := range req.Archive.History[hindsightarchive.AuditLogTable] {
+	for _, row := range req.Archive.History[transferarchive.AuditLogTable] {
 		// The id is left to the target: these are globally unique, so a
 		// same-instance restore would collide with the source's own row, and
 		// nothing outside the log refers to the value.
@@ -895,7 +895,7 @@ func (a ImportApplier) applyOperationalHistory(ctx context.Context, req ImportRe
 		}
 		report.HistoryRows++
 	}
-	for _, row := range req.Archive.History[hindsightarchive.LLMRequestsTable] {
+	for _, row := range req.Archive.History[transferarchive.LLMRequestsTable] {
 		request := storage.LLMRequest{
 			BankID:         target,
 			Operation:      rowString(row, "operation"),
@@ -1211,7 +1211,7 @@ func proofCount(recorded, sources int) int {
 // carries the producer's own JSON (a scope enum string or a list of tag
 // lists), and the column stores that same JSON, so nothing is re-encoded. An
 // absent value stays absent, which is what an unscoped fact carries.
-func factObservationScopes(fact hindsightarchive.Fact) json.RawMessage {
+func factObservationScopes(fact transferarchive.Fact) json.RawMessage {
 	if len(fact.ObservationScopes) == 0 {
 		return nil
 	}
@@ -1220,15 +1220,15 @@ func factObservationScopes(fact hindsightarchive.Fact) json.RawMessage {
 
 // orderKnowledgePages sorts a tree's nodes so every parent precedes its
 // children, which is the order the foreign key needs.
-func orderKnowledgePages(pages []hindsightarchive.KnowledgePage) []hindsightarchive.KnowledgePage {
-	byID := make(map[string]hindsightarchive.KnowledgePage, len(pages))
+func orderKnowledgePages(pages []transferarchive.KnowledgePage) []transferarchive.KnowledgePage {
+	byID := make(map[string]transferarchive.KnowledgePage, len(pages))
 	for _, page := range pages {
 		byID[page.ID] = page
 	}
-	ordered := make([]hindsightarchive.KnowledgePage, 0, len(pages))
+	ordered := make([]transferarchive.KnowledgePage, 0, len(pages))
 	emitted := map[string]bool{}
-	var emit func(page hindsightarchive.KnowledgePage)
-	emit = func(page hindsightarchive.KnowledgePage) {
+	var emit func(page transferarchive.KnowledgePage)
+	emit = func(page transferarchive.KnowledgePage) {
 		if emitted[page.ID] {
 			return
 		}

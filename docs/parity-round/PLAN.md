@@ -91,7 +91,7 @@ python3 /tmp/rt/chk.py PUT  '/x' '' --raw                 # 逐字节比 body（
 | `directives` | 53–57 | `internal/directives/` |
 | `read-surface` | 58–70 | `internal/readsurface/`、`internal/entitylabels/` |
 | `operations` | 71–75 | `internal/memoryops/operations*.go`、`internal/worker/` |
-| `transfer` | 76–85 | `internal/transfer/`、`internal/hindsightarchive/`、`internal/app/transfer.go`、`internal/app/worker_transfer.go` |
+| `transfer` | 76–85 | `internal/transfer/`、`internal/transferarchive/`、`internal/app/transfer.go`、`internal/app/worker_transfer.go` |
 | `webhooks` | 86–90 | `internal/webhooks/`、`internal/app/webhooks.go` |
 | `reporting` | 91–97 + 100 | `internal/reporting/handlers.go`（stats/audit/llm 部分）、`internal/reporting/{stats,audit,llm}*.go`、`internal/audit/`、`internal/app/llm_trace.go` |
 | 组长 | 跨单元 | `internal/httpx/`、`internal/app/app.go`、`internal/storage/`、`internal/config/` |

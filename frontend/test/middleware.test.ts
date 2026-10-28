@@ -76,7 +76,7 @@ describe("access gate — enforced when the key is set", () => {
     const decision = await evaluateGate({
       pathname: "/api/banks",
       search: "",
-      cookieHeader: `hindsight_cp_access=${token("secret")}`,
+      cookieHeader: `wenyuan_cp_access=${token("secret")}`,
       accessKey: "secret",
       basePath: "",
       nowMs: NOW,
@@ -90,7 +90,7 @@ describe("access gate — enforced when the key is set", () => {
     const decision = await evaluateGate({
       pathname: "/api/banks",
       search: "",
-      cookieHeader: `hindsight_cp_access=${tampered}`,
+      cookieHeader: `wenyuan_cp_access=${tampered}`,
       accessKey: "secret",
       basePath: "",
       nowMs: NOW,

@@ -22,7 +22,7 @@ const (
 // The backlog HELP text, copied from the reference's instrument descriptions.
 const (
 	helpAsyncOperations      = "Async operations in a non-terminal state, by operation_type and status (pending=queued backlog, processing=in-flight, failed=stranded)"
-	helpConsolidationBacklog = "Source memories (experience/world) still queued for consolidation into observations; excludes permanently failed ones, which are in hindsight.consolidation.failed"
+	helpConsolidationBacklog = "Source memories (experience/world) still queued for consolidation into observations; excludes permanently failed ones, which are in wenyuan_consolidation_failed"
 	helpConsolidationFailed  = "Source memories whose consolidation permanently failed (recoverable via the consolidation recovery endpoint)"
 )
 

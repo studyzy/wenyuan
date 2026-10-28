@@ -89,7 +89,7 @@ describe("locale negotiation", () => {
   });
 
   it("accepts the alternate locale cookie name", () => {
-    expect(negotiateLocale({ cookieHeader: "hindsight_cp_locale=ja" })).toBe("ja");
+    expect(negotiateLocale({ cookieHeader: "wenyuan_cp_locale=ja" })).toBe("ja");
   });
 
   it("orders Accept-Language by quality", () => {

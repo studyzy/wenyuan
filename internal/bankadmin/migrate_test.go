@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // writeMigrateFixture builds a minimal export archive on disk and returns its
@@ -33,9 +33,9 @@ func writeMigrateFixture(t *testing.T, manifest string, documents map[string]str
 			t.Fatal(err)
 		}
 	}
-	write(hindsightarchive.ManifestName, manifest)
+	write(transferarchive.ManifestName, manifest)
 	for name, body := range documents {
-		write(hindsightarchive.DocumentsDir+"/"+name, body)
+		write(transferarchive.DocumentsDir+"/"+name, body)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)

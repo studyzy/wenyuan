@@ -55,7 +55,7 @@ describe("POST /api/auth/login", () => {
       );
       expect(response.status).toBe(200);
       const cookie = response.headers.get("set-cookie") ?? "";
-      expect(cookie).toContain("hindsight_cp_access=");
+      expect(cookie).toContain("wenyuan_cp_access=");
       expect(cookie).toContain("Max-Age=86400");
       expect(cookie).toContain("HttpOnly");
       expect(cookie).toContain("SameSite=Lax");
@@ -108,7 +108,7 @@ describe("POST /api/auth/logout", () => {
     );
     expect(response.status).toBe(200);
     const cookie = response.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("hindsight_cp_access=");
+    expect(cookie).toContain("wenyuan_cp_access=");
     expect(cookie).toContain("Max-Age=0");
   });
 });

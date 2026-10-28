@@ -2,7 +2,7 @@ import { describe, it } from "vitest";
 
 /**
  * SKIPPED: this case drives `GET`/`PATCH`/`DELETE /api/documents` by mocking
- * `@/lib/hindsight-client` (`sdk.listDocuments`/`getDocument`/`deleteDocument`)
+ * the reference's generated client package (`sdk.listDocuments`/`getDocument`/`deleteDocument`)
  * and its URL helpers — the reference frontend's generated dataplane SDK, which we
  * deliberately do not ship. Every assertion pins the SDK call's argument shape or
  * a URL the SDK builds, not our HTTP behaviour, so none can be carried over
@@ -11,7 +11,7 @@ import { describe, it } from "vitest";
  * `document_id` surviving intact) are ours too, covered by `test/server-*`. Kept
  * skipped so the gap stays visible.
  */
-describe.skip("GET /api/documents (mocks @/lib/hindsight-client, not shipped)", () => {
+describe.skip("GET /api/documents (mocks the reference's generated client package, not shipped)", () => {
   it("forwards the `q` search term to the dataplane (search by document ID)", () => {});
   it("omits `q` when no search term is provided", () => {});
   it("forwards repeated `tags` params and `tags_match` to the dataplane", () => {});
@@ -21,7 +21,7 @@ describe.skip("GET /api/documents (mocks @/lib/hindsight-client, not shipped)", 
   it("fetches a single document when `document_id` is present, slashes intact", () => {});
 });
 
-describe.skip("single-document operations on /api/documents (mocks @/lib/hindsight-client, not shipped)", () => {
+describe.skip("single-document operations on /api/documents (mocks the reference's generated client package, not shipped)", () => {
   it("DELETE passes the id through to the dataplane intact", () => {});
   it("PATCH re-encodes the id for the dataplane path", () => {});
   it("rejects a PATCH with no document_id", () => {});

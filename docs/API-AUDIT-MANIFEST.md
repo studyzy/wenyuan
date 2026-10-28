@@ -84,7 +84,7 @@
 | `directives` | 55–59 | `internal/directives/` |
 | `read-surface` | 60–72 | `internal/readsurface/`、`internal/entitylabels/` |
 | `operations` | 73–77 | `internal/memoryops/operations*.go`、`internal/worker/` |
-| `transfer` | 78–87 | `internal/transfer/`、`internal/hindsightarchive/`、`internal/app/transfer.go`、`internal/app/worker_transfer.go` |
+| `transfer` | 78–87 | `internal/transfer/`、`internal/transferarchive/`、`internal/app/transfer.go`、`internal/app/worker_transfer.go` |
 | `webhooks` | 88–92 | `internal/webhooks/`、`internal/app/webhooks.go` |
 | `reporting-audit` | 93–99 | `internal/reporting/`（stats/audit/llm）、`internal/audit/`、`internal/app/llm_trace.go` |
 

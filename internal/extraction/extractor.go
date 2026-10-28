@@ -133,7 +133,7 @@ func (e *Extractor) VisionRefusal() error {
 			") cannot read images, but this request carries inline image content. Point " +
 			"WENYUAN_API_VLM_MODEL at a vision-capable model, or send the content as text only."}
 	}
-	return &VisionNotSupportedError{Detail: "Hindsight cannot tell whether the model configured to read " +
+	return &VisionNotSupportedError{Detail: "WenYuan cannot tell whether the model configured to read " +
 		"attachments (" + model + ") can read images, and this request carries inline image content. If " +
 		"that model is vision-capable, set WENYUAN_API_LLM_VISION=true; otherwise send the content as " +
 		"text only."}

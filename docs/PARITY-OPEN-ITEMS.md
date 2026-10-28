@@ -223,7 +223,7 @@
 | ✅ 3.7 | 心智模型 list 的 `is_stale` 多算了「撤回」判定：参考的批量 `compute_mental_models_are_stale` 不查撤回，只有单模型路径查 | `engine/memory_engine.py:20398` vs `:20216` | `internal/mentalmodels/handlers.go:86` + `internal/storage/mental_model_staleness.go` 加无撤回的变体 | 造「被引用事实已删」的文档后比对 list/detail |
 | ✅ 3.8 | `groundingRetracted` 在**全部**引用都消失时返回 false（走 `Unresolvable()`），参考的 `_has_retracted_grounding` 只要**任一**引用消失即 true | 参考 `_has_retracted_grounding` | `internal/storage/mental_model_retraction.go` | 造「全部引用消失」用例比对 stale 与是否入队刷新 |
 
-## 4. 传输 / 归档（`internal/transfer/`、`internal/hindsightarchive/`）
+## 4. 传输 / 归档（`internal/transfer/`、`internal/transferarchive/`）
 
 > 4.1–4.5 已于 2026-10-17 **关闭**：
 > - **4.1** `internal/storage/postgres_retain.go` 的 `writeDocument` 改为 `created_at = COALESCE($7, now())`
@@ -231,7 +231,7 @@
 >   `TestPutDocumentPreservesCreatedAt`（pgx，真库）。
 > - **4.2** 经线上核实：参考**确实**携带并恢复两个维护队列段（在夹具银行种一行 `graph_maintenance_queue`
 >   与一行 `entity_maintenance_queue`，导出后导入到新银行 → `maintenance_queue_rows_imported: 2` 且目标行被重新写入）。
->   本服务照此实现：`internal/hindsightarchive/sections.go` 增两个表常量并让 `DataTables` 与参考同序；
+>   本服务照此实现：`internal/transferarchive/sections.go` 增两个表常量并让 `DataTables` 与参考同序；
 >   新增 `internal/storage/maintenance_transfer.go` 的 `MaintenanceQueueTransfer` 能力（PG 走 SQL，
 >   内存后端只做 graph relink 队列）；导出侧 `internal/transfer/export_build.go` 的
 >   `buildGraphMaintenance`/`buildEntityMaintenance`；导入侧 `import_apply.go` 的 `applyMaintenanceQueues` +
@@ -239,7 +239,7 @@
 >   证据：把参考产出的归档导入本服务 → `maintenance_queue_rows_imported: 2`（修复前该字段为 0/缺失），
 >   PG 行已重映射到目标自己的 unit id 与实体。用例：`TestRestoreRemapsMaintenanceQueues`。
 >   **这一条与 `AGENTS.md` 原有的「有意不携带」描述相反，`AGENTS.md` 已同步更正。**
-> - **4.3** `internal/hindsightarchive/`：`Manifest` 去掉全部 `omitempty`、新增 `bank_rows_json_encoding`
+> - **4.3** `internal/transferarchive/`：`Manifest` 去掉全部 `omitempty`、新增 `bank_rows_json_encoding`
 >   （`EncodingSerialized`/`EncodingDecoded`）、manifest 改为带缩进输出；writer 对每个被选中的段都输出（空段输出 `[]`），
 >   只有 `observations.json`/`attachments.json` 保持条件输出（与参考一致）；`banks.json` 行补
 >   `config`（始终）、`internal_id`、`last_consolidated_at`、`mission_changed_at`（经新增 `internal/storage/bank_transfer.go`
@@ -258,8 +258,8 @@
 | # | 现象 | 参考证据 | 落点 | 验收 |
 |---|---|---|---|---|
 | ✅ 4.1 | 导入不保留文档 `created_at`（返回导入时刻）；内存后端已尊重 `doc.CreatedAt`，PG 的 INSERT 硬编码 `now(), now()` | `engine/transfer/importer.py:1619` | `internal/storage/postgres_retain.go:600` | 导入后 `GET /documents` 的 `created_at` 等于源 |
-| ✅ 4.2 | `maintenance_queue_rows_imported` 恒 0：两个维护队列段既不导出也不导入（`data/graph_maintenance_queue.json`、`data/entity_maintenance_queue.json` 被丢弃） | 参考 `data/` 段与重映射逻辑 | `internal/hindsightarchive/sections.go:59`（`DataTables`）、`internal/transfer/import_apply.go`（`applyOperations`）；需要 storage 层行级 list/restore API | 导出→导入后该计数与参考一致；注意 AGENTS.md 明确记录了「重映射后丢弃」的上游语义，需先确认参考的真实行为再动 |
-| ✅ 4.3 | 归档格式残差：manifest 计数带 `omitempty`（零值段被丢掉，参考每个字段都发）、缺 `bank_rows_json_encoding`；`banks.json` 行缺 `internal_id`/`last_consolidated_at`/`mission_changed_at`/`config`，且 JSON 列以解码对象而非 JSON 文本写出；空段（`observations.json` 等）被省略 | 参考 writer | `internal/hindsightarchive/` | 双向 round-trip + 与参考产物逐字段对比（当前两个 reader 都容忍可选段，故只影响产物形状） |
+| ✅ 4.2 | `maintenance_queue_rows_imported` 恒 0：两个维护队列段既不导出也不导入（`data/graph_maintenance_queue.json`、`data/entity_maintenance_queue.json` 被丢弃） | 参考 `data/` 段与重映射逻辑 | `internal/transferarchive/sections.go:59`（`DataTables`）、`internal/transfer/import_apply.go`（`applyOperations`）；需要 storage 层行级 list/restore API | 导出→导入后该计数与参考一致；注意 AGENTS.md 明确记录了「重映射后丢弃」的上游语义，需先确认参考的真实行为再动 |
+| ✅ 4.3 | 归档格式残差：manifest 计数带 `omitempty`（零值段被丢掉，参考每个字段都发）、缺 `bank_rows_json_encoding`；`banks.json` 行缺 `internal_id`/`last_consolidated_at`/`mission_changed_at`/`config`，且 JSON 列以解码对象而非 JSON 文本写出；空段（`observations.json` 等）被省略 | 参考 writer | `internal/transferarchive/` | 双向 round-trip + 与参考产物逐字段对比（当前两个 reader 都容忍可选段，故只影响产物形状） |
 | ✅ 4.4 | 导出对象的 `storage_key` 布局不同：参考 `banks/{bank}/exports/{uuid}/transfer.zip`（文档导出 `tenants/{t}/banks/...`），本服务 `banks/{bank}/exports-{uuid}.zip` | 参考对象存储键 | `internal/app/worker_transfer.go:195`、`internal/storage/stored_files.go:77` | 功能等价（下载路由两者都接受），仅在需要与参考共用对象存储时才是问题 |
 | ✅ 4.5 | clone 的 `result_metadata` 缺 `archive_byte_size` | 参考 clone 元数据 | `internal/app/worker_transfer.go`（`applyClone`） | 两侧比对 clone 操作元数据 |
 

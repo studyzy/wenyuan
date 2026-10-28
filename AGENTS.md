@@ -32,8 +32,6 @@ because it is a contract or a pointer at the counterpart rather than branding:
 | the document served at `/openapi.json`, `info.title` included | that document *is* the reference contract; `scripts/reference_openapi.py --check` compares it byte for byte, so its prose cannot be re-worded on our side |
 | the daemon log default `~/.hindsight/daemon.log` | a path an existing deployment's log pipeline already follows |
 | `hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` | a value deployments pass in `WENYUAN_API_TENANT_EXTENSION` |
-| redaction labels naming the counterpart's credential formats (`hindsight_key` for its `hsk_…` keys) | the label says whose key the pattern catches; the reference's list carries the same name |
-| `internal/hindsightarchive`, `internal/migration/hindsight`, `bankctl … --from-hindsight` | named after what they handle: the reference's export format, and the direction of the import |
 | citations such as `engine/audit.py:1-5`, `hindsight_api/…`, `hindsight-docs/static/openapi.json` | evidence — a citation that cannot be followed is not evidence |
 | `scripts/gen_provider_env_keys.py`'s `SOURCE_PREFIX` | the generator *reads* the reference's declaration, which spells its keys the old way, and emits this service's prefix |
 
@@ -137,9 +135,9 @@ internal/oteltrace/    OTel tracing support
 internal/audit/        audit trail (fire-and-forget)
 internal/tenant/       tenant / extension schema abstraction
 internal/monitoring/   health / metrics / version endpoints
-internal/hindsightarchive/   the reference's whole-bank export format (zip)
-internal/migration/hindsight/  import the reference's exported archive into
-                               this storage (named after what it imports)
+internal/transferarchive/   the reference's whole-bank export format (zip)
+internal/migration/archiveimport/  import the reference's exported archive
+                               into this storage
 internal/bankadmin/    bank admin operations shared by CLI
 internal/cli/          wenyuan-admin implementation (API client only)
 frontend/              control-plane frontend (Next.js, dev on port 19999;
@@ -291,7 +289,7 @@ out of it as they close.
   was wrong on both sides and is fixed in
   `internal/storage/maintenance_transfer.go` (`MaintenanceQueueTransfer`),
   `internal/transfer/{export_build.go,import_apply.go}` and
-  `internal/hindsightarchive/sections.go`, pinned by
+  `internal/transferarchive/sections.go`, pinned by
   `TestRestoreRemapsMaintenanceQueues`. Also matching the reference's
   reader: an archive's jsonb row values may arrive as JSON text (its
   `bank_rows_json_encoding: "serialized"`) or as decoded objects (ours), and

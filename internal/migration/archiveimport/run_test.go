@@ -1,4 +1,4 @@
-package hindsight
+package archiveimport
 
 import (
 	"archive/zip"
@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // fixtureArchive builds a reference export archive with two documents.
-func fixtureArchive(t *testing.T) *hindsightarchive.Archive {
+func fixtureArchive(t *testing.T) *transferarchive.Archive {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bank.zip")
@@ -52,7 +52,7 @@ func fixtureArchive(t *testing.T) *hindsightarchive.Archive {
 		t.Fatal(err)
 	}
 
-	archive, err := hindsightarchive.OpenZip(path)
+	archive, err := transferarchive.OpenZip(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,10 +252,10 @@ func TestRunIncrementalWritesOnlyNewDocuments(t *testing.T) {
 	}
 
 	// A document the target does not hold yet is written by the next run.
-	archive.Documents = append(archive.Documents, hindsightarchive.Document{
+	archive.Documents = append(archive.Documents, transferarchive.Document{
 		ID:           "doc-new",
 		OriginalText: "A later write about Carol.",
-		Facts:        []hindsightarchive.Fact{{Text: "Carol joined the team.", FactType: "world"}},
+		Facts:        []transferarchive.Fact{{Text: "Carol joined the team.", FactType: "world"}},
 	})
 	third, err := Run(ctx, store, Mapping{Archive: archive}, Options{Mode: Incremental})
 	if err != nil {

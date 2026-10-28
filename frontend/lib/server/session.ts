@@ -7,7 +7,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * so tokens cannot be forged without it and rotating the key invalidates
  * outstanding sessions. Comparisons are constant-time.
  */
-export const SESSION_COOKIE = "hindsight_cp_access";
+export const SESSION_COOKIE = "wenyuan_cp_access";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24;
 
 type TokenPayload = {

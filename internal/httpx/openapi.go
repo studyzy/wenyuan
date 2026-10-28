@@ -62,7 +62,7 @@ var documentTitle = func() string {
 		} `json:"info"`
 	}
 	if err := json.Unmarshal([]byte(openAPIDocument), &document); err != nil || document.Info.Title == "" {
-		return "Hindsight HTTP API"
+		return "WenYuan HTTP API"
 	}
 	return document.Info.Title
 }()

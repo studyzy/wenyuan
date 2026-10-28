@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/transfer"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
@@ -24,7 +24,7 @@ func (p archiveProcessor) applyExport(ctx context.Context, op storage.Operation)
 	if err != nil {
 		return err
 	}
-	data, err := hindsightarchive.Write(archive)
+	data, err := transferarchive.Write(archive)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (p archiveProcessor) applyClone(ctx context.Context, op storage.Operation) 
 	// The clone never stashes its archive, but the reference still measures the
 	// copy it made and publishes its size, so the caller reads the same key off
 	// a clone operation as off an export.
-	archiveBytes, err := hindsightarchive.Write(archive)
+	archiveBytes, err := transferarchive.Write(archive)
 	if err != nil {
 		return err
 	}

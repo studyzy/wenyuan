@@ -308,7 +308,7 @@ func runConsumerForOperation(t *testing.T, store storage.Store, processor worker
 
 // A registration's http_config is the delivery shape it asked for: the method
 // selects a bodyless GET, and its headers and query parameters are applied. The
-// Hindsight-controlled headers still win, so a custom header cannot forge the
+// Service-controlled headers still win, so a custom header cannot forge the
 // event type.
 func TestWebhookDeliveryHonoursHTTPConfig(t *testing.T) {
 	store := storage.NewMemoryStore("public")

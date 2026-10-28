@@ -4,7 +4,7 @@ import { normalizeLocaleTag, safeNormalizeLocaleTag } from "./normalize";
 /** Cookie name carrying the locale for the framework layer. */
 export const LOCALE_COOKIE = "NEXT_LOCALE";
 /** Alternate locale cookie name accepted during negotiation. */
-export const LOCALE_COOKIE_ALT = "hindsight_cp_locale";
+export const LOCALE_COOKIE_ALT = "wenyuan_cp_locale";
 
 type CookieSource = string | undefined | null;
 

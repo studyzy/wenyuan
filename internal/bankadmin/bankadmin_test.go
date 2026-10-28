@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/transfer"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 func seedStore(t *testing.T) *storage.MemoryStore {
@@ -93,7 +93,7 @@ func TestExportImportBankRoundTrip(t *testing.T) {
 		t.Fatalf("export reported %d bytes, out = %q", size, out.String())
 	}
 	// The bytes are a readable archive naming the source bank.
-	archive, err := hindsightarchive.OpenZip(path)
+	archive, err := transferarchive.OpenZip(path)
 	if err != nil {
 		t.Fatalf("the written archive must be readable: %v", err)
 	}

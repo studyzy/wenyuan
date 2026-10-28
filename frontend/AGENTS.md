@@ -70,7 +70,7 @@ only structural exception.
 
 ## Provenance: this tree is a copy of the reference frontend
 
-The UI here is **copied from the reference control plane** (`../hindsight/hindsight-control-plane/src/**`)
+The UI here is **copied from the reference control plane** (the reference repository's control-plane source)
 rather than re-derived, by the owner's decision: "前端可以复制". So:
 
 - When a view, dialog or store hook misbehaves, **read the reference file** and port the difference;
@@ -82,7 +82,7 @@ rather than re-derived, by the owner's decision: "前端可以复制". So:
   deployment reads those.
 - **Do not fork the plumbing.** `lib/server/**` (the upstream proxy), `lib/middleware/**` (access gate
   and locale), `lib/server/session.ts`, `lib/client/**` and `lib/use-async-data.ts` are ours: the
-  reference's `@/lib/hindsight-client` (its generated SDK), `@/lib/auth/session` and
+  reference's generated client package (its generated SDK), `@/lib/auth/session` and
   `@/i18n/navigation` are not portable and must map onto ours. The locale set has one source of truth
   in `i18n/locales.ts`; `i18n/routing.ts` reads it.
 - Copied files are exempt from the `react-hooks` rules in `eslint.config.mjs`'s scoped block, because

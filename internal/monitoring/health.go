@@ -71,7 +71,7 @@ type PoolStatsReporter interface {
 // engine/db/pool_instrumentation.py:35,43) and the backend's `_pool_stats` for
 // the utilization (engine/memory_engine.py:6228, engine/db/postgresql.py:338) —
 // and the gauge /metrics exposes for the very same counter
-// (`hindsight.db.pool.waiting`, metrics.py:1104-1127) is produced by that same
+// (the reference's drainer wait gauge, metrics.py:1104-1127) is produced by that same
 // instrumentation. Within one process the readiness payload and that gauge
 // therefore always report the same number. Keeping the two as independent
 // capabilities let a dependency forward one and drop the other, which produced a

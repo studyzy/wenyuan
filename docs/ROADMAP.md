@@ -94,15 +94,15 @@ bankctl bank migrate --archive bank.zip --bank-id TARGET   # target bank id
 ```
 
 Code locations:
-- Archive parsing: `internal/hindsightarchive/` (`archive.go` types, `zip.go` extraction)
-- Mapping and import: `internal/migration/hindsight/` (`map.go` mapping, `run.go` import)
+- Archive parsing: `internal/transferarchive/` (`archive.go` types, `zip.go` extraction)
+- Mapping and import: `internal/migration/archiveimport/` (`map.go` mapping, `run.go` import)
 - CLI: `internal/bankadmin/migrate.go` (parsing), `cmd/bankctl/main.go` (dispatch)
 
 ### 2.2 Known limitations of the migration tooling — Priority: medium
 
 1. **Depends on the upstream export format**: migration reads a ZIP at the reference implementation's
    `SCHEMA_VERSION = 1`. If upstream bumps the format version,
-   `SupportedSchemaVersion` at `internal/hindsightarchive/archive.go:24` must be
+   `SupportedSchemaVersion` at `internal/transferarchive/archive.go:24` must be
    updated in step, along with the types.
 2. **Entity IDs are derived**: `entityID()` in `map.go` generates the entity id
    as a hash of `bank_id + name` (because the export carries the entity **name**
@@ -197,9 +197,9 @@ internal/cli           client CLI: registry, HTTP client, error classifier,
                        resource commands, fs mirror engine, explore TUI
 internal/config        flags > environment variables > defaults
 internal/httpx        router, middleware, JSON/error envelope, ignored-param reporting
-internal/hindsightarchive  reference export ZIP parsing (§2.1)
+internal/transferarchive  reference export ZIP parsing (§2.1)
 internal/memoryops    retain / recall / reflect handlers and request/response models
-internal/migration/hindsight  export → Wenyuan mapping and import (§2.1)
+internal/migration/archiveimport  export → Wenyuan mapping and import (§2.1)
 internal/monitoring   health / live / ready / version / metrics
 internal/storage      storage interfaces + in-memory implementation + PostgreSQL implementation + migrations
 migrations/           PostgreSQL schema, generated from the reference (0001..0005)

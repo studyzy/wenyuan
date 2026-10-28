@@ -1,4 +1,4 @@
-// Package hindsightarchive reads the reference implementation's whole-bank
+// Package transferarchive reads the reference implementation's whole-bank
 // export archive.
 //
 // The archive is a ZIP produced by the reference's
@@ -12,7 +12,7 @@
 // Documents are stored under a zero-padded index rather than their id, so the
 // real id lives inside each payload. The reader exposes the manifest and an
 // iterator over documents; it does not interpret the records.
-package hindsightarchive
+package transferarchive
 
 import (
 	"encoding/json"

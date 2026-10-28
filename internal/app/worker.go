@@ -427,7 +427,7 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		}
 		request.URL.RawQuery = query.Encode()
 	}
-	// The caller's headers go first so the Hindsight-controlled ones below
+	// The caller's headers go first so the service-controlled ones below
 	// always win: a custom header must never be able to forge the event type or
 	// overwrite a signature. Content-Type stays overridable, because some
 	// receivers insist on a vendor media type and the body is JSON either way.

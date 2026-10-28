@@ -9,7 +9,7 @@
  * what the stylesheet's dark variant keys off. Setting a data attribute instead
  * would leave every `dark:` utility inert.
  */
-export const THEME_STORAGE_KEY = "hindsight_cp_theme";
+export const THEME_STORAGE_KEY = "wenyuan_cp_theme";
 
 export function themeBootstrapScript(): string {
   return `(function(){try{var t=localStorage.getItem('${THEME_STORAGE_KEY}');if(t==='dark'||t==='light'){var e=document.documentElement;e.classList.toggle('dark',t==='dark');e.dataset.theme=t;}}catch(e){}})();`;

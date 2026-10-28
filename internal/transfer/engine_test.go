@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/studyzy/wenyuan/internal/hindsightarchive"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // fixedEmbeddings is a deterministic stand-in for a configured embedding
@@ -125,7 +125,7 @@ func TestArchiveWriteReadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := hindsightarchive.Write(archive)
+	data, err := transferarchive.Write(archive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,8 +631,8 @@ func TestOperationalHistoryTravelsOnlyWhenSelected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if len(withHistory.History[hindsightarchive.AuditLogTable]) != 1 ||
-		len(withHistory.History[hindsightarchive.LLMRequestsTable]) != 1 {
+	if len(withHistory.History[transferarchive.AuditLogTable]) != 1 ||
+		len(withHistory.History[transferarchive.LLMRequestsTable]) != 1 {
 		t.Fatalf("history = %+v", withHistory.History)
 	}
 	if !withHistory.Manifest.IncludesHistory {
@@ -682,7 +682,7 @@ func TestInvalidatedMemoriesTravel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	rows := archive.Data[hindsightarchive.InvalidatedMemoryTable]
+	rows := archive.Data[transferarchive.InvalidatedMemoryTable]
 	if len(rows) != 1 {
 		t.Fatalf("invalidated rows = %+v", archive.Data)
 	}
@@ -746,7 +746,7 @@ func TestOperationsLogTravelsVerbatimAndRestoresFinishedOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	rows := archive.Data[hindsightarchive.AsyncOperationsTable]
+	rows := archive.Data[transferarchive.AsyncOperationsTable]
 	if len(rows) != 2 {
 		t.Fatalf("the archive must carry every row, live ones included: %+v", rows)
 	}
@@ -856,16 +856,16 @@ func TestFactObservationScopesRoundTripBothShapes(t *testing.T) {
 		"tag groups": `[["alice","berlin"],["lease"]]`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			archive := &hindsightarchive.Archive{
-				Manifest: hindsightarchive.Manifest{
-					SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+			archive := &transferarchive.Archive{
+				Manifest: transferarchive.Manifest{
+					SchemaVersion: transferarchive.SupportedSchemaVersion,
 					SourceBankID:  "src", ArchiveType: "bank",
 					DocumentCount: 1, FactCount: 1,
 				},
-				Documents: []hindsightarchive.Document{{
+				Documents: []transferarchive.Document{{
 					ID: "d1", OriginalText: "Alice moved to Berlin.",
-					Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved to Berlin."}},
-					Facts: []hindsightarchive.Fact{{
+					Chunks: []transferarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved to Berlin."}},
+					Facts: []transferarchive.Fact{{
 						Text: "Alice moved to Berlin", FactType: "world",
 						ObservationScopes: json.RawMessage(stored),
 					}},
@@ -873,7 +873,7 @@ func TestFactObservationScopesRoundTripBothShapes(t *testing.T) {
 			}
 			// The reference's own reader must accept this archive: the field
 			// was historically a []string, which refused the enum shape.
-			data, err := hindsightarchive.Write(archive)
+			data, err := transferarchive.Write(archive)
 			if err != nil {
 				t.Fatalf("write: %v", err)
 			}
@@ -938,21 +938,21 @@ func (s *orderRecordingStore) UpsertLink(ctx context.Context, link storage.Memor
 // is what the upstream producer emits. Every fact must land before any edge is
 // written, or the forward edge violates the link's foreign key.
 func TestCausalEdgesMayPointForward(t *testing.T) {
-	archive := &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	archive := &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  "src", ArchiveType: "bank",
 			DocumentCount: 1, FactCount: 3,
 		},
-		Documents: []hindsightarchive.Document{{
+		Documents: []transferarchive.Document{{
 			ID: "d1", OriginalText: "Alice moved. Then Alice renewed. So the lease held.",
-			Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved. Then Alice renewed. So the lease held."}},
-			Facts: []hindsightarchive.Fact{
+			Chunks: []transferarchive.Chunk{{ChunkIndex: 0, ChunkText: "Alice moved. Then Alice renewed. So the lease held."}},
+			Facts: []transferarchive.Fact{
 				{Text: "Alice moved", FactType: "world",
-					CausalRelations: []hindsightarchive.CausalRelation{{RelationType: "causes", TargetFactIndex: 2}}},
+					CausalRelations: []transferarchive.CausalRelation{{RelationType: "causes", TargetFactIndex: 2}}},
 				{Text: "Alice renewed", FactType: "world"},
 				{Text: "the lease held", FactType: "world",
-					CausalRelations: []hindsightarchive.CausalRelation{{RelationType: "caused_by", TargetFactIndex: 1}}},
+					CausalRelations: []transferarchive.CausalRelation{{RelationType: "caused_by", TargetFactIndex: 1}}},
 			},
 		}},
 	}
@@ -977,16 +977,16 @@ func TestCausalEdgesMayPointForward(t *testing.T) {
 // edges at all — the relations view of an imported bank draws nothing.
 func TestRestoreRebuildsEntityCooccurrences(t *testing.T) {
 	ctx := context.Background()
-	archive := &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	archive := &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  "src",
 			ArchiveType:   "bank",
 		},
-		Documents: []hindsightarchive.Document{{
+		Documents: []transferarchive.Document{{
 			ID:           "d1",
 			OriginalText: "Alice moved to Berlin.",
-			Facts: []hindsightarchive.Fact{{
+			Facts: []transferarchive.Fact{{
 				Text: "Alice moved to Berlin.", FactType: "world",
 				// The same entity twice, so the pair is counted once for this
 				// unit rather than once per mention.
@@ -1025,20 +1025,20 @@ func TestRestoreRebuildsEntityCooccurrences(t *testing.T) {
 // point.
 func TestRestoreRebuildsDocumentChunks(t *testing.T) {
 	ctx := context.Background()
-	archive := &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	archive := &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  "src",
 			ArchiveType:   "bank",
 		},
-		Documents: []hindsightarchive.Document{{
+		Documents: []transferarchive.Document{{
 			ID:           "d1",
 			OriginalText: "The deployment runs on Tuesdays. Alice leads the team.",
-			Chunks: []hindsightarchive.Chunk{
+			Chunks: []transferarchive.Chunk{
 				{ChunkIndex: 0, ChunkText: "The deployment runs on Tuesdays."},
 				{ChunkIndex: 1, ChunkText: "Alice leads the team."},
 			},
-			Facts: []hindsightarchive.Fact{{
+			Facts: []transferarchive.Fact{{
 				Text: "Alice leads the team.", FactType: "world",
 				ChunkIndex: intPtr(1),
 			}},
@@ -1093,16 +1093,16 @@ func TestRestoreRebuildsDocumentChunks(t *testing.T) {
 func TestRestoreDiscardsChunkTextWhenConfigured(t *testing.T) {
 	ctx := context.Background()
 	const text = "The deployment runs on Tuesdays."
-	archive := &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	archive := &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  "src",
 			ArchiveType:   "bank",
 		},
-		Documents: []hindsightarchive.Document{{
+		Documents: []transferarchive.Document{{
 			ID:     "d1",
-			Chunks: []hindsightarchive.Chunk{{ChunkIndex: 0, ChunkText: text}},
-			Facts:  []hindsightarchive.Fact{{Text: text, FactType: "world"}},
+			Chunks: []transferarchive.Chunk{{ChunkIndex: 0, ChunkText: text}},
+			Facts:  []transferarchive.Fact{{Text: text, FactType: "world"}},
 		}},
 	}
 	store := storage.NewMemoryStore("public")
@@ -1167,8 +1167,8 @@ func TestArchiveCarriesOperationalHistoryOnRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export with history: %v", err)
 	}
-	if len(withHistory.History[hindsightarchive.AuditLogTable]) != 1 ||
-		len(withHistory.History[hindsightarchive.LLMRequestsTable]) != 1 {
+	if len(withHistory.History[transferarchive.AuditLogTable]) != 1 ||
+		len(withHistory.History[transferarchive.LLMRequestsTable]) != 1 {
 		t.Fatalf("history sections = %v, want one row each", withHistory.History)
 	}
 
@@ -1197,9 +1197,9 @@ func TestArchiveCarriesOperationalHistoryOnRequest(t *testing.T) {
 // fall back to their defaults.
 func TestRestoreReadsSerializedRowJSON(t *testing.T) {
 	ctx := context.Background()
-	archive := &hindsightarchive.Archive{
-		Manifest: hindsightarchive.Manifest{
-			SchemaVersion: hindsightarchive.SupportedSchemaVersion,
+	archive := &transferarchive.Archive{
+		Manifest: transferarchive.Manifest{
+			SchemaVersion: transferarchive.SupportedSchemaVersion,
 			SourceBankID:  "src",
 			ArchiveType:   "bank",
 		},
@@ -1283,7 +1283,7 @@ func TestRestoreRemapsMaintenanceQueues(t *testing.T) {
 		t.Fatal(err)
 	}
 	// One row names a fact that travels, one names a unit that does not.
-	archive.Data[hindsightarchive.GraphMaintenanceQueueTable] = []map[string]any{
+	archive.Data[transferarchive.GraphMaintenanceQueueTable] = []map[string]any{
 		{"bank_id": bank, "unit_id": facts["Alice moved to Berlin | Involving: Alice"]},
 		{"bank_id": bank, "unit_id": "00000000-0000-4000-8000-000000000000"},
 	}

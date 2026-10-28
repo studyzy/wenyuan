@@ -255,7 +255,7 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 `GET /v1/default/files/download/{key:path}`（**非 bank 前缀**）。
 
 - 包：`internal/transfer/`（路由表见 `routes.go`）
-- 底层：归档解析 `internal/hindsightarchive/`、映射与导入 `internal/migration/hindsight/`、CLI `internal/bankadmin/migrate.go`
+- 底层：归档解析 `internal/transferarchive/`、映射与导入 `internal/migration/archiveimport/`、CLI `internal/bankadmin/migrate.go`
 - 注意：`GET /document-transfer` 是**主动 retired**（返回 410），不是遗漏。
 
 ### B5. Documents / Chunks / Tags / Entities / Graph — ✅ 13 条
@@ -322,13 +322,13 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 | # | 缺口 | 现状证据 | 参照 |
 |---|---|---|---|
 | C1 | `documents.metadata` / `retain_params` 从未写入 | **已修复**：`PutDocument` 的 INSERT 现含 `metadata` / `retain_params` / `tags` 三列（`postgres_retain.go` 的 `PutDocument`） | `PutDocument` 全量字段 |
-| C2 | 迁移丢失字段 | **已修复**：`unmappedFields()`（`migration/hindsight/map.go`）现返回 `nil`——每个归档字段都有目标列；迁移 0016 补齐了缺失列 | 需先加列 |
+| C2 | 迁移丢失字段 | **已修复**：`unmappedFields()`（`migration/archiveimport/map.go`）现返回 `nil`——每个归档字段都有目标列；迁移 0016 补齐了缺失列 | 需先加列 |
 | C3 | 索引 / 约束不足 | **已修复**：迁移 0013 建核心索引、0019 建按类型的部分索引、0020 建 trigram GIN（`entities name_trgm`）；`migrations/` 现共 **49** 个 `CREATE INDEX`（含 vector HNSW、trigram GIN、jsonb GIN） | `alembic/` |
 | C4 | 无法直连上游库 | **已实现**：`storage.NewDirectSource` 直连参照形态库（`fact_type` / `canonical_name` / `bank_id` 命名差异在读取器内翻译），渲染成归档再走标准导入；CLI：`bankctl bank migrate --source-url URL --source-bank ID` |
 | C5 | 无版本表 | **已实现**：`schema_migrations` 表记录已应用迁移，启动时只跑未应用的 |
 | C6 | 跨进程缓存失效 | **已实现**：`bank_stats_cache` 表（迁移 0018）让一个 worker 的统计摘要被其它 worker 读取；`BankStatsCacheTTL` 控制有效期。bank 行缓存仍是进程内 TTL |
 | C7 | 实体 ID 派生 | **已解决**：实体按归一化名称解析；`resolve=true` 现走 Jaro-Winkler 模糊匹配（阈值 0.84），PG 后端先用 `pg_trgm`（阈值 0.3）筛候选再打分（`internal/storage/entity_match.go`、`postgres_retain.go`） |
-| C8 | 无增量同步 | **已实现**：`hindsight.Incremental` 模式只写目标库未持有的文档，可重复运行而不重复也不破坏；CLI：`--incremental`。报告含 `written` / `skipped` |
+| C8 | 无增量同步 | **已实现**：`archiveimport.Incremental` 模式只写目标库未持有的文档，可重复运行而不重复也不破坏；CLI：`--incremental`。报告含 `written` / `skipped` |
 
 ---
 
@@ -507,7 +507,7 @@ psql -d <wenyuan>  -v schema=public -f scripts/schema_diff.sql > /tmp/wy.schema
 python3 scripts/schema_inventory.py
 
 # 迁移丢字段（函数体应为 return nil）
-grep -n "func unmappedFields" -A 3 internal/migration/hindsight/map.go
+grep -n "func unmappedFields" -A 3 internal/migration/archiveimport/map.go
 
 # provider 适配器
 ls internal/provider/                                            # anthropic/ none/ openai/
@@ -529,7 +529,7 @@ grep -c "CREATE OR REPLACE FUNCTION" migrations/0005_reference_functions.sql int
 
 # 真实运行维护循环（需要 pgx 构建 + 本地库）
 go build -tags pgx -o /tmp/worker ./cmd/worker
-WENYUAN_API_DATABASE_URL="postgresql://hindsight:hindsight@127.0.0.1:5432/wenyuan_test" \
+WENYUAN_API_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/wenyuan_test" \
 WENYUAN_API_DATABASE_SCHEMA=probe WENYUAN_API_AUDIT_LOG_RETENTION_DAYS=30 \
 WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS=0 \
   timeout 10 /tmp/worker        # 应打印 maintenance enabled / job finished 各行
