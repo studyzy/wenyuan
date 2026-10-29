@@ -174,3 +174,59 @@ describe('the knowledge-base reads', () => {
     await expect(client.readKnowledgePage('missing')).resolves.toEqual({ ok: false, reason: 'HTTP 404' })
   })
 })
+
+describe('reflect, diagnose, and sync status', () => {
+  it('asks the reflect route for a synthesized answer', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({ text: '## answer' }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.reflect('why')
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/reflect')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(outcome).toEqual({ ok: true, text: '## answer' })
+  })
+
+  it('reports a refused reflect instead of throwing', async () => {
+    const { impl } = stubFetch(() => new Response('nope', { status: 504 }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    await expect(client.reflect('why')).resolves.toEqual({ ok: false, reason: 'HTTP 504' })
+  })
+
+  it('reads the counter sheet, keeping the counters it needs', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({
+      bank_id: 'b', total_nodes: 12, total_links: 34, total_documents: 5,
+      pending_operations: 2, failed_operations: 3,
+      nodes_by_fact_type: { world: 7, observation: 5 },
+    }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.stats()
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/stats')
+    expect(outcome).toEqual({
+      ok: true,
+      value: {
+        bank_id: 'b', total_nodes: 12, total_links: 34, total_documents: 5,
+        pending_operations: 2, failed_operations: 3,
+        nodes_by_fact_type: { world: 7, observation: 5 },
+      },
+    })
+  })
+
+  it('reads failed operations with the reason each one gave up', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({
+      total: 1,
+      operations: [{ id: 'op-1', operation_id: 'op-1', task_type: 'retain', status: 'failed', error_message: 'attempts exhausted', retry_count: 3 }],
+    }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.operations('failed', 5)
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/operations?status=failed&limit=5')
+    expect(outcome).toEqual({
+      ok: true,
+      value: {
+        total: 1,
+        operations: [{
+          operation_id: 'op-1', task_type: 'retain', status: 'failed',
+          error_message: 'attempts exhausted', retry_count: 3,
+        }],
+      },
+    })
+  })
+})

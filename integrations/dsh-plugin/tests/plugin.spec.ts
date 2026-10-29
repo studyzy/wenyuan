@@ -63,15 +63,18 @@ describe('settings resolution', () => {
 })
 
 describe('mounting', () => {
-  it('registers the five knowledge tools and the transcript projection', () => {
+  it('registers the eight memory tools and the transcript projection', () => {
     const { ctx, tools, projections } = fakeContext()
     apply(ctx as never, {})
     expect(tools.map((tool) => (tool as { name: string }).name).sort()).toEqual([
       'wenyuan_capture_initiative',
+      'wenyuan_diagnose',
       'wenyuan_ingest_document',
       'wenyuan_list_knowledge_pages',
       'wenyuan_read_knowledge_page',
+      'wenyuan_reflect',
       'wenyuan_search_knowledge_pages',
+      'wenyuan_sync_status',
     ])
     expect((projections[0] as { key: string }).key).toBe('wenYuanTranscript')
   })
@@ -87,7 +90,7 @@ describe('mounting', () => {
   it('mounts without a credentials service rather than failing its own fiber', () => {
     const { ctx, tools } = fakeContext()
     expect(() => apply(ctx as never, {})).not.toThrow()
-    expect(tools).toHaveLength(5)
+    expect(tools).toHaveLength(8)
   })
 })
 
@@ -139,5 +142,30 @@ describe('a tool with no memory service reachable', () => {
     const tool = toolNamed('wenyuan_capture_initiative')
     const value = (await tool.execute({ title: 'x' }, { signal: new AbortController().signal })) as { text: string }
     expect(value.text).toContain('non-empty summary')
+  })
+})
+describe('a tool call that outlives the interactive recall deadline', () => {
+  it('waits longer than a lifecycle recall would, so reflect can finish', async () => {
+    // Reflect runs a synthesis loop against a model. The lifecycle recall's
+    // deadline is what keeps a turn from stalling, and applying it here
+    // aborted every reflect that took more than ten seconds.
+    const { ctx, tools } = fakeContext()
+    apply(ctx as never, {})
+    const tool = tools.find((candidate) => (candidate as { name: string }).name === 'wenyuan_reflect') as {
+      execute(args: unknown, exec: unknown): Promise<unknown>
+    }
+    const originalFetch = globalThis.fetch
+    let observedInit: RequestInit | undefined
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      observedInit = init
+      return Response.json({ text: 'answer' })
+    }) as unknown as typeof fetch
+    try {
+      const value = (await tool.execute({ query: 'why' }, { signal: new AbortController().signal })) as { text: string }
+      expect(value.text).toBe('answer')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(observedInit?.method).toBe('POST')
   })
 })

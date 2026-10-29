@@ -101,6 +101,41 @@ export interface KnowledgePage {
   readonly last_updated_at?: string
 }
 
+/** What one bank's counter sheet reports. */
+export interface BankStats {
+  readonly bank_id?: string
+  readonly total_nodes?: number
+  readonly total_links?: number
+  readonly total_documents?: number
+  readonly pending_operations?: number
+  readonly failed_operations?: number
+  readonly nodes_by_fact_type?: Readonly<Record<string, number>>
+  readonly operations_by_status?: Readonly<Record<string, number>>
+}
+
+/** One operation as the queue reports it. */
+export interface QueuedOperation {
+  readonly operation_id: string
+  readonly task_type?: string
+  readonly status?: string
+  readonly error_message?: string
+  readonly retry_count?: number
+  readonly document_id?: string
+  readonly created_at?: string
+  readonly updated_at?: string
+}
+
+/** The queue answer for one status. */
+export interface OperationList {
+  readonly total?: number
+  readonly operations: readonly QueuedOperation[]
+}
+
+/** What one reflect resolved to. */
+export type ReflectOutcome =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly reason: string }
+
 /** What one client instance is built for this bank. */
 export interface MemoryClientOptions {
   /** The resolved connection: base URL, bank, and the API key when configured. */
@@ -234,6 +269,51 @@ export class WenYuanClient {
   }
 
   /**
+   * Ask the bank to synthesize an answer from its memories.
+   *
+   * Unlike recall, which returns the memories that matched, reflect runs a
+   * bounded synthesis loop and answers the question itself.
+   * @param query - the question to answer.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the synthesized text, or the reason the call did not land.
+   */
+  async reflect(query: string, signal?: AbortSignal): Promise<ReflectOutcome> {
+    const answer = await this.request('POST', '/reflect', { query }, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    const text = memberText(answer.body, 'text')
+    return { ok: true, text: text ?? '' }
+  }
+
+  /**
+   * Read the bank's counter sheet, which is what a diagnosis reports on.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the counters, or the reason the call did not land.
+   */
+  async stats(signal?: AbortSignal): Promise<KnowledgeOutcome<BankStats>> {
+    const answer = await this.request('GET', '/stats', undefined, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    return { ok: true, value: asStats(answer.body) }
+  }
+
+  /**
+   * List the queued operations in one status, most recently updated first.
+   * @param status - the queue status to read.
+   * @param limit - how many rows to ask for.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the rows, or the reason the call did not land.
+   */
+  async operations(
+    status: 'failed' | 'pending',
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeOutcome<OperationList>> {
+    const params = new URLSearchParams({ status, limit: String(limit) })
+    const answer = await this.request('GET', `/operations?${params.toString()}`, undefined, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    return { ok: true, value: asOperationList(answer.body) }
+  }
+
+  /**
    * One request, bounded by the deadline and by the caller's cancellation.
    * @param method - the HTTP method.
    * @param suffix - the bank-scoped route, query already encoded.
@@ -356,5 +436,54 @@ function asPage(body: unknown): KnowledgePage {
     ...pick(memberText(body, 'markdown'), 'markdown'),
     ...pick(memberText(body, 'last_updated_at'), 'last_updated_at'),
     ...tags.length === 0 ? {} : { tags },
+  }
+}
+/** Read one numeric member, or undefined when it is absent or not a number. */
+function memberCount(value: unknown, key: string): number | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const found = Reflect.get(value, key)
+  return typeof found === 'number' && Number.isFinite(found) ? found : undefined
+}
+
+/** Read one count map member, dropping entries that are not numbers. */
+function memberCounts(value: unknown, key: string): Record<string, number> | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const found = Reflect.get(value, key)
+  if (found === null || typeof found !== 'object' || Array.isArray(found)) return undefined
+  const counts = Object.entries(found as Record<string, unknown>)
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+  return counts.length === 0 ? undefined : Object.fromEntries(counts)
+}
+
+/** Project the counter sheet. */
+function asStats(body: unknown): BankStats {
+  const factTypes = memberCounts(body, 'nodes_by_fact_type')
+  const byStatus = memberCounts(body, 'operations_by_status')
+  return {
+    ...pick(memberText(body, 'bank_id'), 'bank_id'),
+    ...pick(memberCount(body, 'total_nodes'), 'total_nodes'),
+    ...pick(memberCount(body, 'total_links'), 'total_links'),
+    ...pick(memberCount(body, 'total_documents'), 'total_documents'),
+    ...pick(memberCount(body, 'pending_operations'), 'pending_operations'),
+    ...pick(memberCount(body, 'failed_operations'), 'failed_operations'),
+    ...factTypes === undefined ? {} : { nodes_by_fact_type: factTypes },
+    ...byStatus === undefined ? {} : { operations_by_status: byStatus },
+  }
+}
+
+/** Project the queue answer. */
+function asOperationList(body: unknown): OperationList {
+  return {
+    ...pick(memberCount(body, 'total'), 'total'),
+    operations: memberList(body, 'operations').map((row) => ({
+      operation_id: memberText(row, 'operation_id') ?? memberText(row, 'id') ?? '',
+      ...pick(memberText(row, 'task_type'), 'task_type'),
+      ...pick(memberText(row, 'status'), 'status'),
+      ...pick(memberText(row, 'error_message'), 'error_message'),
+      ...pick(memberCount(row, 'retry_count'), 'retry_count'),
+      ...pick(memberText(row, 'document_id'), 'document_id'),
+      ...pick(memberText(row, 'created_at'), 'created_at'),
+      ...pick(memberText(row, 'updated_at'), 'updated_at'),
+    })),
   }
 }

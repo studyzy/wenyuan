@@ -74,6 +74,16 @@ const RETAIN_CONTEXT =
 /** The per-request deadline for a hook's recall: the user is waiting on it. */
 const RECALL_TIMEOUT_MS = 10_000
 
+/**
+ * The deadline for a tool call the model chose to make.
+ *
+ * Reflect runs a bounded retrieval-and-synthesis loop against a model, which
+ * routinely outlives the recall deadline; reading and writing knowledge is a
+ * plain round trip behind it. Neither sits on the interactive path the way the
+ * lifecycle recall does, so they can afford to wait.
+ */
+const TOOL_TIMEOUT_MS = 120_000
+
 /** The session-start knowledge query, kept broad on purpose. */
 const SESSION_START_QUERY = 'What should I know about this project and the user at the start of a session?'
 
@@ -171,13 +181,15 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
    * on the card must reach the next request without a plugin reload; the key
    * is resolved per call because a rotated credential must too.
    * @param signal - cancellation for the credential read.
+   * @param timeoutMs - the per-request deadline; the lifecycle recall uses the
+   *   interactive one, and a tool call passes {@link TOOL_TIMEOUT_MS}.
    * @returns the client, or null when memory should not run.
    */
-  const clientNow = async (signal?: AbortSignal): Promise<WenYuanClient | null> => {
+  const clientNow = async (signal?: AbortSignal, timeoutMs = RECALL_TIMEOUT_MS): Promise<WenYuanClient | null> => {
     const apiKey = await resolveApiKey(ctx, signal)
     return new WenYuanClient({
       connection: { apiUrl: resolved.apiUrl, bankId: resolved.bankId, ...apiKey === undefined ? {} : { apiKey } },
-      timeoutMs: RECALL_TIMEOUT_MS,
+      timeoutMs,
     })
   }
 
@@ -309,7 +321,7 @@ function isTopLevel(agent: Agent): boolean {
 async function writeBack(
   agent: Agent,
   ready: Promise<{ stateOf(session: Session): readonly TranscriptTurn[] }>,
-  clientNow: (signal?: AbortSignal) => Promise<WenYuanClient | null>,
+  clientNow: (signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
   perSession: { recalledTurn: number; retainedTurns: number; writing: Promise<void> | undefined },
   signal: AbortSignal,
 ): Promise<void> {
@@ -391,6 +403,9 @@ function textArg(args: Record<string, unknown>, key: string): string | undefined
 /** The indentation one tree level adds. */
 const TREE_INDENT = '  '
 
+/** How many failed operations a diagnosis quotes: enough to show a pattern, few enough to read. */
+const DIAGNOSE_FAILURE_LIMIT = 5
+
 /** Render one node and its children as an indented list. */
 function renderNode(node: KnowledgeTreeNode, depth: number, lines: string[]): void {
   const indent = TREE_INDENT.repeat(depth)
@@ -411,11 +426,11 @@ function renderNode(node: KnowledgeTreeNode, depth: number, lines: string[]): vo
  * @returns the tool definitions, in registration order.
  */
 export function knowledgeTools(
-  clientNow: (signal?: AbortSignal) => Promise<WenYuanClient | null>,
+  clientNow: (signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
 ): readonly ToolDefinition[] {
   /** Resolve a client or report the one reason every tool shares. */
   const requireClient = async (exec: ToolRunContext): Promise<WenYuanClient | string> => {
-    const client = await clientNow(exec.signal)
+    const client = await clientNow(exec.signal, TOOL_TIMEOUT_MS)
     return client === null ? 'WenYuan memory is disabled in this deployment.' : client
   }
 
@@ -555,6 +570,81 @@ export function knowledgeTools(
         if (!outcome.ok) return `wenyuan_ingest_document failed: ${outcome.reason}`
         const ref = outcome.operationId === undefined ? '' : ` (operation ${outcome.operationId})`
         return `Stored "${title}" in WenYuan memory${ref}.`
+      },
+    ),
+
+    textTool(
+      'wenyuan_reflect',
+      'Ask WenYuan to synthesize an answer from everything this project has recorded, rather than returning the memories that matched. Use it when pages and search leave the question open and a reasoned answer drawn across many memories would settle it — it is slower than a search.',
+      {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'The question to answer.' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      async (args, exec) => {
+        const query = textArg(args, 'query')
+        if (query === undefined) return 'wenyuan_reflect needs a non-empty query.'
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const outcome = await client.reflect(query, exec.signal)
+        if (!outcome.ok) return `WenYuan reflect failed: ${outcome.reason}`
+        return outcome.text === '' ? 'WenYuan reflected and produced no answer.' : outcome.text
+      },
+    ),
+
+    textTool(
+      'wenyuan_diagnose',
+      'Check whether this project\'s memory is healthy: what the bank holds, and why anything queued has failed. Use it when recall or a write looks wrong, or before concluding that memory is empty.',
+      { type: 'object', properties: {}, additionalProperties: false },
+      async (_args, exec) => {
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const stats = await client.stats(exec.signal)
+        if (!stats.ok) return `WenYuan diagnose failed: ${stats.reason}`
+        const sheet = stats.value
+        const lines = [
+          `bank: ${sheet.bank_id ?? 'unknown'}`,
+          `memories: ${sheet.total_nodes ?? 'unknown'} (${Object.entries(sheet.nodes_by_fact_type ?? {}).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'no breakdown'})`,
+          `links: ${sheet.total_links ?? 'unknown'} · documents: ${sheet.total_documents ?? 'unknown'}`,
+          `queue: ${sheet.pending_operations ?? 0} pending · ${sheet.failed_operations ?? 0} failed`,
+        ]
+        // A failure count without its reason is not a diagnosis, so the failed
+        // rows are read whenever the sheet reports any.
+        const failures = (sheet.failed_operations ?? 0) === 0
+          ? undefined
+          : await client.operations('failed', DIAGNOSE_FAILURE_LIMIT, exec.signal)
+        if (failures !== undefined && failures.ok && failures.value.operations.length > 0) {
+          lines.push('', `most recent failures (${failures.value.operations.length} of ${failures.value.total ?? '?'}):`)
+          for (const operation of failures.value.operations) {
+            const task = operation.task_type ?? 'operation'
+            const tries = operation.retry_count === undefined ? '' : ` after ${operation.retry_count} attempt(s)`
+            lines.push(`- ${task} ${operation.operation_id}${tries}: ${operation.error_message ?? 'no error recorded'}`)
+          }
+        } else if (failures !== undefined && !failures.ok) {
+          lines.push('', `could not read the failed operations: ${failures.reason}`)
+        }
+        return lines.join('\n')
+      },
+    ),
+
+    textTool(
+      'wenyuan_sync_status',
+      'Report whether the memory this session has written is fully processed. A write is queued, so a session that just ended can still be extracting; use this to tell "nothing was written" apart from "not written yet".',
+      { type: 'object', properties: {}, additionalProperties: false },
+      async (_args, exec) => {
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const stats = await client.stats(exec.signal)
+        if (!stats.ok) return `WenYuan sync status failed: ${stats.reason}`
+        const pending = stats.value.pending_operations ?? 0
+        const failed = stats.value.failed_operations ?? 0
+        const state = pending === 0 ? 'caught up' : `${pending} operation(s) still processing`
+        return [
+          `sync: ${state}`,
+          `memories: ${stats.value.total_nodes ?? 'unknown'} · documents: ${stats.value.total_documents ?? 'unknown'}`,
+          ...failed === 0 ? [] : [`failed: ${failed} queued operation(s) gave up; run wenyuan_diagnose for why`],
+        ].join('\n')
       },
     ),
   ]

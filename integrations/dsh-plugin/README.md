@@ -12,7 +12,7 @@ file to keep in step.
 
 | Half | Outlet | Role |
 | --- | --- | --- |
-| Host | `.` | Attaches recalled memory on `agent/created` and `agent/pre-step`, writes the session back on `agent/turn-stopping`, registers the five `wenyuan_*` knowledge tools. |
+| Host | `.` | Attaches recalled memory on `agent/created` and `agent/pre-step`, writes the session back on `agent/turn-stopping`, registers the eight `wenyuan_*` memory tools. |
 | Browser | `./client` | The configuration card: server URL, memory bank, API key, and the two behaviour switches. |
 
 ## What it does
@@ -26,11 +26,15 @@ file to keep in step.
   assembled into the reference's own transcript document and retained under one
   ref-id: user and assistant text, one action line per tool call, injected memory
   stripped. A later turn appends only what is new.
-- **Five knowledge tools**, registered globally. Three read the bank's curated
-  knowledge pages — `wenyuan_search_knowledge_pages`,
-  `wenyuan_list_knowledge_pages`, `wenyuan_read_knowledge_page` — and two write:
-  `wenyuan_capture_initiative` (a tracked initiative) and
-  `wenyuan_ingest_document` (durable notes, and the correction mechanism).
+- **Eight memory tools**, registered globally.
+  - Read the curated knowledge pages: `wenyuan_search_knowledge_pages`,
+    `wenyuan_list_knowledge_pages`, `wenyuan_read_knowledge_page`.
+  - Write: `wenyuan_capture_initiative` (a tracked initiative),
+    `wenyuan_ingest_document` (durable notes, and the correction mechanism).
+  - Answer a question across everything recorded: `wenyuan_reflect`.
+  - Check the memory itself: `wenyuan_diagnose` (what the bank holds and why
+    queued work failed) and `wenyuan_sync_status` (whether this session's
+    writes have finished processing).
 
 Everything is fail-open: an unreachable or slow service costs the session its
 memory, never its run.
