@@ -1,0 +1,19 @@
+# dsh-wenyuan-memory bundle patch: mount the Host plugin.
+#
+# The browser half (the settings card on the Plugins page) is discovered
+# automatically through the package's `dsh.client` declaration and its
+# `exports["./client"]` outlet, so only the Host entry is inserted here.
+#
+# `apiUrl`, `bankId`, `injectContext` and `retainOnStop` are the fields the
+# configuration card edits; they are `volatile()` in the plugin's schema, which
+# is what makes them appear in the card at all. The API key is NOT here: a
+# secret never rides a settings section, so it is written through the
+# credentials domain under `WENYUAN_API_KEY` and resolved on every request.
+- insert:
+    - id: dsh-wenyuan-memory
+      name: '@studyzy/dsh-wenyuan-memory'
+      config:
+        apiUrl: http://127.0.0.1:18888
+        bankId: default
+        injectContext: true
+        retainOnStop: true

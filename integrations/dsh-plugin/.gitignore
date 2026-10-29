@@ -1,0 +1,7 @@
+node_modules/
+lib/
+*.tsbuildinfo
+.coverage/
+.idea/
+test-results/
+.artifacts/
