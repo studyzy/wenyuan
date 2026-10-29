@@ -54,6 +54,24 @@ func auditRows(t *testing.T, a *App, bank, query string) []map[string]any {
 	return rows
 }
 
+// auditRowsWithBodies is auditRows followed by one member fetch per row, so a
+// test can read the request/response bodies the list route no longer serves.
+// The summary members are kept and the bodies added under their own keys.
+func auditRowsWithBodies(t *testing.T, a *App, bank, query string) []map[string]any {
+	t.Helper()
+	rows := auditRows(t, a, bank, query)
+	for _, row := range rows {
+		id, _ := row["id"].(string)
+		rec := exchange(a, http.MethodGet, "/v1/default/banks/"+bank+"/audit-logs/"+id, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("audit-log %s: status %d, body = %s", id, rec.Code, rec.Body.String())
+		}
+		entry := decodeJSON(t, rec)
+		row["request"], row["response"] = entry["request"], entry["response"]
+	}
+	return rows
+}
+
 // actionsByTransport indexes a page of rows by action name.
 func actionsByTransport(rows []map[string]any) map[string]string {
 	indexed := map[string]string{}
@@ -103,7 +121,7 @@ func TestAuditRecordsCoreOperations(t *testing.T) {
 		t.Fatalf("update bank: status %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	rows := auditRows(t, a, "audit-core", "limit=50")
+	rows := auditRowsWithBodies(t, a, "audit-core", "limit=50")
 	indexed := actionsByTransport(rows)
 	for _, action := range []string{"create_bank", "retain", "recall", "reflect", "update_bank"} {
 		if indexed[action] != "http" {
@@ -506,7 +524,7 @@ func TestAuditRecordsDeclaredRequestBody(t *testing.T) {
 
 	for _, tc := range auditedBodyCases(bankPath) {
 		exchange(a, tc.method, tc.path, tc.body)
-		rows := auditRows(t, a, bank, "action="+tc.action+"&limit=50")
+		rows := auditRowsWithBodies(t, a, bank, "action="+tc.action+"&limit=50")
 		if len(rows) == 0 {
 			t.Errorf("%s (%s %s): no audit row", tc.action, tc.method, tc.path)
 			continue

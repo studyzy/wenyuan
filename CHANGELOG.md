@@ -5,6 +5,72 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Added — the reference released v1.1.0
+
+- **The contract is the reference's v1.1.0 document.** `internal/httpx/openapi.json`
+  is that release's `/openapi.json` verbatim (only this service's two renderings
+  differ: an upload body is `contentMediaType: application/octet-stream`, and an
+  environment name in the prose carries this service's prefix), so
+  `/openapi.json` and `/v1/version` now report `1.1.0` and a client generated
+  from the served document generates against the reference's v1.1.0 surface.
+  `scripts/reference_openapi.py` reproduces the committed copy from the
+  reference's published document.
+- **Two routes the reference added.** `GET .../documents/{document_id}/history`
+  returns a document's change history — one `DocumentEvent` per retain, append,
+  reprocess, retag, fact edit, invalidation, restore, delete, per-fact
+  observation clear and consolidation run, newest first, ids and counts only. It
+  is rebuilt from the bank's operations (each event rides the operation that made
+  the change, in `result_metadata.document_events`; no new table), so it reaches
+  back only as far as operations are kept, and a change that ran without an
+  operation — a synchronous retain, or a curation write with auto-consolidation
+  off — is not in it. `GET .../audit-logs/{log_id}` returns one audit entry with
+  its request and response bodies; the audit list itself now answers
+  `AuditLogSummary` items, without bodies.
+- **Additive request and response fields**, each the reference's: `q` on
+  `GET .../documents` now matches the document id *or* its text (`matched_fields`
+  says which, `total_is_estimate` marks a count cut off at 1,000 matches);
+  `PATCH .../documents` accepts `observation_scopes`, moving a document's
+  memories to another scoping without re-extracting them; mental models gain
+  `trigger.full_refresh_cron` (a scheduled full refresh of a delta model),
+  `last_full_refreshed_at`, `is_knowledge_page`, and a refresh body
+  `{"mode": "full"}` that regenerates once without changing the stored trigger;
+  `GET .../mental-models` accepts `exclude_knowledge_pages`; webhook deliveries
+  carry `event_id` plus the `X-Hindsight-Event-Id` and `X-Hindsight-Delivery-Id`
+  headers, and a receiver deduplicates on `event_id` rather than `operation_id`;
+  `GET .../llm-requests` and its stats accept `call_type`
+  (`llm`/`embedding`/`rerank`/`decision`); a memory edit accepts `mentioned_at`;
+  recall's `prefer_observations` is nullable so a bank's new
+  `recall_prefer_observations` default (`WENYUAN_API_RECALL_PREFER_OBSERVATIONS`)
+  decides when a request omits it; and an `observation_scopes` entry containing
+  `*` is a glob over the memory's own tags, with the new bank default
+  `default_observation_scopes` (`WENYUAN_API_DEFAULT_OBSERVATION_SCOPES`)
+  applying to retains that send none.
+- **A retry reaches more operations.** `POST .../operations/{id}/retry` now
+  re-queues a `cancelled` operation too, and on a deferred one (pending with a
+  future `next_retry_at`) clears the parking so it runs now.
+
+### Schema — the reference's v1.1.0 database
+
+- The migration series is regenerated from a reference database at v1.1.0:
+  `mental_models.last_full_refreshed_at` and its partial index
+  `idx_mental_models_full_refresh_cron`; `mental_model_history.mental_model_id`
+  and `knowledge_pages.mental_model_id` widened from `varchar(64)` to `text`, so
+  a mental model whose id is longer than 64 characters can be refreshed;
+  `mental_models_with_cron()` now also reports `full_refresh_cron` and
+  `last_full_refreshed_at` for models carrying either schedule; and
+  `banks_needing_consolidation()` probes each bank instead of scanning
+  `memory_units`. `scripts/reference_schema_migrations.py` now emits a
+  `DROP FUNCTION IF EXISTS` before each routine, because `CREATE OR REPLACE`
+  cannot change a result type — the reference does the same in the release's
+  own migration.
+- **No global vector index on `memory_units`.** The reference dropped
+  `idx_memory_units_embedding_hnsw` in this release: every vector search is
+  served by the per-bank `idx_mu_emb_*` partial indexes, and the global one only
+  doubled the write cost. `docs/SCHEMA-ALIGNMENT.md` is regenerated against a
+  clean reference v1.1.0 database and is empty, object for object; the four
+  maintenance routines a bare reference migration does not install are noted
+  there, and are identical wherever the reference service has started.
+
 ### Changed — BREAKING
 
 - **Every environment variable now spells this service's own name, and the old

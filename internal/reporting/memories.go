@@ -46,10 +46,13 @@ type MemoryListResponse struct {
 
 // MemoryUpdateRequest is the curation body upstream accepts.
 type MemoryUpdateRequest struct {
-	Text            *string   `json:"text"`
-	Context         *string   `json:"context"`
-	OccurredStart   *string   `json:"occurred_start"`
-	OccurredEnd     *string   `json:"occurred_end"`
+	Text          *string `json:"text"`
+	Context       *string `json:"context"`
+	OccurredStart *string `json:"occurred_start"`
+	OccurredEnd   *string `json:"occurred_end"`
+	// MentionedAt is the new mention time (ISO 8601). "" clears it; omitted
+	// leaves it unchanged.
+	MentionedAt     *string   `json:"mentioned_at"`
 	FactType        *string   `json:"fact_type"`
 	Entities        *[]string `json:"entities"`
 	ResolveEntities *bool     `json:"resolve_entities"`

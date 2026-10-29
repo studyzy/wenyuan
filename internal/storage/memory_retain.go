@@ -794,56 +794,55 @@ func (s *MemoryStore) AppendDocument(ctx context.Context, bankID, docID, text, e
 	return doc, nil
 }
 
-// RetagDocumentMemories carries a document's renamed tags onto its units and
-// the observation scopes frozen on them, then removes the observations built
-// over them and returns how many were deleted. It mirrors the database-backed
-// store: the units' tags and scopes move together and the stale-observation
-// sweep that follows requeues the surviving co-sources.
+// RetagDocumentMemories carries a document's new tags and observation scopes
+// onto its units, then removes the observations built over the units whose
+// resolved scopes that moves and requeues those units. It mirrors the
+// database-backed store: the units' tags and scopes move together, the
+// stale-observation sweep that follows requeues the surviving co-sources, and a
+// unit whose scopes stay put keeps its observations.
 func (s *MemoryStore) RetagDocumentMemories(
-	ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool,
-) (int, error) {
+	ctx context.Context, bankID, docID string, change DocumentScopeChange,
+) (RetagOutcome, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return RetagOutcome{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
-		return 0, s.writeErr
+		return RetagOutcome{}, s.writeErr
 	}
-	unitTags := normalizeTags(newTags)
-	srcIDs := make([]string, 0)
+	units := make([]DocumentUnitScope, 0)
 	for id, unit := range s.units {
-		if unit.BankID != bankID || unit.DocumentID != docID {
-			continue
-		}
-		if rewritten := renamedScopes(unit.ObservationScopes, oldTags, newTags); rewritten != nil {
-			unit.ObservationScopes = rewritten
-		}
-		// The retag replaces only the document-derived tags; the label-derived
-		// ones this unit carries (from its own entities) are re-appended.
-		unit.Tags = appendTagLabels(unitTags, labelDerivedTags(unit.Tags, labelKeys))
-		s.units[id] = unit
-		if unit.FactType == TypeWorld || unit.FactType == TypeExperience {
-			srcIDs = append(srcIDs, id)
+		if unit.BankID == bankID && unit.DocumentID == docID {
+			units = append(units, DocumentUnitScope{
+				ID: id, Tags: append([]string(nil), unit.Tags...), Scopes: unit.ObservationScopes,
+				FactType: unit.FactType,
+			})
 		}
 	}
+	plans := planDocumentRetag(units, change)
+	for _, plan := range plans {
+		unit := s.units[plan.unit.ID]
+		if plan.newScopes != nil {
+			unit.ObservationScopes = plan.newScopes
+		}
+		if change.NewTags != nil {
+			unit.Tags = plan.finalTags
+		}
+		s.units[plan.unit.ID] = unit
+	}
+	srcIDs := movedSourceUnits(plans)
 	if len(srcIDs) == 0 {
-		return 0, nil
+		return RetagOutcome{}, nil
 	}
-	deleted, err := s.deleteStaleObservationsLocked(bankID, srcIDs)
-	if err != nil {
-		return 0, err
-	}
-	if deleted > 0 {
-		for _, id := range srcIDs {
-			if unit, ok := s.units[id]; ok {
-				unit.ConsolidatedAt = nil
-				s.units[id] = unit
-				delete(s.consolidated, id)
-			}
-		}
-	}
-	return deleted, nil
+	// Only the units that moved are requeued — whether or not they had an
+	// observation, since a unit consolidated under scopes it no longer writes to
+	// must be tried in its new scope — and a co-source of a swept observation
+	// that stayed put is left alone.
+	removed := s.deleteObservationsOnLocked(bankID, srcIDs)
+	return RetagOutcome{
+		InvalidatedObservations: len(removed), RequeuedUnits: len(srcIDs), Removed: removed,
+	}, nil
 }
 
 // ResolveEntity resolves an entity name against the bank, creating it with the

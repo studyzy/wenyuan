@@ -78,9 +78,11 @@ type DeleteResponse struct {
 }
 
 // Delivery is one recorded delivery attempt. Nullable fields stay present as
-// null, matching the reference's delivery model.
+// null, matching the reference's delivery model; event_id is null only for a
+// delivery queued before event ids existed.
 type Delivery struct {
 	ID                 string  `json:"id"`
+	EventID            *string `json:"event_id"`
 	WebhookID          string  `json:"webhook_id"`
 	URL                string  `json:"url"`
 	EventType          string  `json:"event_type"`
@@ -128,6 +130,10 @@ func toDelivery(record storage.WebhookDelivery, exposeBody bool) Delivery {
 		EventType: record.EventType,
 		Status:    record.Status,
 		Attempts:  record.Attempts,
+	}
+	if record.EventID != "" {
+		value := record.EventID
+		delivery.EventID = &value
 	}
 	if record.NextRetryAt != nil {
 		value := httpx.FormatPostgresTimestamp(*record.NextRetryAt)
@@ -265,6 +271,13 @@ func asHTTPError(err error) *httpx.HTTPError {
 		return httpx.NewHTTPError(httpx.KindInternal, err.Error())
 	}
 }
+
+// NewEventID mints the identifier of one logical webhook event. Every delivery
+// an event fans out to carries the same value, and every retry of one delivery
+// repeats it, so a receiver dedupes on it. It is deliberately not an operation
+// id: a batch retain fires one event per document under one operation, so the
+// operation cannot tell two of its events apart.
+func NewEventID() string { return newID() }
 
 // newID builds the identifier a webhook is addressed by. The column is a uuid
 // on both backends, so the value is rendered in its canonical dashed form: a

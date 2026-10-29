@@ -190,18 +190,19 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 	}
 	// The body was rendered when the event was raised, so the bytes sent are
 	// the bytes the signature covers, whatever the payload has been through
-	// since. A delivery queued by an older build without one is re-rendered.
+	// since. A delivery queued by an older build without one is re-rendered,
+	// under the event id the delivery carries so the two agree.
 	body, _ := op.Payload["body"].(string)
 	bodyBytes := []byte(body)
 	if body == "" {
 		payload, _ := op.Payload["data"].(map[string]any)
-		rendered, err := marshalWebhookEvent(eventType, op.BankID, "", "completed", op.CreatedAt, payload)
+		rendered, err := marshalWebhookEvent(eventType, op.BankID, "", deliveryEventID(op), "completed", op.CreatedAt, payload)
 		if err != nil {
 			return worker.Permanent(err)
 		}
 		bodyBytes = rendered
 	}
-	status, responseBody, err := p.deliverWebhook(ctx, webhook, eventType, bodyBytes)
+	status, responseBody, err := p.deliverWebhook(ctx, webhook, eventType, deliveryEventID(op), op.OperationID, bodyBytes)
 	if err != nil {
 		// A target the guard refuses at delivery time, or a receiver that
 		// answers with a redirect, is a permanent failure: the same
@@ -229,6 +230,15 @@ func (p archiveProcessor) applyWebhookDelivery(ctx context.Context, op storage.O
 	// misconfigured gets the same retries a 5xx does. The delivery fails only
 	// once the attempt budget is spent.
 	return webhookRetryOrFail(op, webhookStatusFailure(status, webhook.URL, responseBody))
+}
+
+// deliveryEventID reads the id of the logical event the delivery belongs to. It
+// stays the same across every retry (the queued payload is unchanged) and across
+// every webhook the event fans out to; a delivery queued before event ids
+// existed carries none, and then neither the body nor the header names one.
+func deliveryEventID(op storage.Operation) string {
+	eventID, _ := op.Payload["event_id"].(string)
+	return eventID
 }
 
 // webhookRetryOrFail schedules one more attempt at the ladder's next rung, or
@@ -403,7 +413,12 @@ const webhookResponseBodyLimit = 2048
 // differently at delivery than it did at registration. A redirect is refused
 // rather than followed: it would move the request to a target the guard never
 // checked.
-func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType string, body []byte) (int, string, error) {
+//
+// eventID identifies the logical event and stays the same on every retry and for
+// every webhook the event goes to; deliveryID identifies this event's delivery to
+// this webhook and stays the same on every retry. Both are service-controlled,
+// like the event type and the signatures, so a configured header cannot set them.
+func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.Webhook, eventType, eventID, deliveryID string, body []byte) (int, string, error) {
 	guard := p.guard()
 	if err := guard.Validate(webhook.URL); err != nil {
 		return 0, "", err
@@ -437,6 +452,15 @@ func (p archiveProcessor) deliverWebhook(ctx context.Context, webhook storage.We
 		request.Header.Set(name, value)
 	}
 	request.Header.Set("X-Hindsight-Event", eventType)
+	// The id headers are set the way the reference sets them: only when they have
+	// a value, because a delivery queued by an older build has no event id and the
+	// reference skips a header it has nothing to put in rather than sending "".
+	if eventID != "" {
+		request.Header.Set("X-Hindsight-Event-Id", eventID)
+	}
+	if deliveryID != "" {
+		request.Header.Set("X-Hindsight-Delivery-Id", deliveryID)
+	}
 	if webhook.Secret != "" {
 		// The primary signature is over the raw body, `sha256=<hex>`, the
 		// same construction GitHub uses. The conventional header name carries
@@ -519,7 +543,10 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 		return worker.Permanent(errors.New("refresh operation carries no mental model id"))
 	}
 	runner := newMentalModelRefresh(p.store, p.provider, p.reflection)
-	_, report, err := runner.refresh(ctx, op.BankID, modelID)
+	// A "full refresh now" or a full_refresh_cron tick carries its mode in the
+	// queued payload; it applies to this run only and never reaches the trigger.
+	modeOverride, _ := op.Payload[storage.RefreshModePayloadKey].(string)
+	_, report, err := runner.refresh(ctx, op.BankID, modelID, modeOverride)
 	// The outcome is the only place a refusal is distinguishable from an empty
 	// document: both leave the content as it was, and a refusal returns no
 	// error. Log it, so "the document never changed" has a name in the log.
@@ -725,8 +752,12 @@ func (p archiveProcessor) fireConsolidationEvent(ctx context.Context, op storage
 // and independent of them: it is one static receiver named by the deployment,
 // so it has no row to read and its endpoint and secret are carried on the
 // queued delivery.
+//
+// One event id is minted here, once, and carried on every delivery the event
+// fans out to, so a receiver can dedupe on it: `operation_id` cannot serve,
+// because a batch retain fires one event per document under one operation.
 func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webhooks.GlobalTarget, bankID, eventType string, data map[string]any) {
-	webhooks, err := store.ListWebhooks(ctx, bankID)
+	registrations, err := store.ListWebhooks(ctx, bankID)
 	if err != nil {
 		slog.Default().Warn("could not read webhooks for an event", "bank_id", bankID, "error", err)
 		return
@@ -742,7 +773,8 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 		status = "completed"
 	}
 	delete(payloadData, "status")
-	body, err := marshalWebhookEvent(eventType, bankID, operationID, status, time.Now().UTC(), payloadData)
+	eventID := webhooks.NewEventID()
+	body, err := marshalWebhookEvent(eventType, bankID, operationID, eventID, status, time.Now().UTC(), payloadData)
 	if err != nil {
 		slog.Default().Warn("could not render a webhook event", "bank_id", bankID, "event_type", eventType, "error", err)
 		return
@@ -754,6 +786,7 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 				OperationType: storage.OperationTypeWebhookDelivery,
 				Payload: map[string]any{
 					"global":     true,
+					"event_id":   eventID,
 					"event_type": eventType,
 					"url":        global.URL,
 					"secret":     global.Secret,
@@ -768,7 +801,7 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 				"bank_id", bankID, "error", err)
 		}
 	}
-	for _, webhook := range webhooks {
+	for _, webhook := range registrations {
 		if !webhook.Enabled || !subscribesTo(webhook.EventTypes, eventType) {
 			continue
 		}
@@ -778,6 +811,7 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 				OperationType: storage.OperationTypeWebhookDelivery,
 				Payload: map[string]any{
 					"webhook_id": webhook.ID,
+					"event_id":   eventID,
 					"event_type": eventType,
 					"url":        webhook.URL,
 					"body":       string(body),
@@ -797,7 +831,13 @@ func enqueueWebhookEvent(ctx context.Context, store storage.Store, global *webho
 // WebhookEvent field order. The order matters: a receiver that recomputes the
 // signature from the body it parsed re-serializes in this same order, so the
 // bytes stay identical.
+//
+// EventID leads because the reference's field leads the model; it is the one
+// member omitted when empty, since a task queued before event ids existed has
+// none and the reference's default-factory member is then simply absent (see
+// marshalWebhookEvent).
 type webhookEventBody struct {
+	EventID     string          `json:"event_id,omitempty"`
 	Event       string          `json:"event"`
 	BankID      string          `json:"bank_id"`
 	OperationID string          `json:"operation_id"`
@@ -825,7 +865,12 @@ var webhookEventDataOrder = map[string][]string{
 // marshalWebhookEvent renders the event envelope as compact JSON with no HTML
 // escaping, so a receiver's re-serialization of the parsed body reproduces these
 // exact bytes and the signature still verifies.
-func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.Time, data map[string]any) ([]byte, error) {
+//
+// An empty eventID is left out rather than rendered as "": it is the one member
+// with a default and no `exclude_none` exception, so the reference's model
+// always carries one — the only body without it is the one a delivery re-renders
+// for a task queued before event ids existed.
+func marshalWebhookEvent(eventType, bankID, operationID, eventID, status string, at time.Time, data map[string]any) ([]byte, error) {
 	encoded, err := marshalWebhookData(eventType, data)
 	if err != nil {
 		return nil, err
@@ -834,6 +879,7 @@ func marshalWebhookEvent(eventType, bankID, operationID, status string, at time.
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(webhookEventBody{
+		EventID:     eventID,
 		Event:       eventType,
 		BankID:      bankID,
 		OperationID: operationID,

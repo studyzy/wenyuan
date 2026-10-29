@@ -11,8 +11,8 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// Model is the wire shape of a mental model. It declares exactly the fourteen
-// fields the reference's MentalModelResponse carries, always present: a field
+// Model is the wire shape of a mental model. It declares exactly the fields the
+// reference's MentalModelResponse carries, always present: a field
 // the reference leaves unset serializes as JSON null rather than being dropped.
 // The detail level decides which of the nullable members are populated.
 type Model struct {
@@ -26,7 +26,7 @@ type Model struct {
 	Tags      []string `json:"tags"`
 	MaxTokens *int     `json:"max_tokens"`
 	// Trigger is the model's refresh trigger, null at metadata detail and the
-	// projected object otherwise. The projection carries all seventeen declared
+	// projected object otherwise. The projection carries all eighteen declared
 	// members in declaration order — not a Go map's sorted order — because that
 	// is what the reference's response model serializes.
 	Trigger Trigger `json:"trigger"`
@@ -36,7 +36,15 @@ type Model struct {
 	LastMemorySeenAt *string `json:"last_memory_seen_at"`
 	// LastRefreshFailedAt parks an automatic refresh after a failure.
 	LastRefreshFailedAt *string `json:"last_refresh_failed_at"`
+	// LastFullRefreshedAt is when a refresh last ran in full mode — asked for,
+	// scheduled by full_refresh_cron, a full-mode model, or a delta that fell
+	// back to full. The full schedule comes due against it.
+	LastFullRefreshedAt *string `json:"last_full_refreshed_at"`
 	CreatedAt           string  `json:"created_at"`
+	// IsKnowledgePage marks a model that holds a knowledge page's content rather
+	// than being a standalone note. Set by the list and get routes, which ask the
+	// store; null from any other producer.
+	IsKnowledgePage *bool `json:"is_knowledge_page"`
 	// ReflectResponse is the stored reflect payload, populated only at full.
 	// ReflectResponse is the stored reflect payload, populated only at full. It is
 	// an any because the stored jsonb has no member order and the reference's
@@ -145,7 +153,9 @@ func toModel(record storage.MentalModel) Model {
 		LastRefreshedAt:     timestampPtr(record.LastRefreshedAt),
 		LastMemorySeenAt:    httpx.FormatTimestampPtr(record.LastMemorySeenAt),
 		LastRefreshFailedAt: httpx.FormatTimestampPtr(record.LastRefreshFailedAt),
+		LastFullRefreshedAt: httpx.FormatTimestampPtr(record.LastFullRefreshedAt),
 		CreatedAt:           httpx.FormatTimestamp(record.CreatedAt),
+		IsKnowledgePage:     record.IsKnowledgePage,
 		ReflectResponse:     reorderReflectResponseForWire(record.ReflectResult),
 	}
 }

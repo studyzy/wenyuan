@@ -122,9 +122,16 @@ func (s *PostgresStore) BanksNeedingConsolidation(ctx context.Context, schema st
 // exclusion is a read and so advisory only; the enqueue itself is what makes it
 // idempotent.
 func (s *PostgresStore) MentalModelsWithSchedule(ctx context.Context, schema string) ([]ScheduledMentalModel, error) {
-	query := `SELECT mm.bank_id, mm.id, COALESCE(mm.trigger->>'refresh_cron',''), mm.last_refreshed_at
+	// Both schedules are read, and a model carrying only a full_refresh_cron is
+	// listed too: the full-refresh arm is an independent schedule, so a delta
+	// model (or one that refreshes after consolidation) that also asks for a
+	// periodic full rebuild appears here with an empty refresh_cron. That is
+	// the predicate the reference's mental_models_with_cron() uses.
+	query := `SELECT mm.bank_id, mm.id, COALESCE(mm.trigger->>'refresh_cron',''), mm.last_refreshed_at,
+	                 COALESCE(mm.trigger->>'full_refresh_cron',''), mm.last_full_refreshed_at
 	          FROM ` + quoteIdent(schema) + `.mental_models mm
-	          WHERE COALESCE(mm.trigger->>'refresh_cron', '') <> ''
+	          WHERE (COALESCE(mm.trigger->>'refresh_cron', '') <> ''
+	                 OR COALESCE(mm.trigger->>'full_refresh_cron', '') <> '')
 	            AND NOT EXISTS (
 	                SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations o
 	                WHERE o.bank_id = mm.bank_id
@@ -143,12 +150,16 @@ func (s *PostgresStore) MentalModelsWithSchedule(ctx context.Context, schema str
 	out := make([]ScheduledMentalModel, 0)
 	for rows.Next() {
 		var entry ScheduledMentalModel
-		var refreshed sql.NullTime
-		if err := rows.Scan(&entry.BankID, &entry.MentalModelID, &entry.RefreshCron, &refreshed); err != nil {
+		var refreshed, fullRefreshed sql.NullTime
+		if err := rows.Scan(&entry.BankID, &entry.MentalModelID, &entry.RefreshCron, &refreshed,
+			&entry.FullRefreshCron, &fullRefreshed); err != nil {
 			return nil, err
 		}
 		if refreshed.Valid {
 			entry.LastRefreshedAt = refreshed.Time
+		}
+		if fullRefreshed.Valid {
+			entry.LastFullRefreshedAt = fullRefreshed.Time
 		}
 		out = append(out, entry)
 	}

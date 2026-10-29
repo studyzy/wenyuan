@@ -7,6 +7,7 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // The graph and entity routes share one parameter pipeline, and its order is
@@ -46,7 +47,7 @@ type entityParamSpec struct {
 	LimitDefault int
 	// MinCount asks for the unbounded `min_count` filter.
 	MinCount bool
-	// TagsMatch validates `tags_match` against the reference's literal set.
+	// TagsMatch validates `tags_match` against the reference's enumeration.
 	TagsMatch bool
 	// TagsMatchDefault is the mode an absent `tags_match` takes.
 	TagsMatchDefault string
@@ -82,7 +83,10 @@ func (h *Handlers) readEntityParams(w http.ResponseWriter, r *http.Request, spec
 	}
 	params.TagsMatch = spec.TagsMatchDefault
 	if spec.TagsMatch {
-		params.TagsMatch = query.literal(r, "tags_match", storage.RecallTagMatchModes(), spec.TagsMatchDefault)
+		// The v1.1.0 document enumerates tags_match on every entity and graph
+		// route (any|all|any_strict|all_strict|exact), so an unknown mode there
+		// is the framework's 422 rather than a silently ignored filter.
+		params.TagsMatch = query.literal(r, "tags_match", validation.TagsMatchModes, spec.TagsMatchDefault)
 	}
 	if !query.empty() {
 		query.flush(w)

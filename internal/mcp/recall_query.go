@@ -65,10 +65,13 @@ func buildRecallQuery(bankID string, request memoryops.RecallRequest) (storage.R
 		tagsMatch = string(storage.TagsMatchAny)
 	}
 	return storage.RecallQuery{
-		BankID:             bankID,
-		Query:              request.Query,
-		Types:              request.Types,
-		PreferObservations: request.PreferObservations,
+		BankID: bankID,
+		Query:  request.Query,
+		Types:  request.Types,
+		// The MCP tool states the member in its own schema (default false), so
+		// its effective value is what the request carries; the HTTP route is
+		// where a nullable, bank-resolved default applies.
+		PreferObservations: request.PreferObservationsValue(false),
 		Budget:             budget,
 		MaxTokens:          maxTokens,
 		MinScores:          request.MinScores,

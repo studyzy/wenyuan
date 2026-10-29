@@ -97,8 +97,20 @@ type MentalModel struct {
 	// LastRefreshFailedAt parks an automatic refresh after a failure, so a
 	// schedule that cannot succeed stops spending a model call per tick.
 	LastRefreshFailedAt *time.Time
-	LastUpdated         time.Time
-	CreatedAt           time.Time
+	// LastFullRefreshedAt is when a refresh last *ran* in full mode —
+	// requested, scheduled by trigger.full_refresh_cron, or fallen back to —
+	// nil when no refresh has. It is the full-refresh schedule's own clock:
+	// LastRefreshedAt advances on every delta refresh, so a weekly full
+	// refresh keyed off it would never come due on a model that deltas daily.
+	LastFullRefreshedAt *time.Time
+	// IsKnowledgePage reports that this model holds a knowledge page's content
+	// rather than being a standalone note. It is not a column: a read derives it
+	// from the knowledge_pages row that points at this model, and leaves it nil
+	// when the read did not resolve it (a write's return, an import's
+	// projection).
+	IsKnowledgePage *bool
+	LastUpdated     time.Time
+	CreatedAt       time.Time
 }
 
 // MentalModelHistoryEntry is one recorded refresh of a mental model. Two kinds
@@ -167,6 +179,9 @@ type MentalModelPatch struct {
 	Observations             *map[string]any
 	Structured               *map[string]any
 	ReflectResult            *map[string]any
+	// LastFullRefreshedAt records that a refresh ran in full mode, which is
+	// the only thing that stamps it. Nil leaves the stored stamp unchanged.
+	LastFullRefreshedAt *time.Time
 }
 
 // DirectivePatch carries a partial directive update.

@@ -738,7 +738,7 @@ func TestGetEntityHonorsTagFilter(t *testing.T) {
 }
 
 // The document and chunk listings default their limit to 100; q filters the
-// document id (not its text), and tags_match defaults to any_strict.
+// document id or its stored text, and tags_match defaults to any_strict.
 func TestDocumentListDefaultsAndQuery(t *testing.T) {
 	store := seededStore(t)
 	mux := serve(t, store)
@@ -759,10 +759,23 @@ func TestDocumentListDefaultsAndQuery(t *testing.T) {
 	if len(byID.Items) != 1 {
 		t.Fatalf("q=doc documents = %d, want 1", len(byID.Items))
 	}
+	// q reaches the document's text too, and each item says which fields matched.
 	var byText DocumentListResponse
 	decodeInto(t, send(mux, http.MethodGet, base+"/documents?q=Alice", ""), &byText)
-	if len(byText.Items) != 0 {
-		t.Fatalf("q=Alice documents = %d, want 0 (q must not match the body text)", len(byText.Items))
+	if len(byText.Items) != 1 {
+		t.Fatalf("q=Alice documents = %d, want 1 (q matches the stored text)", len(byText.Items))
+	}
+	if len(byText.Items[0].MatchedFields) != 1 || byText.Items[0].MatchedFields[0] != "original_text" {
+		t.Fatalf("q=Alice matched_fields = %v, want [original_text]", byText.Items[0].MatchedFields)
+	}
+	if len(byID.Items[0].MatchedFields) != 1 || byID.Items[0].MatchedFields[0] != "id" {
+		t.Fatalf("q=doc matched_fields = %v, want [id]", byID.Items[0].MatchedFields)
+	}
+	if len(list.Items[0].MatchedFields) != 0 {
+		t.Fatalf("matched_fields without q = %v, want empty", list.Items[0].MatchedFields)
+	}
+	if list.TotalIsEstimate {
+		t.Fatal("total_is_estimate without q is true, want false")
 	}
 
 	// tags_match defaults to any_strict: any one tag matching is enough.
@@ -1107,8 +1120,8 @@ func TestTagsSourceAndPattern(t *testing.T) {
 	}
 }
 
-// A document update requires the tags field: an empty or metadata-only body is
-// rejected before the document is consulted.
+// A document update requires at least one mutable field: an empty or
+// metadata-only body is rejected before the document is consulted.
 func TestUpdateDocumentRequiresTags(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank
@@ -1125,7 +1138,7 @@ func TestUpdateDocumentRequiresTags(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &failure); err != nil {
 			t.Fatal(err)
 		}
-		if failure.Detail != "At least one field (tags) must be provided" {
+		if failure.Detail != "At least one field (tags, observation_scopes) must be provided" {
 			t.Fatalf("detail = %q", failure.Detail)
 		}
 	}

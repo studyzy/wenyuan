@@ -42,7 +42,7 @@ func TestRefreshWritesContentAndWatermark(t *testing.T) {
 	store, modelID := refreshFixture(t, "deployment")
 	runner := newMentalModelRefresh(store, nil, nil)
 
-	updated, _, err := runner.refresh(context.Background(), "b1", modelID)
+	updated, _, err := runner.refresh(context.Background(), "b1", modelID, "")
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestRefreshWithoutSourceQueryIsNotRefused(t *testing.T) {
 	store, modelID := refreshFixture(t, "   ")
 	runner := newMentalModelRefresh(store, nil, nil)
 
-	model, _, err := runner.refresh(context.Background(), "b1", modelID)
+	model, _, err := runner.refresh(context.Background(), "b1", modelID, "")
 	if err != nil {
 		t.Fatalf("refresh of a source-queryless model failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestFailedRefreshDoesNotAdvanceTheWatermark(t *testing.T) {
 
 	// A reflection that cannot produce an answer stands in for a model failure.
 	runner := newMentalModelRefresh(store, nil, failingReflector{})
-	if _, _, err := runner.refresh(ctx, "b1", modelID); err == nil {
+	if _, _, err := runner.refresh(ctx, "b1", modelID, ""); err == nil {
 		t.Fatal("a reflection that fails must fail the refresh")
 	}
 
@@ -191,7 +191,7 @@ func TestRefreshDeltaModeMergesContent(t *testing.T) {
 	}
 
 	runner := newMentalModelRefresh(store, mergeProvider{content: "deployments happen on tuesdays and thursdays"}, nil)
-	updated, _, err := runner.refresh(ctx, "b1", modelID)
+	updated, _, err := runner.refresh(ctx, "b1", modelID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestEffectiveRefreshMode(t *testing.T) {
 				Trigger: tc.trigger, Content: tc.content,
 				LastRefreshedSourceQuery: tc.refreshed, SourceQuery: tc.sourceQ,
 			}
-			mode, reason := effectiveRefreshMode(model)
+			mode, reason := effectiveRefreshMode(model, "")
 			if mode != tc.wantMode || reason != tc.wantReason {
 				t.Fatalf("effectiveRefreshMode = (%q, %q), want (%q, %q)", mode, reason, tc.wantMode, tc.wantReason)
 			}
@@ -414,7 +414,7 @@ func TestRefreshRecordsTheQueryItRan(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newMentalModelRefresh(store, nil, nil)
-	if _, _, err := runner.refresh(context.Background(), "b1", modelID); err != nil {
+	if _, _, err := runner.refresh(context.Background(), "b1", modelID, ""); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 	stored, err := store.GetMentalModel(context.Background(), "b1", modelID)
@@ -435,7 +435,7 @@ func TestRefreshRecordsTheQueryItRan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode, reason := effectiveRefreshMode(changed); mode != "full" || reason != modeFallbackSourceQueryChanged {
+	if mode, reason := effectiveRefreshMode(changed, ""); mode != "full" || reason != modeFallbackSourceQueryChanged {
 		t.Fatalf("after a source-query change: (%q, %q), want a full read", mode, reason)
 	}
 }
@@ -458,7 +458,7 @@ func TestFirstRefreshReadsTheWholeScope(t *testing.T) {
 	if model.LastMemorySeenAt != nil {
 		t.Fatal("the fixture must not carry a watermark, or the case is not exercised")
 	}
-	if _, report, err := runner.refresh(context.Background(), "b1", modelID); err != nil {
+	if _, report, err := runner.refresh(context.Background(), "b1", modelID, ""); err != nil {
 		t.Fatalf("refresh: %v", err)
 	} else if report.outcome != outcomeContentWritten {
 		t.Fatalf("outcome = %q, want a written document: the first refresh must read the bank", report.outcome)
@@ -508,7 +508,7 @@ func TestRefreshWithNoSourcesRecordsTheSkipWithoutWritingContent(t *testing.T) {
 	}
 
 	runner := newMentalModelRefresh(store, nil, nil)
-	_, report, err := runner.refresh(ctx, "b1", modelID)
+	_, report, err := runner.refresh(ctx, "b1", modelID, "")
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestRefreshStoresTheReferenceReflectResponseShape(t *testing.T) {
 	store, modelID := refreshFixture(t, "deployment")
 	ctx := context.Background()
 	runner := newMentalModelRefresh(store, nil, nil)
-	if _, _, err := runner.refresh(ctx, "b1", modelID); err != nil {
+	if _, _, err := runner.refresh(ctx, "b1", modelID, ""); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 	model, err := store.GetMentalModel(ctx, "b1", modelID)
@@ -691,7 +691,7 @@ func TestRefreshRecordsTheSlimmedHistorySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newMentalModelRefresh(store, nil, nil)
-	if _, _, err := runner.refresh(ctx, "b1", modelID); err != nil {
+	if _, _, err := runner.refresh(ctx, "b1", modelID, ""); err != nil {
 		t.Fatal(err)
 	}
 	history, err := store.MentalModelHistory(ctx, "b1", modelID)

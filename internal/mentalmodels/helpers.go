@@ -21,7 +21,10 @@ const (
 // detailValues and tagsMatchValues are the reference's Literals for the list and
 // get routes; a value outside them is a 422 literal_error.
 var (
-	detailValues    = []string{"metadata", "content", "full"}
+	detailValues = []string{"metadata", "content", "full"}
+	// tagsMatchValues is the narrower literal /mental-models declares. It keeps
+	// naming the three modes the reference's model does, not the wider
+	// validation.TagsMatchModes the memory read routes enumerate.
 	tagsMatchValues = []string{"any", "all", "exact"}
 )
 
@@ -355,4 +358,85 @@ func rawMaxTokens(raw json.RawMessage) *int {
 		return nil
 	}
 	return &value
+}
+
+// refreshModeValues is the one value a refresh body's mode admits: the
+// reference declares it `Literal["full"]`.
+var refreshModeValues = []string{refreshModeFull}
+
+// refreshModeParam reads the refresh route's optional body and returns the
+// one-run mode override it asks for, "" for the model's own mode.
+//
+// The body is optional and admits a JSON null, so an absent body and a null one
+// both run the model's own mode. A body that is not an object is the framework's
+// `model_attributes_type` item located at body, and a `mode` outside the Literal
+// is a `literal_error` at body.mode — the same items the request model files.
+// Anything the model does not declare is ignored, as it is on every route.
+func refreshModeParam(w http.ResponseWriter, r *http.Request) (string, bool) {
+	limited := http.MaxBytesReader(nil, r.Body, maxBodyBytes)
+	defer func() { _ = limited.Close() }()
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, body))
+		return "", false
+	}
+	if trimmed := strings.TrimSpace(string(body)); trimmed == "" || trimmed == "null" {
+		return "", true
+	}
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		httpx.WriteErrorFor(w, r, httpx.BodyDecodeFailure(err, body))
+		return "", false
+	}
+	object, isObject := decoded.(map[string]any)
+	if !isObject {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.TypeMismatch("model_attributes_type", []string{"body"}, decodeTriggerNumbers(decoded)),
+		}})
+		return "", false
+	}
+	raw, present := object["mode"]
+	if !present || raw == nil {
+		return "", true
+	}
+	mode, isString := raw.(string)
+	if !isString || !contains(refreshModeValues, mode) {
+		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{
+			httpx.Literal([]string{"body", "mode"}, decodeTriggerNumbers(raw), refreshModeValues),
+		}})
+		return "", false
+	}
+	return mode, true
+}
+
+// boolQueryValues are the spellings the framework's lax boolean binding accepts,
+// keyed to the value each one reads as. It is pydantic's lax bool set: the same
+// words, numbers and case-insensitive forms it coerces anywhere else.
+var boolQueryValues = map[string]bool{
+	"1": true, "on": true, "t": true, "true": true, "y": true, "yes": true,
+	"0": false, "off": false, "f": false, "false": false, "n": false, "no": false,
+}
+
+// excludeKnowledgePagesParam reads the list route's exclude_knowledge_pages
+// selector: a boolean declared with a default, so an absent key is false and
+// every present value goes through the framework's lax boolean coercion (a
+// string that is not one of its spellings is a 422 `bool_parsing`). An empty
+// value parses as false — the framework reads an empty string as no words —
+// which is why it is not a default.
+func excludeKnowledgePagesParam(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	raw, present := scalarQuery(r, "exclude_knowledge_pages")
+	if !present {
+		return false, true
+	}
+	if value, ok := boolQueryValues[strings.ToLower(raw)]; ok {
+		return value, true
+	}
+	if strings.TrimSpace(raw) == "" {
+		return false, true
+	}
+	writeQueryItem(w, httpx.TypeMismatch("bool_parsing",
+		[]string{"query", "exclude_knowledge_pages"}, raw))
+	return false, false
 }

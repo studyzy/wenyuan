@@ -488,7 +488,7 @@ func TestTriggerMergeStoresExplicitNulls(t *testing.T) {
 	}
 }
 
-// The trigger reaches the wire with its seventeen members in the order the
+// The trigger reaches the wire with its eighteen members in the order the
 // reference's model declares them, not in a Go map's sorted order. The reference
 // hands its response model to the framework, which serializes fields in
 // declaration order, so a byte comparison of the two answers differed on every
@@ -523,7 +523,7 @@ func TestTriggerRendersInDeclarationOrder(t *testing.T) {
 		members = append(members, struct{ name string }{name})
 	}
 	want := []string{
-		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
+		"budget", "mode", "refresh_after_consolidation", "refresh_cron", "full_refresh_cron",
 		"min_refresh_interval_seconds", "fact_types", "exclude_mental_models",
 		"exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks",
 		"recall_max_tokens", "recall_chunks_max_tokens",

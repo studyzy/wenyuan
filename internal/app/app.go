@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,10 @@ type App struct {
 	Reranker provider.Reranker
 	// Tracer exports spans when tracing is enabled; nil when it is off.
 	Tracer *oteltrace.Tracer
+	// memops is the memory-operation handler set, kept so a caller can read the
+	// defaults composition resolved onto it (and tests can see the recall query
+	// a request produced).
+	memops *memoryops.Handlers
 	// Audit decides and records the audit trail.
 	Audit *audit.Logger
 	// Extensions is the deployment extension host. It is created during
@@ -432,7 +437,14 @@ func (a *App) mount(router *httpx.Router) error {
 	banks.BindRoutes(handle)
 
 	memops := memoryops.NewHandlers(a.Store, int(a.Config.RetryAfter.Seconds()), int(a.Config.ReadTimeout.Milliseconds()))
+	a.memops = memops
 	memops.RecallStrategyBoosts = a.Config.RecallStrategyBoosts
+	// The two v1.1.0 recall/retain defaults: the deployment's value is the last
+	// layer, under the request's and the bank's own configuration.
+	memops.RecallPreferObservations = a.Config.ProcessDefaults.RecallPreferObservations
+	if scopes, ok := a.Config.ProcessDefaults.DefaultObservationScopes.(json.RawMessage); ok {
+		memops.DefaultObservationScopes = scopes
+	}
 	memops.MaxAttachmentBytes = int64(a.Config.RetainAttachmentMaxSizeMB) << 20
 	memops.MaxAttachments = a.Config.RetainAttachmentMaxCount
 	memops.VisionEnabled = SupportsVision(a.Config)

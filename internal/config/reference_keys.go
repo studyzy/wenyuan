@@ -63,18 +63,26 @@ const (
 	EnvRecallPhaseSampleEvery        = "WENYUAN_API_RECALL_PHASE_SAMPLE_EVERY"
 	EnvRecallMaxConcurrent           = "WENYUAN_API_RECALL_MAX_CONCURRENT"
 	EnvRecallIncludeChunks           = "WENYUAN_API_RECALL_INCLUDE_CHUNKS"
-	EnvRecallMaxTokens               = "WENYUAN_API_RECALL_MAX_TOKENS"
-	EnvRecallChunksMaxTokens         = "WENYUAN_API_RECALL_CHUNKS_MAX_TOKENS"
-	EnvBackpressureDeferSeconds      = "WENYUAN_API_BACKPRESSURE_DEFER_SECONDS"
-	EnvRecallBudgetFunction          = "WENYUAN_API_RECALL_BUDGET_FUNCTION"
-	EnvRecallBudgetFixedLow          = "WENYUAN_API_RECALL_BUDGET_FIXED_LOW"
-	EnvRecallBudgetFixedMid          = "WENYUAN_API_RECALL_BUDGET_FIXED_MID"
-	EnvRecallBudgetFixedHigh         = "WENYUAN_API_RECALL_BUDGET_FIXED_HIGH"
-	EnvRecallBudgetAdaptiveLow       = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_LOW"
-	EnvRecallBudgetAdaptiveMid       = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_MID"
-	EnvRecallBudgetAdaptiveHigh      = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_HIGH"
-	EnvRecallBudgetMin               = "WENYUAN_API_RECALL_BUDGET_MIN"
-	EnvRecallBudgetMax               = "WENYUAN_API_RECALL_BUDGET_MAX"
+	// EnvRecallPreferObservations is recall's prefer_observations value when a
+	// request leaves it out (the reference made the request field nullable so a
+	// deployment can turn it on for clients that never pass it).
+	EnvRecallPreferObservations = "WENYUAN_API_RECALL_PREFER_OBSERVATIONS"
+	// EnvDefaultObservationScopes is the observation_scopes retain applies to
+	// items that send none: a mode name, or a JSON list of tag lists (globs
+	// allowed), e.g. [["topic:*"]].
+	EnvDefaultObservationScopes = "WENYUAN_API_DEFAULT_OBSERVATION_SCOPES"
+	EnvRecallMaxTokens          = "WENYUAN_API_RECALL_MAX_TOKENS"
+	EnvRecallChunksMaxTokens    = "WENYUAN_API_RECALL_CHUNKS_MAX_TOKENS"
+	EnvBackpressureDeferSeconds = "WENYUAN_API_BACKPRESSURE_DEFER_SECONDS"
+	EnvRecallBudgetFunction     = "WENYUAN_API_RECALL_BUDGET_FUNCTION"
+	EnvRecallBudgetFixedLow     = "WENYUAN_API_RECALL_BUDGET_FIXED_LOW"
+	EnvRecallBudgetFixedMid     = "WENYUAN_API_RECALL_BUDGET_FIXED_MID"
+	EnvRecallBudgetFixedHigh    = "WENYUAN_API_RECALL_BUDGET_FIXED_HIGH"
+	EnvRecallBudgetAdaptiveLow  = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_LOW"
+	EnvRecallBudgetAdaptiveMid  = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_MID"
+	EnvRecallBudgetAdaptiveHigh = "WENYUAN_API_RECALL_BUDGET_ADAPTIVE_HIGH"
+	EnvRecallBudgetMin          = "WENYUAN_API_RECALL_BUDGET_MIN"
+	EnvRecallBudgetMax          = "WENYUAN_API_RECALL_BUDGET_MAX"
 
 	// Retain tuning.
 	EnvRetainMaxCompletionTokens           = "WENYUAN_API_RETAIN_MAX_COMPLETION_TOKENS"

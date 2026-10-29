@@ -40,6 +40,34 @@ def load(source: str) -> dict:
         return json.load(handle)
 
 
+def render(document: dict) -> str:
+    """The document as served, in this service's two deliberate renderings.
+
+    - Upload bodies are `contentMediaType: application/octet-stream` here, where the
+      reference renders FastAPI's `format: binary`; this service serves raw bytes and
+      documents them that way (pinned by internal/httpx/schema_test.go).
+    - Environment names in the prose carry this service's prefix, so the document a
+      client reads names settings a deployment here actually exports; everything else
+      is the reference's text unchanged.
+    """
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("format") == "binary":
+                del node["format"]
+                node["contentMediaType"] = "application/octet-stream"
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(document)
+    return json.dumps(document, ensure_ascii=False, separators=(",", ":")).replace(
+        "HINDSIGHT_API_", "WENYUAN_API_"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default=SOURCE,
@@ -55,7 +83,7 @@ def main() -> int:
     document.pop("servers", None)
     # The reference's response carries no trailing newline, so neither does the
     # captured copy: /openapi.json is byte-identical to the live document.
-    rendered = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+    rendered = render(document)
 
     if args.check:
         with open(TARGET, "r", encoding="utf-8") as handle:

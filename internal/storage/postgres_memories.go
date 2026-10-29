@@ -438,11 +438,16 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 			doRevert = true
 		}
 	}
+	// The change history is filed on the consolidation this write queues, so the
+	// tracked-writes record is bound before any sweep runs (memory_engine.py:13126-13152).
+	track, ctx := beginCurationHistory(ctx, s, bankID, memoryID, curationInvalidate)
 	if doRevert {
 		if err := s.revertMemory(ctx, bankID, memoryID); err != nil {
 			return MemoryUnit{}, err
 		}
-		s.submitEditFollowUps(ctx, bankID)
+		track.action = curationActionForHistory(curationRevert)
+		track.recordDocument(ctx, s)
+		track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 		return s.GetMemory(ctx, bankID, memoryID)
 	}
 	if patch.Text != nil {
@@ -468,11 +473,15 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 		current.OccurredEnd = nil
 	}
 	current.OccurredEnd = applyDatePatch(current.OccurredEnd, patch.OccurredEnd)
+	if patch.MentionedAt != nil {
+		current.MentionedAt = applyDatePatch(current.MentionedAt, patch.MentionedAt)
+	}
 	// An explicit occurred_start edit — including a clear — re-derives the
 	// legacy single date with retain's own rule (occurred_start or
 	// mentioned_at), so clearing an occurrence cannot leave the old date
-	// behind. An omitted occurred_start is not an occurrence edit.
-	if patch.ClearOccurredStart || patch.OccurredStart != nil {
+	// behind. A mentioned_at edit re-derives it the same way, since it is the
+	// fallback. An edit touching neither is not an occurrence edit.
+	if patch.ClearOccurredStart || patch.OccurredStart != nil || patch.MentionedAt != nil {
 		if current.OccurredStart != nil {
 			current.EventDate = current.OccurredStart
 		} else {
@@ -492,6 +501,9 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 	// date+entity augmentation. The names are read back after the entity rewrite
 	// above, so the vector describes the entity set this same call stores.
 	edit := editTouchesContent(patch)
+	if edit {
+		track.action = curationActionForHistory(curationEdit)
+	}
 	var embedding []float32
 	if edit {
 		names := []string(nil)
@@ -506,7 +518,8 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 	}
 	args := []any{bankID, memoryID,
 		current.Text, normalizeTags(current.Tags), metadata, current.Context,
-		string(current.FactType), current.OccurredStart, current.OccurredEnd, current.EventDate}
+		string(current.FactType), current.OccurredStart, current.OccurredEnd, current.EventDate,
+		current.MentionedAt}
 	// The re-embedded vector rides the edit's own UPDATE, exactly as the
 	// reference's apply_edit does; when no embedder produced one the clause is
 	// omitted so the stored vector is left as it is rather than cleared.
@@ -524,6 +537,7 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 		query := `UPDATE ` + qualified + `.memory_units
 		          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "$6", "text_signals") + `, tags = $4, metadata = $5::jsonb,
 		              context = $6, fact_type = $7, occurred_start = $8, occurred_end = $9, event_date = $10,
+		              mentioned_at = $11,
 		              consolidated_at = NULL, consolidation_failed_at = NULL, edited_at = now(), updated_at = now()` +
 			embeddingClause + `
 		          WHERE bank_id = $1 AND id = $2`
@@ -557,10 +571,12 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 			if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
 				return MemoryUnit{}, err
 			}
-			s.submitEditFollowUps(ctx, bankID)
+			track.recordDocument(ctx, s)
+			track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 		}
 	} else if edit {
-		s.submitEditFollowUps(ctx, bankID)
+		track.recordDocument(ctx, s)
+		track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 	}
 	return s.GetMemory(ctx, bankID, memoryID)
 }
@@ -571,18 +587,20 @@ func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID strin
 func editsColumns(patch MemoryPatch) bool {
 	return patch.Text != nil || patch.Context != nil || patch.FactType != nil ||
 		patch.OccurredStart != nil || patch.ClearOccurredStart ||
-		patch.OccurredEnd != nil || patch.ClearOccurredEnd ||
+		patch.OccurredEnd != nil || patch.ClearOccurredEnd || patch.MentionedAt != nil ||
 		patch.Tags != nil || patch.Metadata != nil
 }
 
 // editTouchesContent reports whether a patch changes the unit's own content in
 // the way the reference's `doing_edit` does: text, context, either occurrence
-// date (including a clear), the fact type or the entity set. It is exactly the
-// set of changes that re-embed the unit and re-fold its observations.
+// date (including a clear), the mention time, the fact type or the entity set.
+// It is exactly the set of changes that re-embed the unit and re-fold its
+// observations.
 func editTouchesContent(patch MemoryPatch) bool {
 	return patch.Text != nil || patch.Context != nil || patch.FactType != nil ||
 		patch.OccurredStart != nil || patch.ClearOccurredStart ||
-		patch.OccurredEnd != nil || patch.ClearOccurredEnd || patch.Entities != nil
+		patch.OccurredEnd != nil || patch.ClearOccurredEnd || patch.MentionedAt != nil ||
+		patch.Entities != nil
 }
 
 // submitEditFollowUps queues the background work a curation edit leaves behind:
@@ -593,17 +611,21 @@ func editTouchesContent(patch MemoryPatch) bool {
 // unreferenced even when the unit itself is isolated). A failure to submit
 // never fails the edit: the write is already durable, and the periodic sweeps
 // pick the work up.
-func (s *PostgresStore) submitEditFollowUps(ctx context.Context, bankID string) {
+func (s *PostgresStore) submitEditFollowUps(ctx context.Context, bankID string) string {
+	consolidationID := ""
 	if s.autoConsolidationFor(ctx, bankID) {
-		if _, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
+		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
 			slog.Default().Warn("could not submit consolidation after curating a memory",
 				"bank_id", bankID, "error", err)
+		} else {
+			consolidationID = op.OperationID
 		}
 	}
 	if _, _, err := s.EnqueueGraphMaintenance(ctx, bankID); err != nil {
 		slog.Default().Warn("could not submit graph maintenance after curating a memory",
 			"bank_id", bankID, "error", err)
 	}
+	return consolidationID
 }
 
 // autoConsolidationFor resolves whether an edit submits a consolidation pass:
@@ -776,6 +798,9 @@ func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID
 	if memoryID == "" {
 		return s.clearBankObservationsTx(ctx, tx, bankID)
 	}
+	// The clear's event is filed on the consolidation it queues, and only a
+	// clear that removed something is recorded (memory_engine.py:12524-12565).
+	track, ctx := beginClearHistory(ctx, s, bankID, memoryID)
 	deleted, err := s.deleteStaleObservationsTx(ctx, tx, bankID, []string{memoryID})
 	if err != nil {
 		return 0, err
@@ -793,6 +818,11 @@ func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
+	}
+	if deleted > 0 && s.autoConsolidationFor(ctx, bankID) {
+		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
+			track.file(ctx, s, op.OperationID)
+		}
 	}
 	return deleted, nil
 }

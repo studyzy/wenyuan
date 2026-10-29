@@ -19,7 +19,7 @@ import (
 func TestWebhookEventBodyConsolidationFailure(t *testing.T) {
 	at := time.Date(2026, 10, 17, 21, 9, 36, 952104000, time.UTC)
 	body, err := marshalWebhookEvent("consolidation.completed", "parity-w12-ref",
-		"d544c9d2-a6a2-461e-b69d-131c40f45443", "failed", at,
+		"d544c9d2-a6a2-461e-b69d-131c40f45443", "", "failed", at,
 		map[string]any{"error_message": "TypeError: 'int' object is not iterable"})
 	if err != nil {
 		t.Fatal(err)

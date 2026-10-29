@@ -491,6 +491,11 @@ type Document struct {
 	// MemoryUnitCount is how many units the document currently owns. It is
 	// derived on read rather than stored, so it cannot drift from the units.
 	MemoryUnitCount int
+	// MatchedFields names which fields a listing's `q` search matched on this
+	// document — "id", "original_text", or both, in that order. A listing
+	// without a `q` leaves it empty: the reference renders the key as an empty
+	// list there and populates it only for a search.
+	MatchedFields []string
 }
 
 // Chunk is one ordered segment of a document.

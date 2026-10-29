@@ -550,3 +550,61 @@ func itoa(value int) string {
 	}
 	return string(digits)
 }
+
+// RefreshModePayloadKey is the payload key carrying a one-run refresh-mode
+// override ("full") for a mental model refresh: a "full refresh now" or a
+// full_refresh_cron tick. The worker reads it to run the refresh in full mode
+// whatever the stored trigger says, and it is the second payload key a fold has
+// to reconcile (see PromoteQueuedRefreshToFull).
+const RefreshModePayloadKey = "_mode"
+
+// LifecycleLockedStore is a store able to mutate a queued operation's payload
+// inside the same critical section that decides whether to queue one. It is a
+// narrow capability rather than part of Store, like the staleness readers: only
+// the mental-model refresh submit needs it.
+type LifecycleLockedStore interface {
+	// WithOperationSubjectLock runs fn under the lock a deduplicated enqueue of
+	// this bank and operation type takes, so a submit that finds an existing
+	// queued operation may amend it without racing a concurrent submit.
+	WithOperationSubjectLock(ctx context.Context, bankID, operationType string, fn func() error) error
+}
+
+// PromoteQueuedRefreshToFull makes a queued refresh run in full mode.
+//
+// Only a row that is still pending is touched. A fold into a *processing*
+// refresh changes nothing: that run has already chosen its mode, and the
+// full_refresh_cron scan simply finds the model due again on its next tick,
+// because only a full run moves last_full_refreshed_at. Returns whether the row
+// was amended; a row that is gone, no longer pending, or already full is left
+// alone. A store that cannot amend a queued payload reports false rather than
+// failing the submit: the caller's refresh is still queued, just in its own mode.
+func PromoteQueuedRefreshToFull(ctx context.Context, store Store, bankID, operationID string) (bool, error) {
+	amender, ok := store.(OperationPayloadAmender)
+	if !ok {
+		return false, nil
+	}
+	var promoted bool
+	locker, locked := store.(LifecycleLockedStore)
+	if !locked {
+		return amender.PromoteOperationPayload(ctx, bankID, operationID,
+			RefreshModePayloadKey, "full", StatusPending)
+	}
+	err := locker.WithOperationSubjectLock(ctx, bankID, OperationTypeRefreshMentalModel, func() error {
+		changed, err := amender.PromoteOperationPayload(ctx, bankID, operationID,
+			RefreshModePayloadKey, "full", StatusPending)
+		promoted = changed
+		return err
+	})
+	return promoted, err
+}
+
+// OperationPayloadAmender sets one payload member on an operation that is still
+// in the given status, so a queued refresh can be upgraded without changing
+// what it works on.
+type OperationPayloadAmender interface {
+	// PromoteOperationPayload writes key=value into the operation's payload
+	// JSON, only while the operation still carries the expected status, and
+	// reports whether a row changed. It is a no-op when the member already
+	// holds the value.
+	PromoteOperationPayload(ctx context.Context, bankID, operationID, key string, value any, onlyStatus OperationStatus) (bool, error)
+}

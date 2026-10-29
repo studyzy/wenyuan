@@ -241,6 +241,29 @@ def functions():
     return [unqualify(r[0]).rstrip(";") + ";" for r in rows]
 
 
+def drop_functions():
+    """A DROP ahead of each routine, so a create that changes the result type applies.
+
+    The reference recreates ``mental_models_with_cron()`` by dropping it first
+    (alembic d4f7a2c9e1b5): ``CREATE OR REPLACE`` cannot change a function's
+    return type, so without the drop a series that must widen the result would
+    fail on an upgraded schema while a fresh one builds fine. Dropping by
+    identity arguments (which do not include the result type) makes the series
+    converge from either state.
+    """
+    rows = query(f"""
+        SELECT p.proname, pg_get_function_identity_arguments(p.oid)
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = '{SCHEMA}' AND p.prokind IN ('f', 'p')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.objid = p.oid AND d.deptype = 'e')
+        ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+    """)
+    return ["DROP FUNCTION IF EXISTS %s(%s);" % (row[0], " ".join(row[1].split())) for row in rows]
+
+
 def build():
     names = tables()
     files = {"extensions": EXTENSIONS}
@@ -250,7 +273,10 @@ def build():
         [s for t in names for s in foreign_keys(t)]) + "\n"
     files["reference_indexes"] = "\n\n".join(
         [s for t in names for s in indexes(t)]) + "\n"
-    files["reference_functions"] = "\n\n".join(functions()) + "\n"
+    # Each routine's DROP precedes the whole block: the creates are independent of
+    # each other, and a drop interleaved with them would read as one routine's
+    # prelude to the next.
+    files["reference_functions"] = "\n".join(drop_functions()) + "\n\n" + "\n\n".join(functions()) + "\n"
 
     bodies = {}
     for index, key in enumerate(ORDER, start=1):

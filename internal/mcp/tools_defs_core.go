@@ -238,8 +238,11 @@ func coreTools() []tool {
 						"default": nil,
 					},
 					"prefer_observations": map[string]any{
-						"default": false,
-						"type":    "boolean",
+						"anyOf": []any{
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+						"default": nil,
 					},
 					"query": map[string]any{
 						"type": "string",

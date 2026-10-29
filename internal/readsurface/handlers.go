@@ -85,6 +85,15 @@ func (h *Handlers) dispatchDocumentMember(w http.ResponseWriter, r *http.Request
 			h.ListDocumentChunks(w, r)
 			return
 		}
+		// The history route is registered ahead of the plain member read in the
+		// reference, so a remainder ending in `/history` names a document one
+		// segment shorter — including one whose id contains a slash.
+		if trimmed, ok := strings.CutSuffix(remainder, httpx.SuffixDocumentHistory); ok && trimmed != "" {
+			httpx.DeclareQuery(r, "limit", "offset")
+			r.SetPathValue("document_id", trimmed)
+			h.GetDocumentHistory(w, r)
+			return
+		}
 		r.SetPathValue("document_id", remainder)
 		h.GetDocument(w, r)
 	case http.MethodPost:
@@ -224,13 +233,15 @@ func pageItems[T any](items []T, offset, limit int) []T {
 
 // Graph returns the bank's memory graph.
 func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
-	// `limit` is the route's only `Query(...)` parameter and is bound before the
-	// handler body, so it is validated before the bank is looked up. The other
-	// parameters here are plain strings in the reference (`type`, `q`,
-	// `tags_match`, `document_id`, `chunk_id`) and are not validated at all.
+	// `limit` and `tags_match` are `Query(...)` parameters in the reference,
+	// bound before the handler body, so they are validated before the bank is
+	// looked up. The rest (`type`, `q`, `document_id`, `chunk_id`) are plain
+	// strings and are not validated at all. `tags_match` became a typed
+	// enumeration in v1.1.0 — v1.0.0 declared it without one — so an unknown
+	// mode is now the framework's 422 rather than a filter the handler ignores.
 	params, bankID, ok := h.validateEntityQuery(w, r, entityParamSpec{
 		Page: true, LimitDefault: defaultGraphLimit, NoTagGroups: true,
-		TagsMatchDefault: storage.TagsMatchAllStrict,
+		TagsMatch: true, TagsMatchDefault: storage.TagsMatchAllStrict,
 	})
 	if !ok {
 		return

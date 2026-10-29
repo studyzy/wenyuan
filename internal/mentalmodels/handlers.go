@@ -76,6 +76,10 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	excludePages, ok := excludeKnowledgePagesParam(w, r)
+	if !ok {
+		return
+	}
 	records, err := h.Store.ListMentalModels(r.Context(), bankID, "")
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
@@ -84,6 +88,12 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	tags := httpx.QueryValues(r, "tags")
 	items := make([]Model, 0, len(records))
 	for _, record := range records {
+		// A page's backing model is a mental model, so it is listed unless the
+		// caller asked for standalone models only — and the exclusion happens
+		// before the totals, so `total` counts what the filter matched.
+		if excludePages && record.IsKnowledgePage != nil && *record.IsKnowledgePage {
+			continue
+		}
 		if len(tags) > 0 && !matchesTags(record.Tags, tags, mode) {
 			continue
 		}
@@ -209,7 +219,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	// A refresh is always queued, so the acknowledgement always carries the
 	// operation id the caller polls, even for an empty source query.
-	opID, err := h.enqueueModelRefresh(r, bankID, record.ID, record.Name)
+	opID, err := h.enqueueModelRefresh(r, bankID, record.ID, record.Name, false)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -225,16 +235,63 @@ func derefTags(tags *[]string) []string {
 	return *tags
 }
 
+// refreshModeFull is the one-run mode override a refresh request may state, and
+// the value the worker reads out of the queued payload.
+const refreshModeFull = "full"
+
 // enqueueModelRefresh queues a refresh of a mental model and returns the
 // operation identifier. It records the model's identifier and name in the
 // operation's result metadata, which is what the operation-status route reads
 // back as mental_model_id, matching the reference.
-func (h *Handlers) enqueueModelRefresh(r *http.Request, bankID, modelID, name string) (string, error) {
-	result, err := h.Store.EnqueueOperation(r.Context(), storage.EnqueueRequest{
+//
+// full asks for a one-run full refresh. The payload carries the mode override
+// the worker reads, and a submit that folds into an already-queued plain refresh
+// upgrades that one rather than dropping the request: a full refresh covers what
+// a delta would have done. A fold into a *processing* refresh changes nothing —
+// that run has already chosen its mode, so a plain submit is left as one.
+func (h *Handlers) enqueueModelRefresh(r *http.Request, bankID, modelID, name string, full bool) (string, error) {
+	ctx := r.Context()
+	if !full {
+		return h.enqueueRefresh(ctx, bankID, modelID, name, false)
+	}
+	// The fold-and-upgrade is decided under the same lock a deduplicated enqueue
+	// takes, where the store offers one, so no submit can queue a second refresh
+	// between the fold and the amendment. The in-memory store offers no such
+	// lock (its enqueue already holds the store mutex, so a second lock would
+	// deadlock) and runs the two steps directly; there the window between them
+	// lets a concurrent plain submit fold into the refresh just before this
+	// promotion, which is still the intended outcome — it is made full, not
+	// dropped.
+	var operationID string
+	enqueue := func() error {
+		var err error
+		operationID, err = h.enqueueRefresh(ctx, bankID, modelID, name, true)
+		return err
+	}
+	if locker, locked := h.Store.(storage.LifecycleLockedStore); locked {
+		if err := locker.WithOperationSubjectLock(ctx, bankID, storage.OperationTypeRefreshMentalModel, enqueue); err != nil {
+			return "", err
+		}
+	} else if err := enqueue(); err != nil {
+		return "", err
+	}
+	if _, err := storage.PromoteQueuedRefreshToFull(ctx, h.Store, bankID, operationID); err != nil {
+		return "", err
+	}
+	return operationID, nil
+}
+
+// enqueueRefresh performs one deduplicated enqueue.
+func (h *Handlers) enqueueRefresh(ctx context.Context, bankID, modelID, name string, full bool) (string, error) {
+	payload := map[string]any{storage.MentalModelIDPayloadKey: modelID}
+	if full {
+		payload[storage.RefreshModePayloadKey] = refreshModeFull
+	}
+	result, err := h.Store.EnqueueOperation(ctx, storage.EnqueueRequest{
 		Operation: storage.Operation{
 			BankID:           bankID,
 			OperationType:    storage.OperationTypeRefreshMentalModel,
-			Payload:          map[string]any{storage.MentalModelIDPayloadKey: modelID},
+			Payload:          payload,
 			ResultMetadata:   map[string]any{storage.MentalModelIDPayloadKey: modelID, "name": name},
 			SerializationKey: storage.MentalModelSerializationKey(modelID),
 		},
@@ -397,12 +454,18 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The body is optional, and the reference reads it after the model exists, so
+	// a malformed body on an unknown model is still the model's 404.
 	record, err := h.Store.GetMentalModel(r.Context(), bankID, id)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.refreshError(bankID, id, err))
 		return
 	}
-	opID, err := h.enqueueModelRefresh(r, bankID, id, record.Name)
+	mode, ok := refreshModeParam(w, r)
+	if !ok {
+		return
+	}
+	opID, err := h.enqueueModelRefresh(r, bankID, id, record.Name, mode == refreshModeFull)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -441,7 +504,7 @@ func (h *Handlers) DryRunRefresh(w http.ResponseWriter, r *http.Request) {
 // BindRoutes registers the family's route table.
 func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMentalModels), httpx.QueryParams(h.List,
-		"tags", "tags_match", "detail", "limit", "offset"))
+		"tags", "tags_match", "detail", "limit", "offset", "exclude_knowledge_pages"))
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMentalModels), h.Create)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMentalModelMember), httpx.QueryParams(h.Get, "detail"))
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixMentalModelMember), h.Update)

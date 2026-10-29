@@ -54,8 +54,9 @@ type MemoriesTimeseriesResponse struct {
 	Buckets   []TimeseriesBucket `json:"buckets"`
 }
 
-// AuditLogEntry is one recorded API interaction.
-type AuditLogEntry struct {
+// AuditLogSummary is one recorded API interaction without its request and
+// response bodies, which is what the list serves.
+type AuditLogSummary struct {
 	ID         string         `json:"id"`
 	Action     string         `json:"action"`
 	Transport  string         `json:"transport"`
@@ -63,18 +64,24 @@ type AuditLogEntry struct {
 	StartedAt  *string        `json:"started_at"`
 	EndedAt    *string        `json:"ended_at"`
 	DurationMS *int           `json:"duration_ms"`
-	Request    map[string]any `json:"request"`
-	Response   map[string]any `json:"response"`
 	Metadata   map[string]any `json:"metadata"`
+}
+
+// AuditLogEntry is one recorded API interaction with its full request and
+// response bodies, which is what a single-entry fetch serves.
+type AuditLogEntry struct {
+	AuditLogSummary
+	Request  map[string]any `json:"request"`
+	Response map[string]any `json:"response"`
 }
 
 // AuditLogListResponse is the audit listing envelope.
 type AuditLogListResponse struct {
-	BankID string          `json:"bank_id"`
-	Total  int             `json:"total"`
-	Limit  int             `json:"limit"`
-	Offset int             `json:"offset"`
-	Items  []AuditLogEntry `json:"items"`
+	BankID string            `json:"bank_id"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
+	Items  []AuditLogSummary `json:"items"`
 }
 
 // AuditLogStatsBucket is one bucket of the audit histogram.

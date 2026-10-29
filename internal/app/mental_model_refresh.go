@@ -134,7 +134,12 @@ func (r mentalModelRefreshReport) metadata() map[string]any {
 
 // refresh runs one refresh and returns the updated model, alongside a report of
 // what it did for the operation record.
-func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string) (storage.MentalModel, mentalModelRefreshReport, error) {
+//
+// modeOverride is the queued operation's one-run mode ("full" for a "full
+// refresh now" or a full_refresh_cron tick), or "" to run the model's own mode.
+// It never changes what is stored in the trigger: the next refresh reads the
+// trigger again and goes back to editing in place.
+func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string, modeOverride string) (storage.MentalModel, mentalModelRefreshReport, error) {
 	model, err := r.store.GetMentalModel(ctx, bankID, modelID)
 	if err != nil {
 		return storage.MentalModel{}, failedRefresh(reasonUnexpectedError), err
@@ -177,7 +182,7 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	// and a topic that has not moved. When either is missing the reference falls
 	// back to a full read and records why, so the window below is only narrowed
 	// for a delta that will actually be taken.
-	mode, modeFallbackReason := effectiveRefreshMode(model)
+	mode, modeFallbackReason := effectiveRefreshMode(model, modeOverride)
 	report.modeFallbackReason = modeFallbackReason
 
 	// The lower bound is the watermark a successful refresh persisted, and
@@ -212,6 +217,14 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 		}
 		if err := r.store.MarkMentalModelSeen(ctx, bankID, modelID, time.Time{}); err != nil {
 			return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
+		}
+		// A full run that found nothing in scope still read everything there is,
+		// so it counts as the last full refresh. Left unstamped, a full_refresh_cron
+		// on a quiet scope would come due again on every scheduler tick.
+		if mode == refreshModeFull {
+			if err := r.stampFullRefresh(ctx, bankID, modelID); err != nil {
+				return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
+			}
 		}
 		report.outcome = outcomeContentPreservedNoNewFacts
 		return updated, report, nil
@@ -296,8 +309,24 @@ func (r mentalModelRefresh) refresh(ctx context.Context, bankID, modelID string)
 	if err := r.store.MarkMentalModelSeen(ctx, bankID, modelID, seenAt); err != nil {
 		return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
 	}
+	// Only a run that finished in full mode moves the full-refresh clock: a plain
+	// delta leaves it where it was, so frequent delta refreshes never push the
+	// full schedule back.
+	if mode == refreshModeFull {
+		if err := r.stampFullRefresh(ctx, bankID, modelID); err != nil {
+			return storage.MentalModel{}, report.failed(reasonUnexpectedError), err
+		}
+	}
 	report.outcome = refreshOutcome
 	return updated, report, nil
+}
+
+// stampFullRefresh records that a completed refresh ran in full mode, which moves
+// the clock trigger.full_refresh_cron comes due against. A backend that cannot
+// record it is not an error: the refresh itself is complete, and the next full
+// tick simply finds the model due again.
+func (r mentalModelRefresh) stampFullRefresh(ctx context.Context, bankID, modelID string) error {
+	return storage.StampFullRefresh(ctx, r.store, bankID, modelID)
 }
 
 // renderContentDocument normalizes a refresh candidate into the markdown that
@@ -361,8 +390,12 @@ func triggerExcludesMentalModels(trigger map[string]any) bool {
 // with no content, and a template reapply rewrites the source query, and in
 // either case a delta over "memories newer than the watermark" would read
 // nothing and leave the document as it was.
-func effectiveRefreshMode(model storage.MentalModel) (mode, fallbackReason string) {
-	if refreshMode(model) != "delta" {
+//
+// A one-run override of "full" replaces the requested mode before the fallback
+// rules run, so a delta model asked for a full refresh reads its whole scope and
+// is not reported as having fallen back — the caller asked for exactly that.
+func effectiveRefreshMode(model storage.MentalModel, modeOverride string) (mode, fallbackReason string) {
+	if modeOverride == refreshModeFull || refreshMode(model) != "delta" {
 		return "full", ""
 	}
 	if strings.TrimSpace(model.Content) == "" {
@@ -380,6 +413,10 @@ const (
 	modeFallbackNoBaselineContent  = "no_baseline_content"
 	modeFallbackSourceQueryChanged = "source_query_changed"
 )
+
+// refreshModeFull is the one-run mode override a refresh operation may carry,
+// the same value the refresh request body's mode admits.
+const refreshModeFull = "full"
 
 // refreshMode reads the refresh mode from the model's trigger, defaulting to
 // full.

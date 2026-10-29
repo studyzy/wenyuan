@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -359,6 +361,65 @@ func (s *PostgresStore) ListAuditLog(ctx context.Context, query AuditQuery) (Aud
 	return AuditPage{Entries: entries, Total: total, Limit: query.Limit, Offset: query.Offset}, rows.Err()
 }
 
+// GetAuditLog returns one audit entry of the bank, bodies included.
+//
+// The reference parses the identifier as a UUID before it looks anything up and
+// answers "not found" for one that does not parse, so a malformed identifier is
+// a missing entry rather than a driver error. The bank is part of the match, so
+// an entry of another bank is missing too.
+func (s *PostgresStore) GetAuditLog(ctx context.Context, bankID, logID string) (AuditEntry, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return AuditEntry{}, schemaErr
+	}
+	canonical, ok := canonicalUUID(logID)
+	if !ok {
+		return AuditEntry{}, ErrAuditEntryNotFound
+	}
+	var entry AuditEntry
+	var endedAt sql.NullTime
+	var request, response, metadata []byte
+	err := s.reader().QueryRowContext(ctx,
+		`SELECT id, action, transport, COALESCE(bank_id,''), started_at, ended_at,
+		        COALESCE(request, 'null'::jsonb), COALESCE(response, 'null'::jsonb),
+		        COALESCE(metadata, '{}'::jsonb)
+		 FROM `+quoteIdent(schema)+`.audit_log WHERE id = $1 AND bank_id = $2`,
+		canonical, bankID).Scan(&entry.ID, &entry.Action, &entry.Transport, &entry.BankID,
+		&entry.StartedAt, &endedAt, &request, &response, &metadata)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuditEntry{}, ErrAuditEntryNotFound
+	}
+	if err != nil {
+		return AuditEntry{}, err
+	}
+	entry.EndedAt = nullTimePtr(endedAt)
+	entry.Request = decodeJSONMap(request)
+	entry.Response = decodeJSONMap(response)
+	entry.Metadata = decodeJSONMap(metadata)
+	return entry, nil
+}
+
+// canonicalUUID reads an identifier the way the reference's uuid.UUID does, and
+// returns its canonical 8-4-4-4-12 lower-case form. The reference accepts the
+// canonical spelling, brace- or urn-wrapped forms, and the bare 32-hex digit
+// form; anything else is not an identifier at all.
+func canonicalUUID(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	lowered := strings.ToLower(trimmed)
+	lowered = strings.TrimPrefix(lowered, "urn:uuid:")
+	if len(lowered) == 38 && lowered[0] == '{' && lowered[37] == '}' {
+		lowered = lowered[1:37]
+	}
+	bare := strings.ReplaceAll(lowered, "-", "")
+	if len(bare) != 32 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(bare); err != nil {
+		return "", false
+	}
+	return bare[0:8] + "-" + bare[8:12] + "-" + bare[12:16] + "-" + bare[16:20] + "-" + bare[20:32], true
+}
+
 // AuditLogStats buckets the audit trail over a period.
 func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error) {
 	schema, schemaErr := s.schemaFor(ctx)
@@ -428,6 +489,9 @@ func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQue
 		}
 		args = append(args, exact.value)
 		clauses = append(clauses, exact.column+" = $"+strconv.Itoa(len(args)))
+	}
+	if query.CallType != "" {
+		clauses = append(clauses, llmCallTypeClause(query.CallType))
 	}
 	if query.DocumentIDSet {
 		// The document is carried in per-call metadata, not a column.
@@ -602,8 +666,30 @@ func marshalNullableJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
-// LLMRequestStats buckets the model-request trace over a period.
-func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error) {
+// The `call_type` conditions as SQL over `scope`, the reference's
+// llm_trace.py `_CALL_TYPE_SQL`. The `_` in an `embedding_`/`decision_` prefix
+// is a LIKE wildcard, so it is escaped — an unescaped one would let
+// `decisionXfoo` count as a decision. `llm` is the complement, over
+// COALESCE(scope, ”): a NULL scope would make NOT (...) NULL and drop the row
+// from every kind, where it counts as an LLM call.
+var llmCallTypeClauses = map[string]string{
+	LLMCallTypeEmbedding: "scope LIKE 'embedding\\_%' ESCAPE '\\'",
+	LLMCallTypeRerank:    "scope = 'rerank'",
+	LLMCallTypeDecision:  "scope LIKE 'decision\\_%' ESCAPE '\\'",
+	LLMCallTypeLLM: "NOT (COALESCE(scope, '') LIKE 'embedding\\_%' ESCAPE '\\'" +
+		" OR COALESCE(scope, '') = 'rerank'" +
+		" OR COALESCE(scope, '') LIKE 'decision\\_%' ESCAPE '\\')",
+}
+
+// llmCallTypeClause is the WHERE condition selecting one kind of model call,
+// the SQL form of LLMCallTypeOf.
+func llmCallTypeClause(callType string) string {
+	return llmCallTypeClauses[callType]
+}
+
+// LLMRequestStats buckets the model-request trace over a period, optionally
+// narrowed to one kind of model call.
+func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, operation, callType string) (LLMRequestStats, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 LLMRequestStats
@@ -612,6 +698,9 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 	trunc, start := chartWindow(period, time.Now().UTC())
 	qualified := quoteIdent(schema)
 	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR operation = $2) AND started_at >= $3`
+	if callType != "" {
+		where += " AND " + llmCallTypeClause(callType)
+	}
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, status, COUNT(*),
 	                 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 	                 COALESCE(SUM(cached_tokens),0), COALESCE(SUM(thoughts_tokens),0),

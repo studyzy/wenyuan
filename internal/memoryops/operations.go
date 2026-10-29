@@ -322,7 +322,8 @@ func (h *Handlers) mapRetryError(err error, op storage.Operation, opID, bankID s
 				"to re-ingest them, then delete this record via DELETE /operations/"+opID+"/delete.")
 	case errors.Is(err, storage.ErrOperationConflict):
 		return httpx.NewHTTPError(httpx.KindConflict,
-			"Operation "+opID+" cannot be retried: status is '"+string(op.Status)+"', expected 'failed' or 'cancelled'")
+			"Operation "+opID+" cannot be retried: status is '"+string(op.Status)+
+				"', expected 'failed', 'cancelled' or deferred")
 	default:
 		return httpx.NewHTTPError(httpx.KindInternal, httpx.DetailInternal)
 	}

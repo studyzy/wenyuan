@@ -38,7 +38,11 @@ const (
 	// Document member routes are a subtree rather than a pattern: the reference
 	// declares the document id as a path-style parameter, so it may span
 	// segments, and the routed handler splits the remainder.
-	SuffixDocumentMember   = "/documents/"
+	SuffixDocumentMember = "/documents/"
+	// SuffixDocumentHistory is the document's change history. The identifier is
+	// the path-style parameter, so the routed handler splits "/history" off the
+	// remainder rather than the pattern naming the suffix.
+	SuffixDocumentHistory  = "/history"
 	SuffixTags             = "/tags"
 	SuffixGraph            = "/graph"
 	SuffixEntities         = "/entities"
@@ -77,6 +81,7 @@ const (
 	SuffixStatsTimeseries     = "/stats/memories-timeseries"
 	SuffixHealthLLM           = "/health/llm"
 	SuffixAuditLogs           = "/audit-logs"
+	SuffixAuditLogMember      = "/audit-logs/{log_id}"
 	SuffixAuditLogsStats      = "/audit-logs/stats"
 	SuffixLLMRequests         = "/llm-requests"
 	SuffixLLMRequestsStats    = "/llm-requests/stats"

@@ -239,7 +239,7 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (
 	if op.OperationType == AsyncRetainType && operationIsParent(op.ResultMetadata) {
 		return s.retryBatchParentLocked(op)
 	}
-	if op.Status != StatusFailed && op.Status != StatusCancelled {
+	if !retryableStatus(op) {
 		return op, ErrOperationConflict
 	}
 	op.Status = StatusPending
@@ -255,6 +255,22 @@ func (s *MemoryStore) RetryOperation(ctx context.Context, bankID, opID string) (
 	return op, nil
 }
 
+// retryableStatus reports whether an operation may be retried: a failed or
+// cancelled one, or a deferred one — pending with a next_retry_at still in the
+// future, which retrying runs now rather than waiting out. A pending operation
+// that is not deferred (already due) is refused: it is queued and will run on
+// its own, so there is nothing to bring forward.
+func retryableStatus(op Operation) bool {
+	switch op.Status {
+	case StatusFailed, StatusCancelled:
+		return true
+	case StatusPending:
+		return op.NextRetryAt != nil && op.NextRetryAt.After(time.Now().UTC())
+	default:
+		return false
+	}
+}
+
 // retryBatchParentLocked requeues a failed batch's children and revives the
 // parent over them. The caller must hold the store lock.
 func (s *MemoryStore) retryBatchParentLocked(parent Operation) (Operation, error) {
@@ -267,7 +283,7 @@ func (s *MemoryStore) retryBatchParentLocked(parent Operation) (Operation, error
 		if childParent, _ := op.ResultMetadata["parent_operation_id"].(string); childParent != parent.OperationID {
 			continue
 		}
-		if op.Status == StatusFailed || op.Status == StatusCancelled {
+		if retryableStatus(op) {
 			op.Status = StatusPending
 			op.Error = ""
 			op.NextRetryAt = nil

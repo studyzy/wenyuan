@@ -551,7 +551,7 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doingEdit := body.Text != nil || body.Context != nil || fields["occurred_start"] || fields["occurred_end"] ||
-		body.FactType != nil || body.Entities != nil
+		body.MentionedAt != nil || body.FactType != nil || body.Entities != nil
 	if doingEdit && existing.InvalidatedAt != nil {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			"Cannot edit an invalidated memory; revert it to 'valid' first."))
@@ -570,7 +570,7 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	// The dates are parsed after the scope checks, as the reference does: a
 	// caller who may not change the memory hears about that first.
-	for _, rawDate := range []*string{body.OccurredStart, body.OccurredEnd} {
+	for _, rawDate := range []*string{body.OccurredStart, body.OccurredEnd, body.MentionedAt} {
 		if rawDate != nil && *rawDate != "" {
 			if _, err := parseISODateTime(*rawDate); err != nil {
 				httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
@@ -579,9 +579,13 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// An explicit JSON null on a date member is the empty string to the
+	// reference's handler, which is how a null clears the date.
 	unit, err := h.Store.UpdateMemory(r.Context(), bankID, memoryID, storage.MemoryPatch{
 		Text: body.Text, Context: body.Context,
-		OccurredStart: body.OccurredStart, OccurredEnd: body.OccurredEnd,
+		OccurredStart:      dateOrClear(body.OccurredStart, fields["occurred_start"]),
+		OccurredEnd:        dateOrClear(body.OccurredEnd, fields["occurred_end"]),
+		MentionedAt:        dateOrClear(body.MentionedAt, fields["mentioned_at"]),
 		ClearOccurredStart: fields["occurred_start"] && body.OccurredStart == nil,
 		ClearOccurredEnd:   fields["occurred_end"] && body.OccurredEnd == nil,
 		FactType:           body.FactType, Entities: body.Entities, ResolveEntities: body.ResolveEntities,
@@ -700,10 +704,10 @@ func validateMemoryUpdate(body MemoryUpdateRequest, fields map[string]bool, inpu
 			httpx.ValueError([]string{"body"}, input, message),
 		}}
 	}
-	hasDateClear := fields["occurred_start"] || fields["occurred_end"]
+	hasDateClear := fields["occurred_start"] || fields["occurred_end"] || fields["mentioned_at"]
 	if body.Text == nil && body.Context == nil && body.OccurredStart == nil &&
-		body.OccurredEnd == nil && body.FactType == nil && body.Entities == nil && body.State == nil &&
-		!hasDateClear {
+		body.OccurredEnd == nil && body.MentionedAt == nil && body.FactType == nil &&
+		body.Entities == nil && body.State == nil && !hasDateClear {
 		return failure("Provide at least one field to update.")
 	}
 	if body.State != nil && *body.State != "valid" && *body.State != "invalidated" {
@@ -1377,4 +1381,16 @@ func (h *Handlers) directivesFor(ctx context.Context, bankID string) []reflect.D
 		}
 	}
 	return out
+}
+
+// dateOrClear turns an explicit JSON null on a memory-update date member into the
+// empty string that clears it. The reference's handler rewrites a null that was
+// present in the request body to "" before the engine sees it, so null and ""
+// are the same instruction; an absent member stays nil, meaning unchanged.
+func dateOrClear(value *string, present bool) *string {
+	if value != nil || !present {
+		return value
+	}
+	empty := ""
+	return &empty
 }

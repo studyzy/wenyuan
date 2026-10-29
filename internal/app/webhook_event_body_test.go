@@ -12,7 +12,7 @@ import (
 // (`model_dump_json(exclude_none=True)`).
 func TestWebhookEventBodyExcludesUnsetDataMembers(t *testing.T) {
 	at := time.Date(2026, 10, 17, 20, 27, 46, 609832000, time.UTC)
-	body, err := marshalWebhookEvent("memory_defense.triggered", "b1", "", "redact", at, map[string]any{
+	body, err := marshalWebhookEvent("memory_defense.triggered", "b1", "", "", "redact", at, map[string]any{
 		"action":         "redact",
 		"detector":       "sensitive_data",
 		"document_id":    nil,
@@ -42,7 +42,7 @@ func TestWebhookEventBodyExcludesUnsetDataMembers(t *testing.T) {
 // order, and an item that contributed nothing leaves an empty object.
 func TestWebhookEventBodyRetainData(t *testing.T) {
 	at := time.Date(2026, 10, 17, 19, 40, 36, 583053000, time.UTC)
-	body, err := marshalWebhookEvent("retain.completed", "b1", "f81acee434cb4c2fab83181b769dc4e3", "completed", at,
+	body, err := marshalWebhookEvent("retain.completed", "b1", "f81acee434cb4c2fab83181b769dc4e3", "", "completed", at,
 		map[string]any{"memory_unit_count": 1, "document_id": "doc-a", "tags": []string{"a", "b"}})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestWebhookEventBodyRetainData(t *testing.T) {
 		t.Fatalf("body =\n%s\nwant\n%s", body, want)
 	}
 
-	empty, err := marshalWebhookEvent("retain.completed", "b1", "f81acee434cb4c2fab83181b769dc4e3", "completed", at,
+	empty, err := marshalWebhookEvent("retain.completed", "b1", "f81acee434cb4c2fab83181b769dc4e3", "", "completed", at,
 		map[string]any{"document_id": nil, "tags": nil, "memory_unit_count": nil})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestWebhookEventBodyRetainData(t *testing.T) {
 // A member the declaration order does not name is still emitted, after the
 // declared ones, so a payload a caller adds is never silently lost.
 func TestWebhookEventBodyKeepsUndeclaredMembers(t *testing.T) {
-	body, err := marshalWebhookEvent("consolidation.completed", "b1", "op", "completed", time.Now().UTC(),
+	body, err := marshalWebhookEvent("consolidation.completed", "b1", "op", "", "completed", time.Now().UTC(),
 		map[string]any{"extra": "kept", "observations_deleted": 1, "observations_created": 2})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestWebhookEventBodyKeepsUndeclaredMembers(t *testing.T) {
 // The body is rendered with no HTML escaping, so a receiver that re-serializes
 // the parsed body reproduces these bytes and the signature still verifies.
 func TestWebhookEventBodyDoesNotEscapeHTML(t *testing.T) {
-	body, err := marshalWebhookEvent("memory_defense.triggered", "b1", "", "redact", time.Now().UTC(),
+	body, err := marshalWebhookEvent("memory_defense.triggered", "b1", "", "", "redact", time.Now().UTC(),
 		map[string]any{"action": "redact", "message": "<b>a & b</b>"})
 	if err != nil {
 		t.Fatal(err)

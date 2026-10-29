@@ -39,6 +39,16 @@ type Handlers struct {
 	RecallRecency storage.RecencyDecayConfig
 	// DisabledRecallArms lists retrieval arms removed by bank configuration.
 	DisabledRecallArms []string
+	// RecallPreferObservations is the deployment's (WENYUAN_API_RECALL_PREFER_
+	// OBSERVATIONS) value for recall's prefer_observations. It is the last
+	// layer: a request that states the member (including false) wins, then the
+	// bank's own recall_prefer_observations, then this.
+	RecallPreferObservations bool
+	// DefaultObservationScopes is the deployment's
+	// WENYUAN_API_DEFAULT_OBSERVATION_SCOPES: the observation_scopes a retained
+	// item takes when neither it nor its bank states one. Raw JSON (a mode name
+	// or a list of tag-group lists); empty is the combined default.
+	DefaultObservationScopes json.RawMessage
 	// RerankerScoresByRankPosition reports whether the configured reranker
 	// scores by rank position; a reranker floor is rejected against it because
 	// such a floor would keep a fixed share rather than filter by relevance.
@@ -598,6 +608,77 @@ func (h *Handlers) enqueuePostRetainConsolidation(ctx context.Context, bankID st
 // configured no policy.
 var errBankConfigRead = errors.New("bank configuration could not be read")
 
+// applyDefaultObservationScopes gives every item that names no observation_scopes
+// the effective default — the bank's own default_observation_scopes, else the
+// deployment's WENYUAN_API_DEFAULT_OBSERVATION_SCOPES — resolved to raw JSON and
+// carried onto the item so consolidation never merges across it. A value that is
+// not a mode name or a list of tag-group lists is ignored rather than written:
+// the bank's config is validated on its own path, and a deployment value nobody
+// validated must not turn a write into one no scope can resolve.
+func (h *Handlers) applyDefaultObservationScopes(write *storage.RetainRequest, bank storage.Bank) {
+	// The deployment's value is raw JSON; the bank's is whatever its config
+	// decoded to, and both feed the same renderer.
+	var value any
+	if len(h.DefaultObservationScopes) > 0 {
+		value = h.DefaultObservationScopes
+	}
+	if configured, ok := bank.Config["default_observation_scopes"]; ok && configured != nil {
+		value = configured
+	}
+	encoded, ok := observationScopesJSON(value)
+	if !ok {
+		return
+	}
+	for index := range write.Items {
+		if len(write.Items[index].ObservationScopes) == 0 {
+			write.Items[index].ObservationScopes = encoded
+		}
+	}
+}
+
+// observationScopesJSON renders a bank or deployment observation_scopes value as
+// the raw JSON the item carries: a mode name as a JSON string, or a list of
+// tag-group lists as itself. A value in neither form reports false.
+func observationScopesJSON(value any) (json.RawMessage, bool) {
+	if raw, isRaw := value.(json.RawMessage); isRaw && len(raw) == 0 {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case json.RawMessage:
+		var parsed any
+		if err := json.Unmarshal(typed, &parsed); err != nil {
+			return nil, false
+		}
+		return observationScopesJSON(parsed)
+	case string:
+		if !containsToken(ObservationScopeModes, typed) {
+			return nil, false
+		}
+		encoded, err := json.Marshal(typed)
+		return encoded, err == nil
+	case []any:
+		groups := make([][]string, 0, len(typed))
+		for _, element := range typed {
+			tags, ok := element.([]any)
+			if !ok {
+				return nil, false
+			}
+			group := make([]string, 0, len(tags))
+			for _, tag := range tags {
+				text, ok := tag.(string)
+				if !ok {
+					return nil, false
+				}
+				group = append(group, text)
+			}
+			groups = append(groups, group)
+		}
+		encoded, err := json.Marshal(groups)
+		return encoded, err == nil
+	}
+	return nil, false
+}
+
 // resolveBankConfig reads the bank's configuration for a write path, layering
 // the tenant's overrides under it. A read failure is returned wrapped with
 // errBankConfigRead, so a caller refuses the write instead of proceeding with
@@ -744,6 +825,7 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 		optionalDimensions: h.DefaultOptionalFactDimensions,
 		strategy:           h.DefaultRetainStrategy,
 	})
+	h.applyDefaultObservationScopes(&write, bank)
 	// An append needs a document to append to. The reference checks that only on
 	// the synchronous path, before it reads the bank's store_document_text
 	// setting, so the more specific refusal is this one; a queued append reaches

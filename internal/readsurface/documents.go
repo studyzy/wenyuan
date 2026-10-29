@@ -2,6 +2,7 @@ package readsurface
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/entitylabels"
+	"github.com/studyzy/wenyuan/internal/history"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // documentVisible reports whether a document's tags satisfy the caller's
@@ -124,6 +127,10 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	if tagsMatch == "" {
 		tagsMatch = storage.TagsMatchAnyStrict
 	}
+	// tags_match is a Literal in v1.1.0 (it was a plain string in v1.0.0), so an
+	// unknown mode is now the framework's 422. storage already implements every
+	// mode, including exact; only the acceptance check was missing.
+	query.literal(r, "tags_match", validation.TagsMatchModes, storage.TagsMatchAnyStrict)
 	query.literal(r, "time_field", []string{"created_at", "updated_at"}, "")
 	limit := query.int(r, "limit", defaultPageLimit, 0, -1)
 	offset := query.int(r, "offset", 0, 0, -1)
@@ -258,16 +265,24 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	// The body is validated before the document is looked up, the way the
 	// framework validates a request model before the endpoint body runs: a
-	// request that names no field is rejected regardless of the document.
+	// request that names no field is rejected regardless of the document, and so
+	// is an observation_scopes value the request model does not admit.
 	var body UpdateDocumentRequest
 	if err := httpx.DecodeBody(r, &body); err != nil {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	if body.Tags == nil {
+	scoped := len(body.ObservationScopes) > 0
+	if body.Tags == nil && !scoped {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable,
-			"At least one field (tags) must be provided"))
+			"At least one field (tags, observation_scopes) must be provided"))
 		return
+	}
+	if scoped {
+		if item := documentScopesValidationItem(body.ObservationScopes); item != nil {
+			httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{*item}})
+			return
+		}
 	}
 	doc, err := h.Store.GetDocument(r.Context(), bankID, docID)
 	if err != nil {
@@ -278,35 +293,146 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	// read scope the document reads as not-found, and a visible one whose tags —
 	// or the tags the write would give it — the caller may not write is refused
 	// with 403. A deployment that resolves no scope is left untouched.
-	if !h.requireDocumentWritable(w, r, doc, *body.Tags) {
+	var writeTags []string
+	if body.Tags != nil {
+		writeTags = *body.Tags
+	}
+	if !h.requireDocumentWritable(w, r, doc, writeTags) {
 		return
 	}
 	oldTags := append([]string(nil), doc.Tags...)
-	doc.Tags = append([]string(nil), (*body.Tags)...)
+	retag := body.Tags != nil && !sameTagSet(oldTags, *body.Tags)
+	if body.Tags != nil {
+		doc.Tags = append([]string(nil), (*body.Tags)...)
+	}
+	if scoped {
+		// Reprocess re-retains from these parameters, so a scoping left behind
+		// here would come back the next time the document is reprocessed.
+		params := make(map[string]any, len(doc.RetainParams)+1)
+		for key, value := range doc.RetainParams {
+			params[key] = value
+		}
+		params["observation_scopes"] = observationScopesValue(body.ObservationScopes)
+		doc.RetainParams = params
+	}
 	if _, err := h.Store.PutDocument(r.Context(), bankID, docID, doc); err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	// A tag rename on the document must carry into its units and the observation
-	// scopes frozen on them, and the observations built over them must be rebuilt
-	// under the new tag — otherwise recall by the new tag no longer reaches them.
-	// A tag set equal to the current one is a no-op (a bulk normalisation sweep
-	// re-sends an identical array), so the cascade is skipped for it.
-	if !sameTagSet(oldTags, doc.Tags) {
-		deleted, err := h.Store.RetagDocumentMemories(r.Context(), bankID, docID, oldTags, doc.Tags,
-			h.bankLabelTagKeys(r.Context(), bankID))
+	// A tag rename — or a change of observation scoping alone — must carry into
+	// the document's units, and the observations of any unit whose RESOLVED
+	// scopes move must be rebuilt: otherwise recall by the new tag no longer
+	// reaches them, or the scoping they consolidated under is gone. A tag set
+	// equal to the current one is a no-op (a bulk normalisation sweep re-sends an
+	// identical array), so the cascade is skipped for it.
+	if retag || scoped {
+		change := storage.DocumentScopeChange{OldTags: oldTags, LabelKeys: h.bankLabelTagKeys(r.Context(), bankID)}
+		if retag {
+			change.NewTags = doc.Tags
+		}
+		if scoped {
+			change.NewScopes = body.ObservationScopes
+		}
+		outcome, err := h.Store.RetagDocumentMemories(r.Context(), bankID, docID, change)
 		if err != nil {
 			httpx.WriteErrorFor(w, r, asHTTPError(err))
 			return
 		}
-		if deleted > 0 && h.autoConsolidationEnabled(r.Context(), bankID) {
-			if _, _, err := h.Store.EnqueueConsolidation(r.Context(), bankID); err != nil {
-				httpx.WriteErrorFor(w, r, asHTTPError(err))
-				return
-			}
+		// The consolidation that rebuilds what the update removed or moved is
+		// recorded on the change history, so the removal shows next to its
+		// rebuild. Best-effort: a history write never fails the update.
+		if op, submitted := h.submitRetagConsolidation(r.Context(), bankID, outcome); submitted {
+			history.AppendRetagEvent(r.Context(), h.Store, op.OperationID, docID, removedObservationIDs(outcome.Removed))
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, UpdateDocumentResponse{Success: true})
+}
+
+// submitRetagConsolidation queues the consolidation that rebuilds what a
+// document update removed or requeued — the reference submits it when either an
+// observation went or a memory moved to another scope, not only when one went.
+// The change history is told about it by the caller of the update.
+func (h *Handlers) submitRetagConsolidation(
+	ctx context.Context, bankID string, outcome storage.RetagOutcome,
+) (storage.Operation, bool) {
+	if outcome.InvalidatedObservations == 0 && outcome.RequeuedUnits == 0 {
+		return storage.Operation{}, false
+	}
+	if !h.autoConsolidationEnabled(ctx, bankID) {
+		return storage.Operation{}, false
+	}
+	op, _, err := h.Store.EnqueueConsolidation(ctx, bankID)
+	if err != nil {
+		return storage.Operation{}, false
+	}
+	return op, true
+}
+
+// removedObservationIDs names the observations a storage sweep removed, the
+// form the change history records.
+func removedObservationIDs(removed []storage.RemovedObservation) []string {
+	ids := make([]string, 0, len(removed))
+	for _, observation := range removed {
+		ids = append(ids, observation.ObservationID)
+	}
+	return ids
+}
+
+// observationScopesValue decodes a raw observation_scopes request value for
+// storage. The decoded value is the one the reference's model keeps, so a
+// document reads back the scoping it was given: a mode name stays a string and a
+// list of tag groups stays a list of tag lists.
+func observationScopesValue(raw json.RawMessage) any {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+// documentScopesValidationItem validates a raw observation_scopes value the way
+// the reference's model does: a mode name or a list of tag lists. Anything else
+// — including null, which the model does not admit — is the framework's
+// validation item for the `body.observation_scopes` field.
+func documentScopesValidationItem(raw json.RawMessage) *httpx.ValidationError {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		item := httpx.ValidationItem("json_invalid", []string{"body", "observation_scopes"},
+			"JSON decode error", nil, map[string]any{"error": err.Error()})
+		return &item
+	}
+	valid := false
+	switch value := decoded.(type) {
+	case string:
+		valid = observationScopeModes[value]
+	case []any:
+		valid = true
+		for _, scope := range value {
+			entries, ok := scope.([]any)
+			if !ok {
+				valid = false
+				break
+			}
+			for _, entry := range entries {
+				if _, ok := entry.(string); !ok {
+					valid = false
+					break
+				}
+			}
+		}
+	}
+	if valid {
+		return nil
+	}
+	item := httpx.ValidationItem("literal_error", []string{"body", "observation_scopes"},
+		"Input should be a valid observation scopes value", "observation_scopes", nil)
+	return &item
+}
+
+// observationScopeModes are the mode names retain accepts, and so the ones a
+// document update accepts.
+var observationScopeModes = map[string]bool{
+	"per_tag": true, "combined": true, "all_combinations": true, "shared": true,
 }
 
 // autoConsolidationEnabled reports whether a document retag that invalidated

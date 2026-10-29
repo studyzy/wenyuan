@@ -177,6 +177,12 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		resolved := config.ResolveLayers(bankConfig, httpx.TenantOverridesFrom(r), nil)
 		bank := storage.Bank{Config: resolved}
 		query.DisabledArms = append(query.DisabledArms, bank.RecallDisabledArms()...)
+		// The bank's own recall_prefer_observations is the middle layer: a
+		// request that stated the member already decided, and the deployment's
+		// value is the fallback this overrides.
+		if preferred, ok := resolved["recall_prefer_observations"].(bool); ok {
+			query.PreferObservations = req.PreferObservationsValue(preferred)
+		}
 	}
 	// The cross-encoder is an optional precision pass, so a bank that turned it
 	// off is answered from the fused order rather than refused. The gate runs
@@ -247,7 +253,7 @@ func (h *Handlers) buildRecallQuery(bankID string, req RecallRequest) (storage.R
 		BankID:             bankID,
 		Query:              req.Query,
 		Types:              req.Types,
-		PreferObservations: req.PreferObservations,
+		PreferObservations: req.PreferObservationsValue(h.RecallPreferObservations),
 		Budget:             budgetOrDefault(req.Budget),
 		MaxTokens:          recallMaxTokens(req),
 		MinScores:          req.MinScores,

@@ -344,7 +344,8 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 			return fmt.Errorf("discover scheduled mental models in %s: %w", schema, err)
 		}
 		for _, entry := range scheduled {
-			if !cronDue(entry.RefreshCron, entry.LastRefreshedAt, now) {
+			due, full := dueScheduledRefresh(entry, now)
+			if !due {
 				continue
 			}
 			model, err := store.GetMentalModel(schemaCtx, entry.BankID, entry.MentalModelID)
@@ -352,28 +353,44 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 				// The model may have been deleted between discovery and here.
 				continue
 			}
-			if !store.IsStale(schemaCtx, entry.BankID, model) {
-				continue
-			}
-			// A model whose last refresh failed is parked against automatic
-			// triggers, so a cron tick does not re-queue the same doomed run.
+			// A model whose last refresh failed is parked against every automatic
+			// trigger, the full schedule included, so a tick does not re-queue the
+			// same doomed run.
 			if refreshPaused(model) {
 				continue
+			}
+			// The plain schedule only runs when the model is stale: a tick that
+			// finds nothing new must not spend a model call to regenerate identical
+			// content. The full schedule skips this gate — it was already gated on
+			// "a refresh ran since the last full one", and drift left by past
+			// edits is still there on a bank nothing has been written to.
+			if !full && !store.IsStale(schemaCtx, entry.BankID, model) {
+				continue
+			}
+			payload := map[string]any{storage.MentalModelIDPayloadKey: entry.MentalModelID}
+			if full {
+				payload[storage.RefreshModePayloadKey] = refreshModeFull
 			}
 			// An automatic refresh folds into a running one: the caller did not
 			// ask for this specific run, and a running refresh covers its
 			// intent. The enqueue is idempotent inside the database, which is
-			// what keeps a fleet from queueing one wave per process.
-			if _, err := store.EnqueueOperation(schemaCtx, storage.EnqueueRequest{
+			// what keeps a fleet from queueing one wave per process. A full tick
+			// that folds into a queued plain refresh upgrades it, so its "full"
+			// is not silently dropped.
+			enqueued, err := store.EnqueueOperation(schemaCtx, storage.EnqueueRequest{
 				Operation: storage.Operation{
 					BankID:           entry.BankID,
 					OperationType:    storage.OperationTypeRefreshMentalModel,
-					Payload:          map[string]any{storage.MentalModelIDPayloadKey: entry.MentalModelID},
+					Payload:          payload,
 					SerializationKey: storage.MentalModelSerializationKey(entry.MentalModelID),
 				},
 				DedupeByPayloadKey:       storage.MentalModelIDPayloadKey,
 				DedupeIncludesProcessing: true,
-			}); err != nil {
+			})
+			if err == nil && full {
+				_, err = storage.PromoteQueuedRefreshToFull(schemaCtx, store, entry.BankID, enqueued.Operation.OperationID)
+			}
+			if err != nil {
 				return fmt.Errorf("schedule refresh for %s: %w", entry.MentalModelID, err)
 			}
 		}

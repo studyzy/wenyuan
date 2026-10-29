@@ -250,6 +250,9 @@ func deliveryFromOperation(op Operation) WebhookDelivery {
 		CreatedAt:   op.CreatedAt,
 		UpdatedAt:   op.UpdatedAt,
 	}
+	if eventID, ok := op.Payload["event_id"].(string); ok {
+		delivery.EventID = eventID
+	}
 	if webhookID, ok := op.Payload["webhook_id"].(string); ok {
 		delivery.WebhookID = webhookID
 	}

@@ -49,7 +49,7 @@ func parseListSelectors(r *http.Request) (listSelectors, []httpx.ValidationError
 		// trim, so " any" is no more a member than "bogus" is.
 		if !containsString(directiveTagsMatch, raw) {
 			items = append(items, httpx.Literal(
-				[]string{"query", "tags_match"}, raw, []string{"any", "all", "exact"}))
+				[]string{"query", "tags_match"}, raw, directiveTagsMatch))
 		} else {
 			resolved.mode = raw
 		}

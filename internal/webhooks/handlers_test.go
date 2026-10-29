@@ -270,7 +270,7 @@ func TestWebhookDeliveriesShapeAndCursor(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &rawItems); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"id", "webhook_id", "url", "event_type", "status", "attempts",
+	for _, field := range []string{"id", "event_id", "webhook_id", "url", "event_type", "status", "attempts",
 		"next_retry_at", "last_error", "last_response_status", "last_response_body",
 		"last_attempt_at", "created_at", "updated_at"} {
 		if _, present := rawItems.Items[0][field]; !present {

@@ -82,19 +82,56 @@ func (i *ReflectIncludeRequest) memberFailure(member string) ([]httpx.Validation
 // RecallRequest is the recall body. Every field name is public surface. Fields
 // are optional so a request carrying only the query stays valid.
 type RecallRequest struct {
-	Query              string                 `json:"query"`
-	Types              []string               `json:"types,omitempty"`
-	Budget             string                 `json:"budget,omitempty"`
-	MaxTokens          *int                   `json:"max_tokens,omitempty"`
-	MinScores          map[string]float64     `json:"min_scores,omitempty"`
-	TagsMatch          string                 `json:"tags_match,omitempty"`
-	TagGroups          TagGroupsField         `json:"tag_groups,omitempty"`
-	Tags               []string               `json:"tags,omitempty"`
-	Include            *IncludeRequest        `json:"include,omitempty"`
-	TemporalWindow     *TemporalWindowRequest `json:"temporal_window,omitempty"`
-	Trace              bool                   `json:"trace,omitempty"`
-	PreferObservations bool                   `json:"prefer_observations,omitempty"`
-	QueryTimestamp     string                 `json:"query_timestamp,omitempty"`
+	Query          string                 `json:"query"`
+	Types          []string               `json:"types,omitempty"`
+	Budget         string                 `json:"budget,omitempty"`
+	MaxTokens      *int                   `json:"max_tokens,omitempty"`
+	MinScores      map[string]float64     `json:"min_scores,omitempty"`
+	TagsMatch      string                 `json:"tags_match,omitempty"`
+	TagGroups      TagGroupsField         `json:"tag_groups,omitempty"`
+	Tags           []string               `json:"tags,omitempty"`
+	Include        *IncludeRequest        `json:"include,omitempty"`
+	TemporalWindow *TemporalWindowRequest `json:"temporal_window,omitempty"`
+	Trace          bool                   `json:"trace,omitempty"`
+	// PreferObservations is nullable in v1.1.0: nil means the request did not
+	// state it and the bank's (else the deployment's) recall_prefer_observations
+	// decides; an explicit false still means false.
+	PreferObservations *bool  `json:"prefer_observations,omitempty"`
+	QueryTimestamp     string `json:"query_timestamp,omitempty"`
+
+	// fieldsSet records which top-level members the body stated, which is how a
+	// nullable member is told apart from one absent, and from one sent as null.
+	fieldsSet map[string]bool
+}
+
+// UnmarshalJSON decodes the body and records which top-level members it stated,
+// which is how a nullable member is told apart from one absent or sent as null.
+// Every other member keeps the body's own decoding: the route reports a wrongly
+// typed member through its own field validation, which reads the raw body.
+func (r *RecallRequest) UnmarshalJSON(data []byte) error {
+	type plain RecallRequest
+	if err := json.Unmarshal(data, (*plain)(r)); err != nil {
+		return err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err == nil && members != nil {
+		r.fieldsSet = make(map[string]bool, len(members))
+		for name := range members {
+			r.fieldsSet[name] = true
+		}
+	}
+	return nil
+}
+
+// PreferObservationsValue resolves the effective prefer_observations: the
+// request's own value when it stated one non-null, else fallback (the bank's
+// setting over the deployment's). An explicit null behaves as omitted, which is
+// the reference's `x is None -> config` rule.
+func (r RecallRequest) PreferObservationsValue(fallback bool) bool {
+	if r.PreferObservations != nil {
+		return *r.PreferObservations
+	}
+	return fallback
 }
 
 // IncludeRequest is the recall include sub-object. Entity states are included

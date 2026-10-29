@@ -169,8 +169,12 @@ func TestStructuralInventoryExcludesIndexes(t *testing.T) {
 			t.Errorf("%s is an index and must not decide adoption", object)
 		}
 	}
-	// The two vector indexes are still tracked, so their absence is reported.
-	for _, name := range []string{"idx_memory_units_embedding_hnsw", "idx_mental_models_embedding_hnsw"} {
+	// A tracked index is one whose absence from an adopted database is reported.
+	// memory_units carries no global vector index — the reference's
+	// e8c1a4f7b2d9 drops it, because a per-bank backend serves every memory
+	// search from the idx_mu_emb_* partial indexes — so the vector index named
+	// here is mental_models' own (its page search reads the whole table).
+	for _, name := range []string{"idx_mental_models_embedding", "idx_memory_units_fact_type"} {
 		if !expected.indexes[name] {
 			t.Errorf("index %q is not tracked", name)
 		}

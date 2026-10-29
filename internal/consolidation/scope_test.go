@@ -265,3 +265,129 @@ func (p *singleResponseProvider) Embed(context.Context, provider.EmbeddingReques
 }
 func (p *singleResponseProvider) VerifyConnection(context.Context) error { return nil }
 func (p *singleResponseProvider) Dimensions() int                        { return provider.EmbeddingDimensions }
+
+// A glob in an explicit scope list names a scope per matching tag of the fact's
+// own tags (#5666); only * is a metacharacter, and a scope whose globs match
+// nothing is dropped rather than becoming the untagged bank-wide scope.
+func TestResolveScopesExpandsTagGlobs(t *testing.T) {
+	cases := []struct {
+		name string
+		tags []string
+		raw  string
+		want [][]string
+	}{
+		{
+			"globs resolve against own tags",
+			[]string{"topic:go", "session:s1", "topic:rust"},
+			`[["topic:*"]]`,
+			[][]string{{"topic:go", "topic:rust"}},
+		},
+		{
+			"literal entries survive beside the glob",
+			[]string{"user:u1", "session:s1"},
+			`[["user:*","fixed"]]`,
+			[][]string{{"fixed", "user:u1"}},
+		},
+		{
+			"a scope whose globs miss is dropped",
+			[]string{"session:s1", "user:u1"},
+			`[["topic:*"],["user:*"]]`,
+			[][]string{{"user:u1"}},
+		},
+		{
+			"every scope dropped falls back to combined",
+			[]string{"a", "b"},
+			`[["topic:*"]]`,
+			[][]string{{"a", "b"}},
+		},
+		{
+			"only star is a metacharacter",
+			[]string{"t?pic:x", "t[1"},
+			`[["t?pic:x","t[1"]]`,
+			[][]string{{"t?pic:x", "t[1"}},
+		},
+		{
+			"a deliberate empty scope is kept",
+			[]string{"a"},
+			`[[]]`,
+			[][]string{nil},
+		},
+		{
+			"a bare star matches every tag",
+			[]string{"a", "b"},
+			`[["*"]]`,
+			[][]string{{"a", "b"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveScopes(tc.tags, json.RawMessage(tc.raw))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resolveScopes(%v, %s) = %v, want %v", tc.tags, tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// globMatch pins Python's fnmatchcase for the *-only patterns scope globs use.
+func TestGlobMatch(t *testing.T) {
+	cases := []struct {
+		pattern, name string
+		want          bool
+	}{
+		{"topic:*", "topic:go", true},
+		{"topic:*", "topic:", true},
+		{"topic:*", "session:s1", false},
+		{"*", "", true},
+		{"*", "anything", true},
+		{"a*b*c", "aXbYc", true},
+		{"a*b*c", "aXc", false},
+		{"prefix*", "prefix", true},
+		{"*suffix", "mysuffix", true},
+		{"*mid*", "amidb", true},
+	}
+	for _, tc := range cases {
+		if got := globMatch(tc.pattern, tc.name); got != tc.want {
+			t.Fatalf("globMatch(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
+		}
+	}
+}
+
+// A tag change alone moves a memory's observations only when its write scopes
+// change: shared and glob-scoped memories ignore their tags, combined ones do not.
+func TestWriteScopesChanged(t *testing.T) {
+	cases := []struct {
+		name    string
+		oldTags []string
+		oldRaw  string
+		newTags []string
+		newRaw  string
+		want    bool
+	}{
+		{"combined tag rename moves", []string{"a"}, "", []string{"b"}, "", true},
+		{"combined unchanged", []string{"a"}, "", []string{"a"}, "", false},
+		{"shared ignores tags", []string{"a"}, `"shared"`, []string{"b"}, `"shared"`, false},
+		{"explicit ignores unrelated tags", []string{"a", "s1"}, `[["a"]]`, []string{"a", "s2"}, `[["a"]]`, false},
+		{"combined over a to explicit a moves nothing", []string{"a"}, "", []string{"a"}, `[["a"]]`, false},
+		{"the glob moves with its tag", []string{"topic:a", "s1"}, `[["topic:*"]]`, []string{"topic:b", "s1"}, `[["topic:*"]]`, true},
+		{"glob to a miss falls back to combined", []string{"s1"}, `[["topic:*"]]`, []string{"s1"}, `[]`, false},
+		{"mode change moves", []string{"a"}, `"shared"`, []string{"a"}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := WriteScopesChanged(tc.oldTags, rawOrNil(tc.oldRaw), tc.newTags, rawOrNil(tc.newRaw))
+			if got != tc.want {
+				t.Fatalf("WriteScopesChanged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// rawOrNil turns a test's raw observation_scopes literal into the JSON value the
+// store carries, an absent value staying nil.
+func rawOrNil(s string) json.RawMessage {
+	if s == "" {
+		return nil
+	}
+	return json.RawMessage(s)
+}

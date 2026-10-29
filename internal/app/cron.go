@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // cronParser reads the schedule forms a stored trigger may carry.
@@ -68,4 +70,40 @@ func cronDue(expression string, lastRefreshedAt, now time.Time) bool {
 		return true
 	}
 	return previous.After(lastRefreshedAt)
+}
+
+// dueScheduledRefresh reports whether a scheduled model has a refresh to run now,
+// and whether that refresh must run in full mode.
+//
+// The two schedules answer to different clocks and different gates:
+//
+//   - refresh_cron comes due against the last refresh of any mode. It is gated on
+//     staleness by the caller, so a tick that finds nothing new costs a cheap
+//     query rather than a model call.
+//   - full_refresh_cron comes due against last_full_refreshed_at, not
+//     last_refreshed_at, which every delta refresh moves — keyed off that, a
+//     weekly full refresh would never come due on a model that deltas daily.
+//     Its gate is different on purpose: a refresh must have run since the last
+//     full one, because a full refresh exists to clear the drift past delta edits
+//     left, which a quiet bank still carries. A model that has never had a full
+//     refresh, or one never refreshed at all, is due.
+//
+// When both are due one refresh is submitted, in full mode: it covers what the
+// plain refresh would have done.
+func dueScheduledRefresh(entry storage.ScheduledMentalModel, now time.Time) (due, full bool) {
+	fullDue := cronDue(entry.FullRefreshCron, entry.LastFullRefreshedAt, now) &&
+		refreshedSinceLastFull(entry)
+	if fullDue || cronDue(entry.RefreshCron, entry.LastRefreshedAt, now) {
+		return true, fullDue
+	}
+	return false, false
+}
+
+// refreshedSinceLastFull reports whether any refresh has run since the last full
+// one, which is what gives a full_refresh_cron tick something to correct.
+func refreshedSinceLastFull(entry storage.ScheduledMentalModel) bool {
+	if entry.LastFullRefreshedAt.IsZero() || entry.LastRefreshedAt.IsZero() {
+		return true
+	}
+	return entry.LastRefreshedAt.After(entry.LastFullRefreshedAt)
 }

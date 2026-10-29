@@ -19,7 +19,7 @@ type captureStore struct {
 	audit     storage.AuditQuery
 	llm       storage.LLMRequestQuery
 	auditArgs [2]string // period, action
-	llmArgs   [2]string // period, operation
+	llmArgs   [3]string // period, operation, call type
 }
 
 func (c *captureStore) ListAuditLog(ctx context.Context, query storage.AuditQuery) (storage.AuditPage, error) {
@@ -37,9 +37,9 @@ func (c *captureStore) ListLLMRequests(ctx context.Context, query storage.LLMReq
 	return c.Store.ListLLMRequests(ctx, query)
 }
 
-func (c *captureStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (storage.LLMRequestStats, error) {
-	c.llmArgs = [2]string{period, operation}
-	return c.Store.LLMRequestStats(ctx, bankID, period, operation)
+func (c *captureStore) LLMRequestStats(ctx context.Context, bankID, period, operation, callType string) (storage.LLMRequestStats, error) {
+	c.llmArgs = [3]string{period, operation, callType}
+	return c.Store.LLMRequestStats(ctx, bankID, period, operation, callType)
 }
 
 // newCaptureServer builds the route table over a capture store seeded with one
@@ -55,8 +55,12 @@ func newCaptureServer(t *testing.T) (*http.ServeMux, *captureStore) {
 	// window (the reference filters on `started_at >= now - period`).
 	started := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, request := range []storage.LLMRequest{
-		{ID: "t1", BankID: bank, Status: "success", Operation: "retain", StartedAt: started},
-		{ID: "t2", BankID: bank, Status: "success", Operation: "reflect", StartedAt: started.Add(time.Hour)},
+		{ID: "t1", BankID: bank, Status: "success", Operation: "retain", Scope: "extraction", StartedAt: started},
+		{ID: "t2", BankID: bank, Status: "success", Operation: "reflect", Scope: "synthesis", StartedAt: started.Add(time.Hour)},
+		{ID: "t3", BankID: bank, Status: "success", Operation: "recall", Scope: "embedding_query",
+			StartedAt: started.Add(2 * time.Hour)},
+		{ID: "t4", BankID: bank, Status: "success", Operation: "recall", Scope: "rerank",
+			StartedAt: started.Add(3 * time.Hour)},
 	} {
 		if err := memory.RecordLLMRequest(ctx, request); err != nil {
 			t.Fatal(err)
@@ -189,7 +193,7 @@ func TestLLMRequestsHandlerFilters(t *testing.T) {
 	// Absent filters select every trace; combined filters narrow.
 	rec = send(mux, http.MethodGet, base+"/llm-requests", "")
 	jsonUnmarshal(t, rec.Body.Bytes(), &page)
-	if page.Total != 2 || len(page.Items) != 2 {
+	if page.Total != 4 || len(page.Items) != 4 {
 		t.Fatalf("unfiltered llm list = %+v", page)
 	}
 	rec = send(mux, http.MethodGet, base+"/llm-requests?status=success&operation=retain", "")
@@ -217,7 +221,7 @@ func TestObservabilityStatsHandlerFilters(t *testing.T) {
 	if rec := send(mux, http.MethodGet, base+"/llm-requests/stats?period=1d&operation=reflect", ""); rec.Code != http.StatusOK {
 		t.Fatalf("llm stats: %d", rec.Code)
 	}
-	if store.llmArgs != [2]string{"1d", "reflect"} {
+	if store.llmArgs != [3]string{"1d", "reflect", ""} {
 		t.Fatalf("llm stats args = %v", store.llmArgs)
 	}
 	// The operation filter narrows the histogram to reflect's single call.
@@ -293,5 +297,160 @@ func TestAuditLogsActionWhitespaceIsFilter(t *testing.T) {
 	jsonUnmarshal(t, rec.Body.Bytes(), &page)
 	if page.Total != 0 || len(page.Items) != 0 {
 		t.Fatalf("whitespace action selected %+v", page)
+	}
+}
+
+// The model-request routes accept call_type and reject a value outside its
+// enum with the framework's 422, before the bank is looked up.
+func TestLLMRequestsCallTypeParam(t *testing.T) {
+	mux, store := newCaptureServer(t)
+	base := "/v1/default/banks/" + bank
+
+	rec := send(mux, http.MethodGet, base+"/llm-requests?call_type=embedding", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("call_type=embedding: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if store.llm.CallType != "embedding" {
+		t.Fatalf("call_type did not reach the store: %+v", store.llm)
+	}
+	var page LLMRequestListResponse
+	jsonUnmarshal(t, rec.Body.Bytes(), &page)
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != "t3" {
+		t.Fatalf("embedding page = %+v", page)
+	}
+
+	rec = send(mux, http.MethodGet, base+"/llm-requests/stats?call_type=rerank", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats call_type=rerank: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if store.llmArgs[2] != "rerank" {
+		t.Fatalf("stats call_type did not reach the store: %+v", store.llmArgs)
+	}
+
+	// An unknown kind is a framework enum failure, not an empty page — and it
+	// outranks the bank lookup, as the framework's own validation does.
+	for _, path := range []string{base + "/llm-requests?call_type=chat",
+		base + "/llm-requests/stats?call_type=chat",
+		"/v1/default/banks/no-such-bank/llm-requests?call_type=chat"} {
+		rec = send(mux, http.MethodGet, path, "")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d, want 422", path, rec.Code)
+		}
+		var envelope struct {
+			Detail []struct {
+				Type  string `json:"type"`
+				Loc   []any  `json:"loc"`
+				Msg   string `json:"msg"`
+				Input string `json:"input"`
+			} `json:"detail"`
+		}
+		jsonUnmarshal(t, rec.Body.Bytes(), &envelope)
+		if len(envelope.Detail) != 1 || envelope.Detail[0].Type != "literal_error" ||
+			envelope.Detail[0].Input != "chat" || len(envelope.Detail[0].Loc) != 2 ||
+			envelope.Detail[0].Loc[0] != "query" || envelope.Detail[0].Loc[1] != "call_type" {
+			t.Fatalf("%s: body = %s", path, rec.Body.String())
+		}
+	}
+}
+
+// The audit listing serves summaries — no request/response bodies — and the new
+// member route serves one entry with its bodies; an unknown or foreign entry is
+// the reference's 404 detail.
+func TestAuditLogSummaryAndMember(t *testing.T) {
+	mux, store := newCaptureServer(t)
+	base := "/v1/default/banks/" + bank
+	started := time.Now().UTC().Truncate(24 * time.Hour)
+	ended := started.Add(1500 * time.Millisecond)
+	if err := store.RecordAuditLog(context.Background(), storage.AuditEntry{
+		ID: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", BankID: bank, Action: "retain", Transport: "http",
+		StartedAt: started, EndedAt: &ended,
+		Request:  map[string]any{"items": []any{}},
+		Response: map[string]any{"status": "ok"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := send(mux, http.MethodGet, base+"/audit-logs?limit=1", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit-logs: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	jsonUnmarshal(t, rec.Body.Bytes(), &listed)
+	if len(listed.Items) != 1 {
+		t.Fatalf("items = %s", rec.Body.String())
+	}
+	for _, member := range []string{"id", "action", "transport", "bank_id", "started_at", "ended_at",
+		"duration_ms", "metadata"} {
+		if _, ok := listed.Items[0][member]; !ok {
+			t.Fatalf("summary is missing %q: %s", member, rec.Body.String())
+		}
+	}
+	for _, member := range []string{"request", "response"} {
+		if _, ok := listed.Items[0][member]; ok {
+			t.Fatalf("summary must not carry %q: %s", member, rec.Body.String())
+		}
+	}
+
+	rec = send(mux, http.MethodGet, base+"/audit-logs/3f2504e0-4f89-11d3-9a0c-0305e82c3301", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit-log member: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var entry map[string]any
+	jsonUnmarshal(t, rec.Body.Bytes(), &entry)
+	if entry["action"] != "retain" || entry["duration_ms"] != float64(1500) {
+		t.Fatalf("member = %s", rec.Body.String())
+	}
+	if request, ok := entry["request"].(map[string]any); !ok || request["items"] == nil {
+		t.Fatalf("member request body = %s", rec.Body.String())
+	}
+	if response, ok := entry["response"].(map[string]any); !ok || response["status"] != "ok" {
+		t.Fatalf("member response body = %s", rec.Body.String())
+	}
+	if _, ok := entry["metadata"].(map[string]any); !ok {
+		t.Fatalf("member metadata = %s", rec.Body.String())
+	}
+
+	// An entry id nobody holds, and one that is not an identifier at all, are
+	// the same 404 with the reference's detail.
+	for _, id := range []string{"e3b0c442-98fc-1c14-9afb-f4c8996fb924", "not-a-uuid"} {
+		rec = send(mux, http.MethodGet, base+"/audit-logs/"+id, "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("audit-log %s: %d, want 404", id, rec.Code)
+		}
+		var envelope struct {
+			Detail string `json:"detail"`
+		}
+		jsonUnmarshal(t, rec.Body.Bytes(), &envelope)
+		if envelope.Detail != "Audit log entry '"+id+"' not found" {
+			t.Fatalf("audit-log %s detail = %q", id, envelope.Detail)
+		}
+	}
+}
+
+// The entry fetch is bank-scoped: another bank's entry is not found, and an
+// unknown bank answers the ordinary missing-bank 404.
+func TestAuditLogMemberIsBankScoped(t *testing.T) {
+	mux, store := newCaptureServer(t)
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "other", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAuditLog(ctx, storage.AuditEntry{
+		ID: "3f2504e0-4f89-11d3-9a0c-0305e82c3302", BankID: "other", Action: "retain",
+		Transport: "http", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := send(mux, http.MethodGet,
+		"/v1/default/banks/"+bank+"/audit-logs/3f2504e0-4f89-11d3-9a0c-0305e82c3302", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign entry: %d, want 404", rec.Code)
+	}
+	rec = send(mux, http.MethodGet,
+		"/v1/default/banks/no-such-bank/audit-logs/3f2504e0-4f89-11d3-9a0c-0305e82c3302", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown bank: %d, want 404", rec.Code)
 	}
 }

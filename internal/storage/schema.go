@@ -238,8 +238,38 @@ var MentalModelsColumns = []string{
 	// last_refresh_failed_at parks an automatic refresh after a failure, so a
 	// schedule that cannot succeed stops spending a model call per tick.
 	"last_refresh_failed_at",
+	// last_full_refreshed_at is when a refresh last ran in full mode (asked
+	// for, or fallen back to). The full-refresh schedule needs its own clock:
+	// last_refreshed_at moves on every delta refresh, so keyed off it a weekly
+	// full refresh would never come due on a model that deltas daily.
+	"last_full_refreshed_at",
 	"last_updated",
 	"created_at",
+}
+
+// MentalModelsFullRefreshIndex is the partial index over the full-refresh
+// schedule, the counterpart of the one over refresh_cron. A deployment with no
+// scheduled model costs an empty index scan instead of a scan of the table.
+const MentalModelsFullRefreshIndex = "idx_mental_models_full_refresh_cron"
+
+// MentalModelsIndexesAreNotGlobalVectorIndexes pins the rule the reference's
+// e8c1a4f7b2d9 migration enforces: memory_units carries no global vector index
+// on a per-bank backend. Every memory_units vector search is served by the
+// per-bank idx_mu_emb_* partial indexes, so a global one is never used and
+// doubles the cost of every vector write.
+//
+// It is not a declaration of the index set (schema_expected.go reads that back
+// out of the series); it names the migration's target so the rule stays
+// checkable against the generated series.
+const MemoryUnitsGlobalVectorIndexIllegal = "idx_memory_units_embedding_hnsw"
+
+// MentalModelIDReferenceColumns are the columns that point at
+// mental_models.id. The reference declares them TEXT (widened from
+// varchar(64) by f2a9c4e7b1d3, because an id over 64 characters could be
+// created but never refreshed), so nothing here may length-check them.
+var MentalModelIDReferenceColumns = map[string]string{
+	"mental_model_history": "mental_model_id",
+	"knowledge_pages":      "mental_model_id",
 }
 
 // WebhooksColumns are the columns of the webhook registrations.

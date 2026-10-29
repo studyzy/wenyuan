@@ -132,8 +132,6 @@ CREATE INDEX idx_memory_units_consolidation_failed ON memory_units USING btree (
 
 CREATE INDEX idx_memory_units_document_id ON memory_units USING btree (document_id);
 
-CREATE INDEX idx_memory_units_embedding_hnsw ON memory_units USING hnsw (embedding vector_cosine_ops);
-
 CREATE INDEX idx_memory_units_event_date ON memory_units USING btree (event_date DESC);
 
 CREATE INDEX idx_memory_units_fact_type ON memory_units USING btree (fact_type);
@@ -156,7 +154,9 @@ CREATE INDEX idx_mental_models_bank_id ON mental_models USING btree (bank_id);
 
 CREATE INDEX idx_mental_models_cron ON mental_models USING btree (bank_id) WHERE (COALESCE((trigger ->> 'refresh_cron'::text), ''::text) <> ''::text);
 
-CREATE INDEX idx_mental_models_embedding_hnsw ON mental_models USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_mental_models_embedding ON mental_models USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX idx_mental_models_full_refresh_cron ON mental_models USING btree (bank_id) WHERE (COALESCE((trigger ->> 'full_refresh_cron'::text), ''::text) <> ''::text);
 
 CREATE INDEX idx_mental_models_subtype ON mental_models USING btree (bank_id, subtype);
 

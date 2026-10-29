@@ -341,6 +341,8 @@ type documentListItem struct {
 	RetainParams    map[string]any `json:"retain_params"`
 	Metadata        any            `json:"document_metadata"`
 	Tags            []string       `json:"tags"`
+	// MatchedFields names which fields a `q` search matched, empty without one.
+	MatchedFields []string `json:"matched_fields"`
 }
 
 // documentListPage is the document listing envelope.
@@ -349,6 +351,8 @@ type documentListPage struct {
 	Total  int                `json:"total"`
 	Limit  int                `json:"limit"`
 	Offset int                `json:"offset"`
+	// TotalIsEstimate reports that a `q` search stopped at its match cap.
+	TotalIsEstimate bool `json:"total_is_estimate"`
 }
 
 // toDocumentListItem renders one stored document for the listing.

@@ -207,14 +207,14 @@ func TestPostgresObservabilityStatsFilters(t *testing.T) {
 		t.Fatalf("unknown audit action buckets = %+v", unknownAudit.Bucket)
 	}
 
-	requests, err := pg.LLMRequestStats(ctx, "b1", "day", "retain")
+	requests, err := pg.LLMRequestStats(ctx, "b1", "day", "retain", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(requests.Bucket) != 1 || requests.Bucket[0].Total != 2 {
 		t.Fatalf("llm operation buckets = %+v", requests.Bucket)
 	}
-	unknownRequests, err := pg.LLMRequestStats(ctx, "b1", "day", "frobnicate")
+	unknownRequests, err := pg.LLMRequestStats(ctx, "b1", "day", "frobnicate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +363,131 @@ func TestPostgresCountAsyncOperations(t *testing.T) {
 	for _, group := range perBank {
 		if group.BankID == "" {
 			t.Fatalf("per-bank grouping lost the bank: %+v", group)
+		}
+	}
+}
+
+// The PostgreSQL trace splits by call_type exactly as the in-memory backend
+// does, and the SQL clause is the reference's: the escaped prefixes, rerank
+// alone, and everything else (a NULL scope included) as llm.
+func TestPostgresLLMRequestCallTypeFilter(t *testing.T) {
+	pg, schema := newClearMemoriesStore(t, "obs_call_type")
+	ctx := context.Background()
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	base := observabilityBase()
+	// llm_requests.id is a uuid column, so every fixture row gets a fresh
+	// uuid-shaped id; the scope is the label the case table expects it under.
+	scopes := []struct {
+		label string
+		scope any
+	}{
+		{"e1", "embedding_document"},
+		{"e2", "embedding_query"},
+		{"k1", "rerank"},
+		{"d1", "decision_recall_rerank"},
+		{"d2", "decisionXfoo"},
+		{"c1", "consolidation"},
+		{"u1", nil},
+	}
+	ids := map[string]string{}
+	for i, row := range scopes {
+		ids[row.label] = newID()
+		if _, err := pg.db.ExecContext(ctx,
+			`INSERT INTO `+quoteIdent(schema)+`.llm_requests (id, bank_id, scope, status, started_at)
+			 VALUES ($1, 'b1', $2, 'success', $3)`,
+			ids[row.label], row.scope, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(callType string) map[string]bool {
+		page, err := pg.ListLLMRequests(ctx, LLMRequestQuery{BankID: "b1", CallType: callType, Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, request := range page.Requests {
+			out[request.ID] = true
+		}
+		return out
+	}
+	want := map[string][]string{
+		LLMCallTypeEmbedding: {"e1", "e2"},
+		LLMCallTypeRerank:    {"k1"},
+		LLMCallTypeDecision:  {"d1"},
+		LLMCallTypeLLM:       {"d2", "c1", "u1"},
+	}
+	seen := map[string]bool{}
+	for callType, labels := range want {
+		got := list(callType)
+		if len(got) != len(labels) {
+			t.Fatalf("call_type=%s = %v, want %v", callType, got, labels)
+		}
+		for _, label := range labels {
+			id := ids[label]
+			if !got[id] {
+				t.Fatalf("call_type=%s = %v, want the rows %v", callType, got, labels)
+			}
+			if seen[id] {
+				t.Fatalf("row %s counted in two call kinds", id)
+			}
+			seen[id] = true
+		}
+	}
+	stats, err := pg.LLMRequestStats(ctx, "b1", "day", "", LLMCallTypeLLM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Bucket) != 1 || stats.Bucket[0].Total != 3 {
+		t.Fatalf("llm stats = %+v, want three llm rows", stats.Bucket)
+	}
+}
+
+// One audit entry is fetched with its bodies, bank-scoped, and a malformed or
+// unknown identifier is the not-found sentinel rather than a driver error.
+func TestPostgresGetAuditLog(t *testing.T) {
+	pg, schema := newClearMemoriesStore(t, "obs_get_audit")
+	ctx := context.Background()
+	for _, bankID := range []string{"b1", "b2"} {
+		if _, err := pg.CreateBank(ctx, Bank{BankID: bankID, Name: bankID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := observabilityBase()
+	id := "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+	if _, err := pg.db.ExecContext(ctx,
+		`INSERT INTO `+quoteIdent(schema)+`.audit_log
+		   (id, action, transport, bank_id, started_at, ended_at, request, response, metadata)
+		 VALUES ($1, 'retain', 'http', 'b1', $2, $3, $4::jsonb, $5::jsonb, $6::jsonb)`,
+		id, base, base.Add(1500*time.Millisecond),
+		`{"items":[]}`, `{"status":"ok"}`, `{"tenant":"t1"}`); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := pg.GetAuditLog(ctx, "b1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Action != "retain" || entry.BankID != "b1" || entry.EndedAt == nil {
+		t.Fatalf("entry = %+v", entry)
+	}
+	if len(entry.Request) == 0 || entry.Response["status"] != "ok" || entry.Metadata["tenant"] != "t1" {
+		t.Fatalf("entry bodies = %+v", entry)
+	}
+	// The uppercase and brace-wrapped spellings name the same identifier.
+	for _, spelling := range []string{"3F2504E0-4F89-11D3-9A0C-0305E82C3301", "{3f2504e0-4f89-11d3-9a0c-0305e82c3301}"} {
+		if _, err := pg.GetAuditLog(ctx, "b1", spelling); err != nil {
+			t.Fatalf("spelling %q: %v", spelling, err)
+		}
+	}
+	for _, missing := range []struct{ bank, id string }{
+		{"b2", id},
+		{"b1", "e3b0c442-98fc-1c14-9afb-f4c8996fb924"},
+		{"b1", "not-a-uuid"},
+		{"b1", ""},
+	} {
+		if _, err := pg.GetAuditLog(ctx, missing.bank, missing.id); err != ErrAuditEntryNotFound {
+			t.Fatalf("GetAuditLog(%s, %q) = %v, want not found", missing.bank, missing.id, err)
 		}
 	}
 }

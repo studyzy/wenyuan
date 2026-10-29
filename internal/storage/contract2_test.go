@@ -141,7 +141,7 @@ func TestContractObservability(t *testing.T) {
 	if _, err := store.ListLLMRequests(ctx, LLMRequestQuery{BankID: bank, Limit: 10}); err != nil {
 		t.Fatalf("llm requests: %v", err)
 	}
-	if _, err := store.LLMRequestStats(ctx, bank, "day", ""); err != nil {
+	if _, err := store.LLMRequestStats(ctx, bank, "day", "", ""); err != nil {
 		t.Fatalf("llm stats: %v", err)
 	}
 	scopes, err := store.ListObservationScopes(ctx, bank, 10, 0)

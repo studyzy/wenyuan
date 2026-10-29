@@ -77,11 +77,13 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixHealthLLM), h.HealthLLM)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixAuditLogs), httpx.QueryParams(h.AuditLogs,
 		"action", "transport", "start_date", "end_date", "limit", "offset"))
+	handle(http.MethodGet, httpx.BankPath(httpx.SuffixAuditLogMember), h.AuditLog)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixAuditLogsStats), httpx.QueryParams(h.AuditLogStats, "action", "period"))
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixLLMRequests), httpx.QueryParams(h.LLMRequests,
-		"status", "operation", "scope", "provider", "trace_id", "document_id", "memory_id", "group",
+		"status", "operation", "scope", "call_type", "provider", "trace_id", "document_id", "memory_id", "group",
 		"start_date", "end_date", "limit", "offset"))
-	handle(http.MethodGet, httpx.BankPath(httpx.SuffixLLMRequestsStats), httpx.QueryParams(h.LLMRequestStats, "operation", "period"))
+	handle(http.MethodGet, httpx.BankPath(httpx.SuffixLLMRequestsStats), httpx.QueryParams(h.LLMRequestStats,
+		"operation", "call_type", "period"))
 
 	// Observations and consolidation.
 	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixObservations), h.DeleteObservations)
@@ -365,27 +367,65 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	items := make([]AuditLogEntry, 0, len(page.Entries))
+	items := make([]AuditLogSummary, 0, len(page.Entries))
 	for _, entry := range page.Entries {
-		startedAt := httpx.FormatTimestamp(entry.StartedAt)
-		metadata := entry.Metadata
-		if metadata == nil {
-			metadata = map[string]any{}
-		}
-		item := AuditLogEntry{
-			ID: entry.ID, Action: entry.Action, Transport: entry.Transport,
-			BankID: nullableString(entry.BankID), StartedAt: &startedAt,
-			EndedAt: httpx.FormatTimestampPtr(entry.EndedAt),
-			Request: entry.Request, Response: entry.Response, Metadata: metadata,
-		}
-		if entry.EndedAt != nil {
-			ms := int(entry.EndedAt.Sub(entry.StartedAt).Milliseconds())
-			item.DurationMS = &ms
-		}
-		items = append(items, item)
+		items = append(items, auditLogSummary(entry))
 	}
 	httpx.WriteJSON(w, http.StatusOK, AuditLogListResponse{
 		BankID: bankID, Total: page.Total, Limit: limit, Offset: offset, Items: items,
+	})
+}
+
+// auditLogSummary is the body-less part of an audit entry, the shape both the
+// list and the single-entry fetch serve. duration_ms is computed from the two
+// stamps and is null until the entry completed, as the reference computes it.
+func auditLogSummary(entry storage.AuditEntry) AuditLogSummary {
+	startedAt := httpx.FormatTimestamp(entry.StartedAt)
+	metadata := entry.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	item := AuditLogSummary{
+		ID: entry.ID, Action: entry.Action, Transport: entry.Transport,
+		BankID: nullableString(entry.BankID), StartedAt: &startedAt,
+		EndedAt: httpx.FormatTimestampPtr(entry.EndedAt), Metadata: metadata,
+	}
+	if entry.EndedAt != nil {
+		ms := int(entry.EndedAt.Sub(entry.StartedAt).Milliseconds())
+		item.DurationMS = &ms
+	}
+	return item
+}
+
+// AuditLog returns one audit entry with its full request and response bodies.
+func (h *Handlers) AuditLog(w http.ResponseWriter, r *http.Request) {
+	logID := pathID(r, "log_id")
+	// The reference resolves the entry identifier before anything else and
+	// answers "not found" for one that is not an identifier at all — before the
+	// bank lookup, because the parse happens first (memory_engine.py
+	// get_audit_log: `uuid.UUID(log_id)` then `get_bank_profile`).
+	entry, err := h.Store.GetAuditLog(r.Context(), PathBankID(r), logID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAuditEntryNotFound) {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
+				"Audit log entry '"+logID+"' not found"))
+			return
+		}
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
+		return
+	}
+	// Past the identifier the reference looks the bank up, so an unknown bank
+	// is the ordinary missing-bank 404.
+	if _, ok := h.requireBank(w, r); !ok {
+		return
+	}
+	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
+		return
+	}
+	request, response := entry.Request, entry.Response
+	httpx.WriteJSON(w, http.StatusOK, AuditLogEntry{
+		AuditLogSummary: auditLogSummary(entry),
+		Request:         request, Response: response,
 	})
 }
 
@@ -443,6 +483,11 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	callType, ok := enumParam(w, r, "call_type", storage.LLMCallTypes())
+	if !ok {
+		return
+	}
+
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -467,6 +512,7 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 		Status:        httpx.Query(r, "status"),
 		Operation:     httpx.Query(r, "operation"),
 		Scope:         httpx.Query(r, "scope"),
+		CallType:      callType,
 		Provider:      httpx.Query(r, "provider"),
 		TraceID:       httpx.Query(r, "trace_id"),
 		DocumentID:    httpx.Query(r, "document_id"),
@@ -513,6 +559,10 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 
 // LLMRequestStats buckets the model-request trace.
 func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
+	callType, ok := enumParam(w, r, "call_type", storage.LLMCallTypes())
+	if !ok {
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -521,7 +571,7 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	period := chartPeriod(r)
-	stats, err := h.Store.LLMRequestStats(r.Context(), bankID, period, httpx.Query(r, "operation"))
+	stats, err := h.Store.LLMRequestStats(r.Context(), bankID, period, httpx.Query(r, "operation"), callType)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -936,6 +986,28 @@ func readOptionalBody(r *http.Request) ([]byte, error) {
 // malformed required JSON body.
 func writeRequiredBodyFailure(w http.ResponseWriter, r *http.Request, err error) {
 	httpx.WriteValidationFailure(w, httpx.BodyDecodeFailure(err, nil))
+}
+
+// enumParam reads an optional parameter declared as a `Literal` enum in the
+// reference, reporting whether it settled on a value. An absent parameter is
+// empty; a value outside allowed is the framework's literal_error 422.
+//
+// The framework resolves the typed query members before the handler body runs,
+// so the caller must validate before its own first act — the bank lookup.
+func enumParam(w http.ResponseWriter, r *http.Request, name string, allowed []string) (string, bool) {
+	values, present := httpx.QueryPresent(r, name)
+	if !present || len(values) == 0 {
+		return "", true
+	}
+	// The reference binds the LAST occurrence of a repeated scalar parameter.
+	raw := values[len(values)-1]
+	for _, token := range allowed {
+		if token == raw {
+			return raw, true
+		}
+	}
+	writeQueryEnumFailure(w, r, name, raw, allowed)
+	return "", false
 }
 
 // writeQueryEnumFailure emits the framework's 422 body for a query parameter

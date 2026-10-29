@@ -3,6 +3,7 @@
 package readsurface
 
 import (
+	"encoding/json"
 	"unicode/utf8"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -21,6 +22,10 @@ type DocumentListItem struct {
 	RetainParams    map[string]any `json:"retain_params"`
 	Metadata        any            `json:"document_metadata"`
 	Tags            []string       `json:"tags"`
+	// MatchedFields names which fields the listing's `q` search matched on this
+	// document — "id", "original_text", or both — and is empty when the listing
+	// carried no `q`.
+	MatchedFields []string `json:"matched_fields"`
 }
 
 // DocumentListResponse is the document listing envelope.
@@ -29,6 +34,9 @@ type DocumentListResponse struct {
 	Total  int                `json:"total"`
 	Limit  int                `json:"limit"`
 	Offset int                `json:"offset"`
+	// TotalIsEstimate reports that a `q` search stopped at its match cap, so
+	// Total is a lower bound rather than an exact count.
+	TotalIsEstimate bool `json:"total_is_estimate"`
 }
 
 // ChunkAttachment is one attachment a document or chunk text references, in the
@@ -70,10 +78,17 @@ type DocumentResponse struct {
 	Attachments       []ChunkAttachment `json:"attachments"`
 }
 
-// UpdateDocumentRequest is the partial-update body. `tags` is the only mutable
-// field, and it must be present; any other body field is ignored.
+// UpdateDocumentRequest is the partial-update body. `tags` replaces the
+// document's tags; `observation_scopes` replaces the scoping its memories
+// consolidate under. At least one of them must be present, and any other body
+// field is ignored.
 type UpdateDocumentRequest struct {
 	Tags *[]string `json:"tags"`
+	// ObservationScopes is the new observation scoping, in the same shapes
+	// retain accepts: a mode name or a list of tag groups that may carry globs.
+	// It is kept raw so the value stored in the document's retain params is the
+	// one the caller sent, as the reference stores it.
+	ObservationScopes json.RawMessage `json:"observation_scopes"`
 }
 
 // UpdateDocumentResponse is the update result.
@@ -293,7 +308,17 @@ func toDocumentListItem(doc storage.Document) DocumentListItem {
 		RetainParams:    presentRetainParams(doc.RetainParams),
 		Metadata:        doc.Metadata,
 		Tags:            tags,
+		MatchedFields:   nonNilStrings(doc.MatchedFields),
 	}
+}
+
+// nonNilStrings renders an absent string list as an empty JSON array, never
+// null, so a caller can iterate the field unconditionally.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // toChunkResponse renders a stored chunk with the attachments its units were

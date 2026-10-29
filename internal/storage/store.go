@@ -210,17 +210,27 @@ type Store interface {
 	// AppendDocument concatenates text onto the stored document, failing with
 	// ErrDocumentConflict when the stored hash no longer matches expectedHash.
 	AppendDocument(ctx context.Context, bankID, docID, text, expectedHash string) (Document, error)
-	// RetagDocumentMemories carries a document's renamed tags onto its units and
-	// the observation scopes frozen on them, then rebuilds the observations built
-	// over them and returns how many were deleted. oldTags is the document's tag
-	// set before the retag, newTags the one being written.
+	// RetagDocumentMemories carries a document's new tags onto its units, and
+	// its new observation scopes, then rebuilds the observations built over the
+	// units whose RESOLVED scopes that moves — the only ones that need it (#5593).
 	//
-	// A retag replaces only the DOCUMENT-derived tags on each unit. The tag
-	// column also carries the projection of the bank's `entity_labels` groups
-	// flagged tag:true, derived per memory from that memory's own entities at
-	// extraction; labelKeys names those groups' keys, so each unit keeps the
-	// label tags it already carries even as the document's tags are replaced.
-	RetagDocumentMemories(ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool) (int, error)
+	// newTags replaces the DOCUMENT-derived tags on each unit when set; nil
+	// means the change is a scoping alone, so no unit's tags are written. A
+	// retag that renames a single tag is also carried into each unit's explicit
+	// scope list, so consolidation does not rebuild under the old tag name.
+	//
+	// The tag column also carries the projection of the bank's `entity_labels`
+	// groups flagged tag:true, derived per memory from that memory's own
+	// entities at extraction; labelKeys names those groups' keys, so each unit
+	// keeps the label tags it already carries even as the document's tags are
+	// replaced.
+	//
+	// newScopes, when set, is the raw observation_scopes value every unit ends
+	// with (the caller writes it into the document's retain params too); nil
+	// keeps each unit's own. Every unit whose scopes moved is requeued whether or
+	// not it had an observation: it was consolidated under scopes it no longer
+	// writes to.
+	RetagDocumentMemories(ctx context.Context, bankID, docID string, change DocumentScopeChange) (RetagOutcome, error)
 	// ResolveEntity resolves an entity name against the bank, honoring the
 	// resolution switch, and returns the canonical stored identity.
 	ResolveEntity(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error)
@@ -299,6 +309,10 @@ type Store interface {
 	// and clears any failure park. It is called only after the new content is
 	// stored, which is what makes a failed refresh retryable.
 	MarkMentalModelSeen(ctx context.Context, bankID, id string, seenAt time.Time) error
+	// MarkMentalModelFullRefresh stamps that a refresh ran in full mode. It is
+	// the full-refresh schedule's own clock: last_refreshed_at advances on
+	// every delta refresh, so a schedule keyed off it would never come due.
+	MarkMentalModelFullRefresh(ctx context.Context, bankID, id string, fullRefreshedAt time.Time) error
 	// RecordMentalModelRefreshFailure parks an automatic refresh after a
 	// failure without advancing the watermark, so the window that failed is
 	// re-read by the next attempt.
@@ -350,6 +364,18 @@ type Store interface {
 	// leaves a cancelled child out of the roll-up — the reference applies a
 	// narrower rule on read than on the worker path.
 	RepairPendingBatchParent(ctx context.Context, bankID, parentID string, status OperationStatus) error
+	// AppendDocumentEvents appends document change-history events to an
+	// operation's result_metadata.document_events. A change appends to the
+	// operation that carried it, so a document's history is a read over the
+	// bank's operations rather than a table of its own (#5638). Recording is
+	// best-effort by construction: the caller logs a failure and never fails
+	// the change it describes.
+	AppendDocumentEvents(ctx context.Context, opID string, events []map[string]any) error
+	// ListDocumentEvents returns one page of a document's change history,
+	// newest first. total and the page bound the operations carrying an event
+	// for the document, not the events themselves: one operation can carry
+	// several events for the same document.
+	ListDocumentEvents(ctx context.Context, bankID, documentID string, limit, offset int) (DocumentEventPage, error)
 	// SubmitAsyncRetain queues an asynchronous write: one parent batch
 	// operation that aggregates the submission and carries no work a worker
 	// runs, plus one child operation per token-bounded sub-batch, each holding
@@ -464,14 +490,19 @@ type Store interface {
 	// AuditLogStats buckets the audit trail over a period, narrowed to one
 	// action when action is not empty.
 	AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error)
+	// GetAuditLog returns one audit entry of the bank, request and response
+	// bodies included. A log_id that is not a UUID, or that names an entry of
+	// another bank, is ErrAuditEntryNotFound.
+	GetAuditLog(ctx context.Context, bankID, logID string) (AuditEntry, error)
 	// ListLLMRequests returns one page of the model-request trace.
 	ListLLMRequests(ctx context.Context, query LLMRequestQuery) (LLMRequestPage, error)
 	// RecordLLMRequest appends one model-request trace row, so the trace the
 	// read endpoints serve is populated by the calls that actually happened.
 	RecordLLMRequest(ctx context.Context, request LLMRequest) error
 	// LLMRequestStats buckets the model-request trace over a period, narrowed to
-	// one operation when operation is not empty.
-	LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error)
+	// one operation when operation is not empty and to one kind of model call
+	// when callType is not empty.
+	LLMRequestStats(ctx context.Context, bankID, period, operation, callType string) (LLMRequestStats, error)
 	// ListObservationScopes returns the distinct observation scopes of a bank.
 	ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error)
 

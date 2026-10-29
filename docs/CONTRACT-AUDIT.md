@@ -11,6 +11,28 @@
 > 本文件是这次复核的完整清单；`docs/GAPS.md` 仍是当前状态总览，
 > `docs/PARITY-PLAN.md` 记录实施与进度。
 
+## 契约版本：已同步到参考 v1.1.0
+
+本文件记录的复核以 1.0.0 为准。此后参考发布 v1.1.0，所服务的契约文档已整体替换为该版本的
+`/openapi.json`（`internal/httpx/openapi.json`，`info.version = 1.1.0`，
+`httpx.ReferenceAPIVersion = "1.1.0"`），差异逐项如下（详见 `CHANGELOG.md` 的
+"Added — the reference released v1.1.0" 一节）：
+
+| 类别 | v1.1.0 新增 |
+|---|---|
+| 新路由 | `GET .../documents/{document_id}/history`（`DocumentHistoryResponse`）、`GET .../audit-logs/{log_id}`（`AuditLogEntry`，404 为 `Audit log entry '<id>' not found`） |
+| 新增查询参数 | `/documents` 的 `tags_match=exact`；`/llm-requests`、`/llm-requests/stats` 的 `call_type`；`/mental-models` 的 `exclude_knowledge_pages`；`/graph` 的 `tags_match` 显式枚举 |
+| 新增/变更请求字段 | `PATCH /documents` 的 `observation_scopes`；`POST /mental-models/{id}/refresh` 的可选 body `{"mode":"full"}`；`UpdateMemoryRequest.mentioned_at`；`RecallRequest.prefer_observations` 改为可空；`trigger.full_refresh_cron`；`BankTemplateConfig.default_observation_scopes` 与 `recall_prefer_observations` |
+| 新增/变更响应字段 | `DocumentListItem.matched_fields`、`ListDocumentsResponse.total_is_estimate`；`AuditLogListResponse.items` 改为 `AuditLogSummary`（不含 request/response）；`AuditLogEntry` 必填顺序调整；`MentalModelResponse.is_knowledge_page` / `last_full_refreshed_at`、trigger 的 `full_refresh_cron`；`WebhookDeliveryResponse.event_id` |
+| 行为文案 | `/operations/{id}/retry` 现在也接受 `cancelled` 与延后的 `pending` 操作；`/documents` 的 `q` 同时匹配文档 id 与正文；`/graph`、`/memories/list` 的 `q` 明确为正文+context 的大小写不敏感子串（无索引扫描） |
+
+未随 v1.1.0 复刻的部分（服务端可选能力，不影响任何已服务路由的请求/响应形状）：
+decision model（`HINDSIGHT_API_DECISION_MODEL_*` 及 `*_use_decision_model` 银行开关，字段已由
+契约声明、按 null 语义透传）、`nvidia` embedding/reranker、`onnx` reranker、
+`chatgpt` provider 与 `hindsight-admin chatgpt` 命令、`LLMRequestExtension`、async batch retain。
+它们是把模型调用换到另一个后端或另加一层扩展点，不是既有路由的语义变化；需要时按
+`AGENTS.md` 的 provider 边界新增适配器即可。
+
 ## 0. 复核方法
 
 | 手段 | 说明 |

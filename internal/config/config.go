@@ -796,20 +796,27 @@ type ProcessDefaults struct {
 	ReflectSourceFactsMaxTokens int
 	ReflectDefaultOptions       map[string]any
 	RecallIncludeChunks         bool
-	RecallMaxTokens             int
-	RecallChunksMaxTokens       int
-	RecallBudgetFunction        string
-	RecallBudgetFixedLow        int
-	RecallBudgetFixedMid        int
-	RecallBudgetFixedHigh       int
-	RecallBudgetAdaptiveLow     float64
-	RecallBudgetAdaptiveMid     float64
-	RecallBudgetAdaptiveHigh    float64
-	RecallBudgetMin             int
-	RecallBudgetMax             int
-	DispositionSkepticism       *int
-	DispositionLiteralism       *int
-	DispositionEmpathy          *int
+	// RecallPreferObservations is the default for recall's prefer_observations
+	// when the request omits it.
+	RecallPreferObservations bool
+	// DefaultObservationScopes is the observation_scopes retain applies to an
+	// item that sends none: a mode name, []string slices for an explicit scope
+	// list, or nil for the combined default.
+	DefaultObservationScopes any
+	RecallMaxTokens          int
+	RecallChunksMaxTokens    int
+	RecallBudgetFunction     string
+	RecallBudgetFixedLow     int
+	RecallBudgetFixedMid     int
+	RecallBudgetFixedHigh    int
+	RecallBudgetAdaptiveLow  float64
+	RecallBudgetAdaptiveMid  float64
+	RecallBudgetAdaptiveHigh float64
+	RecallBudgetMin          int
+	RecallBudgetMax          int
+	DispositionSkepticism    *int
+	DispositionLiteralism    *int
+	DispositionEmpathy       *int
 }
 
 // RecallTuning is the retrieval pipeline's process-level tuning.

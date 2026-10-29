@@ -24,7 +24,10 @@ type DocumentQuery struct {
 	// TagGroups, when set, replaces the flat tag filter with a compound tree,
 	// which is how a caller's resolved read scope is AND-ed into the listing.
 	TagGroups []TagGroup
-	// Query is a case-insensitive substring match on the document id.
+	// Query is a case-insensitive substring match on the document id or its
+	// stored text, matched literally: a `%` or `_` in it is that character, not
+	// a wildcard. A store may stop counting at DocumentSearchCap matches (see
+	// Page.TotalIsEstimate).
 	Query  string
 	Limit  int
 	Offset int
@@ -80,12 +83,84 @@ func matchesTagFilter(present, tags []string, mode string, groups []TagGroup) bo
 	return matchFlatTags(present, tags, mode)
 }
 
+// DocumentSearchCap bounds how many documents a `q` search counts and serves.
+// Without it the count would scan every document's text on every page; with it
+// the scan stops at the cap's worth of rows (engine/memories/pg/documents.py
+// DOCUMENT_SEARCH_CAP).
+const DocumentSearchCap = 1000
+
 // DocumentPage is one page of documents with the pre-paging total.
 type DocumentPage struct {
 	Documents []Document
-	Total     int
-	Limit     int
-	Offset    int
+	// Total is how many documents matched — or, for a `q` search that hit
+	// DocumentSearchCap, the cap itself, with TotalIsEstimate set.
+	Total int
+	Limit int
+	// Offset is the requested offset. A `q` search never pages past the cap, so
+	// Limit and Offset here stay the caller's values while the page itself holds
+	// at most DocumentSearchCap-offset rows.
+	Offset int
+	// TotalIsEstimate reports that a `q` search stopped at its match cap, so
+	// Total is a lower bound.
+	TotalIsEstimate bool
+}
+
+// documentSearchMatches reports whether a document's id or text contains q,
+// case-insensitively, and which fields matched, in the reference's order:
+// id first, then original_text.
+func documentSearchMatches(doc Document, q string) []string {
+	if q == "" {
+		return []string{}
+	}
+	needle := strings.ToLower(q)
+	matched := make([]string, 0, 2)
+	if strings.Contains(strings.ToLower(doc.ID), needle) {
+		matched = append(matched, "id")
+	}
+	if strings.Contains(strings.ToLower(doc.OriginalText), needle) {
+		matched = append(matched, "original_text")
+	}
+	return matched
+}
+
+// matchedDocumentFields renders a search's per-row match flags — the store's
+// `CASE WHEN ... THEN 1 ELSE 0` columns — as the field names a listing serves.
+func matchedDocumentFields(idMatched, textMatched int) []string {
+	matched := make([]string, 0, 2)
+	if idMatched != 0 {
+		matched = append(matched, "id")
+	}
+	if textMatched != 0 {
+		matched = append(matched, "original_text")
+	}
+	return matched
+}
+
+// documentsPageBounds resolves the page of a document listing. A `q` search
+// stops where its count does, so paging never serves a row Total disowns:
+// limit becomes max(0, min(limit, DocumentSearchCap-offset)).
+func documentsPageBounds(total, offset, limit int, searched bool) (start, end int) {
+	if limit < 0 {
+		limit = 100
+	}
+	start = offset
+	if start > total {
+		start = total
+	}
+	end = start + limit
+	if searched {
+		end = offset + limit
+		if capEnd := DocumentSearchCap; end > capEnd {
+			end = capEnd
+		}
+		if end < start {
+			end = start
+		}
+	}
+	if end > total {
+		end = total
+	}
+	return start, end
 }
 
 // ChunkPage is one page of chunks with the pre-paging total.

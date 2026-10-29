@@ -271,7 +271,7 @@ func TestApplyResourcesStoresDefaultTrigger(t *testing.T) {
 		model.Trigger["keep_trace"] != false {
 		t.Fatalf("stored trigger = %#v, want the reference's full default", model.Trigger)
 	}
-	if len(model.Trigger) != 17 {
+	if len(model.Trigger) != 18 {
 		t.Fatalf("stored trigger has %d members, want the full model", len(model.Trigger))
 	}
 }

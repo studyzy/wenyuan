@@ -23,6 +23,9 @@ import (
 //	shared             — the single untagged scope, whatever the fact's tags.
 //	[["a"],["b"]]      — one scope per group in the explicit list.
 //
+// An explicit group entry containing * is a glob over the fact's own tags (see
+// ExpandScopeGlobs).
+//
 // An empty tag set resolves to the untagged scope in every mode, so untagged
 // facts never fan out.
 
@@ -56,13 +59,130 @@ func resolveScopes(tags []string, raw json.RawMessage) [][]string {
 	case scopeModeCombined, "":
 		return [][]string{canonicalTags}
 	default:
-		// An explicit list of tag groups. An empty list is treated as the
-		// combined default, matching the reference's fall-through.
-		if len(groups) == 0 {
+		// An explicit list of tag groups, with any tag glob resolved against the
+		// fact's own tags. An empty list — including a list whose every scope
+		// dropped — is treated as the combined default, matching the reference's
+		// fall-through.
+		expanded := ExpandScopeGlobs(groups, canonicalTags)
+		if len(expanded) == 0 {
 			return [][]string{canonicalTags}
 		}
-		return dedupeScopes(groups)
+		return dedupeScopes(expanded)
 	}
+}
+
+// WriteScopesChanged reports whether relabelling a memory moves it to a different
+// set of observation scopes, which is the only case in which its observations
+// need rebuilding (the reference's consolidator.write_scopes_changed, #5593).
+// Under shared or an explicit scope list the tags take no part in where the
+// observations go, so a tag change alone moves nothing; and a scope change that
+// resolves to the same scopes (combined over [a] -> [["a"]]) rebuilds nothing.
+//
+// oldScopes/newScopes are raw observation_scopes JSON values (nil when unset).
+// The comparison is over exactly the scopes ResolveScopes produces, so the two
+// can never disagree.
+func WriteScopesChanged(oldTags []string, oldScopes json.RawMessage, newTags []string, newScopes json.RawMessage) bool {
+	before, after := WriteScopes(oldTags, oldScopes), WriteScopes(newTags, newScopes)
+	if len(before) != len(after) {
+		return true
+	}
+	for key := range before {
+		if !after[key] {
+			return true
+		}
+	}
+	return false
+}
+
+// WriteScopes returns the canonical scopes a memory will write observations to,
+// as a set keyed by scopeKey.
+func WriteScopes(tags []string, raw json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	for _, scope := range resolveScopes(tags, raw) {
+		out[scopeKey(scope)] = true
+	}
+	return out
+}
+
+// ExpandScopeGlobs resolves tag globs (topic:*) in an explicit scope list
+// against a memory's own tags (#5666). A glob is replaced by every tag it
+// matches, so [["topic:*","user:*"]] scopes a memory by its own topic and user
+// tags while ignoring the rest (session:, source: ...), which is what lets a
+// client or the bank's default_observation_scopes name a scope whose values only
+// the server knows, e.g. topic: tags added from entity labels during retain.
+//
+// Only * marks a glob: ? and [ are common enough in literal tags that treating
+// them as metacharacters would silently change existing explicit scopes.
+//
+// A scope whose globs all matched nothing is dropped rather than kept empty — an
+// empty scope is the untagged, bank-wide one, and a memory the pattern missed
+// must not become visible to everyone. A scope written empty on purpose ([[]])
+// has no globs and is kept. When every scope drops the result is empty, which the
+// callers treat as the combined pass over the memory's own tags.
+//
+// The result is returned unsorted and uncanonicalized, exactly as the reference
+// builds it; resolveScopes canonicalizes it for use.
+func ExpandScopeGlobs(scopes [][]string, tags []string) [][]string {
+	resolved := make([][]string, 0, len(scopes))
+	for _, scope := range scopes {
+		hasGlob := false
+		for _, entry := range scope {
+			if strings.Contains(entry, "*") {
+				hasGlob = true
+				break
+			}
+		}
+		if !hasGlob {
+			resolved = append(resolved, scope)
+			continue
+		}
+		expanded := make([]string, 0, len(scope)+len(tags))
+		for _, entry := range scope {
+			if !strings.Contains(entry, "*") {
+				expanded = append(expanded, entry)
+				continue
+			}
+			for _, tag := range tags {
+				if globMatch(entry, tag) {
+					expanded = append(expanded, tag)
+				}
+			}
+		}
+		if len(expanded) > 0 {
+			resolved = append(resolved, expanded)
+		}
+	}
+	return resolved
+}
+
+// globMatch is Python's fnmatchcase for a pattern whose only metacharacter is *,
+// which is the subset ExpandScopeGlobs treats as a glob. * matches any run of
+// characters, including none.
+func globMatch(pattern, name string) bool {
+	// Greedy scan with backtracking at the most recent star, linear in practice
+	// and no allocation.
+	px, nx := 0, 0
+	star, mark := -1, 0
+	for nx < len(name) {
+		switch {
+		case px < len(pattern) && pattern[px] == name[nx]:
+			px++
+			nx++
+		case px < len(pattern) && pattern[px] == '*':
+			star, mark = px, nx
+			px++
+		case star >= 0:
+			px = star + 1
+			mark++
+			nx = mark
+		default:
+			return false
+		}
+	}
+	for px < len(pattern) && pattern[px] == '*' {
+		px++
+	}
+	return px == len(pattern)
 }
 
 // parseObservationScopes decodes a raw observation_scopes value. A JSON string

@@ -49,6 +49,8 @@ func resolveProcessDefaults(lookup func(string) (string, bool)) ProcessDefaults 
 		ReflectSourceFactsMaxTokens:  intFromEnvAllowNegative(lookup, EnvReflectSourceFactsMaxTokens, DefaultReflectSourceFactsMaxTokens),
 		ReflectDefaultOptions:        jsonObjectFromEnv(lookup, EnvReflectDefaultOptions),
 		RecallIncludeChunks:          boolFromEnv(lookup, EnvRecallIncludeChunks, true),
+		RecallPreferObservations:     boolFromEnv(lookup, EnvRecallPreferObservations, false),
+		DefaultObservationScopes:     observationScopesFromEnv(lookup),
 		RecallMaxTokens:              intFromEnv(lookup, EnvRecallMaxTokens, DefaultRecallMaxTokens),
 		RecallChunksMaxTokens:        intFromEnv(lookup, EnvRecallChunksMaxTokens, DefaultRecallChunksMaxTokens),
 		RecallBudgetFunction:         budgetFunction(lookup),
@@ -351,6 +353,29 @@ func jsonValueFromEnv(lookup func(string) (string, bool), key string) any {
 	raw, ok := lookup(key)
 	if !ok || strings.TrimSpace(raw) == "" {
 		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// observationScopesFromEnv parses the default observation_scopes: a mode name
+// ("combined", "per_tag", "all_combinations", "shared") as written, or a JSON
+// scope list such as [["topic:*"]]. An unset, blank or unparseable value is null,
+// which the reference resolves as the combined default.
+func observationScopesFromEnv(lookup func(string) (string, bool)) any {
+	raw, ok := lookup(EnvDefaultObservationScopes)
+	if !ok {
+		return nil
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if !strings.HasPrefix(raw, "[") {
+		return raw
 	}
 	var parsed any
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {

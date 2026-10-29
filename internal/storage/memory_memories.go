@@ -401,6 +401,10 @@ func (s *MemoryStore) UpdateMemory(ctx context.Context, bankID, memoryID string,
 	if err != nil {
 		return MemoryUnit{}, err
 	}
+	// The change history is filed on the consolidation this write queues, so the
+	// tracked-writes record has to be bound before the sweep runs and consumed
+	// after the pass is submitted (memory_engine.py:13126-13152).
+	track, ctx := beginCurationHistory(ctx, s, bankID, memoryID, action)
 	switch action {
 	case curationEdit:
 		if embedding := s.applyEditEmbedding(ctx, bankID, memoryID, unit); len(embedding) > 0 {
@@ -409,16 +413,19 @@ func (s *MemoryStore) UpdateMemory(ctx context.Context, bankID, memoryID string,
 		if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
 			return MemoryUnit{}, err
 		}
-		s.submitEditFollowUps(ctx, bankID)
+		track.recordDocument(ctx, s)
+		track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 	case curationInvalidate:
 		// The row left the live view, so the observations it was evidence for
 		// are stale now.
 		if _, err := s.DeleteStaleObservations(ctx, bankID, []string{memoryID}); err != nil {
 			return MemoryUnit{}, err
 		}
-		s.submitEditFollowUps(ctx, bankID)
+		track.recordDocument(ctx, s)
+		track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 	case curationRevert:
-		s.submitEditFollowUps(ctx, bankID)
+		track.recordDocument(ctx, s)
+		track.file(ctx, s, s.submitEditFollowUps(ctx, bankID))
 	}
 	return cloneMemoryUnit(unit), nil
 }
@@ -473,10 +480,15 @@ func (s *MemoryStore) updateMemoryLocked(bankID, memoryID string, patch MemoryPa
 		unit.OccurredEnd = nil
 	}
 	unit.OccurredEnd = applyDatePatch(unit.OccurredEnd, patch.OccurredEnd)
+	if patch.MentionedAt != nil {
+		unit.MentionedAt = applyDatePatch(unit.MentionedAt, patch.MentionedAt)
+	}
 	// An explicit occurred_start edit — including a clear — re-derives the
 	// legacy single date with retain's own rule (occurred_start or
-	// mentioned_at), as the reference does.
-	if patch.ClearOccurredStart || patch.OccurredStart != nil {
+	// mentioned_at), as the reference does. A mentioned_at edit re-derives it
+	// the same way, since it is the fallback; an edit touching neither leaves
+	// the legacy date alone.
+	if patch.ClearOccurredStart || patch.OccurredStart != nil || patch.MentionedAt != nil {
 		if unit.OccurredStart != nil {
 			unit.EventDate = unit.OccurredStart
 		} else {
@@ -590,17 +602,21 @@ func (s *MemoryStore) applyEditEmbedding(ctx context.Context, bankID, memoryID s
 // consolidation is on for the bank) and a graph-maintenance sweep (unconditional,
 // as the reference submits it with force_sweep=True). A failure to submit never
 // fails the write; the periodic sweeps pick the work up.
-func (s *MemoryStore) submitEditFollowUps(ctx context.Context, bankID string) {
+func (s *MemoryStore) submitEditFollowUps(ctx context.Context, bankID string) string {
+	consolidationID := ""
 	if s.autoConsolidationFor(ctx, bankID) {
-		if _, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
+		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err != nil {
 			slog.Default().Warn("could not submit consolidation after curating a memory",
 				"bank_id", bankID, "error", err)
+		} else {
+			consolidationID = op.OperationID
 		}
 	}
 	if _, _, err := s.EnqueueGraphMaintenance(ctx, bankID); err != nil {
 		slog.Default().Warn("could not submit graph maintenance after curating a memory",
 			"bank_id", bankID, "error", err)
 	}
+	return consolidationID
 }
 
 // autoConsolidationFor resolves whether a curation write submits a consolidation
@@ -782,7 +798,7 @@ func (s *MemoryStore) ClearBankMemories(ctx context.Context, bankID, factType st
 	if factType == "" {
 		return s.clearBankContentsLocked(bankID), nil
 	}
-	return s.clearBankMemoriesOfTypeLocked(bankID, factType), nil
+	return s.clearBankMemoriesOfTypeLocked(ctx, bankID, factType), nil
 }
 
 // clearBankContentsLocked purges every domain row a bank holds, leaving the
@@ -849,7 +865,7 @@ func (s *MemoryStore) clearBankContentsLocked(bankID string) int {
 // single fact type, plus the links and associations hanging off them. The
 // derived recall projection and the observation snapshots of the removed units
 // go with them.
-func (s *MemoryStore) clearBankMemoriesOfTypeLocked(bankID, factType string) int {
+func (s *MemoryStore) clearBankMemoriesOfTypeLocked(ctx context.Context, bankID, factType string) int {
 	removed := 0
 	doomed := map[string]struct{}{}
 	for id, unit := range s.units {
@@ -904,7 +920,7 @@ func (s *MemoryStore) clearBankMemoriesOfTypeLocked(bankID, factType string) int
 		// Every observation resting on one of the removed units is stale, so it
 		// is dropped and its surviving co-sources are reset for re-consolidation,
 		// mirroring the reference's stale-observation sweep on the typed clear.
-		_, _ = s.deleteStaleObservationsLocked(bankID, keysOf(doomed))
+		_, _ = s.deleteStaleObservationsLocked(ctx, bankID, keysOf(doomed))
 	}
 	s.invalidateBankLocked(bankID)
 	return removed
@@ -918,27 +934,58 @@ func (s *MemoryStore) DeleteObservations(ctx context.Context, bankID, memoryID s
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	if memoryID == "" {
+		return s.clearBankObservations(ctx, bankID)
+	}
+	// The clear's event is filed on the consolidation it queues, so the
+	// tracked-writes record is bound before the sweep and consumed after the
+	// submit — outside the write lock the sweep needs (memory_engine.py:12524-12565).
+	track, ctx := beginClearHistory(ctx, s, bankID, memoryID)
+	removed, err := s.clearMemoryObservations(ctx, bankID, memoryID)
+	if err != nil {
+		return 0, err
+	}
+	if removed > 0 && s.autoConsolidationFor(ctx, bankID) {
+		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
+			track.file(ctx, s, op.OperationID)
+		}
+	}
+	return removed, nil
+}
+
+// clearBankObservations removes every observation of a bank and requeues every
+// source fact, which is the bank-wide clearing the reference does not list in a
+// document's history.
+func (s *MemoryStore) clearBankObservations(ctx context.Context, bankID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
-	if memoryID == "" {
-		removed := 0
-		for id, unit := range s.units {
-			if unit.BankID != bankID || unit.FactType != TypeObservation {
-				continue
-			}
-			delete(s.units, id)
-			delete(s.unitEntities, id)
-			delete(s.observationSources, id)
-			delete(s.memoryHistory, id)
-			removed++
+	removed := 0
+	for id, unit := range s.units {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
+			continue
 		}
-		s.requeueBankSourcesLocked(bankID)
-		return removed, nil
+		delete(s.units, id)
+		delete(s.unitEntities, id)
+		delete(s.observationSources, id)
+		delete(s.memoryHistory, id)
+		removed++
 	}
-	removed, err := s.deleteStaleObservationsLocked(bankID, []string{memoryID})
+	s.requeueBankSourcesLocked(bankID)
+	return removed, nil
+}
+
+// clearMemoryObservations removes one memory's observations and resets its own
+// consolidation marker, under the write lock.
+func (s *MemoryStore) clearMemoryObservations(ctx context.Context, bankID, memoryID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	removed, err := s.deleteStaleObservationsLocked(ctx, bankID, []string{memoryID})
 	if err != nil {
 		return 0, err
 	}

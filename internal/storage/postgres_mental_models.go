@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -16,7 +17,14 @@ const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''),
        COALESCE(links, '{}')::text, COALESCE(tags, '{}')::text, COALESCE(max_tokens, 2048),
        COALESCE(trigger, '{}'::jsonb), structured_content, reflect_response,
        COALESCE(last_refreshed_source_query, ''),
-       last_refreshed_at, last_memory_seen_at, last_refresh_failed_at, last_updated, created_at`
+       last_refreshed_at, last_memory_seen_at, last_refresh_failed_at, last_full_refreshed_at,
+       last_updated, created_at`
+
+// backsKnowledgePageSQL tests whether a projected model row holds a knowledge
+// page's content: the alias must be `mm`, because the case scans a row that may
+// carry no is_knowledge_page column and re-reads the predicate by model id.
+const backsKnowledgePageSQL = `EXISTS (SELECT 1 FROM %[1]s.knowledge_pages kp
+	WHERE kp.bank_id = mm.bank_id AND kp.mental_model_id = mm.id)`
 
 // ListMentalModels returns the mental models of one bank, newest first.
 func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, subtype MentalModelSubtype) ([]MentalModel, error) {
@@ -25,7 +33,10 @@ func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, sub
 		var zero0 []MentalModel
 		return zero0, schemaErr
 	}
-	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(schema) + `.mental_models
+	isPage := fmt.Sprintf(backsKnowledgePageSQL, quoteIdent(schema))
+	query := `SELECT ` + mentalModelSelect + `,
+	                 CASE WHEN ` + isPage + ` THEN 1 ELSE 0 END
+	          FROM ` + quoteIdent(schema) + `.mental_models mm
 	          WHERE bank_id = $1 AND ($2 = '' OR subtype = $2)
 	          ORDER BY last_refreshed_at DESC, id DESC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, string(subtype))
@@ -57,7 +68,10 @@ func (s *PostgresStore) getMentalModelOn(ctx context.Context, q queryer, bankID,
 		var zero0 MentalModel
 		return zero0, schemaErr
 	}
-	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(schema) + `.mental_models
+	isPage := fmt.Sprintf(backsKnowledgePageSQL, quoteIdent(schema))
+	query := `SELECT ` + mentalModelSelect + `,
+	                 CASE WHEN ` + isPage + ` THEN 1 ELSE 0 END
+	          FROM ` + quoteIdent(schema) + `.mental_models mm
 	          WHERE bank_id = $1 AND id = $2`
 	model, err := scanMentalModel(q.QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
@@ -138,15 +152,17 @@ func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, mode
 	if model.LastRefreshFailedAt != nil {
 		lastRefreshFailedAt = *model.LastRefreshFailedAt
 	}
-	if model.LastRefreshFailedAt != nil {
-		lastRefreshFailedAt = *model.LastRefreshFailedAt
+	var lastFullRefreshedAt any
+	if model.LastFullRefreshedAt != nil {
+		lastFullRefreshedAt = *model.LastFullRefreshedAt
 	}
 	query := `INSERT INTO ` + quoteIdent(schema) + `.mental_models
 	          (id, bank_id, subtype, name, description, source_query, content, embedding, entity_id,
 	           observations, links, tags, max_tokens, trigger, structured_content, reflect_response,
-	           last_refreshed_source_query, last_refreshed_at, last_refresh_failed_at, last_updated, created_at)
+	           last_refreshed_source_query, last_refreshed_at, last_refresh_failed_at,
+	           last_full_refreshed_at, last_updated, created_at)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::vector,NULLIF($9,'')::uuid,$10::jsonb,$11,$12,$13,$14::jsonb,
-	                  $15::jsonb,$16::jsonb,$17, $18, $19, now(), now())
+	                  $15::jsonb,$16::jsonb,$17, $18, $19, $20, now(), now())
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
 	              subtype = EXCLUDED.subtype, name = EXCLUDED.name, description = EXCLUDED.description,
 	              source_query = EXCLUDED.source_query, content = EXCLUDED.content,
@@ -157,11 +173,12 @@ func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, mode
 	              last_refreshed_source_query = EXCLUDED.last_refreshed_source_query,
 	              last_refreshed_at = EXCLUDED.last_refreshed_at,
 	              last_refresh_failed_at = EXCLUDED.last_refresh_failed_at,
+	              last_full_refreshed_at = EXCLUDED.last_full_refreshed_at,
 	              last_updated = now()`
 	_, err = e.ExecContext(ctx, query, model.ID, model.BankID, string(model.Subtype), model.Name,
 		model.Description, model.SourceQuery, model.Content, embedding, model.EntityID,
 		observations, model.Links, model.Tags, maxTokens, trigger, structured, reflectResult,
-		model.LastRefreshedSourceQuery, lastRefreshedAt, lastRefreshFailedAt)
+		model.LastRefreshedSourceQuery, lastRefreshedAt, lastRefreshFailedAt, lastFullRefreshedAt)
 	return err
 }
 
@@ -304,12 +321,15 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 	var subtype string
 	var observations, trigger, structured, reflectResult []byte
 	var links, tags string
-	var lastRefreshedAt, lastMemorySeenAt, lastRefreshFailedAt, lastUpdated sql.NullTime
+	var lastRefreshedAt, lastMemorySeenAt, lastRefreshFailedAt, lastFullRefreshedAt, lastUpdated sql.NullTime
+	// isKnowledgePage is the CASE projection's 0/1; no other read of this
+	// projection selects it, so it is scanned here and never left unset.
+	var isKnowledgePage int
 	if err := row.Scan(&model.ID, &model.BankID, &subtype, &model.Name, &model.Description,
 		&model.SourceQuery, &model.Content, &model.EntityID, &observations,
 		&links, &tags, &model.MaxTokens, &trigger, &structured, &reflectResult,
 		&model.LastRefreshedSourceQuery, &lastRefreshedAt, &lastMemorySeenAt, &lastRefreshFailedAt,
-		&lastUpdated, &model.CreatedAt); err != nil {
+		&lastFullRefreshedAt, &lastUpdated, &model.CreatedAt, &isKnowledgePage); err != nil {
 		return MentalModel{}, err
 	}
 	model.Subtype = MentalModelSubtype(subtype)
@@ -318,6 +338,9 @@ func scanMentalModel(row rowScanner) (MentalModel, error) {
 	model.LastRefreshedAt = derefTime(lastRefreshedAt)
 	model.LastMemorySeenAt = nullTimePtr(lastMemorySeenAt)
 	model.LastRefreshFailedAt = nullTimePtr(lastRefreshFailedAt)
+	model.LastFullRefreshedAt = nullTimePtr(lastFullRefreshedAt)
+	backed := isKnowledgePage != 0
+	model.IsKnowledgePage = &backed
 	model.LastUpdated = derefTime(lastUpdated)
 	model.Observations = decodeJSONMap(observations)
 	model.Trigger = decodeJSONMap(trigger)
@@ -419,4 +442,65 @@ func normalizeTags(tags []string) []string {
 		}
 	}
 	return out
+}
+
+// PromoteOperationPayload sets one payload member on an operation that is still
+// in the expected status, so a queued refresh can be upgraded to a full one
+// without changing what it works on. The status is part of the statement rather
+// than a check in front of it, because the row may be claimed between the read
+// and the write: a run that has started has already chosen its mode.
+func (s *PostgresStore) PromoteOperationPayload(ctx context.Context, bankID, operationID, key string, value any, onlyStatus OperationStatus) (bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return false, schemaErr
+	}
+	encoded, err := json.Marshal(map[string]any{key: value})
+	if err != nil {
+		return false, err
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
+	          SET task_payload = (COALESCE(task_payload, '{}'::jsonb) || $4::jsonb),
+	              updated_at = now()
+	          WHERE operation_id = $1 AND bank_id = $2 AND status = $3
+	            AND COALESCE(task_payload ->> $5, '') <> $6`
+	result, err := s.db.ExecContext(ctx, query, operationID, bankID, string(onlyStatus), encoded, key, value)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// WithOperationSubjectLock runs fn under the same bank-row lock a deduplicated
+// enqueue of this operation type takes (see enqueueLockedBankTx), so a submit
+// that amends the operation it folded into cannot interleave with a concurrent
+// submit of the same bank deciding on the same queue.
+func (s *PostgresStore) WithOperationSubjectLock(ctx context.Context, bankID, _ string, fn func() error) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var present int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
+		bankID).Scan(&present); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// The bank went away with the work queued on it; there is nothing
+			// left to promote.
+			return nil
+		}
+		return err
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

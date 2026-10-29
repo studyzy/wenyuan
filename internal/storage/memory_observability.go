@@ -328,6 +328,24 @@ func (s *MemoryStore) ListAuditLog(ctx context.Context, query AuditQuery) (Audit
 	return AuditPage{Entries: matched[start:end], Total: total, Limit: query.Limit, Offset: query.Offset}, nil
 }
 
+// GetAuditLog returns one audit entry of the bank, bodies included.
+func (s *MemoryStore) GetAuditLog(ctx context.Context, bankID, logID string) (AuditEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return AuditEntry{}, err
+	}
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	if s.readErr != nil {
+		return AuditEntry{}, s.readErr
+	}
+	for _, entry := range s.auditEntries {
+		if entry.ID == logID && entry.BankID == bankID {
+			return entry, nil
+		}
+	}
+	return AuditEntry{}, ErrAuditEntryNotFound
+}
+
 // AuditLogStats buckets the audit trail over a period.
 func (s *MemoryStore) AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error) {
 	if err := ctx.Err(); err != nil {
@@ -408,6 +426,9 @@ func matchesLLMRequest(request LLMRequest, query LLMRequestQuery) bool {
 		return false
 	}
 	if query.Scope != "" && request.Scope != query.Scope {
+		return false
+	}
+	if query.CallType != "" && LLMCallTypeOf(request.Scope) != query.CallType {
 		return false
 	}
 	if query.Provider != "" && request.Provider != query.Provider {
@@ -519,8 +540,9 @@ func (s *MemoryStore) RecordLLMRequest(ctx context.Context, request LLMRequest) 
 	return nil
 }
 
-// LLMRequestStats buckets the model-request trace over a period.
-func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error) {
+// LLMRequestStats buckets the model-request trace over a period, optionally
+// narrowed to one kind of model call.
+func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, operation, callType string) (LLMRequestStats, error) {
 	if err := ctx.Err(); err != nil {
 		return LLMRequestStats{}, err
 	}
@@ -537,6 +559,9 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, opera
 			continue
 		}
 		if operation != "" && request.Operation != operation {
+			continue
+		}
+		if callType != "" && LLMCallTypeOf(request.Scope) != callType {
 			continue
 		}
 		if request.StartedAt.Before(start) {

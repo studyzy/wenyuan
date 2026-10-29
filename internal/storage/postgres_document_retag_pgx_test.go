@@ -25,8 +25,9 @@ func TestPostgresRetagKeepsLabelDerivedTags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.RetagDocumentMemories(ctx, "read-bank", "doc-1",
-		[]string{"work"}, []string{"team-a"}, map[string]bool{"topic": true}); err != nil {
+	if _, err := store.RetagDocumentMemories(ctx, "read-bank", "doc-1", DocumentScopeChange{
+		OldTags: []string{"work"}, NewTags: []string{"team-a"}, LabelKeys: map[string]bool{"topic": true},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	unit, err := store.GetMemory(ctx, "read-bank", unitID)
@@ -37,8 +38,9 @@ func TestPostgresRetagKeepsLabelDerivedTags(t *testing.T) {
 		t.Fatalf("tags after retag = %v, want [team-a topic:algorithms]", unit.Tags)
 	}
 
-	if _, err := store.RetagDocumentMemories(ctx, "read-bank", "doc-1",
-		[]string{"team-a"}, []string{"work"}, nil); err != nil {
+	if _, err := store.RetagDocumentMemories(ctx, "read-bank", "doc-1", DocumentScopeChange{
+		OldTags: []string{"team-a"}, NewTags: []string{"work"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	unit, err = store.GetMemory(ctx, "read-bank", unitID)

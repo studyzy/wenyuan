@@ -33,11 +33,24 @@ type ConsolidationReconciler interface {
 }
 
 // ScheduledMentalModel is one mental model carrying a refresh schedule.
+//
+// It carries both schedules, and each answers to its own clock: RefreshCron to
+// the last refresh of any mode, FullRefreshCron to the last one that ran in
+// full mode. A model may hold either, or both.
 type ScheduledMentalModel struct {
-	BankID          string
-	MentalModelID   string
-	RefreshCron     string
+	BankID        string
+	MentalModelID string
+	// RefreshCron is the trigger's refresh_cron, empty when the model has none.
+	RefreshCron string
+	// LastRefreshedAt is when the last refresh of any mode ran; zero when none
+	// has, which takes the column's own default into account.
 	LastRefreshedAt time.Time
+	// FullRefreshCron is the trigger's full_refresh_cron, empty when the model
+	// has none.
+	FullRefreshCron string
+	// LastFullRefreshedAt is when a refresh last ran in full mode; zero when
+	// none has, and a discovery source that predates the column reports zero.
+	LastFullRefreshedAt time.Time
 }
 
 // ScheduledMentalModelFinder lists the models whose schedule may be due.

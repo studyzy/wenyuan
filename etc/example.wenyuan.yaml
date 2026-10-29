@@ -67,7 +67,9 @@
   # temporal_retrieval: "true"
   # graph_retrieval: "true"
   # reranking: "true"
-# default_bank_template: ""  # value-dependent, honoured as shown: the value must be a JSON object
+# default:
+  # bank_template: ""  # value-dependent, honoured as shown: the value must be a JSON object
+  # observation_scopes: "combined"
 # extension_passthrough_headers: ""
 # database:
   # url: "pg0"  # the reference's default is an embedded pg0 instance this build cannot manage; an unset URL refuses startup instead
@@ -112,6 +114,7 @@
   # phase_sample_every: "1"
   # max_concurrent: "32"
   # include_chunks: "true"
+  # prefer_observations: "false"
   # max_tokens: ""
   # chunks_max_tokens: ""
   # budget_function: "fixed"

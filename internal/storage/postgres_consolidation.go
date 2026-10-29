@@ -439,13 +439,23 @@ func (s *PostgresStore) DeleteStaleObservations(ctx context.Context, bankID stri
 // deleteStaleObservationsTx is the body of the sweep, run on the caller's
 // transaction so it can share the locks a delete cascade holds.
 func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, bankID string, factIDs []string) (int, error) {
+	removed, err := s.deleteStaleObservationsReportingTx(ctx, tx, bankID, factIDs)
+	noteSweptObservations(ctx, removed, factIDs)
+	return len(removed), err
+}
+
+// deleteStaleObservationsReportingTx is the sweep, reporting each removed
+// observation with the memories it was consolidated from — what the document
+// change history records for a retag.
+func (s *PostgresStore) deleteStaleObservationsReportingTx(
+	ctx context.Context, tx Tx, bankID string, factIDs []string,
+) ([]RemovedObservation, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
-		var zero0 int
-		return zero0, schemaErr
+		return nil, schemaErr
 	}
 	if len(factIDs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	qualified := quoteIdent(schema)
 	rows, err := tx.QueryContext(ctx,
@@ -454,7 +464,7 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 		 WHERE bank_id = $1 AND fact_type = $2 AND source_memory_ids && $3::uuid[]`,
 		bankID, string(TypeObservation), factIDs)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	doomed := make([]string, 0)
 	deleted := make(map[string]bool, len(factIDs))
@@ -463,14 +473,17 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 	}
 	remaining := make([]string, 0)
 	seen := map[string]bool{}
+	removed := make([]RemovedObservation, 0)
 	for rows.Next() {
 		var observationID, sources string
 		if err := rows.Scan(&observationID, &sources); err != nil {
 			_ = rows.Close()
-			return 0, err
+			return nil, err
 		}
 		doomed = append(doomed, observationID)
-		for _, source := range decodePostgresTextArray([]byte(sources)) {
+		observations := decodePostgresTextArray([]byte(sources))
+		removed = append(removed, RemovedObservation{ObservationID: observationID, SourceFactIDs: observations})
+		for _, source := range observations {
 			if deleted[source] || seen[source] {
 				continue
 			}
@@ -480,10 +493,10 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(doomed) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	// Lock every row this sweep touches — the outgoing facts, the observations
 	// and their surviving co-sources, which may belong to another document — in
@@ -500,12 +513,12 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 		`SELECT id FROM `+qualified+`.memory_units
 		 WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR NO KEY UPDATE`,
 		bankID, lockIDs); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
 		bankID, doomed); err != nil {
-		return 0, err
+		return nil, err
 	}
 	// The history is keyed by observation_id and does not cascade from
 	// memory_units, so drop the deleted observations' snapshots explicitly
@@ -516,7 +529,7 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.observation_history WHERE bank_id = $1 AND observation_id = ANY($2::uuid[])`,
 		bankID, doomed); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(remaining) > 0 {
 		// The surviving co-sources re-consolidate under a fresh observation;
@@ -525,10 +538,76 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 			`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
 			 WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
 			bankID, remaining); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	return len(doomed), nil
+	return removed, nil
+}
+
+// deleteObservationsOnTx removes the observations resting on any of factIDs and
+// clears each fact's consolidation marker, without requeueing the observations'
+// surviving co-sources: a scope change re-consolidates only the memories that
+// moved, and a co-source of another document may have stayed where it was
+// (#5593). It answers with what it removed, for the document's change history.
+func (s *PostgresStore) deleteObservationsOnTx(
+	ctx context.Context, tx Tx, bankID string, factIDs []string,
+) ([]RemovedObservation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	if len(factIDs) == 0 {
+		return nil, nil
+	}
+	qualified := quoteIdent(schema)
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id::text, COALESCE(source_memory_ids, '{}'::uuid[])::text
+		   FROM `+qualified+`.memory_units
+		  WHERE bank_id = $1 AND fact_type = $2 AND source_memory_ids && $3::uuid[]
+		  ORDER BY id`,
+		bankID, string(TypeObservation), factIDs)
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]RemovedObservation, 0)
+	doomed := make([]string, 0)
+	for rows.Next() {
+		var observationID, sources string
+		if err := rows.Scan(&observationID, &sources); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		doomed = append(doomed, observationID)
+		removed = append(removed, RemovedObservation{
+			ObservationID: observationID, SourceFactIDs: decodePostgresTextArray([]byte(sources)),
+		})
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(doomed) == 0 {
+		return removed, nil
+	}
+	// The rows are locked in one id order before any is written, so a concurrent
+	// sweep cannot hold the next row this one writes and deadlock with it.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT id FROM `+qualified+`.memory_units
+		  WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR NO KEY UPDATE`,
+		bankID, doomed); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+		bankID, doomed); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.observation_history WHERE bank_id = $1 AND observation_id = ANY($2::uuid[])`,
+		bankID, doomed); err != nil {
+		return nil, err
+	}
+	return removed, nil
 }
 
 // linkObservationSources records the facts an observation rests on, in the

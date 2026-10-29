@@ -29,12 +29,16 @@ var (
 // hands its response model to the framework, which serializes the fields in
 // declaration order, so a trigger always reaches the wire —
 // `{"budget":…,"mode":…,"refresh_after_consolidation":…,…,"keep_trace":…}` — and
-// a Go map would sort the seventeen keys alphabetically instead.
+// a Go map would sort the eighteen keys alphabetically instead.
 var triggerDefaults = []OrderedTriggerMember{
 	{"budget", nil},
 	{"mode", "full"},
 	{"refresh_after_consolidation", false},
 	{"refresh_cron", nil},
+	// full_refresh_cron is the second, independent schedule: on it the model is
+	// refreshed in full mode whatever its mode says. It sits beside refresh_cron
+	// because that is where the reference's model declares it.
+	{"full_refresh_cron", nil},
 	{"min_refresh_interval_seconds", nil},
 	{"fact_types", nil},
 	{"exclude_mental_models", false},
@@ -91,7 +95,7 @@ func TriggerErrors(object map[string]any) []httpx.ValidationError {
 func NormalizeTrigger(stored map[string]any) map[string]any { return normalizeTrigger(stored) }
 
 // Trigger is a projected trigger: the reference's MentalModelTrigger members in
-// declaration order, so the seventeen keys reach the wire in the order the model
+// declaration order, so the eighteen keys reach the wire in the order the model
 // declares them rather than in a Go map's sorted one.
 type Trigger []OrderedTriggerMember
 
@@ -212,7 +216,7 @@ func (t Trigger) MarshalJSON() ([]byte, error) {
 // their default and dropping any member the model does not declare. A nil stored
 // trigger projects to the model's defaults — the reference reaches that object
 // by validating the absent member into a `MentalModelTrigger`, so a row whose
-// column holds `{}` or NULL still answers with the full seventeen-key object
+// column holds `{}` or NULL still answers with the full eighteen-key object
 // rather than null.
 //
 // Normalization is not just a fill: the reference's own field validators rewrite
@@ -235,11 +239,15 @@ func normalizeTrigger(stored map[string]any) map[string]any {
 			out[key] = value
 		}
 	}
-	if expression, ok := out["refresh_cron"].(string); ok {
-		if trimmed := strings.TrimSpace(expression); trimmed != "" {
-			out["refresh_cron"] = trimmed
-		} else {
-			out["refresh_cron"] = nil
+	// The two cron members share one validator in the reference, so both are
+	// stored and read back stripped, and a whitespace-only expression is null.
+	for _, member := range triggerCronMembers {
+		if expression, ok := out[member].(string); ok {
+			if trimmed := strings.TrimSpace(expression); trimmed != "" {
+				out[member] = trimmed
+			} else {
+				out[member] = nil
+			}
 		}
 	}
 	if groups, ok := out["tag_groups"].([]any); ok {
@@ -343,7 +351,7 @@ func ReorderReflectResponse(stored map[string]any) any {
 }
 
 // projectTrigger renders a stored trigger as the ordered wire value: its
-// seventeen declared members in declaration order.
+// eighteen declared members in declaration order.
 func projectTrigger(stored map[string]any) Trigger {
 	normalized := normalizeTrigger(stored)
 	out := make(Trigger, 0, len(triggerDefaults))
@@ -550,16 +558,24 @@ func validTriggerMembers(object map[string]any) (map[string]any, *httpx.Validati
 			report("mode", httpx.Literal(triggerLoc("mode"), raw, triggerModes))
 		}
 	}
-	if raw, ok := object["refresh_cron"]; ok && raw != nil {
+	// One field validator serves both cron members in the reference
+	// (`@field_validator("refresh_cron", "full_refresh_cron")`), and its message
+	// names the member `info.field_name` resolved to, so a violation of either is
+	// the same item under its own name.
+	for _, member := range triggerCronMembers {
+		raw, ok := object[member]
+		if !ok || raw == nil {
+			continue
+		}
 		expression, isString := raw.(string)
 		trimmed := strings.TrimSpace(expression)
 		switch {
 		case !isString:
-			report("refresh_cron", httpx.TypeMismatch("string_type", triggerLoc("refresh_cron"), raw))
+			report(member, httpx.TypeMismatch("string_type", triggerLoc(member), raw))
 		case trimmed != "" && !validCron(trimmed):
 			// The reference interpolates repr(v), which single-quotes the text.
-			report("refresh_cron", httpx.ValueError(triggerLoc("refresh_cron"), expression,
-				"refresh_cron is not a valid cron expression: '"+trimmed+"'"))
+			report(member, httpx.ValueError(triggerLoc(member), expression,
+				member+" is not a valid cron expression: '"+trimmed+"'"))
 		}
 	}
 	for _, member := range triggerIntMembers {

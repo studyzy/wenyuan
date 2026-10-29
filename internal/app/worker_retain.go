@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/history"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -45,6 +46,9 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	if err != nil {
 		return classifyRetainFailure(err)
 	}
+	// The document change history files this retain on the operation that ran
+	// it — a synchronous retain has none, and leaves none (orchestrator.py:590-619).
+	p.recordRetainEvent(ctx, op, req, outcome)
 	// The write landed, so the completion events are raised here exactly as the
 	// synchronous path raises them: one delivery per submitted item, sharing the
 	// operation that ran the write. A failed write raises none — the reference's
@@ -69,6 +73,24 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 		"progress": retainProgressSnapshot(countUnitIDs(outcome), time.Now().UTC()),
 	})
 	return nil
+}
+
+// recordRetainEvent adds this retain to each document's change history.
+//
+// The event carries what the write did: the facts it added, the facts it
+// retired and the observations the stale-observation sweep dropped. The kind
+// comes from the write's mode — a forced re-extract is a reprocess, then an
+// append, then a retain — and the event lands on the operation that ran it, so
+// a change without an operation leaves none.
+func (p archiveProcessor) recordRetainEvent(ctx context.Context, op storage.Operation, req storage.RetainRequest, outcome storage.RetainOutcome) {
+	for index, item := range req.Items {
+		if item.DocumentID == "" || index >= len(outcome.ItemUnitIDs) {
+			continue
+		}
+		event := history.RetainEvent(item.DocumentID, item.UpdateMode, item.ForceReextract,
+			len(outcome.ItemUnitIDs[index]), nil)
+		history.AppendOperationEvents(ctx, p.store, op.OperationID, event)
+	}
 }
 
 // notifyRetainCompleted fires one retain.completed event per item the queued

@@ -193,7 +193,7 @@ func TestGlobalWebhookDeliverySignature(t *testing.T) {
 	}))
 	defer receiver.Close()
 
-	body, err := marshalWebhookEvent("consolidation.completed", "b1", "", "completed", time.Now().UTC(), map[string]any{})
+	body, err := marshalWebhookEvent("consolidation.completed", "b1", "", "", "completed", time.Now().UTC(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestGlobalWebhookResponseBodyExposure(t *testing.T) {
 			}))
 			defer receiver.Close()
 
-			body, err := marshalWebhookEvent("consolidation.completed", "b1", "", "completed", time.Now().UTC(), map[string]any{})
+			body, err := marshalWebhookEvent("consolidation.completed", "b1", "", "", "completed", time.Now().UTC(), map[string]any{})
 			if err != nil {
 				t.Fatal(err)
 			}

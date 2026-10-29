@@ -25,7 +25,7 @@ func TestRecallRequestDecodesDocumentedFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if req.Query != "hello" || req.Budget != "high" || !req.Trace || !req.PreferObservations {
+	if req.Query != "hello" || req.Budget != "high" || !req.Trace || !req.PreferObservationsValue(false) {
 		t.Fatalf("decoded request = %+v", req)
 	}
 	if req.MaxTokens == nil || *req.MaxTokens != 256 {
@@ -150,5 +150,34 @@ func TestBuildRecallQueryThreadsBoosts(t *testing.T) {
 	}
 	if query.StrategyBoosts["keyword"] != "high" {
 		t.Fatalf("boosts not threaded: %+v", query.StrategyBoosts)
+	}
+}
+
+// prefer_observations is nullable in v1.1.0: an omitted (or null) member defers
+// to the caller's fallback, while an explicit false is a decision of its own and
+// must not be replaced by that fallback.
+func TestRecallPreferObservationsResolution(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		fallback bool
+		want     bool
+	}{
+		{"omitted defers to the fallback", `{"query":"q"}`, true, true},
+		{"omitted with a false fallback", `{"query":"q"}`, false, false},
+		{"explicit true wins", `{"query":"q","prefer_observations":true}`, false, true},
+		{"explicit false wins over a true fallback", `{"query":"q","prefer_observations":false}`, true, false},
+		{"null defers to the fallback", `{"query":"q","prefer_observations":null}`, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req RecallRequest
+			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			if got := req.PreferObservationsValue(tc.fallback); got != tc.want {
+				t.Fatalf("PreferObservationsValue(%v) = %v, want %v", tc.fallback, got, tc.want)
+			}
+		})
 	}
 }

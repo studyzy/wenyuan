@@ -66,6 +66,8 @@ func PublicConfigDefaults(cfg config.Config) map[string]any {
 		"reflect_source_facts_max_tokens":                       p.ReflectSourceFactsMaxTokens,
 		"reflect_default_options":                               p.ReflectDefaultOptions,
 		"recall_include_chunks":                                 p.RecallIncludeChunks,
+		"recall_prefer_observations":                            p.RecallPreferObservations,
+		"default_observation_scopes":                            p.DefaultObservationScopes,
 		"recall_max_tokens":                                     p.RecallMaxTokens,
 		"recall_chunks_max_tokens":                              p.RecallChunksMaxTokens,
 		"recall_budget_function":                                p.RecallBudgetFunction,

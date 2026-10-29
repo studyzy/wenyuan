@@ -351,15 +351,24 @@ func (s *MemoryStore) DeleteStaleObservations(ctx context.Context, bankID string
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
-	return s.deleteStaleObservationsLocked(bankID, factIDs)
+	return s.deleteStaleObservationsLocked(ctx, bankID, factIDs)
 }
 
 // deleteStaleObservationsLocked is the body of the sweep, run while the caller
 // already holds the write lock so a wider retag can share it.
-func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []string) (int, error) {
-	deleted := make(map[string]bool, len(factIDs))
+func (s *MemoryStore) deleteStaleObservationsLocked(ctx context.Context, bankID string, factIDs []string) (int, error) {
+	removed, err := s.deleteStaleObservationsReportingLocked(bankID, factIDs)
+	noteSweptObservations(ctx, removed, factIDs)
+	return len(removed), err
+}
+
+// deleteStaleObservationsReportingLocked is the sweep, reporting each removed
+// observation with the memories it was consolidated from — what the document
+// change history records for a retag.
+func (s *MemoryStore) deleteStaleObservationsReportingLocked(bankID string, factIDs []string) ([]RemovedObservation, error) {
+	doomedSet := make(map[string]bool, len(factIDs))
 	for _, id := range factIDs {
-		deleted[id] = true
+		doomedSet[id] = true
 	}
 	doomed := make([]string, 0)
 	remaining := make([]string, 0)
@@ -371,7 +380,7 @@ func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []str
 		sources := s.observationSources[id]
 		hit := false
 		for _, source := range sources {
-			if deleted[source] {
+			if doomedSet[source] {
 				hit = true
 				break
 			}
@@ -381,14 +390,18 @@ func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []str
 		}
 		doomed = append(doomed, id)
 		for _, source := range sources {
-			if deleted[source] || seen[source] {
+			if doomedSet[source] || seen[source] {
 				continue
 			}
 			seen[source] = true
 			remaining = append(remaining, source)
 		}
 	}
+	removed := make([]RemovedObservation, 0, len(doomed))
 	for _, id := range doomed {
+		removed = append(removed, RemovedObservation{
+			ObservationID: id, SourceFactIDs: append([]string(nil), s.observationSources[id]...),
+		})
 		delete(s.units, id)
 		delete(s.observationSources, id)
 		delete(s.consolidated, id)
@@ -401,7 +414,46 @@ func (s *MemoryStore) deleteStaleObservationsLocked(bankID string, factIDs []str
 			delete(s.consolidated, id)
 		}
 	}
-	return len(doomed), nil
+	return removed, nil
+}
+
+// deleteObservationsOnLocked removes the observations resting on any of factIDs
+// and clears the consolidation marker of each fact, without requeueing the
+// observations' surviving co-sources. It is the sweep a scope change runs: only
+// the memories that moved are re-consolidated, and a co-source belonging to
+// another document may have stayed exactly where it was (#5593).
+func (s *MemoryStore) deleteObservationsOnLocked(bankID string, factIDs []string) []RemovedObservation {
+	deleted := make(map[string]bool, len(factIDs))
+	for _, id := range factIDs {
+		deleted[id] = true
+	}
+	removed := make([]RemovedObservation, 0)
+	for id, unit := range s.units {
+		if unit.BankID != bankID || unit.FactType != TypeObservation {
+			continue
+		}
+		for _, source := range s.observationSources[id] {
+			if !deleted[source] {
+				continue
+			}
+			removed = append(removed, RemovedObservation{
+				ObservationID: id, SourceFactIDs: append([]string(nil), s.observationSources[id]...),
+			})
+			delete(s.units, id)
+			delete(s.observationSources, id)
+			delete(s.consolidated, id)
+			delete(s.memoryHistory, id)
+			break
+		}
+	}
+	for _, id := range factIDs {
+		if unit, ok := s.units[id]; ok && (unit.FactType == TypeWorld || unit.FactType == TypeExperience) {
+			unit.ConsolidatedAt = nil
+			s.units[id] = unit
+			delete(s.consolidated, id)
+		}
+	}
+	return removed
 }
 
 // sourceObservationBoundsLocked aggregates the temporal bounds a fact set

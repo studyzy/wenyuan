@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/history"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -320,6 +321,11 @@ func (c *Consolidator) Available() bool {
 // resolve to, so facts of different scopes are never folded into one
 // observation and each produced observation carries its scope.
 func (c *Consolidator) Run(ctx context.Context, bankID string) (Result, error) {
+	// The pass's observation writes are tracked for the document change history,
+	// and filed on the way out — including on failure, because every batch that
+	// got this far committed its writes (consolidator.py:1596-1622).
+	ctx, changes := history.TrackChanges(ctx)
+	defer c.recordConsolidationEvents(ctx, bankID, changes)
 	if !c.Available() {
 		return Result{}, ErrNoModel
 	}
@@ -606,8 +612,13 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		createdKeys = append(createdKeys, normalized)
 	}
 	observationTextByID := map[string]string{}
+	// The facts each pooled observation stands on, read here so a delete can name
+	// them after the row is gone: the change history files the removal under the
+	// documents those facts came from.
+	observationSourcesByID := map[string][]string{}
 	for _, observation := range observations {
 		observationTextByID[observation.ID] = normalizeObservationText(observation.Text)
+		observationSourcesByID[observation.ID] = observation.SourceIDs
 	}
 	createsApplied := 0
 	for _, create := range decision.Creates {
@@ -639,15 +650,18 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 				if err := c.store.UpdateObservation(ctx, bankID, twin.ID, twin.Text, sources); err != nil {
 					return result, fmt.Errorf("fold duplicate observation: %w", err)
 				}
+				c.noteObservationWritten(ctx, twin.ID, sources, false)
 				markTouched(touched, sources)
 			}
 			result.Skipped++
 			continue
 		}
 		sources := validSourceIDs(create.SourceIDs, factIDs)
-		if _, err := c.store.CreateObservation(ctx, bankID, create.Text, sources, scope); err != nil {
+		createdID, err := c.store.CreateObservation(ctx, bankID, create.Text, sources, scope)
+		if err != nil {
 			return result, fmt.Errorf("create observation: %w", err)
 		}
+		c.noteObservationWritten(ctx, createdID, sources, true)
 		existingTexts[key] = true
 		createdKeys = append(createdKeys, key)
 		markTouched(touched, sources)
@@ -668,6 +682,7 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		if err := c.store.UpdateObservation(ctx, bankID, update.ObservationID, update.Text, sources); err != nil {
 			return result, fmt.Errorf("update observation: %w", err)
 		}
+		c.noteObservationWritten(ctx, update.ObservationID, sources, false)
 		markTouched(touched, sources)
 		result.Updated++
 	}
@@ -677,6 +692,9 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		if del.ObservationID == "" {
 			continue
 		}
+		// Noted before the row goes: its source facts are what the document
+		// change history attributes the removal through.
+		c.noteObservationRemoved(ctx, del.ObservationID, observationSourcesByID[del.ObservationID])
 		if err := c.store.DeleteObservation(ctx, bankID, del.ObservationID); err != nil {
 			return result, fmt.Errorf("delete observation: %w", err)
 		}

@@ -100,6 +100,8 @@ Status words:
 | `WENYUAN_API_RECALL_PHASE_SAMPLE_EVERY` | `recall_phase_sample_every` | `1` | resolved |  |
 | `WENYUAN_API_RECALL_MAX_CONCURRENT` | `recall_max_concurrent` | `32` | resolved |  |
 | `WENYUAN_API_RECALL_INCLUDE_CHUNKS` | `recall_include_chunks` | `true` | resolved |  |
+| `WENYUAN_API_RECALL_PREFER_OBSERVATIONS` | `recall_prefer_observations` | `false` | resolved |  |
+| `WENYUAN_API_DEFAULT_OBSERVATION_SCOPES` | `default_observation_scopes` | `combined` | resolved |  |
 | `WENYUAN_API_RECALL_MAX_TOKENS` | `recall_max_tokens` | `` | resolved |  |
 | `WENYUAN_API_RECALL_CHUNKS_MAX_TOKENS` | `recall_chunks_max_tokens` | `` | resolved |  |
 | `WENYUAN_API_BACKPRESSURE_DEFER_SECONDS` | `backpressure_defer_seconds` | `` | resolved |  |

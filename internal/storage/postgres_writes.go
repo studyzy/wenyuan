@@ -529,7 +529,12 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string)
 	if current.OperationType == AsyncRetainType && operationIsParent(current.ResultMetadata) {
 		return s.retryBatchParent(ctx, current)
 	}
-	if current.Status != StatusFailed && current.Status != StatusCancelled {
+	// Three states retry: failed, cancelled, and deferred — a pending operation
+	// held back by a future next_retry_at (parked until a provider-reported quota
+	// reset, say), which retrying runs now instead of waiting out. The same
+	// transition is written for all three: back to pending with the backoff
+	// cleared, so the clearing of next_retry_at is the whole difference.
+	if !retryableStatus(current) {
 		return current, ErrOperationConflict
 	}
 	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
@@ -564,7 +569,8 @@ func (s *PostgresStore) retryBatchParent(ctx context.Context, parent Operation) 
 	if _, err := tx.ExecContext(ctx, `UPDATE `+qualified+`.async_operations
 	    SET status='pending', error_message='', completed_at=NULL, next_retry_at=NULL,
 	        worker_id=NULL, claimed_at=NULL, retry_count=0, updated_at=now()
-	    WHERE bank_id=$1 AND result_metadata @> $2::jsonb AND status IN ('failed','cancelled')`,
+	    WHERE bank_id=$1 AND result_metadata @> $2::jsonb
+	      AND (status IN ('failed','cancelled') OR (status='pending' AND next_retry_at > now()))`,
 		parent.BankID, childFilter); err != nil {
 		return Operation{}, err
 	}

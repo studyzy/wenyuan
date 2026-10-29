@@ -240,9 +240,17 @@ func (s *Server) listDocuments(ctx context.Context, args map[string]any) (any, e
 	}
 	items := make([]documentListItem, 0, len(page.Documents))
 	for _, doc := range page.Documents {
-		items = append(items, toDocumentListItem(doc))
+		item := toDocumentListItem(doc)
+		item.MatchedFields = doc.MatchedFields
+		if item.MatchedFields == nil {
+			item.MatchedFields = []string{}
+		}
+		items = append(items, item)
 	}
-	return documentListPage{Items: items, Total: page.Total, Limit: limit, Offset: offset}, nil
+	return documentListPage{
+		Items: items, Total: page.Total, Limit: limit, Offset: offset,
+		TotalIsEstimate: page.TotalIsEstimate,
+	}, nil
 }
 
 // getDocument reads one document. An unknown document is a normal negative

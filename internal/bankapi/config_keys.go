@@ -26,6 +26,8 @@ const (
 	// kindListOrObject is the widened shape entity_labels accepts: a bare list
 	// of label groups or the {"attributes": [...]} envelope.
 	kindListOrObject
+	// kindScopes is observation_scopes: a mode name, or a list of tag lists.
+	kindScopes
 )
 
 // configurableFields maps every field the reference lets a bank override to the
@@ -68,6 +70,8 @@ var configurableFields = map[string]configValueKind{
 	"reflect_source_facts_max_tokens":                       kindInt,
 	"reflect_default_options":                               kindObject,
 	"recall_include_chunks":                                 kindBool,
+	"recall_prefer_observations":                            kindBool,
+	"default_observation_scopes":                            kindScopes,
 	"recall_max_tokens":                                     kindInt,
 	"recall_chunks_max_tokens":                              kindInt,
 	"recall_budget_function":                                kindString,
@@ -273,8 +277,50 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 		if err := validateKnowledgePageDefaultTrigger(raw); err != nil {
 			return err
 		}
+	case "default_observation_scopes":
+		if err := validateDefaultObservationScopes(raw); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// observationScopeModes are the mode names observation_scopes accepts, in the
+// reference's declaration order (config.OBSERVATION_SCOPES_MODES).
+var observationScopeModes = []string{"combined", "per_tag", "all_combinations", "shared"}
+
+// validateDefaultObservationScopes rejects a value retain would not accept: one
+// of the mode names, or a list of tag lists. The message is the reference's own
+// (validate_observation_scopes), including its repr of the offending value.
+func validateDefaultObservationScopes(raw any) *httpx.HTTPError {
+	if mode, isString := raw.(string); isString {
+		for _, candidate := range observationScopeModes {
+			if mode == candidate {
+				return nil
+			}
+		}
+	} else if scopes, isList := raw.([]any); isList && isTagListOfLists(scopes) {
+		return nil
+	}
+	return httpx.NewHTTPError(httpx.KindBadRequest,
+		"default_observation_scopes must be one of "+strings.Join(observationScopeModes, ", ")+
+			` or a list of tag lists (e.g. [["topic:*"]]), got `+pyRepr(raw))
+}
+
+// isTagListOfLists reports whether every element is a list of strings.
+func isTagListOfLists(scopes []any) bool {
+	for _, scope := range scopes {
+		tags, isList := scope.([]any)
+		if !isList {
+			return false
+		}
+		for _, tag := range tags {
+			if _, isString := tag.(string); !isString {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isEntityLabelsEmpty reports the two shapes the reference reads as "no
@@ -394,7 +440,8 @@ func validateMemoryDefense(raw any) *httpx.HTTPError {
 }
 
 // pyRepr renders a JSON value the way Python's repr does, which the reference's
-// error messages interpolate: a string is single-quoted, null is None.
+// error messages interpolate: a string is single-quoted, null is None, and a
+// container renders each element the same way — [['a', 1]], not [a 1].
 func pyRepr(value any) string {
 	switch typed := value.(type) {
 	case nil:
@@ -411,6 +458,23 @@ func pyRepr(value any) string {
 			return fmt.Sprintf("%d", int(typed))
 		}
 		return fmt.Sprintf("%v", typed)
+	case []any:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			items = append(items, pyRepr(item))
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		items := make([]string, 0, len(keys))
+		for _, key := range keys {
+			items = append(items, pyRepr(key)+": "+pyRepr(typed[key]))
+		}
+		return "{" + strings.Join(items, ", ") + "}"
 	default:
 		return fmt.Sprintf("%v", value)
 	}
@@ -821,6 +885,10 @@ func kindMatches(kind configValueKind, raw any) bool {
 		}
 		_, ok := raw.(map[string]any)
 		return ok
+	case kindScopes:
+		_, isString := raw.(string)
+		_, isList := raw.([]any)
+		return isString || isList
 	default:
 		return false
 	}
@@ -913,6 +981,8 @@ func describeKind(kind configValueKind) string {
 		return "an object"
 	case kindListOrObject:
 		return "a list or an object"
+	case kindScopes:
+		return "a string or a list"
 	default:
 		return "the declared type"
 	}

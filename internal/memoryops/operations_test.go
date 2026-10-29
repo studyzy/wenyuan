@@ -704,7 +704,7 @@ func TestRetryCompletedBatchParentUsesTheBatchParentMessage(t *testing.T) {
 	if !strings.Contains(body, "is a batch_retain parent with no incomplete sub-batches to retry") {
 		t.Fatalf("body = %s, want the batch-parent message", body)
 	}
-	if strings.Contains(body, "expected 'failed' or 'cancelled'") {
+	if strings.Contains(body, "expected 'failed', 'cancelled' or deferred") {
 		t.Fatalf("body = %s, want it NOT to be the generic status conflict", body)
 	}
 }
@@ -722,7 +722,7 @@ func TestRetryCompletedRetainKeepsTheGenericConflict(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "expected 'failed' or 'cancelled'") {
+	if !strings.Contains(rec.Body.String(), "expected 'failed', 'cancelled' or deferred") {
 		t.Fatalf("body = %s, want the generic status conflict", rec.Body.String())
 	}
 }

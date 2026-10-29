@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -86,14 +87,58 @@ type LLMRequest struct {
 	Metadata       map[string]any
 }
 
+// LLM request call kinds, the values of the llm-requests `call_type` filter.
+// A row carries no label of its own; its kind is derived from its scope, so an
+// old row classifies the same way as a new one (the reference's llm_trace.py
+// `_CALL_TYPE_SQL`).
+const (
+	LLMCallTypeLLM       = "llm"
+	LLMCallTypeEmbedding = "embedding"
+	LLMCallTypeRerank    = "rerank"
+	LLMCallTypeDecision  = "decision"
+)
+
+// The scope vocabulary the call kinds are told apart by.
+const (
+	llmEmbeddingScopePrefix = "embedding_"
+	llmRerankScope          = "rerank"
+	llmDecisionScopePrefix  = "decision_"
+)
+
+// LLMCallTypes returns the accepted `call_type` values in the document's order.
+func LLMCallTypes() []string {
+	return []string{LLMCallTypeLLM, LLMCallTypeEmbedding, LLMCallTypeRerank, LLMCallTypeDecision}
+}
+
+// LLMCallTypeOf returns the call kind a scope names: embedding for an
+// `embedding_*` scope, rerank for the `rerank` scope itself, decision for a
+// `decision_*` scope, and llm for every other scope — including a row that
+// records no scope at all, which the reference counts as an LLM call rather
+// than letting a NULL scope drop out of every kind.
+func LLMCallTypeOf(scope string) string {
+	switch {
+	case strings.HasPrefix(scope, llmEmbeddingScopePrefix):
+		return LLMCallTypeEmbedding
+	case scope == llmRerankScope:
+		return LLMCallTypeRerank
+	case strings.HasPrefix(scope, llmDecisionScopePrefix):
+		return LLMCallTypeDecision
+	default:
+		return LLMCallTypeLLM
+	}
+}
+
 // LLMRequestQuery pages and filters the model-request trace.
 type LLMRequestQuery struct {
 	BankID    string
 	Status    string
 	Operation string
 	Scope     string
-	Provider  string
-	TraceID   string
+	// CallType narrows to one kind of model call, told apart by scope; see
+	// LLMCallTypeOf. An empty value applies no kind filter.
+	CallType string
+	Provider string
+	TraceID  string
 	// DocumentID matches the trace's recorded document, carried in the row's
 	// metadata.
 	DocumentID string
@@ -384,6 +429,9 @@ type MemoryPatch struct {
 	Context       *string
 	OccurredStart *string
 	OccurredEnd   *string
+	// MentionedAt is the new mention time — when the fact was said or written.
+	// An empty string clears it to NULL; nil leaves it unchanged.
+	MentionedAt *string
 	// ClearOccurredStart / ClearOccurredEnd clear the corresponding date to
 	// NULL, which an explicit JSON null requests and which a nil pointer cannot
 	// express on its own (nil also means "leave unchanged").
@@ -449,7 +497,11 @@ type WebhookPatch struct {
 // WebhookDelivery is one recorded delivery attempt, read from the delivery
 // operation that owns it.
 type WebhookDelivery struct {
-	ID        string
+	ID string
+	// EventID is the logical event this delivery belongs to: shared with every
+	// other webhook the event fanned out to, and stable across retries. Empty
+	// for a delivery queued before event ids existed.
+	EventID   string
 	WebhookID string
 	BankID    string
 	URL       string

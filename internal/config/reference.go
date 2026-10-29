@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // This file records the reference service's runtime (non-provider) environment
 // keys and what this build does with each one.
@@ -160,6 +163,19 @@ var referenceRuntimeKeys = []referenceKey{
 	{Name: EnvRecallPhaseSampleEvery, Default: "1", Resolve: func(c Config) any { return c.RecallTuning.PhaseSampleEvery }},
 	{Name: EnvRecallMaxConcurrent, Default: "32", Resolve: func(c Config) any { return c.RecallTuning.MaxConcurrent }},
 	{Name: EnvRecallIncludeChunks, Default: "true", Resolve: func(c Config) any { return c.ProcessDefaults.RecallIncludeChunks }},
+	{Name: EnvRecallPreferObservations, Default: "false", Resolve: func(c Config) any {
+		return c.ProcessDefaults.RecallPreferObservations
+	}},
+	{Name: EnvDefaultObservationScopes, Default: "combined", Resolve: func(c Config) any {
+		// A mode name is the raw string; an explicit scope list is the raw JSON
+		// text, exactly as the caller wrote it.
+		if groups, ok := c.ProcessDefaults.DefaultObservationScopes.([]any); ok {
+			if encoded, err := json.Marshal(groups); err == nil {
+				return string(encoded)
+			}
+		}
+		return c.ProcessDefaults.DefaultObservationScopes
+	}},
 	{Name: EnvRecallMaxTokens, Default: "", Resolve: func(c Config) any { return c.ProcessDefaults.RecallMaxTokens }},
 	{Name: EnvRecallChunksMaxTokens, Default: "", Resolve: func(c Config) any { return c.ProcessDefaults.RecallChunksMaxTokens }},
 	{Name: EnvBackpressureDeferSeconds, Default: "", Resolve: func(c Config) any { return c.WorkerTuning.BackpressureDefer }},

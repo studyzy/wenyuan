@@ -128,14 +128,17 @@ func (s *MemoryStore) MentalModelsWithSchedule(ctx context.Context, schema strin
 	out := make([]ScheduledMentalModel, 0)
 	for _, model := range s.mentalModelRecords {
 		cron := strings.TrimSpace(stringFromTrigger(model.Trigger, "refresh_cron"))
-		if cron == "" || inFlight[model.ID] {
+		fullCron := strings.TrimSpace(stringFromTrigger(model.Trigger, "full_refresh_cron"))
+		if (cron == "" && fullCron == "") || inFlight[model.ID] {
 			continue
 		}
 		out = append(out, ScheduledMentalModel{
-			BankID:          model.BankID,
-			MentalModelID:   model.ID,
-			RefreshCron:     cron,
-			LastRefreshedAt: model.LastRefreshedAt,
+			BankID:              model.BankID,
+			MentalModelID:       model.ID,
+			RefreshCron:         cron,
+			LastRefreshedAt:     model.LastRefreshedAt,
+			FullRefreshCron:     fullCron,
+			LastFullRefreshedAt: zeroTimeWhenNil(model.LastFullRefreshedAt),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].MentalModelID < out[j].MentalModelID })

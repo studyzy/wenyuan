@@ -164,6 +164,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT operation_id::text,
+		        COALESCE(task_payload->>'event_id', ''),
 		        COALESCE(task_payload->>'webhook_id', ''),
 		        bank_id,
 		        COALESCE(task_payload->>'url', ''),
@@ -190,7 +191,7 @@ func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webho
 		var statusCode sql.NullInt64
 		var responseBody, lastAttempt sql.NullString
 		var nextRetryAt sql.NullTime
-		if err := rows.Scan(&delivery.ID, &delivery.WebhookID, &delivery.BankID, &delivery.URL,
+		if err := rows.Scan(&delivery.ID, &delivery.EventID, &delivery.WebhookID, &delivery.BankID, &delivery.URL,
 			&delivery.EventType, &delivery.Status, &delivery.Attempts, &nextRetryAt,
 			&delivery.LastError, &statusCode, &responseBody, &lastAttempt, &delivery.CreatedAt, &delivery.UpdatedAt); err != nil {
 			return WebhookDeliveryPage{}, err

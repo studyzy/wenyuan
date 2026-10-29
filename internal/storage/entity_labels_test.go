@@ -125,8 +125,9 @@ func TestRetagKeepsLabelDerivedTags(t *testing.T) {
 	}
 	unitID := outcome.ItemUnitIDs[0][0]
 
-	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1",
-		[]string{"work"}, []string{"team-a"}, map[string]bool{"topic": true}); err != nil {
+	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1", DocumentScopeChange{
+		OldTags: []string{"work"}, NewTags: []string{"team-a"}, LabelKeys: map[string]bool{"topic": true},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	unit, err := store.GetMemory(context.TODO(), "b1", unitID)
@@ -138,8 +139,9 @@ func TestRetagKeepsLabelDerivedTags(t *testing.T) {
 	}
 
 	// With no label keys the retag replaces every tag, the pre-existing shape.
-	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1",
-		[]string{"team-a"}, []string{"work"}, nil); err != nil {
+	if _, err := store.RetagDocumentMemories(context.TODO(), "b1", "doc-1", DocumentScopeChange{
+		OldTags: []string{"team-a"}, NewTags: []string{"work"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	unit, err = store.GetMemory(context.TODO(), "b1", unitID)

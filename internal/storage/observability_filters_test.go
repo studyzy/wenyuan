@@ -256,14 +256,14 @@ func TestMemoryLLMRequestStatsFilter(t *testing.T) {
 	store, bank := seedObservabilityStore(t)
 	ctx := context.Background()
 
-	all, err := store.LLMRequestStats(ctx, bank, "day", "")
+	all, err := store.LLMRequestStats(ctx, bank, "day", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(all.Bucket) != 1 || all.Bucket[0].Total != 4 {
 		t.Fatalf("unfiltered buckets = %+v", all.Bucket)
 	}
-	narrowed, err := store.LLMRequestStats(ctx, bank, "day", "retain")
+	narrowed, err := store.LLMRequestStats(ctx, bank, "day", "retain", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,11 +274,211 @@ func TestMemoryLLMRequestStatsFilter(t *testing.T) {
 	if narrowed.Bucket[0].Statuses["error"] != 1 || narrowed.Bucket[0].Statuses["success"] != 1 {
 		t.Fatalf("operation filter statuses = %+v", narrowed.Bucket[0].Statuses)
 	}
-	unknown, err := store.LLMRequestStats(ctx, bank, "day", "frobnicate")
+	unknown, err := store.LLMRequestStats(ctx, bank, "day", "frobnicate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(unknown.Bucket) != 0 {
 		t.Fatalf("unknown operation buckets = %+v, want none", unknown.Bucket)
 	}
+}
+
+// The call_type filter splits the trace by scope, and every scope falls in
+// exactly one kind — the four filters partition the table (v1.1.0).
+func TestMemoryLLMRequestCallTypeFilter(t *testing.T) {
+	store, bank := seedObservabilityStore(t)
+	ctx := context.Background()
+	base := observabilityBase()
+	for _, request := range []LLMRequest{
+		{ID: "e1", BankID: "b1", Scope: "embedding_document", StartedAt: base.Add(4 * time.Hour)},
+		{ID: "e2", BankID: "b1", Scope: "embedding_query", StartedAt: base.Add(5 * time.Hour)},
+		{ID: "k1", BankID: "b1", Scope: "rerank", StartedAt: base.Add(6 * time.Hour)},
+		{ID: "d1", BankID: "b1", Scope: "decision_recall_rerank", StartedAt: base.Add(7 * time.Hour)},
+		// A near-miss for decision_: with an unescaped LIKE wildcard this
+		// would classify as a decision rather than an LLM call.
+		{ID: "d2", BankID: "b1", Scope: "decisionXfoo", StartedAt: base.Add(8 * time.Hour)},
+		// No scope at all still counts as an LLM call.
+		{ID: "u1", BankID: "b1", StartedAt: base.Add(9 * time.Hour)},
+	} {
+		if err := store.RecordLLMRequest(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(callType string) []string {
+		page, err := store.ListLLMRequests(ctx, LLMRequestQuery{BankID: bank, CallType: callType, Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return requestIDs(page.Requests)
+	}
+	cases := []struct {
+		callType string
+		want     []string
+	}{
+		{LLMCallTypeEmbedding, []string{"e2", "e1"}},
+		{LLMCallTypeRerank, []string{"k1"}},
+		{LLMCallTypeDecision, []string{"d1"}},
+		{LLMCallTypeLLM, []string{"u1", "d2", "r4", "r3", "r2", "r1"}},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		got := list(tc.callType)
+		if !equalIDs(got, tc.want) {
+			t.Fatalf("call_type=%s = %v, want %v", tc.callType, got, tc.want)
+		}
+		for _, id := range got {
+			if seen[id] {
+				t.Fatalf("row %s is in two call kinds", id)
+			}
+			seen[id] = true
+		}
+	}
+	if len(seen) != 10 {
+		t.Fatalf("the four kinds covered %d rows of 10", len(seen))
+	}
+	stats, err := store.LLMRequestStats(ctx, bank, "7d", "", LLMCallTypeEmbedding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Bucket) != 1 || stats.Bucket[0].Total != 2 {
+		t.Fatalf("embedding stats = %+v, want the two embedding rows", stats.Bucket)
+	}
+}
+
+// LLMCallTypeOf classifies scopes the way the reference's SQL clause does.
+func TestLLMCallTypeOf(t *testing.T) {
+	cases := map[string]string{
+		"embedding_document":        LLMCallTypeEmbedding,
+		"embedding_query":           LLMCallTypeEmbedding,
+		"rerank":                    LLMCallTypeRerank,
+		"decision_recall_rerank":    LLMCallTypeDecision,
+		"decision_consolidation":    LLMCallTypeDecision,
+		"retain_extract_facts":      LLMCallTypeLLM,
+		"reflect":                   LLMCallTypeLLM,
+		"decisionXfoo":              LLMCallTypeLLM,
+		"":                          LLMCallTypeLLM,
+		"embedding":                 LLMCallTypeLLM,
+		"embeddingXdocument":        LLMCallTypeLLM,
+		"prefix_embedding_document": LLMCallTypeLLM,
+	}
+	for scope, want := range cases {
+		if got := LLMCallTypeOf(scope); got != want {
+			t.Fatalf("LLMCallTypeOf(%q) = %q, want %q", scope, got, want)
+		}
+	}
+}
+
+// GetAuditLog returns one entry, bank-scoped, and reports the not-found sentinel
+// for an entry nobody holds, another bank's entry, a malformed id, or an empty id.
+func TestMemoryGetAuditLog(t *testing.T) {
+	store, bank := seedObservabilityStore(t)
+	ctx := context.Background()
+	id := "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+	ended := observabilityBase().Add(time.Second)
+	if err := store.RecordAuditLog(ctx, AuditEntry{
+		ID: id, BankID: bank, Action: "retain", Transport: "http",
+		StartedAt: observabilityBase(), EndedAt: &ended,
+		Request: map[string]any{"items": []any{}}, Response: map[string]any{"status": "ok"},
+		Metadata: map[string]any{"tenant": "t1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := store.GetAuditLog(ctx, bank, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Action != "retain" || entry.Response["status"] != "ok" || entry.Metadata["tenant"] != "t1" {
+		t.Fatalf("entry = %+v", entry)
+	}
+	for _, missing := range []struct{ bank, id string }{
+		{"b2", id}, {bank, "e3b0c442-98fc-1c14-9afb-f4c8996fb924"}, {bank, ""},
+	} {
+		if _, err := store.GetAuditLog(ctx, missing.bank, missing.id); err != ErrAuditEntryNotFound {
+			t.Fatalf("GetAuditLog(%s, %q) = %v, want not found", missing.bank, missing.id, err)
+		}
+	}
+}
+
+// A memory patch that names mentioned_at writes it, "" clears it, and a patch
+// that does not name it leaves it alone; a mention-time edit re-derives the
+// legacy event date with retain's rule.
+func TestMemoryUpdateMentionedAt(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	occurredStart := mustParseRFC3339(t, "2026-02-03T04:05:06Z")
+	unit, err := store.UpsertUnit(ctx, MemoryUnit{
+		BankID: "b1", Text: "a fact", FactType: TypeWorld,
+		MentionedAt: mustParseRFC3339(t, "2026-01-02T03:04:05Z"), OccurredStart: occurredStart,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "2025-06-07T08:09:10Z"
+	patched, err := store.UpdateMemory(ctx, "b1", unit.ID, MemoryPatch{
+		Text: strPtr("a fact, edited"), MentionedAt: &updated,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mustParseRFC3339(t, updated)
+	if patched.MentionedAt == nil || !patched.MentionedAt.Equal(*want) {
+		t.Fatalf("mentioned_at = %v, want %v", patched.MentionedAt, want)
+	}
+	// occurred_start is set, so the legacy date follows it, not the mention time.
+	if patched.EventDate == nil || !patched.EventDate.Equal(*occurredStart) {
+		t.Fatalf("event_date = %v, want occurred_start", patched.EventDate)
+	}
+	kept, err := store.UpdateMemory(ctx, "b1", unit.ID, MemoryPatch{Context: strPtr("ctx")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.MentionedAt == nil || !kept.MentionedAt.Equal(*want) {
+		t.Fatalf("an unrelated patch moved mentioned_at: %v", kept.MentionedAt)
+	}
+	cleared, err := store.UpdateMemory(ctx, "b1", unit.ID, MemoryPatch{MentionedAt: strPtr("")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.MentionedAt != nil {
+		t.Fatalf("mentioned_at was not cleared: %v", cleared.MentionedAt)
+	}
+}
+
+// A mention-time edit re-derives the legacy event date when occurred_start is
+// unset, because the mention time is its fallback.
+func TestMemoryUpdateMentionedAtRedrivesEventDate(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := store.UpsertUnit(ctx, MemoryUnit{
+		BankID: "b1", Text: "a fact", FactType: TypeWorld,
+		MentionedAt: mustParseRFC3339(t, "2026-01-02T03:04:05Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "2025-06-07T08:09:10Z"
+	patched, err := store.UpdateMemory(ctx, "b1", unit.ID, MemoryPatch{MentionedAt: &updated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mustParseRFC3339(t, updated)
+	if patched.EventDate == nil || !patched.EventDate.Equal(*want) {
+		t.Fatalf("event_date = %v, want the new mention time", patched.EventDate)
+	}
+}
+
+// mustParseRFC3339 parses a test timestamp, failing the test when malformed.
+func mustParseRFC3339(t *testing.T, value string) *time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &parsed
 }

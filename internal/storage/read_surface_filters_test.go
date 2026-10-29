@@ -23,18 +23,29 @@ func seedRetained(t *testing.T, store *MemoryStore, content, docID string, tags 
 	}
 }
 
-// doc-q-0001: `q` matches the document id, not the document body.
-func TestMemoryListDocumentsQueryMatchesID(t *testing.T) {
+// doc-q-0001: `q` matches the document id or its body text, and says which.
+func TestMemoryListDocumentsQueryMatchesIDOrText(t *testing.T) {
 	store := NewMemoryStore("public")
 	seedRetained(t, store, "body holds the needle word", "plain-doc", nil)
 	seedRetained(t, store, "unrelated body", "needle-doc", nil)
+	seedRetained(t, store, "neither", "other-doc", nil)
 
 	page, err := store.ListDocuments(context.TODO(), DocumentQuery{BankID: "b1", Query: "needle", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 1 || len(page.Documents) != 1 || page.Documents[0].ID != "needle-doc" {
-		t.Fatalf("q must filter the document id: %+v", page)
+	if page.Total != 2 || page.TotalIsEstimate {
+		t.Fatalf("q must match the id and the text: %+v", page)
+	}
+	fields := map[string][]string{}
+	for _, doc := range page.Documents {
+		fields[doc.ID] = doc.MatchedFields
+	}
+	if len(fields["needle-doc"]) != 1 || fields["needle-doc"][0] != "id" {
+		t.Fatalf("id match fields = %v, want [id]", fields["needle-doc"])
+	}
+	if len(fields["plain-doc"]) != 1 || fields["plain-doc"][0] != "original_text" {
+		t.Fatalf("text match fields = %v, want [original_text]", fields["plain-doc"])
 	}
 }
 

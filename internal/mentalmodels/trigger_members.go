@@ -21,13 +21,16 @@ var (
 	// and reused by normalizeTrigger so the projection and the validation walk
 	// cannot disagree about the member set or its order.
 	triggerMemberOrder = []string{
-		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
+		"budget", "mode", "refresh_after_consolidation", "refresh_cron", "full_refresh_cron",
 		"min_refresh_interval_seconds", "fact_types", "exclude_mental_models",
 		"exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks",
 		"recall_max_tokens", "recall_chunks_max_tokens",
 		"reflect_search_observations_max_tokens",
 		"reflect_search_observations_include_entities", "response_schema", "keep_trace",
 	}
+	// triggerCronMembers are the two schedule members, which the reference's model
+	// declares separately but validates with one shared field validator.
+	triggerCronMembers = []string{"refresh_cron", "full_refresh_cron"}
 	// triggerBoolMembers take the framework's lax boolean coercion.
 	triggerBoolMembers = []string{
 		"refresh_after_consolidation", "exclude_mental_models", "include_chunks",

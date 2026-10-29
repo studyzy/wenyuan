@@ -144,9 +144,17 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	qualified := quoteIdent(schema)
 	args := []any{query.BankID}
 	conds := []string{"bank_id = $1"}
+	// Which fields the search matched, per row (0/1 rather than booleans, the
+	// reference's shape). `q` is a literal substring over the id and the stored
+	// text: LIKE's wildcards are escaped so a `%` or `_` in it matches itself,
+	// and "!" is the escape character because it needs no quoting in a literal.
+	matchColumns := "0 AS id_matched, 0 AS text_matched"
 	if term := query.Query; term != "" {
-		args = append(args, "%"+term+"%")
-		conds = append(conds, fmt.Sprintf("id ILIKE $%d", len(args)))
+		args = append(args, "%"+escapeLikeTerm(term)+"%")
+		like := fmt.Sprintf("ILIKE $%d ESCAPE '!'", len(args))
+		conds = append(conds, fmt.Sprintf("(id %s OR original_text %s)", like, like))
+		matchColumns = fmt.Sprintf("CASE WHEN id %s THEN 1 ELSE 0 END AS id_matched, "+
+			"CASE WHEN original_text %s THEN 1 ELSE 0 END AS text_matched", like, like)
 	}
 	// The tag filter is appended as a literal clause, the way the graph read
 	// builds it: the include-untagged modes need a disjunction a bound array
@@ -183,20 +191,43 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	filter := strings.Join(conds, " AND ")
 	limitParam := "$" + itoa(len(args)+1)
 	offsetParam := "$" + itoa(len(args)+2)
-	var total int
+	// A `q` search counts at most DocumentSearchCap matches — one row past the
+	// cap is enough to know there are more, and the LIMIT is what lets the scan
+	// stop early instead of reading every document's text — and its pages stop
+	// where the count does, so no page serves a row the total disowns.
+	searched := query.Query != ""
+	total, estimate := 0, false
 	countQuery := `SELECT COUNT(*) FROM ` + qualified + `.documents WHERE ` + filter
+	if searched {
+		countQuery = `SELECT COUNT(*) FROM (SELECT 1 FROM ` + qualified + `.documents WHERE ` +
+			filter + ` LIMIT ` + itoa(DocumentSearchCap+1) + `) matched`
+	}
 	if err := s.reader().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return DocumentPage{}, err
+	}
+	if searched && total > DocumentSearchCap {
+		total, estimate = DocumentSearchCap, true
+	}
+	pageLimit := limit
+	if searched {
+		// The same clamp the shared page bounds apply: max(0, min(limit, cap-offset)).
+		if remaining := DocumentSearchCap - query.Offset; pageLimit > remaining {
+			pageLimit = remaining
+		}
+		if pageLimit < 0 {
+			pageLimit = 0
+		}
 	}
 	listQuery := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''),
 	                     COALESCE(retain_params, '{}'::jsonb),
 	                     COALESCE(tags, '{}'), created_at, updated_at,
 	                     (SELECT COUNT(*) FROM ` + qualified + `.memory_units u
-	                      WHERE u.bank_id = d.bank_id AND u.document_id = d.id)
+	                      WHERE u.bank_id = d.bank_id AND u.document_id = d.id),
+	                     ` + matchColumns + `
 	              FROM ` + qualified + `.documents d
 	              WHERE ` + filter + `
 	              ORDER BY ` + orderBy + ` LIMIT ` + limitParam + ` OFFSET ` + offsetParam
-	listArgs := append(append([]any{}, args...), limit, query.Offset)
+	listArgs := append(append([]any{}, args...), pageLimit, query.Offset)
 	rows, err := s.reader().QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return DocumentPage{}, err
@@ -210,7 +241,15 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 		}
 		out = append(out, doc)
 	}
-	return DocumentPage{Documents: out, Total: total, Limit: query.Limit, Offset: query.Offset}, rows.Err()
+	return DocumentPage{
+		Documents: out, Total: total, Limit: query.Limit, Offset: query.Offset, TotalIsEstimate: estimate,
+	}, rows.Err()
+}
+
+// escapeLikeTerm escapes the LIKE metacharacters in a literal search term so it
+// matches itself: "!" first, since it is the escape character the clauses use.
+func escapeLikeTerm(term string) string {
+	return strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(term)
 }
 
 // ListChunks returns one page of a bank's chunks plus the total.
@@ -678,14 +717,16 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 func scanDocumentRow(row rowScanner) (Document, error) {
 	var doc Document
 	var retainParams, tagsRaw []byte
+	var idMatched, textMatched int
 	if err := row.Scan(&doc.ID, &doc.BankID, &doc.OriginalText, &doc.ContentHash,
 		&retainParams, &tagsRaw, &doc.CreatedAt, &doc.UpdatedAt,
-		&doc.MemoryUnitCount); err != nil {
+		&doc.MemoryUnitCount, &idMatched, &textMatched); err != nil {
 		return Document{}, err
 	}
 	doc.RetainParams = decodeJSONMap(retainParams)
 	doc.Metadata = DocumentMetadata(doc.RetainParams)
 	doc.Tags = decodePostgresTextArray(tagsRaw)
+	doc.MatchedFields = matchedDocumentFields(idMatched, textMatched)
 	return doc, nil
 }
 

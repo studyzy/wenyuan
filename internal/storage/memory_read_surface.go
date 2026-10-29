@@ -104,7 +104,11 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 	if mode == "" {
 		mode = TagsMatchAnyStrict
 	}
+	// The fields a `q` search matched on each document are kept beside the
+	// match, because the page is taken after the whole bank has been scanned.
+	searched := query.Query != ""
 	matched := make([]Document, 0, len(s.documents))
+	matches := make(map[string][]string, len(s.documents))
 	for _, doc := range s.documents {
 		if doc.BankID != query.BankID {
 			continue
@@ -115,15 +119,23 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 		if !documentWithinWindow(doc, query) {
 			continue
 		}
-		if query.Query != "" &&
-			!strings.Contains(strings.ToLower(doc.ID), strings.ToLower(query.Query)) {
-			continue
+		if searched {
+			fields := documentSearchMatches(doc, query.Query)
+			if len(fields) == 0 {
+				continue
+			}
+			matches[doc.ID] = fields
 		}
 		matched = append(matched, doc)
 	}
 	sortDocuments(matched, query)
-	total := len(matched)
-	start, end := pageBounds(total, query.Offset, query.Limit)
+	// A `q` search counts at most DocumentSearchCap matches and stops where the
+	// count does, so no page serves a row the total disowns.
+	total, estimate := len(matched), false
+	if searched && total > DocumentSearchCap {
+		total, estimate = DocumentSearchCap, true
+	}
+	start, end := documentsPageBounds(len(matched), query.Offset, query.Limit, searched)
 	page := matched[start:end]
 	// The list carries each document's current unit count, computed from the
 	// units actually stored rather than from a stale counter, and its metadata
@@ -131,8 +143,13 @@ func (s *MemoryStore) ListDocuments(ctx context.Context, query DocumentQuery) (D
 	for i := range page {
 		page[i].MemoryUnitCount = s.countUnitsForDocumentLocked(page[i].BankID, page[i].ID)
 		page[i].Metadata = DocumentMetadata(page[i].RetainParams)
+		if searched {
+			page[i].MatchedFields = matches[page[i].ID]
+		}
 	}
-	return DocumentPage{Documents: page, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
+	return DocumentPage{
+		Documents: page, Total: total, Limit: query.Limit, Offset: query.Offset, TotalIsEstimate: estimate,
+	}, nil
 }
 
 // ListChunks returns one page of a bank's chunks plus the total.

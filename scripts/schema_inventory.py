@@ -10,7 +10,11 @@ type, is a difference a name-only comparison hides — so every row is matched o
 the fields that identify the object and then compared on the rest, and anything
 that differs lands in a `Definitions that differ` section.
 
-Run after rendering both sides:
+Run after rendering both sides. Give each side its own DATABASE and render the
+public schema: the upstream migrations build the public schema of a dedicated
+database (vchord's create_hypertable in the search extension refuses a
+non-public one), so a throwaway schema in the same database is not a comparable
+wenyuan side.
 
     psql -d <upstream> -v schema=public -f scripts/schema_diff.sql > /tmp/up.schema
     psql -d <wenyuan>  -v schema=public -f scripts/schema_diff.sql > /tmp/wy.schema

@@ -21,7 +21,7 @@ func (s *MemoryStore) ListMentalModels(ctx context.Context, bankID string, subty
 		if subtype != "" && model.Subtype != subtype {
 			continue
 		}
-		out = append(out, cloneMentalModel(model))
+		out = append(out, s.withKnowledgePageFlag(bankID, cloneMentalModel(model)))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].LastRefreshedAt.Equal(out[j].LastRefreshedAt) {
@@ -43,7 +43,7 @@ func (s *MemoryStore) GetMentalModel(ctx context.Context, bankID, id string) (Me
 	if !ok {
 		return MentalModel{}, ErrMentalModelNotFound
 	}
-	return cloneMentalModel(model), nil
+	return s.withKnowledgePageFlag(bankID, cloneMentalModel(model)), nil
 }
 
 // PutMentalModel inserts or replaces a mental model.
@@ -276,6 +276,13 @@ func applyMentalModelPatch(model *MentalModel, patch MentalModelPatch) {
 	if patch.ReflectResult != nil {
 		model.ReflectResult = copyAnyMap(*patch.ReflectResult)
 	}
+	// The full-refresh clock is stamped only by a refresh that ran in full
+	// mode, so a patch states it explicitly rather than advancing it with the
+	// content write: a hand edit moves last_refreshed_at and leaves this alone.
+	if patch.LastFullRefreshedAt != nil {
+		stamp := patch.LastFullRefreshedAt.UTC()
+		model.LastFullRefreshedAt = &stamp
+	}
 }
 
 // cloneMentalModel deep-copies the mutable fields so a caller cannot mutate
@@ -302,4 +309,47 @@ func copyAnyMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// PromoteOperationPayload sets one payload member on an operation that is still
+// in the expected status. The in-memory store serialises every submit under its
+// own lock, so no separate critical section is needed.
+func (s *MemoryStore) PromoteOperationPayload(ctx context.Context, bankID, operationID, key string, value any, onlyStatus OperationStatus) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return false, s.writeErr
+	}
+	op, ok := s.operations[operationID]
+	if !ok || op.BankID != bankID || op.Status != onlyStatus {
+		return false, nil
+	}
+	if op.Payload == nil {
+		op.Payload = map[string]any{}
+	}
+	if current, present := op.Payload[key]; present && current == value {
+		return false, nil
+	}
+	op.Payload[key] = value
+	op.UpdatedAt = time.Now().UTC()
+	s.operations[operationID] = op
+	return true, nil
+}
+
+// withKnowledgePageFlag resolves a read record's is_knowledge_page flag from the
+// knowledge tree: a page carries its content in a mental model, so a model any
+// page points at is that page's. Called with s.mu held for reading.
+func (s *MemoryStore) withKnowledgePageFlag(bankID string, model MentalModel) MentalModel {
+	backed := false
+	for _, node := range s.knowledgeNodes {
+		if node.BankID == bankID && node.MentalModelID == model.ID {
+			backed = true
+			break
+		}
+	}
+	model.IsKnowledgePage = &backed
+	return model
 }
