@@ -19,6 +19,15 @@ file as the first run left it. `uninstall` removes exactly what was written and
 leaves foreign entries alone. `update` refreshes the packaged runtime and
 writes no host config at all. `stats` is read-only.
 
+**`install` verifies what it wrote.** After writing a host's hooks it re-reads
+that file the way the host reads it and checks that each event would launch the
+packaged script. An event it cannot confirm — a foreign entry occupying the
+key, an entry in a shape the host does not parse, a file the host does not
+read — is reported as a failure and `install` exits non-zero, because a host
+that runs no hook has no memory regardless of what was written. The same rule
+applies to the MCP entry: a registration that could not be made is reported
+instead of assumed.
+
 ## Usage
 
 ```sh
@@ -29,36 +38,27 @@ wenyuan-agents update                       # re-stage the runtime only
 wenyuan-agents stats
 ```
 
-Hosts: `claude-code`, `codex`, `codebuddy`, `dsh`.
+Hosts: `claude-code`, `codex`, `codebuddy`, `cursor-cli`, `copilot-cli`, `dsh`.
 
 | Host | Lifecycle hooks | MCP registration | Skill |
 | --- | --- | --- | --- |
 | `claude-code` | `~/.claude/settings.json` | `claude mcp add`, user scope | `~/.claude/skills` |
-| `codex` | `~/.codex/settings.json` | `~/.codex/config.toml` table | `~/.agents/skills` |
+| `codex` | `~/.codex/hooks.json` + `features.hooks` in `config.toml` | `~/.codex/config.toml` table | `~/.agents/skills` |
 | `codebuddy` | `~/.codebuddy/settings.json` | `~/.codebuddy/.mcp.json` (or `mcp.json`, `~/.codebuddy.json`) | `~/.codebuddy/skills` |
+| `cursor-cli` | `~/.cursor/hooks.json` | `~/.cursor/mcp.json` | `~/.cursor/skills` |
+| `copilot-cli` | `~/.copilot/hooks/hooks.json` | `~/.copilot/mcp-config.json` | `~/.copilot/skills` |
 | `dsh` | none — a plugin owns these; see below | `~/.dsh/mcp.json` server map | `~/.dsh/skills` |
 
-**DSH's memory wiring is a Cordis plugin, and `install dsh` installs it.**
-`@studyzy/dsh-wenyuan-memory` (in `integrations/dsh-plugin/`) attaches recall on
-the harness's own `agent/created` and `agent/pre-step` seams, writes the session
-back on `agent/turn-stopping`, and registers the memory tools in-process. This
-package therefore writes **no hook config** for DSH — hooks beside the plugin
-would recall twice per prompt and retain the transcript twice — and installs the
-published bundle instead, into **every profile DSH already runs** (or into the
-`web` profile when there is none yet):
+The matcher-group hosts (`claude-code`, `codex`, `codebuddy`) read the same
+registration shape Claude Code does:
 
-```sh
-dsh plugin --profile <name> add @studyzy/dsh-wenyuan-memory
+```json
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "node \"/…/stop.mjs\"", "timeout": 30 } ] } ] } }
 ```
 
-The install goes through DSH's own forwarder, so DSH initializes the profile,
-runs pnpm and reconciles `dsh.profile.bundles` itself; `dsh` and `pnpm` must be
-on `PATH`. A profile that could not take the plugin fails the install, with the
-exact command to retry. `install dsh` also registers the MCP server entry and
-copies the companion skill. A running DSH keeps the bundles it started with, so
-restart it to load the plugin. `uninstall dsh` leaves the bundle alone — remove
-it with `dsh plugin --profile <name> remove @studyzy/dsh-wenyuan-memory`.
-
+`cursor-cli` and `copilot-cli` read one object per event instead
+(`{"stop": {"command": "node \"…\"", "timeout": 30}}`) and spell the events
+in their own lower-camel words.
 Flags:
 
 | Flag | Meaning |
@@ -67,7 +67,7 @@ Flags:
 | `--api-url <url>` | service address, required by the self-hosted mode |
 | `--api-token <token>` | bearer token, required by the hosted mode |
 | `--import-conversations` | additionally attempt the past-session backfill |
-| `--enable-workspace-mcp` | authorize flipping a host's global workspace-MCP setting |
+| `--enable-workspace-mcp` | accepted for compatibility; the machine-wide project-MCP switch is never touched |
 
 Connection parameters resolve in one fixed order: an explicit flag, then the
 stored configuration file, then the deployment environment override, then the
@@ -114,17 +114,37 @@ npm --prefix integrations/coding-agents run typecheck
 npm --prefix integrations/coding-agents run build
 npm --prefix integrations/coding-agents test        # offline unit suite
 npm --prefix integrations/coding-agents run test:e2e # builds, then drives the real installer
+npm --prefix integrations/coding-agents run check:integration  # see below
 ```
 
 The unit suite runs offline against a temporary fake home; the end-to-end suite
 drives the built entry point in-process against the same fixture.
 
+`check:integration` is the suite that answers "does a wired host actually reach
+memory". It installs every host into a throwaway home, reads each host's config
+back the way that host reads it, **execs the exact command string the host would
+exec in a real shell**, and asserts against an in-process mock of the memory
+service that the hook launched and made the right call: the recall carries the
+prompt, the recalled text reaches the host's stdout, the stop hook reads the
+host's transcript, and a second stop appends only the new turn under one
+document id. It needs no server, no network and no credentials, and it is part
+of `npm run check`.
+
+A file that is written correctly is not the same thing as a host that runs it —
+that distinction is what every defect this package has had in common, so the
+check stops at the host's own execution boundary rather than at the file.
+
 ## Known gaps
 
 - The packaged MCP server answers the protocol handshake and serves a single
   recall tool; the rest of the memory tool surface is a later slice.
+- The stop stage reads the conversation out of the hook payload and does not
+  yet read `transcript_path`, so on a host whose `Stop` payload carries no
+  turns nothing is retained.
+- The written document has no stable `document_id` yet, so a repeated write-back
+  is not deduplicated.
 - The skill's substance, structure and front matter are placeholders.
-- The per-host field spellings and budget units for the lifecycle
-  registrations, and the per-host shape of the MCP entry beyond the
-  caller-identifying variable, are deferred to later slices.
 - Nothing in this slice writes the usage log `stats` reports on.
+- Verified end to end here: Claude Code, Codex and DSH. The Cursor and Copilot
+  adapters write the paths and shapes their own documentation gives and are
+  covered by the read-back check, but have not been driven against a live CLI.

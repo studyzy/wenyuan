@@ -28,7 +28,9 @@
     "build:skill": "node scripts/generate-skill.mjs",
     "check:skill": "node scripts/generate-skill.mjs --check",
     "test": "vitest run tests/unit",
-    "test:e2e": "npm run build && vitest run tests/e2e"
+    "test:e2e": "npm run build && vitest run tests/e2e",
+    "check:integration": "node build.config.mjs && node scripts/integration-check.mjs",
+    "check": "npm run typecheck && npm run build:skill --silent && npm run test && npm run check:integration && npm run test:e2e"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

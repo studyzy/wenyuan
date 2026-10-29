@@ -67,9 +67,11 @@ describe("dispatching to the declared mechanism", () => {
         serverPath: staged,
         executable: `${home.home}/bin/does-not-exist`,
       });
-      // The interface is unusable, so the manual line is reported and no
-      // config file is written.
-      expect(result.ok).toBe(true);
+      // The interface is unusable, so the manual line is reported, no config
+      // file is written, and the run does not claim a registration it never
+      // made: a host with no MCP entry has no memory tools.
+      expect(result.ok).toBe(false);
+      expect(result.written).toBe(false);
       expect(await home.isFile(".claude.json")).toBe(false);
       expect(result.messages.join("\n")).toContain(staged);
     });

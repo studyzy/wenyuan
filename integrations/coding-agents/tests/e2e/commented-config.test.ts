@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { declaredEvents } from "../helpers/hooks";
 import { BACKUP_SUFFIX } from "../../src/write/backup";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome } from "../helpers/fake-home";
 
 /**
  * A host config that permits comments is edited as text, so comments, trailing
@@ -34,7 +34,7 @@ function occurrences(text: string, needle: string): number {
 describe("a host config that permits comments", () => {
   it("survives install with its comments, foreign entry and formatting", async () => {
     await withFakeHome(
-      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: "" } },
+      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", "claude-code"]);
         expect(result.status).toBe(0);
@@ -53,7 +53,7 @@ describe("a host config that permits comments", () => {
   it("keeps the file's own line endings", async () => {
     const crlf: string = COMMENTED.replace(/\n/g, "\r\n");
     await withFakeHome(
-      { files: { ".claude/settings.json": crlf }, environment: { PATH: "" } },
+      { files: { ".claude/settings.json": crlf }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         const text: string = await home.read(".claude/settings.json");
@@ -65,7 +65,7 @@ describe("a host config that permits comments", () => {
 
   it("survives uninstall with its comments and foreign entry", async () => {
     await withFakeHome(
-      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: "" } },
+      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         expect((await runInstaller(["uninstall", "claude-code"])).status).toBe(0);
@@ -81,7 +81,7 @@ describe("a host config that permits comments", () => {
 
   it("writes no competing config file beside the host's own", async () => {
     await withFakeHome(
-      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: "" } },
+      { files: { ".claude/settings.json": COMMENTED }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         const settings: string[] = (await home.listFiles()).filter((path: string) =>
@@ -99,7 +99,7 @@ describe("a host config that permits comments", () => {
 describe("a host config that permits comments but will not parse", () => {
   it("is left byte-identical and the host is skipped", async () => {
     await withFakeHome(
-      { files: { ".claude/settings.json": BROKEN }, environment: { PATH: "" } },
+      { files: { ".claude/settings.json": BROKEN }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", "claude-code"]);
         expect(result.status).not.toBe(0);

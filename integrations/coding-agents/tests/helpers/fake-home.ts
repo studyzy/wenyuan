@@ -37,6 +37,10 @@ export interface FakeHome {
   env(): NodeJS.ProcessEnv;
   /** Applies that environment and returns the function that restores it. */
   apply(): () => void;
+  /** Replaces the PATH every later `env()` hands out, once a directory exists. */
+  overridePath(path: string): void;
+  /** True when the suite asked for the host stand-in PATH. */
+  wantsStandInPath(): boolean;
   path(...segments: string[]): string;
   write(relativePath: string, content: string): Promise<void>;
   read(relativePath: string): Promise<string>;
@@ -58,6 +62,10 @@ export function packageRoot(): string {
 export async function createFakeHome(options: FakeHomeOptions = {}): Promise<FakeHome> {
   const home: string = await mkdtemp(join(tmpdir(), "wenyuan-fake-home-"));
   const root: string = packageRoot();
+  const requested: NodeJS.ProcessEnv = { ...options.environment };
+  // The stand-ins live beside the fake home, not inside it: a suite's file
+  // listing must show only what the installer wrote into the host's home.
+  const bin: string = await mkdtemp(join(tmpdir(), "wenyuan-stand-ins-"));
 
   const fixture: FakeHome = {
     home,
@@ -69,7 +77,13 @@ export async function createFakeHome(options: FakeHomeOptions = {}): Promise<Fak
       for (const name of DEPLOYMENT_ENV_VARS) {
         delete environment[name];
       }
-      return Object.assign(environment, options.environment ?? {});
+      return Object.assign(environment, requested);
+    },
+    wantsStandInPath(): boolean {
+      return requested.PATH === NO_HOST_CLI;
+    },
+    overridePath(path: string): void {
+      requested.PATH = path;
     },
     apply(): () => void {
       const saved: NodeJS.ProcessEnv = { ...process.env };
@@ -155,12 +169,23 @@ export async function createFakeHome(options: FakeHomeOptions = {}): Promise<Fak
     },
     async cleanup(): Promise<void> {
       await rm(home, { recursive: true, force: true });
+      await rm(bin, { recursive: true, force: true }).catch(() => undefined);
     },
   };
 
   for (const [relativePath, content] of Object.entries(options.files ?? {})) {
     await fixture.write(relativePath, content);
   }
+  // Every home gets its host stand-ins, and a PATH that reaches them. A suite
+  // that wants the host CLIs answers "wired"; one that writes its own PATH or
+  // its own stand-ins overrides this.
+  // A suite that wants no host CLI on PATH at all (so detection sees only
+  // config directories) asks for that explicitly.
+  // A suite may state its own PATH to keep host CLIs out of reach; otherwise
+  // every home gets the stand-ins and a PATH that reaches them.
+  // Every home gets the stand-ins; `useHostClis` decides whether to adopt the
+  // stand-in PATH or keep the one a suite named.
+  await useHostClis(fixture, bin);
   return fixture;
 }
 
@@ -189,6 +214,110 @@ export interface InstallerRun {
 
 /** The PATH directory the stand-ins below live in, relative to the fake home. */
 export const STAND_IN_BIN = "bin";
+
+/**
+ * The PATH a suite runs the installer under: the host stand-ins, and nothing
+ * else.
+ *
+ * Host detection resolves through PATH, and so does every host CLI the package
+ * drives — so a suite that asserts "wired" needs those CLIs to answer, and a
+ * suite must never reach a real `claude`/`codex` installed on the developer's
+ * machine. Both halves are met by running under this one directory.
+ *
+ * A suite writes `PATH: NO_HOST_CLI` and `createFakeHome` replaces it with the
+ * stand-ins' real directory once it has written them, so the value survives the
+ * gap where the directory does not exist yet.
+ */
+export const NO_HOST_CLI = "__wenyuan-host-stand-ins__";
+
+/**
+ * The CLIs this package drives, each a recording stand-in.
+ *
+ * - `claude` answers `mcp get` with what it holds under the server's name and
+ *   records every invocation (`claude-calls.log`), so a suite can assert both
+ *   the argv the installer passed and the ownership decision it made.
+ * - `codex`, `cursor`, `copilot`, `codebuddy` are detection probes: the
+ *   installer resolves a host by finding its executable or its config directory.
+ */
+const HOST_CLIS: readonly string[] = ["claude", "codex", "cursor", "copilot", "codebuddy", "dsh"];
+
+/**
+ * Writes the host stand-ins into the fake home's PATH directory.
+ * @returns The PATH to run a suite under.
+ */
+/**
+ * Makes a home's host stand-ins available, and gives it the PATH that reaches
+ * them. `createFakeHome` calls this, so every suite gets it without asking.
+ */
+export async function useHostClis(home: FakeHome, bin?: string): Promise<string> {
+  const directory: string = bin ?? join(home.home, STAND_IN_BIN);
+  await writeHostClisAt(directory);
+  // A suite that asked for the stand-in PATH gets the real directory now that
+  // it exists; one that named its own PATH keeps it.
+  if (home.wantsStandInPath()) {
+    home.overridePath(directory);
+  }
+  return directory;
+}
+
+export async function writeHostClis(home: FakeHome): Promise<string> {
+  const bin: string = join(home.home, STAND_IN_BIN);
+  await writeHostClisAt(bin);
+  return bin;
+}
+
+/** Writes the stand-ins into one directory; split out so the fixture can call it. */
+async function writeHostClisAt(bin: string): Promise<void> {
+  await mkdir(bin, { recursive: true });
+  for (const name of HOST_CLIS) {
+    await writeFile(join(bin, name), hostStandIn(name), "utf8");
+    await chmod(join(bin, name), 0o755);
+  }
+}
+
+/**
+ * One stand-in's script. It is `/bin/sh` with built-ins only: it runs under a
+ * PATH that holds nothing but the stand-ins themselves.
+ */
+function hostStandIn(name: string): string {
+  // The log records the server definition itself once one is added, so `mcp
+  // get` can answer with what was registered — the same information the real
+  // CLI holds in its own store.
+  return [
+    "#!/bin/sh",
+    `here="\${0%/*}"`,
+    `echo "$*" >> "$here/${name}-calls.log"`,
+    'if [ "$1" = "mcp" ] && [ "$2" = "get" ]; then',
+    `  if [ -s "$here/${name}-added" ]; then`,
+    `    echo "wenyuan-memory:"`,
+    `    echo "  Command: node"`,
+    // `read` is a shell built-in, so the definition comes back under the
+    // restricted PATH a suite runs with — `cat` would not be found there.
+    `    read -r line < "$here/${name}-added"`,
+    `    echo "  Args: $line"`,
+    "    exit 0",
+    "  fi",
+    "  exit 1",
+    "fi",
+    'if [ "$1" = "mcp" ] && [ "$2" = "add" ]; then',
+    '  shift 2',
+    '  for arg in "$@"; do',
+    '    case "$arg" in',
+    '      /dev/null|command|node) continue ;;',
+    '      /*) echo "$arg" > "$here/NAME-added"; break ;;',
+    '    esac',
+    '  done',
+    "fi",
+    'if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then',
+    // A shell redirection rather than `rm`, again because PATH holds only the
+    // stand-ins: the real CLI drops the entry, and an empty definition file is
+    // an entry that is gone.
+    `  : > "$here/${name}-added"`,
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n").replaceAll("NAME-added", `${name}-added`);
+}
 
 /**
  * A recording stand-in for the `dsh` executable.

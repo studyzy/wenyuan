@@ -29,7 +29,7 @@ describe("the per-session state key", () => {
   });
 
   it("starts a session fresh", () => {
-    expect(emptySessionState("d-1")).toEqual({ injected: false, attempts: 0, documentId: "d-1" });
+    expect(emptySessionState("d-1")).toEqual({ injected: false, attempts: 0, documentId: "d-1", retainedTurns: [] });
   });
 });
 
@@ -37,8 +37,13 @@ describe("reading and writing the state", () => {
   it("round-trips a written state", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (_home: FakeHome) => {
       const key = sessionKey("claude-code", "s-1");
-      await writeSessionState(key, { injected: true, attempts: 2, documentId: "d-1" });
-      await expect(readSessionState(key, "fallback")).resolves.toEqual({ injected: true, attempts: 2, documentId: "d-1" });
+      await writeSessionState(key, { injected: true, attempts: 2, documentId: "d-1", retainedTurns: ["user: hi"] });
+      await expect(readSessionState(key, "fallback")).resolves.toEqual({
+        injected: true,
+        attempts: 2,
+        documentId: "d-1",
+        retainedTurns: ["user: hi"],
+      });
     });
   });
 
@@ -48,6 +53,7 @@ describe("reading and writing the state", () => {
         injected: false,
         attempts: 0,
         documentId: "d-1",
+        retainedTurns: [],
       });
     });
   });

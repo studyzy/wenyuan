@@ -1,10 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerMcpServer, removeMcpServer } from "../mcp/register";
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
-import { backupExistingFile } from "../write/backup";
-import { upsertJsoncMember } from "../write/jsonc-edit";
 import { installLifecycleHooks } from "./hooks";
+import { verifyLifecycleHooks } from "./hook-verify";
 import { removeLifecycleHooks } from "./hooks-remove";
 import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
@@ -24,9 +22,7 @@ import {
  * Its MCP server lives in the host's own store rather than a config file of
  * ours, so the adapter writes no MCP config: the declared command-line
  * mechanism registers through the host's executable and reports the manual line
- * on fallback. The host's global workspace-MCP setting is machine-wide, so it
- * is only flipped when the operator authorizes it; without that, the manual
- * step is reported and the setting is left exactly as it is.
+ * on fallback.
  */
 
 const host: HostContribution = {
@@ -40,7 +36,6 @@ const host: HostContribution = {
     mcpFormat: "json",
     skillsDirectory: ".claude/skills",
   },
-  workspaceMcpKey: "enableAllProjectMcpServers",
 
   async install(env: HostEnvironment, options: HostInstallOptions): Promise<HostOperationResult> {
     const configPath: string = hostConfigPath(host, env.home) ?? "";
@@ -54,15 +49,24 @@ const host: HostContribution = {
     if (!hooks.ok) {
       return { hostId: host.id, ok: false, messages: hooks.messages };
     }
-
-    const messages: string[] = [...hooks.messages];
-    messages.push(...(await applyWorkspaceMcpSetting(configPath, options)));
+    // Read the file back the way Claude Code reads it: a registration it does
+    // not parse is a hook that never runs, and install must not claim one.
+    const verified = await verifyLifecycleHooks(configPath, hooks.expected, "jsonc");
+    const messages: string[] = [...hooks.messages, ...verified.messages];
+    if (!verified.ok) {
+      messages.push(
+        `the hooks are NOT wired: ${configPath} does not let Claude Code run them. ` +
+          `Fix the entry by hand, then re-run install.`,
+      );
+      return { hostId: host.id, ok: false, messages };
+    }
 
     const mcp = await registerMcpServer({
       hostId: host.id,
       home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
       environment: options.environment,
+      executable: host.detection.executable,
     });
     messages.push(...mcp.messages);
     if (!mcp.ok) {
@@ -93,6 +97,7 @@ const host: HostContribution = {
       hostId: host.id,
       home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
+      executable: host.detection.executable,
     });
     ok = ok && mcp.ok;
     messages.push(...mcp.messages);
@@ -101,32 +106,5 @@ const host: HostContribution = {
     return { hostId: host.id, ok: ok && skill.ok, messages };
   },
 };
-
-/**
- * The workspace-MCP setting is global to the machine, so a non-interactive run
- * without the opt-in flag refuses to flip it and prints what the operator can
- * do instead.
- */
-async function applyWorkspaceMcpSetting(
-  configPath: string,
-  options: HostInstallOptions,
-): Promise<string[]> {
-  const key: string | undefined = host.workspaceMcpKey;
-  if (!key) {
-    return [];
-  }
-  if (!options.enableWorkspaceMcp) {
-    return [
-      `left "${key}" untouched: pass the workspace-MCP opt-in flag to change it, or set "${key}": true in ${configPath} yourself.`,
-    ];
-  }
-  const source: string = await readFile(configPath, "utf8").catch(() => "");
-  const edit = upsertJsoncMember(source, [], key, true, () => true);
-  if (edit && edit.changed) {
-    await backupExistingFile(configPath);
-    await writeFile(configPath, edit.text, { mode: 0o600 });
-  }
-  return [];
-}
 
 export const claudeCode: HostContribution = host;

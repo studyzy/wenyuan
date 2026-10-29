@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { registerMcpServer, removeMcpServer } from "../mcp/register";
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
 import { installLifecycleHooks } from "./hooks";
+import { verifyLifecycleHooks } from "./hook-verify";
 import { removeLifecycleHooks } from "./hooks-remove";
 import { copyPackagedSkill, removeInstalledSkill } from "./skills";
 import {
@@ -49,21 +50,32 @@ const host: HostContribution = {
     if (!hooks.ok) {
       return { hostId: host.id, ok: false, messages: hooks.messages };
     }
+    const verified = await verifyLifecycleHooks(configPath, hooks.expected, "jsonc");
+    const messages: string[] = [...hooks.messages, ...verified.messages];
+    if (!verified.ok) {
+      messages.push(
+        `the hooks are NOT wired: ${configPath} does not let CodeBuddy run them. ` +
+          `Fix the entry by hand, then re-run install.`,
+      );
+      return { hostId: host.id, ok: false, messages };
+    }
 
     const mcp = await registerMcpServer({
       hostId: host.id,
       home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
       environment: options.environment,
+      executable: host.detection.executable,
     });
+    messages.push(...mcp.messages);
     if (!mcp.ok) {
       // A refused registration leaves the host unwired, so the companion skill
       // is not installed either.
-      return { hostId: host.id, ok: false, messages: [...hooks.messages, ...mcp.messages] };
+      return { hostId: host.id, ok: false, messages };
     }
 
     const skill = await copyPackagedSkill(host.id, env.home);
-    const messages: string[] = [...hooks.messages, ...mcp.messages, ...skill.messages];
+    messages.push(...skill.messages);
     return { hostId: host.id, ok: mcp.ok && skill.ok, messages };
   },
 
@@ -83,6 +95,7 @@ const host: HostContribution = {
       hostId: host.id,
       home: env.home,
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
+      executable: host.detection.executable,
     });
     ok = ok && mcp.ok;
     messages.push(...mcp.messages);

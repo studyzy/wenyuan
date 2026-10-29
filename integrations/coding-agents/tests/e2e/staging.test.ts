@@ -4,7 +4,9 @@ import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { HOOKS_SUBDIRECTORY, PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME, runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventCommands } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Staging: the runtime is copied into the stable per-user directory before any
@@ -24,7 +26,7 @@ function commandsIn(config: JsonDocument, hostId: string): string[] {
 
 describe("installing from a transient package location", () => {
   it("points every hook command path at the stable runtime directory", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
 
       const staged: string = runtimeDirectory();
@@ -41,7 +43,7 @@ describe("installing from a transient package location", () => {
   });
 
   it("points the JSON host's server entry at the stable runtime directory", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
 
       const staged: string = runtimeDirectory();
@@ -56,7 +58,7 @@ describe("installing from a transient package location", () => {
   });
 
   it("stages the packaged entry points under a marker-bearing directory", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const staged: string[] = await home.listFiles(PER_USER_DIRECTORY_NAME);
       for (const scriptFile of Object.values(HOOK_SCRIPT_FILES)) {
@@ -68,7 +70,7 @@ describe("installing from a transient package location", () => {
   });
 
   it("leaves entries a later uninstall still recognizes", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       expect((await runInstaller(["uninstall", "codebuddy"])).status).toBe(0);
       expect(await home.exists(".codebuddy/settings.json")).toBe(false);

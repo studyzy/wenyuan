@@ -3,12 +3,9 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME } from "../../src/runtime/layout";
-import {
-  packageRoot,
-  runInstaller,
-  withFakeHome,
-  type FakeHome,
-} from "../helpers/fake-home";
+import { NO_HOST_CLI, packageRoot, runInstaller, type FakeHome, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Update re-stages the packaged runtime and writes no host config at all.
@@ -61,7 +58,7 @@ describe("updating after an install", () => {
       ["hooks/session-start.mjs", "mcp-server.mjs", "older-only.txt"],
       ["hooks/session-start.mjs", "mcp-server.mjs", "newer-only.txt"],
       async (older: string, newer: string) => {
-        await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+        await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
           expect((await runInstaller(["install", "claude-code"], { packageRoot: older })).status).toBe(0);
           expect(await home.exists(`${PER_USER_DIRECTORY_NAME}/${RUNTIME_DIRECTORY_NAME}/older-only.txt`)).toBe(true);
           const before: string = await home.read(CONFIG);
@@ -82,7 +79,7 @@ describe("updating after an install", () => {
 
 describe("updating a home where nothing was ever installed", () => {
   it("stages the runtime and creates no host state at all", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const result = await runInstaller(["update"]);
       expect(result.status).toBe(0);
 
@@ -94,7 +91,7 @@ describe("updating a home where nothing was ever installed", () => {
   });
 
   it("wires nothing even when a host is named", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["update", "claude-code"])).status).toBe(0);
       expect(await home.exists(".claude")).toBe(false);
     });

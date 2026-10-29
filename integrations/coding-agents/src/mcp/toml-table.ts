@@ -63,7 +63,20 @@ export function stripOurTable(source: string, container: string): string {
 /** The dotted table name a TOML table header line declares, or null. */
 function tableHeader(line: string): string | null {
   const match = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*$/.exec(line);
-  return match?.[1] ?? null;
+  const declared: string | undefined = match?.[1];
+  // A quoted header (`["mcp_servers"."wenyuan-memory"]`) declares the same
+  // table as its bare spelling. Unquoting it means a table this package wrote
+  // and a table an operator re-quoted are both recognized — otherwise a re-run
+  // appends a second table of the same name and the file stops parsing.
+  return declared === undefined ? null : unquoteSegments(declared);
+}
+
+/** The dotted name with each segment's TOML quoting removed. */
+function unquoteSegments(header: string): string {
+  return header
+    .split(".")
+    .map((segment) => segment.trim().replace(/^["']|["']$/g, ""))
+    .join(".");
 }
 
 /** Renders this package's table with the shared entry members inline. */

@@ -77,6 +77,18 @@ export const HOST_LIFECYCLES: Readonly<Record<string, HostLifecycle>> = {
     "pre-prompt": registration("pre-prompt", "UserPromptSubmit", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
     stop: registration("stop", "Stop", STOP_BUDGET_SECONDS, "seconds", "matcher-group"),
   },
+  // Cursor CLI and Copilot CLI keep one object per event rather than a list of
+  // matcher groups, and spell the event names in lower camel case.
+  "cursor-cli": {
+    "session-start": registration("session-start", "sessionStart", INTERACTIVE_BUDGET_SECONDS, "seconds", "flat-entry"),
+    "pre-prompt": registration("pre-prompt", "beforeSubmitPrompt", INTERACTIVE_BUDGET_SECONDS, "seconds", "flat-entry"),
+    stop: registration("stop", "stop", STOP_BUDGET_SECONDS, "seconds", "flat-entry"),
+  },
+  "copilot-cli": {
+    "session-start": registration("session-start", "sessionStart", INTERACTIVE_BUDGET_SECONDS, "seconds", "flat-entry"),
+    "pre-prompt": registration("pre-prompt", "userPromptTransformed", INTERACTIVE_BUDGET_SECONDS, "seconds", "flat-entry"),
+    stop: registration("stop", "agentStop", STOP_BUDGET_SECONDS, "seconds", "flat-entry"),
+  },
   // DSH declares NO lifecycle: its wiring is a Cordis plugin
   // (`integrations/dsh-plugin`), which attaches memory on the harness's own
   // extension points in-process. Installing Claude-Code-style command hooks

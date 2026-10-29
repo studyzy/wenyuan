@@ -10,7 +10,9 @@ import {
   MCP_SERVERS_KEY,
 } from "../../src/mcp/mechanisms";
 import { PER_USER_DIRECTORY_NAME } from "../../src/runtime/layout";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Connection parameters reaching the registered entry.
@@ -46,7 +48,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
     await withFakeHome(
       {
         environment: {
-          PATH: "",
+          PATH: NO_HOST_CLI,
           [DEPLOYMENT_ENV.apiUrl]: "http://env.example:9999",
           [DEPLOYMENT_ENV.bankId]: "bank-from-env",
         },
@@ -63,7 +65,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
 
   it("lets an explicit address flag win over the stored and environment values", async () => {
     await withFakeHome(
-      { environment: { PATH: "", [DEPLOYMENT_ENV.apiUrl]: "http://env.example:9999" } },
+      { environment: { PATH: NO_HOST_CLI, [DEPLOYMENT_ENV.apiUrl]: "http://env.example:9999" } },
       async (home: FakeHome) => {
         const result = await runInstaller([
           "install",
@@ -79,7 +81,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
   });
 
   it("falls through to the built-in address and bank with the environment unset", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       // The default mode is self-hosted; only an *explicit* self-hosted request
       // without an address is refused, so the default falls through to the
       // built-in values.
@@ -92,7 +94,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
 
   it("carries the port and no explicit address in the locally managed mode", async () => {
     await withFakeHome(
-      { environment: { PATH: "", [DEPLOYMENT_ENV.apiPort]: "19999" } },
+      { environment: { PATH: NO_HOST_CLI, [DEPLOYMENT_ENV.apiPort]: "19999" } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", JSON_HOST, "--server", "local"])).status).toBe(0);
         const env: JsonDocument = jsonEntryEnv(await home.readJson(JSON_PATH));
@@ -107,7 +109,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
 
   it("carries the auth token in the hosted mode", async () => {
     await withFakeHome(
-      { environment: { PATH: "", [DEPLOYMENT_ENV.apiToken]: "token-from-env" } },
+      { environment: { PATH: NO_HOST_CLI, [DEPLOYMENT_ENV.apiToken]: "token-from-env" } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", JSON_HOST, "--server", "hosted"])).status).toBe(0);
         const env: JsonDocument = jsonEntryEnv(await home.readJson(JSON_PATH));
@@ -117,7 +119,7 @@ describe("the JSON host's entry carries the connection parameters", () => {
   });
 
   it("refuses a hosted install with no token and wires nothing", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const result = await runInstaller(["install", JSON_HOST, "--server", "hosted"]);
       expect(result.status).not.toBe(0);
       expect(result.combined()).toContain("--api-token");
@@ -131,7 +133,7 @@ describe("the TOML host's table carries the connection parameters", () => {
     await withFakeHome(
       {
         environment: {
-          PATH: "",
+          PATH: NO_HOST_CLI,
           [DEPLOYMENT_ENV.apiUrl]: "http://env.example:9999",
           [DEPLOYMENT_ENV.bankId]: "bank-from-env",
         },
@@ -152,7 +154,7 @@ describe("the TOML host's table carries the connection parameters", () => {
 
 describe("the runtime is staged before any host is wired", () => {
   it("points every registration at a staged server that already exists", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", JSON_HOST, TOML_HOST])).status).toBe(0);
       for (const file of [JSON_PATH, TOML_PATH]) {
         expect(await home.isFile(file)).toBe(true);

@@ -111,16 +111,19 @@ export function mergeEntryIntoContainer(
  * the key to the value: a key already holding one of ours is replaced in place,
  * a key holding a foreign array of entries keeps those entries and receives
  * ours appended after them, and any other foreign value is left alone.
+ *
+ * Returns false when a foreign value blocked the write, so the caller can
+ * report a registration that will never run instead of claiming one.
  */
 export function mergeValueIntoContainer(
   document: JsonDocument,
   path: readonly string[],
   value: unknown,
-): void {
+): boolean {
   ensureObjectMembers(document, path.slice(0, -1));
   const key: string | undefined = path[path.length - 1];
   if (key === undefined) {
-    return;
+    return false;
   }
   let parent: JsonDocument = document;
   for (const step of path.slice(0, -1)) {
@@ -138,14 +141,15 @@ export function mergeValueIntoContainer(
     const kept: unknown[] = existing.filter((item) => !valueCarriesMarker(item));
     existing.length = 0;
     existing.push(...kept, value);
-    return;
+    return true;
   }
   if (existing !== undefined && !valueCarriesMarker(existing)) {
     // A foreign registration of any other shape has no room for a second entry
-    // and is left exactly as it is.
-    return;
+    // and is left exactly as it is; the caller reports it as blocked.
+    return false;
   }
   parent[key] = value;
+  return true;
 }
 
 /** Ensures every object on a key path exists, creating the missing ones. */

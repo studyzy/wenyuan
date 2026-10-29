@@ -11,7 +11,13 @@ import type { ConfigFormat } from "../write/json-merge";
  * shape shared with the others.
  */
 
-export type HostId = "claude-code" | "codex" | "codebuddy" | "dsh";
+export type HostId =
+  | "claude-code"
+  | "codex"
+  | "codebuddy"
+  | "cursor-cli"
+  | "copilot-cli"
+  | "dsh";
 
 export interface HostLocations {
   /**

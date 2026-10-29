@@ -10,7 +10,9 @@ import {
   SKILL_DIRECTORY_NAME,
 } from "../../src/hosts/skills";
 import { skillsRootFor } from "../../src/hosts/skill-locations";
-import { runInstaller, withFakeHome, withRestrictedPath, writeStandInDsh, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome, withRestrictedPath } from "../helpers/fake-home";
+
+
 
 /**
  * The companion skill is copied into each host's own skills directory under one
@@ -30,7 +32,7 @@ function skillFile(hostId: string, home: FakeHome): string {
 
 describe("installing and uninstalling two hosts", () => {
   it("removes only the host that was uninstalled", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code", "codex"])).status).toBe(0);
       expect(await home.isFile(skillFile("claude-code", home))).toBe(true);
       expect(await home.isFile(skillFile("codex", home))).toBe(true);
@@ -42,11 +44,10 @@ describe("installing and uninstalling two hosts", () => {
   });
 
   it("gives every registered host a copy of its own", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      // DSH is wired through its own `dsh plugin` command, so it needs that
-      // executable on PATH; every other host installs without one.
-      const bin: string = await writeStandInDsh(home);
-      const status: number = await withRestrictedPath([bin], async () =>
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      // Every host is driven through its own CLI, so the fixture's stand-ins
+      // have to be the whole PATH — DSH's `dsh plugin` included.
+      const status: number = await withRestrictedPath([process.env.PATH ?? ""], async () =>
         (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status);
       expect(status).toBe(0);
       for (const host of HOSTS) {
@@ -59,9 +60,8 @@ describe("installing and uninstalling two hosts", () => {
 
 describe("the fixed child-directory name", () => {
   it("is the same name for every host", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const bin: string = await writeStandInDsh(home);
-      const status: number = await withRestrictedPath([bin], async () =>
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      const status: number = await withRestrictedPath([process.env.PATH ?? ""], async () =>
         (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status);
       expect(status).toBe(0);
       const children: string[][] = [];
@@ -77,7 +77,7 @@ describe("the fixed child-directory name", () => {
   });
 
   it("keeps the other host's copy when one host is uninstalled", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code", "codebuddy"])).status).toBe(0);
       const claude: string = skillFile("claude-code", home);
       const buddy: string = skillFile("codebuddy", home);
@@ -91,7 +91,7 @@ describe("the fixed child-directory name", () => {
   it("preserves a foreign sibling under the skills root", async () => {
     const source: string | null = packagedSkillDirectory();
     expect(source).not.toBeNull();
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       await copyPackagedSkill("claude-code", home.home);
       await home.write(".claude/skills/foreign/SKILL.md", "# foreign\n");
 
@@ -105,7 +105,7 @@ describe("the fixed child-directory name", () => {
 
 describe("a copy after the package moved", () => {
   it("refreshes the installed content in place", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await copyPackagedSkill("claude-code", home.home)).ok).toBe(true);
       const before: string = await home.read(".claude/skills/wenyuan-memory/SKILL.md");
 
@@ -125,7 +125,7 @@ describe("a copy after the package moved", () => {
     await mkdir(join(source as string, "guides"), { recursive: true });
     await writeFile(nested, "# usage\n");
     try {
-      await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
         await copyPackagedSkill("claude-code", home.home);
         expect(await home.isFile(".claude/skills/wenyuan-memory/guides/usage.md")).toBe(true);
 

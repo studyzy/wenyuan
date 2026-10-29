@@ -132,7 +132,17 @@ describe("the stop stage", () => {
     });
     expect(first.written).toBe(true);
     expect(first.documentId).toBe(second.documentId);
-    expect(seen[0]).toEqual({ items: [{ content: "a\nb" }] });
+    // One document per session, and the identity is the one the reference
+    // implementation uses, so a re-read conversation addresses the same row.
+    const body = seen[0] as { items: { content: string; document_id: string; update_mode: string }[] };
+    // `isAppendOf([], turns)` is true, so a first write states `append`: the
+    // service opens the document and appends, which is the same stored result
+    // as a replace onto an empty document and is the reference's own choice.
+    expect(body.items[0]).toMatchObject({
+      content: "a\nb",
+      document_id: "conversation:s-1",
+      update_mode: "append",
+    });
   });
 
   it("appends only the new turns when the conversation grew, given the prior turns", async () => {
@@ -144,7 +154,8 @@ describe("the stop stage", () => {
       previousTurns: ["a"],
       client: captureClient((body) => seen.push(body)),
     });
-    expect(seen[0]).toEqual({ items: [{ content: "b" }] });
+    const body = seen[0] as { items: { content: string; update_mode: string }[] };
+    expect(body.items[0]).toMatchObject({ content: "b", update_mode: "append" });
   });
 
   it("reports not-written and does not throw when the service is unreachable", async () => {
@@ -163,5 +174,25 @@ describe("the stop stage", () => {
     const result = await runStop({ hostId: "claude-code", payload: {}, timeoutMs: 1000, client });
     expect(result.written).toBe(false);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("reads the host transcript when the Stop payload carries no turns", async () => {
+    const seen: unknown[] = [];
+    const result = await runStop({
+      hostId: "claude-code",
+      // A real Stop payload: a session id and a transcript path, no turns.
+      payload: { session_id: "s-9", transcript_path: "/tmp/does-not-exist.jsonl" },
+      timeoutMs: 1000,
+      client: captureClient((body) => seen.push(body)),
+      conversation: {
+        sessionId: "s-9",
+        turns: ["user: why are we rounding up?", "assistant: because the ledger does"],
+        fingerprint: "f",
+      },
+    });
+    expect(result.written).toBe(true);
+    expect(result.documentId).toBe("conversation:s-9");
+    const body = seen[0] as { items: { content: string }[] };
+    expect(body.items[0]!.content).toContain("assistant: because the ledger does");
   });
 });

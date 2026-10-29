@@ -15,11 +15,11 @@ import { withFakeHome } from "../helpers/fake-home";
  * the all-hosts keyword or explicit names before anything is written.
  */
 
-const APPROVED = ["claude-code", "codex", "codebuddy", "dsh"];
+const APPROVED = ["claude-code", "codex", "codebuddy", "cursor-cli", "copilot-cli", "dsh"];
 
 describe("the registry", () => {
   it("holds exactly the registered hosts", () => {
-    expect(HOSTS).toHaveLength(4);
+    expect(HOSTS).toHaveLength(APPROVED.length);
     expect(hostNames()).toEqual(APPROVED);
   });
 
@@ -100,7 +100,7 @@ describe("selection", () => {
   it("wires every detected host for the all-hosts keyword", async () => {
     await withFakeHome(
       {
-        files: { ".claude/settings.json": "{}\n", ".codex/settings.json": "{}\n" },
+        files: { ".claude/settings.json": "{}\n", ".codex/hooks.json": "{}\n" },
         environment: { PATH: "" },
       },
       async (home) => {

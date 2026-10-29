@@ -7,7 +7,9 @@ import type { HostContribution } from "../../src/hosts/types";
 import { runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { eventValue, eventCommandEntries } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * What the installer writes into a host config, read back through the shape the
@@ -25,8 +27,10 @@ function readsMatcherGroup(hostId: string): boolean {
 
 const CONFIG: Record<string, string> = {
   "claude-code": ".claude/settings.json",
-  codex: ".codex/settings.json",
+  codex: ".codex/hooks.json",
   codebuddy: ".codebuddy/settings.json",
+  "cursor-cli": ".cursor/hooks.json",
+  "copilot-cli": ".copilot/hooks/hooks.json",
   dsh: ".dsh/hooks/wenyuan.json",
 };
 
@@ -41,6 +45,16 @@ const HOST_IDS: string[] = HOSTS
   .map((host: HostContribution) => host.id)
   .filter((hostId: string) => HOST_LIFECYCLES[hostId] !== undefined);
 
+/** The packaged script a host's event runs, resolved from the declaration. */
+function scriptFor(hostId: string, event: string): string {
+  for (const stage of STAGES) {
+    if (registrationFor(hostId, stage).event === event) {
+      return registrationFor(hostId, stage).scriptFile;
+    }
+  }
+  throw new Error(`no stage declares the event ${event} for ${hostId}`);
+}
+
 /** The stage-to-event spelling each host declares, resolved from the declaration. */
 function stageEvents(hostId: string): Map<LifecycleStage, string> {
   const map = new Map<LifecycleStage, string>();
@@ -52,7 +66,7 @@ function stageEvents(hostId: string): Map<LifecycleStage, string> {
 
 describe("the registration shape install writes", () => {
   it.each(HOST_IDS)("writes one command entry per event in %s, wrapped as its loader reads it", async (hostId: string) => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", hostId])).status).toBe(0);
       const document: JsonDocument = await home.readJson(CONFIG[hostId]!);
 
@@ -72,7 +86,7 @@ describe("the registration shape install writes", () => {
   });
 
   it.each(HOST_IDS)("names the absolute packaged script path and execution type in %s", async (hostId: string) => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", hostId])).status).toBe(0);
       const document: JsonDocument = await home.readJson(CONFIG[hostId]!);
       const staged: string = runtimeDirectory();
@@ -86,25 +100,27 @@ describe("the registration shape install writes", () => {
           : value;
         expect(entry["type"]).toBe(HOOK_COMMAND_TYPE);
         const command: string = String(entry["command"]);
-        expect(command.startsWith(staged), `${hostId} ${event}: ${command}`).toBe(true);
+        // The host execs this through a shell, so the command is the launcher
+        // and a quoted absolute path — never a bare script name.
+        expect(command, `${hostId} ${event}: ${command}`).toBe(`node "${staged}/hooks/${scriptFor(hostId, event)}"`);
         expect(command).toContain(OWNERSHIP_MARKER);
       }
     });
   });
 
   it("points each event at its own packaged script file", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const document: JsonDocument = await home.readJson(CONFIG["claude-code"]!);
       for (const [stage, event] of stageEvents("claude-code")) {
         const entries = eventCommandEntries(document, event);
-        expect(entries[0]!.command.endsWith(HOOK_SCRIPT_FILES[stage])).toBe(true);
+        expect(entries[0]!.command).toContain(`hooks/${HOOK_SCRIPT_FILES[stage]}"`);
       }
     });
   });
 
   it("puts nothing but the three declared events under the wrapper key", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const hooks: JsonDocument = (await home.readJson(CONFIG["claude-code"]!))[HOOKS_CONTAINER_KEY] as JsonDocument;
       expect(Object.keys(hooks).sort()).toEqual([...stageEvents("claude-code").values()].sort());

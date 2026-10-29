@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { removeInstalledSkill, SKILL_DIRECTORY_NAME } from "../../src/hosts/skills";
 import { installedSkillDirectoryFor, skillsRootFor } from "../../src/hosts/skill-locations";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Uninstall removes exactly the fixed child directory under a host's skills
@@ -24,7 +26,7 @@ function relative(home: FakeHome, absolute: string): string {
 
 describe("uninstalling a host's skill", () => {
   it("removes exactly the fixed child directory and keeps a foreign sibling", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       const target: string = installedDir("codebuddy", home);
       await home.write(".codebuddy/skills/foreign/SKILL.md", "# foreign\n");
@@ -37,7 +39,7 @@ describe("uninstalling a host's skill", () => {
   });
 
   it("is a non-error no-op when the skill directory is already absent", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const outcome = await removeInstalledSkill("claude-code", home.home);
       expect(outcome.ok).toBe(true);
       expect(outcome.changed).toBe(false);
@@ -45,7 +47,7 @@ describe("uninstalling a host's skill", () => {
   });
 
   it("keeps a host's own copy under a shared root when a sibling is uninstalled", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       // Two hosts that read the same shared root each keep a directory of their
       // own inside it, so one host's removal cannot take the other's copy.
       expect((await runInstaller(["install", "codex", "codebuddy"])).status).toBe(0);
@@ -57,7 +59,7 @@ describe("uninstalling a host's skill", () => {
   });
 
   it("removes nothing for a host outside the map", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const outcome = await removeInstalledSkill("not-a-host", home.home);
       expect(outcome.ok).toBe(true);
       expect(outcome.changed).toBe(false);

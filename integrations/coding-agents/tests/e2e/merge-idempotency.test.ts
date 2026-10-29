@@ -4,7 +4,9 @@ import { MCP_SERVERS_KEY } from "../../src/mcp/mechanisms";
 import { BACKUP_SUFFIX } from "../../src/write/backup";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventValue, ownEntryCount } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Merging rather than replacing: foreign entries and unrelated keys survive,
@@ -60,7 +62,7 @@ describe("installing into a home whose host config already holds other content",
     await withFakeHome(
       {
         files: { [host.config]: seededConfig, [host.mcp]: SEEDED_MCP },
-        environment: { PATH: "" },
+        environment: { PATH: NO_HOST_CLI },
       },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", host.id]);
@@ -96,7 +98,7 @@ describe("installing the same host twice", () => {
     await withFakeHome(
       {
         files: { [host.config]: SEEDED_CONFIG, [host.mcp]: SEEDED_MCP },
-        environment: { PATH: "" },
+        environment: { PATH: NO_HOST_CLI },
       },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", host.id])).status).toBe(0);
@@ -121,7 +123,7 @@ describe("installing the same host twice", () => {
     await withFakeHome(
       {
         files: { ".claude/settings.json": SEEDED_CONFIG },
-        environment: { PATH: "" },
+        environment: { PATH: NO_HOST_CLI },
       },
       async (home: FakeHome) => {
         const backup: string = `.claude/settings.json${BACKUP_SUFFIX}`;
@@ -135,7 +137,7 @@ describe("installing the same host twice", () => {
   });
 
   it("writes no backup for a file that did not exist before", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       expect(await home.exists(`.claude/settings.json${BACKUP_SUFFIX}`)).toBe(false);
     });

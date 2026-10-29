@@ -4,7 +4,9 @@ import {
   MCP_SERVER_NAME,
 } from "../../src/mcp/mechanisms";
 import { PER_USER_DIRECTORY_NAME } from "../../src/runtime/layout";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * The ownership guard over the MCP server entry.
@@ -64,7 +66,7 @@ describe("a same-named MCP entry this package did not create", () => {
   it("is left byte-identical and the host is not wired", async () => {
     const planted: string = foreignEntry();
     await withFakeHome(
-      { files: { [JSON_PATH]: planted }, environment: { PATH: "" } },
+      { files: { [JSON_PATH]: planted }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         const result = await runInstaller(["install", JSON_HOST]);
         expect(result.status).not.toBe(0);
@@ -76,7 +78,7 @@ describe("a same-named MCP entry this package did not create", () => {
   });
 
   it("survives an uninstall that removes everything else of ours", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", JSON_HOST])).status).toBe(0);
       // Replace our entry with a foreign one of the same name, then uninstall.
       const planted: string = foreignEntry();
@@ -97,7 +99,7 @@ describe("every registration this package writes", () => {
     async (hostId: string, path: string) => {
       // Only the host's MCP entry file is asserted: the lifecycle-hook settings
       // file and its backup carry the marker but never name a host.
-      await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
         expect((await runInstaller(["install", hostId])).status).toBe(0);
         expect(await home.read(path)).toContain(hostId);
       });
@@ -105,7 +107,7 @@ describe("every registration this package writes", () => {
   );
 
   it("points the JSON host's registration at the staged server", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", JSON_HOST])).status).toBe(0);
       const written = await registrations(home);
       expect(written).toHaveLength(1);
@@ -119,7 +121,7 @@ describe("every registration this package writes", () => {
   });
 
   it("points the TOML host's registration at the staged server", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codex"])).status).toBe(0);
       const text = await home.read(".codex/config.toml");
       expect(text).toContain(PER_USER_DIRECTORY_NAME);

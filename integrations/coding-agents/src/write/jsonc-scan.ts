@@ -19,7 +19,13 @@ export interface Member {
   value: Range;
 }
 
-export const lineEndingOf = (text: string): string => (text.includes("\r\n") ? "\r\n" : "\n");
+const NEWLINE: string = String.fromCharCode(10);
+const QUOTE: string = String.fromCharCode(34);
+
+const CARRIAGE_RETURN: string = String.fromCharCode(13);
+const CRLF: string = CARRIAGE_RETURN + NEWLINE;
+
+export const lineEndingOf = (text: string): string => (text.includes(CRLF) ? CRLF : NEWLINE);
 
 export function isWhitespace(character: string | undefined): boolean {
   return character === " " || character === "\t" || character === "\n" || character === "\r";
@@ -52,13 +58,81 @@ export function skipInsignificant(text: string, index: number): number {
   return at;
 }
 
+
+
+/** The index of a `//` comment opener in `text[from, to)`, or -1 when none. */
+function lineCommentOpener(text: string, from: number, to: number): number {
+  let inString = false;
+  for (let at: number = from; at < to; at += 1) {
+    const character: string = text[at] ?? "";
+    if (inString) {
+      if (character === "\\") {
+        at += 1;
+      } else if (character === QUOTE) {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === QUOTE) {
+      inString = true;
+      continue;
+    }
+    if (character === "/" && text[at + 1] === "/") {
+      return at;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The previous structural character, walking back over whitespace AND comments.
+ *
+ * `previousSignificant` stops at a comment on purpose — it only ever looks for
+ * a comma sitting directly beside a value. A removal cannot use it: when a
+ * comment sits between two members, the comma it must consume is on the far
+ * side of the comment, so stopping at the comment makes the removal take the
+ * comma from the far side of the NEXT member and delete it.
+ */
+export function previousStructural(text: string, index: number): number {
+  let at: number = index - 1;
+  while (at >= 0) {
+    const character: string | undefined = text[at];
+    if (character === undefined) {
+      return -1;
+    }
+    if (isWhitespace(character)) {
+      at -= 1;
+      continue;
+    }
+    // A line comment runs from its opener to the end of its line. The opener is
+    // found by scanning the line forward with string state, so a `//` inside a
+    // value (a URL) is not mistaken for one.
+    const lineStart: number = text.lastIndexOf(NEWLINE, at);
+    const opener: number = lineCommentOpener(text, lineStart + 1, at + 1);
+    if (opener !== -1) {
+      return previousStructural(text, opener);
+    }
+    // A block comment: its terminator is unambiguous, so the matching opener is
+    // the last `/*` before it.
+    if (character === "/" && text[at - 1] === "*") {
+      const blockStart: number = text.lastIndexOf("/*", at - 2);
+      if (blockStart !== -1) {
+        return previousStructural(text, blockStart);
+      }
+    }
+    return at;
+  }
+  return -1;
+}
+
 export function nextSignificant(text: string, index: number): number {
   return skipInsignificant(text, index);
 }
 
 /**
  * The previous character that is not whitespace. A comment stops the walk:
- * this is only ever used to find a comma sitting directly beside a value.
+ * this is only ever used to find a comma sitting directly beside a value. A
+ * caller that must look past a comment uses {@link previousStructural} instead.
  */
 export function previousSignificant(text: string, index: number): number {
   let at: number = index - 1;
@@ -155,7 +229,11 @@ export function parseValueRange(text: string, index: number): Range | null {
 }
 
 export function rootObjectRange(text: string): Range | null {
-  const start: number = skipInsignificant(text, 0);
+  // A byte-order mark is not whitespace, but editors on Windows write one.
+  // Skipping it is what keeps a BOM​-prefixed config editable instead of
+  // silently unparseable — an install would otherwise report success while
+  // every edit was refused.
+  const start: number = skipInsignificant(text, text.charCodeAt(0) === 0xfeff ? 1 : 0);
   if (text[start] !== "{") {
     return null;
   }
@@ -341,7 +419,7 @@ export function deleteMember(text: string, path: readonly string[]): string | nu
   if (text[after] === ",") {
     end = after + 1;
   } else {
-    const before: number = previousSignificant(text, start);
+    const before: number = previousStructural(text, start);
     if (before >= 0 && text[before] === ",") {
       start = before;
     }

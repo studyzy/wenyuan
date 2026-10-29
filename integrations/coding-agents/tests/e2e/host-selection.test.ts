@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { HOSTS, hostNames } from "../../src/hosts/registry";
 import type { HostContribution } from "../../src/hosts/types";
 import { ALL_HOSTS_KEYWORD } from "../../src/hosts/select";
-import { runInstaller, withFakeHome, withRestrictedPath, writeStandInDsh, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome, withRestrictedPath } from "../helpers/fake-home";
+
+
 
 /**
  * Host selection: the all-hosts keyword wires every detected host, explicit
@@ -10,20 +12,32 @@ import { runInstaller, withFakeHome, withRestrictedPath, writeStandInDsh, type F
  * name and no selection at all — happen before anything is written.
  */
 
-const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "dsh"];
+const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "cursor-cli", "copilot-cli", "dsh"];
 
 const CONFIG_FILES: Record<string, string> = {
   "claude-code": ".claude/settings.json",
-  codex: ".codex/settings.json",
+  codex: ".codex/hooks.json",
   codebuddy: ".codebuddy/settings.json",
+  "cursor-cli": ".cursor/hooks.json",
+  "copilot-cli": ".copilot/hooks/hooks.json",
   // DSH writes no hook config; its install still wires the MCP server map and
   // the companion skill, which is what proves it was accepted.
   dsh: ".dsh/mcp.json",
 };
 
+/**
+ * Two hosts detected by their config directories, with no host CLI reachable.
+ *
+ * An empty PATH is what makes detection fall back to the directories, and it is
+ * safe here because both hosts are wired through files: the TOML host writes
+ * its own table and needs no CLI of its own.
+ */
 const TWO_DETECTED = {
-  files: { ".claude/settings.json": "{}\n", ".codex/settings.json": "{}\n" },
-  environment: { PATH: "" },
+  files: { ".claude/settings.json": "{}\n", ".codex/hooks.json": "{}\n" },
+  // The suite's stand-in PATH: exactly the host CLIs, nothing else, so
+  // detection is decided by the config directories above and the wiring by the
+  // stand-ins that answer.
+  environment: { PATH: NO_HOST_CLI },
 };
 
 function hostListLine(usage: string): string[] {
@@ -47,12 +61,12 @@ describe("an unrecognized host name", () => {
       }
       // Nothing at all was written: staging and wiring both come after
       // validation, and no host CLI was invoked.
-      expect(await home.list()).toEqual([".claude", ".claude/settings.json", ".codex", ".codex/settings.json"]);
+      expect(await home.list()).toEqual([".claude", ".claude/settings.json", ".codex", ".codex/hooks.json"]);
     });
   });
 
   it("writes nothing for the hosts that were named alongside it", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const result = await runInstaller(["install", "claude-code", "windsurf"]);
       expect(result.status).not.toBe(0);
       expect(result.combined()).toContain('"windsurf"');
@@ -67,7 +81,7 @@ describe("no host selection at all", () => {
       const result = await runInstaller(["install"]);
       expect(result.status).not.toBe(0);
       expect(result.combined()).toContain(ALL_HOSTS_KEYWORD);
-      expect(await home.list()).toEqual([".claude", ".claude/settings.json", ".codex", ".codex/settings.json"]);
+      expect(await home.list()).toEqual([".claude", ".claude/settings.json", ".codex", ".codex/hooks.json"]);
     });
   });
 
@@ -88,18 +102,21 @@ describe("the all-hosts keyword", () => {
       expect(result.combined()).toContain("claude-code");
       expect(result.combined()).toContain("codex");
       expect(await home.isFile(".claude/settings.json")).toBe(true);
-      expect(await home.isFile(".codex/settings.json")).toBe(true);
-      expect(await home.exists(".codebuddy/settings.json")).toBe(false);
+      expect(await home.isFile(".codex/hooks.json")).toBe(true);
+
     });
   });
 
   it("asks for an explicit name when nothing is detected", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const result = await runInstaller(["install", ALL_HOSTS_KEYWORD]);
-      expect(result.status).not.toBe(0);
-      expect(result.combined()).toContain("explicitly");
-      expect(await home.list()).toEqual([]);
-    });
+    await withFakeHome(
+      { environment: { PATH: "" } },
+      async (home: FakeHome) => {
+        const result = await runInstaller(["install", ALL_HOSTS_KEYWORD]);
+        expect(result.status).not.toBe(0);
+        expect(result.combined()).toContain("explicitly");
+        expect(await home.list()).toEqual([]);
+      },
+    );
   });
 });
 
@@ -110,7 +127,7 @@ describe("an explicit host name", () => {
       expect(result.status).toBe(0);
       expect(await home.isFile(".codebuddy/settings.json")).toBe(true);
       expect(await home.read(".claude/settings.json")).toBe("{}\n");
-      expect(await home.read(".codex/settings.json")).toBe("{}\n");
+      expect(await home.read(".codex/hooks.json")).toBe("{}\n");
     });
   });
 });
@@ -122,26 +139,26 @@ describe("the registry", () => {
   });
 
   it.each([...HOSTS.map((host: HostContribution) => host.id)])("accepts %s", async (hostId: string) => {
-    // DSH is wired through its own `dsh plugin` command, so it needs that
-    // executable on PATH; every other host installs without one.
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const bin: string = await writeStandInDsh(home);
-      const status: number = await withRestrictedPath([bin], async () =>
+    // Every host is driven through its own CLI or config file, so the fixture's
+    // stand-ins have to be the whole PATH.
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      const status: number = await withRestrictedPath([process.env.PATH ?? ""], async () =>
         (await runInstaller(["install", hostId])).status);
       expect(status).toBe(0);
+      // DSH writes no hook config: its MCP server map is what proves it.
       expect(await home.isFile(CONFIG_FILES[hostId] ?? "")).toBe(true);
     });
   });
 
   it.each(["cursor", "windsurf", "claude"])("rejects %s", async (hostId: string) => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", hostId])).status).not.toBe(0);
       expect(await home.list()).toEqual([]);
     });
   });
 
   it("lists exactly the same hosts in the usage text", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async () => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async () => {
       const result = await runInstaller([]);
       expect(result.status).toBe(0);
       expect(hostListLine(result.stdout)).toEqual(APPROVED);

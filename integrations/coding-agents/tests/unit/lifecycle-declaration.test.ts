@@ -20,11 +20,19 @@ import {
  * and the sharing that makes install and runtime agree by construction.
  */
 
-/** The event spellings the contract fixes, per stage. */
-const CONTRACT_EVENTS: Record<string, string> = {
-  "session-start": "SessionStart",
-  "pre-prompt": "UserPromptSubmit",
-  stop: "Stop",
+/**
+ * The event spellings each host's contract fixes, per stage.
+ *
+ * These are the hosts' own names, not a package choice: the matcher-group hosts
+ * spell them in PascalCase, and Cursor/Copilot — which read one object per
+ * event — use lower camel case and their own words for the same moments.
+ */
+const CONTRACT_EVENTS: Record<string, Record<string, string>> = {
+  "claude-code": { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
+  codex: { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
+  codebuddy: { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
+  "cursor-cli": { "session-start": "sessionStart", "pre-prompt": "beforeSubmitPrompt", stop: "stop" },
+  "copilot-cli": { "session-start": "sessionStart", "pre-prompt": "userPromptTransformed", stop: "agentStop" },
 };
 
 describe("the shared lifecycle declaration", () => {
@@ -35,7 +43,13 @@ describe("the shared lifecycle declaration", () => {
   it("declares a lifecycle for every host that gets hook config, and not for DSH", () => {
     // DSH's memory wiring is the Cordis plugin `@studyzy/dsh-wenyuan-memory`;
     // a command-hook lifecycle here would recall and retain twice.
-    expect(declaredHostIds().sort()).toEqual(["claude-code", "codebuddy", "codex"]);
+    expect(declaredHostIds().sort()).toEqual([
+      "claude-code",
+      "codebuddy",
+      "codex",
+      "copilot-cli",
+      "cursor-cli",
+    ]);
   });
 
   it("names the packaged script file for every stage, once", () => {
@@ -47,8 +61,12 @@ describe("the shared lifecycle declaration", () => {
   });
 
   it.each(declaredHostIds())("gives %s the contract event spellings", (hostId: string) => {
+    const spelling: Record<string, string> | undefined = CONTRACT_EVENTS[hostId];
+    // Every declared host must have its spellings pinned here, so adding a host
+    // without checking its contract against its own documentation fails.
+    expect(spelling, `no contract spellings are pinned for ${hostId}`).toBeDefined();
     for (const stage of LIFECYCLE_STAGES) {
-      expect(registrationFor(hostId, stage).event).toBe(CONTRACT_EVENTS[stage]);
+      expect(registrationFor(hostId, stage).event).toBe(spelling?.[stage]);
     }
   });
 

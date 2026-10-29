@@ -54,9 +54,13 @@ describe("the before-prompt envelope", () => {
 
 describe("the conversation identity and fingerprint", () => {
   it("is stable across firings of one session and distinct across sessions", () => {
+    // The reference implementation's own document id: one document per
+    // session, shared by every harness that wrote that session, so a session
+    // resumed under another host appends instead of forking a second document.
+    expect(conversationDocumentId("claude-code", "s-1")).toBe("conversation:s-1");
     expect(conversationDocumentId("claude-code", "s-1")).toBe(conversationDocumentId("claude-code", "s-1"));
     expect(conversationDocumentId("claude-code", "s-1")).not.toBe(conversationDocumentId("claude-code", "s-2"));
-    expect(conversationDocumentId("claude-code", "s-1")).not.toBe(conversationDocumentId("codex", "s-1"));
+    expect(conversationDocumentId("claude-code", "s-1")).toBe(conversationDocumentId("codex", "s-1"));
   });
 
   it("changes whenever the turns change", () => {

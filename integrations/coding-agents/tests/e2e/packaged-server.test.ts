@@ -4,14 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOOK_SCRIPT_FILES } from "../../src/hosts/lifecycle";
 import { MCP_SERVER_FILE_NAME, PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME } from "../../src/runtime/layout";
-import {
-  packageRoot,
-  runInstaller,
-  withFakeHome,
-  withRestrictedPath,
-  writeStandInDsh,
-  type FakeHome,
-} from "../helpers/fake-home";
+import { NO_HOST_CLI, packageRoot, runInstaller, type FakeHome, withFakeHome, withRestrictedPath, writeStandInDsh } from "../helpers/fake-home";
+
+
 
 /**
  * The guarantee between staging and the MCP entries that name the server.
@@ -56,7 +51,7 @@ async function withPackage<T>(includeServer: boolean, body: (root: string) => Pr
 describe("a runtime that did not stage the packaged server", () => {
   it("refuses the install and names the missing file", async () => {
     await withPackage(false, async (root: string) => {
-      await withFakeHome({ environment: { PATH: "" } }, async () => {
+      await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async () => {
         const result = await runInstaller(["install", "dsh"], { packageRoot: root });
         expect(result.status).not.toBe(0);
         expect(result.combined()).toContain(MCP_SERVER_FILE_NAME);
@@ -66,7 +61,7 @@ describe("a runtime that did not stage the packaged server", () => {
 
   it("leaves no host wired at all, rather than a host with an absent server", async () => {
     await withPackage(false, async (root: string) => {
-      await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
         await runInstaller(["install", "dsh"], { packageRoot: root });
         // Not even the hook config: the refusal happens before any host adapter
         // runs, and staging is the only write that survives it.
@@ -79,7 +74,7 @@ describe("a runtime that did not stage the packaged server", () => {
 
   it("wires the host once the runtime does stage it", async () => {
     await withPackage(true, async (root: string) => {
-      await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+      await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
         const bin: string = await writeStandInDsh(home);
         const result = await withRestrictedPath([bin], () => runInstaller(["install", "dsh"], { packageRoot: root }));
         expect(result.status).toBe(0);

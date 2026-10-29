@@ -30,6 +30,11 @@ export interface HookRemoveInput {
   format: ConfigFormat;
 }
 
+/** What a removal reports: the shared write result, with nothing to verify. */
+function removed(written: boolean, messages: string[] = [], ok = true): HookWriteResult {
+  return { ok, written, messages, configPath: "", expected: [], blockedEvents: [] };
+}
+
 /**
  * Removes this package's own registrations, then deletes the containers the
  * removal emptied and the file itself when nothing meaningful is left.
@@ -40,7 +45,7 @@ export async function removeLifecycleHooks(input: HookRemoveInput): Promise<Hook
   );
   const before: string | null = await readConfigSource(input.configPath);
   if (before === null) {
-    return { ok: true, written: false, messages: [] };
+    return removed(false);
   }
   await backupExistingFile(input.configPath);
   let text: string = before;
@@ -56,19 +61,17 @@ export async function removeLifecycleHooks(input: HookRemoveInput): Promise<Hook
         (memberSource) => memberSource.includes(OWNERSHIP_MARKER),
       );
       if (edit === null) {
-        return {
-          ok: false,
-          written: false,
-          messages: [
-            `${input.configPath} could not be parsed, so its lifecycle hooks were left alone.`,
-          ],
-        };
+        return removed(
+          false,
+          [`${input.configPath} could not be parsed, so its lifecycle hooks were left alone.`],
+          false,
+        );
       }
       text = edit.text;
     }
     if (jsoncDocumentIsEmpty(text)) {
       await rm(input.configPath, { force: true });
-      return { ok: true, written: true, messages: [] };
+      return removed(true);
     }
   } else {
     const document: JsonDocument = asJsonDocument(text);
@@ -78,15 +81,15 @@ export async function removeLifecycleHooks(input: HookRemoveInput): Promise<Hook
     pruneEmptyContainers(document);
     if (documentIsEmpty(document)) {
       await rm(input.configPath, { force: true });
-      return { ok: true, written: true, messages: [] };
+      return removed(true);
     }
     text = `${JSON.stringify(document, null, 2)}\n`;
   }
   if (text === before) {
-    return { ok: true, written: false, messages: [] };
+    return removed(false);
   }
   await writeConfigSource(input.configPath, text);
-  return { ok: true, written: true, messages: [] };
+  return removed(true);
 }
 
 async function readConfigSource(path: string): Promise<string | null> {

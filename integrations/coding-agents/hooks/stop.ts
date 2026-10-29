@@ -1,7 +1,8 @@
-import { failOpen, hooksDisabled, lifecyclePayload, readStdin } from "../src/runtime/hook-contract";
+import { failOpen, hooksDisabled, lifecyclePayload, payloadString, readStdin } from "../src/runtime/hook-contract";
 import { stageDeadlineMs } from "../src/runtime/deadline";
 import { runStop } from "../src/runtime/stop-stage";
 import { resolveHostId } from "../src/runtime/hook-host";
+import { sessionKey } from "../src/runtime/hook-state";
 
 /**
  * The packaged stop hook, launched when a session stops.
@@ -24,11 +25,15 @@ async function main(): Promise<number> {
   if (hostId === undefined) {
     return 0;
   }
+  // The session key carries the retain cursor between firings, so a session
+  // that stops twice appends only what is new instead of writing itself again.
+  const session: string = payloadString(payload, "session_id", "sessionId", "session") ?? "";
   await failOpen(async () => {
     await runStop({
       hostId,
       payload,
       timeoutMs: stageDeadlineMs(hostId, STAGE),
+      ...(session === "" ? {} : { sessionKey: sessionKey(hostId, session) }),
     });
   });
   return 0;

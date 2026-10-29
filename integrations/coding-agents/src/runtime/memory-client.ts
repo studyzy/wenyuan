@@ -16,8 +16,23 @@ import { type HookConnection, resolveHookConnection } from "./hook-connection";
 /** The versioned bank-scoped prefix every call is made under. */
 export const BANK_PATH_PREFIX = "/v1/default/banks";
 
+/**
+ * One document the stop stage writes back.
+ *
+ * The optional members are the service's own retain parameters, and each one
+ * changes what ends up stored: `document_id` is what makes a later write
+ * address the same document instead of minting a second one, `update_mode`
+ * decides whether that write appends to it or replaces it, and `context` is
+ * what extraction reads to tell a speaker's claim from an established fact.
+ */
 export interface MemoryItem {
   content: string;
+  document_id?: string;
+  update_mode?: "append" | "replace";
+  context?: string;
+  tags?: string[];
+  metadata?: Record<string, string>;
+  timestamp?: string;
 }
 
 export interface RecallOutcome {
@@ -71,9 +86,18 @@ export class MemoryClient {
     return { ok: true, texts };
   }
 
-  /** Captures one item into memory, failing quietly on any error. */
+  /**
+   * Captures one item into memory, failing quietly on any error.
+   *
+   * Only the members the caller set are sent: an explicit `document_id` of
+   * undefined would be a different request from an omitted one, and the service
+   * treats a stated document id as addressing a specific document.
+   */
   async capture(item: MemoryItem): Promise<CaptureOutcome> {
-    const response = await this.post("/memories", { items: [item] });
+    const response = await this.post("/memories", {
+      items: [item],
+      async: false,
+    });
     return response.ok ? { ok: true } : { ok: false, reason: response.reason };
   }
 

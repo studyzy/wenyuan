@@ -51,6 +51,10 @@ export const DSH_HOST_PATH = ".dsh/mcp.json";
 /** The TOML host's single fixed config location. */
 export const TOML_HOST_PATH = ".codex/config.toml";
 
+/** The two flat-entry hosts' single fixed JSON server-map locations. */
+export const CURSOR_MCP_PATH = ".cursor/mcp.json";
+export const COPILOT_MCP_PATH = ".copilot/mcp-config.json";
+
 /**
  * The per-host mechanism declaration. The command-line host declares no
  * container key because it writes no file of ours: its registration lives in
@@ -72,6 +76,18 @@ export const MECHANISMS: readonly McpMechanismDeclaration[] = [
     hostId: "codebuddy",
     mechanism: "json-server-map",
     location: { kind: "candidates", paths: JSON_HOST_CANDIDATES },
+    containerKey: MCP_SERVERS_KEY,
+  },
+  {
+    hostId: "cursor-cli",
+    mechanism: "json-server-map",
+    location: { kind: "fixed", path: CURSOR_MCP_PATH },
+    containerKey: MCP_SERVERS_KEY,
+  },
+  {
+    hostId: "copilot-cli",
+    mechanism: "json-server-map",
+    location: { kind: "fixed", path: COPILOT_MCP_PATH },
     containerKey: MCP_SERVERS_KEY,
   },
   {

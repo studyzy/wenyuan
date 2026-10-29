@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { SKILL_DIRECTORY_NAME } from "../../src/hosts/skills";
 import { skillsRootFor } from "../../src/hosts/skill-locations";
 import { refreshInstalledSkill } from "../../src/runtime/skill-refresh";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * The per-session companion-skill refresh. A host the skill is installed for is
@@ -24,7 +26,7 @@ function skillFile(hostId: string, home: FakeHome): string {
 
 describe("refreshing an installed skill on drift", () => {
   it("restores the packaged content over a drifted installed copy", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const installed: string = skillFile("claude-code", home);
       const packaged: string = await home.read(installed);
@@ -37,7 +39,7 @@ describe("refreshing an installed skill on drift", () => {
   });
 
   it("is a no-op when the installed copy already matches the packaged one", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       const outcome = await refreshInstalledSkill("codebuddy", home.home);
       expect(outcome.refreshed).toBe(false);
@@ -45,7 +47,7 @@ describe("refreshing an installed skill on drift", () => {
   });
 
   it("never introduces a skill for a host that has none installed", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       // Nothing was ever installed, so the skills root does not exist either.
       const outcome = await refreshInstalledSkill("codex", home.home);
       expect(outcome.refreshed).toBe(false);
@@ -54,7 +56,7 @@ describe("refreshing an installed skill on drift", () => {
   });
 
   it("never reintroduces a skill that was uninstalled", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       expect((await runInstaller(["uninstall", "codebuddy"])).status).toBe(0);
 
@@ -65,14 +67,14 @@ describe("refreshing an installed skill on drift", () => {
   });
 
   it("does nothing for a host outside the declared map", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const outcome = await refreshInstalledSkill("not-a-host", home.home);
       expect(outcome.refreshed).toBe(false);
     });
   });
 
   it("leaves a host's own copy untouched when a sibling drifts", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code", "codebuddy"])).status).toBe(0);
       const claude: string = skillFile("claude-code", home);
       const buddy: string = skillFile("codebuddy", home);

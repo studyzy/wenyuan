@@ -23,12 +23,18 @@ export interface SessionState {
   attempts: number;
   /** The stable document identity the stop stage writes back under. */
   documentId: string;
+  /**
+   * The conversation turns the stop stage has already handed over. This is the
+   * retain cursor: the next firing sends only what is past it, so a session is
+   * written back once rather than accumulating one copy per turn.
+   */
+  retainedTurns: string[];
 }
 
 const STATE_SUBDIRECTORY = "hook-state";
 
 export function emptySessionState(documentId: string): SessionState {
-  return { injected: false, attempts: 0, documentId };
+  return { injected: false, attempts: 0, documentId, retainedTurns: [] };
 }
 
 /**
@@ -58,6 +64,9 @@ export async function readSessionState(key: string, documentId: string): Promise
       injected: record["injected"] === true,
       attempts: typeof record["attempts"] === "number" ? record["attempts"] : 0,
       documentId: typeof record["documentId"] === "string" ? record["documentId"] : documentId,
+      retainedTurns: Array.isArray(record["retainedTurns"])
+        ? record["retainedTurns"].filter((turn): turn is string => typeof turn === "string")
+        : [],
     };
   } catch {
     return emptySessionState(documentId);

@@ -39,7 +39,7 @@ describe("the bank-scoped call path", () => {
     await client(fetchImpl as unknown as typeof fetch).capture({ content: "hello" });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`http://127.0.0.1:18888${BANK_PATH_PREFIX}/b-1/memories`);
-    expect(JSON.parse(String(init.body))).toEqual({ items: [{ content: "hello" }] });
+    expect(JSON.parse(String(init.body))).toEqual({ items: [{ content: "hello" }], async: false });
   });
 
   it("sends the token as a bearer credential when one is configured", async () => {

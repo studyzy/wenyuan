@@ -5,14 +5,9 @@ import { DSH_PLUGIN_PACKAGE } from "../../src/hosts/dsh-plugin";
 import { MCP_HARNESS_ENV, MCP_SERVER_NAME, MCP_SERVERS_KEY } from "../../src/mcp/mechanisms";
 import { MCP_SERVER_FILE_NAME, PER_USER_DIRECTORY_NAME, RUNTIME_DIRECTORY_NAME } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
-import {
-  runInstaller,
-  withFakeHome,
-  withRestrictedPath,
-  writeStandInDsh,
-  type FakeHome,
-  type JsonDocument,
-} from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome, withRestrictedPath, writeStandInDsh } from "../helpers/fake-home";
+
+
 
 /**
  * DSH, driven through the real installer.
@@ -58,7 +53,7 @@ describe("installing DSH", () => {
   });
 
   it("adds the published plugin to the web profile when no profile exists yet", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], () => install());
       expect(await recordedCalls(home)).toEqual([pluginInvocation(DSH_DEFAULT_PROFILE)]);
     });
@@ -75,7 +70,7 @@ describe("installing DSH", () => {
           [`${DSH_PROFILES_DIRECTORY}/desktop/package.json`]: "{}\n",
           [`${DSH_PROFILES_DIRECTORY}/scratch/notes.txt`]: "not a profile\n",
         },
-        environment: { PATH: "" },
+        environment: { PATH: NO_HOST_CLI },
       },
       async (home: FakeHome) => {
                 await withRestrictedPath([await writeStandInDsh(home)], () => install());
@@ -88,7 +83,7 @@ describe("installing DSH", () => {
   });
 
   it("exits non-zero and names the DSH command when the plugin cannot be added", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const bin: string = await writeStandInDsh(home, 1);
       const result = await withRestrictedPath([bin], () => runInstaller(["install", HOST]));
       expect(result.status).not.toBe(0);
@@ -97,7 +92,7 @@ describe("installing DSH", () => {
   });
 
   it("writes its own MCP server map naming DSH as the caller", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], () => install());
       const document: JsonDocument = await home.readJson(MCP);
       const servers = document[MCP_SERVERS_KEY] as JsonDocument;
@@ -114,7 +109,7 @@ describe("installing DSH", () => {
   });
 
   it("writes no hook config, so nothing recalls or retains a second time", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], () => install());
       expect(await home.exists(".dsh/hooks/wenyuan.json")).toBe(false);
       expect(await home.exists(".dsh/config.json")).toBe(false);
@@ -123,7 +118,7 @@ describe("installing DSH", () => {
   });
 
   it("copies the companion skill into the DSH skills root", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], () => install());
       expect(await home.isFile(SKILL)).toBe(true);
     });
@@ -131,7 +126,7 @@ describe("installing DSH", () => {
 
   it("keeps a foreign server-map member alone", async () => {
     await withFakeHome(
-      { files: { [MCP]: `${JSON.stringify({ mcpServers: { other: { command: "x" } } }, null, 2)}\n` }, environment: { PATH: "" } },
+      { files: { [MCP]: `${JSON.stringify({ mcpServers: { other: { command: "x" } } }, null, 2)}\n` }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
                 await withRestrictedPath([await writeStandInDsh(home)], () => install());
         const document: JsonDocument = await home.readJson(MCP);
@@ -141,7 +136,7 @@ describe("installing DSH", () => {
   });
 
   it("is idempotent: a second install leaves one server entry", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], async () => {
         await install();
         const first: string = await home.read(MCP);
@@ -154,7 +149,7 @@ describe("installing DSH", () => {
   });
 
   it("uninstalls what it wrote and leaves the profile's plugin installed", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
             await withRestrictedPath([await writeStandInDsh(home)], async () => {
         await install();
         expect((await runInstaller(["uninstall", HOST])).status).toBe(0);

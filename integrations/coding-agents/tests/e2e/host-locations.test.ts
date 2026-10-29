@@ -3,7 +3,9 @@ import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventCommands, HOOKS_CONTAINER_KEY, ownEntryCount } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Where each host's declared locations actually are.
@@ -23,7 +25,7 @@ interface ExpectedLocations {
 
 const LOCATIONS: ExpectedLocations[] = [
   { id: "claude-code", config: ".claude/settings.json", skills: ".claude/skills" },
-  { id: "codex", config: ".codex/settings.json", skills: ".agents/skills" },
+  { id: "codex", config: ".codex/hooks.json", skills: ".agents/skills" },
   { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
   // DSH is absent on purpose: its memory wiring is the Cordis plugin
   // `@studyzy/dsh-wenyuan-memory`, so this package writes no hook config for
@@ -45,7 +47,7 @@ function ownCommands(commands: readonly string[]): string[] {
 describe("installing into a home where the host has no config at all", () => {
   it.each([...LOCATIONS.map((entry: ExpectedLocations) => entry.id)])("wires %s", async (hostId: string) => {
     const expected: ExpectedLocations = locationsFor(hostId);
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const result = await runInstaller(["install", hostId]);
       expect(result.status).toBe(0);
 
@@ -64,7 +66,7 @@ describe("installing into a home where the host has no config at all", () => {
   });
 
   it("registers the JSON host's entry under the server-map key", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       const mcp: JsonDocument = await home.readJson(".codebuddy/.mcp.json");
       const servers: unknown = mcp[MCP_SERVERS_KEY];
@@ -74,21 +76,21 @@ describe("installing into a home where the host has no config at all", () => {
   });
 
   it("registers the TOML host's entry under the server-container key", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codex"])).status).toBe(0);
       expect(await home.read(".codex/config.toml")).toContain(`[mcp_servers.${MCP_SERVER_NAME}]`);
     });
   });
 
   it("writes no MCP config file for the command-line host", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       expect(await home.exists(".claude.json")).toBe(false);
     });
   });
 
   it("registers exactly the three approved lifecycle events and no others", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const hooks: unknown = (await home.readJson(".claude/settings.json"))[HOOKS_CONTAINER_KEY];
       expect(Object.keys(hooks as JsonDocument).sort()).toEqual(declaredEvents("claude-code").sort());
@@ -96,7 +98,7 @@ describe("installing into a home where the host has no config at all", () => {
   });
 
   it("creates the parent directories a host config lives in", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect(await home.exists(".claude")).toBe(false);
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       expect(await home.exists(".claude")).toBe(true);

@@ -6,7 +6,9 @@ import {
 } from "../../src/mcp/mechanisms";
 import { PER_USER_DIRECTORY_NAME } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Per-host MCP registration driven through the real installer.
@@ -39,17 +41,21 @@ async function writtenFiles(home: FakeHome): Promise<string[]> {
 }
 
 describe("the command-line host writes no config file of ours", () => {
-  it("reports the manual line and still completes when the interface is absent", async () => {
+  it("reports the manual line and fails the run when the interface is absent", async () => {
+    // With no host CLI there is no way to register the server, so the run says
+    // so and exits non-zero: a host with no MCP entry has no memory tools, and
+    // "wired" would be a claim the operator cannot act on.
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       const result = await runInstaller(["install", CLI_HOST]);
-      expect(result.status).toBe(0);
+      expect(result.status).not.toBe(0);
       expect(result.combined()).toContain("mcp-server.mjs");
+      expect(result.combined()).toContain("by hand");
       expect(await home.exists(".claude.json")).toBe(false);
     });
   });
 
   it("writes no MCP config anywhere in the home", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", CLI_HOST])).status).toBe(0);
       const written = await writtenFiles(home);
       // Only the lifecycle-hook config carries the marker; no server-map entry
@@ -64,7 +70,7 @@ describe("the command-line host writes no config file of ours", () => {
 
 describe("the TOML host writes a table under its server-container key", () => {
   it("writes one table with the launcher, argv and harness environment", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", TOML_HOST])).status).toBe(0);
       const text = await home.read(TOML_PATH);
       expect(text).toContain(`[mcp_servers.${MCP_SERVER_NAME}]`);
@@ -75,7 +81,7 @@ describe("the TOML host writes a table under its server-container key", () => {
   });
 
   it("keeps an unrelated TOML section on a re-install", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       await home.write(TOML_PATH, 'model = "opus"\n');
       expect((await runInstaller(["install", TOML_HOST])).status).toBe(0);
       expect((await runInstaller(["install", TOML_HOST])).status).toBe(0);
@@ -88,7 +94,7 @@ describe("the TOML host writes a table under its server-container key", () => {
 
 describe("the JSON host writes a server-map member", () => {
   it("writes into the highest-priority candidate when none exists", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", JSON_HOST])).status).toBe(0);
       const document: JsonDocument = await home.readJson(JSON_PATH);
       const servers = document[MCP_SERVERS_KEY] as JsonDocument;
@@ -103,7 +109,7 @@ describe("the JSON host writes a server-map member", () => {
   });
 
   it("uninstall sweeps every candidate", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", JSON_HOST])).status).toBe(0);
       // A dormant duplicate in a lower-priority candidate than the one install
       // writes, carrying the same staged server path so it is recognized as
@@ -130,7 +136,7 @@ describe("every registration this package writes", () => {
     [TOML_HOST, TOML_PATH],
     [JSON_HOST, JSON_PATH],
   ])("names %s as the calling host in the MCP entry it writes", async (hostId: string, path: string) => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", hostId])).status).toBe(0);
       // Only the host's MCP entry file is asserted: the lifecycle-hook settings
       // file and its backup carry the marker but never name a host.

@@ -4,7 +4,9 @@ import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { PER_USER_DIRECTORY_NAME } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * Uninstall removes exactly what install wrote: its own hook entries, its own
@@ -38,7 +40,7 @@ function hooksOf(document: JsonDocument): JsonDocument {
 describe("uninstalling a home seeded with foreign content", () => {
   it("removes its own entries and nothing else", async () => {
     await withFakeHome(
-      { files: { [CONFIG]: SEEDED_CONFIG }, environment: { PATH: "" } },
+      { files: { [CONFIG]: SEEDED_CONFIG }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         expect(await home.isFile(SKILL)).toBe(true);
@@ -64,7 +66,7 @@ describe("uninstalling a home seeded with foreign content", () => {
 
   it("leaves no marker in anything it wrote", async () => {
     await withFakeHome(
-      { files: { [CONFIG]: SEEDED_CONFIG }, environment: { PATH: "" } },
+      { files: { [CONFIG]: SEEDED_CONFIG }, environment: { PATH: NO_HOST_CLI } },
       async (home: FakeHome) => {
         expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
         expect((await runInstaller(["uninstall", "claude-code"])).status).toBe(0);
@@ -84,7 +86,7 @@ describe("uninstalling a home seeded with foreign content", () => {
 
 describe("uninstalling a home that held nothing else", () => {
   it("deletes the files its removal emptied", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       expect(await home.isFile(".codebuddy/.mcp.json")).toBe(true);
 
@@ -95,7 +97,7 @@ describe("uninstalling a home that held nothing else", () => {
   });
 
   it("leaves the staged runtime alone", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       const staged: string[] = (await home.listFiles(PER_USER_DIRECTORY_NAME)).sort();
       expect(staged.length).toBeGreaterThan(0);
@@ -106,7 +108,7 @@ describe("uninstalling a home that held nothing else", () => {
   });
 
   it("sweeps every candidate location a host accepts", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       // CodeBuddy accepts several MCP locations; a dormant duplicate in a
       // lower-priority one is removed all the same, while what else that file
       // holds survives. The planted entry carries the same staged server path

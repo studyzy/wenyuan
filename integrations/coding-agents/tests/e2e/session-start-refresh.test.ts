@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { SKILL_DIRECTORY_NAME } from "../../src/hosts/skills";
 import { skillsRootFor } from "../../src/hosts/skill-locations";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome } from "../helpers/fake-home";
 import { runHook, seedStoredConnection } from "../helpers/hook-run";
+
+
 
 /**
  * The packaged session-start hook refreshes the host's installed companion skill
@@ -23,7 +25,7 @@ function skillFile(hostId: string, home: FakeHome): string {
 
 describe("the session-start hook refreshes the installed skill", () => {
   it("restores a drifted skill when the session starts with the service down", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       const installed: string = skillFile("claude-code", home);
       const packaged: string = await home.read(installed);
@@ -44,7 +46,7 @@ describe("the session-start hook refreshes the installed skill", () => {
   });
 
   it("does not place a skill for a host that has none installed", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       await seedStoredConnection(home, "http://127.0.0.1:1");
       const run = await runHook({
         home,
@@ -57,7 +59,7 @@ describe("the session-start hook refreshes the installed skill", () => {
   });
 
   it("emits the same envelope whether or not a refresh was needed", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "claude-code"])).status).toBe(0);
       await seedStoredConnection(home, "http://127.0.0.1:1");
 

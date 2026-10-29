@@ -24,10 +24,10 @@ function registration(style: RegistrationStyle): LifecycleRegistration {
 }
 
 describe("encoding one registration", () => {
-  it("writes the matcher-group shape the first-batch hosts read", () => {
+  it("writes the matcher-group shape the hook hosts read", () => {
     const value = encodeRegistration(registration("matcher-group"), PATH, 10);
     expect(value).toEqual({
-      [MATCHER_GROUP_KEY]: [{ type: HOOK_COMMAND_TYPE, command: PATH, timeout: 10 }],
+      [MATCHER_GROUP_KEY]: [{ type: HOOK_COMMAND_TYPE, command: `node "${PATH}"`, timeout: 10 }],
     });
   });
 
@@ -38,7 +38,7 @@ describe("encoding one registration", () => {
 
   it("carries the execution type, the script path and the numeric budget on the entry", () => {
     const entries: HookCommandEntry[] = commandEntriesOf(encodeRegistration(registration("matcher-group"), PATH, 42));
-    expect(entries).toEqual([{ type: HOOK_COMMAND_TYPE, command: PATH, timeout: 42 }]);
+    expect(entries).toEqual([{ type: HOOK_COMMAND_TYPE, command: `node "${PATH}"`, timeout: 42 }]);
   });
 
   it("encodes the declared alternative styles distinctly", () => {
@@ -54,7 +54,7 @@ describe("encoding one registration", () => {
   it("writes one flat command entry for a host that reads no matcher group", () => {
     expect(encodeRegistration(registration("flat-entry"), PATH, 10)).toEqual({
       type: HOOK_COMMAND_TYPE,
-      command: PATH,
+      command: `node "${PATH}"`,
       timeout: 10,
     });
   });
@@ -104,6 +104,9 @@ describe("the shared key spellings", () => {
   it("keeps the container, command-type and matcher-group keys as the contract spells them", () => {
     expect(HOOKS_CONTAINER_KEY).toBe("hooks");
     expect(HOOK_COMMAND_TYPE).toBe("command");
-    expect(MATCHER_GROUP_KEY).toBe("matchers");
+    // The matcher group's key is the host's own name for it. It is NOT a
+    // free choice: every host that speaks this protocol reads `hooks`, and a
+    // package-internal spelling here means no host runs the entry at all.
+    expect(MATCHER_GROUP_KEY).toBe("hooks");
   });
 });

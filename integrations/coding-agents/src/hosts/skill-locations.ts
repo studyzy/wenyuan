@@ -32,6 +32,8 @@ const SKILLS_ROOTS: Readonly<Record<string, string>> = {
   "claude-code": ".claude/skills",
   codex: ".agents/skills",
   codebuddy: ".codebuddy/skills",
+  "cursor-cli": ".cursor/skills",
+  "copilot-cli": ".copilot/skills",
   dsh: ".dsh/skills",
 };
 

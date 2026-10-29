@@ -20,7 +20,7 @@ import {
   hostLifecycle,
   orderedRegistrations,
 } from "./lifecycle";
-import type { LifecycleRegistration } from "./lifecycle-types";
+import type { LifecycleRegistration, RegistrationStyle } from "./lifecycle-types";
 
 /**
  * The three lifecycle hooks install merges into a host config.
@@ -45,6 +45,19 @@ export interface HookWriteResult {
   ok: boolean;
   written: boolean;
   messages: string[];
+  /** The config path the run touched. */
+  configPath: string;
+  /** The script path each declared event was written to point at. */
+  expected: HostHookExpectation[];
+  /** Every event whose entry a conflict or a foreign shape kept us out of. */
+  blockedEvents: string[];
+}
+
+/** One event this package claims to have registered, and where it points. */
+export interface HostHookExpectation {
+  event: string;
+  scriptPath: string;
+  style: RegistrationStyle;
 }
 
 /** The host whose lifecycle is installed, resolved from the declaration. */
@@ -97,6 +110,12 @@ function eventPath(event: string): string[] {
  */
 export async function installLifecycleHooks(input: HookWriteInput): Promise<HookWriteResult> {
   const registrations = orderedRegistrations(hostLifecycle(input.hostId));
+  const expected: HostHookExpectation[] = registrations.map(({ registration }) => ({
+    event: registration.event,
+    scriptPath: hookPathFor(registration.scriptFile, input.runtimeDirectory),
+    style: registration.style,
+  }));
+  const blockedEvents: string[] = [];
   const before: string | null = await readConfigSource(input.configPath);
   if (before === null) {
     const document: JsonDocument = {};
@@ -108,7 +127,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
       );
     }
     await writeConfigSource(input.configPath, `${JSON.stringify(document, null, 2)}\n`);
-    return { ok: true, written: true, messages: [] };
+    return result(true, [], input.configPath, expected, blockedEvents);
   }
   await backupExistingFile(input.configPath);
   let text: string = before;
@@ -117,7 +136,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
       // The host's event maps to a nested value, so the member on the event key
       // is written directly. A member already holding one of ours is replaced
       // in place; a foreign member on the same event is left exactly as it is,
-      // matching the document-merge behavior for a config that permits comments.
+      // and reported as blocked rather than silently dropping the registration.
       const edit: JsoncEdit | null = upsertJsoncMember(
         text,
         [HOOKS_CONTAINER_KEY],
@@ -132,26 +151,40 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
           messages: [
             `${input.configPath} could not be parsed, so the lifecycle hooks were not added. Add them by hand.`,
           ],
+          configPath: input.configPath,
+          expected,
+          blockedEvents,
         };
+      }
+      if (edit.conflict === true) {
+        blockedEvents.push(registration.event);
       }
       text = edit.text;
     }
   } else {
     const document: JsonDocument = asJsonDocument(text);
     for (const { registration } of registrations) {
-      mergeValueIntoContainer(
-        document,
-        eventPath(registration.event),
-        eventValue(registration, input),
-      );
+      if (!mergeValueIntoContainer(document, eventPath(registration.event), eventValue(registration, input))) {
+        blockedEvents.push(registration.event);
+      }
     }
     text = `${JSON.stringify(document, null, 2)}\n`;
   }
   if (text === before) {
-    return { ok: true, written: false, messages: [] };
+    return result(false, blockedEvents, input.configPath, expected, blockedEvents);
   }
   await writeConfigSource(input.configPath, text);
-  return { ok: true, written: true, messages: [] };
+  return result(true, blockedEvents, input.configPath, expected, blockedEvents);
+}
+
+function result(
+  written: boolean,
+  messages: string[],
+  configPath: string,
+  expected: HostHookExpectation[],
+  blockedEvents: string[],
+): HookWriteResult {
+  return { ok: true, written, messages, configPath, expected, blockedEvents };
 }
 
 async function readConfigSource(path: string): Promise<string | null> {

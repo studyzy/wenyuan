@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, ownEntryCount } from "../helpers/hooks";
-import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "../helpers/fake-home";
+import { NO_HOST_CLI, runInstaller, type FakeHome, type JsonDocument, withFakeHome } from "../helpers/fake-home";
+
+
 
 /**
  * The install command's opt-in flags, and what happens when one host in a
@@ -18,7 +20,7 @@ const WORKSPACE_KEY = "enableAllProjectMcpServers";
 
 describe("the conversation-backfill opt-in flag", () => {
   it("attempts the backfill only when the flag is passed, and wires identically", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       const without = await runInstaller(["install", "claude-code"]);
       expect(without.status).toBe(0);
       expect(without.combined()).not.toContain("backfill");
@@ -36,7 +38,7 @@ describe("the conversation-backfill opt-in flag", () => {
   });
 
   it("never blocks on input in a non-interactive run", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async () => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async () => {
       const result = await runInstaller(["install", "claude-code", "--import-conversations"]);
       expect(result.status).toBe(0);
       expect(result.combined()).not.toContain("[y/N]");
@@ -45,36 +47,27 @@ describe("the conversation-backfill opt-in flag", () => {
 });
 
 describe("the workspace-MCP opt-in flag", () => {
-  it("refuses to flip the global setting without the flag", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const result = await runInstaller(["install", "claude-code"]);
-      expect(result.status).toBe(0);
-      expect(result.combined()).toContain(WORKSPACE_KEY);
+  it("never touches the machine-wide project-MCP switch", async () => {
+    // `enableAllProjectMcpServers` turns on EVERY project's MCP servers on this
+    // machine. It has nothing to do with a user-scope server entry, and this
+    // package must not flip it — with or without a flag.
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      const plain = await runInstaller(["install", "claude-code"]);
+      expect(plain.status).toBe(0);
+      expect(plain.combined()).not.toContain(WORKSPACE_KEY);
       expect(await home.read(CONFIG)).not.toContain(WORKSPACE_KEY);
       expect(await home.isFile(SKILL)).toBe(true);
-    });
-  });
 
-  it("flips the global setting with the flag", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const result = await runInstaller(["install", "claude-code", "--enable-workspace-mcp"]);
-      expect(result.status).toBe(0);
-      expect(await home.read(CONFIG)).toContain(`"${WORKSPACE_KEY}": true`);
-    });
-  });
-
-  it("accepts the flag in the equals-joined spelling too", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      const result = await runInstaller(["install", "claude-code", "--enable-workspace-mcp=true"]);
-      expect(result.status).toBe(0);
-      expect(await home.read(CONFIG)).toContain(`"${WORKSPACE_KEY}": true`);
+      const flagged = await runInstaller(["install", "claude-code", "--enable-workspace-mcp"]);
+      expect(flagged.status).toBe(0);
+      expect(await home.read(CONFIG)).not.toContain(WORKSPACE_KEY);
     });
   });
 });
 
 describe("a host whose preflight check fails", () => {
   it("is skipped while the healthy host in the same invocation is wired", async () => {
-    await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       // A directory wearing the host config's name can never be written.
       await mkdir(home.path(".claude/settings.json"), { recursive: true });
 
@@ -83,8 +76,8 @@ describe("a host whose preflight check fails", () => {
       expect(result.combined()).toContain("not installed:");
       expect(result.combined()).toContain("claude-code");
 
-      expect(await home.isFile(".codex/settings.json")).toBe(true);
-      const codex: JsonDocument = await home.readJson(".codex/settings.json");
+      expect(await home.isFile(".codex/hooks.json")).toBe(true);
+      const codex: JsonDocument = await home.readJson(".codex/hooks.json");
       for (const event of declaredEvents("codex")) {
         expect(ownEntryCount(codex, event)).toBe(1);
       }
