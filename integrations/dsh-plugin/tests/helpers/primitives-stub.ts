@@ -85,20 +85,27 @@ export class SettingsFormModel<T> {
     if (this.staged.size === 0 || this.saving) return
     this.saving = true
     this.emit()
-    const ops: unknown[] = []
-    for (const [field, edit] of this.staged) {
-      if (edit.clear) { ops.push({ op: 'unset', path: [field] }) ; continue }
-      const secret = this.secrets.find((candidate) => candidate.field === field)
-      if (secret !== undefined) { if (!await secret.write(edit.text)) this.failed = true; continue }
-      const spec = this.specs.find((candidate) => candidate.field === field)
-      const write = spec?.parse(edit.text) as { kind: 'set'; value: unknown } | { kind: 'clear' } | undefined
-      if (write === undefined) { this.failed = true; continue }
-      ops.push(write.kind === 'clear' ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value: write.value })
-    }
-    if (ops.length > 0) {
-      const accepted = await this.scope.mutate(ops as never, this.scope.getSnapshot().revision)
-      if (accepted) this.staged.clear()
-      else this.failed = true
+    // Mirrors the real `SettingsFormModel.save`: a secret write that throws is
+    // caught and marks the save failed, so a refused credential never escapes
+    // as an unhandled rejection.
+    try {
+      const ops: unknown[] = []
+      for (const [field, edit] of this.staged) {
+        if (edit.clear) { ops.push({ op: 'unset', path: [field] }) ; continue }
+        const secret = this.secrets.find((candidate) => candidate.field === field)
+        if (secret !== undefined) { if (!await secret.write(edit.text)) this.failed = true; continue }
+        const spec = this.specs.find((candidate) => candidate.field === field)
+        const write = spec?.parse(edit.text) as { kind: 'set'; value: unknown } | { kind: 'clear' } | undefined
+        if (write === undefined) { this.failed = true; continue }
+        ops.push(write.kind === 'clear' ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value: write.value })
+      }
+      if (ops.length > 0) {
+        const accepted = await this.scope.mutate(ops as never, this.scope.getSnapshot().revision)
+        if (accepted) this.staged.clear()
+        else this.failed = true
+      }
+    } catch {
+      this.failed = true
     }
     this.saving = false
     this.emit()

@@ -59,6 +59,8 @@ export interface WenYuanMemoryCardState extends SettingsFormShell {
   apiKeyConfigured: boolean
   /** Whether the credentials domain accepts a write; false disables the control. */
   apiKeyWritable: boolean
+  /** Why the last save was refused, as the seam reported it; undefined when none failed. */
+  failure: string | undefined
 }
 
 /** The registration-side face the card's slot entries inject. */
@@ -103,6 +105,10 @@ export class WenYuanMemoryCardController {
   private readonly store: SnapshotStore<WenYuanMemoryCardState>
   private readonly unsubscribe: Array<() => void>
   private credential: CredentialState = { configured: false, writable: true }
+  /** The last save's refusal reason, cleared by the next save. */
+  private failure: string | undefined
+  /** Whether the last save reached the credential writer at all. */
+  private reachedWriter = false
 
   /**
    * @param scope - the shared configuration form for this card's namespace.
@@ -169,6 +175,7 @@ export class WenYuanMemoryCardController {
       apiKey: { text: this.form.field(API_KEY_FIELD).text, overridden: false, invalid: false },
       apiKeyConfigured: this.credential.configured,
       apiKeyWritable: this.credential.writable,
+      failure: this.failure,
     }
   }
 
@@ -179,8 +186,19 @@ export class WenYuanMemoryCardController {
    * addressing a secret by reference.
    */
   private async readCredential(): Promise<void> {
-    const response = await this.ctx.remote.credentials.describe([API_KEY_REF])
-    if (!response.ok) return
+    let response: Awaited<ReturnType<ClientContext['remote']['credentials']['describe']>>
+    try {
+      response = await this.ctx.remote.credentials.describe([API_KEY_REF])
+    } catch (error) {
+      this.failure = `credentials.describe threw: ${error instanceof Error ? error.message : String(error)}`
+      return
+    }
+    // A failed describe is not "unset": recording it keeps a read-side refusal
+    // from being reported later as a write refusal.
+    if (!response.ok) {
+      this.failure = `credentials.describe refused (${response.error.code}): ${response.error.message}`
+      return
+    }
     const view = response.value[API_KEY_REF]
     const next: CredentialState = {
       configured: view?.configured ?? false,
@@ -199,8 +217,27 @@ export class WenYuanMemoryCardController {
    * @returns whether the Host reports a configured credential afterwards.
    */
   private async writeKey(value: string): Promise<boolean> {
-    await this.ctx.remote.credentials.set(API_KEY_REF, value)
+    this.reachedWriter = true
+    let written: Awaited<ReturnType<ClientContext['remote']['credentials']['set']>>
+    try {
+      written = await this.ctx.remote.credentials.set(API_KEY_REF, value)
+    } catch (error) {
+      // The transport threw instead of answering, which the form would contain
+      // as a bare `failed`. Recording it is the only way the card can say so.
+      this.failure = `credentials.set threw: ${error instanceof Error ? error.message : String(error)}`
+      return false
+    }
+    if (!written.ok) {
+      this.failure = `credentials.set refused (${written.error.code}): ${written.error.message}`
+      return false
+    }
     await this.readCredential()
+    // The write was accepted, so a still-unset reference is a read-back or
+    // durability fact, not the value being refused. Saying which keeps the
+    // card from blaming a refusal the Host never made.
+    if (!this.credential.configured) {
+      this.failure = `credentials.set accepted the value, but credentials.describe still reports ${API_KEY_REF} as unset`
+    }
     return this.credential.configured
   }
 
@@ -213,7 +250,24 @@ export class WenYuanMemoryCardController {
   private async save(): Promise<void> {
     const state = this.projection()
     if (!state.available || state.invalid || state.saving) return
-    await this.form.save()
+    // The form contains whatever a write throws and reports one bare boolean,
+    // so the reason is recorded here: without it the card can only show a
+    // generic sentence, and a refused write is undiagnosable from the page.
+    this.failure = undefined
+    this.reachedWriter = false
+    try {
+      await this.form.save()
+    } catch (error) {
+      this.failure = error instanceof Error ? error.message : String(error)
+    }
+    if (this.failure === undefined && this.form.shell().failed) {
+      // Which seam refused is what the card can still report: the credential
+      // writer records its own reason, so a save that failed without one never
+      // reached it.
+      this.failure = this.reachedWriter
+        ? 'the credential was written but the form did not accept the save'
+        : `the settings section write was refused before the credential writer ran (namespace "${WENYUAN_MEMORY_NS}")`
+    }
     this.publish()
   }
 

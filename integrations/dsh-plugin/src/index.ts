@@ -35,6 +35,8 @@ import { WenYuanClient } from './client.ts'
 import { contextBlock, RECALL_BLOCK_TAG } from './context-blocks.ts'
 import type { WenYuanMemorySource } from './source.ts'
 import {
+  DEFAULT_API_URL,
+  DEFAULT_BANK_ID,
   DEFAULT_INJECT_CONTEXT,
   DEFAULT_RETAIN_ON_STOP,
   normalizeApiUrl,
@@ -74,20 +76,21 @@ const SESSION_START_QUERY = 'What should I know about this project and the user 
 /**
  * Loader schema: the four user-editable settings the Plugins-page card edits.
  *
- * They are `required()` rather than defaulted, because the bundle patch always
- * supplies all four in its mount entry and the host's settings provider edits
- * the composition layer through `mergeLayers(whole, edits)` — a layer carrying
- * only the field being written. A schema `default()` is folded in only when that
- * key is absent, so an edit that omitted the other three would leave them unset
- * and the whole write would be refused ("the server rejected the value"). The
- * runtime falls back to the same defaults in `resolveSettings`, so a deployment
- * that strips a field still behaves as documented.
+ * Each field carries a `default()`, never `required()`. The host's settings
+ * provider writes one field at a time — `mergeLayers(whole, edits)` layers the
+ * edited field over what it read back — so a write can reach the loader schema
+ * without the other three. A `required()` field makes that write fail at
+ * `fiber.resolveConfig` with `$.<field> missing required value`, which the
+ * Plugins page can only report as "the server rejected the value". A default is
+ * folded in exactly when the key is absent, which is what keeps a partial write
+ * valid; the values match `DEFAULT_*` in `settings.ts`, so a deployment that
+ * strips a field still behaves as documented.
  */
 export const Config = z.object({
-  apiUrl: z.string().required().volatile(),
-  bankId: z.string().required().volatile(),
-  injectContext: z.boolean().required().volatile(),
-  retainOnStop: z.boolean().required().volatile(),
+  apiUrl: z.string().default(DEFAULT_API_URL).volatile(),
+  bankId: z.string().default(DEFAULT_BANK_ID).volatile(),
+  injectContext: z.boolean().default(true).volatile(),
+  retainOnStop: z.boolean().default(true).volatile(),
 }) as unknown as z<WenYuanMemorySettings>
 
 /** What the Host reads at runtime: the plain values, never the volatile wrappers. */

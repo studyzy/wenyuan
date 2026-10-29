@@ -5,13 +5,14 @@ import { DEFAULT_API_URL, DEFAULT_BANK_ID } from '../src/settings.ts'
 /**
  * The loader schema the Host's settings provider reads.
  *
- * The provider validates the WHOLE composed namespace with this schema on every
- * save, and each volatile edit reaches it as a layer holding only the field
- * being written — the sibling fields are merged in from the layer below. A
- * schema `default()` is folded in only when a key is absent from the value, so
- * a defaulted field left the merged document unset and the whole write was
- * refused ("the server rejected the value"). These cases pin the shape that
- * made that impossible: required fields, no defaults, still volatile.
+ * The provider writes one field at a time: `mergeLayers(whole, edits)` layers
+ * the edited field over what it read back, and `configEditor.edit` then runs
+ * the composed result through the loader schema at `fiber.resolveConfig`. A
+ * field declared `required()` fails that step — `$.bankId missing required
+ * value` — for any write that reaches the schema without its siblings, and the
+ * Plugins page can only report the refusal as "the server rejected the value".
+ * A `default()` is folded in exactly when the key is absent, so these cases pin
+ * the shape that keeps a partial write valid: defaulted, and still volatile.
  */
 
 /** One field's schemastery meta, as the provider's schema object exposes it. */
@@ -43,17 +44,21 @@ describe('the loader schema', () => {
     }
   })
 
-  it('makes every field required instead of defaulted', () => {
+  it('defaults every field instead of requiring it', () => {
     for (const [field, meta] of Object.entries(fieldMeta())) {
-      expect(meta.required, field).toBe(true)
-      // A default is what made a partial layer validate as a whole section.
-      expect(meta.default, field).toBeUndefined()
+      expect(meta.required, field).toBeUndefined()
+      expect(meta.default, field).toBeDefined()
     }
   })
 
+  it('accepts a write that carries only the field being edited', () => {
+    // One layer per save is what the settings provider produces; a required
+    // field is what turned that into a refused save.
+    expect(() => Config({ bankId: 'renamed' } as never)).not.toThrow()
+    expect(() => Config({} as never)).not.toThrow()
+  })
+
   it('still gives a deployment that strips a field its documented default', () => {
-    // The runtime, not the schema, supplies the fallback — so a missing field
-    // is a documented behaviour rather than a refused save.
     expect(resolveSettings({})).toEqual({
       apiUrl: DEFAULT_API_URL,
       bankId: DEFAULT_BANK_ID,

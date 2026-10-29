@@ -55,7 +55,7 @@ function makeScope(init: {
 }
 
 /** A remote stand-in answering the credentials namespace. */
-function makeRemote(options: { configured?: boolean; writable?: boolean } = {}) {
+function makeRemote(options: { configured?: boolean; writable?: boolean; rejectKey?: string } = {}) {
   const calls: { describe: string[][]; set: [string, string][] } = { describe: [], set: [] }
   const remote = {
     credentials: {
@@ -69,8 +69,13 @@ function makeRemote(options: { configured?: boolean; writable?: boolean } = {}) 
           }])),
         }
       },
+      // A refusal is a `{ ok: false }` result, never a throw: the Host reports
+      // its reason in-band, so this is the shape the card has to read.
       set: async (ref: string, value: string) => {
         calls.set.push([ref, value])
+        if (options.rejectKey !== undefined) {
+          return { ok: false as const, error: { code: 'credential/rejected', message: options.rejectKey } }
+        }
         options.configured = true
         return { ok: true as const, value: undefined }
       },
@@ -159,6 +164,24 @@ describe('saving the card', () => {
     face.save()
     await vi.waitFor(() => { expect(remote.calls.set).toEqual([[API_KEY_REF, 'sk-new']]) })
     await vi.waitFor(() => { expect(face.hooks.wenYuanMemoryCard.getSnapshot().apiKeyConfigured).toBe(true) })
+    card.dispose()
+  })
+
+  it('surfaces a refused key write instead of reporting it as unlanded silently', async () => {
+    const scope = makeScope()
+    // A refusal is a `{ ok: false }` result, not a throw, and the form contains
+    // every throw while flipping one boolean. The reason therefore has to be
+    // recorded where the card renders it, which is what this asserts.
+    const remote = makeRemote({ configured: false, rejectKey: 'read-only credentials document' })
+    const card = makeCard(scope, remote)
+    const face = card.inject()
+    face.edit('apiKey', 'sk-new')
+    face.save()
+    await vi.waitFor(() => { expect(remote.calls.set).toEqual([[API_KEY_REF, 'sk-new']]) })
+    await vi.waitFor(() => {
+      expect(face.hooks.wenYuanMemoryCard.getSnapshot().failure).toContain('read-only credentials document')
+    })
+    expect(face.hooks.wenYuanMemoryCard.getSnapshot().apiKeyConfigured).toBe(false)
     card.dispose()
   })
 

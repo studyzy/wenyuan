@@ -39,6 +39,16 @@ describe('the bank-scoped route prefix', () => {
     expect(normalizeBankId('  ')).toBe('default')
     expect(normalizeBankId(' mine ')).toBe('mine')
   })
+
+  it('drops an API prefix the user pasted, so the route is not doubled', () => {
+    // `bankUrl` supplies `/v1` itself; a base that already carries it answers
+    // 404 on every call, which reads as a bad key rather than a bad URL.
+    expect(normalizeApiUrl('http://127.0.0.1:18888/v1')).toBe('http://127.0.0.1:18888')
+    expect(normalizeApiUrl('http://127.0.0.1:18888/v1/')).toBe('http://127.0.0.1:18888')
+    expect(normalizeApiUrl('https://mem.example.com/V1')).toBe('https://mem.example.com')
+    expect(bankUrl({ ...CONNECTION, apiUrl: normalizeApiUrl('http://127.0.0.1:18888/v1') }, '/memories/recall'))
+      .toBe('http://127.0.0.1:18888/v1/default/banks/default/memories/recall')
+  })
 })
 
 describe('recall', () => {

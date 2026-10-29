@@ -67,7 +67,13 @@ export const inject = ['slots']
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  ctx.inject(['configForms', 'locale', 'remote'], (settingsCtx) => {
+  // `remote.credentials` is its own injectable service even though it hangs off
+  // `remote`: Cordis resolves a context property only when the fiber's `inject`
+  // names it, so without the sub-namespace the card's write throws
+  // `cannot get property "remote.credentials" without inject` and the save can
+  // only report a generic failure. The official settings pages declare it the
+  // same way (`ui-settings-models`, `ui-settings-web-search`).
+  ctx.inject(['configForms', 'locale', 'remote', 'remote.credentials'], (settingsCtx) => {
     settingsCtx.effect(
       () => settingsCtx.locale.register(NS, { zh, en }),
       'ui-wenyuan-memory: settings card dictionary',

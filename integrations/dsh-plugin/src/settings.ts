@@ -63,16 +63,19 @@ export function bankUrl(connection: WenYuanConnection, suffix: string): string {
 }
 
 /**
- * Normalize one URL: trim, and drop trailing slashes so a route suffix can be
- * appended without producing a double slash. A blank value falls back to the
- * documented default rather than an empty base.
+ * Normalize one URL: trim, drop trailing slashes, and drop a trailing `/v1`.
+ * {@link bankUrl} appends the `/v1/default/banks/...` route itself, so a base
+ * that already carries the API prefix would produce `/v1/v1/...` and every
+ * call would answer 404 even though the key is valid. Pasting the address out
+ * of a client snippet is the common way in, so the prefix is removed instead
+ * of trusted. A blank value falls back to the documented default.
  * @param value - the configured value, possibly blank.
  * @returns the usable base URL.
  */
 export function normalizeApiUrl(value: string | undefined): string {
   const trimmed = (value ?? '').trim()
   if (trimmed === '') return DEFAULT_API_URL
-  return trimmed.replace(/\/+$/, '')
+  return trimmed.replace(/\/+$/, '').replace(/\/v1$/i, '').replace(/\/+$/, '')
 }
 
 /**

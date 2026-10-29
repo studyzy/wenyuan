@@ -124,6 +124,9 @@ function Configuration(props: SettingsCardProps) {
         />
       </label>
       <p>{t('retainOnStopHint')}</p>
+      {state.failure === undefined ? null : (
+        <p role="alert" data-wenyuan-failure>{state.failure}</p>
+      )}
     </SettingsForm>
   )
 }
