@@ -2,13 +2,22 @@ package httpx
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // DetailAuthenticationFailed is the body of a rejected credential, exactly as
 // the reference's AuthenticationError renders it.
 const DetailAuthenticationFailed = "Authentication failed: Invalid API key"
+
+// DetailAuthenticationUnavailable is the body of a registry failure. It is a
+// 503, not a 401: the credential may be valid, but the resolver could not
+// answer, and serving the request without a tenant would be worse.
+const DetailAuthenticationUnavailable = "Authentication temporarily unavailable"
 
 // The legacy MCP token's refusals, word for word as the reference sends them
 // when WENYUAN_API_MCP_AUTH_TOKEN is configured.
@@ -92,6 +101,62 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// TenantExtensionAuthMiddleware resolves every protected request through the
+// tenant extension and places the resolved schema on the request context.
+//
+// It replaces TenantAuthMiddleware in multi-tenant mode: the extension owns the
+// credential check, so the static API key no longer applies. A rejected
+// credential is the reference's uniform 401; a resolver failure is a 503 and
+// never a fallback to a default schema.
+func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled bool, routeAllowed func(*http.Request) bool) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			isMCP := pathInNamespace(r.URL.Path, NamespaceMCP)
+			if !requiresAuthentication(r.URL.Path, mcpAuthDisabled) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// A path that reaches no route is answered by the router, not the
+			// engine, so the credential is never examined for it.
+			if !isMCP && routeAllowed != nil && !routeAllowed(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			resolved, err := extension.Authenticate(r.Context(), tenant.Request{Credential: bearerToken(r)})
+			if err != nil {
+				var authErr *tenant.AuthenticationError
+				if errors.As(err, &authErr) {
+					WriteJSON(w, http.StatusUnauthorized, ErrorEnvelope{Detail: DetailAuthenticationFailed})
+					return
+				}
+				WriteJSON(w, http.StatusServiceUnavailable, ErrorEnvelope{Detail: DetailAuthenticationUnavailable})
+				return
+			}
+			ctx, schemaErr := storage.WithSchema(r.Context(), resolved.Schema)
+			if schemaErr != nil {
+				WriteJSON(w, http.StatusServiceUnavailable, ErrorEnvelope{Detail: DetailAuthenticationUnavailable})
+				return
+			}
+			r = r.WithContext(ctx)
+			if len(resolved.Overrides) > 0 {
+				r = WithTenantOverrides(r, resolved.Overrides)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// bearerToken reads the request's bearer credential, or the bare header when no
+// scheme was given, matching the reference's accepted forms.
+func bearerToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	const scheme = "Bearer "
+	if len(header) >= len(scheme) && strings.EqualFold(header[:len(scheme)], scheme) {
+		return strings.TrimSpace(header[len(scheme):])
+	}
+	return header
 }
 
 // pathInNamespace reports whether a request path is inside a namespace.

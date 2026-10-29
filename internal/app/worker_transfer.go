@@ -13,6 +13,16 @@ import (
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
+// tenantSchema is the schema the operation belongs to. A multi-tenant worker
+// carries it on the claim context; the static field is the single-tenant
+// fallback.
+func (p archiveProcessor) tenantSchema(ctx context.Context) string {
+	if schema, ok := storage.SchemaFrom(ctx); ok {
+		return schema
+	}
+	return p.storeSchema
+}
+
 // applyExport builds an archive for a queued export operation, stashes it in
 // stored-file storage and publishes the download handle on the operation's
 // result_metadata. The bytes are produced here rather than by the export route
@@ -34,7 +44,7 @@ func (p archiveProcessor) applyExport(ctx context.Context, op storage.Operation)
 	// result_metadata, so the difference is observable.
 	key := storage.ExportStorageKey(op.BankID, op.OperationID)
 	if op.OperationType == storage.OperationTypeDocumentExport {
-		key = transfer.DocumentExportStorageKey(p.storeSchema, op.BankID, op.OperationID)
+		key = transfer.DocumentExportStorageKey(p.tenantSchema(ctx), op.BankID, op.OperationID)
 	}
 	if err := p.store.PutStoredFile(ctx, storage.StoredFile{
 		Key:         key,

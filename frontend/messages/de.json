@@ -2658,5 +2658,98 @@
       "cancel": "Abbrechen",
       "save": "Speichern"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "Banken",
+      "tenants": "Mandanten",
+      "overview": "Übersicht",
+      "activeTenant": "Mandant: {tenant}",
+      "exit": "Mandant verlassen"
+    },
+    "list": {
+      "title": "Mandanten",
+      "description": "Mandanten dieser Bereitstellung, ihr Schema, Status und Anmeldedaten.",
+      "new": "Neuer Mandant",
+      "searchPlaceholder": "Id oder Anzeigename suchen",
+      "allStatuses": "Alle Status",
+      "empty": "Noch keine Mandanten.",
+      "tenant": "Mandant",
+      "status": "Status",
+      "displayName": "Anzeigename",
+      "created": "Erstellt",
+      "failed": "Mandanten konnten nicht geladen werden",
+      "statuses": {
+        "active": "Aktiv",
+        "suspended": "Gesperrt",
+        "provisioning": "Wird bereitgestellt",
+        "deleted": "Gelöscht"
+      }
+    },
+    "create": {
+      "title": "Neuer Mandant",
+      "description": "Die Mandanten-Id wird zum PostgreSQL-Schemanamen und kann nicht geändert werden.",
+      "id": "Mandanten-Id",
+      "idHint": "Kleinbuchstaben, Ziffern und Unterstriche; 2-63 Zeichen.",
+      "idPlaceholder": "acme",
+      "displayName": "Anzeigename",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "Konfiguration (JSON)",
+      "adopt": "Ein vorhandenes vollständiges Schema übernehmen, statt ein neues zu erstellen",
+      "creating": "Wird erstellt...",
+      "submit": "Mandant erstellen",
+      "invalidId": "Die Mandanten-Id muss dem erforderlichen Slug-Muster entsprechen.",
+      "invalidConfig": "Die Konfiguration muss ein JSON-Objekt sein.",
+      "failed": "Mandant konnte nicht erstellt werden"
+    },
+    "detail": {
+      "notFound": "Mandant nicht gefunden",
+      "suspend": "Sperren",
+      "activate": "Aktivieren",
+      "deleteConfirm": "Mandant {tenant} soft-löschen? Das Schema bleibt erhalten.",
+      "schema": "Schema:",
+      "config": "Konfiguration",
+      "keys": "Schlüssel",
+      "keyLabel": "Schlüsselbezeichnung",
+      "createKey": "Schlüssel erstellen",
+      "shownOnce": "Diesen Schlüssel jetzt kopieren; er wird nur einmal angezeigt.",
+      "noKeys": "Noch keine Schlüssel.",
+      "prefix": "Präfix",
+      "label": "Bezeichnung",
+      "created": "Erstellt",
+      "state": "Status",
+      "revoked": "widerrufen",
+      "ephemeral": "temporär",
+      "active": "aktiv",
+      "revoke": "Widerrufen",
+      "statusFailed": "Status konnte nicht geändert werden",
+      "deleteFailed": "Mandant konnte nicht gelöscht werden",
+      "keyFailed": "Schlüssel konnte nicht erstellt werden",
+      "revokeFailed": "Schlüssel konnte nicht widerrufen werden",
+      "loadFailed": "Mandant konnte nicht geladen werden",
+      "enter": "Mandant betreten",
+      "enterFailed": "Mandant konnte nicht betreten werden",
+      "migrate": "Migrieren",
+      "migrated": "Schema migriert.",
+      "migrateFailed": "Schema konnte nicht migriert werden",
+      "purge": "Löschen",
+      "purgeConfirm": "Geben Sie {tenant} ein, um das Schema endgültig zu löschen.",
+      "purgeFailed": "Mandant konnte nicht gelöscht werden"
+    },
+    "overview": {
+      "title": "Übersicht",
+      "description": "Mandantenzahlen dieser Bereitstellung.",
+      "failed": "Übersicht konnte nicht geladen werden",
+      "total": "gesamt",
+      "active": "aktiv",
+      "suspended": "gesperrt",
+      "provisioning": "wird bereitgestellt",
+      "deleted": "gelöscht"
+    },
+    "notConfigured": {
+      "title": "Verwaltungsebene nicht konfiguriert",
+      "body": "Setzen Sie WENYUAN_CP_ADMIN_API_URL und WENYUAN_CP_ADMIN_API_KEY auf dem Konsolenserver, um Mandanten zu verwalten.",
+      "back": "Zurück zu den Banken"
+    }
   }
 }

@@ -40,6 +40,10 @@ var renameBankTables = []string{
 // child's foreign key satisfied without relying on deferred constraints, which
 // most of the bank_id foreign keys are not.
 func (s *PostgresStore) RenameBank(ctx context.Context, source, target string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if !ValidBankID(target) {
 		return ErrInvalidBankID
 	}
@@ -51,7 +55,7 @@ func (s *PostgresStore) RenameBank(ctx context.Context, source, target string) e
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 
 	exists, err := bankExistsTx(ctx, tx, qualified, source)
 	if err != nil {
@@ -71,7 +75,7 @@ func (s *PostgresStore) RenameBank(ctx context.Context, source, target string) e
 	// Copy the banks row under the target identifier. The column list is read
 	// from the catalogue so a schema change does not silently drop a column
 	// from the copy.
-	columns, err := bankColumnsTx(ctx, tx, s.schema)
+	columns, err := bankColumnsTx(ctx, tx, schema)
 	if err != nil {
 		return err
 	}

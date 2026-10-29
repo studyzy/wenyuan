@@ -2658,5 +2658,98 @@
       "cancel": "Cancelar",
       "save": "Salvar"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "Bancos",
+      "tenants": "Inquilinos",
+      "overview": "Visão geral",
+      "activeTenant": "Inquilino: {tenant}",
+      "exit": "Sair do inquilino"
+    },
+    "list": {
+      "title": "Inquilinos",
+      "description": "Inquilinos desta implantação, seu esquema, status e credenciais.",
+      "new": "Novo inquilino",
+      "searchPlaceholder": "Pesquisar id ou nome de exibição",
+      "allStatuses": "Todos os status",
+      "empty": "Ainda não há inquilinos.",
+      "tenant": "Inquilino",
+      "status": "Status",
+      "displayName": "Nome de exibição",
+      "created": "Criado",
+      "failed": "Não foi possível carregar os inquilinos",
+      "statuses": {
+        "active": "Ativo",
+        "suspended": "Suspenso",
+        "provisioning": "Provisionando",
+        "deleted": "Excluído"
+      }
+    },
+    "create": {
+      "title": "Novo inquilino",
+      "description": "O id do inquilino se torna o nome do esquema PostgreSQL e não pode ser alterado.",
+      "id": "Id do inquilino",
+      "idHint": "Letras minúsculas, dígitos e sublinhados; 2-63 caracteres.",
+      "idPlaceholder": "acme",
+      "displayName": "Nome de exibição",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "Configuração (JSON)",
+      "adopt": "Adotar um esquema completo existente em vez de criar um novo",
+      "creating": "Criando...",
+      "submit": "Criar inquilino",
+      "invalidId": "O id do inquilino deve corresponder ao padrão slug exigido.",
+      "invalidConfig": "A configuração deve ser um objeto JSON.",
+      "failed": "Não foi possível criar o inquilino"
+    },
+    "detail": {
+      "notFound": "Inquilino não encontrado",
+      "suspend": "Suspender",
+      "activate": "Ativar",
+      "deleteConfirm": "Excluir suavemente o inquilino {tenant}? O esquema é mantido.",
+      "schema": "Esquema:",
+      "config": "Configuração",
+      "keys": "Chaves",
+      "keyLabel": "Rótulo da chave",
+      "createKey": "Criar chave",
+      "shownOnce": "Copie esta chave agora; ela é exibida uma única vez.",
+      "noKeys": "Ainda não há chaves.",
+      "prefix": "Prefixo",
+      "label": "Rótulo",
+      "created": "Criada",
+      "state": "Estado",
+      "revoked": "revogada",
+      "ephemeral": "efêmera",
+      "active": "ativa",
+      "revoke": "Revogar",
+      "statusFailed": "Não foi possível alterar o status",
+      "deleteFailed": "Não foi possível excluir o inquilino",
+      "keyFailed": "Não foi possível criar a chave",
+      "revokeFailed": "Não foi possível revogar a chave",
+      "loadFailed": "Não foi possível carregar o inquilino",
+      "enter": "Entrar no inquilino",
+      "enterFailed": "Não foi possível entrar no inquilino",
+      "migrate": "Migrar",
+      "migrated": "Esquema migrado.",
+      "migrateFailed": "Não foi possível migrar o esquema",
+      "purge": "Expurgar",
+      "purgeConfirm": "Digite {tenant} para remover permanentemente o esquema.",
+      "purgeFailed": "Não foi possível expurgar o inquilino"
+    },
+    "overview": {
+      "title": "Visão geral",
+      "description": "Contagem de inquilinos desta implantação.",
+      "failed": "Não foi possível carregar a visão geral",
+      "total": "total",
+      "active": "ativos",
+      "suspended": "suspensos",
+      "provisioning": "provisionando",
+      "deleted": "excluídos"
+    },
+    "notConfigured": {
+      "title": "Plano de gestão não configurado",
+      "body": "Defina WENYUAN_CP_ADMIN_API_URL e WENYUAN_CP_ADMIN_API_KEY no servidor do console para gerenciar inquilinos.",
+      "back": "Voltar aos bancos"
+    }
   }
 }

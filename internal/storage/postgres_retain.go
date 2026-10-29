@@ -273,10 +273,15 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 // documentEntityIDs returns the distinct entities the document's stored units
 // mention, the candidate set a replace re-checks for orphanhood.
 func (s *PostgresStore) documentEntityIDs(ctx context.Context, bankID, docID string) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT ue.entity_id::text
-		 FROM `+quoteIdent(s.schema)+`.unit_entities ue
-		 JOIN `+quoteIdent(s.schema)+`.memory_units mu ON mu.id = ue.unit_id
+		 FROM `+quoteIdent(schema)+`.unit_entities ue
+		 JOIN `+quoteIdent(schema)+`.memory_units mu ON mu.id = ue.unit_id
 		 WHERE mu.bank_id = $1 AND mu.document_id = $2`, bankID, docID)
 	if err != nil {
 		return nil, err
@@ -296,10 +301,14 @@ func (s *PostgresStore) documentEntityIDs(ctx context.Context, bankID, docID str
 // pruneEntitiesIfOrphaned deletes the named entities that no surviving unit
 // mentions. The co-occurrence rows that named them cascade away with them.
 func (s *PostgresStore) pruneEntitiesIfOrphaned(ctx context.Context, bankID string, entityIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(entityIDs) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.entities e
 		 WHERE e.bank_id = $1 AND e.id = ANY($2::uuid[])
@@ -311,8 +320,13 @@ func (s *PostgresStore) pruneEntitiesIfOrphaned(ctx context.Context, bankID stri
 // unitIDsForDocument returns a document's stored unit ids in a deterministic
 // order, for a delta-skipped retain.
 func (s *PostgresStore) unitIDsForDocument(ctx context.Context, bankID, docID string) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id::text FROM `+quoteIdent(s.schema)+`.memory_units
+		`SELECT id::text FROM `+quoteIdent(schema)+`.memory_units
 		 WHERE bank_id = $1 AND document_id = $2 ORDER BY id ASC`, bankID, docID)
 	if err != nil {
 		return nil, err
@@ -332,7 +346,11 @@ func (s *PostgresStore) unitIDsForDocument(ctx context.Context, bankID, docID st
 // clearDocumentUnits removes a document's units, chunks and links while keeping
 // the document row, so a replace-mode re-retain rebuilds its evidence.
 func (s *PostgresStore) clearDocumentUnits(ctx context.Context, bankID, docID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	// The document's units are about to go with their postings, so give back
 	// the mention counts the postings contributed before they are deleted.
 	if err := releaseEntityPostings(ctx, s.db, qualified,
@@ -392,6 +410,10 @@ func (s *PostgresStore) putItemParts(ctx context.Context, bankID, docID string, 
 // advancing *next past what it wrote. The returned keys are the block's
 // positions.
 func (s *PostgresStore) putPartChunks(ctx context.Context, bankID, docID, content string, storeText bool, sizes SegmentOptions, next *int, existing map[string]bool, bySegment map[int]string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	chunks := segmentsPerContent(content, sizes)
 	// The block is keyed by the index its first stored chunk is written at, plus
 	// how many chunks of it were written before this one, so a position stays
@@ -416,7 +438,7 @@ func (s *PostgresStore) putPartChunks(ctx context.Context, bankID, docID, conten
 		for attempt := 0; ; attempt++ {
 			chunkID = BuildChunkID(bankID, docID, *next)
 			_, err := s.db.ExecContext(ctx,
-				`INSERT INTO `+quoteIdent(s.schema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
+				`INSERT INTO `+quoteIdent(schema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
 				 VALUES ($1,$2,$3,$4,$5,$6)`,
 				chunkID, bankID, docID, *next, text, ContentHash(chunk))
 			if err == nil {
@@ -442,6 +464,11 @@ func (s *PostgresStore) putPartChunks(ctx context.Context, bankID, docID, conten
 // another bank's row (possible for rows written before the chunk-id escaping)
 // must refuse the write rather than overwrite that bank's text.
 func (s *PostgresStore) PutDocumentChunks(ctx context.Context, bankID, documentID string, chunks []DocumentChunk, storeText bool) (map[int]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[int]string
+		return zero0, schemaErr
+	}
 	if len(chunks) == 0 {
 		return map[int]string{}, nil
 	}
@@ -469,7 +496,7 @@ func (s *PostgresStore) PutDocumentChunks(ctx context.Context, bankID, documentI
 		byIndex[chunk.ChunkIndex] = id
 	}
 
-	table := quoteIdent(s.schema) + `.chunks`
+	table := quoteIdent(schema) + `.chunks`
 	rows, err := s.db.QueryContext(ctx,
 		`INSERT INTO `+table+` (chunk_id, bank_id, document_id, chunk_index, chunk_text, content_hash)
 		 SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::integer[], $5::text[], $6::text[])
@@ -517,8 +544,14 @@ const chunkIndexAttempts = 50
 // and how many it holds, so an append can skip a tail it already stored and
 // number its new chunks past the ones present.
 func (s *PostgresStore) documentChunkHashes(ctx context.Context, bankID, docID string) (map[string]bool, int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]bool
+		var zero1 int
+		return zero0, zero1, schemaErr
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(content_hash,'') FROM `+quoteIdent(s.schema)+`.chunks
+		`SELECT COALESCE(content_hash,'') FROM `+quoteIdent(schema)+`.chunks
 		 WHERE bank_id = $1 AND document_id = $2`, bankID, docID)
 	if err != nil {
 		return nil, 0, err
@@ -554,11 +587,16 @@ func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitID
 // has no document id of its own) counted in the same statement, so the count
 // never depends on the document being inside a listing window.
 func (s *PostgresStore) GetDocument(ctx context.Context, bankID, docID string) (Document, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Document
+		return zero0, schemaErr
+	}
 	query := `SELECT id, bank_id, COALESCE(original_text,''), COALESCE(content_hash,''), created_at, updated_at,
 	                 COALESCE(retain_params, '{}'::jsonb), COALESCE(tags, '{}'),
-	                 (SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.memory_units u
+	                 (SELECT COUNT(*) FROM ` + quoteIdent(schema) + `.memory_units u
 	                   WHERE u.bank_id = documents.bank_id AND u.document_id = documents.id)
-	          FROM ` + quoteIdent(s.schema) + `.documents WHERE id=$1 AND bank_id=$2`
+	          FROM ` + quoteIdent(schema) + `.documents WHERE id=$1 AND bank_id=$2`
 	var doc Document
 	var paramsRaw, tagsRaw []byte
 	err := s.reader().QueryRowContext(ctx, query, docID, bankID).Scan(&doc.ID, &doc.BankID, &doc.OriginalText,
@@ -598,6 +636,11 @@ func (s *PostgresStore) PutDocument(ctx context.Context, bankID, docID string, d
 // concurrent one, which without it silently erases the other's turn. An empty
 // expectHash writes unconditionally.
 func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string, doc Document, storeText bool, expectHash string) (Document, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Document
+		return zero0, schemaErr
+	}
 	if doc.ContentHash == "" {
 		doc.ContentHash = ContentHash(doc.OriginalText)
 	}
@@ -632,7 +675,7 @@ func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string,
 	if !doc.CreatedAt.IsZero() {
 		createdArg = doc.CreatedAt
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.documents
+	query := `INSERT INTO ` + quoteIdent(schema) + `.documents
 	          (id, bank_id, original_text, content_hash, retain_params, tags, created_at, updated_at)
 	          VALUES ($1,$2,$3,$4,$5::jsonb,$6, COALESCE($7, now()), now())
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
@@ -643,7 +686,7 @@ func (s *PostgresStore) writeDocument(ctx context.Context, bankID, docID string,
 	                    COALESCE(tags, '{}'), created_at, updated_at`
 	args := []any{docID, bankID, originalText, doc.ContentHash, retainParams, tags, createdArg}
 	if expectHash != "" {
-		query = `UPDATE ` + quoteIdent(s.schema) + `.documents
+		query = `UPDATE ` + quoteIdent(schema) + `.documents
 		         SET original_text = $3, content_hash = $4,
 		             retain_params = $5::jsonb, tags = $6, updated_at = now()
 		         WHERE id = $1 AND bank_id = $2 AND COALESCE(content_hash, '') = $7
@@ -737,6 +780,11 @@ func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name 
 // creates should start its date stamps at. A zero seenAt keeps the previous
 // behaviour (the write clock).
 func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, name string, kind EntityKind, resolve bool, seenAt time.Time) (Entity, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Entity
+		return zero0, schemaErr
+	}
 	if name == "" {
 		return Entity{}, nil
 	}
@@ -752,7 +800,7 @@ func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, nam
 	// mention_count starts at zero: the mention that links this entity to its
 	// first unit is what bumps it, through UpsertUnitEntity, so the count is the
 	// number of mentions rather than the number of entities.
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.entities (id, bank_id, canonical_name, entity_kind, mention_count, first_seen, last_seen)
+	insert := `INSERT INTO ` + quoteIdent(schema) + `.entities (id, bank_id, canonical_name, entity_kind, mention_count, first_seen, last_seen)
 	           VALUES ($1,$2,$3,$4,0,COALESCE($5, now()),COALESCE($5, now()))
 	           ON CONFLICT (id) DO NOTHING`
 	// The reference seeds a new entity's stamps from the memory's event_date and
@@ -824,7 +872,13 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 // PostgreSQL's LOWER() and Go's case folding disagree on some code points, so
 // binding a Go-lowercased value could miss the row the index would collide on.
 func (s *PostgresStore) findEntityByExactName(ctx context.Context, bankID, name string) (Entity, bool, error) {
-	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Entity
+		var zero1 bool
+		return zero0, zero1, schemaErr
+	}
+	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(schema) + `.entities
 	          WHERE bank_id=$1 AND lower(canonical_name)=lower($2) LIMIT 1`
 	return s.scanEntity(ctx, query, bankID, name)
 }
@@ -851,6 +905,11 @@ func (s *PostgresStore) intrabatchMergeSimilarity() float64 {
 // entityCandidates returns the stored entities whose names are close enough to
 // the supplied name to be worth scoring.
 func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string) ([]Entity, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []Entity
+		return zero0, schemaErr
+	}
 	limit := s.tuning.EntityResolutionCandidates
 	if limit <= 0 {
 		limit = DefaultEntityResolutionCandidates
@@ -859,7 +918,7 @@ func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name strin
 	if floor <= 0 {
 		floor = EntityCandidateSimilarity
 	}
-	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(s.schema) + `.entities
+	query := `SELECT ` + entityColumns + ` FROM ` + quoteIdent(schema) + `.entities
 	          WHERE bank_id=$1 AND similarity(lower(canonical_name), lower($2)) >= $3
 	          ORDER BY similarity(lower(canonical_name), lower($2)) DESC, id ASC
 	          LIMIT $4`
@@ -925,6 +984,11 @@ func (s *PostgresStore) scanEntity(ctx context.Context, query string, args ...an
 
 // UpsertUnit persists one memory unit.
 func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (MemoryUnit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MemoryUnit
+		return zero0, schemaErr
+	}
 	if unit.ID == "" {
 		unit.ID = newID()
 	}
@@ -949,7 +1013,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	// absent: retain never sets it, the column defaults it, and the reference's
 	// insert omits it too. search_vector stays the generated expression because
 	// it must track text, which is parameter $3.
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
+	insert := `INSERT INTO ` + quoteIdent(schema) + `.memory_units
 	           (id, bank_id, text, search_vector, context, fact_type, metadata, event_date, occurred_start,
 	            occurred_end, mentioned_at, document_id, chunk_id, tags, embedding,
 	            source_memory_ids, observation_scopes, consolidated_at, consolidation_failed_at, attachment_ids,
@@ -957,7 +1021,7 @@ func (s *PostgresStore) UpsertUnit(ctx context.Context, unit MemoryUnit) (Memory
 	           VALUES ($1,$2,$3,` + s.searchVectorExpr("$3", "$4", "$20") + `,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14::vector,
 	                   $15::uuid[],$16::jsonb,$17,$18,$19,$20)
 	           ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding
-	           WHERE ` + quoteIdent(s.schema) + `.memory_units.embedding IS NULL`
+	           WHERE ` + quoteIdent(schema) + `.memory_units.embedding IS NULL`
 	// A nil tag slice would violate the column's not-null constraint, so an
 	// absent tag set is stored as an empty array.
 	tags := unit.Tags
@@ -1001,7 +1065,11 @@ func (s *PostgresStore) UpsertUnitEntity(ctx context.Context, unitID, entityID s
 // memory is last seen when that memory happened. A zero seenAt binds NULL and
 // the stamp falls back to the write clock.
 func (s *PostgresStore) upsertUnitEntitySeenAt(ctx context.Context, unitID, entityID string, seenAt time.Time) error {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO `+quoteIdent(s.schema)+`.unit_entities (unit_id, entity_id)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO `+quoteIdent(schema)+`.unit_entities (unit_id, entity_id)
 	          VALUES ($1,$2) ON CONFLICT DO NOTHING`, unitID, entityID)
 	if err != nil {
 		return err
@@ -1020,7 +1088,7 @@ func (s *PostgresStore) upsertUnitEntitySeenAt(ctx context.Context, unitID, enti
 	if !seenAt.IsZero() {
 		eventDate = seenAt
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE `+quoteIdent(s.schema)+`.entities
+	_, err = s.db.ExecContext(ctx, `UPDATE `+quoteIdent(schema)+`.entities
 	          SET mention_count = mention_count + 1, last_seen = GREATEST(last_seen, COALESCE($2, now()))
 	          WHERE id = $1::uuid`, entityID, eventDate)
 	return err
@@ -1060,6 +1128,10 @@ func releaseEntityPostings(ctx context.Context, q stmtExecer, qualified, posting
 // its existing link, because write-then-delete would count the same mention
 // twice in the mention count that reads project.
 func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID string, names []string, resolve bool) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	wanted := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		trimmed := strings.TrimSpace(name)
@@ -1076,7 +1148,7 @@ func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID stri
 		wanted[entity.ID] = struct{}{}
 	}
 
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT entity_id::text FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid`, unitID)
 	if err != nil {
@@ -1138,7 +1210,11 @@ func (s *PostgresStore) SetUnitEntities(ctx context.Context, bankID, unitID stri
 // edit is counted exactly as a new one is. An edit that names one entity
 // records nothing, because a pair needs two.
 func (s *PostgresStore) recordEditedSetCooccurrences(ctx context.Context, bankID, unitID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT entity_id::text FROM `+qualified+`.unit_entities WHERE unit_id = $1::uuid ORDER BY entity_id`, unitID)
 	if err != nil {
@@ -1186,10 +1262,15 @@ func (s *PostgresStore) recordEditedSetCooccurrences(ctx context.Context, bankID
 // unit's own detail read reports, and a listing that disagreed with it would be
 // showing the same memory two ways.
 func (s *PostgresStore) UnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]string
+		return zero0, schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return map[string][]string{}, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	query := `
 		SELECT ue.unit_id::text, e.canonical_name
 		FROM ` + qualified + `.unit_entities ue
@@ -1260,10 +1341,14 @@ func (s *PostgresStore) UpsertUnitCooccurrences(ctx context.Context, bankID stri
 // than being replaced, and the stamp is the LATEST of the two times, so a unit
 // seen before the pair's existing stamp cannot pull the pair's recency back.
 func (s *PostgresStore) upsertEntityCooccurrence(ctx context.Context, entityID1, entityID2 string, seenAt time.Time) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if entityID1 > entityID2 {
 		entityID1, entityID2 = entityID2, entityID1
 	}
-	table := quoteIdent(s.schema) + `.entity_cooccurrences`
+	table := quoteIdent(schema) + `.entity_cooccurrences`
 	query := `INSERT INTO ` + table + ` (entity_id_1, entity_id_2, cooccurrence_count, last_cooccurred)
 	          VALUES ($1,$2,1,$3)
 	          ON CONFLICT (entity_id_1, entity_id_2)
@@ -1280,7 +1365,11 @@ func (s *PostgresStore) upsertEntityCooccurrence(ctx context.Context, entityID1,
 // The conflict target is the unique index's expression, which is what makes
 // the insert apply to an existing row rather than duplicate it.
 func (s *PostgresStore) UpsertLink(ctx context.Context, link MemoryLink) error {
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_links (bank_id, from_unit_id, to_unit_id, link_type, entity_id, weight)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `INSERT INTO ` + quoteIdent(schema) + `.memory_links (bank_id, from_unit_id, to_unit_id, link_type, entity_id, weight)
 	          VALUES ($1,$2,$3,$4,$5,$6)
 	          ON CONFLICT (from_unit_id, to_unit_id, link_type, COALESCE(entity_id, '00000000-0000-0000-0000-000000000000'::uuid))
 	          DO UPDATE SET weight = EXCLUDED.weight`

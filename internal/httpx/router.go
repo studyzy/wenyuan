@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // RouterOptions configures router construction.
@@ -18,6 +20,9 @@ type RouterOptions struct {
 	TenantAPIKey string
 	// TenantMCPAuthDisabled exempts the MCP namespace from authentication.
 	TenantMCPAuthDisabled bool
+	// TenantExtension, when set, resolves every protected request to a tenant
+	// and replaces the static API-key gate. Multi-tenant mode sets it.
+	TenantExtension tenant.Extension
 	// MCPAuthToken is the legacy MCP credential. When set, the MCP namespace is
 	// authenticated with it instead of the tenant key, as the reference does.
 	MCPAuthToken string
@@ -463,12 +468,16 @@ func NewRouter(opts RouterOptions) *Router {
 func (r *Router) Service() http.Handler {
 	r.finalize()
 	resolveEndpoint := newEndpointResolver(r.routePatterns)
+	tenantAuth := TenantAuthMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled, r.options.MCPAuthToken, r.routeAllowed)
+	if r.options.TenantExtension != nil {
+		tenantAuth = TenantExtensionAuthMiddleware(r.options.TenantExtension, r.options.TenantMCPAuthDisabled, r.routeAllowed)
+	}
 	chain := Chain(
 		r.undeclaredMCPPath(r.mux),
 		ProxyHeadersMiddleware(r.options.TrustedProxies),
 		BasePathMiddleware(r.options.BasePath),
 		rawPathMiddleware(),
-		TenantAuthMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled, r.options.MCPAuthToken, r.routeAllowed),
+		tenantAuth,
 		AccessLogMiddleware(r.options.AccessLog),
 		RecoveryMiddleware(),
 		RouteFallbackMiddleware(),

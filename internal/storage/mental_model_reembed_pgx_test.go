@@ -14,7 +14,7 @@ func postgresModelEmbedding(t *testing.T, store Store, bankID, id string) string
 	pg := store.(*PostgresStore)
 	var raw string
 	if err := pg.db.QueryRowContext(context.Background(),
-		`SELECT COALESCE(embedding::text, '') FROM `+quoteIdent(pg.schema)+`.mental_models WHERE bank_id = $1 AND id = $2`,
+		`SELECT COALESCE(embedding::text, '') FROM `+quoteIdent(pg.defaultSchema)+`.mental_models WHERE bank_id = $1 AND id = $2`,
 		bankID, id).Scan(&raw); err != nil {
 		t.Fatalf("read embedding: %v", err)
 	}

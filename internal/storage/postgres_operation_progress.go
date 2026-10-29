@@ -11,6 +11,10 @@ import (
 // `updated_at` moves with it. The reference's own write is the same statement
 // (`memory_engine.py:5170-5179`).
 func (s *PostgresStore) RecordOperationProgress(ctx context.Context, opID string, snapshot map[string]any) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if opID == "" || snapshot == nil {
 		return nil
 	}
@@ -21,7 +25,7 @@ func (s *PostgresStore) RecordOperationProgress(ctx context.Context, opID string
 	if err != nil {
 		return err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET result_metadata = (COALESCE(result_metadata, '{}'::jsonb) || $2::jsonb),
 	              updated_at = now()
 	          WHERE operation_id = $1`

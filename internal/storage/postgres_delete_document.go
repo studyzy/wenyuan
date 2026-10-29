@@ -17,13 +17,18 @@ import (
 // document's own; after, to catch an observation consolidation committed while
 // the cascade ran.
 func (s *PostgresStore) DeleteDocument(ctx context.Context, bankID, docID string) (int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	// NO KEY UPDATE, not FOR UPDATE: it still excludes a concurrent cascade but
 	// stays compatible with the foreign-key checks on the bank's child rows.
 	var lockedBank string
@@ -107,7 +112,7 @@ func (s *PostgresStore) DeleteDocument(ctx context.Context, bankID, docID string
 		}
 	}
 
-	if err := pruneOrphanEntities(ctx, tx, s.schema, bankID); err != nil {
+	if err := pruneOrphanEntities(ctx, tx, schema, bankID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

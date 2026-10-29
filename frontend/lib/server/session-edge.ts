@@ -98,3 +98,86 @@ export async function verifySessionToken(
   if (typeof payload.exp !== "number" || payload.exp <= now) return false;
   return true;
 }
+
+export const TENANT_SESSION_COOKIE = "wenyuan_cp_tenant";
+export const TENANT_SESSION_MAX_AGE_SECONDS = 10 * 60;
+
+export type TenantSessionPayload = {
+  tenant_id: string;
+  key: string;
+  exp: number;
+};
+
+async function tenantSessionKey(secret: string): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+export async function createTenantSessionToken(
+  secret: string,
+  tenantId: string,
+  key: string,
+  nowMs: number,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const payload: TenantSessionPayload = {
+    tenant_id: tenantId,
+    key,
+    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
+  };
+  const sealed = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    await tenantSessionKey(secret),
+    new TextEncoder().encode(JSON.stringify(payload)),
+  );
+  return base64UrlEncode(iv) + "." + base64UrlEncode(new Uint8Array(sealed));
+}
+
+export async function readTenantSessionToken(
+  secret: string,
+  token: string | undefined,
+  nowMs: number,
+): Promise<TenantSessionPayload | null> {
+  if (!secret || !token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  try {
+    const iv = base64UrlDecode(parts[0]) as Uint8Array<ArrayBuffer>;
+    const sealed = base64UrlDecode(parts[1]) as Uint8Array<ArrayBuffer>;
+    if (iv.length !== 12 || sealed.length <= 16) return null;
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      await tenantSessionKey(secret),
+      sealed,
+    );
+    const payload = JSON.parse(new TextDecoder().decode(plaintext)) as TenantSessionPayload;
+    if (
+      typeof payload.tenant_id !== "string" ||
+      typeof payload.key !== "string" ||
+      typeof payload.exp !== "number"
+    ) {
+      return null;
+    }
+    if (payload.exp * 1000 <= nowMs) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function tenantSessionCookieAttributes(secure: boolean): string {
+  const parts = [
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${TENANT_SESSION_MAX_AGE_SECONDS}`,
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function clearTenantSessionCookieAttributes(secure: boolean): string {
+  const parts = ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}

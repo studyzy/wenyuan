@@ -15,7 +15,12 @@ const webhookSelect = `id::text, bank_id, url, COALESCE(secret,''), COALESCE(eve
 
 // ListWebhooks returns a bank's webhook registrations, oldest first.
 func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webhook, error) {
-	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []Webhook
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(schema) + `.webhooks
 	          WHERE bank_id = $1 ORDER BY created_at ASC, id ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
@@ -35,7 +40,12 @@ func (s *PostgresStore) ListWebhooks(ctx context.Context, bankID string) ([]Webh
 
 // GetWebhook returns one webhook by identifier.
 func (s *PostgresStore) GetWebhook(ctx context.Context, bankID, webhookID string) (Webhook, error) {
-	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(s.schema) + `.webhooks
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Webhook
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + webhookSelect + ` FROM ` + quoteIdent(schema) + `.webhooks
 	          WHERE bank_id = $1 AND id::text = $2`
 	webhook, err := scanWebhook(s.reader().QueryRowContext(ctx, query, bankID, webhookID))
 	if err != nil {
@@ -49,6 +59,11 @@ func (s *PostgresStore) GetWebhook(ctx context.Context, bankID, webhookID string
 
 // PutWebhook inserts or replaces a webhook.
 func (s *PostgresStore) PutWebhook(ctx context.Context, webhook Webhook) (Webhook, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Webhook
+		return zero0, schemaErr
+	}
 	if webhook.ID == "" || webhook.BankID == "" {
 		return Webhook{}, ErrInvalidOperationID
 	}
@@ -56,7 +71,7 @@ func (s *PostgresStore) PutWebhook(ctx context.Context, webhook Webhook) (Webhoo
 	if err != nil {
 		return Webhook{}, err
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.webhooks
+	query := `INSERT INTO ` + quoteIdent(schema) + `.webhooks
 	          (id, bank_id, url, secret, event_types, enabled, http_config, created_at, updated_at)
 	          VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7::jsonb, now(), now())
 	          ON CONFLICT (id) DO UPDATE SET
@@ -100,8 +115,12 @@ func (s *PostgresStore) UpdateWebhook(ctx context.Context, bankID, webhookID str
 // operations — historical facts — and are left in place, exactly as the
 // reference and the memory backend leave them.
 func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+quoteIdent(s.schema)+`.webhooks WHERE bank_id = $1 AND id::text = $2`, bankID, webhookID)
+		`DELETE FROM `+quoteIdent(schema)+`.webhooks WHERE bank_id = $1 AND id::text = $2`, bankID, webhookID)
 	if err != nil {
 		return err
 	}
@@ -120,7 +139,12 @@ func (s *PostgresStore) DeleteWebhook(ctx context.Context, bankID, webhookID str
 // the reference records one: the endpoint, the event and the outcome all live
 // on that row rather than in a table of their own.
 func (s *PostgresStore) ListWebhookDeliveries(ctx context.Context, bankID, webhookID string, limit int, cursor string) (WebhookDeliveryPage, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 WebhookDeliveryPage
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	filter := `bank_id = $1 AND operation_type = 'webhook_delivery'
 	           AND ($2 = '' OR task_payload->>'webhook_id' = $2)`
 	args := []any{bankID, webhookID}

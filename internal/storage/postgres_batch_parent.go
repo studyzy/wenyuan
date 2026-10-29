@@ -17,6 +17,12 @@ import (
 // children's outcome counters are summed onto the parent, so a caller polling
 // the parent reads the same totals the individual children report.
 func (s *PostgresStore) FinalizeBatchParent(ctx context.Context, bankID, parentID string) (Operation, bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		var zero1 bool
+		return zero0, zero1, schemaErr
+	}
 	parent, err := s.getOperation(ctx, parentID)
 	if err != nil {
 		return Operation{}, false, err
@@ -43,7 +49,7 @@ func (s *PostgresStore) FinalizeBatchParent(ctx context.Context, bankID, parentI
 	if err != nil {
 		return Operation{}, false, err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$2, error_message=$3, updated_at=now(), completed_at=now(),
 	              result_metadata=(COALESCE(result_metadata,'{}'::jsonb) || $4::jsonb)
 	          WHERE operation_id=$1 AND status IN ('pending','processing')
@@ -66,9 +72,14 @@ func (s *PostgresStore) FinalizeBatchParent(ctx context.Context, bankID, parentI
 // batchChildren reads a parent's children with the outcome fields aggregation
 // needs.
 func (s *PostgresStore) batchChildren(ctx context.Context, bankID, parentID string) ([]batchChild, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []batchChild
+		return zero0, schemaErr
+	}
 	query := `SELECT operation_id::text, status, COALESCE(error_message,''),
 	                 COALESCE(result_metadata,'{}'::jsonb)::text
-	          FROM ` + quoteIdent(s.schema) + `.async_operations
+	          FROM ` + quoteIdent(schema) + `.async_operations
 	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, parentID)
 	if err != nil {

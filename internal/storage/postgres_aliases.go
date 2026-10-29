@@ -9,9 +9,14 @@ import (
 // ResolveBankID maps an alias to its canonical bank identifier. A name that is
 // itself a bank wins over an alias of the same text.
 func (s *PostgresStore) ResolveBankID(ctx context.Context, name string) (string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 string
+		return zero0, schemaErr
+	}
 	var exists int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, name).Scan(&exists)
+		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1`, name).Scan(&exists)
 	if err == nil {
 		return name, nil
 	}
@@ -19,23 +24,23 @@ func (s *PostgresStore) ResolveBankID(ctx context.Context, name string) (string,
 		return name, err
 	}
 	cache := aliasCacheRef()
-	if cached, ok := cache.get(s.schema, name); ok {
+	if cached, ok := cache.get(schema, name); ok {
 		return cached, nil
 	}
 	var owner string
 	err = s.db.QueryRowContext(ctx,
-		`SELECT bank_id FROM `+quoteIdent(s.schema)+`.bank_aliases WHERE alias = $1`, name).Scan(&owner)
+		`SELECT bank_id FROM `+quoteIdent(schema)+`.bank_aliases WHERE alias = $1`, name).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		// A miss is worth caching too: nearly every request names a real bank,
 		// and without a negative entry each one would pay a read that can only
 		// answer "not an alias".
-		cache.put(s.schema, name, name)
+		cache.put(schema, name, name)
 		return name, nil
 	}
 	if err != nil {
 		return name, err
 	}
-	cache.put(s.schema, name, owner)
+	cache.put(schema, name, owner)
 	return owner, nil
 }
 
@@ -50,6 +55,11 @@ func (s *PostgresStore) ListAliases(ctx context.Context, bankID string) ([]BankA
 // AddAlias attaches an alias to a bank, optionally displaying the bank under
 // it, and returns the whole alias list.
 func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankAlias
+		return zero0, schemaErr
+	}
 	if !ValidBankID(alias) {
 		return nil, ErrInvalidBankID
 	}
@@ -64,7 +74,7 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 		return nil, err
 	}
 	if owner == alias {
-		if _, isBank := s.bankExists(ctx, alias); isBank {
+		if _, isBank := s.bankExists(ctx, schema, alias); isBank {
 			return nil, ErrAliasConflict
 		}
 	} else {
@@ -76,7 +86,7 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 		}
 	}
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(s.schema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ($1,$2,$3)`,
+		`INSERT INTO `+quoteIdent(schema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ($1,$2,$3)`,
 		alias, bankID, primary); err != nil {
 		// A concurrent create of the same alias loses the unique constraint the
 		// read-then-write check above cannot close; report the reference's
@@ -88,7 +98,7 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 	}
 	// The negative the conflict check above cached for this name would
 	// otherwise keep the new alias invisible on this process for the whole TTL.
-	aliasCacheRef().invalidate(s.schema, alias)
+	aliasCacheRef().invalidate(schema, alias)
 	return s.listAliases(ctx, bankID)
 }
 
@@ -97,10 +107,15 @@ func (s *PostgresStore) AddAlias(ctx context.Context, bankID, alias string, prim
 // clears only that alias's display flag, leaving the bank's other aliases as
 // they are.
 func (s *PostgresStore) SetAliasPrimary(ctx context.Context, bankID, alias string, primary bool) ([]BankAlias, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankAlias
+		return zero0, schemaErr
+	}
 	if _, err := s.GetBank(ctx, bankID); err != nil {
 		return nil, err
 	}
-	if !s.ownsAlias(ctx, bankID, alias) {
+	if !s.ownsAlias(ctx, schema, bankID, alias) {
 		return nil, ErrAliasNotFound
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -112,14 +127,14 @@ func (s *PostgresStore) SetAliasPrimary(ctx context.Context, bankID, alias strin
 		// Demote first: the primary-uniqueness index forbids the overlap that
 		// setting the new one before clearing the old would create.
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = FALSE
+			`UPDATE `+quoteIdent(schema)+`.bank_aliases SET is_primary = FALSE
 			 WHERE bank_id = $1 AND is_primary = TRUE AND alias <> $2`,
 			bankID, alias); err != nil {
 			return nil, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = $1 WHERE bank_id = $2 AND alias = $3`,
+		`UPDATE `+quoteIdent(schema)+`.bank_aliases SET is_primary = $1 WHERE bank_id = $2 AND alias = $3`,
 		primary, bankID, alias); err != nil {
 		return nil, err
 	}
@@ -131,26 +146,36 @@ func (s *PostgresStore) SetAliasPrimary(ctx context.Context, bankID, alias strin
 
 // RemoveAlias detaches the named alias from the bank.
 func (s *PostgresStore) RemoveAlias(ctx context.Context, bankID, alias string) ([]BankAlias, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankAlias
+		return zero0, schemaErr
+	}
 	if _, err := s.GetBank(ctx, bankID); err != nil {
 		return nil, err
 	}
-	if !s.ownsAlias(ctx, bankID, alias) {
+	if !s.ownsAlias(ctx, schema, bankID, alias) {
 		return nil, ErrAliasNotFound
 	}
 	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM `+quoteIdent(s.schema)+`.bank_aliases WHERE bank_id = $1 AND alias = $2`,
+		`DELETE FROM `+quoteIdent(schema)+`.bank_aliases WHERE bank_id = $1 AND alias = $2`,
 		bankID, alias); err != nil {
 		return nil, err
 	}
 	// A cached resolution for the detached name would otherwise keep routing to
 	// the bank on this process for the whole TTL.
-	aliasCacheRef().invalidate(s.schema, alias)
+	aliasCacheRef().invalidate(schema, alias)
 	return s.listAliases(ctx, bankID)
 }
 
 func (s *PostgresStore) listAliases(ctx context.Context, bankID string) ([]BankAlias, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankAlias
+		return zero0, schemaErr
+	}
 	query := `SELECT alias, bank_id, is_primary, created_at
-	          FROM ` + quoteIdent(s.schema) + `.bank_aliases
+	          FROM ` + quoteIdent(schema) + `.bank_aliases
 	          WHERE bank_id = $1 ORDER BY is_primary DESC, created_at ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {
@@ -168,24 +193,28 @@ func (s *PostgresStore) listAliases(ctx context.Context, bankID string) ([]BankA
 	return aliases, rows.Err()
 }
 
-func (s *PostgresStore) ownsAlias(ctx context.Context, bankID, alias string) bool {
+func (s *PostgresStore) ownsAlias(ctx context.Context, schema, bankID, alias string) bool {
 	var exists int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(s.schema)+`.bank_aliases WHERE bank_id = $1 AND alias = $2`,
+		`SELECT 1 FROM `+quoteIdent(schema)+`.bank_aliases WHERE bank_id = $1 AND alias = $2`,
 		bankID, alias).Scan(&exists)
 	return err == nil
 }
 
-func (s *PostgresStore) bankExists(ctx context.Context, bankID string) (string, bool) {
+func (s *PostgresStore) bankExists(ctx context.Context, schema, bankID string) (string, bool) {
 	var seen string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT bank_id FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&seen)
+		`SELECT bank_id FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&seen)
 	return seen, err == nil
 }
 
 func (s *PostgresStore) clearPrimary(ctx context.Context, bankID string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE `+quoteIdent(s.schema)+`.bank_aliases SET is_primary = FALSE WHERE bank_id = $1`,
+		`UPDATE `+quoteIdent(schema)+`.bank_aliases SET is_primary = FALSE WHERE bank_id = $1`,
 		bankID)
 	return err
 }

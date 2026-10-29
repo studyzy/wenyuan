@@ -1,4 +1,11 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
 /**
  * Session token primitives.
@@ -96,6 +103,98 @@ export function sessionCookieAttributes(secure: boolean): string {
 }
 
 export function clearSessionCookieAttributes(secure: boolean): string {
+  const parts = ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+/**
+ * Tenant-session token: an AEAD-encrypted short-lived tenant credential.
+ *
+ * The console holds the tenant key so the BFF can proxy the existing bank pages
+ * without ever handing the key to browser JavaScript. A tenant key is a bearer
+ * secret, so the cookie is encrypted (AES-256-GCM) rather than merely signed;
+ * the format is base64url(iv) + "." + base64url(ciphertext || tag), which the
+ * Edge implementation reads and writes identically.
+ */
+export const TENANT_SESSION_COOKIE = "wenyuan_cp_tenant";
+export const TENANT_SESSION_MAX_AGE_SECONDS = 10 * 60;
+
+export type TenantSessionPayload = {
+  tenant_id: string;
+  key: string;
+  exp: number;
+};
+
+function tenantSessionKey(secret: string): Buffer {
+  return createHash("sha256").update(secret).digest();
+}
+
+export function createTenantSessionToken(
+  secret: string,
+  tenantId: string,
+  key: string,
+  nowMs: number,
+): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", tenantSessionKey(secret), iv);
+  const payload: TenantSessionPayload = {
+    tenant_id: tenantId,
+    key,
+    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
+  };
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final(),
+  ]);
+  const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
+  return iv.toString("base64url") + "." + sealed.toString("base64url");
+}
+
+export function readTenantSessionToken(
+  secret: string,
+  token: string | undefined,
+  nowMs: number,
+): TenantSessionPayload | null {
+  if (!secret || !token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  try {
+    const iv = Buffer.from(parts[0], "base64url");
+    const sealed = Buffer.from(parts[1], "base64url");
+    if (iv.length !== 12 || sealed.length <= 16) return null;
+    const decipher = createDecipheriv("aes-256-gcm", tenantSessionKey(secret), iv);
+    decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+    const plaintext = Buffer.concat([
+      decipher.update(sealed.subarray(0, sealed.length - 16)),
+      decipher.final(),
+    ]).toString("utf8");
+    const payload = JSON.parse(plaintext) as TenantSessionPayload;
+    if (
+      typeof payload.tenant_id !== "string" ||
+      typeof payload.key !== "string" ||
+      typeof payload.exp !== "number"
+    ) {
+      return null;
+    }
+    if (payload.exp * 1000 <= nowMs) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function tenantSessionCookieAttributes(secure: boolean): string {
+  const parts = [
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${TENANT_SESSION_MAX_AGE_SECONDS}`,
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function clearTenantSessionCookieAttributes(secure: boolean): string {
   const parts = ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
   if (secure) parts.push("Secure");
   return parts.join("; ");

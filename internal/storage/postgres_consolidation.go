@@ -21,12 +21,17 @@ func (s *PostgresStore) ConsolidationTuning() ConsolidationTuning {
 // been folded into an observation. A fact is "folded" once its consolidation
 // timestamp is set, which MarkConsolidated does.
 func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, limit int) ([]ConsolidationFact, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []ConsolidationFact
+		return zero0, schemaErr
+	}
 	if limit <= 0 {
 		limit = 200
 	}
 	query := `SELECT id, text, occurred_start, occurred_end, mentioned_at,
 	                 COALESCE(tags, '{}'::text[])::text, observation_scopes::text
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type <> $2 AND consolidated_at IS NULL
 	                AND consolidation_failed_at IS NULL
 	          ORDER BY created_at DESC
@@ -61,6 +66,11 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 // first, with the facts each rests on. The evidence is the observation's own
 // source_memory_ids array, which is where the reference keeps it.
 func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID string, limit int) ([]ConsolidationObservation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []ConsolidationObservation
+		return zero0, schemaErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -68,11 +78,11 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
 	                 COALESCE(u.tags, '{}'::text[])::text,
 	                 COALESCE(src.texts, ARRAY[]::text[])::text
-	          FROM ` + quoteIdent(s.schema) + `.memory_units u
+	          FROM ` + quoteIdent(schema) + `.memory_units u
 	          LEFT JOIN LATERAL (
 	              SELECT array_agg(m.text ORDER BY source.ord) AS texts
 	              FROM unnest(u.source_memory_ids) WITH ORDINALITY AS source(sid, ord)
-	              JOIN ` + quoteIdent(s.schema) + `.memory_units m ON m.id = source.sid
+	              JOIN ` + quoteIdent(schema) + `.memory_units m ON m.id = source.sid
 	          ) src ON true
 	          WHERE u.bank_id = $1 AND u.fact_type = $2
 	          ORDER BY u.created_at DESC
@@ -110,6 +120,13 @@ func (s *PostgresStore) ConsolidationObservations(ctx context.Context, bankID st
 // near-identical twin that sits far down a recency-ordered pool is still the
 // first thing returned.
 func (s *PostgresStore) ObservationDuplicates(ctx context.Context, bankID string, scope []string, text string, limit int) ([]float32, []ConsolidationObservation, bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []float32
+		var zero1 []ConsolidationObservation
+		var zero2 bool
+		return zero0, zero1, zero2, schemaErr
+	}
 	probe := embedObservation(ctx, s.observationEmbedder, text)
 	if len(probe) == 0 {
 		return nil, nil, false, nil
@@ -131,7 +148,7 @@ func (s *PostgresStore) ObservationDuplicates(ctx context.Context, bankID string
 	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
 	                 COALESCE(u.tags, '{}'::text[])::text,
 	                 u.embedding::text
-	          FROM ` + quoteIdent(s.schema) + `.memory_units u
+	          FROM ` + quoteIdent(schema) + `.memory_units u
 	          WHERE u.bank_id = $1 AND u.fact_type = $2
 	            AND u.embedding IS NOT NULL
 	            AND cardinality(COALESCE(u.tags, '{}'::text[])) = $3
@@ -198,6 +215,10 @@ func (s *PostgresStore) CreateObservation(ctx context.Context, bankID, text stri
 // history is bounded per observation so a frequently-reinforced observation does
 // not grow without bound.
 func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observationID, text string, sourceIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if s.tuning.ObservationHistory {
 		if err := s.appendObservationHistory(ctx, bankID, observationID, sourceIDs); err != nil {
 			return err
@@ -213,7 +234,7 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 	if err != nil {
 		return err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	query := `UPDATE ` + quoteIdent(schema) + `.memory_units
 	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "''", "''") + `,
 	              event_date = LEAST(event_date, $5),
 	              occurred_start = LEAST(occurred_start, $6),
@@ -258,6 +279,10 @@ type observationHistorySnapshot struct {
 // An observation that does not exist yet (or was removed by a concurrent pass)
 // has nothing to snapshot, which is not an error.
 func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, observationID string, sourceIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	current, err := s.observationSnapshot(ctx, bankID, observationID)
 	if err != nil {
 		return err
@@ -273,15 +298,15 @@ func (s *PostgresStore) appendObservationHistory(ctx context.Context, bankID, ob
 	if err != nil {
 		return err
 	}
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.observation_history (observation_id, bank_id, content, changed_at)
+	insert := `INSERT INTO ` + quoteIdent(schema) + `.observation_history (observation_id, bank_id, content, changed_at)
 	          VALUES ($1, $2, $3::jsonb, now())`
 	if _, err := s.db.ExecContext(ctx, insert, observationID, bankID, snapshot); err != nil {
 		return err
 	}
-	prune := `DELETE FROM ` + quoteIdent(s.schema) + `.observation_history
+	prune := `DELETE FROM ` + quoteIdent(schema) + `.observation_history
 	          WHERE observation_id = $1
 	            AND id NOT IN (
-	                SELECT id FROM ` + quoteIdent(s.schema) + `.observation_history
+	                SELECT id FROM ` + quoteIdent(schema) + `.observation_history
 	                WHERE observation_id = $1
 	                ORDER BY changed_at DESC, id DESC
 	                LIMIT $2
@@ -303,8 +328,13 @@ func (s *PostgresStore) observationHistoryBound() int {
 // observationSnapshot reads one observation's pre-update state, or nil when it
 // is gone.
 func (s *PostgresStore) observationSnapshot(ctx context.Context, bankID, observationID string) (*observationHistorySnapshot, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 *observationHistorySnapshot
+		return zero0, schemaErr
+	}
 	query := `SELECT COALESCE(text,''), COALESCE(tags, '{}'::text[])::text, occurred_start, occurred_end, mentioned_at
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $3`
 	var (
 		text, tagsRaw                           string
@@ -334,7 +364,11 @@ func (s *PostgresStore) observationSnapshot(ctx context.Context, bankID, observa
 // DeleteObservation removes one observation. Its evidence is an array on the
 // row itself, so it goes with the row.
 func (s *PostgresStore) DeleteObservation(ctx context.Context, bankID, observationID string) error {
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.memory_units
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $3`
 	_, err := s.db.ExecContext(ctx, query, bankID, observationID, string(TypeObservation))
 	return err
@@ -342,10 +376,14 @@ func (s *PostgresStore) DeleteObservation(ctx context.Context, bankID, observati
 
 // MarkConsolidated records that the given facts have been folded.
 func (s *PostgresStore) MarkConsolidated(ctx context.Context, bankID string, factIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(factIDs) == 0 {
 		return nil
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	query := `UPDATE ` + quoteIdent(schema) + `.memory_units
 	          SET consolidated_at = now()
 	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
 	_, err := s.db.ExecContext(ctx, query, bankID, factIDs)
@@ -356,10 +394,14 @@ func (s *PostgresStore) MarkConsolidated(ctx context.Context, bankID string, fac
 // candidates read excludes them (consolidation_failed_at IS NOT NULL), so they
 // stay out of later passes until RecoverConsolidations requeues them.
 func (s *PostgresStore) MarkConsolidationFailed(ctx context.Context, bankID string, factIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(factIDs) == 0 {
 		return nil
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	query := `UPDATE ` + quoteIdent(schema) + `.memory_units
 	          SET consolidation_failed_at = now()
 	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
 	_, err := s.db.ExecContext(ctx, query, bankID, factIDs)
@@ -397,10 +439,15 @@ func (s *PostgresStore) DeleteStaleObservations(ctx context.Context, bankID stri
 // deleteStaleObservationsTx is the body of the sweep, run on the caller's
 // transaction so it can share the locks a delete cascade holds.
 func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, bankID string, factIDs []string) (int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
 	if len(factIDs) == 0 {
 		return 0, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, COALESCE(source_memory_ids, '{}'::uuid[])::text
 		 FROM `+qualified+`.memory_units
@@ -489,10 +536,14 @@ func (s *PostgresStore) deleteStaleObservationsTx(ctx context.Context, tx Tx, ba
 // Both are derived from the union of the existing evidence and the new, so
 // re-running a pass is idempotent.
 func (s *PostgresStore) linkObservationSources(ctx context.Context, observationID string, sourceIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(sourceIDs) == 0 {
 		return nil
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.memory_units
+	query := `UPDATE ` + quoteIdent(schema) + `.memory_units
 	          SET source_memory_ids = (
 	                  SELECT array_agg(DISTINCT e)
 	                  FROM unnest(COALESCE(source_memory_ids, '{}'::uuid[]) || $2::text[]::uuid[]) e),
@@ -519,11 +570,16 @@ func decodeTextArray(encoded string) []string {
 // rule is `_aggregate_source_fields` (consolidator.py:838-860): earliest
 // event_date and occurred_start, latest occurred_end and mentioned_at.
 func (s *PostgresStore) sourceObservationBounds(ctx context.Context, bankID string, sourceIDs []string) (ObservationBounds, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 ObservationBounds
+		return zero0, schemaErr
+	}
 	if len(sourceIDs) == 0 {
 		return ObservationBounds{}, nil
 	}
 	query := `SELECT event_date, occurred_start, occurred_end, mentioned_at
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`
 	rows, err := s.db.QueryContext(ctx, query, bankID, sourceIDs)
 	if err != nil {

@@ -12,11 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/audit"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // Default tuning. The attempt budget matches the reference implementation's
@@ -33,6 +35,9 @@ const (
 	// backpressure is held before its next attempt, matching the reference's
 	// DEFAULT_BACKPRESSURE_DEFER_SECONDS.
 	DefaultBackpressureDefer = 120 * time.Second
+	// DefaultTenantRefresh is how long a multi-tenant consumer caches the
+	// active-tenant list before asking the registry again.
+	DefaultTenantRefresh = 30 * time.Second
 )
 
 // Config tunes the consumer.
@@ -75,6 +80,13 @@ type Config struct {
 	// "bank-pattern:priority,...". When set, a consolidation claim prefers the
 	// banks matching a higher-priority pattern.
 	ConsolidationByBank string
+	// Tenants, when non-nil, enumerates the schemas this consumer polls. A nil
+	// value keeps the single-tenant behaviour: every claim uses the store's
+	// default schema.
+	Tenants tenant.Extension
+	// TenantRefresh bounds how long the active-tenant list is cached, so a
+	// worker does not read the registry on every poll.
+	TenantRefresh time.Duration
 }
 
 // Processor performs the work of one operation. It is supplied by the caller so
@@ -236,6 +248,16 @@ type Consumer struct {
 	// consolidationPriority is the parsed ConsolidationByBank list, applied to
 	// consolidation claims. It is empty when the deployment configured none.
 	consolidationPriority map[string]int
+	// tenantMu guards the cached active-tenant list.
+	tenantMu sync.Mutex
+	// tenantCache is the last ListTenants result; tenantCacheSet distinguishes
+	// an empty list from an unfilled cache.
+	tenantCache    []tenant.Tenant
+	tenantCacheAt  time.Time
+	tenantCacheSet bool
+	// tenantCursor rotates the starting tenant so a busy schema does not
+	// starve the others.
+	tenantCursor atomic.Uint64
 }
 
 // Auditor decides and records system-transport audit entries. It is satisfied
@@ -278,6 +300,9 @@ func New(store storage.Store, processor Processor, cfg Config) *Consumer {
 	}
 	if cfg.BackpressureDefer <= 0 {
 		cfg.BackpressureDefer = DefaultBackpressureDefer
+	}
+	if cfg.TenantRefresh <= 0 {
+		cfg.TenantRefresh = DefaultTenantRefresh
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -410,7 +435,7 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 		if ctx.Err() != nil {
 			return
 		}
-		op, err := c.claim(ctx)
+		op, opCtx, err := c.claim(ctx)
 		// A claim cycle that completed — an operation taken, or an empty batch —
 		// is what the liveness probe ages; a failed claim is not a completed
 		// cycle, so it leaves the stamp alone.
@@ -429,7 +454,7 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 			c.wait(ctx)
 			continue
 		}
-		c.handle(ctx, op)
+		c.handle(opCtx, op)
 		c.trackInflight(op.OperationType, -1)
 	}
 }
@@ -437,22 +462,78 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 // claim takes the next operation, honouring per-type reserved slots: a type
 // with a reserved floor is claimed first while the consumer's in-flight count
 // for it is below the reservation, and any work is claimed otherwise.
-func (c *Consumer) claim(ctx context.Context) (storage.Operation, error) {
+func (c *Consumer) claim(ctx context.Context) (storage.Operation, context.Context, error) {
+	if c.cfg.Tenants == nil {
+		op, err := c.claimOn(ctx)
+		if err == nil {
+			c.trackInflight(op.OperationType, 1)
+		}
+		return op, ctx, err
+	}
+	tenants, err := c.activeTenants(ctx)
+	if err != nil {
+		return storage.Operation{}, ctx, err
+	}
+	if len(tenants) == 0 {
+		return storage.Operation{}, ctx, storage.ErrOperationNotFound
+	}
+	start := int((c.tenantCursor.Add(1) - 1) % uint64(len(tenants)))
+	for i := 0; i < len(tenants); i++ {
+		entry := tenants[(start+i)%len(tenants)]
+		schemaCtx, err := storage.WithSchema(ctx, entry.Schema)
+		if err != nil {
+			return storage.Operation{}, ctx, err
+		}
+		op, err := c.claimOn(schemaCtx)
+		if err == nil {
+			c.trackInflight(op.OperationType, 1)
+			return op, schemaCtx, nil
+		}
+		if !errors.Is(err, storage.ErrOperationNotFound) {
+			return storage.Operation{}, ctx, err
+		}
+	}
+	return storage.Operation{}, ctx, storage.ErrOperationNotFound
+}
+
+// claimOn takes one operation from the schema the context carries.
+func (c *Consumer) claimOn(ctx context.Context) (storage.Operation, error) {
 	if preferred := c.preferredTypes(); len(preferred) > 0 {
 		op, err := c.claimPreferred(ctx, preferred)
 		if err == nil {
-			c.trackInflight(op.OperationType, 1)
 			return op, nil
 		}
 		if !errors.Is(err, storage.ErrOperationNotFound) {
 			return storage.Operation{}, err
 		}
 	}
-	op, err := c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease)
-	if err == nil {
-		c.trackInflight(op.OperationType, 1)
+	return c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease)
+}
+
+// activeTenants returns the schemas to poll, cached for TenantRefresh. A
+// registry failure is returned; the claim loop then waits and retries rather
+// than polling the process schema.
+func (c *Consumer) activeTenants(ctx context.Context) ([]tenant.Tenant, error) {
+	c.tenantMu.Lock()
+	defer c.tenantMu.Unlock()
+	now := c.cfg.Now()
+	if c.tenantCacheSet && now.Sub(c.tenantCacheAt) < c.cfg.TenantRefresh {
+		return c.tenantCache, nil
 	}
-	return op, err
+	listed, err := c.cfg.Tenants.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]tenant.Tenant, 0, len(listed))
+	for _, entry := range listed {
+		if strings.TrimSpace(entry.Schema) != "" {
+			active = append(active, entry)
+		}
+	}
+	c.tenantCache = active
+	c.tenantCacheAt = now
+	c.tenantCacheSet = true
+	return active, nil
 }
 
 // claimPreferred claims from the reserved types, and — when a bank priority is

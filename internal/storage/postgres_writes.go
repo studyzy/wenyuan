@@ -14,12 +14,17 @@ import (
 // operation identifier column is uniquely constrained, so a reused identifier
 // surfaces as a conflict rather than a duplicate row.
 func (s *PostgresStore) RecordWrite(ctx context.Context, req WriteRequest) (WriteResult, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 WriteResult
+		return zero0, schemaErr
+	}
 	if _, err := s.GetBank(ctx, req.BankID); err != nil {
 		return WriteResult{}, err
 	}
 	if req.OperationID != "" {
 		var existing string
-		query := `SELECT operation_id FROM ` + quoteIdent(s.schema) + `.async_operations WHERE operation_id = $1`
+		query := `SELECT operation_id FROM ` + quoteIdent(schema) + `.async_operations WHERE operation_id = $1`
 		err := s.db.QueryRowContext(ctx, query, req.OperationID).Scan(&existing)
 		if err == nil {
 			return WriteResult{OperationID: existing}, ErrOperationConflict
@@ -32,7 +37,7 @@ func (s *PostgresStore) RecordWrite(ctx context.Context, req WriteRequest) (Writ
 	if memoryID == "" {
 		memoryID = newID()
 	}
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.memory_units
+	insert := `INSERT INTO ` + quoteIdent(schema) + `.memory_units
 	           (id, bank_id, text, search_vector, fact_type, metadata, document_id, tags)
 	           VALUES ($1,$2,$3,` + s.searchVectorExpr("$3", "''", "''") + `,$4,$5,$6,$7)`
 	if _, err := s.db.ExecContext(ctx, insert, memoryID, req.BankID, req.Content,
@@ -72,11 +77,16 @@ func nullString(value string) any {
 }
 
 func (s *PostgresStore) Search(ctx context.Context, req RecallRequest) (RecallResult, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 RecallResult
+		return zero0, schemaErr
+	}
 	if _, err := s.GetBank(ctx, req.BankID); err != nil {
 		return RecallResult{}, err
 	}
 	query := `SELECT id, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND ($2 = '' OR text ILIKE '%' || $2 || '%')
 	          LIMIT $3`
 	limit := req.Limit
@@ -123,6 +133,11 @@ func nullTimePtr(value sql.NullTime) *time.Time {
 }
 
 func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	if op.OperationID == "" {
 		op.OperationID = newID()
 	}
@@ -137,7 +152,7 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 	if err != nil {
 		return Operation{}, err
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
+	query := `INSERT INTO ` + quoteIdent(schema) + `.async_operations
 	          (operation_id, bank_id, operation_type, status, error_message, retry_count, result_metadata, task_payload, serialization_key)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	          ON CONFLICT (operation_id) DO UPDATE SET status=$4, error_message=$5, updated_at=now(),
@@ -157,6 +172,11 @@ func (s *PostgresStore) PutOperation(ctx context.Context, op Operation) (Operati
 // when it was restored; PutOperation stamps the current time and would rewrite
 // the history the archive carried.
 func (s *PostgresStore) RestoreOperation(ctx context.Context, op Operation) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	if op.OperationID == "" {
 		op.OperationID = newID()
 	}
@@ -179,7 +199,7 @@ func (s *PostgresStore) RestoreOperation(ctx context.Context, op Operation) (Ope
 		updatedAt = createdAt
 	}
 	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
+	query := `INSERT INTO ` + quoteIdent(schema) + `.async_operations
 	          (operation_id, bank_id, operation_type, status, error_message, retry_count,
 	           result_metadata, task_payload, serialization_key, created_at, updated_at)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -231,8 +251,13 @@ func (s *PostgresStore) GetOperation(ctx context.Context, bankID, opID string) (
 // current status and then writes the next one, and a replica that lags by even
 // one commit would let a terminal operation be advanced a second time.
 func (s *PostgresStore) getOperation(ctx context.Context, opID string) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	query := `SELECT ` + operationColumns + `
-	          FROM ` + quoteIdent(s.schema) + `.async_operations WHERE operation_id = $1`
+	          FROM ` + quoteIdent(schema) + `.async_operations WHERE operation_id = $1`
 	row := s.db.QueryRowContext(ctx, query, opID)
 	op, err := scanOperation(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -250,7 +275,12 @@ func (s *PostgresStore) getOperation(ctx context.Context, opID string) (Operatio
 // replica lagging behind a cancel or a bank delete would report the work alive
 // when it is not.
 func (s *PostgresStore) OperationAlive(ctx context.Context, bankID, opID string) (bool, error) {
-	query := `SELECT bank_id, status FROM ` + quoteIdent(s.schema) + `.async_operations
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 bool
+		return zero0, schemaErr
+	}
+	query := `SELECT bank_id, status FROM ` + quoteIdent(schema) + `.async_operations
 	          WHERE operation_id = $1`
 	var scannedBank, status string
 	err := s.db.QueryRowContext(ctx, query, opID).Scan(&scannedBank, &status)
@@ -269,10 +299,15 @@ func (s *PostgresStore) OperationAlive(ctx context.Context, bankID, opID string)
 // GetOperationChildren returns the child operations of a parent batch, ordered
 // by sub-batch index.
 func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID string) ([]ChildOperation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []ChildOperation
+		return zero0, schemaErr
+	}
 	query := `SELECT operation_id::text, status, error_message,
 	                 (result_metadata->>'sub_batch_index')::int,
 	                 (result_metadata->>'items_count')::int
-	          FROM ` + quoteIdent(s.schema) + `.async_operations
+	          FROM ` + quoteIdent(schema) + `.async_operations
 	          WHERE bank_id = $1 AND result_metadata->>'parent_operation_id' = $2
 	          ORDER BY (result_metadata->>'sub_batch_index')::int ASC, operation_id ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, opID)
@@ -310,6 +345,11 @@ func (s *PostgresStore) GetOperationChildren(ctx context.Context, bankID, opID s
 // ListOperations returns one page of operations matching the query, most
 // recently created first, with the pre-paging total.
 func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery) (OperationPage, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 OperationPage
+		return zero0, schemaErr
+	}
 	limit := query.Limit
 	if limit <= 0 {
 		limit = 100
@@ -323,7 +363,7 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	filter := `($1='' OR bank_id=$1) AND ($2='' OR status=$2) AND ($3='' OR operation_type=$3)
 	           AND ($4='' OR worker_id=$4)`
 	countFilter := filter + ` AND ` + fmt.Sprintf(parentPredicate, 5)
-	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(s.schema) + `.async_operations WHERE ` + countFilter
+	countQuery := `SELECT COUNT(*) FROM ` + quoteIdent(schema) + `.async_operations WHERE ` + countFilter
 	var total int
 	if err := s.reader().QueryRowContext(ctx, countQuery, query.BankID, query.Status, query.Type, query.WorkerID,
 		query.ExcludeParents).Scan(&total); err != nil {
@@ -331,7 +371,7 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 	}
 	listFilter := filter + ` AND ` + fmt.Sprintf(parentPredicate, 7)
 	listQuery := `SELECT ` + operationColumns + `
-	              FROM ` + quoteIdent(s.schema) + `.async_operations
+	              FROM ` + quoteIdent(schema) + `.async_operations
 	              WHERE ` + listFilter + `
 	              ORDER BY created_at DESC, operation_id ASC LIMIT $5 OFFSET $6`
 	rows, err := s.reader().QueryContext(ctx, listQuery, query.BankID, query.Status, query.Type, query.WorkerID, limit, query.Offset, query.ExcludeParents)
@@ -356,6 +396,11 @@ func (s *PostgresStore) ListOperations(ctx context.Context, query OperationQuery
 // CancelOperation cancels a non-terminal operation, returning
 // ErrOperationConflict when the operation is already terminal.
 func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
@@ -369,7 +414,7 @@ func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string
 	// The reference's cancel stamps the status and updated_at only: completed_at
 	// stays null for a cancelled operation, so the read model reports the status
 	// change without inventing a completion time.
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$2, updated_at=now()
 	          WHERE operation_id=$1 AND status IN ('pending','processing')
 	          RETURNING ` + operationColumns
@@ -389,6 +434,11 @@ func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string
 }
 
 func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next OperationStatus, errMsg string) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
@@ -403,7 +453,7 @@ func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next 
 		// a shutdown scan into trying to hand it back.
 		assign = ", completed_at=now(), worker_id=NULL, claimed_at=NULL"
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$2, error_message=$3, updated_at=now()` + assign + ` WHERE operation_id=$1
 	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(next), errMsg))
@@ -415,6 +465,11 @@ func (s *PostgresStore) AdvanceOperation(ctx context.Context, opID string, next 
 // place, so a caller joining on those keys keeps working, and the success-path
 // metadata is written before the row is marked completed.
 func (s *PostgresStore) AdvanceOperationWithResult(ctx context.Context, opID string, next OperationStatus, errMsg string, result map[string]any) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
@@ -433,7 +488,7 @@ func (s *PostgresStore) AdvanceOperationWithResult(ctx context.Context, opID str
 		// a shutdown scan into trying to hand it back.
 		assign = ", completed_at=now(), worker_id=NULL, claimed_at=NULL"
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$2, error_message=$3, result_metadata=(COALESCE(result_metadata, '{}'::jsonb) || $4::jsonb), updated_at=now()` + assign + ` WHERE operation_id=$1
 	          RETURNING ` + operationColumns
 	return scanOperation(s.db.QueryRowContext(ctx, query, opID, string(next), errMsg, metadata))
@@ -449,6 +504,11 @@ func (s *PostgresStore) AdvanceOperationWithResult(ctx context.Context, opID str
 // remains to drive the roll-up — a parent left pending with nothing beneath it
 // would never reach a terminal status again.
 func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	current, err := s.getOperation(ctx, opID)
 	if err != nil {
 		return Operation{}, err
@@ -472,7 +532,7 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string)
 	if current.Status != StatusFailed && current.Status != StatusCancelled {
 		return current, ErrOperationConflict
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$2, error_message=NULL, completed_at=NULL, next_retry_at=NULL,
 	              worker_id=NULL, claimed_at=NULL, retry_count=0, updated_at=now() WHERE operation_id=$1
 	          RETURNING ` + operationColumns
@@ -482,7 +542,12 @@ func (s *PostgresStore) RetryOperation(ctx context.Context, bankID, opID string)
 // retryBatchParent requeues a failed batch's children and revives the parent
 // over them.
 func (s *PostgresStore) retryBatchParent(ctx context.Context, parent Operation) (Operation, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Operation{}, err
@@ -532,7 +597,12 @@ func (s *PostgresStore) retryBatchParent(ctx context.Context, parent Operation) 
 // between a read and a write. An operation that is still pending or running is
 // reported as ErrOperationNotTerminal rather than silently removed.
 func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string) (Operation, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	// The reference scopes the delete to the bank as well as the identifier, so
 	// an operation belonging to another bank reads as not found here.
 	query := `DELETE FROM ` + qualified + `.async_operations
@@ -564,7 +634,11 @@ func (s *PostgresStore) DeleteOperation(ctx context.Context, bankID, opID string
 // "pending", so a concurrent child promotion wins the race and this becomes a
 // no-op rather than re-terminalising the row.
 func (s *PostgresStore) RepairPendingBatchParent(ctx context.Context, bankID, parentID string, status OperationStatus) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status=$3, updated_at=now(), completed_at=now()
 	          WHERE operation_id=$1 AND bank_id=$2 AND status='pending'`
 	_, err := s.db.ExecContext(ctx, query, parentID, bankID, string(status))

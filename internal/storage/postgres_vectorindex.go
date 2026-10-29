@@ -19,6 +19,11 @@ import (
 // EXISTS alone would treat that leftover as the index it was asked for and
 // never rebuild.
 func (s *PostgresStore) ReconcileBankVectorIndexes(ctx context.Context, bankID string, minRows int) ([]BankVectorIndexAction, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankVectorIndexAction
+		return zero0, schemaErr
+	}
 	if minRows <= 0 {
 		return nil, nil
 	}
@@ -29,7 +34,7 @@ func (s *PostgresStore) ReconcileBankVectorIndexes(ctx context.Context, bankID s
 	plan := PlanBankVectorIndexes(states, minRows)
 	applied := make([]BankVectorIndexAction, 0, len(plan))
 	for _, action := range plan {
-		statement := BankVectorIndexDDL(s.schema, s.vectorExtension, bankID, action)
+		statement := BankVectorIndexDDL(schema, s.vectorExtension, bankID, action)
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			// A failure on one partition must not hide the others: the sweep
 			// continues and the caller sees what was actually applied.
@@ -70,7 +75,12 @@ func (s *PostgresStore) OrphanedVectorIndexes(ctx context.Context) ([]string, er
 // liveVectorIndexNames is the set of per-bank vector index names the current
 // banks are owed.
 func (s *PostgresStore) liveVectorIndexNames(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT bank_id FROM `+quoteIdent(s.schema)+`.banks`)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]bool
+		return zero0, schemaErr
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT bank_id FROM `+quoteIdent(schema)+`.banks`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +101,18 @@ func (s *PostgresStore) liveVectorIndexNames(ctx context.Context) (map[string]bo
 // presentBankVectorIndexNames lists every per-bank vector index that exists on
 // memory_units in this schema, whether or not it is usable.
 func (s *PostgresStore) presentBankVectorIndexNames(ctx context.Context) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	query := `SELECT c.relname
 	          FROM pg_class c
 	          JOIN pg_namespace n ON n.oid = c.relnamespace
 	          JOIN pg_index i ON i.indexrelid = c.oid
 	          JOIN pg_class t ON t.oid = i.indrelid
 	          WHERE n.nspname = $1 AND t.relname = 'memory_units' AND c.relname LIKE $2`
-	rows, err := s.db.QueryContext(ctx, query, s.schema, bankVectorIndexPrefix+"%")
+	rows, err := s.db.QueryContext(ctx, query, schema, bankVectorIndexPrefix+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -117,9 +132,13 @@ func (s *PostgresStore) presentBankVectorIndexNames(ctx context.Context) ([]stri
 // EXISTS, so a name that is already gone is not an error and the sweep can be
 // re-run.
 func (s *PostgresStore) DropVectorIndexes(ctx context.Context, names []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	var firstErr error
 	for _, name := range names {
-		statement := "DROP INDEX CONCURRENTLY IF EXISTS " + quoteIdent(s.schema) + "." + quoteIdent(name)
+		statement := "DROP INDEX CONCURRENTLY IF EXISTS " + quoteIdent(schema) + "." + quoteIdent(name)
 		if _, err := s.db.ExecContext(ctx, statement); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -138,10 +157,15 @@ func (s *PostgresStore) DropVectorIndexes(ctx context.Context, names []string) e
 // Counting is bounded by the threshold rather than exact for a partition above
 // it, because the sweep only needs to know whether the partition qualifies.
 func (s *PostgresStore) BanksNeedingVectorIndexes(ctx context.Context, minRows int) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	if minRows <= 0 {
 		return nil, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	query := `SELECT bank_id FROM (
 	            SELECT bank_id, fact_type, COUNT(*) AS rows
 	            FROM ` + qualified + `.memory_units
@@ -198,7 +222,12 @@ func (s *PostgresStore) BanksNeedingVectorIndexes(ctx context.Context, minRows i
 // identifier longer than sixteen characters cannot be recovered from it, only
 // matched against.
 func (s *PostgresStore) banksHoldingVectorIndexes(ctx context.Context) ([]string, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	query := `SELECT DISTINCT b.bank_id
 	          FROM ` + qualified + `.banks b
 	          JOIN pg_class c ON c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
@@ -207,7 +236,7 @@ func (s *PostgresStore) banksHoldingVectorIndexes(ctx context.Context) ([]string
 	          WHERE t.relname = 'memory_units'
 	            AND c.relname LIKE 'idx\_mu\_emb\_%\_' || substr(encode(sha256(convert_to(b.bank_id, 'UTF8')), 'hex'), 1, 16)
 	          ORDER BY b.bank_id`
-	rows, err := s.db.QueryContext(ctx, query, s.schema)
+	rows, err := s.db.QueryContext(ctx, query, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +255,12 @@ func (s *PostgresStore) banksHoldingVectorIndexes(ctx context.Context) ([]string
 // BankVectorIndexStates reports each fact-type partition's row count and
 // whether its partial index exists and is usable.
 func (s *PostgresStore) BankVectorIndexStates(ctx context.Context, bankID string) ([]BankVectorIndexState, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []BankVectorIndexState
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	counts := map[string]int64{}
 	query := `SELECT fact_type, COUNT(*) FROM ` + qualified + `.memory_units
 	          WHERE bank_id = $1 AND fact_type = ANY($2)
@@ -277,6 +311,11 @@ func (s *PostgresStore) BankVectorIndexStates(ctx context.Context, bankID string
 // cancelled or failed CONCURRENTLY build leaves an invalid row that a
 // name-only read would mistake for a healthy index.
 func (s *PostgresStore) existingVectorIndexes(ctx context.Context) (map[string]bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]bool
+		return zero0, schemaErr
+	}
 	// pg_index, not the pg_indexes view: only pg_index.indisvalid/indisready
 	// record whether a concurrent build finished. The index definition lives in
 	// pg_class under the index's namespace, and the table it covers is
@@ -287,7 +326,7 @@ func (s *PostgresStore) existingVectorIndexes(ctx context.Context) (map[string]b
 	          JOIN pg_index i ON i.indexrelid = c.oid
 	          JOIN pg_class t ON t.oid = i.indrelid
 	          WHERE n.nspname = $1 AND t.relname = 'memory_units'`
-	rows, err := s.db.QueryContext(ctx, query, s.schema)
+	rows, err := s.db.QueryContext(ctx, query, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -308,10 +347,14 @@ func (s *PostgresStore) existingVectorIndexes(ctx context.Context) (map[string]b
 // indexes. It is idempotent — every statement is DROP ... IF EXISTS — so it is a
 // no-op for a bank that never earned one and for one whose drop already ran.
 func (s *PostgresStore) dropBankVectorIndexes(ctx context.Context, bankID string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	var firstErr error
 	for _, factType := range factTypeList() {
 		name := BankVectorIndexName(factType, bankID)
-		statement := BankVectorIndexDDL(s.schema, s.vectorExtension, bankID, BankVectorIndexAction{
+		statement := BankVectorIndexDDL(schema, s.vectorExtension, bankID, BankVectorIndexAction{
 			FactType: factType, IndexName: name, Create: false,
 		})
 		if _, err := s.db.ExecContext(ctx, statement); err != nil && firstErr == nil {

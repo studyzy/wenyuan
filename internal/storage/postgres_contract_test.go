@@ -65,7 +65,7 @@ func TestPostgresContractAliasInsertRace(t *testing.T) {
 		t.Fatalf("prime negative resolve: %v", err)
 	}
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(pg.schema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ('dup-alias','vec-bank',false)`); err != nil {
+		`INSERT INTO `+quoteIdent(pg.defaultSchema)+`.bank_aliases (alias, bank_id, is_primary) VALUES ('dup-alias','vec-bank',false)`); err != nil {
 		t.Fatalf("seed alias row: %v", err)
 	}
 	if _, err := store.AddAlias(ctx, "vec-bank", "dup-alias", false); !errors.Is(err, ErrAliasConflict) {

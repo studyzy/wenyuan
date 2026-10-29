@@ -26,7 +26,12 @@ func clampLimit(limit, fallback int) int {
 // the units the document owns: an observation belongs to the document when one
 // of the document's units is among its sources.
 func (s *PostgresStore) DocumentFactCounts(ctx context.Context, bankID, docID string) (map[string]int, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]int
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(fact_type,''), COUNT(*) FROM `+qualified+`.memory_units
 		 WHERE bank_id = $1 AND document_id = $2 GROUP BY fact_type`, bankID, docID)
@@ -61,13 +66,18 @@ func (s *PostgresStore) DocumentFactCounts(ctx context.Context, bankID, docID st
 
 // EntityMentions returns the memory texts that mention an entity.
 func (s *PostgresStore) EntityMentions(ctx context.Context, bankID, entityID string, limit int) ([]EntityMention, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []EntityMention
+		return zero0, schemaErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(u.text,''), u.mentioned_at
-		 FROM `+quoteIdent(s.schema)+`.unit_entities ue
-		 JOIN `+quoteIdent(s.schema)+`.memory_units u ON u.id = ue.unit_id
+		 FROM `+quoteIdent(schema)+`.unit_entities ue
+		 JOIN `+quoteIdent(schema)+`.memory_units u ON u.id = ue.unit_id
 		 WHERE ue.entity_id = $1::uuid AND u.bank_id = $2
 		 LIMIT $3`, entityID, bankID, limit)
 	if err != nil {
@@ -90,9 +100,14 @@ func (s *PostgresStore) EntityMentions(ctx context.Context, bankID, entityID str
 // UnitEntities returns the canonical names of the entities one memory unit
 // mentions, in name order.
 func (s *PostgresStore) UnitEntities(ctx context.Context, bankID, unitID string) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	query := `SELECT COALESCE(e.canonical_name,'')
-	          FROM ` + quoteIdent(s.schema) + `.unit_entities ue
-	          JOIN ` + quoteIdent(s.schema) + `.entities e ON e.id = ue.entity_id
+	          FROM ` + quoteIdent(schema) + `.unit_entities ue
+	          JOIN ` + quoteIdent(schema) + `.entities e ON e.id = ue.entity_id
 	          WHERE ue.unit_id = $1::uuid AND e.bank_id = $2
 	          ORDER BY e.canonical_name ASC`
 	rows, err := s.reader().QueryContext(ctx, query, unitID, bankID)
@@ -113,6 +128,11 @@ func (s *PostgresStore) UnitEntities(ctx context.Context, bankID, unitID string)
 
 // ListDocuments returns one page of a bank's documents plus the total.
 func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) (DocumentPage, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 DocumentPage
+		return zero0, schemaErr
+	}
 	limit := query.Limit
 	if limit < 0 {
 		limit = 100
@@ -121,7 +141,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 	if mode == "" {
 		mode = TagsMatchAnyStrict
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	args := []any{query.BankID}
 	conds := []string{"bank_id = $1"}
 	if term := query.Query; term != "" {
@@ -195,6 +215,11 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, query DocumentQuery) 
 
 // ListChunks returns one page of a bank's chunks plus the total.
 func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (ChunkPage, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 ChunkPage
+		return zero0, schemaErr
+	}
 	// The route already bounds the page size (1..1000), and the reference hands
 	// it straight to LIMIT, so it is not capped again here: a cap below the
 	// route's own bound would silently return a short page.
@@ -205,13 +230,13 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 	filter := `bank_id = $1 AND ($2 = '' OR document_id = $2)`
 	var total int
 	if err := s.reader().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+quoteIdent(s.schema)+`.chunks WHERE `+filter,
+		`SELECT COUNT(*) FROM `+quoteIdent(schema)+`.chunks WHERE `+filter,
 		query.BankID, query.DocumentID).Scan(&total); err != nil {
 		return ChunkPage{}, err
 	}
 	listQuery := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                     COALESCE(content_hash,''), created_at
-	              FROM ` + quoteIdent(s.schema) + `.chunks
+	              FROM ` + quoteIdent(schema) + `.chunks
 	              WHERE ` + filter + `
 	              ORDER BY document_id ASC, chunk_index ASC LIMIT $3 OFFSET $4`
 	rows, err := s.reader().QueryContext(ctx, listQuery, query.BankID, query.DocumentID, limit, query.Offset)
@@ -232,9 +257,14 @@ func (s *PostgresStore) ListChunks(ctx context.Context, query ChunkQuery) (Chunk
 
 // GetChunk returns one stored chunk by identifier.
 func (s *PostgresStore) GetChunk(ctx context.Context, bankID, chunkID string) (Chunk, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Chunk
+		return zero0, schemaErr
+	}
 	query := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                 COALESCE(content_hash,''), created_at
-	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE bank_id = $1 AND chunk_id = $2`
+	          FROM ` + quoteIdent(schema) + `.chunks WHERE bank_id = $1 AND chunk_id = $2`
 	chunk, err := scanChunkRow(s.reader().QueryRowContext(ctx, query, bankID, chunkID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -248,9 +278,14 @@ func (s *PostgresStore) GetChunk(ctx context.Context, bankID, chunkID string) (C
 // FindChunk returns one stored chunk by identifier, wherever it is stored. The
 // identifier is the chunks table's key, so no bank filter applies.
 func (s *PostgresStore) FindChunk(ctx context.Context, chunkID string) (Chunk, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Chunk
+		return zero0, schemaErr
+	}
 	query := `SELECT chunk_id, bank_id, COALESCE(document_id,''), COALESCE(chunk_index,0), COALESCE(chunk_text,''),
 	                 COALESCE(content_hash,''), created_at
-	          FROM ` + quoteIdent(s.schema) + `.chunks WHERE chunk_id = $1`
+	          FROM ` + quoteIdent(schema) + `.chunks WHERE chunk_id = $1`
 	chunk, err := scanChunkRow(s.reader().QueryRowContext(ctx, query, chunkID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -263,9 +298,14 @@ func (s *PostgresStore) FindChunk(ctx context.Context, chunkID string) (Chunk, e
 
 // ListTags returns the bank's tags with their usage counts, most used first.
 func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []TagCount
+		return zero0, schemaErr
+	}
 	query := `SELECT tag, COUNT(*) FROM (
 	              SELECT unnest(COALESCE(tags, '{}')) AS tag
-	              FROM ` + quoteIdent(s.schema) + `.memory_units
+	              FROM ` + quoteIdent(schema) + `.memory_units
 	              WHERE bank_id = $1 AND tags IS NOT NULL AND tags != '{}'
 	          ) AS expanded
 	          GROUP BY tag ORDER BY COUNT(*) DESC, tag ASC`
@@ -290,6 +330,11 @@ func (s *PostgresStore) ListTags(ctx context.Context, bankID string) ([]TagCount
 // recomputes each entity's mention count and dates over those memories only;
 // without one the stored entity columns are served as they stand.
 func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (EntityPage, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 EntityPage
+		return zero0, schemaErr
+	}
 	// The route bounds only the lower end (`ge=0`), so the caller's page size is
 	// handed to LIMIT unchanged — the reference does the same.
 	limit := query.Limit
@@ -300,7 +345,7 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 	if mode == "" {
 		mode = TagsMatchAny
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	args := []any{query.BankID}
 	// Without a tag filter the entity's stored columns ARE the answer: the
 	// reference serves `entities.mention_count / first_seen / last_seen` as they
@@ -377,6 +422,11 @@ func entityTagPredicate(tags []string, mode string, groups []TagGroup, bound int
 
 // Graph returns the bank's memory graph for the query's filtered unit set.
 func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 GraphData
+		return zero0, schemaErr
+	}
 	limit := query.Limit
 	if limit < 0 {
 		limit = 1000
@@ -385,7 +435,7 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 	if mode == "" {
 		mode = TagsMatchAllStrict
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	args := []any{query.BankID}
 	conds := []string{"bank_id = $1"}
 	if query.Type != "" {
@@ -520,6 +570,11 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 // endpoints of the returned edges; a tag filter recomputes mention counts and
 // edges from the matching memories only.
 func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (EntityGraph, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 EntityGraph
+		return zero0, schemaErr
+	}
 	limit := query.Limit
 	if limit < 0 {
 		limit = 1000
@@ -529,7 +584,7 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 	if mode == "" {
 		mode = TagsMatchAny
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	bankID := query.BankID
 
 	type edgeScan struct {

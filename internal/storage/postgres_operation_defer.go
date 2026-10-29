@@ -16,7 +16,11 @@ import (
 // reported about the attempt is merged onto the operation so an operator can
 // still see why it was deferred.
 func (s *PostgresStore) DeferOperation(ctx context.Context, opID string, next time.Time, result map[string]any) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status = 'pending', next_retry_at = $2, worker_id = NULL, claimed_at = NULL,
 	              updated_at = now()
 	          WHERE operation_id = $1 AND status NOT IN ('completed','failed','cancelled')`
@@ -28,7 +32,7 @@ func (s *PostgresStore) DeferOperation(ctx context.Context, opID string, next ti
 		if err != nil {
 			return err
 		}
-		query = `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+		query = `UPDATE ` + quoteIdent(schema) + `.async_operations
 		         SET status = 'pending', next_retry_at = $2, worker_id = NULL, claimed_at = NULL,
 		             updated_at = now(),
 		             result_metadata = (COALESCE(result_metadata, '{}'::jsonb) || $3::jsonb)

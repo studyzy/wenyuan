@@ -36,7 +36,7 @@ var embeddingTables = []string{"memory_units", "mental_models"}
 // disagreement is a configuration fact to report, never a silent conversion.
 func (s *PostgresStore) reconcileEmbeddingColumns(ctx context.Context, tx vectorSchemaTx) error {
 	for _, table := range embeddingTables {
-		width, err := embeddingColumnWidth(ctx, tx, s.schema, table)
+		width, err := embeddingColumnWidth(ctx, tx, s.defaultSchema, table)
 		if errors.Is(err, sql.ErrNoRows) {
 			// The table is absent (a partial adoption) or has no embedding
 			// column; there is nothing to reconcile.
@@ -48,7 +48,7 @@ func (s *PostgresStore) reconcileEmbeddingColumns(ctx context.Context, tx vector
 		if width == EmbeddingDimensions {
 			continue
 		}
-		embedded, err := countEmbeddedRows(ctx, tx, s.schema, table)
+		embedded, err := countEmbeddedRows(ctx, tx, s.defaultSchema, table)
 		if err != nil {
 			return err
 		}
@@ -59,17 +59,17 @@ func (s *PostgresStore) reconcileEmbeddingColumns(ctx context.Context, tx vector
 					"this service at %d-dimensional vectors",
 				table, width, EmbeddingDimensions, embedded, width)
 		}
-		indexes, err := embeddingIndexDefinitions(ctx, tx, s.schema, table)
+		indexes, err := embeddingIndexDefinitions(ctx, tx, s.defaultSchema, table)
 		if err != nil {
 			return err
 		}
 		for _, def := range indexes {
-			if _, err := tx.ExecContext(ctx, "DROP INDEX "+quoteIdent(s.schema)+"."+quoteIdent(def.name)); err != nil {
+			if _, err := tx.ExecContext(ctx, "DROP INDEX "+quoteIdent(s.defaultSchema)+"."+quoteIdent(def.name)); err != nil {
 				return fmt.Errorf("drop %s before resizing %s.embedding: %w", def.name, table, err)
 			}
 		}
 		alter := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN embedding TYPE vector(%d)",
-			quoteIdent(s.schema)+"."+quoteIdent(table), EmbeddingDimensions)
+			quoteIdent(s.defaultSchema)+"."+quoteIdent(table), EmbeddingDimensions)
 		if _, err := tx.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("resize %s.embedding to vector(%d): %w", table, EmbeddingDimensions, err)
 		}

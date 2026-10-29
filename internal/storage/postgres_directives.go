@@ -18,7 +18,12 @@ const directiveSelect = `id, bank_id, name, content, COALESCE(priority,0), COALE
 // ListDirectives returns the directives of one bank, highest priority first so
 // the order a reflection would follow them is the order they are returned in.
 func (s *PostgresStore) ListDirectives(ctx context.Context, bankID string) ([]Directive, error) {
-	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(s.schema) + `.directives
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []Directive
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(schema) + `.directives
 	          WHERE bank_id = $1
 	          ORDER BY priority DESC, created_at DESC, id ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
@@ -39,7 +44,12 @@ func (s *PostgresStore) ListDirectives(ctx context.Context, bankID string) ([]Di
 
 // GetDirective returns one directive by identifier within a bank.
 func (s *PostgresStore) GetDirective(ctx context.Context, bankID, id string) (Directive, error) {
-	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(s.schema) + `.directives
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Directive
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + directiveSelect + ` FROM ` + quoteIdent(schema) + `.directives
 	          WHERE bank_id = $1 AND id = $2`
 	directive, err := scanDirective(s.reader().QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
@@ -53,10 +63,15 @@ func (s *PostgresStore) GetDirective(ctx context.Context, bankID, id string) (Di
 
 // PutDirective inserts or replaces a directive.
 func (s *PostgresStore) PutDirective(ctx context.Context, directive Directive) (Directive, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Directive
+		return zero0, schemaErr
+	}
 	if directive.ID == "" || directive.BankID == "" {
 		return Directive{}, ErrInvalidOperationID
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.directives
+	query := `INSERT INTO ` + quoteIdent(schema) + `.directives
 	          (id, bank_id, name, content, priority, is_active, tags, created_at, updated_at)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7, now(), now())
 	          ON CONFLICT (id) DO UPDATE SET
@@ -95,7 +110,11 @@ func (s *PostgresStore) UpdateDirective(ctx context.Context, bankID, id string, 
 
 // DeleteDirective removes a directive.
 func (s *PostgresStore) DeleteDirective(ctx context.Context, bankID, id string) error {
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.directives WHERE bank_id = $1 AND id = $2`
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.directives WHERE bank_id = $1 AND id = $2`
 	result, err := s.db.ExecContext(ctx, query, bankID, id)
 	if err != nil {
 		return err

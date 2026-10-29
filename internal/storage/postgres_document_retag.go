@@ -24,7 +24,12 @@ import (
 func (s *PostgresStore) RetagDocumentMemories(
 	ctx context.Context, bankID, docID string, oldTags, newTags []string, labelKeys map[string]bool,
 ) (int, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err

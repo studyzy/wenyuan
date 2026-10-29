@@ -31,7 +31,7 @@ func (s *PostgresStore) TableColumns(ctx context.Context, table string) ([]Admin
 	          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 	          WHERE n.nspname = $1 AND c.relname = $2 AND ` + insertableColumnPredicate + `
 	          ORDER BY a.attnum`
-	rows, err := s.db.QueryContext(ctx, query, s.schema, table)
+	rows, err := s.db.QueryContext(ctx, query, s.defaultSchema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (s *PostgresStore) TableColumns(ctx context.Context, table string) ([]Admin
 		return nil, err
 	}
 	if len(columns) == 0 {
-		return nil, fmt.Errorf("table %q not found in schema %q", table, s.schema)
+		return nil, fmt.Errorf("table %q not found in schema %q", table, s.defaultSchema)
 	}
 	return columns, nil
 }
@@ -66,7 +66,7 @@ func (s *PostgresStore) LoadTable(ctx context.Context, table string, data []byte
 		names[i] = quoteIdent(column.Name)
 	}
 	list := strings.Join(names, ", ")
-	qualified := quoteIdent(s.schema) + "." + quoteIdent(table)
+	qualified := quoteIdent(s.defaultSchema) + "." + quoteIdent(table)
 	// json_populate_recordset maps each object onto the table's own row type, so
 	// PostgreSQL performs every type conversion (uuid, jsonb, timestamptz,
 	// arrays) exactly as it would for a normal insert. Any key the target no
@@ -93,7 +93,7 @@ func (s *PostgresStore) TruncateTables(ctx context.Context, tables []string) err
 	}
 	qualified := make([]string, 0, len(tables))
 	for _, table := range tables {
-		qualified = append(qualified, quoteIdent(s.schema)+"."+quoteIdent(table))
+		qualified = append(qualified, quoteIdent(s.defaultSchema)+"."+quoteIdent(table))
 	}
 	if _, err := s.db.ExecContext(ctx, "TRUNCATE TABLE "+strings.Join(qualified, ", ")); err != nil {
 		return fmt.Errorf("truncate tables: %w", err)
@@ -114,7 +114,7 @@ const identityColumnsQuery = `SELECT a.attname FROM pg_catalog.pg_attribute a
 // largest restored value. A restore writes ids explicitly, which does not move
 // the sequence, so without this a later insert could collide.
 func (s *PostgresStore) syncIdentitySequences(ctx context.Context, table string) error {
-	rows, err := s.db.QueryContext(ctx, identityColumnsQuery, s.schema, table)
+	rows, err := s.db.QueryContext(ctx, identityColumnsQuery, s.defaultSchema, table)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func (s *PostgresStore) syncIdentitySequences(ctx context.Context, table string)
 	if len(identityColumns) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema) + "." + quoteIdent(table)
+	qualified := quoteIdent(s.defaultSchema) + "." + quoteIdent(table)
 	// pg_get_serial_sequence takes a text regclass; the double quotes inside the
 	// literal address exactly this schema and table.
 	regclass := "'" + strings.ReplaceAll(qualified, "'", "''") + "'"

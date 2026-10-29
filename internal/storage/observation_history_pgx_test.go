@@ -56,7 +56,7 @@ func TestPostgresObservationHistorySnapshot(t *testing.T) {
 	pg := store.(*PostgresStore)
 	var content string
 	if err := pg.reader().QueryRowContext(ctx,
-		`SELECT content::text FROM `+quoteIdent(pg.schema)+`.observation_history
+		`SELECT content::text FROM `+quoteIdent(pg.defaultSchema)+`.observation_history
 		 WHERE observation_id = $1`, observationID).Scan(&content); err != nil {
 		t.Fatalf("read blob: %v", err)
 	}

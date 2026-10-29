@@ -299,5 +299,5 @@ func OpenDatabaseWithBudget(url string, budget PoolBudget) (DB, error) {
 
 // NewPostgresStore wraps an already-constructed DB in the PostgreSQL store.
 func NewPostgresStore(db DB, schema string) *PostgresStore {
-	return &PostgresStore{db: db, schema: schema, tuning: DefaultTuning(), recallGate: newRecallGate(DefaultTuning().MaxConcurrent)}
+	return &PostgresStore{db: db, defaultSchema: schema, tuning: DefaultTuning(), recallGate: newRecallGate(DefaultTuning().MaxConcurrent)}
 }

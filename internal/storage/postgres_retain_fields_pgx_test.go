@@ -44,7 +44,7 @@ func TestPostgresRetainUnitPersistsDurableFields(t *testing.T) {
 		gotEnd      *time.Time
 	)
 	query := `SELECT context, metadata, mentioned_at, event_date, occurred_end
-	          FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.memory_units WHERE id = $1`
+	          FROM ` + quoteIdent(store.(*PostgresStore).defaultSchema) + `.memory_units WHERE id = $1`
 	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, pgUUID("retain-fields-unit")).
 		Scan(&context, &metadataRaw, &gotMention, &gotEvent, &gotEnd); err != nil {
 		t.Fatalf("read back unit: %v", err)

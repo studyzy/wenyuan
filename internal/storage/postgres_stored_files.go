@@ -12,13 +12,17 @@ import (
 // go there and only the key is recorded locally; otherwise the payload is kept
 // in the stored-file table.
 func (s *PostgresStore) PutStoredFile(ctx context.Context, file StoredFile) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if err := ValidateStoredFileKey(file.Key); err != nil {
 		return err
 	}
 	if s.objectStore != nil {
 		return s.objectStore.Put(ctx, file.Key, file.Data, contentTypeForKey(file.Key))
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.file_storage (storage_key, data)
+	query := `INSERT INTO ` + quoteIdent(schema) + `.file_storage (storage_key, data)
 	          VALUES ($1, $2)
 	          ON CONFLICT (storage_key) DO UPDATE SET data = $2`
 	_, err := s.db.ExecContext(ctx, query, file.Key, file.Data)
@@ -29,6 +33,11 @@ func (s *PostgresStore) PutStoredFile(ctx context.Context, file StoredFile) erro
 // same sentinel as a missing row, so a caller cannot tell which backend held
 // the payload — nor needs to.
 func (s *PostgresStore) GetStoredFile(ctx context.Context, key string) (StoredFile, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 StoredFile
+		return zero0, schemaErr
+	}
 	if err := ValidateStoredFileKey(key); err != nil {
 		return StoredFile{}, ErrStoredFileNotFound
 	}
@@ -45,7 +54,7 @@ func (s *PostgresStore) GetStoredFile(ctx context.Context, key string) (StoredFi
 		}
 		return StoredFile{Key: key, Data: data, ContentType: contentType}, nil
 	}
-	query := `SELECT storage_key, data FROM ` + quoteIdent(s.schema) + `.file_storage WHERE storage_key = $1`
+	query := `SELECT storage_key, data FROM ` + quoteIdent(schema) + `.file_storage WHERE storage_key = $1`
 	var storedKey string
 	var data []byte
 	err := s.db.QueryRowContext(ctx, query, key).Scan(&storedKey, &data)
@@ -63,6 +72,10 @@ func (s *PostgresStore) GetStoredFile(ctx context.Context, key string) (StoredFi
 // no payload, or one that is not a well-formed key, is a no-op: cleanup never
 // fails on a blob that is already gone.
 func (s *PostgresStore) DeleteStoredFile(ctx context.Context, key string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if err := ValidateStoredFileKey(key); err != nil {
 		return nil
 	}
@@ -72,7 +85,7 @@ func (s *PostgresStore) DeleteStoredFile(ctx context.Context, key string) error 
 		}
 		return nil
 	}
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.file_storage WHERE storage_key = $1`
+	query := `DELETE FROM ` + quoteIdent(schema) + `.file_storage WHERE storage_key = $1`
 	_, err := s.db.ExecContext(ctx, query, key)
 	return err
 }

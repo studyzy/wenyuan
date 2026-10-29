@@ -15,7 +15,12 @@ import (
 // others serve. Reading the column is a single indexed lookup, which is the
 // price of that consistency, and it is the reference's own behaviour.
 func (s *PostgresStore) BankConfig(ctx context.Context, bankID string) (map[string]any, error) {
-	query := `SELECT COALESCE(config, '{}'::jsonb) FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]any
+		return zero0, schemaErr
+	}
+	query := `SELECT COALESCE(config, '{}'::jsonb) FROM ` + quoteIdent(schema) + `.banks WHERE bank_id = $1`
 	var raw []byte
 	err := s.reader().QueryRowContext(ctx, query, bankID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -10,6 +10,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // statsStore is a store double that serves the methods the backlog gauges read,
@@ -65,7 +66,7 @@ func backlogConfig() config.Config {
 // An unset backlog key yields no renderer at all, so the exposition carries no
 // backlog series — the reference's default.
 func TestBacklogMetricsDisabledByDefault(t *testing.T) {
-	if got := backlogMetrics(statsStore{}, config.Config{}); got != nil {
+	if got := backlogMetrics(statsStore{}, config.Config{}, nil); got != nil {
 		t.Fatalf("disabled backlog must yield a nil renderer")
 	}
 }
@@ -85,7 +86,7 @@ func TestBacklogMetricsAggregate(t *testing.T) {
 			{OperationType: "consolidate", Status: "processing", Count: 2},
 		},
 	}
-	samples := backlogMetrics(store, backlogConfig())()
+	samples := backlogMetrics(store, backlogConfig(), nil)()
 	want := map[string]float64{
 		`wenyuan_async_operations{operation_type="retain",status="pending",tenant="public"}`:         3,
 		`wenyuan_async_operations{operation_type="consolidate",status="processing",tenant="public"}`: 2,
@@ -110,7 +111,7 @@ func TestBacklogMetricsPerBank(t *testing.T) {
 			{OperationType: "retain", Status: "pending", BankID: "b1", Count: 2},
 		},
 	}
-	samples := backlogMetrics(store, cfg)()
+	samples := backlogMetrics(store, cfg, nil)()
 	want := map[string]float64{
 		`wenyuan_async_operations{bank_id="b1",operation_type="retain",status="pending",tenant="public"}`: 2,
 		`wenyuan_consolidation_backlog{bank_id="b1",tenant="public"}`:                                     3,
@@ -124,7 +125,7 @@ func TestBacklogMetricsPerBank(t *testing.T) {
 // A failed store yields no series rather than a broken scrape.
 func TestBacklogMetricsStoreError(t *testing.T) {
 	store := statsStore{err: fmt.Errorf("boom")}
-	samples := backlogMetrics(store, backlogConfig())()
+	samples := backlogMetrics(store, backlogConfig(), nil)()
 	if len(samples) != 0 {
 		t.Fatalf("samples = %+v", samples)
 	}
@@ -150,7 +151,7 @@ func TestDBPoolMetrics(t *testing.T) {
 // The exposition's extras compose the backlog, pool and process families.
 func TestExpositionExtrasComposes(t *testing.T) {
 	store := poolStore{stats: storage.PoolStats{InUse: 2, Idle: 3, Max: 100}, ok: true}
-	extras := expositionExtras(store, backlogConfig())
+	extras := expositionExtras(store, backlogConfig(), nil)
 	if extras == nil {
 		t.Fatal("extras must be non-nil")
 	}
@@ -231,5 +232,81 @@ func TestMetricsTenantGated(t *testing.T) {
 	cfg.MetricsTuning.IncludeTenant = true
 	if got := metricsTenant(cfg); got != "tenant_a" {
 		t.Fatalf("tenant = %q, want tenant_a", got)
+	}
+}
+
+// staticTenants is the tenant source for the metrics tests: a fixed active set.
+type staticTenants struct {
+	schemas []string
+}
+
+func (s staticTenants) Authenticate(context.Context, tenant.Request) (tenant.Context, error) {
+	return tenant.Context{}, tenant.ErrAuthentication
+}
+
+func (s staticTenants) ListTenants(context.Context) ([]tenant.Tenant, error) {
+	out := make([]tenant.Tenant, 0, len(s.schemas))
+	for _, schema := range s.schemas {
+		out = append(out, tenant.Tenant{Schema: schema, ID: schema})
+	}
+	return out, nil
+}
+
+// schemaStatsStore keys its data by the schema on the context, so a test can
+// prove the collector switched schema for each series.
+type schemaStatsStore struct {
+	storage.Store
+	banks  map[string][]storage.Bank
+	stats  map[string]map[string]storage.BankStats
+	groups map[string][]storage.AsyncOperationGroup
+}
+
+func (s schemaStatsStore) ListBanks(ctx context.Context, _ storage.BankQuery) (storage.BankPage, error) {
+	schema, _ := storage.SchemaFrom(ctx)
+	return storage.BankPage{Banks: s.banks[schema]}, nil
+}
+
+func (s schemaStatsStore) BankStats(ctx context.Context, bankID string) (storage.BankStats, error) {
+	schema, _ := storage.SchemaFrom(ctx)
+	return s.stats[schema][bankID], nil
+}
+
+func (s schemaStatsStore) CountAsyncOperations(ctx context.Context, _ bool) ([]storage.AsyncOperationGroup, error) {
+	schema, _ := storage.SchemaFrom(ctx)
+	return s.groups[schema], nil
+}
+
+func TestBacklogMetricsMultiTenant(t *testing.T) {
+	store := schemaStatsStore{
+		banks: map[string][]storage.Bank{
+			"t1": {{BankID: "b1"}},
+			"t2": {{BankID: "b2"}},
+		},
+		stats: map[string]map[string]storage.BankStats{
+			"t1": {"b1": {PendingConsolidation: 3}},
+			"t2": {"b2": {PendingConsolidation: 4, FailedConsolidation: 2}},
+		},
+		groups: map[string][]storage.AsyncOperationGroup{
+			"t1": {{OperationType: "retain", Status: "pending", Count: 2}},
+			"t2": {{OperationType: "retain", Status: "pending", Count: 5}},
+		},
+	}
+	samples := backlogMetrics(store, backlogConfig(), staticTenants{schemas: []string{"t1", "t2"}})()
+	want := map[string]float64{
+		`wenyuan_async_operations{operation_type="retain",status="pending",tenant="t1"}`: 2,
+		`wenyuan_async_operations{operation_type="retain",status="pending",tenant="t2"}`: 5,
+		`wenyuan_consolidation_backlog{tenant="t1"}`:                                     3,
+		`wenyuan_consolidation_backlog{tenant="t2"}`:                                     4,
+		`wenyuan_consolidation_failed{tenant="t1"}`:                                      0,
+		`wenyuan_consolidation_failed{tenant="t2"}`:                                      2,
+	}
+	assertSeries(t, samples, want)
+}
+
+func TestMetricsTenantIsEmptyInMultiMode(t *testing.T) {
+	cfg := config.Config{DatabaseSchema: "public", TenantMode: config.TenantModeMulti}
+	cfg.MetricsTuning.IncludeTenant = true
+	if got := metricsTenant(cfg); got != "" {
+		t.Fatalf("multi-mode tenant = %q, want empty (per-series labels carry it)", got)
 	}
 }

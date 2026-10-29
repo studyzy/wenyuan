@@ -8,16 +8,22 @@
 export const ACCESS_KEY_ENV = "WENYUAN_CP_ACCESS_KEY";
 export const DATAPLANE_URL_ENV = "WENYUAN_CP_DATAPLANE_API_URL";
 export const DATAPLANE_KEY_ENV = "WENYUAN_CP_DATAPLANE_API_KEY";
+export const ADMIN_URL_ENV = "WENYUAN_CP_ADMIN_API_URL";
+export const ADMIN_KEY_ENV = "WENYUAN_CP_ADMIN_API_KEY";
 export const BASE_PATH_ENV = "NEXT_PUBLIC_BASE_PATH";
 export const MAX_UPLOAD_SIZE_ENV = "WENYUAN_CP_MAX_UPLOAD_SIZE";
 
 export const DEFAULT_DATAPLANE_URL = "http://127.0.0.1:8000";
+// The management plane's default matches the wenyuan server's offset port.
+export const DEFAULT_ADMIN_URL = "http://127.0.0.1:18890";
 export const DEFAULT_MAX_UPLOAD_SIZE = 25 * 1024 * 1024;
 
 export type ServerConfig = {
   accessKey: string;
   dataplaneUrl: string;
   dataplaneKey: string;
+  adminUrl: string;
+  adminKey: string;
   basePath: string;
   maxUploadSize: number;
 };
@@ -38,6 +44,8 @@ export function resolveServerConfig(env: EnvSource): ServerConfig {
       "",
     ),
     dataplaneKey: (env[DATAPLANE_KEY_ENV] ?? "").trim(),
+    adminUrl: ((env[ADMIN_URL_ENV] ?? "").trim() || DEFAULT_ADMIN_URL).replace(/\/+$/, ""),
+    adminKey: (env[ADMIN_KEY_ENV] ?? "").trim(),
     basePath,
     maxUploadSize:
       Number.isFinite(parsedMax) && parsedMax > 0 ? parsedMax : DEFAULT_MAX_UPLOAD_SIZE,
@@ -46,4 +54,18 @@ export function resolveServerConfig(env: EnvSource): ServerConfig {
 
 export function isGateEnabled(config: ServerConfig): boolean {
   return config.accessKey.length > 0;
+}
+
+/**
+ * Re-point the shared upstream client at the management plane. The data-plane
+ * helpers keep their shape; only the base URL and credential change, so the
+ * operator key never reaches the browser and every route stays on the same
+ * server-side call path.
+ */
+export function adminServerConfig(config: ServerConfig): ServerConfig {
+  return {
+    ...config,
+    dataplaneUrl: config.adminUrl,
+    dataplaneKey: config.adminKey,
+  };
 }

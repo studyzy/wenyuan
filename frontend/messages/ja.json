@@ -2658,5 +2658,98 @@
       "cancel": "キャンセル",
       "save": "保存"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "バンク",
+      "tenants": "テナント",
+      "overview": "概要",
+      "activeTenant": "テナント: {tenant}",
+      "exit": "テナントを退出"
+    },
+    "list": {
+      "title": "テナント",
+      "description": "このデプロイのテナント、スキーマ、状態、認証情報。",
+      "new": "新しいテナント",
+      "searchPlaceholder": "ID または表示名を検索",
+      "allStatuses": "すべての状態",
+      "empty": "テナントはまだありません。",
+      "tenant": "テナント",
+      "status": "状態",
+      "displayName": "表示名",
+      "created": "作成日",
+      "failed": "テナントを読み込めませんでした",
+      "statuses": {
+        "active": "有効",
+        "suspended": "停止中",
+        "provisioning": "プロビジョニング中",
+        "deleted": "削除済み"
+      }
+    },
+    "create": {
+      "title": "新しいテナント",
+      "description": "テナント ID は PostgreSQL のスキーマ名になり、変更できません。",
+      "id": "テナント ID",
+      "idHint": "小文字、数字、アンダースコア。2〜63 文字。",
+      "idPlaceholder": "acme",
+      "displayName": "表示名",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "設定 (JSON)",
+      "adopt": "新しいスキーマを作成せず、既存の完全なスキーマを採用する",
+      "creating": "作成中...",
+      "submit": "テナントを作成",
+      "invalidId": "テナント ID は必須の slug 形式に一致する必要があります。",
+      "invalidConfig": "設定は JSON オブジェクトである必要があります。",
+      "failed": "テナントを作成できませんでした"
+    },
+    "detail": {
+      "notFound": "テナントが見つかりません",
+      "suspend": "停止",
+      "activate": "有効化",
+      "deleteConfirm": "テナント {tenant} を論理削除しますか？スキーマは保持されます。",
+      "schema": "スキーマ:",
+      "config": "設定",
+      "keys": "キー",
+      "keyLabel": "キーのラベル",
+      "createKey": "キーを作成",
+      "shownOnce": "このキーは一度しか表示されません。今すぐコピーしてください。",
+      "noKeys": "キーはまだありません。",
+      "prefix": "プレフィックス",
+      "label": "ラベル",
+      "created": "作成日",
+      "state": "状態",
+      "revoked": "失効",
+      "ephemeral": "一時的",
+      "active": "有効",
+      "revoke": "失効させる",
+      "statusFailed": "状態を変更できませんでした",
+      "deleteFailed": "テナントを削除できませんでした",
+      "keyFailed": "キーを作成できませんでした",
+      "revokeFailed": "キーを失効させられませんでした",
+      "loadFailed": "テナントを読み込めませんでした",
+      "enter": "テナントに入る",
+      "enterFailed": "テナントに入れませんでした",
+      "migrate": "移行",
+      "migrated": "スキーマを移行しました。",
+      "migrateFailed": "スキーマを移行できませんでした",
+      "purge": "完全削除",
+      "purgeConfirm": "スキーマを完全に削除するには {tenant} を入力してください。",
+      "purgeFailed": "テナントを完全削除できませんでした"
+    },
+    "overview": {
+      "title": "概要",
+      "description": "このデプロイのテナント数。",
+      "failed": "概要を読み込めませんでした",
+      "total": "合計",
+      "active": "有効",
+      "suspended": "停止中",
+      "provisioning": "プロビジョニング中",
+      "deleted": "削除済み"
+    },
+    "notConfigured": {
+      "title": "管理プレーンが構成されていません",
+      "body": "テナントを管理するには、コンソールサーバーで WENYUAN_CP_ADMIN_API_URL と WENYUAN_CP_ADMIN_API_KEY を設定してください。",
+      "back": "バンクに戻る"
+    }
   }
 }

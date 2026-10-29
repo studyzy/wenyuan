@@ -39,7 +39,7 @@ func (s *PostgresStore) RestoreBinary(ctx context.Context, loads []BinaryLoad) e
 		if !ok {
 			return fmt.Errorf("binary restore needs the pgx driver; the pooled connection is %T", driverConn)
 		}
-		return restoreBinaryOnConn(ctx, s.schema, stdlibConn.Conn(), loads)
+		return restoreBinaryOnConn(ctx, s.defaultSchema, stdlibConn.Conn(), loads)
 	})
 }
 
@@ -68,7 +68,7 @@ func (s *PostgresStore) DumpBinary(ctx context.Context, tables []string) ([]Bina
 		if !ok {
 			return fmt.Errorf("binary backup needs the pgx driver; the pooled connection is %T", driverConn)
 		}
-		dumps, err = dumpBinaryOnConn(ctx, s.schema, stdlibConn.Conn(), tables)
+		dumps, err = dumpBinaryOnConn(ctx, s.defaultSchema, stdlibConn.Conn(), tables)
 		return err
 	})
 	if err != nil {

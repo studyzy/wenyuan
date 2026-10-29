@@ -2658,5 +2658,98 @@
       "cancel": "取消",
       "save": "儲存"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "記憶庫",
+      "tenants": "租戶",
+      "overview": "總覽",
+      "activeTenant": "租戶：{tenant}",
+      "exit": "退出租戶"
+    },
+    "list": {
+      "title": "租戶",
+      "description": "呢個部署嘅租戶、schema、狀態同憑證。",
+      "new": "新租戶",
+      "searchPlaceholder": "搵 ID 或者顯示名",
+      "allStatuses": "全部狀態",
+      "empty": "仲未有租戶。",
+      "tenant": "租戶",
+      "status": "狀態",
+      "displayName": "顯示名",
+      "created": "建立時間",
+      "failed": "載入唔到租戶",
+      "statuses": {
+        "active": "啟用中",
+        "suspended": "已暫停",
+        "provisioning": "建立緊",
+        "deleted": "已刪除"
+      }
+    },
+    "create": {
+      "title": "新租戶",
+      "description": "租戶 ID 會變成 PostgreSQL schema 名，建立後唔可以改。",
+      "id": "租戶 ID",
+      "idHint": "小寫字母、數字同底線，2-63 個字元。",
+      "idPlaceholder": "acme",
+      "displayName": "顯示名",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "設定（JSON）",
+      "adopt": "接管現有完整 schema，而唔係開新嘅",
+      "creating": "建立緊...",
+      "submit": "建立租戶",
+      "invalidId": "租戶 ID 要符合 slug 規則（小寫字母、數字、底線）。",
+      "invalidConfig": "設定一定要係 JSON 物件。",
+      "failed": "建立唔到租戶"
+    },
+    "detail": {
+      "notFound": "搵唔到租戶",
+      "suspend": "暫停",
+      "activate": "啟用",
+      "deleteConfirm": "軟刪除租戶 {tenant}？schema 會保留。",
+      "schema": "Schema：",
+      "config": "設定",
+      "keys": "金鑰",
+      "keyLabel": "金鑰標籤",
+      "createKey": "建立金鑰",
+      "shownOnce": "請即刻複製，呢個金鑰只會顯示一次。",
+      "noKeys": "仲未有金鑰。",
+      "prefix": "前綴",
+      "label": "標籤",
+      "created": "建立時間",
+      "state": "狀態",
+      "revoked": "已撤銷",
+      "ephemeral": "臨時",
+      "active": "有效",
+      "revoke": "撤銷",
+      "statusFailed": "改唔到狀態",
+      "deleteFailed": "刪除唔到租戶",
+      "keyFailed": "建立唔到金鑰",
+      "revokeFailed": "撤銷唔到金鑰",
+      "loadFailed": "載入唔到租戶",
+      "enter": "進入租戶",
+      "enterFailed": "入唔到租戶",
+      "migrate": "遷移",
+      "migrated": "Schema 已遷移。",
+      "migrateFailed": "遷移唔到 Schema",
+      "purge": "清除",
+      "purgeConfirm": "輸入 {tenant} 去永久刪除佢個 schema。",
+      "purgeFailed": "清除唔到租戶"
+    },
+    "overview": {
+      "title": "總覽",
+      "description": "呢個部署嘅租戶數量。",
+      "failed": "載入唔到總覽",
+      "total": "總數",
+      "active": "啟用中",
+      "suspended": "已暫停",
+      "provisioning": "建立緊",
+      "deleted": "已刪除"
+    },
+    "notConfigured": {
+      "title": "管理面未設定",
+      "body": "請喺控制台伺服器設定 WENYUAN_CP_ADMIN_API_URL 同 WENYUAN_CP_ADMIN_API_KEY 去管理租戶。",
+      "back": "返回記憶庫"
+    }
   }
 }

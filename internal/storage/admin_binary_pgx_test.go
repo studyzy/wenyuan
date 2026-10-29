@@ -67,7 +67,7 @@ func captureBinaryStream(t *testing.T, pg *PostgresStore, table string, columns 
 		if !ok {
 			t.Fatalf("pooled connection is %T, want the pgx driver", driverConn)
 		}
-		qualified := quoteIdent(pg.schema) + "." + quoteIdent(table)
+		qualified := quoteIdent(pg.defaultSchema) + "." + quoteIdent(table)
 		names := make([]string, 0, len(columns))
 		for _, column := range columns {
 			names = append(names, quoteIdent(column.Name))
@@ -89,7 +89,7 @@ func captureBinaryStream(t *testing.T, pg *PostgresStore, table string, columns 
 func TestRestoreBinaryRoundTrip(t *testing.T) {
 	pg := openMigratedStore(t, "binrest")
 	ctx := context.Background()
-	table := quoteIdent(pg.schema) + ".observation_history"
+	table := quoteIdent(pg.defaultSchema) + ".observation_history"
 
 	if _, err := pg.db.ExecContext(ctx,
 		`INSERT INTO `+table+` (observation_id, bank_id, content)
@@ -150,7 +150,7 @@ func TestRestoreBinaryRoundTrip(t *testing.T) {
 func TestRestoreBinaryFailureLeavesDataInPlace(t *testing.T) {
 	pg := openMigratedStore(t, "binfail")
 	ctx := context.Background()
-	table := quoteIdent(pg.schema) + ".observation_history"
+	table := quoteIdent(pg.defaultSchema) + ".observation_history"
 
 	if _, err := pg.db.ExecContext(ctx,
 		`INSERT INTO `+table+` (observation_id, bank_id, content)

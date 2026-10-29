@@ -43,6 +43,9 @@ func (e *AuthenticationError) Unwrap() error { return ErrAuthentication }
 // Context is the resolved tenant for one operation: the schema every statement
 // in that operation is qualified with.
 type Context struct {
+	// ID is the tenant identifier a registry resolved. It is empty for the
+	// single-tenant default, which has no registry row.
+	ID string
 	// Schema is the PostgreSQL schema name.
 	Schema string
 	// Overrides are the tenant's configuration overrides, keyed by the public

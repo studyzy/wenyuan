@@ -15,7 +15,11 @@ import "context"
 // live with its own derived adjacency stripped (the reference's
 // enqueue_relink_victims with include_affected_units set).
 func (s *PostgresStore) dropNonCausalLinks(ctx context.Context, bankID, unitID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	if err := s.enqueueRelinkVictims(ctx, s.db, bankID, []string{unitID}, true); err != nil {
 		return err
 	}

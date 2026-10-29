@@ -2658,5 +2658,98 @@
       "cancel": "Cancel",
       "save": "Save"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "Banks",
+      "tenants": "Tenants",
+      "overview": "Overview",
+      "activeTenant": "Tenant: {tenant}",
+      "exit": "Exit tenant"
+    },
+    "list": {
+      "title": "Tenants",
+      "description": "Tenants in this deployment, their schema, status and credentials.",
+      "new": "New tenant",
+      "searchPlaceholder": "Search id or display name",
+      "allStatuses": "All statuses",
+      "empty": "No tenants yet.",
+      "tenant": "Tenant",
+      "status": "Status",
+      "displayName": "Display name",
+      "created": "Created",
+      "failed": "Could not load tenants",
+      "statuses": {
+        "active": "Active",
+        "suspended": "Suspended",
+        "provisioning": "Provisioning",
+        "deleted": "Deleted"
+      }
+    },
+    "create": {
+      "title": "New tenant",
+      "description": "The tenant id becomes the PostgreSQL schema name and cannot be changed.",
+      "id": "Tenant id",
+      "idHint": "Lowercase letters, digits and underscores; 2-63 characters.",
+      "idPlaceholder": "acme",
+      "displayName": "Display name",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "Config (JSON)",
+      "adopt": "Adopt an existing complete schema instead of creating a new one",
+      "creating": "Creating...",
+      "submit": "Create tenant",
+      "invalidId": "Tenant id must match the required slug pattern.",
+      "invalidConfig": "Config must be a JSON object.",
+      "failed": "Could not create the tenant"
+    },
+    "detail": {
+      "notFound": "Tenant not found",
+      "suspend": "Suspend",
+      "activate": "Activate",
+      "deleteConfirm": "Soft-delete tenant {tenant}? Its schema is kept.",
+      "schema": "Schema:",
+      "config": "Config",
+      "keys": "Keys",
+      "keyLabel": "Key label",
+      "createKey": "Create key",
+      "shownOnce": "Copy this key now; it is shown once.",
+      "noKeys": "No keys yet.",
+      "prefix": "Prefix",
+      "label": "Label",
+      "created": "Created",
+      "state": "State",
+      "revoked": "revoked",
+      "ephemeral": "ephemeral",
+      "active": "active",
+      "revoke": "Revoke",
+      "statusFailed": "Could not change the status",
+      "deleteFailed": "Could not delete the tenant",
+      "keyFailed": "Could not create the key",
+      "revokeFailed": "Could not revoke the key",
+      "loadFailed": "Could not load the tenant",
+      "enter": "Enter tenant",
+      "enterFailed": "Could not enter the tenant",
+      "migrate": "Migrate",
+      "migrated": "Schema migrated.",
+      "migrateFailed": "Could not migrate the schema",
+      "purge": "Purge",
+      "purgeConfirm": "Type {tenant} to permanently drop its schema.",
+      "purgeFailed": "Could not purge the tenant"
+    },
+    "overview": {
+      "title": "Overview",
+      "description": "Tenant counts for this deployment.",
+      "failed": "Could not load the overview",
+      "total": "total",
+      "active": "active",
+      "suspended": "suspended",
+      "provisioning": "provisioning",
+      "deleted": "deleted"
+    },
+    "notConfigured": {
+      "title": "Management plane not configured",
+      "body": "Set WENYUAN_CP_ADMIN_API_URL and WENYUAN_CP_ADMIN_API_KEY on the console server to manage tenants.",
+      "back": "Back to banks"
+    }
   }
 }

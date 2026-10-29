@@ -117,7 +117,7 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 		schema = "public"
 	}
 	return &PostgresStore{
-		db: db, schema: schema, vectorExtension: cfg.VectorExtension,
+		db: db, defaultSchema: schema, requireSchema: cfg.RequireTenantSchema, vectorExtension: cfg.VectorExtension,
 		bankStatsCacheTTL: cfg.BankStatsCacheTTL, migrationDB: migrationDB, readDB: readDB,
 		textSearchExtension: textSearch.extension, pgFunctionSchema: textSearch.functionSchema,
 		tsNativeLanguage: textSearch.nativeLanguage, pgTokenizer: textSearch.tokenizer, tuning: DefaultTuning(),
@@ -127,8 +127,12 @@ func (b *PostgresBackend) Open(ctx context.Context, cfg BackendConfig) (Store, e
 // PostgresStore is the database-backed Store. It is the sole owner of the
 // memory-domain tables.
 type PostgresStore struct {
-	db     DB
-	schema string
+	db            DB
+	defaultSchema string
+	// requireSchema makes every statement resolve its schema from the request
+	// context and fail when none was set. Multi-tenant mode turns it on; the
+	// single-tenant default keeps reading schema.
+	requireSchema bool
 	// vectorExtension names the index access method family the deployment runs
 	// on, so the per-bank vector index DDL matches the stored vectors.
 	vectorExtension string
@@ -253,7 +257,17 @@ func (s *PostgresStore) WithObjectStore(objectStore ObjectStore) *PostgresStore 
 func (s *PostgresStore) UsesObjectStore() bool { return s.objectStore != nil }
 
 // Schema returns the configured schema target.
-func (s *PostgresStore) Schema() string { return s.schema }
+func (s *PostgresStore) Schema() string { return s.defaultSchema }
+
+// AdminDB returns the handle the control plane's own tables use: the migration
+// handle when one is configured, else the serving handle. The registry lives
+// in the admin schema, which is not any tenant's schema.
+func (s *PostgresStore) AdminDB() DB {
+	if s.migrationDB != nil {
+		return s.migrationDB
+	}
+	return s.db
+}
 
 // reader is the handle read-only statements run over: the configured read
 // replica when one is set, otherwise the primary.
@@ -351,7 +365,7 @@ func (s *PostgresStore) migrateTarget() *PostgresStore {
 	if s.migrationDB == nil {
 		return s
 	}
-	return &PostgresStore{db: s.migrationDB, schema: s.schema, vectorExtension: s.vectorExtension}
+	return &PostgresStore{db: s.migrationDB, defaultSchema: s.defaultSchema, vectorExtension: s.vectorExtension}
 }
 
 // MigrateWithoutExtensions runs the series without installing or reconciling the
@@ -417,7 +431,7 @@ func (s *PostgresStore) migrate(ctx context.Context, opts migrateOptions) error 
 	}
 	// The schema is created inside the lock so two processes cannot race on its
 	// creation either.
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdent(s.schema))); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdent(s.defaultSchema))); err != nil {
 		return err
 	}
 	// The extension schema stays on the path: a statement in this store may
@@ -495,7 +509,7 @@ const extensionSchema = "public"
 // searchPath is the path every statement of this store resolves against: its
 // own schema first, then the extensions.
 func (s *PostgresStore) searchPath() string {
-	return quoteIdent(s.schema) + ", " + quoteIdent(extensionSchema)
+	return quoteIdent(s.defaultSchema) + ", " + quoteIdent(extensionSchema)
 }
 
 // ensureMigrationTableTx creates the record of applied migrations.
@@ -504,7 +518,7 @@ func (s *PostgresStore) searchPath() string {
 // and a hazard: a migration is only idempotent while someone remembers to write
 // it that way.
 func (s *PostgresStore) ensureMigrationTableTx(ctx context.Context, tx Tx) error {
-	query := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(s.schema) + `.schema_migrations (
+	query := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(s.defaultSchema) + `.schema_migrations (
 	              version     INTEGER PRIMARY KEY,
 	              name        TEXT NOT NULL,
 	              applied_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
@@ -517,7 +531,7 @@ func (s *PostgresStore) ensureMigrationTableTx(ctx context.Context, tx Tx) error
 // sees, which inside Migrate is the transaction holding the migration lock.
 func (s *PostgresStore) appliedMigrationsTx(ctx context.Context, q queryer) (map[int]bool, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT version FROM `+quoteIdent(s.schema)+`.schema_migrations`)
+		`SELECT version FROM `+quoteIdent(s.defaultSchema)+`.schema_migrations`)
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +559,7 @@ func (s *PostgresStore) applyMigrationTx(ctx context.Context, tx Tx, migration M
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(s.schema)+`.schema_migrations (version, name) VALUES ($1, $2)
+		`INSERT INTO `+quoteIdent(s.defaultSchema)+`.schema_migrations (version, name) VALUES ($1, $2)
 		 ON CONFLICT (version) DO NOTHING`,
 		migration.Version, migration.Name); err != nil {
 		return fmt.Errorf("recording migration %04d failed: %w", migration.Version, err)

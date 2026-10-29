@@ -74,13 +74,17 @@ func (s *PostgresStore) resolveRetainReplay(ctx context.Context, bankID, operati
 
 // insertAsyncRetain writes the parent and its children in one transaction.
 func (s *PostgresStore) insertAsyncRetain(ctx context.Context, parent Operation, children []asyncRetainChild) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	parentMetadata, err := marshalMetadata(parent.ResultMetadata)
 	if err != nil {
 		return err
 	}
 	// The parent's payload stays NULL: it is not executable work, and a row
 	// with no payload is what tells a claim there is nothing to run.
-	insert := `INSERT INTO ` + quoteIdent(s.schema) + `.async_operations
+	insert := `INSERT INTO ` + quoteIdent(schema) + `.async_operations
 	           (operation_id, bank_id, operation_type, status, result_metadata, task_payload, serialization_key)
 	           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7)`
 	tx, err := s.db.BeginTx(ctx, nil)

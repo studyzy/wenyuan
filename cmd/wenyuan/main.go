@@ -264,6 +264,7 @@ func newRegistry() *cli.Registry {
 	cli.RegisterMemoryCommands(registry)
 	cli.RegisterReadCommands(registry)
 	cli.RegisterBankCommands(registry)
+	cli.RegisterTenantCommands(registry)
 	cli.RegisterKBCommands(registry)
 	cli.RegisterFSCommands(registry)
 	cli.RegisterUICommand(registry)

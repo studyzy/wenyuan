@@ -26,7 +26,12 @@ type Migration struct {
 // MigrationSeries returns the embedded migration series in ascending version
 // order. It errors if the series is empty or contains a gap.
 func MigrationSeries() ([]Migration, error) {
-	entries, err := fs.ReadDir(migrationFS, "embedded")
+	return migrationSeriesFrom(migrationFS, "embedded")
+}
+
+// migrationSeriesFrom reads one embedded migration series, in version order.
+func migrationSeriesFrom(fsys fs.FS, dir string) ([]Migration, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +44,7 @@ func MigrationSeries() ([]Migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		content, err := fs.ReadFile(migrationFS, "embedded/"+entry.Name())
+		content, err := fs.ReadFile(fsys, dir+"/"+entry.Name())
 		if err != nil {
 			return nil, err
 		}

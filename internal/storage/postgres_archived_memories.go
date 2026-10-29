@@ -14,7 +14,12 @@ import (
 // none of which the live unit projection carries, so projecting the rows here
 // would drop them before a transfer ever saw them.
 func (s *PostgresStore) ListArchivedMemories(ctx context.Context, bankID string) ([]map[string]any, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []map[string]any
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	query := `SELECT row_to_json(mu) FROM (
 	            SELECT * FROM ` + qualified + `.invalidated_memory_units
 	            WHERE bank_id = $1
@@ -45,7 +50,12 @@ func (s *PostgresStore) ListArchivedMemories(ctx context.Context, bankID string)
 // its default rather than shifting the others, and an id already archived is
 // left alone.
 func (s *PostgresStore) PutArchivedMemory(ctx context.Context, row map[string]any) (bool, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 bool
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	data, err := json.Marshal(row)
 	if err != nil {
 		return false, err

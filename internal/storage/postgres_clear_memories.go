@@ -12,13 +12,18 @@ import "context"
 // The count is taken inside the same transaction as the delete, so a caller's
 // before/after diff cannot race a concurrent retain.
 func (s *PostgresStore) ClearBankMemories(ctx context.Context, bankID, factType string) (int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	removed, err := deleteBankMemories(ctx, s, tx, qualified, bankID, factType)
 	if err != nil {
 		return 0, err

@@ -68,10 +68,15 @@ func (s *PostgresStore) attachRecallEntities(ctx context.Context, q RecallQuery,
 // entities, which is the set its own detail read reports. A unit that resolves
 // to no entity is absent from the result rather than mapped to an empty list.
 func (s *PostgresStore) recallUnitEntityRefs(ctx context.Context, bankID string, unitIDs []string) (map[string][]EntityRef, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]EntityRef
+		return zero0, schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return nil, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT ue.unit_id::text, ue.entity_id::text, e.canonical_name
 		FROM `+qualified+`.unit_entities ue
@@ -124,6 +129,11 @@ func containsEntityRef(refs []EntityRef, id string) bool {
 // chunks the returned matches reference, dropping any chunk whose document the
 // reader may not see.
 func (s *PostgresStore) recallChunkEntries(ctx context.Context, q RecallQuery, matches []RecallMatch) ([]ChunkEntry, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []ChunkEntry
+		return zero0, schemaErr
+	}
 	ordered := make([]string, 0, len(matches))
 	seen := map[string]bool{}
 	docByChunk := map[string]string{}
@@ -148,7 +158,7 @@ func (s *PostgresStore) recallChunkEntries(ctx context.Context, q RecallQuery, m
 	}
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT chunk_id, COALESCE(document_id, ''), COALESCE(chunk_index, 0), COALESCE(chunk_text, '')
-		 FROM `+quoteIdent(s.schema)+`.chunks
+		 FROM `+quoteIdent(schema)+`.chunks
 		 WHERE bank_id = $1 AND chunk_id = ANY($2::text[])`, q.BankID, ordered)
 	if err != nil {
 		return nil, err
@@ -193,6 +203,11 @@ func (s *PostgresStore) recallChunkEntries(ctx context.Context, q RecallQuery, m
 // to the stored units they name, keyed by id, so the source-fact channel carries
 // the same result shape as the ranked list.
 func (s *PostgresStore) recallSourceFacts(ctx context.Context, q RecallQuery, matches []RecallMatch) (map[string]RecallMatch, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]RecallMatch
+		return zero0, schemaErr
+	}
 	ids := make([]string, 0)
 	seen := map[string]bool{}
 	for _, m := range matches {
@@ -211,7 +226,7 @@ func (s *PostgresStore) recallSourceFacts(ctx context.Context, q RecallQuery, ma
 		`SELECT id::text, COALESCE(text, ''), COALESCE(fact_type, ''), COALESCE(document_id, ''),
 		        COALESCE(chunk_id, ''), occurred_start, occurred_end, mentioned_at,
 		        COALESCE(metadata, '{}'::jsonb), COALESCE(tags, '{}')
-		 FROM `+quoteIdent(s.schema)+`.memory_units
+		 FROM `+quoteIdent(schema)+`.memory_units
 		 WHERE bank_id = $1 AND id::text = ANY($2::text[])`, q.BankID, ids)
 	if err != nil {
 		return nil, err

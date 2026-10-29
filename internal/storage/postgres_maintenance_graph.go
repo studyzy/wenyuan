@@ -9,10 +9,15 @@ var _ GraphMaintainer = (*PostgresStore)(nil)
 // removes them from the queue, so a deleted unit's neighbours are relinked
 // exactly once.
 func (s *PostgresStore) DrainGraphMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []MaintenanceTarget
+		return zero0, schemaErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`DELETE FROM `+qualified+`.graph_maintenance_queue
 		 WHERE (bank_id, unit_id) IN (
@@ -38,10 +43,14 @@ func (s *PostgresStore) DrainGraphMaintenance(ctx context.Context, limit int) ([
 // drain, so the work is retried rather than lost with the claimed row. A target
 // already queued is left alone.
 func (s *PostgresStore) RequeueGraphMaintenance(ctx context.Context, targets []MaintenanceTarget) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(targets) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	banks := make([]string, len(targets))
 	units := make([]string, len(targets))
 	for i, target := range targets {
@@ -60,10 +69,14 @@ func (s *PostgresStore) RequeueGraphMaintenance(ctx context.Context, targets []M
 // failed drain, so the work is retried rather than lost with the claimed row.
 // A target already queued is left alone.
 func (s *PostgresStore) RequeueEntityMaintenance(ctx context.Context, targets []MaintenanceTarget) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(targets) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	banks := make([]string, len(targets))
 	entities := make([]string, len(targets))
 	for i, target := range targets {
@@ -97,7 +110,11 @@ func (s *PostgresStore) RelinkUnit(ctx context.Context, bankID, unitID string) e
 // same-kind units in both directions inside the 24h window, and leaves any edge
 // that is already there alone.
 func (s *PostgresStore) topUpTemporalLinks(ctx context.Context, bankID, unitID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	_, err := s.db.ExecContext(ctx,
 		`WITH victim AS (
 		     SELECT mu.id, mu.event_date, mu.fact_type
@@ -145,10 +162,14 @@ func (s *PostgresStore) topUpTemporalLinks(ctx context.Context, bankID, unitID s
 // rule: it must run before the links are deleted, because once the rows are
 // gone the join that finds the survivors returns nothing.
 func (s *PostgresStore) enqueueRelinkVictims(ctx context.Context, exec stmtExecer, bankID string, unitIDs []string, includeAffected bool) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	_, err := exec.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.graph_maintenance_queue (bank_id, unit_id)
 		 SELECT $1, victim FROM (
@@ -169,10 +190,15 @@ func (s *PostgresStore) enqueueRelinkVictims(ctx context.Context, exec stmtExece
 // DrainEntityMaintenance claims up to limit queued entity-prune targets and
 // removes them from the queue.
 func (s *PostgresStore) DrainEntityMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []MaintenanceTarget
+		return zero0, schemaErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`DELETE FROM `+qualified+`.entity_maintenance_queue
 		 WHERE (bank_id, entity_id) IN (
@@ -197,7 +223,11 @@ func (s *PostgresStore) DrainEntityMaintenance(ctx context.Context, limit int) (
 // PruneEntity removes an entity no memory unit mentions any more. An entity
 // that regained a mention since it was queued is kept.
 func (s *PostgresStore) PruneEntity(ctx context.Context, bankID, entityID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.entities
 		 WHERE bank_id = $1 AND id = $2::uuid
@@ -225,7 +255,11 @@ func (s *PostgresStore) PruneEntity(ctx context.Context, bankID, entityID string
 // (entity_id_1, entity_id_2) order before the delete, which is the order a
 // concurrent retain upserts take them in, so the two cannot cycle.
 func (s *PostgresStore) pruneStaleCooccurrences(ctx context.Context, entityID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	cooccurrences := qualified + `.entity_cooccurrences`
 	postings := qualified + `.unit_entities`
 	_, err := s.db.ExecContext(ctx,

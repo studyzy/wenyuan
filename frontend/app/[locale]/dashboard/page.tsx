@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { BankSelector } from "@/components/bank-selector";
+import { ConsoleNav } from "@/components/console-nav";
 import { BanksOverview } from "@/components/banks-overview";
 import { useBank } from "@/lib/bank-context";
 
@@ -25,6 +26,7 @@ export default function DashboardPage() {
         className="texture-aurora animate-aurora-drift pointer-events-none fixed inset-x-0 top-0 h-[420px] opacity-70"
       />
       <div className="relative flex flex-1 flex-col">
+        <ConsoleNav />
         <BankSelector />
         <BanksOverview />
       </div>

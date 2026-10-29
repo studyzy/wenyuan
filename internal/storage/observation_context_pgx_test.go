@@ -35,7 +35,7 @@ func TestPostgresObservationContextIsNull(t *testing.T) {
 
 	var isNull bool
 	if err := store.db.QueryRowContext(ctx,
-		`SELECT context IS NULL FROM `+quoteIdent(store.schema)+`.memory_units WHERE id = $1::uuid`,
+		`SELECT context IS NULL FROM `+quoteIdent(store.defaultSchema)+`.memory_units WHERE id = $1::uuid`,
 		observationID).Scan(&isNull); err != nil {
 		t.Fatalf("read the stored context: %v", err)
 	}

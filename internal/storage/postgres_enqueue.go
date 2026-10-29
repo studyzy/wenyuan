@@ -34,6 +34,11 @@ func qualifiedColumns(alias string) string {
 // each one insert its own copy — which is the defect the check exists to
 // prevent. Here the statement itself is the arbiter.
 func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest) (EnqueueResult, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 EnqueueResult
+		return zero0, schemaErr
+	}
 	op := req.Operation
 	if op.OperationID == "" {
 		op.OperationID = newID()
@@ -65,7 +70,7 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 	}
 
 	return s.enqueueLockedBankTx(ctx, op.BankID, true, func(tx Tx) (EnqueueResult, error) {
-		table := quoteIdent(s.schema) + ".async_operations"
+		table := quoteIdent(schema) + ".async_operations"
 		// A running operation is preferred over a merely queued one. Both
 		// suppress the insert, but the running one is the work actually under
 		// way, so it is the honest thing to report back — and preferring it
@@ -81,7 +86,7 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 			op.BankID, op.OperationType, blockingStatuses, subjectKey, subjectValue(op.Payload, subjectKey)).Scan(&existingID)
 		switch {
 		case err == nil:
-			existing, readErr := getOperationTx(ctx, tx, s.schema, existingID)
+			existing, readErr := getOperationTx(ctx, tx, schema, existingID)
 			if readErr != nil {
 				return EnqueueResult{}, readErr
 			}
@@ -90,7 +95,7 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 			return EnqueueResult{}, err
 		}
 
-		query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
+		query := "INSERT INTO " + quoteIdent(schema) + ".async_operations" +
 			"          (bank_id, operation_type, status, error_message, retry_count," +
 			"           result_metadata, task_payload, serialization_key)" +
 			"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +
@@ -129,6 +134,11 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 // caller that deduplicates by bank tolerates it here and lets the insert fail
 // its foreign key, which is what an unknown bank used to answer.
 func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, requireBank bool, submit func(tx Tx) (EnqueueResult, error)) (EnqueueResult, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 EnqueueResult
+		return zero0, schemaErr
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return EnqueueResult{}, err
@@ -137,7 +147,7 @@ func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, 
 
 	var bankPresent int
 	lockErr := tx.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(s.schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
+		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
 		bankID).Scan(&bankPresent)
 	// A bank that is not present holds no queued work, so there is nothing to
 	// deduplicate against; callers that require it stop, and callers that do not
@@ -172,6 +182,11 @@ func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, 
 // (full-bank) pending op", engine/memory_engine.py:22207-22211). It applies to
 // consolidation; graph maintenance has no scoped sibling.
 func (s *PostgresStore) enqueueDedupeByBank(ctx context.Context, op Operation, blockingStatuses []string, unscopedOnly bool) (EnqueueResult, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 EnqueueResult
+		return zero0, schemaErr
+	}
 	if op.OperationID == "" {
 		op.OperationID = newID()
 	}
@@ -201,14 +216,14 @@ func (s *PostgresStore) enqueueDedupeByBank(ctx context.Context, op Operation, b
 			unscoped = ` AND task_payload->'observation_scopes' IS NULL`
 		}
 		err := tx.QueryRowContext(ctx,
-			`SELECT operation_id FROM `+quoteIdent(s.schema)+`.async_operations
+			`SELECT operation_id FROM `+quoteIdent(schema)+`.async_operations
 			 WHERE bank_id = $1 AND operation_type = $2 AND status = ANY($3::text[])`+unscoped+`
 			 ORDER BY created_at, operation_id
 			 LIMIT 1`,
 			op.BankID, op.OperationType, blockingStatuses).Scan(&existingID)
 		switch {
 		case err == nil:
-			existing, readErr := getOperationTx(ctx, tx, s.schema, existingID)
+			existing, readErr := getOperationTx(ctx, tx, schema, existingID)
 			if readErr != nil {
 				return EnqueueResult{}, readErr
 			}
@@ -216,7 +231,7 @@ func (s *PostgresStore) enqueueDedupeByBank(ctx context.Context, op Operation, b
 		case !errors.Is(err, sql.ErrNoRows):
 			return EnqueueResult{}, err
 		}
-		query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
+		query := "INSERT INTO " + quoteIdent(schema) + ".async_operations" +
 			"          (operation_id, bank_id, operation_type, status, error_message, retry_count," +
 			"           result_metadata, task_payload, serialization_key)" +
 			"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)" +
@@ -241,7 +256,12 @@ func getOperationTx(ctx context.Context, tx Tx, schema, opID string) (Operation,
 
 // insertOperation performs the unguarded insert.
 func (s *PostgresStore) insertOperation(ctx context.Context, op Operation, metadata, payload []byte) (Operation, error) {
-	query := "INSERT INTO " + quoteIdent(s.schema) + ".async_operations" +
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
+	query := "INSERT INTO " + quoteIdent(schema) + ".async_operations" +
 		"          (bank_id, operation_type, status, error_message, retry_count," +
 		"           result_metadata, task_payload, serialization_key)" +
 		"          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)" +

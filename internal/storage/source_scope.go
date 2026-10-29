@@ -28,6 +28,10 @@ func TagsVisibleUnderScope(tags []string, scope []TagGroup) bool {
 // or in another bank) is not visible, and neither is an empty id (a chunk with
 // no document).
 func (s *PostgresStore) visibleDocumentIDs(ctx context.Context, bankID string, documentIDs []string, tags []string, mode string, groups []TagGroup) (map[string]bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
 	wanted := make([]string, 0, len(documentIDs))
 	seen := map[string]bool{}
 	for _, id := range documentIDs {
@@ -48,7 +52,7 @@ func (s *PostgresStore) visibleDocumentIDs(ctx context.Context, bankID string, d
 		return visible, nil
 	}
 	rows, err := s.reader().QueryContext(ctx,
-		`SELECT id, COALESCE(tags, '{}') FROM `+quoteIdent(s.schema)+`.documents
+		`SELECT id, COALESCE(tags, '{}') FROM `+quoteIdent(schema)+`.documents
 		 WHERE bank_id = $1 AND id = ANY($2::text[])`, bankID, wanted)
 	if err != nil {
 		return nil, err

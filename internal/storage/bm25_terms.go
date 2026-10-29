@@ -98,7 +98,11 @@ func selectSelectiveTerms(tokens []string, stats []bm25TermStat, maxTerms int) [
 // result aligns with tokens by position. It is best-effort: a failure returns
 // an error the caller treats as "fall back to the first-N cap".
 func (s *PostgresStore) bm25TokenDocumentFrequencies(ctx context.Context, tokens []string) ([]bm25TermStat, error) {
-	rows, err := s.reader().QueryContext(ctx, s.bm25TermStatsQuery(), tokens, s.schema, "memory_units")
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	rows, err := s.reader().QueryContext(ctx, s.bm25TermStatsQuery(), tokens, schema, "memory_units")
 	if err != nil {
 		return nil, err
 	}

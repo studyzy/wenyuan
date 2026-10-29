@@ -371,6 +371,10 @@ func (s *PostgresStore) reflectRecall(ctx context.Context, bankID, query string,
 
 // ReflectReadModels returns specific perspectives by identifier.
 func (s *PostgresStore) ReflectReadModels(ctx context.Context, bankID string, ids []string) ([]ReflectCitation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -379,7 +383,7 @@ func (s *PostgresStore) ReflectReadModels(ctx context.Context, bankID string, id
 	}
 	// The identifier is cast to text so it scans into a string exactly as the
 	// arm queries do, rather than depending on how the driver renders a uuid.
-	query := `SELECT id::text, COALESCE(content, '') FROM ` + quoteIdent(s.schema) + `.mental_models
+	query := `SELECT id::text, COALESCE(content, '') FROM ` + quoteIdent(schema) + `.mental_models
 	          WHERE bank_id = $1 AND id::text = ANY($2::text[])`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
@@ -416,6 +420,10 @@ func (s *PostgresStore) ReflectReadModels(ctx context.Context, bankID string, id
 // cannot see (#5030). One query fetches the memories and their document and
 // chunk text; the visibility check runs before any source text is substituted.
 func (s *PostgresStore) ReflectExpand(ctx context.Context, req ReflectExpandRequest) ([]ReflectCitation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -425,10 +433,10 @@ func (s *PostgresStore) ReflectExpand(ctx context.Context, req ReflectExpandRequ
 	active := tagFilterActive(req.Tags, req.TagsMatch, req.TagGroups)
 	query := `SELECT u.id::text, COALESCE(u.text, ''), COALESCE(u.document_id, ''), COALESCE(u.chunk_id, ''),
 	                 COALESCE(u.tags, '{}'), COALESCE(d.original_text, ''), COALESCE(d.tags, '{}'), COALESCE(c.chunk_text, '')
-	          FROM ` + quoteIdent(s.schema) + `.memory_units u
-	          LEFT JOIN ` + quoteIdent(s.schema) + `.documents d
+	          FROM ` + quoteIdent(schema) + `.memory_units u
+	          LEFT JOIN ` + quoteIdent(schema) + `.documents d
 	                 ON d.id = u.document_id AND d.bank_id = u.bank_id
-	          LEFT JOIN ` + quoteIdent(s.schema) + `.chunks c
+	          LEFT JOIN ` + quoteIdent(schema) + `.chunks c
 	                 ON c.chunk_id = u.chunk_id AND c.bank_id = u.bank_id
 	          WHERE u.bank_id = $1 AND u.id::text = ANY($2::text[])`
 	rows, err := s.reader().QueryContext(ctx, query, req.BankID, req.IDs)

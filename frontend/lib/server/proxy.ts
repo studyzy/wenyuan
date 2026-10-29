@@ -1,5 +1,14 @@
 import type { ServerConfig } from "./config";
+import { adminServerConfig } from "./config";
 import { encodeBankId } from "./paths";
+import { jsonResponse } from "./http";
+import {
+  TENANT_SESSION_COOKIE,
+  createTenantSessionToken,
+  isSecureRequest,
+  readTenantSessionToken,
+  tenantSessionCookieAttributes,
+} from "./session";
 import { callUpstream, passthrough, type QueryValue, type UpstreamResult } from "./upstream";
 import { ERROR_KEY_FIELD, localizeError } from "./errors";
 import { negotiateLocale } from "../../i18n/negotiate";
@@ -25,6 +34,12 @@ export type ProxyOptions = {
   query?: Record<string, QueryValue>;
   method?: string;
   body?: BodyInit;
+  /**
+   * Whether a tenant session cookie may override the data-plane credential.
+   * Data-plane routes keep the default (true); admin routes set false so the
+   * tenant key is never sent to the management plane.
+   */
+  tenantScoped?: boolean;
 };
 
 export type SerializeOptions = ProxyOptions & {
@@ -59,10 +74,81 @@ function forwardBody(options: ProxyOptions) {
   } as const;
 }
 
+function cookieValue(request: Request, name: string): string | undefined {
+  const header = request.headers.get("cookie");
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return undefined;
+}
+
+type TenantOverride = {
+  config: ServerConfig;
+  setCookie?: string;
+  error?: Response;
+};
+
+/**
+ * Swap the static data-plane credential for the tenant key a console session
+ * carries. A tenant cookie that cannot be decrypted or has expired fails closed:
+ * falling back to the static key would silently route the request to the
+ * deployment's default schema.
+ */
+async function tenantOverride(config: ServerConfig, request: Request): Promise<TenantOverride> {
+  const token = cookieValue(request, TENANT_SESSION_COOKIE);
+  if (!token) return { config };
+  if (!config.accessKey) {
+    return { config, error: jsonResponse({ error: "tenant_session_unavailable" }, 503) };
+  }
+  const session = readTenantSessionToken(config.accessKey, token, Date.now());
+  if (!session) {
+    return { config, error: jsonResponse({ error: "tenant_session_invalid" }, 401) };
+  }
+  let dataplaneKey = session.key;
+  let setCookie: string | undefined;
+  // Renew shortly before the short-lived key expires, so a console left open
+  // keeps working without the browser ever seeing the credential.
+  if (session.exp * 1000 - Date.now() < 120_000) {
+    const renewed = await renewTenantSession(config, session.tenant_id);
+    if (renewed) {
+      dataplaneKey = renewed;
+      const secure = isSecureRequest(request.headers.get("x-forwarded-proto"));
+      const next = createTenantSessionToken(config.accessKey, session.tenant_id, renewed, Date.now());
+      setCookie =
+        TENANT_SESSION_COOKIE + "=" + next + "; " + tenantSessionCookieAttributes(secure);
+    }
+  }
+  return { config: { ...config, dataplaneKey }, setCookie };
+}
+
+async function renewTenantSession(config: ServerConfig, tenantId: string): Promise<string | null> {
+  if (!config.adminKey) return null;
+  const result = await callUpstream(adminServerConfig(config), {
+    path: "/admin/v1/tenants/" + encodeURIComponent(tenantId) + "/session",
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (!result.ok) return null;
+  try {
+    const body = JSON.parse(new TextDecoder().decode(result.body)) as { plaintext?: unknown };
+    return typeof body.plaintext === "string" ? body.plaintext : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Direct-fetch passthrough: upstream status and payload are forwarded verbatim. */
 export async function proxyUpstream(options: ProxyOptions): Promise<Response> {
-  const result = await callUpstream(options.config, forwardBody(options));
-  return passthrough(result);
+  const override =
+    options.tenantScoped === false ? { config: options.config } : await tenantOverride(options.config, options.request);
+  if (override.error) return override.error;
+  const result = await callUpstream(override.config, forwardBody(options));
+  const response = passthrough(result);
+  if (override.setCookie) response.headers.append("set-cookie", override.setCookie);
+  return response;
 }
 
 function decodedUpstreamText(result: UpstreamResult): string | undefined {
@@ -103,13 +189,18 @@ function upstreamErrorField(result: UpstreamResult): string | null {
  * therefore do not need a catch that guesses a status.
  */
 export async function serializeUpstream(options: SerializeOptions): Promise<Response> {
+  const override =
+    options.tenantScoped === false ? { config: options.config } : await tenantOverride(options.config, options.request);
+  if (override.error) return override.error;
   let result: UpstreamResult;
   try {
-    result = await callUpstream(options.config, forwardBody(options));
+    result = await callUpstream(override.config, forwardBody(options));
   } catch {
     return upstreamUnavailableBody(options);
   }
-  return serializeResult(result, options);
+  const response = serializeResult(result, options);
+  if (override.setCookie) response.headers.append("set-cookie", override.setCookie);
+  return response;
 }
 
 export function serializeResult(result: UpstreamResult, options: SerializeOptions): Response {

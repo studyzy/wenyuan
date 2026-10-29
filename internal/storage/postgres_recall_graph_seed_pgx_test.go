@@ -22,7 +22,7 @@ func TestPostgresRecallGraphArmSeedsOnlyFromDenseHits(t *testing.T) {
 	}
 	const entity = "33333333-3333-3333-3333-333333333333"
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(pg.schema)+`.entities (id, canonical_name, bank_id) VALUES ($1::uuid,$2,$3)`,
+		`INSERT INTO `+quoteIdent(pg.defaultSchema)+`.entities (id, canonical_name, bank_id) VALUES ($1::uuid,$2,$3)`,
 		entity, "Lisken", bank); err != nil {
 		t.Fatalf("insert entity: %v", err)
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 	"github.com/studyzy/wenyuan/internal/timefmt"
 	"github.com/studyzy/wenyuan/internal/webhooks"
 	"github.com/studyzy/wenyuan/internal/worker"
@@ -625,7 +626,7 @@ func (p archiveProcessor) applyGraphMaintenance(ctx context.Context, op storage.
 	if !ok {
 		return nil
 	}
-	return drainGraphMaintenance(ctx, maintainer)
+	return drainGraphMaintenanceInSchema(ctx, maintainer)
 }
 
 // enqueueConsolidationRefreshes queues a refresh for every model that follows
@@ -1187,7 +1188,7 @@ func formatOptionalTime(value *time.Time) string {
 func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
 	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, tuning config.WorkerTuning,
 	guard *webhooks.Guard, extraction ExtractionSettings, discardDocumentText bool,
-	storeSchema string) *worker.Consumer {
+	storeSchema string, tenants tenant.Extension) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
 		recallPerSourceCap:  cfg.RecallMaxCandidatesPerSource,
@@ -1208,6 +1209,7 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 		ReservedSlots:       cfg.ReservedSlots,
 		BackpressureDefer:   tuning.BackpressureDefer,
 		ConsolidationByBank: tuning.ConsolidationByBank,
+		Tenants:             tenants,
 	})
 }
 

@@ -57,7 +57,7 @@ func TestAttachmentsPersistAndLinkToUnit(t *testing.T) {
 		t.Fatalf("upsert unit: %v", err)
 	}
 	var ids string
-	query := `SELECT attachment_ids::text FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.memory_units WHERE id = $1`
+	query := `SELECT attachment_ids::text FROM ` + quoteIdent(store.(*PostgresStore).defaultSchema) + `.memory_units WHERE id = $1`
 	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, pgUUID("att-unit")).Scan(&ids); err != nil {
 		t.Fatalf("read attachment_ids: %v", err)
 	}

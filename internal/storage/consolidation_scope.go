@@ -159,6 +159,10 @@ func (s *MemoryStore) CreateObservationInScope(ctx context.Context, bankID, text
 // match: an untagged scope returns only untagged observations, so a pass never
 // offers a differently-scoped observation as a merge candidate.
 func (s *PostgresStore) ConsolidationObservationsInScope(ctx context.Context, bankID string, scope []string, limit int) ([]ConsolidationObservation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -173,11 +177,11 @@ func (s *PostgresStore) ConsolidationObservationsInScope(ctx context.Context, ba
 	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
 	                 COALESCE(u.tags, '{}'::text[])::text,
 	                 COALESCE(src.texts, ARRAY[]::text[])::text
-	          FROM ` + quoteIdent(s.schema) + `.memory_units u
+	          FROM ` + quoteIdent(schema) + `.memory_units u
 	          LEFT JOIN LATERAL (
 	              SELECT array_agg(m.text ORDER BY source.ord) AS texts
 	              FROM unnest(u.source_memory_ids) WITH ORDINALITY AS source(sid, ord)
-	              JOIN ` + quoteIdent(s.schema) + `.memory_units m ON m.id = source.sid
+	              JOIN ` + quoteIdent(schema) + `.memory_units m ON m.id = source.sid
 	          ) src ON true
 	          WHERE u.bank_id = $1 AND u.fact_type = $2
 	            AND cardinality(COALESCE(u.tags, '{}'::text[])) = $3

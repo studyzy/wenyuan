@@ -20,9 +20,9 @@ const knowledgeSelect = `kp.id, kp.bank_id, COALESCE(kp.parent_id, ''), kp.kind,
 
 // knowledgeFrom is the shared source. The join is on the pair, not the model id
 // alone, because a mental model identifier is unique within its bank.
-func (s *PostgresStore) knowledgeFrom() string {
-	return quoteIdent(s.schema) + `.knowledge_pages kp
-	        LEFT JOIN ` + quoteIdent(s.schema) + `.mental_models mm
+func knowledgeFrom(schema string) string {
+	return quoteIdent(schema) + `.knowledge_pages kp
+	        LEFT JOIN ` + quoteIdent(schema) + `.mental_models mm
 	               ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id`
 }
 
@@ -36,7 +36,11 @@ func (s *PostgresStore) knowledgeFrom() string {
 // puts 'Alpha' first). Both surfaces that read this — the tree and the export
 // index — render that order, so it has to be the reference's.
 func (s *PostgresStore) ListKnowledgeNodes(ctx context.Context, bankID string) ([]KnowledgeNode, error) {
-	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	query := `SELECT ` + knowledgeSelect + ` FROM ` + knowledgeFrom(schema) + `
 	          WHERE kp.bank_id = $1
 	          ORDER BY kp.sort_order, kp.id`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
@@ -91,7 +95,11 @@ func (s *PostgresStore) GetKnowledgeNode(ctx context.Context, bankID, nodeID str
 // serves both a standalone lookup and one inside a caller's transaction — the
 // read the reference takes inside the patch's transaction.
 func (s *PostgresStore) getKnowledgeNodeOn(ctx context.Context, q queryer, bankID, nodeID string) (KnowledgeNode, error) {
-	query := `SELECT ` + knowledgeSelect + ` FROM ` + s.knowledgeFrom() + `
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return KnowledgeNode{}, schemaErr
+	}
+	query := `SELECT ` + knowledgeSelect + ` FROM ` + knowledgeFrom(schema) + `
 	          WHERE kp.bank_id = $1 AND kp.id = $2`
 	node, err := scanKnowledgeNode(q.QueryRowContext(ctx, query, bankID, nodeID))
 	if err != nil {
@@ -131,9 +139,13 @@ func (s *PostgresStore) PutKnowledgeNode(ctx context.Context, node KnowledgeNode
 // subtype is pinned, which is what the reference creates for an authored page,
 // and the source query is the page name so the model is readable on its own.
 func (s *PostgresStore) insertKnowledgePageModel(ctx context.Context, tx Tx, node KnowledgeNode, modelID string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	// The page name is bound separately to the model's name (VARCHAR) and its
 	// source query (TEXT): one parameter cannot be inferred as two types.
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_models
+	query := `INSERT INTO ` + quoteIdent(schema) + `.mental_models
 	          (id, bank_id, subtype, name, description, source_query, content, tags)
 	          VALUES ($1, $2, $3, $4, ' ', $5, $6, $7)`
 	_, err := tx.ExecContext(ctx, query, modelID, node.BankID, string(SubtypePinned),
@@ -151,7 +163,11 @@ func (s *PostgresStore) insertKnowledgePageModel(ctx context.Context, tx Tx, nod
 // neither half moved, so creating a page (already embedded at insert) and a
 // no-op write do not pay for a second embedding call.
 func (s *PostgresStore) updateKnowledgePageModel(ctx context.Context, tx Tx, node KnowledgeNode, modelID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	var oldName, oldContent string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(name, ''), COALESCE(content, '') FROM `+qualified+`.mental_models
@@ -180,7 +196,11 @@ func (s *PostgresStore) updateKnowledgePageModel(ctx context.Context, tx Tx, nod
 // outlive the page that named it. The page rows themselves go through the
 // parent cascade.
 func (s *PostgresStore) DeleteKnowledgeNode(ctx context.Context, bankID, nodeID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -299,6 +319,11 @@ func knowledgeBM25Query(query string) string {
 // rank on the text arm, and a caller with no query embedding gets the text arm
 // alone. The reported score is normalised to 0..1 (see knowledgeRRFNorm).
 func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query KnowledgeSearchQuery) ([]KnowledgeHit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []KnowledgeHit
+		return zero0, schemaErr
+	}
 	limit := knowledgeSearchLimit(query.Limit)
 	term := strings.TrimSpace(query.Query)
 	if term == "" {
@@ -346,7 +371,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		sqlQuery = `WITH vec AS (
 		                SELECT kp.id AS page_id,
 		                       ROW_NUMBER() OVER (ORDER BY mm.embedding <=> $1::vector, kp.id) AS rnk
-		                FROM ` + s.knowledgeFrom() + `
+		                FROM ` + knowledgeFrom(schema) + `
 		                WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL ` + tagPred + `
 		                ORDER BY mm.embedding <=> $1::vector, kp.id
 		                LIMIT $3
@@ -354,7 +379,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		            bm AS (
 		                SELECT kp.id AS page_id,
 		                       ROW_NUMBER() OVER (ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id) AS rnk
-		                FROM ` + s.knowledgeFrom() + `
+		                FROM ` + knowledgeFrom(schema) + `
 		                WHERE kp.bank_id = $2 AND kp.kind = 'page'
 		                      AND mm.search_vector @@ to_tsquery('english', $4) ` + tagPred + `
 		                ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $4)) DESC, kp.id
@@ -369,8 +394,8 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		            )
 		            SELECT ` + knowledgeSelect + `, f.score
 		            FROM fused f
-		            JOIN ` + quoteIdent(s.schema) + `.knowledge_pages kp ON kp.id = f.page_id AND kp.bank_id = $2
-		            LEFT JOIN ` + quoteIdent(s.schema) + `.mental_models mm
+		            JOIN ` + quoteIdent(schema) + `.knowledge_pages kp ON kp.id = f.page_id AND kp.bank_id = $2
+		            LEFT JOIN ` + quoteIdent(schema) + `.mental_models mm
 		                   ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id
 		            ORDER BY f.score DESC, kp.id ASC
 		            LIMIT $5`
@@ -382,7 +407,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		sqlQuery = `SELECT ` + knowledgeSelect + `,
 		                   ` + norm + `.0 / (` + rrfK + ` + ROW_NUMBER() OVER (
 		                         ORDER BY mm.embedding <=> $1::vector, kp.id)) AS score
-		            FROM ` + s.knowledgeFrom() + `
+		            FROM ` + knowledgeFrom(schema) + `
 		            WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL ` + tagPred + `
 		            ORDER BY mm.embedding <=> $1::vector, kp.id ASC
 		            LIMIT $3`
@@ -396,7 +421,7 @@ func (s *PostgresStore) SearchKnowledgeNodes(ctx context.Context, query Knowledg
 		                   ` + norm + `.0
 		                   / (` + rrfK + ` + ROW_NUMBER() OVER (
 		                         ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id)) AS score
-		            FROM ` + s.knowledgeFrom() + `
+		            FROM ` + knowledgeFrom(schema) + `
 		            WHERE kp.bank_id = $1 AND kp.kind = 'page'
 		                  AND mm.search_vector @@ to_tsquery('english', $2) ` + tagPred + `
 		            ORDER BY ts_rank_cd(mm.search_vector, to_tsquery('english', $2)) DESC, kp.id ASC

@@ -21,14 +21,14 @@ func TestPostgresInvalidVectorIndexIsRebuilt(t *testing.T) {
 	pg := store.(*PostgresStore)
 	bank := "vec-bank"
 	name := BankVectorIndexName("world", bank)
-	qualified := quoteIdent(pg.schema)
+	qualified := quoteIdent(pg.defaultSchema)
 
 	// A partition holding a row, so the plan wants an index for it.
 	if _, err := pg.db.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.memory_units (bank_id, text, fact_type) VALUES ($1, 'x', 'world')`, bank); err != nil {
 		t.Fatalf("insert memory unit: %v", err)
 	}
-	ddl := BankVectorIndexDDL(pg.schema, pg.vectorExtension, bank, BankVectorIndexAction{
+	ddl := BankVectorIndexDDL(pg.defaultSchema, pg.vectorExtension, bank, BankVectorIndexAction{
 		FactType: "world", IndexName: name, Create: true,
 	})
 	if _, err := pg.db.ExecContext(ctx, ddl); err != nil {
@@ -69,7 +69,7 @@ func TestPostgresDeleteBankDropsVectorIndexes(t *testing.T) {
 	bank := "vec-bank"
 	name := BankVectorIndexName("world", bank)
 
-	ddl := BankVectorIndexDDL(pg.schema, pg.vectorExtension, bank, BankVectorIndexAction{
+	ddl := BankVectorIndexDDL(pg.defaultSchema, pg.vectorExtension, bank, BankVectorIndexAction{
 		FactType: "world", IndexName: name, Create: true,
 	})
 	if _, err := pg.db.ExecContext(ctx, ddl); err != nil {
@@ -81,7 +81,7 @@ func TestPostgresDeleteBankDropsVectorIndexes(t *testing.T) {
 	var found int
 	if err := pg.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		 WHERE n.nspname = $1 AND c.relname = $2`, pg.schema, name).Scan(&found); err != nil {
+		 WHERE n.nspname = $1 AND c.relname = $2`, pg.defaultSchema, name).Scan(&found); err != nil {
 		t.Fatalf("count index: %v", err)
 	}
 	if found != 0 {
@@ -103,7 +103,7 @@ func TestPostgresSweepSeesBelowThresholdIndexHolders(t *testing.T) {
 		t.Fatalf("create second bank: %v", err)
 	}
 	name := BankVectorIndexName("world", "vec-bank")
-	ddl := BankVectorIndexDDL(pg.schema, pg.vectorExtension, "vec-bank", BankVectorIndexAction{
+	ddl := BankVectorIndexDDL(pg.defaultSchema, pg.vectorExtension, "vec-bank", BankVectorIndexAction{
 		FactType: "world", IndexName: name, Create: true,
 	})
 	if _, err := pg.db.ExecContext(ctx, ddl); err != nil {

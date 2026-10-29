@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ADMIN_URL,
   DEFAULT_DATAPLANE_URL,
   DEFAULT_MAX_UPLOAD_SIZE,
   resolveServerConfig,
@@ -32,6 +33,8 @@ describe("environment contract", () => {
     expect(config.basePath).toBe("");
     expect(config.maxUploadSize).toBe(DEFAULT_MAX_UPLOAD_SIZE);
     expect(config.accessKey).toBe("");
+    expect(config.adminUrl).toBe(DEFAULT_ADMIN_URL);
+    expect(config.adminKey).toBe("");
   });
 
   it("honors configured values", () => {
@@ -39,12 +42,16 @@ describe("environment contract", () => {
       WENYUAN_CP_ACCESS_KEY: "secret",
       WENYUAN_CP_DATAPLANE_API_URL: "http://api.internal:9000/",
       WENYUAN_CP_DATAPLANE_API_KEY: "upstream-key",
+      WENYUAN_CP_ADMIN_API_URL: "http://admin.internal:18890/",
+      WENYUAN_CP_ADMIN_API_KEY: "operator-key",
       NEXT_PUBLIC_BASE_PATH: "/frontend/",
       WENYUAN_CP_MAX_UPLOAD_SIZE: "1024",
     });
     expect(config.accessKey).toBe("secret");
     expect(config.dataplaneUrl).toBe("http://api.internal:9000");
     expect(config.dataplaneKey).toBe("upstream-key");
+    expect(config.adminUrl).toBe("http://admin.internal:18890");
+    expect(config.adminKey).toBe("operator-key");
     expect(config.basePath).toBe("/frontend");
     expect(config.maxUploadSize).toBe(1024);
   });
@@ -54,6 +61,8 @@ describe("environment contract", () => {
       "WENYUAN_CP_ACCESS_KEY",
       "WENYUAN_CP_DATAPLANE_API_URL",
       "WENYUAN_CP_DATAPLANE_API_KEY",
+      "WENYUAN_CP_ADMIN_API_URL",
+      "WENYUAN_CP_ADMIN_API_KEY",
       "NEXT_PUBLIC_BASE_PATH",
       "WENYUAN_CP_MAX_UPLOAD_SIZE",
     ];
@@ -243,6 +252,8 @@ describe("upstream response handling", () => {
     accessKey: "",
     dataplaneUrl: "http://upstream.local",
     dataplaneKey: "",
+    adminUrl: "http://admin.local",
+    adminKey: "",
     basePath: "",
     maxUploadSize: 1024,
   };

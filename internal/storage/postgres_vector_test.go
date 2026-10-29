@@ -189,7 +189,7 @@ func TestEmbeddingRoundTrips(t *testing.T) {
 		t.Fatal("expected a postgres store")
 	}
 	var raw string
-	query := `SELECT COALESCE(embedding::text, '') FROM ` + quoteIdent(pg.schema) + `.memory_units WHERE id = $1`
+	query := `SELECT COALESCE(embedding::text, '') FROM ` + quoteIdent(pg.defaultSchema) + `.memory_units WHERE id = $1`
 	if err := pg.db.QueryRowContext(ctx, query, pgUUID("round-trip")).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}

@@ -178,7 +178,7 @@ func TestPostgresKnowledgeDeleteSubtreeCycleSafe(t *testing.T) {
 	putKnowledge(t, store, KnowledgeNode{ID: "cyc-a", BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: "a"})
 	putKnowledge(t, store, KnowledgeNode{ID: "cyc-b", BankID: "vec-bank", Kind: KnowledgeKindFolder, Title: "b", ParentID: "cyc-a"})
 	if _, err := pg.db.ExecContext(ctx,
-		`UPDATE `+quoteIdent(pg.schema)+`.knowledge_pages SET parent_id = $1 WHERE bank_id = $2 AND id = $3`,
+		`UPDATE `+quoteIdent(pg.defaultSchema)+`.knowledge_pages SET parent_id = $1 WHERE bank_id = $2 AND id = $3`,
 		"cyc-b", "vec-bank", "cyc-a"); err != nil {
 		t.Fatalf("introduce cycle: %v", err)
 	}

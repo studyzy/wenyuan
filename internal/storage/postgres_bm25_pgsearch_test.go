@@ -14,8 +14,8 @@ import (
 func TestBM25ArmQuerySelectsTextSearchBackend(t *testing.T) {
 	q := RecallQuery{BankID: "bank", Types: []string{string(TypeWorld)}}
 
-	native := &PostgresStore{schema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
-	nativeSQL, nativeArgs := native.bm25ArmQuery(q, "alice | berlin", 20)
+	native := &PostgresStore{defaultSchema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
+	nativeSQL, nativeArgs := native.bm25ArmQuery(q, "alice | berlin", 20, "public")
 	for _, want := range []string{
 		"ts_rank_cd(search_vector, to_tsquery('english', $3)) AS score",
 		"search_vector @@ to_tsquery('english', $3)",
@@ -35,10 +35,10 @@ func TestBM25ArmQuerySelectsTextSearchBackend(t *testing.T) {
 	}
 
 	pg := &PostgresStore{
-		schema: "public", textSearchExtension: TextSearchPGSearch,
+		defaultSchema: "public", textSearchExtension: TextSearchPGSearch,
 		pgFunctionSchema: "paradedb", pgTokenizer: "jieba", tuning: DefaultTuning(),
 	}
-	pgSQL, pgArgs := pg.bm25ArmQuery(q, "alice berlin", 20)
+	pgSQL, pgArgs := pg.bm25ArmQuery(q, "alice berlin", 20, "public")
 	for _, want := range []string{
 		"paradedb.score(id) AS score",
 		"id @@@ paradedb.boolean(should =>",
@@ -64,10 +64,10 @@ func TestBM25ArmQuerySelectsTextSearchBackend(t *testing.T) {
 	// A configured function schema other than the ParadeDB default is used
 	// verbatim.
 	other := &PostgresStore{
-		schema: "public", textSearchExtension: TextSearchPGSearch,
+		defaultSchema: "public", textSearchExtension: TextSearchPGSearch,
 		pgFunctionSchema: "pgsearch", tuning: DefaultTuning(),
 	}
-	otherSQL, _ := other.bm25ArmQuery(q, "alice", 20)
+	otherSQL, _ := other.bm25ArmQuery(q, "alice", 20, "public")
 	if !strings.Contains(otherSQL, "pgsearch.score(id)") || !strings.Contains(otherSQL, "pgsearch.boolean(should =>") {
 		t.Fatalf("custom function schema ignored:\n%s", otherSQL)
 	}

@@ -38,11 +38,15 @@ var _ BankLifecycleSource = (*PostgresStore)(nil)
 
 // BankLifecycle reads a bank's internal identity and lifecycle timestamps.
 func (s *PostgresStore) BankLifecycle(ctx context.Context, bankID string) (BankLifecycle, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return BankLifecycle{}, schemaErr
+	}
 	var out BankLifecycle
 	var internalID *string
 	var lastConsolidated, missionChanged *time.Time
 	query := `SELECT internal_id::text, last_consolidated_at, mission_changed_at
-	          FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
+	          FROM ` + quoteIdent(schema) + `.banks WHERE bank_id = $1`
 	err := s.reader().QueryRowContext(ctx, query, bankID).
 		Scan(&internalID, &lastConsolidated, &missionChanged)
 	if err != nil {

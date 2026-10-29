@@ -20,7 +20,7 @@ func TestPostgresRecallEntityChannelFromStoredPostings(t *testing.T) {
 	if _, err := store.CreateBank(ctx, Bank{BankID: bank, Name: "w13-entities"}); err != nil {
 		t.Fatalf("create bank: %v", err)
 	}
-	qualified := quoteIdent(pg.schema)
+	qualified := quoteIdent(pg.defaultSchema)
 	for id, name := range map[string]string{
 		w13Alice:  "Alice Zhang",
 		w13Berlin: "Berlin Office",
@@ -105,7 +105,7 @@ func TestPostgresRecallEntityChannelAbsentUnlessRequested(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(pg.schema)+`.entities (id, canonical_name, bank_id) VALUES ($1::uuid,$2,$3)`,
+		`INSERT INTO `+quoteIdent(pg.defaultSchema)+`.entities (id, canonical_name, bank_id) VALUES ($1::uuid,$2,$3)`,
 		w13Alice, "Alice Zhang", bank); err != nil {
 		t.Fatalf("insert entity: %v", err)
 	}

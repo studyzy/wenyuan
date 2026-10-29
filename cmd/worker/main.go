@@ -27,6 +27,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 	"github.com/studyzy/wenyuan/internal/worker"
 )
 
@@ -111,16 +112,20 @@ func run(args []string) error {
 	// It is started in every worker process with no leader election, which is
 	// safe because each job's work is collision-proof rather than because one
 	// process is chosen.
-	loop := app.NewMaintenanceLoop(store, model, reflection, app.NewTenantExtension(cfg), cfg.Maintenance, cfg.VectorIndex)
+	tenants, err := app.OpenTenantExtension(ctx, cfg, store)
+	if err != nil {
+		return err
+	}
+	loop := app.NewMaintenanceLoop(store, model, reflection, tenants, cfg.Maintenance, cfg.VectorIndex)
 	if loop.Enabled() {
 		slog.Info("maintenance enabled",
 			"jobs", len(loop.Jobs),
 			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
 	}
 
-	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg), !cfg.StoreDocumentText, cfg.DatabaseSchema).
+	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg), !cfg.StoreDocumentText, cfg.DatabaseSchema, tenants).
 		WithAuditor(app.NewAuditLogger(cfg, store))
-	startWorkerHTTP(ctx, cfg, store, consumer)
+	startWorkerHTTP(ctx, cfg, store, consumer, tenants)
 	return runBoth(ctx, consumer, loop)
 }
 
@@ -146,7 +151,7 @@ func (p workerPinger) PoolWaiting() (int, bool) {
 // info endpoint, the health probes, and the metrics exposition. An orchestrator
 // probes the worker exactly as it probes the API. A non-positive port disables
 // the surface.
-func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store, consumer *worker.Consumer) {
+func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store, consumer *worker.Consumer, tenants tenant.Extension) {
 	if cfg.Worker.HTTPPort <= 0 {
 		return
 	}
@@ -161,7 +166,7 @@ func startWorkerHTTP(ctx context.Context, cfg config.Config, store storage.Store
 		mux.HandleFunc(method+" "+pattern, h)
 	}
 	monitoring.BindWorkerRoutes(handler, bind)
-	monitoring.BindMetricsRoutes(app.WorkerMetricsHandler(store, cfg), bind)
+	monitoring.BindMetricsRoutes(app.WorkerMetricsHandler(store, cfg, tenants), bind)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Worker.HTTPPort),
 		Handler:           mux,

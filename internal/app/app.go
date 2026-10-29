@@ -23,17 +23,24 @@ import (
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/embed"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // App is the composed, served application. It is the object the process
 // entrypoint and the application import target both resolve to.
 type App struct {
-	Config   config.Config
-	Store    storage.Store
-	Router   *httpx.Router
-	Handler  http.Handler
-	Metrics  *httpx.MetricsRecorder
-	MetricsH *monitoring.MetricsHandler
+	Config  config.Config
+	Store   storage.Store
+	Router  *httpx.Router
+	Handler http.Handler
+	// AdminHandler serves the management plane when WENYUAN_API_ADMIN_LISTEN is
+	// set; nil when the plane is off.
+	AdminHandler http.Handler
+	// TenantExtension resolves request and worker tenants in multi mode; nil
+	// in single mode, where the default extension serves one schema.
+	TenantExtension tenant.Extension
+	Metrics         *httpx.MetricsRecorder
+	MetricsH        *monitoring.MetricsHandler
 	// Provider is the active model-provider boundary, built once at
 	// composition so a selection error surfaces at startup. When no model is
 	// configured it is the no-model selection, which preserves the existing
@@ -80,6 +87,9 @@ type Dependencies struct {
 // New composes the application: it selects storage, applies migrations, mounts
 // every route namespace, and wires the middleware stack.
 func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error) {
+	if err := cfg.ValidateTenancy(); err != nil {
+		return nil, err
+	}
 	listen := deps.Listen
 	if listen == nil {
 		listen = net.Listen
@@ -102,7 +112,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	if err != nil {
 		return nil, err
 	}
-	if cfg.RunMigrationsOnStartup {
+	// Multi-tenant mode owns each tenant's schema through the registry; the
+	// process base schema is no longer the migration target.
+	if cfg.RunMigrationsOnStartup && cfg.TenantMode != config.TenantModeMulti {
 		if err := store.Migrate(ctx); err != nil {
 			return nil, fmt.Errorf("migrations failed: %w", err)
 		}
@@ -110,6 +122,34 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	// The alias-resolution cache is process-wide, so it is installed once, here,
 	// rather than per store handle.
 	storage.SetBankAliasCache(cfg.BankAliasCacheTTL, cfg.BankAliasCacheMaxEntries)
+
+	// Multi-tenant mode resolves every request through the registry. The same
+	// registry backs the management plane when it is enabled, so the process
+	// opens one connection to the control plane's tables.
+	var tenantRegistry storage.TenantRegistry
+	var tenantExtension tenant.Extension
+	var tenantProvisioner func(context.Context, string, bool) error
+	var tenantMigrator func(context.Context, string) error
+	var tenantDropper func(context.Context, string) error
+	if cfg.TenantMode == config.TenantModeMulti {
+		tenantRegistry, err = newTenantRegistry(ctx, cfg, store)
+		if err != nil {
+			return nil, err
+		}
+		tenantExtension = NewRegistryExtension(tenantRegistry)
+	}
+	if provider, ok := store.(adminDBProvider); ok {
+		db := provider.AdminDB()
+		tenantProvisioner = func(provisionCtx context.Context, id string, adopt bool) error {
+			return storage.ProvisionTenantSchema(provisionCtx, db, id, adopt, cfg.VectorExtension)
+		}
+		tenantMigrator = func(migrateCtx context.Context, id string) error {
+			return storage.MigrateTenantSchema(migrateCtx, db, id, cfg.VectorExtension)
+		}
+		tenantDropper = func(dropCtx context.Context, id string) error {
+			return storage.DropTenantSchema(dropCtx, db, id)
+		}
+	}
 
 	activeProvider := deps.Provider
 	if activeProvider == nil {
@@ -181,6 +221,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		BasePath:              cfg.BasePath,
 		TenantAPIKey:          tenantAuth.APIKey,
 		TenantMCPAuthDisabled: tenantAuth.MCPAuthDisabled,
+		TenantExtension:       tenantExtension,
 		MCPAuthToken:          cfg.MCPAuthToken,
 		AccessLog:             accessLogWriter(cfg),
 		TrustedProxies:        trustedProxies(cfg),
@@ -216,7 +257,20 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		},
 	})
 
-	app := &App{Config: cfg, Store: store, Router: router, Metrics: metrics, Provider: activeProvider, Tracer: tracer, Extensions: extensions, Audit: auditLogger, Embedder: embedder, Reranker: reranker}
+	app := &App{Config: cfg, Store: store, Router: router, Metrics: metrics, Provider: activeProvider, Tracer: tracer, Extensions: extensions, Audit: auditLogger, Embedder: embedder, Reranker: reranker, TenantExtension: tenantExtension}
+	if strings.TrimSpace(cfg.AdminListen) != "" {
+		if tenantRegistry == nil {
+			tenantRegistry, err = newTenantRegistry(ctx, cfg, store)
+			if err != nil {
+				return nil, err
+			}
+		}
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantProvisioner, tenantMigrator, tenantDropper)
+		if err != nil {
+			return nil, err
+		}
+		app.AdminHandler = adminHandler
+	}
 	// A deployment that names an operation validator gets the one this build
 	// implements natively. The name is the reference's class path, so a
 	// deployment configured for the reference behaves the same way here.
@@ -280,6 +334,7 @@ func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (st
 		TextSearchExtension:      cfg.TextSearchExtension,
 		TextSearchNativeLanguage: cfg.TextSearchExtensionNativeLanguage,
 		RunMigrations:            cfg.RunMigrationsOnStartup,
+		RequireTenantSchema:      cfg.TenantMode == config.TenantModeMulti,
 		BankInfoCacheTTL:         cfg.BankInfoCacheTTL,
 		BankInfoCacheMaxEntries:  cfg.ConsolidationTuning.BankInfoCacheMaxEntries,
 		BankStatsCacheTTL:        cfg.BankStatsCacheTTL,
@@ -357,7 +412,7 @@ func (a *App) mount(router *httpx.Router) error {
 	}
 	monitoring.BindVersionRoutes(version, handle)
 
-	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: expositionExtras(a.Store, a.Config), Histograms: loopLagHistograms(a.Config.MetricsTuning), Tenant: metricsTenant(a.Config)}
+	a.MetricsH = &monitoring.MetricsHandler{Recorder: a.Metrics, Extra: expositionExtras(a.Store, a.Config, a.TenantExtension), Histograms: loopLagHistograms(a.Config.MetricsTuning), Tenant: metricsTenant(a.Config)}
 	monitoring.BindMetricsRoutes(a.MetricsH, handle)
 	// The store measures a recall's phases; installing the observer here puts
 	// them in the same registry the exposition reads.

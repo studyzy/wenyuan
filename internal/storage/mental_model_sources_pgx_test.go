@@ -50,7 +50,7 @@ func insertUnit(t *testing.T, pg *PostgresStore, bankID, factType, text string) 
 	t.Helper()
 	mentioned := time.Now().UTC()
 	query := fmt.Sprintf(`INSERT INTO %s.memory_units (id, bank_id, text, fact_type, mentioned_at, tags)
-	           VALUES (gen_random_uuid(), $1, $2, $3, $4, '{}')`, quoteIdent(pg.schema))
+	           VALUES (gen_random_uuid(), $1, $2, $3, $4, '{}')`, quoteIdent(pg.defaultSchema))
 	if _, err := pg.db.ExecContext(context.Background(), query, bankID, text, factType, mentioned); err != nil {
 		t.Fatalf("insert a %s unit: %v", factType, err)
 	}

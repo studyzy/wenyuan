@@ -415,6 +415,11 @@ func (s *PostgresStore) keywordArm(ctx context.Context, q RecallQuery, term stri
 // listArm returns the bank's newest units of the requested types, for a query
 // with no words and no vector.
 func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []string, limit int) ([]recallHit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []recallHit
+		return zero0, schemaErr
+	}
 	// The score column is part of the shared arm-row shape the scanner reads; a
 	// list hit carries no lexical relevance, so its score is 0.
 	//
@@ -425,7 +430,7 @@ func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []stri
 	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, NULLIF(context, ''), metadata, tags,
 	                 COALESCE(source_memory_ids, '{}'::uuid[])::text,
 	                 0::float8 AS score
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type = ANY($2) AND ` + recallPredicates(q) + `
 	          ORDER BY mentioned_at DESC NULLS LAST, ctid ASC LIMIT $3`
 	args := append(armArgs(q), limit)
@@ -447,7 +452,11 @@ func (s *PostgresStore) listArm(ctx context.Context, q RecallQuery, types []stri
 // The statement itself comes from bm25ArmQuery, which renders the native
 // tsvector form or the configured pg_search form.
 func (s *PostgresStore) keywordHits(ctx context.Context, q RecallQuery, term string, limit int) ([]recallHit, error) {
-	query, args := s.bm25ArmQuery(q, term, limit)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	query, args := s.bm25ArmQuery(q, term, limit, schema)
 	return s.queryWithStatementTimeout(ctx, query, args, bm25StatementTimeout)
 }
 
@@ -487,6 +496,11 @@ func (s *PostgresStore) queryWithStatementTimeout(ctx context.Context, query str
 // weight. The entity arm is weighted tanh(shared_entities * 0.5), the upstream
 // saturation curve.
 func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []string, seeds []string) ([]recallHit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []recallHit
+		return zero0, schemaErr
+	}
 	if containsArm(q.DisabledArms, ArmGraph) {
 		return nil, nil
 	}
@@ -498,7 +512,7 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	// one ubiquitous entity drags in the whole bank.
 	query := `WITH seed_entities AS (
 	              SELECT DISTINCT ue.entity_id
-	              FROM ` + quoteIdent(s.schema) + `.unit_entities ue
+	              FROM ` + quoteIdent(schema) + `.unit_entities ue
 	              WHERE ue.unit_id::text = ANY($3::text[])
 	          ),
 	          entity_targets AS (
@@ -506,7 +520,7 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	              FROM seed_entities se
 	              JOIN LATERAL (
 	                  SELECT ue_target.unit_id
-	                  FROM ` + quoteIdent(s.schema) + `.unit_entities ue_target
+	                  FROM ` + quoteIdent(schema) + `.unit_entities ue_target
 	                  WHERE ue_target.entity_id = se.entity_id
 	                    AND ue_target.unit_id::text <> ALL($3::text[])
 	                  ORDER BY ue_target.unit_id
@@ -515,7 +529,7 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	          ),
 	          expanded AS (
 	              SELECT l.to_unit_id AS unit_id, l.weight AS contrib
-	              FROM ` + quoteIdent(s.schema) + `.memory_links l
+	              FROM ` + quoteIdent(schema) + `.memory_links l
 	              WHERE l.bank_id = $1 AND l.from_unit_id::text = ANY($3::text[])
 	                AND l.to_unit_id::text <> ALL($3::text[])
 	              UNION ALL
@@ -528,7 +542,7 @@ func (s *PostgresStore) graphArm(ctx context.Context, q RecallQuery, types []str
 	                 u.chunk_id, u.document_id, u.context, u.metadata, u.tags,
 	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text, SUM(e.contrib) AS weight
 	          FROM expanded e
-	          JOIN ` + quoteIdent(s.schema) + `.memory_units u ON u.id = e.unit_id
+	          JOIN ` + quoteIdent(schema) + `.memory_units u ON u.id = e.unit_id
 	          WHERE u.fact_type = ANY($2) AND ` + recallPredicates(q) + `
 	          GROUP BY u.id, u.text, u.fact_type, u.occurred_start, u.occurred_end, u.mentioned_at, u.chunk_id, u.document_id, u.context, u.metadata, u.tags, u.source_memory_ids
 	          ORDER BY weight DESC, u.ctid ASC LIMIT $4`
@@ -666,8 +680,13 @@ func utcTimePtr(value *time.Time) *time.Time {
 // about what the fold would have to consider, not about what a particular query
 // happened to surface.
 func (s *PostgresStore) tagVocabulary(ctx context.Context, bankID string) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []string
+		return zero0, schemaErr
+	}
 	query := `SELECT DISTINCT tag
-	          FROM ` + quoteIdent(s.schema) + `.memory_units, unnest(tags) AS tag
+	          FROM ` + quoteIdent(schema) + `.memory_units, unnest(tags) AS tag
 	          WHERE bank_id = $1`
 	rows, err := s.reader().QueryContext(ctx, query, bankID)
 	if err != nil {

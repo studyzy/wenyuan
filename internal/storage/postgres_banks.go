@@ -18,7 +18,12 @@ import (
 // document or a memory unit is the last write. A bank with neither falls back
 // to its creation time, which is the reference's ordering.
 func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPage, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 BankPage
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	where := ""
 	args := []any{}
 	if query.SearchGiven {
@@ -85,6 +90,11 @@ func (s *PostgresStore) ListBanks(ctx context.Context, query BankQuery) (BankPag
 // only when the search text is not already in the bank's own id or name, and
 // only for the page's banks. It is the reference's _aliases_explaining.
 func (s *PostgresStore) matchedAliases(ctx context.Context, banks []Bank, search string) (map[string][]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]string
+		return zero0, schemaErr
+	}
 	if search == "" || len(banks) == 0 {
 		return nil, nil
 	}
@@ -94,7 +104,7 @@ func (s *PostgresStore) matchedAliases(ctx context.Context, banks []Bank, search
 		ids[i] = banks[i].BankID
 		byID[banks[i].BankID] = banks[i]
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.reader().QueryContext(ctx, `SELECT bank_id, alias
 	    FROM `+qualified+`.bank_aliases
 	    WHERE bank_id = ANY($1) AND UPPER(alias) LIKE UPPER($2)
@@ -129,6 +139,10 @@ func (s *PostgresStore) matchedAliases(ctx context.Context, banks []Bank, search
 // a deployment had: the page is a bounded index range per bank. A bank with no
 // units keeps its zero.
 func (s *PostgresStore) fillFactCounts(ctx context.Context, banks []Bank) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(banks) == 0 {
 		return nil
 	}
@@ -136,7 +150,7 @@ func (s *PostgresStore) fillFactCounts(ctx context.Context, banks []Bank) error 
 	for i := range banks {
 		ids[i] = banks[i].BankID
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.reader().QueryContext(ctx, `SELECT bank_id, COUNT(*)
 	    FROM `+qualified+`.memory_units
 	    WHERE bank_id = ANY($1)
@@ -164,6 +178,11 @@ func (s *PostgresStore) fillFactCounts(ctx context.Context, banks []Bank) error 
 }
 
 func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Bank
+		return zero0, schemaErr
+	}
 	if !ValidBankID(bank.BankID) {
 		return Bank{}, ErrInvalidBankID
 	}
@@ -178,7 +197,7 @@ func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error)
 	}
 	// The reference names the bank key `bank_id` and carries the traits in one
 	// jsonb column, so a row written here is one the reference service reads.
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.banks
+	query := `INSERT INTO ` + quoteIdent(schema) + `.banks
 	          (bank_id, name, disposition, mission, config)
 	          VALUES ($1,$2,$3,$4,$5::jsonb)
 	          RETURNING ` + bankSelectColumns
@@ -206,6 +225,11 @@ func (s *PostgresStore) CreateBank(ctx context.Context, bank Bank) (Bank, error)
 // bank-create hook, which the composition root installs; it runs after this
 // insert commits, so the freshly-created bank is the hook's to provision.
 func (s *PostgresStore) ensureBankExists(ctx context.Context, bankID string) (bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 bool
+		return zero0, schemaErr
+	}
 	if !ValidBankID(bankID) {
 		return false, ErrInvalidBankID
 	}
@@ -219,7 +243,7 @@ func (s *PostgresStore) ensureBankExists(ctx context.Context, bankID string) (bo
 	if err != nil {
 		return false, err
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.banks
+	query := `INSERT INTO ` + quoteIdent(schema) + `.banks
 	          (bank_id, name, disposition, mission, config)
 	          VALUES ($1,$2,$3,$4,$5::jsonb)
 	          ON CONFLICT (bank_id) DO NOTHING`
@@ -247,8 +271,13 @@ func (s *PostgresStore) EnsureBank(ctx context.Context, bankID string) error {
 }
 
 func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Bank
+		return zero0, schemaErr
+	}
 	query := `SELECT ` + bankSelectColumns + `
-	          FROM ` + quoteIdent(s.schema) + `.banks WHERE bank_id = $1`
+	          FROM ` + quoteIdent(schema) + `.banks WHERE bank_id = $1`
 	row := s.reader().QueryRowContext(ctx, query, bankID)
 	bank, err := scanBank(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -258,6 +287,11 @@ func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error
 }
 
 func (s *PostgresStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Bank
+		return zero0, schemaErr
+	}
 	// A replace writes exactly what it is given: the name defaulting belongs to
 	// the create paths, so a partial update that clears the name keeps it empty
 	// rather than silently restoring the identifier.
@@ -269,7 +303,7 @@ func (s *PostgresStore) ReplaceBank(ctx context.Context, bank Bank) (Bank, error
 	if err != nil {
 		return Bank{}, err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.banks SET
+	query := `UPDATE ` + quoteIdent(schema) + `.banks SET
 	          name=$2, disposition=$3, mission=$4, config=$5::jsonb, updated_at=now()
 	          WHERE bank_id=$1
 	          RETURNING ` + bankSelectColumns
@@ -300,10 +334,15 @@ func (s *PostgresStore) UpdateBank(ctx context.Context, bankID string, patch Ban
 // that owns this guarantee. Dropping first means a failed drop leaves the bank
 // to be retried rather than stranding an unreachable index.
 func (s *PostgresStore) DeleteBank(ctx context.Context, bankID string) (int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
 	if err := s.dropBankVectorIndexes(ctx, bankID); err != nil {
 		return 0, fmt.Errorf("drop vector indexes for bank %s: %w", bankID, err)
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	// The bank's content is purged explicitly, not left to cascade: the memory
 	// domain hangs off `documents` and `entities`, neither of which references
 	// `banks`, so deleting the bank row alone would orphan the whole domain.

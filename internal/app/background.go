@@ -25,9 +25,12 @@ type BackgroundRoles struct {
 func NewBackgroundRoles(application *App) *BackgroundRoles {
 	model := application.Provider
 	reflection := NewReflectRunner(model)
-	tenants := NewTenantExtension(application.Config)
+	tenants := application.TenantExtension
+	if tenants == nil {
+		tenants = NewTenantExtension(application.Config)
+	}
 	return &BackgroundRoles{
-		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText, application.Config.DatabaseSchema).WithAuditor(application.Audit),
+		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText, application.Config.DatabaseSchema, tenants).WithAuditor(application.Audit),
 		Loop: NewMaintenanceLoop(
 			application.Store,
 			model,

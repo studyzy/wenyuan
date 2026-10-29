@@ -567,7 +567,7 @@ func TestReservedSlotsPreferReservedType(t *testing.T) {
 		ReservedSlots: map[string]int{storage.OperationTypeConsolidate: 1},
 		Logger:        quietLogger(),
 	})
-	op, err := consumer.claim(context.Background())
+	op, _, err := consumer.claim(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestReservedSlotsPreferReservedType(t *testing.T) {
 		t.Fatalf("claimed %q, want the reserved type first", op.OperationType)
 	}
 	// With the floor met, the next claim takes the remaining work.
-	op2, err := consumer.claim(context.Background())
+	op2, _, err := consumer.claim(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +764,7 @@ func TestConsumerClaimsConsolidationByConfiguredBankPriority(t *testing.T) {
 		ReservedSlots:       map[string]int{storage.OperationTypeConsolidate: 1},
 		ConsolidationByBank: "bank-b:10,*:1",
 	})
-	op, err := consumer.claim(ctx)
+	op, _, err := consumer.claim(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +792,7 @@ func TestConsumerWithoutPriorityClaimsOldestConsolidation(t *testing.T) {
 		WorkerID: "worker-1", Lease: time.Hour, Logger: quietLogger(),
 		ReservedSlots: map[string]int{storage.OperationTypeConsolidate: 1},
 	})
-	op, err := consumer.claim(ctx)
+	op, _, err := consumer.claim(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

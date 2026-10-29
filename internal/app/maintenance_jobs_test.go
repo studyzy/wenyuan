@@ -315,7 +315,7 @@ func TestGraphMaintenanceKeepsBatchOnFailure(t *testing.T) {
 		},
 		fail: map[string]bool{"u2": true, "e1": true},
 	}
-	err := drainGraphMaintenance(context.Background(), stub)
+	err := drainGraphMaintenanceInSchema(context.Background(), stub)
 	if err == nil {
 		t.Fatal("a failed target must still surface as a job failure")
 	}
@@ -345,7 +345,7 @@ func TestGraphMaintenanceReportsNoFailureWhenAllSucceed(t *testing.T) {
 	stub := &graphMaintainerStub{
 		relink: []storage.MaintenanceTarget{{BankID: "b1", ID: "u1"}},
 	}
-	if err := drainGraphMaintenance(context.Background(), stub); err != nil {
+	if err := drainGraphMaintenanceInSchema(context.Background(), stub); err != nil {
 		t.Fatalf("a clean batch: %v", err)
 	}
 	if len(stub.requeued) != 0 {

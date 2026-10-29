@@ -16,7 +16,7 @@ import (
 func TestClaimSkipsNullPayloadOperationPG(t *testing.T) {
 	store := postgresVectorStore(t).(*PostgresStore)
 	ctx := context.Background()
-	qualified := quoteIdent(store.schema)
+	qualified := quoteIdent(store.defaultSchema)
 
 	if _, err := store.db.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.async_operations (bank_id, operation_type, status, task_payload)
@@ -43,7 +43,7 @@ func TestClaimSkipsNullPayloadOperationPG(t *testing.T) {
 func TestRecoverConsolidationsSkipsNonSourceFactsPG(t *testing.T) {
 	store := postgresVectorStore(t).(*PostgresStore)
 	ctx := context.Background()
-	qualified := quoteIdent(store.schema)
+	qualified := quoteIdent(store.defaultSchema)
 
 	for _, row := range []struct{ id, factType string }{
 		{"11111111-1111-1111-1111-111111111111", "world"},

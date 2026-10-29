@@ -53,7 +53,7 @@ func TestPostgresDeleteBankPurgesContent(t *testing.T) {
 
 	for _, table := range []string{"memory_units", "documents", "entities"} {
 		var remaining int
-		query := `SELECT COUNT(*) FROM ` + quoteIdent(pg.schema) + `.` + table + ` WHERE bank_id = 'doomed'`
+		query := `SELECT COUNT(*) FROM ` + quoteIdent(pg.defaultSchema) + `.` + table + ` WHERE bank_id = 'doomed'`
 		if err := pg.db.QueryRowContext(ctx, query).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}

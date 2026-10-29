@@ -15,9 +15,9 @@ import (
 func TestNativeDictionaryReachesEveryKeywordSite(t *testing.T) {
 	q := RecallQuery{BankID: "bank", Types: []string{string(TypeWorld)}}
 
-	defaultStore := &PostgresStore{schema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
+	defaultStore := &PostgresStore{defaultSchema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
 	configured := &PostgresStore{
-		schema: "public", textSearchExtension: TextSearchNative, tsNativeLanguage: "simple", tuning: DefaultTuning(),
+		defaultSchema: "public", textSearchExtension: TextSearchNative, tsNativeLanguage: "simple", tuning: DefaultTuning(),
 	}
 
 	cases := []struct {
@@ -31,7 +31,7 @@ func TestNativeDictionaryReachesEveryKeywordSite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			armSQL, _ := tc.store.bm25ArmQuery(q, "alice | berlin", 20)
+			armSQL, _ := tc.store.bm25ArmQuery(q, "alice | berlin", 20, "public")
 			if !strings.Contains(armSQL, "to_tsquery("+tc.want+", $3)") {
 				t.Fatalf("keyword arm does not tokenize with %s:\n%s", tc.want, armSQL)
 			}
@@ -63,7 +63,7 @@ func TestNativeDictionaryReachesEveryKeywordSite(t *testing.T) {
 // directly (a test, or a caller that only needs the schema) would otherwise
 // embed.
 func TestNativeDictionaryFallsBackToEnglish(t *testing.T) {
-	store := &PostgresStore{schema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
+	store := &PostgresStore{defaultSchema: "public", textSearchExtension: TextSearchNative, tuning: DefaultTuning()}
 	if !strings.Contains(store.searchVectorExpr("$3", "''", "''"), "to_tsvector('english', ") {
 		t.Fatalf("empty dictionary did not fall back: %s", store.searchVectorExpr("$3", "''", "''"))
 	}

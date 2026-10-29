@@ -24,8 +24,12 @@ func (s *PostgresStore) BankStats(ctx context.Context, bankID string) (BankStats
 // cached row when forceRefresh is set — the reference's refresh=true query
 // parameter, which bypasses the cached value and stores the fresh result.
 func (s *PostgresStore) BankStatsRefreshing(ctx context.Context, bankID string, forceRefresh bool) (BankStats, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return BankStats{}, schemaErr
+	}
 	if !forceRefresh && s.bankStatsCacheTTL > 0 {
-		if cached, ok := s.cachedBankStats(ctx, bankID); ok {
+		if cached, ok := s.cachedBankStats(ctx, schema, bankID); ok {
 			return cached, nil
 		}
 	}
@@ -34,7 +38,7 @@ func (s *PostgresStore) BankStatsRefreshing(ctx context.Context, bankID string, 
 		return BankStats{}, err
 	}
 	if s.bankStatsCacheTTL > 0 {
-		s.storeBankStats(ctx, bankID, stats)
+		s.storeBankStats(ctx, schema, bankID, stats)
 	}
 	return stats, nil
 }
@@ -45,8 +49,12 @@ func (s *PostgresStore) BankStatsRefreshing(ctx context.Context, bankID string, 
 // row for the rest of the cache's TTL. The write is best-effort: a cache that
 // cannot be cleared leaves the answer intact.
 func (s *PostgresStore) InvalidateBankStats(ctx context.Context, bankID string) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return
+	}
 	_, _ = s.db.ExecContext(ctx,
-		`DELETE FROM `+quoteIdent(s.schema)+`.bank_stats_cache WHERE bank_id = $1`, bankID)
+		`DELETE FROM `+quoteIdent(schema)+`.bank_stats_cache WHERE bank_id = $1`, bankID)
 }
 
 // entityLinkTotal derives the bank's entity-link total from unit_entities
@@ -54,7 +62,12 @@ func (s *PostgresStore) InvalidateBankStats(ctx context.Context, bankID string) 
 // that mention it, summed — the same derivation the reference's link_counts
 // uses now that entity links are no longer stored as rows.
 func (s *PostgresStore) entityLinkTotal(ctx context.Context, bankID string) (int, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	query := `WITH per_entity AS (
 	              SELECT ue.entity_id, COUNT(*) AS n
 	              FROM ` + qualified + `.unit_entities ue
@@ -68,8 +81,8 @@ func (s *PostgresStore) entityLinkTotal(ctx context.Context, bankID string) (int
 
 // cachedBankStats reads a fresh cached summary. A miss, an unreadable row or an
 // absent table all report false so the caller computes.
-func (s *PostgresStore) cachedBankStats(ctx context.Context, bankID string) (BankStats, bool) {
-	query := `SELECT payload FROM ` + quoteIdent(s.schema) + `.bank_stats_cache
+func (s *PostgresStore) cachedBankStats(ctx context.Context, schema, bankID string) (BankStats, bool) {
+	query := `SELECT payload FROM ` + quoteIdent(schema) + `.bank_stats_cache
 	          WHERE bank_id = $1 AND computed_at > now() - make_interval(secs => $2::double precision)`
 	var payload []byte
 	if err := s.reader().QueryRowContext(ctx, query, bankID, s.bankStatsCacheTTL.Seconds()).Scan(&payload); err != nil {
@@ -84,12 +97,12 @@ func (s *PostgresStore) cachedBankStats(ctx context.Context, bankID string) (Ban
 
 // storeBankStats writes a computed summary back. The write is best-effort: a
 // cache that cannot be written leaves the answer intact.
-func (s *PostgresStore) storeBankStats(ctx context.Context, bankID string, stats BankStats) {
+func (s *PostgresStore) storeBankStats(ctx context.Context, schema, bankID string, stats BankStats) {
 	payload, err := json.Marshal(stats)
 	if err != nil {
 		return
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.bank_stats_cache (bank_id, payload, computed_at)
+	query := `INSERT INTO ` + quoteIdent(schema) + `.bank_stats_cache (bank_id, payload, computed_at)
 	          VALUES ($1, $2::jsonb, now())
 	          ON CONFLICT (bank_id) DO UPDATE SET payload = EXCLUDED.payload, computed_at = now()`
 	_, _ = s.db.ExecContext(ctx, query, bankID, string(payload))
@@ -97,6 +110,11 @@ func (s *PostgresStore) storeBankStats(ctx context.Context, bankID string, stats
 
 // computeBankStats runs the aggregates the summary is derived from.
 func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (BankStats, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 BankStats
+		return zero0, schemaErr
+	}
 	stats := BankStats{
 		BankID:             bankID,
 		NodesByFactType:    map[string]int{},
@@ -105,7 +123,7 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 		LinksBreakdown:     map[string]map[string]int{},
 		OperationsByStatus: map[string]int{},
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 
 	// Each count is a separate aggregate so one missing table cannot fail the
 	// whole summary; a failure is reported rather than silently zeroed.
@@ -180,6 +198,12 @@ func (s *PostgresStore) computeBankStats(ctx context.Context, bankID string) (Ba
 // consolidation_failed_at IS NULL over world/experience facts), failed counts
 // the facts the model gave up on. The two are disjoint.
 func (s *PostgresStore) consolidationBacklog(ctx context.Context, bankID string) (int, int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		var zero1 int
+		return zero0, zero1, schemaErr
+	}
 	query := `SELECT
 	              COUNT(*) FILTER (
 	                  WHERE consolidated_at IS NULL AND consolidation_failed_at IS NULL
@@ -189,7 +213,7 @@ func (s *PostgresStore) consolidationBacklog(ctx context.Context, bankID string)
 	                  WHERE consolidation_failed_at IS NOT NULL
 	                    AND fact_type IN ('experience', 'world')
 	              )
-	          FROM ` + quoteIdent(s.schema) + `.memory_units WHERE bank_id = $1`
+	          FROM ` + quoteIdent(schema) + `.memory_units WHERE bank_id = $1`
 	var pending, failed int
 	if err := s.reader().QueryRowContext(ctx, query, bankID).Scan(&pending, &failed); err != nil {
 		return 0, 0, err
@@ -199,6 +223,11 @@ func (s *PostgresStore) consolidationBacklog(ctx context.Context, bankID string)
 
 // MemoriesTimeseries buckets a bank's memory counts over a period.
 func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Timeseries
+		return zero0, schemaErr
+	}
 	window := ResolveTimeseriesWindow(period)
 	timeField = ResolveTimeseriesTimeField(timeField)
 	// The column name comes from a closed set, so nothing caller-supplied is
@@ -214,7 +243,7 @@ func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, 
 	                 COUNT(*) FILTER (WHERE fact_type = 'world') AS world,
 	                 COUNT(*) FILTER (WHERE fact_type = 'experience') AS experience,
 	                 COUNT(*) FILTER (WHERE fact_type = 'observation') AS observation
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND ` + column + ` IS NOT NULL AND ` + column + ` >= $2
 	          GROUP BY bucket ORDER BY bucket ASC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, since)
@@ -238,6 +267,10 @@ func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, 
 
 // RecordAuditLog appends one audit entry to the trail.
 func (s *PostgresStore) RecordAuditLog(ctx context.Context, entry AuditEntry) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if entry.ID == "" {
 		entry.ID = newID()
 	}
@@ -261,7 +294,7 @@ func (s *PostgresStore) RecordAuditLog(ctx context.Context, entry AuditEntry) er
 		endedAt = *entry.EndedAt
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(s.schema)+`.audit_log
+		`INSERT INTO `+quoteIdent(schema)+`.audit_log
 		    (id, action, transport, bank_id, started_at, ended_at, request, response, metadata)
 		 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb)`,
 		entry.ID, entry.Action, entry.Transport, nullString(entry.BankID),
@@ -280,11 +313,16 @@ func mapOrNil(value map[string]any) any {
 
 // ListAuditLog returns one page of the audit trail.
 func (s *PostgresStore) ListAuditLog(ctx context.Context, query AuditQuery) (AuditPage, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 AuditPage
+		return zero0, schemaErr
+	}
 	filter := `($1 = '' OR bank_id = $1) AND ($2 = '' OR action = $2) AND ($3 = '' OR transport = $3)
 	           AND ($4::timestamptz IS NULL OR started_at >= $4)
 	           AND ($5::timestamptz IS NULL OR started_at < $5)`
 	args := []any{query.BankID, query.Action, query.Transport, query.StartDate, query.EndDate}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	var total int
 	if err := s.reader().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+qualified+`.audit_log WHERE `+filter,
@@ -323,8 +361,13 @@ func (s *PostgresStore) ListAuditLog(ctx context.Context, query AuditQuery) (Aud
 
 // AuditLogStats buckets the audit trail over a period.
 func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, action string) (AuditStats, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 AuditStats
+		return zero0, schemaErr
+	}
 	trunc, start := chartWindow(period, time.Now().UTC())
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR action = $2) AND started_at >= $3`
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, action, COUNT(*)
 	          FROM ` + qualified + `.audit_log WHERE ` + where + `
@@ -365,7 +408,12 @@ func (s *PostgresStore) AuditLogStats(ctx context.Context, bankID, period, actio
 
 // ListLLMRequests returns one page of the model-request trace.
 func (s *PostgresStore) ListLLMRequests(ctx context.Context, query LLMRequestQuery) (LLMRequestPage, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 LLMRequestPage
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	clauses := []string{"($1 = '' OR bank_id = $1)"}
 	args := []any{query.BankID}
 	for _, exact := range []struct{ column, value string }{
@@ -503,6 +551,10 @@ const llmRequestSelect = `id::text, COALESCE(bank_id,''), COALESCE(operation,'')
 // record is returned to the caller, which drops it: a trace row is never worth
 // failing the model call that produced the answer.
 func (s *PostgresStore) RecordLLMRequest(ctx context.Context, request LLMRequest) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if request.ID == "" {
 		request.ID = newID()
 	}
@@ -525,7 +577,7 @@ func (s *PostgresStore) RecordLLMRequest(ctx context.Context, request LLMRequest
 	if err != nil {
 		return err
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.llm_requests
+	query := `INSERT INTO ` + quoteIdent(schema) + `.llm_requests
 	          (id, bank_id, operation, scope, trace_id, span_id, parent_span_id, provider, model, status,
 	           started_at, ended_at, duration_ms, input_tokens, output_tokens, cached_tokens, thoughts_tokens,
 	           total_tokens, input, output, error, llm_info, metadata)
@@ -552,8 +604,13 @@ func marshalNullableJSON(value any) ([]byte, error) {
 
 // LLMRequestStats buckets the model-request trace over a period.
 func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, operation string) (LLMRequestStats, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 LLMRequestStats
+		return zero0, schemaErr
+	}
 	trunc, start := chartWindow(period, time.Now().UTC())
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	where := `($1 = '' OR bank_id = $1) AND ($2 = '' OR operation = $2) AND started_at >= $3`
 	query := `SELECT date_trunc('` + trunc + `', started_at) AS bucket, status, COUNT(*),
 	                 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
@@ -611,7 +668,12 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 
 // ListObservationScopes returns the distinct observation scopes of a bank.
 func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 ObservationScopePage
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	// An observation's scope is the exact set of tags it was consolidated with,
 	// normalized by sorting so [a,b] and [b,a] collapse; the empty list is the
 	// global/untagged scope. Grouping and ordering therefore run on the tag
@@ -717,7 +779,12 @@ func (s *PostgresStore) groupedInts(ctx context.Context, query string, args ...a
 // nothing about current load. A null operation type reads as "unknown", as the
 // reference maps it, and bank_id is grouped only when perBank is set.
 func (s *PostgresStore) CountAsyncOperations(ctx context.Context, perBank bool) ([]AsyncOperationGroup, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []AsyncOperationGroup
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	bankSelect, bankGroup := "", ""
 	if perBank {
 		bankSelect = "bank_id, "

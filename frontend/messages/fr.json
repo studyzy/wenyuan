@@ -2658,5 +2658,98 @@
       "cancel": "Annuler",
       "save": "Enregistrer"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "Banques",
+      "tenants": "Locataires",
+      "overview": "Vue d'ensemble",
+      "activeTenant": "Locataire : {tenant}",
+      "exit": "Quitter le locataire"
+    },
+    "list": {
+      "title": "Locataires",
+      "description": "Locataires de ce déploiement, leur schéma, statut et identifiants.",
+      "new": "Nouveau locataire",
+      "searchPlaceholder": "Rechercher un id ou un nom",
+      "allStatuses": "Tous les statuts",
+      "empty": "Aucun locataire pour l'instant.",
+      "tenant": "Locataire",
+      "status": "Statut",
+      "displayName": "Nom affiché",
+      "created": "Créé",
+      "failed": "Impossible de charger les locataires",
+      "statuses": {
+        "active": "Actif",
+        "suspended": "Suspendu",
+        "provisioning": "En cours de provisionnement",
+        "deleted": "Supprimé"
+      }
+    },
+    "create": {
+      "title": "Nouveau locataire",
+      "description": "L'id du locataire devient le nom du schéma PostgreSQL et ne peut pas être modifié.",
+      "id": "Id du locataire",
+      "idHint": "Lettres minuscules, chiffres et tirets bas ; 2 à 63 caractères.",
+      "idPlaceholder": "acme",
+      "displayName": "Nom affiché",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "Configuration (JSON)",
+      "adopt": "Adopter un schéma complet existant au lieu d'en créer un nouveau",
+      "creating": "Création...",
+      "submit": "Créer le locataire",
+      "invalidId": "L'id du locataire doit correspondre au format slug requis.",
+      "invalidConfig": "La configuration doit être un objet JSON.",
+      "failed": "Impossible de créer le locataire"
+    },
+    "detail": {
+      "notFound": "Locataire introuvable",
+      "suspend": "Suspendre",
+      "activate": "Activer",
+      "deleteConfirm": "Supprimer le locataire {tenant} ? Son schéma est conservé.",
+      "schema": "Schéma :",
+      "config": "Configuration",
+      "keys": "Clés",
+      "keyLabel": "Libellé de la clé",
+      "createKey": "Créer une clé",
+      "shownOnce": "Copiez cette clé maintenant ; elle ne sera affichée qu'une fois.",
+      "noKeys": "Aucune clé pour l'instant.",
+      "prefix": "Préfixe",
+      "label": "Libellé",
+      "created": "Créée",
+      "state": "État",
+      "revoked": "révoquée",
+      "ephemeral": "éphémère",
+      "active": "active",
+      "revoke": "Révoquer",
+      "statusFailed": "Impossible de changer le statut",
+      "deleteFailed": "Impossible de supprimer le locataire",
+      "keyFailed": "Impossible de créer la clé",
+      "revokeFailed": "Impossible de révoquer la clé",
+      "loadFailed": "Impossible de charger le locataire",
+      "enter": "Entrer dans le locataire",
+      "enterFailed": "Impossible d'entrer dans le locataire",
+      "migrate": "Migrer",
+      "migrated": "Schéma migré.",
+      "migrateFailed": "Impossible de migrer le schéma",
+      "purge": "Purger",
+      "purgeConfirm": "Saisissez {tenant} pour supprimer définitivement son schéma.",
+      "purgeFailed": "Impossible de purger le locataire"
+    },
+    "overview": {
+      "title": "Vue d'ensemble",
+      "description": "Nombre de locataires de ce déploiement.",
+      "failed": "Impossible de charger la vue d'ensemble",
+      "total": "total",
+      "active": "actifs",
+      "suspended": "suspendus",
+      "provisioning": "en provisionnement",
+      "deleted": "supprimés"
+    },
+    "notConfigured": {
+      "title": "Plan de gestion non configuré",
+      "body": "Définissez WENYUAN_CP_ADMIN_API_URL et WENYUAN_CP_ADMIN_API_KEY sur le serveur de console pour gérer les locataires.",
+      "back": "Retour aux banques"
+    }
   }
 }

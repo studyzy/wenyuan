@@ -31,7 +31,7 @@ func TestPostgresReflectRetrievalQueries(t *testing.T) {
 	// schema, so the provenance the fact carries has to exist as a chunk row
 	// before the unit can name it.
 	if _, err := pg.db.ExecContext(ctx,
-		`INSERT INTO `+quoteIdent(pg.schema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text)
+		`INSERT INTO `+quoteIdent(pg.defaultSchema)+`.chunks (chunk_id, bank_id, document_id, chunk_index, chunk_text)
 		 VALUES ('chunk-1', $1, $2, 0, 'the whole source document')`, bank, docID); err != nil {
 		t.Fatalf("seed chunk: %v", err)
 	}

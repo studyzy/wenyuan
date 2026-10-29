@@ -16,7 +16,7 @@ func OpenStore(ctx context.Context, cfg config.Config, deps Dependencies) (stora
 	if err != nil {
 		return nil, err
 	}
-	if cfg.RunMigrationsOnStartup {
+	if cfg.RunMigrationsOnStartup && cfg.TenantMode != config.TenantModeMulti {
 		if err := store.Migrate(ctx); err != nil {
 			return nil, err
 		}

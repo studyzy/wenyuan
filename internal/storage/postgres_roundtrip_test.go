@@ -40,7 +40,7 @@ func TestArchiveFactFieldsRoundTrip(t *testing.T) {
 		failedAt    *time.Time
 	)
 	query := `SELECT source_memory_ids, observation_scopes::text, consolidated_at, consolidation_failed_at
-	          FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.memory_units WHERE id = $1`
+	          FROM ` + quoteIdent(store.(*PostgresStore).defaultSchema) + `.memory_units WHERE id = $1`
 	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, pgUUID("roundtrip-unit")).
 		Scan(&sourceRaw, &scopes, &consolidate, &failedAt); err != nil {
 		t.Fatalf("read back: %v", err)

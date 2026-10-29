@@ -2658,5 +2658,98 @@
       "cancel": "取消",
       "save": "保存"
     }
+  },
+  "tenants": {
+    "nav": {
+      "banks": "记忆库",
+      "tenants": "租户",
+      "overview": "总览",
+      "activeTenant": "租户：{tenant}",
+      "exit": "退出租户"
+    },
+    "list": {
+      "title": "租户",
+      "description": "当前部署的租户、schema、状态与凭据。",
+      "new": "新建租户",
+      "searchPlaceholder": "搜索 ID 或显示名",
+      "allStatuses": "全部状态",
+      "empty": "还没有租户。",
+      "tenant": "租户",
+      "status": "状态",
+      "displayName": "显示名",
+      "created": "创建时间",
+      "failed": "无法加载租户",
+      "statuses": {
+        "active": "活跃",
+        "suspended": "已暂停",
+        "provisioning": "创建中",
+        "deleted": "已删除"
+      }
+    },
+    "create": {
+      "title": "新建租户",
+      "description": "租户 ID 会成为 PostgreSQL schema 名，创建后不可修改。",
+      "id": "租户 ID",
+      "idHint": "小写字母、数字和下划线，2-63 个字符。",
+      "idPlaceholder": "acme",
+      "displayName": "显示名",
+      "displayNamePlaceholder": "Acme Inc",
+      "config": "配置（JSON）",
+      "adopt": "接管已存在的完整 schema，而不是新建",
+      "creating": "创建中...",
+      "submit": "创建租户",
+      "invalidId": "租户 ID 必须符合 slug 规则（小写字母、数字、下划线）。",
+      "invalidConfig": "配置必须是 JSON 对象。",
+      "failed": "无法创建租户"
+    },
+    "detail": {
+      "notFound": "未找到租户",
+      "suspend": "暂停",
+      "activate": "启用",
+      "deleteConfirm": "软删除租户 {tenant}？schema 会保留。",
+      "schema": "Schema：",
+      "config": "配置",
+      "keys": "密钥",
+      "keyLabel": "密钥标签",
+      "createKey": "创建密钥",
+      "shownOnce": "请立即复制，此密钥只显示一次。",
+      "noKeys": "还没有密钥。",
+      "prefix": "前缀",
+      "label": "标签",
+      "created": "创建时间",
+      "state": "状态",
+      "revoked": "已吊销",
+      "ephemeral": "临时",
+      "active": "有效",
+      "revoke": "吊销",
+      "statusFailed": "无法修改状态",
+      "deleteFailed": "无法删除租户",
+      "keyFailed": "无法创建密钥",
+      "revokeFailed": "无法吊销密钥",
+      "loadFailed": "无法加载租户",
+      "enter": "进入租户",
+      "enterFailed": "无法进入租户",
+      "migrate": "迁移",
+      "migrated": "Schema 已迁移。",
+      "migrateFailed": "无法迁移 Schema",
+      "purge": "清除",
+      "purgeConfirm": "输入 {tenant} 以永久删除其 schema。",
+      "purgeFailed": "无法清除租户"
+    },
+    "overview": {
+      "title": "总览",
+      "description": "当前部署的租户数量。",
+      "failed": "无法加载总览",
+      "total": "总数",
+      "active": "活跃",
+      "suspended": "已暂停",
+      "provisioning": "创建中",
+      "deleted": "已删除"
+    },
+    "notConfigured": {
+      "title": "管理面未配置",
+      "body": "请在控制台服务器上设置 WENYUAN_CP_ADMIN_API_URL 和 WENYUAN_CP_ADMIN_API_KEY 以管理租户。",
+      "back": "返回记忆库"
+    }
   }
 }

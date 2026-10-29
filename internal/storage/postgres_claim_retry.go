@@ -8,7 +8,11 @@ import (
 // ScheduleOperationRetry records a failed attempt and the next attempt time,
 // returning the operation to the claimable pool.
 func (s *PostgresStore) ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status = 'pending', retry_count = $2, next_retry_at = $3, error_message = $4,
 	              worker_id = NULL, claimed_at = NULL, updated_at = now()
 	          WHERE operation_id = $1 AND status NOT IN ('completed','failed','cancelled')`
@@ -33,6 +37,10 @@ func (s *PostgresStore) ScheduleOperationRetry(ctx context.Context, opID string,
 // columns are set exactly as ScheduleOperationRetry sets them, so the deferral's
 // schedule is unchanged.
 func (s *PostgresStore) ScheduleOperationRetryWithResult(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string, result map[string]any) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(result) == 0 {
 		return s.ScheduleOperationRetry(ctx, opID, retryCount, nextRetryAt, errMsg)
 	}
@@ -40,7 +48,7 @@ func (s *PostgresStore) ScheduleOperationRetryWithResult(ctx context.Context, op
 	if err != nil {
 		return err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status = 'pending', retry_count = $2, next_retry_at = $3, error_message = $4,
 	              result_metadata = (COALESCE(result_metadata, '{}'::jsonb) || $5::jsonb),
 	              worker_id = NULL, claimed_at = NULL, updated_at = now()

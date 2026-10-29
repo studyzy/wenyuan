@@ -13,7 +13,12 @@ import (
 // ListMemories returns one page of a bank's memory units, newest first. A
 // state of "invalidated" reads the archive table instead of the live one.
 func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MemoryPage
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	table := qualified + `.memory_units`
 	invalidatedCols := `NULL::timestamptz, NULL::text`
 	if query.State == "invalidated" {
@@ -202,10 +207,15 @@ func timeColumnFor(field string) string {
 // that exists only in the invalidation archive is not returned, matching the
 // reference's memory_units-only query.
 func (s *PostgresStore) SourceMemories(ctx context.Context, bankID string, ids []string) ([]SourceMemoryRow, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []SourceMemoryRow
+		return zero0, schemaErr
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT id, text, COALESCE(fact_type,''), context, occurred_start, mentioned_at
 		 FROM `+qualified+`.memory_units
@@ -250,7 +260,12 @@ func (s *PostgresStore) SourceMemories(ctx context.Context, bankID string, ids [
 // GetMemory returns one memory unit by identifier, reading the archive table
 // when the unit has been invalidated.
 func (s *PostgresStore) GetMemory(ctx context.Context, bankID, memoryID string) (MemoryUnit, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MemoryUnit
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	cols := `id, bank_id, COALESCE(text,''), COALESCE(fact_type,''), COALESCE(context,''),
 	                 occurred_start, occurred_end, mentioned_at, event_date,
 	                 COALESCE(document_id,''), COALESCE(chunk_id,''), COALESCE(tags, '{}'),
@@ -280,10 +295,15 @@ func (s *PostgresStore) GetMemory(ctx context.Context, bankID, memoryID string) 
 // memory-detail view. An observation with no attachment ids of its own inherits
 // its source facts'.
 func (s *PostgresStore) MemoryAttachments(ctx context.Context, bankID string, unitIDs []string) (map[string][]Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]Attachment
+		return zero0, schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return nil, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	type unitInfo struct {
 		ids      []string
 		sources  []string
@@ -389,11 +409,16 @@ func (s *PostgresStore) MemoryAttachments(ctx context.Context, bankID string, un
 // "invalidated" moves the row to the archive (cascading its links and entity
 // associations); "valid" moves it back.
 func (s *PostgresStore) UpdateMemory(ctx context.Context, bankID, memoryID string, patch MemoryPatch) (MemoryUnit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MemoryUnit
+		return zero0, schemaErr
+	}
 	current, err := s.GetMemory(ctx, bankID, memoryID)
 	if err != nil {
 		return MemoryUnit{}, err
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	// An invalidate/revert is applied AFTER the edit fields, never instead of
 	// them: the reference's phase 2 applies the edit to the live row first and
 	// only then moves the row (engine/memory_engine.py:12194-12260 edit, then
@@ -607,7 +632,11 @@ const curationColumns = `id, bank_id, document_id, text, context, event_date, oc
 // only has its reason rewritten, so a repeated invalidation updates the reason
 // instead of silently doing nothing.
 func (s *PostgresStore) invalidateMemory(ctx context.Context, bankID, memoryID string, reason *string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	var reasonArg any
 	if reason != nil {
 		reasonArg = *reason
@@ -658,7 +687,11 @@ func (s *PostgresStore) invalidateMemory(ctx context.Context, bankID, memoryID s
 // invalidation fields. Its embedding is not restored; the reference recomputes
 // it rather than keeping a cold copy.
 func (s *PostgresStore) revertMemory(ctx context.Context, bankID, memoryID string) error {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	qualified := quoteIdent(schema)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.memory_units (`+curationColumns+`)
 		 SELECT `+curationColumns+` FROM `+qualified+`.invalidated_memory_units
@@ -676,12 +709,17 @@ func (s *PostgresStore) revertMemory(ctx context.Context, bankID, memoryID strin
 // is not an observation-level change: a memory edit records nothing here, and
 // only world/experience facts can be curated at all.
 func (s *PostgresStore) MemoryHistory(ctx context.Context, bankID, memoryID string) ([]MemoryHistoryEntry, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []MemoryHistoryEntry
+		return zero0, schemaErr
+	}
 	if _, err := s.GetMemory(ctx, bankID, memoryID); err != nil {
 		return nil, err
 	}
 	rows, err := s.reader().QueryContext(ctx,
 		`SELECT COALESCE(content, '{}'::jsonb), changed_at
-		 FROM `+quoteIdent(s.schema)+`.observation_history
+		 FROM `+quoteIdent(schema)+`.observation_history
 		 WHERE bank_id = $1 AND observation_id = $2
 		 ORDER BY changed_at ASC, id ASC`,
 		bankID, memoryID)
@@ -724,12 +762,17 @@ func (entry *MemoryHistoryEntry) decodeSnapshot(content []byte) {
 // it as evidence, so the memory-scoped filter is an overlap test against the
 // observation's source_memory_ids array.
 func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID string) (int, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	if memoryID == "" {
 		return s.clearBankObservationsTx(ctx, tx, bankID)
 	}
@@ -757,7 +800,12 @@ func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID
 // clearBankObservationsTx deletes a bank's observations, requeues every source
 // fact and drops the observations' history, in the caller's transaction.
 func (s *PostgresStore) clearBankObservationsTx(ctx context.Context, tx Tx, bankID string) (int, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	var count int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM `+qualified+`.memory_units WHERE bank_id = $1 AND fact_type = 'observation'`,
@@ -842,7 +890,12 @@ func (s *PostgresStore) EnqueueGraphMaintenance(ctx context.Context, bankID stri
 // queued: the reference's retry runs the requeue UPDATE and returns the count,
 // leaving the next consolidation to pick the sources up.
 func (s *PostgresStore) RecoverConsolidations(ctx context.Context, bankID string) (int, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 int
+		return zero0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	query := `WITH requeued AS (
 	              UPDATE ` + qualified + `.memory_units
 	              SET consolidation_failed_at = NULL, consolidated_at = NULL
@@ -907,10 +960,15 @@ func scanMemoryUnitRow(row rowScanner) (MemoryUnit, error) {
 // does, because the reference's list query joins unit_entities alone. Units
 // with no postings are absent from the map rather than mapped to an empty slice.
 func (s *PostgresStore) DirectUnitEntityNames(ctx context.Context, bankID string, unitIDs []string) (map[string][]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]string
+		return zero0, schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return map[string][]string{}, nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT ue.unit_id::text, e.canonical_name
 		 FROM `+qualified+`.unit_entities ue

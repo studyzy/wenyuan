@@ -100,8 +100,12 @@ func (s *MemoryStore) MentalModelRefreshSnapshot(ctx context.Context, bankID, mo
 
 // MentalModelRefreshSnapshot reads the database clock through the model row.
 func (s *PostgresStore) MentalModelRefreshSnapshot(ctx context.Context, bankID, modelID string) time.Time {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return time.Time{}
+	}
 	var snapshot *time.Time
-	query := `SELECT now() FROM ` + quoteIdent(s.schema) + `.mental_models
+	query := `SELECT now() FROM ` + quoteIdent(schema) + `.mental_models
 	          WHERE bank_id = $1 AND id = $2`
 	if err := s.db.QueryRowContext(ctx, query, bankID, modelID).Scan(&snapshot); err != nil || snapshot == nil {
 		return time.Time{}
@@ -126,6 +130,10 @@ func (s *MemoryStore) MentalModelScopeWatermark(ctx context.Context, bankID stri
 
 // MentalModelScopeWatermark asks the in-scope memories for their newest write.
 func (s *PostgresStore) MentalModelScopeWatermark(ctx context.Context, bankID string, model MentalModel, cutoff time.Time) time.Time {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return time.Time{}
+	}
 	if err := ctx.Err(); err != nil || cutoff.IsZero() {
 		return time.Time{}
 	}
@@ -142,7 +150,7 @@ func (s *PostgresStore) MentalModelScopeWatermark(ctx context.Context, bankID st
 		args = append(args, predicateArgs...)
 		clauses = append(clauses, predicate)
 	}
-	query := `SELECT MAX(COALESCE(updated_at, mentioned_at, occurred_start)) FROM ` + quoteIdent(s.schema) + `.memory_units
+	query := `SELECT MAX(COALESCE(updated_at, mentioned_at, occurred_start)) FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE ` + strings.Join(clauses, " AND ")
 	var newest *time.Time
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&newest); err != nil || newest == nil {
@@ -153,6 +161,10 @@ func (s *PostgresStore) MentalModelScopeWatermark(ctx context.Context, bankID st
 
 // ScopeHasSources asks the database whether any in-scope memory exists.
 func (s *PostgresStore) ScopeHasSources(ctx context.Context, bankID string, model MentalModel, since time.Time) bool {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return false
+	}
 	if err := ctx.Err(); err != nil {
 		return false
 	}
@@ -175,7 +187,7 @@ func (s *PostgresStore) ScopeHasSources(ctx context.Context, bankID string, mode
 		args = append(args, predicateArgs...)
 		clauses = append(clauses, predicate)
 	}
-	query := `SELECT 1 FROM ` + quoteIdent(s.schema) + `.memory_units
+	query := `SELECT 1 FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE ` + strings.Join(clauses, " AND ") + `
 	          LIMIT 1`
 	var found int

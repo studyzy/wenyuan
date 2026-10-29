@@ -20,7 +20,12 @@ const mentalModelSelect = `id, bank_id, subtype, name, COALESCE(description,''),
 
 // ListMentalModels returns the mental models of one bank, newest first.
 func (s *PostgresStore) ListMentalModels(ctx context.Context, bankID string, subtype MentalModelSubtype) ([]MentalModel, error) {
-	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []MentalModel
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(schema) + `.mental_models
 	          WHERE bank_id = $1 AND ($2 = '' OR subtype = $2)
 	          ORDER BY last_refreshed_at DESC, id DESC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, string(subtype))
@@ -47,7 +52,12 @@ func (s *PostgresStore) GetMentalModel(ctx context.Context, bankID, id string) (
 // getMentalModelOn reads one model through the given connection, so a read
 // serves both a standalone lookup and one inside a caller's transaction.
 func (s *PostgresStore) getMentalModelOn(ctx context.Context, q queryer, bankID, id string) (MentalModel, error) {
-	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(s.schema) + `.mental_models
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MentalModel
+		return zero0, schemaErr
+	}
+	query := `SELECT ` + mentalModelSelect + ` FROM ` + quoteIdent(schema) + `.mental_models
 	          WHERE bank_id = $1 AND id = $2`
 	model, err := scanMentalModel(q.QueryRowContext(ctx, query, bankID, id))
 	if err != nil {
@@ -71,6 +81,10 @@ func (s *PostgresStore) PutMentalModel(ctx context.Context, model MentalModel) (
 // runner, so one write serves both a standalone put and a put inside a caller's
 // transaction.
 func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, model MentalModel) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if err := validateMentalModel(model); err != nil {
 		return err
 	}
@@ -127,7 +141,7 @@ func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, mode
 	if model.LastRefreshFailedAt != nil {
 		lastRefreshFailedAt = *model.LastRefreshFailedAt
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_models
+	query := `INSERT INTO ` + quoteIdent(schema) + `.mental_models
 	          (id, bank_id, subtype, name, description, source_query, content, embedding, entity_id,
 	           observations, links, tags, max_tokens, trigger, structured_content, reflect_response,
 	           last_refreshed_source_query, last_refreshed_at, last_refresh_failed_at, last_updated, created_at)
@@ -136,7 +150,7 @@ func (s *PostgresStore) putMentalModelOn(ctx context.Context, e stmtExecer, mode
 	          ON CONFLICT (id, bank_id) DO UPDATE SET
 	              subtype = EXCLUDED.subtype, name = EXCLUDED.name, description = EXCLUDED.description,
 	              source_query = EXCLUDED.source_query, content = EXCLUDED.content,
-	              embedding = COALESCE(EXCLUDED.embedding, ` + quoteIdent(s.schema) + `.mental_models.embedding),
+	              embedding = COALESCE(EXCLUDED.embedding, ` + quoteIdent(schema) + `.mental_models.embedding),
 	              observations = EXCLUDED.observations, links = EXCLUDED.links, tags = EXCLUDED.tags,
 	              max_tokens = EXCLUDED.max_tokens, trigger = EXCLUDED.trigger,
 	              structured_content = EXCLUDED.structured_content, reflect_response = EXCLUDED.reflect_response,
@@ -163,7 +177,11 @@ func (s *PostgresStore) UpdateMentalModel(ctx context.Context, bankID, id string
 
 // DeleteMentalModel removes a mental model.
 func (s *PostgresStore) DeleteMentalModel(ctx context.Context, bankID, id string) error {
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.mental_models WHERE bank_id = $1 AND id = $2`
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.mental_models WHERE bank_id = $1 AND id = $2`
 	result, err := s.db.ExecContext(ctx, query, bankID, id)
 	if err != nil {
 		return err
@@ -181,6 +199,11 @@ func (s *PostgresStore) DeleteMentalModel(ctx context.Context, bankID, id string
 // ClearMentalModel empties a mental model's content and history while keeping
 // the record.
 func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string) (MentalModel, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 MentalModel
+		return zero0, schemaErr
+	}
 	current, err := s.GetMentalModel(ctx, bankID, id)
 	if err != nil {
 		return MentalModel{}, err
@@ -202,7 +225,7 @@ func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string)
 	if err != nil {
 		return MentalModel{}, err
 	}
-	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
+	query := `UPDATE ` + quoteIdent(schema) + `.mental_models
 	          SET content = '', structured_content = NULL,
 	              last_refreshed_source_query = NULL, last_refresh_failed_at = NULL,
 	              embedding = $3::vector
@@ -218,10 +241,15 @@ func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string)
 // newest first. Each is a row of mental_model_history, which is where the
 // reference keeps a change log rather than a column on the model.
 func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id string) ([]MentalModelHistoryEntry, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []MentalModelHistoryEntry
+		return zero0, schemaErr
+	}
 	if _, err := s.GetMentalModel(ctx, bankID, id); err != nil {
 		return nil, err
 	}
-	query := `SELECT content, changed_at FROM ` + quoteIdent(s.schema) + `.mental_model_history
+	query := `SELECT content, changed_at FROM ` + quoteIdent(schema) + `.mental_model_history
 	          WHERE bank_id = $1 AND mental_model_id = $2
 	          ORDER BY changed_at DESC, id DESC`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, id)
@@ -244,6 +272,10 @@ func (s *PostgresStore) MentalModelHistory(ctx context.Context, bankID, id strin
 // RecordMentalModelHistory appends one refresh to a mental model's history.
 // The identity is left to the column's default, as the reference leaves it.
 func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id string, entry MentalModelHistoryEntry) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if !s.tuning.MentalModelHistory {
 		// The reference's switch for the record: a deployment that turned it off
 		// keeps no history, and the read routes answer with none.
@@ -259,7 +291,7 @@ func (s *PostgresStore) RecordMentalModelHistory(ctx context.Context, bankID, id
 	if err != nil {
 		return err
 	}
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.mental_model_history
+	query := `INSERT INTO ` + quoteIdent(schema) + `.mental_model_history
 	          (mental_model_id, bank_id, content, changed_at)
 	          VALUES ($1, $2, $3::jsonb, $4)`
 	_, err = s.db.ExecContext(ctx, query, id, bankID, payload, entry.ChangedAt)

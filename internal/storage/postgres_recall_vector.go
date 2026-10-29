@@ -117,6 +117,11 @@ func (s *PostgresStore) rememberAnnSettingRejected(name string) {
 // rather than scored as zero, because an unembedded row has no semantic
 // evidence either way.
 func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types []string, limit int) ([]recallHit, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []recallHit
+		return zero0, schemaErr
+	}
 	if len(q.QueryEmbedding) == 0 {
 		return nil, nil
 	}
@@ -129,7 +134,7 @@ func (s *PostgresStore) semanticHits(ctx context.Context, q RecallQuery, types [
 	query := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
 	                 COALESCE(source_memory_ids, '{}'::uuid[])::text,
 	                 embedding <=> $3::vector AS distance
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1
 	            AND fact_type = ANY($2)
 	            AND embedding IS NOT NULL

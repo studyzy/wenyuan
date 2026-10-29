@@ -39,8 +39,12 @@ func referencedAttachmentIDs(text string) []string {
 // placeholder in the text, and must survive a re-retain (the attachment route
 // resolves it when a caller downloads the original).
 func (s *PostgresStore) SyncDocumentAttachments(ctx context.Context, bankID, documentID, text string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	referenced := referencedAttachmentIDs(text)
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.attachments
+	query := `DELETE FROM ` + quoteIdent(schema) + `.attachments
 	          WHERE bank_id = $1 AND document_id = $2 AND kind <> $3
 	            AND NOT (short_id = ANY($4::text[]))`
 	_, err := s.db.ExecContext(ctx, query, bankID, documentID, KindUploadedFile, referenced)
@@ -51,7 +55,11 @@ func (s *PostgresStore) SyncDocumentAttachments(ctx context.Context, bankID, doc
 // document deletes exactly its own attachments; a short id another document
 // still carries survives through that document's own row.
 func (s *PostgresStore) DeleteDocumentAttachments(ctx context.Context, bankID, documentID string) error {
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.attachments WHERE bank_id = $1 AND document_id = $2`
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.attachments WHERE bank_id = $1 AND document_id = $2`
 	_, err := s.db.ExecContext(ctx, query, bankID, documentID)
 	return err
 }
@@ -60,7 +68,11 @@ func (s *PostgresStore) DeleteDocumentAttachments(ctx context.Context, bankID, d
 // bank goes on existing, so nothing cascades from the bank row and the images
 // must be retired explicitly.
 func (s *PostgresStore) DeleteBankAttachments(ctx context.Context, bankID string) error {
-	query := `DELETE FROM ` + quoteIdent(s.schema) + `.attachments WHERE bank_id = $1`
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.attachments WHERE bank_id = $1`
 	_, err := s.db.ExecContext(ctx, query, bankID)
 	return err
 }
@@ -71,13 +83,18 @@ func (s *PostgresStore) DeleteBankAttachments(ctx context.Context, bankID string
 // documents can share a short id; they are content-addressed, so any row serves
 // identical bytes and the first written wins.
 func (s *PostgresStore) AttachmentsByShortIDs(ctx context.Context, bankID string, ids []string) (map[string]Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]Attachment
+		return zero0, schemaErr
+	}
 	resolved := map[string]Attachment{}
 	if len(ids) == 0 {
 		return resolved, nil
 	}
 	query := `SELECT DISTINCT ON (short_id) bank_id, document_id, attachment_hash, short_id, media_type,
 	                 byte_size, storage_key, kind, filename
-	          FROM ` + quoteIdent(s.schema) + `.attachments
+	          FROM ` + quoteIdent(schema) + `.attachments
 	          WHERE bank_id = $1 AND short_id = ANY($2::text[])
 	          ORDER BY short_id, created_at, attachment_hash`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
@@ -106,6 +123,10 @@ func (s *PostgresStore) AttachmentsByShortIDs(ctx context.Context, bankID string
 // row are omitted rather than fabricated, so a reclaimed image leaves the fact
 // recallable without it.
 func (s *PostgresStore) enrichRecallAttachments(ctx context.Context, bankID string, matches []RecallMatch) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return
+	}
 	if len(matches) == 0 {
 		return
 	}
@@ -115,7 +136,7 @@ func (s *PostgresStore) enrichRecallAttachments(ctx context.Context, bankID stri
 	}
 	query := `WITH target AS (
 	              SELECT id, attachment_ids, source_memory_ids
-	              FROM ` + quoteIdent(s.schema) + `.memory_units
+	              FROM ` + quoteIdent(schema) + `.memory_units
 	              WHERE bank_id = $1 AND id::text = ANY($2::text[])
 	          ),
 	          effective AS (
@@ -126,7 +147,7 @@ func (s *PostgresStore) enrichRecallAttachments(ctx context.Context, bankID stri
 	                      WHEN cardinality(t.attachment_ids) > 0 THEN t.attachment_ids
 	                      ELSE COALESCE((
 	                          SELECT array_agg(DISTINCT src.attachment_id)
-	                          FROM ` + quoteIdent(s.schema) + `.memory_units m2,
+	                          FROM ` + quoteIdent(schema) + `.memory_units m2,
 	                               unnest(m2.attachment_ids) AS src(attachment_id)
 	                          WHERE m2.bank_id = $1 AND m2.id = ANY(t.source_memory_ids)
 	                      ), '{}'::text[])
@@ -137,7 +158,7 @@ func (s *PostgresStore) enrichRecallAttachments(ctx context.Context, bankID stri
 	                 COALESCE(a.attachment_hash, ''), COALESCE(a.media_type, ''),
 	                 COALESCE(a.byte_size, 0), COALESCE(a.filename, '')
 	          FROM effective e
-	          LEFT JOIN ` + quoteIdent(s.schema) + `.attachments a
+	          LEFT JOIN ` + quoteIdent(schema) + `.attachments a
 	            ON a.bank_id = $1 AND a.short_id = e.short_id`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
 	if err != nil {
@@ -192,7 +213,11 @@ func bankAttachmentPath(bankID, attachmentID string) string {
 // unique index over the short id therefore raises, and the retain fails where
 // an operator can see it.
 func (s *PostgresStore) PutAttachment(ctx context.Context, attachment Attachment) error {
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.attachments
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `INSERT INTO ` + quoteIdent(schema) + `.attachments
 	          (bank_id, document_id, attachment_hash, short_id, media_type, byte_size, storage_key, kind, filename)
 	          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	          ON CONFLICT (bank_id, document_id, attachment_hash) DO NOTHING`
@@ -206,9 +231,14 @@ func (s *PostgresStore) PutAttachment(ctx context.Context, attachment Attachment
 // ListAttachments returns the attachments a document carries, ordered by
 // creation so provenance resolves deterministically.
 func (s *PostgresStore) ListAttachments(ctx context.Context, bankID, documentID string) ([]Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 []Attachment
+		return zero0, schemaErr
+	}
 	query := `SELECT bank_id, document_id, attachment_hash, short_id, media_type, byte_size,
 	                 storage_key, kind, filename
-	          FROM ` + quoteIdent(s.schema) + `.attachments
+	          FROM ` + quoteIdent(schema) + `.attachments
 	          WHERE bank_id = $1 AND document_id = $2
 	          ORDER BY created_at, attachment_hash`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, documentID)
@@ -239,8 +269,13 @@ func (s *PostgresStore) ListAttachments(ctx context.Context, bankID, documentID 
 // that carries it whether or not any fact was extracted from that part of the
 // text (and never on a sibling chunk that does not).
 func (s *PostgresStore) ChunkAttachments(ctx context.Context, bankID, documentID string) (map[string][]Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string][]Attachment
+		return zero0, schemaErr
+	}
 	rows, err := s.reader().QueryContext(ctx,
-		`SELECT chunk_id, COALESCE(chunk_text,'') FROM `+quoteIdent(s.schema)+`.chunks
+		`SELECT chunk_id, COALESCE(chunk_text,'') FROM `+quoteIdent(schema)+`.chunks
 		 WHERE bank_id = $1 AND document_id = $2 ORDER BY chunk_index ASC`, bankID, documentID)
 	if err != nil {
 		return nil, err
@@ -284,9 +319,14 @@ func (s *PostgresStore) ChunkAttachments(ctx context.Context, bankID, documentID
 // attachmentsByShortIDsInDocument resolves a document's attachment rows, keyed
 // by short id, so a chunk's placeholders map to that document's own rows.
 func (s *PostgresStore) attachmentsByShortIDsInDocument(ctx context.Context, bankID, documentID string) (map[string]Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 map[string]Attachment
+		return zero0, schemaErr
+	}
 	query := `SELECT bank_id, document_id, attachment_hash, short_id, media_type, byte_size,
 	                 storage_key, kind, filename
-	          FROM ` + quoteIdent(s.schema) + `.attachments
+	          FROM ` + quoteIdent(schema) + `.attachments
 	          WHERE bank_id = $1 AND document_id = $2`
 	rows, err := s.reader().QueryContext(ctx, query, bankID, documentID)
 	if err != nil {
@@ -314,9 +354,14 @@ func (s *PostgresStore) attachmentsByShortIDsInDocument(ctx context.Context, ban
 // the only handle a reader has; the row is where the storage key lives, which is
 // what the bytes are actually read by.
 func (s *PostgresStore) GetAttachment(ctx context.Context, bankID, attachmentID string) (Attachment, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Attachment
+		return zero0, schemaErr
+	}
 	query := `SELECT bank_id, document_id, attachment_hash, short_id, media_type, byte_size,
 	                 storage_key, kind, filename
-	          FROM ` + quoteIdent(s.schema) + `.attachments
+	          FROM ` + quoteIdent(schema) + `.attachments
 	          WHERE bank_id = $1 AND short_id = $2`
 	var attachment Attachment
 	var filename sql.NullString

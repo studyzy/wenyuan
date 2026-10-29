@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 // The backlog gauge names, matching the reference's instruments. The reference
@@ -42,8 +44,8 @@ const (
 // gauges. Each provider is gated by configuration or by the store's
 // capabilities, so a scrape carries exactly the families the deployment can
 // report and nothing it cannot.
-func expositionExtras(store storage.Store, cfg config.Config) func() []monitoring.Metric {
-	backlog := backlogMetrics(store, cfg)
+func expositionExtras(store storage.Store, cfg config.Config, tenants tenant.Extension) func() []monitoring.Metric {
+	backlog := backlogMetrics(store, cfg, tenants)
 	pool := dbPoolMetrics(store, cfg)
 	return func() []monitoring.Metric {
 		var out []monitoring.Metric
@@ -67,27 +69,60 @@ func expositionExtras(store storage.Store, cfg config.Config) func() []monitorin
 // metrics_backlog_enabled is set, so an unset key yields a nil renderer and no
 // series at all rather than a zeroed one. The counts are computed at scrape time
 // and bounded, so a slow store cannot hang the scrape.
-func backlogMetrics(store storage.Store, cfg config.Config) func() []monitoring.Metric {
+func backlogMetrics(store storage.Store, cfg config.Config, tenants tenant.Extension) func() []monitoring.Metric {
 	if !cfg.MetricsTuning.BacklogEnabled {
 		return nil
 	}
 	return func() []monitoring.Metric {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		out := asyncOperationSamples(ctx, store, cfg)
-		page, err := store.ListBanks(ctx, storage.BankQuery{Limit: 1000})
-		if err != nil {
-			return out
+		var out []monitoring.Metric
+		for _, target := range metricTargets(ctx, tenants, cfg) {
+			schemaCtx, err := storage.WithSchema(ctx, target)
+			if err != nil {
+				continue
+			}
+			out = append(out, asyncOperationSamples(schemaCtx, store, target, cfg)...)
+			page, err := store.ListBanks(schemaCtx, storage.BankQuery{Limit: 1000})
+			if err != nil {
+				continue
+			}
+			out = append(out, consolidationSamples(schemaCtx, store, page.Banks, target, cfg)...)
 		}
-		return append(out, consolidationSamples(ctx, store, page.Banks, cfg)...)
+		return out
 	}
+}
+
+// metricTargets returns the schemas one scrape covers. Single mode has the
+// process schema; multi mode asks the tenant extension for the active set. A
+// registry failure yields no series rather than a series for the process
+// schema, which would misattribute every tenant's work.
+func metricTargets(ctx context.Context, tenants tenant.Extension, cfg config.Config) []string {
+	if tenants == nil {
+		return []string{cfg.DatabaseSchema}
+	}
+	listed, err := tenants.ListTenants(ctx)
+	if err != nil {
+		return nil
+	}
+	schemas := make([]string, 0, len(listed))
+	seen := map[string]bool{}
+	for _, entry := range listed {
+		schema := strings.TrimSpace(entry.Schema)
+		if schema == "" || seen[schema] {
+			continue
+		}
+		seen[schema] = true
+		schemas = append(schemas, schema)
+	}
+	return schemas
 }
 
 // asyncOperationSamples renders one series per (operation_type, status[,bank_id])
 // bucket of non-terminal operations. Each carries the tenant label, as the
 // reference does unconditionally for this gauge, and the bank_id label only when
 // the bank-id label is enabled.
-func asyncOperationSamples(ctx context.Context, store storage.Store, cfg config.Config) []monitoring.Metric {
+func asyncOperationSamples(ctx context.Context, store storage.Store, tenantID string, cfg config.Config) []monitoring.Metric {
 	counter, ok := store.(storage.AsyncOperationCounter)
 	if !ok {
 		return nil
@@ -100,7 +135,7 @@ func asyncOperationSamples(ctx context.Context, store storage.Store, cfg config.
 	out := make([]monitoring.Metric, 0, len(groups))
 	for _, group := range groups {
 		labels := map[string]string{
-			"tenant":         cfg.DatabaseSchema,
+			"tenant":         tenantID,
 			"operation_type": group.OperationType,
 			"status":         group.Status,
 		}
@@ -119,7 +154,7 @@ func asyncOperationSamples(ctx context.Context, store storage.Store, cfg config.
 // With the bank-id label on each bank gets its own pair; otherwise the counts
 // are summed into one pair per tenant, the shape the reference produces when
 // bank-id labelling is off.
-func consolidationSamples(ctx context.Context, store storage.Store, banks []storage.Bank, cfg config.Config) []monitoring.Metric {
+func consolidationSamples(ctx context.Context, store storage.Store, banks []storage.Bank, tenantID string, cfg config.Config) []monitoring.Metric {
 	if cfg.MetricsTuning.IncludeBankID {
 		out := make([]monitoring.Metric, 0, len(banks)*2)
 		for _, bank := range banks {
@@ -128,7 +163,7 @@ func consolidationSamples(ctx context.Context, store storage.Store, banks []stor
 				continue
 			}
 			out = append(out, consolidationPair(stats.PendingConsolidation, stats.FailedConsolidation,
-				map[string]string{"tenant": cfg.DatabaseSchema, "bank_id": bank.BankID})...)
+				map[string]string{"tenant": tenantID, "bank_id": bank.BankID})...)
 		}
 		return out
 	}
@@ -141,7 +176,7 @@ func consolidationSamples(ctx context.Context, store storage.Store, banks []stor
 		pending += stats.PendingConsolidation
 		failed += stats.FailedConsolidation
 	}
-	return consolidationPair(pending, failed, map[string]string{"tenant": cfg.DatabaseSchema})
+	return consolidationPair(pending, failed, map[string]string{"tenant": tenantID})
 }
 
 // consolidationPair renders the backlog and failed gauges for one label set.
@@ -208,9 +243,9 @@ func loopLagHistograms(tuning config.MetricsTuning) func() []monitoring.Histogra
 // process serves on its own port. It carries the same backlog gauges and loop
 // lag histogram as the API server's, so a scrape of either process sees the
 // deployment's metrics.
-func WorkerMetricsHandler(store storage.Store, cfg config.Config) *monitoring.MetricsHandler {
+func WorkerMetricsHandler(store storage.Store, cfg config.Config, tenants tenant.Extension) *monitoring.MetricsHandler {
 	return &monitoring.MetricsHandler{
-		Extra:      expositionExtras(store, cfg),
+		Extra:      expositionExtras(store, cfg, tenants),
 		Histograms: loopLagHistograms(cfg.MetricsTuning),
 		Tenant:     metricsTenant(cfg),
 	}
@@ -220,7 +255,7 @@ func WorkerMetricsHandler(store storage.Store, cfg config.Config) *monitoring.Me
 // schema the deployment is scoped to, or empty when the deployment has not opted
 // into the label.
 func metricsTenant(cfg config.Config) string {
-	if !cfg.MetricsTuning.IncludeTenant {
+	if !cfg.MetricsTuning.IncludeTenant || cfg.TenantMode == config.TenantModeMulti {
 		return ""
 	}
 	return cfg.DatabaseSchema

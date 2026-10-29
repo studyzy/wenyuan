@@ -84,9 +84,13 @@ func (s *MemoryStore) RecordMentalModelRefreshFailure(ctx context.Context, bankI
 // reports the zero time. The value is not stored: it is the newest
 // memory_units.updated_at, which is where the reference reads it from.
 func (s *PostgresStore) BankWriteWatermark(ctx context.Context, bankID string) time.Time {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return time.Time{}
+	}
 	var last *time.Time
 	query := `SELECT MAX(updated_at) FROM ` +
-		quoteIdent(s.schema) + `.memory_units WHERE bank_id = $1`
+		quoteIdent(schema) + `.memory_units WHERE bank_id = $1`
 	if err := s.db.QueryRowContext(ctx, query, bankID).Scan(&last); err != nil {
 		return time.Time{}
 	}
@@ -104,7 +108,11 @@ func (s *PostgresStore) BankWriteWatermark(ctx context.Context, bankID string) t
 // read on a run that found no sources exactly when that read has one, so a model
 // whose refreshes keep finding an empty scope keeps reporting a null watermark.
 func (s *PostgresStore) MarkMentalModelSeen(ctx context.Context, bankID, id string, seenAt time.Time) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.mental_models
 	          SET last_memory_seen_at = COALESCE($3::timestamptz, last_memory_seen_at),
 	              last_refreshed_at = now(),
 	              last_refresh_failed_at = NULL,
@@ -131,7 +139,11 @@ func (s *PostgresStore) MarkMentalModelSeen(ctx context.Context, bankID, id stri
 // RecordMentalModelRefreshFailure parks the model without advancing the
 // watermark: the window that failed is the window the next attempt re-reads.
 func (s *PostgresStore) RecordMentalModelRefreshFailure(ctx context.Context, bankID, id string, failedAt time.Time) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.mental_models
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.mental_models
 	          SET last_refresh_failed_at = $3, last_updated = now()
 	          WHERE bank_id = $1 AND id = $2`
 	result, err := s.db.ExecContext(ctx, query, bankID, id, failedAt.UTC())

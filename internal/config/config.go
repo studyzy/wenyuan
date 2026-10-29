@@ -175,6 +175,14 @@ const (
 	// authentication, which a deployment that fronts MCP with its own gate
 	// needs.
 	EnvTenantMCPAuthDisabled = "WENYUAN_API_TENANT_MCP_AUTH_DISABLED"
+	// EnvTenantMode selects the control-plane shape: single serves one schema
+	// from the configuration; multi resolves the schema from the registry.
+	EnvTenantMode = "WENYUAN_API_TENANT_MODE"
+	// EnvAdminListen enables the management plane when set to a bind address.
+	EnvAdminListen = "WENYUAN_API_ADMIN_LISTEN"
+	// EnvAdminAPIKey is the operator credential for the management plane. It
+	// never enters the database and is separate from every tenant key.
+	EnvAdminAPIKey = "WENYUAN_API_ADMIN_API_KEY"
 	// EnvOperationValidatorExtension selects the operation validator by its
 	// class path, the reference's extension convention. The one this build
 	// implements natively is the reference suite's tag-scope validator, which
@@ -534,6 +542,12 @@ type Config struct {
 	TenantAPIKey string
 	// TenantMCPAuthDisabled exempts the MCP namespace from authentication.
 	TenantMCPAuthDisabled bool
+	// TenantMode is single or multi; see TenantModeSingle and TenantModeMulti.
+	TenantMode string
+	// AdminListen is the management plane's bind address; empty disables it.
+	AdminListen string
+	// AdminAPIKey is the management plane's operator credential.
+	AdminAPIKey string
 	// OperationValidatorExtension is the selected operation validator's class
 	// path, empty when the deployment registers none.
 	OperationValidatorExtension string
@@ -1014,6 +1028,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 		TextSearchExtension:               DefaultTextSearchExtension,
 		TextSearchExtensionNativeLanguage: DefaultTextSearchExtensionNativeLanguage,
 		GzipMinSize:                       DefaultGzipMinSize,
+		TenantMode:                        TenantModeSingle,
 		LogLevel:                          DefaultLogLevel,
 		Workers:                           DefaultWorkers,
 		ReadTimeout:                       DefaultReadTimeoutSeconds * time.Second,
@@ -1110,6 +1125,11 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.TenantExtension = stringFromEnv(lookup, EnvTenantExtension)
 	cfg.TenantAPIKey = stringFromEnv(lookup, EnvTenantAPIKey)
 	cfg.TenantMCPAuthDisabled = boolFromEnv(lookup, EnvTenantMCPAuthDisabled, false)
+	if v := strings.ToLower(strings.TrimSpace(stringFromEnv(lookup, EnvTenantMode))); v != "" {
+		cfg.TenantMode = v
+	}
+	cfg.AdminListen = strings.TrimSpace(stringFromEnv(lookup, EnvAdminListen))
+	cfg.AdminAPIKey = strings.TrimSpace(stringFromEnv(lookup, EnvAdminAPIKey))
 	cfg.OperationValidatorExtension = stringFromEnv(lookup, EnvOperationValidatorExtension)
 	cfg.PprofEnabled = boolFromEnv(lookup, EnvPprofEnabled, false)
 	// The worker count and daemon log are the reference's own keys: a launcher

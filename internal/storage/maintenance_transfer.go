@@ -51,7 +51,11 @@ var _ MaintenanceQueueTransfer = (*PostgresStore)(nil)
 
 // ExportGraphMaintenance reads a bank's graph-relink queue.
 func (s *PostgresStore) ExportGraphMaintenance(ctx context.Context, bankID string) ([]MaintenanceQueueRow, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT unit_id::text, enqueued_at FROM `+qualified+`.graph_maintenance_queue
 		 WHERE bank_id = $1 ORDER BY enqueued_at, unit_id`, bankID)
@@ -87,7 +91,11 @@ func (s *PostgresStore) ImportGraphMaintenance(ctx context.Context, bankID strin
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return 0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.graph_maintenance_queue (bank_id, unit_id, enqueued_at)
 		 SELECT $1, u::uuid, e FROM unnest($2::uuid[], $3::timestamptz[]) AS t(u, e)
@@ -103,7 +111,11 @@ func (s *PostgresStore) ImportGraphMaintenance(ctx context.Context, bankID strin
 // by its canonical name so the target can re-resolve it. An entity with no name
 // (or no row) cannot be restored and is left out.
 func (s *PostgresStore) ExportEntityMaintenance(ctx context.Context, bankID string) ([]MaintenanceQueueRow, error) {
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.canonical_name, q.enqueued_at
 		 FROM `+qualified+`.entity_maintenance_queue q
@@ -143,7 +155,11 @@ func (s *PostgresStore) ImportEntityMaintenance(ctx context.Context, bankID stri
 	if len(names) == 0 {
 		return 0, nil
 	}
-	qualified := quoteIdent(s.schema)
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return 0, schemaErr
+	}
+	qualified := quoteIdent(schema)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+qualified+`.entity_maintenance_queue (bank_id, entity_id, enqueued_at)
 		 SELECT $1, e.id, t.enqueued_at

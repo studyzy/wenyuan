@@ -21,7 +21,7 @@ func TestBankStatsCacheRoundTrip(t *testing.T) {
 
 	// The cache row now exists and holds the summary the call computed.
 	var payload string
-	query := `SELECT payload::text FROM ` + quoteIdent(store.(*PostgresStore).schema) + `.bank_stats_cache WHERE bank_id = $1`
+	query := `SELECT payload::text FROM ` + quoteIdent(store.(*PostgresStore).defaultSchema) + `.bank_stats_cache WHERE bank_id = $1`
 	if err := store.(*PostgresStore).db.QueryRowContext(ctx, query, "vec-bank").Scan(&payload); err != nil {
 		t.Fatalf("cache row missing: %v", err)
 	}

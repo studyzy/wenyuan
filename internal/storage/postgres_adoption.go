@@ -134,9 +134,9 @@ func (s *PostgresStore) readCatalogue(ctx context.Context, q queryer) (*catalogu
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_attribute a
 		       ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')`, s.schema)
+		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')`, s.defaultSchema)
 	if err != nil {
-		return nil, fmt.Errorf("read the tables of schema %q: %w", s.schema, err)
+		return nil, fmt.Errorf("read the tables of schema %q: %w", s.defaultSchema, err)
 	}
 	if err := scanTableRows(tableRows, snapshot); err != nil {
 		return nil, err
@@ -147,9 +147,9 @@ func (s *PostgresStore) readCatalogue(ctx context.Context, q queryer) (*catalogu
 		FROM pg_constraint con
 		JOIN pg_class rel ON rel.oid = con.conrelid
 		JOIN pg_namespace n ON n.oid = rel.relnamespace
-		WHERE n.nspname = $1`, s.schema)
+		WHERE n.nspname = $1`, s.defaultSchema)
 	if err != nil {
-		return nil, fmt.Errorf("read the constraints of schema %q: %w", s.schema, err)
+		return nil, fmt.Errorf("read the constraints of schema %q: %w", s.defaultSchema, err)
 	}
 	if err := scanPairs(constraintRows, func(table, name string) {
 		snapshot.constraints[table+"\x00"+name] = true
@@ -163,9 +163,9 @@ func (s *PostgresStore) readCatalogue(ctx context.Context, q queryer) (*catalogu
 		JOIN pg_class ic ON ic.oid = i.indexrelid
 		JOIN pg_class tc ON tc.oid = i.indrelid
 		JOIN pg_namespace n ON n.oid = tc.relnamespace
-		WHERE n.nspname = $1`, s.schema)
+		WHERE n.nspname = $1`, s.defaultSchema)
 	if err != nil {
-		return nil, fmt.Errorf("read the indexes of schema %q: %w", s.schema, err)
+		return nil, fmt.Errorf("read the indexes of schema %q: %w", s.defaultSchema, err)
 	}
 	if err := scanSingles(indexRows, func(name string) { snapshot.indexes[name] = true }); err != nil {
 		return nil, err
@@ -175,9 +175,9 @@ func (s *PostgresStore) readCatalogue(ctx context.Context, q queryer) (*catalogu
 		SELECT p.proname
 		FROM pg_proc p
 		JOIN pg_namespace n ON n.oid = p.pronamespace
-		WHERE n.nspname = $1`, s.schema)
+		WHERE n.nspname = $1`, s.defaultSchema)
 	if err != nil {
-		return nil, fmt.Errorf("read the functions of schema %q: %w", s.schema, err)
+		return nil, fmt.Errorf("read the functions of schema %q: %w", s.defaultSchema, err)
 	}
 	if err := scanSingles(functionRows, func(name string) { snapshot.functions[name] = true }); err != nil {
 		return nil, err
@@ -188,7 +188,7 @@ func (s *PostgresStore) readCatalogue(ctx context.Context, q queryer) (*catalogu
 		// The revision is reported, not enforced: the catalogue is what decides
 		// whether the schema is the one this build serves, and a revision this
 		// build has never heard of whose schema matches is still that schema.
-		row := q.QueryRowContext(ctx, `SELECT version_num FROM `+quoteIdent(s.schema)+`.alembic_version LIMIT 1`)
+		row := q.QueryRowContext(ctx, `SELECT version_num FROM `+quoteIdent(s.defaultSchema)+`.alembic_version LIMIT 1`)
 		var revision sql.NullString
 		if err := row.Scan(&revision); err == nil {
 			snapshot.alembicRevision = revision.String
@@ -259,7 +259,7 @@ func (s *PostgresStore) adoptSeries(ctx context.Context, tx Tx, series []Migrati
 	recorded := 0
 	for _, migration := range series {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO `+quoteIdent(s.schema)+`.schema_migrations (version, name) VALUES ($1, $2)
+			`INSERT INTO `+quoteIdent(s.defaultSchema)+`.schema_migrations (version, name) VALUES ($1, $2)
 			 ON CONFLICT (version) DO NOTHING`,
 			migration.Version, migration.Name); err != nil {
 			return fmt.Errorf("recording adopted migration %04d failed: %w", migration.Version, err)
@@ -273,7 +273,7 @@ func (s *PostgresStore) adoptSeries(ctx context.Context, tx Tx, series []Migrati
 		revision = "none"
 	}
 	slog.Info("adopted the existing schema instead of re-creating it",
-		"schema", s.schema,
+		"schema", s.defaultSchema,
 		"recorded_migrations", recorded,
 		"total_migrations", len(series),
 		"latest_version", series[len(series)-1].Version,
@@ -284,7 +284,7 @@ func (s *PostgresStore) adoptSeries(ctx context.Context, tx Tx, series []Migrati
 			names = append(names, object.String())
 		}
 		slog.Warn("the adopted database does not carry every index of the series; it serves without them",
-			"schema", s.schema, "missing", strings.Join(names, ", "))
+			"schema", s.defaultSchema, "missing", strings.Join(names, ", "))
 	}
 	return nil
 }
@@ -299,7 +299,7 @@ func (s *PostgresStore) partialSchemaError(missing []ExpectedObject, expected *E
 	total := len(expected.Structural())
 	message := fmt.Sprintf(
 		"database is not the schema this build serves: schema %q already carries %d of the %d objects the migration series creates, and the first missing one is %s",
-		s.schema, total-len(missing), total, missing[0])
+		s.defaultSchema, total-len(missing), total, missing[0])
 	if snapshot.alembicPresent {
 		message += fmt.Sprintf(
 			"; the database carries the reference service's own bookkeeping (alembic_version = %q), so it was migrated by a revision this build does not serve",

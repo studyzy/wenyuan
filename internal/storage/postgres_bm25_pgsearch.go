@@ -58,12 +58,12 @@ var pgSearchArmFields = []string{"text", "text_signals"}
 // The shape is identical between the two backends — the same columns, the same
 // positional contract ($1 bank, $2 types, $3 query text, $4 limit) and the same
 // ctid tie-break — so only the score expression and the match gate change.
-func (s *PostgresStore) bm25ArmQuery(q RecallQuery, term string, limit int) (string, []any) {
+func (s *PostgresStore) bm25ArmQuery(q RecallQuery, term string, limit int, schema string) (string, []any) {
 	args := append(armArgs(q), term, limit)
 	head := `SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
 	                 COALESCE(source_memory_ids, '{}'::uuid[])::text, `
 	tail := `
-	          FROM ` + quoteIdent(s.schema) + `.memory_units
+	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type = ANY($2) AND ` + recallPredicates(q) + `
 	            AND `
 	if s.textSearchExtension == TextSearchPGSearch {

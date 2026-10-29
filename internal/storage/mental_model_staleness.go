@@ -398,6 +398,10 @@ func (s *PostgresStore) IsStaleBatch(ctx context.Context, bankID string, model M
 // memories is no more stale than one with a single newer memory, and counting
 // them all would turn a cheap existence check into a scan.
 func (s *PostgresStore) anyMemoryInScopeSince(ctx context.Context, bankID string, scope MentalModelScope) bool {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return false
+	}
 	clauses := []string{"bank_id = $1"}
 	args := []any{bankID, scope.Since}
 	// The written time is the unit's record timestamp, the same column the bank
@@ -420,7 +424,7 @@ func (s *PostgresStore) anyMemoryInScopeSince(ctx context.Context, bankID string
 		clauses = append(clauses, predicate)
 	}
 
-	query := `SELECT 1 FROM ` + quoteIdent(s.schema) + `.memory_units
+	query := `SELECT 1 FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE ` + strings.Join(clauses, " AND ") + `
 	          LIMIT 1`
 	var found int

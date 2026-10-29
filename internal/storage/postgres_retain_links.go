@@ -7,10 +7,14 @@ import (
 // createSemanticLinks links each new unit to existing units whose embedding is
 // within the similarity floor, using the pgvector distance operator.
 func (s *PostgresStore) createSemanticLinks(ctx context.Context, bankID string, unitIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	// The reference's ANN phase probes each new unit's nearest bank units and
 	// takes at most `top_k` of them above the similarity floor, with the
 	// similarity clamped to [0,1] because a cosine distance can exceed it on
@@ -67,10 +71,14 @@ func (s *PostgresStore) createSemanticLinks(ctx context.Context, bankID string, 
 // experience and world units carry an event date, so only they are linked, and
 // a temporal pass never writes a self-link.
 func (s *PostgresStore) createTemporalLinks(ctx context.Context, bankID string, unitIDs []string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	if len(unitIDs) == 0 {
 		return nil
 	}
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	_, err := s.db.ExecContext(ctx,
 		`WITH new_units AS (
 		     SELECT id, event_date, fact_type

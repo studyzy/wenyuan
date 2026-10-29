@@ -36,6 +36,11 @@ func (s *PostgresStore) ClaimNextOperationForTypes(ctx context.Context, workerID
 }
 
 func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	if workerID == "" {
 		return Operation{}, ErrInvalidOperationID
 	}
@@ -44,7 +49,7 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	// disjunction, and without the grouping a later conjunct would bind to only
 	// its right-hand side.
 	query := `WITH candidate AS (
-	            SELECT operation_id FROM ` + quoteIdent(s.schema) + `.async_operations
+	            SELECT operation_id FROM ` + quoteIdent(schema) + `.async_operations
 	            WHERE ((status = 'pending'
 	                    AND (next_retry_at IS NULL OR next_retry_at <= now()))
 	                OR (status = 'processing'
@@ -55,10 +60,10 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	              AND task_payload IS NOT NULL
 	              AND (serialization_key IS NULL
 	                   OR NOT EXISTS (
-	                        SELECT 1 FROM ` + quoteIdent(s.schema) + `.async_operations held
-	                        WHERE held.serialization_key = ` + quoteIdent(s.schema) + `.async_operations.serialization_key
+	                        SELECT 1 FROM ` + quoteIdent(schema) + `.async_operations held
+	                        WHERE held.serialization_key = ` + quoteIdent(schema) + `.async_operations.serialization_key
 	                          AND held.status = 'processing'
-	                          AND held.operation_id <> ` + quoteIdent(s.schema) + `.async_operations.operation_id
+	                          AND held.operation_id <> ` + quoteIdent(schema) + `.async_operations.operation_id
 	                          AND ($2 <= 0
 	                               OR held.claimed_at IS NULL
 	                               OR held.claimed_at > now() - make_interval(secs => $2))))
@@ -66,15 +71,15 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	            -- served first, so one bank's backlog cannot starve the others.
 	            -- Within a bank the order stays oldest-first.
 	            ORDER BY (SELECT MIN(pending.created_at)
-	                      FROM ` + quoteIdent(s.schema) + `.async_operations pending
-	                      WHERE pending.bank_id = ` + quoteIdent(s.schema) + `.async_operations.bank_id
+	                      FROM ` + quoteIdent(schema) + `.async_operations pending
+	                      WHERE pending.bank_id = ` + quoteIdent(schema) + `.async_operations.bank_id
 	                        AND pending.status = 'pending'
 	                        AND (pending.next_retry_at IS NULL OR pending.next_retry_at <= now())),
 	                     created_at ASC, operation_id ASC
 	            FOR UPDATE SKIP LOCKED
 	            LIMIT 1
 	          )
-	          UPDATE ` + quoteIdent(s.schema) + `.async_operations AS o
+	          UPDATE ` + quoteIdent(schema) + `.async_operations AS o
 	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now()
 	          FROM candidate
 	          WHERE o.operation_id = candidate.operation_id
@@ -140,7 +145,11 @@ func (s *PostgresStore) claimRow(ctx context.Context, query string, args ...any)
 // ReleaseOperationClaim returns a claimed operation to the claimable pool,
 // clearing the claim so another consumer can pick it up immediately.
 func (s *PostgresStore) ReleaseOperationClaim(ctx context.Context, opID, workerID string) error {
-	query := `UPDATE ` + quoteIdent(s.schema) + `.async_operations
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
 	          SET status = 'pending', worker_id = NULL, claimed_at = NULL, updated_at = now()
 	          WHERE operation_id = $1 AND worker_id = $2`
 	result, err := s.db.ExecContext(ctx, query, opID, workerID)
@@ -190,6 +199,11 @@ var (
 // work is taken. Every ordering the reference builds as separate tiered queries
 // folds into that single expression, so a claim stays one round trip.
 func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		var zero0 Operation
+		return zero0, schemaErr
+	}
 	if len(priority) == 0 {
 		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate})
 	}
@@ -197,7 +211,7 @@ func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, worker
 		return Operation{}, ErrInvalidOperationID
 	}
 	leaseSeconds := lease.Seconds()
-	qualified := quoteIdent(s.schema)
+	qualified := quoteIdent(schema)
 	rank := consolidationPriorityRank(priority)
 
 	query := `WITH candidate AS (

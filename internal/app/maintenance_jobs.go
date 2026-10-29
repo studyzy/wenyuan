@@ -93,7 +93,7 @@ func maintenanceJobs(
 			Name:     "vector_index.reconcile",
 			Interval: time.Duration(vectorIndex.ReconcileInterval) * time.Second,
 			Run: func(ctx context.Context) error {
-				return reconcileVectorIndexes(ctx, store, vectorIndex.MinRows)
+				return reconcileVectorIndexes(ctx, store, tenants, vectorIndex.MinRows)
 			},
 		})
 	}
@@ -108,7 +108,7 @@ func maintenanceJobs(
 				if !ok {
 					return nil
 				}
-				return drainGraphMaintenance(ctx, maintainer)
+				return drainGraphMaintenance(ctx, maintainer, tenants)
 			},
 		})
 	}
@@ -122,22 +122,35 @@ func maintenanceJobs(
 // the capability, so the job is a no-op there. A single bank's failure is
 // reported but does not stop the sweep, because the next tick retries it and
 // one bad bank should not starve the rest.
-func reconcileVectorIndexes(ctx context.Context, store storage.Store, minRows int) error {
+func reconcileVectorIndexes(ctx context.Context, store storage.Store, tenants tenant.Extension, minRows int) error {
 	reconciler, ok := store.(storage.VectorIndexReconciler)
 	if !ok {
 		return nil
 	}
-	banks, err := reconciler.BanksNeedingVectorIndexes(ctx, minRows)
+	schemas, err := tenantSchemas(ctx, tenants)
 	if err != nil {
-		return fmt.Errorf("discover banks needing vector indexes: %w", err)
+		return err
 	}
 	var firstErr error
-	for _, bankID := range banks {
-		if _, err := reconciler.ReconcileBankVectorIndexes(ctx, bankID, minRows); err != nil {
+	for _, schema := range schemas {
+		schemaCtx, schemaErr := storage.WithSchema(ctx, schema)
+		if schemaErr != nil {
+			return schemaErr
+		}
+		banks, err := reconciler.BanksNeedingVectorIndexes(schemaCtx, minRows)
+		if err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = fmt.Errorf("discover banks needing vector indexes in %s: %w", schema, err)
 			}
-			slog.Default().Warn("vector index reconcile failed", "bank_id", bankID, "error", err)
+			continue
+		}
+		for _, bankID := range banks {
+			if _, err := reconciler.ReconcileBankVectorIndexes(schemaCtx, bankID, minRows); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("vector index reconcile failed", "schema", schema, "bank_id", bankID, "error", err)
+			}
 		}
 	}
 	return firstErr
@@ -152,7 +165,25 @@ func reconcileVectorIndexes(ctx context.Context, store storage.Store, minRows in
 // enqueued_at, sending it to the back — and the sweep keeps going, because one
 // bad target must not discard the rest of the batch. The first error is still
 // returned so the job's failure stays visible.
-func drainGraphMaintenance(ctx context.Context, store storage.GraphMaintainer) error {
+func drainGraphMaintenance(ctx context.Context, store storage.GraphMaintainer, tenants tenant.Extension) error {
+	schemas, err := tenantSchemas(ctx, tenants)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, schema := range schemas {
+		schemaCtx, schemaErr := storage.WithSchema(ctx, schema)
+		if schemaErr != nil {
+			return schemaErr
+		}
+		if err := drainGraphMaintenanceInSchema(schemaCtx, store); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func drainGraphMaintenanceInSchema(ctx context.Context, store storage.GraphMaintainer) error {
 	var firstErr error
 	relink, err := store.DrainGraphMaintenance(ctx, 500)
 	if err != nil {
@@ -248,7 +279,11 @@ func reconcileConsolidation(ctx context.Context, store storage.Store, tenants te
 		return err
 	}
 	for _, schema := range schemas {
-		bankIDs, err := finder.BanksNeedingConsolidation(ctx, schema)
+		schemaCtx, schemaErr := storage.WithSchema(ctx, schema)
+		if schemaErr != nil {
+			return schemaErr
+		}
+		bankIDs, err := finder.BanksNeedingConsolidation(schemaCtx, schema)
 		if err != nil {
 			return fmt.Errorf("discover banks needing consolidation in %s: %w", schema, err)
 		}
@@ -264,7 +299,7 @@ func reconcileConsolidation(ctx context.Context, store storage.Store, tenants te
 			//
 			// The enqueue is idempotent inside the database, which is what keeps
 			// every process in a fleet from queueing its own copy.
-			if _, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
+			if _, err := store.EnqueueOperation(schemaCtx, storage.EnqueueRequest{
 				Operation: storage.Operation{
 					BankID:           bankID,
 					OperationType:    storage.OperationTypeConsolidate,
@@ -300,7 +335,11 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 	}
 	now := time.Now().UTC()
 	for _, schema := range schemas {
-		scheduled, err := discoverer.MentalModelsWithSchedule(ctx, schema)
+		schemaCtx, schemaErr := storage.WithSchema(ctx, schema)
+		if schemaErr != nil {
+			return schemaErr
+		}
+		scheduled, err := discoverer.MentalModelsWithSchedule(schemaCtx, schema)
 		if err != nil {
 			return fmt.Errorf("discover scheduled mental models in %s: %w", schema, err)
 		}
@@ -308,12 +347,12 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 			if !cronDue(entry.RefreshCron, entry.LastRefreshedAt, now) {
 				continue
 			}
-			model, err := store.GetMentalModel(ctx, entry.BankID, entry.MentalModelID)
+			model, err := store.GetMentalModel(schemaCtx, entry.BankID, entry.MentalModelID)
 			if err != nil {
 				// The model may have been deleted between discovery and here.
 				continue
 			}
-			if !store.IsStale(ctx, entry.BankID, model) {
+			if !store.IsStale(schemaCtx, entry.BankID, model) {
 				continue
 			}
 			// A model whose last refresh failed is parked against automatic
@@ -325,7 +364,7 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 			// ask for this specific run, and a running refresh covers its
 			// intent. The enqueue is idempotent inside the database, which is
 			// what keeps a fleet from queueing one wave per process.
-			if _, err := store.EnqueueOperation(ctx, storage.EnqueueRequest{
+			if _, err := store.EnqueueOperation(schemaCtx, storage.EnqueueRequest{
 				Operation: storage.Operation{
 					BankID:           entry.BankID,
 					OperationType:    storage.OperationTypeRefreshMentalModel,

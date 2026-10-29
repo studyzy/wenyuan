@@ -636,6 +636,9 @@ type BackendConfig struct {
 	VectorExtension     string
 	TextSearchExtension string
 	RunMigrations       bool
+	// RequireTenantSchema makes every statement resolve its schema from the
+	// request context instead of the process schema. Multi-tenant mode sets it.
+	RequireTenantSchema bool
 	// MigrationDatabaseURL, when set, is the connection the migration series
 	// runs over: a deployment whose serving role cannot run DDL points this at a
 	// role that can, and the server itself keeps using DatabaseURL.

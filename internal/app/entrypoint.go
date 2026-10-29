@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -75,6 +76,27 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		return err
 	}
 
+	// The management plane is a second listener in the same process. It is
+	// bound after composition so an admin-schema migration failure is reported
+	// before the port is taken, and it is shut down with the data plane.
+	var adminServer *http.Server
+	if composed.AdminHandler != nil {
+		adminListener, err := net.Listen("tcp", cfg.AdminListen)
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("bind admin listener %q: %w", cfg.AdminListen, err)
+		}
+		adminServer = &http.Server{
+			Handler:           composed.AdminHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			if err := adminServer.Serve(adminListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("admin server stopped", "error", err)
+			}
+		}()
+	}
+
 	// The reference's standalone mode drains the queue and runs housekeeping in
 	// the same process as the API, so a deployment that runs only the server
 	// still processes its queued work. The roles share the served application's
@@ -118,6 +140,9 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
+		if adminServer != nil {
+			_ = adminServer.Shutdown(shutdownCtx)
+		}
 	}()
 
 	// The certificate, when there is one, is already in the server's

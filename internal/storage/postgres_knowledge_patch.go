@@ -79,6 +79,10 @@ func (s *PostgresStore) updateKnowledgeNodeTx(ctx context.Context, tx Tx, bankID
 // putKnowledgeNodeTx writes one node and, for a page, the model that carries its
 // text and tags, through the given transaction.
 func (s *PostgresStore) putKnowledgeNodeTx(ctx context.Context, tx Tx, node KnowledgeNode) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
 	modelID := ""
 	if node.Kind == KnowledgeKindPage {
 		modelID = node.MentalModelID
@@ -92,7 +96,7 @@ func (s *PostgresStore) putKnowledgeNodeTx(ctx context.Context, tx Tx, node Know
 		}
 	}
 
-	query := `INSERT INTO ` + quoteIdent(s.schema) + `.knowledge_pages
+	query := `INSERT INTO ` + quoteIdent(schema) + `.knowledge_pages
 	          (id, bank_id, parent_id, kind, name, mental_model_id, managed, sort_order, created_at, updated_at)
 	          VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8, now(), now())
 	          ON CONFLICT (id) DO UPDATE SET
