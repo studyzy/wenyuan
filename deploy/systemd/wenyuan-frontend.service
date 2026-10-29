@@ -1,0 +1,31 @@
+# WenYuan control-plane frontend (Next.js standalone output).
+#
+# Installed by `make service-install` after `make frontend-standalone`.
+# WENYUAN_CP_DATAPLANE_API_URL must point at the API server; when the API has
+# a tenant API key configured, WENYUAN_CP_DATAPLANE_API_KEY must carry the same
+# value or every BFF route comes back 401 and the dashboard renders empty.
+# Set both in /etc/default/wenyuan-frontend (read below) rather than editing
+# this unit, so reinstalling does not wipe them.
+
+[Unit]
+Description=WenYuan control-plane frontend (Next.js standalone)
+After=network-online.target wenyuan.service
+Wants=network-online.target
+Requires=wenyuan.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__/frontend/.next/standalone
+EnvironmentFile=-/etc/default/wenyuan-frontend
+Environment=PORT=19999
+Environment=HOSTNAME=0.0.0.0
+Environment=NODE_ENV=production
+ExecStart=__NODE__ server.js
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/wenyuan-frontend.log
+StandardError=append:/var/log/wenyuan-frontend.log
+
+[Install]
+WantedBy=multi-user.target

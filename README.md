@@ -119,9 +119,83 @@ make frontend-run                       # serves on 19999 (Next.js production mo
 
 The frontend talks to the API through its BFF routes, which read
 `WENYUAN_CP_DATAPLANE_API_URL` (default `http://127.0.0.1:8000`; point it at
-the wenyuan API, e.g. `http://127.0.0.1:18888`). Run the production build:
-dev-mode HMR hangs Origin-bearing WebSocket upgrades in this environment and
-the dashboard never finishes loading.
+the wenyuan API, e.g. `http://127.0.0.1:18888`) and
+`WENYUAN_CP_DATAPLANE_API_KEY`. Run the production build: dev-mode HMR hangs
+Origin-bearing WebSocket upgrades in this environment and the dashboard never
+finishes loading.
+
+Both variables are read on the server at request time, so they must be set on
+the **standalone server process**, not baked into the browser bundle. When the
+API has a tenant key configured (`tenant_api_key` in the configuration file),
+the frontend must send the same key or every BFF route answers 401 and the
+dashboard renders empty. A frontend built before an environment variable was
+renamed keeps reading the old name from its compiled bundle — rebuild with
+`make frontend-standalone` after pulling; the server logs
+`[Control Plane] Connecting to dataplane at: …` once at startup, which is the
+quickest way to confirm which URL it is using.
+
+## Installing as a service (systemd)
+
+For a host that keeps the API and the frontend running across sessions and
+reboots, install both as systemd units. The templates live in
+`deploy/systemd/`; `make service-install` substitutes this checkout's path
+and the invoking account and copies them to `/etc/systemd/system/`. It needs
+`sudo`, and `node` on `PATH` for the frontend unit.
+
+```sh
+make db-up                              # dependencies first: PostgreSQL + TEI sidecars
+make install                            # bin/wenyuan-server, worker, bankctl, wenyuan-admin
+make frontend-standalone                # only if the control-plane UI is wanted
+make service-install                    # write the unit files
+make service-enable                     # start now and at every boot
+```
+
+Then:
+
+| Command | Effect |
+| --- | --- |
+| `make service-status` | state of both units plus `GET /health` on 18888 |
+| `make service-restart` | restart both — run after `make install` or `make frontend-standalone` |
+| `make service-stop` | stop both, keeping the boot links |
+| `make service-start` | start both again |
+| `make service-disable` | stop both and stop starting them at boot |
+| `make service-logs` | follow `/var/log/wenyuan-server.log` (`UNIT=frontend` for the UI) |
+| `make service-uninstall` | disable and remove the unit files; data, builds and logs stay |
+
+What the units assume:
+
+- **The API reads its configuration from the checkout.** `WorkingDirectory` is
+  the repository root, so `etc/wenyuan.yaml`, a relative `.env` and the
+  relative paths inside them resolve as they do for `make run`. Moving the
+  checkout means reinstalling (`make service-install`).
+- **The binaries are prebuilt.** `ExecStart` points at `bin/wenyuan-server`,
+  produced by `make install`; a service installed without it exits and is
+  restarted every few seconds until the binary exists.
+- **The frontend reads its environment from `/etc/default/wenyuan-frontend`.**
+  `make service-install` seeds that file once and never overwrites it, so the
+  API URL and `WENYUAN_CP_DATAPLANE_API_KEY` set there survive a reinstall:
+
+  ```sh
+  sudoedit /etc/default/wenyuan-frontend       # set the URL and the API key
+  make service-restart
+  ```
+
+  It must match the API's tenant key; leaving it empty only works when the
+  API has no tenant key configured.
+- **Both units bind all interfaces.** The API listens on `0.0.0.0:18888`
+  (from `host: 0.0.0.0` in the configuration file) and the frontend on
+  `0.0.0.0:19999`, so the dashboard is reachable from another host — restrict
+  the cloud security group if that is not wanted. `make frontend-run` binds
+  `127.0.0.1` only.
+- **Both restart on failure** (`Restart=always`, 3 s backoff) and log to
+  `/var/log/wenyuan-server.log` and `/var/log/wenyuan-frontend.log`. The
+  frontend unit has `Requires=wenyuan.service`, so it stops if the API is
+  stopped.
+
+The dependency services (PostgreSQL, the TEI sidecars) are not covered by these
+units: they are the compose stack, started with `make db-up` and `make tei-up`.
+If they are down, the API still starts but `GET /health` reports the database
+as disconnected.
 
 ### Server flags
 
@@ -302,6 +376,7 @@ internal/provider model-provider port + vendor adapters (openai, anthropic,
                   embed, rerank, none, mock)
 internal/storage  storage interface, in-memory and PostgreSQL stores
 migrations        PostgreSQL schema migrations
+deploy/systemd    systemd unit templates used by `make service-install`
 ```
 
 See `AGENTS.md` for the full package map and the architectural boundaries.

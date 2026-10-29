@@ -1,7 +1,7 @@
 # wenyuan — build and test entrypoints.
 #
 # The default build is standard-library-only and offline. The PostgreSQL
-# driver path is compiled with the `pgx` build tag (`make pgx`).
+# driver path is compiled with the 'pgx' build tag ('make pgx').
 # All Go commands run with GOFLAGS=-mod=mod and CGO disabled to keep the
 # build reproducible across environments.
 
@@ -38,7 +38,9 @@ COVERAGE_MIN_PG ?= 66
         frontend-build frontend-run frontend-standalone clients clients-check \
         test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration \
         test-sdk-python test-sdk-typescript test-sdk-rust help \
-        bench test-pg cover cover-check cover-check-pg parity
+        bench test-pg cover cover-check cover-check-pg parity \
+        service-install service-enable service-disable service-restart \
+        service-stop service-start service-status service-uninstall service-logs
 
 all: check
 
@@ -148,34 +150,116 @@ frontend-build:
 
 ## frontend-run: serve the frontend in production mode on port 19999.
 ##
-## Run the standalone output, not `next start`: next.config.mjs sets
-## `output: "standalone"`, and `next start` refuses that configuration — it
+## Run the standalone output, not 'next start': next.config.mjs sets
+## 'output: "standalone"', and 'next start' refuses that configuration — it
 ## prints a warning and exits without ever listening. The standalone server is
 ## also the only thing that runs what a deployment runs.
 ##
-## The standalone tree is not self-contained: `next build` does not copy
-## `public/` or `.next/static` into it, so both are staged in first. Without
+## The standalone tree is not self-contained: 'next build' does not copy
+## 'public/' or '.next/static' into it, so both are staged in first. Without
 ## them the app boots and serves HTML but every asset 404s.
 ##
 ## HOSTNAME is pinned to the IPv4 loopback: the standalone server resolves its
 ## own hostname when HOSTNAME is unset, and here that produced an IPv6-only
-## `[::1]` bind, so `http://127.0.0.1:19999` — the URL the BFF and the docs use —
+## '[::1]' bind, so 'http://127.0.0.1:19999' — the URL the BFF and the docs use —
 ## was unreachable.
 ##
-## dev mode (`npm run dev`) hangs Origin-bearing HMR WebSocket upgrades in this
+## dev mode ('npm run dev') hangs Origin-bearing HMR WebSocket upgrades in this
 ## environment, which leaves the dashboard reloading forever on an empty list.
 frontend-run: frontend-standalone
 	cd frontend/.next/standalone && PORT=19999 HOSTNAME=127.0.0.1 \
 		WENYUAN_CP_DATAPLANE_API_URL=$(WENYUAN_CP_DATAPLANE_API_URL) \
 		node server.js
 
-## frontend-standalone: stage the standalone output for `frontend-run` —
-## production build, then graft `public/` and `.next/static` into the tree.
+## frontend-standalone: stage the standalone output for 'frontend-run' —
+## production build, then graft 'public/' and '.next/static' into the tree.
 frontend-standalone:
 	cd frontend && npm run build
 	rm -rf frontend/.next/standalone/.next/static frontend/.next/standalone/public
 	cp -r frontend/.next/static frontend/.next/standalone/.next/static
 	cp -r frontend/public frontend/.next/standalone/public
+
+## service-install: install this checkout as systemd services (backend and
+## frontend) and enable them at boot. Needs sudo; the templates live in
+## deploy/systemd/ and the checkout path and the account running them are
+## substituted in.
+##
+## The frontend unit is only installed when a standalone build exists — it
+## would restart-loop without one. /etc/default/wenyuan-frontend is seeded on
+## first install and never overwritten, so the upstream URL and the API key set
+## there survive a reinstall.
+##
+## Installing does not restart a running service; run 'make service-restart'
+## to pick up a new binary or a new frontend build.
+SYSTEMD_DIR     ?= /etc/systemd/system
+SERVICE_ENV     ?= /etc/default/wenyuan-frontend
+SERVICE_USER    ?= $(shell id -un)
+SERVICE_ROOT    := $(CURDIR)
+NODE            ?= $(shell command -v node)
+
+define render_unit
+sudo sed -e 's|__ROOT__|$(SERVICE_ROOT)|g' \
+         -e 's|__USER__|$(SERVICE_USER)|g' \
+         -e 's|__NODE__|$(NODE)|g' $(1) | sudo tee $(2) >/dev/null
+endef
+
+service-install:
+	@test -n "$(NODE)" || { echo "node is required: it runs the frontend unit"; exit 1; }
+	$(call render_unit,deploy/systemd/wenyuan.service,$(SYSTEMD_DIR)/wenyuan.service)
+	@if [ -f frontend/.next/standalone/server.js ]; then \
+		$(call render_unit,deploy/systemd/wenyuan-frontend.service,$(SYSTEMD_DIR)/wenyuan-frontend.service); \
+		if [ ! -f $(SERVICE_ENV) ]; then \
+			sudo install -m 600 deploy/systemd/wenyuan-frontend.env $(SERVICE_ENV); \
+			echo "seeded $(SERVICE_ENV): set WENYUAN_CP_DATAPLANE_API_KEY there when the API requires one"; \
+		fi; \
+	else echo "skipping the frontend unit: run 'make frontend-standalone' first"; fi
+	sudo systemctl daemon-reload
+
+## service-enable: start both services now and at every boot
+service-enable:
+	sudo systemctl enable --now wenyuan.service
+	@if [ -f $(SYSTEMD_DIR)/wenyuan-frontend.service ]; then sudo systemctl enable --now wenyuan-frontend.service; fi
+
+## service-disable: stop both services and stop starting them at boot. The unit
+## files stay installed; 'make service-uninstall' removes them.
+service-disable:
+	-sudo systemctl disable --now wenyuan-frontend.service
+	sudo systemctl disable --now wenyuan.service
+
+## service-restart: restart both, e.g. after 'make install' or
+## 'make frontend-standalone'
+service-restart:
+	sudo systemctl restart wenyuan.service
+	@if [ -f $(SYSTEMD_DIR)/wenyuan-frontend.service ]; then sudo systemctl restart wenyuan-frontend.service; fi
+
+## service-stop: stop both without touching whether they start at boot
+service-stop:
+	-sudo systemctl stop wenyuan-frontend.service
+	sudo systemctl stop wenyuan.service
+
+## service-start: start both again
+service-start:
+	sudo systemctl start wenyuan.service
+	@if [ -f $(SYSTEMD_DIR)/wenyuan-frontend.service ]; then sudo systemctl start wenyuan-frontend.service; fi
+
+## service-status: state of both services plus a health probe of the API
+service-status:
+	-systemctl status wenyuan.service --no-pager -l
+	-systemctl status wenyuan-frontend.service --no-pager -l
+	@curl -s -m 5 http://127.0.0.1:18888/health || echo "API is not answering on 18888"
+
+## service-uninstall: disable and remove the unit files. The database, the
+## build output and the logs are left alone.
+service-uninstall:
+	-sudo systemctl disable --now wenyuan-frontend.service wenyuan.service
+	sudo rm -f $(SYSTEMD_DIR)/wenyuan-frontend.service $(SYSTEMD_DIR)/wenyuan.service
+	sudo systemctl daemon-reload
+
+## service-logs: follow the API log; 'make service-logs UNIT=frontend' for the
+## frontend log
+UNIT ?= server
+service-logs:
+	tail -f /var/log/wenyuan-$(UNIT).log
 
 ## clean: remove build output
 clean:

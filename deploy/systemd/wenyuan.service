@@ -1,0 +1,24 @@
+# WenYuan backend API server.
+#
+# Installed by `make service-install`, which rewrites the paths and the
+# account below for this checkout. Everything the server needs from its
+# working directory (etc/wenyuan.yaml, a relative .env) is resolved from it,
+# so WorkingDirectory must stay at the repository root.
+
+[Unit]
+Description=WenYuan backend API server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/bin/wenyuan-server
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/wenyuan-server.log
+StandardError=append:/var/log/wenyuan-server.log
+
+[Install]
+WantedBy=multi-user.target
