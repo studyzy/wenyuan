@@ -158,10 +158,10 @@ func TestKnowledgeFolderIgnoresUndeclaredOptions(t *testing.T) {
 	}
 }
 
-// An explicitly empty `tag_groups` is treated as absent: the reference's
-// dependency reads `adapter.validate_json(raw) if raw else None` (api/http.py:3712),
-// so the request filters nothing instead of failing to parse. A whitespace value
-// is not empty there and still reaches the adapter.
+// An explicitly empty — or whitespace-only — `tag_groups` is treated as absent:
+// the reference's shared decoder returns early on `raw is None or not
+// raw.strip()` (api/http.py:283), so the request filters nothing instead of
+// failing to parse.
 func TestKnowledgeEmptyTagGroupsIsAbsent(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank + "/knowledge-base"
@@ -169,8 +169,8 @@ func TestKnowledgeEmptyTagGroupsIsAbsent(t *testing.T) {
 	if rec := send(mux, http.MethodGet, base+"/tree?tag_groups=", ""); rec.Code != http.StatusOK {
 		t.Fatalf("tree tag_groups= = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if rec := send(mux, http.MethodGet, base+"/tree?tag_groups=%20", ""); rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("tree tag_groups=%%20 = %d, want 422: %s", rec.Code, rec.Body.String())
+	if rec := send(mux, http.MethodGet, base+"/tree?tag_groups=%20", ""); rec.Code != http.StatusOK {
+		t.Fatalf("tree tag_groups=%%20 = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }
 

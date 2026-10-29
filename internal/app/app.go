@@ -185,6 +185,12 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	// With tracing enabled, wrap the provider so every completion lands in the
 	// model-request trace the observability endpoints serve.
 	activeProvider = TraceProvider(activeProvider, store, cfg.Provider)
+	// The embedding backend and the reranker join the same trace, the way the
+	// reference traces its embedding and rerank calls next to the chat rows
+	// (engine/retain/embedding_utils.py:139, engine/cross_encoder.py:220), so
+	// the /llm-requests call_type filters see this deployment's calls too.
+	embedder = TraceEmbedder(embedder, store, cfg.Provider)
+	reranker = TraceReranker(reranker, store, cfg.Provider, rerankTraceBackend(cfg.Provider))
 	// The span tracer is best-effort and off the latency path; a nil tracer
 	// (tracing disabled) leaves the provider unwrapped.
 	tracer := NewTracer(cfg.Tracing)

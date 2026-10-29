@@ -2,7 +2,7 @@ package storage
 
 import (
 	"encoding/json"
-	"fmt"
+	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/entitylabels"
@@ -393,12 +393,15 @@ func sharedDocumentID(items []RetainItem) string {
 }
 
 // summarizeChildErrors renders a parent's error message from its failed
-// children, naming the most common cause so the parent carries a reason a
-// dashboard can attribute rather than a generic string.
+// children: the most common non-empty failed-child message, verbatim, so the
+// parent carries a reason a dashboard can attribute rather than a generic
+// string. The legacy generic string covers the case where no failed child
+// carries a message at all.
 func summarizeChildErrors(messages []string) string {
 	counts := map[string]int{}
 	order := make([]string, 0, len(messages))
 	for _, message := range messages {
+		message = strings.TrimSpace(message)
 		if message == "" {
 			continue
 		}
@@ -415,10 +418,7 @@ func summarizeChildErrors(messages []string) string {
 		}
 	}
 	if best == "" {
-		return "sub-batch failed"
-	}
-	if total := len(messages); total > 1 {
-		return fmt.Sprintf("%s (%d of %d sub-batches failed)", best, bestCount, total)
+		return "One or more sub-batches failed"
 	}
 	return best
 }

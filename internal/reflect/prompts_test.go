@@ -205,7 +205,7 @@ func TestStructuredExtractionRunsOnlyWithASchema(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "Alice lives in Berlin."},
+		closingDone(map[string]any{"answer": "Alice lives in Berlin."}),
 		provider.CompletionResult{Structured: map[string]any{"city": "Berlin"}, Usage: provider.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}},
 	)}
 	loop := NewLoop(p, retrieval, Config{Question: "where?", ResponseSchema: schema})
@@ -230,13 +230,14 @@ func TestStructuredExtractionRunsOnlyWithASchema(t *testing.T) {
 		t.Fatal("the extraction call must ask for the caller's schema")
 	}
 
-	// No schema: the answering call is the last call, and no extraction follows.
+	// No schema: the closing step's answer is the last answer, and no extraction
+	// follows.
 	plain := &scriptedProvider{name: "stub", script: append(
 		turnScript(
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "Alice lives in Berlin."},
+		closingDone(map[string]any{"answer": "Alice lives in Berlin."}),
 	)}
 	if _, err := NewLoop(plain, retrieval, Config{Question: "where?"}).Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -261,7 +262,7 @@ func TestStructuredExtractionFailureIsReported(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "Alice lives in Berlin."},
+		closingDone(map[string]any{"answer": "Alice lives in Berlin."}),
 		provider.CompletionResult{Content: "absolutely not json"},
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "where?", ResponseSchema: schema}).Run(context.Background())

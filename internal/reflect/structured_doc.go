@@ -34,7 +34,10 @@ func doneDocumentAnswer(input map[string]any) (string, error) {
 			return renderDoneDocument(document)
 		}
 		if raw != nil {
-			return "", fmt.Errorf("document: expected an object with a 'sections' array, got %T", raw)
+			// A document was sent but is not one. Falling through to the answer
+			// would fail a whole refresh over a shape the model fixes when told,
+			// so it is classified as a rejection and re-asked.
+			return "", fmt.Errorf("%w: document: expected an object with a 'sections' array, got %T", ErrDocumentSectionsInvalid, raw)
 		}
 	}
 	answer := strings.TrimSpace(stringArg(input, "answer"))

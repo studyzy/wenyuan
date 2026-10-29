@@ -709,3 +709,100 @@ func TestRefreshRecordsTheSlimmedHistorySnapshot(t *testing.T) {
 		t.Fatalf("previous_reflect_response = %#v, want based_on kept", snapshot)
 	}
 }
+
+// minRefreshFixture is a model whose floor between automatic refreshes the
+// trigger states, last refreshed at the given instant.
+func minRefreshFixture(t *testing.T, trigger map[string]any, lastRefreshed time.Time) (*storage.MemoryStore, string) {
+	t.Helper()
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := store.PutMentalModel(ctx, storage.MentalModel{
+		ID: "model-1", BankID: "b1", Subtype: storage.SubtypePinned,
+		Name: "deploy days", SourceQuery: "deploy days",
+		Trigger: trigger, LastRefreshedAt: lastRefreshed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, model.ID
+}
+
+// An automatic refresh parks while the model's min-refresh window is open: the
+// operation returns to pending with next_retry_at naming when the window
+// closes, spending no retry and writing no error (memory_engine.py:4776-4846).
+func TestAutomaticRefreshParksWithinTheMinRefreshWindow(t *testing.T) {
+	last := time.Now().UTC().Add(-time.Minute)
+	store, modelID := minRefreshFixture(t, map[string]any{"min_refresh_interval_seconds": 3600}, last)
+	ctx := context.Background()
+	op, err := store.PutOperation(ctx, storage.Operation{
+		BankID: "b1", OperationType: storage.OperationTypeRefreshMentalModel,
+		Payload: map[string]any{storage.MentalModelIDPayloadKey: modelID, storage.AutomaticRefreshPayloadKey: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := worker.New(store, archiveProcessor{store: store}, worker.Config{
+		WorkerID: "w-floor", Concurrency: 1, PollInterval: 5 * time.Millisecond,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	go func() { _ = consumer.Run(runCtx) }()
+
+	for {
+		final, err := store.GetOperation(ctx, op.BankID, op.OperationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.NextRetryAt != nil {
+			if final.Status != storage.StatusPending {
+				t.Fatalf("status = %s, want pending", final.Status)
+			}
+			if !final.NextRetryAt.After(last.Add(time.Hour)) || final.NextRetryAt.Before(last.Add(time.Hour)) {
+				t.Fatalf("next_retry_at = %v, want %v", final.NextRetryAt, last.Add(time.Hour).Truncate(time.Second))
+			}
+			if final.Error != "" {
+				t.Fatalf("defer wrote an error: %q", final.Error)
+			}
+			if final.RetryCount != 0 {
+				t.Fatalf("retry_count = %d, want 0", final.RetryCount)
+			}
+			break
+		}
+		if final.Status.Terminal() {
+			t.Fatalf("status = %s, want the run parked", final.Status)
+		}
+		if runCtx.Err() != nil {
+			t.Fatalf("the deferred refresh never settled back to pending: %+v", final)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// An explicit refresh runs inside the window: the floor governs automatic
+// triggers only (memory_engine.py:4886, `if task_dict.get(_REFRESH_AUTOMATIC_KEY)`).
+func TestExplicitRefreshIgnoresTheMinRefreshWindow(t *testing.T) {
+	store, modelID := minRefreshFixture(t, map[string]any{"min_refresh_interval_seconds": 3600}, time.Now().UTC())
+	final := runRefreshOperation(t, store, archiveProcessor{store: store}, modelID)
+	if final.Status != storage.StatusCompleted {
+		t.Fatalf("status = %s, want completed", final.Status)
+	}
+}
+
+// A model whose trigger floor is an explicit 0 opts out of the bank's floor:
+// the per-model member wins (memory_engine.py:4737-4754).
+func TestPerModelZeroOptsOutOfTheBankFloor(t *testing.T) {
+	store, modelID := minRefreshFixture(t, map[string]any{"min_refresh_interval_seconds": 0}, time.Now().UTC())
+	cfg := map[string]any{"mental_model_min_refresh_interval_seconds": 3600}
+	if _, err := store.UpdateBank(t.Context(), "b1", storage.BankPatch{Config: &cfg}); err != nil {
+		t.Fatal(err)
+	}
+	processor := archiveProcessor{store: store, mentalModelMinRefreshSeconds: 3600}
+	final := runRefreshOperation(t, store, processor, modelID)
+	if final.Status != storage.StatusCompleted {
+		t.Fatalf("status = %s, want completed", final.Status)
+	}
+}

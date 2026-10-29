@@ -12,12 +12,20 @@ import (
 // reference emits through json.dumps use '+00:00'. All of those are valid
 // RFC 3339, so one layout set covers them. A nil or unparsable value reads as
 // nil, matching how the reader treats every other optional archive field.
+//
+// A year-1 / year-9999 value reads as nil too: it is how a producer writes an
+// open bound ("since forever", "still ongoing"), not a date, and importing it
+// would recreate the broken row the reference's own validators drop
+// (engine/transfer/schema.py:176-177, :225-226 via engine/stored_dates.py).
 func ParseTime(value *string) *time.Time {
 	if value == nil {
 		return nil
 	}
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
 		if parsed, err := time.Parse(layout, *value); err == nil {
+			if parsed.Year() == 1 || parsed.Year() == 9999 {
+				return nil
+			}
 			utc := parsed.UTC()
 			return &utc
 		}

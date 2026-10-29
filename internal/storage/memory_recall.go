@@ -120,9 +120,16 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 		}
 	}
 
+	// An observation's evidence rides its own postings, so its recall row answers
+	// for them the way the PostgreSQL rows do (postgres_recall.go scans the
+	// source_memory_ids column): the prefer-observations dedup below, the
+	// source-facts channel and the response's source_fact_ids all read it here.
+	s.hydrateObservationSources(candidates)
+
 	// Fusion ordering (reciprocal rank fusion) then combined scoring.
 	stop = phases.measure("score", false)
-	ranked := scoreCandidates(ctx, candidates, arms, q)
+	pool := trimCandidatePool(candidates, arms, q, s.tuning.RerankerMaxCandidatesFor(q.Budget))
+	ranked := scoreCandidates(ctx, pool, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
 	// The trace reports the SCORED list, which is what the reference hands its
@@ -131,7 +138,7 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 	// the narrowing the returned list gets, and the reference keeps the
 	// narrower list in its own `[5]`/`[6]` steps only.
 	scored := append([]*recallCandidate(nil), ranked...)
-	ranked = preferObservations(ranked, q)
+	ranked = preferObservations(ranked, q, limit)
 	ranked = capCandidates(ranked, limit)
 	stop()
 
@@ -176,6 +183,65 @@ func capCandidates(ranked []*recallCandidate, limit int) []*recallCandidate {
 		return ranked
 	}
 	return ranked[:limit]
+}
+
+// hydrateObservationSources fills each observation candidate's SourceMemoryIDs
+// from the observation's source postings. The recall rows themselves carry an
+// empty list (recallMatchFromUnit has no store access, and the sources are
+// recorded after the row is written), while GetMemory hydrates the same postings
+// on read — so a recalled observation carries its evidence the same way the
+// PostgreSQL rows do. A candidate that already carries ids is left as it is.
+func (s *MemoryStore) hydrateObservationSources(candidates map[string]*recallCandidate) {
+	for id, cand := range candidates {
+		if cand.match.Type != string(TypeObservation) || len(cand.match.SourceMemoryIDs) > 0 {
+			continue
+		}
+		if sources := s.observationSources[id]; len(sources) > 0 {
+			cand.match.SourceMemoryIDs = append([]string(nil), sources...)
+		}
+	}
+}
+
+// trimCandidatePool drops the candidates past the reranker's candidate cap
+// before scoring, keeping the best fused ones — the reference trims
+// merged_candidates the same way, before the cross-encoder sees the pool
+// (engine/memory_engine.py:10428-10431), so a candidate past the cap is dropped
+// rather than carried on its fused score. The ordering boosts a configured arm
+// in rank space (stage 1), as the reference's trim does; under the cap nothing
+// is reordered. A non-positive cap leaves the pool alone.
+func trimCandidatePool(candidates map[string]*recallCandidate, arms []string, q RecallQuery, candidateCap int) map[string]*recallCandidate {
+	if candidateCap <= 0 || len(candidates) <= candidateCap {
+		return candidates
+	}
+	list := make([]*recallCandidate, 0, len(candidates))
+	for _, cand := range candidates {
+		list = append(list, cand)
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		left, right := fusedPoolScore(list[i], arms, q), fusedPoolScore(list[j], arms, q)
+		if left != right {
+			return left > right
+		}
+		return list[i].match.ID < list[j].match.ID
+	})
+	trimmed := make(map[string]*recallCandidate, candidateCap)
+	for _, cand := range list[:candidateCap] {
+		trimmed[cand.match.ID] = cand
+	}
+	return trimmed
+}
+
+// fusedPoolScore returns the candidate's reciprocal-rank fusion total with a
+// configured arm promoted in rank space — the ordering the pool trim keeps the
+// head of, and the same stage-1 promotion the combined score applies later.
+func fusedPoolScore(cand *recallCandidate, arms []string, q RecallQuery) float64 {
+	fused := 0.0
+	for _, arm := range arms {
+		if rank, ok := cand.armRanks[arm]; ok {
+			fused += 1 / (rrfConstant + float64(rank))
+		}
+	}
+	return stage1Boost(cand, fused, q.StrategyBoosts)
 }
 
 // buildRecallTrace records what the pipeline looked at, so the trace route can
@@ -758,6 +824,7 @@ func temporalProximity(window *TemporalWindow, occurredStart, occurredEnd, menti
 // proximity grades. A genuine span is read from its midpoint; a unit carrying
 // only one date (or only a mention) uses that. Nil when the unit has no date.
 func unitTemporalPoint(start, end, mentioned *time.Time) *time.Time {
+	start, end, mentioned = finiteUTC(start), finiteUTC(end), finiteUTC(mentioned)
 	if start != nil && end != nil {
 		mid := start.Add(end.Sub(*start) / 2)
 		return &mid
@@ -769,6 +836,19 @@ func unitTemporalPoint(start, end, mentioned *time.Time) *time.Time {
 		return end
 	}
 	return mentioned
+}
+
+// finiteUTC is the recall-side reading of a stored date (engine/stored_dates.py):
+// nil when the column is unset or carries a placeholder year — 1 or 9999, the
+// way a model or an export writes "since forever" / "still ongoing" — and the
+// value as UTC otherwise. A placeholder that stayed a date would grade an open
+// bound as the freshest or the stalest instant in the bank.
+func finiteUTC(value *time.Time) *time.Time {
+	if value == nil || value.Year() == 1 || value.Year() == 9999 {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
 }
 
 // candidateScores builds the per-stage score object as a stage-keyed map. A
@@ -864,7 +944,14 @@ func matchesFloors(cand *recallCandidate, minScores map[string]float64) bool {
 
 // preferObservations drops raw facts superseded by a returned observation when
 // the flag is set and both an observation type and a raw type are requested.
-func preferObservations(candidates []*recallCandidate, q RecallQuery) []*recallCandidate {
+//
+// Only observations within the supersession window — the first 2×budget ranked
+// candidates, the reference's scored_results[:thinking_budget*2]
+// (engine/memory_engine.py:10650-10652) — may suppress a raw fact: a far-down
+// observation should not suppress a top raw fact it merely happens to
+// reference. The drop itself still applies to the whole ranked list, so the
+// slots a dropped raw fact frees backfill with the next-best results.
+func preferObservations(candidates []*recallCandidate, q RecallQuery, limit int) []*recallCandidate {
 	if !q.PreferObservations {
 		return candidates
 	}
@@ -872,8 +959,12 @@ func preferObservations(candidates []*recallCandidate, q RecallQuery) []*recallC
 	if !containsString(types, string(TypeObservation)) {
 		return candidates
 	}
+	window := candidates
+	if limit > 0 && len(candidates) > 2*limit {
+		window = candidates[:2*limit]
+	}
 	superseded := map[string]bool{}
-	for _, cand := range candidates {
+	for _, cand := range window {
 		if cand.match.Type != string(TypeObservation) {
 			continue
 		}

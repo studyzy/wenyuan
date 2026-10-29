@@ -120,6 +120,10 @@ const (
 	KindUnavailable   = http.StatusServiceUnavailable
 	KindTimeout       = http.StatusGatewayTimeout
 	KindInternal      = http.StatusInternalServerError
+	// KindClientClosed is the de facto reverse-proxy status for "client closed
+	// request" — the reference's _CLIENT_CLOSED_REQUEST_STATUS_CODE, which has
+	// no net/http constant.
+	KindClientClosed = 499
 )
 
 // HTTPError carries a status code and a client-safe detail message.
@@ -192,20 +196,20 @@ func BankNotFoundDetail(bankID string) string {
 // scope violation, a rejected operation — carrying the reason and the status
 // the route is expected to answer with.
 //
-// The reference decides the response by whether the route CATCHES the error:
-// a route with an `except OperationValidationError` clause answers the reason
-// as `detail` under the carried status, while a route that swallows it into the
-// generic `except Exception` handler answers 500 with `str(exc)`. The two are
-// therefore different responses for the same failure, and both are contract.
+// Whether the route catches the error no longer decides the response: since
+// #5448 the reference's generic handler recognizes the validator's own error
+// (api/http.py:341-342) and answers the same status and reason a catching
+// route would, so both paths return one body for the same failure.
 type OperationValidationError struct {
-	// Reason is the client-facing detail a catching route returns.
+	// Reason is the client-facing detail the route returns.
 	Reason string
-	// Status is the status a catching route returns alongside the reason.
+	// Status is the status returned alongside the reason.
 	Status int
 }
 
-// Error is the wrapped text an UNCAUGHT validator failure surfaces with through
-// the generic handler: the reference's `str(OperationValidationError)`.
+// Error is the type's own text, the reference's `str(OperationValidationError)`.
+// It is no longer served: the generic handler maps the carried status and
+// reason instead.
 func (e *OperationValidationError) Error() string {
 	return "Operation validation failed: " + e.Reason
 }
@@ -216,8 +220,9 @@ func (e *OperationValidationError) Caught() *HTTPError {
 	return NewHTTPError(e.Status, e.Reason)
 }
 
-// Uncaught maps the failure onto the generic 500 an uncaught validator failure
-// produces, carrying the wrapped text as detail.
+// Uncaught maps the failure onto what the generic handler answers when a route
+// does not catch it: since #5448 that is the validation error's own status and
+// reason, the same body a catching route returns.
 func (e *OperationValidationError) Uncaught() *HTTPError {
-	return NewHTTPError(http.StatusInternalServerError, e.Error())
+	return e.Caught()
 }

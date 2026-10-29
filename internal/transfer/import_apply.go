@@ -219,7 +219,7 @@ func (a ImportApplier) restore(ctx context.Context, req ImportRequest, report Im
 		}
 		// Mental models and knowledge pages are a reading of the bank's facts,
 		// so they ride with the data section rather than the configuration.
-		if err := a.applyKnowledgeBase(ctx, req, target, &report); err != nil {
+		if err := a.applyKnowledgeBase(ctx, req, target, documentIDs, imported, &report); err != nil {
 			return report, err
 		}
 		// The operations log and the curation archive are data too, so they are
@@ -270,7 +270,7 @@ func (a ImportApplier) merge(ctx context.Context, req ImportRequest, conflict st
 	if err := a.applyObservations(ctx, req, target, documentIDs, imported, &report); err != nil {
 		return report, err
 	}
-	if err := a.applyKnowledgeBase(ctx, req, target, &report); err != nil {
+	if err := a.applyKnowledgeBase(ctx, req, target, documentIDs, imported, &report); err != nil {
 		return report, err
 	}
 	return report, a.applyOperationalHistory(ctx, req, target, &report)
@@ -613,9 +613,25 @@ func unitLocations(target string, archive *transferarchive.Archive, documentIDs 
 // tree, parent-first so every parent link resolves. Both keep their archive
 // identifiers, because a page names its backing model and every node names its
 // parent.
-func (a ImportApplier) applyKnowledgeBase(ctx context.Context, req ImportRequest, target string, report *ImportReport) error {
+func (a ImportApplier) applyKnowledgeBase(ctx context.Context, req ImportRequest, target string, documentIDs map[string]string, imported map[string]bool, report *ImportReport) error {
 	if len(req.Archive.KnowledgePages) > 0 && len(req.Archive.MentalModels) == 0 {
 		return errors.New("Knowledge Pages require their backing mental models in the transfer archive") //nolint:staticcheck // exact copy text of the reference contract
+	}
+	// The models keep their ids while the facts and observations they were built
+	// from were replayed under fresh ones, so their grounded evidence is
+	// re-pointed at the target's own units before anything is written
+	// (engine/transfer/importer.py:413, :1393-1394).
+	units := archiveUnitMap(target, req.Archive, documentIDs, imported)
+	remapMentalModelEvidence(req.Archive.MentalModels, units)
+	remapMentalModelEvidence(req.Archive.MentalModelHistory, units)
+	// Rows backing a knowledge page are restored too — the pages need them — but
+	// they are counted under knowledge_pages_imported, not as mental models
+	// (engine/transfer/importer.py:624-644).
+	pageModels := make(map[string]bool, len(req.Archive.KnowledgePages))
+	for _, page := range req.Archive.KnowledgePages {
+		if page.MentalModelID != "" {
+			pageModels[page.MentalModelID] = true
+		}
 	}
 	for _, row := range req.Archive.MentalModels {
 		model := mentalModelFromRow(row, target, a.now())
@@ -625,7 +641,9 @@ func (a ImportApplier) applyKnowledgeBase(ctx context.Context, req ImportRequest
 		if _, err := a.Store.PutMentalModel(ctx, model); err != nil {
 			return fmt.Errorf("write mental model %s: %w", model.ID, err)
 		}
-		report.MentalModelsImported++
+		if !pageModels[model.ID] {
+			report.MentalModelsImported++
+		}
 	}
 	if err := a.applyMentalModelHistory(ctx, req, target, report); err != nil {
 		return err
@@ -836,6 +854,76 @@ func archiveUnitMap(target string, archive *transferarchive.Archive, documentIDs
 		}
 	}
 	return out
+}
+
+// remapMentalModelEvidence rewrites the memory-unit ids in a mental-model row's
+// persisted reflect response, and in the history snapshot's previous reflect
+// response, after a transfer.
+//
+// Mental-model rows retain their ids during a restore, while facts and
+// observations are replayed and receive new ids. The response is otherwise
+// copied verbatim, so only evidence ids are updated and all generated text and
+// metadata is preserved; an id the import did not replay keeps its source value
+// rather than being rewritten onto a unit that does not exist
+// (engine/transfer/importer.py:2024-2047, :2048-2075).
+func remapMentalModelEvidence(rows []map[string]any, unitIDs map[string]string) {
+	if len(unitIDs) == 0 {
+		return
+	}
+	for _, row := range rows {
+		// Both encodings the archive may hold are accepted: the reference dumps a
+		// jsonb column as its JSON text, while an archive this service produced
+		// carries the decoded object. A decoded value is written back so a
+		// serialized one is readable as the rewritten object below.
+		reflectResponse, ok := rowMap(row, "reflect_response")
+		if ok {
+			remapBasedOnIDs(reflectResponse, unitIDs)
+			row["reflect_response"] = reflectResponse
+		}
+		// A history row carries the snapshot as a single content blob holding
+		// previous_content and previous_reflect_response — there is no top-level
+		// column of that name, so the nested payload is rewritten and put back.
+		content, ok := rowMap(row, "content")
+		if ok {
+			previous := mapValue(content, "previous_reflect_response")
+			if previous != nil {
+				remapBasedOnIDs(previous, unitIDs)
+				content["previous_reflect_response"] = previous
+				row["content"] = content
+			}
+		}
+	}
+}
+
+// remapBasedOnIDs rewrites every evidence entry's id the unit map carries. The
+// response groups the entries under memory_ids / mental_model_ids /
+// observation_ids keys, which are walked without being named: a mental model
+// keeps its id, so those entries simply have no mapping to apply.
+func remapBasedOnIDs(payload map[string]any, unitIDs map[string]string) {
+	if len(payload) == 0 || len(unitIDs) == 0 {
+		return
+	}
+	basedOn := mapValue(payload, "based_on")
+	if len(basedOn) == 0 {
+		return
+	}
+	for _, entries := range basedOn {
+		list, ok := entries.([]any)
+		if !ok {
+			continue
+		}
+		for _, entry := range list {
+			typed, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			if sourceID, ok := typed["id"].(string); ok {
+				if mapped, ok := unitIDs[sourceID]; ok {
+					typed["id"] = mapped
+				}
+			}
+		}
+	}
 }
 
 // applyMentalModelHistory replays each carried refresh log onto the model it

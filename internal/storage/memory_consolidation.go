@@ -17,8 +17,11 @@ func (s *MemoryStore) ConsolidationTuning() ConsolidationTuning {
 	return s.tuning.Consolidation
 }
 
-// ConsolidationFacts returns the newest raw facts of a bank that have not yet
-// been folded into an observation.
+// ConsolidationFacts returns the oldest raw facts of a bank that have not yet
+// been folded into an observation. Consolidation works oldest-first: the
+// reference sorts its candidates by created_at ascending
+// (consolidator.py:1459-1461), so a fact's turn comes in the order it was
+// written.
 func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, limit int) ([]ConsolidationFact, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -47,13 +50,13 @@ func (s *MemoryStore) ConsolidationFacts(ctx context.Context, bankID string, lim
 			continue
 		}
 		candidates = append(candidates, ConsolidationFact{
-			ID: unit.ID, Text: unit.Text,
+			ID: unit.ID, Text: unit.Text, CreatedAt: unit.CreatedAt,
 			OccurredStart: unit.OccurredStart, OccurredEnd: unit.OccurredEnd,
 			MentionedAt: unit.MentionedAt,
 			Tags:        canonicalScope(unit.Tags), ObservationScopes: unit.ObservationScopes,
 		})
 	}
-	sortNewestFirst(candidates, func(f ConsolidationFact) *time.Time { return f.MentionedAt },
+	sortOldestFirst(candidates, func(f ConsolidationFact) *time.Time { return f.CreatedAt },
 		func(a, b ConsolidationFact) bool { return a.ID < b.ID })
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -112,6 +115,28 @@ func sortNewestFirst[T any](entries []T, at func(T) *time.Time, tieBreak func(a,
 			return tieBreak(entries[i], entries[j])
 		default:
 			return left.After(*right)
+		}
+	})
+}
+
+// sortOldestFirst orders entries by their timestamp ascending — the reference's
+// `sorted(..., key=lambda m: (m.created_at is None, m.created_at))`, whose
+// undated entries sort last — then by a tie-break, so a page is deterministic
+// when several entries share a time.
+func sortOldestFirst[T any](entries []T, at func(T) *time.Time, tieBreak func(a, b T) bool) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		left, right := at(entries[i]), at(entries[j])
+		switch {
+		case left == nil && right == nil:
+			return tieBreak(entries[i], entries[j])
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		case left.Equal(*right):
+			return tieBreak(entries[i], entries[j])
+		default:
+			return left.Before(*right)
 		}
 	})
 }
@@ -417,28 +442,39 @@ func (s *MemoryStore) deleteStaleObservationsReportingLocked(bankID string, fact
 	return removed, nil
 }
 
-// deleteObservationsOnLocked removes the observations resting on any of factIDs
-// and clears the consolidation marker of each fact, without requeueing the
-// observations' surviving co-sources. It is the sweep a scope change runs: only
-// the memories that moved are re-consolidated, and a co-source belonging to
-// another document may have stayed exactly where it was (#5593).
+// deleteObservationsOnLocked removes the observations resting on any of factIDs,
+// clears the consolidation marker of each fact, and requeues the deleted
+// observations' surviving co-sources: an observation an update deletes is
+// rebuilt from every source that stays, wherever it lives — the co-sources the
+// reference requeues alongside the moved units (documents.py:578-588). The
+// caller holds the write lock.
 func (s *MemoryStore) deleteObservationsOnLocked(bankID string, factIDs []string) []RemovedObservation {
 	deleted := make(map[string]bool, len(factIDs))
 	for _, id := range factIDs {
 		deleted[id] = true
 	}
 	removed := make([]RemovedObservation, 0)
+	survivors := make(map[string]bool)
 	for id, unit := range s.units {
 		if unit.BankID != bankID || unit.FactType != TypeObservation {
 			continue
 		}
-		for _, source := range s.observationSources[id] {
+		sources := s.observationSources[id]
+		for _, source := range sources {
 			if !deleted[source] {
 				continue
 			}
 			removed = append(removed, RemovedObservation{
-				ObservationID: id, SourceFactIDs: append([]string(nil), s.observationSources[id]...),
+				ObservationID: id, SourceFactIDs: append([]string(nil), sources...),
 			})
+			// The sources of the deleted observation that stay behind keep their
+			// own rows: they are requeued so the next pass rebuilds the
+			// observation from them.
+			for _, source := range sources {
+				if !deleted[source] {
+					survivors[source] = true
+				}
+			}
 			delete(s.units, id)
 			delete(s.observationSources, id)
 			delete(s.consolidated, id)
@@ -447,6 +483,13 @@ func (s *MemoryStore) deleteObservationsOnLocked(bankID string, factIDs []string
 		}
 	}
 	for _, id := range factIDs {
+		if unit, ok := s.units[id]; ok && (unit.FactType == TypeWorld || unit.FactType == TypeExperience) {
+			unit.ConsolidatedAt = nil
+			s.units[id] = unit
+			delete(s.consolidated, id)
+		}
+	}
+	for id := range survivors {
 		if unit, ok := s.units[id]; ok && (unit.FactType == TypeWorld || unit.FactType == TypeExperience) {
 			unit.ConsolidatedAt = nil
 			s.units[id] = unit
@@ -470,4 +513,119 @@ func (s *MemoryStore) sourceObservationBoundsLocked(bankID string, sourceIDs []s
 		sources = append(sources, unit)
 	}
 	return AggregatedObservationBounds(sources)
+}
+
+// MergeObservationEvidence moves a merged-away observation's evidence onto the
+// observation that absorbed it, or requeues that evidence when there is no
+// survivor to receive it. It is the reference's _fold_deleted_evidence
+// (consolidator.py:3335-3380): only a delete the model marks as a merge
+// (merged_into) moves its evidence, and a merge whose target the model could
+// not name — or whose survivor is already gone — requeues its live sources
+// instead (mark_consolidated(when=None)), so the next pass attaches them
+// wherever the knowledge now belongs. The caller deletes the merged
+// observation afterwards; the row must still exist when this runs.
+func (s *MemoryStore) MergeObservationEvidence(ctx context.Context, bankID, survivorID, mergedID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	merged, ok := s.units[mergedID]
+	if !ok || merged.BankID != bankID {
+		// The row is already gone: there is no evidence to move.
+		return nil
+	}
+	live := make([]string, 0, len(s.observationSources[mergedID]))
+	for _, sourceID := range s.observationSources[mergedID] {
+		if unit, ok := s.units[sourceID]; ok && unit.BankID == bankID {
+			live = append(live, sourceID)
+		}
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	if survivorID != "" {
+		if survivor, ok := s.units[survivorID]; ok && survivor.BankID == bankID && survivor.FactType == TypeObservation {
+			// The survivor keeps its text; its dates widen with the merged
+			// observation's and its evidence grows by the merged sources.
+			current := ObservationBounds{
+				EventDate:     survivor.EventDate,
+				OccurredStart: survivor.OccurredStart,
+				OccurredEnd:   survivor.OccurredEnd,
+				MentionedAt:   survivor.MentionedAt,
+			}
+			current.MergedWith(ObservationBounds{
+				EventDate:     merged.EventDate,
+				OccurredStart: merged.OccurredStart,
+				OccurredEnd:   merged.OccurredEnd,
+				MentionedAt:   merged.MentionedAt,
+			}).ApplyTo(&survivor)
+			s.units[survivorID] = survivor
+			for _, sourceID := range live {
+				if !containsString(s.observationSources[survivorID], sourceID) {
+					s.observationSources[survivorID] = append(s.observationSources[survivorID], sourceID)
+				}
+			}
+			return nil
+		}
+	}
+	// No usable survivor: the evidence is requeued, keeping the
+	// experience/world guard the reference's clear carries — observations are
+	// never themselves consolidated, so nothing about them is reset.
+	for _, sourceID := range live {
+		unit, ok := s.units[sourceID]
+		if !ok || unit.BankID != bankID {
+			continue
+		}
+		if unit.FactType == TypeWorld || unit.FactType == TypeExperience {
+			unit.ConsolidatedAt = nil
+			s.units[sourceID] = unit
+			delete(s.consolidated, sourceID)
+		}
+	}
+	return nil
+}
+
+// EnqueueConsolidationSuccessor records the next round of a round-capped
+// consolidation chain, carrying callerRequested in the task payload the way the
+// reference's submit_async_consolidation does (memory_engine.py:23716-23717).
+// It deduplicates against a pending full-bank pass only — the pass now running
+// is this one, and folding the successor into it would swallow the chain
+// (engine/memory_engine.py:22207-22211).
+func (s *MemoryStore) EnqueueConsolidationSuccessor(ctx context.Context, bankID string, callerRequested bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	for _, op := range s.operations {
+		if op.BankID != bankID || op.OperationType != OperationTypeConsolidate || op.Status != StatusPending {
+			continue
+		}
+		if _, scoped := op.Payload["observation_scopes"]; scoped {
+			continue
+		}
+		// A pending full-bank pass already waits to fold the bank's remaining
+		// facts; the successor would only duplicate its work.
+		return nil
+	}
+	now := time.Now().UTC()
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
+		SerializationKey: ConsolidationSerializationKey(bankID),
+	}
+	if callerRequested {
+		op.Payload = executablePayload(map[string]any{"caller_requested": true})
+	} else {
+		op.Payload = executablePayload(nil)
+	}
+	s.operations[op.OperationID] = op
+	return nil
 }

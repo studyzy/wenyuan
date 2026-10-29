@@ -422,13 +422,14 @@ func (s *PostgresStore) CancelOperation(ctx context.Context, bankID, opID string
 	if errors.Is(err, sql.ErrNoRows) {
 		// The row reached a terminal state between the read above and this
 		// write: the concurrent terminal write wins the race, and the caller is
-		// told the operation could not be cancelled rather than being handed a
-		// cancellation that never happened.
+		// told the operation could not be cancelled — with the race's own
+		// conflict, distinct from the plain status conflict — rather than being
+		// handed a cancellation that never happened.
 		current, getErr := s.getOperation(ctx, opID)
 		if getErr != nil {
 			return Operation{}, getErr
 		}
-		return current, ErrOperationConflict
+		return current, ErrOperationConcurrentlyTerminal
 	}
 	return cancelled, err
 }

@@ -204,9 +204,20 @@ func TestKnowledgeTreeTagFilter(t *testing.T) {
 		t.Fatalf("grouped tree = %+v", tree.Roots)
 	}
 
-	// A malformed tag_groups is the reference's 422.
-	if rec := send(mux, http.MethodGet, base+"/knowledge-base/tree?tag_groups=notjson", ""); rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("bad tag_groups = %d, want 422: %s", rec.Code, rec.Body.String())
+	// A whitespace-only tag_groups is blank to the reference's shared decoder,
+	// which strips before its emptiness test (api/http.py:283): no filter, the
+	// whole tree.
+	rec = send(mux, http.MethodGet, base+"/knowledge-base/tree?tag_groups=%20", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &tree); err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Roots) != 2 {
+		t.Fatalf("whitespace tag_groups tree = %+v", tree.Roots)
+	}
+
+	// A malformed tag_groups is the reference's 400.
+	if rec := send(mux, http.MethodGet, base+"/knowledge-base/tree?tag_groups=notjson", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad tag_groups = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -279,6 +290,17 @@ func TestKnowledgeSearchTagFilter(t *testing.T) {
 	}
 	if len(response.Results) != 1 || response.Results[0].Name != "Deploy Blue" {
 		t.Fatalf("filtered search = %+v", response.Results)
+	}
+
+	// A whitespace-only tag_groups is blank to the reference's shared decoder,
+	// which strips before its emptiness test (api/http.py:283): no filter, so
+	// both pages answer the query.
+	rec = send(mux, http.MethodGet, base+"/knowledge-base/search?q=deploy&tag_groups=%20", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 {
+		t.Fatalf("whitespace tag_groups search = %+v", response.Results)
 	}
 }
 
@@ -399,13 +421,17 @@ func TestBankTemplateSchemaMatchesReference(t *testing.T) {
 	for _, field := range []string{
 		"memory_defense", "recall_budget_function", "reflect_default_options",
 		"audit_log_enabled", "store_document_text", "consolidation_strategies",
+		// The v1.1.0 fields a stale capture predates.
+		"reflect_use_decision_model", "mental_model_refresh_use_decision_model",
+		"mental_model_delta_use_decision_model", "default_observation_scopes",
+		"consolidation_use_decision_model", "recall_prefer_observations",
 	} {
 		if _, ok := config[field]; !ok {
 			t.Fatalf("BankTemplateConfig missing %q", field)
 		}
 	}
 	trigger := properties(t, defs, "MentalModelTrigger")
-	for _, field := range []string{"exclude_mental_models", "fact_types", "min_refresh_interval_seconds"} {
+	for _, field := range []string{"exclude_mental_models", "fact_types", "min_refresh_interval_seconds", "full_refresh_cron"} {
 		if _, ok := trigger[field]; !ok {
 			t.Fatalf("MentalModelTrigger missing %q", field)
 		}
@@ -1067,10 +1093,11 @@ func TestClearMemoryObservationsHonorsTagScope(t *testing.T) {
 	}
 }
 
-// A malformed `tag_groups` is the reference's plain-string 422 detail
-// ("Invalid tag_groups: …"), not the validation-item list envelope the other
-// query errors use.
-func TestKnowledgeTagGroupsInvalidDetailIsString(t *testing.T) {
+// A malformed `tag_groups` is the reference's 400 with the errors-repr detail
+// of `_decode_tag_groups_query` (api/http.py:284-286) — the same body the
+// entity routes send, not the validation-item list envelope the other query
+// errors use.
+func TestKnowledgeTagGroupsInvalidDetailIsBadRequest(t *testing.T) {
 	mux := newServer(t)
 	base := "/v1/default/banks/" + bank
 	for _, path := range []string{
@@ -1078,8 +1105,8 @@ func TestKnowledgeTagGroupsInvalidDetailIsString(t *testing.T) {
 		"/knowledge-base/search?q=x&tag_groups=%5B%7B",
 	} {
 		rec := send(mux, http.MethodGet, base+path, "")
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("%s = %d, want 422: %s", path, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400: %s", path, rec.Code, rec.Body.String())
 		}
 		var envelope struct {
 			Detail string `json:"detail"`
@@ -1087,8 +1114,11 @@ func TestKnowledgeTagGroupsInvalidDetailIsString(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("%s: decode detail: %v (%s)", path, err, rec.Body.String())
 		}
-		if !strings.HasPrefix(envelope.Detail, "Invalid tag_groups: ") {
-			t.Fatalf("%s detail = %q, want a string starting 'Invalid tag_groups: '", path, envelope.Detail)
+		want := `Invalid tag_groups: [{'type': 'json_invalid', 'loc': (), ` +
+			`'msg': 'Invalid JSON: EOF while parsing an object at line 1 column 2', 'input': '[{', ` +
+			`'ctx': {'error': 'EOF while parsing an object at line 1 column 2'}}]`
+		if envelope.Detail != want {
+			t.Fatalf("%s detail = %q, want %q", path, envelope.Detail, want)
 		}
 	}
 }

@@ -1,5 +1,14 @@
 # Wenyuan 功能缺口与待办清单（净室重写交接文档）
 
+> **✅ 2026-10-29 v1.1.0 复刻收口**：针对参考 v1.1.0 发布的整轮逐路对照复核已完成——
+> 15 个并行切片逐一核对 v1.0.0→v1.1.0 差量在后端的复刻情况，发现的约 60 项分歧全部修复
+> （consolidation 的 v1.1.0 提示词与删除合并语义、reflect 的 closing-step 流程、占位日期、
+> MCP 工具面、graph 边预算、transfer 证据重映射、reranker 候选上限、
+> `min_refresh_interval_seconds` 生效等），逐项证据见 `CHANGELOG.md` 的
+> "Fixed — the v1.1.0 port completed" 一节。Schema 以干净的上游 v1.1.0 alembic 目录复核：
+> 两侧目录逐对象完全一致（`docs/SCHEMA-ALIGNMENT.md` 全零差异）；路由面以所服务
+> `openapi.json` 与上游文档逐操作比对确认一致。
+
 > **✅ 2026-10-14 状态**：`docs/PARITY-PLAN.md` 的全部五个阶段（A 契约面、B 引擎、C 子系统、
 > D 运维）**均已收口**，逐条实现记录、验收命令与"真实运行"证据见该文 §8。本文件保留为
 > 早期基线的对照材料；凡与 `PARITY-PLAN.md` §8 冲突处，以后者为准（下文 §7 已同步更正）。

@@ -134,7 +134,10 @@ func isLeapYear(year int) bool {
 // date, because the end of the period is a bound rather than an observation: a
 // period still in progress would otherwise end in the future, clamp to 1, and
 // swap an invented staleness penalty for an equally invented freshness boost.
+// A placeholder date (year 1 or 9999, an open bound nobody means as a date)
+// reads as unknown, like the unset columns.
 func RecencyForUnit(start, end, mentioned *time.Time, now time.Time, cfg RecencyDecayConfig) float64 {
+	start, end, mentioned = finiteUTC(start), finiteUTC(end), finiteUTC(mentioned)
 	if start != nil && end != nil && SpansCalendarPeriod(*start, *end) {
 		signal := RecencyDecay(now.Sub(*end).Hours()/24, cfg)
 		return math.Min(0.5, signal)

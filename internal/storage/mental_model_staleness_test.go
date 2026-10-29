@@ -201,3 +201,53 @@ func TestTagGroupsOverrideFlatTags(t *testing.T) {
 }
 
 func timePtr(value time.Time) *time.Time { return &value }
+
+// ClearQueuedRefreshPark unparks a queued refresh: the automatic marker leaves
+// the payload and next_retry_at clears, so an explicit refresh that folded into
+// a parked one runs now instead of waiting out somebody else's window
+// (memory_engine.py:_clear_refresh_park).
+func TestClearQueuedRefreshPark(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	op, err := store.PutOperation(ctx, Operation{
+		BankID:        "b1",
+		OperationType: OperationTypeRefreshMentalModel,
+		Payload: map[string]any{
+			MentalModelIDPayloadKey:    "model-1",
+			AutomaticRefreshPayloadKey: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeferOperation(ctx, op.OperationID, time.Now().UTC().Add(time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := ClearQueuedRefreshPark(ctx, store, "b1", op.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("the park was not cleared")
+	}
+	final, err := store.GetOperation(ctx, "b1", op.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.NextRetryAt != nil {
+		t.Fatalf("next_retry_at = %v, want cleared", final.NextRetryAt)
+	}
+	if _, parked := final.Payload[AutomaticRefreshPayloadKey]; parked {
+		t.Fatalf("payload = %v, want the automatic marker gone", final.Payload)
+	}
+
+	// A refresh that is not parked answers unchanged.
+	again, err := ClearQueuedRefreshPark(ctx, store, "b1", op.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again {
+		t.Fatal("an unparked refresh reported a change")
+	}
+}

@@ -367,7 +367,10 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 			if !full && !store.IsStale(schemaCtx, entry.BankID, model) {
 				continue
 			}
-			payload := map[string]any{storage.MentalModelIDPayloadKey: entry.MentalModelID}
+			payload := map[string]any{
+				storage.MentalModelIDPayloadKey:    entry.MentalModelID,
+				storage.AutomaticRefreshPayloadKey: true,
+			}
 			if full {
 				payload[storage.RefreshModePayloadKey] = refreshModeFull
 			}

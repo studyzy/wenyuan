@@ -1010,8 +1010,11 @@ func TestReadSurfaceErrorMapping(t *testing.T) {
 }
 
 // The document listing orders by last write and filters on the window axis the
-// reference selects: updated_at by default, with rows outside the axis excluded
-// and the upper bound exclusive.
+// reference selects: rows outside the axis are excluded and the bounds are
+// checked exclusively. Every write stamps the documents row's updated_at (the
+// reference stamps it on insert and on every update), so the dated window runs
+// on the created_at axis a write preserves from the caller, while the default
+// axis is pinned by the order itself.
 func TestDocumentListWindowAndOrder(t *testing.T) {
 	store := newBankStore(t)
 	ctx := context.Background()
@@ -1020,14 +1023,15 @@ func TestDocumentListWindowAndOrder(t *testing.T) {
 	for _, doc := range []struct {
 		id      string
 		created time.Time
-		updated time.Time
 		tags    []string
 	}{
-		{"old-but-rewritten", early, later, []string{"team-a"}},
-		{"new-but-stale", later, early, nil},
+		// Written first but created last: the listing serves the last WRITE
+		// first, so the default axis is the row's updated_at, not created_at.
+		{"new-but-stale", later, nil},
+		{"old-but-rewritten", early, []string{"team-a"}},
 	} {
 		if _, err := store.PutDocument(ctx, bank, doc.id, storage.Document{
-			CreatedAt: doc.created, UpdatedAt: doc.updated, Tags: doc.tags,
+			CreatedAt: doc.created, Tags: doc.tags,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1042,12 +1046,12 @@ func TestDocumentListWindowAndOrder(t *testing.T) {
 		t.Fatalf("default order = %+v, want the last-written document first", list.Items)
 	}
 
-	// A window filters and orders on updated_at by default, upper bound exclusive.
+	// A window filters on the named axis and excludes rows outside it.
 	var windowed DocumentListResponse
 	decodeInto(t, send(mux, http.MethodGet,
-		base+"/documents?start_date=2024-02-01T00:00:00Z&end_date=2024-03-01T00:00:00Z", ""), &windowed)
-	if len(windowed.Items) != 1 || windowed.Items[0].ID != "old-but-rewritten" {
-		t.Fatalf("updated_at window = %+v, want just the rewritten document", windowed.Items)
+		base+"/documents?time_field=created_at&start_date=2024-02-01T00:00:00Z&end_date=2024-03-01T00:00:00Z", ""), &windowed)
+	if len(windowed.Items) != 1 || windowed.Items[0].ID != "new-but-stale" {
+		t.Fatalf("created_at window = %+v, want just the later-created document", windowed.Items)
 	}
 
 	// The any mode includes an untagged document.

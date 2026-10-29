@@ -110,3 +110,41 @@ func TestRetainDecodeRejectionKeepsSiblingFieldRules(t *testing.T) {
 		}
 	}
 }
+
+// The item timestamp validator checks the year after the format parse, so a
+// year-1/9999 value is the validator's own value_error with its sentence, while
+// "unset" and the empty string stay absent values and never reach either check
+// (api/http.py MemoryItem.validate_timestamp).
+func TestRetainTimestampRejectsPlaceholderDates(t *testing.T) {
+	mux, _ := newServer(t)
+	cases := []struct {
+		name, value, year string
+	}{
+		{"the far edge", "9999-12-31T00:00:00", "9999"},
+		{"the near edge", "0001-01-01T00:00:00Z", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := post(t, mux, "/v1/default/banks/b1/memories",
+				`{"items":[{"content":"hi","timestamp":"`+tc.value+`"}]}`)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			want := `{"detail":[{"type":"value_error","loc":["body","items",0,"timestamp"],` +
+				`"msg":"Value error, timestamp year ` + tc.year + ` is a placeholder, not a date; send a real date or 'unset' to store without one.",` +
+				`"input":"` + tc.value + `","ctx":{"error":{}}}]}`
+			if got := strings.TrimSpace(rec.Body.String()); got != want {
+				t.Fatalf("got  %s\nwant %s", got, want)
+			}
+		})
+	}
+	// The unset sentinel and the empty string are absent timestamps, not dates.
+	for _, body := range []string{
+		`{"items":[{"content":"hi","timestamp":"unset"}]}`,
+		`{"items":[{"content":"hi","timestamp":""}]}`,
+	} {
+		if rec := post(t, mux, "/v1/default/banks/b1/memories", body); rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+}

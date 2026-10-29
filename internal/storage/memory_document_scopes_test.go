@@ -4,7 +4,108 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
+
+// A document write stamps the row: the reference defaults updated_at to the
+// write's clock on insert and re-stamps it beside the fields every update sets
+// (documents.py:386-400).
+func TestPutDocumentStampsUpdatedAt(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	created := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.PutDocument(ctx, "b1", "doc-1", Document{OriginalText: "text", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.GetDocument(ctx, "b1", "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.UpdatedAt.IsZero() {
+		t.Fatal("insert left the documents row unstamped")
+	}
+	if !doc.CreatedAt.Equal(created) {
+		t.Fatalf("created_at = %v, want the caller's %v", doc.CreatedAt, created)
+	}
+	// A re-write re-stamps the row with the last write's clock.
+	first := doc.UpdatedAt
+	if _, err := store.PutDocument(ctx, "b1", "doc-1", doc); err != nil {
+		t.Fatal(err)
+	}
+	doc, err = store.GetDocument(ctx, "b1", "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.UpdatedAt.Before(first) {
+		t.Fatalf("updated_at = %v, want at least the previous write's %v", doc.UpdatedAt, first)
+	}
+}
+
+// A retag stamps the units it writes: a tag change stamps every unit of the
+// document, a scope change alone stamps only the units that moved, and a unit
+// whose scopes stay put keeps its stamp (documents.py:486-498).
+func TestRetagDocumentMemoriesStampsUpdatedAt(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	written := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	units := []struct {
+		id     string
+		scopes []byte
+	}{
+		// combined over [session:a] moves onto shared; the unit already on
+		// shared stays where it was.
+		{id: "moved"},
+		{id: "kept", scopes: []byte(`"shared"`)},
+	}
+	for _, unit := range units {
+		if _, err := store.UpsertUnit(ctx, MemoryUnit{
+			ID: unit.id, BankID: "b1", Text: "a fact", DocumentID: "doc-1",
+			FactType: TypeWorld, Tags: []string{"session:a"},
+			ObservationScopes: unit.scopes, CreatedAt: &written, UpdatedAt: &written,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := store.RetagDocumentMemories(ctx, "b1", "doc-1", DocumentScopeChange{
+		OldTags: []string{"session:a"}, NewScopes: []byte(`"shared"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := store.GetMemory(ctx, "b1", "moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.UpdatedAt == nil || moved.UpdatedAt.Equal(written) {
+		t.Fatalf("moved unit updated_at = %v, want re-stamped", moved.UpdatedAt)
+	}
+	kept, err := store.GetMemory(ctx, "b1", "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.UpdatedAt == nil || !kept.UpdatedAt.Equal(written) {
+		t.Fatalf("kept unit updated_at = %v, want untouched %v", kept.UpdatedAt, written)
+	}
+
+	// A tag change stamps every unit of the document, not only the moved ones.
+	if _, err := store.RetagDocumentMemories(ctx, "b1", "doc-1", DocumentScopeChange{
+		OldTags: []string{"session:a"}, NewTags: []string{"team-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"moved", "kept"} {
+		unit, err := store.GetMemory(ctx, "b1", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unit.UpdatedAt != nil && !unit.UpdatedAt.After(written) {
+			t.Fatalf("%s updated_at = %v, want stamped past %v", id, unit.UpdatedAt, written)
+		}
+		if len(unit.Tags) != 1 || unit.Tags[0] != "team-a" {
+			t.Fatalf("%s tags = %v, want [team-a]", id, unit.Tags)
+		}
+	}
+}
 
 // writeScopesFor is the storage-side mirror of the consolidator's write-scope
 // resolution; the two are pinned together by a cross-package parity test outside
@@ -185,4 +286,51 @@ func scopeKeys(scopes map[string]bool) []string {
 		out = append(out, key)
 	}
 	return out
+}
+
+// A retag's swept observation is rebuilt from every source that stays: the
+// surviving co-sources — including one belonging to another document — are
+// requeued with the moved units, so the next pass folds them again
+// (documents.py:578-588).
+func TestRetagDocumentMemoriesRequeuesSurvivingCoSources(t *testing.T) {
+	store := NewMemoryStore("public")
+	ctx := context.Background()
+	for _, unit := range []MemoryUnit{
+		{ID: "moved", BankID: "b1", Text: "a fact", DocumentID: "doc-1", FactType: TypeWorld, Tags: []string{"session:a"}},
+		{ID: "cosource", BankID: "b1", Text: "another fact", DocumentID: "doc-2", FactType: TypeWorld, Tags: []string{"session:b"}},
+	} {
+		if _, err := store.UpsertUnit(ctx, unit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observationID, err := store.CreateObservation(ctx, "b1", "Alice holds both facts", []string{"moved", "cosource"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkConsolidated(ctx, "b1", []string{"moved", "cosource"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RetagDocumentMemories(ctx, "b1", "doc-1", DocumentScopeChange{
+		OldTags: []string{"session:a"}, NewScopes: []byte(`"shared"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetMemory(ctx, "b1", observationID); err == nil {
+		t.Fatal("the swept observation is still stored")
+	}
+	moved, err := store.GetMemory(ctx, "b1", "moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.ConsolidatedAt != nil {
+		t.Fatalf("moved unit consolidated_at = %v, want requeued", moved.ConsolidatedAt)
+	}
+	cosource, err := store.GetMemory(ctx, "b1", "cosource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cosource.ConsolidatedAt != nil {
+		t.Fatalf("surviving co-source consolidated_at = %v, want requeued", cosource.ConsolidatedAt)
+	}
 }

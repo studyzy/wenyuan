@@ -294,6 +294,83 @@ func TestPostgresEntityReadServesStoredCountWithoutTagFilter(t *testing.T) {
 	}
 }
 
+// A tag-filtered entity read must see what an observation inherits: the
+// reference's tag-filtered entity rowset UNIONs the rows an observation with no
+// postings of its own inherits from its source memories
+// (engine/memories/pg/curation.py:539-583), so the list, the detail and the
+// entity graph all count them. Without the UNION an entity only observations
+// mention vanishes under a filter.
+func TestPostgresTagFilteredEntityReadsInheritObservationMentions(t *testing.T) {
+	store := postgresReadStore(t)
+	ctx := context.Background()
+
+	sourceID := pgUUID("inherit-src")
+	if _, err := store.UpsertUnit(ctx, MemoryUnit{
+		ID: sourceID, BankID: "read-bank", Text: "a fact", FactType: TypeWorld,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.ResolveEntity(ctx, "read-bank", "Alice", EntityKindRegular, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	berlin, err := store.ResolveEntity(ctx, "read-bank", "Berlin", EntityKindRegular, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUnitEntity(ctx, sourceID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUnitEntity(ctx, sourceID, berlin.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The observation matches the filter and carries no postings of its own:
+	// both mentions arrive through its source memory.
+	if _, err := store.UpsertUnit(ctx, MemoryUnit{
+		ID: pgUUID("inherit-obs"), BankID: "read-bank", Text: "an observation",
+		FactType: TypeObservation, Tags: []string{"ops"}, SourceMemoryIDs: []string{sourceID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := store.ListEntities(ctx, EntityQuery{BankID: "read-bank", Tags: []string{"ops"}, TagsMatch: TagsMatchAnyStrict, Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 2 || len(page.Entities) != 2 {
+		t.Fatalf("filtered list = %d of %d, want both inherited mentions", len(page.Entities), page.Total)
+	}
+	for _, entity := range page.Entities {
+		if entity.MentionCount != 1 {
+			t.Fatalf("%s mention_count = %d, want the one inherited mention", entity.CanonicalName, entity.MentionCount)
+		}
+	}
+
+	detail, err := store.ListEntities(ctx, EntityQuery{BankID: "read-bank", ID: alice.ID, Tags: []string{"ops"}, TagsMatch: TagsMatchAnyStrict, Limit: 10})
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if detail.Total != 1 || len(detail.Entities) != 1 || detail.Entities[0].MentionCount != 1 {
+		t.Fatalf("filtered detail = %+v, want Alice with one inherited mention", detail.Entities)
+	}
+
+	graph, err := store.EntityGraph(ctx, EntityGraphQuery{BankID: "read-bank", Tags: []string{"ops"}, TagsMatch: TagsMatchAnyStrict, Limit: 10, MinCount: 1})
+	if err != nil {
+		t.Fatalf("entity graph: %v", err)
+	}
+	if len(graph.Edges) != 1 || graph.Edges[0].Weight != 1 {
+		t.Fatalf("filtered graph = %d edge(s) %+v, want the one pair the observation witnesses", len(graph.Edges), graph.Edges)
+	}
+	if len(graph.Nodes) != 2 {
+		t.Fatalf("filtered graph nodes = %d, want both endpoints", len(graph.Nodes))
+	}
+	for _, node := range graph.Nodes {
+		if node.MentionCount != 1 {
+			t.Fatalf("%s node mention_count = %d, want 1", node.Label, node.MentionCount)
+		}
+	}
+}
+
 // The document read counts its units in the same statement, so the count does
 // not depend on the document appearing in a listing window.
 func TestPostgresGetDocumentCountsUnits(t *testing.T) {

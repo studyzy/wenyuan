@@ -269,7 +269,9 @@ func superviseChildren(ctx context.Context, children []*exec.Cmd) error {
 	}
 	stopChildren(children)
 	for ; collected < len(children); collected++ {
-		<-exits
+		// The drain only waits the children out; their errors are already
+		// accounted for by the first exit the select picked up.
+		<-exits //nolint:errcheck // the drain waits the children out; their errors are already accounted for
 	}
 	if first != nil && !isCleanExit(first) {
 		return first

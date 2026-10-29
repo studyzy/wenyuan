@@ -751,7 +751,11 @@ var factTimeLayouts = []string{
 
 // parseFactTime reads a fact timestamp, returning nil for an absent or
 // unparseable value rather than failing the write over a model's bad format. A
-// value with no zone is read as UTC, the way the reference's reader does.
+// value with no zone is read as UTC, the way the reference's reader does. A
+// year-1 or year-9999 value is an open bound a model writes for "since
+// forever" / "still ongoing", not a date: it reads as unknown and the column
+// stays NULL, the way the reference's fact extraction does
+// (retain/fact_extraction.py:3705-3715).
 func parseFactTime(value string) *time.Time {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -761,6 +765,9 @@ func parseFactTime(value string) *time.Time {
 		parsed, err := time.Parse(layout, trimmed)
 		if err != nil {
 			continue
+		}
+		if IsPlaceholderDate(parsed) {
+			return nil
 		}
 		utc := parsed.UTC()
 		return &utc

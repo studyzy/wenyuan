@@ -111,6 +111,16 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 
 	started := c.now()
 	raw, err := c.sendWithRetry(ctx, "chat/completions", body, policy, req.Scope, hint.headers)
+	if err != nil && rejectsToolChoice(err) && forcedToolChoice(req.ToolChoice) {
+		// The endpoint rejected the forced tool_choice itself. Resend once with
+		// "auto" and remember it: later calls ask with "auto" up front instead
+		// of paying the 400 each time (buildChatRequest drops the field).
+		c.forcedToolChoiceRejected.Store(true)
+		body, err = c.buildChatRequest(req, hint)
+		if err == nil {
+			raw, err = c.sendWithRetry(ctx, "chat/completions", body, policy, req.Scope, hint.headers)
+		}
+	}
 	latency := c.now().Sub(started)
 	if err != nil {
 		return provider.CompletionResult{}, err
@@ -141,6 +151,12 @@ func (c *Client) buildChatRequest(req provider.CompletionRequest, hint affinityH
 	if len(req.Tools) > 0 {
 		wire.Tools = toWireTools(req.Tools)
 		wire.ToolChoice = toWireToolChoice(req.ToolChoice)
+		// Once the endpoint rejected a forced tool_choice, later calls ask with
+		// "auto" up front — the sticky half of the fallback. On the wire that is
+		// the field's absence: omitted tool_choice is auto.
+		if wire.ToolChoice != nil && forcedToolChoice(req.ToolChoice) && c.forcedToolChoiceRejected.Load() {
+			wire.ToolChoice = nil
+		}
 	}
 	encoded, err := json.Marshal(wire)
 	if err != nil {

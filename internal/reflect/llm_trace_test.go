@@ -19,8 +19,9 @@ func TestRunnerReportsOneLLMCallPerModelCall(t *testing.T) {
 		script: []provider.CompletionResult{
 			// Turn 1: call a retrieval tool.
 			{ToolCalls: []provider.ToolCall{{ID: "c1", Name: ToolRecall, Arguments: []byte(`{"query":"topic"}`)}}},
-			// Turn 2: finish with the answer.
-			{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{"answer":"the answer"}`)}}},
+			// Turn 2: stop with done; the closing step writes the answer.
+			{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{}`)}}},
+			closingDone(map[string]any{"answer": "the closing answer"}),
 		},
 	}
 	retrieval := &storageRetrieval{
@@ -45,9 +46,12 @@ func TestRunnerReportsOneLLMCallPerModelCall(t *testing.T) {
 		t.Fatalf("%d llm_calls reported for %d model calls: %+v", len(calls), model.turns, calls)
 	}
 	for index, call := range calls {
-		// The loop's turns are scoped `agent_<n>`, 1-based, which is what the
-		// reference names them.
+		// The loop's turns are scoped `agent_<n>`, 1-based, and the closing step
+		// has its own scope — which is what the reference names them.
 		want := "agent_" + itoa(index+1)
+		if index == len(calls)-1 {
+			want = "closing_done"
+		}
 		if call.Scope != want {
 			t.Fatalf("llm_calls[%d].scope = %q, want %q", index, call.Scope, want)
 		}

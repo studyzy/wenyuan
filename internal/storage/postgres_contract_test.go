@@ -5,6 +5,9 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -350,5 +353,73 @@ func TestMigrationRunsOverItsOwnHandle(t *testing.T) {
 	plain := NewPostgresStore(serving, "public")
 	if target := plain.migrateTarget(); target.db != DB(serving) {
 		t.Fatal("a store with no migration database did not use its own handle")
+	}
+}
+
+// The default memory-list ordering is total: rows tied on both mentioned_at
+// and created_at break by id, so offset pages cannot repeat or skip a row
+// between reads (the reference's #5934). The fixture seeds its tie group in
+// descending id order, so an ordering that left the ties to the planner does
+// not read as the pinned one by accident.
+func TestPostgresMemoryListTieBreakOrdering(t *testing.T) {
+	store := postgresVectorStore(t)
+	pg, ok := store.(*PostgresStore)
+	if !ok {
+		t.Fatalf("store = %T, want *PostgresStore", store)
+	}
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, Bank{BankID: "tied", Name: "tied"}); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		ids = append(ids, pgUUID(fmt.Sprintf("list-tie-%d", i)))
+	}
+	// uuid ASC sorts byte-wise, and the canonical lowercase spelling sorts the
+	// same, so the pinned tie order is the lexicographic one.
+	ordered := append([]string(nil), ids...)
+	sort.Strings(ordered)
+	// Seed in descending id order, so insertion (and any scan) order differs
+	// from the pinned tie-break.
+	mentioned := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i := len(ids) - 1; i >= 0; i-- {
+		if _, err := pg.db.ExecContext(ctx,
+			`INSERT INTO `+quoteIdent(pg.defaultSchema)+`.memory_units
+			   (id, bank_id, text, fact_type, mentioned_at, created_at, updated_at)
+			 VALUES ($1, 'tied', 'a fact', 'world', $2, $2, $2)`,
+			ids[i], mentioned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(offset, limit int) []string {
+		page, err := store.ListMemories(ctx, MemoryQuery{BankID: "tied", Limit: limit, Offset: offset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, 0, len(page.Memories))
+		for _, unit := range page.Memories {
+			got = append(got, unit.ID)
+		}
+		return got
+	}
+	// Offset pages partition the tie group: no row repeats, none is skipped,
+	// and every page reads in the pinned ascending-id order.
+	var paged []string
+	seen := map[string]bool{}
+	for offset := 0; offset < len(ids); offset += 2 {
+		for _, id := range read(offset, 2) {
+			if seen[id] {
+				t.Fatalf("row %s appears on two pages", id)
+			}
+			seen[id] = true
+			paged = append(paged, id)
+		}
+	}
+	if !slices.Equal(paged, ordered) {
+		t.Fatalf("paged tie order = %v, want ascending id %v", paged, ordered)
+	}
+	// A single full read agrees with the pages, so the order is stable.
+	if full := read(0, 10); !slices.Equal(full, ordered) {
+		t.Fatalf("full read = %v, want ascending id %v", full, ordered)
 	}
 }

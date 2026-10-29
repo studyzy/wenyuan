@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -227,7 +228,9 @@ var retainBatchDisabledMessage = "Batch API is enabled (WENYUAN_API_RETAIN_BATCH
 // caller's write scope, answering 403. Every item's tags (with the batch's
 // document tags) must be writable, and so must every tag a retain strategy's
 // entity labels could add — those attach after extraction, from what the model
-// reads into the text, so the whole possible set is checked up front. With no
+// reads into the text, so the whole possible set is checked up front — and so
+// must the item's observation scopes, which consolidation writes at (the
+// strategy's resolved default standing in for an item that names none). With no
 // write scope the check is a no-op, which is the unextended behaviour.
 func (h *Handlers) retainWriteScopeFailure(r *http.Request, bankID string, _ RetainRequest, write storage.RetainRequest) error {
 	scope, confined := httpx.WriteTagScopeFrom(r)
@@ -243,10 +246,24 @@ func (h *Handlers) retainWriteScopeFailure(r *http.Request, bankID string, _ Ret
 	for _, item := range write.Items {
 		tags := append(append([]string{}, item.Tags...), write.DocumentTags...)
 		if !httpx.TagsWritable(tags, scope, confined) {
+			// The refusal names the tags outside the scope, sorted, or the
+			// untagged marker when the item carries none — the reference's
+			// _refuse_unwritable (engine/memory_engine.py:3644-3650).
 			return httpx.NewHTTPError(httpx.KindForbidden,
-				"You can't write memories tagged "+strings.Join(tags, ", "))
+				"You can't write memories tagged "+strings.Join(unwritableMemoryTags(tags, scope), ", "))
 		}
 		config := strategyConfigOverlay(bank.Config, item.Strategy)
+		// The scopes an item without its own would be stamped with are a write
+		// by this caller too: the reference resolves the strategy's default at
+		// check time, so a bank or strategy default of "shared" refuses a
+		// confined caller exactly as an explicit one would.
+		scopes := item.ObservationScopes
+		if len(scopes) == 0 {
+			scopes = defaultObservationScopes(config, h.DefaultObservationScopes)
+		}
+		if err := RefuseUnwritableScopes(scopes, scope, confined); err != nil {
+			return err
+		}
 		vocabulary, perr := entitylabels.Parse(config["entity_labels"])
 		if perr != nil {
 			continue
@@ -258,6 +275,24 @@ func (h *Handlers) retainWriteScopeFailure(r *http.Request, bankID string, _ Ret
 		}
 	}
 	return nil
+}
+
+// unwritableMemoryTags names the tags of a refused write that sit outside the
+// caller's write scope, sorted, or the untagged marker when the write carries
+// none — the reference's _refuse_unwritable computes the same set
+// (engine/memory_engine.py:3644-3650).
+func unwritableMemoryTags(tags, scope []string) []string {
+	outside := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if !httpx.TagsWritable([]string{tag}, scope, true) {
+			outside = append(outside, tag)
+		}
+	}
+	sort.Strings(outside)
+	if len(outside) == 0 {
+		return []string{"(untagged)"}
+	}
+	return outside
 }
 
 // retainDecodeFailure renders a write body the decoder refused. The shared
@@ -478,6 +513,11 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
+		// An abandoned synchronous retain stops work and is answered 499 with
+		// the reference's disconnect reason rather than a server fault.
+		if httpx.WriteClientDisconnected(w, r) {
+			return
+		}
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
@@ -609,31 +649,47 @@ func (h *Handlers) enqueuePostRetainConsolidation(ctx context.Context, bankID st
 var errBankConfigRead = errors.New("bank configuration could not be read")
 
 // applyDefaultObservationScopes gives every item that names no observation_scopes
-// the effective default — the bank's own default_observation_scopes, else the
-// deployment's WENYUAN_API_DEFAULT_OBSERVATION_SCOPES — resolved to raw JSON and
-// carried onto the item so consolidation never merges across it. A value that is
-// not a mode name or a list of tag-group lists is ignored rather than written:
-// the bank's config is validated on its own path, and a deployment value nobody
-// validated must not turn a write into one no scope can resolve.
+// the effective default — default_observation_scopes is strategy-overridable
+// (config.py), so the item's own strategy overlays the bank's config before the
+// setting is read; without a strategy the bank's own value decides, else the
+// deployment's WENYUAN_API_DEFAULT_OBSERVATION_SCOPES. Each value is resolved to
+// raw JSON and carried onto the item so consolidation never merges across it. A
+// value that is not a mode name or a list of tag-group lists is ignored rather
+// than written: the bank's config is validated on its own path, and a
+// deployment value nobody validated must not turn a write into one no scope can
+// resolve.
 func (h *Handlers) applyDefaultObservationScopes(write *storage.RetainRequest, bank storage.Bank) {
-	// The deployment's value is raw JSON; the bank's is whatever its config
-	// decoded to, and both feed the same renderer.
-	var value any
-	if len(h.DefaultObservationScopes) > 0 {
-		value = h.DefaultObservationScopes
+	for index := range write.Items {
+		if len(write.Items[index].ObservationScopes) != 0 {
+			continue
+		}
+		encoded := defaultObservationScopes(
+			strategyConfigOverlay(bank.Config, write.Items[index].Strategy), h.DefaultObservationScopes)
+		if len(encoded) == 0 {
+			continue
+		}
+		write.Items[index].ObservationScopes = encoded
 	}
-	if configured, ok := bank.Config["default_observation_scopes"]; ok && configured != nil {
+}
+
+// defaultObservationScopes resolves the scopes an item without its own would be
+// stamped with, from an already strategy-overlaid bank config and the
+// deployment's raw value: the bank's default_observation_scopes wins, the
+// deployment's applies when the bank names none, and neither form — a mode name
+// or a list of tag-group lists — resolves to none.
+func defaultObservationScopes(config map[string]any, deployment json.RawMessage) json.RawMessage {
+	var value any
+	if len(deployment) > 0 {
+		value = deployment
+	}
+	if configured, ok := config["default_observation_scopes"]; ok && configured != nil {
 		value = configured
 	}
 	encoded, ok := observationScopesJSON(value)
 	if !ok {
-		return
+		return nil
 	}
-	for index := range write.Items {
-		if len(write.Items[index].ObservationScopes) == 0 {
-			write.Items[index].ObservationScopes = encoded
-		}
-	}
+	return encoded
 }
 
 // observationScopesJSON renders a bank or deployment observation_scopes value as
@@ -826,15 +882,16 @@ func (h *Handlers) prepareRetain(ctx context.Context, bankID string, overrides m
 		strategy:           h.DefaultRetainStrategy,
 	})
 	h.applyDefaultObservationScopes(&write, bank)
-	// An append needs a document to append to. The reference checks that only on
-	// the synchronous path, before it reads the bank's store_document_text
-	// setting, so the more specific refusal is this one; a queued append reaches
-	// the worker and fails there instead, which is what the caller polls.
-	if !write.Async {
-		for _, item := range write.Items {
-			if item.UpdateMode == "append" && item.DocumentID == "" {
-				return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutDocumentID
-			}
+	// An append needs a document to append to. The reference checks that on the
+	// synchronous path and inside submit_async_retain alike (its
+	// _validate_retain_update_modes), so a queued append is refused at submit
+	// time with the same 400 instead of reaching the worker — which would mint
+	// the append a fresh document after the caller already saw success. It runs
+	// before the bank's store_document_text read, so the more specific refusal
+	// is this one.
+	for _, item := range write.Items {
+		if item.UpdateMode == "append" && item.DocumentID == "" {
+			return storage.RetainRequest{}, storage.Bank{}, errAppendWithoutDocumentID
 		}
 	}
 	if applyStoreDocumentText(&write, bank, h.DiscardDocumentText) {

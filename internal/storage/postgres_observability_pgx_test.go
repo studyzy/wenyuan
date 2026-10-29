@@ -491,3 +491,66 @@ func TestPostgresGetAuditLog(t *testing.T) {
 		}
 	}
 }
+
+// An audit body recorded as an empty object is stored as '{}' and served back
+// as an empty object; only an absent (nil) body is stored as NULL. The
+// reference's writer draws exactly that line (engine/audit.py _safe_json), so
+// an imported archive row with {} bodies must not be rewritten to NULL and
+// start serving "request": null where the reference serves {}.
+func TestPostgresRecordAuditLogBodies(t *testing.T) {
+	pg, schema := newClearMemoriesStore(t, "obs_audit_bodies")
+	ctx := context.Background()
+	if _, err := pg.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	empty := newID()
+	if err := pg.RecordAuditLog(ctx, AuditEntry{
+		ID: empty, BankID: "b1", Action: "retain", Transport: "http",
+		StartedAt: observabilityBase(),
+		Request:   map[string]any{},
+		Response:  map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	absent := newID()
+	if err := pg.RecordAuditLog(ctx, AuditEntry{
+		ID: absent, BankID: "b1", Action: "recall", Transport: "http",
+		StartedAt: observabilityBase(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The columns themselves: '{}' for the empty bodies, NULL for the absent
+	// ones. Metadata keeps its own policy — an absent metadata reads as '{}'
+	// either way, as the reference's `_safe_json(entry.metadata) or "{}"` does.
+	columns := func(id string) (request, response, metadata []byte) {
+		t.Helper()
+		if err := pg.db.QueryRowContext(ctx,
+			`SELECT request, response, metadata FROM `+quoteIdent(schema)+`.audit_log WHERE id = $1`, id).
+			Scan(&request, &response, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		return request, response, metadata
+	}
+	if request, response, metadata := columns(empty); string(request) != "{}" ||
+		string(response) != "{}" || string(metadata) != "{}" {
+		t.Fatalf("empty bodies stored as request=%q response=%q metadata=%q, want {} each", request, response, metadata)
+	}
+	if request, response, metadata := columns(absent); request != nil || response != nil || string(metadata) != "{}" {
+		t.Fatalf("absent bodies stored as request=%q response=%q metadata=%q, want NULL bodies and {} metadata", request, response, metadata)
+	}
+	// And the served entry distinguishes the two shapes the reference does.
+	entry, err := pg.GetAuditLog(ctx, "b1", empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Request == nil || len(entry.Request) != 0 || entry.Response == nil || len(entry.Response) != 0 {
+		t.Fatalf("empty bodies read back as %v %v, want {} each", entry.Request, entry.Response)
+	}
+	absentEntry, err := pg.GetAuditLog(ctx, "b1", absent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absentEntry.Request != nil || absentEntry.Response != nil {
+		t.Fatalf("absent bodies read back as %v %v, want nil", absentEntry.Request, absentEntry.Response)
+	}
+}

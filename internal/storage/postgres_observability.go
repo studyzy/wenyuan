@@ -304,10 +304,12 @@ func (s *PostgresStore) RecordAuditLog(ctx context.Context, entry AuditEntry) er
 	return err
 }
 
-// mapOrNil returns nil for an empty map, so a caller that has nothing to record
-// leaves the jsonb column NULL rather than the empty object.
+// mapOrNil returns nil for a nil map, so an absent body is stored as NULL
+// while an explicitly empty one is stored as '{}' and served back as {}. The
+// reference's writer draws the same line (engine/audit.py _safe_json: None
+// serializes to NULL, {} to '{}'), so an empty map must survive this cast.
 func mapOrNil(value map[string]any) any {
-	if len(value) == 0 {
+	if value == nil {
 		return nil
 	}
 	return value

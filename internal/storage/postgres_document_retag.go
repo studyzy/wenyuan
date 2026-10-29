@@ -90,12 +90,58 @@ func (s *PostgresStore) RetagDocumentMemories(
 	if err != nil {
 		return RetagOutcome{}, err
 	}
+	// The swept observations' surviving co-sources requeue too: the delete
+	// strands them a source short, so the next pass rebuilds what they lost
+	// (documents.py:578-588). Bookkeeping only, so `updated_at` stays put.
+	if coSources := retagCoSourceIDs(removed, srcIDs); len(coSources) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
+			  WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
+			bankID, coSources); err != nil {
+			return RetagOutcome{}, err
+		}
+	}
+	// Every unit that moved is requeued — bookkeeping only, so `updated_at`
+	// stays put; the write above is what stamped these rows
+	// (documents.py:597-607). Without it a unit whose consolidation marker the
+	// delete did not consume would never be picked up again.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
+		  WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
+		bankID, srcIDs); err != nil {
+		return RetagOutcome{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return RetagOutcome{}, err
 	}
 	return RetagOutcome{
 		InvalidatedObservations: len(removed), RequeuedUnits: len(srcIDs), Removed: removed,
 	}, nil
+}
+
+// retagCoSourceIDs returns the surviving co-sources of the observations a retag
+// swept: every memory the deleted observations were built from other than a
+// unit the update itself moved — those requeue regardless — deduplicated in
+// first-seen order. The source lists are what the delete collected from the
+// rows before removing them; the fact-type guard the caller's UPDATE carries
+// leaves an observation source that is itself derived out.
+func retagCoSourceIDs(removed []RemovedObservation, moved []string) []string {
+	movedIDs := make(map[string]bool, len(moved))
+	for _, id := range moved {
+		movedIDs[id] = true
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+	for _, observation := range removed {
+		for _, source := range observation.SourceFactIDs {
+			if movedIDs[source] || seen[source] {
+				continue
+			}
+			seen[source] = true
+			out = append(out, source)
+		}
+	}
+	return out
 }
 
 // readDocumentUnitScopes reads the units of one document with the tag and scope

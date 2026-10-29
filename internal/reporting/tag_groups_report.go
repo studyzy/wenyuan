@@ -10,18 +10,10 @@ import (
 // takes the same `_TAG_GROUPS_ADAPTER` can render the reference's message from
 // one implementation rather than several.
 //
-// The reference renders the same error list two different ways:
-//
-//   - the knowledge-tree and search routes wrap `str(ValidationError)`
-//     (`api/http.py:3715-3719`), which is the multi-line
-//     "N validation errors for list[union[...]]" form — RenderString below,
-//     and the rendering `decodeKnowledgeTagGroups` has always produced;
-//   - the entity and graph routes wrap `{e.errors(include_url=False)}`
-//     (`api/http.py:281`), which is the Python repr of a list of error dicts —
-//     RenderErrorsRepr below.
-//
-// Both come from the same parsed error list, so a formatting detail fixed in
-// one place cannot drift in the other.
+// The reference raises the same HTTPException everywhere it decodes a
+// `tag_groups` query parameter: `_decode_tag_groups_query` wraps
+// `{e.errors(include_url=False)}` (api/http.py:284-286), which is the Python
+// repr of a list of error dicts — RenderErrorsRepr below.
 
 // TagGroupReport is a parsed `tag_groups` failure: the errors Pydantic would
 // report, in the order it reports them, with the document they came from.
@@ -55,11 +47,6 @@ func ParseTagGroupsReport(raw string) (report *TagGroupReport, ok bool) {
 	}
 	return &TagGroupReport{errors: errors}, true
 }
-
-// RenderString renders the report the way `str(ValidationError)` does — the
-// multi-line form the knowledge routes send in their 422 detail. Its output is
-// exactly what `decodeKnowledgeTagGroups` has always produced.
-func (r *TagGroupReport) RenderString() string { return renderTagGroupReport(r.errors) }
 
 // RenderErrorsRepr renders the report the way `repr(e.errors(include_url=False))`
 // does: a Python list of dicts, one per error, in Pydantic's key order
@@ -155,14 +142,10 @@ func lastLocationName(loc pydanticLoc) string {
 }
 
 // TagGroupsDetail renders the complete `Invalid tag_groups: …` detail string a
-// route puts in its error body. `reprForm` selects the entity/graph routes'
-// `errors()` repr over the knowledge routes' `str(ValidationError)`.
-func TagGroupsDetail(report *TagGroupReport, reprForm bool) string {
+// route puts in its error body — the `errors(include_url=False)` repr form.
+func TagGroupsDetail(report *TagGroupReport) string {
 	if report == nil {
 		return "Invalid tag_groups: "
 	}
-	if reprForm {
-		return "Invalid tag_groups: " + report.RenderErrorsRepr()
-	}
-	return "Invalid tag_groups: " + report.RenderString()
+	return "Invalid tag_groups: " + report.RenderErrorsRepr()
 }

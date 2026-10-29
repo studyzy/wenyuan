@@ -6,9 +6,11 @@ import (
 )
 
 // FinalizeBatchParent promotes a parent batch operation once every child has
-// reached a terminal status, aggregating the children's outcome counters onto
-// it. The postgres backend documents the semantics; this is the same rule
-// applied to the in-memory operation table.
+// reached a terminal status. The promotion branches per outcome, exactly as the
+// reference writes them (engine/memory_engine.py:6021-6068): a completed parent
+// takes the children's aggregated outcome counters and a completion time, a
+// failed one takes only its status, error message and updated_at, and a
+// cancelled one only its status and updated_at.
 func (s *MemoryStore) FinalizeBatchParent(ctx context.Context, bankID, parentID string) (Operation, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Operation{}, false, err
@@ -43,17 +45,28 @@ func (s *MemoryStore) FinalizeBatchParent(ctx context.Context, bankID, parentID 
 	if status == "" {
 		return parent, false, nil
 	}
-	if parent.ResultMetadata == nil {
-		parent.ResultMetadata = map[string]any{}
-	}
-	for key, value := range aggregate {
-		parent.ResultMetadata[key] = value
-	}
-	parent.Status = status
-	parent.Error = errorMessage
 	now := time.Now().UTC()
-	parent.UpdatedAt = now
-	if status.Terminal() {
+	switch status {
+	case StatusFailed:
+		// The batch did not finish: no completion time and no outcome roll-up,
+		// only the cause an operator still needs to see.
+		parent.Status = status
+		parent.Error = errorMessage
+		parent.UpdatedAt = now
+	case StatusCancelled:
+		// The batch was stopped, not finished: no cause and no completion time.
+		parent.Status = status
+		parent.UpdatedAt = now
+	default:
+		if parent.ResultMetadata == nil {
+			parent.ResultMetadata = map[string]any{}
+		}
+		for key, value := range aggregate {
+			parent.ResultMetadata[key] = value
+		}
+		parent.Status = status
+		parent.Error = errorMessage
+		parent.UpdatedAt = now
 		parent.CompletedAt = &now
 	}
 	s.operations[parentID] = parent

@@ -56,6 +56,9 @@ type geminiBackend struct {
 // Name is the configured provider name.
 func (b *geminiBackend) Name() string { return "gemini" }
 
+// Model is the effective model identifier, the adapter default applied.
+func (b *geminiBackend) Model() string { return b.model }
+
 // Dimensions is the width this backend guarantees for every vector.
 func (b *geminiBackend) Dimensions() int { return b.dimensions }
 

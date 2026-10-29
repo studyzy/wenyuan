@@ -140,3 +140,31 @@ func uploadFileRequest(t *testing.T, mux *http.ServeMux, filename, body, request
 	mux.ServeHTTP(rec, req)
 	return rec
 }
+
+// The metadata timestamp's validator refuses a year-1/9999 value at request
+// time, inside the model report; a value it cannot parse is returned as-is, so
+// a format error keeps surfacing where it always has
+// (api/http.py FileRetainMetadata).
+func TestFileRetainMetadataRejectsPlaceholderTimestamp(t *testing.T) {
+	mux, _ := newServer(t)
+
+	rec := uploadFileRequest(t, mux, "a.txt", "hello", `{"files_metadata":[{"timestamp":"9999-12-31T00:00:00"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+	want := "Invalid request JSON: 1 validation error for FileRetainRequest\n" +
+		"files_metadata.0.timestamp\n" +
+		"  Value error, timestamp year 9999 is a placeholder, not a date. " +
+		"[type=value_error, input_value='9999-12-31T00:00:00', input_type=str]\n" +
+		"    For further information visit https://errors.pydantic.dev/2.12/v/value_error"
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != `{"detail":`+jsonString(want)+`}` {
+		t.Fatalf("body = %s\nwant %s", got, `{"detail":`+jsonString(want)+`}`)
+	}
+
+	// A value the validator cannot parse is handed back, so the request is
+	// accepted at this layer exactly as the reference accepts it.
+	rec = uploadFileRequest(t, mux, "a.txt", "hello", `{"files_metadata":[{"timestamp":"not-a-date"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unparsable timestamp = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}

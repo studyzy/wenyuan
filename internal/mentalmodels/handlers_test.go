@@ -483,6 +483,33 @@ func TestMentalModelErrorMapping(t *testing.T) {
 	}
 }
 
+// The framework validates the list's constrained query parameters before the
+// handler runs, so a bad parameter is its 422 even on a bank the handler's bank
+// probe would refuse; the probe alone still answers not-found.
+func TestListValidatesParamsBeforeBankProbe(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := http.NewServeMux()
+	NewHandlers(store).BindRoutes(func(method, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("bank_id", "missing")
+			handler(w, r)
+		})
+	})
+	const base = "/v1/default/banks/missing/mental-models"
+	if rec := send(mux, http.MethodGet, base, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown bank alone: %d, want 404", rec.Code)
+	}
+	for _, query := range []string{
+		"detail=bogus", "tags_match=bogus", "limit=bogus", "offset=bogus",
+		"exclude_knowledge_pages=bogus",
+	} {
+		detail := decodeValidationFailure(t, send(mux, http.MethodGet, base+"?"+query, ""))
+		if len(detail) != 1 {
+			t.Fatalf("%s: detail = %+v, want one item", query, detail)
+		}
+	}
+}
+
 // A deployment with no LLM provider refuses refresh work before any lookup, so
 // a model that does not exist is the same 400 refusal rather than a 404.
 func TestRefreshRefusesWithoutModelConfigured(t *testing.T) {
@@ -507,5 +534,40 @@ func TestRefreshRefusesWithoutModelConfigured(t *testing.T) {
 	const want = "Mental model refresh requires an LLM provider. Current provider is set to 'none'. Set WENYUAN_API_LLM_PROVIDER to a real provider (e.g., openai, anthropic, gemini)."
 	if body["detail"] != want {
 		t.Fatalf("detail = %v, want %q", body["detail"], want)
+	}
+}
+
+// The reference binds RefreshMentalModelRequest before the handler runs, so a
+// body the request model refuses is its 422 before anything the handler would
+// answer otherwise: an unknown model is still a 422, and the no-provider gate
+// does not pre-empt the body either. The refusal itself is unchanged on an
+// acceptable (or absent) body.
+func TestRefreshBodyValidatedBeforeGates(t *testing.T) {
+	cases := []struct {
+		name   string
+		refuse bool
+		want   int
+	}{
+		{"unknown model", false, http.StatusUnprocessableEntity},
+		{"no provider configured", true, http.StatusUnprocessableEntity},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandlers(storage.NewMemoryStore("public"))
+			h.RefuseWithoutRefreshModel = tc.refuse
+			req := httptest.NewRequest(http.MethodPost,
+				"/v1/default/banks/b1/mental-models/no-such-model/refresh",
+				strings.NewReader(`{"mode":"bogus"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.SetPathValue("bank_id", "b1")
+			req.SetPathValue("mental_model_id", "no-such-model")
+			rec := httptest.NewRecorder()
+			h.Refresh(rec, req)
+
+			detail := decodeValidationFailure(t, rec)
+			if len(detail) != 1 || detail[0].Loc[1] != "mode" {
+				t.Fatalf("detail = %+v, want one literal_error item under mode", detail)
+			}
+		})
 	}
 }

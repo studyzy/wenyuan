@@ -674,10 +674,13 @@ func validTriggerMembers(object map[string]any) (map[string]any, *httpx.Validati
 }
 
 // validCron reports whether an expression is one the reference's cron library
-// accepts.
+// accepts: robfig's standard grammar first, then the croniter extensions the
+// reference's validator reads (see croniter.go for the accepted forms).
 func validCron(expression string) bool {
-	_, err := cron.ParseStandard(expression)
-	return err == nil
+	if _, err := cron.ParseStandard(expression); err == nil {
+		return true
+	}
+	return croniterValid(expression)
 }
 
 // triggerIntItem validates one integer-bound trigger member: a value of the

@@ -185,6 +185,10 @@ func resolveWorkerTuning(lookup func(string) (string, bool)) WorkerTuning {
 	return WorkerTuning{
 		ConsolidationByBank: stringFromEnv(lookup, EnvWorkerConsolidationBankPriority),
 		BackpressureDefer:   secondsDurationFromEnv(lookup, EnvBackpressureDeferSeconds, DefaultBackpressureDeferS),
+		// The same key ProcessDefaults.MentalModelMinRefreshSeconds resolves:
+		// the consumer cannot read the whole Config, so the worker-facing tuning
+		// bundle carries the floor its defer check needs.
+		MentalModelMinRefreshSeconds: intFromEnv(lookup, EnvMentalModelMinRefreshIntervalSeconds, 0),
 	}
 }
 
@@ -382,6 +386,59 @@ func observationScopesFromEnv(lookup func(string) (string, bool)) any {
 		return nil
 	}
 	return parsed
+}
+
+// observationScopesModes are the mode names an observation_scopes value accepts
+// (config.py OBSERVATION_SCOPES_MODES).
+var observationScopesModes = []string{"combined", "per_tag", "all_combinations", "shared"}
+
+// observationScopesEnvRefused reports whether the reference's environment
+// parser refuses the value: the upstream parser validates at config
+// construction, so an invalid mode, malformed JSON or a scope list whose
+// members are not tag lists stops start-up instead of failing every later
+// consolidation (_parse_observation_scopes_env + validate_observation_scopes,
+// config.py:361-393). An unset-equivalent blank is not refused.
+func observationScopesEnvRefused(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var value any = raw
+	if strings.HasPrefix(raw, "[") {
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return true
+		}
+	}
+	return !observationScopesValueValid(value)
+}
+
+// observationScopesValueValid reports whether the value is a mode name or a
+// list of tag lists — the shapes validate_observation_scopes accepts.
+func observationScopesValueValid(value any) bool {
+	if mode, isString := value.(string); isString {
+		for _, candidate := range observationScopesModes {
+			if mode == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	scopes, isList := value.([]any)
+	if !isList {
+		return false
+	}
+	for _, scope := range scopes {
+		tags, scopeIsList := scope.([]any)
+		if !scopeIsList {
+			return false
+		}
+		for _, tag := range tags {
+			if _, isString := tag.(string); !isString {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // jsonOnceFromEnv parses a JSON-valued key whose reference resolution is

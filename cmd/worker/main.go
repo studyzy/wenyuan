@@ -103,6 +103,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The worker records its embedding calls in the same trace the server
+	// writes, so a queued retain's embeddings are visible to /llm-requests too.
+	embedder = app.TraceEmbedder(embedder, store, cfg.Provider)
 
 	// The maintenance loop runs beside the consumer rather than in the server,
 	// so the housekeeping work and the queued work share one process's

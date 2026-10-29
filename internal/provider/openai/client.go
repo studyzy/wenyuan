@@ -7,6 +7,7 @@ package openai
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -69,6 +70,12 @@ type Client struct {
 	Now func() time.Time
 	// Sleep is injectable so retry tests do not wait in real time.
 	Sleep func(time.Duration)
+	// forcedToolChoiceRejected is set once the endpoint answered a forced
+	// tool_choice (a named choice or "required") with the 400 that rejects it,
+	// so later calls ask with "auto" up front instead of paying the 400 each
+	// time. Atomic because one client serves concurrent requests; a lost update
+	// only costs one repeat of the fallback.
+	forcedToolChoiceRejected atomic.Bool
 	// opOnce and opSem lazily build the per-operation permit once per client.
 	// Building it per call would hand every caller its own empty permit, which
 	// never blocks and so would not bound concurrency at all.

@@ -71,11 +71,10 @@ func writeQueryItem(w http.ResponseWriter, r *http.Request, item httpx.Validatio
 // invalid tree, or sending it alongside `tags`, is a bad request, mirroring the
 // reference.
 func tagGroupsQuery(w http.ResponseWriter, r *http.Request, tags []string) ([]storage.TagGroup, bool) {
-	// Absence and an empty value are different requests: the reference's helper
-	// returns early only when the parameter is *not present* (`raw is None`), so
-	// `?tag_groups=` and `?tag_groups=null` both reach the JSON adapter and are
-	// its 400. Treating an empty value as absence would answer 200 to a request
-	// the reference rejects.
+	// The reference's shared decoder answers absence and blank alike: it returns
+	// early on `raw is None or not raw.strip()` (api/http.py:283), so
+	// `?tag_groups=` and `?tag_groups=%20` are both no filter — and neither is
+	// `tags` exclusivity, which only fires on a tree that decoded.
 	values, present := httpx.QueryPresent(r, "tag_groups")
 	if !present {
 		return nil, true
@@ -84,22 +83,26 @@ func tagGroupsQuery(w http.ResponseWriter, r *http.Request, tags []string) ([]st
 	if len(values) > 0 {
 		raw = values[len(values)-1]
 	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, true
+	}
+	// The reference decodes before refusing `tags` alongside: _parse_tag_groups_query
+	// validates the tree first (api/http.py:292-301), so an invalid tree wins the
+	// detail over the mutual-exclusion refusal.
+	var nodes []tagGroupNode
+	if report, rejected := reporting.ParseTagGroupsReport(raw); rejected {
+		// The reporting package owns the reference's validation report, in the form
+		// these routes send: a repr of `errors(include_url=False)`.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+			reporting.TagGroupsDetail(report)))
+		return nil, false
+	} else if err := json.Unmarshal([]byte(raw), &nodes); err != nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "Invalid tag_groups: "+err.Error()))
+		return nil, false
+	}
 	if len(tags) > 0 {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
-		return nil, false
-	}
-	// The reporting package owns the reference's validation report, in the form
-	// these routes send: a repr of `errors(include_url=False)`, not the
-	// multi-line `str(ValidationError)` the knowledge routes use.
-	if report, rejected := reporting.ParseTagGroupsReport(raw); rejected {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
-			reporting.TagGroupsDetail(report, true)))
-		return nil, false
-	}
-	var nodes []tagGroupNode
-	if err := json.Unmarshal([]byte(raw), &nodes); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, "Invalid tag_groups: "+err.Error()))
 		return nil, false
 	}
 	return nodesToStorageTagGroups(nodes), true

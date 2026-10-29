@@ -242,7 +242,7 @@ func memoryTools() []tool {
 		},
 		{
 			Name:        "update_memory",
-			Description: "\n            Edit a memory unit to correct what was extracted.\n\n            Pass any of text / context / occurred_start / occurred_end / fact_type /\n            entities. For context and the dates, \"\" clears the field and omitting it\n            leaves it unchanged; entities replaces the fact's entity set ([] detaches\n            all). The memory is re-embedded and its derived observations, links, and\n            graph are recomputed automatically.\n\n            resolve_entities controls how the names in entities are matched. The\n            default True behaves like retain and may resolve a name onto a similar\n            entity that already exists, which silently discards a correction when the\n            bank holds a near-duplicate name. Pass False whenever you are correcting a\n            fact deliberately: an existing entity is then reused only on a\n            case-insensitive name match, and any other name becomes its own entity.\n\n            Only raw world/experience facts can be edited; observations are derived.\n            To retire or restore a fact, use invalidate_memory instead.\n    ",
+			Description: "\n            Edit a memory unit to correct what was extracted.\n\n            Pass any of text / context / occurred_start / occurred_end / mentioned_at /\n            fact_type / entities. For context and the dates, \"\" clears the field and omitting it\n            leaves it unchanged; entities replaces the fact's entity set ([] detaches\n            all). The memory is re-embedded and its derived observations, links, and\n            graph are recomputed automatically.\n\n            resolve_entities controls how the names in entities are matched. The\n            default True behaves like retain and may resolve a name onto a similar\n            entity that already exists, which silently discards a correction when the\n            bank holds a near-duplicate name. Pass False whenever you are correcting a\n            fact deliberately: an existing entity is then reused only on a\n            case-insensitive name match, and any other name becomes its own entity.\n\n            Only raw world/experience facts can be edited; observations are derived.\n            To retire or restore a fact, use invalidate_memory instead.\n    ",
 			InputSchema: map[string]any{
 				"additionalProperties": false,
 				"properties": map[string]any{
@@ -295,6 +295,17 @@ func memoryTools() []tool {
 					},
 					"memory_id": map[string]any{
 						"type": "string",
+					},
+					"mentioned_at": map[string]any{
+						"anyOf": []any{
+							map[string]any{
+								"type": "string",
+							},
+							map[string]any{
+								"type": "null",
+							},
+						},
+						"default": nil,
 					},
 					"occurred_end": map[string]any{
 						"anyOf": []any{
@@ -384,7 +395,7 @@ func memoryTools() []tool {
 		},
 		{
 			Name:        "list_documents",
-			Description: "List documents in a memory bank.\n\nDocuments are containers for related memories (e.g., a conversation transcript,\na meeting notes file). Memories created with a document_id are grouped under that document.\n\nArgs:\n    q: Optional search query to filter documents\n    limit: Maximum number of results (default: 100)\n    offset: Pagination offset (default: 0). Page until the returned items add up to 'total'.\n    bank_id: Optional bank (defaults to session bank). Use for cross-bank operations.",
+			Description: "List documents in a memory bank.\n\nDocuments are containers for related memories (e.g., a conversation transcript,\na meeting notes file). Memories created with a document_id are grouped under that document.\n\nArgs:\n    q: Optional search query to filter documents\n    limit: Maximum number of results (default: 100)\n    offset: Pagination offset (default: 0). Page until the returned items add up to 'total'.\n        A 'q' search is capped: when 'total_is_estimate' is true there are more\n        matches than 'total' — narrow 'q' to reach them.\n    bank_id: Optional bank (defaults to session bank). Use for cross-bank operations.",
 			InputSchema: map[string]any{
 				"additionalProperties": false,
 				"properties": map[string]any{

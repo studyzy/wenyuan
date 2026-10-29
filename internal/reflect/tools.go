@@ -20,6 +20,7 @@ const (
 	ToolRecall             = "recall"
 	ToolReadMentalModels   = "read_mental_models"
 	ToolExpand             = "expand"
+	ToolAnswerReady        = "answer_ready"
 	ToolDone               = "done"
 )
 
@@ -31,6 +32,7 @@ func ToolNames() []string {
 		ToolRecall,
 		ToolReadMentalModels,
 		ToolExpand,
+		ToolAnswerReady,
 		ToolDone,
 	}
 }
@@ -122,13 +124,25 @@ func toolDescription(name string) string {
 		return "Read specific perspectives in full, by the identifiers a previous search returned."
 	case ToolExpand:
 		return "Get more surrounding context for one or more memories."
+	case ToolAnswerReady:
+		return "Call this when what you retrieved is enough to answer. You will then be asked for the " +
+			"answer through done. Do not write the answer before you are asked for it. " + sufficiencyGate
 	case ToolDone:
-		return "Finish with your final answer once the gathered evidence answers the question: " +
-			"put the answer itself in the `answer` argument (or state the document's structure in document mode)."
+		return "Your final answer. Call this only when you are asked for the answer; until then, call " +
+			"answer_ready once you have enough. " + sufficiencyGate
 	default:
 		return ""
 	}
 }
+
+// sufficiencyGate is the stopping condition stated at the tool the model picks
+// when it stops: a result that only shares the question's topic is not an
+// answer, and a negative answer needs recall first (the reference's
+// _DONE_SUFFICIENCY_GATE, carried on both stop tools).
+const sufficiencyGate = "You have NOT gathered enough while the levels you searched do not STATE the answer: a result that only " +
+	"shares the question's topic is not an answer, so search the next level (search_observations, then recall) " +
+	"instead of answering around it. Never call done to report that nothing is known unless recall has already " +
+	"run on the question's key terms."
 
 // toolParameters declares one tool's arguments as a JSON-schema object.
 //
@@ -172,26 +186,46 @@ func toolParameters(name string) json.RawMessage {
 			`"ids":{"type":"array","items":{"type":"string"},"description":"Deprecated alias for memory_ids"},` +
 			`"depth":{"type":"string","enum":["chunk","document"],"description":"Whether to expand to the chunk or the whole document"}` +
 			`},"required":["reason","memory_ids","depth"]}`)
+	case ToolAnswerReady:
+		return json.RawMessage(`{"type":"object","properties":{` +
+			`"answer_found":` + answerFoundProperty +
+			`},"required":["answer_found"]}`)
 	case ToolDone:
 		return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
-			`"answer":{"type":"string","description":"Your final synthesized answer as well-formatted markdown, using headers, lists, bold/italic and code blocks for clarity"}` +
+			`"answer":{"type":"string","description":"Your final synthesized answer as well-formatted markdown, using headers, lists, bold/italic and code blocks for clarity. NEVER include memory IDs, UUIDs, or 'Memory references' in this text - put IDs only in the id arrays"}` +
+			`,"memory_ids":{"type":"array","items":{"type":"string"},"description":"Array of memory IDs that support your answer (put IDs here, NOT in answer text)"}` +
+			`,"mental_model_ids":{"type":"array","items":{"type":"string"},"description":"Array of mental model IDs that support your answer"}` +
+			`,"observation_ids":{"type":"array","items":{"type":"string"},"description":"Array of observation IDs that support your answer"}` +
+			`,"answer_found":` + answerFoundProperty +
 			`,"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
-			`},"required":["reason","answer"]}`)
+			`},"required":["reason","answer","answer_found"]}`)
 	default:
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}
 }
 
+// answerFoundProperty is the model's own verdict on whether it found the answer,
+// shared by done and answer_ready (the reference's _DONE_ANSWER_FOUND_PROPERTY):
+// prose cannot be checked, a bool can, and a false before recall ran is what the
+// loop refuses.
+const answerFoundProperty = `{"type":"boolean","description":"true if what you retrieved states the answer to the question. false if you are reporting that nothing (or not enough) is known about it."}`
+
 // documentDoneParameters is `done`'s argument schema in document mode: the
 // answer IS the stored document, so the model states its structure (or the
 // answer text the renderer accepts) instead of prose. The reference swaps the
-// two fields the same way — the prose `answer` is not what this mode stores.
+// two fields the same way — the prose `answer` is not what this mode stores —
+// and keeps the id arrays and the answer_found verdict, which is what the
+// citation membership and the absence gate read.
 func documentDoneParameters() json.RawMessage {
 	reason := `{"type":"string","description":"Brief explanation of why this call is being made"}`
 	return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
 		`"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
 		`,"answer":{"type":"string","description":"The answer as markdown, when it is not stated as a document"}` +
-		`},"required":["reason"]}`)
+		`,"memory_ids":{"type":"array","items":{"type":"string"},"description":"Array of memory IDs that support your answer (put IDs here, NOT in answer text)"}` +
+		`,"mental_model_ids":{"type":"array","items":{"type":"string"},"description":"Array of mental model IDs that support your answer"}` +
+		`,"observation_ids":{"type":"array","items":{"type":"string"},"description":"Array of observation IDs that support your answer"}` +
+		`,"answer_found":` + answerFoundProperty +
+		`},"required":["reason","answer_found"]}`)
 }
 
 // ToolCall is one call the model asked for.
@@ -199,4 +233,10 @@ type ToolCall struct {
 	ID    string
 	Name  string
 	Input map[string]any
+	// Refusal carries the error the loop answered this call with when it
+	// refused to honour it (a stop before any search returned, say). Empty
+	// means the call was not refused. A refusal is replayed into the
+	// conversation as the call's own tool result, which is how the reference
+	// tells the model why its stop was refused.
+	Refusal string
 }

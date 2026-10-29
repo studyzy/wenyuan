@@ -50,6 +50,11 @@ type Settings struct {
 	MaxMemoriesPerRound                int
 	LLMBatchSize                       int
 	LLMParallelism                     int
+	// EnableAutoConsolidation is the bank's enable_auto_consolidation override:
+	// a round-capped chain a retain started stops re-queuing when it is off,
+	// while a chain an explicit /consolidate call started keeps draining
+	// regardless (consolidator.py:2211-2225).
+	EnableAutoConsolidation bool
 	// Strategies are the named overrides, in priority order.
 	Strategies []Strategy
 	// ScopeLimits are the deprecated observation_scope_limits rules, in priority
@@ -76,6 +81,7 @@ func DefaultSettings() Settings {
 		MaxMemoriesPerRound:                DefaultMaxMemoriesPerRound,
 		LLMBatchSize:                       DefaultLLMBatchSize,
 		LLMParallelism:                     DefaultLLMParallelism,
+		EnableAutoConsolidation:            true,
 	}
 }
 
@@ -186,9 +192,18 @@ func settingsFromConfig(cfg map[string]any) Settings {
 	if v, ok := configInt(cfg, "consolidation_llm_parallelism"); ok && v >= 1 {
 		settings.LLMParallelism = v
 	}
+	if v, ok := configBool(cfg, "enable_auto_consolidation"); ok {
+		settings.EnableAutoConsolidation = v
+	}
 	settings.Strategies = parseStrategies(cfg["consolidation_strategies"])
 	settings.ScopeLimits = parseScopeLimits(cfg["observation_scope_limits"])
 	return settings
+}
+
+// configBool reads a boolean config value.
+func configBool(cfg map[string]any, key string) (bool, bool) {
+	value, ok := cfg[key].(bool)
+	return value, ok
 }
 
 // parseScopeLimits reads the raw deprecated observation_scope_limits list. Like

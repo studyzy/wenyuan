@@ -157,3 +157,76 @@ func TestObservationUpdateWidensBoundsInsteadOfRestamping(t *testing.T) {
 			observation.MentionedAt, laterMentioned)
 	}
 }
+
+// A year-1/9999 placeholder is an open bound, not a date anyone means: the
+// merge reads it as unknown on either side, so a merged bound is the real date
+// when one exists and NULL when only placeholders remain — the reference's
+// _min_date/_max_date over finite_utc (consolidator.py:1376-1380).
+func TestBoundsMergeReadsPlaceholdersAsUnknown(t *testing.T) {
+	real := time.Date(2025, 6, 2, 0, 0, 0, 0, time.UTC)
+	real2 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	forever := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	beginning := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	merge := func(fn func(a, b *time.Time) *time.Time, cases []struct {
+		a, b, want *time.Time
+	}) func(*testing.T) {
+		return func(t *testing.T) {
+			for i, test := range cases {
+				if got := fn(test.a, test.b); !sameTimePtr(got, test.want) {
+					t.Fatalf("case %d: got %v, want %v", i, got, test.want)
+				}
+			}
+		}
+	}
+	t.Run("earlier", merge(earlierTime, []struct {
+		a, b, want *time.Time
+	}{
+		// The earliest known value wins; a placeholder never does.
+		{a: &real, b: &real2, want: &real2},
+		{a: &real, b: &beginning, want: &real},
+		{a: &beginning, b: &real, want: &real},
+		{a: &beginning, b: &forever, want: nil},
+		{a: &real, b: nil, want: &real},
+		{a: &forever, b: nil, want: nil},
+	}))
+	t.Run("later", merge(laterTime, []struct {
+		a, b, want *time.Time
+	}{
+		// The latest known value wins; a placeholder never does.
+		{a: &real2, b: &real, want: &real},
+		{a: &real, b: &forever, want: &real},
+		{a: &forever, b: &real, want: &real},
+		{a: &beginning, b: &forever, want: nil},
+		{a: &real, b: nil, want: &real},
+		{a: &forever, b: nil, want: nil},
+	}))
+
+	// The full aggregates agree: a source set of only placeholders yields no
+	// bounds at all, and a real source anchors the merge.
+	got := AggregatedObservationBounds([]MemoryUnit{
+		{OccurredStart: &beginning, OccurredEnd: &forever},
+		{OccurredStart: &real2},
+	})
+	if got.OccurredStart == nil || !got.OccurredStart.Equal(real2) {
+		t.Fatalf("aggregated occurred_start = %v, want the earlier real bound %v", got.OccurredStart, real2)
+	}
+	if got.OccurredEnd != nil {
+		t.Fatalf("aggregated occurred_end = %v, want the placeholder read as unknown", got.OccurredEnd)
+	}
+	merged := ObservationBounds{OccurredEnd: &forever}.MergedWith(ObservationBounds{OccurredEnd: nil})
+	if merged.OccurredEnd != nil {
+		t.Fatalf("merged occurred_end = %v, want NULL when only placeholders remain", merged.OccurredEnd)
+	}
+}
+
+func sameTimePtr(a, b *time.Time) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return a.Equal(*b)
+	}
+}

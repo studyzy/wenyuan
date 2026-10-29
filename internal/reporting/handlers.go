@@ -400,26 +400,33 @@ func auditLogSummary(entry storage.AuditEntry) AuditLogSummary {
 // AuditLog returns one audit entry with its full request and response bodies.
 func (h *Handlers) AuditLog(w http.ResponseWriter, r *http.Request) {
 	logID := pathID(r, "log_id")
-	// The reference resolves the entry identifier before anything else and
-	// answers "not found" for one that is not an identifier at all — before the
-	// bank lookup, because the parse happens first (memory_engine.py
-	// get_audit_log: `uuid.UUID(log_id)` then `get_bank_profile`).
-	entry, err := h.Store.GetAuditLog(r.Context(), PathBankID(r), logID)
-	if err != nil {
-		if errors.Is(err, storage.ErrAuditEntryNotFound) {
-			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound,
-				"Audit log entry '"+logID+"' not found"))
-			return
-		}
-		httpx.WriteErrorFor(w, r, asHTTPError(err))
+	notFound := httpx.NewHTTPError(httpx.KindNotFound, "Audit log entry '"+logID+"' not found")
+	// The reference resolves the entry identifier first and answers "not found"
+	// for one that is not an identifier at all (memory_engine.py get_audit_log:
+	// `uuid.UUID(log_id)`), then the bank profile, then the bank-wide refusal,
+	// and only then the entry's own SELECT — so a tag-scoped caller is refused
+	// whether or not the entry exists.
+	if !uuidAnyForm(logID) {
+		httpx.WriteErrorFor(w, r, notFound)
 		return
 	}
-	// Past the identifier the reference looks the bank up, so an unknown bank
-	// is the ordinary missing-bank 404.
-	if _, ok := h.requireBank(w, r); !ok {
+	// Past the identifier the reference looks the bank up; every None the engine
+	// returns — the unknown bank's included — is that same entry 404.
+	bankID := PathBankID(r)
+	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, notFound)
 		return
 	}
 	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's audit log") {
+		return
+	}
+	entry, err := h.Store.GetAuditLog(r.Context(), bankID, logID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAuditEntryNotFound) {
+			httpx.WriteErrorFor(w, r, notFound)
+			return
+		}
+		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
 	request, response := entry.Request, entry.Response
@@ -469,21 +476,28 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The date parameters are bound in the reference's handler *signature*
-	// (`_parse_iso_datetime`, api/http.py:10583-10586 and 10659-10662), which
-	// FastAPI resolves before the body runs -- so a malformed date is answered
-	// 400 before the bank is looked up, and an unknown bank with a bad date is a
-	// 400 rather than a 404.
+	// `call_type` is a `Literal` and `group` a `bool` in the reference's
+	// signature (api/http.py:10952-10966), which the framework resolves before
+	// the body runs — so a bad one is the 422 its type produces even when a
+	// date parameter is garbage too.
+	callType, ok := enumParam(w, r, "call_type", storage.LLMCallTypes())
+	if !ok {
+		return
+	}
+	group, ok := strictBoolParam(w, r, "group", false)
+	if !ok {
+		return
+	}
+	// The date parameters are the body's first act (`_parse_iso_datetime`,
+	// api/http.py:10986-10987), after the framework's typed members but before
+	// the store looks the bank up — so a malformed date is answered 400 before
+	// the bank is looked up, and an unknown bank with a bad date is a 400
+	// rather than a 404.
 	startDate, ok := parseDateParam(w, r, "start_date")
 	if !ok {
 		return
 	}
 	endDate, ok := parseDateParam(w, r, "end_date")
-	if !ok {
-		return
-	}
-
-	callType, ok := enumParam(w, r, "call_type", storage.LLMCallTypes())
 	if !ok {
 		return
 	}
@@ -499,10 +513,6 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 	params := httpx.QueryParamsOf(r)
 	_, documentIDSet := params["document_id"]
 	_, memoryIDSet := params["memory_id"]
-	group, ok := strictBoolParam(w, r, "group", false)
-	if !ok {
-		return
-	}
 	page, err := h.Store.ListLLMRequests(r.Context(), storage.LLMRequestQuery{
 		BankID: bankID,
 		// The reference treats these as truthy strings (`if value:`), so a
@@ -755,6 +765,11 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if scoped {
 		op, deduplicated, err = enqueueScopedConsolidation(r.Context(), h.Store, bankID, scopes)
+	} else if enqueuer, ok := h.Store.(callerRequestedConsolidationEnqueuer); ok {
+		// An explicit /consolidate starts a chain that keeps draining past the
+		// auto-consolidation gate: the operation's payload carries
+		// caller_requested (memory_engine.py:23716-23717, api/http.py:9992).
+		op, deduplicated, err = enqueuer.EnqueueCallerRequestedConsolidation(r.Context(), bankID)
 	} else {
 		op, deduplicated, err = h.Store.EnqueueConsolidation(r.Context(), bankID)
 	}
@@ -771,6 +786,14 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 // submit a scoped consolidation whose scope list may be empty.
 type scopedConsolidationEnqueuer interface {
 	EnqueueConsolidationScoped(ctx context.Context, bankID string, observationScopes [][]string) (storage.Operation, bool, error)
+}
+
+// callerRequestedConsolidationEnqueuer is the optional capability a store
+// provides to submit an explicit consolidation whose task payload carries
+// caller_requested, the way the reference's submit_async_consolidation does
+// (memory_engine.py:23716-23717).
+type callerRequestedConsolidationEnqueuer interface {
+	EnqueueCallerRequestedConsolidation(ctx context.Context, bankID string) (storage.Operation, bool, error)
 }
 
 // enqueueScopedConsolidation submits a scoped consolidation pass. A store that

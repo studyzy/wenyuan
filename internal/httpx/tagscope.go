@@ -62,10 +62,15 @@ func WriteTagScopeFrom(r *http.Request) ([]string, bool) {
 // TagsWritable reports whether every tag in tags is one the caller may write,
 // given the write scope. A nil scope (not confined) allows every tag. A tag is
 // writable when it equals one of the scope tags; the wildcard "key:*" and "*"
-// match a whole namespace.
+// match a whole namespace. An untagged item belongs to everyone, so a confined
+// writer may not produce or change one (the reference's tags_writable,
+// engine/search/tags.py:579-588: `bool(tags) and all(...)`).
 func TagsWritable(tags, scope []string, confined bool) bool {
 	if !confined {
 		return true
+	}
+	if len(tags) == 0 {
+		return false
 	}
 	for _, tag := range tags {
 		if !tagWritable(tag, scope) {

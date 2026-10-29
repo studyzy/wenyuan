@@ -89,7 +89,10 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 	}
 	// A time window replaces the default ordering and drops the rows with no
 	// value on the axis it names, so the ordering it drives is total.
-	orderBy := "mu.mentioned_at DESC NULLS LAST, mu.created_at DESC"
+	// The default ordering is total too: `id` last breaks the ties a batch of
+	// memories shares on both timestamps, so offset pages cannot repeat or skip
+	// rows between reads (the reference's #5934).
+	orderBy := "mu.mentioned_at DESC NULLS LAST, mu.created_at DESC, mu.id"
 	if query.TimeField != "" || query.TimeStart != nil || query.TimeEnd != nil {
 		column := "mu." + windowColumn(query.TimeField)
 		optional = append(optional, column+" IS NOT NULL")
@@ -888,6 +891,23 @@ func (s *PostgresStore) EnqueueConsolidation(ctx context.Context, bankID string,
 	// insert is atomic, so a burst of submits cannot each see no queued pass and
 	// each insert its own — the duplicate passes that race the observation layer
 	// and pile up as retry_blocked.
+	result, err := s.enqueueDedupeByBank(ctx, op, []string{"pending", "processing"}, true)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	return result.Operation, result.Deduplicated, nil
+}
+
+// EnqueueCallerRequestedConsolidation records a consolidation pass an explicit
+// /consolidate started: the task payload carries caller_requested, which lets
+// the pass's chain keep draining past the auto-consolidation gate
+// (memory_engine.py:23716-23717, api/http.py:9992).
+func (s *PostgresStore) EnqueueCallerRequestedConsolidation(ctx context.Context, bankID string) (Operation, bool, error) {
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bankID),
+		Payload: map[string]any{"caller_requested": true},
+	}
 	result, err := s.enqueueDedupeByBank(ctx, op, []string{"pending", "processing"}, true)
 	if err != nil {
 		return Operation{}, false, err

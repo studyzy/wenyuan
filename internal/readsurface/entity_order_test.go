@@ -116,19 +116,32 @@ func TestEntitiesTagGroupsPrecedesTheBank(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "mutually exclusive") {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
+	// The tree decodes BEFORE the exclusivity refusal, so an invalid tree wins
+	// the detail (api/http.py:292-301 validates, then refuses `tags`).
+	rec = send(mux, http.MethodGet, "/v1/default/banks/absent/entities?tags=a&tag_groups=bogus", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tags+invalid tag_groups = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Invalid tag_groups") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
 }
 
-// Absence, an empty value and `null` are three different requests. The
-// reference's helper returns early only when the parameter is absent, so an
-// empty or null document reaches the JSON adapter and is its 400.
+// Absence, blank and `null` are three different requests. The reference's
+// shared decoder returns early on `raw is None or not raw.strip()`
+// (api/http.py:283), so an absent parameter and a whitespace-only one are both
+// no filter, while a `null` document reaches the JSON adapter and is its 400.
 func TestTagGroupsDistinguishesAbsentFromEmptyAndNull(t *testing.T) {
 	mux := entityOrderServer(t)
 	for path, want := range map[string]int{
-		"/v1/default/banks/b1/entities":                   http.StatusOK,
-		"/v1/default/banks/b1/entities?tag_groups=":       http.StatusBadRequest,
-		"/v1/default/banks/b1/entities?tag_groups=null":   http.StatusBadRequest,
-		"/v1/default/banks/b1/entities?tag_groups=%7B%7D": http.StatusBadRequest,
-		"/v1/default/banks/b1/entities?tag_groups=%5B%5D": http.StatusOK,
+		"/v1/default/banks/b1/entities":                          http.StatusOK,
+		"/v1/default/banks/b1/entities?tag_groups=":              http.StatusOK,
+		"/v1/default/banks/b1/entities?tag_groups=%20":           http.StatusOK,
+		"/v1/default/banks/b1/entities?tag_groups=null":          http.StatusBadRequest,
+		"/v1/default/banks/b1/entities?tag_groups=%7B%7D":        http.StatusBadRequest,
+		"/v1/default/banks/b1/entities?tag_groups=%5B%5D":        http.StatusOK,
+		"/v1/default/banks/b1/entities?tags=work&tag_groups=":    http.StatusOK,
+		"/v1/default/banks/b1/entities?tags=work&tag_groups=%20": http.StatusOK,
 	} {
 		rec := send(mux, http.MethodGet, path, "")
 		if rec.Code != want {

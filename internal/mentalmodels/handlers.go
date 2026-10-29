@@ -59,11 +59,10 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	// The list route is the one route in the family that probes the bank: the
 	// reference's list_mental_models calls _require_bank_exists, so an unknown
-	// bank is a bank-level 404 rather than an empty page.
-	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
-		return
-	}
+	// bank is a bank-level 404 rather than an empty page. The framework binds
+	// and validates the constrained query parameters before the handler runs,
+	// though, so a bad parameter is its 422 even on a bank the probe would
+	// refuse — the walks precede the probe (api/http.py:7113-7135).
 	detail, ok := detailParam(w, r, "metadata")
 	if !ok {
 		return
@@ -78,6 +77,10 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	excludePages, ok := excludeKnowledgePagesParam(w, r)
 	if !ok {
+		return
+	}
+	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 		return
 	}
 	records, err := h.Store.ListMentalModels(r.Context(), bankID, "")
@@ -300,6 +303,15 @@ func (h *Handlers) enqueueRefresh(ctx context.Context, bankID, modelID, name str
 	if err != nil {
 		return "", err
 	}
+	// An explicit refresh that folded into a queued automatic one inherits its
+	// min-interval park. Release it, so "refresh now" means now — the folded
+	// operation does the same work either way, it just stops waiting out
+	// somebody else's rate limit (memory_engine.py:24207-24209).
+	if result.Deduplicated {
+		if _, err := storage.ClearQueuedRefreshPark(ctx, h.Store, bankID, result.Operation.OperationID); err != nil {
+			return "", err
+		}
+	}
 	return result.Operation.OperationID, nil
 }
 
@@ -443,6 +455,19 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 // Refresh enqueues a refresh of a mental model and reports the accepted
 // operation, which the caller polls to completion.
 func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
+	bankID, id, ok := h.member(w, r)
+	if !ok {
+		return
+	}
+	// The body is optional, and the reference binds RefreshMentalModelRequest
+	// before the handler runs, so its validation failure precedes everything
+	// the handler itself would refuse — including the no-provider gate and the
+	// model lookup (api/http.py:7306-7310; the refusal sits inside the
+	// reference's submit, at engine/memory_engine.py:24147).
+	mode, ok := refreshModeParam(w, r)
+	if !ok {
+		return
+	}
 	// A deployment with no LLM provider refuses refresh work before any lookup,
 	// matching the reference: the gate precedes the model's existence check, so
 	// an unknown model is the same refusal rather than a 404.
@@ -450,19 +475,9 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, ErrNoRefreshModel.Error()))
 		return
 	}
-	bankID, id, ok := h.member(w, r)
-	if !ok {
-		return
-	}
-	// The body is optional, and the reference reads it after the model exists, so
-	// a malformed body on an unknown model is still the model's 404.
 	record, err := h.Store.GetMentalModel(r.Context(), bankID, id)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, h.refreshError(bankID, id, err))
-		return
-	}
-	mode, ok := refreshModeParam(w, r)
-	if !ok {
 		return
 	}
 	opID, err := h.enqueueModelRefresh(r, bankID, id, record.Name, mode == refreshModeFull)

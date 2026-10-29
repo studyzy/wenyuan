@@ -6,11 +6,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/provider"
+	"github.com/studyzy/wenyuan/internal/provider/embed"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -28,9 +30,15 @@ type tracingProvider struct {
 }
 
 // RerankCapability lets ProviderReranker see through the wrapper, so tracing a
-// provider never advertises a reranker the inner provider does not have.
+// provider never advertises a reranker the inner provider does not have. The
+// capability is wrapped too, so a recall that reranks through the chat
+// provider's own cross-encoder is traced next to the chat rows it serves.
 func (p *tracingProvider) RerankCapability() provider.Reranker {
-	return provider.ProviderReranker(p.Provider)
+	inner := provider.ProviderReranker(p.Provider)
+	if inner == nil {
+		return nil
+	}
+	return TraceReranker(inner, p.store, p.cfg, traceBackend{provider: p.Name(), model: p.cfg.Model})
 }
 
 // TraceProvider wraps a provider so its completions are recorded in the
@@ -54,38 +62,78 @@ func (p *tracingProvider) Complete(ctx context.Context, req provider.CompletionR
 	return result, err
 }
 
-// tracesScope reports whether the call's scope is recorded. An empty scope
-// filter records every scope.
+// tracesScope reports whether the call's scope is recorded.
 func (p *tracingProvider) tracesScope(scope string) bool {
-	if len(p.cfg.TraceScopes) == 0 {
+	return traceScopeRecorded(p.cfg, scope)
+}
+
+// The trace scopes the embedding and rerank calls land under — the reference's
+// own scope vocabulary, which is what the /llm-requests `call_type` filter
+// derives the call kinds from (engine/llm_trace.py:643-647): an embedding row
+// names its input type, the reranker's scope is exact.
+const (
+	embeddingDocumentTraceScope = "embedding_document"
+	embeddingQueryTraceScope    = "embedding_query"
+	rerankTraceScope            = "rerank"
+)
+
+// traceScopeRecorded reports whether a call in scope is recorded, with the
+// reference recorder's precedence (engine/llm_trace.py:705-713): a scope the
+// exclude list names is never recorded — exclusion wins over the allow list —
+// an empty allow list records every scope, and both lists match with a
+// trailing-`*` prefix rule rather than exact equality.
+func traceScopeRecorded(cfg config.ProviderConfig, scope string) bool {
+	if scopeMatchesPattern(scope, cfg.TraceExcludeScopes) {
+		return false
+	}
+	if len(cfg.TraceScopes) == 0 {
 		return true
 	}
-	for _, allowed := range p.cfg.TraceScopes {
-		if allowed == scope {
+	return scopeMatchesPattern(scope, cfg.TraceScopes)
+}
+
+// scopeMatchesPattern reports whether scope matches one of the patterns: a
+// pattern ending in `*` matches every scope carrying that prefix, the rest must
+// equal the scope (engine/llm_trace.py:605-612).
+func scopeMatchesPattern(scope string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.HasSuffix(pattern, "*") {
+			if strings.HasPrefix(scope, strings.TrimSuffix(pattern, "*")) {
+				return true
+			}
+			continue
+		}
+		if pattern == scope {
 			return true
 		}
 	}
 	return false
 }
 
-// record writes one trace row for a completed attempt.
+// traceBackend names the backend a traced row labels itself with: the
+// reference reads the row's provider and model off the owner it wraps
+// (engine/llm_trace.py:206-215).
+type traceBackend struct {
+	provider string
+	model    string
+}
+
+// tracedCall is one finished model call reduced to the columns the trace row
+// records. The completion, embedding and rerank wrappers each fill one; the
+// shared emit assembles the row.
+type tracedCall struct {
+	scope   string
+	backend traceBackend
+	start   time.Time
+	callErr error
+	input   any
+	output  any
+	llmInfo map[string]any
+	usage   provider.Usage
+}
+
+// record writes one trace row for a completed completion attempt.
 func (p *tracingProvider) record(ctx context.Context, req provider.CompletionRequest, result provider.CompletionResult, callErr error, start time.Time) {
-	ended := time.Now().UTC()
-	durationMS := int(ended.Sub(start).Milliseconds())
-	status := "success"
-	errText := ""
-	if callErr != nil {
-		status = "error"
-		errText = callErr.Error()
-	}
-	attribution, _ := provider.TraceContextFrom(ctx)
-	// The OTel-style hierarchy the reference records (engine/llm_trace.py:530-536):
-	// one trace id and one operation span per operation invocation, shared by
-	// every model call of that run, and one fresh span per call that points at
-	// the operation span as its parent. The context is the operation scope — the
-	// caller attaches attribution once per run — so the pair is derived from it
-	// and every call in the run agrees.
-	traceID, operationSpanID := traceIDsFor(ctx)
 	// The trace records the *configured* model, not the one the response
 	// echoes: the reference passes `model=self.model`, the LLM wrapper's own
 	// resolved model (engine/llm_wrapper.py:1370, :1519). A gateway may answer
@@ -96,31 +144,69 @@ func (p *tracingProvider) record(ctx context.Context, req provider.CompletionReq
 	if model == "" {
 		model = result.Model
 	}
-	llmInfo := traceLLMInfo(req, result, p.cfg.TraceMaxChars)
+	emitTraceRow(p.store, p.cfg, ctx, tracedCall{
+		scope:   req.Scope,
+		backend: traceBackend{provider: p.Name(), model: model},
+		start:   start,
+		callErr: callErr,
+		input:   traceInput(req, p.cfg.TraceMaxChars),
+		output:  traceOutput(result, p.cfg.TraceMaxChars),
+		llmInfo: traceLLMInfo(req, result, p.cfg.TraceMaxChars),
+		usage:   result.Usage,
+	})
+}
+
+// emitTraceRow assembles one trace row from a finished model call and writes
+// it. Best-effort: a trace write that fails is dropped rather than failing the
+// model call, because the answer is what the caller asked for and the trace is
+// diagnostic.
+func emitTraceRow(store storage.Store, cfg config.ProviderConfig, ctx context.Context, call tracedCall) {
+	ended := time.Now().UTC()
+	durationMS := int(ended.Sub(call.start).Milliseconds())
+	status := "success"
+	errText := ""
+	if call.callErr != nil {
+		status = "error"
+		errText = call.callErr.Error()
+	}
+	attribution, _ := provider.TraceContextFrom(ctx)
+	// The OTel-style hierarchy the reference records (engine/llm_trace.py:530-536):
+	// one trace id and one operation span per operation invocation, shared by
+	// every model call of that run, and one fresh span per call that points at
+	// the operation span as its parent. The context is the operation scope — the
+	// caller attaches attribution once per run — so the pair is derived from it
+	// and every call in the run agrees.
+	traceID, operationSpanID := traceIDsFor(ctx)
+	output := call.output
+	if call.callErr != nil {
+		// A failed call shows no output, the reference's `output=None if error
+		// is not None else response_content` (engine/llm_trace.py:528).
+		output = nil
+	}
 	request := storage.LLMRequest{
 		BankID:       attribution.BankID,
 		Operation:    attribution.Operation,
-		Scope:        req.Scope,
+		Scope:        call.scope,
 		TraceID:      traceID,
 		SpanID:       newTraceSpanID(),
 		ParentSpanID: operationSpanID,
-		Provider:     p.Name(),
-		Model:        model,
+		Provider:     call.backend.provider,
+		Model:        call.backend.model,
 		Status:       status,
-		StartedAt:    start,
+		StartedAt:    call.start,
 		EndedAt:      &ended,
 		DurationMS:   &durationMS,
-		Input:        traceInput(req, p.cfg.TraceMaxChars),
-		Output:       traceOutput(result, callErr, p.cfg.TraceMaxChars),
+		Input:        truncateTrace(call.input, cfg.TraceMaxChars),
+		Output:       truncateTrace(output, cfg.TraceMaxChars),
 		Error:        errText,
-		LLMInfo:      llmInfo,
+		LLMInfo:      traceLLMInfoPayload(call.llmInfo, cfg.TraceMaxChars),
 	}
-	setToken(&request.InputTokens, result.Usage.InputTokens)
-	setToken(&request.OutputTokens, result.Usage.OutputTokens)
-	setToken(&request.CachedTokens, result.Usage.CachedInputTokens)
-	setToken(&request.ThoughtsTokens, result.Usage.ReasoningTokens)
-	setToken(&request.TotalTokens, result.Usage.TotalTokens)
-	_ = p.store.RecordLLMRequest(ctx, request)
+	setToken(&request.InputTokens, call.usage.InputTokens)
+	setToken(&request.OutputTokens, call.usage.OutputTokens)
+	setToken(&request.CachedTokens, call.usage.CachedInputTokens)
+	setToken(&request.ThoughtsTokens, call.usage.ReasoningTokens)
+	setToken(&request.TotalTokens, call.usage.TotalTokens)
+	_ = store.RecordLLMRequest(ctx, request)
 }
 
 // setToken stores a token count, leaving it NULL when the provider reported
@@ -148,11 +234,9 @@ func traceInput(req provider.CompletionRequest, maxChars int) any {
 
 // traceOutput renders the response for the trace: the completion's content as
 // the reference stores it (`output=None if error is not None else
-// response_content`, engine/llm_trace.py:528), not a wrapper object.
-func traceOutput(result provider.CompletionResult, callErr error, maxChars int) any {
-	if callErr != nil {
-		return nil
-	}
+// response_content`, engine/llm_trace.py:528), not a wrapper object. A failed
+// call's output is dropped by the shared emit.
+func traceOutput(result provider.CompletionResult, maxChars int) any {
 	return truncateTrace(result.Content, maxChars)
 }
 
@@ -177,8 +261,15 @@ func traceLLMInfo(req provider.CompletionRequest, result provider.CompletionResu
 	if len(info) == 0 {
 		return map[string]any{}
 	}
-	// Truncation yields a JSON document; the storage layer takes the row's
-	// llm_info as a decoded object, so a clipped payload is read back into one.
+	// Clipping reads a cut document back into an object, so the stored row
+	// keeps the decoded form the storage layer takes.
+	return traceLLMInfoPayload(info, maxChars)
+}
+
+// traceLLMInfoPayload clips an llm_info object to the character budget. The
+// storage layer takes the row's llm_info as a decoded object, so a clipped
+// payload is read back into one.
+func traceLLMInfoPayload(info map[string]any, maxChars int) map[string]any {
 	if clipped := truncateTrace(info, maxChars); clipped != nil {
 		if raw, ok := clipped.(json.RawMessage); ok {
 			var decoded map[string]any
@@ -188,6 +279,102 @@ func traceLLMInfo(req provider.CompletionRequest, result provider.CompletionResu
 		}
 	}
 	return info
+}
+
+// tracingEmbedder records every embedding call in the model-request trace, the
+// way the reference wraps its embedding backends' encode calls in
+// trace_model_call (engine/retain/embedding_utils.py:139): one row per call,
+// its input the text list, its llm_info the input count, and no output — an
+// embedding's vectors would only be noise.
+type tracingEmbedder struct {
+	embed.Embedder
+	store storage.Store
+	cfg   config.ProviderConfig
+}
+
+// TraceEmbedder wraps an embedding backend so its calls are recorded in the
+// model-request trace. When tracing is disabled, or the backend is nil, it
+// returns the backend unchanged.
+func TraceEmbedder(e embed.Embedder, store storage.Store, cfg config.ProviderConfig) embed.Embedder {
+	if e == nil || !cfg.TraceEnabled {
+		return e
+	}
+	return &tracingEmbedder{Embedder: e, store: store, cfg: cfg}
+}
+
+// Embed runs the embedding call and records the attempt. The scope follows the
+// input kind the reference's own scopes name: stored passages are
+// embedding_document, recall queries embedding_query.
+func (e *tracingEmbedder) Embed(ctx context.Context, req provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	scope := embeddingDocumentTraceScope
+	if req.Kind == provider.EmbeddingQuery {
+		scope = embeddingQueryTraceScope
+	}
+	if !traceScopeRecorded(e.cfg, scope) {
+		return e.Embedder.Embed(ctx, req)
+	}
+	start := time.Now().UTC()
+	result, err := e.Embedder.Embed(ctx, req)
+	emitTraceRow(e.store, e.cfg, ctx, tracedCall{
+		scope:   scope,
+		backend: traceBackend{provider: e.Name(), model: e.Model()},
+		start:   start,
+		callErr: err,
+		input:   map[string]any{"texts": req.Texts},
+		llmInfo: map[string]any{"input_count": len(req.Texts)},
+	})
+	return result, err
+}
+
+// tracingReranker records every rerank call in the model-request trace, the
+// way the reference wraps its cross-encoder backends' predict calls in
+// trace_model_call (engine/cross_encoder.py:220): one row per call, its input
+// the deduplicated queries and the candidate documents, its output the scores,
+// its llm_info the input count.
+type tracingReranker struct {
+	provider.Reranker
+	store   storage.Store
+	cfg     config.ProviderConfig
+	backend traceBackend
+}
+
+// TraceReranker wraps a reranker so its calls are recorded in the model-request
+// trace. backend names the row's provider and model, the labels the reference
+// reads off the backend it wraps. When tracing is disabled, or the reranker is
+// nil, it returns the reranker unchanged.
+func TraceReranker(r provider.Reranker, store storage.Store, cfg config.ProviderConfig, backend traceBackend) provider.Reranker {
+	if r == nil || !cfg.TraceEnabled {
+		return r
+	}
+	return &tracingReranker{Reranker: r, store: store, cfg: cfg, backend: backend}
+}
+
+// Rerank runs the scoring call and records the attempt.
+func (r *tracingReranker) Rerank(ctx context.Context, req provider.RerankRequest) (provider.RerankResult, error) {
+	if !traceScopeRecorded(r.cfg, rerankTraceScope) {
+		return r.Reranker.Rerank(ctx, req)
+	}
+	start := time.Now().UTC()
+	result, err := r.Reranker.Rerank(ctx, req)
+	emitTraceRow(r.store, r.cfg, ctx, tracedCall{
+		scope:   rerankTraceScope,
+		backend: r.backend,
+		start:   start,
+		callErr: err,
+		input:   map[string]any{"queries": []string{req.Query}, "documents": req.Documents},
+		output:  map[string]any{"scores": result.Scores},
+		llmInfo: map[string]any{"input_count": len(req.Documents)},
+	})
+	return result, err
+}
+
+// rerankTraceBackend derives the row identity for the dedicated reranker
+// chain: the chain's selected provider and the primary member's configured
+// model, the labels the reference reads off the rerank backend it wraps. The
+// member mapping is the one the chain itself is built from, so the row names
+// the model the same selection chose.
+func rerankTraceBackend(cfg config.ProviderConfig) traceBackend {
+	return traceBackend{provider: cfg.Rerank.Provider, model: rerankMember(cfg.Rerank.Primary).Model}
 }
 
 // truncateTrace serialises a trace payload and clips it to the character

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
-	"time"
 
 	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/memoryops"
@@ -90,7 +90,10 @@ func (s *Server) retain(ctx context.Context, args map[string]any) (any, error) {
 	if content == "" {
 		return nil, invalidArgument("retain requires content")
 	}
-	item := retainItem(args, content)
+	item, err := retainItem(args, content)
+	if err != nil {
+		return nil, err
+	}
 	if item.Context == "" {
 		item.Context = "general"
 	}
@@ -117,7 +120,10 @@ func (s *Server) syncRetain(ctx context.Context, args map[string]any) (any, erro
 	if content == "" {
 		return nil, invalidArgument("sync_retain requires content")
 	}
-	item := retainItem(args, content)
+	item, err := retainItem(args, content)
+	if err != nil {
+		return nil, err
+	}
 	if item.Context == "" {
 		item.Context = "general"
 	}
@@ -141,8 +147,11 @@ func (s *Server) syncRetain(ctx context.Context, args map[string]any) (any, erro
 	}, nil
 }
 
-// retainItem maps the retain tool's arguments onto one stored item.
-func retainItem(args map[string]any, content string) storage.RetainItem {
+// retainItem maps the retain tool's arguments onto one stored item. A timestamp
+// the reference's parse_timestamp refuses — an unparseable value, or a
+// placeholder year that is an open bound rather than a date — is an error the
+// tool reports, not a value the request silently loses.
+func retainItem(args map[string]any, content string) (storage.RetainItem, error) {
 	item := storage.RetainItem{
 		Content:    content,
 		Context:    stringArgument(args, "context"),
@@ -153,11 +162,13 @@ func retainItem(args map[string]any, content string) storage.RetainItem {
 		UpdateMode: stringArgument(args, "update_mode"),
 	}
 	if raw := stringArgument(args, "timestamp"); raw != "" {
-		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-			item.Timestamp, item.HasTimestamp = &parsed, true
+		parsed, err := parseToolTimestamp(raw)
+		if err != nil {
+			return storage.RetainItem{}, err
 		}
+		item.Timestamp, item.HasTimestamp = parsed, true
 	}
-	return item
+	return item, nil
 }
 
 // recall searches a bank's memories and returns the recall response envelope,
@@ -176,6 +187,15 @@ func (s *Server) recall(ctx context.Context, args map[string]any) (any, error) {
 	query, err := buildRecallQuery(bankID, request)
 	if err != nil {
 		return nil, err
+	}
+	// The bank's recall_prefer_observations is the middle layer, as upstream's
+	// engine resolves it for an omitted member: the request that stated the
+	// member already decided, and the bank's configuration is what an omitted
+	// one falls back to.
+	if bankConfig, err := s.store.BankConfig(ctx, bankID); err == nil {
+		if preferred, ok := bankConfig["recall_prefer_observations"].(bool); ok {
+			query.PreferObservations = request.PreferObservationsValue(preferred)
+		}
 	}
 	result, err := s.store.Recall(ctx, query)
 	if err != nil {
@@ -458,7 +478,11 @@ func (s *Server) getMemory(ctx context.Context, args map[string]any) (any, error
 }
 
 // updateMemory applies a partial update to one memory unit and reports the
-// updated unit in the same detail shape a read serves.
+// updated unit in the same detail shape a read serves. The patch covers every
+// member the schema advertises, and the refusals are the HTTP PATCH's: a
+// fact_type outside world/experience, an empty text, a date that does not
+// parse, and a derived or already-invalidated unit are reported rather than
+// silently ignored.
 func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	memoryID := stringArgument(args, "memory_id")
@@ -468,12 +492,21 @@ func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, er
 	if !uuidAnyForm(memoryID) {
 		return notFoundAnswer("Invalid memory_id: '" + memoryID + "' is not a valid UUID"), nil
 	}
-	patch := storage.MemoryPatch{}
-	if text := stringArgument(args, "text"); text != "" {
-		patch.Text = &text
+	patch, err := memoryUpdatePatch(args)
+	if err != nil {
+		return nil, err
 	}
-	if tags := stringListArgument(args, "tags"); tags != nil {
-		patch.Tags = &tags
+	if existing, err := s.store.GetMemory(ctx, bankID, memoryID); err == nil {
+		// The editability checks run on the stored unit, as the HTTP PATCH runs
+		// them: observations are derived and regenerate from their sources, and
+		// an invalidated one has to be reverted before it can change.
+		if existing.FactType != storage.TypeWorld && existing.FactType != storage.TypeExperience {
+			return nil, fmt.Errorf("Memory '%s' is a %s; only world/experience facts can be curated. "+ //nolint:staticcheck // the reference's own wording, sentence-final
+				"Observations are derived and regenerate from their sources.", memoryID, existing.FactType)
+		}
+		if existing.InvalidatedAt != nil && memoryUpdateEdits(args) {
+			return nil, errors.New("Cannot edit an invalidated memory; revert it to 'valid' first.") //nolint:staticcheck // the reference's own wording, sentence-final
+		}
 	}
 	unit, err := s.store.UpdateMemory(ctx, bankID, memoryID, patch)
 	if errors.Is(err, storage.ErrMemoryNotFound) {
@@ -487,6 +520,70 @@ func (s *Server) updateMemory(ctx context.Context, args map[string]any) (any, er
 		return nil, err
 	}
 	return detail, nil
+}
+
+// memoryUpdatePatch builds the storage patch from the tool's arguments with the
+// HTTP PATCH's field rules: an empty text is refused, "" clears the context or
+// a date, an omitted member leaves it unchanged, a date the reference's
+// isoformat would refuse is refused, and a fact_type outside world/experience
+// is refused.
+func memoryUpdatePatch(args map[string]any) (storage.MemoryPatch, error) {
+	patch := storage.MemoryPatch{}
+	if raw, ok := args["text"]; ok && raw != nil {
+		text, _ := raw.(string)
+		if strings.TrimSpace(text) == "" {
+			return storage.MemoryPatch{}, errors.New("text must not be empty.") //nolint:staticcheck // the reference's own wording, sentence-final
+		}
+		patch.Text = &text
+	}
+	if raw, ok := args["context"]; ok && raw != nil {
+		context, _ := raw.(string)
+		patch.Context = &context
+	}
+	for _, member := range []struct {
+		name   string
+		target **string
+	}{
+		{"occurred_start", &patch.OccurredStart},
+		{"occurred_end", &patch.OccurredEnd},
+		{"mentioned_at", &patch.MentionedAt},
+	} {
+		raw, ok := args[member.name]
+		if !ok || raw == nil {
+			continue
+		}
+		value, _ := raw.(string)
+		if value != "" {
+			if _, err := parseToolISODate(value); err != nil {
+				return storage.MemoryPatch{}, fmt.Errorf("Invalid isoformat string: '%s'", value) //nolint:staticcheck // the reference's own wording, capitalised
+			}
+		}
+		*member.target = &value
+	}
+	if raw, ok := args["fact_type"]; ok && raw != nil {
+		factType, _ := raw.(string)
+		if factType != string(storage.TypeWorld) && factType != string(storage.TypeExperience) {
+			return storage.MemoryPatch{}, errors.New("fact_type must be 'world' or 'experience'.") //nolint:staticcheck // the reference's own wording, sentence-final
+		}
+		patch.FactType = &factType
+	}
+	if entities := stringListArgument(args, "entities"); entities != nil {
+		patch.Entities = &entities
+		resolve := boolArgument(args, "resolve_entities", true)
+		patch.ResolveEntities = &resolve
+	}
+	return patch, nil
+}
+
+// memoryUpdateEdits reports whether the arguments carry a member whose change
+// is an edit — the set the HTTP PATCH gates the invalidated-memory refusal on.
+func memoryUpdateEdits(args map[string]any) bool {
+	for _, member := range []string{"text", "context", "occurred_start", "occurred_end", "mentioned_at", "fact_type", "entities"} {
+		if raw, ok := args[member]; ok && raw != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // invalidateMemory clears a memory's observations and reports the memory in the

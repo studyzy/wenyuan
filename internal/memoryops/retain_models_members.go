@@ -9,8 +9,11 @@ package memoryops
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // TimestampField is the item event-date value. It is tri-state: an unset value
@@ -70,6 +73,16 @@ func (t *TimestampField) UnmarshalJSON(data []byte) error {
 		t.Invalid = true
 		t.InvalidMessage = "Invalid timestamp/event_date format: '" + text + "'. Expected ISO format like " +
 			"'2024-01-15T10:30:00' or '2024-01-15T10:30:00Z', or the special value 'unset' to store without a timestamp."
+		t.InvalidInput = text
+		return nil
+	}
+	// The validator checks the year after the format parse, so a format error
+	// keeps its own message and an "unset"/empty value never reaches either
+	// (api/http.py MemoryItem.validate_timestamp).
+	if validation.IsPlaceholderDate(parsed) {
+		t.Invalid = true
+		t.InvalidMessage = fmt.Sprintf("timestamp year %d is a placeholder, not a date; "+
+			"send a real date or 'unset' to store without one.", parsed.Year())
 		t.InvalidInput = text
 		return nil
 	}

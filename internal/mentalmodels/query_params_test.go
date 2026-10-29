@@ -25,6 +25,9 @@ func TestListEmptyQueryValuesAreValidatedNotDefaulted(t *testing.T) {
 		{"empty tags_match", "tags_match=", "literal_error", []any{"query", "tags_match"}},
 		{"empty limit", "limit=", "int_parsing", []any{"query", "limit"}},
 		{"empty offset", "offset=", "int_parsing", []any{"query", "offset"}},
+		// exclude_knowledge_pages is a plain bool to the framework: an empty
+		// binding is handed to its boolean parser and refused, not read as false.
+		{"empty exclude_knowledge_pages", "exclude_knowledge_pages=", "bool_parsing", []any{"query", "exclude_knowledge_pages"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

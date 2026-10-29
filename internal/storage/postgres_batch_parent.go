@@ -14,8 +14,10 @@ import (
 // child does. The promotion is a guarded write — `status IN ('pending',
 // 'processing')` — so when two children finish at once exactly one promotes the
 // parent and the loser leaves it alone rather than re-terminalising it. The
-// children's outcome counters are summed onto the parent, so a caller polling
-// the parent reads the same totals the individual children report.
+// children's outcome counters are summed onto a completed parent only: a failed
+// parent writes its status, error message and updated_at, and a cancelled one
+// its status and updated_at, as the reference writes them
+// (engine/memory_engine.py:6021-6068).
 func (s *PostgresStore) FinalizeBatchParent(ctx context.Context, bankID, parentID string) (Operation, bool, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
@@ -45,16 +47,35 @@ func (s *PostgresStore) FinalizeBatchParent(ctx context.Context, bankID, parentI
 		// A child is still pending or processing: the parent waits.
 		return parent, false, nil
 	}
-	metadata, err := marshalMetadata(aggregate)
-	if err != nil {
-		return Operation{}, false, err
+	// Each outcome writes only its own columns, exactly as the reference does
+	// (engine/memory_engine.py:6021-6068): a failed parent carries the failure
+	// cause but no completion time and no outcome roll-up — the batch did not
+	// finish; a cancelled parent carries neither a cause nor a completion time —
+	// the batch was stopped, not finished; only a completed one folds the
+	// children's outcome counters and stamps completed_at.
+	guard := " WHERE operation_id=$1 AND status IN ('pending','processing') RETURNING " + operationColumns
+	var query string
+	var args []any
+	switch status {
+	case StatusFailed:
+		query = `UPDATE ` + quoteIdent(schema) + `.async_operations
+		          SET status=$2, error_message=$3, updated_at=now()` + guard
+		args = []any{parentID, string(status), errorMessage}
+	case StatusCancelled:
+		query = `UPDATE ` + quoteIdent(schema) + `.async_operations
+		          SET status=$2, updated_at=now()` + guard
+		args = []any{parentID, string(status)}
+	default:
+		metadata, err := marshalMetadata(aggregate)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		query = `UPDATE ` + quoteIdent(schema) + `.async_operations
+		          SET status=$2, error_message=$3, updated_at=now(), completed_at=now(),
+		              result_metadata=(COALESCE(result_metadata,'{}'::jsonb) || $4::jsonb)` + guard
+		args = []any{parentID, string(status), errorMessage, metadata}
 	}
-	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
-	          SET status=$2, error_message=$3, updated_at=now(), completed_at=now(),
-	              result_metadata=(COALESCE(result_metadata,'{}'::jsonb) || $4::jsonb)
-	          WHERE operation_id=$1 AND status IN ('pending','processing')
-	          RETURNING ` + operationColumns
-	promoted, err := scanOperation(s.db.QueryRowContext(ctx, query, parentID, string(status), errorMessage, metadata))
+	promoted, err := scanOperation(s.db.QueryRowContext(ctx, query, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		// Another child promoted it first, or it was cancelled concurrently.
 		current, getErr := s.getOperation(ctx, parentID)
@@ -113,10 +134,18 @@ type batchChild struct {
 // in flight, so the parent is not ready to be promoted. A real failure outranks
 // a cancellation, because it carries a cause an operator still needs to see.
 //
-// The roll-up folds exactly the outcome counters a child produces — the units
+// The outcome counters are the completed branch's alone: a failed parent is
+// written as status, error message and updated_at, and a cancelled one as
+// status and updated_at, exactly as the reference writes them
+// (engine/memory_engine.py:6021-6047), so the aggregate matters only when every
+// child completed. The counters fold exactly what a child produces — the units
 // it stored and the extraction errors it swallowed. The parent's own item count
 // is the submission's and is not a sum: it was written when the batch was
 // queued, and summing the children's item counts over it would double it.
+//
+// The parent's error message is the most common non-empty message among its
+// FAILED children, verbatim (worker/poller.py:256-280): a completed or
+// cancelled sibling never contributes one.
 func aggregateChildren(children []batchChild) (OperationStatus, string, map[string]any) {
 	allDone := true
 	anyFailed := false
@@ -142,7 +171,9 @@ func aggregateChildren(children []batchChild) (OperationStatus, string, map[stri
 	if anyFailed {
 		failures := make([]string, 0, len(children))
 		for _, child := range children {
-			failures = append(failures, child.ErrorMessage)
+			if child.Status == StatusFailed {
+				failures = append(failures, child.ErrorMessage)
+			}
 		}
 		return StatusFailed, summarizeChildErrors(failures), agg
 	}

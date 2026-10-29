@@ -148,7 +148,8 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	fanOutStop()
 
 	stop = phases.measure("score", false)
-	ranked := scoreCandidates(ctx, candidates, arms, q)
+	pool := trimCandidatePool(candidates, arms, q, s.tuning.RerankerMaxCandidatesFor(q.Budget))
+	ranked := scoreCandidates(ctx, pool, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
 	// The trace reports the SCORED list, which is what the reference hands its
@@ -156,7 +157,7 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	// engine/memory_engine.py:10060-10076); the dedup and the budget below are
 	// the narrowing the returned list alone gets.
 	scored := append([]*recallCandidate(nil), ranked...)
-	ranked = preferObservations(ranked, q)
+	ranked = preferObservations(ranked, q, limit)
 	ranked = capCandidates(ranked, limit)
 	stop()
 

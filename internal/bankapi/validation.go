@@ -14,8 +14,9 @@ import (
 )
 
 // ValidateBankID reports the identifier admission failures: empty, over the
-// byte budget, invalid UTF-8 or containing control characters. It returns the
-// client-error status and message for the first violated rule.
+// byte budget, invalid UTF-8, containing control characters, or prefixed with
+// the reserved '_'. It returns the client-error status and message for the
+// first violated rule.
 func ValidateBankID(id string) (int, string, bool) {
 	if storage.ValidBankID(id) {
 		return 0, "", true
@@ -28,10 +29,26 @@ func ValidateBankID(id string) (int, string, bool) {
 		msg = "Bank id is too long: at most 192 bytes of UTF-8 are allowed"
 	case !utf8.ValidString(id):
 		msg = "Bank id must be valid UTF-8"
+	case hasControlCharacter(id):
+		msg = "Bank id must not contain control characters"
+	case strings.HasPrefix(id, "_"):
+		msg = "Bank id must not start with '_': that prefix is reserved"
 	default:
 		msg = "Bank id must not contain control characters"
 	}
 	return http.StatusBadRequest, msg, false
+}
+
+// hasControlCharacter reports whether the identifier carries a Unicode `Cc`
+// character, the rule the storage layer refuses (bank_utils.py checks it before
+// the reserved prefix, so the messages report in that order).
+func hasControlCharacter(id string) bool {
+	for _, r := range id {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeIdentifierError emits the client-error envelope for a rejected bank

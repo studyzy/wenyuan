@@ -181,7 +181,7 @@ func TestIgnoredPinDoesNotAdvanceTheDescent(t *testing.T) {
 	if _, err := NewLoop(p, retrieval, Config{Question: "q"}).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ToolSearchMentalModels, ToolSearchMentalModels, ToolSearchObservations, ToolRecall, ""}
+	want := []string{ToolSearchMentalModels, ToolSearchMentalModels, ToolSearchObservations, ToolRecall}
 	if len(p.requests) < len(want) {
 		t.Fatalf("provider saw %d requests, want at least %d", len(p.requests), len(want))
 	}

@@ -12,9 +12,10 @@ import (
 // storageRetrieval is a scripted storage-side retrieval, so the adapter can be
 // exercised without a store.
 type storageRetrieval struct {
-	banks    []string
-	models   []storage.ReflectCitation
-	memories []storage.ReflectCitation
+	banks        []string
+	models       []storage.ReflectCitation
+	memories     []storage.ReflectCitation
+	observations []storage.ReflectCitation
 }
 
 func (s *storageRetrieval) ReflectMentalModels(_ context.Context, bankID, _ string, _ int) ([]storage.ReflectCitation, error) {
@@ -24,7 +25,7 @@ func (s *storageRetrieval) ReflectMentalModels(_ context.Context, bankID, _ stri
 
 func (s *storageRetrieval) ReflectObservations(_ context.Context, bankID, _ string, _ int) ([]storage.ReflectCitation, error) {
 	s.banks = append(s.banks, bankID)
-	return nil, nil
+	return s.observations, nil
 }
 
 func (s *storageRetrieval) ReflectMemories(_ context.Context, bankID, _ string, _ int) ([]storage.ReflectCitation, error) {
@@ -149,13 +150,14 @@ func TestRunnerWithoutModelReportsNoModel(t *testing.T) {
 	}
 }
 
-// test-trace-excludes-done: `done` ends the run and carries the answer; it
-// retrieves nothing, so the trace must list only the tools that gathered
-// evidence. The reference's tool trace never contains a done entry.
+// test-trace-excludes-done: `done` ends the run and the closing step writes the
+// answer; it retrieves nothing, so the trace must list only the tools that
+// gathered evidence. The reference's tool trace never contains a done entry.
 func TestRunnerTraceExcludesDoneTool(t *testing.T) {
 	model := &scriptedProvider{name: "openai-compatible", script: []provider.CompletionResult{
 		{ToolCalls: []provider.ToolCall{{ID: "c1", Name: ToolRecall, Arguments: []byte(`{"query":"q"}`)}}},
-		{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{"answer":"final"}`)}}},
+		{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{}`)}}},
+		closingDone(map[string]any{"answer": "the closing answer"}),
 	}}
 	retrieval := &storageRetrieval{memories: []storage.ReflectCitation{{ID: "m-1", Text: "a memory"}}}
 	outcome, err := NewRunner(model).Run(context.TODO(), storage.AgenticReflectRequest{
@@ -183,8 +185,35 @@ func TestRunnerTraceExcludesDoneTool(t *testing.T) {
 			t.Fatalf("trace input = %+v, want the model's own arguments kept", call.Input)
 		}
 	}
-	// The done call's own answer is the run's answer: nothing recomposes it.
-	if outcome.Answer != "final" {
-		t.Fatalf("answer = %q, want the done call's answer", outcome.Answer)
+	// The closing step's answer is the run's answer; the free turn's done
+	// wording was discarded.
+	if outcome.Answer != "the closing answer" {
+		t.Fatalf("answer = %q, want the closing step's answer", outcome.Answer)
+	}
+}
+
+// The runner maps the loop's cached and reasoning token counts onto the storage
+// outcome's usage, so the served response reports them instead of zeros: the
+// reference sums both across the run for cost attribution.
+func TestRunnerMapsCachedAndReasoningTokens(t *testing.T) {
+	model := &scriptedProvider{name: "openai-compatible", script: []provider.CompletionResult{
+		{
+			ToolCalls: []provider.ToolCall{{ID: "c1", Name: ToolRecall, Arguments: []byte(`{"query":"q"}`)}},
+			Usage:     provider.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110, CachedInputTokens: 40, ReasoningTokens: 6},
+		},
+		{ToolCalls: []provider.ToolCall{{ID: "c2", Name: ToolDone, Arguments: []byte(`{}`)}}},
+		{
+			ToolCalls: []provider.ToolCall{{ID: "c3", Name: ToolDone, Arguments: []byte(`{"answer":"done"}`)}},
+			Usage:     provider.Usage{InputTokens: 50, OutputTokens: 5, TotalTokens: 55, CachedInputTokens: 20, ReasoningTokens: 4},
+		},
+	}}
+	outcome, err := NewRunner(model).Run(context.TODO(), storage.AgenticReflectRequest{
+		BankID: "b1", Question: "q", Retrieval: &storageRetrieval{memories: []storage.ReflectCitation{{ID: "m-1", Text: "a memory"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Usage.CachedTokens != 60 || outcome.Usage.ThoughtsTokens != 10 {
+		t.Fatalf("usage = %+v, want cached 60 and thoughts 10 summed across the run", outcome.Usage)
 	}
 }

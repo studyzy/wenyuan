@@ -1,7 +1,11 @@
 package storage
 
-// graphEdgeCap bounds the stored links one graph render reads, matching the
-// reference's own cap on the edge count it will build.
+import (
+	"sort"
+)
+
+// graphEdgeCap bounds one graph render's edge budget, matching the reference's
+// GRAPH_MAX_EDGES (engine/memories/base.py:807).
 const graphEdgeCap = 10000
 
 // maxGraphNeighborsPerUnit bounds how many of an entity's other units one unit
@@ -86,34 +90,10 @@ func deriveGraphEdges(units []GraphNodeData, entities map[string][]string, links
 		inferred = append(inferred, GraphEdgeData{From: from, To: to, Type: linkType, Weight: 1, Entity: entity})
 	}
 
-	// Entity edges: pair visible units that share an entity, each unit linked to
-	// a bounded window of the entity's unit list so a hot entity does not produce
-	// a quadratic edge set. First-appearance order keeps the output stable.
-	entityUnits := map[string][]string{}
-	var entityOrder []string
-	for _, unit := range units {
-		for _, name := range entities[unit.ID] {
-			if _, seen := entityUnits[name]; !seen {
-				entityOrder = append(entityOrder, name)
-			}
-			entityUnits[name] = append(entityUnits[name], unit.ID)
-		}
-	}
-	for _, name := range entityOrder {
-		ids := entityUnits[name]
-		for i := range ids {
-			limit := i + 1 + maxGraphNeighborsPerUnit
-			if limit > len(ids) {
-				limit = len(ids)
-			}
-			for j := i + 1; j < limit; j++ {
-				addInferred(ids[i], ids[j], "entity", name)
-			}
-		}
-	}
-
-	// Semantic edges: observations sharing a source memory, in source-memory
-	// first-appearance order.
+	// Semantic edges come first: the reference chains semantic_links() ahead of
+	// entity_links() (engine/memory_engine.py:2691-2694), so observations
+	// sharing a source memory, in source-memory first-appearance order, are the
+	// derived edges a budget keeps.
 	observationsBySource := map[string][]string{}
 	var semanticOrder []string
 	for _, unit := range units {
@@ -136,19 +116,65 @@ func deriveGraphEdges(units []GraphNodeData, entities map[string][]string, links
 		}
 	}
 
-	all := make([]GraphEdgeData, 0, len(direct)+len(copied)+len(inferred))
-	all = append(all, direct...)
-	all = append(all, copied...)
-	all = append(all, inferred...)
-	out := make([]GraphEdgeData, 0, len(all))
-	seenEdge := map[string]bool{}
-	for _, edge := range all {
-		key := edge.From + "\x00" + edge.To + "\x00" + edge.Type + "\x00" + edge.Entity
-		if seenEdge[key] {
-			continue
+	// Entity edges follow: pair visible units that share an entity, each unit
+	// linked to a bounded window of the entity's unit list so a hot entity does
+	// not produce a quadratic edge set. The groups are walked ascending by unit
+	// count, ties in first-appearance order (engine/memory_engine.py:2679 sorts
+	// the same way: rarest entity first, since a name in every memory links
+	// everything to everything and says nothing).
+	entityUnits := map[string][]string{}
+	var entityOrder []string
+	for _, unit := range units {
+		for _, name := range entities[unit.ID] {
+			if _, seen := entityUnits[name]; !seen {
+				entityOrder = append(entityOrder, name)
+			}
+			entityUnits[name] = append(entityUnits[name], unit.ID)
 		}
-		seenEdge[key] = true
-		out = append(out, edge)
 	}
-	return out
+	sort.SliceStable(entityOrder, func(i, j int) bool {
+		return len(entityUnits[entityOrder[i]]) < len(entityUnits[entityOrder[j]])
+	})
+	for _, name := range entityOrder {
+		ids := entityUnits[name]
+		for i := range ids {
+			limit := i + 1 + maxGraphNeighborsPerUnit
+			if limit > len(ids) {
+				limit = len(ids)
+			}
+			for j := i + 1; j < limit; j++ {
+				addInferred(ids[i], ids[j], "entity", name)
+			}
+		}
+	}
+
+	// The reference assembles the edges in two buckets, each with its own
+	// GRAPH_MAX_EDGES budget and one duplicate set shared across both
+	// (engine/memory_engine.py:2704-2737): the stored links — direct rows
+	// first, then the copies observations inherit — and then the derived edges.
+	// A bucket stops adding at its budget, so the same edges survive truncation
+	// on both sides and a well-linked bank keeps room for derived edges.
+	edges := make([]GraphEdgeData, 0, len(links)+len(inferred))
+	seenEdge := map[string]bool{}
+	addBucket := func(rows []GraphEdgeData) {
+		added := 0
+		for _, row := range rows {
+			if added >= graphEdgeCap {
+				return
+			}
+			key := row.From + "\x00" + row.To + "\x00" + row.Type + "\x00" + row.Entity
+			if seenEdge[key] {
+				continue
+			}
+			seenEdge[key] = true
+			added++
+			edges = append(edges, row)
+		}
+	}
+	stored := make([]GraphEdgeData, 0, len(direct)+len(copied))
+	stored = append(stored, direct...)
+	stored = append(stored, copied...)
+	addBucket(stored)
+	addBucket(inferred)
+	return edges
 }

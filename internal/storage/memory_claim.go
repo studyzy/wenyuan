@@ -10,18 +10,25 @@ import (
 // ClaimNextOperation claims the oldest claimable operation for a worker. A
 // pending operation is claimable when its retry gate has passed; a processing
 // operation is claimable only when its claim is older than the lease, which is
-// how a consumer that died mid-operation stops stranding its work.
-func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error) {
-	return s.claimNextOperation(ctx, workerID, lease, nil)
+// how a consumer that died mid-operation stops stranding its work. The
+// variadic options adjust lease-expiry recovery (WithReclaimLimit).
+func (s *MemoryStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, opts ...ClaimOption) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, nil, opts...)
 }
 
 // ClaimNextOperationForTypes claims the oldest claimable operation whose type
 // is in types. An empty list is equivalent to ClaimNextOperation.
-func (s *MemoryStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
-	return s.claimNextOperation(ctx, workerID, lease, types)
+func (s *MemoryStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string, opts ...ClaimOption) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, types, opts...)
 }
 
-func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
+func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string, opts ...ClaimOption) (Operation, error) {
+	options := applyClaimOptions(opts)
+	if options.hasReclaimLimit {
+		if err := s.reapExhaustedRecoveries(ctx, lease, options.maxReclaims); err != nil {
+			return Operation{}, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return Operation{}, err
 	}
@@ -88,17 +95,24 @@ func (s *MemoryStore) claimNextOperation(ctx context.Context, workerID string, l
 		return candidates[i] < candidates[j]
 	})
 
-	return s.claimLocked(candidates[0], workerID, now), nil
+	return s.claimLocked(candidates[0], workerID, now, options.hasReclaimLimit), nil
 }
 
 // claimLocked marks a chosen candidate as claimed by workerID. The caller holds
-// the lock and has already checked the operation is claimable.
-func (s *MemoryStore) claimLocked(opID, workerID string, now time.Time) Operation {
+// the lock and has already checked the operation is claimable. Counting turns
+// on lease-expiry recovery: claiming a row that was already 'processing' — an
+// abandoned claim being recovered — spends one recovery attempt
+// (worker/poller.py:1511-1518).
+func (s *MemoryStore) claimLocked(opID, workerID string, now time.Time, counting bool) Operation {
 	claimed := s.operations[opID]
+	reclaimed := counting && claimed.Status == StatusProcessing
 	claimed.Status = StatusProcessing
 	claimed.WorkerID = workerID
 	claimed.ClaimedAt = &now
 	claimed.UpdatedAt = now
+	if reclaimed {
+		claimed.RetryCount++
+	}
 	s.operations[opID] = claimed
 	return claimed
 }
@@ -111,9 +125,15 @@ func (s *MemoryStore) claimLocked(opID, workerID string, now time.Time) Operatio
 //
 // An empty priority map is the reference's "no priority configured" case and
 // falls back to a plain consolidation claim.
-func (s *MemoryStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error) {
+func (s *MemoryStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int, opts ...ClaimOption) (Operation, error) {
+	options := applyClaimOptions(opts)
+	if options.hasReclaimLimit {
+		if err := s.reapExhaustedRecoveries(ctx, lease, options.maxReclaims); err != nil {
+			return Operation{}, err
+		}
+	}
 	if len(priority) == 0 {
-		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate})
+		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate}, opts...)
 	}
 	if err := ctx.Err(); err != nil {
 		return Operation{}, err
@@ -161,7 +181,7 @@ func (s *MemoryStore) ClaimConsolidationByPriority(ctx context.Context, workerID
 		}
 		return candidates[i] < candidates[j]
 	})
-	return s.claimLocked(candidates[0], workerID, now), nil
+	return s.claimLocked(candidates[0], workerID, now, options.hasReclaimLimit), nil
 }
 
 // bankPriority returns the tier of one bank: the highest priority among the
@@ -287,4 +307,49 @@ func (s *MemoryStore) serializationHeldLocked(op Operation, now time.Time, lease
 		return true
 	}
 	return false
+}
+
+// reapExhaustedRecoveries fails every abandoned 'processing' row whose recovery
+// budget is spent, before the claim can offer it for another run: its lease
+// expired and it has already been recovered limit times, so running it again
+// would only crash-loop the worker (worker/poller.py:1527-1546, the second of
+// the two recovery UPDATEs). Each failed row's batch parent is rolled up, as
+// the reference propagates its reclaimed children.
+func (s *MemoryStore) reapExhaustedRecoveries(ctx context.Context, lease time.Duration, limit int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.writeErr != nil {
+		s.mu.Unlock()
+		return s.writeErr
+	}
+	now := time.Now().UTC()
+	parents := make([][2]string, 0)
+	for id, op := range s.operations {
+		if op.Status != StatusProcessing || op.Payload == nil || !claimable(op, now, lease) {
+			continue
+		}
+		if op.RetryCount < limit {
+			continue
+		}
+		op.Status = StatusFailed
+		op.Error = reclaimExhaustedMessage(limit)
+		op.WorkerID = ""
+		op.ClaimedAt = nil
+		op.CompletedAt = &now
+		op.UpdatedAt = now
+		s.operations[id] = op
+		if parentID, _ := op.ResultMetadata["parent_operation_id"].(string); parentID != "" {
+			parents = append(parents, [2]string{op.BankID, parentID})
+		}
+	}
+	s.mu.Unlock()
+	// The failing write has already happened, so the children stay failed
+	// regardless; a roll-up lapse — a parent already promoted, or gone with its
+	// bank — leaves the others to be rolled up.
+	for _, parent := range parents {
+		_, _, _ = s.FinalizeBatchParent(ctx, parent[0], parent[1])
+	}
+	return nil
 }

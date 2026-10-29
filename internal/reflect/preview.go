@@ -59,7 +59,15 @@ func PreviewSystemPrompt(profile PreviewProfile, directives []Directive, outputL
 }
 
 // AgentUserPrompt renders the reasoning loop's opening user message: the
-// question, closed by the output-language directive when one is configured.
-func AgentUserPrompt(query, outputLanguage string) string {
-	return query + provider.OutputLanguageDirective(outputLanguage)
+// question, the bank's mission restated after it — as the role line at the top
+// of the system prompt it lost to the retrieval ladder below it, so the mission
+// is repeated where the question outranks everything (#3776's reasoning) — and
+// the output-language directive when one is configured
+// (engine/reflect/prompts.py:136-156).
+func AgentUserPrompt(query, outputLanguage, mission string) string {
+	text := query
+	if trimmed := strings.TrimSpace(mission); trimmed != "" {
+		text += "\n\n## Bank mission (it governs what you search and how you answer)\n" + trimmed
+	}
+	return text + provider.OutputLanguageDirective(outputLanguage)
 }

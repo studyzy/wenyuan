@@ -30,7 +30,9 @@ var embeddingTables = []string{"memory_units", "mental_models"}
 //     reason instead of truncating or deleting;
 //   - it disagrees on an empty table: drop the column's vector indexes, alter
 //     the column to the declared width, and rebuild each index from the
-//     definition captured before the drop.
+//     definition captured before the drop — except a global (non-partial)
+//     vector index on memory_units, which upstream keeps deliberately absent
+//     and whose drop therefore stays final.
 //
 // A database this service adopts can have been written by any deployment, so a
 // disagreement is a configuration fact to report, never a silent conversion.
@@ -79,6 +81,17 @@ func (s *PostgresStore) reconcileEmbeddingColumns(ctx context.Context, tx vector
 		// rather than dropped silently: losing a vector index would turn every
 		// recall into a sequential scan.
 		for _, def := range indexes {
+			// Upstream deliberately keeps no global (non-partial) vector index on
+			// memory_units: per-bank backends serve every vector search from the
+			// per-bank partial indexes owned by the maintenance sweep (#5707), and
+			// its repair migration e8c1a4f7b2d9 drops any stale global one by
+			// catalogue lookup. Replaying the captured definition would recreate
+			// exactly what upstream drops, so here the drop stays final. Partial
+			// per-bank indexes still replay, as do indexes on other tables
+			// (mental_models keeps its global index upstream).
+			if table == "memory_units" && def.globalVectorIndex() {
+				continue
+			}
 			if _, err := tx.ExecContext(ctx, def.definition); err != nil {
 				return fmt.Errorf("rebuild %s after resizing %s.embedding: %w", def.name, table, err)
 			}
@@ -127,6 +140,24 @@ type vectorSchemaTx interface {
 type capturedIndex struct {
 	name       string
 	definition string
+	// amname is the index's access method and partial whether its definition
+	// carries a WHERE clause, both read from the catalogue so the replay can
+	// tell a global vector index from a per-bank partial one the way the
+	// reference does.
+	amname  string
+	partial bool
+}
+
+// vectorAccessMethods are the access methods vector indexes are built with,
+// the set the reference matches when it looks vector indexes up in the
+// catalogue (migrations.py `_vector_index_names`, alembic e8c1a4f7b2d9).
+var vectorAccessMethods = map[string]bool{"hnsw": true, "vchordrq": true, "diskann": true, "scann": true}
+
+// globalVectorIndex reports whether a captured index is a global (non-partial)
+// vector index, by the reference's own catalogue predicate: indpred IS NULL (no
+// WHERE clause) and one of the vector access methods.
+func (c capturedIndex) globalVectorIndex() bool {
+	return !c.partial && vectorAccessMethods[c.amname]
 }
 
 // embeddingIndexDefinitions returns the definitions of the indexes on a table's
@@ -135,11 +166,12 @@ type capturedIndex struct {
 // rebuilt in its own shape.
 func embeddingIndexDefinitions(ctx context.Context, tx vectorSchemaTx, schema, table string) ([]capturedIndex, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT ic.relname, pg_get_indexdef(i.indexrelid)
+		SELECT ic.relname, pg_get_indexdef(i.indexrelid), am.amname, i.indpred IS NOT NULL
 		  FROM pg_index i
 		  JOIN pg_class ic ON ic.oid = i.indexrelid
 		  JOIN pg_class tc ON tc.oid = i.indrelid
 		  JOIN pg_namespace n ON n.oid = tc.relnamespace
+		  JOIN pg_am am ON am.oid = ic.relam
 		  JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attnum = ANY (i.indkey)
 		 WHERE n.nspname = $1 AND tc.relname = $2 AND a.attname = 'embedding'
 		 ORDER BY ic.relname`, schema, table)
@@ -150,7 +182,7 @@ func embeddingIndexDefinitions(ctx context.Context, tx vectorSchemaTx, schema, t
 	var out []capturedIndex
 	for rows.Next() {
 		var idx capturedIndex
-		if err := rows.Scan(&idx.name, &idx.definition); err != nil {
+		if err := rows.Scan(&idx.name, &idx.definition, &idx.amname, &idx.partial); err != nil {
 			return nil, err
 		}
 		out = append(out, idx)

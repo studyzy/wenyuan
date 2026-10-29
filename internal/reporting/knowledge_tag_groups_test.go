@@ -11,10 +11,10 @@ import (
 
 // The reference validates `tag_groups` through a Pydantic
 // `TypeAdapter(list[TagGroup])` where TagGroup is a left-to-right union
-// (api/http.py:3712-3720, engine/search/tags.py:307-346), so a document that
-// parses but is not a well-formed tag-group tree is a 422 — not a filter that
+// (api/http.py:277-287, engine/search/tags.py:307-346), so a document that
+// parses but is not a well-formed tag-group tree is a 400 — not a filter that
 // silently does nothing. Each case below pins the exact detail string, because
-// it is the whole 422 body the caller reads.
+// it is the whole 400 body the caller reads.
 func TestKnowledgeTagGroupsValidationReport(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -26,13 +26,13 @@ func TestKnowledgeTagGroupsValidationReport(t *testing.T) {
 			// the CPython json module's ("expected ident", not "Expecting value").
 			name:   "json syntax error",
 			rawn:   `notjson`,
-			detail: "Invalid tag_groups: 1 validation error for list[union[TagGroupLeaf,TagGroupAnd,TagGroupOr,TagGroupNot]]\n  Invalid JSON: expected ident at line 1 column 2 [type=json_invalid, input_value='notjson', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/json_invalid",
+			detail: "Invalid tag_groups: [{'type': 'json_invalid', 'loc': (), 'msg': 'Invalid JSON: expected ident at line 1 column 2', 'input': 'notjson', 'ctx': {'error': 'expected ident at line 1 column 2'}}]",
 		},
 		{
-			// A root-level failure prints no location line at all.
+			// A root-level failure carries the empty location tuple.
 			name:   "not a list",
 			rawn:   `{}`,
-			detail: "Invalid tag_groups: 1 validation error for list[union[TagGroupLeaf,TagGroupAnd,TagGroupOr,TagGroupNot]]\n  Input should be a valid array [type=list_type, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/list_type",
+			detail: "Invalid tag_groups: [{'type': 'list_type', 'loc': (), 'msg': 'Input should be a valid array', 'input': {}}]",
 		},
 		{
 			// A union in left-to-right mode reports every member's failure, so one
@@ -40,21 +40,19 @@ func TestKnowledgeTagGroupsValidationReport(t *testing.T) {
 			// compound members' missing fields.
 			name: "leaf field wrong type",
 			rawn: `[{"tags":"x"}]`,
-			detail: "Invalid tag_groups: 4 validation errors for list[union[TagGroupLeaf,TagGroupAnd,TagGroupOr,TagGroupNot]]\n" +
-				"0.TagGroupLeaf.tags\n  Input should be a valid array [type=list_type, input_value='x', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/list_type\n" +
-				"0.TagGroupAnd.and\n  Field required [type=missing, input_value={'tags': 'x'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\n" +
-				"0.TagGroupOr.or\n  Field required [type=missing, input_value={'tags': 'x'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\n" +
-				"0.TagGroupNot.not\n  Field required [type=missing, input_value={'tags': 'x'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing",
+			detail: "Invalid tag_groups: [{'type': 'list_type', 'loc': (0, 'TagGroupLeaf', 'tags'), 'msg': 'Input should be a valid array', 'input': 'x'}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupAnd', 'and'), 'msg': 'Field required', 'input': {'tags': 'x'}}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupOr', 'or'), 'msg': 'Field required', 'input': {'tags': 'x'}}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupNot', 'not'), 'msg': 'Field required', 'input': {'tags': 'x'}}]",
 		},
 		{
 			// TagResolution is a two-member Literal.
 			name: "resolve outside its literal",
 			rawn: `[{"tags":["a"],"resolve":"bogus"}]`,
-			detail: "Invalid tag_groups: 4 validation errors for list[union[TagGroupLeaf,TagGroupAnd,TagGroupOr,TagGroupNot]]\n" +
-				"0.TagGroupLeaf.resolve\n  Input should be 'exact' or 'fuzzy' [type=literal_error, input_value='bogus', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/literal_error\n" +
-				"0.TagGroupAnd.and\n  Field required [type=missing, input_value={'tags': ['a'], 'resolve': 'bogus'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\n" +
-				"0.TagGroupOr.or\n  Field required [type=missing, input_value={'tags': ['a'], 'resolve': 'bogus'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\n" +
-				"0.TagGroupNot.not\n  Field required [type=missing, input_value={'tags': ['a'], 'resolve': 'bogus'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing",
+			detail: "Invalid tag_groups: [{'type': 'literal_error', 'loc': (0, 'TagGroupLeaf', 'resolve'), 'msg': \"Input should be 'exact' or 'fuzzy'\", 'input': 'bogus', 'ctx': {'expected': \"'exact' or 'fuzzy'\"}}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupAnd', 'and'), 'msg': 'Field required', 'input': {'tags': ['a'], 'resolve': 'bogus'}}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupOr', 'or'), 'msg': 'Field required', 'input': {'tags': ['a'], 'resolve': 'bogus'}}, " +
+				"{'type': 'missing', 'loc': (0, 'TagGroupNot', 'not'), 'msg': 'Field required', 'input': {'tags': ['a'], 'resolve': 'bogus'}}]",
 		},
 	}
 	for _, tc := range cases {
@@ -70,7 +68,7 @@ func TestKnowledgeTagGroupsValidationReport(t *testing.T) {
 	}
 }
 
-// Pydantic renders a dict's `input_value` in the order the document stated its
+// Pydantic renders a dict's `input` in the order the document stated its
 // keys (Python dicts keep insertion order), which is why the report cannot be
 // built from a Go map.
 func TestKnowledgeTagGroupsReportKeepsInputKeyOrder(t *testing.T) {
@@ -78,7 +76,7 @@ func TestKnowledgeTagGroupsReportKeepsInputKeyOrder(t *testing.T) {
 	if ok {
 		t.Fatal("accepted a document whose tags is not a list")
 	}
-	if !strings.Contains(detail, `input_value={'bogus': 1, 'tags': 5}`) {
+	if !strings.Contains(detail, `'input': {'bogus': 1, 'tags': 5}`) {
 		t.Fatalf("report did not preserve key order: %q", detail)
 	}
 }
@@ -110,11 +108,13 @@ func TestKnowledgeTagGroupsRefusesNotAsList(t *testing.T) {
 	if ok {
 		t.Fatal("accepted `not` as a list")
 	}
-	if !strings.Contains(detail, "0.TagGroupNot.not.TagGroupLeaf") {
+	if !strings.Contains(detail, "(0, 'TagGroupNot', 'not', 'TagGroupLeaf')") {
 		t.Fatalf("report did not walk into the not group: %q", detail)
 	}
-	if !strings.Contains(detail, "7 validation errors") {
-		t.Fatalf("want 7 errors (3 missing + 4 nested), got: %q", detail)
+	// Three missing fields on the outer object, then the nested empty list
+	// rejected by all four union members.
+	if got := strings.Count(detail, "'type': "); got != 7 {
+		t.Fatalf("want 7 errors (3 missing + 4 nested), got %d: %q", got, detail)
 	}
 }
 
@@ -133,28 +133,30 @@ func TestKnowledgeTagGroupNotNegatesItsSingleChild(t *testing.T) {
 // The knowledge routes resolve their query parameters *before* looking the bank
 // up, because the reference declares the tag filter as a `Depends`
 // (api/http.py:7314) and the framework resolves dependencies before the handler
-// body runs. A malformed filter on an unknown bank is therefore the 422, not the
-// 404 — and a bad `tags_match` beats the 404 the same way.
+// body runs. A malformed filter on an unknown bank is therefore rejected before
+// the 404 — the tag decoder's 400, and the framework's 422 for the parameters
+// it declares itself (`tags_match`, `q`, `limit`).
 func TestKnowledgeRoutesValidateParametersBeforeTheBankLookup(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	mux := boundMux(store)
 	cases := []struct {
-		name string
-		path string
-		want string
+		name   string
+		path   string
+		status int
+		want   string
 	}{
-		{"tree tag_groups", "/v1/default/banks/never-created/knowledge-base/tree?tag_groups=%7B%7D", "Invalid tag_groups"},
-		{"tree tags_match", "/v1/default/banks/never-created/knowledge-base/tree?tags_match=bogus", "tags_match"},
-		{"search tag_groups", "/v1/default/banks/never-created/knowledge-base/search?q=a&tag_groups=%7B%7D", "Invalid tag_groups"},
-		{"search missing q", "/v1/default/banks/never-created/knowledge-base/search", `"q"`},
-		{"search bad limit", "/v1/default/banks/never-created/knowledge-base/search?q=a&limit=0", "limit"},
+		{"tree tag_groups", "/v1/default/banks/never-created/knowledge-base/tree?tag_groups=%7B%7D", http.StatusBadRequest, "Invalid tag_groups"},
+		{"tree tags_match", "/v1/default/banks/never-created/knowledge-base/tree?tags_match=bogus", http.StatusUnprocessableEntity, "tags_match"},
+		{"search tag_groups", "/v1/default/banks/never-created/knowledge-base/search?q=a&tag_groups=%7B%7D", http.StatusBadRequest, "Invalid tag_groups"},
+		{"search missing q", "/v1/default/banks/never-created/knowledge-base/search", http.StatusUnprocessableEntity, `"q"`},
+		{"search bad limit", "/v1/default/banks/never-created/knowledge-base/search?q=a&limit=0", http.StatusUnprocessableEntity, "limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("%s = %d, want 422: %s", tc.path, rec.Code, rec.Body.String())
+			if rec.Code != tc.status {
+				t.Fatalf("%s = %d, want %d: %s", tc.path, rec.Code, tc.status, rec.Body.String())
 			}
 			if !strings.Contains(rec.Body.String(), tc.want) {
 				t.Fatalf("body %q does not mention %q", rec.Body.String(), tc.want)
@@ -164,9 +166,10 @@ func TestKnowledgeRoutesValidateParametersBeforeTheBankLookup(t *testing.T) {
 }
 
 // Served-level: a `tag_groups` document that parses but is not a well-formed
-// tree is a 422 on both knowledge routes. Before this validation existed the
-// parameter was unmarshalled and any JSON at all was accepted, so a filter the
-// reference refuses was applied as "no filter" here.
+// tree is a 400 on both knowledge routes, carrying the errors-repr form the
+// entity routes send. Before this validation existed the parameter was
+// unmarshalled and any JSON at all was accepted, so a filter the reference
+// refuses was applied as "no filter" here.
 func TestKnowledgeTagGroupsShapeIsValidatedOnBothRoutes(t *testing.T) {
 	mux := boundMux(storage.NewMemoryStore("public"))
 	for _, path := range []string{
@@ -178,11 +181,11 @@ func TestKnowledgeTagGroupsShapeIsValidatedOnBothRoutes(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("%s = %d, want 422: %s", path, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400: %s", path, rec.Code, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), "validation error") {
-			t.Fatalf("%s body %q lacks the validation report", path, rec.Body.String())
+		if !strings.Contains(rec.Body.String(), `'msg': 'Input should be`) {
+			t.Fatalf("%s body %q lacks the errors-repr report", path, rec.Body.String())
 		}
 	}
 }

@@ -423,8 +423,9 @@ var boolQueryValues = map[string]bool{
 // selector: a boolean declared with a default, so an absent key is false and
 // every present value goes through the framework's lax boolean coercion (a
 // string that is not one of its spellings is a 422 `bool_parsing`). An empty
-// value parses as false — the framework reads an empty string as no words —
-// which is why it is not a default.
+// binding is no exception — the framework's boolean parser is handed the empty
+// string and refuses it like any other word it cannot read (api/http.py:7130,
+// the `bool = Query(False)` declaration).
 func excludeKnowledgePagesParam(w http.ResponseWriter, r *http.Request) (bool, bool) {
 	raw, present := scalarQuery(r, "exclude_knowledge_pages")
 	if !present {
@@ -432,9 +433,6 @@ func excludeKnowledgePagesParam(w http.ResponseWriter, r *http.Request) (bool, b
 	}
 	if value, ok := boolQueryValues[strings.ToLower(raw)]; ok {
 		return value, true
-	}
-	if strings.TrimSpace(raw) == "" {
-		return false, true
 	}
 	writeQueryItem(w, httpx.TypeMismatch("bool_parsing",
 		[]string{"query", "exclude_knowledge_pages"}, raw))

@@ -61,10 +61,29 @@ func (c *Consumer) complete(ctx context.Context, op storage.Operation, metadata 
 	c.promoteParent(ctx, op)
 }
 
+// maxErrorMessageChars is the width of async_operations.error_message the
+// reference's schema declares; its worker truncates a longer prose reason to
+// this many characters at the fail and retry writes (worker/poller.py:952,1083).
+const maxErrorMessageChars = 5000
+
+// truncateErrorMessage bounds a failure reason to the error_message column's
+// width, counting runes as the reference's character slice does — a longer
+// reason must not be dropped on the floor, only shortened.
+func truncateErrorMessage(message string) string {
+	if len(message) <= maxErrorMessageChars {
+		return message
+	}
+	runes := []rune(message)
+	if len(runes) <= maxErrorMessageChars {
+		return message
+	}
+	return string(runes[:maxErrorMessageChars])
+}
+
 // fail marks an operation terminally failed, recording any metadata the
 // processor reported alongside the prose detail.
 func (c *Consumer) fail(ctx context.Context, op storage.Operation, detail string, metadata map[string]any) {
-	if _, err := c.settle(ctx, op.OperationID, storage.StatusFailed, detail, metadata); err != nil {
+	if _, err := c.settle(ctx, op.OperationID, storage.StatusFailed, truncateErrorMessage(detail), metadata); err != nil {
 		c.reportSettleLapse(op, "mark-failed", err)
 		return
 	}
@@ -140,8 +159,11 @@ func (c *Consumer) settle(ctx context.Context, opID string, status storage.Opera
 // the store can carry it, merges that metadata onto the operation in the same
 // move. The retry's schedule is the caller's argument unchanged, and a store
 // without the capability — or a processor that reported nothing — takes the
-// plain ScheduleOperationRetry path exactly as before.
+// plain ScheduleOperationRetry path exactly as before. The recorded cause is
+// bounded to the error_message column's width, as the reference's retry write
+// truncates it.
 func (c *Consumer) scheduleRetry(ctx context.Context, op storage.Operation, retryCount int, next time.Time, detail string, metadata map[string]any) error {
+	detail = truncateErrorMessage(detail)
 	if len(metadata) > 0 {
 		if recorder, ok := c.store.(storage.OperationRetryRecorder); ok {
 			return recorder.ScheduleOperationRetryWithResult(ctx, op.OperationID, retryCount, next, detail, metadata)

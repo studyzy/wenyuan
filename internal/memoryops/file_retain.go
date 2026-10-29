@@ -227,6 +227,21 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
+	// The same write-scope checks a text retain runs, and before the batch gates
+	// the reference runs them first too ("Same checks as a text retain: the
+	// worker that converts and retains these files runs as internal work, so it
+	// would never see the caller's scope", memory_engine.py:23567-23570): each
+	// file's tags must be writable, and the scopes it would be stamped with are
+	// a write by this caller as well.
+	scopeItems := make([]storage.RetainItem, len(files))
+	for index := range files {
+		meta := fileRequest.filesMeta(index)
+		scopeItems[index] = storage.RetainItem{Tags: meta.Tags, Strategy: meta.Strategy}
+	}
+	if err := h.retainWriteScopeFailure(r, bankID, RetainRequest{}, storage.RetainRequest{Items: scopeItems}); err != nil {
+		httpx.WriteErrorFor(w, r, err)
+		return
+	}
 	// The reference's request-layer gates run in a fixed order — file count,
 	// then the files_metadata count, then the request-level parser — so a request
 	// that trips several names the first one the reference would name.

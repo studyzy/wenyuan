@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -180,6 +181,7 @@ func (h *Handlers) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, DocumentListResponse{
 		Items: items, Total: page.Total, Limit: limit, Offset: offset,
+		TotalIsEstimate: page.TotalIsEstimate,
 	})
 }
 
@@ -272,15 +274,18 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}
-	scoped := len(body.ObservationScopes) > 0
+	// An explicit null is the union's admitted None, so it decodes to no value
+	// at all: a body naming only it names no field, and one naming it beside
+	// tags updates the tags alone.
+	scoped := observationScopesSent(body.ObservationScopes)
 	if body.Tags == nil && !scoped {
 		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable,
 			"At least one field (tags, observation_scopes) must be provided"))
 		return
 	}
 	if scoped {
-		if item := documentScopesValidationItem(body.ObservationScopes); item != nil {
-			httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{*item}})
+		if items := documentScopesValidationItems(body.ObservationScopes); len(items) > 0 {
+			httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
 			return
 		}
 	}
@@ -299,6 +304,17 @@ func (h *Handlers) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.requireDocumentWritable(w, r, doc, writeTags) {
 		return
+	}
+	// The scopes an update names are writes too — consolidation writes the
+	// document's observations at them — so the reference checks them beside the
+	// tags, after the document itself is writable. A confined caller sending
+	// "shared", or literal scope tags outside its write scope, is refused.
+	if scoped {
+		writeScope, confined := memoryops.WriteScopeFromRequest(r)
+		if err := memoryops.RefuseUnwritableScopes(body.ObservationScopes, writeScope, confined); err != nil {
+			httpx.WriteErrorFor(w, r, err)
+			return
+		}
 	}
 	oldTags := append([]string(nil), doc.Tags...)
 	retag := body.Tags != nil && !sameTagSet(oldTags, *body.Tags)
@@ -390,49 +406,119 @@ func observationScopesValue(raw json.RawMessage) any {
 	return value
 }
 
-// documentScopesValidationItem validates a raw observation_scopes value the way
-// the reference's model does: a mode name or a list of tag lists. Anything else
-// — including null, which the model does not admit — is the framework's
-// validation item for the `body.observation_scopes` field.
-func documentScopesValidationItem(raw json.RawMessage) *httpx.ValidationError {
+// observationScopesSent reports whether the request carries an
+// observation_scopes value. The reference's model admits null — the union's
+// None member — so an explicit null decodes to no value at all, the way an
+// omitted member does.
+func observationScopesSent(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value any
+	return json.Unmarshal(raw, &value) == nil && value != nil
+}
+
+// documentScopesValidationItems renders the failures the reference's model
+// reports for an observation_scopes value it does not admit, and none for one
+// it takes.
+func documentScopesValidationItems(raw json.RawMessage) []httpx.ValidationError {
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		item := httpx.ValidationItem("json_invalid", []string{"body", "observation_scopes"},
 			"JSON decode error", nil, map[string]any{"error": err.Error()})
-		return &item
+		return []httpx.ValidationError{item}
 	}
-	valid := false
 	switch value := decoded.(type) {
 	case string:
-		valid = observationScopeModes[value]
+		if observationScopeMode(value) {
+			return nil
+		}
 	case []any:
-		valid = true
-		for _, scope := range value {
-			entries, ok := scope.([]any)
-			if !ok {
-				valid = false
-				break
-			}
-			for _, entry := range entries {
-				if _, ok := entry.(string); !ok {
-					valid = false
-					break
-				}
+		if documentScopeGroupsValid(value) {
+			return nil
+		}
+	}
+	return documentScopesUnionItems(decoded)
+}
+
+// documentScopeGroupsValid reports whether an explicit scope list is one the
+// model admits: every group a list, and every tag in a group a string.
+func documentScopeGroupsValid(groups []any) bool {
+	for _, scope := range groups {
+		entries, ok := scope.([]any)
+		if !ok {
+			return false
+		}
+		for _, entry := range entries {
+			if _, ok := entry.(string); !ok {
+				return false
 			}
 		}
 	}
-	if valid {
-		return nil
-	}
-	item := httpx.ValidationItem("literal_error", []string{"body", "observation_scopes"},
-		"Input should be a valid observation scopes value", "observation_scopes", nil)
-	return &item
+	return true
 }
 
-// observationScopeModes are the mode names retain accepts, and so the ones a
-// document update accepts.
-var observationScopeModes = map[string]bool{
-	"per_tag": true, "combined": true, "all_combinations": true, "shared": true,
+// documentScopesUnionItems renders the multi-item failure a value that fits
+// neither branch of the observation_scopes union is answered with — the same
+// shape the retain route reports: the literal failure carries the whole value,
+// and the list failure is reported once for the value itself when it is not a
+// list, or once per element that is not a group, with a non-string tag inside a
+// group named at its own position.
+func documentScopesUnionItems(value any) []httpx.ValidationError {
+	loc := []string{"body", "observation_scopes"}
+	items := []httpx.ValidationError{
+		httpx.Literal(append(loc, scopeLiteralBranch), value, memoryops.ObservationScopeModes),
+	}
+	groups, isList := value.([]any)
+	if !isList {
+		return append(items, httpx.TypeMismatch("list_type", append(loc, scopeListBranch), value))
+	}
+	for index, element := range groups {
+		elementLoc := append(append(cloneLoc(loc), scopeListBranch), strconv.Itoa(index))
+		tags, isGroup := element.([]any)
+		if !isGroup {
+			items = append(items, httpx.TypeMismatch("list_type", elementLoc, element))
+			continue
+		}
+		for position, tag := range tags {
+			if _, isText := tag.(string); !isText {
+				items = append(items, httpx.TypeMismatch("string_type",
+					append(cloneLoc(elementLoc), strconv.Itoa(position)), tag))
+			}
+		}
+	}
+	return items
+}
+
+// scopeLiteralBranch and scopeListBranch are the names the framework gives the
+// observation_scopes union's two branches in a rejected value's location. The
+// literal branch's name is built from the accepted modes, so it cannot drift
+// from the set the field validates against.
+var (
+	scopeLiteralBranch = func() string {
+		quoted := make([]string, 0, len(memoryops.ObservationScopeModes))
+		for _, mode := range memoryops.ObservationScopeModes {
+			quoted = append(quoted, "'"+mode+"'")
+		}
+		return "literal[" + strings.Join(quoted, ",") + "]"
+	}()
+	scopeListBranch = "list[list[str]]"
+)
+
+// observationScopeMode reports whether a mode name is one the field accepts.
+func observationScopeMode(value string) bool {
+	for _, mode := range memoryops.ObservationScopeModes {
+		if mode == value {
+			return true
+		}
+	}
+	return false
+}
+
+// cloneLoc returns a copy of a location, so an item that extends it does not
+// write through to the caller's slice.
+func cloneLoc(loc []string) []string {
+	return append([]string(nil), loc...)
 }
 
 // autoConsolidationEnabled reports whether a document retag that invalidated
@@ -468,23 +554,31 @@ func (h *Handlers) bankLabelTagKeys(ctx context.Context, bankID string) map[stri
 }
 
 // sameTagSet reports whether two tag lists name the same set. Consolidation
-// scopes a memory by its tag set, never by the order the array arrived in, so a
-// reordered array changes nothing the retag cascade could observe.
+// scopes a memory by its tag set, never by the order the array arrived in, and
+// the reference compares sets (`set(current_tags) != set(tags)`), so a
+// reordered — or differently duplicated — array changes nothing the retag
+// cascade could observe.
 func sameTagSet(a, b []string) bool {
-	if len(a) != len(b) {
+	left := tagSetOf(a)
+	right := tagSetOf(b)
+	if len(left) != len(right) {
 		return false
 	}
-	seen := make(map[string]int, len(a))
-	for _, tag := range a {
-		seen[tag]++
-	}
-	for _, tag := range b {
-		if seen[tag] == 0 {
+	for tag := range left {
+		if !right[tag] {
 			return false
 		}
-		seen[tag]--
 	}
 	return true
+}
+
+// tagSetOf returns the distinct tags of a list.
+func tagSetOf(tags []string) map[string]bool {
+	out := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		out[tag] = true
+	}
+	return out
 }
 
 // DeleteDocument removes a document's stored text and its units.

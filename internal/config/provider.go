@@ -39,6 +39,7 @@ const (
 	EnvLLMSupportsStringPattrn = "WENYUAN_API_LLM_SUPPORTS_STRING_PATTERN"
 	EnvLLMTimeout              = "WENYUAN_API_LLM_TIMEOUT"
 	EnvLLMTraceEnabled         = "WENYUAN_API_LLM_TRACE_ENABLED"
+	EnvLLMTraceExcludeScopes   = "WENYUAN_API_LLM_TRACE_EXCLUDE_SCOPES"
 	EnvLLMTraceMaxChars        = "WENYUAN_API_LLM_TRACE_MAX_CHARS"
 	EnvLLMTraceRetentionDays   = "WENYUAN_API_LLM_TRACE_RETENTION_DAYS"
 	EnvLLMTraceScopes          = "WENYUAN_API_LLM_TRACE_SCOPES"
@@ -100,7 +101,7 @@ const (
 const (
 	DefaultEmbeddingDimension = 384
 
-	DefaultRerankerCandidateDepth        = 50
+	DefaultRerankerCandidateDepth        = 300
 	DefaultRerankerMaxTokensPerCandidate = 512
 	DefaultRerankerMaxRetries            = 3
 	DefaultRerankerInitialBackoff        = 500 * time.Millisecond
@@ -174,6 +175,7 @@ type ProviderConfig struct {
 	TraceMaxChars         int
 	TraceRetentionDays    int
 	TraceScopes           []string
+	TraceExcludeScopes    []string
 	Vision                *bool
 
 	Embeddings EmbeddingConfig
@@ -447,7 +449,7 @@ func providerKeys() []string {
 		EnvLLMOutputLanguage, EnvLLMPromptCacheEnabled, EnvLLMReasoningEffort, EnvLLMSendBankAsUser,
 		EnvLLMStrategy, EnvLLMForcedTool, EnvLLMSupportsMaxItems, EnvLLMSupportsStringPattrn,
 		EnvLLMTimeout, EnvLLMTraceEnabled, EnvLLMTraceMaxChars, EnvLLMTraceRetentionDays,
-		EnvLLMTraceScopes, EnvLLMVision,
+		EnvLLMTraceScopes, EnvLLMTraceExcludeScopes, EnvLLMVision,
 		EnvEmbeddingsProvider, EnvEmbeddingsInitialBackoff, EnvEmbeddingsLocalAllowMPS,
 		EnvEmbeddingsLocalForceCPU, EnvEmbeddingsLocalModel, EnvEmbeddingsLocalTrustCode,
 		EnvEmbeddingsMaxBackoff, EnvEmbeddingsMaxConcurrent, EnvEmbeddingsMaxInputTokens,
@@ -535,6 +537,7 @@ func ResolveProvider(lookup func(string) (string, bool)) ProviderConfig {
 	cfg.TraceMaxChars = positiveInt(lookup, EnvLLMTraceMaxChars, cfg.TraceMaxChars)
 	cfg.TraceRetentionDays = intFromEnv(lookup, EnvLLMTraceRetentionDays, DefaultLLMTraceRetentionDay)
 	cfg.TraceScopes = splitList(str(EnvLLMTraceScopes))
+	cfg.TraceExcludeScopes = splitList(str(EnvLLMTraceExcludeScopes))
 	cfg.Vision = triState(lookup, EnvLLMVision)
 
 	cfg.Embeddings = resolveEmbeddings(lookup, cfg.Embeddings)

@@ -99,17 +99,14 @@ func (r *Runner) toStorageOutcome(outcome Outcome) storage.ReflectOutcome {
 		StructuredOutput:      outcome.StructuredOutput,
 		StructuredOutputError: outcome.StructuredOutputError,
 		Usage: storage.ReflectUsage{
-			InputTokens:  outcome.Usage.InputTokens,
-			OutputTokens: outcome.Usage.OutputTokens,
-			TotalTokens:  outcome.Usage.TotalTokens,
+			InputTokens:    outcome.Usage.InputTokens,
+			OutputTokens:   outcome.Usage.OutputTokens,
+			TotalTokens:    outcome.Usage.TotalTokens,
+			CachedTokens:   outcome.Usage.CachedInputTokens,
+			ThoughtsTokens: outcome.Usage.ReasoningTokens,
 		},
 	}
 	for _, evidence := range outcome.Evidence {
-		// The answer text is not a citation, so only retrieved evidence is
-		// reported.
-		if evidence.Kind == "answer" {
-			continue
-		}
 		if evidence.Kind == "mental_model" {
 			// A perspective is cited as a mental model, with its full text, so a
 			// caller sees what the answer was read from rather than a snippet.

@@ -400,17 +400,12 @@ func (s *PostgresStore) ListEntities(ctx context.Context, query EntityQuery) (En
 		args = append(args, tagArgs...)
 		mentionExpr, firstExpr, lastExpr = "s.mention_count", "s.first_seen", "s.last_seen"
 		from = qualified + `.entities e JOIN (
-	    SELECT ue.entity_id,
+	    SELECT vm.entity_id,
 	           COUNT(*) AS mention_count,
-	           MIN(vu.seen_at) AS first_seen,
-	           MAX(vu.seen_at) AS last_seen
-	    FROM ` + qualified + `.unit_entities ue
-	    JOIN (
-	        SELECT id, COALESCE(occurred_start, mentioned_at, event_date) AS seen_at
-	        FROM ` + qualified + `.memory_units
-	        WHERE bank_id = $1 AND (` + rendered + `)
-	    ) vu ON vu.id = ue.unit_id
-	    GROUP BY ue.entity_id
+	           MIN(vm.seen_at) AS first_seen,
+	           MAX(vm.seen_at) AS last_seen
+	    FROM (` + visibleEntityMentionsSQL(qualified, rendered) + `) vm
+	    GROUP BY vm.entity_id
 	) s ON s.entity_id = e.id`
 	}
 	where := `WHERE e.bank_id = $1`
@@ -457,6 +452,32 @@ func entityTagPredicate(tags []string, mode string, groups []TagGroup, bound int
 		return sql, args
 	}
 	return flatTagClause(tags, mode), nil
+}
+
+// visibleEntityMentionsSQL renders the rowset every tag-filtered entity read
+// aggregates: one row per entity a tag-matching memory mentions, stamped with
+// the per-memory seen date. Direct mentions come from unit_entities; an
+// observation with no direct rows inherits its source memories' entities — the
+// UNION the reference's visible_entity_mentions_sql builds
+// (engine/memories/pg/curation.py:539-583). Without the second branch an
+// entity only observations mention would vanish under a filter, and its
+// mention_count, dates and co-occurrence pairs would undercount. The tag
+// clause is rendered against the bare columns of the inner memory_units
+// subquery, the way entityTagPredicate renders it.
+func visibleEntityMentionsSQL(qualified, tagClause string) string {
+	visible := `(SELECT id, fact_type, COALESCE(occurred_start, mentioned_at, event_date) AS seen_at, source_memory_ids
+	    FROM ` + qualified + `.memory_units
+	    WHERE bank_id = $1 AND (` + tagClause + `))`
+	return `SELECT ue.unit_id, ue.entity_id, vu.seen_at
+	    FROM ` + qualified + `.unit_entities ue
+	    JOIN ` + visible + ` vu ON vu.id = ue.unit_id
+	    UNION
+	    SELECT vu.id AS unit_id, src_ue.entity_id, vu.seen_at
+	    FROM ` + visible + ` vu
+	    CROSS JOIN LATERAL unnest(vu.source_memory_ids) AS src_id
+	    JOIN ` + qualified + `.unit_entities src_ue ON src_ue.unit_id = src_id
+	    WHERE vu.fact_type = 'observation'
+	      AND NOT EXISTS (SELECT 1 FROM ` + qualified + `.unit_entities d WHERE d.unit_id = vu.id)`
 }
 
 // Graph returns the bank's memory graph for the query's filtered unit set.
@@ -641,12 +662,8 @@ func (s *PostgresStore) EntityGraph(ctx context.Context, query EntityGraphQuery)
 		args = append(args, minCount, limit)
 		minParam := itoa(len(args) - 1)
 		limitParam := itoa(len(args))
-		edgeQuery := `WITH ve AS (
-		    SELECT ue.unit_id, ue.entity_id, COALESCE(mu.occurred_start, mu.mentioned_at, mu.event_date) AS seen_at
-		    FROM ` + qualified + `.unit_entities ue
-		    JOIN ` + qualified + `.memory_units mu ON mu.id = ue.unit_id
-		    WHERE mu.bank_id = $1 AND (` + tagSQL + `)
-		), pairs AS (
+		edgeQuery := `WITH ve AS (` + visibleEntityMentionsSQL(qualified, tagSQL) + `),
+		    pairs AS (
 		    SELECT a.entity_id AS id1, b.entity_id AS id2, COUNT(*) AS w, MAX(a.seen_at) AS last_cooccurred
 		    FROM ve a JOIN ve b ON b.unit_id = a.unit_id AND a.entity_id < b.entity_id
 		    GROUP BY a.entity_id, b.entity_id

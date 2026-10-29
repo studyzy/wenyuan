@@ -892,6 +892,10 @@ type ConsolidationTuning struct {
 type WorkerTuning struct {
 	ConsolidationByBank string
 	BackpressureDefer   time.Duration
+	// MentalModelMinRefreshSeconds is the deployment's floor between two
+	// automatic refreshes of one mental model, under each model's own
+	// trigger.min_refresh_interval_seconds member.
+	MentalModelMinRefreshSeconds int
 }
 
 // DBTuning is the database session's process-level tuning.

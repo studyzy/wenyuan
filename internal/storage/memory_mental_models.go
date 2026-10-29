@@ -339,6 +339,32 @@ func (s *MemoryStore) PromoteOperationPayload(ctx context.Context, bankID, opera
 	return true, nil
 }
 
+// ClearOperationRefreshPark unparks a pending refresh: the automatic marker
+// leaves the payload and next_retry_at clears in the same write.
+func (s *MemoryStore) ClearOperationRefreshPark(ctx context.Context, bankID, operationID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return false, s.writeErr
+	}
+	op, ok := s.operations[operationID]
+	if !ok || op.BankID != bankID || op.Status != StatusPending {
+		return false, nil
+	}
+	_, parked := op.Payload[AutomaticRefreshPayloadKey]
+	if !parked && op.NextRetryAt == nil {
+		return false, nil
+	}
+	delete(op.Payload, AutomaticRefreshPayloadKey)
+	op.NextRetryAt = nil
+	op.UpdatedAt = time.Now().UTC()
+	s.operations[operationID] = op
+	return true, nil
+}
+
 // withKnowledgePageFlag resolves a read record's is_knowledge_page flag from the
 // knowledge tree: a page carries its content in a mental model, so a model any
 // page points at is that page's. Called with s.mu held for reading.

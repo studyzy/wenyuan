@@ -418,6 +418,7 @@ Status words:
 | `WENYUAN_API_LLM_TEMPERATURE_VERIFICATION` | `llm_temperature_verification` | resolved |
 | `WENYUAN_API_LLM_TIMEOUT` | `llm_timeout` | resolved |
 | `WENYUAN_API_LLM_TRACE_ENABLED` | `llm_trace_enabled` | resolved |
+| `WENYUAN_API_LLM_TRACE_EXCLUDE_SCOPES` | `llm_trace_exclude_scopes` | resolved |
 | `WENYUAN_API_LLM_TRACE_MAX_CHARS` | `llm_trace_max_chars` | resolved |
 | `WENYUAN_API_LLM_TRACE_RETENTION_DAYS` | `llm_trace_retention_days` | resolved |
 | `WENYUAN_API_LLM_TRACE_SCOPES` | `llm_trace_scopes` | resolved |

@@ -558,6 +558,12 @@ func itoa(value int) string {
 // to reconcile (see PromoteQueuedRefreshToFull).
 const RefreshModePayloadKey = "_mode"
 
+// AutomaticRefreshPayloadKey marks a queued refresh an automatic trigger
+// submitted — a consolidation flush or a cron tick — rather than an explicit
+// API/MCP call. Only an automatic refresh parks behind the model's
+// min_refresh_interval_seconds (memory_engine.py:24183, _REFRESH_AUTOMATIC_KEY).
+const AutomaticRefreshPayloadKey = "_automatic"
+
 // LifecycleLockedStore is a store able to mutate a queued operation's payload
 // inside the same critical section that decides whether to queue one. It is a
 // narrow capability rather than part of Store, like the staleness readers: only
@@ -596,6 +602,29 @@ func PromoteQueuedRefreshToFull(ctx context.Context, store Store, bankID, operat
 		return err
 	})
 	return promoted, err
+}
+
+// RefreshParkCleaner is the optional capability a store provides when it can
+// release a queued refresh's min-interval park: drop the automatic marker and
+// clear next_retry_at, so "refresh now" folds into a queued automatic refresh
+// without inheriting its wait (memory_engine.py:_clear_refresh_park).
+type RefreshParkCleaner interface {
+	// ClearOperationRefreshPark unparks the pending operation: the automatic
+	// marker leaves its payload and next_retry_at is cleared in the same
+	// write. It reports whether a row changed; a row that is gone or not
+	// pending is left alone.
+	ClearOperationRefreshPark(ctx context.Context, bankID, operationID string) (bool, error)
+}
+
+// ClearQueuedRefreshPark releases a queued refresh's min-interval park. A store
+// that cannot amend a queued payload reports false rather than failing the
+// submit: the caller's refresh is still queued, just still parked.
+func ClearQueuedRefreshPark(ctx context.Context, store Store, bankID, operationID string) (bool, error) {
+	cleaner, ok := store.(RefreshParkCleaner)
+	if !ok {
+		return false, nil
+	}
+	return cleaner.ClearOperationRefreshPark(ctx, bankID, operationID)
 }
 
 // OperationPayloadAmender sets one payload member on an operation that is still

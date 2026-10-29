@@ -329,6 +329,10 @@ func (s *MemoryStore) ListAuditLog(ctx context.Context, query AuditQuery) (Audit
 }
 
 // GetAuditLog returns one audit entry of the bank, bodies included.
+//
+// The identifier is read the way the reference reads it — parsed as a UUID, so
+// the uppercase, brace- or urn-wrapped spellings name the same entry, and a
+// spelling that does not parse is a missing entry rather than a match.
 func (s *MemoryStore) GetAuditLog(ctx context.Context, bankID, logID string) (AuditEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return AuditEntry{}, err
@@ -338,8 +342,12 @@ func (s *MemoryStore) GetAuditLog(ctx context.Context, bankID, logID string) (Au
 	if s.readErr != nil {
 		return AuditEntry{}, s.readErr
 	}
+	canonical, ok := canonicalUUID(logID)
+	if !ok {
+		return AuditEntry{}, ErrAuditEntryNotFound
+	}
 	for _, entry := range s.auditEntries {
-		if entry.ID == logID && entry.BankID == bankID {
+		if entry.ID == canonical && entry.BankID == bankID {
 			return entry, nil
 		}
 	}

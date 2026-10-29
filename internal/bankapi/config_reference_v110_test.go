@@ -3,6 +3,7 @@ package bankapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
@@ -78,7 +79,9 @@ func TestBankConfigCarriesTheObservationDefaults(t *testing.T) {
 
 // The process layer parses the scoping value the way the reference's env parser
 // does: a mode name as written, a JSON scope list as decoded, and anything unset
-// or unparseable as null.
+// or unparseable as null. The reference validates the value at config
+// construction, so an invalid one is additionally refused at start-up
+// (config.py:_parse_observation_scopes_env) rather than resolving silently.
 func TestProcessDefaultsParseTheObservationScopes(t *testing.T) {
 	cases := []struct {
 		raw  string
@@ -107,10 +110,23 @@ func TestProcessDefaultsParseTheObservationScopes(t *testing.T) {
 			if len(scope) != 1 || scope[0] != "topic:*" {
 				t.Fatalf("raw %q: parsed %#v, want [[\"topic:*\"]]", tc.raw, scopes)
 			}
+		} else if got != tc.want {
+			t.Fatalf("raw %q: parsed %#v, want %#v", tc.raw, got, tc.want)
+		}
+		// The values the reference's parser accepts resolve without a refusal;
+		// the ones it raises on refuse start-up naming the key.
+		err := cfg.ValidateSupported()
+		if tc.raw == "" || tc.raw == "   " || tc.raw == "shared" || tc.raw == `[["topic:*"]]` {
+			if err != nil {
+				t.Fatalf("raw %q: refused: %v", tc.raw, err)
+			}
 			continue
 		}
-		if got != tc.want {
-			t.Fatalf("raw %q: parsed %#v, want %#v", tc.raw, got, tc.want)
+		if err == nil {
+			t.Fatalf("raw %q: resolved without the start-up refusal", tc.raw)
+		}
+		if !strings.Contains(err.Error(), config.EnvDefaultObservationScopes) {
+			t.Fatalf("raw %q: refusal %v does not name the key", tc.raw, err)
 		}
 	}
 	// The preference default is off unless configured, and honoured when it is.

@@ -55,6 +55,9 @@ type openAICompat struct {
 // Name is the configured provider name.
 func (b *openAICompat) Name() string { return b.name }
 
+// Model is the configured model identifier.
+func (b *openAICompat) Model() string { return b.model }
+
 // Dimensions is the width this backend guarantees for every vector.
 func (b *openAICompat) Dimensions() int { return b.dimensions }
 

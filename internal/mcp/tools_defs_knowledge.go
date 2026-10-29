@@ -263,6 +263,18 @@ func knowledgeTools() []tool {
 										"default":     nil,
 										"description": "Fact types to retrieve during refresh; null includes all of world, experience and observation.",
 									},
+									"full_refresh_cron": map[string]any{
+										"anyOf": []any{
+											map[string]any{
+												"type": "string",
+											},
+											map[string]any{
+												"type": "null",
+											},
+										},
+										"default":     nil,
+										"description": "UTC five-field cron schedule for a scheduled FULL refresh, e.g. '0 3 * * 0' for Sundays at 03:00 UTC: the content is regenerated from scratch on this schedule whatever 'mode' says, to clear the drift delta edits accumulate. Independent of refresh_cron and refresh_after_consolidation, and it does not change 'mode'. Skipped when no refresh ran since the last full one. null = no schedule.",
+									},
 									"include_chunks": map[string]any{
 										"anyOf": []any{
 											map[string]any{
@@ -613,6 +625,18 @@ func knowledgeTools() []tool {
 										},
 										"default":     nil,
 										"description": "Fact types to retrieve during refresh; null includes all of world, experience and observation.",
+									},
+									"full_refresh_cron": map[string]any{
+										"anyOf": []any{
+											map[string]any{
+												"type": "string",
+											},
+											map[string]any{
+												"type": "null",
+											},
+										},
+										"default":     nil,
+										"description": "UTC five-field cron schedule for a scheduled FULL refresh, e.g. '0 3 * * 0' for Sundays at 03:00 UTC: the content is regenerated from scratch on this schedule whatever 'mode' says, to clear the drift delta edits accumulate. Independent of refresh_cron and refresh_after_consolidation, and it does not change 'mode'. Skipped when no refresh ran since the last full one. null = no schedule.",
 									},
 									"include_chunks": map[string]any{
 										"anyOf": []any{

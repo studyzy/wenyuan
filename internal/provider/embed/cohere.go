@@ -38,6 +38,9 @@ type cohereBackend struct {
 // Name is the configured provider name.
 func (b *cohereBackend) Name() string { return "cohere" }
 
+// Model is the effective model identifier, the adapter default applied.
+func (b *cohereBackend) Model() string { return b.model }
+
 // Dimensions is the width this backend guarantees for every vector.
 func (b *cohereBackend) Dimensions() int { return b.dimensions }
 

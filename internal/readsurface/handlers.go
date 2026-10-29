@@ -269,6 +269,12 @@ func (h *Handlers) Graph(w http.ResponseWriter, r *http.Request) {
 		Limit:      limit,
 	})
 	if err != nil {
+		// The graph read is one of the reads the reference cancels when the
+		// client leaves, answered with its disconnect reason rather than a
+		// server fault (api/disconnect.py, api/http.py:5984).
+		if httpx.WriteClientDisconnected(w, r) {
+			return
+		}
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}

@@ -106,6 +106,28 @@ func (s *MemoryStore) ConsolidationObservationsInScope(ctx context.Context, bank
 	return candidates, nil
 }
 
+// CountObservationsInScope reports how many observations the bank holds at the
+// scope, with no limit: the scope's observation cap is measured against the
+// true count, not the newest slice the candidate pool reads (the reference's
+// count-to-the-end fix, engine/memories/base.py:3838-3857).
+func (s *MemoryStore) CountObservationsInScope(ctx context.Context, bankID string, scope []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.readErr != nil {
+		return 0, s.readErr
+	}
+	count := 0
+	for _, unit := range s.units {
+		if unit.BankID == bankID && unit.FactType == TypeObservation && sameScope(unit.Tags, scope) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // sourceTextsLocked returns the texts of the given units in the order given,
 // skipping an id the store no longer holds. The caller holds the read lock.
 func (s *MemoryStore) sourceTextsLocked(ids []string) []string {
@@ -211,6 +233,30 @@ func (s *PostgresStore) ConsolidationObservationsInScope(ctx context.Context, ba
 	return observations, rows.Err()
 }
 
+// CountObservationsInScope reports how many observations the bank holds at the
+// scope, with no limit: the scope's observation cap is measured against the
+// true count, not the newest slice the candidate pool reads (the reference's
+// count-to-the-end fix, engine/memories/base.py:3838-3857).
+func (s *PostgresStore) CountObservationsInScope(ctx context.Context, bankID string, scope []string) (int, error) {
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	scope = canonicalScope(scope)
+	scopeArg := scope
+	if scopeArg == nil {
+		scopeArg = []string{}
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM `+quoteIdent(schema)+`.memory_units u
+		  WHERE u.bank_id = $1 AND u.fact_type = $2
+		    AND cardinality(COALESCE(u.tags, '{}'::text[])) = $3
+		    AND COALESCE(u.tags, '{}'::text[])::text[] @> $4::text[]`,
+		bankID, string(TypeObservation), len(scope), scopeArg).Scan(&count)
+	return count, err
+}
+
 // CreateObservationInScope records a new observation at the given scope.
 func (s *PostgresStore) CreateObservationInScope(ctx context.Context, bankID, text string, sourceIDs, scope []string) (string, error) {
 	scope = canonicalScope(scope)
@@ -250,7 +296,9 @@ func (s *PostgresStore) EnqueueConsolidationScoped(ctx context.Context, bankID s
 	op := Operation{
 		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
 		Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bankID),
-		Payload: map[string]any{"observation_scopes": observationScopes},
+		// The scoped submit is the route's own, and the route's chain keeps
+		// draining past the auto-consolidation gate (api/http.py:9992).
+		Payload: map[string]any{"observation_scopes": observationScopes, "caller_requested": true},
 	}
 	op, err := s.PutOperation(ctx, op)
 	if err != nil {
@@ -279,7 +327,9 @@ func (s *MemoryStore) EnqueueConsolidationScoped(ctx context.Context, bankID str
 		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
 		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
 		SerializationKey: ConsolidationSerializationKey(bankID),
-		Payload:          map[string]any{"observation_scopes": observationScopes},
+		// The scoped submit is the route's own, and the route's chain keeps
+		// draining past the auto-consolidation gate (api/http.py:9992).
+		Payload: map[string]any{"observation_scopes": observationScopes, "caller_requested": true},
 	}
 	s.operations[op.OperationID] = op
 	return op, false, nil

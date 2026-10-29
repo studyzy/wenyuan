@@ -1063,6 +1063,36 @@ func (s *MemoryStore) EnqueueConsolidation(ctx context.Context, bankID string, o
 	return op, false, nil
 }
 
+// EnqueueCallerRequestedConsolidation records a consolidation pass an explicit
+// /consolidate started: the task payload carries caller_requested, which lets
+// the pass's chain keep draining past the auto-consolidation gate
+// (memory_engine.py:23716-23717, api/http.py:9992).
+func (s *MemoryStore) EnqueueCallerRequestedConsolidation(ctx context.Context, bankID string) (Operation, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Operation{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return Operation{}, false, s.writeErr
+	}
+	// The same outstanding-unscoped dedupe a plain submit runs: the flag rides
+	// the new operation's payload, and a deduplicated submit returns the
+	// operation that beat it, payload unchanged.
+	if op, ok := s.outstandingFullBankConsolidation(bankID); ok {
+		return op, true, nil
+	}
+	now := time.Now().UTC()
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, CreatedAt: now, UpdatedAt: now,
+		SerializationKey: ConsolidationSerializationKey(bankID),
+		Payload:          executablePayload(map[string]any{"caller_requested": true}),
+	}
+	s.operations[op.OperationID] = op
+	return op, false, nil
+}
+
 // outstandingFullBankConsolidation returns a pending or running bank-wide
 // consolidation for the bank. A pass that carries observation scopes is skipped:
 // it covers only its own tag subset, so folding a full-bank sweep into it would

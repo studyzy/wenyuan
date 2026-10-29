@@ -26,12 +26,13 @@ import (
 //
 // A union of that mode tries every member in order and, when none validates,
 // reports the failures of *all* of them — so a single malformed object yields
-// four errors (one per member), not one. The message is Pydantic's
-// `ValidationError.__str__`, which the handler wraps as
-// `HTTPException(422, detail=f"Invalid tag_groups: {e}")`
-// (api/http.py:3715-3719). Reconstructing it here is what keeps the 422 body
-// byte-identical; accepting any JSON instead would let a filter the reference
-// refuses through, and the tree would answer a request the reference rejects.
+// four errors (one per member), not one. The decoder raises
+// `HTTPException(400, detail=f"Invalid tag_groups: {e.errors(include_url=False)}")`
+// (api/http.py:277-287), whose detail is the errors-repr form
+// tag_groups_report.go renders; reconstructing that exactly is what keeps the
+// 400 body byte-identical. Accepting any JSON instead would let a filter the
+// reference refuses through, and the tree would answer a request the reference
+// rejects.
 
 // tagGroupUnionMember is one member of the reference's TagGroup union, in the
 // order Pydantic tries them.
@@ -97,15 +98,10 @@ type unionError struct {
 // decodeKnowledgeTagGroups decodes and validates the `tag_groups` parameter the
 // way the reference's TypeAdapter does. A document that validates returns the
 // groups; anything else returns the rendered detail string, which the caller
-// wraps in the reference's 422.
+// wraps in the reference's 400.
 func decodeKnowledgeTagGroups(raw string) ([]knowledgeTagGroup, string, bool) {
-	decoded, ok := decodeJSONValue([]byte(raw))
-	if !ok {
-		return nil, "Invalid tag_groups: " + tagGroupJSONError(raw), false
-	}
-	errors := validateTagGroupList(decoded)
-	if len(errors) > 0 {
-		return nil, "Invalid tag_groups: " + renderTagGroupErrors(errors), false
+	if report, rejected := ParseTagGroupsReport(raw); rejected {
+		return nil, TagGroupsDetail(report), false
 	}
 	// The document validated, so it is a list of objects with the members the
 	// filter reads; decode it straight into the filter's own shape. (The
@@ -321,12 +317,6 @@ func (l pydanticLoc) parent() pydanticLoc {
 		return l
 	}
 	return l[:len(l)-1]
-}
-
-// renderTagGroupErrors renders the full report: the count and title line, then
-// one indented block per error.
-func renderTagGroupErrors(errors []unionError) string {
-	return renderTagGroupReport(errors)
 }
 
 // renderTagGroupReport renders a Pydantic validation report the way

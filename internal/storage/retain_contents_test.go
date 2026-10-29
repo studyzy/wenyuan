@@ -199,6 +199,23 @@ func TestParseFactTimeAcceptsModelDateShapes(t *testing.T) {
 	}
 }
 
+// A year-1 or year-9999 value is an open bound a model writes for "since
+// forever" / "still ongoing", not a date: it reads as unknown and the column
+// stays NULL (retain/fact_extraction.py:3705-3715).
+func TestParseFactTimeReadsPlaceholdersAsUnknown(t *testing.T) {
+	for _, value := range []string{
+		"0001-01-01", "0001-01-01T00:00:00Z", "9999-12-31", "9999-12-31T00:00:00Z",
+	} {
+		if got := parseFactTime(value); got != nil {
+			t.Fatalf("parseFactTime(%q) = %v, want nil", value, got)
+		}
+	}
+	// A real date next to the placeholders still parses.
+	if got := parseFactTime("2025-06-02"); got == nil || got.Year() != 2025 {
+		t.Fatalf("parseFactTime(2025-06-02) = %v, want the date", got)
+	}
+}
+
 // A date the model wrote as "2015-07-01" reaches the unit's columns rather than
 // being dropped on the way, and the fact's own date wins over the item's ingest
 // clock for event_date, as it does in the reference.

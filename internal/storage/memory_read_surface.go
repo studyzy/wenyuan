@@ -323,7 +323,7 @@ func (s *MemoryStore) entityStatsLocked(query EntityQuery) map[string]*entitySta
 			continue
 		}
 		seen := unitSeenAt(unit)
-		for _, id := range s.unitEntities[unit.ID] {
+		for _, id := range s.mentionedEntityIDsLocked(unit, query.BankID) {
 			stat, ok := stats[id]
 			if !ok {
 				stat = &entityStat{}
@@ -553,7 +553,7 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 			if unit.BankID != bankID || !matchesTagFilter(unit.Tags, query.Tags, mode, query.TagGroups) {
 				continue
 			}
-			recordEntityCooccurrence(unit, s.unitEntities[unit.ID], mentions, weights, seen)
+			recordEntityCooccurrence(unit, s.mentionedEntityIDsLocked(unit, bankID), mentions, weights, seen)
 		}
 	} else {
 		for _, entity := range s.entities {
@@ -617,30 +617,33 @@ func (s *MemoryStore) EntityGraph(ctx context.Context, query EntityGraphQuery) (
 	if len(pairs) > limit {
 		pairs = pairs[:limit]
 	}
-	nodeSet := map[string]bool{}
 	edges := make([]EntityGraphEdge, 0, len(pairs))
 	for _, p := range pairs {
-		nodeSet[p.from] = true
-		nodeSet[p.to] = true
 		edges = append(edges, EntityGraphEdge{
 			ID: p.from + "->" + p.to, Source: p.from, Target: p.to, Weight: p.weight,
 			LastCooccurred: p.seen,
 		})
 	}
-	nodes := make([]EntityGraphNode, 0, len(nodeSet))
-	for id := range nodeSet {
-		entity, ok := s.entities[id]
-		if !ok {
-			continue
+	// Nodes are the endpoints of the returned edges, in edge-appearance order:
+	// walking the edges strongest first, each contributes its two endpoints the
+	// first time they are seen (the way the reference renders the graph,
+	// engine/memories/pg/engine_curation.py:417-424). The postgres backend
+	// builds them the same way.
+	nodes := make([]EntityGraphNode, 0, 2*len(pairs))
+	nodeSeen := map[string]bool{}
+	for _, p := range pairs {
+		for _, id := range []string{p.from, p.to} {
+			if nodeSeen[id] {
+				continue
+			}
+			nodeSeen[id] = true
+			entity, ok := s.entities[id]
+			if !ok {
+				continue
+			}
+			nodes = append(nodes, EntityGraphNode{ID: id, Label: entity.CanonicalName, MentionCount: mentions[id]})
 		}
-		nodes = append(nodes, EntityGraphNode{ID: id, Label: entity.CanonicalName, MentionCount: mentions[id]})
 	}
-	sort.SliceStable(nodes, func(i, j int) bool {
-		if nodes[i].MentionCount != nodes[j].MentionCount {
-			return nodes[i].MentionCount > nodes[j].MentionCount
-		}
-		return nodes[i].ID < nodes[j].ID
-	})
 	return EntityGraph{Nodes: nodes, Edges: edges, TotalEntities: len(nodes),
 		TotalEdges: len(edges), Limit: limit}, nil
 }
@@ -848,6 +851,33 @@ func (s *MemoryStore) inheritedEntityNamesLocked(unit MemoryUnit, bankID string)
 		for _, name := range s.entityNamesForUnitLocked(sourceID) {
 			if !slices.Contains(inherited, name) {
 				inherited = append(inherited, name)
+			}
+		}
+	}
+	return inherited
+}
+
+// mentionedEntityIDsLocked returns the entity ids one unit contributes to a
+// tag-filtered entity read: its own postings, or — the rule the reference's
+// visible_entity_mentions_sql applies (engine/memories/pg/curation.py:539-583)
+// — for an observation with no postings of its own, the postings of the
+// memories it was consolidated from, deduplicated the way that UNION is.
+// Without the inheritance an entity only observations mention would vanish
+// under a filter.
+func (s *MemoryStore) mentionedEntityIDsLocked(unit MemoryUnit, bankID string) []string {
+	ids := s.unitEntities[unit.ID]
+	if len(ids) > 0 || unit.FactType != TypeObservation {
+		return ids
+	}
+	inherited := make([]string, 0)
+	for _, sourceID := range unit.SourceMemoryIDs {
+		source, ok := s.units[sourceID]
+		if !ok || source.BankID != bankID {
+			continue
+		}
+		for _, id := range s.unitEntities[sourceID] {
+			if !slices.Contains(inherited, id) {
+				inherited = append(inherited, id)
 			}
 		}
 	}

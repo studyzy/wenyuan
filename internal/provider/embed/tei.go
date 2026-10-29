@@ -28,6 +28,10 @@ type teiBackend struct {
 // Name is the configured provider name.
 func (b *teiBackend) Name() string { return "tei" }
 
+// Model is empty: TEI serves whichever model its endpoint was launched with,
+// so no identifier travels with a request.
+func (b *teiBackend) Model() string { return "" }
+
 // Dimensions is the width this backend guarantees for every vector.
 func (b *teiBackend) Dimensions() int { return b.dimensions }
 

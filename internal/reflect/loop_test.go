@@ -351,15 +351,15 @@ func TestToolArgumentDefaults(t *testing.T) {
 	}
 }
 
-// test-empty-answer-is-reported: an answering call that asks for another tool
-// instead of answering must be reported, not returned as an empty answer.
+// test-empty-answer-is-reported: a closing done that carries no usable answer
+// must be reported, not returned as an empty answer that reads as "the answer
+// is nothing".
 func TestEmptyAnswerIsReported(t *testing.T) {
-	p := &scriptedProvider{name: "openai", script: turnScript(
-		toolCall(ToolRecall, map[string]any{"query": "x"}),
-		toolCall(ToolDone, nil),
-		// The answering call returns a tool call, so it produced no prose.
-		toolCall(ToolRecall, map[string]any{"query": "x"}),
-	)}
+	p := &scriptedProvider{name: "openai", script: []provider.CompletionResult{
+		{ToolCalls: []provider.ToolCall{toolCall(ToolRecall, map[string]any{"query": "x"})}},
+		{ToolCalls: []provider.ToolCall{toolCall(ToolDone, nil)}},
+		closingDone(map[string]any{}),
+	}}
 	if _, err := NewLoop(p, &stubRetrieval{facts: []Evidence{{Kind: "fact", ID: "f1", Text: "gathered"}}}, Config{Question: "q"}).Run(context.Background()); !errors.Is(err, ErrNoAnswer) {
 		t.Fatalf("error = %v, want ErrNoAnswer", err)
 	}
@@ -367,7 +367,9 @@ func TestEmptyAnswerIsReported(t *testing.T) {
 
 // Every tool schema requires a reason, and the recall/read/expand/done schemas
 // carry the parameters the reference documents. `done` requires the answer it
-// is trusted for; `read_mental_models` requires the ids it exists to read.
+// closes with; `read_mental_models` requires the ids it exists to read.
+// `answer_ready` is the exception: it is deliberately the cheap stop signal, one
+// required bool with no reason attached.
 func TestToolSchemasMatchReference(t *testing.T) {
 	for _, name := range ToolNames() {
 		var schema map[string]any
@@ -381,7 +383,7 @@ func TestToolSchemasMatchReference(t *testing.T) {
 				found = true
 			}
 		}
-		if !found {
+		if !found && name != ToolAnswerReady {
 			t.Fatalf("%s must require reason: %v", name, required)
 		}
 	}
@@ -398,8 +400,8 @@ func TestToolSchemasMatchReference(t *testing.T) {
 		t.Fatalf("expand schema must carry depth: %s", expand)
 	}
 	done := string(toolParameters(ToolDone))
-	if !strings.Contains(done, `"required":["reason","answer"]`) {
-		t.Fatalf("done schema must require the answer it is trusted for: %s", done)
+	if !strings.Contains(done, `"required":["reason","answer","answer_found"]`) {
+		t.Fatalf("done schema must require the answer it closes with and the verdict: %s", done)
 	}
 }
 
@@ -417,7 +419,8 @@ func TestReadMentalModelsRequiresIDs(t *testing.T) {
 }
 
 // test-document-mode-done-schema: document mode swaps `done`'s answer field for
-// the document the stored answer is rendered from, the way the reference does.
+// the document the stored answer is rendered from, the way the reference does,
+// keeping the verdict the absence gate reads.
 func TestDocumentModeDoneSchemaSwapsAnswerForDocument(t *testing.T) {
 	var offered map[string]any
 	for _, def := range ToolDefinitions(true) {
@@ -435,8 +438,8 @@ func TestDocumentModeDoneSchemaSwapsAnswerForDocument(t *testing.T) {
 		t.Fatalf("document-mode done schema has no document field: %v", properties)
 	}
 	required, _ := offered["required"].([]any)
-	if len(required) != 1 || required[0] != "reason" {
-		t.Fatalf("document-mode done required = %v, want reason alone", required)
+	if len(required) != 2 || required[0] != "reason" || required[1] != "answer_found" {
+		t.Fatalf("document-mode done required = %v, want reason and answer_found", required)
 	}
 }
 
@@ -511,43 +514,39 @@ func TestLoopSumsTurnUsage(t *testing.T) {
 	}
 }
 
-// test-done-answer-is-the-answer: a model that calls done with its answer has
-// answered. The loop returns that text verbatim — the reference trusts
-// done.answer — instead of paying for a second synthesis call that would
-// restate what the loop already has. The two tool turns are the whole run.
-func TestDoneAnswerIsTrustedWithoutSynthesis(t *testing.T) {
-	p := &scriptedProvider{name: "openai", script: turnScript(
-		toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
-		toolCall(ToolDone, map[string]any{"answer": "  the answer  "}),
-	)}
+// test-closing-writes-the-answer: the closing step asks for the answer as a
+// done call over the conversation the evidence was gathered in, and that call's
+// answer — not the free turn's discarded wording — is the run's answer.
+func TestClosingStepWritesTheAnswer(t *testing.T) {
+	p := &scriptedProvider{name: "openai", script: []provider.CompletionResult{
+		{ToolCalls: []provider.ToolCall{toolCall(ToolSearchObservations, map[string]any{"query": "q"})}},
+		{ToolCalls: []provider.ToolCall{toolCall(ToolDone, map[string]any{"answer": "  the discarded wording  "})}},
+		closingDone(map[string]any{"answer": "  the closing answer  "}),
+	}}
 	retrieval := &stubRetrieval{observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "fact"}}}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 1000}).Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Answer != "the answer" {
-		t.Fatalf("answer = %q, want the done call's own answer", outcome.Answer)
+	if outcome.Answer != "the closing answer" {
+		t.Fatalf("answer = %q, want the closing step's answer", outcome.Answer)
 	}
-	if len(p.requests) != 2 {
-		t.Fatalf("provider saw %d calls, want only the two loop turns", len(p.requests))
-	}
-	for _, req := range p.requests {
-		if len(req.Tools) == 0 {
-			t.Fatalf("a tool-less synthesis call was made for a done answer")
-		}
+	if len(p.requests) != 3 {
+		t.Fatalf("provider saw %d calls, want the two loop turns plus the closing step", len(p.requests))
 	}
 }
 
-// The done path is not a bypass of the post-answer work: an over-budget done
-// answer goes through the same length rewrite a composed one does, and the
-// rewrite's default template still reaches the provider.
+// The closing path is not a bypass of the post-answer work: an over-budget
+// closing answer goes through the same length rewrite a composed one does, and
+// the rewrite's default template still reaches the provider.
 func TestDoneAnswerStillRewrittenToBudget(t *testing.T) {
 	long := strings.TrimSpace(strings.Repeat("detail. ", 200))
 	p := &scriptedProvider{name: "stub", script: append(
 		turnScript(
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
-			toolCall(ToolDone, map[string]any{"answer": long}),
+			toolCall(ToolDone, nil),
 		),
+		closingDone(map[string]any{"answer": long}),
 		provider.CompletionResult{Content: "short"},
 	)}
 	retrieval := &stubRetrieval{observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "fact"}}}
@@ -556,19 +555,21 @@ func TestDoneAnswerStillRewrittenToBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if outcome.Answer != "short" {
-		t.Fatalf("answer = %q, want the shortened done answer", outcome.Answer)
+		t.Fatalf("answer = %q, want the shortened closing answer", outcome.Answer)
 	}
-	if len(p.requests) != 3 {
-		t.Fatalf("provider saw %d calls, want the two loop turns plus the rewrite", len(p.requests))
+	if len(p.requests) != 4 {
+		t.Fatalf("provider saw %d calls, want the two loop turns, the closing step and the rewrite", len(p.requests))
 	}
-	if p.requests[2].Messages[0].Content != rewriteSystem {
-		t.Fatalf("third call is not the length rewrite: %#v", p.requests[2].Messages)
+	if p.requests[3].Messages[0].Content != rewriteSystem {
+		t.Fatalf("fourth call is not the length rewrite: %#v", p.requests[3].Messages)
 	}
 }
 
 // truncatingProvider drives two tool turns and then answers the synthesis call
 // with a generation that stopped at its output limit, carrying the text it
-// wrote before stopping — the shape a small max_tokens produces.
+// wrote before stopping — the shape a small max_tokens produces. The closing
+// step's request is answered in prose, so the run falls back to the standalone
+// synthesis the test is about.
 type truncatingProvider struct {
 	name     string
 	toolCall int
@@ -577,6 +578,9 @@ type truncatingProvider struct {
 
 func (t *truncatingProvider) Complete(_ context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
 	t.requests = append(t.requests, req)
+	if req.ToolChoice != nil && req.ToolChoice.Name == ToolDone {
+		return provider.CompletionResult{Content: "prose, not the done call"}, nil
+	}
 	if len(req.Tools) > 0 {
 		t.toolCall++
 		if t.toolCall == 1 {

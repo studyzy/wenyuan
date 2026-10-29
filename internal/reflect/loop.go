@@ -175,13 +175,13 @@ type Config struct {
 	// ObservationIncludeEntities attaches resolved entity names to each
 	// observation a search returns.
 	ObservationIncludeEntities bool
-	// AnswerAsDocument makes the loop take its answer from the `done` call's
-	// structure rather than its prose: the model states a structured `document`
-	// (or a plain `answer`) and the markdown is derived from it. It is what a
-	// mental-model refresh wants — the model's structure, not its prose, is the
-	// source of truth — so no free-text render is ever read back to work out
-	// what the model meant. Without it the loop still answers from the `done`
-	// call's `answer`; this only changes which field that is.
+	// AnswerAsDocument makes the loop take its answer from the closing `done`
+	// call's structure rather than its prose: the model states a structured
+	// `document` (or a plain `answer`) and the markdown is derived from it. It
+	// is what a mental-model refresh wants — the model's structure, not its
+	// prose, is the source of truth — so no free-text render is ever read back
+	// to work out what the model meant. Without it the closing `done` call's
+	// `answer` is the answer; this only changes which field that is.
 	AnswerAsDocument bool
 }
 
@@ -224,15 +224,27 @@ type Loop struct {
 	// documentAnswer is the markdown a document-mode `done` call produced, held
 	// until the loop stops.
 	documentAnswer string
-	// doneAnswer is the answer a prose-mode `done` call carried, held until the
-	// loop stops. The model's own done call is the answer: the reference trusts
-	// it verbatim rather than paying for a second synthesis call that would
-	// restate what the loop already has. Empty means no done call produced a
-	// usable answer, which is when synthesis takes over.
-	doneAnswer string
-	// documentRejections counts `done` documents the shape refused, which is
-	// what bounds the re-asks.
-	documentRejections int
+	// searched reports whether a retrieval tool has returned — even an empty
+	// one. It is the done guardrail's gate: a stop before any search returned
+	// is refused with the search-first message, while "searched and found
+	// nothing" is an honest answer.
+	searched bool
+	// recallRan reports whether the recall tool has returned. A stop that
+	// reports nothing found before recall ran is refused once and recall is
+	// forced: a negative answer must not come from the page or observation
+	// layer alone.
+	recallRan bool
+	// absenceRecallForced is set once a stop was refused for reporting nothing
+	// found before recall ran, so the refusal is not repeated every turn and
+	// the next turn is pinned to recall.
+	absenceRecallForced bool
+	// citedMemoryIDs, citedModelIDs and citedObservationIDs are the identifiers
+	// the closing done call cited, per collection. When a collection carries
+	// cited ids, the reported evidence keeps only those items; empty or absent
+	// collections keep everything they retrieved.
+	citedMemoryIDs     map[string]bool
+	citedModelIDs      map[string]bool
+	citedObservationID map[string]bool
 	// documentFeedback is the reason each refused document was handed back, sent
 	// with the re-ask so the model can fix the shape instead of repeating it.
 	documentFeedback []string
@@ -268,15 +280,23 @@ func forcedLayers() []string {
 // or from nothing, while a cheaper layer is untried. A fresh, usable
 // perspective releases the remaining forced steps, and the model then decides
 // each turn which tool to call. The loop stops when the model calls the done
-// tool, when the iteration bound is reached, or when the evidence budget is
-// spent. A done call carries the answer and the run ends on it; a stop without
-// one is answered by synthesis over the evidence actually gathered — never from
+// tool or its answer_ready stop signal, when the iteration bound is reached,
+// or when the evidence budget is spent.
+//
+// Every default-path answer is written by the closing step: a turn that stops —
+// by done, by answer_ready, or with prose — has its own wording discarded and
+// the loop asks for the answer as a `done` call in the conversation the
+// evidence was gathered in. Only when that closing call fails or returns no
+// done does the standalone synthesis answer instead. A stop on the iteration
+// bound or the evidence budget never had a closing turn to build on, so it is
+// answered by synthesis over the evidence actually gathered — never from
 // nothing.
 func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 	if !l.modelAvailable() {
 		return Outcome{}, ErrNoModel
 	}
 	outcome := Outcome{Turns: make([]Turn, 0, l.cfg.MaxIterations)}
+	stopped := false
 	for iteration := 1; iteration <= l.cfg.MaxIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return outcome, err
@@ -289,45 +309,58 @@ func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 		l.turns = append(l.turns, turn)
 		outcome.Usage = addUsage(outcome.Usage, turnUsage(turn))
 		if finish {
+			stopped = true
 			break
 		}
 		if l.evidenceTokens() >= l.cfg.ContextBudget {
 			break
 		}
 	}
-	outcome.Evidence = append([]Evidence(nil), l.evidence...)
-	outcome.LLMCalls = append([]LLMCall(nil), l.llmCalls...)
-	// In document mode the `done` call already carried the answer as a
-	// structure, so there is nothing to compose or extend: reading markdown
-	// back out of free text would be exactly the round trip this mode exists
-	// to avoid.
-	if l.cfg.AnswerAsDocument && strings.TrimSpace(l.documentAnswer) != "" {
-		outcome.Answer = l.aliases.scrubUnverifiedIDs(l.aliases.resolve(strings.TrimSpace(l.documentAnswer)))
-		return outcome, nil
+	// The closing step writes the answer: it asks for a `done` call with the
+	// done-request prompt appended to the conversation the evidence was
+	// gathered in. The free turn's own wording — its done payload, its
+	// answer_ready, its prose — is discarded, so the answer is written against
+	// the question and the full evidence set rather than restated from memory.
+	answer := ""
+	if stopped {
+		closing, err := l.closingStep(ctx, &outcome)
+		if err != nil {
+			return outcome, err
+		}
+		answer = closing
 	}
-	// The `done` call's own answer is the answer: the model wrote it, and the
-	// reference trusts it verbatim rather than spending a second call
-	// restating what the loop already has. It still goes through the same
-	// length rewrite and structured extraction every answer does. Synthesis is
-	// the fallback for a loop that stopped without a done answer — on the
-	// iteration bound, the evidence budget, or a text-only turn.
-	answer := strings.TrimSpace(l.doneAnswer)
-	if answer == "" {
+	// The done call's citation narrows what the answer reports it read: a cited
+	// collection keeps only the cited items, an uncited one everything.
+	l.applyCitedMembership()
+	outcome.Evidence = append([]Evidence(nil), l.evidence...)
+	if answer != "" {
+		// In document mode the `done` call already carried the answer as a
+		// structure, so there is nothing to compose or extend: reading markdown
+		// back out of free text would be exactly the round trip this mode
+		// exists to avoid.
+		if l.cfg.AnswerAsDocument {
+			outcome.Answer = l.aliases.scrubUnverifiedIDs(l.aliases.resolve(strings.TrimSpace(l.documentAnswer)))
+		} else {
+			finalized, err := l.finalize(ctx, &outcome, answer)
+			if err != nil {
+				return outcome, err
+			}
+			outcome.Answer = l.aliases.scrubUnverifiedIDs(l.aliases.resolve(finalized))
+		}
+	} else {
+		// The closing step did not produce an answer — it failed, or the model
+		// would not make the call — or the loop stopped without a stop signal
+		// (the iteration bound, the evidence budget). The standalone synthesis
+		// answers from the accumulated tool results.
 		composed, err := l.compose(ctx, &outcome)
 		if err != nil {
 			return outcome, err
 		}
-		answer = composed
-	} else {
-		finalized, err := l.finalize(ctx, &outcome, answer)
-		if err != nil {
-			return outcome, err
-		}
-		answer = finalized
+		outcome.Answer = l.aliases.scrubUnverifiedIDs(l.aliases.resolve(composed))
 	}
-	answer = l.aliases.resolve(answer)
-	answer = l.aliases.scrubUnverifiedIDs(answer)
-	outcome.Answer = answer
+	// The trace is read after the answer is written, so the closing, synthesis
+	// and reshape calls it went through are all in `llm_calls`.
+	outcome.LLMCalls = append([]LLMCall(nil), l.llmCalls...)
 	return outcome, nil
 }
 
@@ -395,19 +428,20 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	}
 	turn.Usage = response.Usage
 
-	// A model that answered in prose has answered; there is no tool to run.
+	// A model that answered in prose has stopped; there is no tool to run.
 	//
 	// Before any tool call at all, though, prose is not an answer: the loop
 	// cannot know whether the bank holds nothing or the endpoint simply
 	// ignored the prompt's tool choice. Reporting the second as the first is
 	// the one degradation worth refusing, because a caller acting on memory
 	// cannot tell the two apart.
+	//
+	// The prose itself is discarded either way: the closing step writes the
+	// answer, and a free-text turn can carry a raw done payload with ids
+	// leaking into user-visible text.
 	if len(response.ToolCalls) == 0 {
 		if !l.sawToolCall {
 			return turn, false, l.noToolCallError(iteration, response)
-		}
-		if strings.TrimSpace(response.Content) != "" {
-			l.evidence = append(l.evidence, Evidence{Kind: "answer", Text: response.Content})
 		}
 		return turn, true, nil
 	}
@@ -423,6 +457,13 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	finish := false
 	honouredForced := false
 	calls := make([]ToolCall, 0, len(response.ToolCalls))
+	// Where the batch's stop calls sit in turn.Calls, and how many calls are
+	// not stop calls. A done outranks an answer_ready; an answer_ready is the
+	// stop signal only when it comes alone — alongside other calls those run
+	// and the model is asked again.
+	doneIndexes := make([]int, 0, 1)
+	readyIndex := -1
+	otherCalls := 0
 	for _, call := range response.ToolCalls {
 		// The model supplies its arguments as JSON; a malformed payload is
 		// treated as an empty argument set, which the tool's own defaults read.
@@ -438,40 +479,34 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 		if toolCall.Name == forcedLayer {
 			honouredForced = true
 		}
-		if toolCall.Name == ToolDone {
-			// The evidence guardrail: a model that answers before gathering
-			// anything is answered from nothing, so the first done with an
-			// empty evidence set is ignored and the loop keeps going. The
-			// done tool retrieves nothing; it only ends the loop.
-			if len(l.evidence) == 0 {
-				continue
+		switch toolCall.Name {
+		case ToolDone:
+			doneIndexes = append(doneIndexes, len(turn.Calls)-1)
+		case ToolAnswerReady:
+			if readyIndex < 0 {
+				readyIndex = len(turn.Calls) - 1
 			}
-			if l.cfg.AnswerAsDocument {
-				answer, err := doneDocumentAnswer(toolCall.Input)
-				if err != nil {
-					// The document did not match the declared shape. Hand the
-					// reason back and re-ask, rather than storing something
-					// nobody can trust; out of attempts, the run fails.
-					l.documentRejections++
-					if l.documentRejections > maxDocumentRejections {
-						return turn, false, err
-					}
-					l.documentFeedback = append(l.documentFeedback, err.Error())
-					continue
-				}
-				l.documentAnswer = answer
-			} else if answer := strings.TrimSpace(stringArg(toolCall.Input, "answer")); answer != "" {
-				// A prose-mode done call carries the answer itself, and the
-				// model wrote it: the loop ends on that answer rather than
-				// paying for a synthesis call that would restate it. A done
-				// carrying nothing usable is not an answer, so the run stops
-				// without one and synthesis covers that stop.
-				l.doneAnswer = answer
-			}
-			finish = true
-			continue
+		default:
+			otherCalls++
+			calls = append(calls, toolCall)
 		}
-		calls = append(calls, toolCall)
+	}
+	// The stop handling: done wins when the turn carried one, otherwise a lone
+	// answer_ready stops the run. A refused stop keeps the loop going with the
+	// refusal replayed as the call's own tool result.
+	if stopIndex := l.stopCall(doneIndexes, readyIndex, otherCalls); stopIndex >= 0 {
+		refusal, forceRecall := l.stopRefusal(turn.Calls[stopIndex].Input, iteration)
+		if refusal != "" {
+			turn.Calls[stopIndex].Refusal = refusal
+			if forceRecall {
+				l.absenceRecallForced = true
+			}
+		} else {
+			// The model is ready to answer. Its own payload is discarded: the
+			// closing step restates the question over the full evidence set,
+			// which is where the answer is written.
+			finish = true
+		}
 	}
 	// The descent advances only when the model actually ran the pinned layer.
 	// A provider that ignores or downgrades tool_choice returns some other
@@ -509,7 +544,84 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 			l.freshGuidance = freshPagesGuidance
 		}
 	}
+	// A retrieval tool returning — even an empty one — is what the done
+	// guardrail counts, not evidence being non-empty: "nothing is recorded" is
+	// an honest answer once a search ran.
+	for _, call := range calls {
+		if retrievalTools[call.Name] {
+			l.searched = true
+		}
+		if call.Name == ToolRecall {
+			l.recallRan = true
+		}
+	}
 	return turn, finish, nil
+}
+
+// retrievalTools are the tools whose returning counts as having searched: the
+// searches and the page reads. expand reads back source text for memories the
+// model already has, so it does not count (the reference's _RETRIEVAL_TOOLS).
+var retrievalTools = map[string]bool{
+	ToolSearchMentalModels: true,
+	ToolReadMentalModels:   true,
+	ToolSearchObservations: true,
+	ToolRecall:             true,
+}
+
+// stopCall picks the turn's stop call: the first done, or a lone answer_ready.
+// It returns the index into turn.Calls, or -1 when the turn does not stop.
+func (l *Loop) stopCall(doneIndexes []int, readyIndex, otherCalls int) int {
+	if len(doneIndexes) > 0 {
+		return doneIndexes[0]
+	}
+	if readyIndex >= 0 && otherCalls == 0 {
+		return readyIndex
+	}
+	return -1
+}
+
+// searchFirstError is what a stop call is told when it comes before any search
+// has returned.
+const searchFirstError = "You must search for information first. Use search_mental_models(), search_observations(), or recall() " +
+	"before providing your final answer."
+
+// recallFirstError is what a stop call reporting nothing found is told before
+// recall has run.
+const recallFirstError = "You reported that nothing is known, but recall has not run yet. Call " +
+	"recall with the question's key terms (names, ids, issue keys verbatim) before " +
+	"answering."
+
+// stopRefusal reports why a stop call must be refused, or "" when it is
+// accepted: accepted once a search returned — even an empty one — or on the
+// last iteration. A negative answer (answer_found false) before recall ran is
+// refused once and recall forced, so it cannot come from the page or
+// observation layer alone.
+func (l *Loop) stopRefusal(input map[string]any, iteration int) (string, bool) {
+	if !l.searched && iteration < l.cfg.MaxIterations {
+		return searchFirstError, false
+	}
+	if !l.recallRan && !l.absenceRecallForced && iteration < l.cfg.MaxIterations && !answerFound(input) {
+		return recallFirstError, true
+	}
+	return "", false
+}
+
+// answerFound reads a stop call's answer_found verdict leniently: only an
+// explicit false counts as not found. A missing field (a model that ignores it)
+// reads as found, so the gate never blocks a run it cannot read.
+func answerFound(input map[string]any) bool {
+	value, ok := input["answer_found"]
+	if !ok {
+		return true
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.ToLower(strings.TrimSpace(typed)) != "false"
+	default:
+		return true
+	}
 }
 
 // maxParallelToolCalls bounds how many retrievals one turn runs at once, so a
@@ -681,20 +793,33 @@ func (l *Loop) messages(ctx context.Context) []provider.Message {
 		IncludeObservations: true,
 		Profile:             l.profile(),
 	})}}
-	messages = append(messages, provider.Message{Role: "user", Content: l.cfg.Question})
+	messages = append(messages, provider.Message{Role: "user", Content: AgentUserPrompt(l.cfg.Question, "", l.cfg.Mission)})
 	// Each retrieval turn is replayed as the assistant tool call it was and the
 	// tool results it produced, so the model sees its own requests and what came
 	// back. A loop that only ever saw a summarized evidence blob could not tell
 	// that a tool had already run, which is exactly what a "call a tool once,
 	// then finish" turn keys on — and a call whose source text was withheld must
 	// look withheld, not absent.
+	//
+	// A stop call (done, answer_ready) is not replayed: an honoured one ends the
+	// run, and the conversation the closing step reads shows the evidence, not
+	// the stop. A refused one is replayed with the refusal as its own tool
+	// result, which is how the model is told why its stop did not stand.
 	for _, turn := range l.turns {
-		if len(turn.Calls) == 0 {
+		replayed := make([]int, 0, len(turn.Calls))
+		for index, call := range turn.Calls {
+			if call.Refusal == "" && (call.Name == ToolDone || call.Name == ToolAnswerReady) {
+				continue
+			}
+			replayed = append(replayed, index)
+		}
+		if len(replayed) == 0 {
 			continue
 		}
-		calls := make([]provider.ToolCall, 0, len(turn.Calls))
-		ids := make([]string, 0, len(turn.Calls))
-		for index, call := range turn.Calls {
+		calls := make([]provider.ToolCall, 0, len(replayed))
+		ids := make([]string, 0, len(replayed))
+		for _, index := range replayed {
+			call := turn.Calls[index]
 			arguments, err := json.Marshal(call.Input)
 			if err != nil || len(arguments) == 0 {
 				arguments = json.RawMessage("{}")
@@ -711,26 +836,36 @@ func (l *Loop) messages(ctx context.Context) []provider.Message {
 			ids = append(ids, id)
 		}
 		messages = append(messages, provider.Message{Role: provider.RoleAssistant, ToolCalls: calls})
-		for index, call := range turn.Calls {
-			var batch []Evidence
-			if index < len(turn.Batches) {
-				batch = turn.Batches[index]
-			}
-			kindByID := map[string]string{}
-			for _, item := range batch {
-				if item.ID != "" {
-					kindByID[item.ID] = item.Kind
+		batchIndex := 0
+		for position, index := range replayed {
+			call := turn.Calls[index]
+			var content []byte
+			if call.Refusal != "" {
+				content, _ = json.Marshal(map[string]any{"error": call.Refusal})
+			} else {
+				var batch []Evidence
+				if batchIndex < len(turn.Batches) {
+					batch = turn.Batches[batchIndex]
 				}
-				if item.ChunkID != "" {
-					kindByID[item.ChunkID] = "chunk"
+				batchIndex++
+				kindByID := map[string]string{}
+				for _, item := range batch {
+					if item.ID != "" {
+						kindByID[item.ID] = item.Kind
+					}
+					if item.ChunkID != "" {
+						kindByID[item.ChunkID] = "chunk"
+					}
 				}
-			}
-			content, err := json.Marshal(toolOutput(call, batch))
-			if err != nil {
-				content = []byte("{}")
+				var err error
+				content, err = json.Marshal(toolOutput(call, batch))
+				if err != nil {
+					content = []byte("{}")
+				}
+				content = []byte(l.aliasToolText(string(content), kindByID))
 			}
 			messages = append(messages, provider.Message{
-				Role: provider.RoleTool, ToolCallID: ids[index], Content: l.aliasToolText(string(content), kindByID),
+				Role: provider.RoleTool, ToolCallID: ids[position], Content: string(content),
 			})
 		}
 	}
@@ -743,14 +878,6 @@ func (l *Loop) messages(ctx context.Context) []provider.Message {
 			content += "\n" + l.freshGuidance
 		}
 		messages = append(messages, provider.Message{Role: "user", Content: content})
-	}
-	// A refused document rides back with the reason it was refused, so the
-	// re-ask fixes the shape instead of repeating it.
-	if len(l.documentFeedback) > 0 {
-		messages = append(messages, provider.Message{
-			Role:    "user",
-			Content: documentRejectionPrompt + "\nFixing: " + strings.Join(l.documentFeedback, "; "),
-		})
 	}
 	return messages
 }
@@ -985,18 +1112,23 @@ func (l *Loop) evidenceTokens() int {
 // total includes every retrieval turn rather than only the closing calls.
 func turnUsage(turn Turn) provider.Usage { return turn.Usage }
 
-// addUsage sums two usage values.
+// addUsage sums two usage values. The cached and reasoning counts are subsets
+// of (or parallel to) the input/output counts, so they sum alongside them
+// without double-counting totals — the same accounting the reference folds into
+// its run total.
 func addUsage(left, right provider.Usage) provider.Usage {
 	return provider.Usage{
-		InputTokens:  left.InputTokens + right.InputTokens,
-		OutputTokens: left.OutputTokens + right.OutputTokens,
-		TotalTokens:  left.TotalTokens + right.TotalTokens,
+		InputTokens:       left.InputTokens + right.InputTokens,
+		OutputTokens:      left.OutputTokens + right.OutputTokens,
+		TotalTokens:       left.TotalTokens + right.TotalTokens,
+		CachedInputTokens: left.CachedInputTokens + right.CachedInputTokens,
+		ReasoningTokens:   left.ReasoningTokens + right.ReasoningTokens,
 	}
 }
 
-// toolAuto lets the model choose whether to call a tool.
-func toolAuto() *provider.ToolSelectionPolicy {
-	return &provider.ToolSelectionPolicy{Mode: "auto"}
+// toolRequired forces the model to call some tool.
+func toolRequired() *provider.ToolSelectionPolicy {
+	return &provider.ToolSelectionPolicy{Mode: "required"}
 }
 
 // toolNamed pins the model to one tool.
@@ -1005,13 +1137,19 @@ func toolNamed(name string) *provider.ToolSelectionPolicy {
 }
 
 // toolChoice constrains what the model may call this turn: the next layer of
-// the retrieval hierarchy while a forced step is still owed, otherwise the
-// model's own choice.
+// the retrieval hierarchy while a forced step is still owed; recall when a stop
+// was refused for reporting nothing found before recall ran; otherwise
+// `required`. A free turn pins `required` rather than leaving the model free:
+// left to choose, most models stop with the answer as prose, which the closing
+// step throws away and writes again.
 func (l *Loop) toolChoice() *provider.ToolSelectionPolicy {
 	if l.forcedStepPending() {
 		return toolNamed(l.forcedSequence[l.forcedStepsDone])
 	}
-	return toolAuto()
+	if l.absenceRecallForced && !l.recallRan {
+		return toolNamed(ToolRecall)
+	}
+	return toolRequired()
 }
 
 // offeredTools returns the tool definitions a turn presents. During the forced

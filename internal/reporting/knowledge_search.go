@@ -95,8 +95,9 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 	query, limit, filter, items, groupsDetail := knowledgeSearchParams(r)
 	if groupsDetail != "" {
 		// The tag-filter dependency raised its own HTTPException, so its string
-		// detail is the whole response.
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, groupsDetail))
+		// detail is the whole response — the 400 of _decode_tag_groups_query,
+		// not the framework's 422.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, groupsDetail))
 		return
 	}
 	if len(items) > 0 {

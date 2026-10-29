@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed — the v1.1.0 port completed
+
+A route-by-route audit of the v1.1.0 port against the reference's own code
+closed the divergences the first pass had left. Highlights, all verified against
+upstream file:line evidence and pinned by tests:
+
+- **Consolidation runs the v1.1.0 contract.** The system prompt is the
+  reference's rendered text verbatim (recency is `mentioned_at`, chatter is
+  skipped, an update replaces the whole text, deletes carry `merged_into`); a
+  delete whose observation the same response updates is dropped instead of
+  destroying the update; merged evidence folds into its survivor or is
+  requeued; a hallucinated or miscopied target no longer fails the whole pass;
+  every answered batch is stamped consolidated; a round-capped pass requeues a
+  successor carrying `caller_requested`, and the scope's observation cap is
+  measured against the scope's true count rather than a bounded pool.
+- **Reflect answers once, the way v1.1.0 does.** The free turn's own answer is
+  discarded and a closing step (`closing_done`) writes the final one, with the
+  new `answer_ready` stop signal, free turns pinned to `required`, the
+  search-first / recall-first refusals, cited-id `based_on` membership, cached
+  and reasoning token accounting, and a sticky forced-`tool_choice` fallback in
+  the anthropic and openai adapters.
+- **Placeholder dates (year 1 / 9999) are not dates.** They are refused at
+  retain, file retain, edit and dry-run with the reference's sentences, dropped
+  from extracted facts, imported archives and consolidation bounds, and read as
+  unknown by recall and recency.
+- **Documents.** The postgres retag cascade requeues the moved memories and the
+  surviving co-sources of the observations it deletes (both backends now agree),
+  `total_is_estimate` is served past the 1,000-match cap, `PATCH
+  observation_scopes` answers the framework's union-failure shape and treats an
+  explicit null as absent, and the memory backend stamps `updated_at` the way
+  the postgres one does.
+- **Operations and the worker.** A failed or cancelled batch parent no longer
+  reports `completed_at` or borrowed outcome counters; the parent's error is the
+  most-common child message verbatim; retries record `last_retry_error`;
+  error messages truncate at 5,000 characters; a tag-scoped caller cannot read
+  `task_payload`; malformed-operation-id 400s precede the scoped 403;
+  consolidation retries on its own ladder instead of the generic budget; a
+  reclaimed expired lease counts toward the retry cap.
+- **Mental models.** PATCH/clear no longer leak `is_knowledge_page`;
+  `exclude_knowledge_pages=` (present, empty) is a 422; cron validation accepts
+  the reference's croniter grammar; list parameters validate before the bank
+  probe; the refresh body validates before the gates; template export leaves
+  knowledge pages out; `min_refresh_interval_seconds` actually parks automatic
+  refreshes, and "refresh now" releases that park.
+- **Recall.** `prefer_observations` works on the in-memory backend (observations
+  carry their source ids), the supersession window matches the reference's
+  `2×budget` bound, the reranker candidate cap defaults to 300 with per-budget
+  resolution and pool trimming, and placeholder dates rank as unknown.
+- **Observability.** Embedding and rerank calls are traced into `llm_requests`
+  (`call_type=embedding|rerank`, `llm_info.input_count`);
+  `WENYUAN_API_LLM_TRACE_EXCLUDE_SCOPES` exists and both trace scope lists match
+  `*` prefixes; the audit-log member route refuses a bank-wide caller before the
+  lookup and canonicalizes UUID spellings on the memory backend; empty `{}`
+  request/response bodies store as `{}` rather than NULL.
+- **MCP.** The recall tool gained the six include parameters and the bank's
+  `recall_prefer_observations` default; `tags_match` is the five-value enum;
+  `update_memory` applies everything its schema advertises (`mentioned_at`
+  included); the trigger schemas carry `full_refresh_cron`; timestamps refuse
+  placeholder years with the reference's wording.
+- **Everything else the audit caught**: graph assembly caps direct+copied and
+  inferred edges at the reference's budgets in its order, tag-filtered entity
+  reads include observation-inherited mentions; transfers validate the restore
+  target (reserved `_` prefix included), remap imported mental-model evidence
+  into the target's unit ids, count only standalone models, gate the export's
+  lifecycle fields and skip an observation with an unmapped source; disconnected
+  recall, retain, reflect and graph runs answer `499 client disconnected`;
+  bank config accepts and echoes the four decision-model switches (inert), the
+  bank-template schema serves all 57 fields, blank `tag_groups` is no filter
+  everywhere, and untagged writes are refused to write-scoped callers.
+
 ### Added — the reference released v1.1.0
 
 - **The contract is the reference's v1.1.0 document.** `internal/httpx/openapi.json`

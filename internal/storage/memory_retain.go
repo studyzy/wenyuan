@@ -770,9 +770,15 @@ func (s *MemoryStore) PutDocument(ctx context.Context, bankID, docID string, doc
 		params["metadata"] = metadata
 		doc.RetainParams = params
 	}
+	now := time.Now().UTC()
 	if doc.CreatedAt.IsZero() {
-		doc.CreatedAt = time.Now().UTC()
+		doc.CreatedAt = now
 	}
+	// The documents row carries updated_at on every write: the insert defaults
+	// it to the write's clock and the reference's update stamps
+	// `updated_at = now()` beside the fields it sets (documents.py:386-400), so
+	// an upsert — a retag among them — always re-stamps it.
+	doc.UpdatedAt = now
 	s.documents[docID] = doc
 	return doc, nil
 }
@@ -821,6 +827,17 @@ func (s *MemoryStore) RetagDocumentMemories(
 		}
 	}
 	plans := planDocumentRetag(units, change)
+	// A tag change stamps every unit the document owns — the reference's blanket
+	// write carries `updated_at = now()` beside the tags — and a scope change
+	// alone stamps only the units that moved: an in-flight consolidation that
+	// read them under the old scopes must see the edit and drop its result
+	// (documents.py:486-498).
+	now := time.Now().UTC()
+	srcIDs := movedSourceUnits(plans)
+	moved := make(map[string]bool, len(srcIDs))
+	for _, id := range srcIDs {
+		moved[id] = true
+	}
 	for _, plan := range plans {
 		unit := s.units[plan.unit.ID]
 		if plan.newScopes != nil {
@@ -829,9 +846,12 @@ func (s *MemoryStore) RetagDocumentMemories(
 		if change.NewTags != nil {
 			unit.Tags = plan.finalTags
 		}
+		if change.NewTags != nil || moved[plan.unit.ID] {
+			stamp := now
+			unit.UpdatedAt = &stamp
+		}
 		s.units[plan.unit.ID] = unit
 	}
-	srcIDs := movedSourceUnits(plans)
 	if len(srcIDs) == 0 {
 		return RetagOutcome{}, nil
 	}

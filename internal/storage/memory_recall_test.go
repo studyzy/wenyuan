@@ -472,3 +472,118 @@ func TestUnknownBoostLevelIsIgnored(t *testing.T) {
 		t.Fatalf("unknown boost level changed the fused score to %v, want 1", got)
 	}
 }
+
+// beh-0019: an observation recalled from the in-process backend carries the
+// source facts its postings cite, so the prefer-observations dedup, the
+// source-facts channel and the response's source_fact_ids work here the way the
+// PostgreSQL column scan makes them work there.
+func TestRecallHydratesObservationSourcePostings(t *testing.T) {
+	s := NewMemoryStore("public")
+	if _, err := s.CreateBank(context.Background(), Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.UpsertUnit(context.Background(), MemoryUnit{BankID: "b1", Text: "alpha", FactType: TypeWorld})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateObservation(context.Background(), "b1", "alpha conclusion", []string{stored.ID}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Recall(context.Background(), RecallQuery{
+		BankID: "b1", Query: "alpha", PreferObservations: true, IncludeSourceFacts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range result.Matches {
+		if match.Type != string(TypeObservation) {
+			t.Fatalf("a raw fact superseded by a returned observation must be dropped: %v", recallIDs(result))
+		}
+		if len(match.SourceMemoryIDs) == 1 && match.SourceMemoryIDs[0] == stored.ID {
+			if _, ok := result.SourceFactMap[stored.ID]; !ok {
+				t.Fatalf("source-fact map must carry the cited fact: %+v", result.SourceFactMap)
+			}
+			return
+		}
+	}
+	t.Fatalf("observation must carry its source posting %s: %v", stored.ID, recallIDs(result))
+}
+
+// The supersession window bounds which observations may suppress a raw fact:
+// only the first 2×budget ranked candidates hold observations that supersede,
+// so a far-down observation cannot suppress a top raw fact it merely happens to
+// reference (engine/memory_engine.py:10650-10652).
+func TestRecallSupersessionWindowBoundsDedup(t *testing.T) {
+	s := NewMemoryStore("public")
+	seedBank(t, s, "b1",
+		RecallMatch{ID: "raw-1", Text: "alpha", Type: "world"},
+		RecallMatch{ID: "raw-2", Text: "alpha", Type: "world"},
+		RecallMatch{ID: "raw-3", Text: "alpha", Type: "world"},
+		RecallMatch{ID: "raw-4", Text: "alpha", Type: "world"},
+		// The observation ranks last, past the 2×budget window of four.
+		RecallMatch{ID: "z-obs", Text: "alpha", Type: "observation", ObservationSourceIDs: []string{"raw-1"}},
+	)
+	result, err := s.Recall(context.Background(), RecallQuery{
+		BankID: "b1", Query: "alpha", PreferObservations: true, Limit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsID(recallIDs(result), "raw-1") {
+		t.Fatalf("a far-down observation must not suppress the top raw fact: %v", recallIDs(result))
+	}
+}
+
+// rankRecallFinal recalls one seeded unit alone and returns its final weight,
+// with the recency anchor pinned so two recalls are comparable.
+func rankRecallFinal(t *testing.T, match RecallMatch) float64 {
+	t.Helper()
+	s := NewMemoryStore("public")
+	seedBank(t, s, "b1", match)
+	anchor := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	result, err := s.Recall(context.Background(), RecallQuery{BankID: "b1", Query: "alpha", QueryTimestamp: &anchor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("want one match, got %v", recallIDs(result))
+	}
+	return result.Matches[0].Final
+}
+
+// A placeholder date — year 1 or 9999, the way a model or an export writes
+// "since forever" / "still ongoing" — is no date in recall: the unit ranks by
+// the dates it really has, exactly like a unit carrying none
+// (engine/stored_dates.py).
+func TestRecallPlaceholderDateRanksAsUnknown(t *testing.T) {
+	mention := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	plain := rankRecallFinal(t, RecallMatch{ID: "m1", Text: "alpha", Type: "world", MentionedAt: &mention})
+	for _, placeholder := range []time.Time{
+		time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC),
+	} {
+		stored := placeholder
+		got := rankRecallFinal(t, RecallMatch{ID: "m1", Text: "alpha", Type: "world", MentionedAt: &mention, OccurredStart: &stored})
+		if got != plain {
+			t.Fatalf("placeholder occurred_start %s must rank as unknown: got %v, want %v",
+				stored.Format(time.RFC3339), got, plain)
+		}
+	}
+}
+
+// The recall-side reading of a stored date: a placeholder year drops out of the
+// span the way an unset column does.
+func TestUnitTemporalPointPlaceholderDatesAsUnknown(t *testing.T) {
+	real := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	year1 := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	year9999 := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	if got := unitTemporalPoint(&year1, &year9999, &real); got == nil || !got.Equal(real) {
+		t.Fatalf("placeholder bounds must fall back to the mention: %v", got)
+	}
+	if got := unitTemporalPoint(&year1, &year9999, nil); got != nil {
+		t.Fatalf("placeholder bounds with no mention are no date: %v", got)
+	}
+	if got := unitTemporalPoint(&year1, &real, nil); got == nil || !got.Equal(real) {
+		t.Fatalf("a placeholder bound drops out of the span: %v", got)
+	}
+}

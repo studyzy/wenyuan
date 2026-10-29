@@ -18,6 +18,10 @@ const (
 	EnvLLMTemperatureReflect       = "WENYUAN_API_LLM_TEMPERATURE_REFLECT"
 	EnvLLMTemperatureRetain        = "WENYUAN_API_LLM_TEMPERATURE_RETAIN"
 	EnvLLMTemperatureVerification  = "WENYUAN_API_LLM_TEMPERATURE_VERIFICATION"
+	// The mental-model refresh's structured edit calls (delta and retraction
+	// ops). Unset, it takes the resolved consolidation temperature, which those
+	// calls used before it existed (config.py:229-232).
+	EnvLLMTemperatureMentalModelRefresh = "WENYUAN_API_LLM_TEMPERATURE_MENTAL_MODEL_REFRESH"
 )
 
 // TemperatureOmit is the documented sentinel that removes the temperature
@@ -44,7 +48,7 @@ func scopeKeys() []string {
 		EnvLLMStrictSchema, EnvLLMStrictSchemaConsolidation, EnvLLMStrictSchemaReflect,
 		EnvLLMStrictSchemaRetain,
 		EnvLLMTemperature, EnvLLMTemperatureConsolidation, EnvLLMTemperatureReflect,
-		EnvLLMTemperatureRetain, EnvLLMTemperatureVerification,
+		EnvLLMTemperatureRetain, EnvLLMTemperatureVerification, EnvLLMTemperatureMentalModelRefresh,
 	}
 }
 
@@ -106,7 +110,30 @@ func ResolveScopes(lookup func(string) (string, bool)) ScopedConfig {
 			defaultTemperatureFor(op),
 		)
 	}
+	// The mental-model refresh inherits consolidation's already-resolved value
+	// when its own key is unset — the global env and the omit sentinels reach it
+	// through that inheritance, and leaving it unset changes nothing
+	// (_resolve_inherited_temperature, config.py:330-340).
+	cfg.TemperatureByOperation["mental_model_refresh"] = resolveInheritedTemperature(
+		temperatureFromLookup(lookup, EnvLLMTemperatureMentalModelRefresh),
+		cfg.TemperatureByOperation["consolidation"],
+	)
 	return cfg
+}
+
+// resolveInheritedTemperature applies the per-operation env over the inherited
+// value: an explicit omit removes the parameter, an explicit number is the
+// value, and an unset key is the inheritance.
+func resolveInheritedTemperature(perOp temperatureValue, inherited *float64) *float64 {
+	switch {
+	case perOp.set && perOp.omit:
+		return nil
+	case perOp.set:
+		v := perOp.value
+		return &v
+	default:
+		return inherited
+	}
 }
 
 // resolveTemperature applies per-operation, then global, then the built-in

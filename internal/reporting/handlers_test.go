@@ -446,7 +446,8 @@ func TestPromptPreviewRejectsUnknownOperation(t *testing.T) {
 
 // The preview route is the one bank-scoped route that does NOT catch the
 // reference's OperationValidationError: an unknown bank escapes to the generic
-// handler, which answers 500 with the wrapped text rather than the route's 404.
+// handler, which since #5448 maps the validator's own error to its carried
+// status and reason — the same 404 a catching route answers.
 func TestPromptPreviewUnknownBankAnswersUncaughtValidationError(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	const missing = "no-such-bank"
@@ -458,10 +459,10 @@ func TestPromptPreviewUnknownBankAnswersUncaughtValidationError(t *testing.T) {
 		})
 	})
 	rec := send(mux, http.MethodPost, "/v1/default/banks/"+missing+"/prompts/preview", `{"operation":"retain"}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
 	}
-	want := `{"detail":"Operation validation failed: Bank 'no-such-bank' not found"}`
+	want := `{"detail":"Bank 'no-such-bank' not found"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body = %s, want %s", got, want)
 	}

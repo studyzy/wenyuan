@@ -13,6 +13,13 @@ var ErrBankNotFound = errors.New("bank not found")
 // is reused for a different write.
 var ErrOperationConflict = errors.New("operation id already used")
 
+// ErrOperationConcurrentlyTerminal is returned by a cancellation whose guarded
+// write found the operation already terminal: the row reached its terminal
+// state between the read above and this write, so the caller is told the
+// operation could not be cancelled rather than handed a cancellation that never
+// happened (engine/memory_engine.py:22269-22276).
+var ErrOperationConcurrentlyTerminal = errors.New("operation reached a terminal state concurrently")
+
 // ErrWritesUnavailable is returned when the store cannot accept writes for a
 // transient reason; callers map it to a retryable service-unavailable response.
 var ErrWritesUnavailable = errors.New("writes temporarily unavailable")
@@ -393,12 +400,13 @@ type Store interface {
 	// ClaimNextOperation atomically claims the oldest claimable operation for
 	// the given worker and returns it. It reports ErrOperationNotFound when
 	// nothing is claimable. A claim older than lease is reclaimable, so a
-	// consumer that died mid-operation does not strand its work.
-	ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error)
+	// consumer that died mid-operation does not strand its work; the variadic
+	// options adjust that recovery (WithReclaimLimit).
+	ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, opts ...ClaimOption) (Operation, error)
 	// ClaimNextOperationForTypes claims the oldest claimable operation whose
 	// type is in types, so a reserved type's floor can be honoured. An empty
 	// types list is equivalent to ClaimNextOperation.
-	ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error)
+	ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string, opts ...ClaimOption) (Operation, error)
 	// ReleaseOperationClaim returns a claimed operation to the claimable pool
 	// without recording a failure. It is what a graceful shutdown uses to hand
 	// its in-flight work back.

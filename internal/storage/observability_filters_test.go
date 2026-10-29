@@ -390,6 +390,16 @@ func TestMemoryGetAuditLog(t *testing.T) {
 	if entry.Action != "retain" || entry.Response["status"] != "ok" || entry.Metadata["tenant"] != "t1" {
 		t.Fatalf("entry = %+v", entry)
 	}
+	// The uppercase and brace-wrapped spellings name the same entry, as the
+	// reference's uuid.UUID(log_id) parse does on either backend.
+	for _, spelling := range []string{
+		"3F2504E0-4F89-11D3-9A0C-0305E82C3301",
+		"{3f2504e0-4f89-11d3-9a0c-0305e82c3301}",
+	} {
+		if _, err := store.GetAuditLog(ctx, bank, spelling); err != nil {
+			t.Fatalf("GetAuditLog(%q) = %v, want the entry", spelling, err)
+		}
+	}
 	for _, missing := range []struct{ bank, id string }{
 		{"b2", id}, {bank, "e3b0c442-98fc-1c14-9afb-f4c8996fb924"}, {bank, ""},
 	} {

@@ -215,6 +215,11 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		// An abandoned recall stops work and is answered 499 with the
+		// reference's disconnect reason rather than a server fault.
+		if httpx.WriteClientDisconnected(w, r) {
+			return
+		}
 		h.writeReadError(w, r, err)
 		return
 	}

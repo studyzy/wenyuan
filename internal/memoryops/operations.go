@@ -106,6 +106,13 @@ func (h *Handlers) GetOperation(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: []httpx.ValidationError{*boolFailure}})
 		return
 	}
+	// An operation row is not tagged, but its payload is the raw request — a
+	// retain's payload is the text someone else stored. A scoped caller never
+	// gets payloads, so its include_payload is forced off
+	// (engine/memory_engine.py:22064-22068) however it was queried.
+	if len(httpx.TagScopeFrom(r)) > 0 {
+		includePayload = false
+	}
 	op, err := h.Store.GetOperation(r.Context(), bankID, canonical)
 	if err != nil {
 		if errors.Is(err, storage.ErrOperationNotFound) {
@@ -188,14 +195,17 @@ func queryBool(r *http.Request, key string) (bool, *httpx.ValidationError) {
 
 // CancelOperation serves the operation-cancellation route.
 func (h *Handlers) CancelOperation(w http.ResponseWriter, r *http.Request) {
-	// Operations are bank-wide, so a tag-scoped caller may not touch them.
-	if httpx.RefuseBankWideIfScoped(w, r, "cancel the bank's operations") {
-		return
-	}
+	// The identifier is validated before the scoped-caller refusal: the
+	// reference's route parses the UUID first, so a malformed identifier is a
+	// 400 even for a caller a scope would refuse (api/http.py:8575-8578).
 	opID := r.PathValue(OperationIDPathParam)
 	canonical, ok := canonicalOperationID(opID)
 	if !ok {
 		rejectMalformedOperationID(w, r, opID)
+		return
+	}
+	// Operations are bank-wide, so a tag-scoped caller may not touch them.
+	if httpx.RefuseBankWideIfScoped(w, r, "cancel the bank's operations") {
 		return
 	}
 	bankID := r.PathValue("bank_id")
@@ -216,13 +226,16 @@ func (h *Handlers) CancelOperation(w http.ResponseWriter, r *http.Request) {
 
 // RetryOperation starts a new run of a failed or cancelled operation.
 func (h *Handlers) RetryOperation(w http.ResponseWriter, r *http.Request) {
-	if httpx.RefuseBankWideIfScoped(w, r, "retry the bank's operations") {
-		return
-	}
+	// The identifier is validated before the scoped-caller refusal: the
+	// reference's route parses the UUID first, so a malformed identifier is a
+	// 400 even for a caller a scope would refuse (api/http.py:8601-8615).
 	opID := r.PathValue(OperationIDPathParam)
 	canonical, ok := canonicalOperationID(opID)
 	if !ok {
 		rejectMalformedOperationID(w, r, opID)
+		return
+	}
+	if httpx.RefuseBankWideIfScoped(w, r, "retry the bank's operations") {
 		return
 	}
 	bankID := r.PathValue("bank_id")
@@ -250,15 +263,18 @@ func (h *Handlers) rollUpBatchParent(r *http.Request, bankID string, op storage.
 // identifier is rejected before any lookup, and only failed, cancelled or
 // completed operations are removable.
 func (h *Handlers) DeleteOperation(w http.ResponseWriter, r *http.Request) {
-	if httpx.RefuseBankWideIfScoped(w, r, "delete the bank's operations") {
-		return
-	}
+	// The identifier is validated before the scoped-caller refusal: the
+	// reference's route parses the UUID first, so a malformed identifier is a
+	// 400 even for a caller a scope would refuse (api/http.py:8640-8650).
 	opID := r.PathValue(OperationIDPathParam)
 	// The reference rejects a non-UUID identifier with a 400 and a plain
 	// detail string, not the structured validation envelope.
 	canonical, ok := canonicalOperationID(opID)
 	if !ok {
 		rejectMalformedOperationID(w, r, opID)
+		return
+	}
+	if httpx.RefuseBankWideIfScoped(w, r, "delete the bank's operations") {
 		return
 	}
 	bankID := r.PathValue("bank_id")
@@ -291,11 +307,16 @@ func (h *Handlers) mapDeleteOperationError(err error, op storage.Operation, opID
 
 // mapCancelError renders the not-found and conflict failures the cancel route
 // reports. The reference's conflict message names the identifier and the status
-// the row actually held.
+// the row actually held; a race the guarded write lost — the row reached a
+// terminal state between the read and the write — carries its own message
+// (engine/memory_engine.py:22269-22276).
 func (h *Handlers) mapCancelError(err error, op storage.Operation, opID, bankID string) error {
 	switch {
 	case errors.Is(err, storage.ErrOperationNotFound):
 		return httpx.NewHTTPError(httpx.KindNotFound, "Operation "+opID+" not found for bank "+bankID)
+	case errors.Is(err, storage.ErrOperationConcurrentlyTerminal):
+		return httpx.NewHTTPError(httpx.KindConflict,
+			"Operation "+opID+" cannot be cancelled: it reached a terminal state concurrently")
 	case errors.Is(err, storage.ErrOperationConflict):
 		return httpx.NewHTTPError(httpx.KindConflict,
 			"Operation "+opID+" cannot be cancelled: status is '"+string(op.Status)+
@@ -511,9 +532,19 @@ func operationDetails(operationType string, metadata map[string]any) map[string]
 		return nil
 	}
 	details := map[string]any{"operation_type": "refresh_mental_model", "outcome": outcome}
-	details["failure_reason"] = nil
-	if reason, ok := metadata["failure_reason"].(string); ok && refreshFailureReasons[reason] {
+	// failure_reason is a typed member of the same model: a value outside its
+	// enum fails the model's validation, and the reference answers no detail at
+	// all for that row (engine/memory_engine.py:2295-2303) — the same
+	// rolling-upgrade shape an unknown outcome produces. An absent reason is
+	// the model's default and projects as null.
+	if reasonValue, present := metadata["failure_reason"]; present {
+		reason, isString := reasonValue.(string)
+		if !isString || !refreshFailureReasons[reason] {
+			return nil
+		}
 		details["failure_reason"] = reason
+	} else {
+		details["failure_reason"] = nil
 	}
 	return details
 }

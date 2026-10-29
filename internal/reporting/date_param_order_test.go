@@ -146,3 +146,42 @@ func TestEnabledLLMHealthAnswersForAnUnknownBank(t *testing.T) {
 type stubProber struct{}
 
 func (stubProber) Probe(context.Context) error { return nil }
+
+// The reference validates `call_type`'s Literal and `group`'s bool during
+// signature resolution, before the body parses the dates
+// (api/http.py:10952-10966 vs :10986-10987), so a bad typed parameter is its
+// framework 422 even when a date parameter is garbage too — and a good typed
+// parameter leaves the dates their 400.
+func TestLLMRequestsTypesBeforeDates(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := serveRoutes(t, store)
+
+	cases := []struct {
+		path string
+		want int
+		body string
+	}{
+		{"/v1/default/banks/no-such-bank/llm-requests?start_date=garbage&call_type=bogus",
+			http.StatusUnprocessableEntity, `"type":"literal_error"`},
+		{"/v1/default/banks/no-such-bank/llm-requests?end_date=garbage&call_type=bogus",
+			http.StatusUnprocessableEntity, `"type":"literal_error"`},
+		{"/v1/default/banks/no-such-bank/llm-requests?start_date=garbage&group=notabool",
+			http.StatusUnprocessableEntity, `"type":"bool_parsing"`},
+		{"/v1/default/banks/no-such-bank/llm-requests?start_date=garbage&call_type=llm&group=true",
+			http.StatusBadRequest, "Invalid start_date: 'garbage' is not an ISO-8601 datetime."},
+		{"/v1/default/banks/no-such-bank/llm-requests?end_date=garbage&group=false",
+			http.StatusBadRequest, "Invalid end_date: 'garbage' is not an ISO-8601 datetime."},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s: status = %d, want %d (body %s)", tc.path, rec.Code, tc.want, rec.Body.String())
+			continue
+		}
+		if body := rec.Body.String(); !strings.Contains(body, tc.body) {
+			t.Errorf("%s: body = %s, want it to carry %q", tc.path, body, tc.body)
+		}
+	}
+}

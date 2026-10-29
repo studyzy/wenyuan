@@ -221,6 +221,30 @@ func coreTools() []tool {
 						"default": "high",
 						"type":    "string",
 					},
+					"include_chunks": map[string]any{
+						"default": false,
+						"type":    "boolean",
+					},
+					"include_entities": map[string]any{
+						"default": false,
+						"type":    "boolean",
+					},
+					"include_source_facts": map[string]any{
+						"default": false,
+						"type":    "boolean",
+					},
+					"max_chunk_tokens": map[string]any{
+						"default": 8192,
+						"type":    "integer",
+					},
+					"max_entity_tokens": map[string]any{
+						"default": 500,
+						"type":    "integer",
+					},
+					"max_source_facts_tokens": map[string]any{
+						"default": 4096,
+						"type":    "integer",
+					},
 					"max_tokens": map[string]any{
 						"default": 4096,
 						"type":    "integer",
@@ -289,7 +313,14 @@ func coreTools() []tool {
 					},
 					"tags_match": map[string]any{
 						"default": "any",
-						"type":    "string",
+						"enum": []any{
+							"any",
+							"all",
+							"any_strict",
+							"all_strict",
+							"exact",
+						},
+						"type": "string",
 					},
 					"temporal_window": map[string]any{
 						"anyOf": []any{
@@ -326,7 +357,7 @@ func coreTools() []tool {
 		},
 		{
 			Name:        "reflect",
-			Description: "Generate thoughtful analysis by synthesizing stored memories with the bank's personality.\n\nWHEN TO USE THIS TOOL:\nUse reflect when you need reasoned analysis, not just fact retrieval. This tool\nthinks through the question using everything the bank knows and its personality traits.\n\nEXAMPLES OF GOOD QUERIES:\n- \"What patterns have emerged in how I approach debugging?\"\n- \"Based on my past decisions, what architectural style do I prefer?\"\n- \"What might be the best approach for this problem given what you know about me?\"\n- \"How should I prioritize these tasks based on my goals?\"\n\nHOW IT DIFFERS FROM RECALL:\n- recall: Returns raw facts matching your search (fast lookup)\n- reflect: Reasons across memories to form a synthesized answer (deeper analysis)\n\nUse recall for \"what did I say about X?\" and reflect for \"what should I do about X?\"\n\nArgs:\n    query: The question or topic to reflect on\n    context: Optional context about why this reflection is needed\n    budget: Search budget - 'low', 'mid', or 'high' (default: 'low')\n    max_tokens: Maximum tokens for the response (default: 4096)\n    response_schema: Optional JSON schema for structured output. When provided, the response includes a 'structured_output' field.\n    tags: Optional tags to filter memories by (e.g., ['project:alpha'])\n    tags_match: How to match tags - 'any' (match any tag) or 'all' (match all tags). Default: 'any'\n    apply_all_directives: Apply every active directive regardless of tags. By default directives are scoped like memories (untagged always apply; tagged apply only when tags match). Set true to apply all directives, ignoring tag scope.\n    include_based_on: Include source facts used for synthesis. Defaults to false because broad reflections can exceed MCP client result limits.\n    include_trace: Include the reflection's internal trace fields (tool_trace/llm_trace and directives_applied). Defaults to false because the trace can be tens of KB and overflow MCP client context; enable only for debugging.\n    bank_id: Optional bank to reflect in (defaults to session bank). Use for cross-bank operations.",
+			Description: "Generate thoughtful analysis by synthesizing stored memories with the bank's personality.\n\nWHEN TO USE THIS TOOL:\nUse reflect when you need reasoned analysis, not just fact retrieval. This tool\nthinks through the question using everything the bank knows and its personality traits.\n\nEXAMPLES OF GOOD QUERIES:\n- \"What patterns have emerged in how I approach debugging?\"\n- \"Based on my past decisions, what architectural style do I prefer?\"\n- \"What might be the best approach for this problem given what you know about me?\"\n- \"How should I prioritize these tasks based on my goals?\"\n\nHOW IT DIFFERS FROM RECALL:\n- recall: Returns raw facts matching your search (fast lookup)\n- reflect: Reasons across memories to form a synthesized answer (deeper analysis)\n\nUse recall for \"what did I say about X?\" and reflect for \"what should I do about X?\"\n\nArgs:\n    query: The question or topic to reflect on\n    context: Optional context about why this reflection is needed\n    budget: Search budget - 'low', 'mid', or 'high' (default: 'low')\n    max_tokens: Maximum tokens for the response (default: 4096)\n    response_schema: Optional JSON schema for structured output. When provided, the response includes a 'structured_output' field.\n    tags: Optional tags to filter memories by (e.g., ['project:alpha'])\n    tags_match: How to match tags - 'any' (any tag, untagged included), 'all' (all tags, untagged included),\n        'any_strict' / 'all_strict' (same, untagged excluded) or 'exact' (exactly these tags). Default: 'any'\n    apply_all_directives: Apply every active directive regardless of tags. By default directives are scoped like memories (untagged always apply; tagged apply only when tags match). Set true to apply all directives, ignoring tag scope.\n    include_based_on: Include source facts used for synthesis. Defaults to false because broad reflections can exceed MCP client result limits.\n    include_trace: Include the reflection's internal trace fields (tool_trace/llm_trace and directives_applied). Defaults to false because the trace can be tens of KB and overflow MCP client context; enable only for debugging.\n    bank_id: Optional bank to reflect in (defaults to session bank). Use for cross-bank operations.",
 			InputSchema: map[string]any{
 				"additionalProperties": false,
 				"properties": map[string]any{
@@ -403,7 +434,14 @@ func coreTools() []tool {
 					},
 					"tags_match": map[string]any{
 						"default": "any",
-						"type":    "string",
+						"enum": []any{
+							"any",
+							"all",
+							"any_strict",
+							"all_strict",
+							"exact",
+						},
+						"type": "string",
 					},
 				},
 				"required": []any{

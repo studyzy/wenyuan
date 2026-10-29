@@ -102,8 +102,14 @@ func TestStoreWithoutRetryResultCapabilityStillDefers(t *testing.T) {
 	if after.Status != storage.StatusPending {
 		t.Fatalf("a store without the capability must still defer: %+v", after)
 	}
-	if len(after.ResultMetadata) != 0 {
-		t.Fatalf("a store without the capability must not record metadata: %+v", after.ResultMetadata)
+	// The processor's report is dropped — a store without the capability cannot
+	// carry it — but the scheduling write still records its own cause, as every
+	// retry write does (worker/poller.py:1095-1098).
+	if _, recorded := after.ResultMetadata["last_status_code"]; recorded {
+		t.Fatalf("a store without the capability must not record the report: %+v", after.ResultMetadata)
+	}
+	if after.ResultMetadata["last_retry_error"] != "receiver unavailable" {
+		t.Fatalf("last_retry_error = %v, want the scheduling write's own cause", after.ResultMetadata["last_retry_error"])
 	}
 }
 

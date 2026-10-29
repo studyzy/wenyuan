@@ -119,11 +119,15 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		// A wall-clock budget that elapsed is a gateway timeout; a client
-		// disconnect cancels cooperatively and is not misreported.
+		// disconnect cancels cooperatively and is answered 499 with the
+		// reference's disconnect reason rather than silence.
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = storage.ErrReflectTimeout
 		}
 		if errors.Is(err, context.Canceled) {
+			// A cancellation the request's own context did not carry is not a
+			// client disconnect; it still stops without a response, as before.
+			httpx.WriteClientDisconnected(w, r)
 			return
 		}
 		httpx.WriteErrorFor(w, r, h.mapReflectError(err))
@@ -234,17 +238,15 @@ func resolveObservationsIncludeEntities(req ReflectRequest, bank *BankReflectDef
 	return defaultReflectSearchObservationsIncludeEntities
 }
 
-// appendContext appends the deprecated context field onto the query. A blank
-// context leaves the query unchanged; a non-blank context makes a blank query
-// acceptable.
+// appendContext appends the deprecated context field onto the query the way the
+// reference does: as an "Additional context" block after a blank line. The
+// request validation already refuses a blank query, so the query side is never
+// empty here.
 func appendContext(query, context string) string {
 	if context == "" {
 		return query
 	}
-	if query == "" {
-		return context
-	}
-	return query + "\n" + context
+	return query + "\n\nAdditional context: " + context
 }
 
 // reflectTimeoutContext applies the reflection wall-clock budget to the request

@@ -605,8 +605,11 @@ type Attachment struct {
 // ConsolidationFact is one raw memory unit offered to a consolidation pass as
 // new evidence.
 type ConsolidationFact struct {
-	ID            string
-	Text          string
+	ID   string
+	Text string
+	// CreatedAt is when the fact was written: what consolidation's candidates
+	// sort by, oldest first (consolidator.py:1459-1461).
+	CreatedAt     *time.Time
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time

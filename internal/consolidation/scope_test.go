@@ -318,6 +318,30 @@ func TestResolveScopesExpandsTagGlobs(t *testing.T) {
 			`[["*"]]`,
 			[][]string{{"a", "b"}},
 		},
+		{
+			"a class glob keeps only the tags it matches",
+			[]string{"user:1a", "user:2b", "user:3c"},
+			`[["user:[12]*"]]`,
+			[][]string{{"user:1a", "user:2b"}},
+		},
+		{
+			"a negated class glob keeps the tags outside the class",
+			[]string{"xa", "yb"},
+			`[["[!x]*"]]`,
+			[][]string{{"yb"}},
+		},
+		{
+			"a question mark stays a literal without a star",
+			[]string{"topic:a", "topic:?"},
+			`[["topic:?"]]`,
+			[][]string{{"topic:?"}},
+		},
+		{
+			"a question mark beside a star matches exactly one character",
+			[]string{"topic:", "topic:a"},
+			`[["topic:?*"]]`,
+			[][]string{{"topic:a"}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -329,7 +353,9 @@ func TestResolveScopesExpandsTagGlobs(t *testing.T) {
 	}
 }
 
-// globMatch pins Python's fnmatchcase for the *-only patterns scope globs use.
+// globMatch pins Python's fnmatchcase for the patterns scope globs use: * any
+// run of characters, ? exactly one, [seq] / [!seq] classes, case-sensitive, an
+// unclosed [ a literal.
 func TestGlobMatch(t *testing.T) {
 	cases := []struct {
 		pattern, name string
@@ -345,6 +371,30 @@ func TestGlobMatch(t *testing.T) {
 		{"prefix*", "prefix", true},
 		{"*suffix", "mysuffix", true},
 		{"*mid*", "amidb", true},
+		// The full pattern language a `*`-bearing entry is matched with.
+		{"topic:?", "topic:a", true},
+		{"topic:?", "topic:ab", false},
+		{"topic:?", "topic:", false},
+		{"topic:?", "topic:é", true},
+		{"?", "\n", true},
+		{"user:[12]*", "user:1abc", true},
+		{"user:[12]*", "user:2", true},
+		{"user:[12]*", "user:3abc", false},
+		{"user:[12]*", "user:", false},
+		{"user:[!x]*", "user:y1", true},
+		{"user:[!x]*", "user:x1", false},
+		{"[a-c]x", "bx", true},
+		{"[a-c]x", "dx", false},
+		{"[0-9]*", "42abc", true},
+		{"[0-9]*", "x42", false},
+		{"[]]x", "]x", true},
+		{"[]]x", "ax", false},
+		{"[abc", "[abc", true},
+		{"[abc", "xabc", false},
+		{"[a-]x", "-x", true},
+		{"[-x]", "-", true},
+		{"[-x]", "y", false},
+		{"Topic:*", "topic:go", false},
 	}
 	for _, tc := range cases {
 		if got := globMatch(tc.pattern, tc.name); got != tc.want {

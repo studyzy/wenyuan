@@ -76,12 +76,22 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	if err != nil {
 		return nil, err
 	}
+	// The per-fact consolidation lifecycle travels exactly when the observations
+	// do: with observations in the archive the target must not re-derive them, so
+	// imported facts keep their consolidated state; without them the target
+	// re-consolidates from scratch, so the lifecycle is deliberately dropped. A
+	// whole-bank export always carries both
+	// (engine/transfer/export.py:319, :588, :1239-1240).
+	includeLifecycle := opts.IncludeObservations
+	if opts.Scope.Any() {
+		includeLifecycle = true
+	}
 	// unitLocations records where every exported fact sits, so an observation's
 	// source references can be expressed as (document, ordinal) — the only form
 	// that survives a transfer to a bank that mints fresh ids.
 	unitLocations := map[string]transferarchive.ObservationSource{}
 	for _, document := range documents {
-		built, order, err := buildDocument(ctx, store, bankID, document)
+		built, order, err := buildDocument(ctx, store, bankID, document, includeLifecycle)
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +213,10 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 		archive.Manifest.ArchiveType = "documents"
 	}
 	archive.Manifest.ObservationCount = len(archive.Observations)
-	archive.Manifest.MentalModelCount = len(archive.MentalModels)
+	// A page keeps its content in a mental_models row, so those rows travel with
+	// the archive but are counted as knowledge pages, not as mental models
+	// (engine/transfer/export.py:357, :662, :1007).
+	archive.Manifest.MentalModelCount = len(standaloneMentalModels(archive.MentalModels, archive.KnowledgePages))
 	archive.Manifest.KnowledgePageCount = len(archive.KnowledgePages)
 	archive.Manifest.DirectiveCount = len(archive.Directives)
 	archive.Manifest.WebhookCount = len(archive.Webhooks)
@@ -602,7 +615,14 @@ func loadDocuments(ctx context.Context, store storage.Store, bankID string, ids 
 
 // buildDocument turns one stored document into its archive payload and reports
 // where each of its facts travelled.
-func buildDocument(ctx context.Context, store storage.Store, bankID string, document storage.Document) (transferarchive.Document, map[string]transferarchive.ObservationSource, error) {
+//
+// includeLifecycle gates the per-fact consolidation stamps: they are exported
+// only when the archive carries the observations the target would otherwise
+// re-derive, so an import without them re-consolidates from scratch. A failed
+// consolidation is never exported — the field has no interface member the
+// reference's payload could carry, so it exports as unset
+// (engine/transfer/export.py:1239-1241).
+func buildDocument(ctx context.Context, store storage.Store, bankID string, document storage.Document, includeLifecycle bool) (transferarchive.Document, map[string]transferarchive.ObservationSource, error) {
 	built := transferarchive.Document{
 		ID:           document.ID,
 		OriginalText: document.OriginalText,
@@ -631,21 +651,25 @@ func buildDocument(ctx context.Context, store storage.Store, bankID string, docu
 	}
 	locations := make(map[string]transferarchive.ObservationSource, len(units))
 	for ordinal, unit := range units {
+		createdAt := httpx.FormatZuluTimestampPtr(unit.CreatedAt)
+		consolidatedAt := httpx.FormatZuluTimestampPtr(unit.ConsolidatedAt)
+		if !includeLifecycle {
+			createdAt, consolidatedAt = nil, nil
+		}
 		fact := transferarchive.Fact{
-			Text:                  unit.Text,
-			SourceID:              unit.ID,
-			FactType:              string(unit.FactType),
-			Context:               unit.Context,
-			EventDate:             httpx.FormatZuluTimestampPtr(unit.EventDate),
-			OccurredStart:         httpx.FormatZuluTimestampPtr(unit.OccurredStart),
-			OccurredEnd:           httpx.FormatZuluTimestampPtr(unit.OccurredEnd),
-			MentionedAt:           httpx.FormatZuluTimestampPtr(unit.MentionedAt),
-			Metadata:              mapMetadata(unit.Metadata),
-			Tags:                  unit.Tags,
-			ObservationScopes:     archiveScopeList(unit.ObservationScopes),
-			CreatedAt:             httpx.FormatZuluTimestampPtr(unit.CreatedAt),
-			ConsolidatedAt:        httpx.FormatZuluTimestampPtr(unit.ConsolidatedAt),
-			ConsolidationFailedAt: httpx.FormatZuluTimestampPtr(unit.ConsolidationFailedAt),
+			Text:              unit.Text,
+			SourceID:          unit.ID,
+			FactType:          string(unit.FactType),
+			Context:           unit.Context,
+			EventDate:         httpx.FormatZuluTimestampPtr(unit.EventDate),
+			OccurredStart:     httpx.FormatZuluTimestampPtr(unit.OccurredStart),
+			OccurredEnd:       httpx.FormatZuluTimestampPtr(unit.OccurredEnd),
+			MentionedAt:       httpx.FormatZuluTimestampPtr(unit.MentionedAt),
+			Metadata:          mapMetadata(unit.Metadata),
+			Tags:              unit.Tags,
+			ObservationScopes: archiveScopeList(unit.ObservationScopes),
+			CreatedAt:         createdAt,
+			ConsolidatedAt:    consolidatedAt,
 		}
 		if unit.ChunkID != "" {
 			if index, ok := chunkOrdinals[unit.ChunkID]; ok {
@@ -724,9 +748,11 @@ func loadDocumentUnits(ctx context.Context, store storage.Store, bankID, documen
 	}
 }
 
-// buildObservations reads the bank's observations. An observation whose source
-// facts are not all in the archive is dropped rather than carried with
-// dangling evidence, because the importing bank would resolve them to nothing.
+// buildObservations reads the bank's observations. An observation with no
+// sources, or whose source facts are not all in the archive, is dropped whole
+// rather than carried with a truncated evidence list, because the importing
+// bank would resolve the missing ones to nothing
+// (engine/transfer/export.py:1300-1305).
 func buildObservations(ctx context.Context, store storage.Store, bankID string, locations map[string]transferarchive.ObservationSource) ([]transferarchive.Observation, error) {
 	units, err := loadUnitsByType(ctx, store, bankID, storage.TypeObservation)
 	if err != nil {
@@ -734,15 +760,20 @@ func buildObservations(ctx context.Context, store storage.Store, bankID string, 
 	}
 	var out []transferarchive.Observation
 	for _, unit := range units {
+		if len(unit.SourceMemoryIDs) == 0 {
+			continue
+		}
 		sources := make([]transferarchive.ObservationSource, 0, len(unit.SourceMemoryIDs))
+		unmapped := false
 		for _, sourceID := range unit.SourceMemoryIDs {
 			location, ok := locations[sourceID]
 			if !ok {
-				continue
+				unmapped = true
+				break
 			}
 			sources = append(sources, location)
 		}
-		if len(sources) == 0 {
+		if unmapped {
 			continue
 		}
 		out = append(out, transferarchive.Observation{
@@ -779,6 +810,26 @@ func loadUnitsByType(ctx context.Context, store storage.Store, bankID string, fa
 		}
 		offset += len(page.Memories)
 	}
+}
+
+// standaloneMentalModels selects the mental_models rows that are not a
+// knowledge page's backing model. Pages keep their content in a mental_models
+// row, so those rows travel with the archive but are counted as knowledge
+// pages, not as mental models (engine/transfer/schema.py:265-270).
+func standaloneMentalModels(rows []map[string]any, pages []transferarchive.KnowledgePage) []map[string]any {
+	pageModels := make(map[string]bool, len(pages))
+	for _, page := range pages {
+		if page.MentalModelID != "" {
+			pageModels[page.MentalModelID] = true
+		}
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if !pageModels[rowString(row, "id")] {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // buildKnowledgeBase reads the mental models and the knowledge-page tree. The

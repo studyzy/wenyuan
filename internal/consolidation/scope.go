@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // Observation scopes.
@@ -155,34 +157,14 @@ func ExpandScopeGlobs(scopes [][]string, tags []string) [][]string {
 	return resolved
 }
 
-// globMatch is Python's fnmatchcase for a pattern whose only metacharacter is *,
-// which is the subset ExpandScopeGlobs treats as a glob. * matches any run of
-// characters, including none.
+// globMatch is Python's fnmatchcase: * matches any run of characters including
+// none, ? matches exactly one character, [seq] and [!seq] match one character
+// in — or out of — the class, and matching is case-sensitive. The predicate
+// lives in the storage package (storage.FnmatchCase) so every scope matcher in
+// the service — this expansion and the document-scope cascade — resolves
+// patterns identically.
 func globMatch(pattern, name string) bool {
-	// Greedy scan with backtracking at the most recent star, linear in practice
-	// and no allocation.
-	px, nx := 0, 0
-	star, mark := -1, 0
-	for nx < len(name) {
-		switch {
-		case px < len(pattern) && pattern[px] == name[nx]:
-			px++
-			nx++
-		case px < len(pattern) && pattern[px] == '*':
-			star, mark = px, nx
-			px++
-		case star >= 0:
-			px = star + 1
-			mark++
-			nx = mark
-		default:
-			return false
-		}
-	}
-	for px < len(pattern) && pattern[px] == '*' {
-		px++
-	}
-	return px == len(pattern)
+	return storage.FnmatchCase(pattern, name)
 }
 
 // parseObservationScopes decodes a raw observation_scopes value. A JSON string

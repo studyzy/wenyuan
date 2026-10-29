@@ -76,6 +76,28 @@ func (e *permanentRequestError) Error() string {
 	return e.detail
 }
 
+// forcedToolChoice reports whether a request pins the model to a tool: a named
+// choice or required. Only those can be answered with a tool_choice rejection;
+// "none" and omitted are not worth a fallback.
+func forcedToolChoice(policy *provider.ToolSelectionPolicy) bool {
+	return policy != nil && (policy.Name != "" || policy.Mode == "required")
+}
+
+// rejectsToolChoice reports whether an endpoint refused the request over its
+// tool_choice. The 400s read "The tool_choice parameter does not support being
+// set to required...", "only \"auto\" is supported for tool_choice", and alike,
+// from endpoints that serve the same weights as ones accepting every choice —
+// so the error is matched, not a model list, and matched narrowly: the status
+// plus the field named in the message, so no other client error falls into the
+// fallback.
+func rejectsToolChoice(err error) bool {
+	var permanent *permanentRequestError
+	if !errors.As(err, &permanent) || permanent.status != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(permanent.Error(), "tool_choice")
+}
+
 // malformedResponse builds the typed malformed-response error for a status
 // and detail.
 func malformedResponse(status int, detail string) error {

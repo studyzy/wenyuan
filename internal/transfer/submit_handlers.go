@@ -91,6 +91,12 @@ func validateNewBankID(id string) error {
 			return wireMessage("Bank id must not contain control characters")
 		}
 	}
+	// Reserved so a store-owned backend can keep its own bookkeeping objects
+	// next to a bank's objects without escaping bank names
+	// (engine/retain/bank_utils.py:353-356).
+	if strings.HasPrefix(id, "_") {
+		return wireMessage("Bank id must not start with '_': that prefix is reserved")
+	}
 	return nil
 }
 

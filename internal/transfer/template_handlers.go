@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/banktemplate"
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/mentalmodels"
@@ -102,6 +103,17 @@ func validateTemplateManifest(manifest banktemplate.Manifest) error {
 	if len(semantic) > 0 {
 		return wireMessage("Template validation failed: " + strings.Join(semantic, "; "))
 	}
+	// The bank section is a configuration write: the reference persists it
+	// through update_bank_config, whose validation refuses a key the
+	// configuration endpoint would refuse, so a manifest cannot smuggle an
+	// unknown field into the bank's config (http.py:9004-9045 routes the import
+	// through validate_bank_config_updates). The dry run validates the same set
+	// before it answers.
+	if manifest.Bank != nil {
+		if err := bankapi.ValidateConfigurableFields(manifest.Bank); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -185,6 +197,12 @@ func (h *Handlers) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 		manifest.Bank = bankConfig
 	}
 	for _, model := range models {
+		// Knowledge pages are left out: a template carries no pages, and their
+		// backing models would come back on import as standalone mental models
+		// (the reference lists exclude_knowledge_pages=True, api/http.py:9106-9110).
+		if model.IsKnowledgePage != nil && *model.IsKnowledgePage {
+			continue
+		}
 		// The reference constructs its trigger model from the stored value on
 		// every export, so a stored trigger that model rejects — a foreign-written
 		// or otherwise corrupt row — fails the export with a server error rather
@@ -257,6 +275,9 @@ var bankTemplateFields = []string{
 	"enable_temporal_retrieval",
 	"enable_graph_retrieval",
 	"enable_reranking",
+	"reflect_use_decision_model",
+	"mental_model_refresh_use_decision_model",
+	"mental_model_delta_use_decision_model",
 	"disposition_skepticism",
 	"disposition_literalism",
 	"disposition_empathy",
@@ -272,6 +293,7 @@ var bankTemplateFields = []string{
 	"consolidation_source_facts_max_tokens_per_observation",
 	"max_observations_per_scope",
 	"observation_scope_limits",
+	"default_observation_scopes",
 	"consolidation_strategies",
 	"reflect_source_facts_max_tokens",
 	"knowledge_page_default_trigger",
@@ -290,9 +312,11 @@ var bankTemplateFields = []string{
 	"audit_log_enabled",
 	"store_document_text",
 	"enable_auto_consolidation",
+	"consolidation_use_decision_model",
 	"consolidation_max_memories_per_round",
 	"consolidation_llm_parallelism",
 	"recall_include_chunks",
+	"recall_prefer_observations",
 	"recall_max_tokens",
 	"recall_chunks_max_tokens",
 	"memory_defense",
@@ -315,6 +339,7 @@ var triggerTemplateFields = []string{
 	"mode",
 	"refresh_after_consolidation",
 	"refresh_cron",
+	"full_refresh_cron",
 	"min_refresh_interval_seconds",
 	"fact_types",
 	"exclude_mental_models",
@@ -349,6 +374,12 @@ func bankTemplateTrigger(stored map[string]any) map[string]any {
 	}
 	for key, value := range stored {
 		if _, known := out[key]; known {
+			// The reference rebuilds the trigger through MentalModelTrigger, whose
+			// cron validator rewrites a whitespace-only member to null; every read
+			// projects it that way, and the export does too.
+			if (key == "refresh_cron" || key == "full_refresh_cron") && cronBlank(value) {
+				continue
+			}
 			out[key] = value
 		}
 	}
@@ -433,4 +464,14 @@ func wholeNumber(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// cronBlank reports a cron member the reference's validator would rewrite to
+// null: a string that is empty or whitespace only.
+func cronBlank(value any) bool {
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(text) == ""
 }

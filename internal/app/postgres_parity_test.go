@@ -245,3 +245,52 @@ func TestPostgresKnowledgeFuzzyTagGroups(t *testing.T) {
 		t.Fatalf("an unresolvable fuzzy token must not match: %+v", got)
 	}
 }
+
+// The mental-model write returns answer is_knowledge_page null even for a
+// page's backing model — the reference projects its patch and clear rows
+// without the flag — while the reads keep deriving it.
+func TestPostgresParityMentalModelWriteReturnFlag(t *testing.T) {
+	a := postgresParityApp(t)
+	const bank = "write-flag-bank"
+
+	page := exchange(a, http.MethodPost, "/v1/default/banks/"+bank+"/knowledge-base/pages",
+		`{"name":"Page","source_query":"what the page covers"}`)
+	if page.Code != http.StatusCreated {
+		t.Fatalf("create page = %d, body %s", page.Code, page.Body.String())
+	}
+	modelID, _ := decodeJSON(t, page)["mental_model_id"].(string)
+	if modelID == "" {
+		t.Fatalf("page create = %s, want the backing model id", page.Body.String())
+	}
+
+	read := exchange(a, http.MethodGet, "/v1/default/banks/"+bank+"/mental-models/"+modelID, "")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read model = %d, body %s", read.Code, read.Body.String())
+	}
+	if model := decodeJSON(t, read); model["is_knowledge_page"] != true {
+		t.Fatalf("read is_knowledge_page = %#v, want derived true", model["is_knowledge_page"])
+	}
+
+	patch := exchange(a, http.MethodPatch, "/v1/default/banks/"+bank+"/mental-models/"+modelID,
+		`{"name":"Renamed"}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch = %d, body %s", patch.Code, patch.Body.String())
+	}
+	written := decodeJSON(t, patch)
+	if value, present := written["is_knowledge_page"]; !present || value != nil {
+		t.Fatalf("patch is_knowledge_page = %#v (present %v), want null", value, present)
+	}
+
+	cleared := exchange(a, http.MethodPost, "/v1/default/banks/"+bank+"/mental-models/"+modelID+"/clear", "")
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear = %d, body %s", cleared.Code, cleared.Body.String())
+	}
+	if value, present := decodeJSON(t, cleared)["is_knowledge_page"]; !present || value != nil {
+		t.Fatalf("clear is_knowledge_page = %#v (present %v), want null", value, present)
+	}
+
+	reread := exchange(a, http.MethodGet, "/v1/default/banks/"+bank+"/mental-models/"+modelID, "")
+	if model := decodeJSON(t, reread); model["is_knowledge_page"] != true {
+		t.Fatalf("read after the writes is_knowledge_page = %#v, want derived true", model["is_knowledge_page"])
+	}
+}

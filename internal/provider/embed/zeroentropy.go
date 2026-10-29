@@ -44,6 +44,9 @@ type zeroEntropyBackend struct {
 // Name is the configured provider name.
 func (b *zeroEntropyBackend) Name() string { return "zeroentropy" }
 
+// Model is the effective model identifier, the adapter default applied.
+func (b *zeroEntropyBackend) Model() string { return b.model }
+
 // Dimensions is the width this backend guarantees for every vector.
 func (b *zeroEntropyBackend) Dimensions() int { return b.dimensions }
 

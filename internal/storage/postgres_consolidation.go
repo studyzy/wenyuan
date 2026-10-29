@@ -17,9 +17,12 @@ func (s *PostgresStore) ConsolidationTuning() ConsolidationTuning {
 	return s.tuning.Consolidation
 }
 
-// ConsolidationFacts returns the newest raw facts of a bank that have not yet
-// been folded into an observation. A fact is "folded" once its consolidation
-// timestamp is set, which MarkConsolidated does.
+// ConsolidationFacts returns the oldest raw facts of a bank that have not yet
+// been folded into an observation. Consolidation works oldest-first: the
+// reference sorts its candidates by created_at ascending
+// (consolidator.py:1459-1461), so a fact's turn comes in the order it was
+// written. A fact is "folded" once its consolidation timestamp is set, which
+// MarkConsolidated does.
 func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, limit int) ([]ConsolidationFact, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
@@ -29,12 +32,12 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	if limit <= 0 {
 		limit = 200
 	}
-	query := `SELECT id, text, occurred_start, occurred_end, mentioned_at,
+	query := `SELECT id, text, created_at, occurred_start, occurred_end, mentioned_at,
 	                 COALESCE(tags, '{}'::text[])::text, observation_scopes::text
 	          FROM ` + quoteIdent(schema) + `.memory_units
 	          WHERE bank_id = $1 AND fact_type <> $2 AND consolidated_at IS NULL
 	                AND consolidation_failed_at IS NULL
-	          ORDER BY created_at DESC
+	          ORDER BY created_at ASC
 	          LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, bankID, string(TypeObservation), limit)
 	if err != nil {
@@ -44,12 +47,13 @@ func (s *PostgresStore) ConsolidationFacts(ctx context.Context, bankID string, l
 	var facts []ConsolidationFact
 	for rows.Next() {
 		var fact ConsolidationFact
-		var start, end, mentioned sql.NullTime
+		var created, start, end, mentioned sql.NullTime
 		var tags string
 		var scopes sql.NullString
-		if err := rows.Scan(&fact.ID, &fact.Text, &start, &end, &mentioned, &tags, &scopes); err != nil {
+		if err := rows.Scan(&fact.ID, &fact.Text, &created, &start, &end, &mentioned, &tags, &scopes); err != nil {
 			return nil, err
 		}
+		fact.CreatedAt = nullTimePtr(created)
 		fact.OccurredStart = nullTimePtr(start)
 		fact.OccurredEnd = nullTimePtr(end)
 		fact.MentionedAt = nullTimePtr(mentioned)
@@ -226,23 +230,31 @@ func (s *PostgresStore) UpdateObservation(ctx context.Context, bankID, observati
 	}
 	// The temporal columns widen with the new sources rather than being stamped
 	// with the write clock. The reference merges the sources' bounds into the
-	// observation's (consolidator.py:257-262, whose comment names the
-	// LEAST/GREATEST used here), keeping the earliest event/start and the latest
-	// end/mention; PostgreSQL's LEAST/GREATEST already ignore NULL arguments,
-	// which is the "a missing value on either side is ignored" half of the rule.
+	// observation's (`_TemporalBounds.merged_with`, consolidator.py:257-262),
+	// which keeps an observation that rests on an old fact an old observation.
+	// The merge runs on the Go side over both sets of columns so a year-1/9999
+	// placeholder reads as unknown on either side — the reference's
+	// _as_dt→finite_utc — and a merged bound is NULL when only placeholders
+	// remain; the SQL LEAST/GREATEST it replaces would keep a placeholder on
+	// the observation's own columns forever.
 	sources, err := s.sourceObservationBounds(ctx, bankID, sourceIDs)
 	if err != nil {
 		return err
 	}
+	current, err := s.sourceObservationBounds(ctx, bankID, []string{observationID})
+	if err != nil {
+		return err
+	}
+	bounds := current.MergedWith(sources)
 	query := `UPDATE ` + quoteIdent(schema) + `.memory_units
 	          SET text = $3, search_vector = ` + s.searchVectorExpr("$3", "''", "''") + `,
-	              event_date = LEAST(event_date, $5),
-	              occurred_start = LEAST(occurred_start, $6),
-	              occurred_end = GREATEST(occurred_end, $7),
-	              mentioned_at = GREATEST(mentioned_at, $8)
+	              event_date = $5,
+	              occurred_start = $6,
+	              occurred_end = $7,
+	              mentioned_at = $8
 	          WHERE bank_id = $1 AND id = $2 AND fact_type = $4`
 	result, err := s.db.ExecContext(ctx, query, bankID, observationID, text, string(TypeObservation),
-		sources.EventDate, sources.OccurredStart, sources.OccurredEnd, sources.MentionedAt)
+		bounds.EventDate, bounds.OccurredStart, bounds.OccurredEnd, bounds.MentionedAt)
 	if err != nil {
 		return err
 	}
@@ -682,4 +694,140 @@ func (s *PostgresStore) sourceObservationBounds(ctx context.Context, bankID stri
 		return ObservationBounds{}, err
 	}
 	return AggregatedObservationBounds(sources), nil
+}
+
+// MergeObservationEvidence moves a merged-away observation's evidence onto the
+// observation that absorbed it, or requeues that evidence when there is no
+// survivor to receive it. It is the reference's _fold_deleted_evidence
+// (consolidator.py:3335-3380): only a delete the model marks as a merge
+// (merged_into) moves its evidence, and a merge whose target the model could
+// not name — or whose survivor is already gone — requeues its live sources
+// instead (mark_consolidated(when=None)), so the next pass attaches them
+// wherever the knowledge now belongs. The caller deletes the merged
+// observation afterwards; the row must still exist when this runs.
+func (s *PostgresStore) MergeObservationEvidence(ctx context.Context, bankID, survivorID, mergedID string) error {
+	if mergedID == "" {
+		return nil
+	}
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	// The merged observation's evidence and dates, read before the caller
+	// deletes it: the fold widens the survivor's dates with them.
+	var (
+		sourcesRaw                       string
+		eventDate, start, end, mentioned sql.NullTime
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(source_memory_ids, '{}'::uuid[])::text,
+	          event_date, occurred_start, occurred_end, mentioned_at
+	          FROM `+quoteIdent(schema)+`.memory_units
+	          WHERE bank_id = $1 AND id = $2`, bankID, mergedID).
+		Scan(&sourcesRaw, &eventDate, &start, &end, &mentioned)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The row is already gone: there is no evidence to move.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	mergedBounds := ObservationBounds{
+		EventDate: nullTimePtr(eventDate), OccurredStart: nullTimePtr(start),
+		OccurredEnd: nullTimePtr(end), MentionedAt: nullTimePtr(mentioned),
+	}
+	// Only the sources that still exist move; a dead link contributes nothing,
+	// as the reference's liveness filter does (_filter_live_source_memories).
+	live, err := s.liveUnitIDs(ctx, bankID, decodeTextArray(sourcesRaw))
+	if err != nil {
+		return err
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	if survivorID != "" {
+		var factType string
+		survivorErr := s.db.QueryRowContext(ctx, `SELECT fact_type::text
+		          FROM `+quoteIdent(schema)+`.memory_units
+		          WHERE bank_id = $1 AND id = $2`, bankID, survivorID).Scan(&factType)
+		if survivorErr != nil && !errors.Is(survivorErr, sql.ErrNoRows) {
+			return survivorErr
+		}
+		if survivorErr == nil && factType == string(TypeObservation) {
+			current, err := s.sourceObservationBounds(ctx, bankID, []string{survivorID})
+			if err != nil {
+				return err
+			}
+			// The survivor keeps its text; its dates widen with the merged
+			// observation's and its evidence grows by the merged sources
+			// (fold_sources_into_observation keeps the embedding too).
+			bounds := current.MergedWith(mergedBounds)
+			updated, err := s.db.ExecContext(ctx, `UPDATE `+quoteIdent(schema)+`.memory_units
+			          SET event_date = $3, occurred_start = $4, occurred_end = $5, mentioned_at = $6
+			          WHERE bank_id = $1 AND id = $2 AND fact_type = $7`,
+				bankID, survivorID, bounds.EventDate, bounds.OccurredStart, bounds.OccurredEnd, bounds.MentionedAt,
+				string(TypeObservation))
+			if err != nil {
+				return err
+			}
+			if affected, err := updated.RowsAffected(); err == nil && affected > 0 {
+				return s.linkObservationSources(ctx, survivorID, live)
+			}
+			// The survivor vanished between the read and the write: the
+			// evidence is requeued below, the way a fold that found no row is.
+		}
+	}
+	// No usable survivor: the evidence is requeued, keeping the
+	// experience/world guard the reference's clear carries — observations are
+	// never themselves consolidated, so nothing about them is reset.
+	_, err = s.db.ExecContext(ctx, `UPDATE `+quoteIdent(schema)+`.memory_units
+	          SET consolidated_at = NULL
+	          WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
+		bankID, live)
+	return err
+}
+
+// liveUnitIDs returns the ids that resolve to a row of the bank, the liveness
+// filter a fold applies to the evidence it moves.
+func (s *PostgresStore) liveUnitIDs(ctx context.Context, bankID string, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text
+	          FROM `+quoteIdent(schema)+`.memory_units
+	          WHERE bank_id = $1 AND id = ANY($2::uuid[])`, bankID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var live []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		live = append(live, id)
+	}
+	return live, rows.Err()
+}
+
+// EnqueueConsolidationSuccessor records the next round of a round-capped
+// consolidation chain, carrying callerRequested in the task payload the way the
+// reference's submit_async_consolidation does (memory_engine.py:23716-23717).
+// It deduplicates against a pending full-bank pass only — the pass now running
+// is this one, and folding the successor into it would swallow the chain
+// (engine/memory_engine.py:22207-22211).
+func (s *PostgresStore) EnqueueConsolidationSuccessor(ctx context.Context, bankID string, callerRequested bool) error {
+	op := Operation{
+		OperationID: newID(), BankID: bankID, OperationType: OperationTypeConsolidate,
+		Status: StatusPending, SerializationKey: ConsolidationSerializationKey(bankID),
+	}
+	if callerRequested {
+		op.Payload = map[string]any{"caller_requested": true}
+	}
+	_, err := s.enqueueDedupeByBank(ctx, op, []string{"pending"}, true)
+	return err
 }

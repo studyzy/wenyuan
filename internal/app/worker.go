@@ -44,6 +44,9 @@ type archiveProcessor struct {
 	// recallPerSourceCap bounds each retrieval arm of the consolidation
 	// near-duplicate lookup; zero leaves it bound only by the pool budget.
 	recallPerSourceCap int
+	// mentalModelMinRefreshSeconds is the deployment's floor between two
+	// automatic refreshes of one model, under each model's own trigger member.
+	mentalModelMinRefreshSeconds int
 	// reflection, when non-nil, makes a queued mental-model refresh write
 	// prose through the model-driven loop rather than the deterministic
 	// fallback.
@@ -97,8 +100,78 @@ func (p archiveProcessor) Process(ctx context.Context, op storage.Operation) err
 		// "failed" on every failure path — retryable, terminal and wall-clock
 		// alike — and the event's data object then carries only the error.
 		p.fireConsolidationEvent(ctx, op, "failed", map[string]any{"error_message": err.Error()})
+		// The consolidation-only retry decision: the capped exponential ladder,
+		// or a terminal failure when a peer consolidation already covers the bank.
+		if retry, ok := p.consolidationRetry(ctx, op, err); ok {
+			return retry
+		}
 	}
 	return err
+}
+
+// consolidationRetryBackoffBase starts the consolidation retry ladder.
+// The base is intentionally short so a momentary 5xx clears in seconds, not
+// minutes; the cap keeps a genuine multi-hour outage from hammering the
+// upstream (engine/memory_engine.py:525-533).
+const (
+	consolidationRetryBackoffBase = 5 * time.Second
+	consolidationRetryBackoffMax  = 1800 * time.Second
+)
+
+// consolidationRetryBackoff is the capped exponential ladder the reference
+// gives consolidation retries: 5, 10, 20, 40, 80, 160, 320, 640, 1280, then
+// capped at 1800 (engine/memory_engine.py:529-533).
+func consolidationRetryBackoff(retryCount int) time.Duration {
+	backoff := consolidationRetryBackoffBase
+	for range retryCount {
+		backoff *= 2
+		if backoff >= consolidationRetryBackoffMax {
+			return consolidationRetryBackoffMax
+		}
+	}
+	return backoff
+}
+
+// consolidationRetry decides how a failed consolidation pass is scheduled next:
+// a transient failure retries indefinitely on the ladder above — exempt from
+// the generic retry budget, whose exhaustion would silently dead-letter the
+// bank's backlog — unless another consolidation is already pending for the
+// bank. That pending op will process the same unconsolidated rows when it runs,
+// so retrying this one just multiplies retry budgets during a long transient
+// outage (every retain enqueues a fresh op): it is failed now, as the reference
+// skips its retry there (engine/memory_engine.py:5165-5205). The second return
+// reports whether the decision was made; a wall-clock cancellation is left to
+// the consumer's own handling.
+func (p archiveProcessor) consolidationRetry(ctx context.Context, op storage.Operation, cause error) (error, bool) {
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return nil, false
+	}
+	if p.hasOtherPendingConsolidation(ctx, op) {
+		return worker.Permanent(cause), true
+	}
+	return worker.RetryAt(consolidationRetryBackoff(op.RetryCount), cause), true
+}
+
+// hasOtherPendingConsolidation reports whether another consolidation operation
+// is already pending for the operation's bank. A check failure proceeds with
+// the retry rather than swallowing a real failure, exactly as the reference's
+// guard does (engine/memory_engine.py:22882-22917).
+func (p archiveProcessor) hasOtherPendingConsolidation(ctx context.Context, op storage.Operation) bool {
+	page, err := p.store.ListOperations(ctx, storage.OperationQuery{
+		BankID: op.BankID,
+		Status: string(storage.StatusPending),
+		Type:   storage.OperationTypeConsolidate,
+		Limit:  10,
+	})
+	if err != nil {
+		return false
+	}
+	for _, pending := range page.Operations {
+		if pending.OperationID != op.OperationID {
+			return true
+		}
+	}
+	return false
 }
 
 // consolidationFailed reports whether err ends a consolidation pass as a failure
@@ -542,6 +615,18 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 	if modelID == "" {
 		return worker.Permanent(errors.New("refresh operation carries no mental model id"))
 	}
+	// An automatic refresh parks while the model's min-refresh window is open:
+	// the operation goes back to pending with next_retry_at naming when the
+	// window closes, no retry count and no error, so every trigger that fires
+	// while it waits folds into it and the eventual run covers all of them
+	// (memory_engine.py:4776-4846). The check reads state at execution time, so
+	// a parked operation picks up a config change and measures against the
+	// refresh that actually landed last.
+	if automatic, _ := op.Payload[storage.AutomaticRefreshPayloadKey].(bool); automatic {
+		if parked, parkErr := p.minRefreshPark(ctx, op.BankID, modelID); parkErr == nil && parked != nil {
+			return worker.DeferAt(time.Until(parked.due), parked.reason)
+		}
+	}
 	runner := newMentalModelRefresh(p.store, p.provider, p.reflection)
 	// A "full refresh now" or a full_refresh_cron tick carries its mode in the
 	// queued payload; it applies to this run only and never reaches the trigger.
@@ -590,6 +675,75 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 // fail the same way forever, but a provider that is merely down will answer
 // later, and parking on it would freeze the model for days after the limit had
 // already reset.
+// minRefreshPark decides whether an automatic refresh must wait out the
+// model's min-refresh window. It resolves the interval the way the reference
+// does — the model's own trigger.min_refresh_interval_seconds, including an
+// explicit 0, over the bank's setting over the deployment's default, with a
+// non-numeric value ignored rather than raised on — and answers the parked
+// deferral when the window is still open (memory_engine.py:4734-4846).
+func (p archiveProcessor) minRefreshPark(ctx context.Context, bankID, modelID string) (*parkedRefresh, error) {
+	model, err := p.store.GetMentalModel(ctx, bankID, modelID)
+	if err != nil || model.ID == "" {
+		// A model that vanished fails its refresh with the message it has
+		// always failed with; the defer check contributes nothing.
+		return nil, nil
+	}
+	interval, resolved := p.minRefreshIntervalSeconds(ctx, bankID, model.Trigger)
+	if !resolved || interval <= 0 || model.LastRefreshedAt.IsZero() {
+		return nil, nil
+	}
+	due := model.LastRefreshedAt.Add(time.Duration(interval) * time.Second)
+	now := time.Now().UTC()
+	if !now.Before(due) {
+		return nil, nil
+	}
+	return &parkedRefresh{
+		due: due,
+		reason: fmt.Errorf("min_refresh_interval_seconds=%d for mental model %s: last refreshed at %s, next refresh due at %s",
+			interval, modelID, model.LastRefreshedAt.UTC().Format(time.RFC3339Nano), due.UTC().Format(time.RFC3339Nano)),
+	}, nil
+}
+
+// minRefreshIntervalSeconds resolves the floor for one model's automatic
+// refreshes, reporting whether a floor applies at all.
+func (p archiveProcessor) minRefreshIntervalSeconds(ctx context.Context, bankID string, trigger map[string]any) (int, bool) {
+	if perModel, present := trigger["min_refresh_interval_seconds"]; present && perModel != nil {
+		switch value := perModel.(type) {
+		case float64:
+			return max(0, int(value)), true
+		case int:
+			return max(0, value), true
+		default:
+			slog.Default().Warn("Ignoring non-numeric trigger.min_refresh_interval_seconds; falling back to the bank setting",
+				"value", perModel)
+		}
+	}
+	if overrides, err := p.store.BankConfig(ctx, bankID); err == nil && overrides != nil {
+		if fromBank, present := overrides["mental_model_min_refresh_interval_seconds"]; present && fromBank != nil {
+			switch value := fromBank.(type) {
+			case float64:
+				return max(0, int(value)), true
+			case int:
+				return max(0, value), true
+			default:
+				slog.Default().Warn("Ignoring non-numeric mental_model_min_refresh_interval_seconds; no minimum refresh interval will be applied",
+					"value", fromBank)
+				return 0, false
+			}
+		}
+	}
+	if p.mentalModelMinRefreshSeconds > 0 {
+		return p.mentalModelMinRefreshSeconds, true
+	}
+	return 0, false
+}
+
+// parkedRefresh carries the deferral an open min-refresh window produces.
+type parkedRefresh struct {
+	due    time.Time
+	reason error
+}
+
 func transientRefreshFailure(err error) bool {
 	return provider.IsTransient(err) || provider.IsRateLimitReset(err)
 }
@@ -618,6 +772,13 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 	consolidator := consolidation.New(p.provider, consolidationStore{store: p.store, perSourceCap: p.recallPerSourceCap})
 	if !consolidator.Available() {
 		return worker.Permanent(consolidation.ErrNoModel)
+	}
+	// A chain an explicit /consolidate started keeps draining past the
+	// auto-consolidation gate: the route's enqueue carries caller_requested in
+	// the task payload and the pass reads it from there
+	// (memory_engine.py:4697, :23716-23717).
+	if requested, ok := op.Payload["caller_requested"].(bool); ok && requested {
+		consolidator.WithCallerRequested(true)
 	}
 	// The pass reports its phases to the operation running it, so a poller sees
 	// the work advancing; a store without the capability simply runs unreported.
@@ -683,9 +844,12 @@ func (p archiveProcessor) enqueueConsolidationRefreshes(ctx context.Context, ban
 		}
 		if _, err := p.store.EnqueueOperation(ctx, storage.EnqueueRequest{
 			Operation: storage.Operation{
-				BankID:           bankID,
-				OperationType:    storage.OperationTypeRefreshMentalModel,
-				Payload:          map[string]any{storage.MentalModelIDPayloadKey: model.ID},
+				BankID:        bankID,
+				OperationType: storage.OperationTypeRefreshMentalModel,
+				Payload: map[string]any{
+					storage.MentalModelIDPayloadKey:    model.ID,
+					storage.AutomaticRefreshPayloadKey: true,
+				},
 				SerializationKey: storage.MentalModelSerializationKey(model.ID),
 			},
 			DedupeByPayloadKey:       storage.MentalModelIDPayloadKey,
@@ -1107,6 +1271,52 @@ func (a consolidationStore) MarkConsolidationFailed(ctx context.Context, bankID 
 	return a.store.MarkConsolidationFailed(ctx, bankID, factIDs)
 }
 
+// MergeObservationEvidence folds a merged-away observation's evidence into its
+// survivor — or requeues that evidence — the bookkeeping the reference's
+// _fold_deleted_evidence does (consolidator.py:3335-3380). A store without the
+// capability leaves every merge a plain delete.
+func (a consolidationStore) MergeObservationEvidence(ctx context.Context, bankID, survivorID, mergedID string) error {
+	if merger, ok := a.store.(interface {
+		MergeObservationEvidence(ctx context.Context, bankID, survivorID, mergedID string) error
+	}); ok {
+		return merger.MergeObservationEvidence(ctx, bankID, survivorID, mergedID)
+	}
+	return nil
+}
+
+// EnqueueConsolidationSuccessor requeues the next round of a round-capped
+// consolidation chain. A store without the capability leaves the pass stopping
+// silently at its round budget.
+func (a consolidationStore) EnqueueConsolidationSuccessor(ctx context.Context, bankID string, callerRequested bool) error {
+	if enqueuer, ok := a.store.(interface {
+		EnqueueConsolidationSuccessor(ctx context.Context, bankID string, callerRequested bool) error
+	}); ok {
+		return enqueuer.EnqueueConsolidationSuccessor(ctx, bankID, callerRequested)
+	}
+	return nil
+}
+
+// AppendDocumentEvents files the pass's document change-history events against
+// the operation, so GET .../documents/{id}/history rebuilds them. Without this
+// forward the consolidation pass's own history.EventWriter assertion never
+// matches and the events are silently dropped.
+func (a consolidationStore) AppendDocumentEvents(ctx context.Context, opID string, events []map[string]any) error {
+	return a.store.AppendDocumentEvents(ctx, opID, events)
+}
+
+// CountObservationsInScope reports the scope's observation total with no limit,
+// so the scope cap is measured against the true count rather than the bounded
+// candidate pool (the reference's count-to-the-end fix). A store without the
+// capability leaves the cap measured against the pool read.
+func (a consolidationStore) CountObservationsInScope(ctx context.Context, bankID string, scope []string) (int, error) {
+	if counter, ok := a.store.(interface {
+		CountObservationsInScope(ctx context.Context, bankID string, scope []string) (int, error)
+	}); ok {
+		return counter.CountObservationsInScope(ctx, bankID, scope)
+	}
+	return 0, nil
+}
+
 // BankConfig returns the bank's raw configuration overrides, which carry the
 // consolidation settings and strategies the pass reads.
 func (a consolidationStore) BankConfig(ctx context.Context, bankID string) (map[string]any, error) {
@@ -1237,12 +1447,13 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 	storeSchema string, tenants tenant.Extension) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
-		recallPerSourceCap:  cfg.RecallMaxCandidatesPerSource,
-		webhookGuard:        guard,
-		embeddings:          embeddings,
-		extraction:          extraction,
-		discardDocumentText: discardDocumentText,
-		storeSchema:         storeSchema,
+		recallPerSourceCap:           cfg.RecallMaxCandidatesPerSource,
+		mentalModelMinRefreshSeconds: tuning.MentalModelMinRefreshSeconds,
+		webhookGuard:                 guard,
+		embeddings:                   embeddings,
+		extraction:                   extraction,
+		discardDocumentText:          discardDocumentText,
+		storeSchema:                  storeSchema,
 	}, worker.Config{
 		WorkerID:            cfg.ID,
 		MaxRetries:          cfg.MaxRetries,

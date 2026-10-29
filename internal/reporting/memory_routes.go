@@ -20,6 +20,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/reflect"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // ListMemories returns one page of a bank's memory units.
@@ -569,14 +570,24 @@ func (h *Handlers) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The dates are parsed after the scope checks, as the reference does: a
-	// caller who may not change the memory hears about that first.
+	// caller who may not change the memory hears about that first. A parsed
+	// year-1/9999 value is refused the way _parse_edit_date refuses it — after
+	// the format parse, so a format error keeps its own message, and never for
+	// a clearing value, which skips the parse entirely.
 	for _, rawDate := range []*string{body.OccurredStart, body.OccurredEnd, body.MentionedAt} {
-		if rawDate != nil && *rawDate != "" {
-			if _, err := parseISODateTime(*rawDate); err != nil {
-				httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
-					fmt.Sprintf("Invalid isoformat string: '%s'", *rawDate)))
-				return
-			}
+		if rawDate == nil || *rawDate == "" {
+			continue
+		}
+		parsed, err := parseISODateTime(*rawDate)
+		if err != nil {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+				fmt.Sprintf("Invalid isoformat string: '%s'", *rawDate)))
+			return
+		}
+		if validation.IsPlaceholderDate(parsed) {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+				fmt.Sprintf("Date year %d is a placeholder, not a date; send '' to clear it.", parsed.Year())))
+			return
 		}
 	}
 	// An explicit JSON null on a date member is the empty string to the
@@ -916,9 +927,11 @@ func (h *Handlers) memoryDetail(ctx context.Context, bankID string, unit storage
 		"entities":       entities, "document_id": nullableString(unit.DocumentID),
 		"chunk_id": nullableString(unit.ChunkID), "tags": tags, "metadata": metadata,
 		"observation_scopes": observationScopes, "state": memoryState(unit),
-		"invalidation_reason": unit.InvalidationReason,
-		"invalidated_at":      httpx.FormatTimestampPtr(unit.InvalidatedAt),
-		"edited_at":           httpx.FormatTimestampPtr(unit.EditedAt),
+		"invalidation_reason":     unit.InvalidationReason,
+		"invalidated_at":          httpx.FormatTimestampPtr(unit.InvalidatedAt),
+		"edited_at":               httpx.FormatTimestampPtr(unit.EditedAt),
+		"consolidated_at":         httpx.FormatTimestampPtr(unit.ConsolidatedAt),
+		"consolidation_failed_at": httpx.FormatTimestampPtr(unit.ConsolidationFailedAt),
 	}
 	if unit.FactType == storage.TypeObservation {
 		detail["history"] = []any{}
@@ -1175,6 +1188,14 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	} else if present {
+		// A datetime the framework accepted still reaches the reference's
+		// parse_datetime_flexible, which refuses the year-1/9999 placeholders
+		// the route's `except ValueError` answers 400 (orchestrator.py:468-475).
+		if parsed, err := parseISODateTime(value); err == nil && validation.IsPlaceholderDate(parsed) {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest,
+				fmt.Sprintf("Date year %d is a placeholder, not a date.", parsed.Year())))
+			return
+		}
 		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
 			options.ReferenceTime = parsed
 		}
@@ -1338,9 +1359,10 @@ func (h *Handlers) PromptPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reference's preview route is the one bank-scoped route that does NOT
 	// catch OperationValidationError: a missing bank escapes to the generic
-	// handler, which answers 500 with the wrapped text rather than the route's
-	// 404. The bank-existence guard below is requireBank's, with the reference's
-	// uncaught shape.
+	// handler. Since #5448 that handler maps the validator's own error to its
+	// carried status and reason, so the escape answers the same 404 a catching
+	// route would. The bank-existence guard below is requireBank's, producing
+	// that escaped error.
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	if bankID == "" {
 		writeUncaughtBankValidationError(w, r, "")
@@ -1356,8 +1378,8 @@ func (h *Handlers) PromptPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeUncaughtBankValidationError answers a missing bank the way a route that
-// does NOT catch OperationValidationError does: the generic handler maps the
-// escaped failure to 500 with the wrapped text as detail.
+// does NOT catch OperationValidationError does: since #5448 the generic handler
+// maps the escaped failure to the validator's own status and reason.
 func writeUncaughtBankValidationError(w http.ResponseWriter, r *http.Request, bankID string) {
 	err := &httpx.OperationValidationError{Reason: httpx.BankNotFoundDetail(bankID), Status: httpx.KindNotFound}
 	httpx.WriteErrorFor(w, r, err.Uncaught())

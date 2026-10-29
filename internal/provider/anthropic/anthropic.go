@@ -11,8 +11,10 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/provider"
@@ -44,6 +46,12 @@ type Client struct {
 	Now func() time.Time
 	// Sleep is injectable so retry tests do not wait in real time.
 	Sleep func(time.Duration)
+	// forcedToolChoiceRejected is set once the model answered a forced
+	// tool_choice ("tool"/"any") with the 400 that rejects it, so later calls
+	// ask with "auto" up front instead of paying the 400 each time. Atomic
+	// because one client serves concurrent requests; a lost update only costs
+	// one repeat of the fallback.
+	forcedToolChoiceRejected atomic.Bool
 }
 
 // HTTPDoer is the transport seam, so tests need no live endpoint.
@@ -209,6 +217,11 @@ func (c *Client) Complete(ctx context.Context, req provider.CompletionRequest) (
 		// point while the system marker above covers the stable prefix.
 		markLastMessageForCaching(body.Messages)
 	}
+	// Once the model rejected a forced tool_choice, later calls ask with "auto"
+	// up front — the sticky half of the fallback, so the 400 is paid once.
+	if c.forcedToolChoiceRejected.Load() && isForcedToolChoice(body.ToolChoice) {
+		body.ToolChoice = &toolChoiceWire{Type: "auto"}
+	}
 	// An OpenCode Go endpoint rejects a request that omits its session header,
 	// so the header rides every call that targets one, regardless of any cache
 	// mode. The id is derived from the caller's request, so it is the same id
@@ -285,6 +298,16 @@ func (c *Client) call(ctx context.Context, body messagesRequest, structured bool
 		}
 		last = err
 		if !shouldRetry(err) || attempt >= pol.MaxRetries {
+			// A model that does not support a forced tool_choice answers the
+			// request with a 400 naming it. Detected from the error rather than
+			// a model list, so a new model that rejects it works too: resend
+			// once with "auto" and remember it, so later calls ask with "auto"
+			// up front instead of paying the 400 each time.
+			if rejectsForcedToolChoice(last) && isForcedToolChoice(body.ToolChoice) {
+				c.forcedToolChoiceRejected.Store(true)
+				body.ToolChoice = &toolChoiceWire{Type: "auto"}
+				return c.call(ctx, body, structured, headers)
+			}
 			return provider.CompletionResult{}, last
 		}
 		c.sleep(pol.BackoffFor(attempt))
@@ -292,6 +315,25 @@ func (c *Client) call(ctx context.Context, body messagesRequest, structured bool
 			return provider.CompletionResult{}, ctx.Err()
 		}
 	}
+}
+
+// isForcedToolChoice reports whether a request forces a tool: a named choice or
+// the any form.
+func isForcedToolChoice(choice *toolChoiceWire) bool {
+	return choice != nil && (choice.Type == "tool" || choice.Type == "any")
+}
+
+// rejectsForcedToolChoice reports whether an error is the 400 a model sends when
+// it does not support a forced tool_choice — "tool_choice: type \"tool\" and
+// \"any\" are not supported for this model". Matched narrowly on the status and
+// the two phrases, so no other client error falls into the fallback.
+func rejectsForcedToolChoice(err error) bool {
+	var permanent *permanentError
+	if !errors.As(err, &permanent) || permanent.status != http.StatusBadRequest {
+		return false
+	}
+	message := permanent.Error()
+	return strings.Contains(message, "tool_choice") && strings.Contains(message, "not supported")
 }
 
 // splitSystem lifts the system turns out of the message list into the single

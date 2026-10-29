@@ -238,3 +238,29 @@ func TestBoundedBM25TextSelectiveTermsSwitch(t *testing.T) {
 		t.Fatalf("positional cap = %q, want the first %d terms %q", got, DefaultBM25MaxQueryTerms, want)
 	}
 }
+
+// The reranker candidate cap resolves per budget level: a level's override wins
+// when it is set (> 0), otherwise the flat cap answers, and an unrecognised
+// level falls back to the middle one — the reference's resolution
+// (engine/memory_engine.py:1715-1730). An unset cap stays unset.
+func TestRerankerMaxCandidatesFor(t *testing.T) {
+	tuning := Tuning{RerankerMaxCandidates: 300, RerankerMaxCandidatesLow: 100}
+	tests := []struct {
+		budget string
+		want   int
+	}{
+		{BudgetLow, 100},
+		{BudgetMid, 300},
+		{BudgetHigh, 300},
+		{"", 300},
+		{"sometimes", 300},
+	}
+	for _, test := range tests {
+		if got := tuning.RerankerMaxCandidatesFor(test.budget); got != test.want {
+			t.Fatalf("budget %q cap = %d, want %d", test.budget, got, test.want)
+		}
+	}
+	if got := (Tuning{}).RerankerMaxCandidatesFor(BudgetLow); got != 0 {
+		t.Fatalf("unset tuning cap = %d, want 0", got)
+	}
+}

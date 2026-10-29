@@ -182,3 +182,30 @@ func TestParityMentalModelKnowledgePageFlags(t *testing.T) {
 		t.Fatalf("get is_knowledge_page = %#v, want true", page["is_knowledge_page"])
 	}
 }
+
+// The framework validates the list's constrained query parameters and binds the
+// refresh body before the handler runs, so both refusals precede what the
+// handler itself would answer: a bad list parameter is a 422 even on an unknown
+// bank, and a refresh body the request model refuses is a 422 even on an
+// unknown model.
+func TestParityMentalModelValidationPrecedesProbes(t *testing.T) {
+	a := mentalModelApp(t)
+
+	if rec := exchange(a, http.MethodGet, "/v1/default/banks/no-such-bank/mental-models?detail=bogus", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown bank with a bad parameter = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	if rec := exchange(a, http.MethodGet, "/v1/default/banks/no-such-bank/mental-models?exclude_knowledge_pages=", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty exclude_knowledge_pages = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	if rec := exchange(a, http.MethodGet, "/v1/default/banks/no-such-bank/mental-models", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown bank alone = %d, want 404", rec.Code)
+	}
+
+	if rec := exchange(a, http.MethodPost, "/v1/default/banks/p1/mental-models/no-such-model/refresh",
+		`{"mode":"bogus"}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown model with a bad body = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	if rec := exchange(a, http.MethodPost, "/v1/default/banks/p1/mental-models/no-such-model/refresh", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown model alone = %d, want 404", rec.Code)
+	}
+}

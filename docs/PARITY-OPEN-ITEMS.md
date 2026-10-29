@@ -1,5 +1,9 @@
 # 逐 URL 后端逻辑对照轮 — 遗留待办（2026-10-17）
 
+> **2026-10-29 v1.1.0 复核**：参考发布 v1.1.0 后的一轮专项复核已完成，覆盖本文清单中
+> 与该版本差量相关的条目（逐项结论见 `CHANGELOG.md` 的 "Fixed — the v1.1.0 port completed"
+> 一节与当日提交）。本文其余条目维持原状，按下述方法核对后继续领取。
+>
 > 本文是 2026-10-17「逐 URL 后端逻辑对照轮」**未完成项**的完整落地清单：17 个并行切片把参考的
 > 100 条装饰器路由（`api/http.py` 的 `@app.{get,post,put,patch,delete}`，含 `include_in_schema=False`
 > 的 `GET /v1/version`）逐条与 `../hindsight/hindsight-api-slim/hindsight_api/` 及**线上参考服务**
@@ -136,16 +140,26 @@
 >   合成的传输上限不再取调用方的可见 `max_tokens`（未设时回到部署上限）。已审计 `IsOutputTooLong` 的既有消费者
 >   （`internal/extraction/model.go:79-82` 的二分重试、routing 的 failover、rerank）均未受影响。
 >   证据：同请求 `max_tokens:64`/`16` 两侧均 200（此前本服务 500）。
-> - **1.2** `done.answer` 被信任：`internal/reflect/loop.go:205-212,277-310,429-437`（新 `doneAnswer` + 共用的 `finalize`），
->   合成只在拿不到 done 时发生；顺带关闭 `trace.tool_calls[].input` 的 `"tool"` 键、`done` 的 schema
->   （prose 要求 `["reason","answer"]`、文档模式换 `document`）、`read_mental_models` 的必填 `["reason","mental_model_ids"]`。
->   证据：两侧 `llm_requests` 行数/形状一致（4 轮循环 + 一次长度改写，无无工具合成调用），`usage` 为逐轮之和，
->   trace 不含 `done`。
+> - **1.2** 答案由**收尾步（closing step）写出**（2026-10-29 按参考 v1.1.0 的 4db437ef2 重写，取代本条原先
+>   "done.answer 被信任、无额外调用" 的验收口径——该口径与参考现行行为相反）：自由轮的 done/prose/answer_ready
+>   只作停止信号，其自身措辞被**丢弃**；`_finish` → `_ask_for_done` 在原对话末尾追加
+>   `build_done_request_prompt`、以 tool_choice 钉死 `done` 再问一次（trace scope `closing_done`），
+>   失败或拿不到 done 才回落独立合成（scope `final`）。本服务同型实现于 `internal/reflect/loop.go`
+>   （`closingStep`/`closingMessages`/`buildDoneRequestPrompt`），自由轮 tool_choice 钉 `required`，
+>   并新增 `answer_ready` 工具（单个必填 `answer_found` bool）作停止信号；done/answer_ready 增加
+>   `searched` 门（"任一检索工具返回过，即使为空"）与 `answer_found=false` 先强制 recall 一次的门
+>   （agent.py:1660-1668,1695-1735）。usage 多计一次收尾调用（含 `cached_tokens`/`thoughts_tokens`，
+>   本服务此前恒 0，现已穿透到 `storage.ReflectUsage`）；`trace.llm_calls` 出现 `closing_done` 条目。
+>   done 的 schema 另声明 `memory_ids`/`mental_model_ids`/`observation_ids` 数组：done 引用了 id 时
+>   based_on 只保留被引用项（mental model 优先取 `read_mental_models` 的全文；空/缺省 ⇒ 全量，同今天）。
+>   证据：`TestDoneAnswerIsDiscardedForTheClosingStep`、`TestClosingFailureFallsBackToStandaloneSynthesis`、
+>   `TestDoneBeforeAnySearchIsRefusedWithTheSearchFirstMessage`、`TestNegativeAnswerForcesRecallOnce`、
+>   `TestClosingUsageIsBilledIncludingCachedAndReasoningTokens`、`TestClosingCitationsNarrowTheReportedEvidence`。
 
 | # | 现象 | 参考证据 | 本服务落点 | 验收 |
 |---|---|---|---|---|
 | 1.1 | `POST .../reflect` 在较小 `max_tokens` 下 **500**（可复现，约 137s）：模型以 `finish_reason=length` 收尾，`provider.IsOutputTooLong` 被当致命错误；且 `decodeChatResponse` 在返回前**未填 `Content`**，截断文本拿不回来 | 参考容忍 `finish_reason=length` 并使用已返回内容 | `internal/provider/openai/completion.go:184-199`（先填 `Content`/`Structured` 再返回）与/或 `internal/reflect/loop.go`（合成/改写调用容忍 `IsOutputTooLong`） | 同请求打两侧：`200` 且答案受预算约束（不再 500） |
-| 1.2 | 反思的答案来源与参考不同：本服务**忽略 `done.answer`**，总是在循环外再发一次 `compose` 调用（1.1 的 500、usage 形状、trace 形状都由它派生） | 参考信任 `done.answer`（`engine/reflect/agent.py` 的 `_process_done_tool`），仅在拿不到 done 时才回落合成 | `internal/reflect/loop.go:269-284` + `step` 的 done 分支 | 两侧同输入对比 trace/usage/答案来源；改动较大，需先确认无回归 |
+| ✅ 1.2 | ~~参考信任 `done.answer`~~（2026-10-29 更正）参考 v1.1.0 起**丢弃**自由轮的 done/prose 措辞：每个默认路径的答案都由收尾步写出——`_ask_for_done` 追加 done-request prompt、钉死 `done` 再问一次（scope `closing_done`），失败才回落合成（scope `final`）；done/answer_ready 受 `searched` 门与 `answer_found=false` 先 recall 一次的门约束；usage 据此多一次调用，`cached_tokens`/`thoughts_tokens` 逐调用累加；done 引用的 id 收窄 based_on | `engine/reflect/agent.py:1064-1132`（`_finish`/`_ask_for_done`）、`:1650-1735`（门）、`prompts.py:969-995`（prompt）、`memory_engine.py:16253-16330`（based_on 成员）；提交 4db437ef2 | `internal/reflect/loop.go`（`closingStep`/`closingMessages`/`stopRefusal`/`applyCitedMembership`）、`internal/reflect/tools.go`（`answer_ready` + done 的 id 数组）、`internal/reflect/prompts.go`（`buildDoneRequestPrompt`）、`internal/reflect/runner.go`（usage 穿透） | 两侧同输入对比 trace/usage：`llm_calls` 含 `closing_done`、usage 为全部调用之和（含 cached/thoughts）；用例见上方 1.2 关闭注记 |
 | ✅ 1.3 | PostgreSQL 召回路径**从不解析 entities**：顶层 `entities` 恒 null、每个结果 `entities` 也恒 null | 参考按 unit 直接 postings（或 observation 的来源 postings）填结果，按 **entity_id 序**；并给出 name 键的通道 `{entity_id, canonical_name, observations: []}`（`observations` 恒空） | `internal/storage/postgres_recall_channels.go:18`（`attachRecallSideChannels`）；`postgres_retain.go:1118 UnitEntityNames` 的集合正确但 `ORDER BY 2`（应按 `ORDER BY ue.unit_id, ue.entity_id`）；内存后端 `memory_recall_channels.go:26-49` 误用 fact 文本填 `observations` | 同一夹具两侧 recall：`include.entities` 下的结果 `entities` 与顶层通道逐字段一致 |
 | ✅ 1.4（无分歧）| 检索结果里的 tag 次序与写入口径不一致（请求 `["t1","t2"]`，参考落库为 `["t2","t1"]`，本服务 `["t1","t2"]`）——可能只是模型/set 序，**需一次专门核对** | 同一 body 写两侧同构银行后比对 `memory_units.tags` | `internal/memoryops/retain.go` / `internal/storage/postgres_retain.go` | 同 body 两侧写库后行内容逐列比对 |
 | ✅ 1.5 | retain 的 `occurred_start/occurred_end` 未落库：同一 body（含 "yesterday"）参考写入 `2026-10-16T00:00:00.01+00:00`/`23:59:59.01+00:00`，本服务两行都是 null | 参考 `engine/retain/fact_extraction.py` 的时间推断 | `internal/extraction/`（schema/映射）与 `internal/storage/postgres_retain.go` | 同 body 两侧写库后单元时间列比对 |

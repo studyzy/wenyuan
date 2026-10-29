@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -200,15 +201,17 @@ var knowledgeTagMatchModes = []string{
 }
 
 // knowledgeTagFilterFromRequest reads the `tags`, `tags_match` and `tag_groups`
-// query parameters into a filter, writing the reference's 422 and reporting
-// false when one is rejected. It is the single-parameter form used by the tree;
-// the search route collects the whole run instead.
+// query parameters into a filter, writing the reference's 400 and reporting
+// false when `tag_groups` is rejected. It is the single-parameter form used by
+// the tree; the search route collects the whole run instead.
 func knowledgeTagFilterFromRequest(w http.ResponseWriter, r *http.Request) (knowledgeTagFilter, bool) {
 	filter, items, detail := knowledgeTagFilterItems(r)
 	if detail != "" {
-		// The reference raises the dependency's own HTTPException, whose detail is
-		// the rendered report string rather than an item list.
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindUnprocessable, detail))
+		// The reference's decoder raises its own HTTPException, whose detail is
+		// the errors-repr string rather than an item list, and whose status is
+		// the 400 of _decode_tag_groups_query (api/http.py:284-286), not the
+		// framework's 422.
+		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindBadRequest, detail))
 		return knowledgeTagFilter{}, false
 	}
 	if len(items) > 0 {
@@ -226,9 +229,9 @@ func knowledgeTagFilterFromRequest(w http.ResponseWriter, r *http.Request) (know
 // it first: a bad enum and a bad tree in one request report only the enum, the
 // tree's failure arriving from a dependency that never runs.
 func knowledgeTagFilterItems(r *http.Request) (knowledgeTagFilter, []httpx.ValidationError, string) {
-	// Neither value is trimmed: the reference hands the raw strings to its enum
-	// and its JSON adapter, so `tags_match=` is a literal error naming "" and
-	// `tag_groups=%20` is a JSON parse failure, not an absent parameter.
+	// `tags_match` is not trimmed: the reference hands the raw string to its
+	// enum, so `tags_match=` is a literal error naming "". `tag_groups` is
+	// stripped below, the way its decoder reads it.
 	filter := knowledgeTagFilter{tags: httpx.QueryValues(r, "tags"), tagsMatch: httpx.Query(r, "tags_match")}
 	if filter.tagsMatch == "" && !queryHas(r, "tags_match") {
 		filter.tagsMatch = storage.TagsMatchAny
@@ -238,13 +241,12 @@ func knowledgeTagFilterItems(r *http.Request) (knowledgeTagFilter, []httpx.Valid
 			httpx.Literal([]string{"query", "tags_match"}, filter.tagsMatch, knowledgeTagMatchModes),
 		}, ""
 	}
-	// An empty `tag_groups` is treated as absent: the reference's dependency reads
-	// the parameter as `adapter.validate_json(raw) if raw else None`
-	// (api/http.py:3712), so `tag_groups=` yields no groups at all rather than a
-	// parse failure. A whitespace-only value is not empty there, so it still reaches
-	// the adapter and fails to parse.
+	// A blank `tag_groups` is treated as absent: the reference's shared decoder
+	// returns early on `not raw.strip()` (api/http.py:283), so `tag_groups=`
+	// and a whitespace-only value yield no groups at all rather than a parse
+	// failure.
 	rawGroups := httpx.Query(r, "tag_groups")
-	if rawGroups == "" {
+	if strings.TrimSpace(rawGroups) == "" {
 		return filter, nil, ""
 	}
 	groups, detail, ok := decodeKnowledgeTagGroups(rawGroups)

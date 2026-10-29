@@ -175,7 +175,14 @@ var referenceRuntimeKeys = []referenceKey{
 			}
 		}
 		return c.ProcessDefaults.DefaultObservationScopes
-	}},
+	},
+		// The environment parser validates the value at config construction, so a
+		// mode it does not know, malformed JSON or a scope list with non-string
+		// members stops start-up rather than failing every later consolidation
+		// (config.py:_parse_observation_scopes_env). The shapes it accepts are
+		// honoured.
+		UnsupportedWhen: observationScopesEnvRefused,
+		Reason:          "the value must be one of combined, per_tag, all_combinations, shared or a list of tag lists (e.g. [[\"topic:*\"]])"},
 	{Name: EnvRecallMaxTokens, Default: "", Resolve: func(c Config) any { return c.ProcessDefaults.RecallMaxTokens }},
 	{Name: EnvRecallChunksMaxTokens, Default: "", Resolve: func(c Config) any { return c.ProcessDefaults.RecallChunksMaxTokens }},
 	{Name: EnvBackpressureDeferSeconds, Default: "", Resolve: func(c Config) any { return c.WorkerTuning.BackpressureDefer }},

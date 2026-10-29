@@ -114,3 +114,31 @@ func TestRecencyForUnitCoarseDates(t *testing.T) {
 		t.Fatalf("an undated unit = %v, want neutral", got)
 	}
 }
+
+// A placeholder date — year 1 or 9999 — is no date: the unit's freshness reads
+// from the dates it really has, exactly like a unit carrying none
+// (engine/stored_dates.py).
+func TestRecencyForUnitPlaceholderDatesAsUnknown(t *testing.T) {
+	mention := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	metrics := RecencyDecayConfig{}
+	want := RecencyForUnit(nil, nil, &mention, now, metrics)
+	for name, dates := range map[string][2]*time.Time{
+		"placeholder start":      {timePtr(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)), nil},
+		"placeholder start 9999": {timePtr(time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)), nil},
+		"placeholder end":        {nil, timePtr(time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC))},
+		"placeholder bound pair": {timePtr(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)), timePtr(time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC))},
+	} {
+		got := RecencyForUnit(dates[0], dates[1], &mention, now, metrics)
+		if got != want {
+			t.Fatalf("%s: recency = %v, want the mention-time signal %v", name, got, want)
+		}
+	}
+	// A unit with nothing but placeholder dates carries no date at all.
+	year1 := timePtr(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
+	year9999 := timePtr(time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC))
+	placeholderMention := timePtr(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if got := RecencyForUnit(year1, year9999, placeholderMention, now, metrics); got != 0.5 {
+		t.Fatalf("an all-placeholder unit = %v, want neutral", got)
+	}
+}

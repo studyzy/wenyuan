@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // The `request` form part of the file route is a JSON *string* the reference
@@ -255,6 +256,16 @@ func decodeFileRetainMeta(object orderedPairList, prefix string, problems *[]fil
 				meta.Context = text
 			case "timestamp":
 				meta.Timestamp = text
+				// The reference's field validator runs after the type check and
+				// refuses a year-1/9999 value at request time; a value it cannot
+				// parse is returned as-is, so a format error keeps surfacing
+				// where it always has (api/http.py FileRetainMetadata).
+				if parsed, err := parseISODate(text); err == nil && validation.IsPlaceholderDate(parsed) {
+					*problems = append(*problems, fileRetainError{loc: loc, kind: "value_error",
+						msg: fmt.Sprintf("Value error, timestamp year %d is a placeholder, not a date.",
+							parsed.Year()),
+						input: text})
+				}
 			case "strategy":
 				meta.Strategy = text
 			}

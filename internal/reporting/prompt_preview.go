@@ -559,9 +559,15 @@ func (h *Handlers) renderReflectPreview(r *http.Request, bankID string, bankConf
 	}
 	systemPieces = append(systemPieces, previewLanguageBlocks(outputLanguage, reflect.ToolsLanguageRule)...)
 
-	userPieces := previewLanguageBlocks(outputLanguage, "")
+	// The mission is restated after the question too, so the reader sees where
+	// it sits relative to what they asked (prompt_preview.py:561-564).
+	userPieces := []PromptBlockModel{
+		previewSetting("reflect_mission", strings.TrimSpace(profile.Mission),
+			optionalPreviewValue(bankConfig["reflect_mission"]), "text", nil),
+	}
+	userPieces = append(userPieces, previewLanguageBlocks(outputLanguage, "")...)
 	systemPrompt := reflect.PreviewSystemPrompt(profile, directives, outputLanguage)
-	userPrompt := reflect.AgentUserPrompt(reflect.PlaceholderQuestion, outputLanguage)
+	userPrompt := reflect.AgentUserPrompt(reflect.PlaceholderQuestion, outputLanguage, strings.TrimSpace(profile.Mission))
 
 	return PromptPreviewResponse{
 		Messages: []PromptPreviewMessage{

@@ -52,6 +52,19 @@ type Tuning struct {
 	RecallBudgetAdaptiveHigh float64
 	RecallBudgetMin          int
 	RecallBudgetMax          int
+	// RerankerMaxCandidates is the cross-encoder candidate cap: the fused
+	// candidate pool is trimmed to it before scoring, so candidates past the cap
+	// are dropped rather than carried on their fused scores (the reference's
+	// reranker_max_candidates, engine/memory_engine.py:10428-10431). Zero means
+	// unset, which leaves the pool alone — the state of a store built without
+	// the resolved tuning.
+	RerankerMaxCandidates int
+	// RerankerMaxCandidatesLow, Mid and High are the per-budget-level overrides
+	// of RerankerMaxCandidates. Zero falls back to the flat cap, which is how
+	// the reference resolves them (engine/memory_engine.py:1715-1730).
+	RerankerMaxCandidatesLow  int
+	RerankerMaxCandidatesMid  int
+	RerankerMaxCandidatesHigh int
 	// DiagnosticPhases turns the per-phase recall accounting on: every sampled
 	// recall then measures its phases and reports them, as one observation per
 	// phase to the store's phase observer and as the `[phases]` log line.
@@ -390,4 +403,27 @@ func (t Tuning) budgetRatio(budget string) float64 {
 	default:
 		return t.RecallBudgetAdaptiveMid
 	}
+}
+
+// RerankerMaxCandidatesFor resolves the cross-encoder candidate cap for a
+// budget level: the level's override when it is set (> 0), otherwise the flat
+// cap. An absent or unrecognised level falls back to the middle level, which is
+// what an omitted budget means — the reference resolves the cap per recall the
+// same way (engine/memory_engine.py:9532 with :1715-1730).
+func (t Tuning) RerankerMaxCandidatesFor(budget string) int {
+	switch budget {
+	case BudgetLow:
+		if t.RerankerMaxCandidatesLow > 0 {
+			return t.RerankerMaxCandidatesLow
+		}
+	case BudgetHigh:
+		if t.RerankerMaxCandidatesHigh > 0 {
+			return t.RerankerMaxCandidatesHigh
+		}
+	default:
+		if t.RerankerMaxCandidatesMid > 0 {
+			return t.RerankerMaxCandidatesMid
+		}
+	}
+	return t.RerankerMaxCandidates
 }

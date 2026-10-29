@@ -57,6 +57,9 @@ type stubStore struct {
 	failed        []string
 	config        map[string]any
 	poolLimit     int
+	// scopeCount is what CountObservationsInScope answers: the scope's true
+	// observation total, which the cap is measured against.
+	scopeCount int
 	// factsLimit records the load bound the pass asked for, so a test can
 	// assert the batch size the deployment configured.
 	factsLimit int
@@ -65,9 +68,42 @@ type stubStore struct {
 func (s *stubStore) ConsolidationFacts(_ context.Context, _ string, limit int) ([]Fact, error) {
 	s.mu.Lock()
 	s.factsLimit = limit
+	excluded := make(map[string]bool, len(s.marked)+len(s.failed))
+	for _, id := range s.marked {
+		excluded[id] = true
+	}
+	for _, id := range s.failed {
+		// A real store's candidate read excludes failed facts too, so a batch
+		// the model could not answer is not re-fed within the same run.
+		excluded[id] = true
+	}
+	var facts []Fact
+	for _, fact := range s.facts {
+		if !excluded[fact.ID] {
+			facts = append(facts, fact)
+		}
+	}
+	if len(facts) > limit {
+		facts = facts[:limit]
+	}
 	s.mu.Unlock()
-	return s.facts, nil
+	return facts, nil
 }
+func (s *stubStore) CountObservationsInScope(_ context.Context, _ string, scope []string) (int, error) {
+	// A positive scopeCount overrides; otherwise the stub counts its own
+	// observations at the scope, the way a real store does.
+	if s.scopeCount > 0 {
+		return s.scopeCount, nil
+	}
+	count := 0
+	for _, observation := range s.observations {
+		if sameScope(observation.Scope, scope) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *stubStore) ConsolidationObservations(_ context.Context, _ string, scope []string, limit int) ([]Observation, error) {
 	s.mu.Lock()
 	s.poolLimit = limit
@@ -119,19 +155,33 @@ func (s *stubStore) BankConfig(context.Context, string) (map[string]any, error) 
 	return s.config, nil
 }
 
-// The pass applies a create, an update and a delete, and marks only the facts a
-// decision actually consumed.
+// uniqueMarked counts the distinct facts stamped consolidated, so a re-asked
+// sub-batch's idempotent re-stamp does not read as a second fact.
+func uniqueMarked(marked []string) int {
+	seen := make(map[string]bool, len(marked))
+	for _, id := range marked {
+		seen[id] = true
+	}
+	return len(seen)
+}
+
+// The pass applies a create, an update and a delete, and marks the facts of
+// every batch it answered — the whole batch is stamped once the model has
+// spoken, whether or not the decision cited each fact.
 func TestConsolidatorAppliesDecision(t *testing.T) {
 	store := &stubStore{
-		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}, {ID: "f2", Text: "Alice sold it"}},
-		observations: []Observation{{ID: "o1", Text: "Alice owns a Honda", ProofCount: 1}},
+		facts: []Fact{{ID: "f1", Text: "Alice owns a Honda"}, {ID: "f2", Text: "Alice sold it"}},
+		observations: []Observation{
+			{ID: "o1", Text: "Alice owns a Honda", ProofCount: 1},
+			{ID: "o2", Text: "Alice wants a sedan", ProofCount: 1},
+		},
 	}
 	model := &stubProvider{
 		name: "openai",
 		response: provider.CompletionResult{Structured: map[string]any{
 			"creates": []any{map[string]any{"text": "Alice works late", "source_fact_ids": []any{"f2"}}},
 			"updates": []any{map[string]any{"observation_id": "o1", "text": "Alice sold her Honda", "source_fact_ids": []any{"f1"}}},
-			"deletes": []any{map[string]any{"observation_id": "o9"}},
+			"deletes": []any{map[string]any{"observation_id": "o2"}},
 		}},
 	}
 	result, err := New(model, store).Run(context.Background(), "b1")
@@ -147,7 +197,7 @@ func TestConsolidatorAppliesDecision(t *testing.T) {
 	if len(store.updated) != 1 || store.updated[0].ObservationID != "o1" {
 		t.Fatalf("updated = %+v", store.updated)
 	}
-	if len(store.deleted) != 1 || store.deleted[0] != "o9" {
+	if len(store.deleted) != 1 || store.deleted[0] != "o2" {
 		t.Fatalf("deleted = %+v", store.deleted)
 	}
 	// Both facts were referenced, so both are marked as folded.
@@ -157,7 +207,8 @@ func TestConsolidatorAppliesDecision(t *testing.T) {
 }
 
 // An invented source identifier is dropped, so an observation cannot be linked
-// to a fact that was never offered.
+// to a fact that was never offered. The batch is still stamped: the model
+// answered it, and a single-fact batch is never re-asked.
 func TestConsolidatorDropsUnknownSourceIDs(t *testing.T) {
 	store := &stubStore{facts: []Fact{{ID: "f1", Text: "a fact"}}}
 	model := &stubProvider{
@@ -172,9 +223,8 @@ func TestConsolidatorDropsUnknownSourceIDs(t *testing.T) {
 	if len(store.created) != 1 || len(store.created[0].SourceIDs) != 0 {
 		t.Fatalf("created = %+v, want no source ids", store.created)
 	}
-	// Nothing referenced the real fact, so it stays for the next pass.
-	if len(store.marked) != 0 {
-		t.Fatalf("marked = %v, want none", store.marked)
+	if len(store.marked) != 1 || store.marked[0] != "f1" {
+		t.Fatalf("marked = %v, want the answered batch stamped", store.marked)
 	}
 }
 
@@ -486,5 +536,28 @@ func TestConsolidatorWithoutOperationReportsNothing(t *testing.T) {
 		t.Fatal("an unattributed pass must not report")
 	}).Run(context.Background(), "b1"); err != nil {
 		t.Fatalf("run: %v", err)
+	}
+}
+
+// The scope cap is measured against the scope's TRUE observation count, not
+// the bounded candidate pool: a scope holding more observations than the pool
+// reads would otherwise grow past its cap (the reference's count-to-the-end
+// fix, engine/memories/base.py:3838-3857, consolidator.py:2555-2560).
+func TestScopeCapMeasuredAgainstTheTrueCount(t *testing.T) {
+	model := &stubProvider{response: provider.CompletionResult{Structured: map[string]any{
+		"creates": []any{map[string]any{"text": "Alice works late", "source_fact_ids": []any{"f1"}}},
+	}}}
+	store := &stubStore{
+		facts:        []Fact{{ID: "f1", Text: "Alice works late"}},
+		observations: []Observation{{ID: "o1", Text: "Alice drives", Scope: []string{}}, {ID: "o2", Text: "Alice skis", Scope: []string{}}},
+		scopeCount:   5,
+		config:       map[string]any{"max_observations_per_scope": 5},
+	}
+	if _, err := New(model, store).Run(context.Background(), "b1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	user := model.lastRequest().Messages[len(model.lastRequest().Messages)-1].Content
+	if !strings.Contains(user, "OBSERVATION LIMIT REACHED (5/5)") {
+		t.Fatalf("prompt does not report the true-count cap:\n%s", user)
 	}
 }

@@ -113,8 +113,15 @@ func setStoreTuning(store storage.Store, cfg config.Config) {
 		RecallBudgetAdaptiveHigh:     cfg.ProcessDefaults.RecallBudgetAdaptiveHigh,
 		RecallBudgetMin:              cfg.ProcessDefaults.RecallBudgetMin,
 		RecallBudgetMax:              cfg.ProcessDefaults.RecallBudgetMax,
-		DiagnosticPhases:             cfg.RecallTuning.DiagnosticPhases,
-		PhaseSampleEvery:             cfg.RecallTuning.PhaseSampleEvery,
+		// The reranker candidate cap rides the tuning like the budget caps do:
+		// the pipeline resolves the per-budget-level value per recall, which is
+		// where the reference resolves it too (engine/memory_engine.py:9532).
+		RerankerMaxCandidates:     cfg.Provider.Rerank.CandidateDepth,
+		RerankerMaxCandidatesLow:  cfg.Provider.Rerank.CandidateDepthLow,
+		RerankerMaxCandidatesMid:  cfg.Provider.Rerank.CandidateDepthMid,
+		RerankerMaxCandidatesHigh: cfg.Provider.Rerank.CandidateDepthHigh,
+		DiagnosticPhases:          cfg.RecallTuning.DiagnosticPhases,
+		PhaseSampleEvery:          cfg.RecallTuning.PhaseSampleEvery,
 		Consolidation: storage.ConsolidationTuning{
 			MemoryBatchSize:     cfg.ConsolidationTuning.MemoryBatchSize,
 			DedupThreshold:      cfg.ConsolidationTuning.DedupThreshold,

@@ -6,8 +6,10 @@ import (
 )
 
 // ValidBankID reports whether a bank identifier or alias satisfies the
-// admission rules: non-empty, within the byte budget of valid UTF-8, and free
-// of control characters.
+// admission rules: non-empty, within the byte budget of valid UTF-8, free of
+// control characters, and not prefixed with the reserved '_' (which a
+// store-owned backend keeps for its own bookkeeping objects — bank_utils.py
+// refuses it for every new bank, alias and rename target).
 func ValidBankID(id string) bool {
 	if id == "" {
 		return false
@@ -16,6 +18,9 @@ func ValidBankID(id string) bool {
 		return false
 	}
 	if !utf8.ValidString(id) {
+		return false
+	}
+	if strings.HasPrefix(id, "_") {
 		return false
 	}
 	return !containsControl(id)

@@ -265,3 +265,55 @@ func TestDeleteObservationsClearsSourcesAndHistory(t *testing.T) {
 		t.Fatalf("source consolidated_at = %v, want nil (requeued)", remaining.Memories[0].ConsolidatedAt)
 	}
 }
+
+// An explicit /consolidate starts a chain that keeps draining past the
+// auto-consolidation gate: the operation's task payload carries
+// caller_requested on both the unscoped and the scoped submit
+// (api/http.py:9992, memory_engine.py:23716-23717), and the worker's pass
+// reads the flag from there (memory_engine.py:4697).
+func TestConsolidateCarriesCallerRequested(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	mux := boundMux(store)
+	if _, err := store.CreateBank(t.Context(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := send(mux, http.MethodPost, "/v1/default/banks/b1/consolidate", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consolidate = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	page, err := store.ListOperations(t.Context(), storage.OperationQuery{BankID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Operations) != 1 {
+		t.Fatalf("queued %d operations", len(page.Operations))
+	}
+	if page.Operations[0].Payload["caller_requested"] != true {
+		t.Fatalf("unscoped payload = %v, want caller_requested", page.Operations[0].Payload)
+	}
+
+	rec = send(mux, http.MethodPost, "/v1/default/banks/b1/consolidate", `{"observation_scopes":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scoped consolidate = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	page, err = store.ListOperations(t.Context(), storage.OperationQuery{BankID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Operations) != 2 {
+		t.Fatalf("queued %d operations after the scoped submit", len(page.Operations))
+	}
+	var scoped *storage.Operation
+	for index := range page.Operations {
+		if _, ok := page.Operations[index].Payload["observation_scopes"]; ok {
+			scoped = &page.Operations[index]
+		}
+	}
+	if scoped == nil {
+		t.Fatalf("no scoped operation queued: %v", page.Operations)
+	}
+	if scoped.Payload["caller_requested"] != true {
+		t.Fatalf("scoped payload = %v, want caller_requested", scoped.Payload)
+	}
+}

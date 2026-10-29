@@ -131,31 +131,12 @@ func expandDocumentScopeGlobs(scopes [][]string, tags []string) [][]string {
 	return resolved
 }
 
-// documentGlobMatch is fnmatchcase for a pattern whose only metacharacter is *,
-// which is the subset an observation scope treats as a glob.
+// documentGlobMatch resolves one scope entry against a tag under the shared
+// tag-glob rules — any entry containing `*` is a glob with full fnmatch
+// semantics (see FnmatchCase), so the cascade resolves patterns the same way
+// consolidation's scope expansion does.
 func documentGlobMatch(pattern, name string) bool {
-	px, nx := 0, 0
-	star, mark := -1, 0
-	for nx < len(name) {
-		switch {
-		case px < len(pattern) && pattern[px] == name[nx]:
-			px++
-			nx++
-		case px < len(pattern) && pattern[px] == '*':
-			star, mark = px, nx
-			px++
-		case star >= 0:
-			px = star + 1
-			mark++
-			nx = mark
-		default:
-			return false
-		}
-	}
-	for px < len(pattern) && pattern[px] == '*' {
-		px++
-	}
-	return px == len(pattern)
+	return FnmatchCase(pattern, name)
 }
 
 // documentCombinations returns every non-empty subset of tags, in a

@@ -189,7 +189,11 @@ func (s *PostgresStore) UpdateMentalModel(ctx context.Context, bankID, id string
 		return MentalModel{}, err
 	}
 	applyMentalModelPatch(&current, patch)
-	return s.PutMentalModel(ctx, current)
+	stored, err := s.PutMentalModel(ctx, current)
+	if err != nil {
+		return MentalModel{}, err
+	}
+	return withoutKnowledgePageFlag(stored), nil
 }
 
 // DeleteMentalModel removes a mental model.
@@ -251,7 +255,22 @@ func (s *PostgresStore) ClearMentalModel(ctx context.Context, bankID, id string)
 	if err != nil {
 		return MentalModel{}, err
 	}
-	return s.GetMentalModel(ctx, bankID, id)
+	stored, err := s.GetMentalModel(ctx, bankID, id)
+	if err != nil {
+		return MentalModel{}, err
+	}
+	return withoutKnowledgePageFlag(stored), nil
+}
+
+// withoutKnowledgePageFlag clears the derived is_knowledge_page flag on a write
+// return. The reference's patch and clear queries project their rows without
+// the flag and _row_to_mental_model sets the key only when the row carries it,
+// so a write answer is null even for a page's backing model (engine/
+// memory_engine.py:19620-19624, :19869-19873, :21334-21337); reads keep
+// deriving it.
+func withoutKnowledgePageFlag(model MentalModel) MentalModel {
+	model.IsKnowledgePage = nil
+	return model
 }
 
 // MentalModelHistory returns the recorded refreshes of one mental model,
@@ -464,6 +483,30 @@ func (s *PostgresStore) PromoteOperationPayload(ctx context.Context, bankID, ope
 	          WHERE operation_id = $1 AND bank_id = $2 AND status = $3
 	            AND COALESCE(task_payload ->> $5, '') <> $6`
 	result, err := s.db.ExecContext(ctx, query, operationID, bankID, string(onlyStatus), encoded, key, value)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// ClearOperationRefreshPark unparks a pending refresh: the automatic marker
+// leaves the payload and next_retry_at clears in the same write.
+func (s *PostgresStore) ClearOperationRefreshPark(ctx context.Context, bankID, operationID string) (bool, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return false, schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
+	          SET task_payload = task_payload - $4,
+	              next_retry_at = NULL,
+	              updated_at = now()
+	          WHERE operation_id = $1 AND bank_id = $2 AND status = $3
+	            AND (task_payload ? $4 OR next_retry_at IS NOT NULL)`
+	result, err := s.db.ExecContext(ctx, query, operationID, bankID, string(StatusPending), AutomaticRefreshPayloadKey)
 	if err != nil {
 		return false, err
 	}

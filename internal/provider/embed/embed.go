@@ -40,6 +40,10 @@ const (
 type Embedder interface {
 	// Name is the configured provider name.
 	Name() string
+	// Model is the model identifier the backend sends, with the adapter's own
+	// default applied when the configuration left it unset. TEI serves
+	// whichever model its endpoint was launched with, so its name is empty.
+	Model() string
 	// Embed generates one vector per input text, in input order.
 	Embed(ctx context.Context, req provider.EmbeddingRequest) (provider.EmbeddingResult, error)
 	// Dimensions is the width this backend guarantees for every vector.

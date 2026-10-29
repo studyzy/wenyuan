@@ -76,6 +76,7 @@ var resolvedProviderKeys = map[string]bool{
 	// the bank configuration surface, so the key is read rather than refused.
 	EnvLLMGeminiSafetySettings: true,
 	EnvLLMTraceEnabled:         true,
+	EnvLLMTraceExcludeScopes:   true,
 	EnvLLMTraceMaxChars:        true,
 	EnvLLMTraceRetentionDays:   true,
 	EnvLLMTraceScopes:          true,

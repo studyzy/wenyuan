@@ -129,6 +129,7 @@ func TestTracingKeys(t *testing.T) {
 		EnvLLMTraceMaxChars:      "1024",
 		EnvLLMTraceRetentionDays: "30",
 		EnvLLMTraceScopes:        "retain,reflect",
+		EnvLLMTraceExcludeScopes: " embedding_query , rerank ",
 	}))
 	if !cfg.Provider.TraceEnabled {
 		t.Fatal("trace enabled did not resolve")
@@ -138,6 +139,18 @@ func TestTracingKeys(t *testing.T) {
 	}
 	if len(cfg.Provider.TraceScopes) != 2 {
 		t.Fatalf("scopes = %v", cfg.Provider.TraceScopes)
+	}
+	// The exclude list is the reference's comma-separated key, split the same
+	// way: entries are trimmed and blanks dropped.
+	if excluded := cfg.Provider.TraceExcludeScopes; len(excluded) != 2 ||
+		excluded[0] != "embedding_query" || excluded[1] != "rerank" {
+		t.Fatalf("exclude scopes = %v", cfg.Provider.TraceExcludeScopes)
+	}
+
+	// An unset exclude list excludes nothing, the reference's empty default.
+	without := FromEnv(envMap(map[string]string{EnvLLMTraceScopes: "retain"}))
+	if without.Provider.TraceExcludeScopes != nil {
+		t.Fatalf("exclude scopes = %v, want none", without.Provider.TraceExcludeScopes)
 	}
 
 	// The keep-forever sentinel is a negative retention window.

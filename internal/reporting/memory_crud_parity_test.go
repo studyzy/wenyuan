@@ -340,3 +340,49 @@ func TestMemoryListEntitiesAreTheUnitsOwnUnsortedPostings(t *testing.T) {
 		}
 	}
 }
+
+// A year-1/9999 date is an open bound, not a date: the reference's edit path
+// refuses it with its own sentence, checked after the format parse so a format
+// error keeps its message, and never for a clearing value, which skips the
+// parse entirely (memory_engine.py _parse_edit_date).
+func TestMemoryUpdateRejectsPlaceholderDates(t *testing.T) {
+	mux := parityServer(t)
+	path := "/v1/default/banks/" + bank + "/memories/44444444-4444-4444-4444-444444444444"
+
+	cases := []struct {
+		name, member, value, year string
+	}{
+		{"occurred_start at the far edge", "occurred_start", "9999-12-31T23:59:59", "9999"},
+		{"occurred_start at the near edge", "occurred_start", "0001-01-01T00:00:00Z", "1"},
+		{"occurred_end at the far edge", "occurred_end", "9999-12-31", "9999"},
+		{"mentioned_at at the near edge", "mentioned_at", "0001-01-01", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := send(mux, http.MethodPatch, path, `{"`+tc.member+`":"`+tc.value+`"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			want := `{"detail":"Date year ` + tc.year + ` is a placeholder, not a date; send '' to clear it."}`
+			if got := strings.TrimSpace(rec.Body.String()); got != want {
+				t.Fatalf("body = %s, want %s", got, want)
+			}
+		})
+	}
+
+	// A format error keeps its own message: the placeholder check runs after the
+	// parse, on a value the parse produced.
+	rec := send(mux, http.MethodPatch, path, `{"occurred_start":"nope"}`)
+	if rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "Invalid isoformat string: 'nope'") {
+		t.Fatalf("format error = %d, want the isoformat detail: %s", rec.Code, rec.Body.String())
+	}
+	// A clearing value — the empty string or an explicit null — never trips the
+	// check, because the reference's parse clears before it looks at a year.
+	for _, clear := range []string{`{"occurred_start":""}`, `{"occurred_start":null}`} {
+		rec = send(mux, http.MethodPatch, path, clear)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("clearing value %s = %d, want 200: %s", clear, rec.Code, rec.Body.String())
+		}
+	}
+}

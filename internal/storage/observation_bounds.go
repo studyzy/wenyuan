@@ -66,25 +66,44 @@ func (b ObservationBounds) ApplyTo(unit *MemoryUnit) {
 	unit.MentionedAt = b.MentionedAt
 }
 
+// IsPlaceholderDate reports whether a value is a year-1 / year-9999
+// placeholder — an open bound ("since forever", "still ongoing"), not a date
+// anyone means. Every place a date enters a memory treats one as unknown: it
+// is never written (see parseFactTime), never merged into an observation's
+// bounds, and never shown to the consolidation model. This is the shared
+// predicate the reference's stored_dates.is_placeholder_date is
+// (engine/stored_dates.py:14-16).
+func IsPlaceholderDate(t time.Time) bool {
+	return t.Year() == 1 || t.Year() == 9999
+}
+
 // earlierTime is the reference's `_min_date`: the earliest of two values, with
-// an absent side ignored.
+// an absent side ignored. A placeholder on either side reads as absent, so a
+// merged bound is NULL when only placeholders remain.
 func earlierTime(current, candidate *time.Time) *time.Time {
-	if candidate == nil {
+	if candidate == nil || IsPlaceholderDate(*candidate) {
+		if current == nil || IsPlaceholderDate(*current) {
+			return nil
+		}
 		return current
 	}
-	if current == nil || candidate.Before(*current) {
+	if current == nil || IsPlaceholderDate(*current) || candidate.Before(*current) {
 		return candidate
 	}
 	return current
 }
 
 // laterTime is the reference's `_max_date`: the latest of two values, with an
-// absent side ignored.
+// absent side ignored. A placeholder on either side reads as absent, so a
+// merged bound is NULL when only placeholders remain.
 func laterTime(current, candidate *time.Time) *time.Time {
-	if candidate == nil {
+	if candidate == nil || IsPlaceholderDate(*candidate) {
+		if current == nil || IsPlaceholderDate(*current) {
+			return nil
+		}
 		return current
 	}
-	if current == nil || candidate.After(*current) {
+	if current == nil || IsPlaceholderDate(*current) || candidate.After(*current) {
 		return candidate
 	}
 	return current

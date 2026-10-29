@@ -35,26 +35,29 @@ const (
 // configurable, so the write is refused the way the reference refuses an
 // unknown field.
 var configurableFields = map[string]configValueKind{
-	"mcp_enabled_tools":                                     kindList,
-	"audit_log_enabled":                                     kindBool,
-	"store_document_text":                                   kindBool,
-	"retain_chunk_size":                                     kindInt,
-	"retain_structured_chunk_size":                          kindInt,
-	"retain_extraction_mode":                                kindString,
-	"retain_mission":                                        kindString,
-	"retain_custom_instructions":                            kindString,
-	"retain_default_strategy":                               kindString,
-	"retain_strategies":                                     kindObject,
-	"retain_chunk_batch_size":                               kindInt,
-	"retain_max_attachments_per_chunk":                      kindInt,
-	"entity_labels":                                         kindListOrObject,
-	"entities_allow_free_form":                              kindBool,
-	"enable_text_search":                                    kindBool,
-	"enable_temporal_retrieval":                             kindBool,
-	"enable_graph_retrieval":                                kindBool,
-	"enable_reranking":                                      kindBool,
-	"enable_observations":                                   kindBool,
-	"enable_auto_consolidation":                             kindBool,
+	"mcp_enabled_tools":                kindList,
+	"audit_log_enabled":                kindBool,
+	"store_document_text":              kindBool,
+	"retain_chunk_size":                kindInt,
+	"retain_structured_chunk_size":     kindInt,
+	"retain_extraction_mode":           kindString,
+	"retain_mission":                   kindString,
+	"retain_custom_instructions":       kindString,
+	"retain_default_strategy":          kindString,
+	"retain_strategies":                kindObject,
+	"retain_chunk_batch_size":          kindInt,
+	"retain_max_attachments_per_chunk": kindInt,
+	"entity_labels":                    kindListOrObject,
+	"entities_allow_free_form":         kindBool,
+	"enable_text_search":               kindBool,
+	"enable_temporal_retrieval":        kindBool,
+	"enable_graph_retrieval":           kindBool,
+	"enable_reranking":                 kindBool,
+	"enable_observations":              kindBool,
+	"enable_auto_consolidation":        kindBool,
+	// consolidation_use_decision_model is accepted, stored and returned as the
+	// reference does (api/http.py:4151); it gates no behaviour here yet.
+	"consolidation_use_decision_model":                      kindBool,
 	"consolidation_llm_batch_size":                          kindInt,
 	"consolidation_llm_parallelism":                         kindInt,
 	"consolidation_max_memories_per_round":                  kindInt,
@@ -67,6 +70,9 @@ var configurableFields = map[string]configValueKind{
 	"mental_model_min_refresh_interval_seconds":             kindInt,
 	"knowledge_page_default_trigger":                        kindObject,
 	"reflect_mission":                                       kindString,
+	"reflect_use_decision_model":                            kindBool,
+	"mental_model_refresh_use_decision_model":               kindBool,
+	"mental_model_delta_use_decision_model":                 kindBool,
 	"reflect_source_facts_max_tokens":                       kindInt,
 	"reflect_default_options":                               kindObject,
 	"recall_include_chunks":                                 kindBool,
@@ -121,6 +127,56 @@ var positiveIntFields = map[string]struct{}{
 // disposition and mission columns are never written by any route: the
 // reference leaves them at their create-time defaults and resolves the profile
 // by overlaying these overrides on top.
+// ValidateConfigurableFields runs the config write's field-set checks over a
+// set of updates, refusing a credential field, a server-level static field or a
+// truly unknown one with the reference's own message. The template import runs
+// it over a manifest's bank section, so a template cannot carry a key the
+// configuration endpoint would refuse (the reference persists the import's
+// config through validate_bank_config_updates, config_resolver.py:532-549).
+func ValidateConfigurableFields(updates map[string]any) error {
+	// The nil of a concrete *HTTPError is not a nil error, so the refusal is
+	// narrowed before it crosses the boundary as an interface.
+	if httpErr := validateConfigurableFields(updates); httpErr != nil {
+		return httpErr
+	}
+	return nil
+}
+
+// validateConfigurableFields refuses the whole update set at once, in the
+// reference's order: credentials first, then static fields, then unknown ones.
+func validateConfigurableFields(updates map[string]any) *httpx.HTTPError {
+	// Normalize every key once: the credential and configurability checks work
+	// on the whole update set, not the first offending key.
+	normalizedKeys := make([]string, 0, len(updates))
+	for key := range updates {
+		normalizedKeys = append(normalizedKeys, normalizeConfigKey(key))
+	}
+	// Credentials (API keys, base URLs, service-account keys) are rejected first
+	// with their own message, over every offending key at once, exactly as the
+	// reference does before it checks configurability.
+	if attempts := sortedIntersection(normalizedKeys, credentialConfigFields); len(attempts) > 0 {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			"Cannot set credential fields via API: "+pyStringList(attempts)+
+				". Credentials (API keys, base URLs) must be set at server level only.")
+	}
+	invalid := sortedDifference(normalizedKeys, configurableFields)
+	// A key that is a real server-level field has its own message, distinct from
+	// an unknown one: "static" is a field the deployment knows but which cannot
+	// vary per bank.
+	if staticFields := sortedIntersection(invalid, staticConfigFields); len(staticFields) > 0 {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			"Cannot override static (server-level) fields: "+pyStringList(staticFields)+
+				". Only configurable fields can be overridden per-bank. Configurable fields include: "+
+				configFieldSample()+"... (total: "+fmt.Sprintf("%d", len(configurableFields))+" fields)")
+	}
+	if len(invalid) > 0 {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			"Unknown configuration fields: "+pyStringList(invalid)+
+				". Valid configurable fields: "+configFieldSample()+"...")
+	}
+	return nil
+}
+
 func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 	// The policy check runs before everything else, matching the reference: an
 	// invalid memory_defense is a 422 regardless of what else the update names.
@@ -135,38 +191,12 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 		}
 	}
 
+	if httpErr := validateConfigurableFields(updates); httpErr != nil {
+		return storage.BankPatch{}, httpErr
+	}
+
 	patch := storage.BankPatch{}
 	configValues := map[string]any{}
-
-	// Normalize every key once: the credential and configurability checks work
-	// on the whole update set, not the first offending key.
-	normalizedKeys := make([]string, 0, len(updates))
-	for key := range updates {
-		normalizedKeys = append(normalizedKeys, normalizeConfigKey(key))
-	}
-	// Credentials (API keys, base URLs, service-account keys) are rejected first
-	// with their own message, over every offending key at once, exactly as the
-	// reference does before it checks configurability.
-	if attempts := sortedIntersection(normalizedKeys, credentialConfigFields); len(attempts) > 0 {
-		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-			"Cannot set credential fields via API: "+pyStringList(attempts)+
-				". Credentials (API keys, base URLs) must be set at server level only.")
-	}
-	invalid := sortedDifference(normalizedKeys, configurableFields)
-	// A key that is a real server-level field has its own message, distinct from
-	// an unknown one: "static" is a field the deployment knows but which cannot
-	// vary per bank.
-	if staticFields := sortedIntersection(invalid, staticConfigFields); len(staticFields) > 0 {
-		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-			"Cannot override static (server-level) fields: "+pyStringList(staticFields)+
-				". Only configurable fields can be overridden per-bank. Configurable fields include: "+
-				configFieldSample()+"... (total: "+fmt.Sprintf("%d", len(configurableFields))+" fields)")
-	}
-	if len(invalid) > 0 {
-		return storage.BankPatch{}, httpx.NewHTTPError(httpx.KindBadRequest,
-			"Unknown configuration fields: "+pyStringList(invalid)+
-				". Valid configurable fields: "+configFieldSample()+"...")
-	}
 
 	keys := make([]string, 0, len(updates))
 	for key := range updates {
@@ -293,18 +323,27 @@ var observationScopeModes = []string{"combined", "per_tag", "all_combinations", 
 // of the mode names, or a list of tag lists. The message is the reference's own
 // (validate_observation_scopes), including its repr of the offending value.
 func validateDefaultObservationScopes(raw any) *httpx.HTTPError {
+	if !observationScopesValid(raw) {
+		return httpx.NewHTTPError(httpx.KindBadRequest,
+			"default_observation_scopes must be one of "+strings.Join(observationScopeModes, ", ")+
+				` or a list of tag lists (e.g. [["topic:*"]]), got `+pyRepr(raw))
+	}
+	return nil
+}
+
+// observationScopesValid reports whether the value is one of the mode names or
+// a list of tag lists — the shapes validate_observation_scopes accepts.
+func observationScopesValid(raw any) bool {
 	if mode, isString := raw.(string); isString {
 		for _, candidate := range observationScopeModes {
 			if mode == candidate {
-				return nil
+				return true
 			}
 		}
-	} else if scopes, isList := raw.([]any); isList && isTagListOfLists(scopes) {
-		return nil
+		return false
 	}
-	return httpx.NewHTTPError(httpx.KindBadRequest,
-		"default_observation_scopes must be one of "+strings.Join(observationScopeModes, ", ")+
-			` or a list of tag lists (e.g. [["topic:*"]]), got `+pyRepr(raw))
+	scopes, isList := raw.([]any)
+	return isList && isTagListOfLists(scopes)
 }
 
 // isTagListOfLists reports whether every element is a list of strings.
@@ -637,16 +676,30 @@ func validateRetainStrategies(raw any) *httpx.HTTPError {
 			return httpx.NewHTTPError(httpx.KindBadRequest,
 				"Invalid retain strategy "+pyRepr(name)+": must be an object")
 		}
+		var strategyScopes any
 		for innerKey, innerValue := range inner {
 			normalized := normalizeConfigKey(innerKey)
 			kind, known := configurableFields[normalized]
 			if !known {
 				continue
 			}
+			if normalized == "default_observation_scopes" {
+				strategyScopes = innerValue
+			}
 			if innerValue != nil && !kindMatches(kind, innerValue) {
 				return httpx.NewHTTPError(httpx.KindBadRequest,
 					"Invalid retain strategy "+pyRepr(name)+": "+normalized+" must be "+describeKind(kind)+", got "+pythonTypeName(innerValue))
 			}
+		}
+		// A strategy's default scopes are stamped onto its items at retain time,
+		// so a wrong-shaped one wedges the bank exactly as a top-level one would:
+		// the same shape check runs over it, after the type checks
+		// (config_resolver.py:604-612).
+		if strategyScopes != nil && !observationScopesValid(strategyScopes) {
+			return httpx.NewHTTPError(httpx.KindBadRequest,
+				"Invalid retain strategy "+pyRepr(name)+": default_observation_scopes must be one of "+
+					strings.Join(observationScopeModes, ", ")+
+					` or a list of tag lists (e.g. [["topic:*"]]), got `+pyRepr(strategyScopes))
 		}
 	}
 	return nil

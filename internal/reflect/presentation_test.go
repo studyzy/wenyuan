@@ -23,7 +23,7 @@ func TestAliasesShortenPromptAndResolveInAnswer(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "tea"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "According to o1, Alice prefers tea."},
+		closingDone(map[string]any{"answer": "According to o1, Alice prefers tea."}),
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "what does Alice prefer?"}).Run(context.Background())
 	if err != nil {
@@ -66,7 +66,7 @@ func TestUnverifiedIDsAreScrubbed(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "tea"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "See " + known + " and also " + fabricated + "."},
+		closingDone(map[string]any{"answer": "See " + known + " and also " + fabricated + "."}),
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "what does Alice prefer?"}).Run(context.Background())
 	if err != nil {
@@ -203,7 +203,11 @@ func TestAnswerOverBudgetIsRewritten(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: longAnswer, Usage: provider.Usage{InputTokens: 10, OutputTokens: 10}},
+		func() provider.CompletionResult {
+			closing := closingDone(map[string]any{"answer": longAnswer})
+			closing.Usage = provider.Usage{InputTokens: 10, OutputTokens: 10}
+			return closing
+		}(),
 		provider.CompletionResult{Content: "short answer", Usage: provider.Usage{InputTokens: 5, OutputTokens: 5}},
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 20}).Run(context.Background())
@@ -229,7 +233,7 @@ func TestAnswerWithinBudgetIsNotRewritten(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: "short"},
+		closingDone(map[string]any{"answer": "short"}),
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 1000}).Run(context.Background())
 	if err != nil {
@@ -253,7 +257,7 @@ func TestEmptyRewriteKeepsOriginalAnswer(t *testing.T) {
 			toolCall(ToolSearchObservations, map[string]any{"query": "q"}),
 			toolCall(ToolDone, nil),
 		),
-		provider.CompletionResult{Content: longAnswer},
+		closingDone(map[string]any{"answer": longAnswer}),
 		provider.CompletionResult{Content: "   "},
 	)}
 	outcome, err := NewLoop(p, retrieval, Config{Question: "q", MaxTokens: 20}).Run(context.Background())

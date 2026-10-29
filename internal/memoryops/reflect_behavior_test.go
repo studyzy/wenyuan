@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -39,21 +40,25 @@ func TestReflectLengthRewrite(t *testing.T) {
 	}
 }
 
-// beh-0022: a client disconnect cancels the in-flight reflection cooperatively.
+// beh-0022: a client disconnect cancels the in-flight reflection cooperatively
+// and is answered 499 with the reference's disconnect reason
+// (api/http.py:470-476), not left unanswered.
 func TestReflectDisconnectCancels(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	if _, err := store.CreateBank(context.TODO(), storage.Bank{BankID: "b1", Name: "Bank"}); err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandlers(canceledStore{Store: store}, 5, 30000)
-	rec := post(t, bindHandlers(t, h), "/v1/default/banks/b1/reflect", `{"query":"q"}`)
-	// A canceled reflection writes no body: the handler returns without
-	// emitting a response.
-	if rec.Code != http.StatusOK {
-		t.Fatalf("canceled reflection must not emit an error body, got %d", rec.Code)
+	inner := &reflectDisconnectStore{Store: store, startedRelease: startedRelease{
+		started: make(chan struct{}), release: make(chan struct{}),
+	}}
+	bound := bindHandlers(t, NewHandlers(inner, 5, 30000))
+	rec := disconnectRequest(t, bound, http.MethodPost, "/v1/default/banks/b1/reflect",
+		`{"query":"q"}`, inner.started, inner.release)
+	if rec.Code != httpx.KindClientClosed {
+		t.Fatalf("disconnected reflection = %d, want 499: %s", rec.Code, rec.Body.String())
 	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("canceled reflection must not write a body: %s", rec.Body.String())
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"detail":"client disconnected"}` {
+		t.Fatalf("body = %s, want the disconnect reason", got)
 	}
 }
 
@@ -118,11 +123,17 @@ func TestReflectStructuredOutputFailure(t *testing.T) {
 	}
 }
 
-// canceledStore returns a canceled context so the handler stops cooperatively.
-type canceledStore struct{ storage.Store }
+// reflectDisconnectStore is a store whose reflection the test holds open until
+// the request's context is cancelled, then reports the context's own error —
+// what a store that honours the cancellation returns.
+type reflectDisconnectStore struct {
+	storage.Store
+	startedRelease
+}
 
-func (s canceledStore) Reflect(ctx context.Context, query storage.ReflectQuery) (storage.ReflectOutcome, error) {
-	return storage.ReflectOutcome{}, context.Canceled
+func (s *reflectDisconnectStore) Reflect(ctx context.Context, query storage.ReflectQuery) (storage.ReflectOutcome, error) {
+	s.hold()
+	return storage.ReflectOutcome{}, ctx.Err()
 }
 
 // deadlineStore returns a deadline-exceeded error.

@@ -25,17 +25,23 @@ import (
 // leave whichever finished last winning; claiming both would defeat it. The
 // check reads the same table the statement writes, which READ COMMITTED would
 // let race, so the claim runs at SERIALIZABLE and a lost race is retried.
-func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration) (Operation, error) {
-	return s.claimNextOperation(ctx, workerID, lease, nil)
+func (s *PostgresStore) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, opts ...ClaimOption) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, nil, opts...)
 }
 
 // ClaimNextOperationForTypes claims the oldest claimable operation whose type
 // is in types. An empty list is equivalent to ClaimNextOperation.
-func (s *PostgresStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
-	return s.claimNextOperation(ctx, workerID, lease, types)
+func (s *PostgresStore) ClaimNextOperationForTypes(ctx context.Context, workerID string, lease time.Duration, types []string, opts ...ClaimOption) (Operation, error) {
+	return s.claimNextOperation(ctx, workerID, lease, types, opts...)
 }
 
-func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string) (Operation, error) {
+func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string, lease time.Duration, types []string, opts ...ClaimOption) (Operation, error) {
+	options := applyClaimOptions(opts)
+	if options.hasReclaimLimit {
+		if err := s.reapExhaustedRecoveries(ctx, lease, options.maxReclaims); err != nil {
+			return Operation{}, err
+		}
+	}
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 Operation
@@ -47,9 +53,10 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	leaseSeconds := lease.Seconds()
 	// The candidate select is parenthesized: the claimable predicate is a
 	// disjunction, and without the grouping a later conjunct would bind to only
-	// its right-hand side.
+	// its right-hand side. The candidate's prior status and retry count ride
+	// along, so reclaiming an abandoned claim counts against its budget.
 	query := `WITH candidate AS (
-	            SELECT operation_id FROM ` + quoteIdent(schema) + `.async_operations
+	            SELECT operation_id, status, COALESCE(retry_count,0) AS retry_count FROM ` + quoteIdent(schema) + `.async_operations
 	            WHERE ((status = 'pending'
 	                    AND (next_retry_at IS NULL OR next_retry_at <= now()))
 	                OR (status = 'processing'
@@ -80,7 +87,11 @@ func (s *PostgresStore) claimNextOperation(ctx context.Context, workerID string,
 	            LIMIT 1
 	          )
 	          UPDATE ` + quoteIdent(schema) + `.async_operations AS o
-	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now()
+	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now(),
+	              -- Recovering an abandoned claim spends one recovery attempt
+	              -- (worker/poller.py:1511-1518); a fresh claim spends none.
+	              retry_count = CASE WHEN candidate.status = 'processing'
+	                                 THEN candidate.retry_count + 1 ELSE o.retry_count END
 	          FROM candidate
 	          WHERE o.operation_id = candidate.operation_id
 	          RETURNING o.operation_id, o.bank_id, COALESCE(o.operation_type,''), o.status,
@@ -177,8 +188,9 @@ func (s *PostgresStore) ReleaseOperationClaim(ctx context.Context, opID, workerI
 type ConsolidationPriorityClaimer interface {
 	// ClaimConsolidationByPriority claims the oldest claimable consolidation
 	// operation, preferring banks whose identifier matches a higher-priority
-	// pattern. An empty priority map means "no preference configured".
-	ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error)
+	// pattern. An empty priority map means "no preference configured". The
+	// variadic options adjust lease-expiry recovery (WithReclaimLimit).
+	ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int, opts ...ClaimOption) (Operation, error)
 }
 
 // Both backends carry the capability; a store without it would fall back to the
@@ -198,14 +210,20 @@ var (
 // tier of one), and the candidate with the highest rank and then the oldest
 // work is taken. Every ordering the reference builds as separate tiered queries
 // folds into that single expression, so a claim stays one round trip.
-func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int) (Operation, error) {
+func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, workerID string, lease time.Duration, priority map[string]int, opts ...ClaimOption) (Operation, error) {
+	options := applyClaimOptions(opts)
+	if options.hasReclaimLimit {
+		if err := s.reapExhaustedRecoveries(ctx, lease, options.maxReclaims); err != nil {
+			return Operation{}, err
+		}
+	}
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 Operation
 		return zero0, schemaErr
 	}
 	if len(priority) == 0 {
-		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate})
+		return s.ClaimNextOperationForTypes(ctx, workerID, lease, []string{OperationTypeConsolidate}, opts...)
 	}
 	if workerID == "" {
 		return Operation{}, ErrInvalidOperationID
@@ -215,7 +233,7 @@ func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, worker
 	rank := consolidationPriorityRank(priority)
 
 	query := `WITH candidate AS (
-	            SELECT operation_id FROM ` + qualified + `.async_operations
+	            SELECT operation_id, status, COALESCE(retry_count,0) AS retry_count FROM ` + qualified + `.async_operations
 	            WHERE ((status = 'pending'
 	                    AND (next_retry_at IS NULL OR next_retry_at <= now()))
 	                OR (status = 'processing'
@@ -241,7 +259,11 @@ func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, worker
 	            LIMIT 1
 	          )
 	          UPDATE ` + qualified + `.async_operations AS o
-	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now()
+	          SET status = 'processing', worker_id = $1, claimed_at = now(), updated_at = now(),
+	              -- Recovering an abandoned claim spends one recovery attempt
+	              -- (worker/poller.py:1511-1518); a fresh claim spends none.
+	              retry_count = CASE WHEN candidate.status = 'processing'
+	                                 THEN candidate.retry_count + 1 ELSE o.retry_count END
 	          FROM candidate
 	          WHERE o.operation_id = candidate.operation_id
 	          RETURNING o.operation_id, o.bank_id, COALESCE(o.operation_type,''), o.status,
@@ -261,6 +283,54 @@ func (s *PostgresStore) ClaimConsolidationByPriority(ctx context.Context, worker
 			return Operation{}, ErrOperationNotFound
 		}
 	}
+}
+
+// reapExhaustedRecoveries fails every abandoned 'processing' row whose recovery
+// budget is spent, before the claim can offer it for another run: its lease
+// expired and it has already been recovered limit times, so running it again
+// would only crash-loop the worker (worker/poller.py:1527-1546, the second of
+// the two recovery UPDATEs). Each failed row's batch parent is rolled up, one
+// row at a time, exactly as the reference propagates its reclaimed children.
+func (s *PostgresStore) reapExhaustedRecoveries(ctx context.Context, lease time.Duration, limit int) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `UPDATE ` + quoteIdent(schema) + `.async_operations
+	          SET status = 'failed', worker_id = NULL, claimed_at = NULL,
+	              error_message = $3, completed_at = now(), updated_at = now()
+	          WHERE status = 'processing'
+	            AND ($1 <= 0
+	                 OR claimed_at IS NULL
+	                 OR claimed_at <= now() - make_interval(secs => $1))
+	            AND COALESCE(retry_count,0) >= $2
+	          RETURNING bank_id, COALESCE(result_metadata,'{}'::jsonb)::text`
+	rows, err := s.db.QueryContext(ctx, query, lease.Seconds(), limit, reclaimExhaustedMessage(limit))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	parents := make([][2]string, 0)
+	for rows.Next() {
+		var bankID, metadataRaw string
+		if err := rows.Scan(&bankID, &metadataRaw); err != nil {
+			return err
+		}
+		if parentID, _ := decodeJSONMap([]byte(metadataRaw))["parent_operation_id"].(string); parentID != "" {
+			parents = append(parents, [2]string{bankID, parentID})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// The failing UPDATE has already committed, so the children stay failed
+	// regardless; a roll-up lapse — a parent already promoted, or gone with its
+	// bank — leaves the others to be rolled up, as the reference logs and moves
+	// on rather than undoing the reaps.
+	for _, parent := range parents {
+		_, _, _ = s.FinalizeBatchParent(ctx, parent[0], parent[1])
+	}
+	return nil
 }
 
 // consolidationPriorityRank renders the SQL expression that ranks a candidate

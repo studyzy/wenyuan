@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -90,16 +91,24 @@ type Create struct {
 }
 
 // Update rewrites one existing observation and attaches new evidence to it.
+// CurrentText is the observation's text as the model copied it before editing —
+// the prompt asks for it so a small model reads the old text before writing the
+// new one; the write itself uses Text alone (the reference never reads the
+// field either, consolidator.py:788-797).
 type Update struct {
 	ObservationID string   `json:"observation_id"`
+	CurrentText   string   `json:"current_text,omitempty"`
 	Text          string   `json:"text"`
 	SourceIDs     []string `json:"source_fact_ids"`
 	Reason        string   `json:"reason"`
 }
 
-// Delete removes one observation the new facts superseded outright.
+// Delete removes one observation the new facts superseded outright. MergedInto
+// names the observation that now carries this one's content when the delete is
+// a merge: its evidence moves there instead of vanishing with the row.
 type Delete struct {
 	ObservationID string `json:"observation_id"`
+	MergedInto    string `json:"merged_into,omitempty"`
 	Reason        string `json:"reason"`
 }
 
@@ -239,6 +248,11 @@ type Consolidator struct {
 	// operationID names the operation a worker is running, so a snapshot can be
 	// attributed to it. It is empty for the same reason progress is nil.
 	operationID string
+	// callerRequested marks a chain an explicit /consolidate call started. A
+	// round-capped chain it started keeps draining the backlog even when
+	// automatic consolidation is off; a chain a retain started stops
+	// (consolidator.py:2211-2225).
+	callerRequested bool
 }
 
 // ProgressReporter records a progress snapshot for a running operation. The
@@ -273,6 +287,14 @@ func New(p provider.Provider, store Store) *Consolidator {
 func (c *Consolidator) WithOperation(operationID string, report ProgressReporter) *Consolidator {
 	c.operationID = operationID
 	c.progress = report
+	return c
+}
+
+// WithCallerRequested marks the pass as part of a chain an explicit /consolidate
+// call started, whose round-capped requeues keep draining the backlog even when
+// automatic consolidation is off. A pass a retain triggered leaves it unset.
+func (c *Consolidator) WithCallerRequested(requested bool) *Consolidator {
+	c.callerRequested = requested
 	return c
 }
 
@@ -339,47 +361,87 @@ func (c *Consolidator) Run(ctx context.Context, bankID string) (Result, error) {
 	}
 	// A round cap bounds how many facts one pass folds, so one bank cannot hold
 	// a worker slot indefinitely; 0 means unlimited and falls back to the read
-	// bound. The load batch size then bounds how many memories one load carries,
-	// so a pass reads the bank in the reference's batches rather than pulling
-	// the whole backlog into memory at once.
-	limit := c.maxFacts
-	if c.tuning.MemoryBatchSize > 0 && c.tuning.MemoryBatchSize < limit {
-		limit = c.tuning.MemoryBatchSize
+	// bound. The load batch size then bounds how many memories one fetch
+	// carries, so a pass reads the bank in the reference's batches rather than
+	// pulling the whole round into memory at once — and when the fetch exhausts
+	// the round budget, a successor operation carries the rest
+	// (consolidator.py:1741-1747, 2186-2229).
+	fetchBatch := c.maxFacts
+	if c.tuning.MemoryBatchSize > 0 && c.tuning.MemoryBatchSize < fetchBatch {
+		fetchBatch = c.tuning.MemoryBatchSize
 	}
-	if settings.MaxMemoriesPerRound > 0 && settings.MaxMemoriesPerRound < limit {
-		limit = settings.MaxMemoriesPerRound
-	}
-	facts, err := c.store.ConsolidationFacts(ctx, bankID, limit)
-	if err != nil {
-		return Result{}, fmt.Errorf("read facts: %w", err)
-	}
-	if len(facts) == 0 {
-		return Result{}, nil
-	}
-	// An initial durable snapshot, so an operator polling the status route sees
-	// the pass has started and how much work it found before the first batch of
-	// model calls completes — which can take minutes on a dense bank. The
-	// reference writes it at the same point with the same "consolidating" stage
-	// (`consolidator.py:1585-1586`), so the pass reads as one phase advancing
-	// 0/N to N/N rather than an opaque start.
-	totalUnits := len(facts)
-	c.reportProgress("consolidating", 0, totalUnits, nil)
+	roundCap := settings.MaxMemoriesPerRound
 	var total Result
-	for _, group := range groupFactsByScope(facts) {
-		result, err := c.runScope(ctx, bankID, group.scope, group.facts, settings.forScope(group.scope))
-		total.add(result)
-		// The heartbeat an operator polls: one snapshot per scope, carrying the
-		// running counters, so `processed` advances as each scope commits rather
-		// than sitting at the pre-pass count through the whole model phase.
-		c.reportProgress("consolidating", total.Processed(), totalUnits,
-			total.progressDetail())
+	totalUnits := 0
+	hitRoundLimit := false
+	for {
+		// Cap the fetch by the remaining round budget, the way the reference's
+		// fetch_limit does.
+		fetch := fetchBatch
+		if roundCap > 0 {
+			if remaining := roundCap - totalUnits; remaining < fetch {
+				fetch = remaining
+			}
+			if fetch <= 0 {
+				hitRoundLimit = true
+				break
+			}
+		}
+		facts, err := c.store.ConsolidationFacts(ctx, bankID, fetch)
 		if err != nil {
-			return total, err
+			return total, fmt.Errorf("read facts: %w", err)
+		}
+		if len(facts) == 0 {
+			break
+		}
+		// An initial durable snapshot, so an operator polling the status route
+		// sees the pass has started and how much work it found before the first
+		// batch of model calls completes — which can take minutes on a dense
+		// bank. The reference writes it at the same point with the same
+		// "consolidating" stage (`consolidator.py:1585-1586`), so the pass reads
+		// as one phase advancing 0/N to N/N rather than an opaque start.
+		totalUnits += len(facts)
+		c.reportProgress("consolidating", total.Processed(), totalUnits, nil)
+		for _, group := range groupFactsByScope(facts) {
+			result, err := c.runScope(ctx, bankID, group.scope, group.facts, settings.forScope(group.scope))
+			total.add(result)
+			// The heartbeat an operator polls: one snapshot per scope, carrying
+			// the running counters, so `processed` advances as each scope
+			// commits rather than sitting at the pre-pass count through the
+			// whole model phase.
+			c.reportProgress("consolidating", total.Processed(), totalUnits, total.progressDetail())
+			if err != nil {
+				return total, err
+			}
+		}
+		if roundCap > 0 && totalUnits >= roundCap {
+			hitRoundLimit = true
+			break
 		}
 	}
 	// The final phase, written once the chain has drained: the observations are
 	// in and what remains is the mental-model refreshes the pass triggers.
 	c.reportProgress("refreshing_mental_models", total.Processed(), totalUnits, nil)
+	if hitRoundLimit {
+		// An automatic chain stops re-queuing once auto-consolidation is off;
+		// only an explicit /consolidate run keeps draining the backlog
+		// (consolidator.py:2211-2225).
+		if !c.callerRequested && !settings.EnableAutoConsolidation {
+			return total, nil
+		}
+		enqueuer, ok := c.store.(SuccessorEnqueuer)
+		if !ok {
+			// A store that cannot requeue leaves the round as the last word;
+			// the facts past the cap wait for the next trigger.
+			return total, nil
+		}
+		if err := enqueuer.EnqueueConsolidationSuccessor(ctx, bankID, c.callerRequested); err != nil {
+			// A failure here must propagate: swallowing it leaves the bank with
+			// backlog and no queued work — silently stuck — because the outer
+			// operation gets marked completed in the success path.
+			return total, fmt.Errorf("requeue consolidation: %w", err)
+		}
+	}
 	return total, nil
 }
 
@@ -442,7 +504,19 @@ func (c *Consolidator) runScope(ctx context.Context, bankID string, scope []stri
 
 	remaining := -1
 	if settings.MaxObservationsPerScope >= 0 {
-		remaining = settings.MaxObservationsPerScope - len(observations)
+		// The cap is measured against the scope's TRUE observation count, not
+		// the bounded candidate pool: a scope holding more observations than the
+		// pool reads would otherwise grow past its cap (the reference counts the
+		// scope to the end, engine/memories/base.py:3838-3857, and computes the
+		// remaining slots from it, consolidator.py:2555-2560). A store without
+		// the counting capability keeps the pool-derived reading.
+		total := len(observations)
+		if counter, ok := c.store.(ScopeObservationCounter); ok {
+			if counted, err := counter.CountObservationsInScope(ctx, bankID, scope); err == nil {
+				total = counted
+			}
+		}
+		remaining = settings.MaxObservationsPerScope - total
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -498,7 +572,66 @@ func (c *Consolidator) runScope(ctx context.Context, bankID string, scope []stri
 
 // runBatch folds one model call's worth of facts against the shared observation
 // pool and applies the decision it returns.
+//
+// A fact the response never acted on is stamped consolidated all the same, and
+// would never be shown to the model again. In a multi-fact batch that is as
+// likely an oversight as a judgement, so the facts it left are asked again
+// together, in a smaller batch; one that batch forgets too gets a last call of
+// its own — at most two re-asks per fact, and a fact skipped while alone is the
+// model's answer (chatter) and is never re-asked (consolidator.py:1948-1969).
 func (c *Consolidator) runBatch(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, settings Settings, remaining int) (Result, error) {
+	var total Result
+	reasked := map[string]int{}
+	pending := [][]Fact{facts}
+	for len(pending) > 0 {
+		batch := pending[0]
+		pending = pending[1:]
+		result, referenced, err := c.askAndApply(ctx, bankID, scope, batch, observations, settings, remaining)
+		if err != nil {
+			return total, err
+		}
+		total.add(result)
+		if len(batch) <= 1 {
+			continue
+		}
+		// The response left facts unaddressed: re-ask the ones that have calls
+		// left, the never-re-asked ones as one group and the rest singly. The
+		// re-asked batches stamp their own facts when answered.
+		var first []Fact
+		var again []Fact
+		for _, fact := range batch {
+			if referenced[fact.ID] || reasked[fact.ID] >= maxReasksPerFact {
+				continue
+			}
+			if reasked[fact.ID] == 0 {
+				first = append(first, fact)
+			} else {
+				again = append(again, fact)
+			}
+			reasked[fact.ID]++
+		}
+		if len(first) == 0 && len(again) == 0 {
+			continue
+		}
+		prepended := make([][]Fact, 0, 1+len(again))
+		if len(first) > 0 {
+			prepended = append(prepended, first)
+		}
+		for _, fact := range again {
+			prepended = append(prepended, []Fact{fact})
+		}
+		pending = append(prepended, pending...)
+	}
+	return total, nil
+}
+
+// maxReasksPerFact bounds how many times one pass re-asks a fact the response
+// left unaddressed before stamping it anyway. It is the reference's
+// `reasked.get(...) < 2`.
+const maxReasksPerFact = 2
+
+// askAndApply makes one model call for one batch and applies its decision.
+func (c *Consolidator) askAndApply(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, settings Settings, remaining int) (Result, map[string]bool, error) {
 	request := provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: "system", Content: systemPrompt},
@@ -533,11 +666,11 @@ func (c *Consolidator) runBatch(ctx context.Context, bankID string, scope []stri
 		}
 	}
 	if err != nil {
-		return Result{}, &llmFailure{factIDs: factIDsOf(facts), err: fmt.Errorf("consolidation call failed: %w", err)}
+		return Result{}, nil, &llmFailure{factIDs: factIDsOf(facts), err: fmt.Errorf("consolidation call failed: %w", err)}
 	}
 	decision, err := parseDecision(response.Structured, response.Content)
 	if err != nil {
-		return Result{}, &llmFailure{factIDs: factIDsOf(facts), err: err}
+		return Result{}, nil, &llmFailure{factIDs: factIDsOf(facts), err: err}
 	}
 	return c.applyDecision(ctx, bankID, scope, facts, observations, decision, response.Usage, remaining)
 }
@@ -591,21 +724,30 @@ func factIDsOf(facts []Fact) []string {
 	return ids
 }
 
-// applyDecision writes one decision to storage and marks the facts it consumed.
-// remaining bounds the creates this call may apply: -1 is unlimited, 0 or more
-// is the observation slots left in the scope.
-func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, decision Decision, usage provider.Usage, remaining int) (Result, error) {
+// applyDecision writes one decision to storage and stamps the whole batch
+// consolidated once the pass has answered it. remaining bounds the creates this
+// call may apply: -1 is unlimited, 0 or more is the observation slots left in
+// the scope. It returns the facts an applied create or update cited, so the
+// caller can re-ask the ones the response left unaddressed.
+func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, decision Decision, usage provider.Usage, remaining int) (Result, map[string]bool, error) {
 	result := Result{Usage: usage}
 	factIDs := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		factIDs = append(factIDs, fact.ID)
 	}
-	touched := map[string]bool{}
+	// A model recording a new fact sometimes names that fact as the UPDATE
+	// target. There is no observation to update, and dropping it loses the
+	// fact: it is a create (consolidator.py:3753-3760).
+	factIDSet := make(map[string]bool, len(factIDs))
+	for _, id := range factIDs {
+		factIDSet[id] = true
+	}
+	creates, updates := reaimUpdatesAtFacts(decision, factIDSet)
 	// Exact-duplicate guard: an observation whose normalized text already
 	// exists (or was created this pass) is not created again, so a near-miss
 	// the model restated does not accumulate as a twin.
 	existingTexts := map[string]bool{}
-	createdKeys := make([]string, 0, len(observations)+len(decision.Creates))
+	createdKeys := make([]string, 0, len(observations)+len(creates))
 	for _, observation := range observations {
 		normalized := normalizeObservationText(observation.Text)
 		existingTexts[normalized] = true
@@ -616,12 +758,37 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 	// them after the row is gone: the change history files the removal under the
 	// documents those facts came from.
 	observationSourcesByID := map[string][]string{}
+	// The ids the model was shown: every target it names — an update, a delete
+	// or a merge destination — must be one of them, and a miscopied id is
+	// repaired against this set first (consolidator.py:2659, 3285-3306).
+	poolIDs := make(map[string]bool, len(observations))
 	for _, observation := range observations {
 		observationTextByID[observation.ID] = normalizeObservationText(observation.Text)
 		observationSourcesByID[observation.ID] = observation.SourceIDs
+		poolIDs[observation.ID] = true
 	}
+	for i := range updates {
+		updates[i].ObservationID = resolvePoolID(updates[i].ObservationID, poolIDs)
+	}
+	for i := range decision.Deletes {
+		decision.Deletes[i].ObservationID = resolvePoolID(decision.Deletes[i].ObservationID, poolIDs)
+		if decision.Deletes[i].MergedInto != "" {
+			decision.Deletes[i].MergedInto = resolvePoolID(decision.Deletes[i].MergedInto, poolIDs)
+		}
+	}
+	updatedIDs := make(map[string]bool, len(updates))
+	for _, update := range updates {
+		updatedIDs[update.ObservationID] = true
+	}
+	preparedDeletes := prepareDeletes(decision.Deletes, updatedIDs, poolIDs)
+	// A delete the pass rejected — updated in the same response, or naming an
+	// observation the model was never shown — is a dropped action like any
+	// other, and advances the pass's counters rather than vanishing.
+	result.Skipped += len(decision.Deletes) - len(preparedDeletes)
+
+	touched := map[string]bool{}
 	createsApplied := 0
-	for _, create := range decision.Creates {
+	for _, create := range creates {
 		// The scope's observation cap bounds creates: once the cap is reached
 		// the model is told to update or delete, and any create it still emits
 		// is dropped rather than written past the cap.
@@ -648,7 +815,7 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			if twin.ID != "" && twin.Text != "" {
 				sources := validSourceIDs(create.SourceIDs, factIDs)
 				if err := c.store.UpdateObservation(ctx, bankID, twin.ID, twin.Text, sources); err != nil {
-					return result, fmt.Errorf("fold duplicate observation: %w", err)
+					return result, touched, fmt.Errorf("fold duplicate observation: %w", err)
 				}
 				c.noteObservationWritten(ctx, twin.ID, sources, false)
 				markTouched(touched, sources)
@@ -659,7 +826,7 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		sources := validSourceIDs(create.SourceIDs, factIDs)
 		createdID, err := c.store.CreateObservation(ctx, bankID, create.Text, sources, scope)
 		if err != nil {
-			return result, fmt.Errorf("create observation: %w", err)
+			return result, touched, fmt.Errorf("create observation: %w", err)
 		}
 		c.noteObservationWritten(ctx, createdID, sources, true)
 		existingTexts[key] = true
@@ -668,8 +835,16 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		createsApplied++
 		result.Created++
 	}
-	for _, update := range decision.Updates {
+	for _, update := range updates {
 		if update.ObservationID == "" || strings.TrimSpace(update.Text) == "" {
+			continue
+		}
+		// Security: the observation must be one the model was shown. An id
+		// outside the pool is a warning and a skipped action, not a failed
+		// pass — the batch continues (consolidator.py:2696-2712).
+		if !poolIDs[update.ObservationID] {
+			slog.Warn("Batch consolidation: rejected update — observation " + update.ObservationID + " not in the recall pool")
+			result.Skipped++
 			continue
 		}
 		// An update that only restates the observation's own text changes
@@ -680,40 +855,45 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		}
 		sources := validSourceIDs(update.SourceIDs, factIDs)
 		if err := c.store.UpdateObservation(ctx, bankID, update.ObservationID, update.Text, sources); err != nil {
-			return result, fmt.Errorf("update observation: %w", err)
+			return result, touched, fmt.Errorf("update observation: %w", err)
 		}
 		c.noteObservationWritten(ctx, update.ObservationID, sources, false)
 		markTouched(touched, sources)
 		result.Updated++
 	}
-	for _, del := range decision.Deletes {
-		// A delete entry without a target names nothing and would remove an
-		// arbitrary observation, so it is skipped rather than guessed at.
-		if del.ObservationID == "" {
-			continue
+	for _, del := range preparedDeletes {
+		// A merge moves the deleted observation's evidence onto its survivor, or
+		// — when the model named no usable target — requeues that evidence for
+		// the next pass (consolidator.py:2881-2897, 3335-3380). A store without
+		// the merge capability lets the evidence go with the row, as any plain
+		// delete always has.
+		if del.isMerge {
+			if merger, ok := c.store.(MergeStore); ok {
+				if err := merger.MergeObservationEvidence(ctx, bankID, del.mergedInto, del.observationID); err != nil {
+					return result, touched, fmt.Errorf("fold merged evidence: %w", err)
+				}
+			}
 		}
 		// Noted before the row goes: its source facts are what the document
 		// change history attributes the removal through.
-		c.noteObservationRemoved(ctx, del.ObservationID, observationSourcesByID[del.ObservationID])
-		if err := c.store.DeleteObservation(ctx, bankID, del.ObservationID); err != nil {
-			return result, fmt.Errorf("delete observation: %w", err)
+		c.noteObservationRemoved(ctx, del.observationID, observationSourcesByID[del.observationID])
+		if err := c.store.DeleteObservation(ctx, bankID, del.observationID); err != nil {
+			return result, touched, fmt.Errorf("delete observation: %w", err)
 		}
 		result.Deleted++
 	}
-	// Facts no decision referenced are not marked, so the next pass offers them
-	// again rather than losing them.
-	consumed := make([]string, 0, len(touched))
-	for _, id := range factIDs {
-		if touched[id] {
-			consumed = append(consumed, id)
+	// The whole batch is stamped consolidated once the pass has answered it,
+	// including the facts the response skipped
+	// (consolidator.py:1948-1969, 2962-2973): a fact left unstamped is
+	// re-offered to every later pass forever, which is what kept the backlog
+	// answering and reconcile re-enqueueing. The facts the model could not be
+	// asked about at all take the failed path instead (see llmFailure).
+	if len(factIDs) > 0 {
+		if err := c.store.MarkConsolidated(ctx, bankID, factIDs); err != nil {
+			return result, touched, fmt.Errorf("mark consolidated: %w", err)
 		}
 	}
-	if len(consumed) > 0 {
-		if err := c.store.MarkConsolidated(ctx, bankID, consumed); err != nil {
-			return result, fmt.Errorf("mark consolidated: %w", err)
-		}
-	}
-	return result, nil
+	return result, touched, nil
 }
 
 // chunkFacts splits facts into batches of at most size, preserving order. A
@@ -851,9 +1031,11 @@ func parseDecision(structured any, content string) (Decision, error) {
 			}
 		}
 	}
-	// A model that answered in neither form contributed nothing; that is not an
-	// error, because a pass with no decision simply leaves the facts for later.
-	return Decision{}, nil
+	// A model that answered in neither form produced nothing the pass can act
+	// on. That is a failed batch rather than an empty answer: an empty answer
+	// stamps the batch consolidated once applied, and stamping facts the pass
+	// never actually read would drop them for good.
+	return Decision{}, errors.New("consolidation response carried no usable JSON")
 }
 
 // normalize replaces nil slices with empty ones so a reader never has to tell

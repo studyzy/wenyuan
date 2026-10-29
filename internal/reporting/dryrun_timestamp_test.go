@@ -185,3 +185,26 @@ func TestPromptPreviewRejectsStrategyTypeBeforeBankLookup(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+// A datetime the framework accepted still reaches the engine's
+// parse_datetime_flexible, which refuses the year-1/9999 placeholders; the
+// route's `except ValueError` answers that refusal with a plain 400
+// (orchestrator.py:468-475).
+func TestDryRunTimestampRejectsPlaceholderDates(t *testing.T) {
+	mux := dryRunServer(t, nil, bank)
+	for _, value := range []string{"9999-12-31T23:59:59Z", "0001-01-01T00:00:00"} {
+		rec := send(mux, http.MethodPost, "/v1/default/banks/"+bank+"/memories/dry-run-extract",
+			`{"content":"x","timestamp":"`+value+`"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("timestamp %s = %d, want 400: %s", value, rec.Code, rec.Body.String())
+		}
+		year := "9999"
+		if strings.HasPrefix(value, "0001") {
+			year = "1"
+		}
+		want := `{"detail":"Date year ` + year + ` is a placeholder, not a date."}`
+		if got := strings.TrimSpace(rec.Body.String()); got != want {
+			t.Fatalf("timestamp %s: body = %s, want %s", value, got, want)
+		}
+	}
+}

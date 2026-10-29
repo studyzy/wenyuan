@@ -15,7 +15,7 @@ func TestRewritePromptsMatchReference(t *testing.T) {
 	long := strings.TrimSpace(strings.Repeat("this is a long answer. ", 200))
 	p := &scriptedProvider{name: "stub", script: append(
 		turnScript(toolCall(ToolSearchObservations, map[string]any{"query": "q"}), toolCall(ToolDone, nil)),
-		provider.CompletionResult{Content: long},
+		closingDone(map[string]any{"answer": long}),
 		provider.CompletionResult{Content: "short"},
 	)}
 	retrieval := &stubRetrieval{observations: []Evidence{{Kind: "observation", ID: "obs-1", Text: "fact"}}}

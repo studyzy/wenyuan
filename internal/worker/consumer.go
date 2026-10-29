@@ -507,7 +507,7 @@ func (c *Consumer) claimOn(ctx context.Context) (storage.Operation, error) {
 			return storage.Operation{}, err
 		}
 	}
-	return c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease)
+	return c.store.ClaimNextOperation(ctx, c.workerID(), c.cfg.Lease, storage.WithReclaimLimit(c.cfg.MaxRetries))
 }
 
 // activeTenants returns the schemas to poll, cached for TenantRefresh. A
@@ -544,7 +544,7 @@ func (c *Consumer) activeTenants(ctx context.Context) ([]tenant.Tenant, error) {
 func (c *Consumer) claimPreferred(ctx context.Context, preferred []string) (storage.Operation, error) {
 	if len(c.consolidationPriority) > 0 && containsType(preferred, storage.OperationTypeConsolidate) {
 		if claimer, ok := c.store.(storage.ConsolidationPriorityClaimer); ok {
-			op, err := claimer.ClaimConsolidationByPriority(ctx, c.workerID(), c.cfg.Lease, c.consolidationPriority)
+			op, err := claimer.ClaimConsolidationByPriority(ctx, c.workerID(), c.cfg.Lease, c.consolidationPriority, storage.WithReclaimLimit(c.cfg.MaxRetries))
 			if err == nil {
 				return op, nil
 			}
@@ -553,7 +553,7 @@ func (c *Consumer) claimPreferred(ctx context.Context, preferred []string) (stor
 			}
 		}
 	}
-	return c.store.ClaimNextOperationForTypes(ctx, c.workerID(), c.cfg.Lease, preferred)
+	return c.store.ClaimNextOperationForTypes(ctx, c.workerID(), c.cfg.Lease, preferred, storage.WithReclaimLimit(c.cfg.MaxRetries))
 }
 
 // containsType reports whether a slice names an operation type.
@@ -795,7 +795,7 @@ func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error,
 	// pending, so a second release would find no claim to release and fail with
 	// a conflict — noise on the log, and it would mask the recorded cause.
 	next := c.cfg.Now().Add(c.BackoffFor(attempt))
-	if err := c.store.ScheduleOperationRetry(ctx, op.OperationID, op.RetryCount+1, next, cause.Error()); err != nil {
+	if err := c.store.ScheduleOperationRetry(ctx, op.OperationID, op.RetryCount+1, next, truncateErrorMessage(cause.Error())); err != nil {
 		c.reportSettleLapse(op, "schedule-retry", err)
 		return
 	}

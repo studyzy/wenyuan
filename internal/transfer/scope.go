@@ -154,6 +154,12 @@ func (h *Handlers) resolveImportSelection(r *http.Request, data []byte, mode str
 	if _, err := h.Store.GetBank(r.Context(), target); err == nil {
 		return "", wireMessage(fmt.Sprintf("Target bank '%s' already exists; a bank restore writes into a fresh bank (it is not a merge). Delete it first, or choose a different target bank id.", target))
 	}
+	// The restore re-checks the identifier on the resolved target — including one
+	// derived from the archive's manifest — so the caller gets the 400 now, not a
+	// failed background operation (engine/memory_engine.py:8240).
+	if err := validateNewBankID(target); err != nil {
+		return "", err
+	}
 	return target, nil
 }
 
