@@ -236,7 +236,7 @@ fn recall_request() -> types::RecallRequest {
         query: "what must the schema stay?".to_owned(),
         max_tokens: 4096,
         trace: false,
-        prefer_observations: false,
+        prefer_observations: Some(false),
         tags_match: types::TagsMatch::Any,
         budget: None,
         include: None,

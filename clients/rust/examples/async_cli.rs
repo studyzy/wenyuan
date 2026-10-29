@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 query: "what does the async CLI keep?".to_owned(),
                 max_tokens: 4096,
                 trace: false,
-                prefer_observations: false,
+                prefer_observations: Some(false),
                 tags_match: types::TagsMatch::Any,
                 budget: None,
                 include: None,

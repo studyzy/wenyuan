@@ -86,7 +86,7 @@ fn recall_request(query: &str, tags: Option<Vec<String>>) -> types::RecallReques
         query: query.to_owned(),
         max_tokens: 4096,
         trace: false,
-        prefer_observations: false,
+        prefer_observations: Some(false),
         tags_match: types::TagsMatch::Any,
         budget: None,
         include: None,
