@@ -1,4 +1,4 @@
-import { failOpen, hooksDisabled, parsePayload, readStdin } from "../src/runtime/hook-contract";
+import { failOpen, hooksDisabled, lifecyclePayload, readStdin } from "../src/runtime/hook-contract";
 import { stageDeadlineMs } from "../src/runtime/deadline";
 import { runSessionStart } from "../src/runtime/session-start-stage";
 import { homeDirectory } from "../src/config/paths";
@@ -21,7 +21,7 @@ async function main(): Promise<number> {
     return 0;
   }
   const source: string = await readStdin();
-  const payload: Record<string, unknown> = parsePayload(source);
+  const payload: Record<string, unknown> = lifecyclePayload(source);
   const hostId: string | undefined = resolveHostId(payload);
   if (hostId === undefined) {
     return 0;

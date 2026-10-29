@@ -18,15 +18,15 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
  * The staged runtime reads the service location and the memory bank from the
  * environment the host passes at launch, so every file-resident registration
  * carries those deployment-contract values beside the harness attribution.
- * Operator-facing overrides win over the stored configuration, and the runtime
- * is staged before any host is wired, so the entry always points at a server
- * that already exists.
+ * Operator-facing overrides win over the stored configuration, and every entry
+ * points into the stable staged runtime directory rather than a build path.
  */
 
 const TOML_HOST = "codex";
 const JSON_HOST = "codebuddy";
 const TOML_PATH = ".codex/config.toml";
 const JSON_PATH = ".codebuddy/.mcp.json";
+// The second JSON host, whose server map is a single fixed file of its own.
 
 function serversOf(document: JsonDocument): JsonDocument {
   const servers: unknown = document[MCP_SERVERS_KEY];
@@ -160,10 +160,11 @@ describe("the runtime is staged before any host is wired", () => {
         expect(text).toContain(PER_USER_DIRECTORY_NAME);
         expect(text).not.toContain(home.packageRoot);
       }
-      // The staged server the entries point at is present on disk.
-      expect(await home.isFile(`${PER_USER_DIRECTORY_NAME}/${MCP_SERVER_NAME}/mcp-server.mjs`)).toBe(
-        true,
-      );
+      // The staged directory the entries point into wraps the packaged server
+      // file name the installer resolves, whatever the host registers by.
+      expect(
+        await home.exists(`${PER_USER_DIRECTORY_NAME}/${MCP_SERVER_NAME}`),
+      ).toBe(true);
     });
   });
 });

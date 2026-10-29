@@ -26,12 +26,13 @@ export const SKILL_DIRECTORY_NAME = OWNERSHIP_MARKER;
  * The home-relative skills root for each approved host. Kept table-shaped
  * rather than branched on the host id, so adding a host is a data edit and a
  * host outside the map stays absent. The second host reads the shared
- * agentskills-standard root; the first and third keep their own dot-directory.
+ * agentskills-standard root; the others keep their own dot-directory.
  */
 const SKILLS_ROOTS: Readonly<Record<string, string>> = {
   "claude-code": ".claude/skills",
   codex: ".agents/skills",
   codebuddy: ".codebuddy/skills",
+  dsh: ".dsh/skills",
 };
 
 /**

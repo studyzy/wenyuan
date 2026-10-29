@@ -47,7 +47,7 @@ export { mcpServerPath, runtimeDirectory } from "./runtime/layout";
 export { stageRuntime, builtRuntimeDirectory, runtimeIsStaged } from "./runtime/stage";
 export { MemoryClient, openMemoryClient, textsFromRecall } from "./runtime/memory-client";
 export { resolveHookConnection, type HookConnection, type HookConnectionResult } from "./runtime/hook-connection";
-export { hooksDisabled, failOpen, readStdin, parsePayload, DISABLE_HOOKS_ENV } from "./runtime/hook-contract";
+export { hooksDisabled, failOpen, readStdin, parsePayload, lifecyclePayload, DISABLE_HOOKS_ENV } from "./runtime/hook-contract";
 export { stageDeadlineMs, STOP_DEADLINE_MARGIN_SECONDS } from "./runtime/deadline";
 export { runSessionStart } from "./runtime/session-start-stage";
 export { runPrePrompt } from "./runtime/pre-prompt-stage";
@@ -90,6 +90,7 @@ export {
   MCP_ENTRY_MEMBERS,
   MECHANISMS,
   JSON_HOST_CANDIDATES,
+  DSH_HOST_PATH,
   TOML_HOST_PATH,
   mechanismFor,
   mechanismKindFor,

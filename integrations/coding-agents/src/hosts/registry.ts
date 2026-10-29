@@ -3,18 +3,20 @@ import { delimiter, join } from "node:path";
 import { claudeCode } from "./claude-code";
 import { codebuddy } from "./codebuddy";
 import { codex } from "./codex";
+import { dsh } from "./dsh";
 import type { HostContribution, HostId } from "./types";
 
 /**
  * The ordered registry of registered hosts.
  *
- * The first batch registers exactly these three. The registry and the install
+ * The first batch registered three hosts; DSH was added as a fourth, and the
+ * list order is the order hosts are wired in. The registry and the install
  * machinery agree in both directions: every selectable host is installable, and
  * every installable host is selectable, so this list is the only place a host
  * is named.
  */
 
-export const HOSTS: readonly HostContribution[] = [claudeCode, codex, codebuddy];
+export const HOSTS: readonly HostContribution[] = [claudeCode, codex, codebuddy, dsh];
 
 export const HOST_IDS: readonly HostId[] = HOSTS.map((host) => host.id);
 

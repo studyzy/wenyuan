@@ -77,6 +77,10 @@ export const HOST_LIFECYCLES: Readonly<Record<string, HostLifecycle>> = {
     "pre-prompt": registration("pre-prompt", "UserPromptSubmit", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
     stop: registration("stop", "Stop", STOP_BUDGET_SECONDS, "seconds", "matcher-group"),
   },
+  // DSH declares NO lifecycle: its wiring is a Cordis plugin
+  // (`integrations/dsh-plugin`), which attaches memory on the harness's own
+  // extension points in-process. Installing Claude-Code-style command hooks
+  // beside it would recall twice per prompt and retain the transcript twice.
 };
 
 /**

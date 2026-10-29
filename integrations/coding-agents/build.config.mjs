@@ -37,6 +37,13 @@ const entryPoints = [
     outfile: "dist/runtime/hooks/stop.mjs",
     executable: true,
   },
+  // The MCP server a host launches over standard input/output. Its staged path
+  // is what every host's MCP registration names, so it ships beside the hooks.
+  {
+    entry: "hooks/mcp-server.ts",
+    outfile: "dist/runtime/mcp-server.mjs",
+    executable: true,
+  },
 ];
 
 // A host execs a hook by path, so the bundled file carries its own

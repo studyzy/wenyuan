@@ -9,12 +9,14 @@ import type { LifecycleRegistration, RegistrationStyle } from "./lifecycle-types
  * back so install, re-install and uninstall all agree on what is this
  * package's own entry.
  *
- * All three approved hosts read the matcher-group style: the host's event maps
- * to a matcher group that holds an array with exactly one command entry, and
- * that entry names the execution type, the packaged script path and the host's
- * budget. The other declared styles each get their own encoder, so adding a
- * host with a different loader adds an encoder rather than a growing
- * conditional in the caller.
+ * The first-batch hosts read the matcher-group style: the host's event maps to
+ * a matcher group that holds an array with exactly one command entry, and that
+ * entry names the execution type, the packaged script path and the host's
+ * budget. The other declared styles keep their own encoders, so a host with a
+ * different loader is added as an encoder rather than a growing conditional in
+ * the caller. DSH is deliberately not one of them any more: its wiring is a
+ * Cordis plugin (`integrations/dsh-plugin`), so this package writes no hook
+ * config for it at all.
  */
 
 /** The wrapper key every host's event map lives under. */
@@ -61,8 +63,6 @@ function encoderFor(
       return encodeMatcherGroup;
     case "flat-entry":
       return (scriptPath, budgetValue) => commandEntry(scriptPath, budgetValue);
-    case "argv-split":
-      return encodeArgvSplit;
     case "table-array":
       return (scriptPath, budgetValue) => [commandEntry(scriptPath, budgetValue)];
     default:
@@ -74,14 +74,9 @@ function commandEntry(scriptPath: string, budgetValue: number): HookCommandEntry
   return { type: HOOK_COMMAND_TYPE, command: scriptPath, timeout: budgetValue };
 }
 
-/** The style all three approved hosts use. */
+/** The style the first-batch hosts use. */
 function encodeMatcherGroup(scriptPath: string, budgetValue: number): MatcherGroup {
   return { [MATCHER_GROUP_KEY]: [commandEntry(scriptPath, budgetValue)] };
-}
-
-/** A style whose entry splits the path into an argv on whitespace. */
-function encodeArgvSplit(scriptPath: string, budgetValue: number): HookCommandEntry {
-  return { type: HOOK_COMMAND_TYPE, command: scriptPath, timeout: budgetValue };
 }
 
 /**

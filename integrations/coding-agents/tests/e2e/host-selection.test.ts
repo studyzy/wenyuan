@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HOSTS, hostNames } from "../../src/hosts/registry";
 import type { HostContribution } from "../../src/hosts/types";
 import { ALL_HOSTS_KEYWORD } from "../../src/hosts/select";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { runInstaller, withFakeHome, withRestrictedPath, writeStandInDsh, type FakeHome } from "../helpers/fake-home";
 
 /**
  * Host selection: the all-hosts keyword wires every detected host, explicit
@@ -10,12 +10,15 @@ import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home"
  * name and no selection at all — happen before anything is written.
  */
 
-const APPROVED: string[] = ["claude-code", "codex", "codebuddy"];
+const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "dsh"];
 
 const CONFIG_FILES: Record<string, string> = {
   "claude-code": ".claude/settings.json",
   codex: ".codex/settings.json",
   codebuddy: ".codebuddy/settings.json",
+  // DSH writes no hook config; its install still wires the MCP server map and
+  // the companion skill, which is what proves it was accepted.
+  dsh: ".dsh/mcp.json",
 };
 
 const TWO_DETECTED = {
@@ -113,14 +116,19 @@ describe("an explicit host name", () => {
 });
 
 describe("the registry", () => {
-  it("holds exactly three hosts and no others", () => {
-    expect(HOSTS).toHaveLength(3);
+  it("holds exactly the registered hosts and no others", () => {
+    expect(HOSTS).toHaveLength(APPROVED.length);
     expect(hostNames()).toEqual(APPROVED);
   });
 
   it.each([...HOSTS.map((host: HostContribution) => host.id)])("accepts %s", async (hostId: string) => {
+    // DSH is wired through its own `dsh plugin` command, so it needs that
+    // executable on PATH; every other host installs without one.
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      expect((await runInstaller(["install", hostId])).status).toBe(0);
+      const bin: string = await writeStandInDsh(home);
+      const status: number = await withRestrictedPath([bin], async () =>
+        (await runInstaller(["install", hostId])).status);
+      expect(status).toBe(0);
       expect(await home.isFile(CONFIG_FILES[hostId] ?? "")).toBe(true);
     });
   });
@@ -132,7 +140,7 @@ describe("the registry", () => {
     });
   });
 
-  it("lists exactly the same three hosts in the usage text", async () => {
+  it("lists exactly the same hosts in the usage text", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async () => {
       const result = await runInstaller([]);
       expect(result.status).toBe(0);

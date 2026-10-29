@@ -32,7 +32,9 @@ describe("the shared lifecycle declaration", () => {
     expect([...LIFECYCLE_STAGES]).toEqual(["session-start", "pre-prompt", "stop"]);
   });
 
-  it("declares a lifecycle for every approved host", () => {
+  it("declares a lifecycle for every host that gets hook config, and not for DSH", () => {
+    // DSH's memory wiring is the Cordis plugin `@studyzy/dsh-wenyuan-memory`;
+    // a command-hook lifecycle here would recall and retain twice.
     expect(declaredHostIds().sort()).toEqual(["claude-code", "codebuddy", "codex"]);
   });
 

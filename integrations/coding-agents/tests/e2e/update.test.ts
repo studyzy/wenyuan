@@ -58,8 +58,8 @@ async function withPackages<T>(
 describe("updating after an install", () => {
   it("refreshes the runtime and leaves the host config byte-identical", async () => {
     await withPackages(
-      ["hooks/session-start.mjs", "older-only.txt"],
-      ["hooks/session-start.mjs", "newer-only.txt"],
+      ["hooks/session-start.mjs", "mcp-server.mjs", "older-only.txt"],
+      ["hooks/session-start.mjs", "mcp-server.mjs", "newer-only.txt"],
       async (older: string, newer: string) => {
         await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
           expect((await runInstaller(["install", "claude-code"], { packageRoot: older })).status).toBe(0);

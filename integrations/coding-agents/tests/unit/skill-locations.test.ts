@@ -13,7 +13,7 @@ import {
  * to nothing so its placement path is never reached.
  */
 
-const APPROVED: readonly string[] = ["claude-code", "codex", "codebuddy"];
+const APPROVED: readonly string[] = ["claude-code", "codex", "codebuddy", "dsh"];
 
 describe("the skills-root map", () => {
   it.each(APPROVED)("resolves a non-empty root for %s", (hostId: string) => {
@@ -29,6 +29,7 @@ describe("the skills-root map", () => {
   it("resolves each host to its declared dot-directory skills child", () => {
     expect(skillsRootFor("claude-code", "/home/u")).toBe(join("/home/u", ".claude/skills"));
     expect(skillsRootFor("codebuddy", "/home/u")).toBe(join("/home/u", ".codebuddy/skills"));
+    expect(skillsRootFor("dsh", "/home/u")).toBe(join("/home/u", ".dsh/skills"));
   });
 
   it("resolves nothing for a host outside the map", () => {

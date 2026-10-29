@@ -6,6 +6,7 @@ import {
   MCP_SERVER_NAME,
   MCP_SERVERS_KEY,
   MCP_TOML_CONTAINER_KEY,
+  DSH_HOST_PATH,
   MECHANISMS,
   containerKeyFor,
   declaredMechanismHosts,
@@ -22,8 +23,8 @@ import { OWNERSHIP_MARKER } from "../../src/write/marker";
  * names, and the member names appear exactly once.
  */
 
-const APPROVED_HOSTS = ["claude-code", "codex", "codebuddy"];
-const FILE_HOSTS = ["codex", "codebuddy"];
+const APPROVED_HOSTS = ["claude-code", "codex", "codebuddy", "dsh"];
+const FILE_HOSTS = ["codex", "codebuddy", "dsh"];
 const MECHANISM_KINDS = ["command-line", "toml-table", "json-server-map"];
 
 describe("the per-host mechanism declaration", () => {
@@ -32,9 +33,12 @@ describe("the per-host mechanism declaration", () => {
     expect(MECHANISM_KINDS).toContain(mechanismKindFor(hostId));
   });
 
-  it("assigns each mechanism to exactly one host", () => {
-    const kinds = MECHANISMS.map((declaration) => declaration.mechanism);
-    expect(new Set(kinds).size).toBe(kinds.length);
+  it("assigns each host its own declaration, with the mechanism kinds that exist", () => {
+    const hostIds = MECHANISMS.map((declaration) => declaration.hostId);
+    expect(new Set(hostIds).size).toBe(hostIds.length);
+    for (const declaration of MECHANISMS) {
+      expect(MECHANISM_KINDS).toContain(declaration.mechanism);
+    }
   });
 
   it("gives the command-line host no config file of ours", () => {
@@ -55,7 +59,13 @@ describe("the per-host mechanism declaration", () => {
     }
   });
 
-  it("leaves an unapproved host with no declaration", () => {
+  it("points the second JSON host at one fixed server-map path", () => {
+    expect(mechanismKindFor("dsh")).toBe("json-server-map");
+    expect(locationResolutionFor("dsh")).toEqual({ kind: "fixed", path: DSH_HOST_PATH });
+    expect(containerKeyFor("dsh")).toBe(MCP_SERVERS_KEY);
+  });
+
+  it("leaves an unregistered host with no declaration", () => {
     expect(mechanismFor("some-other-host")).toBeUndefined();
     expect(mechanismKindFor("some-other-host")).toBeUndefined();
   });

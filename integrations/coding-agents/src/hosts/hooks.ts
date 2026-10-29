@@ -10,7 +10,11 @@ import {
   type ConfigFormat,
   type JsonDocument,
 } from "../write/json-merge";
-import { encodeRegistration, HOOKS_CONTAINER_KEY, type EncodedRegistration } from "./hook-shape";
+import {
+  encodeRegistration,
+  HOOKS_CONTAINER_KEY,
+  type EncodedRegistration,
+} from "./hook-shape";
 import {
   budgetMilliseconds,
   hostLifecycle,
@@ -43,18 +47,21 @@ export interface HookWriteResult {
   messages: string[];
 }
 
-export interface HookWriteInput {
-  /** The host whose lifecycle is installed, resolved from the declaration. */
+/** The host whose lifecycle is installed, resolved from the declaration. */
+export type HookWriteInput = HookTarget;
+
+/** The absolute path a host config points at for one declared registration. */
+export function hookPathFor(scriptFile: string, runtimeDirectory: string): string {
+  return join(runtimeDirectory, HOOKS_SUBDIRECTORY, scriptFile);
+}
+
+/** What one host's lifecycle write needs resolved. */
+export interface HookTarget {
   hostId: string;
   configPath: string;
   format: ConfigFormat;
   /** The stable staged runtime every written command path points into. */
   runtimeDirectory: string;
-}
-
-/** The absolute path a host config points at for one declared registration. */
-export function hookPathFor(scriptFile: string, runtimeDirectory: string): string {
-  return join(runtimeDirectory, HOOKS_SUBDIRECTORY, scriptFile);
 }
 
 /**
@@ -64,13 +71,17 @@ export function hookPathFor(scriptFile: string, runtimeDirectory: string): strin
  */
 function eventValue(
   registration: LifecycleRegistration,
-  runtimeDirectory: string,
+  target: HookTarget,
 ): EncodedRegistration {
   const budgetValue: number =
     registration.budgetUnit === "seconds"
       ? registration.budget
       : budgetMilliseconds(registration);
-  return encodeRegistration(registration, hookPathFor(registration.scriptFile, runtimeDirectory), budgetValue);
+  return encodeRegistration(
+    registration,
+    hookPathFor(registration.scriptFile, target.runtimeDirectory),
+    budgetValue,
+  );
 }
 
 /** One event key path for a host config: the wrapper key plus the event spelling. */
@@ -93,7 +104,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
       mergeValueIntoContainer(
         document,
         eventPath(registration.event),
-        eventValue(registration, input.runtimeDirectory),
+        eventValue(registration, input),
       );
     }
     await writeConfigSource(input.configPath, `${JSON.stringify(document, null, 2)}\n`);
@@ -111,7 +122,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
         text,
         [HOOKS_CONTAINER_KEY],
         registration.event,
-        eventValue(registration, input.runtimeDirectory),
+        eventValue(registration, input),
         (memberSource) => memberSource.includes(OWNERSHIP_MARKER),
       );
       if (edit === null) {
@@ -131,7 +142,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
       mergeValueIntoContainer(
         document,
         eventPath(registration.event),
-        eventValue(registration, input.runtimeDirectory),
+        eventValue(registration, input),
       );
     }
     text = `${JSON.stringify(document, null, 2)}\n`;

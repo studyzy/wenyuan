@@ -6,6 +6,7 @@ import {
   RETRY_BUDGET,
   failOpen,
   hooksDisabled,
+  lifecyclePayload,
   parsePayload,
   payloadString,
   readStdin,
@@ -88,6 +89,26 @@ describe("reading the host payload", () => {
     for (const source of ["", "   ", "not json", "[1,2]", "null", "\"str\""]) {
       expect(parsePayload(source), source).toEqual({});
     }
+  });
+
+  it("adds the lifecycle members a host exports in the environment", () => {
+    // DSH launches a hook with no payload on standard input and the firing
+    // event in the environment instead.
+    const environment: NodeJS.ProcessEnv = {
+      WENYUAN_HOOK_EVENT: "SessionStart",
+      WENYUAN_HOOK_HOST: "dsh",
+    };
+    expect(lifecyclePayload("", environment)).toEqual({ hook_event_name: "SessionStart", host: "dsh" });
+    expect(lifecyclePayload("{\"session_id\":\"s-1\"}", environment)).toEqual({
+      session_id: "s-1",
+      hook_event_name: "SessionStart",
+      host: "dsh",
+    });
+  });
+
+  it("reads an empty payload when a firing carries nothing either way", () => {
+    expect(lifecyclePayload("")).toEqual({});
+    expect(lifecyclePayload("", { WENYUAN_HOOK_EVENT: "" })).toEqual({});
   });
 
   it("reads the first present non-empty string member", () => {

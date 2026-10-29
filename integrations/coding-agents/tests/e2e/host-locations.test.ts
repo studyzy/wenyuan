@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { HOSTS } from "../../src/hosts/registry";
-import type { HostContribution } from "../../src/hosts/types";
 import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
 import { runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
@@ -27,6 +25,9 @@ const LOCATIONS: ExpectedLocations[] = [
   { id: "claude-code", config: ".claude/settings.json", skills: ".claude/skills" },
   { id: "codex", config: ".codex/settings.json", skills: ".agents/skills" },
   { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
+  // DSH is absent on purpose: its memory wiring is the Cordis plugin
+  // `@studyzy/dsh-wenyuan-memory`, so this package writes no hook config for
+  // it. Its MCP server map and skills directory are covered by its own suite.
 ];
 
 function locationsFor(hostId: string): ExpectedLocations {
@@ -42,7 +43,7 @@ function ownCommands(commands: readonly string[]): string[] {
 }
 
 describe("installing into a home where the host has no config at all", () => {
-  it.each([...HOSTS.map((host: HostContribution) => host.id)])("wires %s", async (hostId: string) => {
+  it.each([...LOCATIONS.map((entry: ExpectedLocations) => entry.id)])("wires %s", async (hostId: string) => {
     const expected: ExpectedLocations = locationsFor(hostId);
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       const result = await runInstaller(["install", hostId]);

@@ -37,7 +37,7 @@ const host: HostContribution = {
   },
 
   async install(env: HostEnvironment, options: HostInstallOptions): Promise<HostOperationResult> {
-    const configPath: string = hostConfigPath(host, env.home);
+    const configPath: string = hostConfigPath(host, env.home) ?? "";
 
     const hooks = await installLifecycleHooks({
       hostId: host.id,

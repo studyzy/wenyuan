@@ -11,7 +11,7 @@ import type { ConfigFormat } from "../write/json-merge";
  * shape shared with the others.
  */
 
-export type HostId = "claude-code" | "codex" | "codebuddy";
+export type HostId = "claude-code" | "codex" | "codebuddy" | "dsh";
 
 export interface HostLocations {
   /**
@@ -67,12 +67,19 @@ export interface HostContribution {
   preflight?(env: HostEnvironment): Promise<string | null>;
 }
 
-/** The config location to write: the first candidate that already exists. */
-export function hostConfigPath(host: HostContribution, home: string): string {
+/**
+ * The config location to write: the first candidate that already exists.
+ *
+ * `null` means this package writes no hook config for the host at all — true of
+ * a host whose wiring is a plugin of its own, and of a host with no config file
+ * of this shape. Callers skip such a host rather than resolving `home` as a path.
+ */
+export function hostConfigPath(host: HostContribution, home: string): string | null {
   const existing: string | undefined = host.locations.configFiles.find((candidate) =>
     existsSync(join(home, candidate)),
   );
-  return join(home, existing ?? host.locations.configFiles[0] ?? "");
+  const relative: string | undefined = existing ?? host.locations.configFiles[0];
+  return relative === undefined ? null : join(home, relative);
 }
 
 /** Every candidate config location, for a sweep that leaves no duplicate. */

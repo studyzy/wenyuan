@@ -24,11 +24,11 @@ export const LIFECYCLE_STAGES: readonly LifecycleStage[] = [
 export type BudgetUnit = "seconds" | "milliseconds";
 
 /**
- * The registration shape a host's loader expects. All three approved hosts use
+ * The registration shape a host's loader expects. The first-batch hosts use
  * the matcher-group style; the other styles are declared so a host with a
  * different loader is distinguishable without changing any other field.
  */
-export type RegistrationStyle = "matcher-group" | "flat-entry" | "argv-split" | "table-array";
+export type RegistrationStyle = "matcher-group" | "flat-entry" | "table-array";
 
 /**
  * One lifecycle registration for one host: the host's own event spelling, the

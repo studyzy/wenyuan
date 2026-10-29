@@ -94,6 +94,37 @@ export function parsePayload(source: string): Record<string, unknown> {
   }
 }
 
+/**
+ * The environment members a host may export instead of sending a payload.
+ *
+ * DSH launches a hook with the lifecycle on the command's environment, not on
+ * standard input, so the event it is firing and the host it fires for arrive as
+ * two members. The payload keys are the ones the stages already read.
+ */
+const LIFECYCLE_ENV_MEMBERS: Readonly<Record<string, string>> = {
+  WENYUAN_HOOK_EVENT: "hook_event_name",
+  WENYUAN_HOOK_HOST: "host",
+};
+
+/**
+ * The payload a hook reads: the standard input document with the environment
+ * members folded in. A firing that carries neither yields an empty document, so
+ * a stage still runs rather than failing.
+ */
+export function lifecyclePayload(
+  source: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = parsePayload(source);
+  for (const [name, key] of Object.entries(LIFECYCLE_ENV_MEMBERS)) {
+    const value: string | undefined = environment[name];
+    if (value !== undefined && value.length > 0) {
+      payload[key] = value;
+    }
+  }
+  return payload;
+}
+
 /** Reads a string member of the payload, or undefined when it is not a string. */
 export function payloadString(payload: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {

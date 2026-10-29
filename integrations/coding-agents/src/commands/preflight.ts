@@ -36,9 +36,14 @@ export async function runPreflight(
   host: HostContribution,
   env: HostEnvironment,
 ): Promise<PreflightOutcome> {
-  const configReason: string | null = await locationReason(hostConfigPath(host, env.home));
-  if (configReason !== null) {
-    return { host, reason: configReason };
+  // A host that declares no config file writes no hook config here (its wiring
+  // is a plugin of its own), so there is nothing of ours to check first.
+  const configPath: string | null = hostConfigPath(host, env.home);
+  if (configPath !== null) {
+    const configReason: string | null = await locationReason(configPath);
+    if (configReason !== null) {
+      return { host, reason: configReason };
+    }
   }
   // A host whose registration lives in its own store (the command-line host)
   // declares no MCP config location and has nothing to check here.

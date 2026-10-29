@@ -24,7 +24,7 @@ function registration(style: RegistrationStyle): LifecycleRegistration {
 }
 
 describe("encoding one registration", () => {
-  it("writes the matcher-group shape the three approved hosts read", () => {
+  it("writes the matcher-group shape the first-batch hosts read", () => {
     const value = encodeRegistration(registration("matcher-group"), PATH, 10);
     expect(value).toEqual({
       [MATCHER_GROUP_KEY]: [{ type: HOOK_COMMAND_TYPE, command: PATH, timeout: 10 }],
@@ -49,6 +49,14 @@ describe("encoding one registration", () => {
     const table = encodeRegistration(registration("table-array"), PATH, 10);
     expect(Array.isArray(table)).toBe(true);
     expect(commandEntriesOf(table)).toHaveLength(1);
+  });
+
+  it("writes one flat command entry for a host that reads no matcher group", () => {
+    expect(encodeRegistration(registration("flat-entry"), PATH, 10)).toEqual({
+      type: HOOK_COMMAND_TYPE,
+      command: PATH,
+      timeout: 10,
+    });
   });
 });
 

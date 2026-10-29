@@ -11,15 +11,15 @@ import { ALL_HOSTS_KEYWORD, selectHosts } from "../../src/hosts/select";
 import { withFakeHome } from "../helpers/fake-home";
 
 /**
- * The registry holds exactly the three approved hosts, and selection resolves
+ * The registry holds exactly the registered hosts, and selection resolves
  * the all-hosts keyword or explicit names before anything is written.
  */
 
-const APPROVED = ["claude-code", "codex", "codebuddy"];
+const APPROVED = ["claude-code", "codex", "codebuddy", "dsh"];
 
 describe("the registry", () => {
-  it("holds exactly the three approved hosts", () => {
-    expect(HOSTS).toHaveLength(3);
+  it("holds exactly the registered hosts", () => {
+    expect(HOSTS).toHaveLength(4);
     expect(hostNames()).toEqual(APPROVED);
   });
 
@@ -33,9 +33,13 @@ describe("the registry", () => {
     expect(isHostId(name)).toBe(false);
   });
 
-  it("gives every host a config file and a skills directory", () => {
+  it("gives every host a skills directory and, except DSH, a hook config", () => {
     for (const host of HOSTS) {
-      expect(host.locations.configFiles.length).toBeGreaterThan(0);
+      // DSH declares no config file: its memory wiring is the Cordis plugin
+      // `@studyzy/dsh-wenyuan-memory`, so this package writes no hooks for it.
+      if (host.id !== "dsh") {
+        expect(host.locations.configFiles.length).toBeGreaterThan(0);
+      }
       expect(host.locations.skillsDirectory.length).toBeGreaterThan(0);
       // The command-line host keeps its MCP registration in the host's own
       // store and declares no MCP config file of ours; the file hosts each

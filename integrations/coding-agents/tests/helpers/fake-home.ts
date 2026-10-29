@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
@@ -185,6 +185,52 @@ export interface InstallerRun {
   stderr: string;
   /** Both channels in the order they were written, for assertions that do not care. */
   combined(): string;
+}
+
+/** The PATH directory the stand-ins below live in, relative to the fake home. */
+export const STAND_IN_BIN = "bin";
+
+/**
+ * A recording stand-in for the `dsh` executable.
+ *
+ * Installing DSH adds the memory plugin through DSH's own `dsh plugin` command,
+ * so a suite that wires DSH needs that executable on PATH. The stand-in appends
+ * its arguments to `bin/dsh-calls.log` and exits with `exitCode`. It locates its
+ * log relative to `$0` with shell built-ins only, because the restricted PATH it
+ * runs under holds no other command.
+ * @returns The directory to put on PATH.
+ */
+export async function writeStandInDsh(home: FakeHome, exitCode = 0): Promise<string> {
+  const script: string = [
+    "#!/bin/sh",
+    `log="\${0%/*}/dsh-calls.log"`,
+    `echo "$*" >> "$log"`,
+    `exit ${exitCode}`,
+    "",
+  ].join("\n");
+  await home.write(`${STAND_IN_BIN}/dsh`, script);
+  await chmod(join(home.home, STAND_IN_BIN, "dsh"), 0o755);
+  return join(home.home, STAND_IN_BIN);
+}
+
+/**
+ * Runs `body` with PATH set to exactly `directories`.
+ *
+ * A suite that wires a host through that host's own CLI needs this; nothing in
+ * the installer reads PATH beyond finding that CLI.
+ */
+export async function withRestrictedPath<T>(directories: readonly string[], body: () => Promise<T>): Promise<T> {
+  const saved: string | undefined = process.env.PATH;
+  process.env.PATH = directories.join(delimiter);
+  try {
+    return await body();
+  } finally {
+    if (saved === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = saved;
+    }
+  }
 }
 
 export interface RunInstallerOptions {

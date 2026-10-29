@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HOOKS_CONTAINER_KEY, MATCHER_GROUP_KEY, HOOK_COMMAND_TYPE } from "../../src/hosts/hook-shape";
-import { HOOK_SCRIPT_FILES, registrationFor } from "../../src/hosts/lifecycle";
+import { HOST_LIFECYCLES, HOOK_SCRIPT_FILES, registrationFor } from "../../src/hosts/lifecycle";
 import type { LifecycleStage } from "../../src/hosts/lifecycle-types";
 import { HOSTS } from "../../src/hosts/registry";
 import type { HostContribution } from "../../src/hosts/types";
@@ -11,21 +11,35 @@ import { runInstaller, withFakeHome, type FakeHome, type JsonDocument } from "..
 
 /**
  * What the installer writes into a host config, read back through the shape the
- * host's loader expects: the event maps to a matcher group holding an array
- * with exactly one command entry, and that entry names the execution type, the
- * absolute packaged script path and the host's numeric budget.
+ * host's loader expects. A first-batch host's event maps to a matcher group
+ * holding an array with exactly one command entry; DSH wraps one flat command
+ * entry in the naming member its loader reads. Either way the entry names the
+ * absolute packaged script path and the host's numeric budget, and a host whose
+ * loader runs a shell command spells its launcher out.
  */
+
+/** True when a host's loader wraps the entry in a matcher group. */
+function readsMatcherGroup(hostId: string): boolean {
+  return registrationFor(hostId, "session-start").style === "matcher-group";
+}
 
 const CONFIG: Record<string, string> = {
   "claude-code": ".claude/settings.json",
   codex: ".codex/settings.json",
   codebuddy: ".codebuddy/settings.json",
+  dsh: ".dsh/hooks/wenyuan.json",
 };
 
 const STAGES: readonly LifecycleStage[] = ["session-start", "pre-prompt", "stop"];
 
-/** The approved host ids, read from the registry so a new host is covered. */
-const HOST_IDS: string[] = HOSTS.map((host: HostContribution) => host.id);
+/**
+ * The hosts that write a hook config, read from the registry so a new one is
+ * covered. DSH is deliberately absent: its memory wiring is the Cordis plugin
+ * `@studyzy/dsh-wenyuan-memory`, so this package writes no hooks for it.
+ */
+const HOST_IDS: string[] = HOSTS
+  .map((host: HostContribution) => host.id)
+  .filter((hostId: string) => HOST_LIFECYCLES[hostId] !== undefined);
 
 /** The stage-to-event spelling each host declares, resolved from the declaration. */
 function stageEvents(hostId: string): Map<LifecycleStage, string> {
@@ -37,14 +51,19 @@ function stageEvents(hostId: string): Map<LifecycleStage, string> {
 }
 
 describe("the registration shape install writes", () => {
-  it.each(HOST_IDS)("writes one matcher-group command entry per event in %s", async (hostId: string) => {
+  it.each(HOST_IDS)("writes one command entry per event in %s, wrapped as its loader reads it", async (hostId: string) => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", hostId])).status).toBe(0);
       const document: JsonDocument = await home.readJson(CONFIG[hostId]!);
 
       for (const event of stageEvents(hostId).values()) {
         const value = eventValue(document, event);
-        expect(value, `${hostId} ${event}`).toHaveProperty(MATCHER_GROUP_KEY);
+        if (readsMatcherGroup(hostId)) {
+          expect(value, `${hostId} ${event}`).toHaveProperty(MATCHER_GROUP_KEY);
+        } else {
+          expect(value, `${hostId} ${event}`).not.toHaveProperty(MATCHER_GROUP_KEY);
+          expect(typeof (value as JsonDocument)["command"], `${hostId} ${event}`).toBe("string");
+        }
         const entries = eventCommandEntries(document, event);
         expect(entries, `${hostId} ${event}`).toHaveLength(1);
         expect(entries[0]!.timeout, `${hostId} ${event}`).toBeGreaterThan(0);
@@ -62,11 +81,13 @@ describe("the registration shape install writes", () => {
       expect(byStage.size).toBe(3);
       for (const event of byStage.values()) {
         const value = eventValue(document, event) as JsonDocument;
-        const group = value[MATCHER_GROUP_KEY] as JsonDocument[];
-        const entry = group[0]!;
+        const entry = readsMatcherGroup(hostId)
+          ? (value[MATCHER_GROUP_KEY] as JsonDocument[])[0]!
+          : value;
         expect(entry["type"]).toBe(HOOK_COMMAND_TYPE);
-        expect(String(entry["command"]).startsWith(staged)).toBe(true);
-        expect(String(entry["command"])).toContain(OWNERSHIP_MARKER);
+        const command: string = String(entry["command"]);
+        expect(command.startsWith(staged), `${hostId} ${event}: ${command}`).toBe(true);
+        expect(command).toContain(OWNERSHIP_MARKER);
       }
     });
   });

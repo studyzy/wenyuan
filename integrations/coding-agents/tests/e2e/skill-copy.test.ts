@@ -10,7 +10,7 @@ import {
   SKILL_DIRECTORY_NAME,
 } from "../../src/hosts/skills";
 import { skillsRootFor } from "../../src/hosts/skill-locations";
-import { runInstaller, withFakeHome, type FakeHome } from "../helpers/fake-home";
+import { runInstaller, withFakeHome, withRestrictedPath, writeStandInDsh, type FakeHome } from "../helpers/fake-home";
 
 /**
  * The companion skill is copied into each host's own skills directory under one
@@ -43,9 +43,12 @@ describe("installing and uninstalling two hosts", () => {
 
   it("gives every registered host a copy of its own", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      expect(
-        (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status,
-      ).toBe(0);
+      // DSH is wired through its own `dsh plugin` command, so it needs that
+      // executable on PATH; every other host installs without one.
+      const bin: string = await writeStandInDsh(home);
+      const status: number = await withRestrictedPath([bin], async () =>
+        (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status);
+      expect(status).toBe(0);
       for (const host of HOSTS) {
         const path: string = skillFile(host.id, home);
         expect(await home.isFile(path), path).toBe(true);
@@ -57,9 +60,10 @@ describe("installing and uninstalling two hosts", () => {
 describe("the fixed child-directory name", () => {
   it("is the same name for every host", async () => {
     await withFakeHome({ environment: { PATH: "" } }, async (home: FakeHome) => {
-      expect(
-        (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status,
-      ).toBe(0);
+      const bin: string = await writeStandInDsh(home);
+      const status: number = await withRestrictedPath([bin], async () =>
+        (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status);
+      expect(status).toBe(0);
       const children: string[][] = [];
       for (const host of HOSTS) {
         const root: string | null = skillsRootFor(host.id, home.home);

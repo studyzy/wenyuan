@@ -3,6 +3,7 @@ import { homeDirectory } from "../config/paths";
 import { beginGroup, describeError, fail, say, warn } from "../cli/log";
 import { selectHosts } from "../hosts/select";
 import type { HostContribution, HostEnvironment } from "../hosts/types";
+import { packagedServerReason } from "../runtime/server-presence";
 import { stageRuntime } from "../runtime/stage";
 import { runPreflights } from "./preflight";
 
@@ -51,6 +52,16 @@ export async function install(request: InstallRequest): Promise<number> {
     return 1;
   }
   say(`staged ${staged.files.length} runtime file(s) at ${staged.directory}`);
+
+  // Every host's MCP entry names the staged server by absolute path, so a
+  // runtime that did not stage it would wire hosts whose memory tools never
+  // start. Refusing here is the one place the guarantee can be made once for
+  // every host, rather than repeating the check in each adapter.
+  const serverReason: string | null = await packagedServerReason(staged.directory);
+  if (serverReason !== null) {
+    fail(serverReason);
+    return 1;
+  }
 
   const hostEnvironment: HostEnvironment = { home, runtimeDirectory: staged.directory };
   const outcomes = await runPreflights(selection.hosts, hostEnvironment);

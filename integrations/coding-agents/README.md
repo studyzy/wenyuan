@@ -6,8 +6,10 @@ The service already serves MCP; this package is what wires it into a host so a
 session can use it. Per selected host, `install` does three things:
 
 1. merges three lifecycle hook registrations into the host's own config file —
-   session start, before a user prompt is submitted, and stop;
-2. writes the MCP server entry into the host's MCP config location;
+   session start, before a user prompt is submitted, and stop (a host whose
+   wiring is a plugin of its own — DSH — gets the plugin installed instead);
+2. writes the MCP server entry into the host's MCP config location, naming the
+   packaged server that staging placed beside the hooks;
 3. copies the packaged companion skill into the host's skills directory.
 
 Every write into a host-owned file is non-destructive: the existing file is
@@ -26,6 +28,36 @@ wenyuan-agents uninstall codebuddy
 wenyuan-agents update                       # re-stage the runtime only
 wenyuan-agents stats
 ```
+
+Hosts: `claude-code`, `codex`, `codebuddy`, `dsh`.
+
+| Host | Lifecycle hooks | MCP registration | Skill |
+| --- | --- | --- | --- |
+| `claude-code` | `~/.claude/settings.json` | `claude mcp add`, user scope | `~/.claude/skills` |
+| `codex` | `~/.codex/settings.json` | `~/.codex/config.toml` table | `~/.agents/skills` |
+| `codebuddy` | `~/.codebuddy/settings.json` | `~/.codebuddy/.mcp.json` (or `mcp.json`, `~/.codebuddy.json`) | `~/.codebuddy/skills` |
+| `dsh` | none — a plugin owns these; see below | `~/.dsh/mcp.json` server map | `~/.dsh/skills` |
+
+**DSH's memory wiring is a Cordis plugin, and `install dsh` installs it.**
+`@studyzy/dsh-wenyuan-memory` (in `integrations/dsh-plugin/`) attaches recall on
+the harness's own `agent/created` and `agent/pre-step` seams, writes the session
+back on `agent/turn-stopping`, and registers the memory tools in-process. This
+package therefore writes **no hook config** for DSH — hooks beside the plugin
+would recall twice per prompt and retain the transcript twice — and installs the
+published bundle instead, into **every profile DSH already runs** (or into the
+`web` profile when there is none yet):
+
+```sh
+dsh plugin --profile <name> add @studyzy/dsh-wenyuan-memory
+```
+
+The install goes through DSH's own forwarder, so DSH initializes the profile,
+runs pnpm and reconciles `dsh.profile.bundles` itself; `dsh` and `pnpm` must be
+on `PATH`. A profile that could not take the plugin fails the install, with the
+exact command to retry. `install dsh` also registers the MCP server entry and
+copies the companion skill. A running DSH keeps the bundles it started with, so
+restart it to load the plugin. `uninstall dsh` leaves the bundle alone — remove
+it with `dsh plugin --profile <name> remove @studyzy/dsh-wenyuan-memory`.
 
 Flags:
 
@@ -52,10 +84,11 @@ src/write/     non-destructive write primitives: marker, merge, backup, comment-
 src/config/    per-user locations, the stored configuration, the precedence chain
 src/runtime/   the stable per-user runtime directory and staging
 src/mcp/       the MCP server registration and its ownership guard
-src/hosts/     the registry, host selection, one module per host, shared hook and skill behavior
+src/hosts/     the registry, host selection, one module per host, shared hook and skill behavior,
+               and the DSH plugin install
 src/commands/  install, uninstall, update and stats
 src/cli/       argument parsing, usage text and the dispatcher
-hooks/         one packaged lifecycle-hook entry point per event
+hooks/         one packaged lifecycle-hook entry point per event, plus the MCP server
 skill/         the packaged companion skill
 ```
 
@@ -88,8 +121,8 @@ drives the built entry point in-process against the same fixture.
 
 ## Known gaps
 
-- The packaged lifecycle hooks exist so a host has something to launch by
-  absolute path; their runtime behavior is a later slice.
+- The packaged MCP server answers the protocol handshake and serves a single
+  recall tool; the rest of the memory tool surface is a later slice.
 - The skill's substance, structure and front matter are placeholders.
 - The per-host field spellings and budget units for the lifecycle
   registrations, and the per-host shape of the MCP entry beyond the
