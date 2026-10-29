@@ -31,7 +31,11 @@ import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-session-projection'
-import { WenYuanClient } from './client.ts'
+import {
+  WenYuanClient,
+  type KnowledgeTreeFolder,
+  type KnowledgeTreeNode,
+} from './client.ts'
 import { contextBlock, RECALL_BLOCK_TAG } from './context-blocks.ts'
 import type { WenYuanMemorySource } from './source.ts'
 import {
@@ -239,9 +243,10 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
     await write.catch(() => {})
   })
 
-  // --- The two tools. ---
-  ctx.effect(() => ctx.tools.register(recallTool(clientNow)), 'dsh-wenyuan-memory: recall tool')
-  ctx.effect(() => ctx.tools.register(retainTool(clientNow, resolved.bankId)), 'dsh-wenyuan-memory: retain tool')
+  // --- The knowledge tools. ---
+  for (const tool of knowledgeTools(clientNow)) {
+    ctx.effect(() => ctx.tools.register(tool), `dsh-wenyuan-memory: ${tool.name} tool`)
+  }
 }
 
 /**
@@ -351,17 +356,17 @@ const TOOL_OUTPUT_SCHEMA = {
   additionalProperties: false,
 } as const
 
-/** The recall tool's definition. */
-function recallTool(clientNow: (signal?: AbortSignal) => Promise<WenYuanClient | null>): ToolDefinition {
+/** A tool's shared shape: one text output, rendered verbatim. */
+function textTool(
+  name: string,
+  description: string,
+  parameters: Record<string, unknown>,
+  run: (args: Record<string, unknown>, exec: ToolRunContext) => Promise<string>,
+): ToolDefinition {
   return {
-    name: 'wenyuan_recall',
-    description: 'Recall what WenYuan memory already knows about this project, the user, or a past decision.',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'What to recall.' } },
-      required: ['query'],
-      additionalProperties: false,
-    },
+    name,
+    description,
+    parameters,
     output: {
       schema: TOOL_OUTPUT_SCHEMA,
       render: (_args: unknown, value: unknown) => [
@@ -369,60 +374,188 @@ function recallTool(clientNow: (signal?: AbortSignal) => Promise<WenYuanClient |
       ],
     },
     async execute(args: unknown, exec: ToolRunContext): Promise<unknown> {
-      const query = typeof (args as { query?: unknown }).query === 'string' ? (args as { query: string }).query : ''
-      if (query.trim() === '') return toolValue('wenyuan_recall needs a non-empty query.')
-      const client = await clientNow(exec.signal)
-      if (client === null) return toolValue('WenYuan memory is disabled in this deployment.')
-      const outcome = await client.recall(query, exec.signal)
-      if (!outcome.ok) return toolValue(`WenYuan recall failed: ${outcome.reason}`)
-      return toolValue(outcome.texts.length === 0 ? 'No memory matched.' : outcome.texts.map((text) => `- ${text}`).join('\n'))
+      const record = args !== null && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+      return toolValue(await run(record, exec))
     },
   } as unknown as ToolDefinition
 }
 
-/** The retain tool's definition. */
-function retainTool(
+/** Read one string argument, trimmed; a blank reads as absent. */
+function textArg(args: Record<string, unknown>, key: string): string | undefined {
+  const raw = args[key]
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/** The indentation one tree level adds. */
+const TREE_INDENT = '  '
+
+/** Render one node and its children as an indented list. */
+function renderNode(node: KnowledgeTreeNode, depth: number, lines: string[]): void {
+  const indent = TREE_INDENT.repeat(depth)
+  lines.push(`${indent}- ${node.name} (\`${node.id}\`)`)
+  const children = (node as KnowledgeTreeFolder).children ?? []
+  for (const child of children) renderNode(child, depth + 1, lines)
+}
+
+/**
+ * The five knowledge tools: search, list, and read the bank's curated
+ * knowledge pages, plus the two writes that keep them current.
+ *
+ * The reads answer from knowledge pages — living documents the service
+ * synthesizes from memories — rather than from raw memories, which is what
+ * separates them from the automatic recall this plugin already injects.
+ * @param clientNow - resolves a client for the current settings, or null when
+ *   memory is disabled in this deployment.
+ * @returns the tool definitions, in registration order.
+ */
+export function knowledgeTools(
   clientNow: (signal?: AbortSignal) => Promise<WenYuanClient | null>,
-  bankId: string,
-): ToolDefinition {
-  return {
-    name: 'wenyuan_retain',
-    description: 'Store a durable fact, decision or convention in WenYuan memory so later sessions can recall it.',
-    parameters: {
-      type: 'object',
-      properties: {
-        content: { type: 'string', description: 'The fact, decision or convention to remember.' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for later filtering.' },
+): readonly ToolDefinition[] {
+  /** Resolve a client or report the one reason every tool shares. */
+  const requireClient = async (exec: ToolRunContext): Promise<WenYuanClient | string> => {
+    const client = await clientNow(exec.signal)
+    return client === null ? 'WenYuan memory is disabled in this deployment.' : client
+  }
+
+  return [
+    textTool(
+      'wenyuan_search_knowledge_pages',
+      'Search what this project has already settled, as curated knowledge pages rather than raw memories. Use this first when a question may have been decided before; read a hit in full with wenyuan_read_knowledge_page.',
+      {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to search for.' },
+          limit: { type: 'number', description: 'Maximum pages to return (1-50, default: 10).' },
+        },
+        required: ['query'],
+        additionalProperties: false,
       },
-      required: ['content'],
-      additionalProperties: false,
-    },
-    output: {
-      schema: TOOL_OUTPUT_SCHEMA,
-      render: (_args: unknown, value: unknown) => [
-        { type: 'text', text: String((value as { text?: unknown }).text ?? '') },
-      ],
-    },
-    async execute(args: unknown, exec: ToolRunContext): Promise<unknown> {
-      const content = typeof (args as { content?: unknown }).content === 'string' ? (args as { content: string }).content : ''
-      if (content.trim() === '') return toolValue('wenyuan_retain needs non-empty content.')
-      const tags = Array.isArray((args as { tags?: unknown }).tags)
-        ? ((args as { tags: unknown[] }).tags.filter((tag): tag is string => typeof tag === 'string'))
-        : []
-      const client = await clientNow(exec.signal)
-      if (client === null) return toolValue('WenYuan memory is disabled in this deployment.')
-      const sessionId = exec.agent === undefined ? 'anonymous' : String(exec.agent.id)
-      const documentId = `tool:${sessionId}:${Date.now()}`
-      const outcome = await client.retain([{
-        content: content.trim(),
-        document_id: documentId,
-        tags: [...tags, 'source:chat', 'harness:dsh'],
-        strategy: 'conversation',
-        timestamp: new Date().toISOString(),
-        metadata: { source: 'chat', session_id: sessionId, bank: bankId },
-      }], exec.signal)
-      if (!outcome.ok) return toolValue(`WenYuan retain failed: ${outcome.reason}`)
-      return toolValue('Stored in WenYuan memory.')
-    },
-  } as unknown as ToolDefinition
+      async (args, exec) => {
+        const query = textArg(args, 'query')
+        if (query === undefined) return 'wenyuan_search_knowledge_pages needs a non-empty query.'
+        const raw = args['limit']
+        const limit = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(50, Math.max(1, Math.trunc(raw))) : 10
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const outcome = await client.searchKnowledge(query, limit, exec.signal)
+        if (!outcome.ok) return `WenYuan knowledge search failed: ${outcome.reason}`
+        if (outcome.value.results.length === 0) return 'No knowledge page matched.'
+        return outcome.value.results
+          .map((hit) => [`- ${hit.name} (\`${hit.id}\`)`, hit.snippet ?? hit.description ?? ''].filter((part) => part !== '').join('\n  '))
+          .join('\n')
+      },
+    ),
+
+    textTool(
+      'wenyuan_list_knowledge_pages',
+      'List this project\'s knowledge pages as a tree of folders and pages, with the one-line description of what each covers. Use it to see what the bank documents before reading or searching.',
+      { type: 'object', properties: {}, additionalProperties: false },
+      async (_args, exec) => {
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const outcome = await client.listKnowledgePages(exec.signal)
+        if (!outcome.ok) return `WenYuan knowledge listing failed: ${outcome.reason}`
+        if (outcome.value.roots.length === 0) return 'The bank has no knowledge pages yet.'
+        const lines: string[] = []
+        for (const root of outcome.value.roots) renderNode(root, 0, lines)
+        return lines.join('\n')
+      },
+    ),
+
+    textTool(
+      'wenyuan_read_knowledge_page',
+      'Read one knowledge page in full. Get its id from wenyuan_list_knowledge_pages or wenyuan_search_knowledge_pages.',
+      {
+        type: 'object',
+        properties: { page_id: { type: 'string', description: 'The id of the page to read.' } },
+        required: ['page_id'],
+        additionalProperties: false,
+      },
+      async (args, exec) => {
+        const pageId = textArg(args, 'page_id')
+        if (pageId === undefined) return 'wenyuan_read_knowledge_page needs a non-empty page_id.'
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const outcome = await client.readKnowledgePage(pageId, exec.signal)
+        if (!outcome.ok) return `WenYuan knowledge read failed: ${outcome.reason}`
+        const page = outcome.value
+        const header = [`# ${page.name}`, `id: \`${page.id}\``]
+        if (page.description !== undefined) header.push(page.description)
+        if (page.last_updated_at !== undefined) header.push(`last updated: ${page.last_updated_at}`)
+        return [...header, '', page.body ?? page.markdown ?? ''].join('\n')
+      },
+    ),
+
+    textTool(
+      'wenyuan_capture_initiative',
+      'Record a new initiative as a tracked knowledge page, so future sessions know it exists and can build on it. Call it right after the user approves a plan, before writing code. Call it again with relates_to_page_id when the goal, scope, or rationale materially changes, so the page tracks the current plan. Skip bug fixes, small tweaks, refactors, and chores.',
+      {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short, specific name of the initiative.' },
+          summary: { type: 'string', description: 'Two or three sentences on what is being built and why — the current intent, not the opening plan.' },
+          relates_to_page_id: { type: 'string', description: 'An existing initiative page to fold this change into, instead of a new page.' },
+        },
+        required: ['title', 'summary'],
+        additionalProperties: false,
+      },
+      async (args, exec) => {
+        const title = textArg(args, 'title')
+        const summary = textArg(args, 'summary')
+        if (title === undefined) return 'wenyuan_capture_initiative needs a non-empty title.'
+        if (summary === undefined) return 'wenyuan_capture_initiative needs a non-empty summary.'
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const content = `# ${title}\n\n${summary}`
+        const sessionId = exec.agent === undefined ? 'anonymous' : String(exec.agent.id)
+        const outcome = await client.retain([{
+          content,
+          document_id: `initiative:${sessionId}:${Date.now()}`,
+          tags: ['kind:initiative', 'source:chat', 'harness:dsh'],
+          strategy: 'conversation',
+          timestamp: new Date().toISOString(),
+          metadata: { source: 'initiative', title, session_id: sessionId },
+        }], exec.signal)
+        if (!outcome.ok) return `wenyuan_capture_initiative failed: ${outcome.reason}`
+        const ref = outcome.operationId === undefined ? '' : ` (operation ${outcome.operationId})`
+        return `Captured initiative "${title}"${ref}. The service derives its knowledge page from memory.`
+      },
+    ),
+
+    textTool(
+      'wenyuan_ingest_document',
+      'Save an external document or a block of durable notes into this project\'s memory, so it informs future recall and knowledge pages. Use it for design notes, research, or reference material you want remembered — not for the conversation you are already in, which is captured automatically at session end. This is also the correction mechanism: to supersede a memory you verified as wrong, ingest a document titled "Correction: <topic>" stating what the memory claimed, what is true now, and the evidence.',
+      {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The document\'s title.' },
+          content: { type: 'string', description: 'The document body.' },
+        },
+        required: ['title', 'content'],
+        additionalProperties: false,
+      },
+      async (args, exec) => {
+        const title = textArg(args, 'title')
+        const content = textArg(args, 'content')
+        if (title === undefined) return 'wenyuan_ingest_document needs a non-empty title.'
+        if (content === undefined) return 'wenyuan_ingest_document needs non-empty content.'
+        const client = await requireClient(exec)
+        if (typeof client === 'string') return client
+        const sessionId = exec.agent === undefined ? 'anonymous' : String(exec.agent.id)
+        const outcome = await client.retain([{
+          content: `# ${title}\n\n${content}`,
+          document_id: `document:${sessionId}:${Date.now()}`,
+          tags: ['kind:document', 'source:chat', 'harness:dsh'],
+          strategy: 'conversation',
+          timestamp: new Date().toISOString(),
+          metadata: { source: 'document', title, session_id: sessionId },
+        }], exec.signal)
+        if (!outcome.ok) return `wenyuan_ingest_document failed: ${outcome.reason}`
+        const ref = outcome.operationId === undefined ? '' : ` (operation ${outcome.operationId})`
+        return `Stored "${title}" in WenYuan memory${ref}.`
+      },
+    ),
+  ]
 }

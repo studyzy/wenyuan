@@ -12,7 +12,7 @@ file to keep in step.
 
 | Half | Outlet | Role |
 | --- | --- | --- |
-| Host | `.` | Attaches recalled memory on `agent/created` and `agent/pre-step`, writes the session back on `agent/turn-stopping`, registers `wenyuan_recall` / `wenyuan_retain`. |
+| Host | `.` | Attaches recalled memory on `agent/created` and `agent/pre-step`, writes the session back on `agent/turn-stopping`, registers the five `wenyuan_*` knowledge tools. |
 | Browser | `./client` | The configuration card: server URL, memory bank, API key, and the two behaviour switches. |
 
 ## What it does
@@ -26,7 +26,11 @@ file to keep in step.
   assembled into the reference's own transcript document and retained under one
   ref-id: user and assistant text, one action line per tool call, injected memory
   stripped. A later turn appends only what is new.
-- **Two tools.** `wenyuan_recall` and `wenyuan_retain`, registered globally.
+- **Five knowledge tools**, registered globally. Three read the bank's curated
+  knowledge pages — `wenyuan_search_knowledge_pages`,
+  `wenyuan_list_knowledge_pages`, `wenyuan_read_knowledge_page` — and two write:
+  `wenyuan_capture_initiative` (a tracked initiative) and
+  `wenyuan_ingest_document` (durable notes, and the correction mechanism).
 
 Everything is fail-open: an unreachable or slow service costs the session its
 memory, never its run.
@@ -109,7 +113,7 @@ this machine's environment sets `NODE_ENV=production` globally.
 ## Layout
 
 ```
-src/index.ts            the Hook/plugin entry: lifecycle listeners, the two tools, settings resolution
+src/index.ts            the Hook/plugin entry: lifecycle listeners, the knowledge tools, settings resolution
 src/client.ts           the WenYuan HTTP client (fetch only, fail-open)
 src/transcript.ts       transcript turns and the reference's session document
 src/transcript-projection.ts  the host-only fold that the write-back reads
@@ -122,9 +126,9 @@ scripts/verify-client-bundle.mjs  the browser-kernel contract check
 
 ## Known limits
 
-- `wenyuan_recall` / `wenyuan_retain` are the tool surface; the server's fuller
-  MCP roster is not mirrored here (the installer's MCP registration still covers
-  a deployment that wants it).
+- The `wenyuan_*` tools are the tool surface; the server's fuller MCP roster is
+  not mirrored here (the installer's MCP registration still covers a deployment
+  that wants it).
 - The write-back cursor is per process: after a harness restart, the next stop
   writes the session's folded turns again rather than appending from a persisted
   position.

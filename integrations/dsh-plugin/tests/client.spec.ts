@@ -127,3 +127,50 @@ describe('retain', () => {
     await expect(client.retain([{ content: 'x', document_id: 'd' }])).resolves.toEqual({ ok: false, reason: 'HTTP 401' })
   })
 })
+describe('the knowledge-base reads', () => {
+  it('queries the search route with the service\'s own parameter names', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({ results: [{ id: 'kp-1', name: 'Core', snippet: 'all of it' }] }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.searchKnowledge('conventions', 5)
+    // The route names the query `q`; `query` is answered 422 by the service.
+    expect(calls[0]?.url).toBe(
+      'http://127.0.0.1:18888/v1/default/banks/default/knowledge-base/search?q=conventions&limit=5',
+    )
+    expect(calls[0]?.init?.method).toBe('GET')
+    expect(outcome).toEqual({ ok: true, value: { results: [{ id: 'kp-1', name: 'Core', snippet: 'all of it' }] } })
+  })
+
+  it('reads the tree and keeps each node\'s page id', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({
+      roots: [{ id: 'kp-1', kind: 'page', name: 'Core', description: 'the vocabulary' }],
+    }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.listKnowledgePages()
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/knowledge-base/tree')
+    expect(outcome).toEqual({
+      ok: true,
+      value: { roots: [{ id: 'kp-1', kind: 'page', name: 'Core', description: 'the vocabulary' }] },
+    })
+  })
+
+  it('reads one page by id and carries its body', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({ id: 'kp-1', name: 'Core', body: '# Core\n\ntext' }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    const outcome = await client.readKnowledgePage('kp-1')
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/knowledge-base/pages/kp-1')
+    expect(outcome).toEqual({ ok: true, value: { id: 'kp-1', name: 'Core', body: '# Core\n\ntext' } })
+  })
+
+  it('encodes a page id so a reserved character cannot retarget the route', async () => {
+    const { impl, calls } = stubFetch(() => Response.json({ id: 'a/b', name: 'x' }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    await client.readKnowledgePage('a/b')
+    expect(calls[0]?.url).toBe('http://127.0.0.1:18888/v1/default/banks/default/knowledge-base/pages/a%2Fb')
+  })
+
+  it('reports a refused read instead of throwing', async () => {
+    const { impl } = stubFetch(() => new Response('nope', { status: 404 }))
+    const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
+    await expect(client.readKnowledgePage('missing')).resolves.toEqual({ ok: false, reason: 'HTTP 404' })
+  })
+})

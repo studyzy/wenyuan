@@ -63,10 +63,16 @@ describe('settings resolution', () => {
 })
 
 describe('mounting', () => {
-  it('registers the two tools and the transcript projection', () => {
+  it('registers the five knowledge tools and the transcript projection', () => {
     const { ctx, tools, projections } = fakeContext()
     apply(ctx as never, {})
-    expect(tools.map((tool) => (tool as { name: string }).name).sort()).toEqual(['wenyuan_recall', 'wenyuan_retain'])
+    expect(tools.map((tool) => (tool as { name: string }).name).sort()).toEqual([
+      'wenyuan_capture_initiative',
+      'wenyuan_ingest_document',
+      'wenyuan_list_knowledge_pages',
+      'wenyuan_read_knowledge_page',
+      'wenyuan_search_knowledge_pages',
+    ])
     expect((projections[0] as { key: string }).key).toBe('wenYuanTranscript')
   })
 
@@ -81,45 +87,57 @@ describe('mounting', () => {
   it('mounts without a credentials service rather than failing its own fiber', () => {
     const { ctx, tools } = fakeContext()
     expect(() => apply(ctx as never, {})).not.toThrow()
-    expect(tools).toHaveLength(2)
+    expect(tools).toHaveLength(5)
   })
 })
 
 describe('a tool with no memory service reachable', () => {
   /**
-   * The registered tool definition, run with a credential provider that answers
-   * "nothing configured" and a fetch that refuses every connection.
-   * @returns the tool's canonical value for one call.
+   * The registered tool definition by name, mounted over the host fakes.
+   * @param name - the tool to look up.
+   * @returns the tool, ready to execute.
    */
-  async function runRecall(): Promise<{ text: string }> {
-    const { ctx, tools } = fakeContext({
-      credentials: { resolve: async () => undefined },
-    })
+  function toolNamed(name: string): { execute(args: unknown, exec: unknown): Promise<unknown> } {
+    const { ctx, tools } = fakeContext()
     apply(ctx as never, {})
-    const tool = tools.find((candidate) => (candidate as { name: string }).name === 'wenyuan_recall') as {
+    return tools.find((candidate) => (candidate as { name: string }).name === name) as {
       execute(args: unknown, exec: unknown): Promise<unknown>
     }
+  }
+
+  /** Run one call with every connection refused. */
+  async function refusing<T>(run: () => Promise<T>): Promise<T> {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => { throw new Error('ECONNREFUSED') }) as unknown as typeof fetch
     try {
-      return (await tool.execute({ query: 'anything' }, { signal: new AbortController().signal })) as { text: string }
+      return await run()
     } finally {
       globalThis.fetch = originalFetch
     }
   }
 
   it('answers with a failure line instead of throwing into the loop', async () => {
-    const value = await runRecall()
-    expect(value.text).toContain('WenYuan recall failed')
+    const tool = toolNamed('wenyuan_search_knowledge_pages')
+    const value = await refusing(async () =>
+      (await tool.execute({ query: 'anything' }, { signal: new AbortController().signal })) as { text: string })
+    expect(value.text).toContain('WenYuan knowledge search failed')
   })
 
   it('rejects an empty query before it reaches the network', async () => {
-    const { ctx, tools } = fakeContext()
-    apply(ctx as never, {})
-    const tool = tools.find((candidate) => (candidate as { name: string }).name === 'wenyuan_recall') as {
-      execute(args: unknown, exec: unknown): Promise<unknown>
-    }
+    const tool = toolNamed('wenyuan_search_knowledge_pages')
     const value = (await tool.execute({ query: '  ' }, { signal: new AbortController().signal })) as { text: string }
     expect(value.text).toContain('non-empty query')
+  })
+
+  it('rejects a page read with no id before it reaches the network', async () => {
+    const tool = toolNamed('wenyuan_read_knowledge_page')
+    const value = (await tool.execute({}, { signal: new AbortController().signal })) as { text: string }
+    expect(value.text).toContain('non-empty page_id')
+  })
+
+  it('rejects an initiative with no summary before it reaches the network', async () => {
+    const tool = toolNamed('wenyuan_capture_initiative')
+    const value = (await tool.execute({ title: 'x' }, { signal: new AbortController().signal })) as { text: string }
+    expect(value.text).toContain('non-empty summary')
   })
 })

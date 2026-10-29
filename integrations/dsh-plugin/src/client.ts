@@ -47,7 +47,61 @@ export type RetainOutcome =
   | { readonly ok: true; readonly operationId?: string }
   | { readonly ok: false; readonly reason: string }
 
-/** How one client instance is built. */
+/** What one knowledge-base read resolved to. */
+export type KnowledgeOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: string }
+
+/** One page as the knowledge tree lists it. */
+export interface KnowledgeTreeNode {
+  readonly id: string
+  readonly kind?: string
+  readonly name: string
+  readonly description?: string
+  readonly folder?: string
+  readonly parent_id?: string | null
+  readonly mental_model_id?: string
+  readonly source_query?: string
+}
+
+/** One page as the tree returns it, including its children. */
+export interface KnowledgeTreeFolder extends KnowledgeTreeNode {
+  readonly children?: readonly KnowledgeTreeNode[]
+}
+
+/** The tree answer. */
+export interface KnowledgeTree {
+  readonly roots: readonly KnowledgeTreeNode[]
+}
+
+/** One search hit: the page plus the snippet that matched. */
+export interface KnowledgeHit {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly snippet?: string
+  readonly source_query?: string
+}
+
+/** The search answer. */
+export interface KnowledgeSearch {
+  readonly results: readonly KnowledgeHit[]
+}
+
+/** One page read in full. */
+export interface KnowledgePage {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly type?: string
+  readonly tags?: readonly string[]
+  readonly timestamp?: string
+  readonly body?: string
+  readonly markdown?: string
+  readonly last_updated_at?: string
+}
+
+/** What one client instance is built for this bank. */
 export interface MemoryClientOptions {
   /** The resolved connection: base URL, bank, and the API key when configured. */
   readonly connection: WenYuanConnection
@@ -142,23 +196,68 @@ export class WenYuanClient {
   }
 
   /**
-   * One POST, bounded by the deadline and by the caller's cancellation.
-   * @param suffix - the bank-scoped route.
-   * @param body - the JSON body.
+   * Search the bank's knowledge pages: curated documents synthesized from
+   * memories, not the raw memories themselves.
+   * @param query - what to search for.
+   * @param limit - the result cap the service accepts (1-50).
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the ranked hits, or the reason the call did not land.
+   */
+  async searchKnowledge(query: string, limit: number, signal?: AbortSignal): Promise<KnowledgeOutcome<KnowledgeSearch>> {
+    const params = new URLSearchParams({ q: query, limit: String(limit) })
+    const answer = await this.request('GET', `/knowledge-base/search?${params.toString()}`, undefined, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    return { ok: true, value: asSearch(answer.body) }
+  }
+
+  /**
+   * List the bank's knowledge pages as a tree of folders and pages.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the tree, or the reason the call did not land.
+   */
+  async listKnowledgePages(signal?: AbortSignal): Promise<KnowledgeOutcome<KnowledgeTree>> {
+    const answer = await this.request('GET', '/knowledge-base/tree', undefined, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    return { ok: true, value: asTree(answer.body) }
+  }
+
+  /**
+   * Read one knowledge page in full.
+   * @param pageId - the page's node id.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the page, or the reason the call did not land.
+   */
+  async readKnowledgePage(pageId: string, signal?: AbortSignal): Promise<KnowledgeOutcome<KnowledgePage>> {
+    const answer = await this.request('GET', `/knowledge-base/pages/${encodeURIComponent(pageId)}`, undefined, signal)
+    if (!answer.ok) return { ok: false, reason: answer.reason }
+    return { ok: true, value: asPage(answer.body) }
+  }
+
+  /**
+   * One request, bounded by the deadline and by the caller's cancellation.
+   * @param method - the HTTP method.
+   * @param suffix - the bank-scoped route, query already encoded.
+   * @param body - the JSON body for a write, undefined for a read.
    * @param signal - the caller's cancellation, when one stands.
    * @returns the parsed answer, or the failure reason.
    */
-  private async post(suffix: string, body: unknown, signal?: AbortSignal): Promise<PostOutcome> {
+  private async request(
+    method: 'GET' | 'POST',
+    suffix: string,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<PostOutcome> {
     const timeout = new AbortController()
     const timer = setTimeout(() => { timeout.abort() }, this.timeoutMs)
     const combined = signal === undefined ? timeout.signal : AbortSignal.any([timeout.signal, signal])
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    const headers: Record<string, string> = {}
+    if (body !== undefined) headers['content-type'] = 'application/json'
     if (this.token !== undefined && this.token !== '') headers['authorization'] = `Bearer ${this.token}`
     try {
       const response = await this.fetchImpl(`${this.base}${suffix}`, {
-        method: 'POST',
+        method,
         headers,
-        body: JSON.stringify(body),
+        ...body === undefined ? {} : { body: JSON.stringify(body) },
         signal: combined,
       })
       if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` }
@@ -177,5 +276,85 @@ export class WenYuanClient {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /**
+   * One POST, bounded by the deadline and by the caller's cancellation.
+   * @param suffix - the bank-scoped route.
+   * @param body - the JSON body.
+   * @param signal - the caller's cancellation, when one stands.
+   * @returns the parsed answer, or the failure reason.
+   */
+  private post(suffix: string, body: unknown, signal?: AbortSignal): Promise<PostOutcome> {
+    return this.request('POST', suffix, body, signal)
+  }
+}
+
+/** Read one string member, or undefined when it is absent or not a string. */
+function memberText(value: unknown, key: string): string | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const found = Reflect.get(value, key)
+  return typeof found === 'string' ? found : undefined
+}
+
+/** Read one array member, or an empty list when it is absent or malformed. */
+function memberList(value: unknown, key: string): readonly unknown[] {
+  if (value === null || typeof value !== 'object') return []
+  const found = Reflect.get(value, key)
+  return Array.isArray(found) ? found : []
+}
+
+/** Project one node the tree or a search answer carried. */
+function asNode(value: unknown): KnowledgeTreeNode {
+  const id = memberText(value, 'id') ?? ''
+  const children = memberList(value, 'children').map(asNode)
+  return {
+    id,
+    name: memberText(value, 'name') ?? id,
+    ...pick(memberText(value, 'kind'), 'kind'),
+    ...pick(memberText(value, 'description'), 'description'),
+    ...pick(memberText(value, 'parent_id'), 'parent_id'),
+    ...pick(memberText(value, 'mental_model_id'), 'mental_model_id'),
+    ...pick(memberText(value, 'source_query'), 'source_query'),
+    ...children.length === 0 ? {} : { children },
+  } as KnowledgeTreeNode
+}
+
+/** Spread one optional member, so an absent key stays absent. */
+function pick<T>(value: T | undefined, key: string): Record<string, T> {
+  return value === undefined ? {} : { [key]: value }
+}
+
+/** Project the tree answer. */
+function asTree(body: unknown): KnowledgeTree {
+  return { roots: memberList(body, 'roots').map(asNode) }
+}
+
+/** Project the search answer. */
+function asSearch(body: unknown): KnowledgeSearch {
+  return {
+    results: memberList(body, 'results').map((hit) => ({
+      id: memberText(hit, 'id') ?? '',
+      name: memberText(hit, 'name') ?? '',
+      ...pick(memberText(hit, 'description'), 'description'),
+      ...pick(memberText(hit, 'snippet'), 'snippet'),
+      ...pick(memberText(hit, 'source_query'), 'source_query'),
+    })),
+  }
+}
+
+/** Project one page read in full. */
+function asPage(body: unknown): KnowledgePage {
+  const tags = memberList(body, 'tags').filter((tag): tag is string => typeof tag === 'string')
+  return {
+    id: memberText(body, 'id') ?? '',
+    name: memberText(body, 'name') ?? '',
+    ...pick(memberText(body, 'description'), 'description'),
+    ...pick(memberText(body, 'type'), 'type'),
+    ...pick(memberText(body, 'timestamp'), 'timestamp'),
+    ...pick(memberText(body, 'body'), 'body'),
+    ...pick(memberText(body, 'markdown'), 'markdown'),
+    ...pick(memberText(body, 'last_updated_at'), 'last_updated_at'),
+    ...tags.length === 0 ? {} : { tags },
   }
 }
