@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as auditLogs from "../app/api/banks/[bankId]/audit-logs/route";
+import * as auditLogDetail from "../app/api/banks/[bankId]/audit-logs/[logId]/route";
 import * as auditStats from "../app/api/banks/[bankId]/audit-logs/stats/route";
 import * as llmRequests from "../app/api/banks/[bankId]/llm-requests/route";
 import * as llmStats from "../app/api/banks/[bankId]/llm-requests/stats/route";
@@ -18,8 +19,9 @@ afterEach(() => {
 const VALID_ID = "a".repeat(64);
 
 describe("observability route method sets", () => {
-  it("binds audit logs, llm requests and their stats as GET", () => {
+  it("binds audit logs, their detail, llm requests and their stats as GET", () => {
     expect(Object.keys(auditLogs).sort()).toEqual(["GET"]);
+    expect(Object.keys(auditLogDetail).sort()).toEqual(["GET"]);
     expect(Object.keys(auditStats).sort()).toEqual(["GET"]);
     expect(Object.keys(llmRequests).sort()).toEqual(["GET"]);
     expect(Object.keys(llmStats).sort()).toEqual(["GET"]);
@@ -41,6 +43,17 @@ describe("observability query passthrough", () => {
       });
       expect(stub.calls[0]).toContain("/v1/default/banks/acme/audit-logs");
       expect(stub.calls[0]).toContain("limit=5");
+    });
+  });
+
+  it("fetches a single audit-log entry by id with slashes intact", async () => {
+    const stub = stubFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      await auditLogDetail.GET(makeRequest("http://localhost/api/banks/acme/audit-logs/abc/123"), {
+        params: Promise.resolve({ bankId: "acme", logId: "abc/123" }),
+      });
+      expect(stub.calls[0]).toContain("/v1/default/banks/acme/audit-logs/abc%2F123");
     });
   });
 

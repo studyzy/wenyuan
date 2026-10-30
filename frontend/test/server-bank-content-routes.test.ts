@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as directives from "../app/api/banks/[bankId]/directives/route";
 import * as directive from "../app/api/banks/[bankId]/directives/[directiveId]/route";
+import * as documentHistory from "../app/api/banks/[bankId]/documents/[documentId]/history/route";
 import * as mentalModels from "../app/api/banks/[bankId]/mental-models/route";
 import * as mentalModel from "../app/api/banks/[bankId]/mental-models/[mentalModelId]/route";
 import * as clear from "../app/api/banks/[bankId]/mental-models/[mentalModelId]/clear/route";
@@ -31,11 +32,17 @@ const model = (bankId: string, mentalModelId: string) =>
   ({ params: Promise.resolve({ bankId, mentalModelId }) });
 const webhookCtx = (bankId: string, webhookId: string) =>
   ({ params: Promise.resolve({ bankId, webhookId }) });
+const documentCtx = (bankId: string, documentId: string) =>
+  ({ params: Promise.resolve({ bankId, documentId }) });
 
 describe("content route method sets", () => {
   it("binds directives and their detail", () => {
     expect(Object.keys(directives).sort()).toEqual(["GET", "POST"]);
     expect(Object.keys(directive).sort()).toEqual(["DELETE", "GET", "PATCH"]);
+  });
+
+  it("binds document history as GET", () => {
+    expect(Object.keys(documentHistory).sort()).toEqual(["GET"]);
   });
 
   it("binds mental models and their children", () => {
@@ -144,6 +151,21 @@ describe("content routes proxy at their catalogued paths", () => {
         webhookCtx("acme", "w1"),
       );
       expect(stub.calls[0]).toContain("limit=50");
+    });
+  });
+
+  it("document history forwards limit and offset with the id encoded", async () => {
+    const stub = stubFetch([{ status: 200, body: { document_id: "d/1", total: 0, limit: 50, offset: 0, items: [] } }]);
+    restore = stub.restore;
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await documentHistory.GET(
+        makeRequest("http://localhost/api/banks/acme/documents/d/1/history?limit=50&offset=0"),
+        documentCtx("acme", "d/1"),
+      );
+      expect(response.status).toBe(200);
+      expect(stub.calls[0]).toContain("/v1/default/banks/acme/documents/d%2F1/history");
+      expect(stub.calls[0]).toContain("limit=50");
+      expect(stub.calls[0]).toContain("offset=0");
     });
   });
 

@@ -5,7 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-### Fixed — a second parity sweep over the v1.1.0 port
+### Added — control-plane frontend parity with the reference's v1.1.0
+
+The backend reached v1.1.0 parity in the sweeps below; the three non-backend
+modules were then re-diffed against the reference's v1.1.0 (frontend, generated
+clients, coding-agent integrations). Findings, ports and decisions:
+
+- **Document history is ported.** The reference's per-document change history
+  (rebuilt from operations, #5638): a bank-scoped BFF route
+  (`/api/banks/[bankId]/documents/[documentId]/history`), the
+  `DocumentHistory` component (event table with per-kind pills, id chips that
+  open the memory detail modal, operation-count pagination) and its mount point
+  in the document detail dialog, next to the retain traces.
+- **Audit-log entries fetch their full bodies.** The reference's detail route
+  (#5826/#5834): a `[logId]` BFF route plus a fetch-on-open in the audit-logs
+  view, so the dialog shows the full request/response instead of the list's
+  bodyless preview.
+- **Failed uploads are retryable.** The reference's retry on failed uploads
+  (#5689): failed pending-upload rows gain a retry button that re-runs the
+  failed `file_convert_retain` operation through the same API the Operations
+  view uses.
+- **The generated clients were already current.** go/python/typescript/rust all
+  carry the v1.1.0 surface (document history, audit-log detail, the new
+  models); regenerating typescript reproduces the tree byte for byte. The
+  wrapper's convenience helpers cover the core memory operations by design;
+  everything generated is re-exported.
+- **The coding-agent git-log delta does not apply.** The reference's v1.1.0
+  `git.ts` change (#5711) makes the git-log *document* append-only between
+  syncs. Our integration captures agent sessions through hooks and reads no
+  git-log documents, so there is nothing to port; the incremental-append
+  pattern applies if a git-log source is ever added here.
+
+Known gaps, deliberately open: the operations view has no *retry all* (the
+reference's oldest-first fan-out with partial-failure reporting, #5689's other
+half) and knowledge pages / mental models have no PDF/Markdown export
+(#5679). The reference's timeline sort toggle (#5681) has no counterpart
+surface here — no timeline view exists. Tests: route inventory, the new BFF
+route behaviours and message coverage are pinned; the upload retry button
+itself has no component test yet — `documents-view` has no render harness and
+one was not built for this change.
 
 A second audit, one agent per route family and every claim checked against the
 reference's v1.1.0 code, found divergences the first port left behind. Each is

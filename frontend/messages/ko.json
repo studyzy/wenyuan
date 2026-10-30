@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "파일이 접수되었으며 변환 대기 중입니다",
     "pendingUploadProcessingStatus": "처리 중",
     "pendingUploadFailedStatus": "실패",
+    "pendingUploadRetry": "재시도",
     "pendingUploadFailed": "파일 변환 실패",
     "colDocument": "문서",
     "colUpdated": "수정일",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id와 mental_model_id는 필수입니다",
         "bankAndModelIdRequired": "bank_id와 model_id는 필수입니다",
         "operationIdRequired": "operation_id는 필수입니다",
+        "logIdRequired": "log_id는 필수입니다",
         "missingRequestData": "요청 데이터가 누락되었습니다",
         "missingBankId": "bank_id가 누락되었습니다",
         "fileRequired": "파일이 필요합니다",
-        "targetBankIdRequired": "target_bank_id는 필수입니다"
+        "targetBankIdRequired": "target_bank_id는 필수입니다",
+        "documentIdRequired": "document_id는 필수입니다"
       },
       "generic": {
         "failed": "실패했습니다",
@@ -2055,7 +2058,8 @@
         "chunks": "문서 청크를 가져오지 못했습니다",
         "reprocess": "문서를 다시 처리하지 못했습니다",
         "export": "문서 내보내기에 실패했습니다",
-        "import": "문서 가져오기에 실패했습니다"
+        "import": "문서 가져오기에 실패했습니다",
+        "history": "문서 히스토리를 가져오지 못했습니다"
       },
       "files": {
         "upload": "파일을 업로드하지 못했습니다",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "감사 로그 목록을 가져오지 못했습니다",
+        "get": "감사 로그 항목을 가져오지 못했습니다",
         "stats": "감사 로그 통계를 가져오지 못했습니다"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "테넌트를 관리하려면 콘솔 서버에서 WENYUAN_CP_ADMIN_API_URL 및 WENYUAN_CP_ADMIN_API_KEY를 설정하세요.",
       "back": "뱅크로 돌아가기"
     }
+  },
+  "documentHistory": {
+    "explainer": "각 변경이 이 문서의 팩트와 옵저베이션에 한 일. 옵저베이션은 버전 관리가 아니라 재구축됩니다. 변경이 하나를 제거하면 여기의 id만이 남는 흔적입니다. 히스토리는 bank의 작업에서 재구축되므로 동기 retain과 자동 통합이 꺼진 상태의 변경은 나열되지 않습니다. 행을 펼쳐 id를 보고, id에 호버하여 다른 행에서 찾아보세요.",
+    "empty": "변경 기록이 없습니다. 히스토리는 bank의 작업에서 옵니다. 비동기 retain과 편집 뒤의 통합입니다.",
+    "loadError": "히스토리를 불러오지 못했습니다.",
+    "idsRemoved": "제거",
+    "idsCreated": "생성",
+    "idsUpdated": "업데이트",
+    "chipRemoved": "이 변경으로 제거됨 — 더 이상 존재하지 않음",
+    "chipOpen": "이 옵저베이션 열기",
+    "moreIds": "{count}개 더",
+    "kind": {
+      "retain": "보존",
+      "append": "추가",
+      "reprocess": "재처리",
+      "retag": "태그 변경",
+      "fact_edited": "팩트 편집",
+      "fact_invalidated": "팩트 무효화",
+      "fact_restored": "팩트 복원",
+      "fact_deleted": "팩트 삭제",
+      "observations_cleared": "옵저베이션 삭제",
+      "consolidation": "통합"
+    },
+    "loadOlder": "이전 항목 로드",
+    "colWhen": "시간",
+    "colChange": "변경",
+    "colFacts": "팩트",
+    "colObservations": "옵저베이션",
+    "colOperation": "작업",
+    "legendExists": "존재함 — 클릭하여 열기",
+    "legendRemovedLater": "이후 변경으로 제거됨",
+    "legendRemovedHere": "이 변경으로 제거됨",
+    "chipRemovedLater": "나중에 제거됨: {kind} ({when})"
   }
 }

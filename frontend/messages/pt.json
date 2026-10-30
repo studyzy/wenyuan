@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "Arquivo aceito; conversão pendente",
     "pendingUploadProcessingStatus": "Processando",
     "pendingUploadFailedStatus": "Falhou",
+    "pendingUploadRetry": "Tentar novamente",
     "pendingUploadFailed": "Falha na conversão do arquivo",
     "colDocument": "Documento",
     "colUpdated": "Atualizado",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id e mental_model_id são obrigatórios",
         "bankAndModelIdRequired": "bank_id e model_id são obrigatórios",
         "operationIdRequired": "operation_id é obrigatório",
+        "logIdRequired": "log_id é obrigatório",
         "missingRequestData": "Dados da solicitação ausentes",
         "missingBankId": "bank_id ausente",
         "fileRequired": "É necessário um arquivo",
-        "targetBankIdRequired": "target_bank_id é obrigatório"
+        "targetBankIdRequired": "target_bank_id é obrigatório",
+        "documentIdRequired": "document_id é obrigatório"
       },
       "generic": {
         "failed": "Falha",
@@ -2055,7 +2058,8 @@
         "chunks": "Falha ao buscar fragmentos do documento",
         "reprocess": "Falha ao reprocessar documento",
         "export": "Falha ao exportar documentos",
-        "import": "Falha ao importar documentos"
+        "import": "Falha ao importar documentos",
+        "history": "Falha ao obter o histórico do documento"
       },
       "files": {
         "upload": "Falha ao enviar arquivos",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "Falha ao listar registros de auditoria",
+        "get": "Falha ao obter a entrada do log de auditoria",
         "stats": "Falha ao buscar estatísticas dos registros de auditoria"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "Defina WENYUAN_CP_ADMIN_API_URL e WENYUAN_CP_ADMIN_API_KEY no servidor do console para gerenciar inquilinos.",
       "back": "Voltar aos bancos"
     }
+  },
+  "documentHistory": {
+    "explainer": "O que cada mudança fez aos fatos e observações deste documento. As observações são reconstruídas, não versionadas: quando uma mudança remove uma, o id aqui é o único rastro restante. Reconstruído a partir das operações do bank, então retains síncronos e mudanças feitas com a autoconsolidação desligada não são listados. Expanda uma linha para ver os ids; passe o mouse sobre um id para encontrá-lo em outras linhas.",
+    "empty": "Nenhuma mudança registrada. O histórico vem das operações deste bank: retains assíncronos e as consolidações que seguem edições.",
+    "loadError": "Não foi possível carregar o histórico.",
+    "idsRemoved": "Removidas",
+    "idsCreated": "Criadas",
+    "idsUpdated": "Atualizadas",
+    "chipRemoved": "Removida por esta mudança — não existe mais",
+    "chipOpen": "Abrir esta observação",
+    "moreIds": "+{count} mais",
+    "kind": {
+      "retain": "Retido",
+      "append": "Anexado",
+      "reprocess": "Reprocessado",
+      "retag": "Tags alteradas",
+      "fact_edited": "Fato editado",
+      "fact_invalidated": "Fato invalidado",
+      "fact_restored": "Fato restaurado",
+      "fact_deleted": "Fato excluído",
+      "observations_cleared": "Observações limpas",
+      "consolidation": "Consolidado"
+    },
+    "loadOlder": "Carregar mais antigos",
+    "colWhen": "Quando",
+    "colChange": "Mudança",
+    "colFacts": "Fatos",
+    "colObservations": "Observações",
+    "colOperation": "Operação",
+    "legendExists": "Ainda existe — clique para abrir",
+    "legendRemovedLater": "Removida por uma mudança posterior",
+    "legendRemovedHere": "Removida por esta mudança",
+    "chipRemovedLater": "Removida depois por: {kind} ({when})"
   }
 }

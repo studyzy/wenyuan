@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "Datei angenommen; Konvertierung ausstehend",
     "pendingUploadProcessingStatus": "Wird verarbeitet",
     "pendingUploadFailedStatus": "Fehlgeschlagen",
+    "pendingUploadRetry": "Erneut versuchen",
     "pendingUploadFailed": "Dateikonvertierung fehlgeschlagen",
     "colDocument": "Dokument",
     "colUpdated": "Aktualisiert",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id und mental_model_id sind erforderlich",
         "bankAndModelIdRequired": "bank_id und model_id sind erforderlich",
         "operationIdRequired": "operation_id ist erforderlich",
+        "logIdRequired": "log_id ist erforderlich",
         "missingRequestData": "Anfragedaten fehlen",
         "missingBankId": "bank_id fehlt",
         "fileRequired": "Eine Datei ist erforderlich",
-        "targetBankIdRequired": "target_bank_id ist erforderlich"
+        "targetBankIdRequired": "target_bank_id ist erforderlich",
+        "documentIdRequired": "document_id ist erforderlich"
       },
       "generic": {
         "failed": "Fehlgeschlagen",
@@ -2055,7 +2058,8 @@
         "chunks": "Dokument-Chunks konnten nicht abgerufen werden",
         "reprocess": "Dokument konnte nicht erneut verarbeitet werden",
         "export": "Dokumente konnten nicht exportiert werden",
-        "import": "Dokumente konnten nicht importiert werden"
+        "import": "Dokumente konnten nicht importiert werden",
+        "history": "Fehler beim Abrufen der Dokumenthistorie"
       },
       "files": {
         "upload": "Dateien konnten nicht hochgeladen werden",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "Audit-Protokolle konnten nicht aufgelistet werden",
+        "get": "Fehler beim Abrufen des Audit-Log-Eintrags",
         "stats": "Audit-Protokollstatistiken konnten nicht abgerufen werden"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "Setzen Sie WENYUAN_CP_ADMIN_API_URL und WENYUAN_CP_ADMIN_API_KEY auf dem Konsolenserver, um Mandanten zu verwalten.",
       "back": "Zurück zu den Banken"
     }
+  },
+  "documentHistory": {
+    "explainer": "Was jede Änderung mit den Fakten und Beobachtungen dieses Dokuments gemacht hat. Beobachtungen werden neu aufgebaut, nicht versioniert: Entfernt eine Änderung eine, ist die id hier die einzige Spur. Aus den Operationen der Bank rekonstruiert, daher sind synchrone Retains und Änderungen ohne Auto-Konsolidierung nicht gelistet. Zeile aufklappen für die ids; id anfahren, um sie in anderen Zeilen zu finden.",
+    "empty": "Keine Änderungen aufgezeichnet. Die Historie stammt aus den Operationen dieser Bank: asynchrone Retains und die Konsolidierungen nach Bearbeitungen.",
+    "loadError": "Historie konnte nicht geladen werden.",
+    "idsRemoved": "Entfernt",
+    "idsCreated": "Erstellt",
+    "idsUpdated": "Aktualisiert",
+    "chipRemoved": "Durch diese Änderung entfernt — existiert nicht mehr",
+    "chipOpen": "Diese Beobachtung öffnen",
+    "moreIds": "+{count} weitere",
+    "kind": {
+      "retain": "Beibehalten",
+      "append": "Angehängt",
+      "reprocess": "Neu verarbeitet",
+      "retag": "Tags geändert",
+      "fact_edited": "Fakt bearbeitet",
+      "fact_invalidated": "Fakt ungültig gemacht",
+      "fact_restored": "Fakt wiederhergestellt",
+      "fact_deleted": "Fakt gelöscht",
+      "observations_cleared": "Beobachtungen geleert",
+      "consolidation": "Konsolidiert"
+    },
+    "loadOlder": "Ältere laden",
+    "colWhen": "Wann",
+    "colChange": "Änderung",
+    "colFacts": "Fakten",
+    "colObservations": "Beobachtungen",
+    "colOperation": "Operation",
+    "legendExists": "Existiert noch — zum Öffnen klicken",
+    "legendRemovedLater": "Durch eine spätere Änderung entfernt",
+    "legendRemovedHere": "Durch diese Änderung entfernt",
+    "chipRemovedLater": "Später entfernt durch: {kind} ({when})"
   }
 }

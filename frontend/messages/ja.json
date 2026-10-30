@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "ファイルを受け付けました。変換待ちです",
     "pendingUploadProcessingStatus": "処理中",
     "pendingUploadFailedStatus": "失敗",
+    "pendingUploadRetry": "再試行",
     "pendingUploadFailed": "ファイル変換に失敗しました",
     "colDocument": "ドキュメント",
     "colUpdated": "更新日",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id と mental_model_id は必須です",
         "bankAndModelIdRequired": "bank_id と model_id は必須です",
         "operationIdRequired": "operation_id は必須です",
+        "logIdRequired": "log_id は必須です",
         "missingRequestData": "リクエストデータが不足しています",
         "missingBankId": "bank_id がありません",
         "fileRequired": "ファイルが必要です",
-        "targetBankIdRequired": "target_bank_id は必須です"
+        "targetBankIdRequired": "target_bank_id は必須です",
+        "documentIdRequired": "document_id は必須です"
       },
       "generic": {
         "failed": "失敗しました",
@@ -2055,7 +2058,8 @@
         "chunks": "ドキュメントチャンクの取得に失敗しました",
         "reprocess": "ドキュメントの再処理に失敗しました",
         "export": "ドキュメントのエクスポートに失敗しました",
-        "import": "ドキュメントのインポートに失敗しました"
+        "import": "ドキュメントのインポートに失敗しました",
+        "history": "ドキュメント履歴の取得に失敗しました"
       },
       "files": {
         "upload": "ファイルのアップロードに失敗しました",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "監査ログの一覧取得に失敗しました",
+        "get": "監査ログエントリの取得に失敗しました",
         "stats": "監査ログ統計の取得に失敗しました"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "テナントを管理するには、コンソールサーバーで WENYUAN_CP_ADMIN_API_URL と WENYUAN_CP_ADMIN_API_KEY を設定してください。",
       "back": "バンクに戻る"
     }
+  },
+  "documentHistory": {
+    "explainer": "各変更がこのドキュメントのファクトとオブザベーションに何をしたか。オブザベーションはバージョン管理ではなく再構築されます。変更が削除すると、ここにある id が唯一の痕跡です。履歴は bank の操作から再構築されるため、同期 retain や自動統合オフ時の変更は表示されません。行を展開して id を表示し、id にホバーすると他の行で探せます。",
+    "empty": "変更記録はありません。履歴は bank の操作から生成されます。非同期 retain と編集後の統合です。",
+    "loadError": "履歴を読み込めませんでした。",
+    "idsRemoved": "削除",
+    "idsCreated": "作成",
+    "idsUpdated": "更新",
+    "chipRemoved": "この変更で削除 — もう存在しません",
+    "chipOpen": "このオブザベーションを開く",
+    "moreIds": "他 {count} 件",
+    "kind": {
+      "retain": "保持",
+      "append": "追加",
+      "reprocess": "再処理",
+      "retag": "タグ変更",
+      "fact_edited": "ファクト編集",
+      "fact_invalidated": "ファクト無効化",
+      "fact_restored": "ファクト復元",
+      "fact_deleted": "ファクト削除",
+      "observations_cleared": "オブザベーション消去",
+      "consolidation": "統合"
+    },
+    "loadOlder": "さらに読み込む",
+    "colWhen": "日時",
+    "colChange": "変更",
+    "colFacts": "ファクト",
+    "colObservations": "オブザベーション",
+    "colOperation": "操作",
+    "legendExists": "存在中 — クリックで開く",
+    "legendRemovedLater": "後の変更で削除",
+    "legendRemovedHere": "この変更で削除",
+    "chipRemovedLater": "後から削除：{kind}（{when}）"
   }
 }

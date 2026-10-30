@@ -116,6 +116,45 @@ export interface AuditLogEntry {
   metadata: Record<string, unknown>;
 }
 
+export type DocumentEventKind =
+  | "retain"
+  | "append"
+  | "reprocess"
+  | "retag"
+  | "fact_edited"
+  | "fact_invalidated"
+  | "fact_restored"
+  | "fact_deleted"
+  | "observations_cleared"
+  | "consolidation";
+
+/** How many observations an event touched, and (up to 100) which. */
+export interface ObservationIdSample {
+  count: number;
+  ids: string[];
+}
+
+export interface DocumentEvent {
+  document_id: string;
+  kind: DocumentEventKind;
+  created_at: string;
+  operation_id: string | null;
+  fact_id: string | null;
+  facts_added: number;
+  facts_removed: number;
+  observations_created: ObservationIdSample;
+  observations_updated: ObservationIdSample;
+  observations_removed: ObservationIdSample;
+}
+
+export interface DocumentHistoryResponse {
+  document_id: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: DocumentEvent[];
+}
+
 export interface AuditLogsResponse {
   bank_id: string;
   total: number;
@@ -2438,6 +2477,29 @@ export class ControlPlaneClient {
     const query = params.toString();
     return this.fetchApi<AuditStatsResponse>(
       bankApi(bankId, `/audit-logs/stats${query ? `?${query}` : ""}`)
+    );
+  }
+
+  /** Fetch a single audit-log entry with its full request/response bodies. */
+  async getAuditLog(bankId: string, logId: string): Promise<AuditLogEntry> {
+    return this.fetchApi<AuditLogEntry>(
+      bankApi(bankId, `/audit-logs/${encodeURIComponent(logId)}`)
+    );
+  }
+
+  /**
+   * A document's change history, newest first: what each retain, fact edit and
+   * consolidation did to its facts and observations. Pagination counts
+   * operations, not events: the next page starts after the ones loaded.
+   */
+  async getDocumentHistory(
+    bankId: string,
+    documentId: string,
+    offset = 0,
+    limit = 100
+  ): Promise<DocumentHistoryResponse> {
+    return this.fetchApi<DocumentHistoryResponse>(
+      bankApi(bankId, `/documents/${encodeURIComponent(documentId)}/history?limit=${limit}&offset=${offset}`)
     );
   }
 

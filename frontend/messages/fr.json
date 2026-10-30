@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "Fichier accepté ; conversion en attente",
     "pendingUploadProcessingStatus": "Traitement",
     "pendingUploadFailedStatus": "Échec",
+    "pendingUploadRetry": "Réessayer",
     "pendingUploadFailed": "La conversion du fichier a échoué",
     "colDocument": "Document",
     "colUpdated": "Mis à jour",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id et mental_model_id sont obligatoires",
         "bankAndModelIdRequired": "bank_id et model_id sont obligatoires",
         "operationIdRequired": "operation_id est obligatoire",
+        "logIdRequired": "log_id est obligatoire",
         "missingRequestData": "Données de requête manquantes",
         "missingBankId": "bank_id manquant",
         "fileRequired": "Un fichier est requis",
-        "targetBankIdRequired": "target_bank_id est obligatoire"
+        "targetBankIdRequired": "target_bank_id est obligatoire",
+        "documentIdRequired": "document_id est obligatoire"
       },
       "generic": {
         "failed": "Échec",
@@ -2055,7 +2058,8 @@
         "chunks": "Impossible de récupérer les fragments du document",
         "reprocess": "Impossible de retraiter le document",
         "export": "Échec de l'exportation des documents",
-        "import": "Échec de l'importation des documents"
+        "import": "Échec de l'importation des documents",
+        "history": "Échec de la récupération de l'historique du document"
       },
       "files": {
         "upload": "Impossible de téléverser les fichiers",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "Impossible de lister les journaux d'audit",
+        "get": "Échec de la récupération de l'entrée du journal d'audit",
         "stats": "Impossible de récupérer les statistiques des journaux d'audit"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "Définissez WENYUAN_CP_ADMIN_API_URL et WENYUAN_CP_ADMIN_API_KEY sur le serveur de console pour gérer les locataires.",
       "back": "Retour aux banques"
     }
+  },
+  "documentHistory": {
+    "explainer": "Ce que chaque changement a fait aux faits et aux observations de ce document. Les observations sont reconstruites, pas versionnées : quand un changement en supprime une, son id ici est la seule trace restante. Reconstruit à partir des opérations de la bank, donc les retains synchrones et les changements effectués avec l'auto-consolidation désactivée ne sont pas listés. Dépliez une ligne pour voir les ids ; survolez un id pour le retrouver dans les autres lignes.",
+    "empty": "Aucun changement enregistré. L'historique provient des opérations de cette bank : les retains asynchrones et les consolidations qui suivent les modifications.",
+    "loadError": "Impossible de charger l'historique.",
+    "idsRemoved": "Supprimées",
+    "idsCreated": "Créées",
+    "idsUpdated": "Mises à jour",
+    "chipRemoved": "Supprimée par ce changement — n'existe plus",
+    "chipOpen": "Ouvrir cette observation",
+    "moreIds": "+{count} de plus",
+    "kind": {
+      "retain": "Conservé",
+      "append": "Ajouté",
+      "reprocess": "Retraité",
+      "retag": "Tags modifiés",
+      "fact_edited": "Fait modifié",
+      "fact_invalidated": "Fait invalidé",
+      "fact_restored": "Fait restauré",
+      "fact_deleted": "Fait supprimé",
+      "observations_cleared": "Observations effacées",
+      "consolidation": "Consolidé"
+    },
+    "loadOlder": "Charger les plus anciens",
+    "colWhen": "Quand",
+    "colChange": "Changement",
+    "colFacts": "Faits",
+    "colObservations": "Observations",
+    "colOperation": "Opération",
+    "legendExists": "Existe encore — cliquer pour ouvrir",
+    "legendRemovedLater": "Supprimée par un changement ultérieur",
+    "legendRemovedHere": "Supprimée par ce changement",
+    "chipRemovedLater": "Supprimée plus tard par : {kind} ({when})"
   }
 }

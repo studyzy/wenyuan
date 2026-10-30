@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "File accepted; conversion pending",
     "pendingUploadProcessingStatus": "Processing",
     "pendingUploadFailedStatus": "Failed",
+    "pendingUploadRetry": "Retry",
     "pendingUploadFailed": "File conversion failed",
     "colDocument": "Document",
     "colUpdated": "Updated",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id and mental_model_id are required",
         "bankAndModelIdRequired": "bank_id and model_id are required",
         "operationIdRequired": "operation_id is required",
+        "logIdRequired": "log_id is required",
         "missingRequestData": "Missing request data",
         "missingBankId": "Missing bank_id",
         "fileRequired": "file is required",
-        "targetBankIdRequired": "target_bank_id is required"
+        "targetBankIdRequired": "target_bank_id is required",
+        "documentIdRequired": "document_id is required"
       },
       "generic": {
         "failed": "Failed",
@@ -2055,7 +2058,8 @@
         "chunks": "Failed to fetch document chunks",
         "reprocess": "Failed to reprocess document",
         "export": "Failed to export documents",
-        "import": "Failed to import documents"
+        "import": "Failed to import documents",
+        "history": "Failed to fetch document history"
       },
       "files": {
         "upload": "Failed to upload files",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "Failed to list audit logs",
+        "get": "Failed to get audit log entry",
         "stats": "Failed to get audit log stats"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "Set WENYUAN_CP_ADMIN_API_URL and WENYUAN_CP_ADMIN_API_KEY on the console server to manage tenants.",
       "back": "Back to banks"
     }
+  },
+  "documentHistory": {
+    "explainer": "What each change did to this document's facts and observations. Observations are rebuilt, not versioned: when a change removes one, its id here is the only trace left. Rebuilt from the bank's operations, so synchronous retains and changes made with auto-consolidation off are not listed. Expand a row to see the ids; hover an id to find it in other rows.",
+    "empty": "No changes recorded. History comes from this bank's operations: async retains, and the consolidations that follow edits.",
+    "loadError": "Could not load the history.",
+    "idsRemoved": "Removed",
+    "idsCreated": "Created",
+    "idsUpdated": "Updated",
+    "chipRemoved": "Removed by this change — no longer exists",
+    "chipOpen": "Open this observation",
+    "moreIds": "+{count} more",
+    "kind": {
+      "retain": "Retained",
+      "append": "Appended",
+      "reprocess": "Reprocessed",
+      "retag": "Tags changed",
+      "fact_edited": "Fact edited",
+      "fact_invalidated": "Fact invalidated",
+      "fact_restored": "Fact restored",
+      "fact_deleted": "Fact deleted",
+      "observations_cleared": "Observations cleared",
+      "consolidation": "Consolidated"
+    },
+    "loadOlder": "Load older",
+    "colWhen": "When",
+    "colChange": "Change",
+    "colFacts": "Facts",
+    "colObservations": "Observations",
+    "colOperation": "Operation",
+    "legendExists": "Still exists — click to open",
+    "legendRemovedLater": "Removed by a later change",
+    "legendRemovedHere": "Removed by this change",
+    "chipRemovedLater": "Removed later by: {kind} ({when})"
   }
 }

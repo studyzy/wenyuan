@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "文件已接收，正在轉換為文件",
     "pendingUploadProcessingStatus": "處理中",
     "pendingUploadFailedStatus": "失敗",
+    "pendingUploadRetry": "重試",
     "pendingUploadFailed": "文件轉換失敗",
     "colDocument": "文件",
     "colUpdated": "更新時間",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id 和 mental_model_id 為必填欄位",
         "bankAndModelIdRequired": "bank_id 和 model_id 為必填欄位",
         "operationIdRequired": "operation_id 為必填欄位",
+        "logIdRequired": "log_id 為必填欄位",
         "missingRequestData": "缺少請求資料",
         "missingBankId": "缺少 bank_id",
         "fileRequired": "需要檔案",
-        "targetBankIdRequired": "必須提供 target_bank_id"
+        "targetBankIdRequired": "必須提供 target_bank_id",
+        "documentIdRequired": "document_id 為必填欄位"
       },
       "generic": {
         "failed": "失敗",
@@ -2055,7 +2058,8 @@
         "chunks": "取得文件片段失敗",
         "reprocess": "重新處理文件失敗",
         "export": "匯出文件失敗",
-        "import": "匯入文件失敗"
+        "import": "匯入文件失敗",
+        "history": "取得文件歷史失敗"
       },
       "files": {
         "upload": "上傳檔案失敗",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "列出稽核記錄失敗",
+        "get": "取得審計日誌項目失敗",
         "stats": "取得稽核記錄統計失敗"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "請在控制台伺服器上設定 WENYUAN_CP_ADMIN_API_URL 與 WENYUAN_CP_ADMIN_API_KEY 以管理租戶。",
       "back": "返回記憶庫"
     }
+  },
+  "documentHistory": {
+    "explainer": "每次變更對這個文件的事實和觀察做了什麼。觀察是重建而非版本化的：當某次變更移除一條觀察時，這裡的 id 是它留下的唯一痕跡。歷史從 bank 的操作流水重建，因此同步 retain 以及關閉自動整合時的變更不會列出。展開一行查看 id；懸停 id 可在其他行中定位它。",
+    "empty": "沒有變更記錄。歷史來自 bank 的操作流水：非同步 retain，以及編輯後觸發的整合。",
+    "loadError": "歷史載入失敗。",
+    "idsRemoved": "移除",
+    "idsCreated": "建立",
+    "idsUpdated": "更新",
+    "chipRemoved": "已被本次變更移除——不再存在",
+    "chipOpen": "打開這條觀察",
+    "moreIds": "還有 {count} 筆",
+    "kind": {
+      "retain": "保留",
+      "append": "附加",
+      "reprocess": "重新處理",
+      "retag": "標籤變更",
+      "fact_edited": "事實編輯",
+      "fact_invalidated": "事實失效",
+      "fact_restored": "事實恢復",
+      "fact_deleted": "事實刪除",
+      "observations_cleared": "觀察清空",
+      "consolidation": "整合"
+    },
+    "loadOlder": "載入更早的",
+    "colWhen": "時間",
+    "colChange": "變更",
+    "colFacts": "事實",
+    "colObservations": "觀察",
+    "colOperation": "操作",
+    "legendExists": "仍存在——點擊打開",
+    "legendRemovedLater": "已被後續變更移除",
+    "legendRemovedHere": "已被本次變更移除",
+    "chipRemovedLater": "稍後被移除：{kind}（{when}）"
   }
 }

@@ -12,6 +12,7 @@ import {
 import { useBank } from "@/lib/bank-context";
 import { useFeatures } from "@/lib/features-context";
 import { DataView } from "./data-view";
+import { DocumentHistory } from "./document-history";
 import { TraceDialog } from "./llm-requests-view";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -781,6 +782,7 @@ export function DocumentsView() {
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [deletingUploadOperationId, setDeletingUploadOperationId] = useState<string | null>(null);
+  const [retryingUploadOperationId, setRetryingUploadOperationId] = useState<string | null>(null);
 
   // Tag editing state
   const [editingTags, setEditingTags] = useState(false);
@@ -1123,6 +1125,22 @@ export function DocumentsView() {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setDeletingUploadOperationId(null);
+    }
+  };
+
+  const retryFailedUpload = async (operationId: string) => {
+    if (!currentBank) return;
+
+    setRetryingUploadOperationId(operationId);
+    try {
+      // Re-run the failed file_convert_retain operation through the same API
+      // the Operations view uses; the row flips back to processing on reload.
+      await client.retryOperation(currentBank, operationId);
+      await loadPendingUploads();
+    } catch {
+      // Error toast is shown automatically by the API client interceptor
+    } finally {
+      setRetryingUploadOperationId(null);
     }
   };
 
@@ -1732,6 +1750,22 @@ export function DocumentsView() {
                             <Button
                               variant="ghost"
                               size="sm"
+                              className="h-7 text-xs text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400"
+                              onClick={() => retryFailedUpload(upload.operationId)}
+                              disabled={retryingUploadOperationId === upload.operationId}
+                            >
+                              {retryingUploadOperationId === upload.operationId ? (
+                                <Spinner size="xs" />
+                              ) : (
+                                <RotateCcw className="w-3 h-3 mr-1" />
+                              )}
+                              {retryingUploadOperationId === upload.operationId
+                                ? ""
+                                : t("pendingUploadRetry")}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               className="h-7 text-xs text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
                               onClick={() => deleteFailedUpload(upload.operationId)}
                               disabled={deletingUploadOperationId === upload.operationId}
@@ -2176,6 +2210,13 @@ export function DocumentsView() {
 
                       {currentBank && selectedDocument?.id && (
                         <DocumentRetainTraces
+                          bankId={currentBank}
+                          documentId={selectedDocument.id}
+                        />
+                      )}
+
+                      {currentBank && selectedDocument?.id && (
+                        <DocumentHistory
                           bankId={currentBank}
                           documentId={selectedDocument.id}
                         />

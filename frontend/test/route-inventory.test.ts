@@ -4,10 +4,12 @@ import * as authLogin from "../app/api/auth/login/route";
 import * as authLogout from "../app/api/auth/logout/route";
 import * as banks from "../app/api/banks/route";
 import * as bankDetail from "../app/api/banks/[bankId]/route";
+import * as documentHistory from "../app/api/banks/[bankId]/documents/[documentId]/history/route";
 import * as aliases from "../app/api/banks/[bankId]/aliases/route";
 import * as aliasDetail from "../app/api/banks/[bankId]/aliases/[alias]/route";
 import * as attachment from "../app/api/banks/[bankId]/attachments/[attachmentId]/route";
 import * as auditLogs from "../app/api/banks/[bankId]/audit-logs/route";
+import * as auditLogDetail from "../app/api/banks/[bankId]/audit-logs/[logId]/route";
 import * as auditStats from "../app/api/banks/[bankId]/audit-logs/stats/route";
 import * as clone from "../app/api/banks/[bankId]/clone/route";
 import * as bankConfig from "../app/api/banks/[bankId]/config/route";
@@ -94,6 +96,8 @@ const INVENTORY: Array<[string, unknown, string[]]> = [
   ["/api/banks/[bankId]/aliases/[alias]", aliasDetail, ["DELETE", "PATCH"]],
   ["/api/banks/[bankId]/attachments/[attachmentId]", attachment, ["GET"]],
   ["/api/banks/[bankId]/audit-logs", auditLogs, ["GET"]],
+  ["/api/banks/[bankId]/audit-logs/[logId]", auditLogDetail, ["GET"]],
+  ["/api/banks/[bankId]/documents/[documentId]/history", documentHistory, ["GET"]],
   ["/api/banks/[bankId]/audit-logs/stats", auditStats, ["GET"]],
   ["/api/banks/[bankId]/clone", clone, ["POST"]],
   ["/api/banks/[bankId]/config", bankConfig, ["DELETE", "GET", "PATCH"]],
@@ -157,9 +161,9 @@ const INVENTORY: Array<[string, unknown, string[]]> = [
 ];
 
 describe("control-plane route inventory", () => {
-  it("materializes exactly the 68 catalogued routes", () => {
-    expect(INVENTORY).toHaveLength(68);
-    expect(new Set(INVENTORY.map(([path]) => path)).size).toBe(68);
+  it("materializes exactly the 70 catalogued routes", () => {
+    expect(INVENTORY).toHaveLength(70);
+    expect(new Set(INVENTORY.map(([path]) => path)).size).toBe(70);
   });
 
   it("includes a bank-scoped child sub-resource and a nested action beneath it", () => {

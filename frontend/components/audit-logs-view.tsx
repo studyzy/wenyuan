@@ -317,9 +317,17 @@ export function AuditLogsView() {
     loadLogs(actionFilter, transportFilter, dateRange, newOffset);
   };
 
-  const handleLogClick = (log: AuditLogEntry) => {
-    setSelectedLog(log);
+  const handleLogClick = async (log: AuditLogEntry) => {
+    // The list carries no bodies: show the row now, then load its request/response.
+    setSelectedLog({ ...log, request: null, response: null });
     setDialogOpen(true);
+    if (!currentBank) return;
+    try {
+      const full = await client.getAuditLog(currentBank, log.id);
+      setSelectedLog((current) => (current?.id === full.id ? full : current));
+    } catch (error) {
+      console.error("Error loading audit log entry:", error);
+    }
   };
 
   useEffect(() => {

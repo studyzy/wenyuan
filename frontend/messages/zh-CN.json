@@ -869,6 +869,7 @@
     "pendingUploadMetadata": "文件已接收，正在转换为文档",
     "pendingUploadProcessingStatus": "处理中",
     "pendingUploadFailedStatus": "失败",
+    "pendingUploadRetry": "重试",
     "pendingUploadFailed": "文件转换失败",
     "colDocument": "文档",
     "colUpdated": "更新时间",
@@ -2002,10 +2003,12 @@
         "bankAndMentalModelIdRequired": "bank_id 和 mental_model_id 为必填项",
         "bankAndModelIdRequired": "bank_id 和 model_id 为必填项",
         "operationIdRequired": "operation_id 为必填项",
+        "logIdRequired": "log_id 为必填项",
         "missingRequestData": "缺少请求数据",
         "missingBankId": "缺少 bank_id",
         "fileRequired": "需要文件",
-        "targetBankIdRequired": "必须提供 target_bank_id"
+        "targetBankIdRequired": "必须提供 target_bank_id",
+        "documentIdRequired": "document_id 为必填项"
       },
       "generic": {
         "failed": "失败",
@@ -2055,7 +2058,8 @@
         "chunks": "获取文档分块失败",
         "reprocess": "重新处理文档失败",
         "export": "导出文档失败",
-        "import": "导入文档失败"
+        "import": "导入文档失败",
+        "history": "获取文档历史失败"
       },
       "files": {
         "upload": "上传文件失败",
@@ -2106,6 +2110,7 @@
       },
       "auditLogs": {
         "list": "列出审计日志失败",
+        "get": "获取审计日志条目失败",
         "stats": "获取审计日志统计失败"
       },
       "llmRequests": {
@@ -2751,5 +2756,38 @@
       "body": "请在控制台服务器上设置 WENYUAN_CP_ADMIN_API_URL 和 WENYUAN_CP_ADMIN_API_KEY 以管理租户。",
       "back": "返回记忆库"
     }
+  },
+  "documentHistory": {
+    "explainer": "每次变更对这个文档的事实和观察做了什么。观察是重建而非版本化的：当某次变更移除一条观察时，这里的 id 是它留下的唯一痕迹。历史从 bank 的操作流水重建，因此同步 retain 以及关闭自动整合时的变更不会列出。展开一行查看 id；悬停 id 可在其他行中定位它。",
+    "empty": "没有变更记录。历史来自 bank 的操作流水：异步 retain，以及编辑后触发的整合。",
+    "loadError": "历史加载失败。",
+    "idsRemoved": "移除",
+    "idsCreated": "创建",
+    "idsUpdated": "更新",
+    "chipRemoved": "已被本次变更移除——不再存在",
+    "chipOpen": "打开这条观察",
+    "moreIds": "还有 {count} 条",
+    "kind": {
+      "retain": "保留",
+      "append": "追加",
+      "reprocess": "重处理",
+      "retag": "标签变更",
+      "fact_edited": "事实编辑",
+      "fact_invalidated": "事实失效",
+      "fact_restored": "事实恢复",
+      "fact_deleted": "事实删除",
+      "observations_cleared": "观察清空",
+      "consolidation": "整合"
+    },
+    "loadOlder": "加载更早的",
+    "colWhen": "时间",
+    "colChange": "变更",
+    "colFacts": "事实",
+    "colObservations": "观察",
+    "colOperation": "操作",
+    "legendExists": "仍存在——点击打开",
+    "legendRemovedLater": "已被后续变更移除",
+    "legendRemovedHere": "已被本次变更移除",
+    "chipRemovedLater": "稍后被移除：{kind}（{when}）"
   }
 }
