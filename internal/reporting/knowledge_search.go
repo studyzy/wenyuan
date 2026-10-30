@@ -159,20 +159,7 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, hit := range hits {
 			model, hasModel := models[hit.Node.MentalModelID]
-			var sourceQuery, updatedAt *string
-			if hasModel {
-				sourceQuery = &model.SourceQuery
-				updatedAt = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
-			}
-			out = append(out, KnowledgeSearchResult{
-				ID:            hit.Node.ID,
-				Name:          hit.Node.Title,
-				MentalModelID: optionalString(hit.Node.MentalModelID),
-				SourceQuery:   sourceQuery,
-				Snippet:       knowledgeSnippet(hit.Node.Text),
-				Score:         httpx.PythonFloat(hit.Score),
-				UpdatedAt:     updatedAt,
-			})
+			out = append(out, ProjectKnowledgeSearchHit(hit, model, hasModel))
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, KnowledgePageSearchResponse{
@@ -287,3 +274,25 @@ func knowledgeSearchLimit(raw string, present bool) (int, *httpx.ValidationError
 // itemPtr returns a pointer to one validation item, the shape the accumulating
 // validators collect.
 func itemPtr(item httpx.ValidationError) *httpx.ValidationError { return &item }
+
+// ProjectKnowledgeSearchHit renders one search hit as the result the reference
+// reports: identity, the page's own name, the model backing it (its id, the
+// question it answers and when it last refreshed), the opening text as a
+// snippet, and the fused rank score. It is shared by the HTTP search route and
+// the MCP tool, so the two cannot drift.
+func ProjectKnowledgeSearchHit(hit storage.KnowledgeHit, model storage.MentalModel, hasModel bool) KnowledgeSearchResult {
+	var sourceQuery, updatedAt *string
+	if hasModel {
+		sourceQuery = &model.SourceQuery
+		updatedAt = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
+	}
+	return KnowledgeSearchResult{
+		ID:            hit.Node.ID,
+		Name:          hit.Node.Title,
+		MentalModelID: optionalString(hit.Node.MentalModelID),
+		SourceQuery:   sourceQuery,
+		Snippet:       knowledgeSnippet(hit.Node.Text),
+		Score:         httpx.PythonFloat(hit.Score),
+		UpdatedAt:     updatedAt,
+	}
+}

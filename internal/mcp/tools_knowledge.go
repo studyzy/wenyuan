@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/reporting"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -26,17 +27,35 @@ func (s *Server) searchKnowledgeBase(ctx context.Context, args map[string]any) (
 	if query == "" {
 		return nil, invalidArgument("search_knowledge_base requires query")
 	}
+	// The limit is clamped rather than rejected: the HTTP route answers an
+	// out-of-range limit with a 422, but "an agent that asked for 500 pages wants
+	// results, not a validation round trip" (mcp_tools.py::_do_search_knowledge_base).
+	limit := intArgument(args, "limit", 10)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 50 {
+		limit = 50
+	}
 	hits, err := s.store.SearchKnowledgeNodes(ctx, storage.KnowledgeSearchQuery{
 		BankID: bankID,
 		Query:  query,
-		Limit:  intArgument(args, "limit", 10),
+		Limit:  limit,
 	})
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(hits))
+	models, err := s.knowledgeModels(ctx, bankID)
+	if err != nil {
+		return nil, err
+	}
+	// The result is the same projection the HTTP search route serves — the page's
+	// identity, the question its model answers, a snippet of its text and when it
+	// last refreshed — because an agent picking a page needs more than a score.
+	items := make([]reporting.KnowledgeSearchResult, 0, len(hits))
 	for _, hit := range hits {
-		items = append(items, map[string]any{"id": hit.Node.ID, "name": hit.Node.Title, "score": hit.Score})
+		model, hasModel := models[hit.Node.MentalModelID]
+		items = append(items, reporting.ProjectKnowledgeSearchHit(hit, model, hasModel))
 	}
 	return map[string]any{"results": items, "total": len(items)}, nil
 }
@@ -54,7 +73,23 @@ func (s *Server) getKnowledgePage(ctx context.Context, args map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": node.ID, "name": node.Title, "body": node.Text}, nil
+	// A folder is not a page: the reference's page read joins on kind='page', so a
+	// folder answers the same not-found rather than an empty document.
+	if node.Kind != storage.KnowledgeKindPage {
+		return notFoundAnswer("Knowledge page '" + pageID + "' not found in bank '" + bankID + "'"), nil
+	}
+	model, hasModel := s.knowledgeModel(ctx, bankID, node)
+	// The body is the backing model's content, which is what the reference
+	// renders (`page_markdown.render_document(node)` over the merged mentally-model
+	// dict); the node row itself carries no content column.
+	body := node.Text
+	if hasModel {
+		body = model.Content
+	}
+	// The rendered document already carries the body under its frontmatter block,
+	// so it is returned once — the reference's `_do_get_knowledge_page` returns
+	// the same seven members and no separate body.
+	return reporting.RenderKnowledgePage(node, model, hasModel, &body), nil
 }
 
 func (s *Server) createKnowledgeFolder(ctx context.Context, args map[string]any) (any, error) {
@@ -169,3 +204,31 @@ func (s *Server) deleteKnowledgeNode(ctx context.Context, args map[string]any) (
 // knowledgeRootParent is the literal a caller sends to move a node to the top
 // level, since an MCP argument cannot express an explicit null.
 const knowledgeRootParent = "root"
+
+// knowledgeModels returns the bank's mental models keyed by identifier, the
+// lookup the knowledge tools use to render a page's model-derived fields.
+func (s *Server) knowledgeModels(ctx context.Context, bankID string) (map[string]storage.MentalModel, error) {
+	models, err := s.store.ListMentalModels(ctx, bankID, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]storage.MentalModel, len(models))
+	for _, model := range models {
+		out[model.ID] = model
+	}
+	return out, nil
+}
+
+// knowledgeModel returns the mental model backing a page, and whether it exists.
+// A page whose model is gone has no description or timestamp to render, which is
+// what the reference reports for it too.
+func (s *Server) knowledgeModel(ctx context.Context, bankID string, node storage.KnowledgeNode) (storage.MentalModel, bool) {
+	if node.Kind != storage.KnowledgeKindPage || node.MentalModelID == "" {
+		return storage.MentalModel{}, false
+	}
+	model, err := s.store.GetMentalModel(ctx, bankID, node.MentalModelID)
+	if err != nil {
+		return storage.MentalModel{}, false
+	}
+	return model, true
+}

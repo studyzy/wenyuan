@@ -224,6 +224,48 @@ func knowledgeDocFields(node storage.KnowledgeNode, model storage.MentalModel) [
 	return knowledgeDocumentFields(node.ID, pageType.Type, node.Title, description, timestamp, pageType.DisplayTags)
 }
 
+// KnowledgePageDocument is one page rendered as a markdown document, without the
+// HTTP route's extra `body` member: id, name, type, description, tags,
+// timestamp and the rendered markdown. It is the shape the reference's MCP
+// `get_knowledge_page` tool returns (`_do_get_knowledge_page`), and the HTTP read
+// route is the same document plus the raw body.
+type KnowledgePageDocument struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Description *string  `json:"description"`
+	Tags        []string `json:"tags"`
+	Timestamp   *string  `json:"timestamp"`
+	Markdown    string   `json:"markdown"`
+}
+
+// RenderKnowledgePage builds the document for one page: the description and
+// timestamp from the model backing it, the ordered frontmatter fields the
+// reference's renderer emits, and the empty-page notice when the body is empty.
+func RenderKnowledgePage(node storage.KnowledgeNode, model storage.MentalModel, hasModel bool, body *string) KnowledgePageDocument {
+	pageType := knowledgePageType(node.Tags)
+	var description *string
+	timestamp := httpx.FormatTimestampPtr(&node.CreatedAt)
+	if hasModel {
+		description = &model.SourceQuery
+		if !model.LastRefreshedAt.IsZero() {
+			timestamp = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
+		}
+	}
+	bodyText := ""
+	if body != nil {
+		bodyText = *body
+	}
+	return KnowledgePageDocument{
+		ID: node.ID, Name: node.Title, Type: pageType.Type,
+		Description: description, Tags: pageType.DisplayTags, Timestamp: timestamp,
+		Markdown: renderKnowledgeDocument(
+			knowledgeDocumentFields(node.ID, pageType.Type, node.Title,
+				knowledgeOptionalString(description), derefString(timestamp), pageType.DisplayTags),
+			bodyText, true),
+	}
+}
+
 // writeKnowledgePage renders a page as a markdown document, adding the
 // empty-page notice to `markdown` when the body is empty. The frontmatter is
 // rendered from the non-null spelling of each nullable member, because the

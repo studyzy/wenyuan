@@ -263,3 +263,106 @@ func TestMCPCreateBankKeepsItsRequiredBankIDOnEveryMount(t *testing.T) {
 		}
 	}
 }
+
+// get_knowledge_page returns the reference's seven-member document — id, name,
+// type, description, tags, timestamp and the rendered markdown whose frontmatter
+// block already carries the body — not a bare {id, name, body}.
+func TestMCPGetKnowledgePageReturnsTheRenderedDocument(t *testing.T) {
+	server := newServer(t)
+	ctx := t.Context()
+	if _, err := server.store.PutMentalModel(ctx, storage.MentalModel{
+		ID: "mm-page", BankID: "b1", Subtype: storage.SubtypePinned,
+		Name: "Orders", SourceQuery: "How do orders flow?", Content: "Orders flow through billing.\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
+		ID: "kp-orders", BankID: "b1", Kind: storage.KnowledgeKindPage, Title: "Orders",
+		MentalModelID: "mm-page", Tags: []string{"type:runbook", "team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := callTool(t, server, "1", "get_knowledge_page", `{"bank_id":"b1","page_id":"kp-orders"}`)
+	var page map[string]any
+	if err := json.Unmarshal([]byte(rawText(t, result)), &page); err != nil {
+		t.Fatalf("answer = %s", rawText(t, result))
+	}
+	want := []string{"id", "name", "type", "description", "tags", "timestamp", "markdown"}
+	got := make([]string, 0, len(page))
+	for member := range page {
+		got = append(got, member)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("members = %v, want %v", got, want)
+	}
+	for _, member := range want {
+		if _, present := page[member]; !present {
+			t.Fatalf("member %q is missing from %v", member, page)
+		}
+	}
+	if page["type"] != "runbook" {
+		t.Fatalf("type = %v, want the type lifted from the tag", page["type"])
+	}
+	if page["description"] != "How do orders flow?" {
+		t.Fatalf("description = %v, want the model's source query", page["description"])
+	}
+	markdown, _ := page["markdown"].(string)
+	if !strings.Contains(markdown, `title: "Orders"`) || !strings.Contains(markdown, "Orders flow through billing.") {
+		t.Fatalf("markdown = %q, want the frontmatter block and the body", markdown)
+	}
+	// A folder is not a page, so it answers the page's not-found.
+	if _, err := server.store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
+		ID: "kf-docs", BankID: "b1", Kind: storage.KnowledgeKindFolder, Title: "Docs",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	folder := callTool(t, server, "1", "get_knowledge_page", `{"bank_id":"b1","page_id":"kf-docs"}`)
+	if want := `{"error": "Knowledge page 'kf-docs' not found in bank 'b1'"}`; rawText(t, folder) != want {
+		t.Fatalf("folder answer = %s, want %s", rawText(t, folder), want)
+	}
+}
+
+// search_knowledge_base answers with the same projection the HTTP search route
+// serves and clamps the limit instead of rejecting an out-of-range one.
+func TestMCPSearchKnowledgeBaseProjectionAndClamp(t *testing.T) {
+	server := newServer(t)
+	ctx := t.Context()
+	if _, err := server.store.PutMentalModel(ctx, storage.MentalModel{
+		ID: "mm-page", BankID: "b1", Subtype: storage.SubtypePinned,
+		Name: "Orders", SourceQuery: "How do orders flow?", Content: "Orders flow through billing and shipping.\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
+		ID: "kp-orders", BankID: "b1", Kind: storage.KnowledgeKindPage, Title: "Orders",
+		MentalModelID: "mm-page", Text: "Orders flow through billing and shipping.\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := callTool(t, server, "1", "search_knowledge_base",
+		`{"bank_id":"b1","query":"Orders flow","limit":500}`)
+	var page struct {
+		Results []map[string]any `json:"results"`
+		Total   int              `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(rawText(t, result)), &page); err != nil {
+		t.Fatalf("answer = %s", rawText(t, result))
+	}
+	if page.Total == 0 || len(page.Results) == 0 {
+		t.Fatalf("search found nothing: %s", rawText(t, result))
+	}
+	hit := page.Results[0]
+	for _, member := range []string{
+		"id", "name", "mental_model_id", "source_query", "snippet", "score", "updated_at",
+	} {
+		if _, present := hit[member]; !present {
+			t.Fatalf("result is missing %q: %v", member, hit)
+		}
+	}
+	if hit["snippet"] == "" || hit["snippet"] == nil {
+		t.Fatalf("snippet = %v, want the page's opening text", hit["snippet"])
+	}
+	if hit["source_query"] != "How do orders flow?" {
+		t.Fatalf("source_query = %v, want the model's question", hit["source_query"])
+	}
+}
