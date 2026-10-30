@@ -10,7 +10,6 @@ package extraction
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,9 +82,14 @@ type Extractor struct {
 	Provider provider.Provider
 	// Scope labels the provider call for tracing.
 	Scope string
-	// MaxCorrectionRetries bounds how many times a response whose facts are in a
-	// foreign shape is re-asked with the drift correction. Zero (the default)
-	// leaves such a response as "no facts found".
+	// MaxCorrectionRetries bounds how many times a response is re-asked with a
+	// correction: one whose facts are in a foreign shape gets the drift
+	// correction, and one that is not the {"facts": [...]} object at all gets
+	// the envelope correction. It is the reference's own budget — the retain
+	// LLM's max-retries, so `N` retries after the initial ask — and a zero
+	// budget still sends the first request. A response that is still not an
+	// envelope after the budget is spent fails the chunk; only an explicit
+	// {"facts": []} reports "no facts".
 	MaxCorrectionRetries int
 	// MaxCompletionTokens caps the extraction call's generated tokens. Zero
 	// leaves the parameter unset, which is what a deployment that configured no
@@ -196,21 +200,12 @@ func (e *Extractor) ExtractWith(ctx context.Context, text string, opts Options) 
 	return e.extractModel(ctx, trimmed, opts, 0)
 }
 
-// repairAsk is the self-correcting instruction appended when the first response
-// could not be parsed.
+// repairAsk is the self-correcting instruction appended when the previous
+// response could not be parsed at all.
 const repairAsk = `Your previous response could not be read as the required
 JSON object. Return exactly one JSON object of the form {"facts":[{"text":"...",
 "entities":[...],"occurred_start":"...","occurred_end":"...","confidence":0.0}]}
 with no other text.`
-
-// repair asks the model once more for a well-shaped response.
-func (e *Extractor) repair(ctx context.Context, text, previous string, opts Options) ([]Fact, error) {
-	response, err := e.complete(ctx, text, opts, previous, repairAsk)
-	if err != nil {
-		return nil, fmt.Errorf("fact extraction repair call failed: %w", err)
-	}
-	return parseForMode(resolveMode(opts.Mode), response.Structured, opts)
-}
 
 // driftCorrection is the user turn appended when the model answered with facts
 // in a shape the extractor cannot read. A bare retry converges to nothing — the
@@ -234,39 +229,65 @@ func driftWarranted(structured any) bool {
 	return ok && len(facts) > 0
 }
 
-// correctDrift re-asks the model with the drift correction appended, up to the
-// configured retry budget. It returns the facts the corrected ask produced and
-// the response they came from, so usage reflects the call that actually
-// answered. A budget of zero leaves the drifted response alone.
-func (e *Extractor) correctDrift(ctx context.Context, text string, response provider.CompletionResult, opts Options) ([]Fact, provider.CompletionResult, error) {
-	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts)
-	for range e.MaxCorrectionRetries {
-		if parseErr == nil && (len(facts) > 0 || !driftWarranted(response.Structured)) {
-			break
-		}
-		previous := response.Content
-		corrected, err := e.complete(ctx, text, opts, previous, driftCorrection)
-		if err != nil {
-			return nil, response, fmt.Errorf("fact extraction correction call failed: %w", err)
-		}
-		response = corrected
-		facts, parseErr = parseForMode(resolveMode(opts.Mode), response.Structured, opts)
-	}
-	if parseErr != nil {
-		return nil, response, parseErr
-	}
-	return facts, response, nil
-}
-
 // parseForMode reads the model's structured value with the parser the mode
 // needs: verbatim entries carry no text and take the metadata-only reader,
 // every other mode reads the dimensions (or the concise "text") and collapses
 // them.
 func parseForMode(mode string, structured any, opts Options) ([]Fact, error) {
-	if mode == ModeVerbatim {
-		return parseVerbatimFacts(structured, opts.Vocabulary)
+	root, err := coerceFactEnvelope(structured)
+	if err != nil {
+		return nil, err
 	}
-	return parseFacts(structured, opts)
+	if mode == ModeVerbatim {
+		return parseVerbatimFacts(root, opts.Vocabulary)
+	}
+	return parseFacts(root, opts)
+}
+
+// envelopeCorrection is the user turn appended when the model answered with
+// something other than the {"facts": [...]} object the schema asks for. It
+// names the exact shape, and states how "no facts" is spelled, because a model
+// that invented a wrapper is usually also the one replying in prose.
+const envelopeCorrection = `Your reply was not a JSON object with a top-level "facts"
+array. Reply again with exactly {"facts": [...]} following the schema, with no
+wrapper object around it. If the text holds no facts, reply {"facts": []}.`
+
+// brokenEnvelopeError reports a reply that is not the {"facts": [...]} object
+// the schema asks for. It is a distinct type so the caller can re-ask with the
+// envelope correction rather than fail the chunk on the first bad answer.
+type brokenEnvelopeError struct{}
+
+func (brokenEnvelopeError) Error() string {
+	return `extraction response had no top-level "facts" list`
+}
+
+// coerceFactEnvelope accepts the schema wrapper, or a recoverable top-level
+// facts array, and reports anything else as a broken envelope.
+//
+// A reply without a top-level `facts` list is a broken envelope, not an empty
+// extraction: reading it as [] would commit the document with zero memories and
+// report success, so the caller cannot tell a model that ignored the schema
+// from content that genuinely held no facts (the reference's #5582, which
+// follows the same rule at fact_extraction.py:2014-2030). Only an explicit
+// {"facts": []} means "nothing here".
+func coerceFactEnvelope(structured any) (map[string]any, error) {
+	switch value := structured.(type) {
+	case map[string]any:
+		if _, ok := value["facts"].([]any); !ok {
+			return nil, brokenEnvelopeError{}
+		}
+		return value, nil
+	case []any:
+		// A bare array of fact objects is the shape the reference wraps.
+		for _, item := range value {
+			if _, ok := item.(map[string]any); !ok {
+				return nil, brokenEnvelopeError{}
+			}
+		}
+		return map[string]any{"facts": value}, nil
+	default:
+		return nil, brokenEnvelopeError{}
+	}
 }
 
 // factExtractionPrompt and the mode schemas live in modes.go; this file owns
@@ -275,16 +296,10 @@ func parseForMode(mode string, structured any, opts Options) ([]Fact, error) {
 // parseFacts reads the model's structured value, falling back to parsing its
 // text when no structured value was produced. The vocabulary, when present,
 // turns each fact's 'labels' object into canonical key:value selections.
-func parseFacts(structured any, opts Options) ([]Fact, error) {
-	root, ok := structured.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("extraction response was not an object")
-	}
-	rawFacts, ok := root["facts"].([]any)
-	if !ok {
-		// An empty or absent list is a legitimate "no facts found".
-		return nil, nil
-	}
+func parseFacts(root map[string]any, opts Options) ([]Fact, error) {
+	// The envelope was already settled by coerceFactEnvelope, so an explicit
+	// empty list is the only way to report "no facts".
+	rawFacts, _ := root["facts"].([]any)
 	facts := make([]Fact, 0, len(rawFacts))
 	for _, raw := range rawFacts {
 		entry, ok := raw.(map[string]any)
@@ -350,15 +365,8 @@ func parseFacts(structured any, opts Options) ([]Fact, error) {
 // degenerate-text filter does not apply here; the entries are kept for the
 // entities, dates and perspective they report, and the caller collapses them
 // into one fact per chunk.
-func parseVerbatimFacts(structured any, vocab *entitylabels.Vocabulary) ([]Fact, error) {
-	root, ok := structured.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("extraction response was not an object")
-	}
-	rawFacts, ok := root["facts"].([]any)
-	if !ok {
-		return nil, nil
-	}
+func parseVerbatimFacts(root map[string]any, vocab *entitylabels.Vocabulary) ([]Fact, error) {
+	rawFacts, _ := root["facts"].([]any)
 	facts := make([]Fact, 0, len(rawFacts))
 	for _, raw := range rawFacts {
 		entry, ok := raw.(map[string]any)

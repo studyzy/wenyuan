@@ -304,7 +304,10 @@ func TestExtractRepairsMalformedResponse(t *testing.T) {
 		"not an object",
 		map[string]any{"facts": []any{map[string]any{"text": "Alice works at Google."}}},
 	}}
-	result, err := New(provider).Extract(context.Background(), "Alice works at Google.")
+	extractor := New(provider)
+	// One correction round, the reference's outer-attempt budget.
+	extractor.MaxCorrectionRetries = 1
+	result, err := extractor.Extract(context.Background(), "Alice works at Google.")
 	if err != nil {
 		t.Fatal(err)
 	}

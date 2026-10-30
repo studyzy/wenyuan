@@ -2,6 +2,7 @@ package extraction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -90,21 +91,9 @@ func (e *Extractor) extractModel(ctx context.Context, text string, opts Options,
 			return Result{}, fmt.Errorf("fact extraction call failed: %w", err)
 		}
 	}
-	facts, parseErr := parseForMode(resolveMode(opts.Mode), response.Structured, opts)
+	facts, parseErr := e.settleResponse(ctx, text, response, opts)
 	if parseErr != nil {
-		facts, parseErr = e.repair(ctx, text, response.Content, opts)
-		if parseErr != nil {
-			return Result{}, parseErr
-		}
-	} else if len(facts) == 0 && e.MaxCorrectionRetries > 0 && driftWarranted(response.Structured) {
-		// The model answered with the right envelope but the wrong fact shape,
-		// so nothing was usable. Re-ask with the correction; a bare retry would
-		// repeat the same drifted answer because the prompt never changed.
-		corrected, correctedResponse, err := e.correctDrift(ctx, text, response, opts)
-		if err != nil {
-			return Result{}, err
-		}
-		facts, response = corrected, correctedResponse
+		return Result{}, parseErr
 	}
 	// Verbatim mode stores the chunk's own text, with the model's metadata
 	// riding along; the entries collapse to exactly that one fact.
@@ -119,6 +108,65 @@ func (e *Extractor) extractModel(ctx context.Context, text string, opts Options,
 	applyDateInference(facts, opts.ReferenceTime)
 	applyFactKindDates(facts)
 	return Result{Facts: facts, Extracted: true, Usage: response.Usage}, nil
+}
+
+// settleResponse turns one model response into facts, re-asking while the
+// answer is unusable. Every correction shares the extractor's one retry budget,
+// the way the reference's outer attempt loop does: a reply that is not the
+// {"facts": [...]} object gets the envelope correction, one whose fact entries
+// carry keys this extractor cannot read gets the drift correction, and one that
+// cannot be parsed at all gets the repair ask.
+//
+// A reply that is still not an envelope once the budget is spent fails the
+// chunk. Treating it as "no facts" would commit the document with zero memories
+// and report success, so a caller could not tell a model that ignored the
+// schema from content that genuinely held no facts (#5582); only an explicit
+// {"facts": []} reports "no facts".
+func (e *Extractor) settleResponse(ctx context.Context, text string, response provider.CompletionResult, opts Options) ([]Fact, error) {
+	correction := ""
+	lastErr := error(nil)
+	for attempt := range e.MaxCorrectionRetries + 1 {
+		facts, err := parseForMode(resolveMode(opts.Mode), response.Structured, opts)
+		if err == nil && (len(facts) > 0 || !driftWarranted(response.Structured) || resolveMode(opts.Mode) == ModeVerbatim) {
+			return facts, nil
+		}
+		lastErr = err
+		if attempt == e.MaxCorrectionRetries {
+			// The budget is spent: the last ask is reported, not re-asked.
+			break
+		}
+		switch {
+		case isBrokenEnvelope(err):
+			correction = envelopeCorrection
+		case err != nil:
+			correction = repairAsk
+		default:
+			correction = driftCorrection
+		}
+		corrected, callErr := e.complete(ctx, text, opts, response.Content, correction)
+		if callErr != nil && !provider.IsOutputTooLong(callErr) {
+			return nil, fmt.Errorf("fact extraction correction call failed: %w", callErr)
+		}
+		if callErr == nil {
+			response = corrected
+		}
+	}
+	var broken brokenEnvelopeError
+	if errors.As(lastErr, &broken) {
+		return nil, fmt.Errorf(`fact extraction failed: LLM reply had no top-level "facts" list after %d attempts`,
+			e.MaxCorrectionRetries+1)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, nil
+}
+
+// isBrokenEnvelope reports whether an error means the reply was not the
+// {"facts": [...]} object at all.
+func isBrokenEnvelope(err error) bool {
+	var broken brokenEnvelopeError
+	return errors.As(err, &broken)
 }
 
 // applyFactKindDates keeps a fact's occurred dates only where the reference does:
