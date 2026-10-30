@@ -313,6 +313,8 @@ For EVENTS (fact_kind="event") - MUST SET BOTH occurred_start AND occurred_end:
   Do NOT collapse a coarse date to the first day of the period, and do NOT resolve it to the
   Event Date — even when the period is the current year. A year-only date is not a precise
   date; recording it as one makes the memory claim a day it never stated.
+- OPEN-ENDED events (still ongoing, "since forever", no stated end): set only the bound the
+  text gives. NEVER write a placeholder year such as 0001 or 9999 for an unknown bound.
 
 For CONVERSATIONS (fact_kind="conversation"):
 - General info, preferences, ongoing states → NO occurred dates

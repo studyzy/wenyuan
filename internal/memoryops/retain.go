@@ -19,6 +19,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/monitoring"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/validation"
 )
 
 // Handlers wires the memory operation routes to a store.
@@ -970,7 +971,13 @@ func applyRetainParams(item *storage.RetainItem, params map[string]any) {
 			item.Context = stringFromParams(params, "context")
 		case "event_date":
 			if eventDate := stringFromParams(params, "event_date"); eventDate != "" {
-				if parsed, err := time.Parse(time.RFC3339, eventDate); err == nil {
+				// A document retained before v1.1.0 may have kept a year-1/9999
+				// placeholder as its event date, which retain now refuses. It
+				// replays as undated instead, so its reprocess does not fail
+				// forever on a date it can no longer be given (#5820,
+				// memory_engine.py:14113-14117).
+				if parsed, err := time.Parse(time.RFC3339, eventDate); err == nil &&
+					!validation.IsPlaceholderDate(parsed) {
 					item.Timestamp = &parsed
 					item.HasTimestamp = true
 				}

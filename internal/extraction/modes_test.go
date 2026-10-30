@@ -56,6 +56,34 @@ func TestEachModeSelectsItsOwnPromptAndSchema(t *testing.T) {
 	}
 }
 
+// The v1.1.0 extraction prompt tells the model not to write a placeholder year
+// for an open-ended event (#5820, fact_extraction.py:1315-1316). It sits in the
+// verbose prompt alone, beside the coarse-date rule it extends, which is where
+// the reference renders it: the concise, custom and verbatim templates share the
+// shorter temporal section and gained no such bullet.
+func TestOpenEndedDatesAreToldNotToUseAPlaceholderYear(t *testing.T) {
+	const bullet = "- OPEN-ENDED events (still ongoing, \"since forever\", no stated end): set only the bound the\n" +
+		"  text gives. NEVER write a placeholder year such as 0001 or 9999 for an unknown bound.\n"
+	if !strings.Contains(verboseExtractionPrompt, bullet) {
+		t.Fatal("the verbose prompt is missing the open-ended-dates rule")
+	}
+	// It follows the coarse-date rule, as the reference lays it out.
+	coarse := strings.Index(verboseExtractionPrompt, "- COARSE DATES")
+	openEnded := strings.Index(verboseExtractionPrompt, "- OPEN-ENDED events")
+	if coarse < 0 || openEnded < coarse {
+		t.Fatalf("the open-ended rule must follow the coarse-date rule (coarse %d, open-ended %d)", coarse, openEnded)
+	}
+	for name, prompt := range map[string]string{
+		"concise":  factExtractionPrompt,
+		"verbatim": verbatimExtractionPrompt,
+		"custom":   customFactExtractionPrompt("Record only what the speaker said."),
+	} {
+		if strings.Contains(prompt, bullet) {
+			t.Fatalf("the %s prompt must not carry the verbose temporal section", name)
+		}
+	}
+}
+
 // test-custom-mode-carries-the-banks-instructions: a bank's custom instructions
 // reach the prompt in custom mode, and only there — the reference stores them
 // unconditionally but consults them only when the mode asks for them.

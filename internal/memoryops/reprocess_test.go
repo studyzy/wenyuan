@@ -129,3 +129,36 @@ func TestReprocessReplaysAttachmentFilenames(t *testing.T) {
 		t.Fatalf("malformed names kept: %+v", broken.AttachmentFilenames)
 	}
 }
+
+// A document retained before v1.1.0 could keep a year-1/9999 placeholder as its
+// event date. Retain refuses such a date now, so replaying it would fail every
+// reprocess of that document; the reference replays it as undated instead
+// (#5820, memory_engine.py:14113-14117). A real stored date still replays.
+func TestReprocessReplaysPlaceholderEventDateAsUndated(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		eventDate string
+		wantDate  bool
+	}{
+		{"far-edge placeholder", "9999-12-31T23:59:59+00:00", false},
+		{"near-edge placeholder", "0001-01-01T00:00:00+00:00", false},
+		{"real date", "2025-01-16T00:00:00+00:00", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := storage.RetainItem{}
+			applyRetainParams(&item, map[string]any{"event_date": tc.eventDate})
+			if item.HasTimestamp != tc.wantDate {
+				t.Fatalf("has_timestamp = %v, want %v", item.HasTimestamp, tc.wantDate)
+			}
+			if tc.wantDate {
+				if item.Timestamp == nil || item.Timestamp.Year() != 2025 {
+					t.Fatalf("replayed timestamp = %v, want the stored date", item.Timestamp)
+				}
+				return
+			}
+			if item.Timestamp != nil {
+				t.Fatalf("replayed timestamp = %v, want none for a placeholder", item.Timestamp)
+			}
+		})
+	}
+}
