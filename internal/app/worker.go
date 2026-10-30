@@ -653,7 +653,7 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 			// the failure, but the next automatic trigger retries it.
 			return worker.Permanent(err)
 		}
-		if permanentRefreshFailure(err) {
+		if permanentRefreshFailure(err) || provider.IsAuthRejected(err) {
 			if recordErr := p.store.RecordMentalModelRefreshFailure(ctx, op.BankID, modelID, time.Now().UTC()); recordErr != nil {
 				// A failure that cannot be recorded is still the failure that
 				// matters; the operation's own error carries the reason.
@@ -785,6 +785,12 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 	consolidator.WithOperation(op.OperationID, p.operationProgressReporter())
 	if result, err := consolidator.Run(ctx, op.BankID); err != nil {
 		if errors.Is(err, consolidation.ErrNoModel) {
+			return worker.Permanent(err)
+		}
+		// A rejected credential is a function of the configured key, so the
+		// pass cannot succeed on replay; fail it once rather than walking the
+		// retry ladder (#5644).
+		if provider.IsAuthRejected(err) {
 			return worker.Permanent(err)
 		}
 		return err

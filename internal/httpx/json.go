@@ -52,6 +52,18 @@ func WriteError(w http.ResponseWriter, err error) {
 			w.Header().Add(name, v)
 		}
 	}
+	// Every 503 advertises a retry delay, which the reference pairs with the
+	// status without exception: its `_store_unavailable` builds the 503 and the
+	// `Retry-After` together (api/http.py:367-371), its app-level handler for a
+	// store that shed the write does the same (api/http.py:5801-5806), and the
+	// admission shed carries one too (api/http.py:5712-5717). A site here that
+	// chooses its own value sets it above and keeps it; one that does not —
+	// the storage-error mappers, which have no handler state to read a
+	// configured value from — gets the reference's default rather than a 503
+	// with no hint at all.
+	if httpErr.Status == KindUnavailable && w.Header().Get(HeaderRetryAfter) == "" {
+		w.Header().Set(HeaderRetryAfter, strconv.Itoa(RetryAfterSeconds))
+	}
 	if httpErr.Plain {
 		// The reference's unhandled-exception fallback: the ASGI server answers the
 		// reason phrase as text, not through the API's error envelope.

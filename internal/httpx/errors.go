@@ -18,6 +18,12 @@ const (
 	HeaderRetryAfter    = "Retry-After"
 )
 
+// RetryAfterSeconds is the delay a 503 advertises when the site did not choose
+// one of its own: the reference's `StoreWriteUnavailable.retry_after`
+// (engine/memories/base.py:85), the value its app-level handler falls back to
+// when the exception carries none (api/http.py:5805).
+const RetryAfterSeconds = 30
+
 // ValidationError describes one rejected request field. It follows the
 // framework's standard structured error-item list shape: the same keys the
 // reference emits under "detail" for a request validation failure.

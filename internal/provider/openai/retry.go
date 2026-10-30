@@ -75,13 +75,10 @@ func (c *Client) attempt(ctx context.Context, path string, body []byte, headers 
 }
 
 // shouldRetry reports whether an error is worth another attempt. A
-// content-policy refusal and a missing credential are permanent, so they are
-// raised without transport retry.
+// content-policy refusal, a rejected credential and an unaddressable provider
+// are permanent, so they are raised without transport retry.
 func shouldRetry(err error) bool {
-	if provider.IsContentPolicy(err) || provider.IsMissingCredential(err) {
-		return false
-	}
-	if provider.IsNotAvailable(err) || provider.IsInvalidProvider(err) {
+	if provider.IsPermanent(err) {
 		return false
 	}
 	return provider.IsTransient(err) || provider.IsRateLimitReset(err) ||

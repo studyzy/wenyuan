@@ -19,6 +19,11 @@ var (
 	// ErrContentPolicy reports a deterministic refusal: the same input earns
 	// the same refusal, so it is never retried.
 	ErrContentPolicy = errors.New("the provider refused the request on content-policy grounds")
+	// ErrAuthRejected reports that the provider rejected the request's
+	// credentials (HTTP 401/403). A rejection is a property of the configured
+	// key, not of the moment or the content: every replay sends the same key
+	// and earns the same rejection (issue #5644), so it is never retried.
+	ErrAuthRejected = errors.New("the provider rejected the request's credentials")
 	// ErrRateLimitReset reports a rate limit with a known reset time.
 	ErrRateLimitReset = errors.New("the provider rate limit was reached")
 	// ErrOutputTooLong reports that a generation hit its own output token
@@ -96,6 +101,31 @@ func (e *ContentPolicyError) Error() string {
 
 // Unwrap exposes the sentinel so errors.Is works for the whole class.
 func (e *ContentPolicyError) Unwrap() error { return ErrContentPolicy }
+
+// AuthError reports a credential rejection the provider answered with 401 or
+// 403. It names the provider whose key was rejected so the failure reads as a
+// deployment problem rather than a bad request, and it is distinct from the
+// missing-credential class: nothing is unconfigured here, the key that was
+// sent is wrong.
+type AuthError struct {
+	// Provider is the provider whose credential was rejected.
+	Provider string
+	// ConfigKey is the key holding the credential to correct.
+	ConfigKey string
+	// Reason is the provider-supplied explanation, when it gave one.
+	Reason string
+}
+
+func (e *AuthError) Error() string {
+	message := fmt.Sprintf("%s: provider %q rejected %s", ErrAuthRejected, e.Provider, e.ConfigKey)
+	if e.Reason != "" {
+		return message + ": " + e.Reason
+	}
+	return message
+}
+
+// Unwrap exposes the sentinel so errors.Is works for the whole class.
+func (e *AuthError) Unwrap() error { return ErrAuthRejected }
 
 // RateLimitResetError carries the moment the provider says capacity returns.
 type RateLimitResetError struct {
@@ -182,6 +212,20 @@ func IsTransient(err error) bool {
 
 // IsContentPolicy reports whether an error is a permanent content refusal.
 func IsContentPolicy(err error) bool { return errors.Is(err, ErrContentPolicy) }
+
+// IsAuthRejected reports whether an error is a permanent credential rejection.
+// Like the content-policy class it is a function of the deployment's
+// configuration rather than of the moment, so a caller must fail the operation
+// on first sight instead of replaying it through the retry budget (#5644).
+func IsAuthRejected(err error) bool { return errors.Is(err, ErrAuthRejected) }
+
+// IsPermanent reports whether an error can never succeed on replay, so the
+// retry budget must not be spent on it: a content refusal, a rejected
+// credential, or a provider the boundary cannot address at all.
+func IsPermanent(err error) bool {
+	return IsContentPolicy(err) || IsAuthRejected(err) ||
+		IsMissingCredential(err) || IsInvalidProvider(err)
+}
 
 // IsRateLimitReset reports whether an error carries a known rate-limit reset.
 func IsRateLimitReset(err error) bool {

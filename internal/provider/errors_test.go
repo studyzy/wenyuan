@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,5 +180,56 @@ func TestConcurrencyComposition(t *testing.T) {
 				t.Fatalf("effective = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A rejected credential is a permanent failure: the same key is sent on every
+// replay, so nothing can change between attempts (#5644). It is its own class,
+// distinct from the not-yet-configured missing-credential state: an operator
+// reading it must know the key was rejected, not that one is absent.
+func TestAuthRejectionIsPermanentAndDistinct(t *testing.T) {
+	err := &AuthError{Provider: "openai", ConfigKey: "WENYUAN_API_LLM_API_KEY", Reason: "invalid api key"}
+	if !IsAuthRejected(err) {
+		t.Fatal("an AuthError must report the auth-rejected class")
+	}
+	if !IsPermanent(err) {
+		t.Fatal("a rejected credential must be permanent, so the worker fails the operation once")
+	}
+	if IsMissingCredential(err) {
+		t.Fatal("a rejected key is not a missing key: the two must not be confused")
+	}
+	if IsTransient(err) || IsContentPolicy(err) || IsRateLimitReset(err) {
+		t.Fatal("a rejected credential belongs to no other retryable or permanent class")
+	}
+	if !strings.Contains(err.Error(), "invalid api key") {
+		t.Fatalf("the provider's reason must reach the operator: %q", err.Error())
+	}
+}
+
+// The permanent set is exactly the configuration-level outcomes plus the two
+// deterministic provider refusals, so a transport fault can never be swept into
+// it by accident.
+func TestIsPermanentCoversOnlyDeterministicClasses(t *testing.T) {
+	permanent := []error{
+		&AuthError{Provider: "p", ConfigKey: "k"},
+		&ContentPolicyError{Reason: "refused"},
+		&MissingCredentialError{Provider: "p", ConfigKey: "k"},
+		&InvalidProviderError{Name: "nope"},
+	}
+	for _, err := range permanent {
+		if !IsPermanent(err) {
+			t.Fatalf("%T must be permanent", err)
+		}
+	}
+	retryable := []error{
+		&TransientError{Cause: errors.New("connection reset")},
+		&RateLimitResetError{},
+		&MalformedResponseError{Detail: "bad body"},
+		errors.New("something else"),
+	}
+	for _, err := range retryable {
+		if IsPermanent(err) {
+			t.Fatalf("%T must not be permanent", err)
+		}
 	}
 }

@@ -103,15 +103,22 @@ func TestContentPolicyRaisedWithoutRetry(t *testing.T) {
 	}
 }
 
-// A 401 is classified as a missing credential, not retried.
-func TestUnauthorizedClassifiedAsMissingCredential(t *testing.T) {
-	c, doer := testClient(doubleResponse{status: http.StatusUnauthorized, body: `{"error":{"message":"no key"}}`})
-	_, err := c.Complete(context.Background(), provider.CompletionRequest{})
-	if !provider.IsMissingCredential(err) {
-		t.Fatalf("error is %T, want missing-credential", err)
-	}
-	if doer.calls != 1 {
-		t.Fatalf("401 should not be retried, made %d attempts", doer.calls)
+// A 401/403 is classified as a rejected credential and not retried. It is a
+// permanent failure — the same key is sent on every replay — so the operation
+// fails once rather than spending the retry budget (#5644).
+func TestUnauthorizedClassifiedAsAuthRejected(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		c, doer := testClient(doubleResponse{status: status, body: `{"error":{"message":"no key"}}`})
+		_, err := c.Complete(context.Background(), provider.CompletionRequest{})
+		if !provider.IsAuthRejected(err) {
+			t.Fatalf("status %d: error is %T, want auth-rejected", status, err)
+		}
+		if !provider.IsPermanent(err) {
+			t.Fatalf("status %d: error is %T, want permanent", status, err)
+		}
+		if doer.calls != 1 {
+			t.Fatalf("status %d should not be retried, made %d attempts", status, doer.calls)
+		}
 	}
 }
 

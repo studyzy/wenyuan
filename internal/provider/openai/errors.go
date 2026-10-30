@@ -50,7 +50,11 @@ func classifyResponse(status int, header http.Header, body []byte, now time.Time
 	case isContentPolicy(status, detail):
 		return &provider.ContentPolicyError{Reason: detail}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return &provider.MissingCredentialError{Provider: NameOpenAI, ConfigKey: provider.ConfigKeyAPIKey}
+		// A rejected key is a property of the deployment's configuration, not
+		// of the request: every replay sends the same key and earns the same
+		// rejection, so it is a permanent failure rather than the
+		// not-yet-configured state MissingCredentialError describes (#5644).
+		return &provider.AuthError{Provider: NameOpenAI, ConfigKey: provider.ConfigKeyAPIKey, Reason: detail}
 	case status >= 500 || status == http.StatusRequestEntityTooLarge:
 		return &provider.TransientError{Cause: malformedResponse(status, detail)}
 	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity || status == http.StatusNotFound:

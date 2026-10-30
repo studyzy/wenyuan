@@ -110,3 +110,61 @@ func TestWriteJSONKeepsNullsInHandler(t *testing.T) {
 		t.Fatalf("metadata must stay on the wire: %s", rec.Body.String())
 	}
 }
+
+// A 503 that names no delay of its own still advertises one: the reference
+// never serves the status without the header (api/http.py:367-371, :5801-5806),
+// and the storage-error mappers that build most of this service's 503s have no
+// configured value to reach for. The default is the reference's
+// `StoreWriteUnavailable.retry_after`.
+func TestWriteErrorGivesEvery503ARetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteError(rec, NewHTTPError(KindUnavailable, DetailWritesDown))
+	if rec.Code != KindUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get(HeaderRetryAfter); got != "30" {
+		t.Fatalf("Retry-After = %q, want the reference's default 30", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, the header must not disturb the envelope", got)
+	}
+}
+
+// A site that chose its own delay keeps it: the default only fills a gap.
+func TestWriteErrorKeepsAnExplicitRetryAfter(t *testing.T) {
+	for _, value := range []string{"5", "0", "120"} {
+		rec := httptest.NewRecorder()
+		err := NewHTTPError(KindUnavailable, DetailWritesDown).WithHeader(HeaderRetryAfter, value)
+		WriteError(rec, err)
+		if got := rec.Header().Get(HeaderRetryAfter); got != value {
+			t.Fatalf("Retry-After = %q, want the site's own %q", got, value)
+		}
+	}
+}
+
+// The pairing is a property of the 503, not of the 503-capable routes: no other
+// status gains the header, so a client cannot be told to retry a 400 or a 500.
+func TestWriteErrorDoesNotAddRetryAfterToOtherStatuses(t *testing.T) {
+	for _, status := range []int{KindBadRequest, KindForbidden, KindNotFound, KindConflict,
+		KindUnprocessable, KindInternal, KindTimeout, KindClientClosed} {
+		rec := httptest.NewRecorder()
+		WriteError(rec, NewHTTPError(status, "detail"))
+		if got := rec.Header().Get(HeaderRetryAfter); got != "" {
+			t.Fatalf("status %d carried Retry-After %q", status, got)
+		}
+	}
+}
+
+// WriteErrorFor is the path every handler actually takes; the naming wrapper it
+// applies must not drop the header.
+func TestWriteErrorForGives503ARetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1/documents", nil)
+	WriteErrorFor(rec, req, NewHTTPError(KindUnavailable, DetailWritesDown))
+	if rec.Code != KindUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get(HeaderRetryAfter); got != "30" {
+		t.Fatalf("Retry-After = %q", got)
+	}
+}

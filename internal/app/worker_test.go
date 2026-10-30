@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -323,5 +325,42 @@ func TestEnqueueWebhookEvent(t *testing.T) {
 	}
 	if deliveries != 1 {
 		t.Fatalf("queued %d deliveries, want only the subscribed webhook", deliveries)
+	}
+}
+
+// A provider that rejects the configured credential (401/403) fails the
+// operation once instead of walking the retry ladder: every replay would send
+// the same key and earn the same rejection, so the budget can buy nothing
+// (#5644). Asserted on the classification the consumer acts on, because that is
+// what decides one attempt versus a full schedule.
+func TestRetainAuthRejectionFailsOnce(t *testing.T) {
+	cause := &provider.AuthError{
+		Provider: "openai", ConfigKey: "WENYUAN_API_LLM_API_KEY", Reason: "Incorrect API key provided",
+	}
+	// The extractor wraps the provider's error on its way out, so the class has
+	// to survive the wrap exactly as it does in the pipeline.
+	wrapped := fmt.Errorf("fact extraction call failed: %w", cause)
+	err := classifyRetainFailure(wrapped)
+	if err == nil || !worker.IsPermanent(err) {
+		t.Fatalf("classifyRetainFailure(%v) = %v, want a permanent failure", cause, err)
+	}
+	// The cause stays reachable, so the operation's error message names the
+	// rejected key rather than only the wrap.
+	if !provider.IsAuthRejected(err) {
+		t.Fatalf("the classification must preserve the auth-rejected cause: %v", err)
+	}
+}
+
+// The ordinary failures keep their existing classification: a transient model
+// fault is still retried, so this change does not turn every provider error
+// permanent.
+func TestRetainTransientFailureStillRetries(t *testing.T) {
+	cause := &provider.TransientError{Cause: errors.New("connection reset by peer")}
+	err := classifyRetainFailure(fmt.Errorf("fact extraction call failed: %w", cause))
+	if err == nil {
+		t.Fatal("a failed retain must return its error")
+	}
+	if worker.IsPermanent(err) {
+		t.Fatalf("a transient provider fault must stay retryable, got permanent: %v", err)
 	}
 }

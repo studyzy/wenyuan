@@ -70,7 +70,14 @@ func classifyResponse(status int, body []byte) error {
 	case status == http.StatusTooManyRequests:
 		return &provider.RateLimitResetError{WithinBackoff: true}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return &provider.MissingCredentialError{Provider: NameAnthropic, ConfigKey: provider.ConfigKeyAPIKey}
+		// A rejected key is a property of the deployment's configuration, not
+		// of the request: every replay sends the same key and earns the same
+		// rejection, so it is a permanent failure rather than the
+		// not-yet-configured state MissingCredentialError describes (#5644).
+		// The status outranks the body on purpose: the reference re-raises the
+		// SDK error and classifies it by its HTTP status, so a 403 that also
+		// reads as a safety refusal is still an auth rejection.
+		return &provider.AuthError{Provider: NameAnthropic, ConfigKey: provider.ConfigKeyAPIKey, Reason: detail}
 	case isContentRefusal(detail):
 		return &provider.ContentPolicyError{Reason: detail}
 	case status >= 500:
@@ -133,8 +140,7 @@ func isContentRefusal(detail string) bool {
 
 // shouldRetry reports whether an error is worth another attempt.
 func shouldRetry(err error) bool {
-	if provider.IsContentPolicy(err) || provider.IsMissingCredential(err) ||
-		provider.IsNotAvailable(err) || provider.IsInvalidProvider(err) {
+	if provider.IsPermanent(err) {
 		return false
 	}
 	var permanent *permanentError

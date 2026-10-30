@@ -311,18 +311,27 @@ func TestTextAndUsageMapping(t *testing.T) {
 	}
 }
 
-// A missing credential is reported as such rather than retried.
-func TestUnauthorizedIsMissingCredential(t *testing.T) {
-	c, doer := testClient(`{"error":{"type":"authentication_error","message":"invalid key"}}`)
-	doer.status = http.StatusUnauthorized
-	_, err := c.Complete(context.Background(), provider.CompletionRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
-	})
-	if !provider.IsMissingCredential(err) {
-		t.Fatalf("err = %v, want a missing-credential error", err)
-	}
-	if doer.calls != 1 {
-		t.Fatalf("calls = %d, want no retry on a credential failure", doer.calls)
+// A rejected credential (401/403) is a permanent auth failure — not the
+// not-yet-configured state a missing credential reports — and it is not
+// retried. The reference classifies it by HTTP status so the worker fails the
+// operation once instead of replaying the same key through the retry budget
+// (#5644).
+func TestUnauthorizedIsAuthRejected(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		c, doer := testClient(`{"error":{"type":"authentication_error","message":"invalid key"}}`)
+		doer.status = status
+		_, err := c.Complete(context.Background(), provider.CompletionRequest{
+			Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		})
+		if !provider.IsAuthRejected(err) {
+			t.Fatalf("status %d: err = %v, want an auth-rejected error", status, err)
+		}
+		if !provider.IsPermanent(err) {
+			t.Fatalf("status %d: err = %v, want a permanent error", status, err)
+		}
+		if doer.calls != 1 {
+			t.Fatalf("status %d: calls = %d, want no retry on a credential failure", status, doer.calls)
+		}
 	}
 }
 

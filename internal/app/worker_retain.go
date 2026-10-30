@@ -113,6 +113,13 @@ func (p archiveProcessor) notifyRetainCompleted(ctx context.Context, op storage.
 // cannot.
 func classifyRetainFailure(err error) error {
 	switch {
+	case provider.IsAuthRejected(err):
+		// The provider rejected the configured credential (401/403). Every
+		// replay sends the same key and earns the same rejection, so the
+		// operation fails once instead of spending the retry budget — and the
+		// wall-clock a full schedule costs — on an answer that cannot change
+		// (#5644).
+		return worker.Permanent(err)
 	case errors.Is(err, storage.ErrDocumentConflict):
 		// An append that lost its race wrote nothing, so "the document moved,
 		// read it again" is a retry rather than a verdict on the content. It is
