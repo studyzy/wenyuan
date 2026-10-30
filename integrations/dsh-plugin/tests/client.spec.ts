@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { textsFromRecall, WenYuanClient } from '../src/client.ts'
-import { bankUrl, DEFAULT_BANK_ID, normalizeApiUrl, normalizeBankId } from '../src/settings.ts'
+import { bankUrl, DEFAULT_TENANT_NAME, normalizeApiUrl, normalizeTenantName } from '../src/settings.ts'
 
 /**
  * The WenYuan HTTP client: the reference's routes, and the fail-open rule.
@@ -33,13 +33,13 @@ describe('the bank-scoped route prefix', () => {
     )
   })
 
-  it('normalizes a URL and a blank bank back to their defaults', () => {
+  it('normalizes a URL and a blank tenant back to their defaults', () => {
     expect(normalizeApiUrl('  http://h:1///  ')).toBe('http://h:1')
     expect(normalizeApiUrl(undefined)).toBe('http://127.0.0.1:18888')
-    // A blank bank is the per-session derivation sentinel, not a fixed bank;
-    // `resolveBankId` turns it into `coding-agent::<repo>`.
-    expect(normalizeBankId('  ')).toBe(DEFAULT_BANK_ID)
-    expect(normalizeBankId(' mine ')).toBe('mine')
+    // A blank tenant keeps the historical prefix; `resolveBankId` turns it
+    // into `coding-agent::<repo>`.
+    expect(normalizeTenantName('  ')).toBe(DEFAULT_TENANT_NAME)
+    expect(normalizeTenantName(' mine ')).toBe('mine')
   })
 
   it('drops an API prefix the user pasted, so the route is not doubled', () => {
@@ -77,7 +77,7 @@ describe('recall', () => {
   it('resolves an error status to an outcome instead of throwing', async () => {
     const { impl } = stubFetch(() => new Response('boom', { status: 500 }))
     const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
-    await expect(client.recall('q')).resolves.toEqual({ ok: false, reason: 'HTTP 500' })
+    await expect(client.recall('q')).resolves.toEqual({ ok: false, reason: "HTTP 500 for bank 'default'" })
   })
 
   it('resolves a transport failure to an outcome instead of throwing', async () => {
@@ -126,7 +126,7 @@ describe('retain', () => {
   it('reports a refused write instead of throwing', async () => {
     const { impl } = stubFetch(() => new Response('nope', { status: 401 }))
     const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
-    await expect(client.retain([{ content: 'x', document_id: 'd' }])).resolves.toEqual({ ok: false, reason: 'HTTP 401' })
+    await expect(client.retain([{ content: 'x', document_id: 'd' }])).resolves.toEqual({ ok: false, reason: "HTTP 401 for bank 'default'" })
   })
 })
 describe('the knowledge-base reads', () => {
@@ -173,7 +173,7 @@ describe('the knowledge-base reads', () => {
   it('reports a refused read instead of throwing', async () => {
     const { impl } = stubFetch(() => new Response('nope', { status: 404 }))
     const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
-    await expect(client.readKnowledgePage('missing')).resolves.toEqual({ ok: false, reason: 'HTTP 404' })
+    await expect(client.readKnowledgePage('missing')).resolves.toEqual({ ok: false, reason: "HTTP 404 for bank 'default'" })
   })
 })
 
@@ -190,7 +190,7 @@ describe('reflect, diagnose, and sync status', () => {
   it('reports a refused reflect instead of throwing', async () => {
     const { impl } = stubFetch(() => new Response('nope', { status: 504 }))
     const client = new WenYuanClient({ connection: CONNECTION, timeoutMs: 1000, fetchImpl: impl })
-    await expect(client.reflect('why')).resolves.toEqual({ ok: false, reason: 'HTTP 504' })
+    await expect(client.reflect('why')).resolves.toEqual({ ok: false, reason: "HTTP 504 for bank 'default'" })
   })
 
   it('reads the counter sheet, keeping the counters it needs', async () => {

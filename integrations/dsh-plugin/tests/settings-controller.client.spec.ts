@@ -91,14 +91,14 @@ function makeCard(scope: ReturnType<typeof makeScope>, remote: ReturnType<typeof
 
 describe('the card\'s field projection', () => {
   it('shows the effective value and whether the user layer overrides it', () => {
-    const scope = makeScope({ value: { apiUrl: 'http://base:1', bankId: 'mine' }, user: { bankId: 'mine' } })
+    const scope = makeScope({ value: { apiUrl: 'http://base:1', tenantName: 'studyzy' }, user: { tenantName: 'studyzy' } })
     const card = makeCard(scope, makeRemote())
     const face = card.inject()
     const state = face.hooks.wenYuanMemoryCard.getSnapshot()
     expect(state.apiUrl.text).toBe('http://base:1')
     expect(state.apiUrl.overridden).toBe(false)
-    expect(state.bankId.text).toBe('mine')
-    expect(state.bankId.overridden).toBe(true)
+    expect(state.tenantName.text).toBe('studyzy')
+    expect(state.tenantName.overridden).toBe(true)
     expect(state.available).toBe(true)
     card.dispose()
   })
@@ -123,12 +123,12 @@ describe('saving the card', () => {
     const card = makeCard(scope, makeRemote())
     const face = card.inject()
     face.edit('apiUrl', 'http://wenyuan.example:18888')
-    face.edit('bankId', 'team')
+    face.edit('tenantName', 'studyzy')
     face.save()
     await vi.waitFor(() => { expect(scope.writes).toHaveLength(1) })
     expect(scope.writes[0]).toEqual([
       { op: 'set', path: ['apiUrl'], value: 'http://wenyuan.example:18888' },
-      { op: 'set', path: ['bankId'], value: 'team' },
+      { op: 'set', path: ['tenantName'], value: 'studyzy' },
     ])
     card.dispose()
   })

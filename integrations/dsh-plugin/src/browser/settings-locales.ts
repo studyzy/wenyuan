@@ -9,8 +9,8 @@ export type WenYuanMemoryLocaleKey =
   | 'description'
   | 'apiUrl'
   | 'apiUrlHint'
-  | 'bankId'
-  | 'bankIdHint'
+  | 'tenantName'
+  | 'tenantNameHint'
   | 'apiKey'
   | 'apiKeyHint'
   | 'apiKeySet'
@@ -40,11 +40,11 @@ export const en: Record<WenYuanMemoryLocaleKey, string> = {
   description: 'Long-term project memory served by a WenYuan server',
   apiUrl: 'Server URL',
   apiUrlHint: 'Base URL of the WenYuan service, for example http://127.0.0.1:18888.',
-  bankId: 'Memory bank',
-  bankIdHint:
-    'Leave blank (or set auto) to derive the bank from the current project: coding-agent::<repo>, '
-    + 'taken from the working directory\'s git remote, or its directory name when there is no git remote. '
-    + 'A session with no working directory uses coding-agent::workspace. Type a name to share one bank across projects.',
+  tenantName: 'Tenant name',
+  tenantNameHint:
+    'Your user name on the memory server. Memory is stored as <tenant>::<project>: the project is '
+    + 'taken from the working directory\'s git remote, or its directory name when there is no git remote '
+    + '(workspace when the session has no working directory). Leave blank to keep coding-agent.',
   apiKey: 'API key',
   apiKeyHint: 'Stored as WENYUAN_API_KEY. Leave blank to keep the current key.',
   apiKeySet: 'A key is configured.',
@@ -69,11 +69,10 @@ export const zh: Record<WenYuanMemoryLocaleKey, string> = {
   description: '由文渊服务提供的长期项目记忆',
   apiUrl: '服务地址',
   apiUrlHint: '文渊服务的基础地址，例如 http://127.0.0.1:18888。',
-  bankId: '记忆库',
-  bankIdHint:
-    '留空（或填 auto）= 按当前项目自动推导（coding-agent::<repo>）：取工作目录 git remote 的仓库名，'
-    + '没有 remote 就用目录名；无工作目录时回退 coding-agent::workspace。'
-    + '填具体名字则所有项目共用一个记忆库。',
+  tenantName: '用户名（租户名）',
+  tenantNameHint:
+    '你在记忆服务上的用户名，记忆库按 <用户名>::<项目> 生成：项目取工作目录 git remote 的仓库名，'
+    + '没有 remote 就用目录名，无工作目录时用 workspace。留空则沿用 coding-agent。',
   apiKey: 'API Key',
   apiKeyHint: '保存为 WENYUAN_API_KEY；留空则保留当前 Key。',
   apiKeySet: '已配置 Key。',

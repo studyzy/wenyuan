@@ -41,11 +41,11 @@ import { contextBlock, RECALL_BLOCK_TAG } from './context-blocks.ts'
 import type { WenYuanMemorySource } from './source.ts'
 import {
   DEFAULT_API_URL,
-  DEFAULT_BANK_ID,
   DEFAULT_INJECT_CONTEXT,
   DEFAULT_RETAIN_ON_STOP,
+  DEFAULT_TENANT_NAME,
   normalizeApiUrl,
-  normalizeBankId,
+  normalizeTenantName,
   resolveBankId,
   type WenYuanMemorySettings,
 } from './settings.ts'
@@ -105,7 +105,7 @@ const SESSION_START_QUERY = 'What should I know about this project and the user 
  */
 export const Config = z.object({
   apiUrl: z.string().default(DEFAULT_API_URL).volatile(),
-  bankId: z.string().default(DEFAULT_BANK_ID).volatile(),
+  tenantName: z.string().default(DEFAULT_TENANT_NAME).volatile(),
   injectContext: z.boolean().default(true).volatile(),
   retainOnStop: z.boolean().default(true).volatile(),
 }) as unknown as z<WenYuanMemorySettings>
@@ -113,7 +113,7 @@ export const Config = z.object({
 /** What the Host reads at runtime: the plain values, never the volatile wrappers. */
 interface ResolvedSettings {
   apiUrl: string
-  bankId: string
+  tenantName: string
   injectContext: boolean
   retainOnStop: boolean
 }
@@ -142,7 +142,7 @@ function unwrap<T>(value: T | { get(): T } | undefined): T | undefined {
 export function resolveSettings(config: WenYuanMemorySettings): ResolvedSettings {
   return {
     apiUrl: normalizeApiUrl(unwrap<string>(config.apiUrl)),
-    bankId: normalizeBankId(unwrap<string>(config.bankId)),
+    tenantName: normalizeTenantName(unwrap<string>(config.tenantName)),
     injectContext: unwrap<boolean>(config.injectContext) ?? DEFAULT_INJECT_CONTEXT,
     retainOnStop: unwrap<boolean>(config.retainOnStop) ?? DEFAULT_RETAIN_ON_STOP,
   }
@@ -192,7 +192,7 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
    */
   const bankIdFor = async (agent: Agent | undefined): Promise<string> => {
     const cwd = sessionCwd(agent)
-    return resolveBankId(resolved.bankId, { cwd, repo: await gitRepoAt(cwd) })
+    return resolveBankId(resolved.tenantName, { cwd, repo: await gitRepoAt(cwd) })
   }
 
   /**
@@ -202,14 +202,14 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
    * @param signal - cancellation for the credential read.
    * @param timeoutMs - the per-request deadline; the lifecycle recall uses the
    *   interactive one, and a tool call passes {@link TOOL_TIMEOUT_MS}.
-   * @param bankId - the bank this call addresses, when the caller already
-   *   resolved it; omitted, the configured setting is used as-is.
+   * @param bankId - the bank this call addresses, resolved from the tenant and
+   *   the session's project.
    * @returns the client, or null when memory should not run.
    */
-  const clientNow = async (signal?: AbortSignal, timeoutMs = RECALL_TIMEOUT_MS, bankId?: string): Promise<WenYuanClient | null> => {
+  const clientNow = async (signal: AbortSignal | undefined, timeoutMs: number, bankId: string): Promise<WenYuanClient | null> => {
     const apiKey = await resolveApiKey(ctx, signal)
     return new WenYuanClient({
-      connection: { apiUrl: resolved.apiUrl, bankId: bankId ?? resolved.bankId, ...apiKey === undefined ? {} : { apiKey } },
+      connection: { apiUrl: resolved.apiUrl, bankId, ...apiKey === undefined ? {} : { apiKey } },
       timeoutMs,
     })
   }

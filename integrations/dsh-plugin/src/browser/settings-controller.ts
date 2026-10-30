@@ -1,7 +1,7 @@
 /**
  * The staged form behind the WenYuan memory card.
  *
- * The card edits three settings fields through the shared `SettingsFormModel`,
+ * The card edits the four settings fields through the shared `SettingsFormModel`,
  * which stages what the user types and writes only on save. The API key is the
  * one control outside the section: a secret literal must never ride a settings
  * response, so the card writes it through the credentials domain (which answers
@@ -23,7 +23,7 @@ import {
   type SettingsFormScope,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  API_KEY_REF, DEFAULT_BANK_ID, DEFAULT_API_URL, WENYUAN_MEMORY_NS,
+  API_KEY_REF, DEFAULT_API_URL, DEFAULT_TENANT_NAME, WENYUAN_MEMORY_NS,
   type WenYuanMemorySettings,
 } from '../settings.ts'
 
@@ -33,7 +33,7 @@ export { WENYUAN_MEMORY_NS }
 const API_KEY_FIELD = 'apiKey'
 
 /** The section fields this card edits, in render order. */
-const SECTION_FIELDS: readonly string[] = ['apiUrl', 'bankId', 'injectContext', 'retainOnStop']
+const SECTION_FIELDS: readonly string[] = ['apiUrl', 'tenantName', 'injectContext', 'retainOnStop']
 
 /** What the credentials domain last reported. */
 interface CredentialState {
@@ -47,8 +47,8 @@ interface CredentialState {
 export interface WenYuanMemoryCardState extends SettingsFormShell {
   /** Base URL field. */
   apiUrl: SettingsFieldState
-  /** Memory bank field. */
-  bankId: SettingsFieldState
+  /** Tenant (user) name field. */
+  tenantName: SettingsFieldState
   /** Attach-memory switch. */
   injectContext: SettingsFieldState
   /** Write-back switch. */
@@ -121,7 +121,7 @@ export class WenYuanMemoryCardController {
   ) {
     this.form = new SettingsFormModel<WenYuanMemorySettings>(scope, [
       settingsUrlField('apiUrl'),
-      settingsTextField('bankId'),
+      settingsTextField('tenantName'),
       settingsSwitchField('injectContext'),
       settingsSwitchField('retainOnStop'),
     ], [{ field: API_KEY_FIELD, write: (text) => this.writeKey(text) }])
@@ -169,7 +169,7 @@ export class WenYuanMemoryCardController {
       ...shell,
       invalid: shell.invalid || urlInvalid,
       apiUrl: { ...apiUrl, invalid: urlInvalid },
-      bankId: this.form.field('bankId'),
+      tenantName: this.form.field('tenantName'),
       injectContext: this.form.field('injectContext'),
       retainOnStop: this.form.field('retainOnStop'),
       apiKey: { text: this.form.field(API_KEY_FIELD).text, overridden: false, invalid: false },
@@ -281,9 +281,9 @@ export class WenYuanMemoryCardController {
   /** The fields this card edits, for a verification script or a test. */
   static readonly sectionFields = SECTION_FIELDS
   /**
-   * The built-in defaults the card's controls revert to. `bankId` is the `auto`
-   * sentinel, so a reset — and an emptied control, which writes a clear — reads
-   * as "derive the bank from this project" rather than a named bank.
+   * The built-in defaults the card's controls revert to. `tenantName` is
+   * `coding-agent`, so a reset — and an emptied control, which writes a clear —
+   * keeps the `coding-agent::<project>` ids an install already uses.
    */
-  static readonly defaults = { apiUrl: DEFAULT_API_URL, bankId: DEFAULT_BANK_ID }
+  static readonly defaults = { apiUrl: DEFAULT_API_URL, tenantName: DEFAULT_TENANT_NAME }
 }

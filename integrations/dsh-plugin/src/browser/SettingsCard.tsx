@@ -1,6 +1,6 @@
 /**
- * The WenYuan memory card on the WebUI Plugins page: the server URL, the memory
- * bank, the API key, and the two behaviour switches, staged until save.
+ * The WenYuan memory card on the WebUI Plugins page: the server URL, the tenant
+ * (user) name, the API key, and the two behaviour switches, staged until save.
  *
  * The page renders the same component through **three** surfaces:
  *
@@ -80,16 +80,16 @@ function Configuration(props: SettingsCardProps) {
         onReset={() => { props.resetField('apiUrl') }}
       />
       <SettingsValueField
-        id="wenyuan-memory-bank-id"
-        label={t('bankId')}
-        hint={t('bankIdHint')}
+        id="wenyuan-memory-tenant-name"
+        label={t('tenantName')}
+        hint={t('tenantNameHint')}
         overriddenLabel={t('overridden')}
         resetLabel={t('reset')}
         invalidLabel={t('invalidUrl')}
         disabled={disabled}
-        {...state.bankId}
-        onEdit={(text) => { props.edit('bankId', text) }}
-        onReset={() => { props.resetField('bankId') }}
+        {...state.tenantName}
+        onEdit={(text) => { props.edit('tenantName', text) }}
+        onReset={() => { props.resetField('tenantName') }}
       />
       <SettingsSecretField
         id="wenyuan-memory-api-key"

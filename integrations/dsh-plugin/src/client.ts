@@ -346,7 +346,12 @@ export class WenYuanClient {
         ...body === undefined ? {} : { body: JSON.stringify(body) },
         signal: combined,
       })
-      if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` }
+      // The bank is part of the reason: a 404 is nearly always "this bank does
+      // not exist under the configured tenant", and the bare status left that
+      // indistinguishable from a route the service does not serve.
+      if (!response.ok) {
+        return { ok: false, reason: `HTTP ${response.status} for bank '${this.connection.bankId}'` }
+      }
       // An accepted write may answer with no body at all; that is still a
       // success, so a parse failure reads as an empty document.
       const text = await response.text()

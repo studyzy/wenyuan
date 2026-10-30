@@ -13,7 +13,7 @@ file to keep in step.
 | Half | Outlet | Role |
 | --- | --- | --- |
 | Host | `.` | Attaches recalled memory on `agent/created` and `agent/pre-step`, writes the session back on `agent/turn-stopping`, registers the eight `wenyuan_*` memory tools. |
-| Browser | `./client` | The configuration card: server URL, memory bank, API key, and the two behaviour switches. |
+| Browser | `./client` | The configuration card: server URL, tenant (user) name, API key, and the two behaviour switches. |
 
 ## What it does
 
@@ -81,7 +81,7 @@ page. Both surfaces edit the same form.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | Server URL | `http://127.0.0.1:18888` | WenYuan base URL, without the `/v1` prefix |
-| Memory bank | `default` | the bank this session reads and writes |
+| Tenant name | `coding-agent` | the user name bank ids are prefixed with: memory lives in `<tenant>::<project>`, where the project comes from the working directory's git remote (its directory name when there is none, `workspace` when there is no working directory) |
 | API key | — | written through the credentials domain as `WENYUAN_API_KEY`; never read back into the form |
 | Attach memory to prompts | on | the `agent/created` / `agent/pre-step` recall |
 | Write sessions back | on | the `agent/turn-stop` retain |

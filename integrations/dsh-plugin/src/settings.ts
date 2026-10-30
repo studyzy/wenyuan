@@ -25,31 +25,26 @@ export const WENYUAN_MEMORY_NS = 'dsh-wenyuan-memory'
 export const API_KEY_REF = 'WENYUAN_API_KEY'
 
 /**
- * The memory bank a session uses when the card names none.
+ * The tenant prefix a bank id carries when the card names no tenant.
  *
- * It is a *sentinel*, not a bank: one fixed bank is shared by every repository
- * the user opens, so memory learned in one project is recalled in another — and
- * a session working in a repo bank never sees what it wrote there. `auto` makes
- * the bank derived per session instead; see {@link resolveBankId}.
+ * A bank id is `<tenant>::<project>`: the tenant is the user name configured on
+ * the card, the project is derived per session. A card that names no tenant
+ * keeps the historical `coding-agent` prefix, so an existing install addresses
+ * the same banks it did before the field became a tenant name.
  */
-export const DEFAULT_BANK_ID = 'auto'
+export const DEFAULT_TENANT_NAME = 'coding-agent'
 
 /**
- * Spellings that asked for the derivation before it existed.
+ * Spellings the card may still hold from the bank-era field.
  *
- * `default` was this package's sentinel while the bank was one fixed name, and
- * a card that saved it holds that literal in its stored settings. It is read as
- * {@link DEFAULT_BANK_ID} so an install that never touched the field keeps
- * deriving instead of addressing a bank named `default`, which no deployment
- * provisions.
+ * `auto` and `default` named the derivation when this field was a bank id; a
+ * stored value of either one reads as "no tenant configured" instead of a
+ * tenant literally called `auto`.
  */
-const LEGACY_AUTO_BANK_IDS: readonly string[] = ['default']
+const UNCONFIGURED_TENANTS: readonly string[] = ['auto', 'default']
 
-/** The prefix every derived bank id carries, so derived banks group by kind. */
-export const BANK_PREFIX = 'coding-agent::'
-
-/** The derived repo a session with no working directory falls back to. */
-export const FALLBACK_BANK_REPO = 'workspace'
+/** The project a session with no working directory falls back to. */
+export const FALLBACK_PROJECT = 'workspace'
 
 /** Built-in defaults, kept together so a deployment can retarget them once. */
 export const DEFAULT_API_URL = 'http://127.0.0.1:18888'
@@ -60,8 +55,8 @@ export const DEFAULT_RETAIN_ON_STOP = true
 export interface WenYuanMemorySettings {
   /** WenYuan service base URL, without the `/v1` prefix. */
   apiUrl?: string
-  /** Memory bank this session reads from and writes to. */
-  bankId?: string
+  /** Tenant (user) name; the bank id is `<tenant>::<project>`. */
+  tenantName?: string
   /** Whether the session-start and pre-prompt hooks attach recalled memory. */
   injectContext?: boolean
   /** Whether a finished turn is written back to memory when the turn stops. */
@@ -72,6 +67,7 @@ export interface WenYuanMemorySettings {
 export interface WenYuanConnection {
   /** Base URL with any trailing slash removed. */
   apiUrl: string
+  /** The resolved bank id: `<tenant>::<project>`. */
   bankId: string
   /** The resolved API key, absent when none is configured. */
   apiKey?: string
@@ -105,25 +101,18 @@ export function normalizeApiUrl(value: string | undefined): string {
 }
 
 /**
- * Normalize one bank id: trim, and fall back to the sentinel when blank.
+ * Normalize one tenant name: trim, and fall back to the default tenant when
+ * blank. The legacy `auto` / `default` spellings are treated the same way, so
+ * a stored value from the bank-era field never becomes a tenant name.
  * @param value - the configured value, possibly blank.
- * @returns the usable bank id, `auto` when nothing usable was configured.
+ * @returns the usable tenant name.
  */
-export function normalizeBankId(value: string | undefined): string {
+export function normalizeTenantName(value: string | undefined): string {
   const trimmed = (value ?? '').trim()
-  return trimmed === '' ? DEFAULT_BANK_ID : trimmed
-}
-
-/**
- * Whether a configured bank id asks for the per-session derivation.
- * The comparison ignores case, so a card that saved `Auto` is not mistaken for
- * a bank literally named `Auto` while every other value stays verbatim.
- * @param value - a normalized bank id.
- * @returns true when the id is the {@link DEFAULT_BANK_ID} sentinel.
- */
-export function isAutoBankId(value: string): boolean {
-  const normalized = value.trim().toLowerCase()
-  return normalized === DEFAULT_BANK_ID || LEGACY_AUTO_BANK_IDS.includes(normalized)
+  if (trimmed === '' || UNCONFIGURED_TENANTS.includes(trimmed.toLowerCase())) {
+    return DEFAULT_TENANT_NAME
+  }
+  return trimmed
 }
 
 /**
@@ -152,39 +141,50 @@ export function parseGitRepo(remoteUrl: string | undefined): string | undefined 
 }
 
 /**
- * The bank id for one repository name.
+ * The project segment of a bank id, for one repository or directory name.
+ * @param name - a repository or directory name.
+ * @returns the name, or the workspace fallback when it is blank or unfit to be
+ *   a path segment.
+ */
+function bankProject(name: string | undefined): string {
+  const trimmed = (name ?? '').trim()
+  const usable = /^[A-Za-z0-9._-]+$/.test(trimmed) && trimmed !== '.' && trimmed !== '..'
+  return usable ? trimmed : FALLBACK_PROJECT
+}
+
+/**
+ * The bank id a session uses when the card names no tenant.
  * @param repo - a repository or directory name.
  * @returns `coding-agent::<repo>`, or the workspace fallback when the name is
  *   blank or unfit to be a path segment.
  */
 export function autoBankId(repo: string | undefined): string {
-  const name = (repo ?? '').trim()
-  const usable = /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..'
-  return `${BANK_PREFIX}${usable ? name : FALLBACK_BANK_REPO}`
+  return `${DEFAULT_TENANT_NAME}::${bankProject(repo)}`
 }
 
 /**
  * Resolve the bank a session reads from and writes to.
  *
- * An explicit bank id is used verbatim — a deployment that names a bank to share
- * across projects must keep working. Only the `auto` sentinel, a blank, or the
- * legacy `default` spelling derives: the repository name the Host read from the
- * working directory's git remote, then the directory's own name, then
- * {@link FALLBACK_BANK_REPO} when the session has no working directory at all.
- * @param configured - the normalized `bankId` setting.
+ * The card configures the tenant (user) name, never a bank: the bank is
+ * `<tenant>::<project>`, where the project comes from the repository name the
+ * Host read from the working directory's git remote, then the directory's own
+ * name, then {@link FALLBACK_PROJECT} when the session has no working directory
+ * at all. A blank tenant — or the legacy `auto` / `default` spellings — uses
+ * {@link DEFAULT_TENANT_NAME}, which is the `coding-agent::<project>` ids this
+ * package produced before the field became a tenant name.
+ * @param tenantName - the configured tenant name.
  * @param scope - what the session's place resolves to: its working directory,
  *   and the repository name read from it when one could be read.
  * @returns the bank id this session's requests address.
  */
 export function resolveBankId(
-  configured: string | undefined,
+  tenantName: string | undefined,
   scope: { cwd?: string | undefined; repo?: string | undefined } = {},
 ): string {
-  const value = normalizeBankId(configured)
-  if (!isAutoBankId(value)) return value
-  if (scope.repo !== undefined && scope.repo.trim() !== '') return autoBankId(scope.repo)
+  const tenant = normalizeTenantName(tenantName)
+  const repo = (scope.repo ?? '').trim()
+  if (repo !== '') return `${tenant}::${bankProject(repo)}`
   const cwd = (scope.cwd ?? '').trim()
-  if (cwd === '') return autoBankId(undefined)
   const base = cwd.split(/[\\/]+/).filter((segment) => segment !== '').at(-1)
-  return autoBankId(base)
+  return `${tenant}::${bankProject(base)}`
 }

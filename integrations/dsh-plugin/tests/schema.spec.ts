@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Config, resolveSettings } from '../src/index.ts'
-import { DEFAULT_API_URL, DEFAULT_BANK_ID } from '../src/settings.ts'
+import { DEFAULT_API_URL, DEFAULT_TENANT_NAME } from '../src/settings.ts'
 
 /**
  * The loader schema the Host's settings provider reads.
@@ -23,7 +23,7 @@ interface FieldMeta {
 }
 
 /** The fields the card edits, in the schema's own order. */
-const FIELDS = ['apiUrl', 'bankId', 'injectContext', 'retainOnStop']
+const FIELDS = ['apiUrl', 'tenantName', 'injectContext', 'retainOnStop']
 
 /** The schema's field nodes, read the way the provider reads them. */
 function fieldMeta(): Record<string, FieldMeta> {
@@ -54,14 +54,14 @@ describe('the loader schema', () => {
   it('accepts a write that carries only the field being edited', () => {
     // One layer per save is what the settings provider produces; a required
     // field is what turned that into a refused save.
-    expect(() => Config({ bankId: 'renamed' } as never)).not.toThrow()
+    expect(() => Config({ tenantName: 'renamed' } as never)).not.toThrow()
     expect(() => Config({} as never)).not.toThrow()
   })
 
   it('still gives a deployment that strips a field its documented default', () => {
     expect(resolveSettings({})).toEqual({
       apiUrl: DEFAULT_API_URL,
-      bankId: DEFAULT_BANK_ID,
+      tenantName: DEFAULT_TENANT_NAME,
       injectContext: true,
       retainOnStop: true,
     })

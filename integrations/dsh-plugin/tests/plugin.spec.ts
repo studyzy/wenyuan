@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_BANK_ID, DEFAULT_API_URL } from '../src/settings.ts'
+import { DEFAULT_API_URL, DEFAULT_TENANT_NAME } from '../src/settings.ts'
 import { resolveSettings, apply } from '../src/index.ts'
 
 /**
@@ -43,21 +43,21 @@ describe('settings resolution', () => {
   it('unwraps a volatile field to the plain value behind it', () => {
     const resolved = resolveSettings({
       apiUrl: { get: () => 'http://example:1' },
-      bankId: { get: () => 'mine' },
+      tenantName: { get: () => 'mine' },
       injectContext: { get: () => false },
       retainOnStop: { get: () => true },
     } as never)
     expect(resolved).toEqual({
-      apiUrl: 'http://example:1', bankId: 'mine', injectContext: false, retainOnStop: true,
+      apiUrl: 'http://example:1', tenantName: 'mine', injectContext: false, retainOnStop: true,
     })
   })
 
   it('falls back to the documented defaults for a blank or absent field', () => {
     expect(resolveSettings({})).toEqual({
-      apiUrl: DEFAULT_API_URL, bankId: DEFAULT_BANK_ID, injectContext: true, retainOnStop: true,
+      apiUrl: DEFAULT_API_URL, tenantName: DEFAULT_TENANT_NAME, injectContext: true, retainOnStop: true,
     })
-    expect(resolveSettings({ apiUrl: '   ', bankId: '' } as never)).toEqual({
-      apiUrl: DEFAULT_API_URL, bankId: DEFAULT_BANK_ID, injectContext: true, retainOnStop: true,
+    expect(resolveSettings({ apiUrl: '   ', tenantName: '' } as never)).toEqual({
+      apiUrl: DEFAULT_API_URL, tenantName: DEFAULT_TENANT_NAME, injectContext: true, retainOnStop: true,
     })
   })
 })
@@ -203,8 +203,8 @@ describe('the bank a call addresses', () => {
   }
 
   it('derives the bank from the calling session\'s working directory', async () => {
-    // `auto` is the default, so this is the path every session takes unless
-    // the card names a bank: the request must address the project's own bank.
+    // No tenant configured keeps the coding-agent prefix, so this is the path
+    // every session takes until the card names one.
     await withFetch({ results: [] }, async (urls) => {
       await toolNamed('wenyuan_search_knowledge_pages').execute(
         { query: 'anything' },
@@ -214,15 +214,15 @@ describe('the bank a call addresses', () => {
     })
   })
 
-  it('uses a bank the card names verbatim, whatever the working directory is', async () => {
+  it('uses the tenant the card names, with the project from the session', async () => {
     const { ctx, tools } = fakeContext()
-    apply(ctx as never, { bankId: 'team::shared' })
+    apply(ctx as never, { tenantName: 'team' })
     const tool = tools.find((candidate) => (candidate as { name: string }).name === 'wenyuan_search_knowledge_pages') as {
       execute(args: unknown, exec: unknown): Promise<unknown>
     }
     await withFetch({ results: [] }, async (urls) => {
       await tool.execute({ query: 'x' }, { signal: new AbortController().signal, agent: agentIn('/code/studyzy/pvz-shoot') })
-      expect(urls[0]).toContain('/banks/team%3A%3Ashared/')
+      expect(urls[0]).toContain('/banks/team%3A%3Apvz-shoot/')
     })
   })
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clearRepoCache, gitRepoAt, sessionCwd } from '../src/bank-scope.ts'
 import {
-  autoBankId, isAutoBankId, normalizeBankId, parseGitRepo, resolveBankId,
+  autoBankId, DEFAULT_TENANT_NAME, normalizeTenantName, parseGitRepo, resolveBankId,
 } from '../src/settings.ts'
 import { resolveSettings } from '../src/index.ts'
 
@@ -58,54 +58,50 @@ describe('autoBankId', () => {
 })
 
 describe('resolveBankId', () => {
-  it('uses a genuinely explicit bank verbatim', () => {
-    // A deployment that names a bank to share across projects must keep
-    // working — anything that is not a sentinel spelling is taken as written.
-    expect(resolveBankId('team::shared', { cwd: '/code/x/pvz-shoot' })).toBe('team::shared')
-    expect(resolveBankId(' mine ', {})).toBe('mine')
+  it('prefixes the project with the configured tenant (user) name', () => {
+    // The card names a tenant, not a bank: the bank is always <tenant>::<repo>.
+    expect(resolveBankId('studyzy', { cwd: '/code/x/pvz-shoot' })).toBe('studyzy::pvz-shoot')
+    expect(resolveBankId(' studyzy ', { repo: 'wenyuan' })).toBe('studyzy::wenyuan')
   })
 
-  it('derives for the legacy `default` spelling a stored card still holds', () => {
-    // `default` was the sentinel while the bank was one fixed name. A card that
-    // saved it keeps that literal in its stored settings, and no deployment
-    // provisions a bank called `default`, so reading it verbatim made every
-    // request a 404. It now derives like `auto` does.
-    expect(resolveBankId('default', { cwd: '/code/x/wenyuan', repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
-    expect(resolveBankId('Default', { cwd: '/code/x/pvz-shoot' })).toBe('coding-agent::pvz-shoot')
+  it('keeps the coding-agent prefix when no tenant is configured', () => {
+    // Before this field was a tenant name it held a bank id whose sentinels
+    // were `auto` and `default`; a card that still holds one of them must not
+    // turn it into a tenant literally named auto.
+    expect(resolveBankId('', { repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
+    expect(resolveBankId(undefined, { repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
+    expect(resolveBankId('auto', { repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
+    expect(resolveBankId('default', { repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
+    expect(resolveBankId('AUTO', { repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
     expect(resolveBankId('default')).toBe('coding-agent::workspace')
   })
 
-  it('derives from the repository of the working directory when asked to auto', () => {
-    expect(resolveBankId('auto', { cwd: '/code/wenyuan', repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
-    expect(resolveBankId('', { cwd: '/code/wenyuan', repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
-    expect(resolveBankId(undefined, { cwd: '/code/wenyuan', repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
-    expect(resolveBankId('AUTO', { cwd: '/code/wenyuan', repo: 'wenyuan' })).toBe('coding-agent::wenyuan')
-  })
-
   it('falls back to the working directory\'s own name without a remote', () => {
-    expect(resolveBankId('auto', { cwd: '/code/studyzy/pvz-shoot' })).toBe('coding-agent::pvz-shoot')
+    expect(resolveBankId('', { cwd: '/code/studyzy/pvz-shoot' })).toBe('coding-agent::pvz-shoot')
+    expect(resolveBankId('studyzy', { cwd: '/code/studyzy/pvz-shoot' })).toBe('studyzy::pvz-shoot')
     // A trailing separator is not a directory name.
-    expect(resolveBankId('auto', { cwd: '/code/studyzy/pvz-shoot/' })).toBe('coding-agent::pvz-shoot')
-    expect(resolveBankId('auto', { cwd: 'C:\\code\\pvz-shoot' })).toBe('coding-agent::pvz-shoot')
+    expect(resolveBankId('', { cwd: '/code/studyzy/pvz-shoot/' })).toBe('coding-agent::pvz-shoot')
+    expect(resolveBankId('', { cwd: 'C:\\code\\pvz-shoot' })).toBe('coding-agent::pvz-shoot')
   })
 
-  it('falls back to the workspace bank when the session has no working directory', () => {
-    expect(resolveBankId('auto')).toBe('coding-agent::workspace')
-    expect(resolveBankId('auto', {})).toBe('coding-agent::workspace')
-    expect(resolveBankId('auto', { cwd: '   ' })).toBe('coding-agent::workspace')
+  it('falls back to the workspace project when the session has no working directory', () => {
+    expect(resolveBankId('')).toBe('coding-agent::workspace')
+    expect(resolveBankId(undefined, {})).toBe('coding-agent::workspace')
+    expect(resolveBankId('', { cwd: '   ' })).toBe('coding-agent::workspace')
     expect(resolveBankId(undefined, { cwd: '/' })).toBe('coding-agent::workspace')
+    expect(resolveBankId('studyzy')).toBe('studyzy::workspace')
   })
 })
 
 describe('the setting\'s own default', () => {
-  it('is the auto sentinel, and a blank normalizes to it', () => {
-    expect(resolveSettings({}).bankId).toBe('auto')
-    expect(resolveSettings({ bankId: '  ' } as never).bankId).toBe('auto')
-    expect(normalizeBankId('')).toBe('auto')
-    expect(isAutoBankId('auto')).toBe(true)
-    expect(isAutoBankId('default')).toBe(true)
-    expect(isAutoBankId('DEFAULT')).toBe(true)
-    expect(isAutoBankId('coding-agent::wenyuan')).toBe(false)
+  it('is the coding-agent tenant, and a blank normalizes to it', () => {
+    expect(DEFAULT_TENANT_NAME).toBe('coding-agent')
+    expect(resolveSettings({}).tenantName).toBe('coding-agent')
+    expect(resolveSettings({ tenantName: '  ' } as never).tenantName).toBe('coding-agent')
+    expect(normalizeTenantName('')).toBe('coding-agent')
+    expect(normalizeTenantName('auto')).toBe('coding-agent')
+    expect(normalizeTenantName('DEFAULT')).toBe('coding-agent')
+    expect(normalizeTenantName(' studyzy ')).toBe('studyzy')
   })
 })
 
