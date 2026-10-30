@@ -200,6 +200,7 @@ func emitTraceRow(store storage.Store, cfg config.ProviderConfig, ctx context.Co
 		Output:       truncateTrace(output, cfg.TraceMaxChars),
 		Error:        errText,
 		LLMInfo:      traceLLMInfoPayload(call.llmInfo, cfg.TraceMaxChars),
+		Metadata:     traceMetadata(attribution),
 	}
 	setToken(&request.InputTokens, call.usage.InputTokens)
 	setToken(&request.OutputTokens, call.usage.OutputTokens)
@@ -216,6 +217,21 @@ func setToken(target **int, value int) {
 		return
 	}
 	*target = &value
+}
+
+// traceMetadata renders the row's `metadata` from the call's attribution: the
+// object a caller merged onto the trace context for this call.
+//
+// The reference always writes an object — `_safe_json(record.metadata) or "{}"`
+// (engine/llm_trace.py:899) — so a call that bound nothing stores `{}` rather
+// than NULL, and the `?document_id=` and `?memory_id=` filters read one shape
+// whichever call wrote the row.
+func traceMetadata(attribution provider.TraceContext) map[string]any {
+	metadata := make(map[string]any, len(attribution.Metadata))
+	for key, value := range attribution.Metadata {
+		metadata[key] = value
+	}
+	return metadata
 }
 
 // traceInput renders the trace column the way the reference stores it: the

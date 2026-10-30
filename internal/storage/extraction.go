@@ -65,6 +65,31 @@ type ContextualFactExtraction interface {
 	ExtractWithOptions(ctx context.Context, text string, opts FactExtractionOptions) ([]ExtractedFact, error)
 }
 
+// itemDocumentKey carries the document a chunk belongs to down to the
+// extraction call.
+type itemDocumentKey struct{}
+
+// itemDocumentID is the document the extraction of this chunk belongs to, or ""
+// outside an item. It is bound by the extraction loop rather than passed as a
+// parameter so an extractor's signature — and every implementation of it — stays
+// what it was.
+func itemDocumentID(ctx context.Context) string {
+	id, _ := ctx.Value(itemDocumentKey{}).(string)
+	return id
+}
+
+// ItemDocumentIDFrom reports the document the chunk being extracted belongs to,
+// or "" when the call is not part of a document's retain.
+//
+// It exists so the layer that owns the model boundary can attribute the call to
+// that document without this package importing it: the reference binds the same
+// value per chunk (`set_call_metadata({"document_id": effective_doc_id})`,
+// engine/retain/orchestrator.py:2849) so `GET .../llm-requests?document_id=`
+// finds the calls a document's retain made.
+func ItemDocumentIDFrom(ctx context.Context) string {
+	return itemDocumentID(ctx)
+}
+
 // TokenUsage is the token accounting a dry-run extraction reports.
 type TokenUsage struct {
 	InputTokens    int
@@ -246,13 +271,14 @@ func extractItemFacts(ctx context.Context, extractor FactExtraction, item Retain
 			facts []ExtractedFact
 			err   error
 		)
+		chunkCtx := context.WithValue(ctx, itemDocumentKey{}, item.DocumentID)
 		// The richer call is asked for only when the request carries something it
 		// would use, so an extractor that ignores configuration is never handed a
 		// call it cannot answer.
 		if contextual, ok := extractor.(ContextualFactExtraction); ok && !opts.empty() {
-			facts, err = contextual.ExtractWithOptions(ctx, segment, opts)
+			facts, err = contextual.ExtractWithOptions(chunkCtx, segment, opts)
 		} else {
-			facts, err = extractor.Extract(ctx, segment)
+			facts, err = extractor.Extract(chunkCtx, segment)
 		}
 		if err != nil {
 			return nil, err

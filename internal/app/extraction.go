@@ -144,7 +144,7 @@ func (f factExtractor) Extract(ctx context.Context, text string) ([]storage.Extr
 // strategy, and the reference time a relative phrase in the text resolves
 // against.
 func (f factExtractor) ExtractWithOptions(ctx context.Context, text string, opts storage.FactExtractionOptions) ([]storage.ExtractedFact, error) {
-	result, err := f.extractor.ExtractWith(ctx, text, extractionOptions(opts))
+	result, err := f.extractor.ExtractWith(attributeToDocument(ctx), text, extractionOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (f factExtractor) ExtractWithOptions(ctx context.Context, text string, opts
 // ExtractWithOptions; only the usage, which the storage boundary drops, is
 // carried out.
 func (f factExtractor) ExtractDryRun(ctx context.Context, text string, opts storage.FactExtractionOptions) (storage.DryRunExtraction, error) {
-	result, err := f.extractor.ExtractWith(ctx, text, extractionOptions(opts))
+	result, err := f.extractor.ExtractWith(attributeToDocument(ctx), text, extractionOptions(opts))
 	if err != nil {
 		return storage.DryRunExtraction{}, err
 	}
@@ -170,6 +170,26 @@ func (f factExtractor) ExtractDryRun(ctx context.Context, text string, opts stor
 			ThoughtsTokens: result.Usage.ReasoningTokens,
 		},
 	}, nil
+}
+
+// attributeToDocument binds the chunk's document onto the trace context, so
+// the trace row this call writes names the document whose retain made it. The
+// reference does the same per chunk (`set_call_metadata({"document_id":
+// effective_doc_id})`, engine/retain/orchestrator.py:2849), which is what makes
+// `GET .../llm-requests?document_id=` find a document's calls.
+//
+// It binds onto the copy, so the run's own context — shared by the item's other
+// chunks — is untouched. A call outside a document's retain binds nothing.
+func attributeToDocument(ctx context.Context) context.Context {
+	documentID := storage.ItemDocumentIDFrom(ctx)
+	if documentID == "" {
+		return ctx
+	}
+	attribution, ok := provider.TraceContextFrom(ctx)
+	if !ok {
+		return ctx
+	}
+	return provider.WithTraceContext(ctx, attribution.WithMetadata(map[string]any{"document_id": documentID}))
 }
 
 // extractionOptions maps the storage-shaped per-item settings onto the
