@@ -805,6 +805,13 @@ func (h *Handlers) queueRetainAsync(ctx context.Context, bankID string, override
 		return storage.RetainOutcome{}, err
 	}
 	prepared.Async = true
+	// The extraction happens later, on a worker that no longer holds this
+	// request, so the document each item lands in must be fixed here: a
+	// document's extraction is attributed to it on the model-request trace
+	// (the reference's `set_call_metadata({"document_id": effective_doc_id})`),
+	// and an id minted during the write is known to nothing outside it — the
+	// row would carry no document for an item that named none.
+	assignDocumentIDs(&prepared)
 	tokensPerBatch := h.RetainSubBatchTokens
 	if tokensPerBatch <= 0 {
 		tokensPerBatch = storage.DefaultRetainSubBatchTokens
@@ -1510,4 +1517,49 @@ func itoa(value int) string {
 		value /= 10
 	}
 	return string(digits)
+}
+
+// assignDocumentIDs gives every item an explicit document id, minting one where
+// the caller named none, before the write is queued.
+//
+// `RetainItem.DocumentID` is optional here in a way it is not in the reference:
+// that engine resolves one `effective_doc_id` per retain — the caller's, else
+// the single document a batch names, else one recovered from the operation,
+// else a fresh uuid — and hands every chunk that id (orchestrator.py:1785-1812,
+// :2569). This service's store instead mints a fresh id per item at write time,
+// which the caller never learns and which therefore cannot be put on anything
+// it reports about that item. Resolving it at submission keeps the same
+// guarantee — the extraction of a document is attributed to that document — and
+// costs nothing when the caller already named one.
+//
+// An item that already has an id keeps it, so a resubmission, a document id a
+// client chose, and the async path's document transfer are unaffected.
+func assignDocumentIDs(req *storage.RetainRequest) {
+	// One id for the whole retain, resolved the way the reference resolves it:
+	// the single document the batch names when there is exactly one, else a
+	// fresh id. Only items that named none inherit it, so a client-chosen id
+	// and a multi-document batch are untouched.
+	shared := ""
+	named := map[string]bool{}
+	for i := range req.Items {
+		if id := req.Items[i].DocumentID; id != "" {
+			named[id] = true
+		}
+	}
+	if len(named) == 1 {
+		for id := range named {
+			shared = id
+		}
+	}
+	if len(named) == 0 {
+		shared = storage.NewDocumentID()
+	}
+	if shared == "" {
+		return
+	}
+	for i := range req.Items {
+		if req.Items[i].DocumentID == "" {
+			req.Items[i].DocumentID = shared
+		}
+	}
 }
