@@ -280,6 +280,10 @@ export class WenYuanMemoryCardController {
 
   /** The fields this card edits, for a verification script or a test. */
   static readonly sectionFields = SECTION_FIELDS
-  /** The built-in defaults the card's controls revert to. */
+  /**
+   * The built-in defaults the card's controls revert to. `bankId` is the `auto`
+   * sentinel, so a reset — and an emptied control, which writes a clear — reads
+   * as "derive the bank from this project" rather than a named bank.
+   */
   static readonly defaults = { apiUrl: DEFAULT_API_URL, bankId: DEFAULT_BANK_ID }
 }

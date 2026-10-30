@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { textsFromRecall, WenYuanClient } from '../src/client.ts'
-import { bankUrl, normalizeApiUrl, normalizeBankId } from '../src/settings.ts'
+import { bankUrl, DEFAULT_BANK_ID, normalizeApiUrl, normalizeBankId } from '../src/settings.ts'
 
 /**
  * The WenYuan HTTP client: the reference's routes, and the fail-open rule.
@@ -36,7 +36,9 @@ describe('the bank-scoped route prefix', () => {
   it('normalizes a URL and a blank bank back to their defaults', () => {
     expect(normalizeApiUrl('  http://h:1///  ')).toBe('http://h:1')
     expect(normalizeApiUrl(undefined)).toBe('http://127.0.0.1:18888')
-    expect(normalizeBankId('  ')).toBe('default')
+    // A blank bank is the per-session derivation sentinel, not a fixed bank;
+    // `resolveBankId` turns it into `coding-agent::<repo>`.
+    expect(normalizeBankId('  ')).toBe(DEFAULT_BANK_ID)
     expect(normalizeBankId(' mine ')).toBe('mine')
   })
 

@@ -179,6 +179,11 @@ export function textsFromRecall(body: unknown): string[] {
 
 /** One client bound to one resolved connection. */
 export class WenYuanClient {
+  /**
+   * The connection this client addresses. Read by callers that need to stamp
+   * the bank into a document's own fields — a tag, not just the route.
+   */
+  readonly connection: WenYuanConnection
   private readonly base: string
   private readonly token: string | undefined
   private readonly timeoutMs: number
@@ -188,6 +193,7 @@ export class WenYuanClient {
    * @param options - the connection, the deadline, and an injectable fetch.
    */
   constructor(options: MemoryClientOptions) {
+    this.connection = options.connection
     this.base = bankUrl(options.connection, '')
     this.token = options.connection.apiKey
     this.timeoutMs = options.timeoutMs

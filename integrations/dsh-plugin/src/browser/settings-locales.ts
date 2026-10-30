@@ -41,7 +41,10 @@ export const en: Record<WenYuanMemoryLocaleKey, string> = {
   apiUrl: 'Server URL',
   apiUrlHint: 'Base URL of the WenYuan service, for example http://127.0.0.1:18888.',
   bankId: 'Memory bank',
-  bankIdHint: 'Bank this session reads from and writes to.',
+  bankIdHint:
+    'Leave blank (or set auto) to derive the bank from the current project: coding-agent::<repo>, '
+    + 'taken from the working directory\'s git remote, or its directory name when there is no git remote. '
+    + 'A session with no working directory uses coding-agent::workspace. Type a name to share one bank across projects.',
   apiKey: 'API key',
   apiKeyHint: 'Stored as WENYUAN_API_KEY. Leave blank to keep the current key.',
   apiKeySet: 'A key is configured.',
@@ -67,7 +70,10 @@ export const zh: Record<WenYuanMemoryLocaleKey, string> = {
   apiUrl: '服务地址',
   apiUrlHint: '文渊服务的基础地址，例如 http://127.0.0.1:18888。',
   bankId: '记忆库',
-  bankIdHint: '本会话读取与写入的记忆库。',
+  bankIdHint:
+    '留空（或填 auto）= 按当前项目自动推导（coding-agent::<repo>）：取工作目录 git remote 的仓库名，'
+    + '没有 remote 就用目录名；无工作目录时回退 coding-agent::workspace。'
+    + '填具体名字则所有项目共用一个记忆库。',
   apiKey: 'API Key',
   apiKeyHint: '保存为 WENYUAN_API_KEY；留空则保留当前 Key。',
   apiKeySet: '已配置 Key。',

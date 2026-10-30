@@ -31,6 +31,7 @@ import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import { gitRepoAt, sessionCwd } from './bank-scope.ts'
 import {
   WenYuanClient,
   type KnowledgeTreeFolder,
@@ -45,6 +46,7 @@ import {
   DEFAULT_RETAIN_ON_STOP,
   normalizeApiUrl,
   normalizeBankId,
+  resolveBankId,
   type WenYuanMemorySettings,
 } from './settings.ts'
 import { renderSessionDocument, type TranscriptTurn } from './transcript.ts'
@@ -53,6 +55,7 @@ import { wenYuanTranscriptProjection } from './transcript-projection.ts'
 export type * from './settings.ts'
 export type { TranscriptTurn } from './transcript.ts'
 export type { WenYuanTranscriptState } from './transcript-projection.ts'
+export { clearRepoCache, gitRepoAt, sessionCwd } from './bank-scope.ts'
 export { stripInjectedBlocks } from './context-blocks.ts'
 export { textsFromRecall, WenYuanClient } from './client.ts'
 
@@ -177,21 +180,43 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
     ctx.sessionProjections.register(wenYuanTranscriptProjection) as unknown as Promise<{ stateOf(session: Session): readonly TranscriptTurn[] }>
 
   /**
+   * The bank this session's requests address.
+   *
+   * A fixed bank id is used verbatim; the `auto` sentinel is derived from the
+   * session's working directory, so the same user's memory follows the
+   * repository the session is open in rather than the machine. The derivation
+   * runs per call because it is cheap once the remote is cached, and because a
+   * write-back and a recall in the same turn must agree on it.
+   * @param agent - the agent the call is made for, when one is known.
+   * @returns the bank id the connection should address.
+   */
+  const bankIdFor = async (agent: Agent | undefined): Promise<string> => {
+    const cwd = sessionCwd(agent)
+    return resolveBankId(resolved.bankId, { cwd, repo: await gitRepoAt(cwd) })
+  }
+
+  /**
    * The connection in force right now. The settings are volatile, so a save
    * on the card must reach the next request without a plugin reload; the key
    * is resolved per call because a rotated credential must too.
    * @param signal - cancellation for the credential read.
    * @param timeoutMs - the per-request deadline; the lifecycle recall uses the
    *   interactive one, and a tool call passes {@link TOOL_TIMEOUT_MS}.
+   * @param bankId - the bank this call addresses, when the caller already
+   *   resolved it; omitted, the configured setting is used as-is.
    * @returns the client, or null when memory should not run.
    */
-  const clientNow = async (signal?: AbortSignal, timeoutMs = RECALL_TIMEOUT_MS): Promise<WenYuanClient | null> => {
+  const clientNow = async (signal?: AbortSignal, timeoutMs = RECALL_TIMEOUT_MS, bankId?: string): Promise<WenYuanClient | null> => {
     const apiKey = await resolveApiKey(ctx, signal)
     return new WenYuanClient({
-      connection: { apiUrl: resolved.apiUrl, bankId: resolved.bankId, ...apiKey === undefined ? {} : { apiKey } },
+      connection: { apiUrl: resolved.apiUrl, bankId: bankId ?? resolved.bankId, ...apiKey === undefined ? {} : { apiKey } },
       timeoutMs,
     })
   }
+
+  /** Resolve a client for one agent, addressing that agent's own bank. */
+  const clientFor = async (agent: Agent | undefined, signal?: AbortSignal, timeoutMs = RECALL_TIMEOUT_MS): Promise<WenYuanClient | null> =>
+    clientNow(signal, timeoutMs, await bankIdFor(agent))
 
   /**
    * Per-session state: which turn was recalled, how much of the folded
@@ -215,7 +240,7 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
   // --- Session start: the bank's knowledge, attached before the first turn. ---
   ctx.on('agent/created', async ({ agent, signal }) => {
     if (!resolved.injectContext || !isTopLevel(agent)) return
-    const client = await clientNow(signal)
+    const client = await clientFor(agent, signal)
     if (client === null) return
     const outcome = await client.recall(SESSION_START_QUERY, signal).catch(() => null)
     if (outcome === null || !outcome.ok || outcome.texts.length === 0) return
@@ -230,7 +255,7 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
     perSession.recalledTurn = turn
     const query = promptTextOf(messages)
     if (query === '') return next()
-    const client = await clientNow(signal)
+    const client = await clientFor(agent, signal)
     if (client === null) return next()
     const outcome = await client.recall(query, signal).catch(() => null)
     // Delegate before folding ours in: a later listener may still reject or
@@ -250,13 +275,13 @@ export function apply(ctx: Context, config: WenYuanMemorySettings): void {
     // A previous write-back still in flight is superseded, not raced: the
     // newer one sees every turn the older one saw plus more.
     if (perSession.writing !== undefined) await perSession.writing.catch(() => {})
-    const write = writeBack(agent, transcriptReady, clientNow, perSession, signal)
+    const write = writeBack(agent, transcriptReady, clientFor, perSession, signal)
     perSession.writing = write
     await write.catch(() => {})
   })
 
   // --- The knowledge tools. ---
-  for (const tool of knowledgeTools(clientNow)) {
+  for (const tool of knowledgeTools(clientFor)) {
     ctx.effect(() => ctx.tools.register(tool), `dsh-wenyuan-memory: ${tool.name} tool`)
   }
 }
@@ -314,14 +339,14 @@ function isTopLevel(agent: Agent): boolean {
  * @param ctx - context exposing the projection registry.
  * @param agent - the agent whose turn is stopping.
  * @param ready - the awaited transcript registration.
- * @param clientNow - builds the client for this call.
+ * @param clientFor - builds the client for this agent's own bank.
  * @param perSession - the session's mutable write-back state.
  * @param signal - the turn's cancellation.
  */
 async function writeBack(
   agent: Agent,
   ready: Promise<{ stateOf(session: Session): readonly TranscriptTurn[] }>,
-  clientNow: (signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
+  clientFor: (agent: Agent | undefined, signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
   perSession: { recalledTurn: number; retainedTurns: number; writing: Promise<void> | undefined },
   signal: AbortSignal,
 ): Promise<void> {
@@ -331,7 +356,7 @@ async function writeBack(
   const folded: readonly TranscriptTurn[] = handle.stateOf(session)
   const fresh: TranscriptTurn[] = folded.slice(perSession.retainedTurns)
   if (fresh.length === 0) return
-  const client = await clientNow(signal)
+  const client = await clientFor(agent, signal)
   if (client === null) return
   const refId = `conversation:${String(session.id)}`
   const baseTs = fresh[0]?.timestamp ?? new Date().toISOString()
@@ -421,16 +446,21 @@ function renderNode(node: KnowledgeTreeNode, depth: number, lines: string[]): vo
  * The reads answer from knowledge pages — living documents the service
  * synthesizes from memories — rather than from raw memories, which is what
  * separates them from the automatic recall this plugin already injects.
- * @param clientNow - resolves a client for the current settings, or null when
- *   memory is disabled in this deployment.
+ * @param clientFor - resolves a client for one agent's own bank, or null when
+ *   memory is disabled in this deployment. Called with the agent the tool runs
+ *   for, so the bank follows the session's working directory.
  * @returns the tool definitions, in registration order.
  */
 export function knowledgeTools(
-  clientNow: (signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
+  clientFor: (agent?: Agent, signal?: AbortSignal, timeoutMs?: number) => Promise<WenYuanClient | null>,
 ): readonly ToolDefinition[] {
-  /** Resolve a client or report the one reason every tool shares. */
+  /**
+   * Resolve a client or report the one reason every tool shares.
+   * @param exec - the tool's execution context; its agent decides the bank.
+   * @returns the client, or the sentence to answer with instead.
+   */
   const requireClient = async (exec: ToolRunContext): Promise<WenYuanClient | string> => {
-    const client = await clientNow(exec.signal, TOOL_TIMEOUT_MS)
+    const client = await clientFor(exec.agent, exec.signal, TOOL_TIMEOUT_MS)
     return client === null ? 'WenYuan memory is disabled in this deployment.' : client
   }
 
@@ -528,7 +558,9 @@ export function knowledgeTools(
         const outcome = await client.retain([{
           content,
           document_id: `initiative:${sessionId}:${Date.now()}`,
-          tags: ['kind:initiative', 'source:chat', 'harness:dsh'],
+          // The bank tag names the project the page belongs to: it is the one
+          // fact a later session in another repository must be able to filter on.
+          tags: ['kind:initiative', 'source:chat', `${client.connection.bankId}:dsh`],
           strategy: 'conversation',
           timestamp: new Date().toISOString(),
           metadata: { source: 'initiative', title, session_id: sessionId },
@@ -562,7 +594,8 @@ export function knowledgeTools(
         const outcome = await client.retain([{
           content: `# ${title}\n\n${content}`,
           document_id: `document:${sessionId}:${Date.now()}`,
-          tags: ['kind:document', 'source:chat', 'harness:dsh'],
+          // Same project tag as an initiative: `coding-agent::<repo>:dsh`.
+          tags: ['kind:document', 'source:chat', `${client.connection.bankId}:dsh`],
           strategy: 'conversation',
           timestamp: new Date().toISOString(),
           metadata: { source: 'document', title, session_id: sessionId },

@@ -169,3 +169,78 @@ describe('a tool call that outlives the interactive recall deadline', () => {
     expect(observedInit?.method).toBe('POST')
   })
 })
+
+describe('the bank a call addresses', () => {
+  /** Mounted tool by name, over the host fakes. */
+  function toolNamed(name: string): { execute(args: unknown, exec: unknown): Promise<unknown> } {
+    const { ctx, tools } = fakeContext()
+    apply(ctx as never, {})
+    return tools.find((candidate) => (candidate as { name: string }).name === name) as {
+      execute(args: unknown, exec: unknown): Promise<unknown>
+    }
+  }
+
+  /** One agent whose session header names a working directory. */
+  function agentIn(cwd: string): { id: string; session: { header: { cwd: string } } } {
+    return { id: 'session-1', session: { header: { cwd } } }
+  }
+
+  /** Answer every request with `body`, recording the URLs it was asked for. */
+  async function withFetch(body: unknown, run: (urls: string[], inits: (RequestInit | undefined)[]) => Promise<void>): Promise<void> {
+    const originalFetch = globalThis.fetch
+    const urls: string[] = []
+    const inits: (RequestInit | undefined)[] = []
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      urls.push(String(url))
+      inits.push(init)
+      return Response.json(body)
+    }) as unknown as typeof fetch
+    try {
+      await run(urls, inits)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
+  it('derives the bank from the calling session\'s working directory', async () => {
+    // `auto` is the default, so this is the path every session takes unless
+    // the card names a bank: the request must address the project's own bank.
+    await withFetch({ results: [] }, async (urls) => {
+      await toolNamed('wenyuan_search_knowledge_pages').execute(
+        { query: 'anything' },
+        { signal: new AbortController().signal, agent: agentIn('/code/studyzy/pvz-shoot') },
+      )
+      expect(urls[0]).toBe('http://127.0.0.1:18888/v1/default/banks/coding-agent%3A%3Apvz-shoot/knowledge-base/search?q=anything&limit=10')
+    })
+  })
+
+  it('uses a bank the card names verbatim, whatever the working directory is', async () => {
+    const { ctx, tools } = fakeContext()
+    apply(ctx as never, { bankId: 'team::shared' })
+    const tool = tools.find((candidate) => (candidate as { name: string }).name === 'wenyuan_search_knowledge_pages') as {
+      execute(args: unknown, exec: unknown): Promise<unknown>
+    }
+    await withFetch({ results: [] }, async (urls) => {
+      await tool.execute({ query: 'x' }, { signal: new AbortController().signal, agent: agentIn('/code/studyzy/pvz-shoot') })
+      expect(urls[0]).toContain('/banks/team%3A%3Ashared/')
+    })
+  })
+
+  it('falls back to the workspace bank when the call carries no agent', async () => {
+    await withFetch({ text: '' }, async (urls) => {
+      await toolNamed('wenyuan_reflect').execute({ query: 'x' }, { signal: new AbortController().signal })
+      expect(urls[0]).toContain('/banks/coding-agent%3A%3Aworkspace/')
+    })
+  })
+
+  it('tags a captured initiative with the bank it was written to', async () => {
+    await withFetch({}, async (_urls, inits) => {
+      await toolNamed('wenyuan_capture_initiative').execute(
+        { title: 'Auto banks', summary: 'Derive the bank per project.' },
+        { signal: new AbortController().signal, agent: agentIn('/code/studyzy/pvz-shoot') },
+      )
+      const body = JSON.parse(String(inits[0]?.body)) as { items?: { tags?: string[] }[] }
+      expect(body.items?.[0]?.tags).toContain('coding-agent::pvz-shoot:dsh')
+    })
+  })
+})
