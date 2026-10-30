@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/studyzy/wenyuan/internal/bankapi"
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -20,6 +20,10 @@ type tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
+	// keepsBankArgument marks a tool whose `bank_id` member is the tool's own
+	// required argument, not the mount's optional target, so the single-bank
+	// projection leaves it in place.
+	keepsBankArgument bool
 }
 
 // roster assembles the reference tool roster in registration order.
@@ -59,12 +63,31 @@ func withInstructions(defs []tool, instructions string) []tool {
 	return out
 }
 
+// dropDeclaredBankArgument keeps the `bank_id` member of a tool that declares it
+// as a required argument of its own: the reference registers create_bank with a
+// required `bank_id` and no optional one, so the schema carries it once and the
+// single-bank mount keeps it (it is the name the bank takes, not a mount target).
+func dropDeclaredBankArgument(defs []tool, name string) {
+	for index := range defs {
+		if defs[index].Name != name {
+			continue
+		}
+		defs[index].keepsBankArgument = true
+		return
+	}
+}
+
 // toolDefinitions is the roster the server advertises. A multi-bank server
 // exposes every tool with an optional bank_id argument; a single-bank server
 // (the reference's /mcp/{bank_id}) drops the bank-management tools and the
 // bank_id argument, because the bank is fixed by the URL.
 func toolDefinitions(multiBank bool) []tool {
 	defs := roster()
+	// create_bank is the one tool whose id is an identity rather than a target:
+	// the reference registers it with a required `bank_id` argument and no
+	// optional one, so the mount never strips it and no `bank_id` member is
+	// advertised beside it.
+	dropDeclaredBankArgument(defs, "create_bank")
 	if multiBank {
 		return defs
 	}
@@ -73,8 +96,10 @@ func toolDefinitions(multiBank bool) []tool {
 		if singleBankOmitted[def.Name] {
 			continue
 		}
-		if properties, ok := def.InputSchema["properties"].(map[string]any); ok {
-			delete(properties, "bank_id")
+		if !def.keepsBankArgument {
+			if properties, ok := def.InputSchema["properties"].(map[string]any); ok {
+				delete(properties, "bank_id")
+			}
 		}
 		single = append(single, def)
 	}
@@ -254,8 +279,14 @@ func structuredOutputError(message string) any {
 	return message
 }
 
-// listBanks lists the server's banks. The rows are the same public list shape
-// the HTTP collection route serves, so a client reads one contract.
+// listBanks lists the server's banks.
+//
+// The tool hands the engine's page through untouched, as the reference's does:
+// its `list_banks` returns `{"banks": page, "total", "limit", "offset"}` with
+// each row being the dict the engine built, not the HTTP collection route's
+// projection. Re-projecting the rows here added the HTTP-only
+// `matched_aliases` member and re-rendered the timestamps in the HTTP form, so
+// an MCP caller read a different contract from the reference's.
 func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error) {
 	page, err := s.store.ListBanks(ctx, storage.BankQuery{
 		Search: stringArgument(args, "query"),
@@ -265,16 +296,41 @@ func (s *Server) listBanks(ctx context.Context, args map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]bankapi.BankListRow, 0, len(page.Banks))
+	return map[string]any{"banks": s.engineBanks(ctx, page), "total": page.Total, "limit": page.Limit, "offset": page.Offset}, nil
+}
+
+// engineBanks renders the stored banks as the engine's own row dicts — the
+// reference's `bank_utils.list_banks` row: identity, name, the disposition it
+// holds, the mission, the three timestamps, the fact count, and the aliases that
+// explain why a searched row matched. The promoted alias rides under
+// `display_alias`, which the engine sets on each row of the page it returns
+// (`memory_engine.py:15683`).
+func (s *Server) engineBanks(ctx context.Context, page storage.BankPage) []map[string]any {
+	rows := make([]map[string]any, 0, len(page.Banks))
 	for _, bank := range page.Banks {
-		rows = append(rows, bankapi.ToListRow(bank, s.primaryAlias(ctx, bank.BankID), page.MatchedAliases[bank.BankID]))
+		matched := page.MatchedAliases[bank.BankID]
+		if matched == nil {
+			matched = []string{}
+		}
+		rows = append(rows, map[string]any{
+			"bank_id":          bank.BankID,
+			"name":             bank.Name,
+			"disposition":      bank.NormalizedDisposition(),
+			"mission":          bank.Mission,
+			"created_at":       httpx.FormatTimestampPtr(&bank.CreatedAt),
+			"updated_at":       httpx.FormatTimestampPtr(&bank.UpdatedAt),
+			"fact_count":       bank.FactCount,
+			"last_document_at": httpx.FormatTimestampPtr(bank.LastDocumentAt),
+			"last_write_at":    httpx.FormatTimestampPtr(bank.LastWriteAt),
+			"matched_aliases":  matched,
+			"display_alias":    s.primaryAlias(ctx, bank.BankID),
+		})
 	}
-	return map[string]any{"banks": rows, "total": page.Total, "limit": page.Limit, "offset": page.Offset}, nil
+	return rows
 }
 
 // primaryAlias names the bank's promoted alias, or nil when it is presented
-// under its own id. It is the request-free form of the HTTP list handler's
-// displayAlias.
+// under its own id.
 func (s *Server) primaryAlias(ctx context.Context, bankID string) *string {
 	aliases, err := s.store.ListAliases(ctx, bankID)
 	if err != nil {

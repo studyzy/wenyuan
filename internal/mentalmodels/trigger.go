@@ -76,6 +76,12 @@ func triggerKnownMember(name string) bool {
 // name (a bank's knowledge_page_default_trigger is one).
 func TriggerMember(name string) bool { return triggerKnownMember(name) }
 
+// TriggerTagsMatchValues lists the match modes a trigger's `tags_match` member
+// accepts, in the reference's declaration order, for callers outside this
+// package that validate the flat shorthand a tool accepts beside the trigger
+// object.
+func TriggerTagsMatchValues() []string { return append([]string(nil), triggerTagsMatch...) }
+
 // TriggerErrors returns every validation item a trigger object's members
 // violate, for callers outside this package that report the whole set at once
 // (a bank's knowledge_page_default_trigger is one). The items' locations begin

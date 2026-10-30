@@ -783,7 +783,11 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		// is the same as calling something that does not exist.
 		return toolError("Unknown tool: '" + params.Name + "'"), nil
 	}
-	payload, err := s.invokeAudited(ctx, params.Name, params.Arguments)
+	// The transport repairs the two habits an LLM client has — an argument the
+	// tool never declared, and a list or object sent as a JSON string — before
+	// the tool sees them, which is what the reference's own wrapper does.
+	arguments := normalizeToolArguments(s.toolArgumentSchema(ctx, params.Name), params.Arguments)
+	payload, err := s.invokeAudited(ctx, params.Name, arguments)
 	if err != nil {
 		return toolFailure(params.Name, err), nil
 	}

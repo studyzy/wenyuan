@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/memoryops"
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -24,7 +25,9 @@ func (s *Server) getMentalModel(ctx context.Context, args map[string]any) (any, 
 		return nil, invalidArgument("get_mental_model requires mental_model_id")
 	}
 	model, err := s.store.GetMentalModel(ctx, bankID, modelID)
-	if errors.Is(err, storage.ErrMentalModelNotFound) {
+	// An unknown bank reads as a missing model: the reference looks the model up
+	// inside the bank, so it cannot tell the two apart and names only the model.
+	if errors.Is(err, storage.ErrMentalModelNotFound) || errors.Is(err, storage.ErrBankNotFound) {
 		return notFoundAnswer("Mental model '" + modelID + "' not found in bank '" + bankID + "'"), nil
 	}
 	if err != nil {
@@ -51,6 +54,17 @@ func (s *Server) createMentalModel(ctx context.Context, args map[string]any) (an
 	if maxTokens < 256 || maxTokens > 8192 {
 		return nil, errors.New("max_tokens must be between 256 and 8192")
 	}
+	if message := validateTagsMatchArgument(args); message != "" {
+		return nil, errors.New(message)
+	}
+	// The reference validates the supplied trigger before it writes anything: the
+	// tool's argument model is checked by the framework's own validator, so a cron
+	// expression its parser refuses, an unknown member or a member of the wrong
+	// kind is a refused call rather than a value it stores and fails on later.
+	trigger, err := validatedTriggerPatch(args)
+	if err != nil {
+		return nil, err
+	}
 	id := stringArgument(args, "mental_model_id")
 	if id == "" {
 		id = newID()
@@ -63,7 +77,7 @@ func (s *Server) createMentalModel(ctx context.Context, args map[string]any) (an
 		SourceQuery: sourceQuery,
 		Tags:        stringListArgument(args, "tags"),
 		MaxTokens:   maxTokens,
-		Trigger:     triggerPatch(args),
+		Trigger:     trigger,
 	})
 	if err != nil {
 		return nil, err
@@ -123,8 +137,37 @@ func (s *Server) updateMentalModel(ctx context.Context, args map[string]any) (an
 		}
 		patch.MaxTokens = &maxTokens
 	}
-	if trigger := triggerPatch(args); trigger != nil {
-		patch.Trigger = &trigger
+	if message := validateTagsMatchArgument(args); message != "" {
+		return nil, errors.New(message)
+	}
+	// A supplied trigger is a patch: the members the caller stated are merged
+	// over the model's current trigger, so the combination is validated rather
+	// than each half on its own — a stated refresh_cron beside a stored
+	// refresh_after_consolidation is the reference's mutual-exclusion refusal,
+	// and it happens before the write.
+	supplied, err := validatedTriggerPatch(args)
+	if err != nil {
+		return nil, err
+	}
+	if supplied != nil {
+		current, err := s.store.GetMentalModel(ctx, bankID, modelID)
+		if errors.Is(err, storage.ErrMentalModelNotFound) {
+			return notFoundAnswer("Mental model '" + modelID + "' not found in bank '" + bankID + "'"), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		merged := mentalmodels.MergeTrigger(supplied, current.Trigger)
+		// The merge resolves a schedule conflict by dropping the member the
+		// caller replaced, but a patch that states one schedule while the stored
+		// trigger keeps the other is still two schedules on one model, which the
+		// reference's model-level validator refuses.
+		if bothSchedulesSet(merged) {
+			//nolint:staticcheck // the reference's own wording, capitalised and sentence-final
+			return nil, errors.New("refresh_after_consolidation and refresh_cron are mutually exclusive: " +
+				"a mental model refreshes either after consolidation or on a cron schedule, not both.")
+		}
+		patch.Trigger = &merged
 	}
 	model, err := s.store.UpdateMentalModel(ctx, bankID, modelID, patch)
 	if errors.Is(err, storage.ErrMentalModelNotFound) {
@@ -159,7 +202,17 @@ func (s *Server) refreshMentalModel(ctx context.Context, args map[string]any) (a
 	if modelID == "" {
 		return nil, invalidArgument("refresh_mental_model requires mental_model_id")
 	}
-	operationID, err := s.enqueueMentalModelRefresh(ctx, bankID, modelID, "")
+	// The model is read first: its name goes into the operation's result
+	// metadata, which is what the operation-status read reports back, and a
+	// model that is not in the bank is an answer rather than a queued row.
+	model, err := s.store.GetMentalModel(ctx, bankID, modelID)
+	if errors.Is(err, storage.ErrMentalModelNotFound) || errors.Is(err, storage.ErrBankNotFound) {
+		return notFoundAnswer("Mental model " + modelID + " not found in bank " + bankID), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	operationID, err := s.enqueueMentalModelRefresh(ctx, bankID, modelID, model.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +269,9 @@ func (s *Server) deleteDirective(ctx context.Context, args map[string]any) (any,
 		return nil, invalidArgument("delete_directive requires directive_id")
 	}
 	if err := s.store.DeleteDirective(ctx, bankID, directiveID); err != nil {
+		if errors.Is(err, storage.ErrDirectiveNotFound) {
+			return notFoundAnswer("Directive '" + directiveID + "' not found"), nil
+		}
 		return nil, err
 	}
 	return compactToolText(deleteDirectiveAck{Status: "deleted", DirectiveID: directiveID}), nil
