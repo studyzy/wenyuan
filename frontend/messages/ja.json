@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "このサーバーではテナントキーでのサインインは利用できません。",
         "dataKeyLoginUnavailable": "このデプロイではテナントキーでサインインします。データキーは使用できません。"
       },
+      "tenant": {
+        "required": "先にテナントを選択してください。このセッションにはテナントのスキーマがありません。"
+      },
       "validation": {
         "bankIdRequired": "bank_id は必須です",
         "bankAndDirectiveIdRequired": "bank_id と directive_id は必須です",

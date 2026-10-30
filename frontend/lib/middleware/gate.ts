@@ -1,5 +1,6 @@
 import { prefixBasePath, stripBasePath } from "../server/paths";
-import { OPERATOR_SUBJECT, SESSION_COOKIE, readSessionToken } from "../server/session-edge";
+import { SESSION_COOKIE, readSessionToken } from "../server/session-edge";
+import { OPERATOR_SUBJECT } from "../server/subjects";
 import { buildErrorBody } from "../server/errors";
 import { readCookie } from "../../i18n/negotiate";
 import { isApiPath, isPublicPath } from "./whitelist";

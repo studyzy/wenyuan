@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "Entrar com uma chave de locatário não está disponível neste servidor.",
         "dataKeyLoginUnavailable": "Esta implantação entra com chaves de locatário; a chave de dados não é aceita."
       },
+      "tenant": {
+        "required": "Selecione um locatário primeiro — esta sessão não tem esquema de locatário."
+      },
       "validation": {
         "bankIdRequired": "bank_id é obrigatório",
         "bankAndDirectiveIdRequired": "bank_id e directive_id são obrigatórios",

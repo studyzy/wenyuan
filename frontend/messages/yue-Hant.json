@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "此伺服器唔支援用租戶金鑰登入。",
         "dataKeyLoginUnavailable": "呢個部署用租戶金鑰登入，資料金鑰喺度唔可用。"
       },
+      "tenant": {
+        "required": "請先入一個租戶：呢個工作階段未有對應嘅租戶 schema。"
+      },
       "validation": {
         "bankIdRequired": "必須提供 bank_id",
         "bankAndDirectiveIdRequired": "必須提供 bank_id 及 directive_id",

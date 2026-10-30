@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "Signing in with a tenant key is not available on this server.",
         "dataKeyLoginUnavailable": "This deployment signs in with tenant keys; the data key is not accepted."
       },
+      "tenant": {
+        "required": "Select a tenant first — this session has no tenant schema."
+      },
       "validation": {
         "bankIdRequired": "bank_id is required",
         "bankAndDirectiveIdRequired": "bank_id and directive_id are required",

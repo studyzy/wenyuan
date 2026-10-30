@@ -12,14 +12,11 @@ import {
 import { errorResponse } from "../../../../lib/server/http";
 import { callUpstream } from "../../../../lib/server/upstream";
 import { negotiateLocale } from "../../../../i18n/negotiate";
+import { DATA_SUBJECT, OPERATOR_SUBJECT, tenantSubject } from "../../../../lib/server/subjects";
 
 /** Prefix every tenant key the registry mints carries (internal/tenant.NewKey). */
 const TENANT_KEY_PREFIX = "wyk_";
 
-/** Operator session: may reach the management plane. */
-const OPERATOR_SUBJECT = "console";
-/** Data-key session: may use the console, never the management plane. */
-const DATA_SUBJECT = "data";
 
 type TenantResolution =
   | { kind: "tenant"; tenantId: string }
@@ -139,14 +136,17 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   if (config.adminKey && verifyAccessKey(config.adminKey, submitted)) {
-    return signInAs(OPERATOR_SUBJECT);
+    // An operator session names no schema, so the bank pages have nothing to
+    // read until a tenant is entered. Land on the tenant list instead of a
+    // dashboard whose every request would come back unauthorized.
+    return signInAs(OPERATOR_SUBJECT, { body: { signedIn: true, landing: "/tenants" } });
   }
 
   if (config.dataplaneKey && verifyAccessKey(config.dataplaneKey, submitted)) {
     if (await dataPlaneRefusesKey(config, submitted)) {
       return errorResponse("api.errors.auth.dataKeyLoginUnavailable", 401, locale);
     }
-    return signInAs(DATA_SUBJECT);
+    return signInAs(DATA_SUBJECT, { body: { signedIn: true, landing: "/dashboard" } });
   }
 
   // Tenant keys carry the registry prefix. Anything else is a mistyped key, and
@@ -167,10 +167,10 @@ export async function POST(request: Request): Promise<Response> {
   // The subject is what keeps this session out of the management plane: a
   // tenant key must not create, purge or re-key tenants just because it can use
   // the console. The key itself is sealed in the tenant cookie for the BFF.
-  return signInAs(`tenant:${tenant.tenantId}`, {
+  return signInAs(tenantSubject(tenant.tenantId), {
     cookies: [
       `${TENANT_SESSION_COOKIE}=${createTenantSessionToken(config.accessKey, tenant.tenantId, submitted, Date.now())}; ${tenantSessionCookieAttributes(secure)}`,
     ],
-    body: { signedIn: true, tenant_id: tenant.tenantId },
+    body: { signedIn: true, tenant_id: tenant.tenantId, landing: "/dashboard" },
   });
 }

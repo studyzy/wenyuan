@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "Iniciar sesión con una clave de inquilino no está disponible en este servidor.",
         "dataKeyLoginUnavailable": "Esta implementación inicia sesión con claves de inquilino; la clave de datos no se acepta."
       },
+      "tenant": {
+        "required": "Selecciona primero un inquilino: esta sesión no tiene esquema de inquilino."
+      },
       "validation": {
         "bankIdRequired": "bank_id es obligatorio",
         "bankAndDirectiveIdRequired": "bank_id y directive_id son obligatorios",

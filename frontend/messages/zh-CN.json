@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "此服务器不支持使用租户密钥登录。",
         "dataKeyLoginUnavailable": "该部署使用租户密钥登录，数据密钥在此不可用。"
       },
+      "tenant": {
+        "required": "请先进入一个租户：当前会话没有对应的租户 schema。"
+      },
       "validation": {
         "bankIdRequired": "bank_id 为必填项",
         "bankAndDirectiveIdRequired": "bank_id 和 directive_id 为必填项",

@@ -54,25 +54,39 @@ export function verifySessionToken(
   token: string | undefined,
   nowMs: number,
 ): boolean {
-  if (!secret || !token) return false;
+  return readSessionToken(secret, token, nowMs) !== null;
+}
+
+/**
+ * Read a session token: signature and expiry must hold. Returns the payload, or
+ * null for any malformed input. Callers that need the subject (the proxy, to
+ * tell an operator session from a tenant one) use this instead of the bare
+ * verification.
+ */
+export function readSessionToken(
+  secret: string,
+  token: string | undefined,
+  nowMs: number,
+): TokenPayload | null {
+  if (!secret || !token) return null;
   const dot = token.lastIndexOf(".");
-  if (dot <= 0) return false;
+  if (dot <= 0) return null;
 
   const encoded = token.slice(0, dot);
   const providedSignature = token.slice(dot + 1);
   const expectedSignature = sign(secret, encoded);
-  if (!constantTimeEquals(providedSignature, expectedSignature)) return false;
+  if (!constantTimeEquals(providedSignature, expectedSignature)) return null;
 
   let payload: TokenPayload;
   try {
     payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as TokenPayload;
   } catch {
-    return false;
+    return null;
   }
 
   const now = Math.floor(nowMs / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) return false;
-  return true;
+  if (typeof payload.exp !== "number" || payload.exp <= now) return null;
+  return payload;
 }
 
 /** Constant-time comparison of a submitted access key against the configured one. */

@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "Die Anmeldung mit einem Tenant-Schlüssel ist auf diesem Server nicht verfügbar.",
         "dataKeyLoginUnavailable": "Diese Bereitstellung meldet sich mit Tenant-Schlüsseln an; der Datenschlüssel wird nicht akzeptiert."
       },
+      "tenant": {
+        "required": "Bitte zuerst einen Tenant auswählen – diese Sitzung hat kein Tenant-Schema."
+      },
       "validation": {
         "bankIdRequired": "bank_id ist erforderlich",
         "bankAndDirectiveIdRequired": "bank_id und directive_id sind erforderlich",

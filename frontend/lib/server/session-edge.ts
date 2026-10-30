@@ -17,12 +17,7 @@ type TokenPayload = {
   exp: number;
 };
 
-/**
- * Subjects a session can carry. `console` is the operator session minted from
- * the console passphrase; `tenant:<id>` is a session entered with a tenant key,
- * which may use the console but must never reach the management plane.
- */
-export const OPERATOR_SUBJECT = "console";
+// Session subjects live in ./subjects, shared with the Node-side proxy.
 
 function base64UrlDecode(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");

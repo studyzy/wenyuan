@@ -1999,6 +1999,9 @@
         "tenantLoginUnavailable": "이 서버에서는 테넌트 키로 로그인할 수 없습니다.",
         "dataKeyLoginUnavailable": "이 배포에서는 테넌트 키로 로그인합니다. 데이터 키는 사용할 수 없습니다."
       },
+      "tenant": {
+        "required": "먼저 테넌트를 선택하세요. 이 세션에는 테넌트 스키마가 없습니다."
+      },
       "validation": {
         "bankIdRequired": "bank_id는 필수입니다",
         "bankAndDirectiveIdRequired": "bank_id와 directive_id는 필수입니다",

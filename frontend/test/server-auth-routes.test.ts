@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as login } from "../app/api/auth/login/route";
 import { POST as logout } from "../app/api/auth/logout/route";
+import { GET as banks } from "../app/api/banks/route";
+import { createSessionToken, createTenantSessionToken } from "../lib/server/session";
+import { OPERATOR_SUBJECT } from "../lib/server/subjects";
 import { stubFetch, withEnv } from "./support/fixtures";
 import { expectNoErrorKey, makeRequest, readJson } from "./support/harness";
 
@@ -66,6 +69,9 @@ describe("POST /api/auth/login", () => {
         expect(cookie).toContain("HttpOnly");
         expect(cookie).toContain("SameSite=Lax");
         expect(subjectOf(cookie)).toBe("console");
+        // An operator names no schema: the tenant list is the only page that
+        // can act, so the login response says where to go next.
+        expect(await readJson(response)).toMatchObject({ signedIn: true, landing: "/tenants" });
       });
       // The operator credential is never sent upstream at sign-in.
       expect(stub.calls).toHaveLength(0);
@@ -149,7 +155,11 @@ describe("tenant key sign-in", () => {
           }),
         );
         expect(response.status).toBe(200);
-        expect(await readJson(response)).toMatchObject({ signedIn: true, tenant_id: "studyzy" });
+        expect(await readJson(response)).toMatchObject({
+          signedIn: true,
+          tenant_id: "studyzy",
+          landing: "/dashboard",
+        });
         const cookies = response.headers.getSetCookie();
         expect(subjectOf(cookies[0] ?? "")).toBe("tenant:studyzy");
         expect(cookies.some((c) => c.startsWith("wenyuan_cp_tenant="))).toBe(true);
@@ -228,5 +238,40 @@ describe("POST /api/auth/logout", () => {
     const cookies = response.headers.getSetCookie();
     expect(cookies.some((c) => c.startsWith("wenyuan_cp_access=") && c.includes("Max-Age=0"))).toBe(true);
     expect(cookies.some((c) => c.startsWith("wenyuan_cp_tenant=") && c.includes("Max-Age=0"))).toBe(true);
+  });
+});
+
+describe("operator session without a tenant", () => {
+  const accessKey = OPERATOR_KEY;
+
+  it("answers 409 so the console does not bounce back to the login form", async () => {
+    const stub = stubFetch([{ status: 401, body: { detail: "Authentication failed: Invalid API key" } }]);
+    try {
+      await withEnv({ WENYUAN_CP_ADMIN_API_KEY: accessKey, WENYUAN_CP_DATAPLANE_API_KEY: DATA_KEY }, async () => {
+        const cookie = `wenyuan_cp_access=${createSessionToken(accessKey, OPERATOR_SUBJECT, Date.now())}`;
+        const response = await banks(makeRequest("http://localhost/api/banks", { cookie }));
+        expect(response.status).toBe(409);
+        const body = await readJson(response);
+        expectNoErrorKey(body);
+        expect(String(body.error)).not.toContain("api.errors");
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("leaves a tenant session's 401 alone", async () => {
+    const stub = stubFetch([{ status: 401, body: { detail: "Authentication failed: Invalid API key" } }]);
+    try {
+      await withEnv({ WENYUAN_CP_ADMIN_API_KEY: accessKey, WENYUAN_CP_DATAPLANE_API_KEY: DATA_KEY }, async () => {
+        const session = createSessionToken(accessKey, "tenant:studyzy", Date.now());
+        const tenant = createTenantSessionToken(accessKey, "studyzy", "wyk_x", Date.now());
+        const cookie = `wenyuan_cp_access=${session}; wenyuan_cp_tenant=${tenant}`;
+        const response = await banks(makeRequest("http://localhost/api/banks", { cookie }));
+        expect(response.status).toBe(401);
+      });
+    } finally {
+      stub.restore();
+    }
   });
 });

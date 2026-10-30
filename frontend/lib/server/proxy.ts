@@ -3,12 +3,15 @@ import { adminServerConfig } from "./config";
 import { encodeBankId } from "./paths";
 import { jsonResponse } from "./http";
 import {
+  SESSION_COOKIE,
   TENANT_SESSION_COOKIE,
   createTenantSessionToken,
   isSecureRequest,
+  readSessionToken,
   readTenantSessionToken,
   tenantSessionCookieAttributes,
 } from "./session";
+import { OPERATOR_SUBJECT } from "./subjects";
 import { callUpstream, passthrough, type QueryValue, type UpstreamResult } from "./upstream";
 import { ERROR_KEY_FIELD, localizeError } from "./errors";
 import { negotiateLocale } from "../../i18n/negotiate";
@@ -82,6 +85,22 @@ function cookieValue(request: Request, name: string): string | undefined {
     if (key === name) return rest.join("=");
   }
   return undefined;
+}
+
+/**
+ * Whether the caller is an operator session with no tenant entered.
+ *
+ * Such a session holds the console but no data credential: every data-plane
+ * request is answered 401 by the API, and a browser client that treats 401 as
+ * "signed out" bounces the operator back to the login form. The proxy answers
+ * 409 instead, so the client shows "select a tenant" rather than re-running the
+ * sign-in it just completed.
+ */
+function operatorWithoutTenant(config: ServerConfig, request: Request): boolean {
+  if (!config.accessKey) return false;
+  if (cookieValue(request, TENANT_SESSION_COOKIE)) return false;
+  const session = readSessionToken(config.accessKey, cookieValue(request, SESSION_COOKIE), Date.now());
+  return session?.sub === OPERATOR_SUBJECT;
 }
 
 type TenantOverride = {
@@ -198,6 +217,22 @@ export async function serializeUpstream(options: SerializeOptions): Promise<Resp
   } catch {
     return upstreamUnavailableBody(options);
   }
+  if (
+    result.status === 401 &&
+    options.tenantScoped !== false &&
+    operatorWithoutTenant(options.config, options.request)
+  ) {
+    const body = localizeError({
+      payload: { error: "tenant_required" },
+      errorKey: "api.errors.tenant.required",
+      locale: options.locale,
+    });
+    return new Response(JSON.stringify(body), {
+      status: 409,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
   const response = serializeResult(result, options);
   if (override.setCookie) response.headers.append("set-cookie", override.setCookie);
   return response;

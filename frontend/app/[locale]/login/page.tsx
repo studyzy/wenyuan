@@ -41,8 +41,11 @@ function LoginForm() {
       });
 
       if (res.ok) {
-        // Navigate to the returnTo URL
-        router.push(returnTo);
+        // An operator session names no schema, so the API answers with the page
+        // that can act (the tenant list) rather than letting the dashboard
+        // bounce on its first unauthorized request.
+        const data = (await res.json().catch(() => null)) as { landing?: string } | null;
+        router.push(data?.landing ?? returnTo);
         router.refresh();
       } else {
         const data = await res.json().catch(() => null);
