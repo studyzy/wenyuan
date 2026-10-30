@@ -2868,14 +2868,14 @@
       "remove": "제거",
       "project": "프로젝트",
       "projectName": "이름",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "예: Web 백엔드",
       "bank": "뱅크",
       "projectMembers": "멤버 수",
       "projectIdPlaceholder": "web",
       "createProject": "프로젝트 생성",
-      "projectHint": "뱅크 ID는 <team>::<name>이며 생성 후 변경되지 않습니다.",
-      "projectIdInvalid": "프로젝트 ID가 요구된 형식과 일치해야 합니다.",
-      "projectNameInvalid": "프로젝트 이름은 영숫자, 점, 하이픈, 밑줄만 가능하며 콜론은 쓸 수 없습니다.",
+      "projectHint": "bank id 는 <team>::<프로젝트 ID> 이며 생성 후 바뀌지 않습니다.",
+      "projectIdInvalid": "프로젝트 ID 는 소문자, 숫자, 밑줄로 구성되며 문자로 시작합니다.",
+      "projectNameInvalid": "표시 이름이 필요합니다.",
       "projectCreated": "프로젝트를 생성했습니다.",
       "projectDeleteConfirm": "프로젝트를 삭제하면 소유한 모든 뱅크({bank} 포함)가 삭제됩니다. 계속하려면 {project}을(를) 입력하세요.",
       "projectDeleted": "프로젝트를 삭제했습니다. 뱅크 {count}개를 삭제했습니다.",
@@ -2899,7 +2899,18 @@
       "keyActive": "활성",
       "revoke": "폐기",
       "noKeys": "아직 키가 없습니다.",
-      "keyFailed": "키를 변경하지 못했습니다"
+      "keyFailed": "키를 변경하지 못했습니다",
+      "projectIdLabel": "프로젝트 ID",
+      "projectNameLabel": "표시 이름",
+      "removeProjectMember": "프로젝트에서 제거",
+      "purgeProjectMember": "기여 철회",
+      "removeProjectMemberHint": "{member} 를 프로젝트에서 제거합니다. 이미 병합된 내용은 팀 뱅크에 남습니다.",
+      "purgeProjectMemberHint": "{member} 를 프로젝트에서 제거하고 기여를 팀 뱅크에서 삭제합니다.",
+      "projectMemberRemoved": "{member} 를 제거했습니다. 이미 병합된 내용은 팀 뱅크에 남아 있습니다.",
+      "projectMemberRemoveFailed": "프로젝트 멤버 제거에 실패했습니다.",
+      "projectMemberPurgeConfirm": "철회하면 {member} 가 프로젝트에서 제거되고 기여가 팀 뱅크에서 삭제됩니다. 확인하려면 {member} 를 입력하세요:",
+      "projectMemberPurged": "{member} 의 기여를 철회했습니다. 팀 뱅크는 다음 병합 주기에 갱신됩니다.",
+      "projectMemberPurgeFailed": "기여 철회에 실패했습니다. 멤버가 아직 프로젝트에 남아 있을 수 있습니다."
     }
   }
 }

@@ -121,8 +121,10 @@ func runTeamRegistrySuite(t *testing.T, fixture teamRegistryFixture) {
 		if err != nil {
 			t.Fatalf("GetTeamProject: %v", err)
 		}
-		if created.BankID != "acme::Web" {
-			t.Fatalf("bank_id = %q, want acme::Web", created.BankID)
+		// The bank id is built from the project id, not from the display name: the
+		// name is a label and addresses nothing.
+		if created.BankID != "acme::web" {
+			t.Fatalf("bank_id = %q, want acme::web", created.BankID)
 		}
 		// The same project id or name cannot be reused inside one team.
 		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "acme", ProjectID: "web2", Name: "Web"}); !errors.Is(err, tenant.ErrExists) {
@@ -131,13 +133,37 @@ func runTeamRegistrySuite(t *testing.T, fixture teamRegistryFixture) {
 		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "acme", ProjectID: "web", Name: "Web2"}); !errors.Is(err, tenant.ErrExists) {
 			t.Fatalf("duplicate id = %v, want ErrExists", err)
 		}
-		// A bad name and a bad id are refused before anything is written.
-		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "acme", ProjectID: "bad", Name: "a:b"}); !errors.Is(err, tenant.ErrInvalidProject) {
-			t.Fatalf("colon name = %v, want ErrInvalidProject", err)
+		// An empty name is still refused: the console would show a blank row.
+		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "acme", ProjectID: "blank", Name: "  "}); !errors.Is(err, tenant.ErrInvalidProject) {
+			t.Fatalf("blank name = %v, want ErrInvalidProject", err)
+		}
+		// A malformed id is refused before anything is written.
+		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "acme", ProjectID: "Bad ID", Name: "Web"}); !errors.Is(err, tenant.ErrInvalidProject) {
+			t.Fatalf("bad id = %v, want ErrInvalidProject", err)
 		}
 		// A personal tenant is not a project owner.
 		if err := fixture.teams.CreateTeamProject(ctx, tenant.TeamProject{TeamID: "alice", ProjectID: "web", Name: "Web"}); !errors.Is(err, tenant.ErrKindMismatch) {
 			t.Fatalf("personal owner = %v, want ErrKindMismatch", err)
+		}
+	})
+
+	t.Run("a name is presentation only", func(t *testing.T) {
+		// Names are what a person reads, so any text is accepted — a colon no
+		// longer participates in an id, and neither does any other character. The
+		// bank id stays the project's own slug regardless.
+		project := tenant.TeamProject{TeamID: "acme", ProjectID: "labelled", Name: "产品:后端 🚀"}
+		if err := fixture.teams.CreateTeamProject(ctx, project); err != nil {
+			t.Fatalf("free-form name = %v, want it accepted", err)
+		}
+		created, err := fixture.teams.GetTeamProject(ctx, "acme", "labelled")
+		if err != nil {
+			t.Fatalf("GetTeamProject: %v", err)
+		}
+		if created.Name != "产品:后端 🚀" {
+			t.Fatalf("name = %q, want the free-form text preserved", created.Name)
+		}
+		if created.BankID != "acme::labelled" {
+			t.Fatalf("bank_id = %q, want acme::labelled from the id", created.BankID)
 		}
 	})
 
@@ -150,7 +176,7 @@ func runTeamRegistrySuite(t *testing.T, fixture teamRegistryFixture) {
 		if err != nil {
 			t.Fatalf("GetTeamProject(beta/web): %v", err)
 		}
-		if betaProject.BankID != "beta::Web" || betaProject.BankID == "acme::Web" {
+		if betaProject.BankID != "beta::web" || betaProject.BankID == "acme::web" {
 			t.Fatalf("beta bank_id = %q, want its own bank", betaProject.BankID)
 		}
 	})
@@ -239,8 +265,14 @@ func runTeamRegistrySuite(t *testing.T, fixture teamRegistryFixture) {
 		if team.MemberCount != 2 {
 			t.Fatalf("member count = %d, want 2 (alice, bob)", team.MemberCount)
 		}
-		if team.ProjectCount != 1 {
-			t.Fatalf("project count = %d, want 1", team.ProjectCount)
+		// Counted against the registry rather than a literal: the subtests share
+		// one fixture, so a project another subtest created is legitimately here.
+		projects, err := fixture.teams.ListTeamProjects(ctx, "acme")
+		if err != nil {
+			t.Fatalf("ListTeamProjects: %v", err)
+		}
+		if team.ProjectCount != len(projects) {
+			t.Fatalf("project count = %d, want %d as listed", team.ProjectCount, len(projects))
 		}
 		if _, err := fixture.teams.UpdateTeamName(ctx, "alice", "Nope"); !errors.Is(err, tenant.ErrKindMismatch) {
 			t.Fatalf("UpdateTeamName(personal) = %v, want ErrKindMismatch", err)

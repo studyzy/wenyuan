@@ -26,7 +26,9 @@ func newTenantRegistry(ctx context.Context, cfg config.Config, store storage.Sto
 	if provider, ok := store.(adminDBProvider); ok {
 		db := provider.AdminDB()
 		if cfg.RunMigrationsOnStartup {
-			if err := storage.MigrateAdminSchema(ctx, db); err != nil {
+			// A single-tenant deployment has no teams, so it does not get the
+			// team tables: the registry it needs is 0001 alone.
+			if err := storage.MigrateAdminSchemaFor(ctx, db, cfg.TenantMode == config.TenantModeMulti); err != nil {
 				return nil, fmt.Errorf("admin migrations failed: %w", err)
 			}
 		}
@@ -60,6 +62,8 @@ func newAdminHandler(
 	dropper func(context.Context, string) error,
 	teams storage.TeamRegistry,
 	banks adminapi.BankAdmin,
+	merges adminapi.MergeAdmin,
+	membershipChanged func(string),
 ) (http.Handler, error) {
 	adminConfig := adminapi.Config{
 		Registry:    registry,
@@ -70,7 +74,9 @@ func newAdminHandler(
 		Dropper:     dropper,
 		// Teams stay nil in single-tenant mode, where every team route answers
 		// 501; that is the one place the plane differs between the two modes.
-		TeamConfig: adminapi.TeamConfig{Teams: teams, Banks: banks},
+		TeamConfig: adminapi.TeamConfig{
+			Teams: teams, Banks: banks, Merges: merges, MembershipChanged: membershipChanged,
+		},
 	}
 	// The console turns a tenant key into a console session, and it needs the
 	// tenant id to renew that session. Resolving through the same extension the

@@ -276,14 +276,24 @@ B 部分实施时**不得回头改 0002**；表结构的任何追加都走新迁
 | 10 语种补齐成本 | 只要求键结构一致，非基准语种简译；结构由测试守住 |
 ## 八、实施记要（2026-10-30）
 
-按 §四 的 A-1…A-6 全部落地。与计划的差异只有一处，另有三条实施中做出的决定：
+按 §四 的 A-1…A-6 全部落地。另有三条实施中做出的决定：
 
 | # | 计划 | 实际 | 原因 |
 |---|---|---|---|
-| 1 | `BankAdmin` 只有 `ListBanks` / `DeleteBank` | 去掉 `CreateBank`：建项目只写注册表，bank 在首次写入时由既有惰性建行产生；另加 `POST .../adopt-bank` 报告 bank 是否存在 | 计划 A-3 里“建 bank 失败回滚”的事务边界会跨两套存储；惰性建行没有这个问题 |
+| 1 | 建项目同时建 `T::X` | **已于 2026-10-30 补上**：`BankAdmin` 增加 `CreateBank`，建项目先建 bank 再写注册表行；注册表拒绝时删掉刚建的 bank 作为补偿。`POST .../adopt-bank` 保留为“bank 是否存在”的只读查询 | 最初为规避跨两套存储的事务边界省掉了建 bank，代价是项目建好之后 bank 并不存在——团队第一次写入才出现。改成“先建 bank、失败删 bank”，用一个补偿步骤代替分布式事务 |
 | 2 | 团队 key 未明确 | 增加 `GET/POST /admin/v1/teams/{id}/keys`、`DELETE .../keys/{keyId}`，复用租户 key 的同一批 handler，前面加一道 `teamOnly` 校验 | 一个团队的 key 就是它的租户 key；e2e 验证时发现只有 `/tenants/{id}/keys` 能发，团队路径下 404，补上 |
 | 3 | — | `decodeJSON` 拒绝 JSON 值之后的多余数据 | 计划测试里的“畸形 body”用 `{}{}` 试出来，原来会静默丢弃第二个对象 |
 | 4 | — | `vitest.config.ts` 固定 `NODE_ENV=test` | 本机 `NODE_ENV=production` 时 React 19 不导出 `act`，全部 41 个既有组件测试本来就是红的；这是环境缺陷，不是本次引入 |
+
+**`adopt_bank` 只在一种情形下有意义，而该情形被 schema 排除（未修，待决）**：
+跨 Team 同名项目不冲突——bank id 有 `<team>::` 前缀，唯一约束也都带
+`team_tenant_id`（实测 TeamA::Web 与 TeamB::Web 各自 201）。真正被拒的是
+**同一 Team 内**另一个 project_id 复用同一个 name：撞的是
+`UNIQUE (team_tenant_id, name)`，与 bank id 无关。既然同一 team 内 name 唯一，
+“已存在的 `T::X` 交给新项目接管”在线上就无法发生，`adopt_bank` 实际只剩
+“bank 在但项目行丢了”这一种用途，而那需要脱库造数据。内存后端不模拟该唯一约束，
+所以 `TestTeamLifecycleThroughTheAPI` 里的 adopt 正例才一直是绿的。本次改动没有碰
+它——是去掉 `adopt_bank`，还是放宽约束，需要产品决定。
 
 **删除项目的前缀闸门**最终形态（比 §二 更严）：先按 `bank_id` 前缀列出该团队 schema 里的 bank，若项目的规范 bank **不在**其中就 409 且不删任何东西；否则按 `left(bank_id, length($1)) = $1` 逐个小删。`left()` 而非 `LIKE`，因为项目名允许 `.` 与 `_`。
 

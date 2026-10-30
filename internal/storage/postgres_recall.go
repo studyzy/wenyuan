@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,42 @@ func (s *PostgresStore) RecallQueryTokenLimit() int { return s.tuning.MaxQueryTo
 // threads the caller's tag scoping, temporal window, strategy boosts, score
 // floors and reranker through the shared scoring path.
 func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, error) {
+	if q.Fallback == nil {
+		return s.recallWhere(ctx, q)
+	}
+	// A team member's read falls back to their project's shared bank once their
+	// own holds nothing. The redirected read runs through the same pipeline in
+	// the team's schema, and its bank ids are rewritten so the caller sees the
+	// bank it asked for.
+	fallback := q.Fallback
+	q.Fallback = nil
+	fallbackRead := q
+	result, servedBy, err := withFallback(ctx, s, FallbackQuery{BankID: q.BankID},
+		fallback, func(ctx context.Context, bankID string) (RecallResult, error) {
+			fallbackRead.BankID = bankID
+			result, err := s.recallWhere(ctx, fallbackRead)
+			if err != nil && errors.Is(err, ErrBankNotFound) && bankID == q.BankID {
+				// The caller's own bank has not been created yet, which is what a
+				// member looks like before their first write. An empty result is
+				// the honest answer: nothing of theirs is there to recall, and
+				// the team's content was already ruled out by the fallback
+				// decision.
+				return RecallResult{}, nil
+			}
+			return result, err
+		})
+	if err != nil {
+		return RecallResult{}, err
+	}
+	// A recall match carries no bank id of its own, so the redirected read needs
+	// no rewriting: the client sees the same shape whichever bank answered. The
+	// servedBy result is kept for the diagnostic path that may need it later.
+	_ = servedBy
+	return result, nil
+}
+
+// recallWhere runs the recall pipeline against the query's own bank.
+func (s *PostgresStore) recallWhere(ctx context.Context, q RecallQuery) (RecallResult, error) {
 	// Recalls are bounded at the engine level, separately from admission
 	// control: more than the configured number in flight wait for a permit
 	// rather than all running at once.

@@ -17,6 +17,11 @@ const (
 	DefaultOperationRetentionDays             = 0
 	DefaultOperationCleanupBatchSize          = 1000
 	DefaultAuditLogRetentionDays              = -1
+	DefaultProjectMergeIntervalSeconds        = 60
+	DefaultProjectMergeBatchSize              = 10
+	DefaultProjectMergeRebuildMaxUnits        = 5000
+	DefaultProjectMergeMaxTeamFacts           = 500
+	DefaultProjectMergeFailThreshold          = 5
 )
 
 // MaintenanceConfig tunes the background maintenance loop.
@@ -56,6 +61,28 @@ type MaintenanceConfig struct {
 	LLMTraceEnabled bool
 	// LLMTraceRetentionDays is how long a model-request trace row is kept.
 	LLMTraceRetentionDays int
+	// ProjectMergeInterval is how often a project's contributed facts are merged
+	// into its team's bank. Zero or negative disables the job.
+	ProjectMergeInterval time.Duration
+	// ProjectMergeBatchSize bounds the new member facts one round consumes. The
+	// team's previous content is always part of the input.
+	ProjectMergeBatchSize int
+	// ProjectMergeRebuildMaxUnits bounds a rebuild's input before the project
+	// fails closed.
+	ProjectMergeRebuildMaxUnits int
+	// ProjectMergeMaxTeamFacts bounds the team content one round's prompt
+	// carries; beyond it the round is skipped rather than failed closed.
+	ProjectMergeMaxTeamFacts int
+	// ProjectMergeFailThreshold is how many consecutive failed rounds halt a
+	// project until an operator resets it.
+	ProjectMergeFailThreshold int
+	// ProjectMergeEnabled reports that a merge store was wired, which is what a
+	// multi-tenant process with teams has and a single-tenant one never does.
+	//
+	// It is separate from the interval on purpose: the interval has a default,
+	// so keying the job on it alone would start the loop on every deployment and
+	// leave it ticking over work it has no store to do.
+	ProjectMergeEnabled bool
 }
 
 // AnyJobEnabled reports whether at least one job could actually do work, so the
@@ -71,7 +98,8 @@ func (m MaintenanceConfig) AnyJobEnabled() bool {
 	reconcileOn := m.ConsolidationReconcileInterval > 0
 	refreshOn := m.MentalModelRefreshTick > 0
 	cleanupOn := m.OperationCleanupInterval > 0 && m.OperationRetentionDays > 0
-	return auditOn || llmOn || reconcileOn || refreshOn || cleanupOn
+	mergeOn := m.ProjectMergeEnabled && m.ProjectMergeInterval > 0
+	return auditOn || llmOn || reconcileOn || refreshOn || cleanupOn || mergeOn
 }
 
 // resolveMaintenance reads the maintenance tuning through the shared resolution
@@ -87,6 +115,24 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 		OperationRetentionDays:         intFromEnv(lookup, EnvOperationRetentionDays, DefaultOperationRetentionDays),
 		OperationCleanupBatchSize:      intFromEnv(lookup, EnvOperationCleanupBatchSize, DefaultOperationCleanupBatchSize),
 		StartJitter:                    time.Duration(intFromEnv(lookup, EnvMaintenanceStartJitterSeconds, DefaultMaintenanceStartJitterSeconds)) * time.Second,
+		ProjectMergeInterval:           time.Duration(intFromEnv(lookup, EnvProjectMergeIntervalSeconds, DefaultProjectMergeIntervalSeconds)) * time.Second,
+		ProjectMergeBatchSize:          intFromEnv(lookup, EnvProjectMergeBatchSize, DefaultProjectMergeBatchSize),
+		ProjectMergeRebuildMaxUnits:    intFromEnv(lookup, EnvProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits),
+		ProjectMergeMaxTeamFacts:       intFromEnv(lookup, EnvProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts),
+		ProjectMergeFailThreshold:      intFromEnv(lookup, EnvProjectMergeFailThreshold, DefaultProjectMergeFailThreshold),
+	}
+	for _, pair := range []struct {
+		target *int
+		def    int
+	}{
+		{&cfg.ProjectMergeBatchSize, DefaultProjectMergeBatchSize},
+		{&cfg.ProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits},
+		{&cfg.ProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts},
+		{&cfg.ProjectMergeFailThreshold, DefaultProjectMergeFailThreshold},
+	} {
+		if *pair.target <= 0 {
+			*pair.target = pair.def
+		}
 	}
 	if cfg.OperationCleanupBatchSize <= 0 {
 		cfg.OperationCleanupBatchSize = DefaultOperationCleanupBatchSize

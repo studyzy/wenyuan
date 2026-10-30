@@ -406,6 +406,10 @@ type MemoryQuery struct {
 	TimeEnd   *time.Time
 	Limit     int
 	Offset    int
+	// Fallback, when set, is read instead of BankID once BankID is found to hold
+	// no units at all. See RecallQuery.Fallback for why the decision is per-bank
+	// rather than per-query.
+	Fallback *FallbackScope
 }
 
 // MemoryPage is one page of memories with the pre-paging total.

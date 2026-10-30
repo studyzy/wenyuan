@@ -207,6 +207,17 @@ type RecallQuery struct {
 	// fusion, so one over-expanding backend cannot crowd the others out of the
 	// merged pool. Zero (or negative) disables the cap.
 	PerSourceCap int
+	// Fallback, when set, is read instead of BankID once BankID is found to hold
+	// no units at all, provided the store implements BankPresence. A store
+	// without that capability ignores it, which is what keeps the in-memory
+	// backend and every test double on their previous behaviour.
+	//
+	// The pipeline runs once, against exactly one bank — never as a merge of the
+	// two — so a member sees one stable view per request rather than the team's
+	// answer to one question and their own to the next. Every bank the response
+	// reports is rewritten back to BankID, so the caller never sees the scope it
+	// was served from.
+	Fallback *FallbackScope
 }
 
 // RerankFunc scores candidate texts against a query. It is a function type

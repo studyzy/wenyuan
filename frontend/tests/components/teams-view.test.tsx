@@ -31,6 +31,7 @@ const addTeamMember = vi.fn();
 const removeTeamMember = vi.fn();
 const addProjectMember = vi.fn();
 const removeProjectMember = vi.fn();
+const purgeContribution = vi.fn();
 const deleteTeam = vi.fn();
 const renameTeam = vi.fn();
 const tenantSession = vi.fn();
@@ -52,6 +53,7 @@ vi.mock("@/lib/admin-api", () => ({
     removeTeamMember: (...args: unknown[]) => removeTeamMember(...args),
     addProjectMember: (...args: unknown[]) => addProjectMember(...args),
     removeProjectMember: (...args: unknown[]) => removeProjectMember(...args),
+    purgeContribution: (...args: unknown[]) => purgeContribution(...args),
     deleteTeam: (...args: unknown[]) => deleteTeam(...args),
     renameTeam: (...args: unknown[]) => renameTeam(...args),
     tenantSession: () => tenantSession(),
@@ -83,6 +85,16 @@ const project = {
  * tab's content, so the project rows and their forms exist only once the tab
  * is selected — which is also what an operator does.
  */
+/**
+ * openProjectMembers expands one project's membership panel. The member rows,
+ * and the two exits on each, exist only once the panel is open.
+ */
+async function openProjectMembers() {
+  fireEvent.click(screen.getByText("showMembers"));
+  // The panel fetches its members when it opens, so the rows appear a tick later.
+  await waitFor(() => expect(listProjectMembers).toHaveBeenCalledWith("acme", "web"));
+}
+
 function openProjectsTab() {
   const trigger = screen.getByRole("tab", { name: "tabs.projects" });
   fireEvent.mouseDown(trigger);
@@ -156,15 +168,100 @@ describe("TeamDetailView", () => {
     await waitFor(() => expect(createTeamProject).toHaveBeenCalledWith("acme", { project_id: "web", name: "Web" }));
   });
 
-  it("refuses a project name carrying a colon before calling the API", async () => {
+  it("accepts any display name, a colon and Chinese included", async () => {
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+    // The name is a label only: it never participates in an id, so nothing in it
+    // is refused.
+    fireEvent.change(screen.getByPlaceholderText("projectIdPlaceholder"), { target: { value: "web2" } });
+    fireEvent.change(screen.getByPlaceholderText("projectNamePlaceholder"), { target: { value: "产品:Web 后端" } });
+    fireEvent.submit(screen.getByText("createProject").closest("form") as HTMLFormElement);
+    await waitFor(() =>
+      expect(createTeamProject).toHaveBeenCalledWith("acme", { project_id: "web2", name: "产品:Web 后端" }),
+    );
+  });
+
+  it("refuses an empty project name before calling the API", async () => {
     render(<TeamDetailView teamId="acme" />);
     await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
     openProjectsTab();
     fireEvent.change(screen.getByPlaceholderText("projectIdPlaceholder"), { target: { value: "web2" } });
-    fireEvent.change(screen.getByPlaceholderText("projectNamePlaceholder"), { target: { value: "a:b" } });
+    fireEvent.change(screen.getByPlaceholderText("projectNamePlaceholder"), { target: { value: "   " } });
     fireEvent.submit(screen.getByText("createProject").closest("form") as HTMLFormElement);
     await waitFor(() => expect(screen.getByText("projectNameInvalid")).toBeDefined());
     expect(createTeamProject).not.toHaveBeenCalled();
+  });
+
+  it("removes a member from a project and says what stayed behind", async () => {
+    // The member rows come from the project's own membership list.
+    listProjectMembers.mockResolvedValue({
+      members: [{ tenant_id: "alice", display_name: "alice", added_at: "2026-01-01T00:00:00Z" }],
+    });
+    removeProjectMember.mockResolvedValue({ status: "removed" });
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+    await openProjectMembers();
+
+    fireEvent.click(screen.getByText("removeProjectMember"));
+    await waitFor(() => expect(removeProjectMember).toHaveBeenCalledWith("acme", "web", "alice"));
+    // The message states the part the operator cannot see: merged content stays.
+    await waitFor(() => expect(screen.getByText("projectMemberRemoved")).toBeDefined());
+    // A plain removal is not a withdrawal.
+    expect(purgeContribution).not.toHaveBeenCalled();
+  });
+
+  it("withdraws a contribution only after the member id is typed back", async () => {
+    listProjectMembers.mockResolvedValue({
+      members: [{ tenant_id: "alice", display_name: "alice", added_at: "2026-01-01T00:00:00Z" }],
+    });
+    purgeContribution.mockResolvedValue({ status: "purged", rebuild: true });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("alice");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+    await openProjectMembers();
+
+    fireEvent.click(screen.getByText("purgeProjectMember"));
+    await waitFor(() => expect(purgeContribution).toHaveBeenCalledWith("acme", "web", "alice"));
+    await waitFor(() => expect(screen.getByText("projectMemberPurged")).toBeDefined());
+    prompt.mockRestore();
+  });
+
+  it("does not withdraw when the confirmation is left blank", async () => {
+    listProjectMembers.mockResolvedValue({
+      members: [{ tenant_id: "alice", display_name: "alice", added_at: "2026-01-01T00:00:00Z" }],
+    });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+    await openProjectMembers();
+
+    fireEvent.click(screen.getByText("purgeProjectMember"));
+    await waitFor(() => expect(prompt).toHaveBeenCalled());
+    expect(purgeContribution).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  it("reports why a withdrawal was refused", async () => {
+    listProjectMembers.mockResolvedValue({
+      members: [{ tenant_id: "alice", display_name: "alice", added_at: "2026-01-01T00:00:00Z" }],
+    });
+    // The management plane refuses a withdrawal when the deployment cannot merge.
+    purgeContribution.mockRejectedValue(new Error("the project merge job is not enabled on this deployment"));
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("alice");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+    await openProjectMembers();
+
+    fireEvent.click(screen.getByText("purgeProjectMember"));
+    await waitFor(() =>
+      expect(screen.getByText("the project merge job is not enabled on this deployment")).toBeDefined(),
+    );
+    prompt.mockRestore();
   });
 
   it("deletes a project only after the operator types its id, and says how many banks went", async () => {

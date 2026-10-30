@@ -25,6 +25,11 @@ func (p llmProber) Probe(ctx context.Context) error {
 // observation and consolidation families into the existing composition root.
 func (a *App) mountReporting(handle func(method, pattern string, handler http.HandlerFunc)) {
 	handlers := reporting.NewHandlers(a.Store)
+	if a.TeamRead != nil {
+		// A deployment with no team registry leaves this nil, which keeps every
+		// listing on its own bank.
+		handlers.TeamScope = a.TeamRead
+	}
 	handlers.APIVersion = httpx.APIVersion
 	handlers.Features = a.Config.FeatureMap()
 	handlers.BankLLMHealthEnabled = a.Config.EnableBankLLMHealth

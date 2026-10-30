@@ -110,15 +110,34 @@ func TestTeamPlaneEndToEnd(t *testing.T) {
 		t.Fatalf("members = %d, want 2", got)
 	}
 
-	// Project and its membership.
+	// Project and its membership. Creating the project creates its bank, so the
+	// team's key can address "acme::web" without a first write having made it.
 	if recorder := teamAdminRequest(t, admin, http.MethodPost, "/admin/v1/teams/acme/projects", `{"project_id":"web","name":"Web"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create project = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	banks := httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil)
+	banks.Header.Set("Authorization", "Bearer "+key)
+	banksRecorder := httptest.NewRecorder()
+	application.Handler.ServeHTTP(banksRecorder, banks)
+	if banksRecorder.Code != http.StatusOK {
+		t.Fatalf("list banks = %d: %s", banksRecorder.Code, banksRecorder.Body.String())
+	}
+	var listed struct {
+		Banks []struct {
+			BankID string `json:"bank_id"`
+		} `json:"banks"`
+	}
+	if err := json.Unmarshal(banksRecorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode banks: %v", err)
+	}
+	if len(listed.Banks) != 1 || listed.Banks[0].BankID != "acme::web" {
+		t.Fatalf("banks after creating the project = %s, want acme::web", banksRecorder.Body.String())
 	}
 	if recorder := teamAdminRequest(t, admin, http.MethodPut, "/admin/v1/teams/acme/projects/web/members/alice", ""); recorder.Code != http.StatusOK {
 		t.Fatalf("add project member = %d: %s", recorder.Code, recorder.Body.String())
 	}
 	project := decodeResponse(t, teamAdminRequest(t, admin, http.MethodGet, "/admin/v1/teams/acme/projects/web", ""))
-	if project["bank_id"] != "acme::Web" {
+	if project["bank_id"] != "acme::web" {
 		t.Fatalf("project bank = %v", project["bank_id"])
 	}
 

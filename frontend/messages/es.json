@@ -2868,14 +2868,14 @@
       "remove": "Quitar",
       "project": "Proyecto",
       "projectName": "Nombre",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "p. ej. Backend Web",
       "bank": "Banco",
       "projectMembers": "Miembros",
       "projectIdPlaceholder": "web",
       "createProject": "Crear proyecto",
-      "projectHint": "El id del banco es <team>::<name> y no cambia después.",
-      "projectIdInvalid": "El id del proyecto debe cumplir el formato requerido.",
-      "projectNameInvalid": "El nombre del proyecto admite letras, dígitos, puntos, guiones y guiones bajos, pero no dos puntos.",
+      "projectHint": "El bank id es <team>::<id del proyecto> y no cambia después.",
+      "projectIdInvalid": "El id del proyecto necesita minúsculas, dígitos y guiones bajos, empezando por una letra.",
+      "projectNameInvalid": "Se requiere un nombre visible.",
       "projectCreated": "Proyecto creado.",
       "projectDeleteConfirm": "Eliminar un proyecto elimina todos los bancos que posee, incluido {bank}. Escribe {project} para continuar.",
       "projectDeleted": "Proyecto eliminado con {count} banco(s).",
@@ -2899,7 +2899,18 @@
       "keyActive": "activa",
       "revoke": "Revocar",
       "noKeys": "Aún no hay claves.",
-      "keyFailed": "No se pudieron cambiar las claves"
+      "keyFailed": "No se pudieron cambiar las claves",
+      "projectIdLabel": "ID del proyecto",
+      "projectNameLabel": "Nombre visible",
+      "removeProjectMember": "Quitar",
+      "purgeProjectMember": "Retirar",
+      "removeProjectMemberHint": "Quita a {member} del proyecto; lo ya fusionado permanece en el banco del equipo.",
+      "purgeProjectMemberHint": "Quita a {member} del proyecto y borra su contribución del banco del equipo.",
+      "projectMemberRemoved": "Se quitó a {member}; lo que ya había fusionado permanece en el banco del equipo.",
+      "projectMemberRemoveFailed": "No se pudo quitar al miembro del proyecto.",
+      "projectMemberPurgeConfirm": "Retirar quita a {member} del proyecto y borra su contribución del banco del equipo. Escribe {member} para confirmar:",
+      "projectMemberPurged": "Se retiró la contribución de {member}; el banco del equipo se actualiza en la próxima ronda.",
+      "projectMemberPurgeFailed": "No se pudo retirar la contribución; el miembro puede seguir en el proyecto."
     }
   }
 }

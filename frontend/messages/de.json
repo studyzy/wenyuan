@@ -2868,14 +2868,14 @@
       "remove": "Entfernen",
       "project": "Projekt",
       "projectName": "Name",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "z. B. Web-Backend",
       "bank": "Bank",
       "projectMembers": "Mitglieder",
       "projectIdPlaceholder": "web",
       "createProject": "Projekt erstellen",
-      "projectHint": "Die Bank-Id ist <team>::<name> und ändert sich danach nicht mehr.",
-      "projectIdInvalid": "Die Projekt-Id muss dem geforderten Format entsprechen.",
-      "projectNameInvalid": "Ein Projektname darf Buchstaben, Ziffern, Punkte, Bindestriche und Unterstriche enthalten, aber keinen Doppelpunkt.",
+      "projectHint": "Die Bank-ID ist <team>::<Projekt-ID> und bleibt unveränderlich.",
+      "projectIdInvalid": "Eine Projekt-ID braucht Kleinbuchstaben, Ziffern und Unterstriche und beginnt mit einem Buchstaben.",
+      "projectNameInvalid": "Ein Anzeigename ist erforderlich.",
       "projectCreated": "Projekt erstellt.",
       "projectDeleteConfirm": "Beim Löschen eines Projekts werden alle zugehörigen Banken gelöscht, auch {bank}. Geben Sie {project} ein, um fortzufahren.",
       "projectDeleted": "Projekt mit {count} Bank(en) gelöscht.",
@@ -2899,7 +2899,18 @@
       "keyActive": "aktiv",
       "revoke": "Widerrufen",
       "noKeys": "Noch keine Schlüssel.",
-      "keyFailed": "Schlüssel konnten nicht geändert werden"
+      "keyFailed": "Schlüssel konnten nicht geändert werden",
+      "projectIdLabel": "Projekt-ID",
+      "projectNameLabel": "Anzeigename",
+      "removeProjectMember": "Entfernen",
+      "purgeProjectMember": "Zurückziehen",
+      "removeProjectMemberHint": "{member} aus dem Projekt entfernen; bereits zusammengeführte Inhalte bleiben in der Team-Bank.",
+      "purgeProjectMemberHint": "{member} aus dem Projekt entfernen und den Beitrag aus der Team-Bank löschen.",
+      "projectMemberRemoved": "{member} wurde entfernt; bereits zusammengeführte Inhalte bleiben in der Team-Bank.",
+      "projectMemberRemoveFailed": "Das Entfernen des Projektmitglieds ist fehlgeschlagen.",
+      "projectMemberPurgeConfirm": "Zurückziehen entfernt {member} aus dem Projekt und löscht den Beitrag aus der Team-Bank. Zur Bestätigung {member} eingeben:",
+      "projectMemberPurged": "Der Beitrag von {member} wurde zurückgezogen; die Team-Bank aktualisiert sich in der nächsten Runde.",
+      "projectMemberPurgeFailed": "Das Zurückziehen ist fehlgeschlagen; das Mitglied ist eventuell noch im Projekt."
     }
   }
 }

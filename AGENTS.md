@@ -96,13 +96,56 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   `team_project`, `team_project_member`, from `embeddedadmin/0002_team_registry.sql`).
   A tenant schema must stay object-for-object identical to the reference schema,
   so nothing team-related may be created there.
-- A project's bank is `<team_tenant_id>::<name>`, fixed at creation. Deleting a
+- A project's bank is `<team_tenant_id>::<name>`, created together with the
+  project and in the team's own schema. A bank already under that id is a 409
+  unless the caller passes `adopt_bank`, which hands the existing bank over
+  rather than overwriting it; a registry row refused after the bank was created
+  deletes that bank again. Deleting a
   project deletes every bank under that prefix, so the delete demands
   `{"confirm": "<project_id>", "delete_banks": true}` and refuses when the
   project's own bank is not among the ones the prefix found — that disagreement
   is what would let a prefix delete take another project's data.
+- **Shared memory is merged, not shared raw.** A background job `project.merge`
+  (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
+  60s) reads each member's `fact_type='world'` facts from their own bank and asks
+  the chat model to combine them into the project's team bank `<team>::<name>`.
+  Raw conversation, documents, chunks and attachments are never copied. Design:
+  `docs/plans/2026-10-30-team-memory-design-v3.md`.
+- **The merge ledger is `admin.merge_source_unit`** (`embeddedadmin/0003_merge_state.sql`),
+  and it records the `merge_key` each member fact *supports* — or `__dropped__`
+  when the model folded it away. Delete detection reads only the supporting rows,
+  so removing a redundant fact cannot force a rebuild. A team fact's id is its
+  `merge_key`, so a fact whose wording survives keeps its row and its
+  observations.
+- **A merge round is two transactions with the model call between them.** The
+  first takes the project's claim (`pg_try_advisory_xact_lock` plus
+  `merge_state.merging_since`); the second is fenced on the claim stamp, so a
+  round another process took over cannot write a stale result. The model call is
+  never inside a transaction.
+- **The team bank is written only by the merge job.** A fact written into it
+  directly is replaced by the next round; `merge-status.unmanaged_facts` counts
+  those so an operator can see it.
+- **Reads fall back per bank, in the storage layer.** A member's
+  `POST /banks/{id}/memories/recall` and `GET /banks/{id}/memories/list` read the
+  project's team bank once the member's own bank holds no units at all;
+  `RecallQuery.Fallback` / `MemoryQuery.Fallback` carry the scope and the
+  response keeps the bank id the caller asked for. The redirect needs the
+  `storage.BankPresence` capability (absent → never fall back) and
+  `storage.TeamRegistry.ResolveProjectForMember` (membership is the authority,
+  never the bank id's shape). `tags`, `graph`, `entities`, `stats`, `documents`,
+  `chunks`, reads and writes by unit id, `state=invalidated` and `document_id`
+  filters do **not** fall back.
+- **Visibility window:** a member's new fact reaches the team bank on the next
+  round plus one model call — 60s or so by default. The member's own recall does
+  not see it either during that window, which is the accepted trade for a
+  stable team view.
 - The team plane is **multi-tenant only**: `tenant_mode: single` leaves the team
-  registry unset and every team route answers 501.
+  registry unset and every team route answers 501. The same gate keeps
+  `MergeStore`, the read resolver and the `project.merge` job nil or absent, and
+  the admin migration series applies **0001 only** in that mode — a single-tenant
+  deployment's `admin` schema holds no team tables
+  (`storage.AdminMigrationSeriesFor`). `internal/app/maintenance_single_tenant_test.go`
+  and `internal/app/team_read_test.go` pin these facts.
 - The plane is **additive**: it does not change the reference `/v1/...` routes,
   JSON contracts or schema. Parity audits should exclude it rather than report
   it as a divergence, and its operator key must never be reused as a tenant key.
@@ -174,9 +217,14 @@ internal/httpx/        router, JSON helpers, error envelope, middleware,
 internal/config/       config resolution: flags, env, .env, defaults
 internal/storage/      storage interfaces + memory + postgres backends
 internal/storage/embedded/  embedded copy of the SQL migrations (see below)
+internal/storage/embeddedadmin/  the control plane's own migration series
+                       (tenant registry, team registry, merge ledger)
 internal/provider/     model-provider port + adapters (openai, anthropic,
                        embed, rerank, none, mock) — see "Provider boundary"
 internal/reflect/      bounded retrieval-and-synthesis reflection loop
+internal/projectmerge/ the project merge engine's pure rules (merge key, diff,
+                       prompt, answer parsing) — no database, no HTTP
+internal/teamread/     decides whether a read falls back to a project's team bank
 internal/consolidation/  observation consolidation engine
 internal/extraction/   memory extraction pipeline
 internal/entitylabels/ entity label resolution

@@ -2868,14 +2868,14 @@
       "remove": "外す",
       "project": "プロジェクト",
       "projectName": "名前",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "例：Web バックエンド",
       "bank": "バンク",
       "projectMembers": "メンバー数",
       "projectIdPlaceholder": "web",
       "createProject": "プロジェクトを作成",
-      "projectHint": "バンク ID は <team>::<name> で、作成後は変更できません。",
-      "projectIdInvalid": "プロジェクト ID は規定の形式に一致する必要があります。",
-      "projectNameInvalid": "プロジェクト名は英数字、ピリオド、ハイフン、アンダースコアのみ。コロンは使用できません。",
+      "projectHint": "bank id は <team>::<プロジェクト ID> で、作成後は変わりません。",
+      "projectIdInvalid": "プロジェクト ID は小文字・数字・アンダースコアで、先頭は英字です。",
+      "projectNameInvalid": "表示名は必須です。",
       "projectCreated": "プロジェクトを作成しました。",
       "projectDeleteConfirm": "プロジェクトを削除すると、所有するすべてのバンク（{bank} を含む）が削除されます。続行するには {project} と入力してください。",
       "projectDeleted": "プロジェクトを削除しました。{count} 個のバンクを削除しました。",
@@ -2899,7 +2899,18 @@
       "keyActive": "有効",
       "revoke": "失効させる",
       "noKeys": "キーはまだありません。",
-      "keyFailed": "キーを変更できませんでした"
+      "keyFailed": "キーを変更できませんでした",
+      "projectIdLabel": "プロジェクト ID",
+      "projectNameLabel": "表示名",
+      "removeProjectMember": "プロジェクトから外す",
+      "purgeProjectMember": "貢献を取り消す",
+      "removeProjectMemberHint": "{member} をプロジェクトから外します。既に統合された内容はチームバンクに残ります。",
+      "purgeProjectMemberHint": "{member} をプロジェクトから外し、貢献をチームバンクから削除します。",
+      "projectMemberRemoved": "{member} を外しました。既に統合された内容はチームバンクに残っています。",
+      "projectMemberRemoveFailed": "プロジェクトメンバーの削除に失敗しました。",
+      "projectMemberPurgeConfirm": "取り消すと {member} がプロジェクトから外れ、貢献がチームバンクから削除されます。確認のため {member} を入力してください:",
+      "projectMemberPurged": "{member} の貢献を取り消しました。チームバンクは次回の統合で更新されます。",
+      "projectMemberPurgeFailed": "貢献の取り消しに失敗しました。メンバーはまだプロジェクトに残っている可能性があります。"
     }
   }
 }

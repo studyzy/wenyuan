@@ -2868,14 +2868,14 @@
       "remove": "Remover",
       "project": "Projeto",
       "projectName": "Nome",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "ex. Backend Web",
       "bank": "Banco",
       "projectMembers": "Membros",
       "projectIdPlaceholder": "web",
       "createProject": "Criar projeto",
-      "projectHint": "O id do banco é <team>::<name> e não muda depois.",
-      "projectIdInvalid": "O id do projeto deve corresponder ao formato exigido.",
-      "projectNameInvalid": "O nome do projeto aceita letras, dígitos, pontos, hífens e sublinhados, mas não dois-pontos.",
+      "projectHint": "O bank id é <team>::<id do projeto> e não muda depois.",
+      "projectIdInvalid": "O id do projeto usa minúsculas, dígitos e underscores, começando por uma letra.",
+      "projectNameInvalid": "Um nome de exibição é obrigatório.",
       "projectCreated": "Projeto criado.",
       "projectDeleteConfirm": "Excluir um projeto exclui todos os bancos que ele possui, incluindo {bank}. Digite {project} para continuar.",
       "projectDeleted": "Projeto excluído com {count} banco(s).",
@@ -2899,7 +2899,18 @@
       "keyActive": "ativa",
       "revoke": "Revogar",
       "noKeys": "Ainda não há chaves.",
-      "keyFailed": "Não foi possível alterar as chaves"
+      "keyFailed": "Não foi possível alterar as chaves",
+      "projectIdLabel": "ID do projeto",
+      "projectNameLabel": "Nome de exibição",
+      "removeProjectMember": "Remover",
+      "purgeProjectMember": "Revogar",
+      "removeProjectMemberHint": "Remove {member} do projeto; o que já foi fundido permanece no banco da equipe.",
+      "purgeProjectMemberHint": "Remove {member} do projeto e apaga a contribuição do banco da equipe.",
+      "projectMemberRemoved": "{member} foi removido; o que já havia sido fundido permanece no banco da equipe.",
+      "projectMemberRemoveFailed": "Falha ao remover o membro do projeto.",
+      "projectMemberPurgeConfirm": "Revogar remove {member} do projeto e apaga a contribuição do banco da equipe. Digite {member} para confirmar:",
+      "projectMemberPurged": "A contribuição de {member} foi revogada; o banco da equipe atualiza na próxima rodada.",
+      "projectMemberPurgeFailed": "Falha ao revogar a contribuição; o membro pode continuar no projeto."
     }
   }
 }

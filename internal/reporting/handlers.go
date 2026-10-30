@@ -24,6 +24,10 @@ const maxBodyBytes = 1 << 20
 // and consolidation families.
 type Handlers struct {
 	Store storage.Store
+	// TeamScope, when non-nil, resolves whether a bank-scoped read should be
+	// served from a team's shared bank instead of the caller's own. A nil value
+	// is a deployment without teams, where every read stays on its own bank.
+	TeamScope TeamScopeResolver
 	// APIVersion and Features back the versioned /v1/version route, which
 	// reports the same payload as the root version endpoint.
 	APIVersion string
@@ -948,6 +952,11 @@ func strictBoolParam(w http.ResponseWriter, r *http.Request, name string, def bo
 }
 
 // requireBank reports not-found for an unknown bank.
+//
+// A bank may be missing and still be readable: a team member whose own bank has
+// not been created yet is served their project's shared content, which is the
+// onboarding path. So a missing bank is only refused when the deployment has no
+// team scope to serve it from.
 func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, bool) {
 	bankID := PathBankID(r)
 	if bankID == "" {
@@ -955,10 +964,25 @@ func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, 
 		return "", false
 	}
 	if _, err := h.Store.GetBank(r.Context(), bankID); err != nil {
-		httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
-		return "", false
+		if h.TeamScope == nil || !isMissingBank(err) {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
+			return "", false
+		}
+		// A deployment with teams may still have content for this caller. The
+		// read itself decides whether it does: an unresolved scope means the
+		// caller is not a member of anything, and the store then answers the
+		// same not-found through its own lookup.
+		if h.teamFallback(r.Context(), bankID) == nil {
+			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
+			return "", false
+		}
 	}
 	return bankID, true
+}
+
+// isMissingBank reports whether an error is the store's "no such bank".
+func isMissingBank(err error) bool {
+	return errors.Is(err, storage.ErrBankNotFound)
 }
 
 // requireOrCreateBank resolves the bank, creating it lazily when absent — the

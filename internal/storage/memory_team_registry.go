@@ -209,7 +209,7 @@ func (r *MemoryTeamRegistry) CreateTeamProject(ctx context.Context, project tena
 		return err
 	}
 	if project.BankID == "" {
-		project.BankID = tenant.ProjectBankID(project.TeamID, project.Name)
+		project.BankID = tenant.ProjectBankID(project.TeamID, project.ProjectID)
 	}
 	if project.CreatedAt.IsZero() {
 		project.CreatedAt = time.Now().UTC()
@@ -318,6 +318,30 @@ func (r *MemoryTeamRegistry) RemoveProjectMember(ctx context.Context, teamID, pr
 	}
 	delete(r.joined[teamID][projectID], tenantID)
 	return nil
+}
+
+// ResolveProjectForMember returns the active project a member takes part in.
+//
+// It mirrors the PostgreSQL query: only a project of an active team counts, so a
+// soft-deleted team stops offering its content to readers.
+func (r *MemoryTeamRegistry) ResolveProjectForMember(ctx context.Context, tenantID, projectID string) (tenant.TeamProject, error) {
+	r.tenants.mu.RLock()
+	defer r.tenants.mu.RUnlock()
+	for teamID, projects := range r.projects {
+		record, err := r.tenants.GetTenant(ctx, teamID)
+		if err != nil || !record.IsTeam() || record.Status != tenant.StatusActive {
+			continue
+		}
+		project, ok := projects[projectID]
+		if !ok {
+			continue
+		}
+		if _, joined := r.joined[teamID][projectID][tenantID]; !joined {
+			continue
+		}
+		return project, nil
+	}
+	return tenant.TeamProject{}, tenant.ErrNotFound
 }
 
 // teamRecord reads a tenant and refuses one that is not a team.

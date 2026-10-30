@@ -25,6 +25,11 @@ SDK_API_URL ?= http://127.0.0.1:18888
 # The PostgreSQL-backed suite needs a live instance and is therefore opt-in:
 # the default gate stays offline. Point WENYUAN_TEST_DATABASE_URL at a database
 # this project owns; the suite creates its own schema and cleans up.
+#
+# It must be a SEPARATE database from the one a running service serves: the suite
+# deletes rows and drops schemas, and some tests clean up the shared admin schema,
+# which on a serving database would remove that deployment's tenants and teams.
+# Use e.g. wenyuan_test, not wenyuan.
 PG_TEST_URL ?= $(WENYUAN_TEST_DATABASE_URL)
 # The coverage floor sits just below the measured baseline so a regression fails
 # the gate; raise it as coverage improves rather than leaving it aspirational.
@@ -83,7 +88,7 @@ bench:
 ## test-pg: run the PostgreSQL-backed suite against a live instance
 test-pg:
 	@if [ -z "$(PG_TEST_URL)" ]; then \
-		echo "test-pg needs WENYUAN_TEST_DATABASE_URL (or PG_TEST_URL) pointed at a database this project owns"; \
+		echo "test-pg needs WENYUAN_TEST_DATABASE_URL (or PG_TEST_URL) pointed at a database this project owns, SEPARATE from any serving database"; \
 		exit 1; \
 	fi
 	WENYUAN_TEST_DATABASE_URL="$(PG_TEST_URL)" $(GO) test -tags pgx -count=1 $(GOFLAGS) $(PKGS)

@@ -142,6 +142,25 @@ const (
 	// EnvMaintenanceStartJitterSeconds spreads the first maintenance tick, so a
 	// fleet started together does not fire every probe at once.
 	EnvMaintenanceStartJitterSeconds = "WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS"
+	// EnvProjectMergeIntervalSeconds is how often a project's contributed facts
+	// are merged into its team's bank. Zero or negative disables the job, which
+	// is what a single-tenant deployment always gets.
+	EnvProjectMergeIntervalSeconds = "WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS"
+	// EnvProjectMergeBatchSize bounds how many new member facts one round
+	// consumes. The team's previous content is always part of the input, so a
+	// batch only defers new facts, never drops old ones.
+	EnvProjectMergeBatchSize = "WENYUAN_API_PROJECT_MERGE_BATCH_SIZE"
+	// EnvProjectMergeRebuildMaxUnits bounds a rebuild's input. Beyond it the
+	// project fails closed: its team content is emptied rather than left
+	// standing with facts a member has deleted.
+	EnvProjectMergeRebuildMaxUnits = "WENYUAN_API_PROJECT_MERGE_REBUILD_MAX_UNITS"
+	// EnvProjectMergeMaxTeamFacts bounds the team content carried into one
+	// round's prompt. Beyond it the round is skipped, not failed closed: an
+	// oversized project is a capacity problem, not a privacy one.
+	EnvProjectMergeMaxTeamFacts = "WENYUAN_API_PROJECT_MERGE_MAX_TEAM_FACTS"
+	// EnvProjectMergeFailThreshold is how many consecutive failed rounds halt a
+	// project until an operator resets it.
+	EnvProjectMergeFailThreshold = "WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD"
 	// EnvGzipMinSize bounds the response size above which a body is compressed.
 	EnvGzipMinSize = "WENYUAN_API_GZIP_MIN_SIZE"
 	// EnvProfile holds the reference's profiling request as raw JSON, e.g.

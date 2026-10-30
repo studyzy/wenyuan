@@ -2868,14 +2868,14 @@
       "remove": "移除",
       "project": "專案",
       "projectName": "名",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "例如：Web 後端",
       "bank": "Bank",
       "projectMembers": "成員數",
       "projectIdPlaceholder": "web",
       "createProject": "建立專案",
-      "projectHint": "bank id 係 <team>::<name>，建立之後唔會改。",
-      "projectIdInvalid": "專案 id 要符合規定格式。",
-      "projectNameInvalid": "專案名可以有字母、數字、點、橫線同底線，但唔可以有冒號。",
+      "projectHint": "bank id 係 <team>::<專案 ID>，建立之後唔會再變。",
+      "projectIdInvalid": "專案 ID 要用細楷字母、數字同底線，而且以字母開頭。",
+      "projectNameInvalid": "顯示名稱唔可以留空。",
       "projectCreated": "專案已建立。",
       "projectDeleteConfirm": "刪除專案會刪埋佢有嘅全部 bank，包括 {bank}。輸入 {project} 繼續。",
       "projectDeleted": "專案已刪除，刪咗 {count} 個 bank。",
@@ -2899,7 +2899,18 @@
       "keyActive": "有效",
       "revoke": "撤銷",
       "noKeys": "仲未有 key。",
-      "keyFailed": "改唔到 key"
+      "keyFailed": "改唔到 key",
+      "projectIdLabel": "專案 ID",
+      "projectNameLabel": "顯示名稱",
+      "removeProjectMember": "移出專案",
+      "purgeProjectMember": "撤回貢獻",
+      "removeProjectMemberHint": "將 {member} 移出專案；已經合併咗嘅內容會保留喺團隊庫。",
+      "purgeProjectMemberHint": "將 {member} 移出專案，並且喺團隊庫刪除佢嘅貢獻。",
+      "projectMemberRemoved": "已經移出 {member}；佢之前合併咗嘅內容仲喺團隊庫。",
+      "projectMemberRemoveFailed": "移出專案成員失敗。",
+      "projectMemberPurgeConfirm": "撤回會將 {member} 移出專案，並且喺團隊庫刪除佢嘅貢獻。請再輸入 {member} 確認：",
+      "projectMemberPurged": "已經撤回 {member} 嘅貢獻，團隊庫會喺下一輪合併後更新。",
+      "projectMemberPurgeFailed": "撤回貢獻失敗；該成員可能仲喺專案入面。"
     }
   }
 }

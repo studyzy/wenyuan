@@ -2868,14 +2868,14 @@
       "remove": "Retirer",
       "project": "Projet",
       "projectName": "Nom",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "ex. backend Web",
       "bank": "Banque",
       "projectMembers": "Membres",
       "projectIdPlaceholder": "web",
       "createProject": "Créer le projet",
-      "projectHint": "L'id de banque est <team>::<name> et ne change plus ensuite.",
-      "projectIdInvalid": "L'id du projet doit respecter le format requis.",
-      "projectNameInvalid": "Le nom du projet accepte lettres, chiffres, points, tirets et soulignés, mais pas les deux-points.",
+      "projectHint": "Le bank id est <team>::<id du projet> et ne change plus ensuite.",
+      "projectIdInvalid": "Un id de projet demande des minuscules, des chiffres et des soulignés, en commençant par une lettre.",
+      "projectNameInvalid": "Un nom affiché est requis.",
       "projectCreated": "Projet créé.",
       "projectDeleteConfirm": "Supprimer un projet supprime toutes les banques qu'il possède, dont {bank}. Tapez {project} pour continuer.",
       "projectDeleted": "Projet supprimé avec {count} banque(s).",
@@ -2899,7 +2899,18 @@
       "keyActive": "active",
       "revoke": "Révoquer",
       "noKeys": "Aucune clé pour l'instant.",
-      "keyFailed": "Impossible de modifier les clés"
+      "keyFailed": "Impossible de modifier les clés",
+      "projectIdLabel": "ID du projet",
+      "projectNameLabel": "Nom affiché",
+      "removeProjectMember": "Retirer",
+      "purgeProjectMember": "Révoquer",
+      "removeProjectMemberHint": "Retire {member} du projet ; ce qui a déjà été fusionné reste dans la banque de l'équipe.",
+      "purgeProjectMemberHint": "Retire {member} du projet et supprime sa contribution de la banque de l'équipe.",
+      "projectMemberRemoved": "{member} a été retiré ; ce qui avait déjà été fusionné reste dans la banque de l'équipe.",
+      "projectMemberRemoveFailed": "Le retrait du membre du projet a échoué.",
+      "projectMemberPurgeConfirm": "Révoquer retire {member} du projet et supprime sa contribution de la banque de l'équipe. Saisissez {member} pour confirmer :",
+      "projectMemberPurged": "La contribution de {member} a été révoquée ; la banque de l'équipe se met à jour au prochain tour.",
+      "projectMemberPurgeFailed": "La révocation a échoué ; le membre est peut-être encore sur le projet."
     }
   }
 }

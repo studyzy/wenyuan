@@ -18,6 +18,24 @@ func (s *MemoryStore) RecallQueryTokenLimit() int { return s.tuning.MaxQueryToke
 // store. It returns a single ranked list whose order is descending by combined
 // relevance, plus any requested side channels.
 func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, error) {
+	if q.Fallback != nil {
+		// The in-memory backend is one flat namespace, so a redirected read is the
+		// same read against another bank id.
+		fb := q.Fallback
+		q.Fallback = nil
+		fbQuery := q
+		result, _, err := withFallback(ctx, s, FallbackQuery{BankID: q.BankID}, fb,
+			func(ctx context.Context, bankID string) (RecallResult, error) {
+				fbQuery.BankID = bankID
+				return s.recallFlat(ctx, fbQuery)
+			})
+		return result, err
+	}
+	return s.recallFlat(ctx, q)
+}
+
+// recallFlat runs the recall pipeline without the fallback.
+func (s *MemoryStore) recallFlat(ctx context.Context, q RecallQuery) (RecallResult, error) {
 	// Recalls are bounded at the engine level, separately from admission
 	// control: more than the configured number in flight wait for a permit
 	// rather than all running at once.

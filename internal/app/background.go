@@ -29,17 +29,20 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 	if tenants == nil {
 		tenants = NewTenantExtension(application.Config)
 	}
+	maintenanceCfg := application.Config.Maintenance
+	maintenanceCfg.ProjectMergeEnabled = mergeEnabled(application.Config, application.MergeStore, model)
 	return &BackgroundRoles{
 		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,
 			application.Config.EnableObservations, application.Config.EnableAutoConsolidation,
 			application.Config.DatabaseSchema, tenants).WithAuditor(application.Audit),
-		Loop: NewMaintenanceLoop(
+		Loop: NewMaintenanceLoopWithMerge(
 			application.Store,
 			model,
 			reflection,
 			tenants,
-			application.Config.Maintenance,
+			maintenanceCfg,
 			application.Config.VectorIndex,
+			application.MergeStore,
 		),
 	}
 }

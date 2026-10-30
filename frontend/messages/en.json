@@ -2868,14 +2868,14 @@
       "remove": "Remove",
       "project": "Project",
       "projectName": "Name",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "e.g. Web backend",
       "bank": "Bank",
       "projectMembers": "Members",
       "projectIdPlaceholder": "web",
       "createProject": "Create project",
-      "projectHint": "The bank id is <team>::<name> and cannot change afterwards.",
-      "projectIdInvalid": "A project id must match the required slug pattern.",
-      "projectNameInvalid": "A project name may hold letters, digits, dots, dashes and underscores, but no colon.",
+      "projectHint": "The bank id is <team>::<project id> and cannot change afterwards.",
+      "projectIdInvalid": "A project id needs lowercase letters, digits and underscores, starting with a letter.",
+      "projectNameInvalid": "A display name is required.",
       "projectCreated": "Project created.",
       "projectDeleteConfirm": "Deleting a project deletes every bank it owns, including {bank}. Type {project} to continue.",
       "projectDeleted": "Project deleted with {count} bank(s).",
@@ -2899,7 +2899,18 @@
       "keyActive": "active",
       "revoke": "Revoke",
       "noKeys": "No keys yet.",
-      "keyFailed": "Could not change the keys"
+      "keyFailed": "Could not change the keys",
+      "projectIdLabel": "Project ID",
+      "projectNameLabel": "Display name",
+      "removeProjectMember": "Remove",
+      "purgeProjectMember": "Withdraw",
+      "removeProjectMemberHint": "Remove {member} from the project; what was already merged stays in the team bank.",
+      "purgeProjectMemberHint": "Remove {member} from the project and delete their contribution from the team bank.",
+      "projectMemberRemoved": "{member} was removed; what they had already merged stays in the team bank.",
+      "projectMemberRemoveFailed": "Removing the project member failed.",
+      "projectMemberPurgeConfirm": "Withdrawing removes {member} from the project and deletes their contribution from the team bank. Type {member} to confirm:",
+      "projectMemberPurged": "{member}'s contribution was withdrawn; the team bank updates on the next merge round.",
+      "projectMemberPurgeFailed": "Withdrawing the contribution failed; the member may still be on the project."
     }
   }
 }

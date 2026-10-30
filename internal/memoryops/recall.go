@@ -157,6 +157,11 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query = applyRecallTagScope(r, query)
+	// A team member's recall reads the project's shared bank once their own holds
+	// nothing. The decision is made here, once, and the storage layer does the
+	// redirect: everything downstream is keyed by the query's bank, so resolving
+	// it there keeps one answer to which bank this request read.
+	query.Fallback = h.teamFallback(r.Context(), bankID)
 	// With an embedding model configured, the query text is embedded so the
 	// semantic arm can rank by vector similarity. A failed embedding degrades
 	// to the lexical path rather than failing the read, because recall is an

@@ -272,7 +272,7 @@ func (r *PostgresTenantRegistry) CreateTeamProject(ctx context.Context, project 
 		return err
 	}
 	if project.BankID == "" {
-		project.BankID = tenant.ProjectBankID(project.TeamID, project.Name)
+		project.BankID = tenant.ProjectBankID(project.TeamID, project.ProjectID)
 	}
 	if _, err := r.GetTeam(ctx, project.TeamID); err != nil {
 		return err
@@ -369,6 +369,23 @@ func (r *PostgresTenantRegistry) RemoveProjectMember(ctx context.Context, teamID
 		return tenant.ErrNotFound
 	}
 	return nil
+}
+
+// ResolveProjectForMember returns the active project a member takes part in.
+func (r *PostgresTenantRegistry) ResolveProjectForMember(ctx context.Context, tenantID, projectID string) (tenant.TeamProject, error) {
+	project, err := scanTeamProject(r.db.QueryRowContext(ctx,
+		"SELECT "+r.projectSelect()+" FROM "+r.qualified("team_project")+" p"+
+			" JOIN "+r.qualified("team_project_member")+" pm"+
+			"   ON pm.team_tenant_id = p.team_tenant_id AND pm.project_id = p.project_id"+
+			" JOIN "+r.qualified("tenant")+" t ON t.tenant_id = p.team_tenant_id"+
+			" WHERE pm.tenant_id = $1 AND p.project_id = $2"+
+			"   AND t.kind = 'team' AND t.status = 'active' AND t.deleted_at IS NULL"+
+			" ORDER BY p.team_tenant_id, p.project_id LIMIT 1",
+		tenantID, projectID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return tenant.TeamProject{}, tenant.ErrNotFound
+	}
+	return project, err
 }
 
 // memberRefusal reports why a member insert wrote nothing.

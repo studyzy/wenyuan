@@ -111,7 +111,11 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	// whitespace-padded value is a filter that matches nothing rather than one
 	// that was meant to be trimmed away.
 	page, err := h.Store.ListMemories(r.Context(), storage.MemoryQuery{
-		BankID:             bankID,
+		BankID: bankID,
+		// A team member's listing reads the project's shared bank once their own
+		// holds nothing. The storage layer performs the redirect and rewrites the
+		// units' bank ids back to this one, so the caller's shape is unchanged.
+		Fallback:           h.teamFallback(r.Context(), bankID),
 		Type:               queryLast(r, "type"),
 		Q:                  queryLast(r, "q"),
 		DocumentID:         queryLast(r, "document_id"),

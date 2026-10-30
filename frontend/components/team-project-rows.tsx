@@ -6,7 +6,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TableCell, TableRow } from "@/components/ui/table";
 
-/** ProjectRows renders one project, plus its membership when expanded. */
+/**
+ * ProjectRows renders one project, plus its membership when expanded.
+ *
+ * A member has two distinct exits, and the panel names both rather than leaving a
+ * bare glyph to be discovered:
+ *
+ *   - remove takes them off the project. Their ledger rows go with them, so their
+ *     new facts stop arriving, but what was already merged stays in the team's
+ *     shared content.
+ *   - withdraw removes them *and* rebuilds, so what they contributed leaves the
+ *     team's content too.
+ *
+ * The distinction matters enough to be spelled out: "I added the wrong person" and
+ * "this person should no longer be quoted" have different answers, and getting the
+ * gentler one when the stronger was meant leaves their facts in place.
+ */
 export function ProjectRows({
   project,
   expanded,
@@ -17,6 +32,7 @@ export function ProjectRows({
   onToggle,
   onAddMember,
   onRemoveMember,
+  onPurgeMember,
   onDelete,
 }: {
   project: TeamProject;
@@ -28,6 +44,7 @@ export function ProjectRows({
   onToggle: () => void;
   onAddMember: (event: React.FormEvent) => void;
   onRemoveMember: (id: string) => void;
+  onPurgeMember: (id: string) => void;
   onDelete: () => void;
 }) {
   const t = useTranslations("teams.detail");
@@ -74,27 +91,43 @@ export function ProjectRows({
                 {t("addProjectMember")}
               </Button>
             </form>
-            <div className="flex flex-wrap gap-2">
-              {members.length === 0 ? (
-                <p className="text-[12px] text-muted-foreground">{t("noProjectMembers")}</p>
-              ) : (
-                members.map((member) => (
-                  <span
+            {members.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground">{t("noProjectMembers")}</p>
+            ) : (
+              <div className="space-y-1">
+                {members.map((member) => (
+                  <div
                     key={member.tenant_id}
-                    className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-2.5 py-0.5 text-[12px]"
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-border bg-card px-3 py-1.5"
                   >
-                    <span className="font-mono">{member.tenant_id}</span>
-                    <button
-                      type="button"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => onRemoveMember(member.tenant_id)}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))
-              )}
-            </div>
+                    <span className="text-[12px]">
+                      <span className="font-mono">{member.tenant_id}</span>
+                      {member.display_name && member.display_name !== member.tenant_id ? (
+                        <span className="ml-2 text-muted-foreground">{member.display_name}</span>
+                      ) : null}
+                    </span>
+                    <span className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        title={t("removeProjectMemberHint", { member: member.tenant_id })}
+                        onClick={() => onRemoveMember(member.tenant_id)}
+                      >
+                        {t("removeProjectMember")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        title={t("purgeProjectMemberHint", { member: member.tenant_id })}
+                        onClick={() => onPurgeMember(member.tenant_id)}
+                      >
+                        {t("purgeProjectMember")}
+                      </Button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </TableCell>
         </TableRow>
       )}

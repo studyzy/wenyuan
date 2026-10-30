@@ -40,6 +40,23 @@ func maintenanceJobs(
 	cfg config.MaintenanceConfig,
 	vectorIndex config.VectorIndexConfig,
 ) []maintenance.Job {
+	return maintenanceJobsWithMerge(store, model, reflection, tenants, cfg, vectorIndex, nil)
+}
+
+// maintenanceJobsWithMerge builds the jobs including project.merge.
+//
+// It is the variant a deployment that can merge goes through; the plain
+// maintenanceJobs is what tests and single-tenant processes use, and it registers
+// no merge job because it has no store to merge with.
+func maintenanceJobsWithMerge(
+	store storage.Store,
+	model provider.Provider,
+	reflection storage.ReflectRunner,
+	tenants tenant.Extension,
+	cfg config.MaintenanceConfig,
+	vectorIndex config.VectorIndexConfig,
+	merges storage.MergeStore,
+) []maintenance.Job {
 	jobs := make([]maintenance.Job, 0, 4)
 
 	if cfg.AuditLogRetentionDays > 0 && cfg.RetentionSweepInterval > 0 {
@@ -94,6 +111,16 @@ func maintenanceJobs(
 			Interval: time.Duration(vectorIndex.ReconcileInterval) * time.Second,
 			Run: func(ctx context.Context) error {
 				return reconcileVectorIndexes(ctx, store, tenants, vectorIndex.MinRows)
+			},
+		})
+	}
+	if cfg.ProjectMergeEnabled && cfg.ProjectMergeInterval > 0 && merges != nil && model != nil {
+		runner := &mergeRunner{merges: merges, store: store, model: model, cfg: cfg}
+		jobs = append(jobs, maintenance.Job{
+			Name:     "project.merge",
+			Interval: cfg.ProjectMergeInterval,
+			Run: func(ctx context.Context) error {
+				return runner.runProjectMerges(ctx)
 			},
 		})
 	}

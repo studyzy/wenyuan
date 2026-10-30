@@ -119,7 +119,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	loop := app.NewMaintenanceLoop(store, model, reflection, tenants, cfg.Maintenance, cfg.VectorIndex)
+	// The merge store is the worker's too: a deployment that runs a worker but
+	// not the API still converges its teams' shared content.
+	mergeStore := app.NewMergeStore(store)
+	maintenanceCfg := cfg.Maintenance
+	maintenanceCfg.ProjectMergeEnabled = app.MergeEnabled(cfg, mergeStore, model)
+	loop := app.NewMaintenanceLoopWithMerge(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore)
 	if loop.Enabled() {
 		slog.Info("maintenance enabled",
 			"jobs", len(loop.Jobs),

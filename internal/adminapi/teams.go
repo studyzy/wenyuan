@@ -49,6 +49,8 @@ func (h *Handler) bindTeamRoutes() {
 	h.mux.HandleFunc("DELETE /admin/v1/teams/{id}/projects/{project_id}/members/{tenant_id}", h.deleteProjectMember)
 
 	h.mux.HandleFunc("POST /admin/v1/teams/{id}/projects/{project_id}/purge-contribution", h.purgeContribution)
+	h.mux.HandleFunc("GET /admin/v1/teams/{id}/projects/{project_id}/merge-status", h.getMergeStatus)
+	h.mux.HandleFunc("POST /admin/v1/teams/{id}/projects/{project_id}/merge-reset", h.postMergeReset)
 }
 
 // teamsAbsent answers the 501 every team route shares. It reports whether it
@@ -376,10 +378,14 @@ func (h *Handler) deleteTeamMember(w http.ResponseWriter, r *http.Request) {
 	if h.teamsAbsent(w) {
 		return
 	}
-	if err := h.cfg.Teams.RemoveTeamMember(r.Context(), r.PathValue("id"), r.PathValue("tenant_id")); err != nil {
+	tenantID := r.PathValue("tenant_id")
+	if err := h.cfg.Teams.RemoveTeamMember(r.Context(), r.PathValue("id"), tenantID); err != nil {
 		h.writeTeamError(w, err, "removing a team member")
 		return
 	}
+	// Every project membership went with the team membership, so their reads stop
+	// being served from the team at once.
+	h.membershipChanged(tenantID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 

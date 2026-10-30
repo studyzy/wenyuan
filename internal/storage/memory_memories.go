@@ -115,6 +115,34 @@ func unitMatchesConsolidationState(unit MemoryUnit, state string) bool {
 
 // ListMemories returns one page of a bank's memory units, newest first.
 func (s *MemoryStore) ListMemories(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
+	if query.Fallback != nil {
+		// The in-memory backend is one flat namespace, so a redirected read is the
+		// same read against another bank id; the units' bank ids are rewritten
+		// back so callers see the bank they asked for, exactly as PostgreSQL's
+		// implementation does.
+		fb := query.Fallback
+		requested := query.BankID
+		fbQuery := query
+		fbQuery.Fallback = nil
+		page, servedBy, err := withFallback(ctx, s,
+			FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State},
+			fb, func(ctx context.Context, bankID string) (MemoryPage, error) {
+				fbQuery.BankID = bankID
+				return s.listMemoriesFlat(ctx, fbQuery)
+			})
+		if err != nil {
+			return MemoryPage{}, err
+		}
+		if servedBy != requested {
+			page.Memories = restoreBankID(page.Memories, requested)
+		}
+		return page, nil
+	}
+	return s.listMemoriesFlat(ctx, query)
+}
+
+// listMemoriesFlat lists one bank's memories without the fallback.
+func (s *MemoryStore) listMemoriesFlat(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
 	if err := ctx.Err(); err != nil {
 		return MemoryPage{}, err
 	}

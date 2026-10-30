@@ -13,6 +13,34 @@ import (
 // ListMemories returns one page of a bank's memory units, newest first. A
 // state of "invalidated" reads the archive table instead of the live one.
 func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
+	if query.Fallback == nil {
+		return s.listMemoriesWhere(ctx, query)
+	}
+	// A team member's list falls back to their project's shared bank once their
+	// own holds nothing. A listing reports its bank ids, so the redirected read's
+	// units are rewritten to the bank the caller asked for — its unit ids stay the
+	// team bank's own, so a unit fetched by id can be addressed again.
+	fallback := query.Fallback
+	query.Fallback = nil
+	requested := query.BankID
+	redirected := query
+	page, servedBy, err := withFallback(ctx, s,
+		FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State},
+		fallback, func(ctx context.Context, bankID string) (MemoryPage, error) {
+			redirected.BankID = bankID
+			return s.listMemoriesWhere(ctx, redirected)
+		})
+	if err != nil {
+		return MemoryPage{}, err
+	}
+	if servedBy != requested {
+		page.Memories = restoreBankID(page.Memories, requested)
+	}
+	return page, nil
+}
+
+// listMemoriesWhere lists one bank's memories in the query's own schema.
+func (s *PostgresStore) listMemoriesWhere(ctx context.Context, query MemoryQuery) (MemoryPage, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 MemoryPage

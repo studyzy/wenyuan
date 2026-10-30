@@ -25,6 +25,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/embed"
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/teamread"
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
@@ -66,6 +67,17 @@ type App struct {
 	// composition so a caller can register route extensions and an operation
 	// validator before serving.
 	Extensions *httpx.ExtensionHost
+	// MergeStore runs the project merge for a multi-tenant deployment; nil when
+	// the deployment cannot merge, which is always the single-tenant case.
+	MergeStore storage.MergeStore
+	// TeamRead resolves whether a bank-scoped read falls back to a team's shared
+	// bank. It is nil without the team registry, which is the single-tenant case:
+	// every read then stays on its own bank, exactly as before.
+	TeamRead *teamread.Resolver
+	// mergeTrigger runs on-demand merge rounds, the ones a management action asks
+	// for instead of waiting on the scheduled tick. It is nil without a merge
+	// store.
+	mergeTrigger *mergeTrigger
 }
 
 // Dependencies is the injectable surface used to build an App. Tests supply
@@ -278,14 +290,37 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		// registry to record them in, so its plane serves no team routes.
 		var teamRegistry storage.TeamRegistry
 		var bankAdmin adminapi.BankAdmin
+		var mergeAdmin adminapi.MergeAdmin
 		if cfg.TenantMode == config.TenantModeMulti {
 			teamRegistry, err = newTeamRegistry(cfg, store, tenantRegistry)
 			if err != nil {
 				return nil, err
 			}
 			bankAdmin = newBankAdmin(store)
+			// Merging is a team feature, so it exists only where teams do. The
+			// store is asked for unconditionally and answers nil on a build
+			// without the driver, which is what keeps the job out of the loop.
+			app.MergeStore = newMergeStore(store)
+			app.TeamRead = teamread.NewResolver(teamRegistry)
+			if app.MergeStore != nil {
+				// The management plane keeps the merge ledger in step with
+				// membership: a member leaving a project clears their rows, a purge
+				// asks for a rebuild, and adding a member merges straight away.
+				maintenanceCfg := cfg.Maintenance
+				maintenanceCfg.ProjectMergeEnabled = mergeEnabled(cfg, app.MergeStore, activeProvider)
+				runner := &mergeRunner{merges: app.MergeStore, store: store, model: activeProvider, cfg: maintenanceCfg}
+				app.mergeTrigger = newMergeTrigger(runner)
+				mergeAdmin = mergeAdminFor{store: app.MergeStore, trigger: app.mergeTrigger}
+			}
 		}
-		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin)
+		// The read cache is invalidated on a membership change whether or not this
+		// deployment can merge: which bank a read is served from depends on
+		// membership alone.
+		var membershipChanged func(string)
+		if app.TeamRead != nil {
+			membershipChanged = app.TeamRead.InvalidateMember
+		}
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged)
 		if err != nil {
 			return nil, err
 		}
@@ -310,6 +345,9 @@ func (a *App) Close() {
 	if a == nil {
 		return
 	}
+	// An on-demand merge round is a background goroutine this process owns, so a
+	// clean shutdown waits for it rather than closing the database under it.
+	a.mergeTrigger.Wait()
 	a.Tracer.Close()
 }
 
@@ -453,6 +491,11 @@ func (a *App) mount(router *httpx.Router) error {
 
 	memops := memoryops.NewHandlers(a.Store, int(a.Config.RetryAfter.Seconds()), int(a.Config.ReadTimeout.Milliseconds()))
 	a.memops = memops
+	// A deployment with no team registry leaves both nil, which is what keeps a
+	// single-tenant read on its own bank.
+	if a.TeamRead != nil {
+		memops.TeamScope = a.TeamRead
+	}
 	memops.RecallStrategyBoosts = a.Config.RecallStrategyBoosts
 	// The two v1.1.0 recall/retain defaults: the deployment's value is the last
 	// layer, under the request's and the bank's own configuration.

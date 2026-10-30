@@ -25,6 +25,11 @@ import (
 // Handlers wires the memory operation routes to a store.
 type Handlers struct {
 	Store storage.Store
+	// TeamScope, when non-nil, resolves whether this read should be served from
+	// a team's shared bank instead of the caller's own. A nil value is a
+	// deployment without teams — the single-tenant case — where every read stays
+	// on its own bank.
+	TeamScope TeamScopeResolver
 	// DefaultRetryAfter is the delay advertised when writes are unavailable.
 	DefaultRetryAfterSeconds int
 	// ReadTimeout is the budget after which a read reports a gateway timeout.

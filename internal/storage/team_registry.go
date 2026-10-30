@@ -50,4 +50,13 @@ type TeamRegistry interface {
 	AddProjectMember(ctx context.Context, teamID, projectID, tenantID string) error
 	// RemoveProjectMember removes a member from a project.
 	RemoveProjectMember(ctx context.Context, teamID, projectID, tenantID string) error
+
+	// ResolveProjectForMember returns the active project a member takes part in,
+	// by project id, in any team.
+	//
+	// This is the read path's membership check: a bank id can be forged, so a
+	// member's read is only redirected to a team's bank when the registry says
+	// they are on that project and the team is still active. tenant.ErrNotFound
+	// means they take part in no such project.
+	ResolveProjectForMember(ctx context.Context, tenantID, projectID string) (tenant.TeamProject, error)
 }

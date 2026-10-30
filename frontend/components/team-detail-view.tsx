@@ -19,6 +19,7 @@ import { ConsoleNav } from "@/components/console-nav";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProjectRows } from "@/components/team-project-rows";
@@ -123,7 +124,9 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
       setNotice({ kind: "error", text: t("projectIdInvalid") });
       return;
     }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(projectName)) {
+    // The name is a label a person reads, so it accepts any text in any script;
+    // only emptiness is refused. The id above is what addresses the project.
+    if (!projectName.trim()) {
       setNotice({ kind: "error", text: t("projectNameInvalid") });
       return;
     }
@@ -190,8 +193,29 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
       const list = await adminApi.listProjectMembers(teamId, project.project_id);
       setProjectMembers((current) => ({ ...current, [project.project_id]: list.members ?? [] }));
       await load();
+      // The removal is silent by nature — a row disappears — so the message says
+      // the part a person cannot see: what was already merged stays.
+      setNotice({ kind: "ok", text: t("projectMemberRemoved", { member: id }) });
     } catch (err) {
-      fail(err, "projectFailed");
+      fail(err, "projectMemberRemoveFailed");
+    }
+  }
+
+  // Withdrawing is the stronger exit: the member leaves the project and the team's
+  // shared content is rebuilt without their facts. It is confirmed because it
+  // deletes data rather than merely changing who receives what.
+  async function purgeProjectMember(project: TeamProject, id: string) {
+    setNotice(null);
+    const typed = window.prompt(t("projectMemberPurgeConfirm", { member: id, project: project.project_id }), "");
+    if (typed !== id) return;
+    try {
+      await adminApi.purgeContribution(teamId, project.project_id, id);
+      const list = await adminApi.listProjectMembers(teamId, project.project_id);
+      setProjectMembers((current) => ({ ...current, [project.project_id]: list.members ?? [] }));
+      await load();
+      setNotice({ kind: "ok", text: t("projectMemberPurged", { member: id }) });
+    } catch (err) {
+      fail(err, "projectMemberPurgeFailed");
     }
   }
 
@@ -322,19 +346,37 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
                 <CardTitle className="text-[15px]">{t("projects")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <form className="flex flex-wrap items-center gap-2" onSubmit={createProject}>
-                  <Input
-                    value={projectId}
-                    onChange={(event) => setProjectId(event.target.value)}
-                    placeholder={t("projectIdPlaceholder")}
-                    className="max-w-[180px]"
-                  />
-                  <Input
-                    value={projectName}
-                    onChange={(event) => setProjectName(event.target.value)}
-                    placeholder={t("projectNamePlaceholder")}
-                    className="max-w-[180px]"
-                  />
+                <form className="flex flex-wrap items-end gap-2" onSubmit={createProject}>
+                  {/*
+                    Both fields keep a visible label: the id addresses the project
+                    and never changes, the name is only what a person reads. A bare
+                    placeholder used to be the only cue, which vanished on the first
+                    keystroke.
+                  */}
+                  <div className="space-y-1">
+                    <Label htmlFor="project-id" className="text-[12px]">
+                      {t("projectIdLabel")}
+                    </Label>
+                    <Input
+                      id="project-id"
+                      value={projectId}
+                      onChange={(event) => setProjectId(event.target.value)}
+                      placeholder={t("projectIdPlaceholder")}
+                      className="max-w-[180px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="project-name" className="text-[12px]">
+                      {t("projectNameLabel")}
+                    </Label>
+                    <Input
+                      id="project-name"
+                      value={projectName}
+                      onChange={(event) => setProjectName(event.target.value)}
+                      placeholder={t("projectNamePlaceholder")}
+                      className="max-w-[180px]"
+                    />
+                  </div>
                   <Button type="submit">{t("createProject")}</Button>
                   <span className="text-[12px] text-muted-foreground">{t("projectHint")}</span>
                 </form>
@@ -370,6 +412,7 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
                           onToggle={() => void toggleProject(project)}
                           onAddMember={(event) => void addProjectMember(project, event)}
                           onRemoveMember={(id) => void removeProjectMember(project, id)}
+                          onPurgeMember={(id) => void purgeProjectMember(project, id)}
                           onDelete={() => void deleteProject(project)}
                         />
                       ))

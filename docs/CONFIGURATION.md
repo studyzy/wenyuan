@@ -182,6 +182,11 @@ Status words:
 | `WENYUAN_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS` | `consolidation_reconcile_interval_seconds` | `300` | resolved |  |
 | `WENYUAN_API_MENTAL_MODEL_REFRESH_TICK_SECONDS` | `mental_model_refresh_tick_seconds` | `300` | resolved |  |
 | `WENYUAN_API_MAINTENANCE_START_JITTER_SECONDS` | `maintenance_start_jitter_seconds` | `60` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS` | `project_merge_interval_seconds` | `60` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_BATCH_SIZE` | `project_merge_batch_size` | `10` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_REBUILD_MAX_UNITS` | `project_merge_rebuild_max_units` | `5000` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_MAX_TEAM_FACTS` | `project_merge_max_team_facts` | `500` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` | `project_merge_fail_threshold` | `5` | resolved |  |
 | `WENYUAN_API_MENTAL_MODEL_HISTORY_MAX_ENTRIES` | `mental_model_history_max_entries` | `50` | resolved |  |
 | `WENYUAN_API_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS` | `mental_model_min_refresh_interval_seconds` | `0` | resolved |  |
 | `WENYUAN_API_OBSERVATION_HISTORY_MAX_ENTRIES` | `observation_history_max_entries` | `50` | resolved |  |

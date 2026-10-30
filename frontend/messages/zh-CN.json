@@ -2868,14 +2868,14 @@
       "remove": "移除",
       "project": "项目",
       "projectName": "名称",
-      "projectNamePlaceholder": "Web",
+      "projectNamePlaceholder": "例如：Web 后端",
       "bank": "Bank",
       "projectMembers": "成员数",
       "projectIdPlaceholder": "web",
       "createProject": "创建项目",
-      "projectHint": "bank id 为 <team>::<name>，创建后不再改变。",
-      "projectIdInvalid": "项目 id 必须符合规定的字符格式。",
-      "projectNameInvalid": "项目名可含字母、数字、点、横线和下划线，但不能有冒号。",
+      "projectHint": "bank id 为 <team>::<项目 ID>，创建后不再改变。",
+      "projectIdInvalid": "项目 ID 必须由小写字母、数字和下划线组成，且以字母开头。",
+      "projectNameInvalid": "显示名称不能为空。",
       "projectCreated": "项目已创建。",
       "projectDeleteConfirm": "删除项目会删除它拥有的全部 bank，包括 {bank}。输入 {project} 继续。",
       "projectDeleted": "项目已删除，共删除 {count} 个 bank。",
@@ -2899,7 +2899,18 @@
       "keyActive": "有效",
       "revoke": "吊销",
       "noKeys": "还没有 key。",
-      "keyFailed": "无法修改 key"
+      "keyFailed": "无法修改 key",
+      "projectIdLabel": "项目 ID",
+      "projectNameLabel": "显示名称",
+      "removeProjectMember": "移出项目",
+      "purgeProjectMember": "撤回贡献",
+      "removeProjectMemberHint": "将 {member} 移出项目；已合并到团队库的内容保留。",
+      "purgeProjectMemberHint": "将 {member} 移出项目，并从团队库中删除他的贡献。",
+      "projectMemberRemoved": "已移出 {member}；他此前已合并的内容仍保留在团队库中。",
+      "projectMemberRemoveFailed": "移出项目成员失败。",
+      "projectMemberPurgeConfirm": "撤回会把 {member} 移出项目，并从团队库中删除他的贡献。请再次输入 {member} 确认：",
+      "projectMemberPurged": "已撤回 {member} 的贡献，团队库将在下一轮合并后更新。",
+      "projectMemberPurgeFailed": "撤回贡献失败；该成员可能仍留在项目中。"
     }
   }
 }

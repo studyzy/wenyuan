@@ -116,7 +116,13 @@ func TestDumpKeyInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile("/tmp/wenyuan_inventory.json", b, 0o600); err != nil {
+	// The output path is overridable so a sandboxed run can write somewhere it
+	// can read back; the render script reads whatever this wrote.
+	path := os.Getenv("WENYUAN_CONFIG_INVENTORY_PATH")
+	if path == "" {
+		path = "/tmp/wenyuan_inventory.json"
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("asked empty=%d populated=%d runtime=%d", len(empty), len(populated), len(runtime))
