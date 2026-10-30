@@ -1996,7 +1996,8 @@
         "unauthorized": "認証されていません",
         "keyNotConfigured": "このサーバーにアクセスキーが設定されていません。",
         "wrongKey": "アクセスキーが正しくありません。",
-        "tenantLoginUnavailable": "このサーバーではテナントキーでのサインインは利用できません。"
+        "tenantLoginUnavailable": "このサーバーではテナントキーでのサインインは利用できません。",
+        "dataKeyLoginUnavailable": "このデプロイではテナントキーでサインインします。データキーは使用できません。"
       },
       "validation": {
         "bankIdRequired": "bank_id は必須です",

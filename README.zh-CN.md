@@ -102,6 +102,11 @@ make frontend-run                       # 19999 端口（Next.js 生产模式）
 `http://127.0.0.1:18888`）。请使用生产构建：本环境下 dev 模式的 HMR
 会挂起带 Origin 的 WebSocket 升级，dashboard 会一直加载不出数据。
 
+控制台没有独立口令：日常用 `WENYUAN_CP_DATAPLANE_API_KEY` 登录（同一把 key
+既能访问控制台也能访问 API）；需要管理租户时用 `WENYUAN_CP_ADMIN_API_KEY`
+登录，只有该会话能调用 `/api/admin/**`。`tenant_mode: multi` 的部署不认数据
+key，用它会登录失败，各租户改用自己的 `wyk_...` key 登录。
+
 ### 服务端参数
 
 | 参数 | 作用 |

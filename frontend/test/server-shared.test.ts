@@ -39,7 +39,6 @@ describe("environment contract", () => {
 
   it("honors configured values", () => {
     const config = resolveServerConfig({
-      WENYUAN_CP_ACCESS_KEY: "secret",
       WENYUAN_CP_DATAPLANE_API_URL: "http://api.internal:9000/",
       WENYUAN_CP_DATAPLANE_API_KEY: "upstream-key",
       WENYUAN_CP_ADMIN_API_URL: "http://admin.internal:18890/",
@@ -47,7 +46,7 @@ describe("environment contract", () => {
       NEXT_PUBLIC_BASE_PATH: "/frontend/",
       WENYUAN_CP_MAX_UPLOAD_SIZE: "1024",
     });
-    expect(config.accessKey).toBe("secret");
+    expect(config.accessKey).toBe("operator-key");
     expect(config.dataplaneUrl).toBe("http://api.internal:9000");
     expect(config.dataplaneKey).toBe("upstream-key");
     expect(config.adminUrl).toBe("http://admin.internal:18890");
@@ -56,9 +55,23 @@ describe("environment contract", () => {
     expect(config.maxUploadSize).toBe(1024);
   });
 
+  it("signs sessions with the operator key, then the data key", () => {
+    // The console has no passphrase of its own; the signing secret is a
+    // credential the deployment already holds.
+    const withOperator = resolveServerConfig({
+      WENYUAN_CP_DATAPLANE_API_KEY: "data-key",
+      WENYUAN_CP_ADMIN_API_KEY: "operator-key",
+    });
+    expect(withOperator.accessKey).toBe("operator-key");
+
+    const withoutOperator = resolveServerConfig({ WENYUAN_CP_DATAPLANE_API_KEY: "data-key" });
+    expect(withoutOperator.accessKey).toBe("data-key");
+
+    expect(resolveServerConfig({}).accessKey).toBe("");
+  });
+
   it("uses the documented environment variable names verbatim", () => {
     const names = [
-      "WENYUAN_CP_ACCESS_KEY",
       "WENYUAN_CP_DATAPLANE_API_URL",
       "WENYUAN_CP_DATAPLANE_API_KEY",
       "WENYUAN_CP_ADMIN_API_URL",

@@ -1996,7 +1996,8 @@
         "unauthorized": "Unauthorized",
         "keyNotConfigured": "The access key is not configured on this server.",
         "wrongKey": "The access key is incorrect.",
-        "tenantLoginUnavailable": "Signing in with a tenant key is not available on this server."
+        "tenantLoginUnavailable": "Signing in with a tenant key is not available on this server.",
+        "dataKeyLoginUnavailable": "This deployment signs in with tenant keys; the data key is not accepted."
       },
       "validation": {
         "bankIdRequired": "bank_id is required",

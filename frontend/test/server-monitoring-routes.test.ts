@@ -49,7 +49,7 @@ describe("version route", () => {
     const restore = stub.restore;
     try {
       await withEnv(
-        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_ACCESS_KEY: "secret" },
+        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_DATAPLANE_API_KEY: "secret" },
         async () => {
           const response = await version(makeRequest("http://localhost/api/version"));
           expect(response.status).toBe(200);
@@ -68,7 +68,7 @@ describe("version route", () => {
     const restore = stub.restore;
     try {
       await withEnv(
-        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_ACCESS_KEY: undefined },
+        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local", WENYUAN_CP_DATAPLANE_API_KEY: undefined },
         async () => {
           const response = await version(makeRequest("http://localhost/api/version"));
           const body = await readJson(response);

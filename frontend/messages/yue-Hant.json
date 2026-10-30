@@ -1996,7 +1996,8 @@
         "unauthorized": "未獲授權",
         "keyNotConfigured": "呢個伺服器未設定存取金鑰。",
         "wrongKey": "存取金鑰唔正確。",
-        "tenantLoginUnavailable": "此伺服器唔支援用租戶金鑰登入。"
+        "tenantLoginUnavailable": "此伺服器唔支援用租戶金鑰登入。",
+        "dataKeyLoginUnavailable": "呢個部署用租戶金鑰登入，資料金鑰喺度唔可用。"
       },
       "validation": {
         "bankIdRequired": "必須提供 bank_id",

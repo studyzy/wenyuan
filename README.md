@@ -134,6 +134,13 @@ renamed keeps reading the old name from its compiled bundle — rebuild with
 `[Control Plane] Connecting to dataplane at: …` once at startup, which is the
 quickest way to confirm which URL it is using.
 
+The console has no passphrase of its own: sign in with
+`WENYUAN_CP_DATAPLANE_API_KEY` for the console and the API, or with
+`WENYUAN_CP_ADMIN_API_KEY` when you need tenant administration (only that
+session may call `/api/admin/**`). A deployment in `tenant_mode: multi` ignores
+the data key, so signing in with it is refused and each tenant signs in with its
+own `wyk_...` key.
+
 ## Installing as a service (systemd)
 
 For a host that keeps the API and the frontend running across sessions and

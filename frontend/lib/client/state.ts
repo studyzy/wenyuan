@@ -41,8 +41,8 @@ export function readFeatureFlags(payload: VersionPayload): FeatureFlags {
   return { accessKeyAuth: Boolean(features.access_key_auth), ...features };
 }
 
-export async function signIn(accessKey: string, returnTo?: string): Promise<unknown> {
-  return apiPost<unknown>("/api/auth/login", { accessKey, returnTo });
+export async function signIn(key: string, returnTo?: string): Promise<unknown> {
+  return apiPost<unknown>("/api/auth/login", { key, returnTo });
 }
 
 export async function signOut(): Promise<unknown> {

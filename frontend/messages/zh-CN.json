@@ -1996,7 +1996,8 @@
         "unauthorized": "未授权",
         "keyNotConfigured": "此服务器未配置访问密钥。",
         "wrongKey": "访问密钥不正确。",
-        "tenantLoginUnavailable": "此服务器不支持使用租户密钥登录。"
+        "tenantLoginUnavailable": "此服务器不支持使用租户密钥登录。",
+        "dataKeyLoginUnavailable": "该部署使用租户密钥登录，数据密钥在此不可用。"
       },
       "validation": {
         "bankIdRequired": "bank_id 为必填项",

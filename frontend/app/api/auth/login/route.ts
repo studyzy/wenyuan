@@ -13,8 +13,13 @@ import { errorResponse } from "../../../../lib/server/http";
 import { callUpstream } from "../../../../lib/server/upstream";
 import { negotiateLocale } from "../../../../i18n/negotiate";
 
-/** Prefix every key the registry mints carries (internal/tenant.NewKey). */
+/** Prefix every tenant key the registry mints carries (internal/tenant.NewKey). */
 const TENANT_KEY_PREFIX = "wyk_";
+
+/** Operator session: may reach the management plane. */
+const OPERATOR_SUBJECT = "console";
+/** Data-key session: may use the console, never the management plane. */
+const DATA_SUBJECT = "data";
 
 type TenantResolution =
   | { kind: "tenant"; tenantId: string }
@@ -24,11 +29,11 @@ type TenantResolution =
 /**
  * Resolve a submitted key as a tenant credential.
  *
- * The console key and a tenant key are two different things: the console key
- * unlocks the console, while a tenant key is a data-plane bearer credential
- * that names the schema to serve. The management plane owns the key-to-tenant
- * mapping, and it answers with the same resolver the data plane authenticates
- * with, so a key that resolves here is one the API accepts.
+ * The data key and a tenant key are different things: the data key names the
+ * deployment's default schema, a tenant key names one tenant. The management
+ * plane owns the key-to-tenant mapping and answers with the same resolver the
+ * data plane authenticates with, so a key that resolves here is one the API
+ * accepts.
  */
 async function resolveTenant(
   config: ReturnType<typeof resolveServerConfig>,
@@ -43,9 +48,6 @@ async function resolveTenant(
       body: JSON.stringify({ key }),
     });
     if (!result.ok) {
-      // A rejected credential is a wrong key; anything else (501 in a
-      // single-tenant deployment, an unreachable registry) means this
-      // deployment cannot accept tenant-key sign-in at all.
       return result.status === 401 ? { kind: "unauthorized" } : { kind: "unavailable" };
     }
     const body = JSON.parse(new TextDecoder().decode(result.body)) as { tenant_id?: unknown };
@@ -59,17 +61,45 @@ async function resolveTenant(
 }
 
 /**
+ * Whether the data plane accepts the configured data key.
+ *
+ * A multi-tenant deployment ignores the static key: the key is right for this
+ * configuration and still refused by the API. Asking once at sign-in turns that
+ * into a rejected login instead of a console whose every page is empty. An
+ * unreachable API is not an authentication answer, so it leaves the sign-in
+ * alone and lets the pages report the outage.
+ */
+async function dataPlaneRefusesKey(
+  config: ReturnType<typeof resolveServerConfig>,
+  key: string,
+): Promise<boolean> {
+  try {
+    const result = await callUpstream({ ...config, dataplaneKey: key }, {
+      path: "/v1/default/banks",
+      query: { limit: "1" },
+      method: "GET",
+    });
+    return result.status === 401;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Login route. Binds POST, returning documented localized errors and issuing the
  * signed session cookie on success.
  *
  * The submitted key travels in the `key` field, which is what the login form
- * posts; reading any other name would leave the form unable to sign in.
+ * posts. Two credentials open the console, and they are the two the deployment
+ * already holds:
  *
- * A key that is not the console key but carries the tenant registry prefix is
- * tried as a tenant key: on success the session is entered as that tenant, so
- * the console serves the tenant schema instead of the deployment default. The
- * tenant credential is sealed in its own cookie and never reaches browser
- * JavaScript.
+ *   - the operator key (`WENYUAN_CP_ADMIN_API_KEY`) — tenant administration;
+ *   - the data key (`WENYUAN_CP_DATAPLANE_API_KEY`) — the console and the API;
+ *   - a tenant key (`wyk_...`) — one tenant's schema, through the registry.
+ *
+ * The session records which one it was: only the operator session may reach the
+ * management plane, so holding a data or tenant credential never widens into
+ * tenant administration.
  */
 export async function POST(request: Request): Promise<Response> {
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
@@ -91,18 +121,36 @@ export async function POST(request: Request): Promise<Response> {
 
   const submitted = typeof payload?.key === "string" ? payload.key : "";
   const secure = isSecureRequest(request.headers.get("x-forwarded-proto"));
-  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
 
-  if (verifyAccessKey(config.accessKey, submitted)) {
+  const signInAs = (
+    subject: string,
+    options: { cookies?: string[]; body?: Record<string, unknown> } = {},
+  ): Response => {
+    const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
     headers.append(
       "set-cookie",
-      `${SESSION_COOKIE}=${createSessionToken(config.accessKey, "console", Date.now())}; ${sessionCookieAttributes(secure)}`,
+      `${SESSION_COOKIE}=${createSessionToken(config.accessKey, subject, Date.now())}; ${sessionCookieAttributes(secure)}`,
     );
-    return new Response(JSON.stringify({ signedIn: true }), { status: 200, headers });
+    for (const cookie of options.cookies ?? []) headers.append("set-cookie", cookie);
+    return new Response(JSON.stringify(options.body ?? { signedIn: true }), {
+      status: 200,
+      headers,
+    });
+  };
+
+  if (config.adminKey && verifyAccessKey(config.adminKey, submitted)) {
+    return signInAs(OPERATOR_SUBJECT);
   }
 
-  // Tenant keys carry the registry prefix. Anything else is a mistyped console
-  // key, and asking the management plane about it would turn a typo into a
+  if (config.dataplaneKey && verifyAccessKey(config.dataplaneKey, submitted)) {
+    if (await dataPlaneRefusesKey(config, submitted)) {
+      return errorResponse("api.errors.auth.dataKeyLoginUnavailable", 401, locale);
+    }
+    return signInAs(DATA_SUBJECT);
+  }
+
+  // Tenant keys carry the registry prefix. Anything else is a mistyped key, and
+  // asking the management plane about it would turn a typo into a
   // deployment-capability error.
   if (!submitted.startsWith(TENANT_KEY_PREFIX)) {
     return errorResponse("api.errors.auth.wrongKey", 401, locale);
@@ -117,18 +165,12 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // The subject is what keeps this session out of the management plane: a
-  // tenant key must not be able to create, purge or re-key tenants just because
-  // it can use the console.
-  headers.append(
-    "set-cookie",
-    `${SESSION_COOKIE}=${createSessionToken(config.accessKey, `tenant:${tenant.tenantId}`, Date.now())}; ${sessionCookieAttributes(secure)}`,
-  );
-  headers.append(
-    "set-cookie",
-    `${TENANT_SESSION_COOKIE}=${createTenantSessionToken(config.accessKey, tenant.tenantId, submitted, Date.now())}; ${tenantSessionCookieAttributes(secure)}`,
-  );
-  return new Response(JSON.stringify({ signedIn: true, tenant_id: tenant.tenantId }), {
-    status: 200,
-    headers,
+  // tenant key must not create, purge or re-key tenants just because it can use
+  // the console. The key itself is sealed in the tenant cookie for the BFF.
+  return signInAs(`tenant:${tenant.tenantId}`, {
+    cookies: [
+      `${TENANT_SESSION_COOKIE}=${createTenantSessionToken(config.accessKey, tenant.tenantId, submitted, Date.now())}; ${tenantSessionCookieAttributes(secure)}`,
+    ],
+    body: { signedIn: true, tenant_id: tenant.tenantId },
   });
 }

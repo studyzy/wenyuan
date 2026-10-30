@@ -1996,7 +1996,8 @@
         "unauthorized": "Nicht autorisiert",
         "keyNotConfigured": "Der Zugriffsschlüssel ist auf diesem Server nicht konfiguriert.",
         "wrongKey": "Der Zugriffsschlüssel ist falsch.",
-        "tenantLoginUnavailable": "Die Anmeldung mit einem Tenant-Schlüssel ist auf diesem Server nicht verfügbar."
+        "tenantLoginUnavailable": "Die Anmeldung mit einem Tenant-Schlüssel ist auf diesem Server nicht verfügbar.",
+        "dataKeyLoginUnavailable": "Diese Bereitstellung meldet sich mit Tenant-Schlüsseln an; der Datenschlüssel wird nicht akzeptiert."
       },
       "validation": {
         "bankIdRequired": "bank_id ist erforderlich",

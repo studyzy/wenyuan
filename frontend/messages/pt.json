@@ -1996,7 +1996,8 @@
         "unauthorized": "Não autorizado",
         "keyNotConfigured": "A chave de acesso não está configurada neste servidor.",
         "wrongKey": "A chave de acesso está incorreta.",
-        "tenantLoginUnavailable": "Entrar com uma chave de locatário não está disponível neste servidor."
+        "tenantLoginUnavailable": "Entrar com uma chave de locatário não está disponível neste servidor.",
+        "dataKeyLoginUnavailable": "Esta implantação entra com chaves de locatário; a chave de dados não é aceita."
       },
       "validation": {
         "bankIdRequired": "bank_id é obrigatório",

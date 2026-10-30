@@ -1996,7 +1996,8 @@
         "unauthorized": "Non autorisé",
         "keyNotConfigured": "La clé d’accès n’est pas configurée sur ce serveur.",
         "wrongKey": "La clé d’accès est incorrecte.",
-        "tenantLoginUnavailable": "La connexion avec une clé de locataire n'est pas disponible sur ce serveur."
+        "tenantLoginUnavailable": "La connexion avec une clé de locataire n'est pas disponible sur ce serveur.",
+        "dataKeyLoginUnavailable": "Ce déploiement utilise des clés de locataire ; la clé de données n'est pas acceptée."
       },
       "validation": {
         "bankIdRequired": "bank_id est obligatoire",

@@ -2,7 +2,6 @@
  * Public entrypoint for shared server-side building blocks.
  */
 export {
-  ACCESS_KEY_ENV,
   DATAPLANE_URL_ENV,
   DATAPLANE_KEY_ENV,
   BASE_PATH_ENV,

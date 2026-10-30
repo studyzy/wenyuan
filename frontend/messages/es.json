@@ -1996,7 +1996,8 @@
         "unauthorized": "No autorizado",
         "keyNotConfigured": "La clave de acceso no está configurada en este servidor.",
         "wrongKey": "La clave de acceso es incorrecta.",
-        "tenantLoginUnavailable": "Iniciar sesión con una clave de inquilino no está disponible en este servidor."
+        "tenantLoginUnavailable": "Iniciar sesión con una clave de inquilino no está disponible en este servidor.",
+        "dataKeyLoginUnavailable": "Esta implementación inicia sesión con claves de inquilino; la clave de datos no se acepta."
       },
       "validation": {
         "bankIdRequired": "bank_id es obligatorio",
