@@ -129,7 +129,7 @@ bankctl bank migrate --archive reference-<bank_id>.zip --bank-id <new-id>
 
 ```sh
 # 起 Wenyuan（或指向目标 PG 并用 API）
-./bin/wenyuan --port 18888
+./bin/wenyuan-server --port 18888
 
 # 抽查一条记忆能否 recall
 curl -X POST "http://127.0.0.1:18888/v1/default/banks/<bank_id>/memories/recall" \

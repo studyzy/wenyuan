@@ -302,7 +302,7 @@ CONSOLIDATION_LLM_BATCH_SIZE=16` 启动后，`GET /v1/default/banks/<id>/config`
 ```sh
 make parity                      # 上游 77 个 story 全量（339 passed / 1 skipped）
 scripts/run_parity_suite.sh tests/test_20_consolidation.py   # 单个 story
-PORT=19500 bash scripts/contract_smoke.sh bin/wenyuan        # 35 项契约事实
+PORT=19500 bash scripts/contract_smoke.sh bin/wenyuan-server # 35 项契约事实
 make check                       # build + test + vet + pgx + lint + gofmt
 ```
 

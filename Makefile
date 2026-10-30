@@ -8,7 +8,7 @@
 GO        ?= go
 GOFLAGS   ?= -mod=mod
 PKGS      ?= ./...
-BINARY    ?= bin/wenyuan
+BINARY    ?= bin/wenyuan-server
 BANKCTL   ?= bin/bankctl
 WENYUANCLI ?= bin/wenyuan-admin
 WORKER    ?= bin/worker
