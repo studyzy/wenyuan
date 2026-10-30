@@ -94,10 +94,25 @@ func triggerRefusal(trigger map[string]any) error {
 	return errors.New(strings.Join(messages, "\n"))
 }
 
-// bothSchedulesSet reports whether a trigger carries both refresh schedules at
-// once, which the reference's model-level validator refuses.
-func bothSchedulesSet(trigger map[string]any) bool {
-	after, _ := trigger["refresh_after_consolidation"].(bool)
-	expression, _ := trigger["refresh_cron"].(string)
-	return after && strings.TrimSpace(expression) != ""
+// mergeTriggerPatch layers a validated trigger patch over the model's current
+// trigger the way the reference's `_merge_trigger` does: every supplied member
+// wins (an explicit null clears it), and supplying one of the two schedule
+// members drops the other unless the patch states it too — "setting one drops
+// an unstated other rather than producing a combination no request could have
+// expressed" (memory_engine.py:19997-20002).
+func mergeTriggerPatch(supplied, current map[string]any) map[string]any {
+	merged := make(map[string]any, len(current)+len(supplied))
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range supplied {
+		merged[key] = value
+	}
+	if _, statedCron := supplied["refresh_cron"]; !statedCron {
+		return merged
+	}
+	if cron, _ := supplied["refresh_cron"].(string); strings.TrimSpace(cron) != "" {
+		delete(merged, "refresh_after_consolidation")
+	}
+	return merged
 }

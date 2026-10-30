@@ -48,10 +48,10 @@ func TestMCPTriggerIsValidatedBeforeItIsStored(t *testing.T) {
 	}
 }
 
-// A trigger patch is validated after the merge, so a stated refresh_cron beside
-// the model's stored refresh_after_consolidation is the reference's
-// mutual-exclusion refusal rather than two settings stored side by side.
-func TestMCPUUpdateTriggerIsValidatedAsAMergedPatch(t *testing.T) {
+// Supplying one of the two schedule members drops the stored other, as the
+// reference's merge does, and a patch that states BOTH is refused by the
+// supplied-trigger validator — the only cross-member rule the reference has.
+func TestMCPUUpdateTriggerMergesLikeTheReference(t *testing.T) {
 	server := newServer(t)
 	created := callTool(t, server, "1", "create_mental_model",
 		`{"bank_id":"b1","name":"n","source_query":"q","tags_match":"any","trigger":{"refresh_after_consolidation":true}}`)
@@ -62,33 +62,34 @@ func TestMCPUUpdateTriggerIsValidatedAsAMergedPatch(t *testing.T) {
 	if err != nil || len(models) != 1 {
 		t.Fatalf("models = %v, %v", models, err)
 	}
-	// The merge drops the schedule the caller replaced, so the cron is stored
-	// and the consolidation trigger leaves with it — the reference's own
-	// directional rule, not a refusal.
+	// Stating a cron replaces the stored consolidation trigger rather than
+	// being refused: a merged result is not a conflict.
 	replaced := callTool(t, server, "1", "update_mental_model",
 		`{"bank_id":"b1","mental_model_id":"`+models[0].ID+`","trigger":{"refresh_cron":"0 3 * * *"}}`)
-	if got := rawText(t, replaced); !strings.Contains(got, `"refresh_cron": "0 3 * * *"`) ||
-		strings.Contains(got, `"refresh_after_consolidation": true`) {
-		t.Fatalf("text = %q, want the cron to replace the consolidation trigger", got)
-	}
-	// A patch that states BOTH schedules is refused by the model-level
-	// validator, before anything is written.
-	result := callTool(t, server, "1", "update_mental_model",
-		`{"bank_id":"b1","mental_model_id":"`+models[0].ID+
-			`","trigger":{"refresh_cron":"0 3 * * *","refresh_after_consolidation":true}}`)
-	if !strings.Contains(rawText(t, result), "mutually exclusive") {
-		t.Fatalf("text = %q, want the mutual-exclusion refusal", rawText(t, result))
+	if replaced["isError"] == true {
+		t.Fatalf("a cron patch was refused: %v", replaced)
 	}
 	stored, err := server.store.GetMentalModel(t.Context(), "b1", models[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Trigger["refresh_cron"] == nil {
-		t.Fatalf("stored trigger = %v, want the refused patch to have written nothing", stored.Trigger)
+	if stored.Trigger["refresh_cron"] != "0 3 * * *" {
+		t.Fatalf("stored trigger = %v, want the cron", stored.Trigger)
+	}
+	if _, present := stored.Trigger["refresh_after_consolidation"]; present {
+		t.Fatalf("stored trigger = %v, want the superseded consolidation flag dropped", stored.Trigger)
+	}
+	// A patch that states both in one object is contradictory and is refused
+	// before anything is written.
+	refused := callTool(t, server, "1", "update_mental_model",
+		`{"bank_id":"b1","mental_model_id":"`+models[0].ID+
+			`","trigger":{"refresh_cron":"0 3 * * *","refresh_after_consolidation":true}}`)
+	if !strings.Contains(rawText(t, refused), "mutually exclusive") {
+		t.Fatalf("text = %q, want the mutual-exclusion refusal", rawText(t, refused))
 	}
 }
 
-// The legacy flat tags_match shorthand the mental-model tools still accept is
+// The legacy flat tags_match shorthand// The legacy flat tags_match shorthand the mental-model tools still accept is
 // checked against the same five modes the reference's enum declares, and the
 // sentence names the rejected value.
 func TestMCPTagsMatchShorthandIsValidated(t *testing.T) {

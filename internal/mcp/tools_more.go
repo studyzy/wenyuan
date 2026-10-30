@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/memoryops"
-	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -140,11 +139,13 @@ func (s *Server) updateMentalModel(ctx context.Context, args map[string]any) (an
 	if message := validateTagsMatchArgument(args); message != "" {
 		return nil, errors.New(message)
 	}
-	// A supplied trigger is a patch: the members the caller stated are merged
-	// over the model's current trigger, so the combination is validated rather
-	// than each half on its own — a stated refresh_cron beside a stored
-	// refresh_after_consolidation is the reference's mutual-exclusion refusal,
-	// and it happens before the write.
+	// Only what the caller supplied is validated: the reference's tool checks the
+	// trigger model it was handed (`mcp_tools.py::_mental_model_trigger_patch`),
+	// whose one cross-member rule is that a *single* supplied object may not state
+	// both schedules. The engine then merges the patch over the model's current
+	// trigger and pops the schedule the patch superseded
+	// (`memory_engine.py:19994-20002`), so the merged result cannot express a
+	// conflict and gets no further check.
 	supplied, err := validatedTriggerPatch(args)
 	if err != nil {
 		return nil, err
@@ -157,16 +158,7 @@ func (s *Server) updateMentalModel(ctx context.Context, args map[string]any) (an
 		if err != nil {
 			return nil, err
 		}
-		merged := mentalmodels.MergeTrigger(supplied, current.Trigger)
-		// The merge resolves a schedule conflict by dropping the member the
-		// caller replaced, but a patch that states one schedule while the stored
-		// trigger keeps the other is still two schedules on one model, which the
-		// reference's model-level validator refuses.
-		if bothSchedulesSet(merged) {
-			//nolint:staticcheck // the reference's own wording, capitalised and sentence-final
-			return nil, errors.New("refresh_after_consolidation and refresh_cron are mutually exclusive: " +
-				"a mental model refreshes either after consolidation or on a cron schedule, not both.")
-		}
+		merged := mergeTriggerPatch(supplied, current.Trigger)
 		patch.Trigger = &merged
 	}
 	model, err := s.store.UpdateMentalModel(ctx, bankID, modelID, patch)
