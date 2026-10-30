@@ -356,7 +356,22 @@ func refreshDueMentalModels(ctx context.Context, store storage.Store, tenants te
 			// A model whose last refresh failed is parked against every automatic
 			// trigger, the full schedule included, so a tick does not re-queue the
 			// same doomed run.
+			//
+			// A paused model is skipped by *submitting*, which is where the
+			// reference's pause check sits (memory_engine.py:24146) — after the
+			// tick's own gate. The difference is what a full tick does with its
+			// clock: the gate above is "a refresh has run since the last full
+			// one", and only a full run moves that clock, so a model skipped
+			// before it is stamped stays due on every tick forever. A paused
+			// full tick therefore stamps the clock it just answered for: it
+			// found nothing to correct, which is the condition the schedule
+			// exists to look for.
 			if refreshPaused(model) {
+				if full {
+					if err := storage.StampFullRefresh(schemaCtx, store, entry.BankID, entry.MentalModelID); err != nil {
+						return fmt.Errorf("stamp skipped full refresh for %s: %w", entry.MentalModelID, err)
+					}
+				}
 				continue
 			}
 			// The plain schedule only runs when the model is stale: a tick that

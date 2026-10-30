@@ -163,6 +163,50 @@ func TestScheduledFullRefreshJob(t *testing.T) {
 	}
 }
 
+// A paused full tick stamps the full-refresh clock it just answered for.
+// Only a full run moves that clock, so a tick skipped before it would leave the
+// model permanently "due" and re-scanned on every pass of the job.
+func TestPausedFullTickStopsBeingDue(t *testing.T) {
+	const everyFive = "*/5 * * * *"
+	now := time.Now().UTC()
+	store := newJobStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutMentalModel(ctx, storage.MentalModel{
+		ID: "mm-1", BankID: "b1", Subtype: storage.SubtypePinned, Name: "m", SourceQuery: "q",
+		Trigger:             map[string]any{"mode": "delta", "full_refresh_cron": everyFive},
+		LastRefreshedAt:     now.Add(-time.Hour),
+		LastFullRefreshedAt: timePtr(now.Add(-24 * time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A failed refresh parks the model against every automatic trigger.
+	if err := store.RecordMentalModelRefreshFailure(ctx, "b1", "mm-1", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshDueMentalModels(ctx, store, tenant.NewDefault("public"), newMentalModelRefresh(store, nil, nil)); err != nil {
+		t.Fatalf("job: %v", err)
+	}
+	if queued := queuedRefreshPayloads(t, store, "mm-1"); len(queued) != 0 {
+		t.Fatalf("a paused model was queued: %+v", queued)
+	}
+	model, err := store.GetMentalModel(ctx, "b1", "mm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.LastFullRefreshedAt == nil || !model.LastFullRefreshedAt.After(now.Add(-time.Hour)) {
+		t.Fatalf("last_full_refreshed_at = %v, want the skipped tick to have moved it", model.LastFullRefreshedAt)
+	}
+	due, _ := dueScheduledRefresh(storage.ScheduledMentalModel{
+		FullRefreshCron: everyFive, LastFullRefreshedAt: now, LastRefreshedAt: now.Add(-time.Hour),
+	}, now)
+	if due {
+		t.Fatal("the model is still due on the next tick")
+	}
+}
+
 // timePtr and stringPtr keep the schedule seeds readable.
 func timePtr(at time.Time) *time.Time { return &at }
 
