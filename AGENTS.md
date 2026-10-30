@@ -86,6 +86,23 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   per tenant.
 - The control-plane frontend exposes the same surface at `/[locale]/tenants`,
   with BFF routes under `/api/admin/tenants/**`.
+- It also serves the **team plane**, `/admin/v1/teams`: teams, their members and
+  their projects. A team *is* a tenant with `kind = 'team'` and its own schema,
+  so creating one goes through the same provisioning path, and a team's key is
+  an ordinary tenant key (reachable under `/admin/v1/teams/{id}/keys` and
+  `/admin/v1/tenants/{id}/keys` alike). The console exposes it at
+  `/[locale]/teams` with BFF routes under `/api/admin/teams/**`.
+- Team state lives **only** in the `admin` schema (`team_member`,
+  `team_project`, `team_project_member`, from `embeddedadmin/0002_team_registry.sql`).
+  A tenant schema must stay object-for-object identical to the reference schema,
+  so nothing team-related may be created there.
+- A project's bank is `<team_tenant_id>::<name>`, fixed at creation. Deleting a
+  project deletes every bank under that prefix, so the delete demands
+  `{"confirm": "<project_id>", "delete_banks": true}` and refuses when the
+  project's own bank is not among the ones the prefix found — that disagreement
+  is what would let a prefix delete take another project's data.
+- The team plane is **multi-tenant only**: `tenant_mode: single` leaves the team
+  registry unset and every team route answers 501.
 - The plane is **additive**: it does not change the reference `/v1/...` routes,
   JSON contracts or schema. Parity audits should exclude it rather than report
   it as a divergence, and its operator key must never be reused as a tenant key.

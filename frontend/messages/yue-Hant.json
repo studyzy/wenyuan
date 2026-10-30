@@ -87,7 +87,8 @@
     "reflect": "反思",
     "documents": "文件",
     "settings": "設定",
-    "language": "語言"
+    "language": "語言",
+    "teams": "團隊"
   },
   "bank": {
     "bankConfiguration": "記憶庫設定",
@@ -2675,7 +2676,8 @@
       "tenants": "租戶",
       "overview": "總覽",
       "activeTenant": "租戶：{tenant}",
-      "exit": "退出租戶"
+      "exit": "退出租戶",
+      "teams": "團隊"
     },
     "list": {
       "title": "租戶",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "已被之後變更移除",
     "legendRemovedHere": "已被本次變更移除",
     "chipRemovedLater": "之後被移除：{kind}（{when}）"
+  },
+  "teams": {
+    "list": {
+      "title": "團隊",
+      "description": "呢個部署嘅團隊，每個團隊有自己嘅 schema、成員同專案。",
+      "new": "新團隊",
+      "searchPlaceholder": "搜尋 id 或顯示名",
+      "empty": "仲未有團隊。",
+      "team": "團隊",
+      "status": "狀態",
+      "displayName": "顯示名",
+      "members": "成員",
+      "projects": "專案",
+      "created": "建立時間",
+      "failed": "載入唔到團隊"
+    },
+    "statuses": {
+      "active": "正常",
+      "suspended": "已暫停",
+      "provisioning": "建立緊",
+      "deleted": "已刪除"
+    },
+    "create": {
+      "title": "新團隊",
+      "description": "團隊即係租戶，有自己嘅 schema。個 id 唔可以改。",
+      "id": "團隊 id",
+      "idHint": "細楷字母、數字同底線；2-63 個字元。",
+      "idPlaceholder": "acme",
+      "displayName": "顯示名",
+      "displayNamePlaceholder": "Acme 研發部",
+      "creating": "建立緊...",
+      "submit": "建立團隊",
+      "createAnother": "再建一個",
+      "openTeam": "打開團隊",
+      "invalidId": "團隊 id 要符合規定格式。",
+      "failed": "建立唔到團隊",
+      "succeeded": "團隊已建立，即刻複製佢嘅 key。",
+      "shownOnce": "即刻複製呢個 key，佢只會顯示一次。"
+    },
+    "detail": {
+      "notFound": "搵唔到團隊",
+      "loadFailed": "載入唔到團隊",
+      "rename": "改名",
+      "renamePrompt": "新嘅顯示名",
+      "delete": "刪除團隊",
+      "deleteConfirm": "軟刪除團隊 {team}？佢嘅 schema、成員同專案都會保留。",
+      "deleteFailed": "刪除唔到團隊",
+      "renameFailed": "改唔到名",
+      "tabs": {
+        "members": "成員",
+        "projects": "專案",
+        "keys": "憑證"
+      },
+      "members": "成員",
+      "projects": "專案",
+      "tenant": "租戶",
+      "displayName": "顯示名",
+      "role": "角色",
+      "joined": "加入時間",
+      "roles": {
+        "member": "成員",
+        "owner": "負責人"
+      },
+      "memberIdPlaceholder": "成員租戶 id",
+      "addMember": "加成員",
+      "memberAdded": "已加成員。",
+      "memberRemoveConfirm": "將 {tenant} 移出呢個團隊？佢喺各專案嘅成員關係都會一齊移除。",
+      "memberFailed": "改唔到成員",
+      "noMembers": "仲未有成員。",
+      "remove": "移除",
+      "project": "專案",
+      "projectName": "名",
+      "projectNamePlaceholder": "Web",
+      "bank": "Bank",
+      "projectMembers": "成員數",
+      "projectIdPlaceholder": "web",
+      "createProject": "建立專案",
+      "projectHint": "bank id 係 <team>::<name>，建立之後唔會改。",
+      "projectIdInvalid": "專案 id 要符合規定格式。",
+      "projectNameInvalid": "專案名可以有字母、數字、點、橫線同底線，但唔可以有冒號。",
+      "projectCreated": "專案已建立。",
+      "projectDeleteConfirm": "刪除專案會刪埋佢有嘅全部 bank，包括 {bank}。輸入 {project} 繼續。",
+      "projectDeleted": "專案已刪除，刪咗 {count} 個 bank。",
+      "projectFailed": "改唔到專案",
+      "noProjects": "仲未有專案。",
+      "showMembers": "成員",
+      "hideMembers": "收起",
+      "projectMemberPlaceholder": "團隊成員租戶 id",
+      "addProjectMember": "加",
+      "noProjectMembers": "仲未有成員參與呢個專案。",
+      "keys": "憑證",
+      "keysHint": "團隊嘅 key 即係租戶嘅 key，喺 API 上指住呢個團隊嘅 schema。",
+      "keyLabel": "Key 標籤",
+      "createKey": "建立 key",
+      "keyShownOnce": "即刻複製呢個 key，佢只會顯示一次。",
+      "keyPrefix": "前綴",
+      "keyLabelColumn": "標籤",
+      "createdAt": "建立時間",
+      "keyState": "狀態",
+      "keyRevoked": "已撤銷",
+      "keyActive": "有效",
+      "revoke": "撤銷",
+      "noKeys": "仲未有 key。",
+      "keyFailed": "改唔到 key"
+    }
   }
 }

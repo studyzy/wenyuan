@@ -87,7 +87,8 @@
     "reflect": "反思",
     "documents": "文档",
     "settings": "设置",
-    "language": "语言"
+    "language": "语言",
+    "teams": "团队"
   },
   "bank": {
     "bankConfiguration": "记忆库配置",
@@ -2675,7 +2676,8 @@
       "tenants": "租户",
       "overview": "总览",
       "activeTenant": "租户：{tenant}",
-      "exit": "退出租户"
+      "exit": "退出租户",
+      "teams": "团队"
     },
     "list": {
       "title": "租户",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "已被后续变更移除",
     "legendRemovedHere": "已被本次变更移除",
     "chipRemovedLater": "稍后被移除：{kind}（{when}）"
+  },
+  "teams": {
+    "list": {
+      "title": "团队",
+      "description": "本部署中的团队，每个团队有独立的 schema、成员和项目。",
+      "new": "新建团队",
+      "searchPlaceholder": "搜索 id 或显示名",
+      "empty": "还没有团队。",
+      "team": "团队",
+      "status": "状态",
+      "displayName": "显示名",
+      "members": "成员",
+      "projects": "项目",
+      "created": "创建时间",
+      "failed": "无法加载团队"
+    },
+    "statuses": {
+      "active": "正常",
+      "suspended": "已暂停",
+      "provisioning": "创建中",
+      "deleted": "已删除"
+    },
+    "create": {
+      "title": "新建团队",
+      "description": "团队就是一个租户，拥有独立的 schema。其 id 不可修改。",
+      "id": "团队 id",
+      "idHint": "小写字母、数字和下划线；2-63 个字符。",
+      "idPlaceholder": "acme",
+      "displayName": "显示名",
+      "displayNamePlaceholder": "Acme 研发部",
+      "creating": "创建中...",
+      "submit": "创建团队",
+      "createAnother": "再建一个",
+      "openTeam": "打开团队",
+      "invalidId": "团队 id 必须符合规定的字符格式。",
+      "failed": "无法创建团队",
+      "succeeded": "团队已创建，请立即复制它的 key。",
+      "shownOnce": "现在就复制这个 key，它只显示一次。"
+    },
+    "detail": {
+      "notFound": "团队不存在",
+      "loadFailed": "无法加载团队",
+      "rename": "重命名",
+      "renamePrompt": "新的显示名",
+      "delete": "删除团队",
+      "deleteConfirm": "软删除团队 {team}？它的 schema、成员和项目都会保留。",
+      "deleteFailed": "无法删除团队",
+      "renameFailed": "无法重命名团队",
+      "tabs": {
+        "members": "成员",
+        "projects": "项目",
+        "keys": "凭据"
+      },
+      "members": "成员",
+      "projects": "项目",
+      "tenant": "租户",
+      "displayName": "显示名",
+      "role": "角色",
+      "joined": "加入时间",
+      "roles": {
+        "member": "成员",
+        "owner": "负责人"
+      },
+      "memberIdPlaceholder": "成员租户 id",
+      "addMember": "添加成员",
+      "memberAdded": "成员已添加。",
+      "memberRemoveConfirm": "把 {tenant} 移出这个团队？他在各项目中的成员关系也会一并移除。",
+      "memberFailed": "无法修改成员",
+      "noMembers": "还没有成员。",
+      "remove": "移除",
+      "project": "项目",
+      "projectName": "名称",
+      "projectNamePlaceholder": "Web",
+      "bank": "Bank",
+      "projectMembers": "成员数",
+      "projectIdPlaceholder": "web",
+      "createProject": "创建项目",
+      "projectHint": "bank id 为 <team>::<name>，创建后不再改变。",
+      "projectIdInvalid": "项目 id 必须符合规定的字符格式。",
+      "projectNameInvalid": "项目名可含字母、数字、点、横线和下划线，但不能有冒号。",
+      "projectCreated": "项目已创建。",
+      "projectDeleteConfirm": "删除项目会删除它拥有的全部 bank，包括 {bank}。输入 {project} 继续。",
+      "projectDeleted": "项目已删除，共删除 {count} 个 bank。",
+      "projectFailed": "无法修改项目",
+      "noProjects": "还没有项目。",
+      "showMembers": "成员",
+      "hideMembers": "收起",
+      "projectMemberPlaceholder": "团队成员租户 id",
+      "addProjectMember": "添加",
+      "noProjectMembers": "还没有成员参与这个项目。",
+      "keys": "凭据",
+      "keysHint": "团队的 key 就是租户的 key，在 API 上指向本团队的 schema。",
+      "keyLabel": "Key 标签",
+      "createKey": "创建 key",
+      "keyShownOnce": "现在就复制这个 key，它只显示一次。",
+      "keyPrefix": "前缀",
+      "keyLabelColumn": "标签",
+      "createdAt": "创建时间",
+      "keyState": "状态",
+      "keyRevoked": "已吊销",
+      "keyActive": "有效",
+      "revoke": "吊销",
+      "noKeys": "还没有 key。",
+      "keyFailed": "无法修改 key"
+    }
   }
 }

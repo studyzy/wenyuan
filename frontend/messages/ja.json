@@ -87,7 +87,8 @@
     "reflect": "内省",
     "documents": "ドキュメント",
     "settings": "設定",
-    "language": "言語"
+    "language": "言語",
+    "teams": "チーム"
   },
   "bank": {
     "bankConfiguration": "バンク設定",
@@ -2675,7 +2676,8 @@
       "tenants": "テナント",
       "overview": "概要",
       "activeTenant": "テナント: {tenant}",
-      "exit": "テナントを退出"
+      "exit": "テナントを退出",
+      "teams": "チーム"
     },
     "list": {
       "title": "テナント",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "後の変更で削除",
     "legendRemovedHere": "この変更で削除",
     "chipRemovedLater": "後から削除：{kind}（{when}）"
+  },
+  "teams": {
+    "list": {
+      "title": "チーム",
+      "description": "このデプロイのチーム。各チームは独自のスキーマ、メンバー、プロジェクトを持ちます。",
+      "new": "新しいチーム",
+      "searchPlaceholder": "ID または表示名で検索",
+      "empty": "チームはまだありません。",
+      "team": "チーム",
+      "status": "状態",
+      "displayName": "表示名",
+      "members": "メンバー",
+      "projects": "プロジェクト",
+      "created": "作成日時",
+      "failed": "チームを読み込めませんでした"
+    },
+    "statuses": {
+      "active": "有効",
+      "suspended": "停止中",
+      "provisioning": "作成中",
+      "deleted": "削除済み"
+    },
+    "create": {
+      "title": "新しいチーム",
+      "description": "チームはテナントであり、独自のスキーマを持ちます。ID は変更できません。",
+      "id": "チーム ID",
+      "idHint": "小文字、数字、アンダースコア。2〜63 文字。",
+      "idPlaceholder": "acme",
+      "displayName": "表示名",
+      "displayNamePlaceholder": "Acme 開発部",
+      "creating": "作成中...",
+      "submit": "チームを作成",
+      "createAnother": "続けて作成",
+      "openTeam": "チームを開く",
+      "invalidId": "チーム ID は規定の形式に一致する必要があります。",
+      "failed": "チームを作成できませんでした",
+      "succeeded": "チームを作成しました。キーを今すぐコピーしてください。",
+      "shownOnce": "このキーは一度だけ表示されます。今すぐコピーしてください。"
+    },
+    "detail": {
+      "notFound": "チームが見つかりません",
+      "loadFailed": "チームを読み込めませんでした",
+      "rename": "名前を変更",
+      "renamePrompt": "新しい表示名",
+      "delete": "チームを削除",
+      "deleteConfirm": "チーム {team} を論理削除しますか？スキーマ、メンバー、プロジェクトは保持されます。",
+      "deleteFailed": "チームを削除できませんでした",
+      "renameFailed": "名前を変更できませんでした",
+      "tabs": {
+        "members": "メンバー",
+        "projects": "プロジェクト",
+        "keys": "キー"
+      },
+      "members": "メンバー",
+      "projects": "プロジェクト",
+      "tenant": "テナント",
+      "displayName": "表示名",
+      "role": "役割",
+      "joined": "参加日時",
+      "roles": {
+        "member": "メンバー",
+        "owner": "オーナー"
+      },
+      "memberIdPlaceholder": "メンバーのテナント ID",
+      "addMember": "メンバーを追加",
+      "memberAdded": "メンバーを追加しました。",
+      "memberRemoveConfirm": "{tenant} をこのチームから外しますか？プロジェクトの参加も解除されます。",
+      "memberFailed": "メンバーを変更できませんでした",
+      "noMembers": "メンバーはまだいません。",
+      "remove": "外す",
+      "project": "プロジェクト",
+      "projectName": "名前",
+      "projectNamePlaceholder": "Web",
+      "bank": "バンク",
+      "projectMembers": "メンバー数",
+      "projectIdPlaceholder": "web",
+      "createProject": "プロジェクトを作成",
+      "projectHint": "バンク ID は <team>::<name> で、作成後は変更できません。",
+      "projectIdInvalid": "プロジェクト ID は規定の形式に一致する必要があります。",
+      "projectNameInvalid": "プロジェクト名は英数字、ピリオド、ハイフン、アンダースコアのみ。コロンは使用できません。",
+      "projectCreated": "プロジェクトを作成しました。",
+      "projectDeleteConfirm": "プロジェクトを削除すると、所有するすべてのバンク（{bank} を含む）が削除されます。続行するには {project} と入力してください。",
+      "projectDeleted": "プロジェクトを削除しました。{count} 個のバンクを削除しました。",
+      "projectFailed": "プロジェクトを変更できませんでした",
+      "noProjects": "プロジェクトはまだありません。",
+      "showMembers": "メンバー",
+      "hideMembers": "閉じる",
+      "projectMemberPlaceholder": "チームメンバーのテナント ID",
+      "addProjectMember": "追加",
+      "noProjectMembers": "このプロジェクトにはまだメンバーがいません。",
+      "keys": "キー",
+      "keysHint": "チームのキーはテナントのキーです。API ではこのチームのスキーマを指します。",
+      "keyLabel": "キーのラベル",
+      "createKey": "キーを作成",
+      "keyShownOnce": "このキーは一度だけ表示されます。今すぐコピーしてください。",
+      "keyPrefix": "プレフィックス",
+      "keyLabelColumn": "ラベル",
+      "createdAt": "作成日時",
+      "keyState": "状態",
+      "keyRevoked": "失効",
+      "keyActive": "有効",
+      "revoke": "失効させる",
+      "noKeys": "キーはまだありません。",
+      "keyFailed": "キーを変更できませんでした"
+    }
   }
 }

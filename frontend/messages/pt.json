@@ -87,7 +87,8 @@
     "reflect": "Reflexão",
     "documents": "Documentos",
     "settings": "Configurações",
-    "language": "Idioma"
+    "language": "Idioma",
+    "teams": "Equipes"
   },
   "bank": {
     "bankConfiguration": "Configuração do banco",
@@ -2675,7 +2676,8 @@
       "tenants": "Inquilinos",
       "overview": "Visão geral",
       "activeTenant": "Inquilino: {tenant}",
-      "exit": "Sair do inquilino"
+      "exit": "Sair do inquilino",
+      "teams": "Equipes"
     },
     "list": {
       "title": "Inquilinos",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "Removida por uma mudança posterior",
     "legendRemovedHere": "Removida por esta mudança",
     "chipRemovedLater": "Removida depois por: {kind} ({when})"
+  },
+  "teams": {
+    "list": {
+      "title": "Equipes",
+      "description": "Equipes desta implantação, cada uma com seu próprio esquema, membros e projetos.",
+      "new": "Nova equipe",
+      "searchPlaceholder": "Pesquisar id ou nome de exibição",
+      "empty": "Ainda não há equipes.",
+      "team": "Equipe",
+      "status": "Status",
+      "displayName": "Nome de exibição",
+      "members": "Membros",
+      "projects": "Projetos",
+      "created": "Criada",
+      "failed": "Não foi possível carregar as equipes"
+    },
+    "statuses": {
+      "active": "Ativa",
+      "suspended": "Suspensa",
+      "provisioning": "Provisionando",
+      "deleted": "Excluída"
+    },
+    "create": {
+      "title": "Nova equipe",
+      "description": "Uma equipe é um inquilino com seu próprio esquema. Seu id não pode ser alterado.",
+      "id": "Id da equipe",
+      "idHint": "Letras minúsculas, dígitos e sublinhados; 2 a 63 caracteres.",
+      "idPlaceholder": "acme",
+      "displayName": "Nome de exibição",
+      "displayNamePlaceholder": "Acme Engenharia",
+      "creating": "Criando...",
+      "submit": "Criar equipe",
+      "createAnother": "Criar outra",
+      "openTeam": "Abrir a equipe",
+      "invalidId": "O id da equipe deve corresponder ao formato exigido.",
+      "failed": "Não foi possível criar a equipe",
+      "succeeded": "A equipe foi criada. Copie a chave agora.",
+      "shownOnce": "Copie esta chave agora; ela aparece apenas uma vez."
+    },
+    "detail": {
+      "notFound": "Equipe não encontrada",
+      "loadFailed": "Não foi possível carregar a equipe",
+      "rename": "Renomear",
+      "renamePrompt": "Novo nome de exibição",
+      "delete": "Excluir equipe",
+      "deleteConfirm": "Excluir (soft) a equipe {team}? O esquema, os membros e os projetos são mantidos.",
+      "deleteFailed": "Não foi possível excluir a equipe",
+      "renameFailed": "Não foi possível renomear a equipe",
+      "tabs": {
+        "members": "Membros",
+        "projects": "Projetos",
+        "keys": "Chaves"
+      },
+      "members": "Membros",
+      "projects": "Projetos",
+      "tenant": "Inquilino",
+      "displayName": "Nome de exibição",
+      "role": "Função",
+      "joined": "Entrou",
+      "roles": {
+        "member": "Membro",
+        "owner": "Proprietário"
+      },
+      "memberIdPlaceholder": "Id do inquilino membro",
+      "addMember": "Adicionar membro",
+      "memberAdded": "Membro adicionado.",
+      "memberRemoveConfirm": "Remover {tenant} desta equipe? A participação em projetos também é removida.",
+      "memberFailed": "Não foi possível alterar o membro",
+      "noMembers": "Ainda não há membros.",
+      "remove": "Remover",
+      "project": "Projeto",
+      "projectName": "Nome",
+      "projectNamePlaceholder": "Web",
+      "bank": "Banco",
+      "projectMembers": "Membros",
+      "projectIdPlaceholder": "web",
+      "createProject": "Criar projeto",
+      "projectHint": "O id do banco é <team>::<name> e não muda depois.",
+      "projectIdInvalid": "O id do projeto deve corresponder ao formato exigido.",
+      "projectNameInvalid": "O nome do projeto aceita letras, dígitos, pontos, hífens e sublinhados, mas não dois-pontos.",
+      "projectCreated": "Projeto criado.",
+      "projectDeleteConfirm": "Excluir um projeto exclui todos os bancos que ele possui, incluindo {bank}. Digite {project} para continuar.",
+      "projectDeleted": "Projeto excluído com {count} banco(s).",
+      "projectFailed": "Não foi possível alterar o projeto",
+      "noProjects": "Ainda não há projetos.",
+      "showMembers": "Membros",
+      "hideMembers": "Ocultar",
+      "projectMemberPlaceholder": "Id do inquilino membro da equipe",
+      "addProjectMember": "Adicionar",
+      "noProjectMembers": "Nenhum membro participa deste projeto ainda.",
+      "keys": "Chaves",
+      "keysHint": "A chave de uma equipe é a de um inquilino: ela aponta para o esquema desta equipe na API.",
+      "keyLabel": "Rótulo da chave",
+      "createKey": "Criar chave",
+      "keyShownOnce": "Copie esta chave agora; ela aparece apenas uma vez.",
+      "keyPrefix": "Prefixo",
+      "keyLabelColumn": "Rótulo",
+      "createdAt": "Criada",
+      "keyState": "Estado",
+      "keyRevoked": "revogada",
+      "keyActive": "ativa",
+      "revoke": "Revogar",
+      "noKeys": "Ainda não há chaves.",
+      "keyFailed": "Não foi possível alterar as chaves"
+    }
   }
 }

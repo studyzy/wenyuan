@@ -87,7 +87,8 @@
     "reflect": "Reflect",
     "documents": "Documents",
     "settings": "Settings",
-    "language": "Language"
+    "language": "Language",
+    "teams": "Teams"
   },
   "bank": {
     "bankConfiguration": "Bank Configuration",
@@ -2675,7 +2676,8 @@
       "tenants": "Tenants",
       "overview": "Overview",
       "activeTenant": "Tenant: {tenant}",
-      "exit": "Exit tenant"
+      "exit": "Exit tenant",
+      "teams": "Teams"
     },
     "list": {
       "title": "Tenants",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "Removed by a later change",
     "legendRemovedHere": "Removed by this change",
     "chipRemovedLater": "Removed later by: {kind} ({when})"
+  },
+  "teams": {
+    "list": {
+      "title": "Teams",
+      "description": "Teams in this deployment, each with its own schema, members and projects.",
+      "new": "New team",
+      "searchPlaceholder": "Search id or display name",
+      "empty": "No teams yet.",
+      "team": "Team",
+      "status": "Status",
+      "displayName": "Display name",
+      "members": "Members",
+      "projects": "Projects",
+      "created": "Created",
+      "failed": "Could not load teams"
+    },
+    "statuses": {
+      "active": "Active",
+      "suspended": "Suspended",
+      "provisioning": "Provisioning",
+      "deleted": "Deleted"
+    },
+    "create": {
+      "title": "New team",
+      "description": "A team is a tenant with its own schema. Its id cannot be changed.",
+      "id": "Team id",
+      "idHint": "Lowercase letters, digits and underscores; 2-63 characters.",
+      "idPlaceholder": "acme",
+      "displayName": "Display name",
+      "displayNamePlaceholder": "Acme Engineering",
+      "creating": "Creating...",
+      "submit": "Create team",
+      "createAnother": "Create another",
+      "openTeam": "Open the team",
+      "invalidId": "Team id must match the required slug pattern.",
+      "failed": "Could not create the team",
+      "succeeded": "The team was created. Copy its key now.",
+      "shownOnce": "Copy this key now; it is shown once."
+    },
+    "detail": {
+      "notFound": "Team not found",
+      "loadFailed": "Could not load the team",
+      "rename": "Rename",
+      "renamePrompt": "New display name",
+      "delete": "Delete team",
+      "deleteConfirm": "Soft-delete team {team}? Its schema, members and projects are kept.",
+      "deleteFailed": "Could not delete the team",
+      "renameFailed": "Could not rename the team",
+      "tabs": {
+        "members": "Members",
+        "projects": "Projects",
+        "keys": "Keys"
+      },
+      "members": "Members",
+      "projects": "Projects",
+      "tenant": "Tenant",
+      "displayName": "Display name",
+      "role": "Role",
+      "joined": "Joined",
+      "roles": {
+        "member": "Member",
+        "owner": "Owner"
+      },
+      "memberIdPlaceholder": "Member tenant id",
+      "addMember": "Add member",
+      "memberAdded": "Member added.",
+      "memberRemoveConfirm": "Remove {tenant} from this team? Their project membership goes with them.",
+      "memberFailed": "Could not change the member",
+      "noMembers": "No members yet.",
+      "remove": "Remove",
+      "project": "Project",
+      "projectName": "Name",
+      "projectNamePlaceholder": "Web",
+      "bank": "Bank",
+      "projectMembers": "Members",
+      "projectIdPlaceholder": "web",
+      "createProject": "Create project",
+      "projectHint": "The bank id is <team>::<name> and cannot change afterwards.",
+      "projectIdInvalid": "A project id must match the required slug pattern.",
+      "projectNameInvalid": "A project name may hold letters, digits, dots, dashes and underscores, but no colon.",
+      "projectCreated": "Project created.",
+      "projectDeleteConfirm": "Deleting a project deletes every bank it owns, including {bank}. Type {project} to continue.",
+      "projectDeleted": "Project deleted with {count} bank(s).",
+      "projectFailed": "Could not change the project",
+      "noProjects": "No projects yet.",
+      "showMembers": "Members",
+      "hideMembers": "Hide",
+      "projectMemberPlaceholder": "Team member tenant id",
+      "addProjectMember": "Add",
+      "noProjectMembers": "No member takes part in this project yet.",
+      "keys": "Keys",
+      "keysHint": "A team key is a tenant key: it addresses this team's schema on the API.",
+      "keyLabel": "Key label",
+      "createKey": "Create key",
+      "keyShownOnce": "Copy this key now; it is shown once.",
+      "keyPrefix": "Prefix",
+      "keyLabelColumn": "Label",
+      "createdAt": "Created",
+      "keyState": "State",
+      "keyRevoked": "revoked",
+      "keyActive": "active",
+      "revoke": "Revoke",
+      "noKeys": "No keys yet.",
+      "keyFailed": "Could not change the keys"
+    }
   }
 }

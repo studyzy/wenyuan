@@ -87,7 +87,8 @@
     "reflect": "Reflexion",
     "documents": "Dokumente",
     "settings": "Einstellungen",
-    "language": "Sprache"
+    "language": "Sprache",
+    "teams": "Teams"
   },
   "bank": {
     "bankConfiguration": "Bankkonfiguration",
@@ -2675,7 +2676,8 @@
       "tenants": "Mandanten",
       "overview": "Übersicht",
       "activeTenant": "Mandant: {tenant}",
-      "exit": "Mandant verlassen"
+      "exit": "Mandant verlassen",
+      "teams": "Teams"
     },
     "list": {
       "title": "Mandanten",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "Durch eine spätere Änderung entfernt",
     "legendRemovedHere": "Durch diese Änderung entfernt",
     "chipRemovedLater": "Später entfernt durch: {kind} ({when})"
+  },
+  "teams": {
+    "list": {
+      "title": "Teams",
+      "description": "Teams dieser Bereitstellung, jeweils mit eigenem Schema, Mitgliedern und Projekten.",
+      "new": "Neues Team",
+      "searchPlaceholder": "Id oder Anzeigename suchen",
+      "empty": "Noch keine Teams.",
+      "team": "Team",
+      "status": "Status",
+      "displayName": "Anzeigename",
+      "members": "Mitglieder",
+      "projects": "Projekte",
+      "created": "Erstellt",
+      "failed": "Teams konnten nicht geladen werden"
+    },
+    "statuses": {
+      "active": "Aktiv",
+      "suspended": "Pausiert",
+      "provisioning": "Wird bereitgestellt",
+      "deleted": "Gelöscht"
+    },
+    "create": {
+      "title": "Neues Team",
+      "description": "Ein Team ist ein Mandant mit eigenem Schema. Seine Id lässt sich nicht ändern.",
+      "id": "Team-Id",
+      "idHint": "Kleinbuchstaben, Ziffern und Unterstriche; 2-63 Zeichen.",
+      "idPlaceholder": "acme",
+      "displayName": "Anzeigename",
+      "displayNamePlaceholder": "Acme Entwicklung",
+      "creating": "Wird erstellt...",
+      "submit": "Team erstellen",
+      "createAnother": "Noch eins erstellen",
+      "openTeam": "Team öffnen",
+      "invalidId": "Die Team-Id muss dem geforderten Format entsprechen.",
+      "failed": "Team konnte nicht erstellt werden",
+      "succeeded": "Das Team wurde erstellt. Kopieren Sie jetzt seinen Schlüssel.",
+      "shownOnce": "Kopieren Sie diesen Schlüssel jetzt; er wird nur einmal angezeigt."
+    },
+    "detail": {
+      "notFound": "Team nicht gefunden",
+      "loadFailed": "Team konnte nicht geladen werden",
+      "rename": "Umbenennen",
+      "renamePrompt": "Neuer Anzeigename",
+      "delete": "Team löschen",
+      "deleteConfirm": "Team {team} logisch löschen? Schema, Mitglieder und Projekte bleiben erhalten.",
+      "deleteFailed": "Team konnte nicht gelöscht werden",
+      "renameFailed": "Team konnte nicht umbenannt werden",
+      "tabs": {
+        "members": "Mitglieder",
+        "projects": "Projekte",
+        "keys": "Schlüssel"
+      },
+      "members": "Mitglieder",
+      "projects": "Projekte",
+      "tenant": "Mandant",
+      "displayName": "Anzeigename",
+      "role": "Rolle",
+      "joined": "Beigetreten",
+      "roles": {
+        "member": "Mitglied",
+        "owner": "Eigentümer"
+      },
+      "memberIdPlaceholder": "Mandanten-Id des Mitglieds",
+      "addMember": "Mitglied hinzufügen",
+      "memberAdded": "Mitglied hinzugefügt.",
+      "memberRemoveConfirm": "{tenant} aus diesem Team entfernen? Die Projektteilnahme entfällt ebenfalls.",
+      "memberFailed": "Mitglied konnte nicht geändert werden",
+      "noMembers": "Noch keine Mitglieder.",
+      "remove": "Entfernen",
+      "project": "Projekt",
+      "projectName": "Name",
+      "projectNamePlaceholder": "Web",
+      "bank": "Bank",
+      "projectMembers": "Mitglieder",
+      "projectIdPlaceholder": "web",
+      "createProject": "Projekt erstellen",
+      "projectHint": "Die Bank-Id ist <team>::<name> und ändert sich danach nicht mehr.",
+      "projectIdInvalid": "Die Projekt-Id muss dem geforderten Format entsprechen.",
+      "projectNameInvalid": "Ein Projektname darf Buchstaben, Ziffern, Punkte, Bindestriche und Unterstriche enthalten, aber keinen Doppelpunkt.",
+      "projectCreated": "Projekt erstellt.",
+      "projectDeleteConfirm": "Beim Löschen eines Projekts werden alle zugehörigen Banken gelöscht, auch {bank}. Geben Sie {project} ein, um fortzufahren.",
+      "projectDeleted": "Projekt mit {count} Bank(en) gelöscht.",
+      "projectFailed": "Projekt konnte nicht geändert werden",
+      "noProjects": "Noch keine Projekte.",
+      "showMembers": "Mitglieder",
+      "hideMembers": "Ausblenden",
+      "projectMemberPlaceholder": "Mandanten-Id des Teammitglieds",
+      "addProjectMember": "Hinzufügen",
+      "noProjectMembers": "Noch kein Mitglied nimmt an diesem Projekt teil.",
+      "keys": "Schlüssel",
+      "keysHint": "Der Schlüssel eines Teams ist ein Mandantenschlüssel: er adressiert das Schema dieses Teams in der API.",
+      "keyLabel": "Schlüssel-Label",
+      "createKey": "Schlüssel erstellen",
+      "keyShownOnce": "Kopieren Sie diesen Schlüssel jetzt; er wird nur einmal angezeigt.",
+      "keyPrefix": "Präfix",
+      "keyLabelColumn": "Label",
+      "createdAt": "Erstellt",
+      "keyState": "Status",
+      "keyRevoked": "widerrufen",
+      "keyActive": "aktiv",
+      "revoke": "Widerrufen",
+      "noKeys": "Noch keine Schlüssel.",
+      "keyFailed": "Schlüssel konnten nicht geändert werden"
+    }
   }
 }

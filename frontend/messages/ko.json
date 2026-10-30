@@ -87,7 +87,8 @@
     "reflect": "성찰",
     "documents": "문서",
     "settings": "설정",
-    "language": "언어"
+    "language": "언어",
+    "teams": "팀"
   },
   "bank": {
     "bankConfiguration": "뱅크 구성",
@@ -2675,7 +2676,8 @@
       "tenants": "테넌트",
       "overview": "개요",
       "activeTenant": "테넌트: {tenant}",
-      "exit": "테넌트 나가기"
+      "exit": "테넌트 나가기",
+      "teams": "팀"
     },
     "list": {
       "title": "테넌트",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "이후 변경으로 제거됨",
     "legendRemovedHere": "이 변경으로 제거됨",
     "chipRemovedLater": "나중에 제거됨: {kind} ({when})"
+  },
+  "teams": {
+    "list": {
+      "title": "팀",
+      "description": "이 배포의 팀입니다. 각 팀은 자체 스키마, 멤버, 프로젝트를 가집니다.",
+      "new": "새 팀",
+      "searchPlaceholder": "ID 또는 표시 이름 검색",
+      "empty": "아직 팀이 없습니다.",
+      "team": "팀",
+      "status": "상태",
+      "displayName": "표시 이름",
+      "members": "멤버",
+      "projects": "프로젝트",
+      "created": "생성 시각",
+      "failed": "팀을 불러오지 못했습니다"
+    },
+    "statuses": {
+      "active": "활성",
+      "suspended": "일시 중지",
+      "provisioning": "생성 중",
+      "deleted": "삭제됨"
+    },
+    "create": {
+      "title": "새 팀",
+      "description": "팀은 테넌트이며 자체 스키마를 가집니다. ID는 변경할 수 없습니다.",
+      "id": "팀 ID",
+      "idHint": "소문자, 숫자, 밑줄. 2~63자.",
+      "idPlaceholder": "acme",
+      "displayName": "표시 이름",
+      "displayNamePlaceholder": "Acme 개발팀",
+      "creating": "생성 중...",
+      "submit": "팀 생성",
+      "createAnother": "하나 더 생성",
+      "openTeam": "팀 열기",
+      "invalidId": "팀 ID가 요구된 형식과 일치해야 합니다.",
+      "failed": "팀을 생성하지 못했습니다",
+      "succeeded": "팀이 생성되었습니다. 키를 지금 복사하세요.",
+      "shownOnce": "이 키는 한 번만 표시됩니다. 지금 복사하세요."
+    },
+    "detail": {
+      "notFound": "팀을 찾을 수 없습니다",
+      "loadFailed": "팀을 불러오지 못했습니다",
+      "rename": "이름 변경",
+      "renamePrompt": "새 표시 이름",
+      "delete": "팀 삭제",
+      "deleteConfirm": "팀 {team}을(를) 소프트 삭제할까요? 스키마, 멤버, 프로젝트는 유지됩니다.",
+      "deleteFailed": "팀을 삭제하지 못했습니다",
+      "renameFailed": "이름을 변경하지 못했습니다",
+      "tabs": {
+        "members": "멤버",
+        "projects": "프로젝트",
+        "keys": "키"
+      },
+      "members": "멤버",
+      "projects": "프로젝트",
+      "tenant": "테넌트",
+      "displayName": "표시 이름",
+      "role": "역할",
+      "joined": "참여 시각",
+      "roles": {
+        "member": "멤버",
+        "owner": "소유자"
+      },
+      "memberIdPlaceholder": "멤버 테넌트 ID",
+      "addMember": "멤버 추가",
+      "memberAdded": "멤버를 추가했습니다.",
+      "memberRemoveConfirm": "{tenant}을(를) 이 팀에서 제거할까요? 프로젝트 참여도 함께 제거됩니다.",
+      "memberFailed": "멤버를 변경하지 못했습니다",
+      "noMembers": "아직 멤버가 없습니다.",
+      "remove": "제거",
+      "project": "프로젝트",
+      "projectName": "이름",
+      "projectNamePlaceholder": "Web",
+      "bank": "뱅크",
+      "projectMembers": "멤버 수",
+      "projectIdPlaceholder": "web",
+      "createProject": "프로젝트 생성",
+      "projectHint": "뱅크 ID는 <team>::<name>이며 생성 후 변경되지 않습니다.",
+      "projectIdInvalid": "프로젝트 ID가 요구된 형식과 일치해야 합니다.",
+      "projectNameInvalid": "프로젝트 이름은 영숫자, 점, 하이픈, 밑줄만 가능하며 콜론은 쓸 수 없습니다.",
+      "projectCreated": "프로젝트를 생성했습니다.",
+      "projectDeleteConfirm": "프로젝트를 삭제하면 소유한 모든 뱅크({bank} 포함)가 삭제됩니다. 계속하려면 {project}을(를) 입력하세요.",
+      "projectDeleted": "프로젝트를 삭제했습니다. 뱅크 {count}개를 삭제했습니다.",
+      "projectFailed": "프로젝트를 변경하지 못했습니다",
+      "noProjects": "아직 프로젝트가 없습니다.",
+      "showMembers": "멤버",
+      "hideMembers": "접기",
+      "projectMemberPlaceholder": "팀 멤버 테넌트 ID",
+      "addProjectMember": "추가",
+      "noProjectMembers": "이 프로젝트에 참여한 멤버가 없습니다.",
+      "keys": "키",
+      "keysHint": "팀 키는 테넌트 키입니다. API에서 이 팀의 스키마를 가리킵니다.",
+      "keyLabel": "키 레이블",
+      "createKey": "키 생성",
+      "keyShownOnce": "이 키는 한 번만 표시됩니다. 지금 복사하세요.",
+      "keyPrefix": "접두사",
+      "keyLabelColumn": "레이블",
+      "createdAt": "생성 시각",
+      "keyState": "상태",
+      "keyRevoked": "폐기됨",
+      "keyActive": "활성",
+      "revoke": "폐기",
+      "noKeys": "아직 키가 없습니다.",
+      "keyFailed": "키를 변경하지 못했습니다"
+    }
   }
 }

@@ -87,7 +87,8 @@
     "reflect": "Réflexion",
     "documents": "Documents",
     "settings": "Paramètres",
-    "language": "Langue"
+    "language": "Langue",
+    "teams": "Équipes"
   },
   "bank": {
     "bankConfiguration": "Configuration de la banque",
@@ -2675,7 +2676,8 @@
       "tenants": "Locataires",
       "overview": "Vue d'ensemble",
       "activeTenant": "Locataire : {tenant}",
-      "exit": "Quitter le locataire"
+      "exit": "Quitter le locataire",
+      "teams": "Équipes"
     },
     "list": {
       "title": "Locataires",
@@ -2794,5 +2796,110 @@
     "legendRemovedLater": "Supprimée par un changement ultérieur",
     "legendRemovedHere": "Supprimée par ce changement",
     "chipRemovedLater": "Supprimée plus tard par : {kind} ({when})"
+  },
+  "teams": {
+    "list": {
+      "title": "Équipes",
+      "description": "Équipes de ce déploiement, chacune avec son propre schéma, ses membres et ses projets.",
+      "new": "Nouvelle équipe",
+      "searchPlaceholder": "Rechercher un id ou un nom affiché",
+      "empty": "Aucune équipe pour l'instant.",
+      "team": "Équipe",
+      "status": "Statut",
+      "displayName": "Nom affiché",
+      "members": "Membres",
+      "projects": "Projets",
+      "created": "Créée",
+      "failed": "Impossible de charger les équipes"
+    },
+    "statuses": {
+      "active": "Active",
+      "suspended": "Suspendue",
+      "provisioning": "En cours",
+      "deleted": "Supprimée"
+    },
+    "create": {
+      "title": "Nouvelle équipe",
+      "description": "Une équipe est un locataire avec son propre schéma. Son id ne peut pas changer.",
+      "id": "Id de l'équipe",
+      "idHint": "Lettres minuscules, chiffres et soulignés ; 2 à 63 caractères.",
+      "idPlaceholder": "acme",
+      "displayName": "Nom affiché",
+      "displayNamePlaceholder": "Acme Ingénierie",
+      "creating": "Création...",
+      "submit": "Créer l'équipe",
+      "createAnother": "En créer une autre",
+      "openTeam": "Ouvrir l'équipe",
+      "invalidId": "L'id de l'équipe doit respecter le format requis.",
+      "failed": "Impossible de créer l'équipe",
+      "succeeded": "L'équipe est créée. Copiez sa clé maintenant.",
+      "shownOnce": "Copiez cette clé maintenant ; elle ne s'affiche qu'une fois."
+    },
+    "detail": {
+      "notFound": "Équipe introuvable",
+      "loadFailed": "Impossible de charger l'équipe",
+      "rename": "Renommer",
+      "renamePrompt": "Nouveau nom affiché",
+      "delete": "Supprimer l'équipe",
+      "deleteConfirm": "Supprimer (logiquement) l'équipe {team} ? Son schéma, ses membres et ses projets sont conservés.",
+      "deleteFailed": "Impossible de supprimer l'équipe",
+      "renameFailed": "Impossible de renommer l'équipe",
+      "tabs": {
+        "members": "Membres",
+        "projects": "Projets",
+        "keys": "Clés"
+      },
+      "members": "Membres",
+      "projects": "Projets",
+      "tenant": "Locataire",
+      "displayName": "Nom affiché",
+      "role": "Rôle",
+      "joined": "Rejoint",
+      "roles": {
+        "member": "Membre",
+        "owner": "Propriétaire"
+      },
+      "memberIdPlaceholder": "Id du locataire membre",
+      "addMember": "Ajouter un membre",
+      "memberAdded": "Membre ajouté.",
+      "memberRemoveConfirm": "Retirer {tenant} de cette équipe ? Sa participation aux projets est aussi retirée.",
+      "memberFailed": "Impossible de modifier le membre",
+      "noMembers": "Aucun membre pour l'instant.",
+      "remove": "Retirer",
+      "project": "Projet",
+      "projectName": "Nom",
+      "projectNamePlaceholder": "Web",
+      "bank": "Banque",
+      "projectMembers": "Membres",
+      "projectIdPlaceholder": "web",
+      "createProject": "Créer le projet",
+      "projectHint": "L'id de banque est <team>::<name> et ne change plus ensuite.",
+      "projectIdInvalid": "L'id du projet doit respecter le format requis.",
+      "projectNameInvalid": "Le nom du projet accepte lettres, chiffres, points, tirets et soulignés, mais pas les deux-points.",
+      "projectCreated": "Projet créé.",
+      "projectDeleteConfirm": "Supprimer un projet supprime toutes les banques qu'il possède, dont {bank}. Tapez {project} pour continuer.",
+      "projectDeleted": "Projet supprimé avec {count} banque(s).",
+      "projectFailed": "Impossible de modifier le projet",
+      "noProjects": "Aucun projet pour l'instant.",
+      "showMembers": "Membres",
+      "hideMembers": "Masquer",
+      "projectMemberPlaceholder": "Id du locataire membre de l'équipe",
+      "addProjectMember": "Ajouter",
+      "noProjectMembers": "Aucun membre ne participe encore à ce projet.",
+      "keys": "Clés",
+      "keysHint": "La clé d'une équipe est celle d'un locataire : elle adresse le schéma de cette équipe côté API.",
+      "keyLabel": "Libellé de la clé",
+      "createKey": "Créer une clé",
+      "keyShownOnce": "Copiez cette clé maintenant ; elle ne s'affiche qu'une fois.",
+      "keyPrefix": "Préfixe",
+      "keyLabelColumn": "Libellé",
+      "createdAt": "Créée",
+      "keyState": "État",
+      "keyRevoked": "révoquée",
+      "keyActive": "active",
+      "revoke": "Révoquer",
+      "noKeys": "Aucune clé pour l'instant.",
+      "keyFailed": "Impossible de modifier les clés"
+    }
   }
 }

@@ -1,7 +1,7 @@
 import { adminServerConfig, resolveServerConfig } from "../../../../lib/server/config";
 import { requestLocale, serializeUpstream } from "../../../../lib/server/proxy";
 
-const QUERY_PARAMS = ["status", "q", "limit", "offset"] as const;
+const QUERY_PARAMS = ["status", "kind", "q", "limit", "offset"] as const;
 
 function adminConfig() {
   return adminServerConfig(resolveServerConfig(process.env as Record<string, string | undefined>));
