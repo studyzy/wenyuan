@@ -270,6 +270,34 @@ func (s *PostgresStore) EnsureBank(ctx context.Context, bankID string) error {
 	return err
 }
 
+// ListBankIDs returns the ids of the banks in the current schema whose id
+// starts with prefix, in id order.
+//
+// The match is on left(), not LIKE: a prefix built from a name is literal text,
+// and a "_" or "%" inside it must not turn into a wildcard.
+func (s *PostgresStore) ListBankIDs(ctx context.Context, prefix string) ([]string, error) {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return nil, schemaErr
+	}
+	rows, err := s.reader().QueryContext(ctx,
+		`SELECT bank_id FROM `+quoteIdent(schema)+`.banks
+		 WHERE left(bank_id, length($1::text)) = $1 ORDER BY bank_id`, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *PostgresStore) GetBank(ctx context.Context, bankID string) (Bank, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
