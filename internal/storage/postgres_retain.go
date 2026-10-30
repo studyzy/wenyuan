@@ -153,6 +153,18 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 				return s.unitIDsForDocument(ctx, req.BankID, item.DocumentID)
 			}
 		}
+	}
+	// Build the units and embed them before anything is written or cleared: a
+	// model call that fails must leave the document exactly as it was. A first
+	// retain then leaves no document behind, and a failed update keeps the
+	// previous text and evidence.
+	tags := mergeTags(item.Tags, req.DocumentTags)
+	contents := itemContents(req.BankID, docID, item, facts, tags, sizes, modelExtractionEnabled(req))
+	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
+		return nil, err
+	}
+	// A re-retain against an explicit document id honours the update mode.
+	if item.DocumentID != "" {
 		// The default mode is replace: re-retaining a document id with new
 		// content supersedes what the document said, so its units, chunks and
 		// links are discarded before the new evidence is written. "append" is
@@ -192,7 +204,6 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 			pruneCandidates = stale
 		}
 	}
-	tags := mergeTags(item.Tags, req.DocumentTags)
 	document := Document{
 		OriginalText: originalText,
 		ContentHash:  ContentHash(originalText),
@@ -212,10 +223,13 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 	if err != nil {
 		return nil, err
 	}
-	contents := itemContents(req.BankID, docID, chunkBySegment, item, facts, tags, sizes, modelExtractionEnabled(req))
-	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
-		return nil, err
-	}
+	// Appended content is chunked from its own first segment while the chunks
+	// land after the ones the document already holds; extraction numbers its
+	// facts from zero, so the mapping is shifted back to that frame. Without
+	// this, every fact of an appended turn names a chunk index the new content
+	// never occupies and is dropped, leaving only the earlier turns.
+	chunkBySegment = relativeChunkSegments(chunkBySegment, baseIndex)
+	contents = attachChunkIDs(contents, chunkBySegment)
 	// The item's mentions are clustered once, before any is scored, so two
 	// spellings of one name that appear in this same document become one entity
 	// rather than two.

@@ -78,6 +78,7 @@ func TestFileRetainImageUploadUsesPlaceholder(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 
 	wantText := AttachmentPlaceholder(AttachmentShortID(attachmentHashOf([]byte("png bytes"))))
 	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 10})
@@ -107,6 +108,7 @@ func TestFileRetainConvertsDocumentUpload(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +152,7 @@ func TestFileRetainAcceptsTextUpload(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)

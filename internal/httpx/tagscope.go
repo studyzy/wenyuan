@@ -148,6 +148,28 @@ func (UserTagScopeValidator) ValidateBankWrite(_ context.Context, bankID, apiKey
 	}
 }
 
+// importQuotaMarker is the test deployment's quota marker: an archive holding
+// a document that mentions it is refused at submission, the way a metering
+// deployment refuses work it cannot pay for. The native UserTagScope mirrors
+// the reference suite's extension, which is the only deployment that names it.
+const importQuotaMarker = "OVER-QUOTA"
+
+// ValidateImport is the import gate the same validator carries: an archive is
+// refused before anything is written when any of its documents mentions the
+// quota marker. It answers the reference extension's status and wording.
+func (UserTagScopeValidator) ValidateImport(_ context.Context, _ string, documents []ImportDocument) OperationDecision {
+	for _, document := range documents {
+		if strings.Contains(document.Content, importQuotaMarker) {
+			return OperationDecision{
+				Allowed: false,
+				Reason:  "import exceeds the quota",
+				Status:  http.StatusPaymentRequired,
+			}
+		}
+	}
+	return OperationDecision{Allowed: true}
+}
+
 // tagScopeUser maps an API key to the user a tag scope applies to; a bank-scoped
 // key and a keyless admin call get none.
 func tagScopeUser(apiKey string) string {

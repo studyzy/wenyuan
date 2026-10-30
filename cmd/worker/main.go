@@ -126,7 +126,8 @@ func run(args []string) error {
 			"jitter_seconds", int(cfg.Maintenance.StartJitter.Seconds()))
 	}
 
-	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg), !cfg.StoreDocumentText, cfg.DatabaseSchema, tenants).
+	consumer := app.NewQueueConsumer(store, model, reflection, app.EmbeddingGeneratorFrom(embedder), cfg.Worker, cfg.WorkerTuning, app.NewWebhookGuard(cfg), app.ExtractionSettingsFrom(cfg), !cfg.StoreDocumentText,
+		cfg.EnableObservations, cfg.EnableAutoConsolidation, cfg.DatabaseSchema, tenants).
 		WithAuditor(app.NewAuditLogger(cfg, store))
 	startWorkerHTTP(ctx, cfg, store, consumer, tenants)
 	return runBoth(ctx, consumer, loop)

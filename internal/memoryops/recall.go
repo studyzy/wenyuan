@@ -9,6 +9,7 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -92,6 +93,11 @@ func resolveRecallInclude(include *IncludeRequest) recallInclude {
 // streaming variant.
 func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	bankID := r.PathValue("bank_id")
+	// The query embedding and the rerank are model calls this run makes, so they
+	// are attributed to the bank and the operation in the model-request trace —
+	// without this a row lands with no bank and the per-bank trace listing never
+	// shows it.
+	r = r.WithContext(provider.WithTraceContext(r.Context(), provider.TraceContext{BankID: bankID, Operation: "recall"}))
 	var req RecallRequest
 	body, err := decodeJSON(r, &req)
 	if err != nil {

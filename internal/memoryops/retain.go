@@ -1523,43 +1523,22 @@ func itoa(value int) string {
 // the caller named none, before the write is queued.
 //
 // `RetainItem.DocumentID` is optional here in a way it is not in the reference:
-// that engine resolves one `effective_doc_id` per retain — the caller's, else
-// the single document a batch names, else one recovered from the operation,
-// else a fresh uuid — and hands every chunk that id (orchestrator.py:1785-1812,
-// :2569). This service's store instead mints a fresh id per item at write time,
-// which the caller never learns and which therefore cannot be put on anything
-// it reports about that item. Resolving it at submission keeps the same
-// guarantee — the extraction of a document is attributed to that document — and
-// costs nothing when the caller already named one.
+// that engine resolves an `effective_doc_id` per item — the caller's, else a
+// fresh uuid — and hands every chunk of that item the id. This service's store
+// instead mints a fresh id per item at write time, which the caller never
+// learns and which therefore cannot be put on anything it reports about that
+// item. Resolving it at submission keeps the same guarantee — the extraction of
+// a document is attributed to that document — and costs nothing when the caller
+// already named one.
 //
-// An item that already has an id keeps it, so a resubmission, a document id a
-// client chose, and the async path's document transfer are unaffected.
+// Each unnamed item gets its own id. An async batch is a set of independent
+// documents: sharing one id across its items would make the second item's
+// default replace-mode write erase the first one's units. An item that already
+// has an id keeps it, so a resubmission and a client-chosen id are unaffected.
 func assignDocumentIDs(req *storage.RetainRequest) {
-	// One id for the whole retain, resolved the way the reference resolves it:
-	// the single document the batch names when there is exactly one, else a
-	// fresh id. Only items that named none inherit it, so a client-chosen id
-	// and a multi-document batch are untouched.
-	shared := ""
-	named := map[string]bool{}
-	for i := range req.Items {
-		if id := req.Items[i].DocumentID; id != "" {
-			named[id] = true
-		}
-	}
-	if len(named) == 1 {
-		for id := range named {
-			shared = id
-		}
-	}
-	if len(named) == 0 {
-		shared = storage.NewDocumentID()
-	}
-	if shared == "" {
-		return
-	}
 	for i := range req.Items {
 		if req.Items[i].DocumentID == "" {
-			req.Items[i].DocumentID = shared
+			req.Items[i].DocumentID = storage.NewDocumentID()
 		}
 	}
 }

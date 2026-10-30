@@ -128,24 +128,25 @@ func BuildArchive(ctx context.Context, store storage.Store, bankID string, opts 
 	// route before it reaches here, while a document export legitimately carries
 	// no scope — and used to be written as a bank archive with an all-false
 	// scope and a data section, which the reference's document export never has.
-	if opts.Scope.Any() {
-		if opts.Scope.Data || opts.IncludeObservations || opts.IncludeKnowledgeBase {
-			if opts.IncludeObservations {
-				observations, err := buildObservations(ctx, store, bankID, unitLocations)
-				if err != nil {
-					return nil, err
-				}
-				archive.Observations = observations
-			}
-			if opts.IncludeKnowledgeBase {
-				models, pages, err := buildKnowledgeBase(ctx, store, bankID)
-				if err != nil {
-					return nil, err
-				}
-				archive.MentalModels = models
-				archive.KnowledgePages = pages
-			}
+	// Observations and the knowledge base are selected independently of whether
+	// the archive is a whole-bank one: the document-export door accepts the same
+	// two flags, and an archive that names them must carry them.
+	if opts.IncludeObservations {
+		observations, err := buildObservations(ctx, store, bankID, unitLocations)
+		if err != nil {
+			return nil, err
 		}
+		archive.Observations = observations
+	}
+	if opts.IncludeKnowledgeBase {
+		models, pages, err := buildKnowledgeBase(ctx, store, bankID)
+		if err != nil {
+			return nil, err
+		}
+		archive.MentalModels = models
+		archive.KnowledgePages = pages
+	}
+	if opts.Scope.Any() {
 		// The operations log and the curation archive ride with the data
 		// section: the first records what the bank did, the second holds units
 		// the caller invalidated and can still revert.

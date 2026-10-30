@@ -71,6 +71,12 @@ type archiveProcessor struct {
 	// The document export keys its archive under `tenants/{schema}/banks/...`,
 	// the reference's own layout, so the published storage_key carries it.
 	storeSchema string
+	// observationsEnabled and autoConsolidationEnabled are the deployment
+	// defaults the post-retain consolidation gate falls back to when the bank
+	// names neither. A queued retain has no request handler to read them from,
+	// so a worker that does not carry them silently never folds its facts.
+	observationsEnabled      bool
+	autoConsolidationEnabled bool
 }
 
 // guard returns the delivery URL guard, defaulting to the strict policy when
@@ -1310,6 +1316,20 @@ func (a consolidationStore) AppendDocumentEvents(ctx context.Context, opID strin
 	return a.store.AppendDocumentEvents(ctx, opID, events)
 }
 
+// DocumentFactSources resolves each fact's document so a consolidation change
+// can be filed under the documents its evidence came from. The history package
+// asks the store it was handed; wrapping the store without this forward made
+// the capability assertion fail, and every consolidation event was dropped.
+func (a consolidationStore) DocumentFactSources(ctx context.Context, bankID string, factIDs []string) (map[string]string, error) {
+	reader, ok := a.store.(interface {
+		DocumentFactSources(ctx context.Context, bankID string, factIDs []string) (map[string]string, error)
+	})
+	if !ok {
+		return map[string]string{}, nil
+	}
+	return reader.DocumentFactSources(ctx, bankID, factIDs)
+}
+
 // CountObservationsInScope reports the scope's observation total with no limit,
 // so the scope cap is measured against the true count rather than the bounded
 // candidate pool (the reference's count-to-the-end fix). A store without the
@@ -1450,6 +1470,7 @@ func formatOptionalTime(value *time.Time) string {
 func NewQueueConsumer(store storage.Store, model provider.Provider, reflection storage.ReflectRunner,
 	embeddings storage.EmbeddingGenerator, cfg config.WorkerConfig, tuning config.WorkerTuning,
 	guard *webhooks.Guard, extraction ExtractionSettings, discardDocumentText bool,
+	observationsEnabled, autoConsolidationEnabled bool,
 	storeSchema string, tenants tenant.Extension) *worker.Consumer {
 	return worker.New(store, archiveProcessor{
 		store: store, provider: model, reflection: reflection,
@@ -1459,6 +1480,8 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 		embeddings:                   embeddings,
 		extraction:                   extraction,
 		discardDocumentText:          discardDocumentText,
+		observationsEnabled:          observationsEnabled,
+		autoConsolidationEnabled:     autoConsolidationEnabled,
 		storeSchema:                  storeSchema,
 	}, worker.Config{
 		WorkerID:            cfg.ID,

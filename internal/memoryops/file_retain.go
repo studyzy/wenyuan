@@ -334,20 +334,27 @@ func (h *Handlers) FileRetain(w http.ResponseWriter, r *http.Request) {
 	// conversion operation, so a caller tracks each upload separately.
 	overrides := httpx.TenantOverridesFrom(r)
 	operationIDs := make([]string, 0, len(items))
-	for _, item := range items {
+	for index, item := range items {
+		filename := files[index].Filename
+		// The conversion half is complete as soon as the bytes are text: record
+		// it first, so a caller watching the upload sees that half finish before
+		// the retain it queued even starts.
+		conversionID, err := h.recordFileConversion(r.Context(), bankID, item.DocumentID, filename)
+		if err != nil {
+			httpx.WriteErrorFor(w, r, h.mapWriteError(err))
+			return
+		}
 		write := toStorageRetain(bankID, RetainRequest{Items: []RetainItem{item}, Async: true})
 		// The bank's retain configuration applies to a converted upload too, so
 		// the file route extracts with the same prompt and chunking as the JSON
 		// route. The tenant's overrides layer under the bank's own. As on the
 		// JSON route, a configuration that cannot be read refuses the upload
 		// rather than storing it without the bank's Memory Defense policy.
-		result, bank, err := h.executeRetain(r.Context(), bankID, overrides, write)
-		if err != nil {
+		if _, err := h.queueFileRetain(r.Context(), bankID, overrides, write, item.DocumentID, filename); err != nil {
 			httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 			return
 		}
-		operationIDs = append(operationIDs, result.OperationID)
-		h.enqueuePostRetainConsolidation(r.Context(), bankID, bank)
+		operationIDs = append(operationIDs, conversionID)
 	}
 	httpx.WriteJSON(w, http.StatusOK, FileRetainResponse{OperationIDs: operationIDs})
 }

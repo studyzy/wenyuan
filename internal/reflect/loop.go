@@ -224,6 +224,10 @@ type Loop struct {
 	// documentAnswer is the markdown a document-mode `done` call produced, held
 	// until the loop stops.
 	documentAnswer string
+	// documentFromStop reports that the loop's own `done` call carried a valid
+	// document, so its answer is the run's answer and the closing step must not
+	// ask for it again.
+	documentFromStop bool
 	// searched reports whether a retrieval tool has returned — even an empty
 	// one. It is the done guardrail's gate: a stop before any search returned
 	// is refused with the search-first message, while "searched and found
@@ -322,7 +326,9 @@ func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 	// answer_ready, its prose — is discarded, so the answer is written against
 	// the question and the full evidence set rather than restated from memory.
 	answer := ""
-	if stopped {
+	if stopped && l.documentFromStop {
+		answer = l.documentAnswer
+	} else if stopped {
 		closing, err := l.closingStep(ctx, &outcome)
 		if err != nil {
 			return outcome, err
@@ -502,9 +508,25 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 				l.absenceRecallForced = true
 			}
 		} else {
-			// The model is ready to answer. Its own payload is discarded: the
-			// closing step restates the question over the full evidence set,
-			// which is where the answer is written.
+			// A document-mode `done` already carries the answer's structure.
+			// A valid one is the run's answer (the closing step does not ask
+			// again); a rejected one is handed back with its reasons attached
+			// by the closing step, exactly as a rejected closing document is.
+			if l.cfg.AnswerAsDocument && turn.Calls[stopIndex].Name == ToolDone {
+				if _, carried := turn.Calls[stopIndex].Input["document"]; carried {
+					answer, docErr := doneDocumentAnswer(turn.Calls[stopIndex].Input)
+					if docErr != nil {
+						l.documentFeedback = append(l.documentFeedback, docErr.Error())
+					} else {
+						l.documentAnswer = answer
+						l.documentFromStop = true
+						l.captureCitations(turn.Calls[stopIndex].Input)
+					}
+				}
+			}
+			// Otherwise the model is ready to answer and its own payload is
+			// discarded: the closing step restates the question over the full
+			// evidence set, which is where the answer is written.
 			finish = true
 		}
 	}

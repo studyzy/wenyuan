@@ -163,6 +163,9 @@ type EmbeddingResult struct {
 	Vectors [][]float32
 	// Dimensions is the width of every returned vector.
 	Dimensions int
+	// Usage is the provider-reported billing for the call, when the backend
+	// returns one. A backend that reports nothing leaves it zero.
+	Usage Usage
 }
 
 // RerankRequest asks a cross-encoder to score candidate documents against one

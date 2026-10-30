@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/history"
@@ -58,6 +59,11 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 	// Count the document by its extraction outcome, as the synchronous path
 	// does, so both routes report the same facts/no_facts split.
 	monitoring.Workload.CountRetainDocument(countUnitIDs(outcome))
+	// A queued retain folds its facts into observations exactly as a
+	// synchronous one does. The enqueue happens here, after the write landed,
+	// rather than at submission: a consolidation queued first could run before
+	// the facts it is meant to fold exist.
+	p.enqueuePostRetainConsolidation(ctx, op.BankID)
 	worker.ReportOutcome(ctx, map[string]any{
 		"unit_ids_count":          countUnitIDs(outcome),
 		"extraction_errors_count": 0,
@@ -106,6 +112,31 @@ func (p archiveProcessor) notifyRetainCompleted(ctx context.Context, op storage.
 		p.enqueueWebhookEvent(ctx, op.BankID, "retain.completed",
 			memoryops.RetainCompletedData(op.OperationID, item.DocumentID, item.Tags,
 				memoryops.DocumentUnitCount(ctx, p.store, op.BankID, item.DocumentID)))
+	}
+}
+
+// enqueuePostRetainConsolidation queues the pass that folds a queued retain's
+// facts into observations. The bank's own enable_observations and
+// enable_auto_consolidation overrides win over the deployment defaults, the
+// same resolution the synchronous route applies; a failure is logged and
+// swallowed because the write is already durable and the reconcile sweep will
+// pick the bank up.
+func (p archiveProcessor) enqueuePostRetainConsolidation(ctx context.Context, bankID string) {
+	observations := p.observationsEnabled
+	auto := p.autoConsolidationEnabled
+	if bank, err := p.store.GetBank(ctx, bankID); err == nil {
+		if value, ok := bank.Config["enable_observations"].(bool); ok {
+			observations = value
+		}
+		if value, ok := bank.Config["enable_auto_consolidation"].(bool); ok {
+			auto = value
+		}
+	}
+	if !observations || !auto {
+		return
+	}
+	if _, _, err := p.store.EnqueueConsolidation(ctx, bankID); err != nil {
+		slog.Default().Warn("could not enqueue post-retain consolidation", "bank_id", bankID, "error", err)
 	}
 }
 

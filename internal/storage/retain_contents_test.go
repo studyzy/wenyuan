@@ -65,7 +65,7 @@ func TestFactAttachmentIDs(t *testing.T) {
 // A fact that names an attachment adds it to the unit without dropping the
 // item's own attachments.
 func TestFactContentsCarriesFactAttachments(t *testing.T) {
-	contents := factContents("b1", "doc-1", map[int]string{0: "chunk-1"}, RetainItem{
+	contents := factContents("b1", "doc-1", RetainItem{
 		AttachmentIDs: []string{"att-a", "att-b"},
 	}, []ExtractedFact{{
 		Text: "the chart shows growth", Type: "world", FromAttachments: []string{"2"},

@@ -58,7 +58,7 @@ func drainUntilSettled(t *testing.T, store storage.Store, bankID string) {
 	consumer := NewQueueConsumer(store, none.New(), nil, nil, config.WorkerConfig{
 		ID: "w-file", MaxRetries: 1, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
 		Lease: time.Minute, Concurrency: 1, PollInterval: time.Millisecond,
-	}, config.WorkerTuning{}, nil, ExtractionSettings{}, false, "public", nil)
+	}, config.WorkerTuning{}, nil, ExtractionSettings{}, false, false, false, "public", nil)
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	go func() { _ = consumer.Run(runCtx) }()

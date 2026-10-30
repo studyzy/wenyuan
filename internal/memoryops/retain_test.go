@@ -391,6 +391,7 @@ func TestFileRetainPersistsAttachment(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 
 	// The upload names no document, so the ingress mints one — and the
 	// attachment is filed under that document, which is the id the memory units
@@ -696,6 +697,7 @@ func TestFileRetainRecordsEmptyMetadata(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	doc, err := store.GetDocument(context.Background(), "b1", "doc-upload")
 	if err != nil {
 		t.Fatalf("the upload stored no document: %v", err)

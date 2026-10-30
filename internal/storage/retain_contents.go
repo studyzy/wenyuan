@@ -415,6 +415,11 @@ func mergeJSONArrayParts(parts ...string) (string, bool) {
 type itemContent struct {
 	unit     MemoryUnit
 	entities []RetainEntity
+	// segment is the position in the item's text this content came from. The
+	// chunk identifier is attached after the chunks are written, so embedding
+	// can run before any write — a failed model call must not leave the
+	// document's previous version overwritten.
+	segment int
 	// causedByIndexes names the earlier units within the same item that caused
 	// this one, by their position in the item's unit list. The position is
 	// resolved to a stored unit once identifiers exist, which is why it is
@@ -422,45 +427,67 @@ type itemContent struct {
 	causedByIndexes []int
 }
 
-// itemContents builds the units one item produces, given the bank, the chunk
-// identifier stored for each segment the item's text was split into, and the
-// tags that apply.
-//
-// When a model was asked and produced facts, each fact becomes its own unit
-// carrying the fact's entities, dates and confidence, anchored to the chunk it
-// came from. When no model was configured — or the bank asked for chunks mode,
-// which stores text without asking — every stored segment of the item becomes a
-// unit. A model that was asked and found nothing produces no unit at all: the
-// text is still stored on the document, but the bank remembers nothing of it.
-//
-// chunkBySegment maps a segment's position in the item to the chunk identifier
-// stored for it; a segment absent from the map was not stored (an append whose
-// text the document already held) and contributes no unit.
-func itemContents(bankID, docID string, chunkBySegment map[int]string, item RetainItem, facts []ExtractedFact, tags []string, sizes SegmentOptions, extractionAttempted bool) []itemContent {
+// relativeChunkSegments rebases a chunk-position map onto the segment numbers
+// of the content that produced it. When a document is appended to, its chunks
+// start after the stored ones (baseIndex) but the incoming content — and the
+// facts extracted from it — is numbered from zero, so a lookup by the fact's
+// own chunk index must subtract the base first.
+func relativeChunkSegments(bySegment map[int]string, baseIndex int) map[int]string {
+	if baseIndex == 0 || len(bySegment) == 0 {
+		return bySegment
+	}
+	out := make(map[int]string, len(bySegment))
+	for index, chunkID := range bySegment {
+		if index < baseIndex {
+			continue
+		}
+		out[index-baseIndex] = chunkID
+	}
+	return out
+}
+
+// itemContents builds the units one item produces from its facts and tags. A
+// model that produced facts gives one unit per fact; a deployment with no model
+// (or a chunks-mode write) gives one unit per segment; a model that was asked
+// and named nothing gives none. The chunk identifier each unit is anchored to
+// is attached later, once the chunks exist (see attachChunkIDs), so embedding
+// can run before any write.
+func itemContents(bankID, docID string, item RetainItem, facts []ExtractedFact, tags []string, sizes SegmentOptions, extractionAttempted bool) []itemContent {
 	if len(facts) > 0 {
-		return factContents(bankID, docID, chunkBySegment, item, facts, tags)
+		return factContents(bankID, docID, item, facts, tags)
 	}
 	if extractionAttempted {
 		// The model ran and named nothing: the item yields evidence only when
 		// the model says it does, so an empty answer stores no unit.
 		return nil
 	}
-	return verbatimContents(bankID, docID, chunkBySegment, item, tags, sizes)
+	return verbatimContents(bankID, docID, item, tags, sizes)
+}
+
+// attachChunkIDs binds each content to the chunk stored for its segment and
+// drops the contents whose segment was not stored (an append whose text the
+// document already held). The chunks must already be written; the call is what
+// happens once their identifiers exist.
+func attachChunkIDs(contents []itemContent, bySegment map[int]string) []itemContent {
+	kept := contents[:0]
+	for _, content := range contents {
+		chunkID, ok := bySegment[content.segment]
+		if !ok {
+			continue
+		}
+		content.unit.ChunkID = chunkID
+		kept = append(kept, content)
+	}
+	return kept
 }
 
 // verbatimContents stores each segment of the item's text as a unit. The
 // boundaries are the request's, so a bank that configured a segment size gets
 // its own rather than the package default.
-func verbatimContents(bankID, docID string, chunkBySegment map[int]string, item RetainItem, tags []string, sizes SegmentOptions) []itemContent {
+func verbatimContents(bankID, docID string, item RetainItem, tags []string, sizes SegmentOptions) []itemContent {
 	chunks := SegmentWith(item.Content, sizes)
 	out := make([]itemContent, 0, len(chunks))
 	for index, chunk := range chunks {
-		chunkID, ok := chunkBySegment[index]
-		if !ok {
-			// The segment was not stored — a re-sent append turn the document
-			// already held — so it contributes no unit.
-			continue
-		}
 		unit := MemoryUnit{
 			BankID:        bankID,
 			Text:          chunk,
@@ -468,7 +495,6 @@ func verbatimContents(bankID, docID string, chunkBySegment map[int]string, item 
 			FactType:      TypeWorld,
 			Metadata:      item.Metadata,
 			DocumentID:    docID,
-			ChunkID:       chunkID,
 			Tags:          tags,
 			AttachmentIDs: item.AttachmentIDs,
 			// A verbatim segment inherits the item's observation scoping so the
@@ -480,22 +506,16 @@ func verbatimContents(bankID, docID string, chunkBySegment map[int]string, item 
 		}
 		applyItemDates(&unit, item)
 		unit.TextSignals = buildTextSignals(item.Entities, unit.OccurredStart, unit.OccurredEnd)
-		out = append(out, itemContent{unit: unit, entities: item.Entities})
+		out = append(out, itemContent{unit: unit, entities: item.Entities, segment: index})
 	}
 	return out
 }
 
 // factContents stores one unit per extracted fact, each anchored to the chunk
 // of the document its text came from.
-func factContents(bankID, docID string, chunkBySegment map[int]string, item RetainItem, facts []ExtractedFact, tags []string) []itemContent {
+func factContents(bankID, docID string, item RetainItem, facts []ExtractedFact, tags []string) []itemContent {
 	out := make([]itemContent, 0, len(facts))
 	for _, fact := range facts {
-		chunkID, ok := chunkBySegment[fact.ChunkIndex]
-		if !ok {
-			// The fact came from a segment the document already held (a re-sent
-			// append turn), so it is not re-stored.
-			continue
-		}
 		// The item's scoping rides with each fact: extraction stamps it onto
 		// the fact so a fact that carries its own scopes is the authority for
 		// its unit, and a fact that does not falls back to the item. This is
@@ -513,7 +533,6 @@ func factContents(bankID, docID string, chunkBySegment map[int]string, item Reta
 			FactType:      factTypeOrDefault(fact.Type, fact.Kind),
 			Metadata:      item.Metadata,
 			DocumentID:    docID,
-			ChunkID:       chunkID,
 			Tags:          appendTagLabels(tags, fact.LabelTags),
 			AttachmentIDs: mergeAttachmentIDs(item.AttachmentIDs, factAttachmentIDs(item.AttachmentIDs, fact.FromAttachments)),
 			// See above: the scoping the fact folds under survives to storage.
@@ -538,6 +557,7 @@ func factContents(bankID, docID string, chunkBySegment map[int]string, item Reta
 		out = append(out, itemContent{
 			unit:            unit,
 			entities:        entities,
+			segment:         fact.ChunkIndex,
 			causedByIndexes: fact.CausedByIndexes,
 		})
 	}

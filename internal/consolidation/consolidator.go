@@ -632,10 +632,11 @@ const maxReasksPerFact = 2
 
 // askAndApply makes one model call for one batch and applies its decision.
 func (c *Consolidator) askAndApply(ctx context.Context, bankID string, scope []string, facts []Fact, observations []Observation, settings Settings, remaining int) (Result, map[string]bool, error) {
+	input := buildInput(facts, observations, settings, remaining)
 	request := provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: buildInput(facts, observations, settings, remaining)},
+			{Role: "user", Content: input},
 		},
 		ResponseSchema: decisionSchema(),
 		Scope:          c.scope,
@@ -714,6 +715,24 @@ type llmFailure struct {
 
 func (e *llmFailure) Error() string { return e.err.Error() }
 func (e *llmFailure) Unwrap() error { return e.err }
+
+// addsNewSources reports whether sources names any id the observation does not
+// already rest on.
+func addsNewSources(sources, existing []string) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	known := make(map[string]bool, len(existing))
+	for _, id := range existing {
+		known[id] = true
+	}
+	for _, id := range sources {
+		if !known[id] {
+			return true
+		}
+	}
+	return false
+}
 
 // factIDsOf collects the identifiers of one batch's facts.
 func factIDsOf(facts []Fact) []string {
@@ -847,13 +866,16 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			result.Skipped++
 			continue
 		}
-		// An update that only restates the observation's own text changes
-		// nothing and is dropped rather than written back.
-		if observationTextByID[update.ObservationID] == normalizeObservationText(update.Text) {
+		sources := validSourceIDs(update.SourceIDs, factIDs)
+		// An update that restates the observation's text *and* adds no evidence
+		// changes nothing and is dropped rather than written back. A restatement
+		// that does name a new source is applied: its text is unchanged, but the
+		// evidence it attaches is exactly what the merge was for.
+		if observationTextByID[update.ObservationID] == normalizeObservationText(update.Text) &&
+			!addsNewSources(sources, observationSourcesByID[update.ObservationID]) {
 			result.Skipped++
 			continue
 		}
-		sources := validSourceIDs(update.SourceIDs, factIDs)
 		if err := c.store.UpdateObservation(ctx, bankID, update.ObservationID, update.Text, sources); err != nil {
 			return result, touched, fmt.Errorf("update observation: %w", err)
 		}

@@ -98,6 +98,7 @@ func TestImageUploadWithoutVisionDropsTheAttachment(t *testing.T) {
 	if rec := uploadFile(t, mux, "pic.png", "png bytes", ""); rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	docs, err := store.ListDocuments(context.TODO(), storage.DocumentQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)

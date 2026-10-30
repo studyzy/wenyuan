@@ -135,6 +135,18 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 				return s.unitIDsForDocumentLocked(req.BankID, item.DocumentID), nil
 			}
 		}
+	}
+	// Build the units and embed them before anything is written or cleared: a
+	// failed model call must leave the document exactly as it was.
+	tags := mergeTags(item.Tags, req.DocumentTags)
+	contents := itemContents(req.BankID, docID, item, facts, tags, segmentOptionsFor(req), modelExtractionEnabled(req))
+	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
+		return nil, err
+	}
+	// A re-retain against an explicit document id honours the update mode:
+	// replace discards the previous document's units, chunks and links, append
+	// concatenates the new text onto the stored document.
+	if item.DocumentID != "" {
 		// The default mode is replace: re-retaining a document id with new
 		// content supersedes what the document said, so its units, chunks and
 		// links are discarded before the new evidence is written. "append" is
@@ -157,13 +169,12 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 	// An attachment is derived from the document's canonical text and nothing
 	// else, so a re-retain that drops an image retires it here.
 	s.syncDocumentAttachmentsLocked(req.BankID, docID, item.Content)
-	tags := mergeTags(item.Tags, req.DocumentTags)
-
 	chunkBySegment := s.putItemPartsLocked(req.BankID, docID, item.ContentParts(), !req.DiscardDocumentText, segmentOptionsFor(req), baseIndex, existingHashes)
-	contents := itemContents(req.BankID, docID, chunkBySegment, item, facts, tags, segmentOptionsFor(req), modelExtractionEnabled(req))
-	if err := embedContents(ctx, req.Embeddings, contents); err != nil {
-		return nil, err
-	}
+	// Appended content is numbered from its own first segment, while its chunks
+	// start after the ones the document already holds; shift the mapping back so
+	// an extracted fact finds the chunk it came from.
+	chunkBySegment = relativeChunkSegments(chunkBySegment, baseIndex)
+	contents = attachChunkIDs(contents, chunkBySegment)
 	// The item's mentions are clustered once, before any is scored, so two
 	// spellings of one name that appear in this same document become one entity
 	// rather than two. The tuning is already read under the write lock.

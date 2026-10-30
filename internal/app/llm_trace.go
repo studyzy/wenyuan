@@ -338,6 +338,7 @@ func (e *tracingEmbedder) Embed(ctx context.Context, req provider.EmbeddingReque
 		callErr: err,
 		input:   map[string]any{"texts": req.Texts},
 		llmInfo: map[string]any{"input_count": len(req.Texts)},
+		usage:   result.Usage,
 	})
 	return result, err
 }
@@ -363,6 +364,29 @@ func TraceReranker(r provider.Reranker, store storage.Store, cfg config.Provider
 		return r
 	}
 	return &tracingReranker{Reranker: r, store: store, cfg: cfg, backend: backend}
+}
+
+// ScoresByRankPosition forwards the wrapped backend's capability. The wrapper
+// must not hide it: the recall pipeline asks the reranker it was handed, so a
+// rank-position backend behind this wrapper would otherwise be read as a
+// pointwise one and have its positions published as relevance.
+func (r *tracingReranker) ScoresByRankPosition() bool {
+	scorer, ok := r.Reranker.(interface{ ScoresByRankPosition() bool })
+	return ok && scorer.ScoresByRankPosition()
+}
+
+// PrunesCandidates forwards the wrapped backend's capability, for the same
+// reason: a pruning backend behind this wrapper must still shrink recall.
+func (r *tracingReranker) PrunesCandidates() bool {
+	pruner, ok := r.Reranker.(interface{ PrunesCandidates() bool })
+	return ok && pruner.PrunesCandidates()
+}
+
+// SeedsFromFused forwards the wrapped backend's capability, so the RRF
+// passthrough keeps seeding recall from the fused order through the wrapper.
+func (r *tracingReranker) SeedsFromFused() bool {
+	seeder, ok := r.Reranker.(interface{ SeedsFromFused() bool })
+	return ok && seeder.SeedsFromFused()
 }
 
 // Rerank runs the scoring call and records the attempt.

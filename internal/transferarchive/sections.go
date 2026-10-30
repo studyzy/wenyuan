@@ -374,7 +374,10 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 	}
 	// The synthesized knowledge rides with the data it was derived from; the
 	// bank's configuration and its own row ride with the bank-config section.
-	if bankArchive && scopeData {
+	// A whole-bank archive writes these sections even when empty, so a reader can
+	// tell "selected and empty" from "not carried"; a document export carries
+	// them too when the caller asked and they hold something.
+	if (bankArchive && scopeData) || len(archive.MentalModels) > 0 || len(archive.MentalModelHistory) > 0 {
 		if err := writeRowFile(MentalModelsName, archive.MentalModels, true); err != nil {
 			return err
 		}
@@ -397,10 +400,11 @@ func writeArchive(zw *zip.Writer, archive *Archive) error {
 			}
 		}
 	}
-	if bankArchive && scopeData {
+	if (bankArchive && scopeData) || len(archive.KnowledgePages) > 0 {
 		// The knowledge tree is written even when empty for a whole-bank
 		// archive: an empty list distinguishes "no pages" from an archive
-		// produced before the tree existed.
+		// produced before the tree existed. A document export carries it when
+		// the caller asked for it and it holds something.
 		if err := writeSection(KnowledgePagesName, archive.KnowledgePages, true, len(archive.KnowledgePages)); err != nil {
 			return err
 		}

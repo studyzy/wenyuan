@@ -68,6 +68,7 @@ func TestFileRetainChainFallsThroughAtRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	page, err := store.ListMemories(context.TODO(), storage.MemoryQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +308,7 @@ func TestFileRetainConvertedUploadKeepsNoAttachment(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	// The upload names its document through files_metadata, so the id the route
 	// was told to use is the one to read back; the async retain creates it.
 	document, err := store.GetDocument(context.TODO(), "b1", "converted-doc")

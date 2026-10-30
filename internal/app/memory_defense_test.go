@@ -127,7 +127,7 @@ func TestWebhookDeliveryRecordsReceiverStatus(t *testing.T) {
 	consumer := NewQueueConsumer(store, nil, nil, nil, config.WorkerConfig{
 		ID: "w1", MaxRetries: 1, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
 		Lease: time.Minute, Concurrency: 1, PollInterval: time.Millisecond,
-	}, config.WorkerTuning{}, webhooks.NewGuard(webhooks.GuardConfig{AllowPrivateHosts: true, AllowInsecure: true}), ExtractionSettings{}, false, "public", nil)
+	}, config.WorkerTuning{}, webhooks.NewGuard(webhooks.GuardConfig{AllowPrivateHosts: true, AllowInsecure: true}), ExtractionSettings{}, false, false, false, "public", nil)
 	// Drive the real consumer for long enough to settle the queued delivery,
 	// then stop it: the settlement path under test is the one a deployment runs.
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

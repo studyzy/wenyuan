@@ -517,11 +517,15 @@ func (s *PostgresStore) ClearOperationRefreshPark(ctx context.Context, bankID, o
 	return affected > 0, nil
 }
 
-// WithOperationSubjectLock runs fn under the same bank-row lock a deduplicated
-// enqueue of this operation type takes (see enqueueLockedBankTx), so a submit
-// that amends the operation it folded into cannot interleave with a concurrent
-// submit of the same bank deciding on the same queue.
-func (s *PostgresStore) WithOperationSubjectLock(ctx context.Context, bankID, _ string, fn func() error) error {
+// WithOperationSubjectLock serializes two submits that decide on the same
+// operation subject.
+//
+// It uses a transaction-scoped advisory lock rather than a row lock on the
+// bank: the callback queues the operation through EnqueueOperation, which opens
+// its own transaction and takes the bank row's FOR NO KEY UPDATE lock. Holding
+// that same row lock here as well would make the callback wait on a lock its
+// own caller holds — a self-deadlock that hangs the refresh request forever.
+func (s *PostgresStore) WithOperationSubjectLock(ctx context.Context, bankID, operationType string, fn func() error) error {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		return schemaErr
@@ -531,15 +535,9 @@ func (s *PostgresStore) WithOperationSubjectLock(ctx context.Context, bankID, _ 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var present int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
-		bankID).Scan(&present); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// The bank went away with the work queued on it; there is nothing
-			// left to promote.
-			return nil
-		}
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+		schema+":"+bankID, operationType); err != nil {
 		return err
 	}
 	if err := fn(); err != nil {

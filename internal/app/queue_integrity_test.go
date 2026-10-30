@@ -36,7 +36,7 @@ func TestAsyncRetainForDeletedBankIsNotResurrected(t *testing.T) {
 	consumer := NewQueueConsumer(store, none.New(), nil, nil, config.WorkerConfig{
 		ID: "w-integrity", MaxRetries: 1, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
 		Lease: time.Minute, Concurrency: 1, PollInterval: 2 * time.Millisecond,
-	}, config.WorkerTuning{}, nil, ExtractionSettings{}, false, "public", nil)
+	}, config.WorkerTuning{}, nil, ExtractionSettings{}, false, false, false, "public", nil)
 	runCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	defer cancel()
 	_ = consumer.Run(runCtx)

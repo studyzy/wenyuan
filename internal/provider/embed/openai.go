@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/studyzy/wenyuan/internal/provider"
 )
@@ -34,6 +35,10 @@ type openAIEmbedResponse struct {
 		Index     int       `json:"index"`
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // openAICompat serves the OpenAI-compatible members (openai, openrouter,
@@ -69,16 +74,28 @@ func (b *openAICompat) Embed(ctx context.Context, req provider.EmbeddingRequest)
 	if len(texts) == 0 {
 		return provider.EmbeddingResult{Dimensions: b.dimensions}, nil
 	}
-	vectors, err := batchEmbed(ctx, texts, b.batchSize, b.maxConcurrent, b.fetch)
+	// Every batch call reports its own billing, so the result carries the sum
+	// across the batches this request fanned out into.
+	var usage provider.Usage
+	var usageMu sync.Mutex
+	fetch := func(ctx context.Context, texts []string) ([][]float32, error) {
+		vectors, callUsage, err := b.fetch(ctx, texts)
+		usageMu.Lock()
+		usage.InputTokens += callUsage.InputTokens
+		usage.TotalTokens += callUsage.TotalTokens
+		usageMu.Unlock()
+		return vectors, err
+	}
+	vectors, err := batchEmbed(ctx, texts, b.batchSize, b.maxConcurrent, fetch)
 	if err != nil {
 		return provider.EmbeddingResult{}, err
 	}
-	return provider.EmbeddingResult{Vectors: vectors, Dimensions: b.dimensions}, nil
+	return provider.EmbeddingResult{Vectors: vectors, Dimensions: b.dimensions, Usage: usage}, nil
 }
 
 // fetch issues one batch request and returns its vectors in input order,
-// re-sorting by the index the endpoint reported.
-func (b *openAICompat) fetch(ctx context.Context, texts []string) ([][]float32, error) {
+// re-sorting by the index the endpoint reported, plus the call's billing.
+func (b *openAICompat) fetch(ctx context.Context, texts []string) ([][]float32, provider.Usage, error) {
 	raw, err := b.http.postJSON(ctx, "/embeddings", openAIEmbedRequest{
 		Model:          b.model,
 		Input:          texts,
@@ -86,11 +103,11 @@ func (b *openAICompat) fetch(ctx context.Context, texts []string) ([][]float32, 
 		EncodingFormat: "float",
 	}, bearerHeaders(b.apiKey))
 	if err != nil {
-		return nil, err
+		return nil, provider.Usage{}, err
 	}
 	var wire openAIEmbedResponse
 	if err := decodeJSON(raw, &wire, "cannot decode embedding response"); err != nil {
-		return nil, err
+		return nil, provider.Usage{}, err
 	}
 	sort.Slice(wire.Data, func(i, j int) bool { return wire.Data[i].Index < wire.Data[j].Index })
 	vectors := make([][]float32, 0, len(wire.Data))
@@ -98,9 +115,9 @@ func (b *openAICompat) fetch(ctx context.Context, texts []string) ([][]float32, 
 		vectors = append(vectors, item.Embedding)
 	}
 	if err := onePerInput(vectors, len(texts), b.name); err != nil {
-		return nil, err
+		return nil, provider.Usage{}, err
 	}
-	return vectors, nil
+	return vectors, provider.Usage{InputTokens: wire.Usage.PromptTokens, TotalTokens: wire.Usage.TotalTokens}, nil
 }
 
 // newOpenAICompat builds an OpenAI-compatible member from the resolved

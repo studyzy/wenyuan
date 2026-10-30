@@ -74,11 +74,14 @@ type asyncRetainTask struct {
 // payload is a stable wire shape of its own rather than the storage struct's
 // field names, which are free to change.
 type asyncRetainItem struct {
-	Content           string              `json:"content"`
-	Timestamp         *time.Time          `json:"timestamp,omitempty"`
-	HasTimestamp      bool                `json:"has_timestamp,omitempty"`
-	Context           string              `json:"context,omitempty"`
-	Metadata          map[string]any      `json:"metadata,omitempty"`
+	Content      string     `json:"content"`
+	Timestamp    *time.Time `json:"timestamp,omitempty"`
+	HasTimestamp bool       `json:"has_timestamp,omitempty"`
+	Context      string     `json:"context,omitempty"`
+	// Metadata is a pointer so "present but empty" survives the payload: a
+	// file upload stores `{}`, and a plain map with omitempty would encode it
+	// away and decode it back as absent, losing the document's metadata key.
+	Metadata          *map[string]any     `json:"metadata,omitempty"`
 	DocumentID        string              `json:"document_id,omitempty"`
 	Entities          []asyncRetainEntity `json:"entities,omitempty"`
 	ResolveEntities   bool                `json:"resolve_entities,omitempty"`
@@ -126,12 +129,17 @@ func AsyncRetainPayload(bankID, operationID string, req RetainRequest) map[strin
 		}
 	}
 	for _, item := range req.Items {
+		metadata := item.Metadata
+		var metadataPointer *map[string]any
+		if metadata != nil {
+			metadataPointer = &metadata
+		}
 		task.Items = append(task.Items, asyncRetainItem{
 			Content:             item.Content,
 			Timestamp:           item.Timestamp,
 			HasTimestamp:        item.HasTimestamp,
 			Context:             item.Context,
-			Metadata:            item.Metadata,
+			Metadata:            metadataPointer,
 			DocumentID:          item.DocumentID,
 			Entities:            asyncRetainEntities(item.Entities),
 			ResolveEntities:     item.ResolveEntities,
@@ -193,12 +201,16 @@ func DecodeAsyncRetainPayload(payload map[string]any) (RetainRequest, error) {
 		}
 	}
 	for _, item := range task.Items {
+		var metadata map[string]any
+		if item.Metadata != nil {
+			metadata = *item.Metadata
+		}
 		req.Items = append(req.Items, RetainItem{
 			Content:             item.Content,
 			Timestamp:           item.Timestamp,
 			HasTimestamp:        item.HasTimestamp,
 			Context:             item.Context,
-			Metadata:            item.Metadata,
+			Metadata:            metadata,
 			DocumentID:          item.DocumentID,
 			Entities:            retainEntities(item.Entities),
 			ResolveEntities:     item.ResolveEntities,

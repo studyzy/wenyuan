@@ -353,6 +353,19 @@ func (v timingValidator) ValidateBankWrite(ctx context.Context, bankID, apiKey s
 	return decision
 }
 
+// ValidateImport times the import gate. A validator that carries no import
+// rule lets the archive through without a timer, exactly as before wrapping.
+func (v timingValidator) ValidateImport(ctx context.Context, bankID string, documents []httpx.ImportDocument) httpx.OperationDecision {
+	gate, ok := v.inner.(httpx.ImportGate)
+	if !ok {
+		return httpx.OperationDecision{Allowed: true}
+	}
+	start := time.Now()
+	decision := gate.ValidateImport(ctx, bankID, documents)
+	monitoring.Workload.ObserveValidatorPhase("import", "pre", time.Since(start).Seconds())
+	return decision
+}
+
 // ResolveWriteTagScope times the write-scope resolver, reporting under "other"
 // as its name carries no operation verb. A validator that carries no write
 // scope confines nobody, exactly as before wrapping.

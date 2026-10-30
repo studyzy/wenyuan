@@ -19,6 +19,7 @@ func timestampedDocument(t *testing.T, store *storage.MemoryStore, timestamp str
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	document, err := store.GetDocument(context.TODO(), "b1", "dated")
 	if err != nil {
 		t.Fatalf("the converted upload stored no document: %v", err)

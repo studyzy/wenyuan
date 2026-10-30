@@ -66,6 +66,7 @@ func TestUploadHasNoPerFileSizeCap(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
+	drainQueuedFileRetains(t, store)
 	documents, err := store.ListDocuments(context.TODO(), storage.DocumentQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
