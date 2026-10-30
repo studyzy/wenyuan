@@ -945,7 +945,11 @@ func (s *MemoryStore) DeleteObservations(ctx context.Context, bankID, memoryID s
 	if err != nil {
 		return 0, err
 	}
-	if removed > 0 && s.autoConsolidationFor(ctx, bankID) {
+	// The consolidation is submitted whether or not the sweep removed
+	// anything: the clear is an explicit reset request, and the memory it names
+	// has just been requeued, so the pass is what rebuilds its observations
+	// (memory_engine.py:12540-12565).
+	if s.autoConsolidationFor(ctx, bankID) {
 		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
 			track.file(ctx, s, op.OperationID)
 		}
@@ -989,11 +993,10 @@ func (s *MemoryStore) clearMemoryObservations(ctx context.Context, bankID, memor
 	if err != nil {
 		return 0, err
 	}
-	// The memory was a source of the deleted observations, so clear its own
-	// consolidated marker too — it needs fresh observations.
-	if removed > 0 {
-		s.requeueSourceLocked(bankID, memoryID)
-	}
+	// The memory's consolidated marker is cleared whether or not anything went:
+	// the clear is an explicit reset request, and a memory whose last pass kept
+	// no observation from it still has to be tried again (#5731).
+	s.requeueSourceLocked(bankID, memoryID)
 	return removed, nil
 }
 

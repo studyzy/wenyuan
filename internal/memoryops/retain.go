@@ -462,10 +462,19 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	// so the canonical text carries only placeholders and the bytes never enter
 	// an async operation's payload. A failure to store them refuses the write
 	// rather than extracting from a picture the model will never see.
-	if err := h.storeInlineAttachments(r.Context(), bankID, &req); err != nil {
+	written, err := h.storeInlineAttachments(r.Context(), bankID, &req)
+	if err != nil {
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
+	// Every refusal from here on has to take those bytes back out: the ingress
+	// already wrote them, nothing else reclaims an attachment a retain never
+	// referenced, and the reference does exactly this on the memory-clearing
+	// refusals below (engine/memory_engine.py:6924-6966, :23257-23287 — the
+	// write-scope check moved inside that block in v1.1.0, #5416). The scope is
+	// the documents this request names, so a group that already landed keeps its
+	// attachments.
+	refused := func() { h.discardIngressAttachments(r.Context(), bankID, written, req) }
 	// Memory Defense screens the items as the caller submitted them, before the
 	// write is converted or folded: the reference decides "every item was blocked"
 	// against the submitted count and reports each violation by its position in
@@ -473,11 +482,13 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	// blocked item take a clean neighbour down with it.
 	bankConfig, err := h.resolveBankConfig(r.Context(), httpx.TenantOverridesFrom(r), bankID)
 	if err != nil {
+		refused()
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
 	screened, err := h.applyMemoryDefense(r.Context(), bankID, bankConfig, req.Items)
 	if err != nil {
+		refused()
 		httpx.WriteErrorFor(w, r, h.mapWriteError(err))
 		return
 	}
@@ -486,6 +497,7 @@ func (h *Handlers) Retain(w http.ResponseWriter, r *http.Request) {
 	// A write may not carry a tag the caller cannot write, so a scoped caller
 	// cannot reach another scope's tags through a retain.
 	if err := h.retainWriteScopeFailure(r, bankID, req, write); err != nil {
+		refused()
 		httpx.WriteErrorFor(w, r, err)
 		return
 	}

@@ -424,12 +424,12 @@ func (h *Handlers) ClearMemoryObservations(w http.ResponseWriter, r *http.Reques
 }
 
 // clearObservationsAndReconsolidate is the body of ClearMemoryObservations plus
-// the follow-up the reference's engine performs: when the clear actually removed
-// observations and the bank consolidates automatically, one consolidation is
-// submitted so the memory produces fresh observations on the next run
-// (engine/memory_engine.py:11855-11859 → :11879-11882). A clear that removed
-// nothing submits nothing, and a bank with automatic consolidation off never
-// submits.
+// the follow-up the reference's engine performs: when the bank consolidates
+// automatically, one consolidation is submitted so the memory produces fresh
+// observations on the next run (engine/memory_engine.py:12540-12565). The clear
+// is a reset request, so it submits whether or not the sweep removed anything —
+// the memory's own consolidated marker is cleared either way; a bank with
+// automatic consolidation off never submits.
 func (h *Handlers) clearObservationsAndReconsolidate(w http.ResponseWriter, r *http.Request) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	memoryID := strings.TrimSpace(r.PathValue("memory_id"))
@@ -445,7 +445,11 @@ func (h *Handlers) clearObservationsAndReconsolidate(w http.ResponseWriter, r *h
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
 	}
-	if removed > 0 && h.autoConsolidationEnabled(r, bankID) {
+	// The store already filed the clear's consolidation when automatic
+	// consolidation is on; this enqueue is the route's own follow-up for a
+	// backend that did not, so it is gated on the same setting and not on the
+	// removed count.
+	if h.autoConsolidationEnabled(r, bankID) {
 		if _, _, err := h.Store.EnqueueConsolidation(r.Context(), bankID); err != nil {
 			// The clear is already durable; consolidation is a follow-up the
 			// reconcile sweep picks up, so a failed enqueue is not the clear's

@@ -179,6 +179,34 @@ func (s *MemoryStore) DeleteDocumentAttachments(ctx context.Context, bankID, doc
 	return nil
 }
 
+// RemoveAttachmentRows drops the named attachment rows of one document, which is
+// what a refused retain's recall does with the rows it stored at ingress
+// (engine/memory_engine.py:8440-8455). Only the short ids named are removed, so
+// an attachment the document already carried survives.
+func (s *MemoryStore) RemoveAttachmentRows(ctx context.Context, bankID, documentID string, shortIDs []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(shortIDs) == 0 {
+		return nil
+	}
+	wanted := map[string]bool{}
+	for _, id := range shortIDs {
+		wanted[id] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, attachment := range s.attachments {
+		if attachment.BankID != bankID || attachment.DocumentID != documentID {
+			continue
+		}
+		if wanted[attachment.ShortID] {
+			delete(s.attachments, key)
+		}
+	}
+	return nil
+}
+
 // DeleteBankAttachments removes every attachment row a bank holds.
 func (s *MemoryStore) DeleteBankAttachments(ctx context.Context, bankID string) error {
 	if err := ctx.Err(); err != nil {

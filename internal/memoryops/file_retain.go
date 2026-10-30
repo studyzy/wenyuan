@@ -13,7 +13,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/studyzy/wenyuan/internal/fileparse"
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -457,9 +456,14 @@ func applyFileMetadata(item *RetainItem, meta FileRetainMeta) {
 		item.Strategy = meta.Strategy
 	}
 	if meta.Timestamp != "" {
-		if parsed, err := time.Parse(time.RFC3339, meta.Timestamp); err == nil {
-			utc := parsed.UTC()
-			item.Timestamp = TimestampField{Set: true, Value: &utc}
+		// The reference takes the value as it validated it — `datetime.fromisoformat`,
+		// which admits a date-only or naive datetime — and carries it into the
+		// document's event_date unchanged (api/http.py FileRetainMetadata →
+		// memory_engine.py:23625-23632 → :4556-4560). Parsing with the strict
+		// RFC 3339 form would drop a date-only value the request layer already
+		// accepted, and silently date the document by its ingest time.
+		if parsed, err := parseISODate(meta.Timestamp); err == nil {
+			item.Timestamp = TimestampField{Set: true, Value: &parsed}
 		}
 	}
 }

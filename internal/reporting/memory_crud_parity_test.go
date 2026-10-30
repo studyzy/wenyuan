@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -233,10 +234,10 @@ func sameJSON(left, right any) bool {
 	return err1 == nil && err2 == nil && string(l) == string(r)
 }
 
-// A clear that removed observations submits exactly one consolidation when the
-// bank consolidates automatically (engine/memory_engine.py:11879-11882: only
-// `deleted_count > 0`, then `if config.enable_auto_consolidation`); a clear
-// that removed nothing submits nothing, and a bank with the switch off never
+// A clear submits exactly one consolidation whenever the bank consolidates
+// automatically (engine/memory_engine.py:12540-12565 at v1.1.0: the `deleted_count
+// > 0` gate was removed from BOTH the requeue of the memory and the submit — the
+// clear is an explicit reset request, #5731); a bank with the switch off never
 // submits.
 func TestClearObservationsSubmitsConsolidationWhenAutoEnabled(t *testing.T) {
 	for _, tc := range []struct {
@@ -247,7 +248,8 @@ func TestClearObservationsSubmitsConsolidationWhenAutoEnabled(t *testing.T) {
 	}{
 		{name: "auto on, observations removed", auto: true, observing: true, wantOps: 1},
 		{name: "auto off, observations removed", auto: false, observing: true, wantOps: 0},
-		{name: "auto on, nothing removed", auto: true, observing: false, wantOps: 0},
+		{name: "auto on, nothing removed", auto: true, observing: false, wantOps: 1},
+		{name: "auto off, nothing removed", auto: false, observing: false, wantOps: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := storage.NewMemoryStore("public")
@@ -281,6 +283,40 @@ func TestClearObservationsSubmitsConsolidationWhenAutoEnabled(t *testing.T) {
 				t.Fatalf("queued %d operations, want %d", len(ops.Operations), tc.wantOps)
 			}
 		})
+	}
+}
+
+// Clearing a memory that carries no observation is still a reset: the memory's
+// own consolidated marker goes and the pass that rebuilds its observations is
+// queued (engine/memory_engine.py:12540-12548, #5731).
+func TestClearObservationsRequeuesTheMemoryWithNothingToRemove(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	ctx := context.Background()
+	if _, err := store.CreateBank(ctx, storage.Bank{BankID: bank, Name: "Bank"}); err != nil {
+		t.Fatal(err)
+	}
+	const source = "77777777-7777-4777-8777-777777777777"
+	consolidated := time.Now().UTC()
+	if _, err := store.UpsertUnit(ctx, storage.MemoryUnit{
+		ID: source, BankID: bank, Text: "the deployment runs on Tuesdays", FactType: storage.TypeWorld,
+		ConsolidatedAt: &consolidated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := send(reportingMux(store), http.MethodDelete,
+		"/v1/default/banks/"+bank+"/memories/"+source+"/observations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear = %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := decodeObject(t, rec)["deleted_count"]; got != float64(0) {
+		t.Fatalf("deleted_count = %v, want 0", got)
+	}
+	unit, err := store.GetMemory(ctx, bank, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unit.ConsolidatedAt != nil {
+		t.Fatalf("consolidated_at = %v, want nil — the clear is a reset request", unit.ConsolidatedAt)
 	}
 }
 

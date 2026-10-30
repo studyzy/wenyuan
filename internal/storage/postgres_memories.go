@@ -808,21 +808,23 @@ func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID
 	if err != nil {
 		return 0, err
 	}
-	// The memory was a source of the deleted observations, so clear its own
-	// consolidated marker too — it needs fresh observations. Bookkeeping only:
-	// `updated_at` stays put.
-	if deleted > 0 {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
-			 WHERE id = $1::uuid AND bank_id = $2 AND fact_type IN ('experience', 'world')`,
-			memoryID, bankID); err != nil {
-			return 0, err
-		}
+	// The memory's consolidated marker is cleared whether or not anything went:
+	// the clear is an explicit reset request, and a memory whose last pass kept
+	// no observation from it still has to be tried again (#5731). Bookkeeping
+	// only: `updated_at` stays put.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
+		 WHERE id = $1::uuid AND bank_id = $2 AND fact_type IN ('experience', 'world')`,
+		memoryID, bankID); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	if deleted > 0 && s.autoConsolidationFor(ctx, bankID) {
+	// Submitted whether or not the sweep removed anything: the memory above was
+	// requeued, and this pass is what rebuilds its observations
+	// (memory_engine.py:12540-12565).
+	if s.autoConsolidationFor(ctx, bankID) {
 		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
 			track.file(ctx, s, op.OperationID)
 		}

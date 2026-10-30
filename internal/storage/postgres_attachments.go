@@ -64,6 +64,24 @@ func (s *PostgresStore) DeleteDocumentAttachments(ctx context.Context, bankID, d
 	return err
 }
 
+// RemoveAttachmentRows drops the named attachment rows of one document, which is
+// what a refused retain's recall does with the rows it stored at ingress
+// (engine/memory_engine.py:8440-8455). Only the short ids named are removed, so
+// an attachment the document already carried survives.
+func (s *PostgresStore) RemoveAttachmentRows(ctx context.Context, bankID, documentID string, shortIDs []string) error {
+	if len(shortIDs) == 0 {
+		return nil
+	}
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	query := `DELETE FROM ` + quoteIdent(schema) + `.attachments
+	          WHERE bank_id = $1 AND document_id = $2 AND short_id = ANY($3::text[])`
+	_, err := s.db.ExecContext(ctx, query, bankID, documentID, shortIDs)
+	return err
+}
+
 // DeleteBankAttachments removes every attachment row a bank holds. A cleared
 // bank goes on existing, so nothing cascades from the bank row and the images
 // must be retired explicitly.
