@@ -23,6 +23,16 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Status = status
 	}
+	// A team is a tenant, so the tenant list can be narrowed by kind. Without
+	// the parameter it keeps reporting both, as it always has.
+	if raw := r.URL.Query().Get("kind"); raw != "" {
+		kind := tenant.Kind(strings.TrimSpace(raw))
+		if kind != tenant.KindPersonal && kind != tenant.KindTeam {
+			writeError(w, http.StatusBadRequest, "unknown tenant kind")
+			return
+		}
+		filter.Kind = kind
+	}
 	records, err := h.cfg.Registry.ListTenants(r.Context(), filter)
 	if err != nil {
 		writeRegistryError(w, err)

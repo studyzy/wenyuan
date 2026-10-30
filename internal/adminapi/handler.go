@@ -39,6 +39,8 @@ type Config struct {
 	ResolveKey func(ctx context.Context, credential string) (string, error)
 	// Now supplies the clock. It defaults to the wall clock in UTC.
 	Now func() time.Time
+
+	TeamConfig
 }
 
 // Handler serves the management plane. It is a separate mux from the data
@@ -80,6 +82,7 @@ func New(cfg Config) (*Handler, error) {
 	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/session", handler.sessionKey)
 	handler.mux.HandleFunc("POST /admin/v1/tenants/resolve", handler.resolveTenantKey)
 	handler.mux.HandleFunc("GET /admin/v1/overview", handler.overview)
+	handler.bindTeamRoutes()
 	return handler, nil
 }
 
@@ -108,6 +111,7 @@ type tenantResponse struct {
 	TenantID    string         `json:"tenant_id"`
 	DisplayName string         `json:"display_name"`
 	Status      string         `json:"status"`
+	Kind        string         `json:"kind"`
 	Config      map[string]any `json:"config"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
@@ -135,6 +139,7 @@ func toTenantResponse(record tenant.Record) tenantResponse {
 		TenantID:    record.ID,
 		DisplayName: record.DisplayName,
 		Status:      string(record.Status),
+		Kind:        string(record.KindValue()),
 		Config:      config,
 		CreatedAt:   record.CreatedAt,
 		UpdatedAt:   record.UpdatedAt,
@@ -177,6 +182,10 @@ func writeRegistryError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "tenant or key not found")
 	case errors.Is(err, tenant.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, tenant.ErrKindMismatch):
+		writeError(w, http.StatusNotFound, "team not found")
+	case errors.Is(err, tenant.ErrInvalidProject):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storage.ErrSchemaExists):
 		writeError(w, http.StatusConflict, "schema already exists; retry with adopt=true")
 	case errors.Is(err, storage.ErrInvalidSchema):
@@ -189,7 +198,17 @@ func writeRegistryError(w http.ResponseWriter, err error) {
 }
 
 func decodeJSON(r *http.Request, target any) error {
-	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(target)
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	// The body must be one JSON value. A second value after it, or any trailing
+	// garbage, is a malformed request rather than a value to ignore: a caller
+	// that sent two objects does not get the first one applied silently.
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("unexpected data after the JSON value")
+	}
+	return nil
 }
 
 func parseStatus(raw string) (tenant.Status, bool) {

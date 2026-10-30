@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
@@ -56,16 +54,8 @@ func (h *Handler) issueKey(w http.ResponseWriter, r *http.Request, label string,
 	if strings.TrimSpace(label) == "" {
 		label = "key"
 	}
-	plaintext, key, err := tenant.NewKey(h.cfg.Now())
+	plaintext, key, err := h.mintKey(r.Context(), tenantID, label, ephemeral, expiresAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	key.TenantID = tenantID
-	key.Label = label
-	key.Ephemeral = ephemeral
-	key.ExpiresAt = expiresAt
-	if err := h.cfg.Registry.CreateKey(r.Context(), key); err != nil {
 		writeRegistryError(w, err)
 		return
 	}
