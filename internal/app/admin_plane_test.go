@@ -18,7 +18,7 @@ func TestNewAdminHandlerServesWithMemoryRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newTenantRegistry: %v", err)
 	}
-	handler, err := newAdminHandler(config.Config{AdminAPIKey: "operator-secret"}, registry, nil, nil, nil, nil)
+	handler, err := newAdminHandler(config.Config{AdminAPIKey: "operator-secret"}, registry, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newAdminHandler: %v", err)
 	}

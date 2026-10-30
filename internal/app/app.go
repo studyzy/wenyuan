@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/adminapi"
 	"github.com/studyzy/wenyuan/internal/audit"
 	"github.com/studyzy/wenyuan/internal/bankapi"
 	"github.com/studyzy/wenyuan/internal/config"
@@ -273,7 +274,18 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 				return nil, err
 			}
 		}
-		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper)
+		// Teams are a multi-tenant feature: a single-tenant process has no
+		// registry to record them in, so its plane serves no team routes.
+		var teamRegistry storage.TeamRegistry
+		var bankAdmin adminapi.BankAdmin
+		if cfg.TenantMode == config.TenantModeMulti {
+			teamRegistry, err = newTeamRegistry(cfg, store, tenantRegistry)
+			if err != nil {
+				return nil, err
+			}
+			bankAdmin = newBankAdmin(store)
+		}
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin)
 		if err != nil {
 			return nil, err
 		}

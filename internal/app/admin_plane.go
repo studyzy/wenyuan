@@ -58,6 +58,8 @@ func newAdminHandler(
 	provisioner func(context.Context, string, bool) error,
 	migrator func(context.Context, string) error,
 	dropper func(context.Context, string) error,
+	teams storage.TeamRegistry,
+	banks adminapi.BankAdmin,
 ) (http.Handler, error) {
 	adminConfig := adminapi.Config{
 		Registry:    registry,
@@ -66,6 +68,9 @@ func newAdminHandler(
 		Provisioner: provisioner,
 		Migrator:    migrator,
 		Dropper:     dropper,
+		// Teams stay nil in single-tenant mode, where every team route answers
+		// 501; that is the one place the plane differs between the two modes.
+		TeamConfig: adminapi.TeamConfig{Teams: teams, Banks: banks},
 	}
 	// The console turns a tenant key into a console session, and it needs the
 	// tenant id to renew that session. Resolving through the same extension the
