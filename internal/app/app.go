@@ -240,13 +240,10 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		Metrics:               metrics,
 		EnabledBankConfigAPI:  cfg.EnableBankConfigAPI,
 		EnabledMCP:            cfg.MCPEnabled,
-		MCPHandler: mcp.New(store, auditLogger).WithOptions(mcp.Options{
-			EnabledTools: cfg.MCPEnabledTools,
-			Instructions: cfg.MCPInstructions,
-		}),
-		Extensions:       extensions,
-		Authenticator:    authenticatorFrom(cfg),
-		ResolveBankAlias: store.ResolveBankID,
+		MCPHandler:            newMCPHandler(store, auditLogger, &cfg),
+		Extensions:            extensions,
+		Authenticator:         authenticatorFrom(cfg),
+		ResolveBankAlias:      store.ResolveBankID,
 		Audit: &httpx.AuditOptions{
 			Action: httpAuditAction,
 			Hook:   auditLogger,
@@ -611,4 +608,17 @@ func (p storePinger) PoolWaiting() (int, bool) {
 		return 0, false
 	}
 	return reporter.PoolWaiting()
+}
+
+// newMCPHandler builds the MCP server with the deployment's configuration: its
+// tool allowlist and instructions, and the process-level knowledge-page trigger
+// default, which a page created over MCP resolves exactly as one created over
+// HTTP does.
+func newMCPHandler(store storage.Store, auditor mcp.Auditor, cfg *config.Config) *mcp.Server {
+	server := mcp.New(store, auditor).WithOptions(mcp.Options{
+		EnabledTools: cfg.MCPEnabledTools,
+		Instructions: cfg.MCPInstructions,
+	})
+	server.SetKnowledgeDefaults(bankapi.PublicConfigDefaults(*cfg))
+	return server
 }

@@ -33,6 +33,7 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/audit"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/reporting"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -64,6 +65,11 @@ type Server struct {
 	// auditor, when non-nil, records auditable tool calls.
 	auditor Auditor
 
+	// handlers is the knowledge-base service the knowledge tools run, so an MCP
+	// tool and its HTTP route share one implementation of create, patch and read
+	// rather than re-deriving them over the raw store.
+	handlers *reporting.Handlers
+
 	// multiBank and singleBank are the session registries of the two MCP apps
 	// the reference runs: the multi-bank one behind /mcp and the single-bank
 	// one behind /mcp/{bank_id}. Each app keeps its own sessions — a session
@@ -94,8 +100,18 @@ func New(store storage.Store, auditor Auditor) *Server {
 	return &Server{
 		store:      store,
 		auditor:    auditor,
+		handlers:   reporting.NewHandlers(store),
 		multiBank:  newSessionRegistry(),
 		singleBank: newSessionRegistry(),
+	}
+}
+
+// SetKnowledgeDefaults carries the process-level knowledge-page trigger default
+// into the handler set the knowledge tools run, so a page created over MCP
+// resolves `knowledge_page_default_trigger` exactly as one created over HTTP.
+func (s *Server) SetKnowledgeDefaults(processDefaults map[string]any) {
+	if s.handlers != nil {
+		s.handlers.ProcessDefaults = processDefaults
 	}
 }
 

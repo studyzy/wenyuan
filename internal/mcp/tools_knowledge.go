@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/reporting"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -118,6 +119,11 @@ func (s *Server) createKnowledgeFolder(ctx context.Context, args map[string]any)
 	return view, nil
 }
 
+// createKnowledgePage creates a page through the same code the HTTP route runs,
+// so the page gets a backing mental model, the resolved knowledge-page trigger,
+// its content budget and a queued refresh — the four things a bare tree row
+// lacks. The reference's tool then submits the refresh and reports the
+// operation the caller polls (`mcp_tools.py::_do_create_knowledge_page`).
 func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	name := stringArgument(args, "name")
@@ -128,60 +134,110 @@ func (s *Server) createKnowledgePage(ctx context.Context, args map[string]any) (
 	if strings.TrimSpace(sourceQuery) == "" {
 		return nil, errors.New("source_query cannot be empty")
 	}
-	node, err := s.store.PutKnowledgeNode(ctx, storage.KnowledgeNode{
-		ID:       newID(),
-		BankID:   bankID,
-		ParentID: stringArgument(args, "parent_id"),
-		Kind:     storage.KnowledgeKindPage,
-		Title:    name,
-		Tags:     stringListArgument(args, "tags"),
-		Managed:  true,
-	})
+	if message := validateTagsMatchArgument(args); message != "" {
+		return nil, errors.New(message)
+	}
+	trigger, err := validatedTriggerPatch(args)
 	if err != nil {
 		return nil, err
 	}
-	view, err := s.knowledgeNodePayload(ctx, node)
+	parentID, err := s.knowledgeParentArgument(ctx, bankID, args)
 	if err != nil {
 		return nil, err
 	}
-	return view, nil
+	// A page name is unique within its folder, case-insensitively, so the create
+	// answers "a page named '<name>' already exists in this folder" rather than
+	// letting two nodes shadow each other — the reference's uniqueness index.
+	if err := s.assertNoDuplicatePage(ctx, bankID, parentID, name); err != nil {
+		return nil, err
+	}
+	maxTokens := intArgument(args, "max_tokens", 0)
+	result, serviceErr := s.handlers.CreateKnowledgePageNode(ctx, nil, bankID, parentID, name,
+		reporting.CreateKnowledgePageParams{
+			SourceQuery: sourceQuery,
+			Tags:        stringListArgument(args, "tags"),
+			MaxTokens:   maxTokens,
+			Trigger:     trigger,
+		})
+	if serviceErr != nil {
+		if serviceErr.Status == httpx.KindConflict {
+			return errorPayload(serviceErr.Detail), nil
+		}
+		return nil, errors.New(serviceErr.Detail)
+	}
+	return compactToolText(createKnowledgePageAck{
+		PageID:        result.Node.ID,
+		MentalModelID: result.ModelID,
+		OperationID:   result.OperationID,
+		Status:        "created",
+		Message:       "Page '" + name + "' created. Content is being generated asynchronously.",
+	}), nil
 }
 
+// updateKnowledgeNode patches a node through the same code the HTTP route runs:
+// the page options reach the backing model, a stated trigger is merged over the
+// page's current one, and a new source query schedules the rebuild.
 func (s *Server) updateKnowledgeNode(ctx context.Context, args map[string]any) (any, error) {
 	bankID := s.bankArgument(ctx, args)
 	nodeID := stringArgument(args, "node_id")
 	if nodeID == "" {
 		return nil, invalidArgument("update_knowledge_node requires node_id")
 	}
-	patch := storage.KnowledgeNodePatch{}
-	if name := stringArgument(args, "name"); name != "" {
-		patch.Title = &name
+	if message := validateTagsMatchArgument(args); message != "" {
+		return nil, errors.New(message)
 	}
-	if tags := stringListArgument(args, "tags"); tags != nil {
-		patch.Tags = &tags
+	trigger, err := validatedTriggerPatch(args)
+	if err != nil {
+		return nil, err
 	}
-	if raw, ok := args["parent_id"]; ok {
-		parent, _ := raw.(string)
-		// The tool cannot express an explicit null, so the literal "root" is the
-		// caller's way to move a node to the top level.
+	params := reporting.KnowledgeNodeParams{Trigger: trigger, TriggerSet: trigger != nil}
+	if raw, present := args["name"]; present && raw != nil {
+		name := stringArgument(args, "name")
+		params.Name = &name
+	}
+	if _, present := args["tags"]; present {
+		tags := stringListArgument(args, "tags")
+		if tags == nil {
+			tags = []string{}
+		}
+		params.Tags = &tags
+	}
+	if raw, present := args["source_query"]; present && raw != nil {
+		sourceQuery := stringArgument(args, "source_query")
+		params.SourceQuery = &sourceQuery
+	}
+	if _, present := args["max_tokens"]; present {
+		maxTokens := intArgument(args, "max_tokens", 0)
+		params.MaxTokens = &maxTokens
+	}
+	if raw, present := args["parent_id"]; present && raw != nil {
+		// An MCP argument cannot express an explicit null, so the literal "root"
+		// is the caller's way to move a node to the top level.
+		parent := stringArgument(args, "parent_id")
 		if parent == knowledgeRootParent {
 			parent = ""
 		}
-		patch.ParentID = &parent
+		params.Move = true
+		params.NewParent = &parent
 	}
-	node, err := s.store.UpdateKnowledgeNode(ctx, bankID, nodeID, patch)
-	if errors.Is(err, storage.ErrKnowledgeNodeNotFound) {
-		return notFoundAnswer("Knowledge node '" + nodeID + "' not found in bank '" + bankID + "'"), nil
+	// The engine refuses a patch that names nothing too, because a no-op
+	// authorizes no operation; kept here so an agent gets a sentence it can act
+	// on rather than an exception. The reference words it for its own tool.
+	if params.Name == nil && !params.Move && params.SourceQuery == nil &&
+		params.Tags == nil && params.MaxTokens == nil && !params.TriggerSet {
+		return errorPayload("Provide name, parent_id, source_query, tags, max_tokens, " +
+			"trigger, and/or refresh_after_consolidation to update"), nil
 	}
+	result, serviceErr := s.handlers.UpdateKnowledgeNodeRecord(ctx, bankID, nodeID, params)
+	if serviceErr != nil {
+		if serviceErr.Status == httpx.KindNotFound {
+			return errorPayload("Knowledge node '" + nodeID + "' not found in bank '" + bankID + "'"), nil
+		}
+		return nil, errors.New(serviceErr.Detail)
+	}
+	view, err := s.knowledgeNodePayload(ctx, result.Node)
 	if err != nil {
 		return nil, err
-	}
-	view, err := s.knowledgeNodePayload(ctx, node)
-	if err != nil {
-		return nil, err
-	}
-	if view.Kind == string(storage.KnowledgeKindFolder) {
-		view.Children = []knowledgeNodeView{}
 	}
 	return view, nil
 }
@@ -231,4 +287,58 @@ func (s *Server) knowledgeModel(ctx context.Context, bankID string, node storage
 		return storage.MentalModel{}, false
 	}
 	return model, true
+}
+
+// knowledgeParentArgument reads the `parent_id` of a create. It must name a
+// folder in this bank, so the tree cannot be given a dangling reference or a
+// page with children.
+func (s *Server) knowledgeParentArgument(ctx context.Context, bankID string, args map[string]any) (*string, error) {
+	raw, present := args["parent_id"]
+	if !present || raw == nil {
+		return nil, nil
+	}
+	parent := stringArgument(args, "parent_id")
+	if strings.TrimSpace(parent) == "" {
+		return nil, nil
+	}
+	node, err := s.store.GetKnowledgeNode(ctx, bankID, parent)
+	if errors.Is(err, storage.ErrKnowledgeNodeNotFound) {
+		return nil, errors.New("Parent folder '" + parent + "' not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if node.Kind != storage.KnowledgeKindFolder {
+		return nil, errors.New("Parent '" + parent + "' is not a folder")
+	}
+	return &parent, nil
+}
+
+// assertNoDuplicatePage refuses a second page of the same name in one folder,
+// which the reference reports as the create's "already exists" answer.
+func (s *Server) assertNoDuplicatePage(ctx context.Context, bankID string, parentID *string, name string) error {
+	nodes, err := s.store.ListKnowledgeNodes(ctx, bankID)
+	if err != nil {
+		return err
+	}
+	want := ""
+	if parentID != nil {
+		want = *parentID
+	}
+	for _, node := range nodes {
+		if node.Kind == storage.KnowledgeKindPage && node.ParentID == want && strings.EqualFold(node.Title, name) {
+			return errors.New("A page named '" + name + "' already exists in this folder")
+		}
+	}
+	return nil
+}
+
+// createKnowledgePageAck is the answer to creating a knowledge page: the node, the
+// mental model backing it, and the refresh operation the content comes from.
+type createKnowledgePageAck struct {
+	PageID        string `json:"page_id"`
+	MentalModelID string `json:"mental_model_id"`
+	OperationID   string `json:"operation_id"`
+	Status        string `json:"status"`
+	Message       string `json:"message"`
 }
