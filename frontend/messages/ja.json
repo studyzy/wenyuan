@@ -1995,7 +1995,8 @@
         "invalidAccessKey": "アクセスキーが無効です",
         "unauthorized": "認証されていません",
         "keyNotConfigured": "このサーバーにアクセスキーが設定されていません。",
-        "wrongKey": "アクセスキーが正しくありません。"
+        "wrongKey": "アクセスキーが正しくありません。",
+        "tenantLoginUnavailable": "このサーバーではテナントキーでのサインインは利用できません。"
       },
       "validation": {
         "bankIdRequired": "bank_id は必須です",

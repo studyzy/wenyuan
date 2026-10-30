@@ -1995,7 +1995,8 @@
         "invalidAccessKey": "Invalid access key",
         "unauthorized": "Unauthorized",
         "keyNotConfigured": "The access key is not configured on this server.",
-        "wrongKey": "The access key is incorrect."
+        "wrongKey": "The access key is incorrect.",
+        "tenantLoginUnavailable": "Signing in with a tenant key is not available on this server."
       },
       "validation": {
         "bankIdRequired": "bank_id is required",

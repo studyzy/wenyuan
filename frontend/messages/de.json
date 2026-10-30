@@ -1995,7 +1995,8 @@
         "invalidAccessKey": "Ungültiger Zugriffsschlüssel",
         "unauthorized": "Nicht autorisiert",
         "keyNotConfigured": "Der Zugriffsschlüssel ist auf diesem Server nicht konfiguriert.",
-        "wrongKey": "Der Zugriffsschlüssel ist falsch."
+        "wrongKey": "Der Zugriffsschlüssel ist falsch.",
+        "tenantLoginUnavailable": "Die Anmeldung mit einem Tenant-Schlüssel ist auf diesem Server nicht verfügbar."
       },
       "validation": {
         "bankIdRequired": "bank_id ist erforderlich",

@@ -1995,7 +1995,8 @@
         "invalidAccessKey": "A chave de acesso é inválida",
         "unauthorized": "Não autorizado",
         "keyNotConfigured": "A chave de acesso não está configurada neste servidor.",
-        "wrongKey": "A chave de acesso está incorreta."
+        "wrongKey": "A chave de acesso está incorreta.",
+        "tenantLoginUnavailable": "Entrar com uma chave de locatário não está disponível neste servidor."
       },
       "validation": {
         "bankIdRequired": "bank_id é obrigatório",

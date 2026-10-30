@@ -1995,7 +1995,8 @@
         "invalidAccessKey": "La clave de acceso no es válida",
         "unauthorized": "No autorizado",
         "keyNotConfigured": "La clave de acceso no está configurada en este servidor.",
-        "wrongKey": "La clave de acceso es incorrecta."
+        "wrongKey": "La clave de acceso es incorrecta.",
+        "tenantLoginUnavailable": "Iniciar sesión con una clave de inquilino no está disponible en este servidor."
       },
       "validation": {
         "bankIdRequired": "bank_id es obligatorio",
