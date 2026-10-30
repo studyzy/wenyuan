@@ -298,6 +298,17 @@ out of it as they close.
   default.
 - **Intentionally out of scope:** OAuth provider integration and GCS / Azure
   object stores (the S3-compatible backend covers object storage).
+- **A decision model is declared, not served.** v1.1.0 lets a deployment point
+  recall's reranking, reflect's orchestration and consolidation's triage at a
+  separate decision endpoint (the reference's `*_DECISION_MODEL_*` env keys, and
+  the four `*_use_decision_model` bank switches). The contract declares those
+  switches and this service stores and echoes them, but nothing consumes them:
+  with no decision model configured — the reference's own default — both sides
+  run the same LLM-only path, so the difference shows only on a deployment that
+  configures one. Making it real is a new adapter under `internal/provider`, not
+  a change to any route. The same holds for the `nvidia` embedding/reranker, the
+  `onnx` reranker, the `chatgpt` provider and `LLMRequestExtension`;
+  `docs/CONTRACT-AUDIT.md` keeps that ledger.
 - **Default listen ports are offset from the reference on purpose.** wenyuan
   defaults to API `18888`, worker HTTP `18889`, and frontend `19999` —
   upstream's 8888/8889 plus 10000 (the upstream Control Plane UI is 9999) —
