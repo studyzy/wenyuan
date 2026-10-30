@@ -1,8 +1,10 @@
+import type { Metadata } from "next";
 import { JetBrains_Mono, Manrope, Sora } from "next/font/google";
 import { NextIntlClientProvider, hasLocale } from "next-intl";
-import { setRequestLocale } from "next-intl/server";
+import { getTranslations, setRequestLocale } from "next-intl/server";
 import { notFound } from "next/navigation";
 import { routing } from "@/i18n/routing";
+import { normalizeBasePath } from "@/lib/base-path";
 import { BankProvider } from "@/lib/bank-context";
 import { FeaturesProvider } from "@/lib/features-context";
 import { ThemeProvider } from "@/lib/theme-context";
@@ -38,6 +40,31 @@ const jetbrainsMono = JetBrains_Mono({
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
+}
+
+// The browser tab and the search/social description follow the negotiated
+// locale: the root layout's static metadata is English-only, so a Chinese
+// session would otherwise title the tab in pinyin. The title is the same
+// `common.appName` the web app manifest installs under, so the tab and the
+// installed app name never disagree.
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}): Promise<Metadata> {
+  const { locale } = await params;
+  const [common, meta] = await Promise.all([
+    getTranslations({ locale, namespace: "common" }),
+    getTranslations({ locale, namespace: "metadata" }),
+  ]);
+  return {
+    title: common("appName"),
+    description: meta("description"),
+    // The manifest is a route handler (app/manifest.webmanifest/route.ts) so it
+    // can answer in the session's language; the framework only emits the <link>
+    // for its own app/manifest.ts special file, so it is declared here.
+    manifest: `${normalizeBasePath()}/manifest.webmanifest`,
+  };
 }
 
 // Anti-FOUC: apply the theme's `.dark` class before first paint. ThemeProvider

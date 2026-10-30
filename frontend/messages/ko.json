@@ -43,6 +43,7 @@
     "matchAnyTooltip": "선택한 태그 중 하나라도 일치",
     "matchAllTooltip": "선택한 모든 태그 일치",
     "appName": "WenYuan 제어 플레인",
+    "brandName": "WenYuan",
     "refresh": "새로 고침",
     "retry": "다시 시도",
     "unknown": "알 수 없음",
@@ -1858,7 +1859,6 @@
     "clustered": "클러스터로 그룹화"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
     "description": "WenYuan 시맨틱 메모리를 위한 멀티테넌트 컨트롤 플레인"
   },
   "addDocument": {

@@ -43,6 +43,7 @@
     "matchAnyTooltip": "Match any selected tag",
     "matchAllTooltip": "Match all selected tags",
     "appName": "WenYuan Control Plane",
+    "brandName": "WenYuan",
     "refresh": "Refresh",
     "retry": "Retry",
     "unknown": "Unknown",
@@ -1858,7 +1859,6 @@
     "clustered": "Grouped by cluster"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
     "description": "Multi-tenant control plane for WenYuan semantic memory"
   },
   "addDocument": {

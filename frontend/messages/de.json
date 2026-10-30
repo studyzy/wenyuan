@@ -43,6 +43,7 @@
     "matchAnyTooltip": "Mit einem beliebigen ausgewählten Tag übereinstimmen",
     "matchAllTooltip": "Mit allen ausgewählten Tags übereinstimmen",
     "appName": "WenYuan-Kontrollzentrum",
+    "brandName": "WenYuan",
     "refresh": "Aktualisieren",
     "retry": "Wiederholen",
     "unknown": "Unbekannt",
@@ -1858,7 +1859,6 @@
     "clustered": "Nach Cluster gruppiert"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
     "description": "Mehrmandanten-Steuerungsebene für WenYuan semantischen Speicher"
   },
   "addDocument": {

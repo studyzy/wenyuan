@@ -13,8 +13,8 @@ export const metadata: Metadata = {
     icon: "/favicon.png",
     apple: "/apple-touch-icon.png",
   },
-  // `manifest` is not declared here: app/manifest.ts is a route, and the
-  // framework injects its <link rel="manifest"> itself.
+  // `manifest` is not declared here: it is per-locale (the installed app name
+  // follows the session language), so `app/[locale]/layout.tsx` declares it.
 };
 
 export default function RootLayout({

@@ -43,6 +43,7 @@
     "matchAnyTooltip": "Coincidir con cualquier etiqueta seleccionada",
     "matchAllTooltip": "Coincidir con todas las etiquetas seleccionadas",
     "appName": "Plano de control de WenYuan",
+    "brandName": "WenYuan",
     "refresh": "Actualizar",
     "retry": "Reintentar",
     "unknown": "Desconocido",
@@ -1858,7 +1859,6 @@
     "clustered": "Agrupado por clúster"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
     "description": "Plano de control multi-inquilino para la memoria semántica de WenYuan"
   },
   "addDocument": {

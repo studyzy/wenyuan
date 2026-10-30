@@ -42,7 +42,8 @@
     "matchAll": "全部",
     "matchAnyTooltip": "匹配任意选中标签",
     "matchAllTooltip": "匹配所有选中标签",
-    "appName": "WenYuan 控制台",
+    "appName": "文渊控制台",
+    "brandName": "文渊",
     "refresh": "刷新",
     "retry": "重试",
     "unknown": "未知",
@@ -631,7 +632,7 @@
     "memoryDefenseSecretLeakTitle": "密钥泄露防护",
     "memoryDefenseSecretLeakDescription": "扫描保留内容中的密钥。45 种模式,涵盖常见提供商密钥、AWS 和个人信息。",
     "memoryDefenseEnterpriseTitle": "Memory Defense Enterprise",
-    "memoryDefenseEnterpriseSubtitle": "检测更多、智能编辑、全面审计 — WenYuan Cloud 中提供。",
+    "memoryDefenseEnterpriseSubtitle": "检测更多、智能编辑、全面审计 — 文渊云中提供。",
     "memoryDefenseEnterpriseFeatureDetectSecrets": "高级密钥检测:200+ 模式,涵盖提供商密钥、AWS、GitHub 和 CI 令牌",
     "memoryDefenseEnterpriseFeatureBase64": "Base64 解码:捕获编码负载中隐藏的密钥",
     "memoryDefenseEnterpriseFeatureLlm": "LLM 筛查:捕获正则表达式无法识别的新型外泄模式",
@@ -1858,8 +1859,7 @@
     "clustered": "按聚类分组"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
-    "description": "WenYuan 语义记忆的多租户控制面板"
+    "description": "文渊语义记忆的多租户控制面板"
   },
   "addDocument": {
     "addDocumentButton": "添加文档",
@@ -1950,7 +1950,7 @@
   "banksOverview": {
     "title": "记忆库",
     "subtitle": "每个记忆库都是一个独立的大脑——隔离存储某个用户、智能体或项目记住的一切。记忆库之间不共享任何内容。",
-    "welcomeTitle": "欢迎使用 WenYuan",
+    "welcomeTitle": "欢迎使用文渊",
     "welcomeBody": "记忆库是一个独立的大脑——隔离存储某个用户、智能体或项目记住的一切。创建第一个记忆库开始使用。",
     "search": "搜索记忆库...",
     "noSearchResults": "没有与搜索匹配的记忆库。",
@@ -1978,7 +1978,7 @@
     "bulkDeleteFailures": "以下记忆库无法删除："
   },
   "login": {
-    "title": "WenYuan 控制面板",
+    "title": "文渊控制面板",
     "description": "输入访问密钥以继续",
     "accessKey": "访问密钥",
     "accessKeyPlaceholder": "输入访问密钥",

@@ -588,7 +588,7 @@ function BankSelectorInner() {
             onAnimationEnd={() => setLogoSpinning(false)}
           />
           <span className="font-heading ml-2 text-[17px] font-semibold tracking-[-0.025em] text-foreground">
-            WenYuan
+            {tCommon("brandName")}
           </span>
         </button>
 

@@ -38,6 +38,7 @@ interface SidebarProps {
 export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
   const t = useTranslations("bank.sidebar");
   const tBank = useTranslations("bank");
+  const tCommon = useTranslations("common");
   const { currentBank } = useBank();
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [apiVersion, setApiVersion] = useState<string | null>(null);
@@ -160,13 +161,13 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
               "mb-2 flex items-center justify-center gap-1.5 text-center font-mono text-[10.5px] tracking-[0.02em] text-muted-foreground/70 select-none",
               isCollapsed ? "px-0" : "px-1"
             )}
-            title={`WenYuan API v${apiVersion}`}
+            title={`${tCommon("brandName")} API v${apiVersion}`}
           >
             <span
               aria-hidden
               className="h-1.5 w-1.5 shrink-0 rounded-full bg-success shadow-[0_0_6px_0_color-mix(in_oklab,var(--hs-success)_80%,transparent)]"
             />
-            {isCollapsed ? `v${apiVersion}` : `WenYuan v${apiVersion}`}
+            {isCollapsed ? `v${apiVersion}` : `${tCommon("brandName")} v${apiVersion}`}
           </div>
         )}
         <button

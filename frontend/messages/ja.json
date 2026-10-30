@@ -43,6 +43,7 @@
     "matchAnyTooltip": "選択したいずれかのタグに一致",
     "matchAllTooltip": "選択したすべてのタグに一致",
     "appName": "WenYuan コントロールプレーン",
+    "brandName": "WenYuan",
     "refresh": "更新",
     "retry": "再試行",
     "unknown": "不明",
@@ -1858,7 +1859,6 @@
     "clustered": "クラスタでグループ化"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
     "description": "WenYuanセマンティックメモリのマルチテナントコントロールプレーン"
   },
   "addDocument": {

@@ -42,7 +42,8 @@
     "matchAll": "全部",
     "matchAnyTooltip": "符合任一已選標籤",
     "matchAllTooltip": "符合所有已選標籤",
-    "appName": "WenYuan 控制台",
+    "appName": "文淵控制台",
+    "brandName": "文淵",
     "refresh": "重新整理",
     "retry": "重試",
     "unknown": "未知",
@@ -631,7 +632,7 @@
     "memoryDefenseSecretLeakTitle": "密鑰外洩防護",
     "memoryDefenseSecretLeakDescription": "掃描保留內容中的密鑰。45 種模式涵蓋常見供應商金鑰、AWS 與個人資訊。",
     "memoryDefenseEnterpriseTitle": "Memory Defense Enterprise",
-    "memoryDefenseEnterpriseSubtitle": "偵測更多、智能編輯、全面稽核 — WenYuan Cloud 提供。",
+    "memoryDefenseEnterpriseSubtitle": "偵測更多、智能編輯、全面稽核 — 文淵雲提供。",
     "memoryDefenseEnterpriseFeatureDetectSecrets": "進階密鑰偵測:200+ 種樣式,涵蓋供應商金鑰、AWS、GitHub 與 CI 權杖",
     "memoryDefenseEnterpriseFeatureBase64": "Base64 解碼:擷取編碼負載中隱藏的密鑰",
     "memoryDefenseEnterpriseFeatureLlm": "LLM 篩查:擷取正則表達式無法識別的新型外洩模式",
@@ -1858,8 +1859,7 @@
     "clustered": "依聚類分組"
   },
   "metadata": {
-    "title": "WenYuan Cloud",
-    "description": "WenYuan 語義記憶的多租戶控制面板"
+    "description": "文淵語義記憶的多租戶控制面板"
   },
   "addDocument": {
     "addDocumentButton": "新增文件",
@@ -1950,7 +1950,7 @@
   "banksOverview": {
     "title": "記憶庫",
     "subtitle": "每個記憶庫都是一個獨立的大腦——隔離儲存某個使用者、代理或專案記住的一切。記憶庫之間不會共享任何內容。",
-    "welcomeTitle": "歡迎使用 WenYuan",
+    "welcomeTitle": "歡迎使用文淵",
     "welcomeBody": "記憶庫是一個獨立的大腦——隔離儲存某個使用者、代理或專案記住的一切。建立第一個記憶庫開始使用。",
     "search": "搜尋記憶庫...",
     "noSearchResults": "沒有符合搜尋的記憶庫。",
@@ -1978,7 +1978,7 @@
     "bulkDeleteFailures": "以下記憶庫無法刪除："
   },
   "login": {
-    "title": "WenYuan 控制面板",
+    "title": "文淵控制面板",
     "description": "輸入存取金鑰以繼續",
     "accessKey": "存取金鑰",
     "accessKeyPlaceholder": "輸入存取金鑰",
