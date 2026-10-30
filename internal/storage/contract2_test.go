@@ -129,7 +129,7 @@ func TestContractObservability(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 
-	if _, err := store.MemoriesTimeseries(ctx, bank, "day", "created_at"); err != nil {
+	if _, err := store.MemoriesTimeseries(ctx, bank, "day", "created_at", nil); err != nil {
 		t.Fatalf("timeseries: %v", err)
 	}
 	if _, err := store.ListAuditLog(ctx, AuditQuery{BankID: bank, Limit: 10}); err != nil {
@@ -144,7 +144,7 @@ func TestContractObservability(t *testing.T) {
 	if _, err := store.LLMRequestStats(ctx, bank, "day", "", ""); err != nil {
 		t.Fatalf("llm stats: %v", err)
 	}
-	scopes, err := store.ListObservationScopes(ctx, bank, 10, 0)
+	scopes, err := store.ListObservationScopes(ctx, bank, nil, 10, 0)
 	if err != nil {
 		t.Fatalf("observation scopes: %v", err)
 	}
