@@ -20,8 +20,29 @@ var ErrNotFound = errors.New("tenant not found")
 // ErrExists reports a tenant or key id already present in the registry.
 var ErrExists = errors.New("tenant already exists")
 
+// KindValue returns the stored spelling of the record's kind, defaulting an
+// empty kind to personal.
+func (r Record) KindValue() Kind {
+	if r.Kind == "" {
+		return KindPersonal
+	}
+	return r.Kind
+}
+
+// IsTeam reports whether the record is a team tenant.
+func (r Record) IsTeam() bool { return r.KindValue() == KindTeam }
+
 // ErrInvalidTransition reports a status change the state machine does not allow.
 var ErrInvalidTransition = errors.New("invalid tenant status transition")
+
+// ErrKindMismatch reports a team operation on a tenant that is not a team, or
+// the reverse. A tenant's kind is fixed at creation: an existing personal
+// tenant is never promoted to a team.
+var ErrKindMismatch = errors.New("tenant kind does not match the operation")
+
+// ErrInvalidProject reports a project id, project name or bank id that cannot
+// be stored.
+var ErrInvalidProject = errors.New("invalid project")
 
 // Status is a tenant's lifecycle state.
 type Status string
@@ -37,15 +58,30 @@ const (
 	StatusDeleted Status = "deleted"
 )
 
+// Kind distinguishes a person's own tenant from a team's. A team is a tenant
+// with its own schema; the kind is what makes it one without a second table.
+type Kind string
+
+const (
+	// KindPersonal is a person's tenant. It is the default, so an existing row
+	// needs no backfill.
+	KindPersonal Kind = "personal"
+	// KindTeam is a team's tenant.
+	KindTeam Kind = "team"
+)
+
 // Record is one row of the tenant registry.
 type Record struct {
 	ID          string
 	DisplayName string
 	Status      Status
-	Config      map[string]any
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   *time.Time
+	// Kind is personal or team. An empty value reads as personal, which is what
+	// a record written before the column existed means.
+	Kind      Kind
+	Config    map[string]any
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
 }
 
 // Key is one tenant credential. Only the hash is stored; the plaintext exists

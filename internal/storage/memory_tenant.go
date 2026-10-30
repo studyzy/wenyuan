@@ -35,6 +35,7 @@ func (r *MemoryTenantRegistry) CreateTenant(_ context.Context, record tenant.Rec
 	if record.Status == "" {
 		record.Status = tenant.StatusProvisioning
 	}
+	record.Kind = record.KindValue()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.tenants[record.ID]; ok {
@@ -65,6 +66,9 @@ func (r *MemoryTenantRegistry) ListTenants(_ context.Context, filter TenantFilte
 		if filter.Status != "" && record.Status != filter.Status {
 			continue
 		}
+		if filter.Kind != "" && record.KindValue() != filter.Kind {
+			continue
+		}
 		if query != "" &&
 			!strings.Contains(strings.ToLower(record.ID), query) &&
 			!strings.Contains(strings.ToLower(record.DisplayName), query) {
@@ -89,6 +93,12 @@ func (r *MemoryTenantRegistry) UpdateTenant(_ context.Context, id string, update
 	}
 	if update.Config != nil {
 		record.Config = copyConfig(update.Config)
+	}
+	// A tenant's kind is fixed at creation: an existing personal tenant is
+	// never promoted to a team. Restating the current kind is accepted so a
+	// client can send the record it read back unchanged.
+	if update.Kind != nil && *update.Kind != record.KindValue() {
+		return tenant.Record{}, tenant.ErrInvalidTransition
 	}
 	if update.Status != nil && *update.Status != record.Status {
 		next, err := tenant.Transition(record, *update.Status, time.Now().UTC())

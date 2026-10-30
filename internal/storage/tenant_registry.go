@@ -31,6 +31,10 @@ type TenantRegistry interface {
 type TenantFilter struct {
 	// Status, when set, returns only tenants in that state.
 	Status tenant.Status
+	// Kind, when set, returns only tenants of that kind. Empty returns both
+	// personal and team tenants, which is what the tenant list has always
+	// shown.
+	Kind tenant.Kind
 	// Query matches the tenant id or display name, case-insensitively.
 	Query string
 	// Limit caps the result; zero means no cap.
@@ -45,4 +49,8 @@ type TenantUpdate struct {
 	DisplayName *string
 	Config      map[string]any
 	Status      *tenant.Status
+	// Kind requests a kind change. A tenant's kind is fixed at creation, so a
+	// value other than the stored one is refused with
+	// tenant.ErrInvalidTransition; restating the current kind is accepted.
+	Kind *tenant.Kind
 }

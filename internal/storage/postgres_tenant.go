@@ -25,7 +25,7 @@ func NewPostgresTenantRegistry(db DB) *PostgresTenantRegistry {
 	return &PostgresTenantRegistry{db: db, schema: AdminSchema}
 }
 
-const tenantColumns = "tenant_id, display_name, status, config, created_at, updated_at, deleted_at"
+const tenantColumns = "tenant_id, display_name, status, kind, config, created_at, updated_at, deleted_at"
 
 const keyColumns = "key_id::text, tenant_id, key_hash, prefix, label, ephemeral, expires_at, revoked_at, last_used_at, created_at"
 
@@ -53,8 +53,8 @@ func (r *PostgresTenantRegistry) CreateTenant(ctx context.Context, record tenant
 		return err
 	}
 	_, err = r.db.ExecContext(ctx,
-		"INSERT INTO "+r.qualified("tenant")+" (tenant_id, display_name, status, config, created_at, updated_at) VALUES ($1,$2,$3,$4::jsonb,$5,$6)",
-		record.ID, record.DisplayName, string(record.Status), config, record.CreatedAt, record.UpdatedAt)
+		"INSERT INTO "+r.qualified("tenant")+" (tenant_id, display_name, status, kind, config, created_at, updated_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)",
+		record.ID, record.DisplayName, string(record.Status), string(record.KindValue()), config, record.CreatedAt, record.UpdatedAt)
 	if isUniqueViolation(err) {
 		return tenant.ErrExists
 	}
@@ -78,6 +78,10 @@ func (r *PostgresTenantRegistry) ListTenants(ctx context.Context, filter TenantF
 	if filter.Status != "" {
 		args = append(args, string(filter.Status))
 		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if filter.Kind != "" {
+		args = append(args, string(filter.Kind))
+		where = append(where, fmt.Sprintf("kind = $%d", len(args)))
 	}
 	if query := strings.TrimSpace(filter.Query); query != "" {
 		args = append(args, "%"+escapeLike(query)+"%")
@@ -263,19 +267,19 @@ func (r *PostgresTenantRegistry) RevokeKey(ctx context.Context, tenantID, keyID 
 func (r *PostgresTenantRegistry) LookupKey(ctx context.Context, hash []byte) (tenant.Key, tenant.Record, error) {
 	row := r.db.QueryRowContext(ctx,
 		"SELECT k.key_id::text, k.tenant_id, k.key_hash, k.prefix, k.label, k.ephemeral, k.expires_at, k.revoked_at, k.last_used_at, k.created_at, "+
-			"t.tenant_id, t.display_name, t.status, t.config, t.created_at, t.updated_at, t.deleted_at"+
+			"t.tenant_id, t.display_name, t.status, t.kind, t.config, t.created_at, t.updated_at, t.deleted_at"+
 			" FROM "+r.qualified("tenant_key")+" k JOIN "+r.qualified("tenant")+" t ON t.tenant_id = k.tenant_id"+
 			" WHERE k.key_hash = $1", hash)
 
 	var key tenant.Key
 	var record tenant.Record
-	var status string
+	var status, kind string
 	var config []byte
 	var expires, revoked, lastUsed, deleted sql.NullTime
 	err := row.Scan(
 		&key.ID, &key.TenantID, &key.Hash, &key.Prefix, &key.Label, &key.Ephemeral,
 		&expires, &revoked, &lastUsed, &key.CreatedAt,
-		&record.ID, &record.DisplayName, &status, &config, &record.CreatedAt, &record.UpdatedAt, &deleted)
+		&record.ID, &record.DisplayName, &status, &kind, &config, &record.CreatedAt, &record.UpdatedAt, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tenant.Key{}, tenant.Record{}, tenant.ErrNotFound
 	}
@@ -286,6 +290,7 @@ func (r *PostgresTenantRegistry) LookupKey(ctx context.Context, hash []byte) (te
 	key.RevokedAt = timePointer(revoked)
 	key.LastUsedAt = timePointer(lastUsed)
 	record.Status = tenant.Status(status)
+	record.Kind = tenant.Kind(kind)
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &record.Config); err != nil {
 			return tenant.Key{}, tenant.Record{}, fmt.Errorf("decode tenant config: %w", err)
@@ -318,13 +323,14 @@ func (r *PostgresTenantRegistry) TouchKey(ctx context.Context, keyID string, now
 // scanTenantRecord reads the tenantColumns list.
 func scanTenantRecord(row rowScanner) (tenant.Record, error) {
 	var record tenant.Record
-	var status string
+	var status, kind string
 	var config []byte
 	var deleted sql.NullTime
-	if err := row.Scan(&record.ID, &record.DisplayName, &status, &config, &record.CreatedAt, &record.UpdatedAt, &deleted); err != nil {
+	if err := row.Scan(&record.ID, &record.DisplayName, &status, &kind, &config, &record.CreatedAt, &record.UpdatedAt, &deleted); err != nil {
 		return tenant.Record{}, err
 	}
 	record.Status = tenant.Status(status)
+	record.Kind = tenant.Kind(kind)
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &record.Config); err != nil {
 			return tenant.Record{}, fmt.Errorf("decode tenant config: %w", err)
