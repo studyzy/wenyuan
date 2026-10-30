@@ -50,6 +50,10 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(gate.body, { status: 401 });
   }
 
+  if (gate.kind === "api-forbidden") {
+    return NextResponse.json(gate.body, { status: 403 });
+  }
+
   if (gate.kind === "redirect-login") {
     const url = request.nextUrl.clone();
     const [path, query] = gate.location.split("?");

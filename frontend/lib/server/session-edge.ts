@@ -17,6 +17,13 @@ type TokenPayload = {
   exp: number;
 };
 
+/**
+ * Subjects a session can carry. `console` is the operator session minted from
+ * the console passphrase; `tenant:<id>` is a session entered with a tenant key,
+ * which may use the console but must never reach the management plane.
+ */
+export const OPERATOR_SUBJECT = "console";
+
 function base64UrlDecode(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
@@ -69,34 +76,44 @@ export async function verifyAccessKey(configured: string, submitted: string): Pr
 }
 
 /**
- * Verify a session token: the signature must match and the payload must not be
- * expired. Returns false for any malformed input rather than throwing.
+ * Read a session token: the signature must match and the payload must not be
+ * expired. Returns the payload, or null for any malformed input rather than
+ * throwing.
  */
-export async function verifySessionToken(
+export async function readSessionToken(
   secret: string,
   token: string | undefined,
   nowMs: number,
-): Promise<boolean> {
-  if (!secret || !token) return false;
+): Promise<TokenPayload | null> {
+  if (!secret || !token) return null;
   const dot = token.lastIndexOf(".");
-  if (dot <= 0) return false;
+  if (dot <= 0) return null;
 
   const encoded = token.slice(0, dot);
   const provided = token.slice(dot + 1);
   const expected = await hmacSha256(secret, encoded);
-  if (!constantTimeEquals(base64UrlDecode(provided), expected)) return false;
-  if (base64UrlEncode(expected) !== provided) return false;
+  if (!constantTimeEquals(base64UrlDecode(provided), expected)) return null;
+  if (base64UrlEncode(expected) !== provided) return null;
 
   let payload: TokenPayload;
   try {
     payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(encoded))) as TokenPayload;
   } catch {
-    return false;
+    return null;
   }
 
   const now = Math.floor(nowMs / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) return false;
-  return true;
+  if (typeof payload.exp !== "number" || payload.exp <= now) return null;
+  return payload;
+}
+
+/** Verify a session token without inspecting its subject. */
+export async function verifySessionToken(
+  secret: string,
+  token: string | undefined,
+  nowMs: number,
+): Promise<boolean> {
+  return (await readSessionToken(secret, token, nowMs)) !== null;
 }
 
 export const TENANT_SESSION_COOKIE = "wenyuan_cp_tenant";

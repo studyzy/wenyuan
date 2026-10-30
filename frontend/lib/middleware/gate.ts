@@ -1,5 +1,5 @@
 import { prefixBasePath, stripBasePath } from "../server/paths";
-import { verifySessionToken, SESSION_COOKIE } from "../server/session-edge";
+import { OPERATOR_SUBJECT, SESSION_COOKIE, readSessionToken } from "../server/session-edge";
 import { buildErrorBody } from "../server/errors";
 import { readCookie } from "../../i18n/negotiate";
 import { isApiPath, isPublicPath } from "./whitelist";
@@ -14,6 +14,7 @@ import { isApiPath, isPublicPath } from "./whitelist";
 export type GateDecision =
   | { kind: "allow" }
   | { kind: "api-unauthorized"; body: Record<string, unknown> }
+  | { kind: "api-forbidden"; body: Record<string, unknown> }
   | { kind: "redirect-login"; location: string };
 
 export type GateInput = {
@@ -26,6 +27,17 @@ export type GateInput = {
   nowMs?: number;
 };
 
+/**
+ * Whether a path is answered by the management plane's BFF and therefore needs
+ * an operator session. The session's own report/exit route is exempt: it only
+ * describes or clears the caller's own tenant, and a tenant session must be
+ * able to leave.
+ */
+function requiresOperator(appPath: string): boolean {
+  if (appPath === "/api/admin/session") return false;
+  return appPath === "/api/admin" || appPath.startsWith("/api/admin/");
+}
+
 export async function evaluateGate(input: GateInput): Promise<GateDecision> {
   if (!input.accessKey) return { kind: "allow" };
 
@@ -37,7 +49,18 @@ export async function evaluateGate(input: GateInput): Promise<GateDecision> {
   if (isPublicPath(appPath)) return { kind: "allow" };
 
   const token = readCookie(input.cookieHeader, SESSION_COOKIE);
-  if (await verifySessionToken(input.accessKey, token, input.nowMs ?? Date.now())) {
+  const session = await readSessionToken(input.accessKey, token, input.nowMs ?? Date.now());
+  if (session) {
+    // A session entered with a tenant key may use the console but never the
+    // management plane: tenant administration creates, purges and re-keys other
+    // tenants, which is strictly more than the data credential it was opened
+    // with. The one exception is the session's own report/exit route.
+    if (requiresOperator(appPath) && session.sub !== OPERATOR_SUBJECT) {
+      return {
+        kind: "api-forbidden",
+        body: buildErrorBody("api.errors.generic.forbidden", input.locale),
+      };
+    }
     return { kind: "allow" };
   }
 

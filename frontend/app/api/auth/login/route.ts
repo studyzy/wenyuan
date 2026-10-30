@@ -116,9 +116,12 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse("api.errors.auth.tenantLoginUnavailable", 503, locale);
   }
 
+  // The subject is what keeps this session out of the management plane: a
+  // tenant key must not be able to create, purge or re-key tenants just because
+  // it can use the console.
   headers.append(
     "set-cookie",
-    `${SESSION_COOKIE}=${createSessionToken(config.accessKey, "console", Date.now())}; ${sessionCookieAttributes(secure)}`,
+    `${SESSION_COOKIE}=${createSessionToken(config.accessKey, `tenant:${tenant.tenantId}`, Date.now())}; ${sessionCookieAttributes(secure)}`,
   );
   headers.append(
     "set-cookie",

@@ -307,3 +307,47 @@ describe("auth and locale contract", () => {
     expect(decision.kind).toBe("allow");
   });
 });
+
+describe("access gate — role separation", () => {
+  const accessKey = "secret";
+  const operatorCookie = `wenyuan_cp_access=${token(accessKey)}`;
+  const tenantCookie = `wenyuan_cp_access=${createSessionToken(accessKey, "tenant:acme", NOW)}`;
+
+  function gate(pathname: string, cookieHeader: string | undefined) {
+    return evaluateGate({
+      pathname,
+      search: "",
+      cookieHeader,
+      accessKey,
+      basePath: "",
+      nowMs: NOW,
+    });
+  }
+
+  it("lets an operator session reach the management plane", async () => {
+    await expect(gate("/api/admin/tenants", operatorCookie)).resolves.toMatchObject({
+      kind: "allow",
+    });
+  });
+
+  it("answers 403 when a tenant session calls the management plane", async () => {
+    // A tenant key must not be able to create, purge or re-key other tenants
+    // just because it can open the console.
+    const decision = await gate("/api/admin/tenants", tenantCookie);
+    expect(decision.kind).toBe("api-forbidden");
+    if (decision.kind === "api-forbidden") {
+      expect(JSON.stringify(decision.body)).not.toContain("api.errors");
+    }
+  });
+
+  it("still lets a tenant session report and leave itself", async () => {
+    await expect(gate("/api/admin/session", tenantCookie)).resolves.toMatchObject({
+      kind: "allow",
+    });
+  });
+
+  it("keeps the data plane open to both roles", async () => {
+    await expect(gate("/api/banks", tenantCookie)).resolves.toMatchObject({ kind: "allow" });
+    await expect(gate("/api/banks", operatorCookie)).resolves.toMatchObject({ kind: "allow" });
+  });
+});
