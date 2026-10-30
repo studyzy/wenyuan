@@ -39,7 +39,7 @@ COVERAGE_MIN_PG ?= 66
         test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration \
         test-sdk-python test-sdk-typescript test-sdk-rust help \
         bench test-pg cover cover-check cover-check-pg parity \
-        service-install service-enable service-disable service-restart \
+        service-install service-env service-enable service-disable service-restart \
         service-stop service-start service-status service-uninstall service-logs
 
 all: check
@@ -208,10 +208,7 @@ service-install:
 	$(call render_unit,deploy/systemd/wenyuan.service,$(SYSTEMD_DIR)/wenyuan.service)
 	@if [ -f frontend/.next/standalone/server.js ]; then \
 		$(call render_unit,deploy/systemd/wenyuan-frontend.service,$(SYSTEMD_DIR)/wenyuan-frontend.service); \
-		if [ ! -f $(SERVICE_ENV) ]; then \
-			sudo install -m 600 deploy/systemd/wenyuan-frontend.env $(SERVICE_ENV); \
-			echo "seeded $(SERVICE_ENV): set WENYUAN_CP_DATAPLANE_API_KEY there when the API requires one"; \
-		fi; \
+		$(MAKE) service-env; \
 	else echo "skipping the frontend unit: run 'make frontend-standalone' first"; fi
 	sudo systemctl daemon-reload
 
@@ -226,9 +223,20 @@ service-disable:
 	-sudo systemctl disable --now wenyuan-frontend.service
 	sudo systemctl disable --now wenyuan.service
 
+## service-env: regenerate the frontend's environment from etc/wenyuan.yaml.
+##
+## The console has no keys of its own — it signs in with, and proxies with, the
+## backend's — so the frontend unit file is generated rather than hand-edited,
+## and a key is configured in exactly one place. Runs automatically before
+## 'service-restart' and 'service-install'.
+service-env:
+	@python3 scripts/sync_frontend_env.py | sudo tee $(SERVICE_ENV) >/dev/null
+	@sudo chmod 600 $(SERVICE_ENV)
+	@echo "wrote $(SERVICE_ENV) from etc/wenyuan.yaml"
+
 ## service-restart: restart both, e.g. after 'make install' or
 ## 'make frontend-standalone'
-service-restart:
+service-restart: service-env
 	sudo systemctl restart wenyuan.service
 	@if [ -f $(SYSTEMD_DIR)/wenyuan-frontend.service ]; then sudo systemctl restart wenyuan-frontend.service; fi
 

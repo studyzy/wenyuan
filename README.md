@@ -134,12 +134,16 @@ renamed keeps reading the old name from its compiled bundle — rebuild with
 `[Control Plane] Connecting to dataplane at: …` once at startup, which is the
 quickest way to confirm which URL it is using.
 
-The console has no passphrase of its own: sign in with
-`WENYUAN_CP_DATAPLANE_API_KEY` for the console and the API, or with
-`WENYUAN_CP_ADMIN_API_KEY` when you need tenant administration (only that
-session may call `/api/admin/**`). A deployment in `tenant_mode: multi` ignores
-the data key, so signing in with it is refused and each tenant signs in with its
-own `wyk_...` key.
+The console has no passphrase of its own: sign in with the API's data key
+(`tenant_api_key`) for the console and the API, or with the operator key
+(`admin_api_key`) when you need tenant administration (only that session may call
+`/api/admin/**`). A deployment in `tenant_mode: multi` ignores the data key, so
+signing in with it is refused and each tenant signs in with its own `wyk_...`
+key.
+
+The frontend's own environment is generated from this same configuration file —
+see `make service-env` below — so a key is configured once, in
+`etc/wenyuan.yaml`.
 
 ## Installing as a service (systemd)
 
@@ -178,17 +182,13 @@ What the units assume:
 - **The binaries are prebuilt.** `ExecStart` points at `bin/wenyuan-server`,
   produced by `make install`; a service installed without it exits and is
   restarted every few seconds until the binary exists.
-- **The frontend reads its environment from `/etc/default/wenyuan-frontend`.**
-  `make service-install` seeds that file once and never overwrites it, so the
-  API URL and `WENYUAN_CP_DATAPLANE_API_KEY` set there survive a reinstall:
-
-  ```sh
-  sudoedit /etc/default/wenyuan-frontend       # set the URL and the API key
-  make service-restart
-  ```
-
-  It must match the API's tenant key; leaving it empty only works when the
-  API has no tenant key configured.
+- **The frontend's environment is generated, never hand-edited.**
+  `make service-env` renders `/etc/default/wenyuan-frontend` from
+  `etc/wenyuan.yaml` — the API URL from `port`, the management URL from
+  `admin_listen`, and the two keys from `tenant_api_key` / `admin_api_key` —
+  and `make service-restart` runs it first, so editing a key in one place is
+  enough. (The same values can still be set explicitly in that file when the
+  frontend runs somewhere the generator cannot read the backend configuration.)
 - **Both units bind all interfaces.** The API listens on `0.0.0.0:18888`
   (from `host: 0.0.0.0` in the configuration file) and the frontend on
   `0.0.0.0:19999`, so the dashboard is reachable from another host — restrict
