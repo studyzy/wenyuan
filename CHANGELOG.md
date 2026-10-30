@@ -5,6 +5,70 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed — a second parity sweep over the v1.1.0 port
+
+A second audit, one agent per route family and every claim checked against the
+reference's v1.1.0 code, found divergences the first port left behind. Each is
+closed here and pinned by a test that fails without it.
+
+- **A reply without a `facts` envelope fails the retain.** v1.1.0 made a model
+  answer that is not the `{"facts": [...]}` object an error (#5582): reading it
+  as "no facts" committed the document with zero memories and reported success.
+  The extractor now coerces the envelope, re-asks with the reference's
+  correction inside the one attempt budget, and fails the chunk when the budget
+  is spent; only an explicit `{"facts": []}` means "nothing here".
+- **Reads are confined by the caller's tag scope where v1.1.0 confines them.**
+  `GET .../observations/scopes` and the consolidation-strategy preview returned
+  every scope of the bank with its count to a tag-scoped caller; the
+  `.../stats/memories-timeseries` chart counted the whole bank. Both now AND the
+  caller's resolved scope into the query, as the reference's scoped counts do
+  (engine/memory_engine.py:12438, :17046).
+- **`GET .../graph` honours `tags_match=exact` with no tags.** That combination
+  is the untagged global scope; it selected the whole bank instead
+  (engine/memories/pg/graph.py:219-236). The grouped tag renderer also dropped an
+  empty `exact` leaf, which is what caused it.
+- **`GET .../llm-requests?document_id=` can now match.** The filter read a
+  metadata member nothing wrote. Each retained chunk's model call is now
+  attributed to its document (orchestrator.py:2849), and a queued retain
+  resolves its items' document ids at submission so the worker can attribute
+  them too; every trace row carries its metadata object, `{}` when it bound
+  nothing.
+- **Memory curation.** Clearing a memory's observations is a reset request and no
+  longer skips the requeue when nothing was deleted (#5731); a refuse that fires
+  after the request's bytes were stored at ingress takes the attachment rows back;
+  an attachment-only item's document id is `retain_<uuid>`; and
+  `files_metadata[].timestamp` accepts every ISO form rather than only RFC 3339.
+- **Operations and providers.** A provider that rejects the configured credential
+  (401/403) fails the operation once instead of spending the retry budget
+  (#5644), and every `503` carries `Retry-After` with the reference's default of
+  30 seconds (api/http.py:369-371).
+- **A paused full-refresh tick stamps its clock**, so a `full_refresh_cron` model
+  held back by `min_refresh_interval_seconds` is not re-scanned on every tick.
+- **A reprocess replays a legacy placeholder date as undated** rather than failing
+  forever, and the v1.1.0 extraction prompt's OPEN-ENDED bullet (never write a
+  placeholder year such as 0001 or 9999) is carried verbatim.
+- **Transfer archives are gated at submission, as the reference gates them.** A
+  deployment's import validator now sees the archive's documents before anything
+  is stored or queued, and a refusal creates no bank and no operation
+  (memory_engine.py:9076-9079, :9175-9196).
+
+#### MCP
+
+`POST /mcp` carried its own divergences, now closed: `tools/list` entries are
+serialized in the reference's byte order (verified against the MCP SDK's own
+`model_dump_json` for all 39 tools); tool arguments are normalized the way the
+reference normalizes them (undeclared members stripped, JSON-encoded lists
+coerced, an unknown `tags_match` refused); a trigger is validated before it is
+written, and an update merges the patch with the reference's rule rather than
+refusing a merged schedule; the knowledge-page tools read the reference's
+seven-member document and search projection (limit clamped 1..50), and create and
+patch a page through the same code the HTTP route uses — building the backing
+mental model, its trigger and its refresh; error sentences name the directive,
+the mental model and its bank; `list_banks` returns the engine row and
+`refresh_mental_model` records the model's name on the operation. Two audit
+claims did not reproduce (`tag_groups` was already a plain array, and the page
+markdown renderer was already identical) and are pinned so they cannot regress.
+
 ### Fixed — the v1.1.0 port completed
 
 A route-by-route audit of the v1.1.0 port against the reference's own code
