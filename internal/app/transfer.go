@@ -17,6 +17,16 @@ func (a *App) mountTransfer(handle func(method, pattern string, handler http.Han
 		a.Config.EnableDocumentExportAPI,
 		a.Config.EnableDocumentImportAPI,
 	)
+	// The import gate is read per request, not captured here: composition mounts
+	// the routes before a deployment registers its validator, so a value fixed
+	// at mount time would miss it (app.go registers the configured validator
+	// after the first mount, and a caller registers its own after New).
+	handlers.ImportGate = func() httpx.ImportGate {
+		if a.Extensions == nil {
+			return nil
+		}
+		return a.Extensions.ImportGate()
+	}
 
 	bindTransferRoutes(handlers, handle)
 }

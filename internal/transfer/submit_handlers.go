@@ -194,8 +194,14 @@ func (h *Handlers) SubmitDocumentImport(w http.ResponseWriter, r *http.Request) 
 	// unsupported version fails now rather than in the queue. The bank is only
 	// materialized once the archive is known to be acceptable, so a rejected
 	// import never leaves an empty bank behind.
-	if _, err := validateArchive(data, producedByDocumentExport); err != nil {
+	archive, err := validateArchive(data, producedByDocumentExport)
+	if err != nil {
 		h.submitRejected(w, r, err.Error())
+		return
+	}
+	// The deployment's import gate sees the archive's documents before the bank
+	// is created or anything is queued (engine/memory_engine.py:9076-9079).
+	if !h.refuseImport(w, r, bankID, archive) {
 		return
 	}
 	if err := h.Store.EnsureBank(r.Context(), bankID); err != nil {
@@ -353,9 +359,24 @@ func (h *Handlers) SubmitTransferImport(w http.ResponseWriter, r *http.Request) 
 		h.rejectUploadError(w, r, err)
 		return
 	}
-	target, err := h.resolveImportSelection(r, data, mode)
+	target, archive, err := h.resolveImportSelection(r, data, mode)
 	if err != nil {
 		h.submitRejected(w, r, err.Error())
+		return
+	}
+	// The deployment's import gate runs after the target and bank checks and
+	// before anything is written, so a refusal creates no bank and queues
+	// nothing (engine/memory_engine.py:8244-8252 for a restore, :9076-9079 for a
+	// merge). A restore gates what its data section will replay, so a restore of
+	// the configuration alone carries no document to judge.
+	gateBank := bankID
+	if mode != "merge" {
+		gateBank = target
+		if includeData, _, _ := scope.resolved(); !includeData {
+			archive = nil
+		}
+	}
+	if !h.refuseImport(w, r, gateBank, archive) {
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/banktemplate"
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
 
 // validateExportSelection rejects a whole-bank transfer export that combines a
@@ -107,7 +108,8 @@ func queryBool(r *http.Request, name string) (value, present bool, failure *http
 }
 
 // resolveImportSelection enforces the coherence rules for a transfer import and
-// returns the bank a restore writes into (empty in merge mode).
+// returns the bank a restore writes into (empty in merge mode), plus the parsed
+// archive so the import gate reads what the selection already validated.
 //
 // Modes and flags follow the reference: mode defaults to restore and must be
 // restore or merge; document_conflict defaults to skip and must be skip,
@@ -119,48 +121,49 @@ func queryBool(r *http.Request, name string) (value, present bool, failure *http
 // already exists, whether or not it is the bank the operation was recorded
 // against, because restoring onto a live bank would mix two configurations
 // silently.
-func (h *Handlers) resolveImportSelection(r *http.Request, data []byte, mode string) (string, error) {
+func (h *Handlers) resolveImportSelection(r *http.Request, data []byte, mode string) (string, *transferarchive.Archive, error) {
 	target := queryValue(r, "target_bank_id")
 	if mode == "merge" {
 		// A merge takes the archive's documents only, so a target or any
 		// include flag is incoherent with it.
 		if target != "" {
-			return "", errors.New("target_bank_id is only valid in restore mode; merge imports into {bank_id}")
+			return "", nil, errors.New("target_bank_id is only valid in restore mode; merge imports into {bank_id}")
 		}
 		for _, flag := range []string{"include_data", "include_bank_config", "include_history"} {
 			if _, present := httpx.QueryPresent(r, flag); present {
-				return "", errors.New("include_data / include_bank_config / include_history apply to mode=restore; a merge imports the archive's documents only")
+				return "", nil, errors.New("include_data / include_bank_config / include_history apply to mode=restore; a merge imports the archive's documents only")
 			}
 		}
 		// A merge feeds the document importer, so its archive is the documents
 		// archive the document export produces.
-		if _, err := validateArchive(data, producedByDocumentExport); err != nil {
-			return "", err
+		archive, err := validateArchive(data, producedByDocumentExport)
+		if err != nil {
+			return "", nil, err
 		}
-		return "", nil
+		return "", archive, nil
 	}
 
 	// A restore writes a whole bank, so its archive is the whole-bank archive.
 	archive, err := validateArchive(data, producedByBankExport)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if target == "" {
 		target = archive.Manifest.SourceBankID
 	}
 	if target == "" {
-		return "", errors.New("the archive names no source bank and no target was given")
+		return "", nil, errors.New("the archive names no source bank and no target was given")
 	}
 	if _, err := h.Store.GetBank(r.Context(), target); err == nil {
-		return "", wireMessage(fmt.Sprintf("Target bank '%s' already exists; a bank restore writes into a fresh bank (it is not a merge). Delete it first, or choose a different target bank id.", target))
+		return "", nil, wireMessage(fmt.Sprintf("Target bank '%s' already exists; a bank restore writes into a fresh bank (it is not a merge). Delete it first, or choose a different target bank id.", target))
 	}
 	// The restore re-checks the identifier on the resolved target — including one
 	// derived from the archive's manifest — so the caller gets the 400 now, not a
 	// failed background operation (engine/memory_engine.py:8240).
 	if err := validateNewBankID(target); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return target, nil
+	return target, archive, nil
 }
 
 // resolved fills the reference's defaults into the tri-state selector: data and

@@ -17,6 +17,31 @@ type BankWriteGate interface {
 	ValidateBankWrite(ctx context.Context, bankID, apiKey string) OperationDecision
 }
 
+// ImportDocument is one document of a transfer archive, as the import gate
+// sees it: the archive's own document id and the text it was retained from.
+// The reference lists exactly these two members for every document of the
+// archive (engine/memory_engine.py:9182-9196).
+type ImportDocument struct {
+	DocumentID string
+	Content    string
+}
+
+// ImportGate is the optional capability a validator implements when a
+// deployment gates a transfer-archive import before it is queued: metering by
+// document, a quota, a content policy. It is separate from OperationValidator
+// because the question is decided per archive rather than per operation, and a
+// deployment may answer it without carrying an operation allow-list.
+//
+// The gate runs at submission, with the archive parsed but nothing written, so
+// a refusal leaves no bank, no stored archive and no queued operation
+// (engine/memory_engine.py:9175-9196).
+type ImportGate interface {
+	// ValidateImport decides whether the named bank may import these documents.
+	// The bank is the one the documents land in: the import's own bank, or the
+	// restore's target.
+	ValidateImport(ctx context.Context, bankID string, documents []ImportDocument) OperationDecision
+}
+
 // BankKeyPrefix marks a credential scoped to one bank, the reference's
 // per-key isolation convention.
 const BankKeyPrefix = "bank:"

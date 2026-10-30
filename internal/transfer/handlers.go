@@ -25,6 +25,13 @@ type Handlers struct {
 	DocumentExportEnabled bool
 	// DocumentImportEnabled gates the document import routes.
 	DocumentImportEnabled bool
+	// ImportGate answers the deployment's import gate, or nil when it carries
+	// none: it sees every document of an archive before an import is queued and
+	// may refuse it. It is asked per submission rather than held, so a gate the
+	// deployment registers after composition is honoured (a restored archive
+	// would otherwise bypass it). nil lets every import through, which is the
+	// unextended behaviour.
+	ImportGate func() httpx.ImportGate
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }

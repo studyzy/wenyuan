@@ -120,6 +120,27 @@ func (h *ExtensionHost) operationValidator() OperationValidator {
 	return h.validator
 }
 
+// ImportGate returns the registered validator's import gate, or nil when no
+// validator is registered or the one registered carries no import rule. A nil
+// gate lets an import through untouched, which is the unextended behaviour.
+// The capability is asked of the validator the host holds, so a deployment
+// registers one validator and implements whichever hooks it needs.
+//
+// The nil guard comes FIRST: composition may hand a nil *ExtensionHost here
+// (an application composed without extensions), and operationValidator's own
+// guard only runs once the pointer has already been dereferenced by the
+// method call.
+func (h *ExtensionHost) ImportGate() ImportGate {
+	if h == nil {
+		return nil
+	}
+	gate, ok := h.operationValidator().(ImportGate)
+	if !ok {
+		return nil
+	}
+	return gate
+}
+
 // EnableFeature records a deployment feature flag that extensions may key on.
 func (h *ExtensionHost) EnableFeature(name string, enabled bool) {
 	h.mu.Lock()
