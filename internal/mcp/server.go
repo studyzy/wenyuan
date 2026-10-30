@@ -700,7 +700,11 @@ func (s *Server) dispatch(ctx context.Context, call request) (any, *rpcError) {
 	case "initialize":
 		return s.initialize(call.Params)
 	case "tools/list":
-		return map[string]any{"tools": toolEntries(withInstructions(s.advertisedTools(mountBank(ctx) == ""), s.instructions))}, nil
+		// The entries carry the reference's member order and its per-entry
+		// members (title included, annotations only where FastMCP emits one),
+		// because a client reads this payload as a document.
+		return toolsListResult{Entries: fastmcpToolEntries(
+			withInstructions(s.advertisedTools(mountBank(ctx) == ""), s.instructions), true)}, nil
 	case "tools/call":
 		return s.callTool(ctx, call.Params)
 	case "ping":
@@ -716,6 +720,18 @@ func (s *Server) dispatch(ctx context.Context, call request) (any, *rpcError) {
 	default:
 		return nil, invalidParamsError()
 	}
+}
+
+// toolsListResult is the tools/list result. The entries are an ordered
+// projection rather than a map so the response encoder emits each tool's members
+// in the reference's order instead of sorting them.
+type toolsListResult struct {
+	Entries []orderedObject
+}
+
+// MarshalJSON writes the result object with `tools` as its only member.
+func (r toolsListResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(orderedObject{{key: "tools", value: r.Entries}})
 }
 
 // initialize answers the handshake with the server's capabilities and identity.

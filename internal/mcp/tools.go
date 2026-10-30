@@ -849,24 +849,6 @@ func toolOutputSchema(name string) map[string]any {
 	}
 }
 
-// toolEntries renders the roster the tools/list response carries: each
-// definition plus the annotations, structured-output schema and metadata the
-// reference publishes for it.
-func toolEntries(defs []tool) []map[string]any {
-	entries := make([]map[string]any, 0, len(defs))
-	for _, def := range defs {
-		entries = append(entries, map[string]any{
-			"name":         def.Name,
-			"description":  def.Description,
-			"inputSchema":  def.InputSchema,
-			"outputSchema": toolOutputSchema(def.Name),
-			"annotations":  toolAnnotations(def.Name),
-			"_meta":        map[string]any{"fastmcp": map[string]any{"tags": []any{}}},
-		})
-	}
-	return entries
-}
-
 // toolResult wraps a tool payload in the envelope its return kind calls for. The
 // two memory-write tools return objects; every other tool returns text, which
 // the reference pretty-prints with CPython's json.dumps(indent=2) — a tool that
