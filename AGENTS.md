@@ -146,6 +146,25 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   deployment's `admin` schema holds no team tables
   (`storage.AdminMigrationSeriesFor`). `internal/app/maintenance_single_tenant_test.go`
   and `internal/app/team_read_test.go` pin these facts.
+- **The personal aggregate bank is `<tenant>::myself`**, and it is not a team
+  feature: `personal.rollup` exists in **both** tenant modes and has **no off
+  switch** (a zero interval falls back to the default). A team tenant is not a
+  person and never gets one. Design:
+  `docs/plans/2026-10-31-personal-aggregate-bank-design.md`.
+- **The aggregate bank is written only by the job.** `myself` is not a reserved
+  name, so the write routes never refuse it — a client that retains into it is
+  accepted, and the next round replaces those rows because only facts carrying
+  `metadata.origin='aggregate'` are the rollup's. `aggregate-status.user_facts`
+  counts the others so an operator sees them.
+- **Watermarks are per source bank.** One WENYUAN column per source bank in
+  `admin.personal_bank_state`; the aggregate bank is never a source, so it has no
+  watermark of its own. The ledger is `admin.personal_source` (source unit →
+  `merge_key`, or `'__dropped__'`), and each round runs a live-source anti-join so
+  a fact deleted from a source bank leaves the aggregate.
+- **`project.merge` excludes `<member>::myself`**: a project whose id is `myself`
+  points at the member's aggregate bank, and a person's cross-project conclusions
+  must never pass as their contribution to a team (`postgres_merge_store.go`,
+  `loadMemberInput`).
 - The plane is **additive**: it does not change the reference `/v1/...` routes,
   JSON contracts or schema. Parity audits should exclude it rather than report
   it as a divergence, and its operator key must never be reused as a tenant key.
@@ -224,6 +243,8 @@ internal/provider/     model-provider port + adapters (openai, anthropic,
 internal/reflect/      bounded retrieval-and-synthesis reflection loop
 internal/projectmerge/ the project merge engine's pure rules (merge key, diff,
                        prompt, answer parsing) — no database, no HTTP
+internal/personalrollup/ the personal aggregate's pure rules (answer parsing,
+                       prompt, the navigation-index projection) — no database
 internal/teamread/     decides whether a read falls back to a project's team bank
 internal/consolidation/  observation consolidation engine
 internal/extraction/   memory extraction pipeline

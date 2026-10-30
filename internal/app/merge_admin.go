@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -40,4 +41,29 @@ func (m mergeAdminFor) MergeStatus(ctx context.Context, teamID, projectID string
 // ResetMergeState clears a halted project's circuit breaker.
 func (m mergeAdminFor) ResetMergeState(ctx context.Context, teamID, projectID string) error {
 	return m.store.ResetMergeState(ctx, teamID, projectID)
+}
+
+// personalAdminFor is the management plane's handle on the personal aggregate.
+//
+// It exists because the plane speaks tenant ids, while the aggregate's store
+// reports the shared-schema fact itself: a single-tenant deployment resolves every
+// credential to one schema, so "this person's aggregate" is the deployment's.
+type personalAdminFor struct {
+	store storage.PersonalStore
+	cfg   config.Config
+}
+
+// PersonalAggregateStatus reports one tenant's aggregate state.
+func (p personalAdminFor) PersonalAggregateStatus(ctx context.Context, tenantID string) (storage.PersonalStatus, error) {
+	return p.store.PersonalStatus(ctx, tenantID, p.cfg.TenantMode == config.TenantModeSingle)
+}
+
+// ResetPersonalAggregate clears a halted tenant's circuit breaker.
+func (p personalAdminFor) ResetPersonalAggregate(ctx context.Context, tenantID string) error {
+	return p.store.ResetPersonalState(ctx, tenantID)
+}
+
+// RebuildPersonalAggregate asks the next round to ignore its watermarks.
+func (p personalAdminFor) RebuildPersonalAggregate(ctx context.Context, tenantID string) error {
+	return p.store.RequestRebuild(ctx, tenantID)
 }

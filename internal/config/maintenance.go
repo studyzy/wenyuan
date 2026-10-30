@@ -22,6 +22,11 @@ const (
 	DefaultProjectMergeRebuildMaxUnits        = 5000
 	DefaultProjectMergeMaxTeamFacts           = 500
 	DefaultProjectMergeFailThreshold          = 5
+	DefaultPersonalRollupIntervalSeconds      = 300
+	DefaultPersonalRollupBatchSize            = 20
+	DefaultPersonalRollupRebuildMaxUnits      = 5000
+	DefaultPersonalRollupMaxTeamFacts         = 500
+	DefaultPersonalRollupFailThreshold        = 5
 )
 
 // MaintenanceConfig tunes the background maintenance loop.
@@ -83,6 +88,30 @@ type MaintenanceConfig struct {
 	// so keying the job on it alone would start the loop on every deployment and
 	// leave it ticking over work it has no store to do.
 	ProjectMergeEnabled bool
+	// PersonalRollupInterval is how often one personal tenant's bank watermarks
+	// are folded into its aggregate bank `<tenant>::myself`.
+	//
+	// There is no switch for this job and no default that turns it off: a
+	// deployment with a chat model always runs it. Setting the interval to zero
+	// or below falls back to the default rather than disabling the work, which
+	// is what "the feature cannot be switched off" means in configuration terms.
+	PersonalRollupInterval time.Duration
+	// PersonalRollupBatchSize bounds the new source facts one round consumes.
+	// The aggregate's previous content is always part of the input.
+	PersonalRollupBatchSize int
+	// PersonalRollupRebuildMaxUnits bounds a rebuild's input before the
+	// aggregate fails closed and empties its derived content.
+	PersonalRollupRebuildMaxUnits int
+	// PersonalRollupMaxTeamFacts bounds the previous aggregate content one
+	// round's prompt carries; beyond it the round is skipped, not failed closed.
+	PersonalRollupMaxTeamFacts int
+	// PersonalRollupFailThreshold is how many consecutive failed rounds halt a
+	// tenant's rollup until an operator resets it.
+	PersonalRollupFailThreshold int
+	// PersonalRollupEnabled reports that a rollup store was wired, which is what
+	// a process with a chat model on a PostgreSQL store has. It is derived the
+	// same way ProjectMergeEnabled is, and it is not a configuration switch.
+	PersonalRollupEnabled bool
 }
 
 // AnyJobEnabled reports whether at least one job could actually do work, so the
@@ -99,7 +128,8 @@ func (m MaintenanceConfig) AnyJobEnabled() bool {
 	refreshOn := m.MentalModelRefreshTick > 0
 	cleanupOn := m.OperationCleanupInterval > 0 && m.OperationRetentionDays > 0
 	mergeOn := m.ProjectMergeEnabled && m.ProjectMergeInterval > 0
-	return auditOn || llmOn || reconcileOn || refreshOn || cleanupOn || mergeOn
+	rollupOn := m.PersonalRollupEnabled && m.PersonalRollupInterval > 0
+	return auditOn || llmOn || reconcileOn || refreshOn || cleanupOn || mergeOn || rollupOn
 }
 
 // resolveMaintenance reads the maintenance tuning through the shared resolution
@@ -120,6 +150,11 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 		ProjectMergeRebuildMaxUnits:    intFromEnv(lookup, EnvProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits),
 		ProjectMergeMaxTeamFacts:       intFromEnv(lookup, EnvProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts),
 		ProjectMergeFailThreshold:      intFromEnv(lookup, EnvProjectMergeFailThreshold, DefaultProjectMergeFailThreshold),
+		PersonalRollupInterval:         time.Duration(intFromEnv(lookup, EnvPersonalRollupIntervalSeconds, DefaultPersonalRollupIntervalSeconds)) * time.Second,
+		PersonalRollupBatchSize:        intFromEnv(lookup, EnvPersonalRollupBatchSize, DefaultPersonalRollupBatchSize),
+		PersonalRollupRebuildMaxUnits:  intFromEnv(lookup, EnvPersonalRollupRebuildMaxUnits, DefaultPersonalRollupRebuildMaxUnits),
+		PersonalRollupMaxTeamFacts:     intFromEnv(lookup, EnvPersonalRollupMaxTeamFacts, DefaultPersonalRollupMaxTeamFacts),
+		PersonalRollupFailThreshold:    intFromEnv(lookup, EnvPersonalRollupFailThreshold, DefaultPersonalRollupFailThreshold),
 	}
 	for _, pair := range []struct {
 		target *int
@@ -129,6 +164,10 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 		{&cfg.ProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits},
 		{&cfg.ProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts},
 		{&cfg.ProjectMergeFailThreshold, DefaultProjectMergeFailThreshold},
+		{&cfg.PersonalRollupBatchSize, DefaultPersonalRollupBatchSize},
+		{&cfg.PersonalRollupRebuildMaxUnits, DefaultPersonalRollupRebuildMaxUnits},
+		{&cfg.PersonalRollupMaxTeamFacts, DefaultPersonalRollupMaxTeamFacts},
+		{&cfg.PersonalRollupFailThreshold, DefaultPersonalRollupFailThreshold},
 	} {
 		if *pair.target <= 0 {
 			*pair.target = pair.def
@@ -136,6 +175,11 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 	}
 	if cfg.OperationCleanupBatchSize <= 0 {
 		cfg.OperationCleanupBatchSize = DefaultOperationCleanupBatchSize
+	}
+	// The personal rollup is not a switch: an interval of zero means "use the
+	// default", never "stop folding the user's banks into their aggregate".
+	if cfg.PersonalRollupInterval <= 0 {
+		cfg.PersonalRollupInterval = DefaultPersonalRollupIntervalSeconds * time.Second
 	}
 	return cfg
 }

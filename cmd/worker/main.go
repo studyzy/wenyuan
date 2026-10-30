@@ -122,9 +122,13 @@ func run(args []string) error {
 	// The merge store is the worker's too: a deployment that runs a worker but
 	// not the API still converges its teams' shared content.
 	mergeStore := app.NewMergeStore(store)
+	// The aggregate store is the worker's too, and in either tenant mode: a
+	// deployment that runs only a worker still folds people's banks together.
+	personalStore := app.NewPersonalStore(store)
 	maintenanceCfg := cfg.Maintenance
 	maintenanceCfg.ProjectMergeEnabled = app.MergeEnabled(cfg, mergeStore, model)
-	loop := app.NewMaintenanceLoopWithMerge(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore)
+	maintenanceCfg.PersonalRollupEnabled = app.PersonalRollupEnabled(personalStore, model)
+	loop := app.NewMaintenanceLoopWithStores(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore, personalStore)
 	if loop.Enabled() {
 		slog.Info("maintenance enabled",
 			"jobs", len(loop.Jobs),

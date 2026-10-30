@@ -373,6 +373,16 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeP
 // loadMemberInput reads one member's contribution for this round.
 func (s *PostgresMergeStore) loadMemberInput(ctx context.Context, member MergeProjectMember, limit int) (MergeMemberInput, error) {
 	out := MergeMemberInput{Member: member}
+	// A project whose id is "myself" points at the member's aggregate bank, and
+	// that bank holds conclusions the personal rollup drew from every bank its
+	// owner has — not facts the member contributed to this project. Folding them
+	// in would let one person's cross-project summary pass as their input to a
+	// team, which is exactly what the aggregate must never do. The exclusion is a
+	// decision here rather than a predicate in SQL so that the merge queries keep
+	// saying only what they are about.
+	if tenant.IsPersonalBankID(memberBankID(member)) {
+		return out, nil
+	}
 	memberCtx, err := WithSchema(ctx, member.Schema)
 	if err != nil {
 		return out, err

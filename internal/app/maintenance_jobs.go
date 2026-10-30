@@ -40,15 +40,16 @@ func maintenanceJobs(
 	cfg config.MaintenanceConfig,
 	vectorIndex config.VectorIndexConfig,
 ) []maintenance.Job {
-	return maintenanceJobsWithMerge(store, model, reflection, tenants, cfg, vectorIndex, nil)
+	return maintenanceJobsWithStores(store, model, reflection, tenants, cfg, vectorIndex, nil, nil)
 }
 
-// maintenanceJobsWithMerge builds the jobs including project.merge.
+// maintenanceJobsWithStores builds every job the deployment's stores allow.
 //
-// It is the variant a deployment that can merge goes through; the plain
-// maintenanceJobs is what tests and single-tenant processes use, and it registers
-// no merge job because it has no store to merge with.
-func maintenanceJobsWithMerge(
+// The personal aggregate and the project merge are separate stores for separate
+// planes: the aggregate is a person's own banks folded into one, the merge is a
+// project's members' facts folded into a team bank. Either may be nil, and a nil
+// store registers no job for its plane rather than an idle one.
+func maintenanceJobsWithStores(
 	store storage.Store,
 	model provider.Provider,
 	reflection storage.ReflectRunner,
@@ -56,6 +57,7 @@ func maintenanceJobsWithMerge(
 	cfg config.MaintenanceConfig,
 	vectorIndex config.VectorIndexConfig,
 	merges storage.MergeStore,
+	personals storage.PersonalStore,
 ) []maintenance.Job {
 	jobs := make([]maintenance.Job, 0, 4)
 
@@ -111,6 +113,16 @@ func maintenanceJobsWithMerge(
 			Interval: time.Duration(vectorIndex.ReconcileInterval) * time.Second,
 			Run: func(ctx context.Context) error {
 				return reconcileVectorIndexes(ctx, store, tenants, vectorIndex.MinRows)
+			},
+		})
+	}
+	if cfg.PersonalRollupEnabled && cfg.PersonalRollupInterval > 0 && personals != nil {
+		runner := &personalRunner{store: personals, models: func(string) provider.Provider { return model }, cfg: cfg}
+		jobs = append(jobs, maintenance.Job{
+			Name:     "personal.rollup",
+			Interval: cfg.PersonalRollupInterval,
+			Run: func(ctx context.Context) error {
+				return runner.runPersonalRounds(ctx)
 			},
 		})
 	}

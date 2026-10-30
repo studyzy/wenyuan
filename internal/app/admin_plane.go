@@ -64,6 +64,7 @@ func newAdminHandler(
 	banks adminapi.BankAdmin,
 	merges adminapi.MergeAdmin,
 	membershipChanged func(string),
+	personal adminapi.PersonalAdmin,
 ) (http.Handler, error) {
 	adminConfig := adminapi.Config{
 		Registry:    registry,
@@ -72,6 +73,9 @@ func newAdminHandler(
 		Provisioner: provisioner,
 		Migrator:    migrator,
 		Dropper:     dropper,
+		// The aggregate exists in both tenant modes, so it is set outside the
+		// team gate: it is nil only where the store has no admin database.
+		Personal: personal,
 		// Teams stay nil in single-tenant mode, where every team route answers
 		// 501; that is the one place the plane differs between the two modes.
 		TeamConfig: adminapi.TeamConfig{

@@ -39,6 +39,10 @@ type Config struct {
 	ResolveKey func(ctx context.Context, credential string) (string, error)
 	// Now supplies the clock. It defaults to the wall clock in UTC.
 	Now func() time.Time
+	// Personal, when non-nil, serves the personal aggregate routes. It is a
+	// top-level field rather than part of TeamConfig because the aggregate exists
+	// without teams: a single-tenant deployment has it too.
+	Personal PersonalAdmin
 
 	TeamConfig
 }
@@ -82,6 +86,9 @@ func New(cfg Config) (*Handler, error) {
 	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/session", handler.sessionKey)
 	handler.mux.HandleFunc("POST /admin/v1/tenants/resolve", handler.resolveTenantKey)
 	handler.mux.HandleFunc("GET /admin/v1/overview", handler.overview)
+	handler.mux.HandleFunc("GET /admin/v1/tenants/{id}/aggregate", handler.getPersonalAggregateStatus)
+	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/aggregate/reset", handler.postPersonalAggregateReset)
+	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/aggregate/rebuild", handler.postPersonalAggregateRebuild)
 	handler.bindTeamRoutes()
 	return handler, nil
 }

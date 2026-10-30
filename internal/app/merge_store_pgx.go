@@ -17,3 +17,13 @@ func newMergeStoreTagged(store storage.Store) storage.MergeStore {
 	}
 	return storage.NewPostgresMergeStore(provider.AdminDB())
 }
+
+// newPersonalStoreTagged returns the personal aggregate store when the store has
+// an admin database handle.
+func newPersonalStoreTagged(store storage.Store) storage.PersonalStore {
+	provider, ok := store.(adminDBProvider)
+	if !ok {
+		return nil
+	}
+	return storage.NewPostgresPersonalStore(provider.AdminDB())
+}
