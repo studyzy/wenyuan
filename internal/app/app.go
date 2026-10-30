@@ -273,7 +273,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 				return nil, err
 			}
 		}
-		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantProvisioner, tenantMigrator, tenantDropper)
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper)
 		if err != nil {
 			return nil, err
 		}

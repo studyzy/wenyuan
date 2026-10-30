@@ -32,6 +32,11 @@ type Config struct {
 	Migrator func(ctx context.Context, tenantID string) error
 	// Dropper removes a soft-deleted tenant's schema. Nil answers 501.
 	Dropper func(ctx context.Context, tenantID string) error
+	// ResolveKey maps a tenant credential to its tenant id using the same
+	// checks the data plane applies. The console needs the id, not the key: it
+	// renews its short-lived session through /tenants/{id}/session. Nil answers
+	// 501, which is what a single-tenant deployment gets.
+	ResolveKey func(ctx context.Context, credential string) (string, error)
 	// Now supplies the clock. It defaults to the wall clock in UTC.
 	Now func() time.Time
 }
@@ -73,6 +78,7 @@ func New(cfg Config) (*Handler, error) {
 	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/keys", handler.createKey)
 	handler.mux.HandleFunc("DELETE /admin/v1/tenants/{id}/keys/{keyId}", handler.revokeKey)
 	handler.mux.HandleFunc("POST /admin/v1/tenants/{id}/session", handler.sessionKey)
+	handler.mux.HandleFunc("POST /admin/v1/tenants/resolve", handler.resolveTenantKey)
 	handler.mux.HandleFunc("GET /admin/v1/overview", handler.overview)
 	return handler, nil
 }

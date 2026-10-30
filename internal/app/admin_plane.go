@@ -54,16 +54,31 @@ func OpenTenantExtension(ctx context.Context, cfg config.Config, store storage.S
 func newAdminHandler(
 	cfg config.Config,
 	registry storage.TenantRegistry,
+	extension tenant.Extension,
 	provisioner func(context.Context, string, bool) error,
 	migrator func(context.Context, string) error,
 	dropper func(context.Context, string) error,
 ) (http.Handler, error) {
-	return adminapi.New(adminapi.Config{
+	adminConfig := adminapi.Config{
 		Registry:    registry,
 		OperatorKey: cfg.AdminAPIKey,
 		Actor:       "operator",
 		Provisioner: provisioner,
 		Migrator:    migrator,
 		Dropper:     dropper,
-	})
+	}
+	// The console turns a tenant key into a console session, and it needs the
+	// tenant id to renew that session. Resolving through the same extension the
+	// data plane authenticates with keeps one answer to "is this key valid": a
+	// single-tenant deployment has no extension, so the endpoint stays 501.
+	if extension != nil {
+		adminConfig.ResolveKey = func(ctx context.Context, credential string) (string, error) {
+			resolved, err := extension.Authenticate(ctx, tenant.Request{Credential: credential})
+			if err != nil {
+				return "", err
+			}
+			return resolved.ID, nil
+		}
+	}
+	return adminapi.New(adminConfig)
 }

@@ -80,7 +80,8 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
 
 - A separate admin listener (`admin_listen`, own operator key) serves
   `/admin/v1/tenants`: create, list, get, patch, delete, plus `/purge`,
-  `/migrate`, `/keys` and `/session`.
+  `/migrate`, `/keys`, `/session` and `/resolve` (a tenant key to its tenant id —
+  what lets the console sign in with a tenant key).
 - It operates with `tenant_mode: multi` and provisions one PostgreSQL schema
   per tenant.
 - The control-plane frontend exposes the same surface at `/[locale]/tenants`,

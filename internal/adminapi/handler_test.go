@@ -3,12 +3,14 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/storage"
+	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
 const testOperatorKey = "operator-secret"
@@ -352,5 +354,72 @@ func TestAdminMigrateRejectsDeleted(t *testing.T) {
 	}
 	if got := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/acme/migrate", "{}")).Code; got != http.StatusConflict {
 		t.Fatalf("migrate deleted = %d, want 409", got)
+	}
+}
+
+func TestAdminResolveTenantKey(t *testing.T) {
+	handler, _ := newTestHandler(t)
+
+	// No resolver (single-tenant deployment): the endpoint is unavailable
+	// rather than answering every key with a 401.
+	unavailable := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/resolve",
+		`{"key":"wyk_whatever"}`))
+	if unavailable.Code != http.StatusNotImplemented {
+		t.Fatalf("status without resolver = %d, want 501", unavailable.Code)
+	}
+
+	handler.cfg.ResolveKey = func(_ context.Context, credential string) (string, error) {
+		switch credential {
+		case "wyk_good":
+			return "acme", nil
+		case "wyk_revoked":
+			return "", &tenant.AuthenticationError{Reason: "revoked credential"}
+		case "wyk_broken":
+			return "", errors.New("registry unavailable")
+		}
+		return "", &tenant.AuthenticationError{Reason: "unknown credential"}
+	}
+
+	resolved := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/resolve",
+		`{"key":"wyk_good"}`))
+	if resolved.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", resolved.Code, resolved.Body.String())
+	}
+	var body struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(resolved.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TenantID != "acme" {
+		t.Fatalf("tenant_id = %q, want acme", body.TenantID)
+	}
+
+	for _, testCase := range []struct {
+		name string
+		key  string
+		want int
+	}{
+		{name: "unknown", key: "wyk_unknown", want: http.StatusUnauthorized},
+		{name: "revoked", key: "wyk_revoked", want: http.StatusUnauthorized},
+		{name: "registry failure", key: "wyk_broken", want: http.StatusServiceUnavailable},
+	} {
+		recorder := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/resolve",
+			`{"key":"`+testCase.key+`"}`))
+		if recorder.Code != testCase.want {
+			t.Fatalf("%s status = %d, want %d: %s", testCase.name, recorder.Code, testCase.want, recorder.Body.String())
+		}
+	}
+
+	if empty := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/resolve", `{"key":"  "}`)); empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty key status = %d, want 400", empty.Code)
+	}
+
+	// The resolve route must not shadow the key-issuing routes it sits beside.
+	if created := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants", `{"tenant_id":"acme"}`)); created.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d: %s", created.Code, created.Body.String())
+	}
+	if session := serve(t, handler, adminRequest(http.MethodPost, "/admin/v1/tenants/acme/session", "{}")); session.Code != http.StatusCreated {
+		t.Fatalf("session status = %d, want 201: %s", session.Code, session.Body.String())
 	}
 }
