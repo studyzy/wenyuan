@@ -70,6 +70,12 @@ Status words:
 | `WENYUAN_API_DB_ACQUIRE_WARN_THRESHOLD_MS` | `db_acquire_warn_threshold_ms` | `1000` | resolved |  |
 | `WENYUAN_API_MIGRATION_ISOLATION` | `migration_isolation` | `false` | value-dependent | this build migrates in-process; the reference's subprocess isolation is not implemented |
 | `WENYUAN_API_MIGRATION_CONCURRENCY` | `migration_concurrency` | `1` | value-dependent | this build migrates one schema at a time; the reference's concurrent tenant sweep is not implemented |
+| `WENYUAN_API_TENANT_EXTENSION` | `tenant_extension` | `` | resolved | only the built-in ApiKeyTenantExtension is implemented; any other selection refuses startup instead of silently authenticating nothing |
+| `WENYUAN_API_TENANT_API_KEY` | `tenant_api_key` | `` | resolved |  |
+| `WENYUAN_API_TENANT_MODE` | `tenant_mode` | `single` | resolved |  |
+| `WENYUAN_API_ADMIN_LISTEN` | `admin_listen` | `` | resolved |  |
+| `WENYUAN_API_ADMIN_API_KEY` | `admin_api_key` | `` | resolved |  |
+| `WENYUAN_API_TENANT_MCP_AUTH_DISABLED` | `tenant_mcp_auth_disabled` | `false` | resolved |  |
 | `WENYUAN_API_MCP_ENABLED` | `mcp_enabled` | `true` | resolved |  |
 | `WENYUAN_API_ENABLE_BANK_CONFIG_API` | `enable_bank_config_api` | `true` | resolved |  |
 | `WENYUAN_API_ENABLE_BANK_LLM_HEALTH` | `enable_bank_llm_health` | `false` | resolved |  |
@@ -101,7 +107,7 @@ Status words:
 | `WENYUAN_API_RECALL_MAX_CONCURRENT` | `recall_max_concurrent` | `32` | resolved |  |
 | `WENYUAN_API_RECALL_INCLUDE_CHUNKS` | `recall_include_chunks` | `true` | resolved |  |
 | `WENYUAN_API_RECALL_PREFER_OBSERVATIONS` | `recall_prefer_observations` | `false` | resolved |  |
-| `WENYUAN_API_DEFAULT_OBSERVATION_SCOPES` | `default_observation_scopes` | `combined` | resolved |  |
+| `WENYUAN_API_DEFAULT_OBSERVATION_SCOPES` | `default_observation_scopes` | `combined` | value-dependent | the value must be one of combined, per_tag, all_combinations, shared or a list of tag lists (e.g. [["topic:*"]]) |
 | `WENYUAN_API_RECALL_MAX_TOKENS` | `recall_max_tokens` | `` | resolved |  |
 | `WENYUAN_API_RECALL_CHUNKS_MAX_TOKENS` | `recall_chunks_max_tokens` | `` | resolved |  |
 | `WENYUAN_API_BACKPRESSURE_DEFER_SECONDS` | `backpressure_defer_seconds` | `` | resolved |  |
@@ -560,3 +566,9 @@ Status words:
 | `WENYUAN_API_RETAIN_LLM_REASONING_EFFORT` | `retain_llm_reasoning_effort` | refused |
 | `WENYUAN_API_RETAIN_LLM_STRATEGY` | `retain_llm_strategy` | refused |
 | `WENYUAN_API_RETAIN_LLM_TIMEOUT` | `retain_llm_timeout` | refused |
+
+## Additional keys
+
+| Environment variable | File key |
+| --- | --- |
+| `WENYUAN_API_LLM_TEMPERATURE_MENTAL_MODEL_REFRESH` | `llm_temperature_mental_model_refresh` |

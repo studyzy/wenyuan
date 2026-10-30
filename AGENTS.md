@@ -261,6 +261,12 @@ It writes `migrations/` and `internal/storage/embedded/` as five files —
   keep in sync by hand. `internal/storage/migrate.go` embeds
   `internal/storage/embedded/` via `//go:embed all:embedded`, and that is the
   copy the binary reads.
+- **In multi-tenant mode the startup migration covers only the control-plane
+  registry.** `run_migrations_on_startup` skips both the base schema and the
+  tenant schemas when `tenant_mode: multi` (`internal/app/app.go`): a tenant is
+  migrated when it is created, and afterwards through
+  `POST /admin/v1/tenants/{id}/migrate`; bring `public` forward with
+  `bankctl run-db-migration`.
 - **The embedding column width is not part of the series.** The dumped
   reference declares whichever width that deployment's embedding model had,
   and upstream resolves the column width at startup, so this service does the

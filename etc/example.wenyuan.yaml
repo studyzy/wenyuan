@@ -69,7 +69,7 @@
   # reranking: "true"
 # default:
   # bank_template: ""  # value-dependent, honoured as shown: the value must be a JSON object
-  # observation_scopes: "combined"
+  # observation_scopes: "combined"  # value-dependent, honoured as shown: the value must be one of combined, per_tag, all_combinations, shared or a list of tag lists (e.g. [["topic:*"]])
 # extension_passthrough_headers: ""
 # database:
   # url: "pg0"  # the reference's default is an embedded pg0 instance this build cannot manage; an unset URL refuses startup instead
@@ -93,6 +93,14 @@
   # database_url: ""
   # isolation: "false"  # value-dependent, honoured as shown: this build migrates in-process; the reference's subprocess isolation is not implemented
   # concurrency: "1"  # value-dependent, honoured as shown: this build migrates one schema at a time; the reference's concurrent tenant sweep is not implemented
+# tenant:
+  # extension: ""  # only the built-in ApiKeyTenantExtension is implemented; any other selection refuses startup instead of silently authenticating nothing
+  # api_key: ""
+  # mode: "single"
+  # mcp_auth_disabled: "false"
+# admin:
+  # listen: ""
+  # api_key: ""
 # graph:
   # retriever: "link_expansion"  # value-dependent, honoured as shown: only the link_expansion graph retriever is implemented
   # seed_min_similarity: "0.3"
@@ -491,6 +499,7 @@
   # vertexai_project_id: ""  # refused by this build
   # vertexai_region: ""  # refused by this build
   # vertexai_service_account_key: ""  # refused by this build
+  # temperature_mental_model_refresh: ""
 # skip:
   # llm_verification: ""
 # reranker:

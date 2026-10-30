@@ -126,6 +126,19 @@ var referenceRuntimeKeys = []referenceKey{
 		},
 		Reason: "this build migrates one schema at a time; the reference's concurrent tenant sweep is not implemented"},
 
+	// --- Tenancy and the management plane ---
+	// The first two keys are the reference's: its built-in API-key authenticator
+	// is selected by name and configured with a key. The tenant mode and the
+	// management listener are this build's addition — an operator plane that
+	// provisions one schema per tenant.
+	{Name: EnvTenantExtension, Default: "", Resolve: func(c Config) any { return c.TenantExtension },
+		Divergent: "only the built-in ApiKeyTenantExtension is implemented; any other selection refuses startup instead of silently authenticating nothing"},
+	{Name: EnvTenantAPIKey, Default: "", Resolve: func(c Config) any { return c.TenantAPIKey }},
+	{Name: EnvTenantMode, Default: "single", Resolve: func(c Config) any { return c.TenantMode }},
+	{Name: EnvAdminListen, Default: "", Resolve: func(c Config) any { return c.AdminListen }},
+	{Name: EnvAdminAPIKey, Default: "", Resolve: func(c Config) any { return c.AdminAPIKey }},
+	{Name: EnvTenantMCPAuthDisabled, Default: "false", Resolve: func(c Config) any { return c.TenantMCPAuthDisabled }},
+
 	// --- Feature flags ---
 	{Name: EnvMCPEnabled, Default: "true", Resolve: func(c Config) any { return c.MCPEnabled }},
 	{Name: EnvEnableBankConfigAPI, Default: "true", Resolve: func(c Config) any { return c.EnableBankConfigAPI }},
