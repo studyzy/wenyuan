@@ -47,6 +47,48 @@ Adding a new identifier, log line, metric, header or document of our own must
 not use the old name; if something has to keep it, add it to this table with
 the reason.
 
+## Deliberate deviations from the reference
+
+Three differences are intentional. An AI agent must treat them as part of this
+project's design, not as parity gaps to "fix" back to the reference.
+
+### Models are TEI + a local LLM, not the reference's built-ins
+
+- Embeddings: `embeddings.provider: tei` serves `intfloat/multilingual-e5-small`
+  (384 dimensions) with `query: ` / `passage: ` prefixes.
+- Reranking: `reranker.provider: tei` serves `BAAI/bge-reranker-base`.
+- Chat: the LLM is an OpenAI-compatible endpoint on the same host.
+
+All three enter through `internal/provider`; no handler imports a vendor
+package. The HTTP surface and PostgreSQL schema are unchanged by this choice.
+`embedding.dimension` must stay consistent with the stored vector width (384
+in the checked-in local configuration). `etc/wenyuan.yaml` is the local,
+unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
+
+### Dependencies are compose services, not embedded
+
+- `docker-compose.yml` starts PostgreSQL (pgvector) on host port **15432**.
+- The `tei` profile adds `tei-embedding` on **18080** and `tei-reranker` on
+  **18081**.
+- The API, worker and `bankctl` run as **host binaries**; there is deliberately
+  no API container in the compose file.
+- The +10000 port offset lets the reference service and this one run side by
+  side. Do not switch to the reference's embedded pg0 / in-process models or
+  add an API container without an explicit decision.
+
+### The admin tenant plane is our addition
+
+- A separate admin listener (`admin_listen`, own operator key) serves
+  `/admin/v1/tenants`: create, list, get, patch, delete, plus `/purge`,
+  `/migrate`, `/keys` and `/session`.
+- It operates with `tenant_mode: multi` and provisions one PostgreSQL schema
+  per tenant.
+- The control-plane frontend exposes the same surface at `/[locale]/tenants`,
+  with BFF routes under `/api/admin/tenants/**`.
+- The plane is **additive**: it does not change the reference `/v1/...` routes,
+  JSON contracts or schema. Parity audits should exclude it rather than report
+  it as a divergence, and its operator key must never be reused as a tenant key.
+
 ## Ground rules
 
 1. **Compatibility surface is frozen.** Routes, JSON field names, status codes,
