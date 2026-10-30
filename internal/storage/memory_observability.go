@@ -614,8 +614,12 @@ func (s *MemoryStore) LLMRequestStats(ctx context.Context, bankID, period, opera
 	return LLMRequestStats{BankID: bankID, Period: period, Trunc: trunc, Start: start, Bucket: out}, nil
 }
 
-// ListObservationScopes returns the distinct observation scopes of a bank.
-func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error) {
+// ListObservationScopes returns the distinct observation scopes of a bank,
+// narrowed to the scopes the reader's tag filter admits. A scope is an
+// observation's own tags, so the reference AND-s the caller's resolved read
+// scope into the count (engine/memories/pg/counts.py:172-202); a confined
+// caller must not learn that other scopes exist.
+func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, scopeFilter []TagGroup, limit, offset int) (ObservationScopePage, error) {
 	if err := ctx.Err(); err != nil {
 		return ObservationScopePage{}, err
 	}
@@ -625,6 +629,10 @@ func (s *MemoryStore) ListObservationScopes(ctx context.Context, bankID string, 
 	byKey := map[string][]string{}
 	for _, unit := range s.units {
 		if unit.BankID != bankID || unit.FactType != TypeObservation {
+			continue
+		}
+		// The scope is the exact set of tags the observation carries.
+		if len(scopeFilter) > 0 && !TagsVisibleUnderScope(unit.Tags, scopeFilter) {
 			continue
 		}
 		// The scope is the exact set of tags the observation carries, normalized

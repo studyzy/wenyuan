@@ -647,7 +647,9 @@ func (h *Handlers) ObservationScopes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := h.Store.ListObservationScopes(r.Context(), bankID, limit, offset)
+	// The caller's resolved read scope confines the histogram, so a scoped
+	// reader pages over only the scopes it may see and the total agrees.
+	page, err := h.Store.ListObservationScopes(r.Context(), bankID, memoryops.ScopeFromRequest(r), limit, offset)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return
@@ -712,7 +714,10 @@ func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	scopePage, err := h.Store.ListObservationScopes(r.Context(), bankID, 10000, 0)
+	// The preview is built from the same histogram, so it is confined by the
+	// same scope (the reference delegates to the scoped scope list,
+	// engine/memory_engine.py:12394-12405).
+	scopePage, err := h.Store.ListObservationScopes(r.Context(), bankID, memoryops.ScopeFromRequest(r), 10000, 0)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return

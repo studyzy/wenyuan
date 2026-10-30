@@ -42,7 +42,10 @@ func TestMemoriesTimeseriesWindows(t *testing.T) {
 	if _, err := store.CreateBank(ctx, Bank{BankID: "ts-bank", Name: "ts-bank"}); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
+	// Anchored on the current hour's :30 rather than on the wall clock: buckets are
+	// UTC calendar days, so a run within a couple of minutes of UTC midnight would
+	// straddle two of them and report two buckets, not one.
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 	occurred := now.Add(-2 * time.Minute)
 	if _, err := store.UpsertUnit(ctx, MemoryUnit{
 		ID: "unit-now", BankID: "ts-bank", Text: "recent", FactType: TypeWorld,
@@ -56,7 +59,7 @@ func TestMemoriesTimeseriesWindows(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	series, err := store.MemoriesTimeseries(ctx, "ts-bank", "1h", "occurred_start")
+	series, err := store.MemoriesTimeseries(ctx, "ts-bank", "1h", "occurred_start", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +75,7 @@ func TestMemoriesTimeseriesWindows(t *testing.T) {
 	}
 	// A day-wide period drops nothing that a minute-wide one kept, and the stale
 	// row still counts: it is inside a 7-day window.
-	if series, err := store.MemoriesTimeseries(ctx, "ts-bank", "7d", "occurred_start"); err != nil {
+	if series, err := store.MemoriesTimeseries(ctx, "ts-bank", "7d", "occurred_start", nil); err != nil {
 		t.Fatal(err)
 	} else if len(series.Buckets) != 1 {
 		t.Fatalf("a 7d window bucketed by day must hold one bucket, got %+v", series.Buckets)

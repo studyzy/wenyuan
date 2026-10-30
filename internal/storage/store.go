@@ -513,8 +513,10 @@ type Store interface {
 	// one operation when operation is not empty and to one kind of model call
 	// when callType is not empty.
 	LLMRequestStats(ctx context.Context, bankID, period, operation, callType string) (LLMRequestStats, error)
-	// ListObservationScopes returns the distinct observation scopes of a bank.
-	ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error)
+	// ListObservationScopes returns the distinct observation scopes of a bank,
+	// narrowed to the scopes the reader's tag filter admits. A nil scopeFilter
+	// sees every scope.
+	ListObservationScopes(ctx context.Context, bankID string, scopeFilter []TagGroup, limit, offset int) (ObservationScopePage, error)
 
 	// --- Read surface ---------------------------------------------------
 	// ListDocuments returns one page of a bank's documents plus the total.

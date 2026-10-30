@@ -769,8 +769,9 @@ func (s *PostgresStore) LLMRequestStats(ctx context.Context, bankID, period, ope
 	return stats, nil
 }
 
-// ListObservationScopes returns the distinct observation scopes of a bank.
-func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string, limit, offset int) (ObservationScopePage, error) {
+// ListObservationScopes returns the distinct observation scopes of a bank,
+// narrowed to the scopes the reader's tag filter admits.
+func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string, scopeFilter []TagGroup, limit, offset int) (ObservationScopePage, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 ObservationScopePage
@@ -780,16 +781,24 @@ func (s *PostgresStore) ListObservationScopes(ctx context.Context, bankID string
 	// An observation's scope is the exact set of tags it was consolidated with,
 	// normalized by sorting so [a,b] and [b,a] collapse; the empty list is the
 	// global/untagged scope. Grouping and ordering therefore run on the tag
-	// array itself, most populous scope first.
+	// array itself, most populous scope first. The reader's resolved scope is
+	// AND-ed into the row filter, the way the reference's counts query applies
+	// its tag groups (engine/memories/pg/counts.py:172-202).
+	filter, filterArgs := renderTagGroups(scopeFilter, 2)
+	narrow := ""
+	if filter != "" {
+		narrow = " AND (" + filter + ")"
+	}
 	query := `WITH scopes AS (
 	              SELECT COALESCE(ARRAY(SELECT unnest(tags) ORDER BY 1), '{}'::text[]) AS scope
 	              FROM ` + qualified + `.memory_units
-	              WHERE bank_id = $1 AND fact_type = 'observation'
+	              WHERE bank_id = $1 AND fact_type = 'observation'` + narrow + `
 	          )
 	          SELECT scope::text, COUNT(*)
 	          FROM scopes GROUP BY scope
 	          ORDER BY COUNT(*) DESC, scope`
-	rows, err := s.reader().QueryContext(ctx, query, bankID)
+	args := append([]any{bankID}, filterArgs...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return ObservationScopePage{}, err
 	}

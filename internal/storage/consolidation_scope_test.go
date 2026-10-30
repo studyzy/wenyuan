@@ -53,7 +53,7 @@ func TestConsolidationScopeIsolation(t *testing.T) {
 	}
 
 	// The observation-scope listing reports the observation's tag set.
-	page, err := store.ListObservationScopes(ctx, "b1", 10, 0)
+	page, err := store.ListObservationScopes(ctx, "b1", nil, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
