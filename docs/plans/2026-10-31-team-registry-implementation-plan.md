@@ -300,4 +300,5 @@ B 部分实施时**不得回头改 0002**；表结构的任何追加都走新迁
 
 **仍然没做**（B 部分）：`merge_state` / `merge_source_unit`、`project.merge`、
 读回退、`purge-contribution` 的重建——`purge-contribution` 现在只移出成员并在响应里
-如实写 `rebuild: false`。
+如实写 `rebuild: false`。这些的详细计划见
+`docs/plans/2026-10-31-team-merge-implementation-plan.md`。
