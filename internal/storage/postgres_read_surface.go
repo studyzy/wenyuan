@@ -520,10 +520,15 @@ func (s *PostgresStore) Graph(ctx context.Context, query GraphQuery) (GraphData,
 				"(SELECT array_agg(id) FROM %s WHERE bank_id = $1 AND chunk_id = $%d)))",
 			len(args), qualified+".memory_units", len(args)))
 	}
-	if tagFilterActive(query.Tags, mode, query.TagGroups) {
+	// `exact` with no tags is the "global" scope: the rows carrying no tags at
+	// all, not "no filter" (engine/memories/pg/graph.py:219-236). The other
+	// modes treat empty tags as no filter, so the arm is exact-only.
+	if len(query.Tags) > 0 || len(query.TagGroups) > 0 {
 		tagSQL, tagArgs := entityTagPredicate(query.Tags, mode, query.TagGroups, len(args))
 		args = append(args, tagArgs...)
 		conds = append(conds, "("+tagSQL+")")
+	} else if mode == TagsMatchExact {
+		conds = append(conds, "(tags IS NULL OR tags = '{}')")
 	}
 	where := "WHERE " + strings.Join(conds, " AND ")
 

@@ -487,8 +487,10 @@ type Store interface {
 	// --- Observability --------------------------------------------------
 	// BankStats summarises one bank's operational state.
 	BankStats(ctx context.Context, bankID string) (BankStats, error)
-	// MemoriesTimeseries buckets a bank's memory counts over a period.
-	MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error)
+	// MemoriesTimeseries buckets a bank's memory counts over a period,
+	// narrowed to the memories the reader's tag filter admits. A nil
+	// scopeFilter counts the whole bank.
+	MemoriesTimeseries(ctx context.Context, bankID, period, timeField string, scopeFilter []TagGroup) (Timeseries, error)
 	// ListAuditLog returns one page of the audit trail.
 	ListAuditLog(ctx context.Context, query AuditQuery) (AuditPage, error)
 	// RecordAuditLog appends one audit entry. A write failure is the caller's

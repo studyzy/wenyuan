@@ -223,8 +223,12 @@ func (s *PostgresStore) consolidationBacklog(ctx context.Context, bankID string)
 	return pending, failed, nil
 }
 
-// MemoriesTimeseries buckets a bank's memory counts over a period.
-func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error) {
+// MemoriesTimeseries buckets a bank's memory counts over a period, narrowed to
+// the memories the reader's tag filter admits. The reference AND-s the caller's
+// resolved read scope into the row filter after the time window
+// (engine/memories/pg/counts.py:138-148, `{groups.sql}`), so a confined caller
+// counts only what it may read.
+func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string, scopeFilter []TagGroup) (Timeseries, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 Timeseries
@@ -241,14 +245,22 @@ func (s *PostgresStore) MemoriesTimeseries(ctx context.Context, bankID, period, 
 	}
 	bucket := `date_trunc('` + window.Trunc + `', ` + column + ` AT TIME ZONE 'UTC')`
 	since := time.Now().UTC().Add(-window.Step * time.Duration(window.Count))
+	// The scope binds after the two fixed parameters, exactly as the reference
+	// renders its groups against `len(params) + 1`.
+	scopeSQL, scopeArgs := renderTagGroups(scopeFilter, 2)
+	narrow := ""
+	if scopeSQL != "" {
+		narrow = " AND (" + scopeSQL + ")"
+	}
 	query := `SELECT ` + bucket + ` AS bucket, COUNT(*),
 	                 COUNT(*) FILTER (WHERE fact_type = 'world') AS world,
 	                 COUNT(*) FILTER (WHERE fact_type = 'experience') AS experience,
 	                 COUNT(*) FILTER (WHERE fact_type = 'observation') AS observation
 	          FROM ` + quoteIdent(schema) + `.memory_units
-	          WHERE bank_id = $1 AND ` + column + ` IS NOT NULL AND ` + column + ` >= $2
+	          WHERE bank_id = $1 AND ` + column + ` IS NOT NULL AND ` + column + ` >= $2` + narrow + `
 	          GROUP BY bucket ORDER BY bucket ASC`
-	rows, err := s.reader().QueryContext(ctx, query, bankID, since)
+	args := append([]any{bankID, since}, scopeArgs...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return Timeseries{}, err
 	}

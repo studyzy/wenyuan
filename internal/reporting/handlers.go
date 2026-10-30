@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -173,7 +174,11 @@ func (h *Handlers) Timeseries(w http.ResponseWriter, r *http.Request) {
 	period := strings.TrimSpace(httpx.Query(r, "period"))
 	timeField := storage.ResolveTimeseriesTimeField(strings.TrimSpace(httpx.Query(r, "time_field")))
 	cfg := resolveTimeseriesPeriod(period)
-	series, err := h.Store.MemoriesTimeseries(r.Context(), bankID, cfg.period, timeField)
+	// The caller's resolved read scope narrows the counted set, so a confined
+	// reader charts only the memories it may read. The reference resolves the
+	// scope before the query and passes it as the tag groups
+	// (engine/memory_engine.py:17046,17070).
+	series, err := h.Store.MemoriesTimeseries(r.Context(), bankID, cfg.period, timeField, memoryops.ScopeFromRequest(r))
 	if err != nil {
 		httpx.WriteErrorFor(w, r, asHTTPError(err))
 		return

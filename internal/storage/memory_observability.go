@@ -189,8 +189,13 @@ func (c *bankStatsCache) invalidate(schema, bankID string) {
 	delete(c.entries, bankCacheKey(schema, bankID))
 }
 
-// MemoriesTimeseries buckets a bank's memory counts over a period.
-func (s *MemoryStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string) (Timeseries, error) {
+// MemoriesTimeseries buckets a bank's memory counts over a period, narrowed to
+// the memories the reader's tag filter admits. The reference resolves the
+// caller's read scope before the query and AND-s it into the row filter
+// (engine/memory_engine.py:17046 passes it as `tag_groups` to
+// engine/memories/pg/counts.py:138-148), so a confined caller counts only what
+// it may read rather than the whole bank.
+func (s *MemoryStore) MemoriesTimeseries(ctx context.Context, bankID, period, timeField string, scopeFilter []TagGroup) (Timeseries, error) {
 	if err := ctx.Err(); err != nil {
 		return Timeseries{}, err
 	}
@@ -214,6 +219,12 @@ func (s *MemoryStore) MemoriesTimeseries(ctx context.Context, bankID, period, ti
 	counts := map[time.Time]*accumulator{}
 	for _, unit := range s.units {
 		if unit.BankID != bankID {
+			continue
+		}
+		// The caller's resolved read scope narrows the counted set; a nil
+		// filter counts every memory in the bank, which is what an unscoped
+		// caller expects.
+		if len(scopeFilter) > 0 && !TagsVisibleUnderScope(unit.Tags, scopeFilter) {
 			continue
 		}
 		stamp := seriesStamp(unit, timeField)

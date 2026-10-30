@@ -500,6 +500,15 @@ func renderTagGroup(group TagGroup, used int) (string, []any) {
 			wanted = append([]string{group.Tag}, wanted...)
 		}
 		if len(wanted) == 0 {
+			// A leaf naming no tag still filters in `exact` mode: set equality
+			// against the empty set is the "global" (untagged) scope, the same
+			// clause an ungrouped `tags_match=exact` with no tags renders
+			// (flatTagClause) and the same reading the in-memory matcher takes.
+			// Returning "" here would turn the request into no filter at all,
+			// so a caller asking for the untagged graph would get the bank.
+			if group.Match == TagsMatchExact {
+				return "(tags IS NULL OR tags = '{}')", nil
+			}
 			return "", nil
 		}
 		placeholder := "$" + itoa(used+1)
