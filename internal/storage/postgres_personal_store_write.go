@@ -47,9 +47,6 @@ func (s *PostgresPersonalStore) FinishPersonalRound(ctx context.Context, req Fin
 	if !held {
 		return ErrPersonalClaimLost
 	}
-	if err := s.ensureAggregateBank(ctx, tx, qualified, req); err != nil {
-		return err
-	}
 	if err := s.applyPersonalFacts(ctx, tx, qualified, req); err != nil {
 		return err
 	}
@@ -80,12 +77,12 @@ func (s *PostgresPersonalStore) FinishPersonalRound(ctx context.Context, req Fin
 // The row is created, never replaced: a bank the person already owns under this
 // id keeps its name, disposition and mission, which is what makes the second and
 // every later round a no-op here.
-func (s *PostgresPersonalStore) ensureAggregateBank(ctx context.Context, tx Tx, qualified string, req FinishPersonalRequest) error {
+func (s *PostgresPersonalStore) ensureAggregateBank(ctx context.Context, tx Tx, qualified, bankID string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO `+qualified+`.banks (bank_id, name, mission, config)
 		VALUES ($1, $2, $3, '{}'::jsonb)
 		ON CONFLICT (bank_id) DO NOTHING`,
-		req.BankID, req.BankID, aggregateMission)
+		bankID, bankID, aggregateMission)
 	return err
 }
 

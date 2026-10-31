@@ -363,6 +363,35 @@ func TestPersonalRoundDoesNotReplaceAnExistingBank(t *testing.T) {
 	}
 }
 
+// TestPersonalRoundCreatesTheBankForACaughtUpTenant pins the case production
+// showed: a tenant whose aggregate content predates the bank row is caught up, so
+// its next round writes nothing at all — and the row still has to appear, or the
+// aggregate stays invisible to the bank list for as long as nothing changes.
+func TestPersonalRoundCreatesTheBankForACaughtUpTenant(t *testing.T) {
+	f := newPersonalFixture(t)
+	orders := f.bank(t, "orders")
+	f.fact(t, orders, "orders deploys on port 15432")
+	input, _, stamp := f.round(t, 20)
+	f.finish(t, personalFinish(input, stamp, "orders deploys on port 15432"))
+
+	// Simulate the pre-fix state: the content is there, the bank row is not.
+	if _, err := f.db.ExecContext(f.ctx(t),
+		"DELETE FROM "+quoteIdent(f.persona)+".banks WHERE bank_id = $1", tenant.PersonalBankID(f.persona)); err != nil {
+		t.Fatalf("remove the bank row: %v", err)
+	}
+
+	caughtUp, ran, _ := f.round(t, 20)
+	if !ran {
+		t.Fatal("the round did not run")
+	}
+	if len(caughtUp.Facts) != 0 {
+		t.Fatalf("fresh facts = %d, want a caught-up tenant", len(caughtUp.Facts))
+	}
+	if count := f.aggregateBankRows(t); count != 1 {
+		t.Fatalf("a caught-up tenant's aggregate bank rows = %d, want 1", count)
+	}
+}
+
 // aggregateBankRows counts the banks row the aggregate id has.
 func (f *personalFixture) aggregateBankRows(t *testing.T) int {
 	t.Helper()

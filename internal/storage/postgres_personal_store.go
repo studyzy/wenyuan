@@ -165,6 +165,15 @@ func (s *PostgresPersonalStore) BeginPersonalRound(
 	if err != nil {
 		return false, err
 	}
+	// A tenant whose aggregate already holds content must have its bank row even
+	// when this round has nothing new to write: a caught-up tenant takes the
+	// no-write path, and an aggregate whose content predates the row would
+	// otherwise stay invisible to the bank list for as long as nothing changes.
+	if len(input.Previous) > 0 || len(input.Facts) > 0 {
+		if err := s.ensureAggregateBank(ctx, tx, quoteIdent(schema), self); err != nil {
+			return false, err
+		}
+	}
 	input.Topics, err = s.topicsTx(ctx, tenantID)
 	if err != nil {
 		return false, err
