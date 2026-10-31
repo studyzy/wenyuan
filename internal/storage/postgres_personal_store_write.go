@@ -47,6 +47,9 @@ func (s *PostgresPersonalStore) FinishPersonalRound(ctx context.Context, req Fin
 	if !held {
 		return ErrPersonalClaimLost
 	}
+	if err := s.ensureAggregateBank(ctx, tx, qualified, req); err != nil {
+		return err
+	}
 	if err := s.applyPersonalFacts(ctx, tx, qualified, req); err != nil {
 		return err
 	}
@@ -64,6 +67,31 @@ func (s *PostgresPersonalStore) FinishPersonalRound(ctx context.Context, req Fin
 	}
 	return tx.Commit()
 }
+
+// ensureAggregateBank makes the aggregate bank a bank like any other.
+//
+// Writing its facts is not enough: every bank-scoped surface — the bank list the
+// console shows, a read addressed to the aggregate, a write to it — resolves the
+// bank through the banks table first, so an aggregate holding facts but no bank
+// row is invisible to all of them. Creating the row is therefore part of the
+// round that first writes content, not a separate setup step somebody has to
+// remember.
+//
+// The row is created, never replaced: a bank the person already owns under this
+// id keeps its name, disposition and mission, which is what makes the second and
+// every later round a no-op here.
+func (s *PostgresPersonalStore) ensureAggregateBank(ctx context.Context, tx Tx, qualified string, req FinishPersonalRequest) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO `+qualified+`.banks (bank_id, name, mission, config)
+		VALUES ($1, $2, $3, '{}'::jsonb)
+		ON CONFLICT (bank_id) DO NOTHING`,
+		req.BankID, req.BankID, aggregateMission)
+	return err
+}
+
+// aggregateMission is what the aggregate bank's mission says, so a reader of the
+// bank that never sees this feature still learns what fills it.
+const aggregateMission = "结论来自该租户其余各个 bank 的汇总，由后台任务生成，不直接接受人工写入。"
 
 // claimHeldTx reports whether this round still owns the tenant's claim.
 func (s *PostgresPersonalStore) claimHeldTx(ctx context.Context, tx Tx, tenantID string, stamp time.Time) (bool, error) {

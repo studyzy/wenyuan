@@ -310,6 +310,71 @@ func TestPersonalRoundReadsEveryBankAndWritesTheAggregate(t *testing.T) {
 	}
 }
 
+// TestPersonalRoundCreatesTheAggregateBank pins that a round leaves a bank behind,
+// not only facts: every bank-scoped surface resolves the bank through the banks
+// table first, so an aggregate holding conclusions but no bank row is invisible to
+// the console and unroutable to a read addressed at it.
+func TestPersonalRoundCreatesTheAggregateBank(t *testing.T) {
+	f := newPersonalFixture(t)
+	orders := f.bank(t, "orders")
+	f.fact(t, orders, "orders deploys on port 15432")
+
+	if count := f.aggregateBankRows(t); count != 0 {
+		t.Fatalf("the aggregate bank exists before the first round: %d rows", count)
+	}
+	input, _, stamp := f.round(t, 20)
+	f.finish(t, personalFinish(input, stamp, "orders deploys on port 15432"))
+
+	if count := f.aggregateBankRows(t); count != 1 {
+		t.Fatalf("the aggregate bank rows = %d after a round, want 1", count)
+	}
+	// The row is complete enough that a bank-scoped read finds it, which is what
+	// the console's list and a read addressed at the aggregate depend on.
+	if _, err := NewPostgresStore(f.db, f.persona).GetBank(f.ctx(t), tenant.PersonalBankID(f.persona)); err != nil {
+		t.Fatalf("the aggregate bank cannot be read as a bank: %v", err)
+	}
+}
+
+// TestPersonalRoundDoesNotReplaceAnExistingBank pins the other half: a bank the
+// person already owns under this id keeps what it had, so the round only creates
+// what is missing.
+func TestPersonalRoundDoesNotReplaceAnExistingBank(t *testing.T) {
+	f := newPersonalFixture(t)
+	orders := f.bank(t, "orders")
+	f.fact(t, orders, "orders deploys on port 15432")
+	self := tenant.PersonalBankID(f.persona)
+	if _, err := f.db.ExecContext(f.ctx(t), `
+		INSERT INTO `+quoteIdent(f.persona)+`.banks (bank_id, name, mission, config)
+		VALUES ($1,'my own repo','kept','{"enable_text_search": true}'::jsonb)`, self); err != nil {
+		t.Fatalf("seed the person's own bank: %v", err)
+	}
+
+	input, _, stamp := f.round(t, 20)
+	f.finish(t, personalFinish(input, stamp, "orders deploys on port 15432"))
+
+	var name, mission string
+	if err := f.db.QueryRowContext(f.ctx(t),
+		"SELECT name, COALESCE(mission,'') FROM "+quoteIdent(f.persona)+".banks WHERE bank_id = $1", self).
+		Scan(&name, &mission); err != nil {
+		t.Fatalf("read the bank: %v", err)
+	}
+	if name != "my own repo" || mission != "kept" {
+		t.Fatalf("the round replaced the person's bank: name=%q mission=%q", name, mission)
+	}
+}
+
+// aggregateBankRows counts the banks row the aggregate id has.
+func (f *personalFixture) aggregateBankRows(t *testing.T) int {
+	t.Helper()
+	var count int
+	if err := f.db.QueryRowContext(f.ctx(t),
+		"SELECT count(*) FROM "+quoteIdent(f.persona)+".banks WHERE bank_id = $1",
+		tenant.PersonalBankID(f.persona)).Scan(&count); err != nil {
+		t.Fatalf("count aggregate banks: %v", err)
+	}
+	return count
+}
+
 // TestPersonalWatermarksArePerBank pins the watermark's granularity: one bank's
 // new fact does not make the other bank read again.
 func TestPersonalWatermarksArePerBank(t *testing.T) {

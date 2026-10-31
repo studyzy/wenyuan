@@ -127,6 +127,25 @@ func (f *aggregateE2EFixture) writeFact(t *testing.T, bank, text string) string 
 	return id
 }
 
+// unmanagedFact puts one world fact into a bank without creating the bank row,
+// which is what a client that retained before the bank existed leaves behind: the
+// aggregate's own id has no bank until a round creates one.
+func (f *aggregateE2EFixture) unmanagedFact(t *testing.T, bank, text string) string {
+	t.Helper()
+	bankID := tenant.ProjectBankID(f.tenantID, bank)
+	ctx, err := storage.WithSchema(context.Background(), f.tenantID)
+	if err != nil {
+		t.Fatalf("WithSchema: %v", err)
+	}
+	var id string
+	if err := f.db.QueryRowContext(ctx, `
+		INSERT INTO "`+f.tenantID+`".memory_units (bank_id, text, fact_type)
+		VALUES ($1,$2,'world') RETURNING id::text`, bankID, text).Scan(&id); err != nil {
+		t.Fatalf("insert unmanaged fact: %v", err)
+	}
+	return id
+}
+
 // aggregate is the tenant's aggregate bank id.
 func (f *aggregateE2EFixture) aggregate() string { return tenant.PersonalBankID(f.tenantID) }
 
@@ -183,7 +202,7 @@ func TestPostgresAggregateRollupReplacesADirectlyWrittenRow(t *testing.T) {
 		reply: `{"facts":[{"text":"` + extractedFact + `","sources":[0]}]}`}}
 	f := newAggregateE2EFixture(t, model)
 	f.writeFact(t, "orders", extractedFact)
-	f.writeFact(t, "myself", "a conclusion someone wrote by hand")
+	f.unmanagedFact(t, "myself", "a conclusion someone wrote by hand")
 
 	f.runRound(t)
 
@@ -197,6 +216,31 @@ func TestPostgresAggregateRollupReplacesADirectlyWrittenRow(t *testing.T) {
 	}
 	if strings.Contains(body, "written by hand") {
 		t.Fatalf("a directly written row survived the round: %s", body)
+	}
+
+	// The list the console shows is the bank list, which resolves banks through
+	// the banks table: the aggregate must be in it, not merely addressable.
+	banks := f.call(t, http.MethodGet, "/v1/default/banks?limit=100", "")
+	if banks.Code != http.StatusOK {
+		t.Fatalf("list banks = %d: %s", banks.Code, banks.Body.String())
+	}
+	var listed struct {
+		Banks []struct {
+			BankID string `json:"bank_id"`
+		} `json:"banks"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(banks.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode banks: %v", err)
+	}
+	found := false
+	for _, bank := range listed.Banks {
+		if bank.BankID == f.aggregate() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the aggregate bank is missing from the bank list: %+v", listed.Banks)
 	}
 }
 
