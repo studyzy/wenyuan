@@ -355,8 +355,10 @@ func (s *PostgresPersonalStore) PersonalStatus(ctx context.Context, tenantID str
 		status.Kind = kind
 	}
 	if status.Kind == "team" {
-		status.Aggregate = false
-		return status, nil
+		// Refused rather than reported as "no aggregate": the management plane
+		// answers a team from its members' aggregates instead, and an empty
+		// status would read as a team whose memory stopped working.
+		return status, ErrPersonalAggregateIsTeam
 	}
 	status.Aggregate = true
 

@@ -23,6 +23,11 @@ import (
 // internal/personalrollup and are tested there; everything behind this interface
 // is verified against PostgreSQL.
 
+// ErrPersonalAggregateIsTeam reports a team tenant asked for an aggregate of its
+// own. A team is not a person: its banks are merged into a project's team bank,
+// and its members' aggregates live in the members' own schemas.
+var ErrPersonalAggregateIsTeam = errors.New("a team tenant has no aggregate of its own")
+
 // ErrPersonalClaimLost reports a round whose claim was taken over, so its result
 // is stale. It is not a failure of the tenant: another process is doing the work,
 // and that one's result is the one that counts.

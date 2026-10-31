@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -597,12 +598,8 @@ func TestPersonalStatusReportsATeamAsHavingNoAggregate(t *testing.T) {
 		teamID); err != nil {
 		t.Fatalf("insert team: %v", err)
 	}
-	status, err := f.store.PersonalStatus(ctx, teamID, false)
-	if err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	if status.Aggregate || status.Kind != "team" {
-		t.Fatalf("status = %+v, want no aggregate for a team", status)
+	if _, err := f.store.PersonalStatus(ctx, teamID, false); !errors.Is(err, ErrPersonalAggregateIsTeam) {
+		t.Fatalf("status error = %v, want the team refusal", err)
 	}
 	tenants, err := f.store.ListRollupTenants(ctx)
 	if err != nil {

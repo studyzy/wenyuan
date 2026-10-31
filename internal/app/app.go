@@ -329,7 +329,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		}
 		var personalAdmin adminapi.PersonalAdmin
 		if app.PersonalStore != nil {
-			personalAdmin = personalAdminFor{store: app.PersonalStore, cfg: cfg}
+			personalAdmin = personalAdminFor{store: app.PersonalStore, teams: teamRegistry, cfg: cfg}
 		}
 		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged, personalAdmin)
 		if err != nil {

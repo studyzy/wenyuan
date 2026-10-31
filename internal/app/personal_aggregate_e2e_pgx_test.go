@@ -257,6 +257,10 @@ func TestPostgresAggregateReportsATeamAsHavingNone(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create team = %d: %s", created.Code, created.Body.String())
 	}
+	// A team with one member, so the page has a member's aggregate to carry.
+	if added := f.admin(t, http.MethodPut, "/admin/v1/teams/"+teamID+"/members/"+f.tenantID, `{"role":"member"}`); added.Code != http.StatusOK {
+		t.Fatalf("add team member = %d: %s", added.Code, added.Body.String())
+	}
 	t.Cleanup(func() {
 		_, _ = f.db.ExecContext(context.Background(), "DROP SCHEMA IF EXISTS \""+teamID+"\" CASCADE")
 		_, _ = f.db.ExecContext(context.Background(), "DELETE FROM admin.tenant WHERE tenant_id = $1", teamID)
@@ -268,11 +272,19 @@ func TestPostgresAggregateReportsATeamAsHavingNone(t *testing.T) {
 	var decoded struct {
 		Aggregate bool   `json:"aggregate"`
 		Kind      string `json:"kind"`
+		Reason    string `json:"reason"`
+		Members   []struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"members"`
 	}
 	if err := json.Unmarshal(status.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
-	if decoded.Aggregate || decoded.Kind != "team" {
-		t.Fatalf("status = %+v, want a team with no aggregate", decoded)
+	if decoded.Aggregate || decoded.Kind != "team" || decoded.Reason == "" {
+		t.Fatalf("status = %+v, want a team with no aggregate and a reason", decoded)
+	}
+	// The team's own banks are nobody's aggregate, but its members' are theirs.
+	if len(decoded.Members) != 1 || decoded.Members[0].TenantID != f.tenantID {
+		t.Fatalf("team members = %+v, want the one member", decoded.Members)
 	}
 }
