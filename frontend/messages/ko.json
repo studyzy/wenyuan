@@ -2746,7 +2746,21 @@
       "migrateFailed": "스키마를 마이그레이션할 수 없습니다",
       "purge": "완전 삭제",
       "purgeConfirm": "스키마를 영구 삭제하려면 {tenant}을(를) 입력하세요.",
-      "purgeFailed": "테넌트를 완전 삭제할 수 없습니다"
+      "purgeFailed": "테넌트를 완전 삭제할 수 없습니다",
+      "aggregate": "집계 메모리",
+      "aggregateBank": "뱅크:",
+      "aggregateFacts": "결론 {facts}개 · 원본 뱅크 {banks}개 · 연결 {links}개 · 주제 {topics}개",
+      "aggregateLastRound": "마지막 집계: {at}",
+      "aggregateUserFacts": "이 뱅크의 {count}개 행은 직접 쓰였으며 다음 집계에서 대체됩니다.",
+      "aggregateHalted": "연속 실패로 중지되었습니다.",
+      "aggregateResetAction": "중지 해제",
+      "aggregateRebuildAction": "지금 재구축",
+      "aggregateReset": "중지가 해제되었습니다.",
+      "aggregateRebuild": "재구축을 요청했습니다. 다음 집계에서 전체를 다시 계산합니다.",
+      "aggregateFailed": "집계 요청에 실패했습니다.",
+      "aggregateNone": "이 테넌트에는 집계 메모리가 없습니다.",
+      "aggregateMember": "멤버",
+      "aggregateFactsShort": "결론"
     },
     "overview": {
       "title": "개요",

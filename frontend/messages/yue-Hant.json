@@ -2746,7 +2746,21 @@
       "migrateFailed": "遷移唔到 Schema",
       "purge": "清除",
       "purgeConfirm": "輸入 {tenant} 去永久刪除佢個 schema。",
-      "purgeFailed": "清除唔到租戶"
+      "purgeFailed": "清除唔到租戶",
+      "aggregate": "彙總記憶",
+      "aggregateBank": "Bank：",
+      "aggregateFacts": "結論 {facts} 條 · 來源 Bank {banks} 個 · 關聯 {links} 條 · 主題 {topics} 個",
+      "aggregateLastRound": "上次彙總：{at}",
+      "aggregateUserFacts": "呢個 Bank 有 {count} 條係直接寫入嘅，下一輪彙總會替換佢哋。",
+      "aggregateHalted": "連續失敗後已停止。",
+      "aggregateResetAction": "解除停止",
+      "aggregateRebuildAction": "立即重建",
+      "aggregateReset": "已解除停止。",
+      "aggregateRebuild": "已要求重建，下一輪會整體重算。",
+      "aggregateFailed": "彙總請求失敗。",
+      "aggregateNone": "呢個租戶冇彙總記憶。",
+      "aggregateMember": "成員",
+      "aggregateFactsShort": "結論數"
     },
     "overview": {
       "title": "總覽",

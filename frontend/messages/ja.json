@@ -2746,7 +2746,21 @@
       "migrateFailed": "スキーマを移行できませんでした",
       "purge": "完全削除",
       "purgeConfirm": "スキーマを完全に削除するには {tenant} を入力してください。",
-      "purgeFailed": "テナントを完全削除できませんでした"
+      "purgeFailed": "テナントを完全削除できませんでした",
+      "aggregate": "集約メモリ",
+      "aggregateBank": "バンク：",
+      "aggregateFacts": "結論 {facts} 件 · ソースバンク {banks} 件 · リンク {links} 件 · トピック {topics} 件",
+      "aggregateLastRound": "前回の集約：{at}",
+      "aggregateUserFacts": "このバンクの {count} 行は直接書き込まれたもので、次回の集約で置き換えられます。",
+      "aggregateHalted": "連続失敗のため停止しています。",
+      "aggregateResetAction": "停止を解除",
+      "aggregateRebuildAction": "今すぐ再構築",
+      "aggregateReset": "停止を解除しました。",
+      "aggregateRebuild": "再構築を要求しました。次回の集約で全体を再計算します。",
+      "aggregateFailed": "集約のリクエストに失敗しました。",
+      "aggregateNone": "このテナントには集約メモリがありません。",
+      "aggregateMember": "メンバー",
+      "aggregateFactsShort": "結論"
     },
     "overview": {
       "title": "概要",

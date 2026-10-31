@@ -2746,7 +2746,21 @@
       "migrateFailed": "无法迁移 Schema",
       "purge": "清除",
       "purgeConfirm": "输入 {tenant} 以永久删除其 schema。",
-      "purgeFailed": "无法清除租户"
+      "purgeFailed": "无法清除租户",
+      "aggregate": "汇总记忆",
+      "aggregateBank": "Bank：",
+      "aggregateFacts": "结论 {facts} 条 · 来源 Bank {banks} 个 · 关联 {links} 条 · 主题 {topics} 个",
+      "aggregateLastRound": "上次汇总：{at}",
+      "aggregateUserFacts": "这个 Bank 里有 {count} 条是被直接写入的，下一轮汇总会替换它们。",
+      "aggregateHalted": "连续失败后已停止。",
+      "aggregateResetAction": "解除停止",
+      "aggregateRebuildAction": "立即重建",
+      "aggregateReset": "已解除停止。",
+      "aggregateRebuild": "已请求重建，下一轮会整体重算。",
+      "aggregateFailed": "汇总请求失败。",
+      "aggregateNone": "该租户没有汇总记忆。",
+      "aggregateMember": "成员",
+      "aggregateFactsShort": "结论数"
     },
     "overview": {
       "title": "总览",
