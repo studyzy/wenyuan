@@ -67,6 +67,45 @@ export type ProjectMember = {
 
 export type DeletedProject = { project_id: string; deleted_banks: string[] };
 
+/**
+ * A tenant's aggregate memory: the bank `<tenant>::myself`, which the background
+ * rollup fills from every other bank the tenant owns.
+ *
+ * A team has none of its own — it is not a person — so its answer carries
+ * `members` instead: each member's aggregate, which is where a team's
+ * contributions actually live.
+ */
+export type TenantAggregate = {
+  tenant_id: string;
+  kind?: string;
+  aggregate: boolean;
+  bank_id?: string;
+  shared_schema?: boolean;
+  last_round_at?: string;
+  last_error?: string;
+  halted: boolean;
+  fail_count?: number;
+  rebuilding?: boolean;
+  adopted_preexisting?: boolean;
+  source_banks?: number;
+  pending_banks?: number;
+  aggregate_facts?: number;
+  user_facts?: number;
+  links?: number;
+  topics?: number;
+  members?: TenantAggregateMember[];
+  reason?: string;
+};
+
+export type TenantAggregateMember = {
+  tenant_id: string;
+  bank_id?: string;
+  last_round_at?: string;
+  last_error?: string;
+  halted?: boolean;
+  aggregate_facts?: number;
+};
+
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(withBasePath(path), {
@@ -119,6 +158,23 @@ export const adminApi = {
   },
   getTenant(tenantId: string) {
     return request<Tenant>("/api/admin/tenants/" + encodeURIComponent(tenantId));
+  },
+  getTenantAggregate(tenantId: string) {
+    return request<TenantAggregate>(
+      "/api/admin/tenants/" + encodeURIComponent(tenantId) + "/aggregate",
+    );
+  },
+  resetTenantAggregate(tenantId: string) {
+    return request<{ status: string }>(
+      "/api/admin/tenants/" + encodeURIComponent(tenantId) + "/aggregate/reset",
+      { method: "POST" },
+    );
+  },
+  rebuildTenantAggregate(tenantId: string) {
+    return request<{ status: string }>(
+      "/api/admin/tenants/" + encodeURIComponent(tenantId) + "/aggregate/rebuild",
+      { method: "POST" },
+    );
   },
   updateTenant(
     tenantId: string,

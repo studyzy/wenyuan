@@ -2746,7 +2746,21 @@
       "migrateFailed": "Could not migrate the schema",
       "purge": "Purge",
       "purgeConfirm": "Type {tenant} to permanently drop its schema.",
-      "purgeFailed": "Could not purge the tenant"
+      "purgeFailed": "Could not purge the tenant",
+      "aggregate": "Aggregate memory",
+      "aggregateBank": "Bank:",
+      "aggregateFacts": "Conclusions: {facts} · source banks: {banks} · links: {links} · topics: {topics}",
+      "aggregateLastRound": "Last round: {at}",
+      "aggregateUserFacts": "{count} rows in this bank were written directly and will be replaced by the next round.",
+      "aggregateHalted": "Stopped after repeated failures.",
+      "aggregateResetAction": "Clear the stop",
+      "aggregateRebuildAction": "Rebuild now",
+      "aggregateReset": "The aggregate stop was cleared.",
+      "aggregateRebuild": "A rebuild was requested; the next round will recompute everything.",
+      "aggregateFailed": "The aggregate request failed.",
+      "aggregateNone": "This tenant has no aggregate memory.",
+      "aggregateMember": "Member",
+      "aggregateFactsShort": "Conclusions"
     },
     "overview": {
       "title": "Overview",

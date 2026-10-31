@@ -2746,7 +2746,21 @@
       "migrateFailed": "Impossible de migrer le schéma",
       "purge": "Purger",
       "purgeConfirm": "Saisissez {tenant} pour supprimer définitivement son schéma.",
-      "purgeFailed": "Impossible de purger le locataire"
+      "purgeFailed": "Impossible de purger le locataire",
+      "aggregate": "Mémoire agrégée",
+      "aggregateBank": "Banque :",
+      "aggregateFacts": "Conclusions : {facts} · banques source : {banks} · liens : {links} · thèmes : {topics}",
+      "aggregateLastRound": "Dernière passe : {at}",
+      "aggregateUserFacts": "{count} lignes de cette banque ont été écrites directement et seront remplacées à la prochaine passe.",
+      "aggregateHalted": "Arrêté après plusieurs échecs.",
+      "aggregateResetAction": "Lever l'arrêt",
+      "aggregateRebuildAction": "Reconstruire maintenant",
+      "aggregateReset": "L'arrêt a été levé.",
+      "aggregateRebuild": "Une reconstruction a été demandée ; la prochaine passe recalculera tout.",
+      "aggregateFailed": "La requête d'agrégation a échoué.",
+      "aggregateNone": "Ce tenant n'a pas de mémoire agrégée.",
+      "aggregateMember": "Membre",
+      "aggregateFactsShort": "Conclusions"
     },
     "overview": {
       "title": "Vue d'ensemble",

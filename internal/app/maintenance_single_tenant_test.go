@@ -20,9 +20,9 @@ import (
 
 // jobNames returns the names of the jobs a configuration builds.
 func jobNames(cfg config.MaintenanceConfig) []string {
-	jobs := maintenanceJobsWithMerge(
+	jobs := maintenanceJobsWithStores(
 		storage.NewMemoryStore("public"), &stubProvider{name: "stub"}, nil, &tenant.Default{}, cfg,
-		config.VectorIndexConfig{}, nil)
+		config.VectorIndexConfig{}, nil, nil)
 	names := make([]string, 0, len(jobs))
 	for _, job := range jobs {
 		names = append(names, job.Name)
@@ -55,9 +55,9 @@ func TestProjectMergeIsAbsentWhenNotEnabled(t *testing.T) {
 		ProjectMergeEnabled:   false,
 	}
 	merges := &fakeMergeStore{}
-	jobs := maintenanceJobsWithMerge(
+	jobs := maintenanceJobsWithStores(
 		storage.NewMemoryStore("public"), &stubProvider{name: "stub"}, nil, &tenant.Default{}, cfg,
-		config.VectorIndexConfig{}, merges)
+		config.VectorIndexConfig{}, merges, nil)
 	for _, job := range jobs {
 		if job.Name == "project.merge" {
 			t.Fatal("the merge job ran while ProjectMergeEnabled was false")
@@ -74,9 +74,9 @@ func TestProjectMergeIsAbsentAtZeroInterval(t *testing.T) {
 		ProjectMergeEnabled:   true,
 		ProjectMergeBatchSize: 10,
 	}
-	jobs := maintenanceJobsWithMerge(
+	jobs := maintenanceJobsWithStores(
 		storage.NewMemoryStore("public"), &stubProvider{name: "stub"}, nil, &tenant.Default{}, cfg,
-		config.VectorIndexConfig{}, &fakeMergeStore{})
+		config.VectorIndexConfig{}, &fakeMergeStore{}, nil)
 	for _, job := range jobs {
 		if job.Name == "project.merge" {
 			t.Fatal("the merge job ran at a zero interval")

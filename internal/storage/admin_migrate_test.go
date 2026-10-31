@@ -11,8 +11,8 @@ func TestAdminMigrationSeries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminMigrationSeries: %v", err)
 	}
-	if len(series) != 4 {
-		t.Fatalf("series length = %d, want 4", len(series))
+	if len(series) != 5 {
+		t.Fatalf("series length = %d, want 5", len(series))
 	}
 	wantVersions := []struct {
 		version int
@@ -22,6 +22,7 @@ func TestAdminMigrationSeries(t *testing.T) {
 		{2, "team_registry"},
 		{3, "merge_state"},
 		{4, "project_name_is_a_label"},
+		{5, "personal_aggregate"},
 	}
 	for i, want := range wantVersions {
 		if series[i].Version != want.version || series[i].Name != want.name {
@@ -123,18 +124,28 @@ func TestAdminSeriesSkipsTeamTablesForSingleTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminMigrationSeriesFor(single): %v", err)
 	}
-	if len(full) != 4 {
-		t.Fatalf("multi-tenant series length = %d, want 4", len(full))
+	if len(full) != 5 {
+		t.Fatalf("multi-tenant series length = %d, want 5", len(full))
 	}
-	if len(single) != 1 {
-		t.Fatalf("single-tenant series length = %d, want 1", len(single))
+	// The personal aggregate is not a team feature: a single-tenant deployment
+	// gets the tenant registry and the aggregate ledger.
+	if len(single) != 2 {
+		t.Fatalf("single-tenant series length = %d, want 2", len(single))
 	}
 	if single[0].Version != 1 {
 		t.Fatalf("single-tenant series starts at %d, want 1", single[0].Version)
 	}
+	if single[1].Version != 5 {
+		t.Fatalf("single-tenant series continues at %d, want 5", single[1].Version)
+	}
 	var body strings.Builder
 	for _, migration := range single {
 		body.WriteString(migration.SQL)
+	}
+	for _, want := range []string{"personal_state", "personal_bank_state", "personal_source", "personal_link", "personal_topic"} {
+		if !strings.Contains(body.String(), want) {
+			t.Fatalf("single-tenant series must mention %q:\n%s", want, body.String())
+		}
 	}
 	for _, unwanted := range []string{"team_member", "team_project", "merge_state", "merge_source_unit"} {
 		if strings.Contains(body.String(), unwanted) {
@@ -151,5 +162,46 @@ func TestAdminSeriesSkipsTeamTablesForSingleTenant(t *testing.T) {
 	}
 	if !slices.Equal(versions, []int{2, 3, 4}) {
 		t.Fatalf("multi-tenant-only versions = %v, want [2 3 4]", versions)
+	}
+}
+
+// TestPersonalAggregateMigration pins the aggregate ledger's shape. Two details
+// are load-bearing rather than cosmetic: the aggregate bank is never a source
+// (no row names it), and the live ledger rows carry the bank the source lives in
+// so the directory can aggregate by bank without resolving each unit.
+func TestPersonalAggregateMigration(t *testing.T) {
+	series, err := AdminMigrationSeries()
+	if err != nil {
+		t.Fatalf("AdminMigrationSeries: %v", err)
+	}
+	if len(series) < 5 {
+		t.Fatalf("series length = %d, want at least 5", len(series))
+	}
+	ledger := strings.Join(strings.Fields(series[4].SQL), " ")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS personal_state",
+		"CREATE TABLE IF NOT EXISTS personal_bank_state",
+		"CREATE TABLE IF NOT EXISTS personal_source",
+		"CREATE TABLE IF NOT EXISTS personal_link",
+		"CREATE TABLE IF NOT EXISTS personal_topic",
+		"merging_since timestamptz",
+		"cursor_updated_at timestamptz NOT NULL DEFAULT '-infinity'",
+		"PRIMARY KEY (tenant_id, source_unit_id)",
+		"bank_id text NOT NULL",
+		"REFERENCES tenant(tenant_id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(ledger, want) {
+			t.Fatalf("0005 does not contain %q:\n%s", want, ledger)
+		}
+	}
+	if !strings.Contains(ledger, "WHERE merge_key <> '__dropped__'") {
+		t.Fatalf("0005 has no partial index excluding dropped sources:\n%s", ledger)
+	}
+	// Reusing the team ledger would have needed a team_project row that does not
+	// exist for a person.
+	for _, unwanted := range []string{"team_project", "team_member", "merge_state"} {
+		if strings.Contains(ledger, unwanted) {
+			t.Fatalf("0005 must not reference %q:\n%s", unwanted, ledger)
+		}
 	}
 }

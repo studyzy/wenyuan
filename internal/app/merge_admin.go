@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 
+	"github.com/studyzy/wenyuan/internal/adminapi"
+	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -40,4 +43,54 @@ func (m mergeAdminFor) MergeStatus(ctx context.Context, teamID, projectID string
 // ResetMergeState clears a halted project's circuit breaker.
 func (m mergeAdminFor) ResetMergeState(ctx context.Context, teamID, projectID string) error {
 	return m.store.ResetMergeState(ctx, teamID, projectID)
+}
+
+// personalAdminFor is the management plane's handle on the personal aggregate.
+//
+// It exists because the plane speaks tenant ids, while the aggregate's store
+// reports the shared-schema fact itself: a single-tenant deployment resolves every
+// credential to one schema, so "this person's aggregate" is the deployment's.
+type personalAdminFor struct {
+	store storage.PersonalStore
+	// teams is the team registry, present only in a multi-tenant deployment. It
+	// is what lets a team's page show its members' aggregates; without teams
+	// there is no team to show.
+	teams storage.TeamRegistry
+	cfg   config.Config
+}
+
+// PersonalAggregateStatus reports one tenant's aggregate state.
+func (p personalAdminFor) PersonalAggregateStatus(ctx context.Context, tenantID string) (storage.PersonalStatus, error) {
+	status, err := p.store.PersonalStatus(ctx, tenantID, p.cfg.TenantMode == config.TenantModeSingle)
+	if errors.Is(err, storage.ErrPersonalAggregateIsTeam) {
+		return status, adminapi.ErrNotPersonal
+	}
+	return status, err
+}
+
+// TeamMembers returns a team's member tenants, which is whose aggregates a team's
+// page lists.
+func (p personalAdminFor) TeamMembers(ctx context.Context, teamID string) ([]string, error) {
+	if p.teams == nil {
+		return nil, nil
+	}
+	members, err := p.teams.ListTeamMembers(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(members))
+	for _, member := range members {
+		out = append(out, member.TenantID)
+	}
+	return out, nil
+}
+
+// ResetPersonalAggregate clears a halted tenant's circuit breaker.
+func (p personalAdminFor) ResetPersonalAggregate(ctx context.Context, tenantID string) error {
+	return p.store.ResetPersonalState(ctx, tenantID)
+}
+
+// RebuildPersonalAggregate asks the next round to ignore its watermarks.
+func (p personalAdminFor) RebuildPersonalAggregate(ctx context.Context, tenantID string) error {
+	return p.store.RequestRebuild(ctx, tenantID)
 }

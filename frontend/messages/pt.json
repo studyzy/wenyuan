@@ -2746,7 +2746,21 @@
       "migrateFailed": "Não foi possível migrar o esquema",
       "purge": "Expurgar",
       "purgeConfirm": "Digite {tenant} para remover permanentemente o esquema.",
-      "purgeFailed": "Não foi possível expurgar o inquilino"
+      "purgeFailed": "Não foi possível expurgar o inquilino",
+      "aggregate": "Memória agregada",
+      "aggregateBank": "Banco:",
+      "aggregateFacts": "Conclusões: {facts} · bancos de origem: {banks} · ligações: {links} · tópicos: {topics}",
+      "aggregateLastRound": "Última passagem: {at}",
+      "aggregateUserFacts": "{count} linhas deste banco foram escritas diretamente e serão substituídas na próxima passagem.",
+      "aggregateHalted": "Parado após falhas repetidas.",
+      "aggregateResetAction": "Remover a parada",
+      "aggregateRebuildAction": "Reconstruir agora",
+      "aggregateReset": "A parada foi removida.",
+      "aggregateRebuild": "Reconstrução solicitada; a próxima passagem recalculará tudo.",
+      "aggregateFailed": "O pedido de agregação falhou.",
+      "aggregateNone": "Este tenant não tem memória agregada.",
+      "aggregateMember": "Membro",
+      "aggregateFactsShort": "Conclusões"
     },
     "overview": {
       "title": "Visão geral",

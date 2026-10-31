@@ -31,11 +31,12 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 	}
 	maintenanceCfg := application.Config.Maintenance
 	maintenanceCfg.ProjectMergeEnabled = mergeEnabled(application.Config, application.MergeStore, model)
+	maintenanceCfg.PersonalRollupEnabled = personalRollupEnabled(application.PersonalStore)
 	return &BackgroundRoles{
 		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,
 			application.Config.EnableObservations, application.Config.EnableAutoConsolidation,
 			application.Config.DatabaseSchema, tenants).WithAuditor(application.Audit),
-		Loop: NewMaintenanceLoopWithMerge(
+		Loop: NewMaintenanceLoopWithStores(
 			application.Store,
 			model,
 			reflection,
@@ -43,6 +44,7 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 			maintenanceCfg,
 			application.Config.VectorIndex,
 			application.MergeStore,
+			application.PersonalStore,
 		),
 	}
 }

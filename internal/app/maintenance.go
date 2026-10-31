@@ -44,7 +44,24 @@ func NewMaintenanceLoopWithMerge(
 	vectorIndex config.VectorIndexConfig,
 	merges storage.MergeStore,
 ) *maintenance.Loop {
-	jobs := maintenanceJobsWithMerge(store, model, reflection, tenants, cfg, vectorIndex, merges)
+	return NewMaintenanceLoopWithStores(store, model, reflection, tenants, cfg, vectorIndex, merges, nil)
+}
+
+// NewMaintenanceLoopWithStores builds the loop with both cross-schema stores.
+//
+// It is what the server and the worker use once both planes are wired; the
+// MergeStore-only variant is kept for callers that never run the aggregate.
+func NewMaintenanceLoopWithStores(
+	store storage.Store,
+	model provider.Provider,
+	reflection storage.ReflectRunner,
+	tenants tenant.Extension,
+	cfg config.MaintenanceConfig,
+	vectorIndex config.VectorIndexConfig,
+	merges storage.MergeStore,
+	personals storage.PersonalStore,
+) *maintenance.Loop {
+	jobs := maintenanceJobsWithStores(store, model, reflection, tenants, cfg, vectorIndex, merges, personals)
 	loop := maintenance.New(jobs, nil)
 	loop.StartJitter = cfg.StartJitter
 	return loop

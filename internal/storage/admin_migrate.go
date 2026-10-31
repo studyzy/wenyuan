@@ -27,6 +27,9 @@ const AdminSchema = "admin"
 // migration, because a later multi-tenant migration may sit beside a
 // tenant-independent one; naming the versions explicitly keeps the two from
 // drifting together by accident.
+//
+// 0005 (the personal aggregate) is deliberately absent: folding a person's own
+// banks together is not a team feature, so a single-tenant deployment gets it.
 var adminTeamMigrations = map[int]bool{2: true, 3: true, 4: true}
 
 // adminMigrationRequiredByMultiTenant reports whether version is a team

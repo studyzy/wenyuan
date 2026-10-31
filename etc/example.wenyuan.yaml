@@ -269,6 +269,12 @@
   # merge_rebuild_max_units: "5000"
   # merge_max_team_facts: "500"
   # merge_fail_threshold: "5"
+# personal:
+  # rollup_interval_seconds: "300"
+  # rollup_batch_size: "20"
+  # rollup_rebuild_max_units: "5000"
+  # rollup_max_team_facts: "500"
+  # rollup_fail_threshold: "5"
 # knowledge_page_default_trigger: ""  # value-dependent, honoured as shown: the value must be a JSON object
 # vector:
   # index_min_rows: "0"

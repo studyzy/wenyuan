@@ -2746,7 +2746,21 @@
       "migrateFailed": "Schema konnte nicht migriert werden",
       "purge": "Löschen",
       "purgeConfirm": "Geben Sie {tenant} ein, um das Schema endgültig zu löschen.",
-      "purgeFailed": "Mandant konnte nicht gelöscht werden"
+      "purgeFailed": "Mandant konnte nicht gelöscht werden",
+      "aggregate": "Aggregiertes Gedächtnis",
+      "aggregateBank": "Bank:",
+      "aggregateFacts": "Schlüsse: {facts} · Quellbanken: {banks} · Verknüpfungen: {links} · Themen: {topics}",
+      "aggregateLastRound": "Letzter Lauf: {at}",
+      "aggregateUserFacts": "{count} Zeilen dieser Bank wurden direkt geschrieben und werden im nächsten Lauf ersetzt.",
+      "aggregateHalted": "Nach wiederholten Fehlern angehalten.",
+      "aggregateResetAction": "Anhalten aufheben",
+      "aggregateRebuildAction": "Jetzt neu aufbauen",
+      "aggregateReset": "Das Anhalten wurde aufgehoben.",
+      "aggregateRebuild": "Ein Neuaufbau wurde angefordert; der nächste Lauf berechnet alles neu.",
+      "aggregateFailed": "Die Aggregat-Anfrage ist fehlgeschlagen.",
+      "aggregateNone": "Dieser Tenant hat kein aggregiertes Gedächtnis.",
+      "aggregateMember": "Mitglied",
+      "aggregateFactsShort": "Schlüsse"
     },
     "overview": {
       "title": "Übersicht",

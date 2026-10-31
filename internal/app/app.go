@@ -70,6 +70,10 @@ type App struct {
 	// MergeStore runs the project merge for a multi-tenant deployment; nil when
 	// the deployment cannot merge, which is always the single-tenant case.
 	MergeStore storage.MergeStore
+	// PersonalStore runs the personal aggregate. Unlike MergeStore it exists in
+	// both tenant modes: folding a person's own banks together is not a team
+	// feature. It is nil only in a build without the PostgreSQL driver.
+	PersonalStore storage.PersonalStore
 	// TeamRead resolves whether a bank-scoped read falls back to a team's shared
 	// bank. It is nil without the team registry, which is the single-tenant case:
 	// every read then stays on its own bank, exactly as before.
@@ -313,6 +317,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 				mergeAdmin = mergeAdminFor{store: app.MergeStore, trigger: app.mergeTrigger}
 			}
 		}
+		// The aggregate is asked for outside the tenant-mode gate on purpose: a
+		// single-tenant deployment folds its one schema's banks too.
+		app.PersonalStore = newPersonalStore(store)
 		// The read cache is invalidated on a membership change whether or not this
 		// deployment can merge: which bank a read is served from depends on
 		// membership alone.
@@ -320,7 +327,11 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		if app.TeamRead != nil {
 			membershipChanged = app.TeamRead.InvalidateMember
 		}
-		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged)
+		var personalAdmin adminapi.PersonalAdmin
+		if app.PersonalStore != nil {
+			personalAdmin = personalAdminFor{store: app.PersonalStore, teams: teamRegistry, cfg: cfg}
+		}
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged, personalAdmin)
 		if err != nil {
 			return nil, err
 		}

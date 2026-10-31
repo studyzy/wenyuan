@@ -161,6 +161,22 @@ const (
 	// EnvProjectMergeFailThreshold is how many consecutive failed rounds halt a
 	// project until an operator resets it.
 	EnvProjectMergeFailThreshold = "WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD"
+	// EnvPersonalRollupIntervalSeconds is how often one personal tenant's banks
+	// are folded into its aggregate bank. Zero or below falls back to the
+	// default; this job has no off switch.
+	EnvPersonalRollupIntervalSeconds = "WENYUAN_API_PERSONAL_ROLLUP_INTERVAL_SECONDS"
+	// EnvPersonalRollupBatchSize bounds how many new source facts one rollup
+	// round consumes.
+	EnvPersonalRollupBatchSize = "WENYUAN_API_PERSONAL_ROLLUP_BATCH_SIZE"
+	// EnvPersonalRollupRebuildMaxUnits bounds a rebuild's input before the
+	// aggregate fails closed.
+	EnvPersonalRollupRebuildMaxUnits = "WENYUAN_API_PERSONAL_ROLLUP_REBUILD_MAX_UNITS"
+	// EnvPersonalRollupMaxTeamFacts bounds the aggregate content one round's
+	// prompt carries.
+	EnvPersonalRollupMaxTeamFacts = "WENYUAN_API_PERSONAL_ROLLUP_MAX_TEAM_FACTS"
+	// EnvPersonalRollupFailThreshold is how many consecutive failed rounds halt
+	// one tenant's rollup.
+	EnvPersonalRollupFailThreshold = "WENYUAN_API_PERSONAL_ROLLUP_FAIL_THRESHOLD"
 	// EnvGzipMinSize bounds the response size above which a body is compressed.
 	EnvGzipMinSize = "WENYUAN_API_GZIP_MIN_SIZE"
 	// EnvProfile holds the reference's profiling request as raw JSON, e.g.

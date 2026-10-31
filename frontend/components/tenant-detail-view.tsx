@@ -4,7 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { adminApi, type IssuedKey, type Tenant, type TenantKey } from "@/lib/admin-api";
+import {
+  adminApi,
+  type IssuedKey,
+  type Tenant,
+  type TenantAggregate,
+  type TenantKey,
+} from "@/lib/admin-api";
 import { ConsoleNav } from "@/components/console-nav";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
@@ -32,6 +38,7 @@ export function TenantDetailView({ tenantId }: { tenantId: string }) {
   const ts = useTranslations("tenants.list.statuses");
   const tc = useTranslations("common");
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [aggregate, setAggregate] = useState<TenantAggregate | null>(null);
   const [keys, setKeys] = useState<TenantKey[]>([]);
   const [label, setLabel] = useState("");
   const [issued, setIssued] = useState<IssuedKey | null>(null);
@@ -49,6 +56,14 @@ export function TenantDetailView({ tenantId }: { tenantId: string }) {
       ]);
       setTenant(record);
       setKeys(keyList.keys ?? []);
+      // The aggregate is a separate surface with its own failure: a deployment
+      // without a PostgreSQL store answers 501 there, and that must not hide the
+      // tenant itself.
+      try {
+        setAggregate(await adminApi.getTenantAggregate(tenantId));
+      } catch {
+        setAggregate(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : t("loadFailed"));
     } finally {
@@ -111,6 +126,27 @@ export function TenantDetailView({ tenantId }: { tenantId: string }) {
       router.push("/tenants");
     } catch (err) {
       setError(err instanceof Error ? err.message : t("deleteFailed"));
+    }
+  }
+
+  async function resetAggregate() {
+    setNotice(null);
+    try {
+      await adminApi.resetTenantAggregate(tenantId);
+      setNotice(t("aggregateReset"));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("aggregateFailed"));
+    }
+  }
+
+  async function rebuildAggregate() {
+    setNotice(null);
+    try {
+      await adminApi.rebuildTenantAggregate(tenantId);
+      setNotice(t("aggregateRebuild"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("aggregateFailed"));
     }
   }
 
@@ -222,6 +258,82 @@ export function TenantDetailView({ tenantId }: { tenantId: string }) {
             {t("schema")} <span className="font-mono">{tenant.tenant_id}</span>
           </span>
         </div>
+
+        {aggregate && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="text-[15px]">{t("aggregate")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {aggregate.aggregate ? (
+                <>
+                  <p className="text-muted-foreground">
+                    {t("aggregateBank")}{" "}
+                    <span className="font-mono">{aggregate.bank_id}</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t("aggregateFacts", {
+                      facts: aggregate.aggregate_facts ?? 0,
+                      banks: aggregate.source_banks ?? 0,
+                      links: aggregate.links ?? 0,
+                      topics: aggregate.topics ?? 0,
+                    })}
+                  </p>
+                  {aggregate.last_round_at && (
+                    <p className="text-muted-foreground">
+                      {t("aggregateLastRound", {
+                        at: new Date(aggregate.last_round_at).toLocaleString(),
+                      })}
+                    </p>
+                  )}
+                  {(aggregate.user_facts ?? 0) > 0 && (
+                    <p className="text-amber-600 dark:text-amber-400">
+                      {t("aggregateUserFacts", { count: aggregate.user_facts ?? 0 })}
+                    </p>
+                  )}
+                  {aggregate.last_error && (
+                    <p className="text-destructive">{aggregate.last_error}</p>
+                  )}
+                  {aggregate.halted && (
+                    <p className="text-destructive">{t("aggregateHalted")}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" disabled={!aggregate.halted} onClick={() => void resetAggregate()}>
+                      {t("aggregateResetAction")}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => void rebuildAggregate()}>
+                      {t("aggregateRebuildAction")}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-muted-foreground">{aggregate.reason ?? t("aggregateNone")}</p>
+                  {aggregate.members && aggregate.members.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>{t("aggregateMember")}</TableHead>
+                          <TableHead>{t("aggregateBank")}</TableHead>
+                          <TableHead>{t("aggregateFactsShort")}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {aggregate.members.map((member) => (
+                          <TableRow key={member.tenant_id}>
+                            <TableCell className="font-mono text-[12px]">{member.tenant_id}</TableCell>
+                            <TableCell className="font-mono text-[12px]">{member.bank_id ?? "-"}</TableCell>
+                            <TableCell>{member.aggregate_facts ?? 0}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="mb-6">
           <CardHeader>
