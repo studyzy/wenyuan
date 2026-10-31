@@ -474,3 +474,108 @@ func TestRoundDeadlineIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestRebuildDoesNotCarryThePreviousContent pins the rule a withdrawal rests on:
+// a rebuild recomputes the project from what the members hold now, so the team's
+// previous content must not reach the model.
+//
+// Carrying it made a withdrawal report success and change nothing: the model was
+// handed the very facts the rebuild exists to drop, and kept them.
+func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
+	input := mergeTestInput()
+	input.Previous = []storage.TeamFactRow{
+		{ID: "u1", Text: "A withdrawn member's fact.", MergeKey: tenant.MergeKey("A withdrawn member's fact.")},
+	}
+	input.Members[0].Member.State.RebuildRequested = true
+
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"facts":[{"text":"Only what the members still hold.","sources":[0]}]}`,
+	}
+	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.finished == nil {
+		t.Fatal("the rebuild wrote nothing")
+	}
+	if !merges.finished.Rebuild {
+		t.Fatal("the round was not marked as a rebuild")
+	}
+	// The previous fact is removed because the rebuild never saw it.
+	removed := make(map[string]bool, len(merges.finished.Replace.Remove))
+	for _, fact := range merges.finished.Replace.Remove {
+		removed[fact.Text] = true
+	}
+	if !removed["A withdrawn member's fact."] {
+		t.Fatalf("rebuild remove set = %v, want the previous fact dropped", merges.finished.Replace.Remove)
+	}
+	// And the members' ledger rows are replaced, not appended to.
+	if len(merges.finished.Replace.RebuildMembers) == 0 {
+		t.Fatal("a rebuild must replace the members' ledger rows")
+	}
+}
+
+// TestIncrementalRoundCarriesThePreviousContent pins the other side: without a
+// rebuild the previous content is part of the input, so a fact nobody restated
+// survives.
+func TestIncrementalRoundCarriesThePreviousContent(t *testing.T) {
+	input := mergeTestInput()
+	input.Previous = []storage.TeamFactRow{
+		{ID: "u1", Text: "A fact this round does not restate.", MergeKey: tenant.MergeKey("A fact this round does not restate.")},
+	}
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	// The model's answer omits the previous fact; the prompt had it, so a round
+	// that dropped it did so on the model's judgement rather than because it never
+	// saw it.
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0]}]}`,
+	}
+	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.finished.Rebuild {
+		t.Fatal("an incremental round was marked as a rebuild")
+	}
+	if len(merges.finished.Replace.RebuildMembers) != 0 {
+		t.Fatalf("an incremental round replaced ledger rows: %v", merges.finished.Replace.RebuildMembers)
+	}
+}
+
+// TestRebuildKeepsSurvivingRowsAndDropsTheRest pins a rebuild's fact-level effect:
+// a fact whose wording survived keeps its row (so its id and observations), one
+// the members no longer hold is removed, and nothing is inserted twice.
+func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
+	survivor := "A fact both rounds agree on."
+	withdrawn := "A withdrawn member's fact."
+	input := mergeTestInput()
+	input.Previous = []storage.TeamFactRow{
+		{ID: "keep-me", Text: survivor, MergeKey: tenant.MergeKey(survivor)},
+		{ID: "drop-me", Text: withdrawn, MergeKey: tenant.MergeKey(withdrawn)},
+	}
+	input.Members[0].Member.State.RebuildRequested = true
+	input.Members[0].Fresh = []storage.MergeFact{
+		{TenantID: "alice", UnitID: "00000000-0000-0000-0000-000000000001", Text: survivor, UpdatedAt: time.Now().UTC()},
+	}
+
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"facts":[{"text":"A fact both rounds agree on.","sources":[0]}]}`,
+	}
+	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	replace := merges.finished.Replace
+	// The withdrawn fact is the only removal.
+	if len(replace.Remove) != 1 || replace.Remove[0].ID != "drop-me" {
+		t.Fatalf("remove = %+v, want only the withdrawn fact", replace.Remove)
+	}
+	// The survivor is not re-inserted: its row is already there.
+	for _, fact := range replace.Insert {
+		if fact.Text == survivor {
+			t.Fatalf("the surviving fact was re-inserted: %+v", replace.Insert)
+		}
+	}
+}

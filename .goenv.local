@@ -1,0 +1,5 @@
+export GOROOT=/data/home/devinyzeng/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64
+export PATH=$GOROOT/bin:/data/home/devinyzeng/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export GOCACHE=/tmp/gocache-personal-dev
+export GOTOOLCHAIN=local
+export GOFLAGS="-mod=mod -buildvcs=false"

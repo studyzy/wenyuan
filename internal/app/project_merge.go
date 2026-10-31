@@ -146,11 +146,6 @@ type roundPlan struct {
 // planRound decides what this round does, without calling the model.
 func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg config.MaintenanceConfig) (roundPlan, error) {
 	plan := roundPlan{cursor: map[string]storage.MergeCursor{}}
-	for _, fact := range input.Previous {
-		plan.previous = append(plan.previous, projectmerge.TeamFact{
-			ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
-		})
-	}
 	rebuild := false
 	total := 0
 	for _, member := range input.Members {
@@ -173,6 +168,21 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 		}
 	}
 	plan.rebuild = rebuild
+	if !rebuild {
+		// The team's previous content is part of an incremental round's input, so
+		// a fact nobody restates survives it.
+		//
+		// A rebuild is the opposite: it recomputes the project from what the
+		// members hold *now*, so carrying the previous content would hand the
+		// model the very facts the rebuild exists to drop — a withdrawn member's
+		// contribution would come straight back, and the round would report
+		// success while changing nothing.
+		for _, fact := range input.Previous {
+			plan.previous = append(plan.previous, projectmerge.TeamFact{
+				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
+			})
+		}
+	}
 	if rebuild {
 		// A rebuild reads every member's facts rather than the delta, so its
 		// input is bounded separately and failing closed is the right answer
@@ -236,6 +246,40 @@ func buildFinishRequest(
 ) storage.FinishMergeRequest {
 	diff := projectmerge.Diff(plan.previous, answers)
 	sourceKeys := diff.SourceMergeKeys(len(plan.fresh))
+	remove := diff.Remove
+	insert := diff.Insert
+	if plan.rebuild {
+		// A rebuild replays the team's content from the members, so its diff is
+		// computed against no previous content: the answer marks every fact it
+		// produced as an insert. The previous rows are still the rows to reconcile
+		// with, though — a fact whose wording survived must keep its row (and its
+		// id, and its observations), and one that is gone must be removed rather
+		// than duplicated.
+		byKey := make(map[string]storage.TeamFactRow, len(input.Previous))
+		for _, fact := range input.Previous {
+			byKey[fact.MergeKey] = fact
+		}
+		remove = make([]projectmerge.TeamFact, 0, len(input.Previous))
+		insert = make([]projectmerge.TeamFact, 0, len(diff.Insert))
+		reproduced := make(map[string]bool, len(diff.Insert))
+		for _, fact := range diff.Insert {
+			reproduced[fact.MergeKey] = true
+			if existing, ok := byKey[fact.MergeKey]; ok {
+				// The row survives; its ledger provenance is rewritten below.
+				_ = existing
+				continue
+			}
+			insert = append(insert, fact)
+		}
+		for _, fact := range input.Previous {
+			if reproduced[fact.MergeKey] {
+				continue
+			}
+			remove = append(remove, projectmerge.TeamFact{
+				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
+			})
+		}
+	}
 
 	// The ledger is keyed by the member a source came from, and the fresh slice
 	// is ordered member by member, so each index maps back to its owner.
@@ -254,8 +298,8 @@ func buildFinishRequest(
 		BankID:     project.BankID,
 		Stamp:      stamp,
 		Replace: storage.MergeReplaceResult{
-			Remove:  toFactRows(diff.Remove),
-			Insert:  toFactRows(diff.Insert),
+			Remove:  toFactRows(remove),
+			Insert:  toFactRows(insert),
 			Sources: sources,
 		},
 		Cursors: plan.cursor,

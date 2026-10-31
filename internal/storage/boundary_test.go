@@ -18,7 +18,11 @@ func TestNoMemoryDomainTableReferencesOutsideStorage(t *testing.T) {
 			return err
 		}
 		if info.IsDir() {
-			if info.Name() == ".git" || info.Name() == "vendor" {
+			// A nested checkout is another tree's source, not this module's: a git
+			// worktree under .agents/ carries its own internal/storage, and holding
+			// this tree to that one's contents would report violations nobody here
+			// wrote.
+			if info.Name() == ".git" || info.Name() == "vendor" || info.Name() == "worktrees" {
 				return filepath.SkipDir
 			}
 			return nil

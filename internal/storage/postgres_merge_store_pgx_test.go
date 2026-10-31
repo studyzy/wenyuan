@@ -490,3 +490,113 @@ func TestMergeStoreSpansSchemasInOneDatabase(t *testing.T) {
 			adminDB, teamDB)
 	}
 }
+
+// TestRebuildReadsTheWholeBank pins what a rebuild is for: it recomputes the
+// project from what the members hold now, so it must read their whole banks rather
+// than the delta past the cursor.
+//
+// The defect this covers was a withdrawal that reported success and changed
+// nothing: the round read only facts newer than the cursor, so a removed member's
+// content — already merged, and now behind the cursor — was never dropped.
+func TestRebuildReadsTheWholeBank(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	oldA := f.writeMemberFact(t, f.memberA, "A fact from before the cursor.")
+	oldB := f.writeMemberFact(t, f.memberB, "Another fact from before the cursor.")
+
+	var stamp time.Time
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, 100, time.Minute,
+		func(stanza MergeStanza) error {
+			stamp = stanza.(*mergeStanza).ClaimStamp()
+			return nil
+		}); err != nil {
+		t.Fatalf("first BeginMergeStanza: %v", err)
+	}
+	// Consume both facts, which moves the cursors past them.
+	if err := f.store.FinishMergeStanza(context.Background(), FinishMergeRequest{
+		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
+		Replace: MergeReplaceResult{
+			Insert: []TeamFactRow{{Text: "A fact from before the cursor.", MergeKey: tenant.MergeKey("A fact from before the cursor.")}},
+		},
+		Members: []string{f.memberA, f.memberB},
+		Cursors: map[string]MergeCursor{
+			f.memberA: {UpdatedAt: time.Now().UTC().Add(time.Minute), UnitID: oldA},
+			f.memberB: {UpdatedAt: time.Now().UTC().Add(time.Minute), UnitID: oldB},
+		},
+	}); err != nil {
+		t.Fatalf("FinishMergeStanza: %v", err)
+	}
+	// Ask for a rebuild: the next round must read the facts that are now behind
+	// the cursor, not just anything newer.
+	if err := f.store.RequestRebuild(context.Background(), f.teamID, f.projectID); err != nil {
+		t.Fatalf("RequestRebuild: %v", err)
+	}
+	var seenA, seenB []string
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, 100, time.Minute,
+		func(stanza MergeStanza) error {
+			for _, member := range stanza.Input().Members {
+				switch member.Member.TenantID {
+				case f.memberA:
+					for _, fact := range member.Fresh {
+						seenA = append(seenA, fact.Text)
+					}
+				case f.memberB:
+					for _, fact := range member.Fresh {
+						seenB = append(seenB, fact.Text)
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+		t.Fatalf("rebuild BeginMergeStanza: %v", err)
+	}
+	if len(seenA) != 1 || seenA[0] != "A fact from before the cursor." {
+		t.Fatalf("a rebuild read %v from member A, want the fact already behind its cursor", seenA)
+	}
+	if len(seenB) != 1 || seenB[0] != "Another fact from before the cursor." {
+		t.Fatalf("a rebuild read %v from member B, want the fact already behind its cursor", seenB)
+	}
+}
+
+// TestIncrementalRoundStillUsesTheCursor pins the other side: without a rebuild,
+// a round reads only what is past the cursor, which is what keeps a tick cheap.
+func TestIncrementalRoundStillUsesTheCursor(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	consumed := f.writeMemberFact(t, f.memberA, "Already merged.")
+	fresh := f.writeMemberFact(t, f.memberB, "Not merged yet.")
+
+	var stamp time.Time
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, 100, time.Minute,
+		func(stanza MergeStanza) error { stamp = stanza.(*mergeStanza).ClaimStamp(); return nil }); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	if err := f.store.FinishMergeStanza(context.Background(), FinishMergeRequest{
+		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
+		Replace: MergeReplaceResult{Insert: []TeamFactRow{{Text: "Already merged.", MergeKey: tenant.MergeKey("Already merged.")}}},
+		Members: []string{f.memberA, f.memberB},
+		Cursors: map[string]MergeCursor{
+			f.memberA: {UpdatedAt: time.Now().UTC().Add(time.Minute), UnitID: consumed},
+			f.memberB: {UpdatedAt: time.Now().UTC().Add(-time.Minute), UnitID: fresh},
+		},
+	}); err != nil {
+		t.Fatalf("FinishMergeStanza: %v", err)
+	}
+	var seenA int
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, 100, time.Minute,
+		func(stanza MergeStanza) error {
+			for _, member := range stanza.Input().Members {
+				if member.Member.TenantID == f.memberA {
+					seenA = len(member.Fresh)
+				}
+			}
+			return nil
+		}); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	if seenA != 0 {
+		t.Fatalf("an incremental round read %d facts behind the cursor, want 0", seenA)
+	}
+}
