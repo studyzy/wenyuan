@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/storage"
@@ -68,5 +69,34 @@ func TestRestoreReadsHistoryContentInEitherJSONEncoding(t *testing.T) {
 				t.Fatalf("previous_reflect_response = %v, want the replaced response", history[0].PreviousReflectResponse)
 			}
 		})
+	}
+}
+
+// The reproduction the work-19 note refers to. archiveJSONValue is the one
+// place a carried value stops following the row encoding, so it is where the
+// serialized loss is produced: a row in a sync map holds no jsonb cast, so
+// nothing re-encodes the value on the way in and whatever this function
+// returns is what the applier reads. Returning it unchanged is the reader as
+// it stood before internal/jsontext, and every member that arrives as the JSON
+// text of an object then falls back to its default instead of failing loudly:
+// the silent loss, with no error to look at.
+func TestArchiveJSONValueReproducesTheSerializedLoss(t *testing.T) {
+	text := `{"previous_reflect_response": {"based_on": {"facts": "kept"}}}`
+	object := map[string]any{"previous_reflect_response": map[string]any{"based_on": map[string]any{"facts": "kept"}}}
+	if got := archiveJSONValue(text); got == text {
+		t.Fatalf("archiveJSONValue returned the JSON text unchanged: every serialized member now reads as absent")
+	}
+	if got, _ := archiveJSONValue(text).(map[string]any); !reflect.DeepEqual(got, object) {
+		t.Fatalf("archiveJSONValue(text) = %#v, want the object it encodes", archiveJSONValue(text))
+	}
+	// A decoded object has no text to decode and is read as it is.
+	if got := archiveJSONValue(object); !reflect.DeepEqual(got, object) {
+		t.Fatalf("archiveJSONValue(object) = %#v, want it unchanged", got)
+	}
+	// A column that merely holds braces stays literal: only text opening as an
+	// object or array is structure.
+	plain := "the value is {not json}"
+	if got := archiveJSONValue(plain); got != plain {
+		t.Fatalf("archiveJSONValue(%q) = %#v, want the literal text kept", plain, got)
 	}
 }
