@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -134,5 +136,98 @@ func TestServeDoesNotStartExtensionsWhenBindingFails(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("a refused Serve must not run lifecycle hooks, got %v", events)
+	}
+}
+
+// t-extension-lifecycle-through-serve: Serve itself runs the startup hook
+// before it answers and the shutdown hook when its context is cancelled. The
+// wiring is what the claim is about, so this goes through Serve rather than
+// calling the hook runner directly.
+func TestServeRunsExtensionLifecycle(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, event)
+	}
+	host := httpx.NewExtensionHost()
+	host.Register(&serveLifecycleProbe{record: record})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan error, 1)
+	listeners := make(chan net.Listener, 1)
+	go func() {
+		served <- Serve(ctx, testConfig(), Dependencies{Store: storage.NewMemoryStore("public"), Extensions: host},
+			ServeOptions{Listen: captureListener(listeners, net.Listen)})
+	}()
+
+	var listener net.Listener
+	select {
+	case listener = <-listeners:
+	case err := <-served:
+		t.Fatalf("Serve() returned before it bound a listener: %v", err)
+	}
+	// Binding is the last thing Serve does before its hooks, so waiting for the
+	// first response is what makes the startup hook observable here.
+	base := "http://" + listener.Addr().String()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, err := http.Get(base + "/version")
+		if err == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Serve() never answered /version: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	before := append([]string(nil), events...)
+	mu.Unlock()
+	if len(before) != 1 || before[0] != "start" {
+		t.Fatalf("events once Serve answered = %v, want [start]", before)
+	}
+
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve() after cancellation = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve() did not return after its context was cancelled")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[1] != "stop" {
+		t.Fatalf("events after shutdown = %v, want [start stop]", events)
+	}
+}
+
+// serveLifecycleProbe records the hooks Serve runs without mounting anything,
+// so the probe cannot change which routes the process answers.
+type serveLifecycleProbe struct {
+	record func(string)
+}
+
+func (p *serveLifecycleProbe) Mount(httpx.RouteRegistrar) {}
+
+func (p *serveLifecycleProbe) Start() error { p.record("start"); return nil }
+
+func (p *serveLifecycleProbe) Stop() { p.record("stop") }
+
+// captureListener wraps a listener factory so the test learns the address Serve
+// bound. Handing back the same listener keeps Serve's single bind intact.
+func captureListener(out chan<- net.Listener, listen func(string, string) (net.Listener, error)) func(string, string) (net.Listener, error) {
+	return func(network, addr string) (net.Listener, error) {
+		l, err := listen(network, addr)
+		if err != nil {
+			return nil, err
+		}
+		out <- l
+		return l, nil
 	}
 }

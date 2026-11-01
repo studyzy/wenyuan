@@ -76,6 +76,17 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		return err
 	}
 
+	// Every configured extension's startup hook runs before either listener
+	// serves, so an extension that cannot initialise fails startup instead of
+	// mounting into a process that is already answering. The returned stop
+	// runs on the graceful path below, in reverse registration order.
+	stopExtensions, err := composed.startExtensions()
+	if err != nil {
+		_ = listener.Close()
+		composed.Close()
+		return err
+	}
+
 	// The management plane is a second listener in the same process. It is
 	// bound after composition so an admin-schema migration failure is reported
 	// before the port is taken, and it is shut down with the data plane.
@@ -84,6 +95,8 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 		adminListener, err := net.Listen("tcp", cfg.AdminListen)
 		if err != nil {
 			_ = listener.Close()
+			stopExtensions()
+			composed.Close()
 			return fmt.Errorf("bind admin listener %q: %w", cfg.AdminListen, err)
 		}
 		adminServer = &http.Server{
@@ -107,6 +120,9 @@ func Serve(ctx context.Context, cfg config.Config, deps Dependencies, opts Serve
 	defer func() {
 		bgCancel()
 		stopBackground()
+		// The extension's shutdown hook runs on the graceful path only, after
+		// the background roles have stopped producing work for it.
+		stopExtensions()
 		// The servers have stopped by the time Serve returns, so the tracer's
 		// queued spans can be flushed with no completion still producing one.
 		composed.Close()
