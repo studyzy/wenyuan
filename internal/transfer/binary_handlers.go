@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/studyzy/wenyuan/internal/storage"
 )
@@ -80,28 +79,18 @@ func (h *Handlers) ServeDownload(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, r, detailFileNotFound)
 		return
 	}
-	// A store that can sign a time-limited URL hands it out and lets the object
-	// store serve the bytes, so an archive download is not proxied through the
-	// API. A store that cannot sign — the row backend, or an anonymous bucket —
-	// falls through to the proxy path below, and so does a signing failure,
-	// which must not turn an available archive into an error.
-	if signer, ok := h.Store.(storage.StoredFileDownloadURLer); ok {
-		direct, err := signer.StoredFileDownloadURL(r.Context(), key, downloadURLTTL)
-		if err == nil && direct != "" {
-			http.Redirect(w, r, direct, http.StatusFound)
-			return
-		}
-	}
+	// The archive is always streamed through the API, never replaced by a
+	// redirect to a signed object-store URL: the route's contract is a 200 ZIP
+	// response whose media type, disposition and content length the caller can
+	// read directly. A backend that can sign a URL therefore still serves the
+	// bytes here; signing is only ever a way for that backend to reach its own
+	// storage, not a response the route hands out.
 	h.serveBinary(w, r, key, binaryWrite{
 		ContentType:    "application/zip",
 		Disposition:    downloadFilename(bankID),
 		NotFoundDetail: detailFileNotFound,
 	})
 }
-
-// downloadURLTTL is the lifetime of the direct URL an object-store download
-// hands out. It is the reference's default for a signed download URL.
-const downloadURLTTL = time.Hour
 
 // binaryWrite describes how a stored payload is served: the media type and
 // attachment disposition it carries, the not-found detail a miss reports, and

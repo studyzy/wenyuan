@@ -70,6 +70,48 @@ type Extension interface {
 	Mount(r RouteRegistrar)
 }
 
+// ExtensionSelector is the optional capability of an extension that wants to
+// know the class path the deployment selected it by. The host records the
+// selector during composition and offers it to every extension before serving,
+// so an extension registered under the configured class can read its own
+// settings keyed by that name.
+type ExtensionSelector interface {
+	// SelectedAs is called once with the selector the deployment configured.
+	SelectedAs(class string)
+}
+
+// ExtensionLifecycle is the optional lifecycle an extension may implement. The
+// host asks for it by type assertion rather than putting the hooks on Extension
+// itself, so an extension that needs no lifecycle keeps implementing one method.
+//
+// Start runs once, before the composed application is served, and its failure
+// refuses startup — an extension that could not initialize must not be served
+// half-initialized. Stop runs once, on the graceful shutdown path only; Serve
+// never calls it when the process is torn down abruptly, and it is not called
+// for a Start that failed.
+type ExtensionLifecycle interface {
+	Start() error
+	Stop()
+}
+
+// ExtensionRootRouter is the optional capability of an extension that wants to
+// register routes at the application root instead of under the extension
+// prefix. The host asks for it by type assertion; an extension that does not
+// implement it contributes only its Mounted routes.
+type ExtensionRootRouter interface {
+	// MountRoot registers routes on the root registrar. The patterns are the
+	// application's own, so an extension can answer a path the core surface
+	// leaves free.
+	MountRoot(r RouteRegistrar)
+}
+
+// ExtensionRootMount is one extension's root contributions, in registration
+// order. The composition root applies them to its own router.
+type ExtensionRootMount struct {
+	Extension Extension
+	Router    ExtensionRootRouter
+}
+
 // ExtensionHost collects extensions registered with the application.
 type ExtensionHost struct {
 	mu         sync.Mutex
@@ -81,6 +123,11 @@ type ExtensionHost struct {
 	// reference's default and keeps a header out of extension code unless an
 	// operator opted in.
 	passthrough []string
+	// settings are the deployment's extension-only settings. They are inert
+	// until an extension is registered and reads them; no core route sees them.
+	settings map[string]string
+	// selectedClass is the class path the deployment configured.
+	selectedClass string
 }
 
 // NewExtensionHost builds an empty extension host.
@@ -88,7 +135,9 @@ func NewExtensionHost() *ExtensionHost {
 	return &ExtensionHost{feature: map[string]bool{}}
 }
 
-// Register adds an extension to the host.
+// Register adds an extension to the host. An extension registered after the
+// deployment's class was recorded is told the selector immediately, so the
+// order a caller registers in does not decide whether it sees the selection.
 func (h *ExtensionHost) Register(ext Extension) {
 	if ext == nil {
 		return
@@ -96,6 +145,12 @@ func (h *ExtensionHost) Register(ext Extension) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.extensions = append(h.extensions, ext)
+	if h.selectedClass == "" {
+		return
+	}
+	if selected, ok := ext.(ExtensionSelector); ok {
+		selected.SelectedAs(h.selectedClass)
+	}
 }
 
 // RegisterOperationValidator installs the deployment's operation validator.
@@ -264,6 +319,126 @@ func (h *ExtensionHost) MountAll(r RouteRegistrar) {
 	for _, ext := range h.extensions {
 		ext.Mount(r)
 	}
+}
+
+// RootMounts returns the root-routing extensions in registration order, so the
+// composition root can register their routes on the application's own router.
+// Extensions that do not implement ExtensionRootRouter contribute nothing.
+func (h *ExtensionHost) RootMounts() []ExtensionRootMount {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	mounts := make([]ExtensionRootMount, 0, len(h.extensions))
+	for _, ext := range h.extensions {
+		if router, ok := ext.(ExtensionRootRouter); ok {
+			mounts = append(mounts, ExtensionRootMount{Extension: ext, Router: router})
+		}
+	}
+	return mounts
+}
+
+// SelectClass records the class path the deployment selected and tells every
+// extension that accepts a selector. It is called during composition, before
+// StartExtensions, so an extension can resolve its own settings from the
+// selector it was picked by.
+func (h *ExtensionHost) SelectClass(class string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.selectedClass = strings.TrimSpace(class)
+	extensions := append([]Extension(nil), h.extensions...)
+	h.mu.Unlock()
+	for _, ext := range extensions {
+		if selector, ok := ext.(ExtensionSelector); ok {
+			selector.SelectedAs(h.selectedClass)
+		}
+	}
+}
+
+// SelectedClass returns the class path the deployment selected, or "" when it
+// selected none.
+func (h *ExtensionHost) SelectedClass() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.selectedClass
+}
+
+// StartExtensions runs the startup hook of every registered extension that has
+// one, in registration order, stopping at the first failure. The extensions
+// whose Start already ran are stopped again before the error is returned, so a
+// refused startup does not leave an initialized extension behind.
+//
+// The returned function runs the shutdown hooks in reverse registration order
+// and is idempotent; it stops only the extensions this call started.
+func StartExtensions(host *ExtensionHost) (func(), error) {
+	if host == nil {
+		return func() {}, nil
+	}
+	host.mu.Lock()
+	extensions := append([]Extension(nil), host.extensions...)
+	host.mu.Unlock()
+	started := make([]ExtensionLifecycle, 0, len(extensions))
+	for _, ext := range extensions {
+		lifecycle, ok := ext.(ExtensionLifecycle)
+		if !ok {
+			continue
+		}
+		if err := lifecycle.Start(); err != nil {
+			stopExtensions(started)
+			return func() {}, err
+		}
+		started = append(started, lifecycle)
+	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() { stopExtensions(started) })
+	}
+	return stop, nil
+}
+
+// stopExtensions runs shutdown hooks in reverse registration order, which is
+// the order the dependencies were established in.
+func stopExtensions(started []ExtensionLifecycle) {
+	for i := len(started) - 1; i >= 0; i-- {
+		started[i].Stop()
+	}
+}
+
+// SetSettings records the deployment's extension-only settings on the host. An
+// extension reads them through Settings when it is constructed or mounted; a
+// host that was given none reports nil.
+func (h *ExtensionHost) SetSettings(settings map[string]string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.settings = copySettings(settings)
+	h.mu.Unlock()
+}
+
+// Settings returns the settings this host holds, or nil when none were set.
+func (h *ExtensionHost) Settings() map[string]string {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return copySettings(h.settings)
+}
+
+// copySettings clones a settings map so callers cannot alias the host's copy.
+func copySettings(settings map[string]string) map[string]string {
+	if len(settings) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(settings))
+	for name, value := range settings {
+		cloned[name] = value
+	}
+	return cloned
 }
 
 // MountExtensions wires the extension namespace into the root mux using the

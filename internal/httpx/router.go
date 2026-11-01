@@ -599,6 +599,23 @@ func (r *Router) mountCore() {
 	r.mountDescriptorNamespace()
 	r.mountExtensionNamespace()
 	r.mountMCPNamespace()
+	// Root-routing extensions register last so a core pattern always wins a
+	// collision: the core surface is frozen and must not be shadowed. They land
+	// here rather than after composition because Service captures the mux when
+	// the chain is built; a route added later would answer through the mux but
+	// not through the fallback and method-semantics wrappers around it.
+	r.mountExtensionRoots()
+}
+
+// mountExtensionRoots gives every root-routing extension the router's own
+// registrar.
+func (r *Router) mountExtensionRoots() {
+	if r.options.Extensions == nil {
+		return
+	}
+	for _, mount := range r.options.Extensions.RootMounts() {
+		mount.Router.MountRoot(r)
+	}
 }
 
 func (r *Router) mountExtensionNamespace() {

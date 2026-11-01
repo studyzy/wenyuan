@@ -30,15 +30,17 @@ const (
 	// operation so delivery retries and the delivery record share the queue's
 	// lifecycle.
 	OperationTypeWebhookDelivery = "webhook_delivery"
-	// OperationTypeFileConvertRetain, OperationTypeGraphMaintenance and
-	// OperationTypeVectorIndexMaintenance complete the reference's async
-	// operation vocabulary. This service does that work without a queue row of
-	// its own — an upload is converted at ingress and queued as a retain, and
-	// graph and vector-index upkeep runs as a periodic maintenance job rather
-	// than an operation — so nothing here enqueues them. They are declared so
-	// the operation-type vocabulary this service serves, and the frontend that
-	// filters on it, stays in step with the reference.
-	OperationTypeFileConvertRetain      = "file_convert_retain"
+	// OperationTypeFileConvertRetain is the operation a file upload is tracked
+	// by: its conversion runs at ingress and its retain runs in the worker, but
+	// both halves are one row, so the identifier the route returned is the row
+	// the caller polls through completion or failure.
+	OperationTypeFileConvertRetain = "file_convert_retain"
+	// OperationTypeGraphMaintenance and OperationTypeVectorIndexMaintenance
+	// complete the reference's async operation vocabulary. This service does
+	// that work as a periodic maintenance job rather than as an operation — so
+	// nothing here enqueues them — but they are declared so the operation-type
+	// vocabulary this service serves, and the frontend that filters on it,
+	// stays in step with the reference.
 	OperationTypeGraphMaintenance       = "graph_maintenance"
 	OperationTypeVectorIndexMaintenance = "vector_index_maintenance"
 )

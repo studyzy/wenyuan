@@ -488,6 +488,47 @@ func TestTriggerMergeStoresExplicitNulls(t *testing.T) {
 	}
 }
 
+// The same patch body, applied with a member present-and-null or absent, must
+// behave differently: the stated null clears that member, the omitted one keeps
+// whatever the record already had.
+func TestTriggerPatchClearsOnlyTheStatedMember(t *testing.T) {
+	cases := []struct {
+		name        string
+		secondPatch string
+		wantCleared bool
+	}{
+		{"present and null clears", `{"trigger":{"refresh_cron":null,"fact_types":null}}`, true},
+		{"absent keeps the seeded values", `{"trigger":{"mode":"full"}}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := newTriggerServer(t)
+			const path = "/v1/default/banks/b1/mental-models/mm-1"
+			if rec := send(mux, http.MethodPatch, path,
+				`{"trigger":{"refresh_cron":"9 9 * * *","fact_types":["world"]}}`); rec.Code != http.StatusOK {
+				t.Fatalf("seed: %d (%s)", rec.Code, rec.Body.String())
+			}
+			if rec := send(mux, http.MethodPatch, path, tc.secondPatch); rec.Code != http.StatusOK {
+				t.Fatalf("patch: %d (%s)", rec.Code, rec.Body.String())
+			}
+			rec := send(mux, http.MethodGet, path, "")
+			var model Model
+			if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+				t.Fatal(err)
+			}
+			for _, member := range []string{"refresh_cron", "fact_types"} {
+				value, present := model.Trigger.Value(member)
+				switch {
+				case tc.wantCleared && (!present || value != nil):
+					t.Fatalf("%s = %#v (present %v), want an explicit null", member, value, present)
+				case !tc.wantCleared && (!present || value == nil):
+					t.Fatalf("%s = %#v (present %v), want the seeded value kept", member, value, present)
+				}
+			}
+		})
+	}
+}
+
 // The trigger reaches the wire with its eighteen members in the order the
 // reference's model declares them, not in a Go map's sorted order. The reference
 // hands its response model to the framework, which serializes fields in

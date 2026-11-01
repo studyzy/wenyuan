@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/studyzy/wenyuan/internal/jsontext"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/transferarchive"
 )
@@ -945,7 +946,10 @@ func (a ImportApplier) applyMentalModelHistory(ctx context.Context, req ImportRe
 			FailureReason:           mapString(content, "failure_reason"),
 			ErrorMessage:            mapString(content, "error_message"),
 		}
-		if previous, ok := content["previous_content"].(string); ok {
+		// The member is read in either encoding: an archive this service wrote
+		// holds a string, and one a reference archive rewrote holds its JSON text,
+		// which is the same string once decoded.
+		if previous, ok := archiveJSONValue(content["previous_content"]).(string); ok {
 			entry.PreviousContent = &previous
 		}
 		if err := a.Store.RecordMentalModelHistory(ctx, target, modelID, entry); err != nil {
@@ -1045,33 +1049,7 @@ func rowValue(row map[string]any, key string) any { return archiveJSONValue(row[
 
 // archiveJSONValue reads one archive value that the producer may have written
 // in either JSON encoding.
-//
-// A row this service wrote holds a decoded object or array where the column is
-// jsonb. The reference writes the same column as its JSON *text* and declares
-// `bank_rows_json_encoding: "serialized"` in the manifest, so an archive it
-// produced carries `"{\"mode\": \"delta\"}"` where ours carries the object. Both
-// have to read the same, or every jsonb field of an imported reference archive
-// silently falls back to its default — which is what a trigger, a bank config or
-// a history payload losing its contents looks like.
-//
-// Only a string that opens as a JSON object or array is parsed, so a text column
-// that happens to hold braces keeps its literal value rather than being
-// reinterpreted as structure.
-func archiveJSONValue(value any) any {
-	text, isText := value.(string)
-	if !isText {
-		return value
-	}
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-		return value
-	}
-	var decoded any
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return value
-	}
-	return decoded
-}
+func archiveJSONValue(value any) any { return jsontext.Value(value) }
 
 // mapString reads a string member of a decoded object.
 func mapString(object map[string]any, key string) string {

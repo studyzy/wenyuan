@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -59,9 +58,28 @@ func TestTenantAPIKeyGate(t *testing.T) {
 	}
 }
 
-// The routes the reference answers before reaching the engine keep their own
-// status even when a credential is configured.
-func TestTenantAPIKeyDoesNotGateRetiredRoutes(t *testing.T) {
+// The retired BACKGROUND route is the one the reference answers before reaching
+// the engine, so it keeps its own status even when a credential is configured.
+// The retired profile routes are engine routes and so sit behind the check —
+// see the bank lifecycle's test for those.
+func TestTenantAPIKeyDoesNotGateRetiredBackgroundRoute(t *testing.T) {
+	router := NewRouter(RouterOptions{TenantAPIKey: "s3cret"})
+	router.Handle(http.MethodPost, BankPath(SuffixBackground), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	})
+	service := router.Service()
+
+	rec := httptest.NewRecorder()
+	service.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/default/banks/b1/background", nil))
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want the retirement status", rec.Code)
+	}
+}
+
+// The retired profile routes reach the engine, so a configured credential is
+// examined before their handler runs: an unauthenticated caller is refused
+// rather than told the route is retired.
+func TestTenantAPIKeyGatesRetiredProfileRoutes(t *testing.T) {
 	router := NewRouter(RouterOptions{TenantAPIKey: "s3cret"})
 	router.Handle(http.MethodGet, BankPath(SuffixProfile), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusGone)
@@ -70,8 +88,16 @@ func TestTenantAPIKeyDoesNotGateRetiredRoutes(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	service.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1/profile", nil))
-	if rec.Code != http.StatusGone {
-		t.Fatalf("status = %d, want the retirement status", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status without a credential = %d, want 401", rec.Code)
+	}
+
+	authed := httptest.NewRequest(http.MethodGet, "/v1/default/banks/b1/profile", nil)
+	authed.Header.Set("Authorization", "Bearer s3cret")
+	authedRec := httptest.NewRecorder()
+	service.ServeHTTP(authedRec, authed)
+	if authedRec.Code != http.StatusGone {
+		t.Fatalf("status with a credential = %d, want the retirement status", authedRec.Code)
 	}
 }
 
@@ -95,19 +121,18 @@ func TestMCPAuthTokenReplacesTenantAuthForMCP(t *testing.T) {
 	handler := TenantAuthMiddleware("tenant-key", false, "mcp-token", nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
+	// t-mcp-auth-error-envelope: the refusal carries the protocol's "error"
+	// member, not the shared envelope's "detail" one, and the two messages stay
+	// distinct.
 	missing := httptest.NewRecorder()
 	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodPost, "/mcp", nil))
-	if missing.Code != http.StatusUnauthorized || !strings.Contains(missing.Body.String(), "Authorization header required") {
-		t.Fatalf("missing header: %d %s", missing.Code, missing.Body.String())
-	}
+	assertMCPRefusal(t, missing, DetailMCPAuthorizationRequired)
 
 	wrong := httptest.NewRecorder()
 	wrongReq := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	wrongReq.Header.Set("Authorization", "Bearer tenant-key")
 	handler.ServeHTTP(wrong, wrongReq)
-	if wrong.Code != http.StatusUnauthorized || !strings.Contains(wrong.Body.String(), "Invalid authentication token") {
-		t.Fatalf("wrong token: %d %s", wrong.Code, wrong.Body.String())
-	}
+	assertMCPRefusal(t, wrong, DetailMCPInvalidToken)
 
 	ok := httptest.NewRecorder()
 	okReq := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -118,11 +143,42 @@ func TestMCPAuthTokenReplacesTenantAuthForMCP(t *testing.T) {
 	}
 
 	// The engine routes keep the tenant key: the legacy token covers MCP only.
+	// Their refusal keeps the shared envelope, so the MCP shape does not leak
+	// into an ordinary route.
 	engine := httptest.NewRecorder()
 	engineReq := httptest.NewRequest(http.MethodGet, PrefixDefaultV1+"/banks", nil)
 	engineReq.Header.Set("Authorization", "Bearer mcp-token")
 	handler.ServeHTTP(engine, engineReq)
 	if engine.Code != http.StatusUnauthorized {
 		t.Fatalf("the legacy token opened an engine route: %d", engine.Code)
+	}
+	var shared ErrorEnvelope
+	if err := json.Unmarshal(engine.Body.Bytes(), &shared); err != nil {
+		t.Fatalf("engine refusal is not the shared envelope: %v (%s)", err, engine.Body.String())
+	}
+	if shared.Detail != DetailAuthenticationFailed {
+		t.Fatalf("engine refusal detail = %q, want %q", shared.Detail, DetailAuthenticationFailed)
+	}
+}
+
+// assertMCPRefusal checks one MCP credential refusal: the status, the message,
+// and that the body carries exactly one member, named for the protocol.
+func assertMCPRefusal(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not a JSON object: %v (%s)", err, rec.Body.String())
+	}
+	if len(body) != 1 {
+		t.Fatalf("body members = %v, want exactly one", body)
+	}
+	if got := body["error"]; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if _, present := body["detail"]; present {
+		t.Fatalf("the MCP refusal must not carry the shared detail member: %s", rec.Body.String())
 	}
 }

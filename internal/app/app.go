@@ -102,6 +102,11 @@ type Dependencies struct {
 	// already holds fails with address-in-use — which is not a startup error,
 	// it is the probe colliding with its own listener.
 	AddressAlreadyBound bool
+	// Extensions, when non-nil, is the extension host composition mounts, with
+	// the caller's extensions and operation validator already registered on it.
+	// A nil value composes an empty host, which is a deployment with no
+	// extension.
+	Extensions *httpx.ExtensionHost
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }
@@ -241,9 +246,21 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	}
 
 	metrics := &httpx.MetricsRecorder{}
-	extensions := httpx.NewExtensionHost()
+	extensions := deps.Extensions
+	if extensions == nil {
+		extensions = httpx.NewExtensionHost()
+	}
 	// The deployment's allowlist of request headers an extension may read.
 	extensions.SetPassthroughHeaders(cfg.ExtensionPassThroughHeaders)
+	// The deployment's extension-only settings, handed to the extension the
+	// operator selected and to nothing else. A deployment with no selection
+	// resolves none, so this stays empty.
+	extensions.SetSettings(cfg.ExtensionSettings())
+	extensions.SelectClass(cfg.TenantExtension)
+	// The selected extension class either loads or refuses startup.
+	if err := registerConfiguredExtension(extensions, cfg); err != nil {
+		return nil, err
+	}
 	auditLogger := NewAuditLogger(cfg, store)
 	router := httpx.NewRouter(httpx.RouterOptions{
 		BasePath:              cfg.BasePath,
@@ -348,6 +365,20 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	}
 	app.Handler = router.Service()
 	return app, nil
+}
+
+// startExtensions runs every configured extension's startup hook. The returned
+// function runs their shutdown hooks once, in reverse order; it is the graceful
+// shutdown path's, so nothing else calls it.
+func (a *App) startExtensions() (func(), error) {
+	if a == nil || a.Extensions == nil {
+		return func() {}, nil
+	}
+	stop, err := httpx.StartExtensions(a.Extensions)
+	if err != nil {
+		return func() {}, fmt.Errorf("start extension: %w", err)
+	}
+	return stop, nil
 }
 
 // Close flushes and stops the span tracer, so spans queued by the last calls

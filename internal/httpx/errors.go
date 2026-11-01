@@ -109,6 +109,16 @@ type ErrorEnvelope struct {
 	Detail string `json:"detail"`
 }
 
+// MCPErrorEnvelope is the refusal body the MCP namespace answers with. The
+// MCP transport reports its own failures under the protocol's "error" member,
+// not the shared HTTP envelope's "detail", and its credential refusals are a
+// transport failure: a client that speaks the protocol reads them there. An
+// ordinary route's refusal keeps the shared envelope, so this shape is
+// reserved for the namespace that declares the protocol.
+type MCPErrorEnvelope struct {
+	Error string `json:"error"`
+}
+
 // PayloadEnvelope is ErrorEnvelope for a detail that is not a string, which the
 // reference's envelope allows.
 type PayloadEnvelope struct {

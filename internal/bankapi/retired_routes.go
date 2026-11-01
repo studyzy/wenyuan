@@ -7,10 +7,11 @@ import (
 )
 
 // RetiredHandler answers the retired bank routes with the terminal gone status.
-// It consults no authenticator: the reference's retired handlers raise before
-// any authenticated engine call, so the retirement status is revealed without a
-// credential, and the router's tenant authentication (when a deployment enables
-// it) exempts these paths.
+// It consults no authenticator itself: authorization is the middleware's, and
+// the reference applies it before the route answers. The profile routes are
+// behind the engine's credential check, so an unauthenticated caller is
+// refused rather than told the route is retired; the background route is
+// answered ahead of that check and stays reachable without one.
 //
 // A retired WRITE route still declares its request body, and the framework
 // validates a declared body before the handler runs — so an unparseable body is

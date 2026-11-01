@@ -34,8 +34,14 @@ var ProtectedPrefixes = []string{PrefixDefaultV1, NamespaceMCP}
 
 // UnprotectedExactPaths are the routes the reference answers before it reaches
 // the engine, so a configured authenticator never sees them.
+//
+// The retired background route is the only one left: the reference's
+// background submission is served ahead of the engine's credential check. The
+// retired profile routes are NOT here — reading or writing a profile is an
+// engine call, so the reference authenticates it first and only then answers
+// the terminal gone status. Leaving them on this list would let an
+// unauthenticated caller learn that the route exists and is retired.
 var UnprotectedExactPaths = []string{
-	PrefixBanksV1 + "/{bank_id}" + SuffixProfile,
 	PrefixBanksV1 + "/{bank_id}" + SuffixBackground,
 }
 
@@ -76,8 +82,10 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 					if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 						detail = DetailMCPAuthorizationRequired
 					}
-					WriteJSON(w, http.StatusUnauthorized,
-						ErrorEnvelope{Detail: detail})
+					// The MCP refusal is the protocol's, so it carries the
+					// "error" member rather than the shared "detail" one; the
+					// two distinct messages and the status are unchanged.
+					WriteJSON(w, http.StatusUnauthorized, MCPErrorEnvelope{Error: detail})
 					return
 				}
 				next.ServeHTTP(w, r)

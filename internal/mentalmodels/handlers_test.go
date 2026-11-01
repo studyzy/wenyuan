@@ -182,9 +182,31 @@ func TestMentalModelLifecycle(t *testing.T) {
 	if rec := send(mux, http.MethodPost, base+"/"+model.ID+"/clear", ""); rec.Code != http.StatusOK {
 		t.Fatalf("clear: %d", rec.Code)
 	}
+	// t-dry-run-persists-nothing: the preview reports what a refresh would do
+	// and must leave the record exactly as it found it — neither refresh clock
+	// nor the observed-bank watermark moves, and no history entry is written.
+	before := send(mux, http.MethodGet, base+"/"+model.ID, "")
+	var beforeBody map[string]json.RawMessage
+	if err := json.Unmarshal(before.Body.Bytes(), &beforeBody); err != nil {
+		t.Fatal(err)
+	}
 	dry := send(mux, http.MethodPost, base+"/"+model.ID+"/dry-run-refresh", "")
 	if dry.Code != http.StatusOK {
 		t.Fatalf("dry-run refresh: %d", dry.Code)
+	}
+	after := send(mux, http.MethodGet, base+"/"+model.ID, "")
+	var afterBody map[string]json.RawMessage
+	if err := json.Unmarshal(after.Body.Bytes(), &afterBody); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{"last_refreshed_at", "last_memory_seen_at", "last_full_refreshed_at", "content", "last_updated"} {
+		if string(beforeBody[member]) != string(afterBody[member]) {
+			t.Fatalf("the dry run moved %s from %s to %s", member, beforeBody[member], afterBody[member])
+		}
+	}
+	if history := send(mux, http.MethodGet, base+"/"+model.ID+"/history", ""); history.Code != http.StatusOK ||
+		strings.TrimSpace(history.Body.String()) != "[]" {
+		t.Fatalf("the dry run recorded history: %d %s", history.Code, history.Body.String())
 	}
 	var dryBody map[string]any
 	if err := json.Unmarshal(dry.Body.Bytes(), &dryBody); err != nil {

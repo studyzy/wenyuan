@@ -12,16 +12,17 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// The adapter exposes a signed download URL when the backend can sign one, and
-// the storage area delegates to it, so the download route can hand the client
-// a direct URL instead of proxying the payload.
-func TestObjectStoreDownloadURLIsDelegated(t *testing.T) {
+// A backend that can sign a URL can still do so, but nothing on the download
+// route consumes it: the archive is served through the API, so signing is only
+// the backend's own way to reach its storage.
+func TestObjectStoreDownloadURLIsBackendOwned(t *testing.T) {
 	store := testObjectStoreS3(t, config.S3Config{
 		Bucket: "bucket", Region: "us-east-1", Endpoint: "https://minio.internal",
 		AccessKeyID: "access", SecretAccessKey: "secret",
 	})
-	pg := (&storage.PostgresStore{}).WithObjectStore(store)
-	direct, err := pg.StoredFileDownloadURL(context.Background(), "banks/b1/exports/e.zip", time.Hour)
+	direct, err := store.(interface {
+		GetDownloadURL(ctx context.Context, key string, expiresIn time.Duration) (string, error)
+	}).GetDownloadURL(context.Background(), "banks/b1/exports/e.zip", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,24 +31,12 @@ func TestObjectStoreDownloadURLIsDelegated(t *testing.T) {
 	}
 }
 
-// A backend with no credentials has nothing to sign, so the signed URL is
-// empty and the caller keeps serving the payload itself.
+// A backend with no credentials has nothing to sign.
 func TestObjectStoreDownloadURLUnsignedWithoutCredentials(t *testing.T) {
 	store := testObjectStoreS3(t, config.S3Config{Bucket: "bucket", Endpoint: "https://minio.internal"})
 	direct, err := store.(interface {
 		GetDownloadURL(ctx context.Context, key string, expiresIn time.Duration) (string, error)
 	}).GetDownloadURL(context.Background(), "banks/b1/exports/e.zip", time.Hour)
-	if err != nil || direct != "" {
-		t.Fatalf("url = %q err = %v, want empty", direct, err)
-	}
-}
-
-// The row backend offers no direct URL — the route that would serve its API
-// path is the caller — so it yields the empty string rather than a redirect
-// loop.
-func TestRowBackendHasNoDownloadURL(t *testing.T) {
-	pg := &storage.PostgresStore{}
-	direct, err := pg.StoredFileDownloadURL(context.Background(), "banks/b1/exports/e.zip", time.Hour)
 	if err != nil || direct != "" {
 		t.Fatalf("url = %q err = %v, want empty", direct, err)
 	}

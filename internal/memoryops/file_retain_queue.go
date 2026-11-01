@@ -6,40 +6,21 @@ import (
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
-// recordFileConversion records the completed conversion half of a file upload:
-// one file_convert_retain operation naming the document and the upload's
-// original filename. The conversion itself ran in the request; the operation
-// row is what lets a caller watching the upload tell that half finished before
-// the queued retain did.
-func (h *Handlers) recordFileConversion(ctx context.Context, bankID, documentID, filename string) (string, error) {
-	operationID := storage.NewDocumentID()
-	op := storage.Operation{
-		OperationID:   operationID,
-		BankID:        bankID,
-		OperationType: storage.OperationTypeFileConvertRetain,
-		Status:        storage.StatusCompleted,
-		ResultMetadata: map[string]any{
-			"document_id":       documentID,
-			"original_filename": filename,
-		},
-		Payload: map[string]any{
-			"document_id":       documentID,
-			"original_filename": filename,
-		},
-	}
-	if _, err := h.Store.PutOperation(ctx, op); err != nil {
-		return "", err
-	}
-	return operationID, nil
-}
-
-// queueFileRetain queues the retain half of a file upload as a single retain
-// operation, not a batch parent: one uploaded file is one document, and the
-// reference submits it as the conversion task's follow-up. The operation
-// carries the document and filename in its result metadata so the retain a
-// caller sees in the operations list is traceable to the upload that produced
-// it. Extraction happens in the worker, so a model failure surfaces on the
-// operation instead of turning the upload request into a 500.
+// queueFileRetain queues one uploaded file as a single file_convert_retain
+// operation and returns that operation's identifier.
+//
+// The conversion itself already ran in the request — the bytes are text by the
+// time this is called — but the conversion and the retain are one unit of work
+// to the caller: they were told one identifier and poll it for the outcome. A
+// completed conversion row beside a separate pending retain row split that unit
+// in two, so the identifier handed back always read as finished work while the
+// retain had not started.
+//
+// The row is therefore queued pending, carries the retain's task payload — the
+// worker executes it — and records the document and the upload's original
+// filename in its result metadata from the start, so a task whose conversion
+// half fails never runs still reads as a file-convert retain for that document,
+// and its error text carries the reason.
 func (h *Handlers) queueFileRetain(ctx context.Context, bankID string, overrides map[string]any, write storage.RetainRequest, documentID, filename string) (string, error) {
 	prepared, _, err := h.prepareRetain(ctx, bankID, overrides, write)
 	if err != nil {
@@ -55,7 +36,7 @@ func (h *Handlers) queueFileRetain(ctx context.Context, bankID string, overrides
 	op := storage.Operation{
 		OperationID:    operationID,
 		BankID:         bankID,
-		OperationType:  storage.OperationTypeRetain,
+		OperationType:  storage.OperationTypeFileConvertRetain,
 		Status:         storage.StatusPending,
 		ResultMetadata: metadata,
 		Payload:        storage.AsyncRetainPayload(bankID, operationID, prepared),

@@ -215,7 +215,10 @@ func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) er
 		return p.applyMentalModelRefresh(ctx, op)
 	case storage.OperationTypeWebhookDelivery:
 		return p.applyWebhookDelivery(ctx, op)
-	case storage.OperationTypeRetain:
+	case storage.OperationTypeRetain, storage.OperationTypeFileConvertRetain:
+		// A file upload is one operation whose conversion ran at ingress and
+		// whose retain runs here, so it executes exactly as a plain retain
+		// does: same payload, same handler, same settlement.
 		return p.applyRetain(ctx, op)
 	case storage.AsyncRetainType:
 		// A batch parent carries no task payload: it is a status aggregator
@@ -235,7 +238,7 @@ func (p archiveProcessor) dispatch(ctx context.Context, op storage.Operation) er
 // Types whose handler never calls a model have none, so their runs add no rows.
 func traceOperationFor(operationType string) (string, bool) {
 	switch operationType {
-	case storage.OperationTypeRetain:
+	case storage.OperationTypeRetain, storage.OperationTypeFileConvertRetain:
 		return "retain", true
 	case storage.OperationTypeConsolidate:
 		return "consolidation", true

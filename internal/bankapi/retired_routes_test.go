@@ -43,20 +43,53 @@ func TestRetiredRoutesRemainRoutable(t *testing.T) {
 	}
 }
 
-// The retired routes must not gate on a credential: the reference raises the
-// gone status before any authenticated call, so a caller with no Authorization
-// header still learns the route was retired.
-func TestRetiredRoutesAnswerWithoutCredential(t *testing.T) {
-	mux := http.NewServeMux()
-	(&RetiredHandler{}).BindRetiredRoutes(func(method, pattern string, handler http.HandlerFunc) {
-		mux.HandleFunc(method+" "+pattern, handler)
-	})
+// t-retired-profile-requires-auth: the retired PROFILE routes are answered only
+// after authentication, so an unauthenticated caller is refused instead of
+// learning the route exists and is retired. The retired background route is
+// not on that list and keeps answering without a credential.
+//
+// The refusal comes from the router's credential middleware, so this test goes
+// through the composed router with a credential configured; a family mux alone
+// has no authenticator to consult.
+func TestRetiredProfileRequiresAuthBeforeRevealingRetirement(t *testing.T) {
+	router := httpx.NewRouter(httpx.RouterOptions{TenantAPIKey: "secret-key"})
+	(&RetiredHandler{}).BindRetiredRoutes(router.Handle)
 
-	path := replaceBankID(RetiredRoutes[0].Pattern)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-	if rec.Code != http.StatusGone {
-		t.Fatalf("retired status without a credential = %d, want 410", rec.Code)
+	profile := []struct{ method, pattern string }{
+		{http.MethodGet, httpx.BankPath(httpx.SuffixProfile)},
+		{http.MethodPut, httpx.BankPath(httpx.SuffixProfile)},
+	}
+	for _, route := range profile {
+		req := httptest.NewRequest(route.method, replaceBankID(route.pattern), nil)
+		rec := httptest.NewRecorder()
+		router.Service().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without a credential = %d, want 401", route.method, route.pattern, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "retired") || strings.Contains(rec.Body.String(), "410") {
+			t.Fatalf("%s %s leaked the retirement: %s", route.method, route.pattern, rec.Body.String())
+		}
+
+		// The same request with the credential reaches the retirement status.
+		body := acceptableRetiredBody(RetiredRoute{Method: route.method, Pattern: route.pattern})
+		authed := httptest.NewRequest(route.method, replaceBankID(route.pattern), strings.NewReader(body))
+		authed.Header.Set("Authorization", "Bearer secret-key")
+		authedRec := httptest.NewRecorder()
+		router.Service().ServeHTTP(authedRec, authed)
+		if authedRec.Code != http.StatusGone {
+			t.Fatalf("%s %s with a credential = %d, want 410 (body %s)",
+				route.method, route.pattern, authedRec.Code, authedRec.Body.String())
+		}
+	}
+
+	// The background route stays reachable without a credential.
+	background := httptest.NewRequest(http.MethodPost, replaceBankID(httpx.BankPath(httpx.SuffixBackground)),
+		strings.NewReader(`{"content":"x"}`))
+	backgroundRec := httptest.NewRecorder()
+	router.Service().ServeHTTP(backgroundRec, background)
+	if backgroundRec.Code != http.StatusGone {
+		t.Fatalf("retired background without a credential = %d, want 410 (body %s)",
+			backgroundRec.Code, backgroundRec.Body.String())
 	}
 }
 

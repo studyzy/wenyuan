@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -573,6 +572,10 @@ type Config struct {
 	FileDeleteAfterRetain        bool
 	// TenantExtension is the selected tenant authenticator's class path.
 	TenantExtension string
+	// httpExtensionSettings are the deployment's extension-only settings,
+	// resolved only when an extension is selected. They are unexported and read
+	// through ExtensionSettings, so an ordinary route cannot reach them.
+	httpExtensionSettings map[string]string
 	// TenantAPIKey is the credential the built-in authenticator accepts.
 	TenantAPIKey string
 	// TenantMCPAuthDisabled exempts the MCP namespace from authentication.
@@ -1118,7 +1121,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 	cfg.EnableObservations = boolFromEnv(lookup, EnvEnableObservations, true)
 	cfg.DatabaseBackend = databaseBackend(lookup)
 	cfg.WebhookGlobal = resolveWebhookGlobal(lookup)
-	cfg.ExtensionPassThroughHeaders = stringListFromEnv(lookup, EnvExtensionPassThroughHdr)
+	cfg.ExtensionPassThroughHeaders = extensionPassThroughHeaders(lookup)
 	cfg.DefaultBankTemplate = jsonObjectFromEnv(lookup, EnvDefaultBankTemplate)
 	cfg.ReadReplica = ReadReplicaConfig{
 		URL:     strings.TrimSpace(stringFromEnv(lookup, EnvReadDatabaseURL)),
@@ -1169,6 +1172,7 @@ func FromEnv(lookup func(string) (string, bool)) Config {
 		cfg.LogLevel = v
 	}
 	cfg.TenantExtension = stringFromEnv(lookup, EnvTenantExtension)
+	cfg.httpExtensionSettings = extensionSettings(lookup)
 	cfg.TenantAPIKey = stringFromEnv(lookup, EnvTenantAPIKey)
 	cfg.TenantMCPAuthDisabled = boolFromEnv(lookup, EnvTenantMCPAuthDisabled, false)
 	if v := strings.ToLower(strings.TrimSpace(stringFromEnv(lookup, EnvTenantMode))); v != "" {
@@ -1430,46 +1434,6 @@ func normalizeBasePath(value string) string {
 		value = "/" + value
 	}
 	return strings.TrimRight(value, "/")
-}
-
-// BuiltinAPIKeyTenantExtension is the reference's built-in tenant authenticator,
-// selected by WENYUAN_API_TENANT_EXTENSION from the package that ships it.
-// Selecting it requires WENYUAN_API_TENANT_API_KEY.
-const BuiltinAPIKeyTenantExtension = "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension"
-
-// TenantAuth is the resolved tenant authentication policy.
-type TenantAuth struct {
-	// APIKey is the credential the authenticator accepts. Empty means no
-	// authentication is configured, which is the reference's default.
-	APIKey string
-	// MCPAuthDisabled exempts the MCP namespace from authentication.
-	MCPAuthDisabled bool
-}
-
-// Enabled reports whether requests are authenticated at all.
-func (a TenantAuth) Enabled() bool { return a.APIKey != "" }
-
-// ResolveTenantAuth validates the tenant extension selection.
-//
-// The reference loads the configured class from an importable module. A Go
-// build cannot import a Python class, so the one extension whose behavior is
-// specified here is supported by name and every other selection is refused at
-// startup: a deployment that asked for authentication and silently got none
-// would be worse off than one that will not start.
-func (c Config) ResolveTenantAuth() (TenantAuth, error) {
-	if c.TenantExtension == "" {
-		return TenantAuth{}, nil
-	}
-	if !strings.EqualFold(strings.TrimSpace(c.TenantExtension), BuiltinAPIKeyTenantExtension) {
-		return TenantAuth{}, fmt.Errorf(
-			"%s=%q is not supported by this build: only the built-in %q is implemented",
-			EnvTenantExtension, c.TenantExtension, BuiltinAPIKeyTenantExtension)
-	}
-	if strings.TrimSpace(c.TenantAPIKey) == "" {
-		return TenantAuth{}, fmt.Errorf(
-			"%s is required when using ApiKeyTenantExtension", EnvTenantAPIKey)
-	}
-	return TenantAuth{APIKey: c.TenantAPIKey, MCPAuthDisabled: c.TenantMCPAuthDisabled}, nil
 }
 
 // JSONLogs reports whether the process writes structured JSON records.

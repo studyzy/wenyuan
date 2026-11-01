@@ -384,16 +384,40 @@ func jsonOrNull(value map[string]any) (any, error) {
 	return json.Marshal(value)
 }
 
-// decodeJSONMap decodes a jsonb object, tolerating null.
+// decodeJSONMap decodes a jsonb object, tolerating null and the JSON-text
+// encoding a reference archive rewrites a row into: a value there is the JSON
+// text of the object, so the inner object is read rather than the string.
 func decodeJSONMap(raw []byte) map[string]any {
 	if len(raw) == 0 {
 		return nil
 	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return nil
 	}
+	if text, isText := decoded.(string); isText {
+		// The reference's serialized encoding: the jsonb column holds the JSON
+		// text of the object, so the inner object is what the row means.
+		var inner map[string]any
+		if err := json.Unmarshal([]byte(text), &inner); err != nil {
+			return nil
+		}
+		return inner
+	}
+	out, _ := decoded.(map[string]any)
 	return out
+}
+
+// decodeJSONMember reads one member of a decoded jsonb object, accepting the
+// member in either encoding: a row this service wrote holds the object, and a
+// row rewritten from a reference archive holds the JSON text of that object.
+func decodeJSONMember(value any) map[string]any {
+	text, isText := value.(string)
+	if !isText {
+		object, _ := value.(map[string]any)
+		return object
+	}
+	return decodeJSONMap([]byte(text))
 }
 
 // derefTime returns the time or the zero value.
@@ -429,9 +453,13 @@ func historyEntryToMap(entry MentalModelHistoryEntry) map[string]any {
 func historyEntryFromMap(raw map[string]any, changedAt time.Time) MentalModelHistoryEntry {
 	entry := MentalModelHistoryEntry{ChangedAt: changedAt}
 	if value, ok := raw["previous_content"].(string); ok {
+		// A jsonb string is still a string in either encoding: only an object
+		// or array is expanded, so the member reads the same either way.
 		entry.PreviousContent = &value
 	}
-	if value, ok := raw["previous_reflect_response"].(map[string]any); ok {
+	// The reflect response is read in either encoding: a row this service wrote
+	// holds the object, and a row a reference archive rewrote holds its JSON text.
+	if value := decodeJSONMember(raw["previous_reflect_response"]); value != nil {
 		entry.PreviousReflectResponse = value
 	}
 	if value, ok := raw["kind"].(string); ok {
