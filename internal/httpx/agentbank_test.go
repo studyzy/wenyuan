@@ -3,6 +3,7 @@ package httpx
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/tenant"
@@ -50,13 +51,13 @@ func TestAgentBankPrefixThroughServedRouter(t *testing.T) {
 		},
 		{
 			name: "another tenant prefix", credential: "good",
-			target:   "/v1/default/banks/team-alpha::wenyuan",
-			wantPath: "/v1/default/banks/team-alpha::wenyuan", wantBank: "team-alpha::wenyuan",
+			target:   "/v1/default/banks/acme::wenyuan",
+			wantPath: "/v1/default/banks/acme::wenyuan", wantBank: "acme::wenyuan",
 		},
 		{
 			name: "harness name without a project", credential: "good",
 			target:   "/v1/default/banks/coding-agent",
-			wantPath: "/v1/default/banks/coding-agent", wantBank: "coding-agent",
+			wantPath: "/v1/default/banks/acme::", wantBank: "acme::",
 		},
 		{
 			name: "collection is not bank-scoped", credential: "good",
@@ -92,6 +93,69 @@ func TestAgentBankPrefixThroughServedRouter(t *testing.T) {
 			}
 			if seenBank != tc.wantBank {
 				t.Fatalf("bank = %q, want %q", seenBank, tc.wantBank)
+			}
+		})
+	}
+}
+
+// testAgentBankRouter serves the bank routes for the tenant "acme": the member
+// route, the config sub-route and the collection, all answering 200 when the
+// request gets through.
+func testAgentBankRouter() *Router {
+	extension := &stubTenantExtension{contexts: map[string]tenant.Context{
+		"good": {ID: "acme", Schema: "acme"},
+	}}
+	router := NewRouter(RouterOptions{TenantExtension: extension})
+	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+	router.Handle(http.MethodGet, BankMemberPath(), ok)
+	router.Handle(http.MethodGet, BankPath("/config"), ok)
+	router.Handle(http.MethodGet, BanksCollectionPath(), ok)
+	return router
+}
+
+// A bank-scoped route is where the rewrite has to fire: the served route is
+// /v1/default/banks/{bank_id}/..., so a prefix that leaves out the version
+// segment matches no path and the harness id reaches the store unchanged.
+// The unit test above registers its handler on BankMemberPath(), which is what
+// makes it pin the route the rewrite is written for; this one pins the constant
+// those routes are built from.
+func TestBankRoutesPrefixIsTheServedBankRoute(t *testing.T) {
+	if BankRoutesPrefix != PrefixBanksV1+"/" {
+		t.Fatalf("BankRoutesPrefix = %q, want %q", BankRoutesPrefix, PrefixBanksV1+"/")
+	}
+	if !strings.HasPrefix(BankMemberPath(), BankRoutesPrefix) {
+		t.Fatalf("the bank member route %q is not under %q", BankMemberPath(), BankRoutesPrefix)
+	}
+}
+
+// The harness id is re-homed for every bank the caller's tenant owns and for
+// none it does not: a prefix naming another tenant, or no `::` at all, is a
+// bank the caller cannot reach, and the answer is the missing-bank 404 the
+// contract gives for a bank that is not there.
+func TestAgentBankPrefixRefusesForeignBankIDs(t *testing.T) {
+	router := testAgentBankRouter()
+	cases := []struct {
+		name, target string
+		want         int
+	}{
+		{"own tenant prefix", "/v1/default/banks/acme::wenyuan", http.StatusOK},
+		{"harness prefix", "/v1/default/banks/coding-agent::wenyuan", http.StatusOK},
+		{"another tenant's bank", "/v1/default/banks/bob::wenyuan", http.StatusNotFound},
+		{"no tenant prefix", "/v1/default/banks/wenyuan", http.StatusNotFound},
+		{"collection", "/v1/default/banks", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			request.Header.Set("Authorization", "Bearer good")
+			recorder := httptest.NewRecorder()
+			router.Service().ServeHTTP(recorder, request)
+			if recorder.Code != tc.want {
+				t.Fatalf("%s answered %d, want %d: %s", tc.target, recorder.Code, tc.want, recorder.Body.String())
+			}
+			if tc.want == http.StatusNotFound &&
+				!strings.Contains(recorder.Body.String(), "Bank '") {
+				t.Fatalf("refusal does not name the bank: %s", recorder.Body.String())
 			}
 		})
 	}

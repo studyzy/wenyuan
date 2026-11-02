@@ -20,6 +20,13 @@ const (
 	PrefixBanksV1 = "/v1/default/banks"
 )
 
+// BankRoutesPrefix is the path the bank-scoped REST routes are mounted under,
+// with the trailing slash: the versioned namespace of every bank route. It is
+// kept beside PrefixBanksV1 so an edge that has to find the bank id in a URL —
+// the coding-agent prefix rewrite, for one — names the same path the router
+// declares instead of re-spelling it.
+const BankRoutesPrefix = PrefixBanksV1 + "/"
+
 // BankRouteSuffixes builds the bank-scoped sub-paths. Kept in the router area
 // so no other area hard-codes URL shapes.
 const (

@@ -124,6 +124,13 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 // credential check, so the static API key no longer applies. A rejected
 // credential is the reference's uniform 401; a resolver failure is a 503 and
 // never a fallback to a default schema.
+//
+// The request is carried to the extension with the operator's tenant header
+// already removed, so the extension decides whether one acts as that tenant
+// when it recognized the credential as its operator key. No tenant key, and no
+// keyless request on a deployment with no operator key, can name a tenant: an
+// extension that read the header from the request instead of this field would
+// let any caller pick a schema.
 func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled bool, routeAllowed func(*http.Request) bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,9 +145,15 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 				next.ServeHTTP(w, r)
 				return
 			}
+			namedTenant := strings.TrimSpace(r.Header.Get(TenantHeader))
+			if namedTenant != "" {
+				// The header is read here and never down the chain: only the
+				// extension's decision about this credential may act on it.
+				r.Header.Del(TenantHeader)
+			}
 			resolved, err := extension.Authenticate(r.Context(), tenant.Request{
 				Credential: bearerToken(r),
-				TenantID:   strings.TrimSpace(r.Header.Get(TenantHeader)),
+				TenantID:   namedTenant,
 			})
 			if err != nil {
 				var authErr *tenant.AuthenticationError
@@ -161,6 +174,10 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 			// credential has just resolved the tenant, so its id takes the
 			// prefix's place before routing captures the bank id.
 			rewriteAgentBankPrefix(r.URL, resolved.ID)
+			if bankID, foreign := foreignBankID(r, resolved.ID); foreign {
+				WriteError(w, NewHTTPError(KindNotFound, BankNotFoundDetail(bankID)))
+				return
+			}
 			r = r.WithContext(ctx)
 			if len(resolved.Overrides) > 0 {
 				r = WithTenantOverrides(r, resolved.Overrides)
@@ -197,6 +214,48 @@ func mcpTokenMatches(r *http.Request, token string) bool {
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(header, scheme))
 	return subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
+}
+
+// foreignBankID reports whether the bank a bank-scoped path addresses belongs to
+// some other tenant, and names it.
+//
+// A bank id is `<tenant>::<name>` and the bank lives in that tenant's schema, so
+// a prefix naming another tenant — or no `::` at all, which names no tenant — is
+// a bank this caller cannot reach. Letting it through would serve a request
+// under the caller's schema while the id claimed another tenant's: the store
+// would create or read that prefix as a plain name, and the id would then stop
+// meaning what the contract says it means. The refusal is the same 404 an
+// absent bank gets, so a caller cannot tell a foreign id from a missing one.
+//
+// Nothing is foreign for a deployment with no resolved tenant id (the
+// single-tenant extension), nor for a path that addresses no bank: the bank
+// collection, and every route that is not bank-scoped.
+func foreignBankID(r *http.Request, tenantID string) (string, bool) {
+	if tenantID == "" {
+		return "", false
+	}
+	bankID, bankScoped := bankScopedPath(r.URL.Path)
+	if !bankScoped || bankID == "" {
+		return "", false
+	}
+	prefix, _, ok := strings.Cut(bankID, "::")
+	if ok && prefix == tenantID {
+		return "", false
+	}
+	return bankID, true
+}
+
+// bankScopedPath splits a bank-scoped path into the bank it addresses.
+// @param path - the request's decoded path.
+// @returns the first segment after the prefix, and whether the path is
+// bank-scoped at all. A path that is not is `false`.
+func bankScopedPath(path string) (string, bool) {
+	start, ok := agentBankPathStart(path)
+	if !ok {
+		return "", false
+	}
+	bankID, _, _ := strings.Cut(path[start:], "/")
+	return bankID, true
 }
 
 // requiresAuthentication reports whether the path is one the reference

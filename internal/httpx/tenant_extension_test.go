@@ -85,6 +85,39 @@ func TestTenantExtensionAuthPassesNamedTenant(t *testing.T) {
 	}
 }
 
+// A tenant key never names a tenant. The header is the operator's, and an
+// extension that resolves a request's credential to a tenant of its own must
+// never be told a different one: an extension that read the header off the
+// request — as one reaching for it further down the chain would — would serve
+// the caller's key against a schema it does not own.
+func TestTenantExtensionAuthNeverLeavesTheHeaderOnTheRequest(t *testing.T) {
+	extension := &stubTenantExtension{contexts: map[string]tenant.Context{
+		"good": {ID: "acme", Schema: "acme"},
+	}}
+	router := NewRouter(RouterOptions{TenantExtension: extension})
+	var seenHeader string
+	router.Handle("GET", "/v1/default/banks", func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get(TenantHeader)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil)
+	request.Header.Set("Authorization", "Bearer good")
+	request.Header.Set(TenantHeader, "beta")
+	recorder := httptest.NewRecorder()
+	router.Service().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if extension.last.TenantID != "beta" {
+		t.Fatalf("TenantID = %q, want beta: the header is what names the operator's tenant", extension.last.TenantID)
+	}
+	if seenHeader != "" {
+		t.Fatalf("the handler still sees %s = %q, want it removed", TenantHeader, seenHeader)
+	}
+}
+
 func TestTenantExtensionAuthRejects(t *testing.T) {
 	extension := &stubTenantExtension{contexts: map[string]tenant.Context{"good": {Schema: "tenant_acme"}}}
 	for _, tc := range []struct {

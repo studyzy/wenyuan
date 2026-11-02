@@ -11,12 +11,14 @@ import (
 // the prefix names the harness, not a tenant of this service.
 const agentBankHarness = "coding-agent"
 
-// agentBankPrefix is the full prefix such a client puts in front of a bank id.
-const agentBankPrefix = agentBankHarness + "::"
-
-// agentBankPathPrefixes are the namespaces whose first path segment is a bank
-// identifier: the bank-scoped REST routes and the single-bank MCP mount.
-var agentBankPathPrefixes = []string{PrefixBanksV1 + "/", NamespaceMCP + "/"}
+// agentBankPathPrefixes are the paths whose next segment is a bank identifier:
+// the bank-scoped REST routes and the single-bank MCP mount.
+//
+// The REST entry is spelled with the version and the namespace segment the
+// reference serves its bank routes under (/v1/default/banks/). A prefix without
+// them matches no served route, so the rewrite would never fire and the harness
+// id would reach the store unchanged.
+var agentBankPathPrefixes = []string{BankRoutesPrefix, NamespaceMCP + "/"}
 
 // rewriteAgentBankPrefix replaces the coding-agent harness prefix of the bank
 // id a bank-scoped path addresses with the tenant the request's credential
@@ -41,10 +43,33 @@ func rewriteAgentBankPrefix(u *url.URL, tenantID string) bool {
 		return false
 	}
 	start, ok := agentBankPathStart(u.Path)
-	if !ok || !strings.HasPrefix(u.Path[start:], agentBankPrefix) {
+	if !ok {
 		return false
 	}
-	u.Path = u.Path[:start] + tenantID + "::" + u.Path[start+len(agentBankPrefix):]
+	// A bank id is the whole segment after the prefix, so a client that sends the
+	// harness name with no project at all — "coding-agent", no separator — names
+	// the same non-tenant bank and is re-homed the same way. Anything longer is a
+	// project name, and only the harness spelling of it is a bank of this
+	// service's.
+	segment := u.Path[start:]
+	if !strings.HasPrefix(segment, agentBankHarness) {
+		return false
+	}
+	rest := segment[len(agentBankHarness):]
+	bare := rest == ""
+	// A bank id is `<tenant>::<name>`, so the tenant always arrives with its
+	// separator. A client that sent the harness name with no separator is naming
+	// a bank with no project, which gets the same "::" and serves as the
+	// tenant's empty-named bank rather than a bare id the contract has no
+	// meaning for.
+	replacement := tenantID
+	if !bare && !strings.HasPrefix(rest, "::") {
+		return false
+	}
+	if bare {
+		rest = "::"
+	}
+	u.Path = u.Path[:start] + replacement + rest
 	// A raw path, when the request carried one, is what the mux matches on, so
 	// it has to move with Path. The harness name and a tenant id are both
 	// unescaped ASCII, which is what lets the name be replaced in place; the
@@ -52,11 +77,25 @@ func rewriteAgentBankPrefix(u *url.URL, tenantID string) bool {
 	// A RawPath this does not apply to is no longer a valid encoding of Path,
 	// and EscapedPath falls back to escaping Path itself.
 	if u.RawPath != "" {
-		if rawStart, ok := agentBankPathStart(u.RawPath); ok && strings.HasPrefix(u.RawPath[rawStart:], agentBankHarness) {
-			u.RawPath = u.RawPath[:rawStart] + tenantID + u.RawPath[rawStart+len(agentBankHarness):]
+		if rawStart, ok := agentBankPathStart(u.RawPath); ok {
+			rawSegment := u.RawPath[rawStart:]
+			if strings.HasPrefix(rawSegment, agentBankHarness) && bareOrSeparated(rawSegment[len(agentBankHarness):]) {
+				rawRest := rawSegment[len(agentBankHarness):]
+				if rawRest == "" {
+					rawRest = "::"
+				}
+				u.RawPath = u.RawPath[:rawStart] + replacement + rawRest
+			}
 		}
 	}
 	return true
+}
+
+// bareOrSeparated reports whether what follows the harness name in a path
+// segment is the end of the segment or the "::" separator, in either spelling.
+func bareOrSeparated(rest string) bool {
+	return rest == "" || strings.HasPrefix(rest, "::") ||
+		strings.HasPrefix(rest, "%3A%3A") || strings.HasPrefix(rest, "%3a%3a")
 }
 
 // agentBankPathStart returns the offset at which the bank-id segment of a
