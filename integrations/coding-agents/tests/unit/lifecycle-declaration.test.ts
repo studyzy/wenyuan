@@ -31,6 +31,7 @@ const CONTRACT_EVENTS: Record<string, Record<string, string>> = {
   "claude-code": { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
   codex: { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
   codebuddy: { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
+  workbuddy: { "session-start": "SessionStart", "pre-prompt": "UserPromptSubmit", stop: "Stop" },
   "cursor-cli": { "session-start": "sessionStart", "pre-prompt": "beforeSubmitPrompt", stop: "stop" },
   "copilot-cli": { "session-start": "sessionStart", "pre-prompt": "userPromptTransformed", stop: "agentStop" },
 };
@@ -49,6 +50,7 @@ describe("the shared lifecycle declaration", () => {
       "codex",
       "copilot-cli",
       "cursor-cli",
+      "workbuddy",
     ]);
   });
 

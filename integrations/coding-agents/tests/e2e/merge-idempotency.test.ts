@@ -24,6 +24,7 @@ interface HostFixture {
 
 const HOSTS: HostFixture[] = [
   { id: "codebuddy", config: ".codebuddy/settings.json", mcp: ".codebuddy/.mcp.json" },
+  { id: "workbuddy", config: ".workbuddy/settings.json", mcp: ".workbuddy/mcp.json" },
 ];
 
 /** The stage-one event spelling each host declares, holding the foreign entry. */

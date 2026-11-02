@@ -8,6 +8,7 @@ import {
   MCP_TOML_CONTAINER_KEY,
   DSH_HOST_PATH,
   MECHANISMS,
+  WORKBUDDY_MCP_PATH,
   containerKeyFor,
   declaredMechanismHosts,
   locationResolutionFor,
@@ -23,8 +24,8 @@ import { OWNERSHIP_MARKER } from "../../src/write/marker";
  * names, and the member names appear exactly once.
  */
 
-const APPROVED_HOSTS = ["claude-code", "codex", "codebuddy", "dsh"];
-const FILE_HOSTS = ["codex", "codebuddy", "dsh"];
+const APPROVED_HOSTS = ["claude-code", "codex", "codebuddy", "workbuddy", "dsh"];
+const FILE_HOSTS = ["codex", "codebuddy", "workbuddy", "dsh"];
 const MECHANISM_KINDS = ["command-line", "toml-table", "json-server-map"];
 
 describe("the per-host mechanism declaration", () => {
@@ -63,6 +64,15 @@ describe("the per-host mechanism declaration", () => {
     expect(mechanismKindFor("dsh")).toBe("json-server-map");
     expect(locationResolutionFor("dsh")).toEqual({ kind: "fixed", path: DSH_HOST_PATH });
     expect(containerKeyFor("dsh")).toBe(MCP_SERVERS_KEY);
+  });
+
+  it("gives WorkBuddy one fixed server-map path rather than a candidate chain", () => {
+    // WorkBuddy reads ~/.workbuddy/mcp.json and no fallback, so a candidate
+    // list would let an install write a file the host never opens.
+    expect(mechanismKindFor("workbuddy")).toBe("json-server-map");
+    expect(locationResolutionFor("workbuddy")).toEqual({ kind: "fixed", path: WORKBUDDY_MCP_PATH });
+    expect(containerKeyFor("workbuddy")).toBe(MCP_SERVERS_KEY);
+    expect(WORKBUDDY_MCP_PATH).toBe(".workbuddy/mcp.json");
   });
 
   it("leaves an unregistered host with no declaration", () => {

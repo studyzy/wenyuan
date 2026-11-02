@@ -91,6 +91,7 @@ export {
   MECHANISMS,
   JSON_HOST_CANDIDATES,
   DSH_HOST_PATH,
+  WORKBUDDY_MCP_PATH,
   TOML_HOST_PATH,
   mechanismFor,
   mechanismKindFor,

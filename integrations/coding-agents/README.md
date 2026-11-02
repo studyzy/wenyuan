@@ -38,19 +38,20 @@ wenyuan-agents update                       # re-stage the runtime only
 wenyuan-agents stats
 ```
 
-Hosts: `claude-code`, `codex`, `codebuddy`, `cursor-cli`, `copilot-cli`, `dsh`.
+Hosts: `claude-code`, `codex`, `codebuddy`, `workbuddy`, `cursor-cli`, `copilot-cli`, `dsh`.
 
 | Host | Lifecycle hooks | MCP registration | Skill |
 | --- | --- | --- | --- |
 | `claude-code` | `~/.claude/settings.json` | `claude mcp add`, user scope | `~/.claude/skills` |
 | `codex` | `~/.codex/hooks.json` + `features.hooks` in `config.toml` | `~/.codex/config.toml` table | `~/.agents/skills` |
 | `codebuddy` | `~/.codebuddy/settings.json` | `~/.codebuddy/.mcp.json` (or `mcp.json`, `~/.codebuddy.json`) | `~/.codebuddy/skills` |
+| `workbuddy` | `~/.workbuddy/settings.json` | `~/.workbuddy/mcp.json` — one fixed path, no fallback | `~/.workbuddy/skills` |
 | `cursor-cli` | `~/.cursor/hooks.json` | `~/.cursor/mcp.json` | `~/.cursor/skills` |
 | `copilot-cli` | `~/.copilot/hooks/hooks.json` | `~/.copilot/mcp-config.json` | `~/.copilot/skills` |
 | `dsh` | none — a plugin owns these; see below | `~/.dsh/mcp.json` server map | `~/.dsh/skills` |
 
-The matcher-group hosts (`claude-code`, `codex`, `codebuddy`) read the same
-registration shape Claude Code does:
+The matcher-group hosts (`claude-code`, `codex`, `codebuddy`, `workbuddy`) read
+the same registration shape Claude Code does:
 
 ```json
 { "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "node \"/…/stop.mjs\"", "timeout": 30 } ] } ] } }
@@ -148,3 +149,6 @@ check stops at the host's own execution boundary rather than at the file.
 - Verified end to end here: Claude Code, Codex and DSH. The Cursor and Copilot
   adapters write the paths and shapes their own documentation gives and are
   covered by the read-back check, but have not been driven against a live CLI.
+  WorkBuddy is driven by `check:integration` — the exact command string it would
+  exec is run in a real shell against the mock service — but has likewise not
+  been driven against a live session.

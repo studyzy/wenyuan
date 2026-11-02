@@ -11,7 +11,7 @@ import type { LifecycleRegistration, RegistrationStyle } from "./lifecycle-types
  *
  * The shapes are the hosts' own contracts, not this package's invention:
  *
- * - `matcher-group` (Claude Code, Codex, CodeBuddy) —
+ * - `matcher-group` (Claude Code, Codex, CodeBuddy, WorkBuddy) —
  *   `{"<Event>": [{"hooks": [{"type": "command", "command": "node \"…\"", "timeout": N}]}]}`.
  * - `flat-entry` (Cursor CLI, Copilot CLI) — `{"<event>": {"command": "…", "timeout": N}}`.
  *

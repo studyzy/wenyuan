@@ -159,6 +159,7 @@ const HOSTS = [
   { id: "claude-code", config: ".claude/settings.json", commands: matcherGroupCommands },
   { id: "codex", config: ".codex/hooks.json", commands: matcherGroupCommands },
   { id: "codebuddy", config: ".codebuddy/settings.json", commands: matcherGroupCommands },
+  { id: "workbuddy", config: ".workbuddy/settings.json", commands: matcherGroupCommands },
   { id: "cursor-cli", config: ".cursor/hooks.json", commands: flatCommands },
   { id: "copilot-cli", config: ".copilot/hooks/hooks.json", commands: flatCommands },
 ];

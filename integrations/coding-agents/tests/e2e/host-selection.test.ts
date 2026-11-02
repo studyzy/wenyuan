@@ -12,12 +12,13 @@ import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome, withRestrictedP
  * name and no selection at all — happen before anything is written.
  */
 
-const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "cursor-cli", "copilot-cli", "dsh"];
+const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "workbuddy", "cursor-cli", "copilot-cli", "dsh"];
 
 const CONFIG_FILES: Record<string, string> = {
   "claude-code": ".claude/settings.json",
   codex: ".codex/hooks.json",
   codebuddy: ".codebuddy/settings.json",
+  workbuddy: ".workbuddy/settings.json",
   "cursor-cli": ".cursor/hooks.json",
   "copilot-cli": ".copilot/hooks/hooks.json",
   // DSH writes no hook config; its install still wires the MCP server map and

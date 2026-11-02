@@ -6,6 +6,7 @@ import { codex } from "./codex";
 import { copilotCli } from "./copilot-cli";
 import { cursorCli } from "./cursor-cli";
 import { dsh } from "./dsh";
+import { workbuddy } from "./workbuddy";
 import type { HostContribution, HostId } from "./types";
 
 /**
@@ -21,6 +22,7 @@ export const HOSTS: readonly HostContribution[] = [
   claudeCode,
   codex,
   codebuddy,
+  workbuddy,
   cursorCli,
   copilotCli,
   dsh,

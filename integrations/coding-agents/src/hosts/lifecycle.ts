@@ -18,10 +18,10 @@ import {
  * here and nowhere else.
  *
  * The events are the hosts' own lifecycle vocabulary and are contracts: they
- * are written into each host's config verbatim and must not be renamed. All
- * three approved hosts read the same registration shape, so the per-host
- * variation is the config file location (owned by the host adapters), the
- * script file name and the numeric budget.
+ * are written into each host's config verbatim and must not be renamed. Every
+ * host that declares a lifecycle here reads one of two registration shapes, so
+ * the per-host variation is the shape style, the config file location (owned by
+ * the host adapters), the script file name and the numeric budget.
  */
 
 /** The three packaged hook script files, named once. */
@@ -73,6 +73,14 @@ export const HOST_LIFECYCLES: Readonly<Record<string, HostLifecycle>> = {
     stop: registration("stop", "Stop", STOP_BUDGET_SECONDS, "seconds", "matcher-group"),
   },
   codebuddy: {
+    "session-start": registration("session-start", "SessionStart", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
+    "pre-prompt": registration("pre-prompt", "UserPromptSubmit", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
+    stop: registration("stop", "Stop", STOP_BUDGET_SECONDS, "seconds", "matcher-group"),
+  },
+  // WorkBuddy reads the same hook registration shape CodeBuddy does, with the
+  // PascalCase event names and a seconds budget, so its lifecycle is declared
+  // identically and only the file it is written into differs.
+  workbuddy: {
     "session-start": registration("session-start", "SessionStart", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
     "pre-prompt": registration("pre-prompt", "UserPromptSubmit", INTERACTIVE_BUDGET_SECONDS, "seconds", "matcher-group"),
     stop: registration("stop", "Stop", STOP_BUDGET_SECONDS, "seconds", "matcher-group"),

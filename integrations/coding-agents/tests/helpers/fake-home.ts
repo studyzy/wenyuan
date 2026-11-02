@@ -239,7 +239,7 @@ export const NO_HOST_CLI = "__wenyuan-host-stand-ins__";
  * - `codex`, `cursor`, `copilot`, `codebuddy` are detection probes: the
  *   installer resolves a host by finding its executable or its config directory.
  */
-const HOST_CLIS: readonly string[] = ["claude", "codex", "cursor", "copilot", "codebuddy", "dsh"];
+const HOST_CLIS: readonly string[] = ["claude", "codex", "cursor", "copilot", "codebuddy", "workbuddy", "dsh"];
 
 /**
  * Writes the host stand-ins into the fake home's PATH directory.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MCP_SERVERS_KEY, MCP_SERVER_NAME } from "../../src/mcp/mechanisms";
+import { MCP_SERVERS_KEY, MCP_SERVER_NAME, WORKBUDDY_MCP_PATH } from "../../src/mcp/mechanisms";
 import { runtimeDirectory } from "../../src/runtime/layout";
 import { OWNERSHIP_MARKER } from "../../src/write/marker";
 import { declaredEvents, eventCommands, HOOKS_CONTAINER_KEY, ownEntryCount } from "../helpers/hooks";
@@ -27,6 +27,7 @@ const LOCATIONS: ExpectedLocations[] = [
   { id: "claude-code", config: ".claude/settings.json", skills: ".claude/skills" },
   { id: "codex", config: ".codex/hooks.json", skills: ".agents/skills" },
   { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
+  { id: "workbuddy", config: ".workbuddy/settings.json", skills: ".workbuddy/skills" },
   // DSH is absent on purpose: its memory wiring is the Cordis plugin
   // `@studyzy/dsh-wenyuan-memory`, so this package writes no hook config for
   // it. Its MCP server map and skills directory are covered by its own suite.
@@ -69,6 +70,19 @@ describe("installing into a home where the host has no config at all", () => {
     await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       expect((await runInstaller(["install", "codebuddy"])).status).toBe(0);
       const mcp: JsonDocument = await home.readJson(".codebuddy/.mcp.json");
+      const servers: unknown = mcp[MCP_SERVERS_KEY];
+      expect(servers !== null && typeof servers === "object").toBe(true);
+      expect(Object.keys(servers as JsonDocument)).toEqual([MCP_SERVER_NAME]);
+    });
+  });
+
+  it("registers the second JSON host's entry at its one fixed server-map path", async () => {
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      expect((await runInstaller(["install", "workbuddy"])).status).toBe(0);
+      // WorkBuddy reads `mcp.json` under its own directory and nothing else, so
+      // the CodeBuddy-style dotted alternate must never be written beside it.
+      expect(await home.exists(".workbuddy/.mcp.json")).toBe(false);
+      const mcp: JsonDocument = await home.readJson(WORKBUDDY_MCP_PATH);
       const servers: unknown = mcp[MCP_SERVERS_KEY];
       expect(servers !== null && typeof servers === "object").toBe(true);
       expect(Object.keys(servers as JsonDocument)).toEqual([MCP_SERVER_NAME]);

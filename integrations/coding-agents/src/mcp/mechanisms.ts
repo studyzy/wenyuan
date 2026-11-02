@@ -48,6 +48,14 @@ export const JSON_HOST_CANDIDATES: readonly string[] = [
 /** A second JSON host's single fixed server-map location, under its home directory. */
 export const DSH_HOST_PATH = ".dsh/mcp.json";
 
+/**
+ * WorkBuddy's MCP server-map location. It is a single fixed file, unlike
+ * CodeBuddy's priority-ordered candidates: WorkBuddy reads one path and no
+ * fallback, so a candidate list here would let an install write a file the host
+ * never opens.
+ */
+export const WORKBUDDY_MCP_PATH = ".workbuddy/mcp.json";
+
 /** The TOML host's single fixed config location. */
 export const TOML_HOST_PATH = ".codex/config.toml";
 
@@ -76,6 +84,12 @@ export const MECHANISMS: readonly McpMechanismDeclaration[] = [
     hostId: "codebuddy",
     mechanism: "json-server-map",
     location: { kind: "candidates", paths: JSON_HOST_CANDIDATES },
+    containerKey: MCP_SERVERS_KEY,
+  },
+  {
+    hostId: "workbuddy",
+    mechanism: "json-server-map",
+    location: { kind: "fixed", path: WORKBUDDY_MCP_PATH },
     containerKey: MCP_SERVERS_KEY,
   },
   {

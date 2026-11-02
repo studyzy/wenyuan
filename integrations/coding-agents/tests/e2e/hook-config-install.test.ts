@@ -29,6 +29,7 @@ const CONFIG: Record<string, string> = {
   "claude-code": ".claude/settings.json",
   codex: ".codex/hooks.json",
   codebuddy: ".codebuddy/settings.json",
+  workbuddy: ".workbuddy/settings.json",
   "cursor-cli": ".cursor/hooks.json",
   "copilot-cli": ".copilot/hooks/hooks.json",
   dsh: ".dsh/hooks/wenyuan.json",

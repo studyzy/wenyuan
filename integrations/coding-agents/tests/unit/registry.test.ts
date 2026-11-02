@@ -15,7 +15,7 @@ import { withFakeHome } from "../helpers/fake-home";
  * the all-hosts keyword or explicit names before anything is written.
  */
 
-const APPROVED = ["claude-code", "codex", "codebuddy", "cursor-cli", "copilot-cli", "dsh"];
+const APPROVED = ["claude-code", "codex", "codebuddy", "workbuddy", "cursor-cli", "copilot-cli", "dsh"];
 
 describe("the registry", () => {
   it("holds exactly the registered hosts", () => {

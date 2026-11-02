@@ -15,6 +15,7 @@ export type HostId =
   | "claude-code"
   | "codex"
   | "codebuddy"
+  | "workbuddy"
   | "cursor-cli"
   | "copilot-cli"
   | "dsh";
