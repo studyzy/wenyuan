@@ -14,6 +14,7 @@ import {
 import { ConsoleNav } from "@/components/console-nav";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -365,13 +366,7 @@ export function TenantDetailView({ tenantId }: { tenantId: string }) {
                 <p className="text-[12px] font-medium">{t("shownOnce")}</p>
                 <div className="mt-2 flex items-center gap-2">
                   <code className="min-w-0 flex-1 truncate font-mono text-[12px]">{issued.plaintext}</code>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void navigator.clipboard?.writeText(issued.plaintext)}
-                  >
-                    {tc("copy")}
-                  </Button>
+                  <CopyButton value={issued.plaintext} />
                 </div>
               </div>
             )}

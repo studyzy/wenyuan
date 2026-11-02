@@ -45,10 +45,17 @@ separately.
   test enforces parity.
 - **Upstream credential stays server-side.** `WENYUAN_CP_DATAPLANE_API_KEY` is
   attached only by `lib/server/upstream.ts`; never reference it from
-  `lib/client/` or any component.
+  `lib/client/` or any component. The same holds for the operator key when an
+  operator session has entered a tenant: `lib/server/proxy.ts` attaches it and
+  names the tenant with `X-Wenyuan-Tenant`, and the tenant cookie holds no
+  credential in that mode.
 - **Route handlers are unit-tested as plain functions.** `test/support/harness.ts`
   builds a standard `Request` and passes a context object, so tests run without
   a framework server. New handlers should follow the same shape.
+- **Clipboard access is secure-context only.** An HTTP console on a LAN address
+  has no `navigator.clipboard`, so calling it directly is a silent no-op. Use
+  `lib/client/clipboard.ts`'s `copyText` (or the `ui/copy-button` component),
+  which falls back to a selection-based copy.
 
 ## Layout
 
