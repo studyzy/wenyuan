@@ -86,6 +86,15 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   per tenant.
 - The control-plane frontend exposes the same surface at `/[locale]/tenants`,
   with BFF routes under `/api/admin/tenants/**`.
+- **The console enters a tenant without minting a key.** An operator session
+  names the tenant in `X-Wenyuan-Tenant` on a data-plane request, and the BFF
+  attaches the operator credential; `RegistryExtension` resolves that pair
+  through the registry and nothing is written to `tenant_key`. A non-operator
+  credential ignores the header and still resolves only its own tenant, and an
+  unknown, suspended or deleted tenant is the uniform 401. The tenant cookie
+  holds the tenant id alone in this mode. `POST /admin/v1/tenants/{id}/session`
+  remains for the CLI's explicit short-lived key, but the console no longer
+  calls it.
 - It also serves the **team plane**, `/admin/v1/teams`: teams, their members and
   their projects. A team *is* a tenant with `kind = 'team'` and its own schema,
   so creating one goes through the same provisioning path, and a team's key is

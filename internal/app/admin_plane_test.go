@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/studyzy/wenyuan/internal/config"
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -28,6 +29,46 @@ func TestNewAdminHandlerServesWithMemoryRegistry(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMultiTenantDataPlaneOperatorEntersNamedTenant(t *testing.T) {
+	cfg := testConfig()
+	cfg.TenantMode = config.TenantModeMulti
+	cfg.AdminListen = "127.0.0.1:18890"
+	cfg.AdminAPIKey = "operator-secret"
+	application, err := New(context.Background(), cfg, Dependencies{Store: storage.NewMemoryStore("public")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/admin/v1/tenants", strings.NewReader("{\"tenant_id\":\"acme\"}"))
+	create.Header.Set("Authorization", "Bearer operator-secret")
+	create.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	application.AdminHandler.ServeHTTP(recorder, create)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create tenant = %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	call := func(tenantID string) int {
+		request := httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil)
+		request.Header.Set("Authorization", "Bearer operator-secret")
+		if tenantID != "" {
+			request.Header.Set(httpx.TenantHeader, tenantID)
+		}
+		recorder := httptest.NewRecorder()
+		application.Handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+
+	if got := call("acme"); got != http.StatusOK {
+		t.Fatalf("operator with tenant header = %d, want 200", got)
+	}
+	if got := call(""); got != http.StatusUnauthorized {
+		t.Fatalf("operator without a tenant = %d, want 401", got)
+	}
+	if got := call("missing"); got != http.StatusUnauthorized {
+		t.Fatalf("operator naming an unknown tenant = %d, want 401", got)
 	}
 }
 

@@ -26,6 +26,12 @@ const (
 	DetailMCPInvalidToken          = "Invalid authentication token"
 )
 
+// TenantHeader names the tenant an operator credential acts as. It is read on
+// every protected request but honored only by a tenant extension that
+// recognises the credential as its operator key; a tenant key always resolves
+// its own tenant and ignores the header.
+const TenantHeader = "X-Wenyuan-Tenant"
+
 // ProtectedPrefixes are the namespaces the reference authenticates: every route
 // answered by the memory engine, and the MCP namespace. The monitoring and
 // descriptor routes are deliberately not among them, because the reference
@@ -132,7 +138,10 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 				next.ServeHTTP(w, r)
 				return
 			}
-			resolved, err := extension.Authenticate(r.Context(), tenant.Request{Credential: bearerToken(r)})
+			resolved, err := extension.Authenticate(r.Context(), tenant.Request{
+				Credential: bearerToken(r),
+				TenantID:   strings.TrimSpace(r.Header.Get(TenantHeader)),
+			})
 			if err != nil {
 				var authErr *tenant.AuthenticationError
 				if errors.As(err, &authErr) {

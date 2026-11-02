@@ -14,9 +14,11 @@ import (
 type stubTenantExtension struct {
 	contexts map[string]tenant.Context
 	down     bool
+	last     tenant.Request
 }
 
 func (s *stubTenantExtension) Authenticate(_ context.Context, request tenant.Request) (tenant.Context, error) {
+	s.last = request
 	if s.down {
 		return tenant.Context{}, errors.New("registry unavailable")
 	}
@@ -57,6 +59,29 @@ func TestTenantExtensionAuthSetsSchemaAndOverrides(t *testing.T) {
 	}
 	if seenOverrides != 200 {
 		t.Fatalf("overrides = %+v", seenOverrides)
+	}
+}
+
+func TestTenantExtensionAuthPassesNamedTenant(t *testing.T) {
+	extension := &stubTenantExtension{contexts: map[string]tenant.Context{
+		"operator": {ID: "acme", Schema: "acme"},
+	}}
+	router := NewRouter(RouterOptions{TenantExtension: extension})
+	router.Handle("GET", "/v1/default/banks", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/default/banks", nil)
+	request.Header.Set("Authorization", "Bearer operator")
+	request.Header.Set(TenantHeader, " acme ")
+	recorder := httptest.NewRecorder()
+	router.Service().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if extension.last.TenantID != "acme" {
+		t.Fatalf("TenantID = %q, want acme", extension.last.TenantID)
 	}
 }
 

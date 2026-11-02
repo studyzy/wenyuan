@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { serializeUpstream } from "../lib/server/proxy";
-import { createTenantSessionToken } from "../lib/server/session";
+import { TENANT_HEADER, serializeUpstream } from "../lib/server/proxy";
+import {
+  createAdminTenantSessionToken,
+  createSessionToken,
+  createTenantSessionToken,
+} from "../lib/server/session";
+import { OPERATOR_SUBJECT } from "../lib/server/subjects";
 import { configFixture, stubFetch } from "./support/fixtures";
 import { makeRequest, readJson } from "./support/harness";
 
@@ -16,6 +21,12 @@ const NOW = Date.now();
 
 function tenantCookie(key: string, now = NOW): string {
   return "wenyuan_cp_tenant=" + createTenantSessionToken("console-secret", "acme", key, now);
+}
+
+function adminTenantCookie(now = NOW, subject = OPERATOR_SUBJECT): string {
+  const session = "wenyuan_cp_access=" + createSessionToken("console-secret", subject, NOW);
+  const tenant = "wenyuan_cp_tenant=" + createAdminTenantSessionToken("console-secret", "acme", now);
+  return session + "; " + tenant;
 }
 
 describe("tenant-scoped data-plane proxy", () => {
@@ -49,6 +60,42 @@ describe("tenant-scoped data-plane proxy", () => {
     }
   });
 
+  it("uses the operator credential and names the tenant for an operator entry", async () => {
+    const stub = stubFetch([{ body: {} }]);
+    try {
+      await serializeUpstream({
+        config,
+        request: makeRequest("http://localhost/api/banks", { cookie: adminTenantCookie() }),
+        upstreamPath: "/v1/default/banks",
+        failureLabel: "x",
+      });
+      const headers = new Headers(stub.headers[0] as HeadersInit);
+      expect(headers.get("authorization")).toBe("Bearer operator-key");
+      expect(headers.get(TENANT_HEADER)).toBe("acme");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("does not let a tenant session borrow an operator tenant cookie", async () => {
+    const stub = stubFetch([{ body: {} }]);
+    try {
+      const response = await serializeUpstream({
+        config,
+        request: makeRequest("http://localhost/api/banks", {
+          cookie: adminTenantCookie(NOW, "tenant:acme"),
+        }),
+        upstreamPath: "/v1/default/banks",
+        failureLabel: "x",
+      });
+      expect(response.status).toBe(401);
+      expect(await readJson(response)).toEqual({ error: "tenant_session_invalid" });
+      expect(stub.calls).toHaveLength(0);
+    } finally {
+      stub.restore();
+    }
+  });
+
   it("fails closed on a tampered session cookie without calling upstream", async () => {
     const stub = stubFetch([{ body: {} }]);
     try {
@@ -73,7 +120,7 @@ describe("tenant-scoped data-plane proxy", () => {
       await serializeUpstream({
         config,
         request: makeRequest("http://localhost/api/admin/tenants", {
-          cookie: tenantCookie("wyk_tenant"),
+          cookie: adminTenantCookie(),
         }),
         upstreamPath: "/admin/v1/tenants",
         failureLabel: "x",
@@ -85,11 +132,8 @@ describe("tenant-scoped data-plane proxy", () => {
     }
   });
 
-  it("renews a session close to expiry and sets the rotated cookie", async () => {
-    const stub = stubFetch([
-      { status: 201, body: { plaintext: "wyk_renewed" } },
-      { body: {} },
-    ]);
+  it("renews a tenant-key session locally, without minting a key", async () => {
+    const stub = stubFetch([{ body: {} }]);
     try {
       const response = await serializeUpstream({
         config,
@@ -99,11 +143,8 @@ describe("tenant-scoped data-plane proxy", () => {
         upstreamPath: "/v1/default/banks",
         failureLabel: "x",
       });
-      expect(stub.calls).toEqual([
-        "http://admin.local/admin/v1/tenants/acme/session",
-        "http://data.local/v1/default/banks",
-      ]);
-      expect(new Headers(stub.headers[1] as HeadersInit).get("authorization")).toBe("Bearer wyk_renewed");
+      expect(stub.calls).toEqual(["http://data.local/v1/default/banks"]);
+      expect(new Headers(stub.headers[0] as HeadersInit).get("authorization")).toBe("Bearer wyk_old");
       expect(response.headers.get("set-cookie")).toContain("wenyuan_cp_tenant=");
     } finally {
       stub.restore();

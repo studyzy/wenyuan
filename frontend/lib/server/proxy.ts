@@ -1,10 +1,10 @@
 import type { ServerConfig } from "./config";
-import { adminServerConfig } from "./config";
 import { encodeBankId } from "./paths";
 import { jsonResponse } from "./http";
 import {
   SESSION_COOKIE,
   TENANT_SESSION_COOKIE,
+  createAdminTenantSessionToken,
   createTenantSessionToken,
   isSecureRequest,
   readSessionToken,
@@ -40,7 +40,7 @@ export type ProxyOptions = {
   /**
    * Whether a tenant session cookie may override the data-plane credential.
    * Data-plane routes keep the default (true); admin routes set false so the
-   * tenant key is never sent to the management plane.
+   * tenant credential or selection never reaches the management plane.
    */
   tenantScoped?: boolean;
 };
@@ -67,12 +67,22 @@ export function bankScopedPath(prefix: string, bankId: string, suffix = ""): str
   return `${prefix}/${encodeBankId(bankId)}${suffix}`;
 }
 
-function forwardBody(options: ProxyOptions) {
+/**
+ * The header an operator session uses to name the tenant it entered. The API
+ * honors it only when the credential is the operator key, so a tenant key can
+ * never use it to reach another tenant.
+ */
+export const TENANT_HEADER = "x-wenyuan-tenant";
+
+function forwardBody(options: ProxyOptions, headers: Record<string, string> = {}) {
   return {
     path: options.upstreamPath,
     method: options.method ?? options.request.method,
     query: options.query,
-    headers: { "content-type": options.request.headers.get("content-type") ?? "application/json" },
+    headers: {
+      ...headers,
+      "content-type": options.request.headers.get("content-type") ?? "application/json",
+    },
     body: options.body,
   } as const;
 }
@@ -105,15 +115,29 @@ function operatorWithoutTenant(config: ServerConfig, request: Request): boolean 
 
 type TenantOverride = {
   config: ServerConfig;
+  headers?: Record<string, string>;
   setCookie?: string;
   error?: Response;
 };
 
 /**
- * Swap the static data-plane credential for the tenant key a console session
- * carries. A tenant cookie that cannot be decrypted or has expired fails closed:
- * falling back to the static key would silently route the request to the
- * deployment's default schema.
+ * Swap the static data-plane credential for the tenant the console entered.
+ *
+ * Two kinds of tenant session exist:
+ *
+ * - a tenant key, sealed in the cookie by the login route; and
+ * - an operator entry, which carries only the tenant id. The BFF attaches the
+ *   operator key and names the tenant in TENANT_HEADER, and the API resolves
+ *   that pair through the registry. No tenant key is minted, so entering a
+ *   tenant leaves no credential behind.
+ *
+ * The operator path is allowed only while the console session is an operator's:
+ * a tenant or data session that happens to carry an old operator cookie must
+ * not borrow the operator credential.
+ *
+ * A tenant cookie that cannot be decrypted or has expired fails closed: falling
+ * back to the static key would silently route the request to the deployment's
+ * default schema.
  */
 async function tenantOverride(config: ServerConfig, request: Request): Promise<TenantOverride> {
   const token = cookieValue(request, TENANT_SESSION_COOKIE);
@@ -125,46 +149,58 @@ async function tenantOverride(config: ServerConfig, request: Request): Promise<T
   if (!session) {
     return { config, error: jsonResponse({ error: "tenant_session_invalid" }, 401) };
   }
-  let dataplaneKey = session.key;
-  let setCookie: string | undefined;
-  // Renew shortly before the short-lived key expires, so a console left open
-  // keeps working without the browser ever seeing the credential.
-  if (session.exp * 1000 - Date.now() < 120_000) {
-    const renewed = await renewTenantSession(config, session.tenant_id);
-    if (renewed) {
-      dataplaneKey = renewed;
-      const secure = isSecureRequest(request.headers.get("x-forwarded-proto"));
-      const next = createTenantSessionToken(config.accessKey, session.tenant_id, renewed, Date.now());
-      setCookie =
-        TENANT_SESSION_COOKIE + "=" + next + "; " + tenantSessionCookieAttributes(secure);
-    }
-  }
-  return { config: { ...config, dataplaneKey }, setCookie };
-}
 
-async function renewTenantSession(config: ServerConfig, tenantId: string): Promise<string | null> {
-  if (!config.adminKey) return null;
-  const result = await callUpstream(adminServerConfig(config), {
-    path: "/admin/v1/tenants/" + encodeURIComponent(tenantId) + "/session",
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  });
-  if (!result.ok) return null;
-  try {
-    const body = JSON.parse(new TextDecoder().decode(result.body)) as { plaintext?: unknown };
-    return typeof body.plaintext === "string" ? body.plaintext : null;
-  } catch {
-    return null;
+  // Renew shortly before the cookie expires, so a console left open keeps
+  // working. Renewal re-seals what the session already holds; it never asks
+  // the management plane for a new credential.
+  const secure = isSecureRequest(request.headers.get("x-forwarded-proto"));
+  const renewed = (tokenValue: string): string | undefined =>
+    session.exp * 1000 - Date.now() < 120_000
+      ? TENANT_SESSION_COOKIE + "=" + tokenValue + "; " + tenantSessionCookieAttributes(secure)
+      : undefined;
+
+  if (session.admin === true) {
+    const operator = readSessionToken(
+      config.accessKey,
+      cookieValue(request, SESSION_COOKIE),
+      Date.now(),
+    );
+    if (operator?.sub !== OPERATOR_SUBJECT) {
+      return { config, error: jsonResponse({ error: "tenant_session_invalid" }, 401) };
+    }
+    if (!config.adminKey) {
+      return { config, error: jsonResponse({ error: "tenant_session_unavailable" }, 503) };
+    }
+    return {
+      config: { ...config, dataplaneKey: config.adminKey },
+      headers: { [TENANT_HEADER]: session.tenant_id },
+      setCookie: renewed(
+        createAdminTenantSessionToken(config.accessKey, session.tenant_id, Date.now()),
+      ),
+    };
   }
+
+  return {
+    config: { ...config, dataplaneKey: session.key },
+    setCookie: renewed(
+      createTenantSessionToken(
+        config.accessKey,
+        session.tenant_id,
+        session.key,
+        Date.now(),
+      ),
+    ),
+  };
 }
 
 /** Direct-fetch passthrough: upstream status and payload are forwarded verbatim. */
 export async function proxyUpstream(options: ProxyOptions): Promise<Response> {
-  const override =
-    options.tenantScoped === false ? { config: options.config } : await tenantOverride(options.config, options.request);
+  const override: TenantOverride =
+    options.tenantScoped === false
+      ? { config: options.config }
+      : await tenantOverride(options.config, options.request);
   if (override.error) return override.error;
-  const result = await callUpstream(override.config, forwardBody(options));
+  const result = await callUpstream(override.config, forwardBody(options, override.headers));
   const response = passthrough(result);
   if (override.setCookie) response.headers.append("set-cookie", override.setCookie);
   return response;
@@ -208,12 +244,14 @@ function upstreamErrorField(result: UpstreamResult): string | null {
  * therefore do not need a catch that guesses a status.
  */
 export async function serializeUpstream(options: SerializeOptions): Promise<Response> {
-  const override =
-    options.tenantScoped === false ? { config: options.config } : await tenantOverride(options.config, options.request);
+  const override: TenantOverride =
+    options.tenantScoped === false
+      ? { config: options.config }
+      : await tenantOverride(options.config, options.request);
   if (override.error) return override.error;
   let result: UpstreamResult;
   try {
-    result = await callUpstream(override.config, forwardBody(options));
+    result = await callUpstream(override.config, forwardBody(options, override.headers));
   } catch {
     return upstreamUnavailableBody(options);
   }

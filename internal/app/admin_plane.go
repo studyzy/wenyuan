@@ -47,7 +47,7 @@ func OpenTenantExtension(ctx context.Context, cfg config.Config, store storage.S
 	if err != nil {
 		return nil, err
 	}
-	return NewRegistryExtension(registry), nil
+	return NewRegistryExtension(registry, ""), nil
 }
 
 // newAdminHandler builds the management plane over an already-opened registry.

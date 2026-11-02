@@ -163,7 +163,15 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		if err != nil {
 			return nil, err
 		}
-		tenantExtension = NewRegistryExtension(tenantRegistry)
+		// The operator key also authenticates the data plane, but only for the
+		// tenant a request names: that is how the console enters a tenant
+		// without minting a key. A deployment with no management listener has
+		// no one to enter one, so the key stays a management-plane secret.
+		operatorKey := ""
+		if strings.TrimSpace(cfg.AdminListen) != "" {
+			operatorKey = cfg.AdminAPIKey
+		}
+		tenantExtension = NewRegistryExtension(tenantRegistry, operatorKey)
 	}
 	if provider, ok := store.(adminDBProvider); ok {
 		db := provider.AdminDB()

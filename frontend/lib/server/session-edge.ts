@@ -116,7 +116,10 @@ export const TENANT_SESSION_MAX_AGE_SECONDS = 10 * 60;
 
 export type TenantSessionPayload = {
   tenant_id: string;
+  /** The tenant key; empty when an operator entered the tenant. */
   key: string;
+  /** True when the session was entered by the deployment operator. */
+  admin?: boolean;
   exp: number;
 };
 
@@ -125,24 +128,41 @@ async function tenantSessionKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function createTenantSessionToken(
-  secret: string,
-  tenantId: string,
-  key: string,
-  nowMs: number,
-): Promise<string> {
+async function sealTenantSession(secret: string, payload: TenantSessionPayload): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const payload: TenantSessionPayload = {
-    tenant_id: tenantId,
-    key,
-    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
-  };
   const sealed = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
     await tenantSessionKey(secret),
     new TextEncoder().encode(JSON.stringify(payload)),
   );
   return base64UrlEncode(iv) + "." + base64UrlEncode(new Uint8Array(sealed));
+}
+
+export async function createTenantSessionToken(
+  secret: string,
+  tenantId: string,
+  key: string,
+  nowMs: number,
+): Promise<string> {
+  return sealTenantSession(secret, {
+    tenant_id: tenantId,
+    key,
+    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
+  });
+}
+
+/** A tenant entered by the operator; the cookie carries no tenant key. */
+export async function createAdminTenantSessionToken(
+  secret: string,
+  tenantId: string,
+  nowMs: number,
+): Promise<string> {
+  return sealTenantSession(secret, {
+    tenant_id: tenantId,
+    key: "",
+    admin: true,
+    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
+  });
 }
 
 export async function readTenantSessionToken(
@@ -166,10 +186,12 @@ export async function readTenantSessionToken(
     if (
       typeof payload.tenant_id !== "string" ||
       typeof payload.key !== "string" ||
-      typeof payload.exp !== "number"
+      typeof payload.exp !== "number" ||
+      (payload.admin !== undefined && typeof payload.admin !== "boolean")
     ) {
       return null;
     }
+    if (payload.admin === true ? payload.key !== "" : payload.key === "") return null;
     if (payload.exp * 1000 <= nowMs) return null;
     return payload;
   } catch {

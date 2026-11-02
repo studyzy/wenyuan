@@ -122,25 +122,45 @@ export function clearSessionCookieAttributes(secure: boolean): string {
   return parts.join("; ");
 }
 /**
- * Tenant-session token: an AEAD-encrypted short-lived tenant credential.
+ * Tenant-session token: an AEAD-encrypted short-lived tenant selection.
  *
- * The console holds the tenant key so the BFF can proxy the existing bank pages
- * without ever handing the key to browser JavaScript. A tenant key is a bearer
- * secret, so the cookie is encrypted (AES-256-GCM) rather than merely signed;
- * the format is base64url(iv) + "." + base64url(ciphertext || tag), which the
- * Edge implementation reads and writes identically.
+ * A session entered with a tenant key holds that key so the BFF can proxy the
+ * bank pages without ever handing it to browser JavaScript; a session entered
+ * by the operator holds only the tenant id and is paired with the operator
+ * credential at the proxy. Either way the payload is a bearer secret, so the
+ * cookie is encrypted (AES-256-GCM) rather than merely signed; the format is
+ * base64url(iv) + "." + base64url(ciphertext || tag), which the Edge
+ * implementation reads and writes identically.
  */
 export const TENANT_SESSION_COOKIE = "wenyuan_cp_tenant";
 export const TENANT_SESSION_MAX_AGE_SECONDS = 10 * 60;
 
 export type TenantSessionPayload = {
   tenant_id: string;
+  /** The tenant key; empty when an operator entered the tenant. */
   key: string;
+  /**
+   * True when the session was entered by the deployment operator. Such a
+   * session holds no tenant key: the BFF attaches the operator credential and
+   * names the tenant on the data plane.
+   */
+  admin?: boolean;
   exp: number;
 };
 
 function tenantSessionKey(secret: string): Buffer {
   return createHash("sha256").update(secret).digest();
+}
+
+function sealTenantSession(secret: string, payload: TenantSessionPayload): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", tenantSessionKey(secret), iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final(),
+  ]);
+  const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
+  return iv.toString("base64url") + "." + sealed.toString("base64url");
 }
 
 export function createTenantSessionToken(
@@ -149,19 +169,29 @@ export function createTenantSessionToken(
   key: string,
   nowMs: number,
 ): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", tenantSessionKey(secret), iv);
-  const payload: TenantSessionPayload = {
+  return sealTenantSession(secret, {
     tenant_id: tenantId,
     key,
     exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
-  };
-  const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify(payload), "utf8"),
-    cipher.final(),
-  ]);
-  const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
-  return iv.toString("base64url") + "." + sealed.toString("base64url");
+  });
+}
+
+/**
+ * A tenant entered by the operator. The cookie names the tenant and nothing
+ * else: the data-plane credential is the operator key the BFF already holds,
+ * attached only when it proxies a request for this session.
+ */
+export function createAdminTenantSessionToken(
+  secret: string,
+  tenantId: string,
+  nowMs: number,
+): string {
+  return sealTenantSession(secret, {
+    tenant_id: tenantId,
+    key: "",
+    admin: true,
+    exp: Math.floor(nowMs / 1000) + TENANT_SESSION_MAX_AGE_SECONDS,
+  });
 }
 
 export function readTenantSessionToken(
@@ -186,10 +216,15 @@ export function readTenantSessionToken(
     if (
       typeof payload.tenant_id !== "string" ||
       typeof payload.key !== "string" ||
-      typeof payload.exp !== "number"
+      typeof payload.exp !== "number" ||
+      (payload.admin !== undefined && typeof payload.admin !== "boolean")
     ) {
       return null;
     }
+    // An operator session names a tenant but carries no key; a tenant-key
+    // session must carry one. Anything else is malformed rather than a
+    // session that silently falls back to a credential it does not have.
+    if (payload.admin === true ? payload.key !== "" : payload.key === "") return null;
     if (payload.exp * 1000 <= nowMs) return null;
     return payload;
   } catch {

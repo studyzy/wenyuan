@@ -33,7 +33,7 @@ func TestRegistryExtensionAuthenticate(t *testing.T) {
 	ctx := context.Background()
 	registry := storage.NewMemoryTenantRegistry()
 	plaintext, key := seedActiveTenant(t, registry, "acme", map[string]any{"enable_text_search": false})
-	extension := NewRegistryExtension(registry)
+	extension := NewRegistryExtension(registry, "")
 
 	resolved, err := extension.Authenticate(ctx, tenant.Request{Credential: plaintext})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestRegistryExtensionRejectsInactiveTenants(t *testing.T) {
 	ctx := context.Background()
 	registry := storage.NewMemoryTenantRegistry()
 	plaintext, _ := seedActiveTenant(t, registry, "acme", nil)
-	extension := NewRegistryExtension(registry)
+	extension := NewRegistryExtension(registry, "")
 
 	suspended := tenant.StatusSuspended
 	if _, err := registry.UpdateTenant(ctx, "acme", storage.TenantUpdate{Status: &suspended}); err != nil {
@@ -110,6 +110,77 @@ func TestRegistryExtensionRejectsInactiveTenants(t *testing.T) {
 	}
 }
 
+func TestRegistryExtensionOperatorResolvesNamedTenant(t *testing.T) {
+	ctx := context.Background()
+	registry := storage.NewMemoryTenantRegistry()
+	tenantKey, _ := seedActiveTenant(t, registry, "acme", map[string]any{"enable_text_search": false})
+	seedActiveTenant(t, registry, "beta", nil)
+	extension := NewRegistryExtension(registry, "operator-secret")
+
+	resolved, err := extension.Authenticate(ctx, tenant.Request{Credential: "operator-secret", TenantID: "beta"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if resolved.ID != "beta" || resolved.Schema != "beta" {
+		t.Fatalf("resolved = %+v, want beta", resolved)
+	}
+
+	fromOperator, err := extension.Authenticate(ctx, tenant.Request{Credential: "operator-secret", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("Authenticate acme: %v", err)
+	}
+	if fromOperator.Overrides["enable_text_search"] != false {
+		t.Fatalf("overrides = %+v", fromOperator.Overrides)
+	}
+
+	// A tenant key resolves its own tenant even when the header names another
+	// one: the operator branch is the only caller of the named tenant.
+	own, err := extension.Authenticate(ctx, tenant.Request{Credential: tenantKey, TenantID: "beta"})
+	if err != nil {
+		t.Fatalf("Authenticate tenant key: %v", err)
+	}
+	if own.ID != "acme" {
+		t.Fatalf("resolved = %+v, want acme", own)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		credential string
+		tenantID   string
+	}{
+		{name: "operator without a tenant", credential: "operator-secret"},
+		{name: "operator naming an unknown tenant", credential: "operator-secret", tenantID: "missing"},
+		{name: "non-operator naming a tenant", credential: "wyk_unknown", tenantID: "beta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := extension.Authenticate(ctx, tenant.Request{Credential: tc.credential, TenantID: tc.tenantID})
+			if !errors.Is(err, tenant.ErrAuthentication) {
+				t.Fatalf("Authenticate(%q, %q) = %v, want ErrAuthentication", tc.credential, tc.tenantID, err)
+			}
+		})
+	}
+
+	suspended := tenant.StatusSuspended
+	if _, err := registry.UpdateTenant(ctx, "beta", storage.TenantUpdate{Status: &suspended}); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if _, err := extension.Authenticate(ctx, tenant.Request{Credential: "operator-secret", TenantID: "beta"}); !errors.Is(err, tenant.ErrAuthentication) {
+		t.Fatalf("suspended tenant = %v, want ErrAuthentication", err)
+	}
+}
+
+func TestRegistryExtensionWithoutOperatorKeyIgnoresTenantHeader(t *testing.T) {
+	ctx := context.Background()
+	registry := storage.NewMemoryTenantRegistry()
+	seedActiveTenant(t, registry, "acme", nil)
+	extension := NewRegistryExtension(registry, "")
+
+	_, err := extension.Authenticate(ctx, tenant.Request{Credential: "operator-secret", TenantID: "acme"})
+	if !errors.Is(err, tenant.ErrAuthentication) {
+		t.Fatalf("Authenticate = %v, want ErrAuthentication", err)
+	}
+}
+
 func TestRegistryExtensionListTenants(t *testing.T) {
 	ctx := context.Background()
 	registry := storage.NewMemoryTenantRegistry()
@@ -122,7 +193,7 @@ func TestRegistryExtensionListTenants(t *testing.T) {
 		t.Fatalf("create gamma: %v", err)
 	}
 
-	extension := NewRegistryExtension(registry)
+	extension := NewRegistryExtension(registry, "")
 	tenants, err := extension.ListTenants(ctx)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)

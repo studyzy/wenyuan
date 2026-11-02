@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   TENANT_SESSION_COOKIE,
   TENANT_SESSION_MAX_AGE_SECONDS,
+  createAdminTenantSessionToken,
   createTenantSessionToken,
   readTenantSessionToken,
   tenantSessionCookieAttributes,
   clearTenantSessionCookieAttributes,
 } from "../lib/server/session";
 import {
+  createAdminTenantSessionToken as createEdgeAdminToken,
   createTenantSessionToken as createEdgeToken,
   readTenantSessionToken as readEdgeToken,
 } from "../lib/server/session-edge";
@@ -48,6 +50,32 @@ describe("tenant session token", () => {
       key: "wyk_edge",
       exp: EXP,
     });
+
+    const edgeAdmin = await createEdgeAdminToken("console-secret", "acme", NOW);
+    expect(readTenantSessionToken("console-secret", edgeAdmin, NOW)).toEqual({
+      tenant_id: "acme",
+      key: "",
+      admin: true,
+      exp: EXP,
+    });
+  });
+
+  it("round-trips an operator-entered tenant without a key", () => {
+    const token = createAdminTenantSessionToken("console-secret", "acme", NOW);
+    expect(readTenantSessionToken("console-secret", token, NOW)).toEqual({
+      tenant_id: "acme",
+      key: "",
+      admin: true,
+      exp: EXP,
+    });
+  });
+
+  it("rejects a session whose key and mode disagree", () => {
+    // An admin marker with a key, or a keyless session without the marker, is
+    // not a state the console can produce; reading it must fail rather than
+    // pick one of the two credentials.
+    const keyed = createTenantSessionToken("console-secret", "acme", "", NOW);
+    expect(readTenantSessionToken("console-secret", keyed, NOW)).toBeNull();
   });
 
   it("sets an httpOnly, sameSite lax cookie for ten minutes", () => {

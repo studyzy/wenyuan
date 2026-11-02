@@ -93,6 +93,11 @@ type Request struct {
 	// Credential is the bearer credential the request carried, empty when
 	// none was supplied.
 	Credential string
+	// TenantID names the tenant an operator credential acts as. It comes from
+	// the data plane's X-Wenyuan-Tenant header and is honored only by an
+	// extension that recognises the credential as its operator key; every
+	// other credential resolves through its own key and this is ignored.
+	TenantID string
 	// Headers holds any headers the deployment opted into, keyed by
 	// lower-cased name.
 	Headers map[string]string

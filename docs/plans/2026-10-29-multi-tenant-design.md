@@ -280,13 +280,15 @@ schema 要求。
   `WENYUAN_CP_ACCESS_KEY` 继续做控制台登录。
 - 新页面：`/tenants`、`/tenants/new`、`/tenants/[id]`（配置、key、用量、迁移版本）、
   `/overview`。
-- 进入租户：BFF 调 `POST /admin/v1/tenants/{id}/session` 拿短期租户 key，放在
-  加密签名的 HttpOnly cookie 里（现有 session 只是 HMAC 签名，存密钥要升级为 AEAD
-  加密；Node 与 Edge 两份实现 `frontend/lib/server/session.ts` /
-  `session-edge.ts` 都要改），再拿它代理现有 bank 页面；到期自动续签。
-  key 永远不进浏览器 JS。
+- 进入租户（2026-11-02 修订）：BFF 不再调 `POST /admin/v1/tenants/{id}/session`
+  代签 key，而是在加密的 HttpOnly tenant cookie 里只放 tenant id（`admin: true`、
+  `key: ""`）。代理现有 bank 页面时，BFF 用 operator key 做数据面凭据，并把
+  `X-Wenyuan-Tenant: <tenant_id>` 交给 API；`RegistryExtension` 用注册表解析这个
+  组合，非 operator 凭据一律忽略该头。进入任意次租户都不会再往 `tenant_key`
+  写行。tenant-key 登录仍把 key 封在 cookie 里；到期续期只是本地重封，不再请求
+  管理面。key 与 operator key 都永远不进浏览器 JS。
 - cookie 保持 `SameSite=Lax` + `HttpOnly`，BFF 的写请求再加一层 Origin 校验：
-  cookie 里现在装的是可用的租户凭据，不再只是一个登录事实。
+  tenant-key 模式下 cookie 里装的是可用的租户凭据；operator 模式下只有 tenant id。
 - 未选租户时保持现有单租户控制台；后端未配注册表时管理页面整体隐藏。
 
 ## worker 与可观测
@@ -329,7 +331,9 @@ schema 要求。
   `MigrationDatabaseURL`（`internal/storage/postgres.go` 已支持迁移走独立 DSN、
   serving pool 不发 DDL），管理面复用同一形状即可。
 - 代签 key：TTL ≤ 10 分钟，label `console:<operator>`，在 key 列表中以 `ephemeral`
-  可见、可审计。
+  可见、可审计。**控制台不再使用它**（见「控制台接入」的 2026-11-02 修订）；
+  `POST /admin/v1/tenants/{id}/session` 仅供 `wenyuan-admin tenant session`
+  显式取短期 key，不再有自动签发。
 - slug 校验保留名与控制字符；key 不进 URL、不回显、不写日志，日志只出现 `prefix`。
 - key 规格：≥128 bit 随机、固定前缀（如 `wyk_`），sha256 无盐对高熵密钥是安全的
   （与口令哈希不同，不需要 KDF）；`last_used_at` 按分钟采样写，避免每请求一次写放大。
@@ -352,7 +356,9 @@ schema 要求。
   文档导出对象 key 落在各自 schema 前缀下。
 - 兼容回归：未配注册表时整套 parity 测试与 `reference_openapi.py --check` 原样通过；
   管理路由不出现在 `/openapi.json`。
-- 控制台：BFF 任何响应都不含租户 key；session 加密；管理页在后端未启用时隐藏。
+- 控制台：BFF 任何响应都不含租户 key；operator 进入租户的 cookie 只含 tenant id，
+  数据面凭据是 operator key + `X-Wenyuan-Tenant`；session 加密；管理页在后端
+  未启用时隐藏。
 - 故障注入：注册表不可用时数据面 503，且没有请求落到 `public`。
 
 ## 分阶段
