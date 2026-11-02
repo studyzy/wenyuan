@@ -23,7 +23,11 @@ type MigrateFlags struct {
 	// SourceBank is the bank to read when SourceURL is set. Empty falls back
 	// to the target bank id.
 	SourceBank string
-	// BankID is the target bank identifier. Empty uses the archive's source id.
+	// Tenant is the tenant the copy belongs to, resolved from --tenant by the
+	// dispatcher before the store is opened.
+	Tenant string
+	// BankID is the target bank identifier. Empty re-homes the archive's source
+	// name under Tenant (coding-agent::wenyuan -> studyzy::wenyuan).
 	BankID string
 	// Replace deletes the target bank's rows before writing (idempotent).
 	Replace bool
@@ -88,12 +92,14 @@ func readDirectBank(ctx context.Context, flags MigrateFlags) (*transferarchive.A
 		return nil, func() {}, err
 	}
 	bankID := flags.SourceBank
-	if bankID == "" {
+	// --bank-id names the target once a tenant re-homes the bank, so it can only
+	// stand in for the source when no tenant was selected.
+	if bankID == "" && flags.Tenant == "" {
 		bankID = flags.BankID
 	}
 	if bankID == "" {
 		_ = db.Close()
-		return nil, func() {}, fmt.Errorf("--source-bank (or --bank-id) is required to read a bank directly")
+		return nil, func() {}, fmt.Errorf("--source-bank (or --bank-id without --tenant) is required to read a bank directly")
 	}
 	archive, err := storage.NewDirectSource(db, bankID).Read(ctx)
 	if err != nil {
@@ -127,6 +133,10 @@ func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, ou
 		source = filepath.Base(flags.Archive)
 	}
 
+	target, err := ImportTargetBankID(archive.Manifest.SourceBankID, flags.Tenant, flags.BankID)
+	if err != nil {
+		return archiveimport.Report{}, err
+	}
 	mode := archiveimport.Replace
 	switch {
 	case flags.Append:
@@ -136,7 +146,7 @@ func RunMigrate(ctx context.Context, store storage.Store, flags MigrateFlags, ou
 	}
 	report, err := archiveimport.Run(ctx, store, archiveimport.Mapping{
 		Archive: archive,
-		BankID:  flags.BankID,
+		BankID:  target,
 	}, archiveimport.Options{Mode: mode, DryRun: flags.DryRun, DiscardDocumentText: flags.DiscardDocumentText})
 	if err != nil {
 		return archiveimport.Report{}, err

@@ -328,7 +328,7 @@ func (a ImportApplier) createBank(ctx context.Context, req ImportRequest, target
 	}
 	if len(req.Archive.Banks) > 0 {
 		row := req.Archive.Banks[0]
-		if name := rowString(row, "name"); name != "" {
+		if name := restoredBankName(row, req.Archive.Manifest.SourceBankID, target); name != "" {
 			bank.Name = name
 		}
 		if mission := rowString(row, "mission"); mission != "" {
@@ -343,6 +343,24 @@ func (a ImportApplier) createBank(ctx context.Context, req ImportRequest, target
 	}
 	_, err := a.Store.CreateBank(ctx, bank)
 	return err
+}
+
+// restoredBankName returns the display name a restore writes.
+//
+// A bank's default display name is its id, so restoring under a new id would
+// otherwise leave the copy showing the source's id as its name — two banks
+// reading as the same one in any list of names. The rename is followed only
+// when the archived name is that default; a name someone actually chose is
+// theirs and is kept (engine/transfer/importer.py, the reference's rule).
+func restoredBankName(row map[string]any, source, target string) string {
+	name := rowString(row, "name")
+	if name == "" {
+		return ""
+	}
+	if source != "" && target != source && name == source {
+		return target
+	}
+	return name
 }
 
 // applyDocuments replays every document payload into the target bank: the
@@ -1072,7 +1090,7 @@ func (a ImportApplier) applyBankProfile(ctx context.Context, req ImportRequest, 
 		return nil
 	}
 	row := req.Archive.Banks[0]
-	name := rowString(row, "name")
+	name := restoredBankName(row, req.Archive.Manifest.SourceBankID, target)
 	mission := rowString(row, "mission")
 	disposition := rowIntMap(row, "disposition")
 	config, _ := rowMap(row, "config")

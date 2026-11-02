@@ -53,7 +53,13 @@ func ParseExportBank(args []string) (ExportBankFlags, error) {
 
 // ImportBankFlags is the parsed `import-bank` command surface.
 type ImportBankFlags struct {
-	Archive        string
+	Archive string
+	// Tenant is the tenant the copy belongs to. It is resolved from --tenant
+	// by the dispatcher, which needs it before the store is opened, so it is
+	// not a flag of this parser.
+	Tenant string
+	// TargetBank is the explicit bank id. Empty re-homes the archive's source
+	// name under Tenant (coding-agent::wenyuan -> studyzy::wenyuan).
 	TargetBank     string
 	IncludeHistory bool
 	// DiscardDocumentText is resolved by the caller from the deployment
@@ -131,20 +137,28 @@ func RunImportBank(ctx context.Context, store storage.Store, embeddings storage.
 	if err != nil {
 		return transfer.ImportReport{}, err
 	}
+	target, err := ImportTargetBankID(archive.Manifest.SourceBankID, flags.Tenant, flags.TargetBank)
+	if err != nil {
+		return transfer.ImportReport{}, err
+	}
 	report, err := transfer.ImportApplier{Store: store, Embeddings: embeddings, DiscardDocumentText: flags.DiscardDocumentText}.Apply(ctx, transfer.ImportRequest{
 		Archive:      archive,
 		BankID:       archive.Manifest.SourceBankID,
-		TargetBankID: flags.TargetBank,
+		TargetBankID: target,
 		Mode:         transfer.ImportRestore,
 		Scope:        BankExportScope(flags.IncludeHistory),
 	})
 	if err != nil {
 		return report, err
 	}
-	_, _ = fmt.Fprintf(out, "Imported bank %q: %d doc(s), %d fact(s), %d observation(s), "+
+	tenantClause := ""
+	if flags.Tenant != "" {
+		tenantClause = fmt.Sprintf(" into tenant %q", flags.Tenant)
+	}
+	_, _ = fmt.Fprintf(out, "Imported bank %q%s: %d doc(s), %d fact(s), %d observation(s), "+
 		"%d attachment(s), %d mental model(s), %d mm-history row(s), %d knowledge page(s), "+
 		"%d directive(s), %d webhook(s), %d history row(s), %d operation(s), %d invalidated fact(s)\n",
-		report.TargetBankID, report.DocumentsImported, report.FactsImported, report.ObservationsImported,
+		report.TargetBankID, tenantClause, report.DocumentsImported, report.FactsImported, report.ObservationsImported,
 		report.AttachmentsImported, report.MentalModelsImported, report.MentalModelHistory,
 		report.KnowledgePagesImported, report.DirectivesImported, report.WebhooksImported,
 		report.HistoryRows, report.Operations, report.InvalidatedMemories)

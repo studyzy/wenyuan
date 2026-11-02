@@ -131,7 +131,7 @@ key，用它会登录失败，各租户改用自己的 `wyk_...` key 登录。
 ```sh
 bankctl bank rename --from OLD --to NEW [--dry-run]
 bankctl bank export-bank --bank ID --output FILE [--include-history]
-bankctl bank import-bank --archive FILE [--target-bank ID] [--include-history]
+bankctl bank import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history]
 bankctl bank backup [--output] FILE
 bankctl bank restore [--input] FILE [--yes]
 bankctl bank run-db-migration [--embedding-dimension N] [--skip-extension-reconcile]
@@ -139,11 +139,43 @@ bankctl bank repair-bank (--bank ID | --all) [--dry-run]
 bankctl bank worker-status
 bankctl bank decommission-worker [--worker] ID [--yes]
 bankctl bank decommission-workers [--yes]
-bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
+bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) --tenant TENANT [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
 ```
 
 所有数据库命令都可用 `--schema/-s` 指向配置之外的 schema；不带 `--schema` 的迁移
 覆盖基础 schema 及租户扩展报告的每个 schema。
+
+归档导入会写入一个新的 bank id。参考实现与本服务的 id 前缀含义不同：前者是产出该
+bank 的 harness（`coding-agent::wenyuan`），后者是拥有它的租户
+（`studyzy::wenyuan`）。前缀无法照搬，因此多租户部署下 `--tenant` 是必填项，
+工具据此从注册表解析该租户的 schema。不传 `--target-bank` 时，归档中的名称会
+重新挂到租户下（`coding-agent::wenyuan` → `studyzy::wenyuan`）；显式指定目标时
+必须属于该租户：
+
+```sh
+bankctl bank import-bank --archive coding-agent__wenyuan.zip --tenant studyzy
+bankctl bank import-bank --archive bank.zip --tenant studyzy --target-bank studyzy::wenyuan
+```
+
+## Bank ID 命名规则
+
+每个 bank 属于唯一一个租户的 PostgreSQL schema，id 以该租户开头：
+
+```
+<tenant-id>::<name>
+```
+
+- `<tenant-id>` 是租户注册表中的 id（`studyzy`、`acme` 等）。个人聚合 bank 为
+  `<tenant-id>::myself`，只由 rollup 任务写入；团队项目 bank 为
+  `<team-tenant-id>::<name>`，只由 merge 任务写入。
+- `<name>` 是该租户内的 bank 名。`::` 属于 id 本身，不是 URL 编码。
+- 参考实现在同一字段上用 harness 前缀（`coding-agent::wenyuan`）。该前缀不是
+  tenant id，导入时绝不照搬——这正是 `bankctl bank import-bank` 要求 `--tenant`
+  的原因。
+- bank 的显示名默认等于 id。导入会保留自定义显示名；当归档中的名字就是源 id 时，
+  显示名跟随重命名。
+- 限制：非空、不超过 192 字节合法 UTF-8、不含控制字符、不能以 `_` 开头（保留给
+  存储内部簿记）。
 
 ## 配置
 

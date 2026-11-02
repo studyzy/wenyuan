@@ -226,7 +226,7 @@ in this build.
 ```sh
 bankctl bank rename --from OLD --to NEW [--dry-run]
 bankctl bank export-bank --bank ID --output FILE [--include-history]
-bankctl bank import-bank --archive FILE [--target-bank ID] [--include-history]
+bankctl bank import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history]
 bankctl bank backup [--output] FILE
 bankctl bank restore [--input] FILE [--yes]
 bankctl bank run-db-migration [--embedding-dimension N] [--skip-extension-reconcile]
@@ -234,12 +234,26 @@ bankctl bank repair-bank (--bank ID | --all) [--dry-run]
 bankctl bank worker-status
 bankctl bank decommission-worker [--worker] ID [--yes]
 bankctl bank decommission-workers [--yes]
-bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
+bankctl bank migrate (--archive FILE | --source-url URL --source-bank ID) --tenant TENANT [--bank-id ID] [--replace|--append|--incremental] [--dry-run]
 ```
 
 Every database command takes `--schema/-s` to point at a schema other than the
 configured one, and `--schema`-less migrations cover the base schema plus every
 schema the tenant extension reports.
+
+An archive import writes under a new bank id. The two implementations spell that
+id differently: the reference names the harness that produced the bank
+(`coding-agent::wenyuan`), while this service names the tenant that owns it
+(`studyzy::wenyuan`). The prefix cannot be carried across, so `--tenant` is
+required in a multi-tenant deployment and selects the tenant's schema through the
+registry. Without `--target-bank`, the archive's name is re-homed under the
+tenant (`coding-agent::wenyuan` → `studyzy::wenyuan`); an explicit target must be
+scoped to that tenant:
+
+```sh
+bankctl bank import-bank --archive coding-agent__wenyuan.zip --tenant studyzy
+bankctl bank import-bank --archive bank.zip --tenant studyzy --target-bank studyzy::wenyuan
+```
 
 ### Client CLI
 
@@ -261,6 +275,30 @@ Output is `pretty` by default; `-o json` / `-o yaml` switch to machine
 formats. Configuration lives in `~/.wenyuan/config` with named profiles in
 `~/.wenyuan/cli-profiles/`; `WENYUAN_API_URL` and `WENYUAN_API_KEY`
 override both.
+
+## Bank identifiers
+
+A bank lives in exactly one tenant's PostgreSQL schema, and its id names that
+tenant:
+
+```
+<tenant-id>::<name>
+```
+
+- `<tenant-id>` is the tenant's registry id (`studyzy`, `acme`, …). A personal
+  tenant's aggregate bank is `<tenant-id>::myself`, written only by the rollup
+  job; a team's project bank is `<team-tenant-id>::<name>`, written only by the
+  merge job.
+- `<name>` is the bank's name inside that tenant. `::` is part of the id, not
+  URL encoding.
+- The reference implementation uses the same field with a different prefix: it
+  names the harness that produced the bank (`coding-agent::wenyuan`). That
+  prefix is not a tenant id and is never carried across an import, which is why
+  `bankctl bank import-bank` requires `--tenant`.
+- A bank's display name defaults to its id. An import keeps a custom display
+  name, and follows the rename when the archived name is just the source id.
+- Limits: non-empty, at most 192 bytes of valid UTF-8, no control characters,
+  no leading `_` (reserved for store bookkeeping).
 
 ## Configuration
 

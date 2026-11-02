@@ -91,7 +91,7 @@ curl -X POST \
 ### 3.2 在 Wenyuan 上预演（不写库）
 
 ```sh
-bankctl bank migrate --archive reference-<bank_id>.zip --dry-run
+bankctl bank migrate --archive reference-<bank_id>.zip --tenant <tenant-id> --dry-run
 ```
 
 输出示例：
@@ -112,17 +112,28 @@ would migrate <bank_id> from reference-<bank_id>.zip (replace mode)
 
 **核对计数**与上游侧的实际数量一致，并确认"未映射字段"清单可接受。
 
+多租户部署下 `--tenant` 是必填项：上游的 bank id 前缀是 harness 名
+（`coding-agent::wenyuan`），本服务的前缀是 TenantID（`studyzy::wenyuan`），
+前缀不能照搬。工具用租户注册表把 TenantID 解析成对应 schema，并按
+`<tenant-id>::<源名去前缀>` 生成目标 bank id；显式 `--bank-id` 必须带该租户前缀。
+需要保留全部内容（观察、知识页、mental model 等）时，用 `import-bank` 而不是
+`migrate`：
+
+```sh
+bankctl bank import-bank --archive reference-<bank_id>.zip --tenant <tenant-id>
+```
+
 ### 3.3 正式导入
 
 ```sh
 # 幂等重建（推荐）：先清空目标 bank 再写入，可重复执行
-bankctl bank migrate --archive reference-<bank_id>.zip --replace
+bankctl bank migrate --archive reference-<bank_id>.zip --tenant <tenant-id> --replace
 
 # 追加合并：保留目标 bank 已有行
-bankctl bank migrate --archive reference-<bank_id>.zip --append
+bankctl bank migrate --archive reference-<bank_id>.zip --tenant <tenant-id> --append
 
-# 指定目标 bank id（默认用导出里的 source_bank_id）
-bankctl bank migrate --archive reference-<bank_id>.zip --bank-id <new-id>
+# 指定目标 bank id（默认由 <tenant-id>::<源名去前缀> 派生）
+bankctl bank migrate --archive reference-<bank_id>.zip --tenant <tenant-id> --bank-id <tenant-id>::<name>
 ```
 
 ### 3.4 验证

@@ -26,7 +26,7 @@ import (
 const usage = "usage: bankctl bank " +
 	"rename --from OLD --to NEW [--dry-run] | " +
 	"export-bank --bank ID --output FILE [--include-history] | " +
-	"import-bank --archive FILE [--target-bank ID] [--include-history] | " +
+	"import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history] | " +
 	"backup [--output] FILE | " +
 	"restore [--input] FILE [--yes] | " +
 	"run-db-migration | " +
@@ -34,7 +34,7 @@ const usage = "usage: bankctl bank " +
 	"worker-status | " +
 	"decommission-worker [--worker] ID [--yes] | " +
 	"decommission-workers [--yes] | " +
-	"migrate (--archive FILE | --source-url URL --source-bank ID) [--bank-id ID] [--replace|--append|--incremental] [--dry-run]"
+	"migrate (--archive FILE | --source-url URL --source-bank ID) --tenant TENANT [--bank-id ID] [--replace|--append|--incremental] [--dry-run]"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
@@ -65,11 +65,40 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	if args[1] == "run-db-migration" {
 		return runDBMigration(ctx, schema, args[2:], stdout)
 	}
+	cfg := config.FromEnvironment()
+	tenant, args, err := splitTenantOption(args)
+	if err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		return errors.New(usage)
+	}
+	command := args[1]
+	switch {
+	case tenant != "" && !importCommand(command):
+		return bankadmin.NewUsageError("--tenant is only valid for import-bank and migrate")
+	case importCommand(command):
+		// The tenant chooses the schema, and the store is opened against it, so
+		// this has to be settled before the store exists.
+		schema, err = resolveImportSchema(ctx, cfg, schema, tenant)
+		if err != nil {
+			return err
+		}
+		if tenant != "" {
+			_, _ = fmt.Fprintf(stdout, "Importing into tenant %q (schema %q)\n", tenant, schema)
+		}
+	}
 	store, err := openStore(ctx, schema)
 	if err != nil {
 		return err
 	}
-	return dispatch(ctx, store, args[1], args[2:], stdin, stdout)
+	return dispatch(ctx, store, command, args[2:], tenant, stdin, stdout)
+}
+
+// importCommand reports whether a command writes a bank from an archive, which
+// is what makes the tenant selection meaningful.
+func importCommand(command string) bool {
+	return command == "import-bank" || command == "migrate"
 }
 
 // splitSchemaOption lifts the global --schema/-s selector out of the argument
@@ -158,7 +187,7 @@ func migrationSchemas(ctx context.Context, cfg config.Config, schema string) ([]
 }
 
 // dispatch runs one bank subcommand against the store.
-func dispatch(ctx context.Context, store storage.Store, command string, args []string, stdin io.Reader, stdout io.Writer) error {
+func dispatch(ctx context.Context, store storage.Store, command string, args []string, tenant string, stdin io.Reader, stdout io.Writer) error {
 	switch command {
 	case "rename":
 		flags, err := bankadmin.ParseRename(args)
@@ -179,6 +208,7 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 		if err != nil {
 			return err
 		}
+		flags.Tenant = tenant
 		flags.DiscardDocumentText = !config.FromEnvironment().StoreDocumentText
 		_, err = bankadmin.RunImportBank(ctx, store, importEmbeddings(stdout), flags, stdout)
 		return err
@@ -187,6 +217,7 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 		if err != nil {
 			return err
 		}
+		flags.Tenant = tenant
 		flags.DiscardDocumentText = !config.FromEnvironment().StoreDocumentText
 		_, err = bankadmin.RunMigrate(ctx, store, flags, stdout)
 		return err
