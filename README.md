@@ -295,6 +295,11 @@ tenant:
   names the harness that produced the bank (`coding-agent::wenyuan`). That
   prefix is not a tenant id and is never carried across an import, which is why
   `bankctl bank import-bank` requires `--tenant`.
+- A Hindsight-compatible coding-agent client keeps addressing its bank as
+  `coding-agent::<project>`: in multi-tenant mode the data plane replaces that
+  prefix with the tenant the request's key resolved to, so the same call is
+  served as `<tenant>::<project>`. Any other prefix is passed through as sent,
+  and a single-tenant deployment (no tenant registry) never rewrites.
 - A bank's display name defaults to its id. An import keeps a custom display
   name, and follows the rename when the archived name is just the source id.
 - Limits: non-empty, at most 192 bytes of valid UTF-8, no control characters,

@@ -156,6 +156,11 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 				WriteJSON(w, http.StatusServiceUnavailable, ErrorEnvelope{Detail: DetailAuthenticationUnavailable})
 				return
 			}
+			// A coding-agent client addresses its bank by the harness name
+			// ("coding-agent::<project>"), which is not a tenant id here. The
+			// credential has just resolved the tenant, so its id takes the
+			// prefix's place before routing captures the bank id.
+			rewriteAgentBankPrefix(r.URL, resolved.ID)
 			r = r.WithContext(ctx)
 			if len(resolved.Overrides) > 0 {
 				r = WithTenantOverrides(r, resolved.Overrides)

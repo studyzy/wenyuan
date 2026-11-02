@@ -172,6 +172,10 @@ bankctl bank import-bank --archive bank.zip --tenant studyzy --target-bank study
 - 参考实现在同一字段上用 harness 前缀（`coding-agent::wenyuan`）。该前缀不是
   tenant id，导入时绝不照搬——这正是 `bankctl bank import-bank` 要求 `--tenant`
   的原因。
+- 与 Hindsight 兼容的 coding-agent 客户端仍用 `coding-agent::<project>` 访问自己的
+  bank：多租户模式下数据面会把该前缀替换成请求所用 key 解析出的租户，同一次调用
+  按 `<tenant>::<project>` 服务。其他前缀原样透传；单租户部署（无租户注册表）
+  从不改写。
 - bank 的显示名默认等于 id。导入会保留自定义显示名；当归档中的名字就是源 id 时，
   显示名跟随重命名。
 - 限制：非空、不超过 192 字节合法 UTF-8、不含控制字符、不能以 `_` 开头（保留给
