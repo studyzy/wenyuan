@@ -50,9 +50,17 @@ type RouterOptions struct {
 	// Authenticator enforces authentication on retired routes. A nil
 	// authenticator rejects every unauthenticated request.
 	Authenticator Authenticator
-	// BankExists reports whether a bank identifier is known. It is injected by
-	// the composition root from the storage area.
-	BankExists func(bankID string) bool
+	// BankExists reports whether a bank identifier is a bank of the schema the
+	// request resolved to. The context carries that schema, so the answer is
+	// per-tenant and never a lookup in some other schema.
+	//
+	// It exists for the legacy lifecycle allowance: a bank whose id names a
+	// prefix that is not the caller's tenant is refused bank-scoped, except
+	// that a delete or a whole-bank replace of a bank that really does live in
+	// the caller's own schema is how an operator removes a bank written under a
+	// prefix this service no longer hands out. A nil hook allows nothing, which
+	// is the strict prefix rule.
+	BankExists func(ctx context.Context, bankID string) (bool, error)
 	// ResolveBankAlias maps a bank-scoped path identifier to its canonical bank
 	// identifier through the alias table. It is injected by the composition root
 	// and applied to every bank-scoped route before the handler runs, so alias
@@ -470,7 +478,7 @@ func (r *Router) Service() http.Handler {
 	resolveEndpoint := newEndpointResolver(r.routePatterns)
 	tenantAuth := TenantAuthMiddleware(r.options.TenantAPIKey, r.options.TenantMCPAuthDisabled, r.options.MCPAuthToken, r.routeAllowed)
 	if r.options.TenantExtension != nil {
-		tenantAuth = TenantExtensionAuthMiddleware(r.options.TenantExtension, r.options.TenantMCPAuthDisabled, r.routeAllowed)
+		tenantAuth = TenantExtensionAuthMiddleware(r.options.TenantExtension, r.options.TenantMCPAuthDisabled, r.routeAllowed, r.options.BankExists)
 	}
 	chain := Chain(
 		r.undeclaredMCPPath(r.mux),

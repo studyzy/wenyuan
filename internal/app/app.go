@@ -286,6 +286,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		Extensions:            extensions,
 		Authenticator:         authenticatorFrom(cfg),
 		ResolveBankAlias:      store.ResolveBankID,
+		BankExists:            bankExistsInSchema(store),
 		Audit: &httpx.AuditOptions{
 			Action: httpAuditAction,
 			Hook:   auditLogger,

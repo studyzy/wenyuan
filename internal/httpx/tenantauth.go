@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -131,7 +132,11 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 // keyless request on a deployment with no operator key, can name a tenant: an
 // extension that read the header from the request instead of this field would
 // let any caller pick a schema.
-func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled bool, routeAllowed func(*http.Request) bool) Middleware {
+//
+// bankExists, when non-nil, answers whether an id is a bank of the schema the
+// request resolved to. It is what admits the legacy lifecycle allowance
+// described at foreignBankID; a nil hook allows nothing.
+func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled bool, routeAllowed func(*http.Request) bool, bankExists func(context.Context, string) (bool, error)) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			isMCP := pathInNamespace(r.URL.Path, NamespaceMCP)
@@ -175,8 +180,10 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 			// prefix's place before routing captures the bank id.
 			rewriteAgentBankPrefix(r.URL, resolved.ID)
 			if bankID, foreign := foreignBankID(r, resolved.ID); foreign {
-				WriteError(w, NewHTTPError(KindNotFound, BankNotFoundDetail(bankID)))
-				return
+				if !legacyBankLifecycle(r.WithContext(ctx), bankID, bankExists) {
+					WriteError(w, NewHTTPError(KindNotFound, BankNotFoundDetail(bankID)))
+					return
+				}
 			}
 			r = r.WithContext(ctx)
 			if len(resolved.Overrides) > 0 {
@@ -230,6 +237,15 @@ func mcpTokenMatches(r *http.Request, token string) bool {
 // Nothing is foreign for a deployment with no resolved tenant id (the
 // single-tenant extension), nor for a path that addresses no bank: the bank
 // collection, and every route that is not bank-scoped.
+//
+// The prefix rule is a rule about which *ids* a caller may name, and it exists
+// because the id is what the schema does not check. A bank written under a
+// prefix this service no longer hands out — the `public::` banks an earlier
+// client created — still physically lives in its tenant's schema, and deleting
+// it is a lifecycle operation on the caller's own data, not a cross-tenant
+// reach. legacyBankLifecycle is what admits exactly that and nothing more: a whole
+// -bank replace or delete of an id that a per-schema lookup finds, which is why
+// every read, and every write below the bank, stays refused.
 func foreignBankID(r *http.Request, tenantID string) (string, bool) {
 	if tenantID == "" {
 		return "", false
@@ -243,6 +259,38 @@ func foreignBankID(r *http.Request, tenantID string) (string, bool) {
 		return "", false
 	}
 	return bankID, true
+}
+
+// legacyBankLifecycle reports whether a bank-scoped request on a
+// foreign-prefixed bank id is a lifecycle operation the caller may still make on
+// a bank of its own schema.
+//
+// It answers true only for a whole-bank replace or delete — the two requests
+// whose subject is the bank row itself — and only when the bank is really there
+// in the schema the credential resolved to. A read, a sub-resource write, an
+// alias, a config change, an export or a clone is not: those still answer the
+// missing-bank 404 of the prefix rule, so `public::x` cannot be read, listed,
+// exported or appended to, only removed or replaced as a whole.
+//
+// This is deliberately not "any bank in my schema": a caller that reaches a
+// route by id alone still cannot address a prefix the contract reserves for
+// another tenant. It exists for the banks an earlier build wrote under a
+// prefix this service no longer hands out, which an operator has to be able to
+// remove from the console rather than from SQL.
+func legacyBankLifecycle(r *http.Request, bankID string, exists func(context.Context, string) (bool, error)) bool {
+	if exists == nil {
+		return false
+	}
+	if r.Method != http.MethodDelete && r.Method != http.MethodPut {
+		return false
+	}
+	// The path is exactly the bank: no sub-resource segment follows the id.
+	start, ok := agentBankPathStart(r.URL.Path)
+	if !ok || strings.Trim(r.URL.Path[start:], "/") != bankID {
+		return false
+	}
+	found, err := exists(r.Context(), bankID)
+	return err == nil && found
 }
 
 // bankScopedPath splits a bank-scoped path into the bank it addresses.
