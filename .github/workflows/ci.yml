@@ -218,8 +218,8 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.changed == 'true'
         with:
-          # Pinned to the package's declared engines floor.
-          node-version: "20"
+          # Pinned to the package's declared engines floor (>=22.15: zstd for dsh transcripts).
+          node-version: "22"
           cache: npm
           cache-dependency-path: integrations/coding-agents/package-lock.json
 
