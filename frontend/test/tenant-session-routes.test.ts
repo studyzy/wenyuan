@@ -14,8 +14,21 @@ const ENV = {
 
 const params = { params: Promise.resolve({ tenantId: "acme" }) };
 
+/**
+ * The browser's session cookie for a subject.
+ *
+ * A session token's signature is derived from the access key, which this
+ * configuration takes from the operator key — so the cookie is signed with that
+ * key, not with the console passphrase a deployment might set beside it.
+ */
+function subjectCookie(subject: string): string {
+  return (
+    "wenyuan_cp_access=" + createSessionToken(ENV.WENYUAN_CP_ADMIN_API_KEY, subject, Date.now())
+  );
+}
+
 function operatorCookie(): string {
-  return "wenyuan_cp_access=" + createSessionToken("operator-key", OPERATOR_SUBJECT, Date.now());
+  return subjectCookie(OPERATOR_SUBJECT);
 }
 
 async function withSessionStub(
@@ -68,12 +81,18 @@ describe("tenant session BFF", () => {
       [{ status: 200, body: { tenant_id: "acme", status: "active" } }],
       async () => {
         const entered = await enter(operatorCookie());
-        const cookie = (entered.headers.get("set-cookie") ?? "").split(";")[0];
+        const tenantCookie = (entered.headers.get("set-cookie") ?? "").split(";")[0];
 
+        // The browser sends the operator session cookie beside the tenant one,
+        // and that pair is what the console reports on.
         const status = await sessionStatus(
-          makeRequest("http://localhost/api/admin/session", { cookie }),
+          makeRequest("http://localhost/api/admin/session", {
+            cookie: operatorCookie() + "; " + tenantCookie,
+          }),
         );
-        expect(await readJson(status)).toEqual({ tenant_id: "acme" });
+        // The console reports the operator session entering a tenant, which is
+        // what keeps the management-plane links on screen.
+        expect(await readJson(status)).toEqual({ tenant_id: "acme", operator: true });
 
         const cleared = await exitTenant(
           makeRequest("http://localhost/api/admin/session", { method: "DELETE" }),
@@ -116,7 +135,22 @@ describe("tenant session BFF", () => {
           cookie: "wenyuan_cp_tenant=not-a-token",
         }),
       );
-      expect(await readJson(response)).toEqual({ tenant_id: null });
+      expect(await readJson(response)).toEqual({ tenant_id: null, operator: false });
+    });
+  });
+
+  it("reports a tenant-key session as not the operator", async () => {
+    // The nav hides the management plane for exactly this session: the gate
+    // answers 403 on /api/admin/** to a tenant key, so those links must not be
+    // offered to it.
+    await withEnv({ ...ENV, WENYUAN_CP_ACCESS_KEY: "console-secret" }, async () => {
+      const cookie =
+        "wenyuan_cp_access=" +
+        createSessionToken("console-secret", "tenant:acme", Date.now());
+      const response = await sessionStatus(
+        makeRequest("http://localhost/api/admin/session", { cookie }),
+      );
+      expect(await readJson(response)).toEqual({ tenant_id: null, operator: false });
     });
   });
 

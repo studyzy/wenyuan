@@ -1,10 +1,13 @@
 import { resolveServerConfig } from "../../../../lib/server/config";
 import {
+  SESSION_COOKIE,
   TENANT_SESSION_COOKIE,
   clearTenantSessionCookieAttributes,
   isSecureRequest,
+  readSessionToken,
   readTenantSessionToken,
 } from "../../../../lib/server/session";
+import { OPERATOR_SUBJECT } from "../../../../lib/server/subjects";
 
 function cookieValue(request: Request, name: string): string | undefined {
   const header = request.headers.get("cookie");
@@ -16,15 +19,29 @@ function cookieValue(request: Request, name: string): string | undefined {
   return undefined;
 }
 
-/** Report which tenant the console session is entered as, never its key. */
+/**
+ * Report which tenant the console session is entered as, never its key, and
+ * whether the session is the operator's.
+ *
+ * `operator` decides which console links the nav offers. A tenant key opens one
+ * tenant's schema and is refused by the management plane, so the tenant, team
+ * and overview entries would only lead that session to a 403.
+ */
 export async function GET(request: Request): Promise<Response> {
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
+  // No access key means the gate is open, which is also when every page is
+  // reachable, so the console keeps its full navigation.
+  const session = config.accessKey
+    ? readSessionToken(config.accessKey, cookieValue(request, SESSION_COOKIE), Date.now())
+    : null;
+  const operator = !config.accessKey || session?.sub === OPERATOR_SUBJECT;
+
   const token = cookieValue(request, TENANT_SESSION_COOKIE);
   if (!config.accessKey || !token) {
-    return Response.json({ tenant_id: null });
+    return Response.json({ tenant_id: null, operator });
   }
-  const session = readTenantSessionToken(config.accessKey, token, Date.now());
-  return Response.json({ tenant_id: session?.tenant_id ?? null });
+  const tenant = readTenantSessionToken(config.accessKey, token, Date.now());
+  return Response.json({ tenant_id: tenant?.tenant_id ?? null, operator });
 }
 
 /** Leave the tenant: the cookie is cleared and the static console resumes. */

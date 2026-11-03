@@ -223,7 +223,7 @@ export const adminApi = {
     );
   },
   tenantSession() {
-    return request<{ tenant_id: string | null }>("/api/admin/session");
+    return request<{ tenant_id: string | null; operator: boolean }>("/api/admin/session");
   },
   exitTenant() {
     return request<{ tenant_id: null }>("/api/admin/session", { method: "DELETE" });
