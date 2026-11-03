@@ -11,8 +11,10 @@ import {
   type JsonDocument,
 } from "../write/json-merge";
 import { OWNERSHIP_MARKER } from "../write/marker";
-import { HOOKS_CONTAINER_KEY } from "./hook-shape";
-import { hostLifecycle, orderedRegistrations } from "./lifecycle";
+import {
+  allRegistrations,
+  hookContainerPath,
+} from "./lifecycle";
 import type { HookWriteResult } from "./hooks";
 
 /**
@@ -40,9 +42,7 @@ function removed(written: boolean, messages: string[] = [], ok = true): HookWrit
  * removal emptied and the file itself when nothing meaningful is left.
  */
 export async function removeLifecycleHooks(input: HookRemoveInput): Promise<HookWriteResult> {
-  const events: string[] = orderedRegistrations(hostLifecycle(input.hostId)).map(
-    ({ registration }) => registration.event,
-  );
+  const events: string[] = [...new Set(allRegistrations(input.hostId).map(({ event }) => event))];
   const before: string | null = await readConfigSource(input.configPath);
   if (before === null) {
     return removed(false);
@@ -56,7 +56,7 @@ export async function removeLifecycleHooks(input: HookRemoveInput): Promise<Hook
       // emptied are pruned. A foreign member on the same event is left alone.
       const edit: JsoncEdit | null = removeJsoncMember(
         text,
-        [HOOKS_CONTAINER_KEY],
+        [...hookContainerPath(input.hostId)],
         event,
         (memberSource) => memberSource.includes(OWNERSHIP_MARKER),
       );
@@ -75,8 +75,32 @@ export async function removeLifecycleHooks(input: HookRemoveInput): Promise<Hook
     }
   } else {
     const document: JsonDocument = asJsonDocument(text);
+    const containerPath: readonly string[] = hookContainerPath(input.hostId);
     for (const event of events) {
-      removeOwnValuesFromContainer(document, [HOOKS_CONTAINER_KEY, event]);
+      removeOwnValuesFromContainer(document, [...containerPath, event]);
+    }
+    // A nested event container (ZCode's hooks.events) that the removal emptied
+    // takes the whole declared hook container with it: the members install
+    // seeded beside the events (the enabled switch, the output cap) are this
+    // package's wiring, and leaving them behind would keep the host's hook
+    // system on with nothing registered to run.
+    if (containerPath.length >= 2) {
+      const rootKey: string | undefined = containerPath[0];
+      const nextKey: string | undefined = containerPath[1];
+      const root: unknown = rootKey === undefined ? undefined : document[rootKey];
+      const eventsContainer: unknown =
+        root !== null && typeof root === "object" && nextKey !== undefined
+          ? (root as JsonDocument)[nextKey]
+          : undefined;
+      const emptied: boolean =
+        eventsContainer === undefined ||
+        eventsContainer === null ||
+        typeof eventsContainer !== "object" ||
+        Array.isArray(eventsContainer) ||
+        Object.keys(eventsContainer as JsonDocument).length === 0;
+      if (emptied && rootKey !== undefined) {
+        delete document[rootKey];
+      }
     }
     pruneEmptyContainers(document);
     if (documentIsEmpty(document)) {

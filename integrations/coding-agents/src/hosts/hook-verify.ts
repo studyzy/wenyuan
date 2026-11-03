@@ -37,9 +37,11 @@ export async function verifyLifecycleHooks(
   configPath: string,
   expected: readonly HostHookExpectation[],
   format: ConfigFormat,
+  containerPath: readonly string[] = [HOOKS_CONTAINER_KEY],
 ): Promise<HookVerification> {
   const source: string | null = await readConfigSource(configPath);
-  const events: Record<string, unknown> = source === null ? {} : eventsIn(source, format);
+  const events: Record<string, unknown> =
+    source === null ? {} : eventsIn(source, format, containerPath);
   const messages: string[] = [];
   const missing: string[] = [];
   for (const expectation of expected) {
@@ -62,24 +64,46 @@ export async function verifyLifecycleHooks(
  * event as missing even though the write was correct. This is why the reader
  * takes the format instead of assuming strict JSON.
  */
-function eventsIn(source: string, format: ConfigFormat): Record<string, unknown> {
+function eventsIn(source: string, format: ConfigFormat, containerPath: readonly string[]): Record<string, unknown> {
   if (format === "json") {
-    const hooks: unknown = asJsonDocument(source)[HOOKS_CONTAINER_KEY];
+    const hooks: unknown = objectAt(asJsonDocument(source), containerPath);
     return isObject(hooks) ? (hooks as Record<string, unknown>) : {};
   }
   const root: Range | null = rootObjectRange(source);
   if (root === null) {
     return {};
   }
-  const hooks: Member | null = findMember(source, root, HOOKS_CONTAINER_KEY);
-  if (hooks === null || source[hooks.value.start] !== "{") {
+  // Walks the container path member by member, the same walk the text editor
+  // performs when it writes, so a nested container verifies at its own depth.
+  let range: Range | null = root;
+  let container: Member | null = null;
+  for (const segment of containerPath) {
+    container = findMember(source, range, segment);
+    if (container === null || source[container.value.start] !== "{") {
+      return {};
+    }
+    range = container.value;
+  }
+  if (container === null) {
     return {};
   }
   const events: Record<string, unknown> = {};
-  for (const member of objectMembers(source, hooks.value) ?? []) {
+  for (const member of objectMembers(source, container.value) ?? []) {
     events[member.key] = JSON.parse(plainText(source, member.value));
   }
   return events;
+}
+
+/** The object a key path names, or undefined when any step is missing. */
+function objectAt(document: Record<string, unknown>, path: readonly string[]): unknown {
+  let current: unknown = document;
+  for (const key of path) {
+    if (!isObject(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }
 
 /** One value of a comment-permitting document, as plain JSON. */

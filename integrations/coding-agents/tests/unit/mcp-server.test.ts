@@ -8,7 +8,7 @@ import {
   SUPPORTED_PROTOCOL_VERSIONS,
 } from "../../src/runtime/mcp-server";
 import { Readable } from "node:stream";
-import type { MemoryClient } from "../../src/runtime/memory-client";
+import type { MemoryClient } from "../../src/core/client";
 
 /**
  * The packaged MCP server's protocol side.
@@ -22,8 +22,8 @@ import type { MemoryClient } from "../../src/runtime/memory-client";
 /** A stand-in memory client: the one read path the server serves. */
 function clientReturning(texts: string[]): MemoryClient {
   return {
-    async recall() {
-      return { ok: true as const, texts };
+    recallObservations() {
+      return Promise.resolve(texts);
     },
   } as unknown as MemoryClient;
 }

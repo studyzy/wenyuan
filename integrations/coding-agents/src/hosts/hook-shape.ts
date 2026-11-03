@@ -26,25 +26,49 @@ export const HOOKS_CONTAINER_KEY = "hooks";
 /** The execution-type value a matcher-group command entry carries. */
 export const HOOK_COMMAND_TYPE = "command";
 
+/** The launcher a process registration names; the script path is its argument. */
+export const PROCESS_LAUNCHER = "node";
+
 /**
  * The matcher-group's own key. It is `hooks`, the name every host that speaks
  * this protocol reads — not a name of ours.
  */
 export const MATCHER_GROUP_KEY = "hooks";
 
-/** A hook command entry: the execution type, the script path and the budget. */
+/** A hook command entry: the execution type, the script path and the budget.
+ * The type is optional because a plain-entry host's loader reads only the
+ * command and the budget. */
 export interface HookCommandEntry {
-  type: string;
+  type?: string;
   command: string;
   timeout: number;
 }
 
-/** One event's matcher group: an array holding exactly one command entry. */
+/** One event's matcher group: an array holding exactly one command entry.
+ * The entry may be the process argv split a no-shell host reads. */
 export interface MatcherGroup {
-  [MATCHER_GROUP_KEY]: HookCommandEntry[];
+  [MATCHER_GROUP_KEY]: (HookCommandEntry | ProcessHookEntry)[];
 }
 
-export type EncodedRegistration = MatcherGroup | HookCommandEntry | HookCommandEntry[];
+/**
+ * One event's process registration: the argv a no-shell host spawns, with the
+ * budget on its own member because the host reads it in milliseconds.
+ */
+export interface ProcessHookEntry {
+  type: string;
+  command: string;
+  args: string[];
+  timeoutMs: number;
+}
+
+/** The execution-type value a process registration carries. */
+export const PROCESS_COMMAND_TYPE = "process";
+
+export type EncodedRegistration =
+  | MatcherGroup
+  | HookCommandEntry
+  | HookCommandEntry[]
+  | ProcessHookEntry;
 
 /**
  * The command string a host executes.
@@ -79,12 +103,36 @@ function encoderFor(
       return encodeMatcherGroup;
     case "flat-entry":
       return (scriptPath, budgetValue) => commandEntry(scriptPath, budgetValue);
+    case "plain-entry":
+      return (scriptPath, budgetValue) => plainEntry(scriptPath, budgetValue);
     case "table-array":
       return (scriptPath, budgetValue) => [commandEntry(scriptPath, budgetValue)];
+    case "process-entry":
+      // ZCode's event value is the same matcher-group nesting as the
+      // matcher-group hosts; only the entry inside the group is the argv split.
+      return (scriptPath, budgetValue) => ({
+        [MATCHER_GROUP_KEY]: [processEntry(scriptPath, budgetValue)],
+      });
     default:
       return encodeMatcherGroup;
   }
 }
+
+/** One plain command entry: no execution type, just the script and the budget. */
+function plainEntry(scriptPath: string, budgetValue: number): HookCommandEntry {
+  return { command: hookCommand(scriptPath), timeout: budgetValue };
+}
+
+/** One process registration: the argv split the no-shell host spawns. */
+function processEntry(scriptPath: string, budgetValue: number): ProcessHookEntry {
+  return {
+    type: PROCESS_COMMAND_TYPE,
+    command: PROCESS_LAUNCHER,
+    args: [scriptPath],
+    timeoutMs: budgetValue,
+  };
+}
+
 
 function commandEntry(scriptPath: string, budgetValue: number): HookCommandEntry {
   return { type: HOOK_COMMAND_TYPE, command: hookCommand(scriptPath), timeout: budgetValue };
@@ -106,12 +154,40 @@ export function commandEntriesOf(value: unknown): HookCommandEntry[] {
     return value.flatMap((item) => commandEntriesOf(item));
   }
   if (isMatcherGroup(value)) {
-    return value[MATCHER_GROUP_KEY].filter(isCommandEntry);
+    return value[MATCHER_GROUP_KEY].flatMap((entry) =>
+      isProcessEntry(entry) ? [normalizedProcessEntry(entry)] : isCommandEntry(entry) ? [entry] : [],
+    );
+  }
+  if (isProcessEntry(value)) {
+    return [normalizedProcessEntry(value)];
   }
   if (isCommandEntry(value)) {
     return [value];
   }
   return [];
+}
+
+/** True when a value is a process registration: an argv split, not a command line. */
+export function isProcessEntry(value: unknown): value is ProcessHookEntry {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as ProcessHookEntry).type === PROCESS_COMMAND_TYPE &&
+    Array.isArray((value as ProcessHookEntry).args)
+  );
+}
+
+/**
+ * A process registration as a command entry: the script path is the command,
+ * the milliseconds budget is the timeout number. The split argv and the member
+ * name are the host's spawn dialect; what ownership and the read-back check
+ * answer is "which script runs, within what budget", and that is the same
+ * question for both shapes.
+ */
+function normalizedProcessEntry(entry: ProcessHookEntry): HookCommandEntry {
+  const script: string | undefined = entry.args[0];
+  return { type: PROCESS_COMMAND_TYPE, command: script ?? "", timeout: entry.timeoutMs };
 }
 
 /**
@@ -149,12 +225,25 @@ export function entriesHostWouldRun(value: unknown, style: RegistrationStyle): H
       return groups
         .filter(isMatcherGroup)
         .flatMap((group) => group[MATCHER_GROUP_KEY])
-        .filter(isCommandEntry);
+        .flatMap((entry) =>
+          isProcessEntry(entry) ? [normalizedProcessEntry(entry)] : isCommandEntry(entry) ? [entry] : [],
+        );
     }
     case "flat-entry":
+    case "plain-entry":
       return isCommandEntry(value) ? [value] : [];
     case "table-array":
       return (Array.isArray(value) ? value : [value]).filter(isCommandEntry);
+    case "process-entry": {
+      // A process-entry host reads the same matcher-group nesting, but its
+      // entries are argv splits; a command-string entry on the same event is
+      // not a registration this host would launch.
+      const groups: unknown[] = Array.isArray(value) ? value : [value];
+      return groups
+        .filter(isMatcherGroup)
+        .flatMap((group) => group[MATCHER_GROUP_KEY])
+        .flatMap((entry) => (isProcessEntry(entry) ? [normalizedProcessEntry(entry)] : []));
+    }
     default:
       return commandEntriesOf(value);
   }

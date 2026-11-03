@@ -51,6 +51,11 @@ describe("installing and uninstalling two hosts", () => {
         (await runInstaller(["install", ...HOSTS.map((host: HostContribution) => host.id)])).status);
       expect(status).toBe(0);
       for (const host of HOSTS) {
+        // Devin and Dcode have no skills mechanism of their own, so the
+        // installer places no companion skill for them.
+        if (skillsRootFor(host.id, home.home) === null) {
+          continue;
+        }
         const path: string = skillFile(host.id, home);
         expect(await home.isFile(path), path).toBe(true);
       }
@@ -67,8 +72,12 @@ describe("the fixed child-directory name", () => {
       const children: string[][] = [];
       for (const host of HOSTS) {
         const root: string | null = skillsRootFor(host.id, home.home);
-        expect(root).not.toBeNull();
-        children.push(await home.list(relativeToHome(home, root as string)));
+        // The two hosts without a skills mechanism resolve no root at all.
+        if (root === null) {
+          expect(["devin-cli", "dcode"]).toContain(host.id);
+          continue;
+        }
+        children.push(await home.list(relativeToHome(home, root)));
       }
       for (const listed of children) {
         expect(listed).toContain(SKILL_DIRECTORY_NAME);

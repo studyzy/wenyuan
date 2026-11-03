@@ -32,8 +32,20 @@ const CONFIG: Record<string, string> = {
   workbuddy: ".workbuddy/settings.json",
   "cursor-cli": ".cursor/hooks.json",
   "copilot-cli": ".copilot/hooks/hooks.json",
-  dsh: ".dsh/hooks/wenyuan.json",
+  "devin-cli": ".config/devin/config.json",
+  "grok-build": ".grok/hooks/hooks.json",
+  "qwen-code": ".qwen/settings.json",
+  traecode: ".trae-cn/hooks.json",
 };
+
+/**
+ * The hosts this suite excludes, each because its config dialect is not the
+ * standard JSON container the shared readers here assume: Antigravity keeps
+ * its events in a namespace key, Factory Droid reads the event map at the
+ * document root, ZCode nests it under hooks.events, and Kimi's block is TOML.
+ * Each one's own suite reads its config the way the host does.
+ */
+const EXCLUDED = new Set(["antigravity-cli", "factory-droid", "zcode", "kimi"]);
 
 const STAGES: readonly LifecycleStage[] = ["session-start", "pre-prompt", "stop"];
 
@@ -44,7 +56,8 @@ const STAGES: readonly LifecycleStage[] = ["session-start", "pre-prompt", "stop"
  */
 const HOST_IDS: string[] = HOSTS
   .map((host: HostContribution) => host.id)
-  .filter((hostId: string) => HOST_LIFECYCLES[hostId] !== undefined);
+  .filter((hostId: string) => HOST_LIFECYCLES[hostId] !== undefined)
+  .filter((hostId: string) => !EXCLUDED.has(hostId));
 
 /** The packaged script a host's event runs, resolved from the declaration. */
 function scriptFor(hostId: string, event: string): string {

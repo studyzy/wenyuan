@@ -239,7 +239,26 @@ export const NO_HOST_CLI = "__wenyuan-host-stand-ins__";
  * - `codex`, `cursor`, `copilot`, `codebuddy` are detection probes: the
  *   installer resolves a host by finding its executable or its config directory.
  */
-const HOST_CLIS: readonly string[] = ["claude", "codex", "cursor", "copilot", "codebuddy", "workbuddy", "dsh"];
+const HOST_CLIS: readonly string[] = [
+  "claude",
+  "codex",
+  "cursor",
+  "copilot",
+  "codebuddy",
+  "workbuddy",
+  "dsh",
+  "agy",
+  "devin",
+  "grok",
+  "qwen",
+  "droid",
+  "kimi",
+  "dcode",
+  "trae",
+  // Devin's preflight probes the node on PATH for SQLite support; the shim
+  // answers it so the suite does not depend on the runner's own node version.
+  "node",
+];
 
 /**
  * Writes the host stand-ins into the fake home's PATH directory.
@@ -270,7 +289,11 @@ export async function writeHostClis(home: FakeHome): Promise<string> {
 async function writeHostClisAt(bin: string): Promise<void> {
   await mkdir(bin, { recursive: true });
   for (const name of HOST_CLIS) {
-    await writeFile(join(bin, name), hostStandIn(name), "utf8");
+    const script: string =
+      name === "node"
+        ? ["#!/bin/sh", `exec '${process.execPath}' \"$@\"`, ""].join("\n")
+        : hostStandIn(name);
+    await writeFile(join(bin, name), script, "utf8");
     await chmod(join(bin, name), 0o755);
   }
 }

@@ -1,4 +1,6 @@
-import { openMemoryClient, type MemoryClient } from "./memory-client";
+import { MemoryClient } from "../core/client";
+import { readStoredConfig } from "../config/store";
+import { CONFIG_KEYS, DEFAULT_API_URL, DEFAULT_BANK_ID } from "../config/connection";
 
 /**
  * The packaged MCP server's transport.
@@ -130,11 +132,13 @@ export async function handleMessage(
       if (client === null) {
         return reply(message.id, textResult("the memory service is not reachable"));
       }
-      const outcome = await client.recall(query).catch(() => ({ ok: false as const, texts: [] as string[] }));
-      if (!outcome.ok) {
+      const texts = await client
+        .recallObservations(query, { timeoutMs: 10_000 })
+        .catch(() => null);
+      if (texts === null) {
         return reply(message.id, textResult("the memory service could not be reached"));
       }
-      return reply(message.id, textResult(outcome.texts.length === 0 ? "no memory matched" : outcome.texts.join("\n")));
+      return reply(message.id, textResult(texts.length === 0 ? "no memory matched" : texts.join("\n")));
     }
     default:
       return failure(message.id, -32601, `method not found: ${String(message.method ?? "")}`);
@@ -196,13 +200,31 @@ export interface ServerOptions {
  * blocks on anything but its own input and never writes to standard output
  * except the one JSON line per answered request.
  */
+
+/** The client the stored installer connection points at, or null when the
+ *  service was never installed or the stored file does not resolve. */
+async function openStoredClient(): Promise<MemoryClient | null> {
+  try {
+    const stored = (await readStoredConfig()) as Record<string, unknown>;
+    const str = (key: string): string | undefined =>
+      typeof stored[key] === "string" && (stored[key] as string).length > 0
+        ? (stored[key] as string)
+        : undefined;
+    return new MemoryClient({
+      apiUrl: str(CONFIG_KEYS.apiUrl) ?? DEFAULT_API_URL,
+      apiToken: str(CONFIG_KEYS.apiToken),
+      bank: str(CONFIG_KEYS.bankId) ?? DEFAULT_BANK_ID,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function launchStdioServer(options: ServerOptions): Promise<void> {
   const input: NodeJS.ReadableStream = options.input ?? process.stdin;
   const output: NodeJS.WritableStream = options.output ?? process.stdout;
   const client: MemoryClient | null =
-    options.client !== undefined
-      ? options.client
-      : await openMemoryClient(10_000, options.environment ?? process.env).catch(() => null);
+    options.client !== undefined ? options.client : await openStoredClient().catch(() => null);
   for await (const message of readMessages(input)) {
     const answer: RpcReply = await handleMessage(message, client).catch((reason: unknown) =>
       failure(message.id, -32603, reason instanceof Error ? reason.message : "internal error"),

@@ -1,0 +1,501 @@
+/**
+ * Shared runtime for HOOK-based harnesses (Claude Code, Codex, Cursor CLI, ...).
+ *
+ * The ONE runtime path:
+ *   - AUTO-INJECT once per session, on the first prompt, from the configured `autoInject` source:
+ *     "reflect" (default) is an agentic synthesis over the bank; "pages" a knowledge-page search
+ *     and "recall" a raw memory recall, both retrieval-only and far cheaper; "none" injects
+ *     nothing. Cached per session; failures/empty attempts retry within a small budget.
+ *   - KNOWLEDGE PAGES every turn: the roster is fetched and re-injected on a cadence; the pages
+ *     themselves are pulled by the agent through the search tool.
+ *
+ * Every outcome is recorded in the diagnostics file — a memory-less session can't masquerade as a
+ * memory session. A failure never breaks the agent.
+ *
+ * A harness plugs in with a HookSpec: its name, how to read (prompt, cwd, sessionId) from its
+ * stdin event, and how to wrap injected context in its native output schema. The pure logic is
+ * `buildHookOutput` (testable without stdin/stdout); `runHook` is thin plumbing with a
+ * `makeClient` seam for tests.
+ */
+import { existsSync } from "node:fs";
+import { hooksDisabled } from "../runtime/hook-contract";
+import { deriveBankIdOrSkip } from "./bank";
+import { brandWord } from "./brand";
+import type { ClientOpts } from "./client";
+import { MemoryClient, ReflectError } from "./client";
+import type { Config } from "./config";
+import { applyBankConfig, loadConfig } from "./config";
+import { diag, diagFilePath, readHookEvent } from "./diag";
+import {
+  buildReflectQuery,
+  buildSystemInjection,
+  formatPageFallback,
+  formatRecallFallback,
+  PAGE_INJECT_LEAD,
+  RECALL_INJECT_LEAD,
+} from "./inject";
+import type { PageRef } from "./knowledge-injection";
+import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
+import { describeError, log, setLogLevel } from "./log";
+import { startBackgroundSeed } from "./seed";
+import {
+  readSessionCache,
+  sessionCacheFile,
+  sessionRootDir,
+  stashPendingContext,
+  takePendingContext,
+  writeSessionCache,
+  type SessionCache,
+} from "./session-cache";
+import { appendJournalTurn, journalPath } from "./turn-journal";
+
+export interface HookEventFields {
+  prompt?: string;
+  cwd?: string;
+  sessionId?: string;
+}
+
+export interface HookSpec {
+  /** Harness name — config `harnesses.<name>` section, {harness} template field, diag records. */
+  harness: string;
+  /** Read the fields out of the harness's stdin event (shapes differ per harness). */
+  parse(event: Record<string, unknown>): HookEventFields;
+  /** Optional event gate, evaluated before config loading: false makes the hook a silent no-op. */
+  accept?(event: Record<string, unknown>): boolean;
+  /** Some hosts execute hook commands from their global config directory. Those hosts must provide
+   *  a workspace path in the event; falling back to process.cwd() would create a bank for config. */
+  requireCwd?: boolean;
+  /** Record this prompt in the session's own turn journal (core/turn-journal.ts). Set ONLY by
+   *  harnesses whose host keeps no durable transcript: for them the journal IS the transcript
+   *  their Stop hook retains. */
+  journalPrompt?: boolean;
+  /** Wrap injected context (and an optional user-facing notice) in the harness's native
+   *  hook-output schema. Harnesses whose schema has no user-visible channel ignore `notice`. */
+  emit(context: string, notice?: string, event?: Record<string, unknown>): unknown;
+  /** For a host that only hands a TOOL hook's context to the model: the context is stashed for
+   *  the session, and the next event this accepts delivers it once through `emit`. */
+  toolHook?: {
+    accept(event: Record<string, unknown>): boolean;
+    emit(context: string): unknown;
+  };
+}
+
+/** Minimal client shape `buildHookOutput` needs; `MemoryClient` satisfies it structurally. */
+interface HookClient {
+  reflect(query: string, opts: { budget?: string; timeoutMs: number }): Promise<string>;
+  listPages(): Promise<unknown>;
+  searchKnowledgePages(
+    query: string,
+    opts?: { limit?: number; timeoutMs?: number }
+  ): Promise<{ id: string; name: string; snippet: string }[]>;
+  recallObservations(query: string, opts: { timeoutMs: number }): Promise<string[]>;
+  knowledgePagesSupported?: boolean;
+  /** Recorded on reflect failures so the diag trail says which bank to look at server-side. */
+  readonly bank?: string;
+}
+
+/** How many turns auto-inject may FAIL on before a session gives up on memory. The budget is
+ *  turns, not time: each retry costs a full attempt (up to `reflectTimeoutMs`), so a dead server
+ *  spends this many turns before every later turn is free. */
+const HOOK_INJECT_ATTEMPTS = 2;
+
+/** How many turns a pages/recall source may come back EMPTY on before the session stops asking.
+ *  Larger than the failure budget: an empty retrieval is cheap (no LLM) and its query is the
+ *  current prompt, so an opener like "hi" matching nothing says nothing about the real one. */
+const HOOK_INJECT_EMPTY_ATTEMPTS = 5;
+
+/**
+ * What to cache for a once-per-session auto-injection, given what the source returned.
+ *
+ * `null` (ran, nothing matched THIS prompt) and `undefined` (failed) both stay unresolved so a
+ * later turn can try again, each until its own attempt budget is spent. Caching either as an
+ * answer cost the whole session its memory: a first-prompt timeout, or a first prompt that simply
+ * matched nothing.
+ */
+function resolveInjection(got: string | null | undefined, attempts: number): string | undefined {
+  if (got != null) return got;
+  const budget = got === null ? HOOK_INJECT_EMPTY_ATTEMPTS : HOOK_INJECT_ATTEMPTS;
+  return attempts >= budget ? "" : undefined;
+}
+
+/** Servers without the query truncation reject a recall query over 500 tokens with HTTP 400,
+ *  which cost the turn its memory on long or non-Latin prompts. A BPE token never covers less
+ *  than one UTF-8 byte, so non-ASCII is costed at its byte length (a true ceiling) and ASCII at
+ *  half a token, which still leaves English and code ~1000 characters. */
+const RECALL_QUERY_MAX_TOKENS = 500;
+
+function boundRecallQuery(prompt: string): string {
+  let cost = 0;
+  let end = 0;
+  for (const ch of prompt) {
+    const cp = ch.codePointAt(0)!;
+    cost += cp < 0x80 ? 0.5 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (cost > RECALL_QUERY_MAX_TOKENS) break;
+    end += ch.length;
+  }
+  return prompt.slice(0, end);
+}
+
+/** Knowledge-page search for the prompt, formatted for injection. `null` = it ran and nothing
+ *  matched (an answer); `undefined` = it FAILED (recorded as `${event}_failed`) and is worth
+ *  retrying — one value for both cached a transient failure as "no memory" for every turn. */
+async function injectPages(
+  harness: string,
+  prompt: string,
+  client: HookClient,
+  timeoutMs: number,
+  event: string,
+  lead?: string
+): Promise<string | null | undefined> {
+  const t0 = Date.now();
+  try {
+    // The query rides in a GET query string; the goal's opening carries its keywords. How MANY
+    // pages come back is the client's `pageSearchLimit`, shared with the MCP tool.
+    const hits = await client.searchKnowledgePages(prompt.slice(0, 500), { timeoutMs });
+    diag(harness, event, { ms: Date.now() - t0, count: hits.length });
+    return hits.length ? formatPageFallback(hits, lead) : null;
+  } catch (e) {
+    diag(harness, `${event}_failed`, { ms: Date.now() - t0, error: describeError(e) });
+    return undefined;
+  }
+}
+
+/** Raw recall over the bank (the ask is the client's `recallOptions`); same contract as `injectPages`. */
+async function injectRecall(
+  harness: string,
+  prompt: string,
+  client: HookClient,
+  timeoutMs: number,
+  event: string,
+  lead?: string
+): Promise<string | null | undefined> {
+  const t0 = Date.now();
+  try {
+    // What is asked for — types, token budget, everything — is the client's `recallOptions`.
+    const observations = await client.recallObservations(boundRecallQuery(prompt), { timeoutMs });
+    diag(harness, event, { ms: Date.now() - t0, count: observations.length });
+    return observations.length ? formatRecallFallback(observations, lead) : null;
+  } catch (e) {
+    diag(harness, `${event}_failed`, { ms: Date.now() - t0, error: describeError(e) });
+    return undefined;
+  }
+}
+
+/**
+ * Reflect timed out or 5xx'd: the synthesis path broke, but retrieval may still answer. Try the
+ * curated knowledge pages first, and only when none match fall back to a raw recall. Returns the
+ * memory body to inject, or a nullish value when both came back empty or failed — the caller only
+ * asks whether there IS a body, so the tri-state passes through. Never throws.
+ */
+async function reflectFallback(
+  harness: string,
+  prompt: string,
+  client: HookClient,
+  timeoutMs: number
+): Promise<string | null | undefined> {
+  // Page search and recall share ONE retrieval budget after reflect fails, rather than each
+  // spending a full injectTimeoutMs and doubling the time added to the host's hook window.
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => Math.max(deadline - Date.now(), 1);
+  return (
+    (await injectPages(harness, prompt, client, remaining(), "reflect_fallback_pages")) ??
+    // Event name predates the `injectRecall` rename and is kept: it is a logged contract that
+    // other tools read, so renaming it would silently break them.
+    (await injectRecall(harness, prompt, client, remaining(), "reflect_fallback_observations"))
+  );
+}
+
+export interface HookOutput {
+  /** The model-facing injection block, or undefined when there's nothing to inject. */
+  context?: string;
+  /** User-facing line(s) — set only on the reflect turn (its goal + result preview). */
+  notice?: string;
+  /** This session's knowledge-page roster, from the shared per-session cache. The SINGLE source
+   *  of truth for every page-derived block in a turn — the persistent-plugin runtime rebuilds its
+   *  SessionStart preamble from this too. Empty also signals a bank the engine never built. */
+  pages: PageRef[];
+}
+
+/**
+ * Pure hook logic: reflect once per session (cached); knowledge-page sections + roster on every
+ * turn. Returns the injection plus a per-turn user-facing notice.
+ */
+export async function buildHookOutput(args: {
+  harness: string;
+  prompt: string;
+  cfg: Config;
+  client: HookClient;
+  cacheFile: string;
+}): Promise<HookOutput> {
+  const { harness, prompt, cfg, client, cacheFile } = args;
+
+  const cached = readSessionCache(cacheFile);
+  const turns = (cached.turns ?? 0) + 1;
+
+  // ── auto-inject: once per session, on the first prompt ────────────────────────
+  // cfg.autoInject picks the source: a reflect synthesis, a knowledge-page search, or a recall of
+  // observations. "none" = tool-only mode: the roster's tool guide instead sends new goals through
+  // knowledge pages first and reserves reflection for gaps. Whatever the source, its body is
+  // cached as `reflectAnswer` (the field name predates the other sources).
+  let reflectAnswer = cached.reflectAnswer;
+  let reflectAttempts = cached.reflectAttempts ?? 0;
+  let reflectRanThisTurn = false;
+  // Set by whichever source actually FAILED — reflect's catch, or a pages/recall helper returning
+  // undefined. An empty answer is not a failure: a source can legitimately have nothing to say on a
+  // sparse bank (diag records reflect_empty), and reporting that would tell the user the plugin
+  // broke on exactly the sessions where it did not.
+  let reflectFailed = false;
+  // Set when reflect timed out / 5xx'd and a retrieval-only fallback supplied the memory instead.
+  let fallback: string | null | undefined;
+  const deferInitialReflect = cached.deferInitialReflect === true;
+  if (deferInitialReflect) {
+    // A new bank has no useful history yet. Do not burn the once-per-session synthesis on prompt
+    // one; this marker is deliberately consumed below so prompt two remains eligible to reflect.
+    diag(harness, "reflect_deferred_new_bank", { query: prompt.slice(0, 80) });
+  } else if (cfg.autoInject === "pages" && reflectAnswer === undefined) {
+    reflectRanThisTurn = true;
+    reflectAttempts++;
+    const got = await injectPages(
+      harness,
+      prompt,
+      client,
+      cfg.injectTimeoutMs,
+      "inject_pages",
+      PAGE_INJECT_LEAD
+    );
+    // `undefined` is the search FAILING, distinct from `null` (it ran, nothing matched). These
+    // modes stayed silent on a failure while reflect announced one — the same turn looked healthy
+    // whether memory was unavailable or simply had nothing to say.
+    if (got === undefined) reflectFailed = true;
+    reflectAnswer = resolveInjection(got, reflectAttempts);
+  } else if (cfg.autoInject === "recall" && reflectAnswer === undefined) {
+    reflectRanThisTurn = true;
+    reflectAttempts++;
+    const got = await injectRecall(
+      harness,
+      prompt,
+      client,
+      cfg.injectTimeoutMs,
+      "inject_recall",
+      RECALL_INJECT_LEAD
+    );
+    if (got === undefined) reflectFailed = true; // see the pages branch above
+    reflectAnswer = resolveInjection(got, reflectAttempts);
+  } else if (cfg.autoInject === "reflect" && reflectAnswer === undefined) {
+    reflectRanThisTurn = true;
+    reflectAttempts++;
+    const t0 = Date.now();
+    // Not clamped: a user who raises reflectTimeoutMs past the host's prompt-hook timeout (30s on
+    // the hook harnesses) must raise that too — see the README's reflectTimeoutMs row.
+    const timeoutMs = cfg.reflectTimeoutMs;
+    try {
+      reflectAnswer = await client.reflect(buildReflectQuery(prompt), {
+        // Automatic reflection runs inside the host's hook window. The service's low budget is the
+        // supported default for bounded reflect calls; callers that explicitly invoke the MCP
+        // tool still get the deeper high-budget path.
+        budget: "low",
+        timeoutMs,
+      });
+      diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
+        ms: Date.now() - t0,
+        chars: reflectAnswer.length,
+        query: prompt.slice(0, 80),
+        // Verbatim injected synthesis — the ONLY durable record of what the agent actually saw
+        // (post-mortems otherwise depend on the harness happening to persist hook context).
+        answer: reflectAnswer.slice(0, 8000),
+      });
+    } catch (e) {
+      // A failure is RETRYABLE, not an answer — `resolveInjection` leaves it unresolved until the
+      // budget is spent. Caching "" here meant one timeout on the session's first prompt disabled
+      // synthesis for the ENTIRE session. ...except a permanent 4xx, which fails identically on
+      // every later turn: resolve it now rather than spend a retry on a call that cannot succeed.
+      reflectAnswer =
+        e instanceof ReflectError && e.permanent
+          ? ""
+          : resolveInjection(undefined, reflectAttempts);
+      reflectFailed = true;
+      log.warn(harness, "reflect failed — session runs without memory", {
+        error: describeError(e),
+      });
+      diag(harness, "reflect_failed", {
+        ms: Date.now() - t0,
+        bank: client.bank,
+        timeoutMs,
+        // Wider than describeError's default: the server's error body is the useful part.
+        error: describeError(e, 1500),
+        query: prompt.slice(0, 80),
+      });
+      if (e instanceof ReflectError && e.fallbackEligible) {
+        fallback = await reflectFallback(harness, prompt, client, cfg.injectTimeoutMs);
+        // The fallback body is cached exactly like a reflect answer: injected once, not retried.
+        if (fallback) reflectAnswer = fallback;
+      }
+    }
+  }
+
+  // ── knowledge-page roster (ids + titles only): refreshed on the cadence ────────
+  const cadence = cfg.pageRefreshEveryTurns;
+  const stale = !cached.pages || (cadence > 0 && turns - cached.pages.atTurn >= cadence);
+  let pages = cached.pages?.list ?? [];
+  if (stale) {
+    const t0 = Date.now();
+    try {
+      pages = parsePageList(await client.listPages());
+      diag(harness, "pages_ok", { ms: Date.now() - t0, count: pages.length });
+    } catch (e) {
+      diag(
+        harness,
+        client.knowledgePagesSupported === false ? "knowledge_pages_unavailable" : "pages_failed",
+        {
+          ms: Date.now() - t0,
+          error: describeError(e),
+        }
+      );
+    }
+  }
+
+  writeSessionCache(cacheFile, {
+    turns,
+    reflectAnswer,
+    reflectAttempts,
+    pages: { atTurn: stale ? turns : (cached.pages?.atTurn ?? turns), list: pages },
+  } satisfies SessionCache);
+
+  const blocks: string[] = [];
+  // Hook-injected context lands in the USER MESSAGE and persists in the transcript — unlike a
+  // system prompt, it accumulates. The reflect block is injected exactly ONCE, the turn reflect
+  // ran: replaying the turn-1 synthesis at later turns reads as noise once the session drifts,
+  // and the agent holds the reflect tool for a FRESH pass when it needs memory again.
+  if (reflectAnswer && reflectRanThisTurn) blocks.push(buildSystemInjection(reflectAnswer));
+  // Knowledge pages are NOT auto-injected: the agent pulls them through the page-search tool —
+  // an unprompted injection on every turn (even a plain "yes") read as phantom research. The
+  // roster below keeps the tool and the page names in front of the agent.
+  if (cadence > 0 && turns % cadence === 0) {
+    blocks.push(
+      buildRosterRefresh(pages, {
+        reflectOnNewGoals: cfg.autoInject !== "reflect",
+        extra: cfg.toolGuideExtra,
+      })
+    );
+  }
+  const kept = blocks.filter(Boolean);
+
+  // User-facing notice ONLY on a turn that actually ran a source (reflect, pages or recall),
+  // showing its goal and a preview of what came back. Ordinary turns stay silent — page knowledge
+  // is pulled via the page-search tool, a visible tool call.
+  let notice: string | undefined;
+  if (fallback) {
+    // Silent: the session still got memory, just not a synthesis. The notice used to say which
+    // source answered and point at the diag file, but that read as an error on a turn that
+    // worked; reflect_failed + reflect_fallback_* in the diag trail carry the details.
+  } else if (reflectRanThisTurn && reflectAnswer) {
+    const q = prompt.replace(/\s+/g, " ").trim();
+    const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
+    // Page/recall bodies open with a lead line; preview what came back, not that.
+    const body =
+      cfg.autoInject === "reflect" ? reflectAnswer : reflectAnswer.split("\n").slice(1).join("\n");
+    const preview = body.replace(/\s+/g, " ").trim();
+    notice =
+      `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n` +
+      `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}`;
+  } else if (reflectFailed) {
+    // The failure is already in the diag trail and plugin.log — files nobody tails mid-session,
+    // so a memory-less session looked exactly like a healthy one. One terse line pointing at the
+    // trail; it fires only on a turn that actually attempted a source, so at most
+    // HOOK_INJECT_ATTEMPTS times per session.
+    notice = `${brandWord()} · no memory this turn — see ${diagFilePath()}`;
+  }
+
+  return { context: kept.length ? kept.join("\n\n") : undefined, notice, pages };
+}
+
+/** Run one hook invocation: stdin event in, (maybe) an injection object on stdout. */
+export async function runHook(
+  spec: HookSpec,
+  makeClient: (opts: ClientOpts) => HookClient = (o) => new MemoryClient(o),
+  /** The event a shim already read from stdin; absent, the event is read here. */
+  preRead?: Record<string, unknown>,
+): Promise<void> {
+  // Anti-recursion: the codebase survey's own headless session sets WENYUAN_DISABLE_HOOKS so its
+  // hooks are a no-op (hooksDisabled is the packaged-hook contract's reading of that variable).
+  if (hooksDisabled()) return;
+
+  const ev = preRead ?? readHookEvent(spec.harness);
+  if (!ev) return;
+  if (spec.accept && !spec.accept(ev)) return;
+  const { prompt: rawPrompt, cwd: rawCwd, sessionId } = spec.parse(ev);
+  if (spec.toolHook?.accept(ev)) {
+    // Runs on every tool call, so it does nothing but hand over what a prompt hook stashed.
+    const pending = sessionId ? takePendingContext(spec.harness, sessionId) : undefined;
+    if (pending) process.stdout.write(JSON.stringify(spec.toolHook.emit(pending)));
+    return;
+  }
+  if (spec.requireCwd && !rawCwd) return;
+  const cwd = rawCwd || process.cwd();
+  const prompt = (rawPrompt || "").trim();
+  if (!prompt) return;
+
+  let cfg = loadConfig({ harness: spec.harness });
+  setLogLevel(cfg.logLevel);
+  if (cfg.disabled) {
+    log.debug(spec.harness, "hook skipped: disabled");
+    return;
+  }
+
+  // Before any network work, and deliberately before the bank is resolved: the journal is this
+  // session's only record of what the user said, and a slow or unreachable server must not cost
+  // the turn. Journaling under `retainSessions: false` writes a temp file nothing reads —
+  // cheaper than threading that decision through two processes to find out.
+  if (spec.journalPrompt) {
+    appendJournalTurn(journalPath(spec.harness, sessionId), { role: "user", content: prompt });
+  }
+
+  const out = (context: string | undefined, notice?: string) =>
+    process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice, ev)));
+
+  const sessionRoot = sessionRootDir(spec.harness, sessionId, cwd);
+  const derived = deriveBankIdOrSkip(cfg, cwd, spec.harness, sessionRoot);
+  if (derived === null) return; // repository unidentifiable: stay silent rather than invent a bank
+  const resolved = applyBankConfig(cfg, derived, cwd);
+  cfg = resolved.cfg;
+  const bankId = resolved.bankId;
+  if (cfg.disabled) {
+    log.debug(spec.harness, "hook skipped: bank disabled via banks override", { bank: bankId });
+    return;
+  }
+  const client = makeClient({
+    apiUrl: cfg.apiUrl,
+    apiToken: cfg.apiToken,
+    bank: bankId,
+    maxParallelRetains: cfg.maxParallelRetains,
+    observationScopes: cfg.observationScopes,
+    pageSearchLimit: cfg.pageSearchLimit,
+    recallOptions: cfg.recallOptions,
+  });
+  const cacheFile = sessionCacheFile(spec.harness, sessionId || "no-session");
+
+  // Safety net on EVERY harness: on the session's FIRST prompt (no cache file yet), fire the
+  // ingestion engine. Normally the shared SessionStart lifecycle already did (the engine's
+  // per-bank lock makes this a no-op), but a session that predates installation never received
+  // SessionStart; this limited fallback heals that without duplicating survey logic.
+  if (cfg.autoSeed !== false && !existsSync(cacheFile)) {
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
+  }
+
+  const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
+  // Mid-session heal: a bank with ZERO pages means the engine never built it (the session
+  // predates the install). Fire the idempotent engine — repeats are free while it builds.
+  if (
+    cfg.autoSeed !== false &&
+    client.knowledgePagesSupported !== false &&
+    output.pages.length === 0
+  ) {
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
+  }
+  let context = output.context;
+  if (context && spec.toolHook && sessionId) {
+    stashPendingContext(spec.harness, sessionId, context);
+    context = undefined;
+  }
+  if (context || output.notice) out(context, output.notice);
+}

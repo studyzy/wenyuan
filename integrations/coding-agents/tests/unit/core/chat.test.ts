@@ -1,0 +1,757 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { RateLimitedError, type MemoryClient } from "../../../src/core/client";
+import {
+  DEFAULT_RETAIN_CONTEXT,
+  ingestChats,
+  renderSessionJsonl,
+  retainLiveSession,
+} from "../../../src/core/chat";
+import type { TransportTurn } from "../../../src/core/transcript";
+import {
+  PENDING_MAX_AGE_MS,
+  memoryCursorStore,
+  type RetainCursorStore,
+} from "../../../src/core/retain-cursor";
+
+describe("renderSessionJsonl", () => {
+  const turns: TransportTurn[] = [
+    { role: "user", content: "Add retry backoff", timestamp: "2026-01-01T00:00:00Z" },
+    { role: "assistant", content: "On it.", timestamp: "2026-01-01T00:00:01Z" },
+    { role: "action", content: "Edit uploader.ts" },
+  ];
+
+  it("renders JSONL (one JSON object per line) led by the REF-ID system turn, preserving roles/content/timestamps", () => {
+    const jsonl = renderSessionJsonl("conversation:s1", turns, "2026-01-01T00:00:00Z");
+    const parsed = jsonl.split("\n").map((line) => JSON.parse(line) as TransportTurn);
+    expect(parsed).toHaveLength(4);
+    expect(parsed[0]).toEqual({
+      role: "system",
+      content: "REF-ID: conversation:s1",
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+    expect(parsed[1]).toEqual({
+      role: "user",
+      content: "Add retry backoff",
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+    expect(parsed[2]).toEqual({
+      role: "assistant",
+      content: "On it.",
+      timestamp: "2026-01-01T00:00:01Z",
+    });
+    // Compact action turns pass through untouched (no timestamp -> none serialized).
+    expect(parsed[3]).toEqual({ role: "action", content: "Edit uploader.ts" });
+  });
+
+  it("empty turn list still yields the REF-ID system turn alone (exactly one line)", () => {
+    const lines = renderSessionJsonl("r", [], "2026-01-01T00:00:00Z").split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "") as TransportTurn).toEqual({
+      role: "system",
+      content: "REF-ID: r",
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+  });
+});
+
+describe("retainLiveSession", () => {
+  it("upserts the JSONL transcript under conversation:<id> with the unified conversation strategy", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+    const turns: TransportTurn[] = [
+      { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+
+    await retainLiveSession(client, "s2", turns, "2026-01-01T00:00:00Z");
+
+    expect(retain).toHaveBeenCalledTimes(1);
+    const first = retain.mock.calls[0] as unknown[];
+    const [content, context, documentId, tags, strategy, opts] = first;
+    // The retained content IS the renderSessionJsonl transcript.
+    expect(content).toBe(renderSessionJsonl("conversation:s2", turns, "2026-01-01T00:00:00Z"));
+    const parsed = (content as string).split("\n").map((line) => JSON.parse(line) as TransportTurn);
+    expect(parsed[0]).toEqual({
+      role: "system",
+      content: "REF-ID: conversation:s2",
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+    expect(parsed[1]).toEqual({ role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" });
+    expect(context).toBe(DEFAULT_RETAIN_CONTEXT);
+    expect(documentId).toBe("conversation:s2");
+    expect(tags).toEqual(["source:chat"]);
+    expect(strategy).toBe("conversation");
+    expect(opts).toMatchObject({ timestamp: "2026-01-01T00:00:00Z" });
+    expect((opts as { metadata: unknown }).metadata).toMatchObject({
+      source: "chat",
+      session_id: "s2",
+      ref_id: "conversation:s2",
+    });
+  });
+
+  it("sends the stamp's resolved context instead of the default when one is configured", async () => {
+    // The default says nothing about authorship, so extraction can record an assistant's
+    // proposal as the user's decision. This is the path a deployment uses to state the boundary.
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+    const turns: TransportTurn[] = [
+      { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+    const configured = "Assistant turns are agent-generated and not the user's decisions.";
+
+    await retainLiveSession(client, "s3", turns, "2026-01-01T00:00:00Z", undefined, {
+      stamp: { tags: [], metadata: {}, context: configured },
+    });
+
+    const first = retain.mock.calls[0] as unknown[];
+    expect(first[1]).toBe(configured);
+  });
+
+  it("keeps the default when a stamp carries tags but no context", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+    const turns: TransportTurn[] = [
+      { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+
+    await retainLiveSession(client, "s4", turns, "2026-01-01T00:00:00Z", undefined, {
+      stamp: { tags: ["project:x"], metadata: {} },
+    });
+
+    const first = retain.mock.calls[0] as unknown[];
+    expect(first[1]).toBe(DEFAULT_RETAIN_CONTEXT);
+  });
+});
+
+describe("ingestChats", () => {
+  it("applies per-session retain attribution while preserving built-in chat identity", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+
+    await ingestChats(
+      client,
+      [{ id: "s-import", turns: [{ role: "user", text: "remember this" }] }],
+      {
+        stampFor: (sessionId) => ({
+          tags: [`project:repo-a`, `session:${sessionId}`],
+          metadata: { project: "repo-a", source: "configured" },
+        }),
+      }
+    );
+
+    expect(retain).toHaveBeenCalledTimes(1);
+    const first = retain.mock.calls[0] as unknown[];
+    const [, , , tags, , opts] = first;
+    expect(tags).toEqual(["project:repo-a", "session:s-import", "source:chat"]);
+    expect((opts as { metadata: unknown }).metadata).toMatchObject({
+      project: "repo-a",
+      source: "chat",
+      chat: "s-import",
+      ref_id: "chat:s-import",
+    });
+  });
+
+  it("dates a backfilled document from the session's own source timestamps, not the import clock", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+
+    const importedAt = Date.now();
+    await ingestChats(client, [
+      {
+        id: "s-hist",
+        turns: [
+          { role: "user", text: "pick the storage engine", timestamp: "2026-01-05T09:00:00Z" },
+          { role: "assistant", text: "RocksDB.", timestamp: "2026-01-05T09:00:05Z" },
+        ],
+      },
+    ]);
+
+    const first = retain.mock.calls[0] as unknown[];
+    const [content, , , , , opts] = first;
+    // The document/Event Date is the conversation's own first timestamp…
+    expect((opts as { timestamp: string }).timestamp).toBe("2026-01-05T09:00:00Z");
+    // …and the REF-ID system turn that heads the transcript carries the same anchor.
+    expect(JSON.parse((content as string).split("\n")[0] ?? "") as TransportTurn).toEqual({
+      role: "system",
+      content: "REF-ID: chat:s-hist",
+      timestamp: "2026-01-05T09:00:00Z",
+    });
+    // The regression: an import in September must not date a January session to September.
+    expect(Date.parse((opts as { timestamp: string }).timestamp)).toBeLessThan(importedAt - 60_000);
+  });
+
+  it("keeps the synthetic import-time anchor when no turn carries a usable timestamp", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+
+    const importedAt = Date.now();
+    await ingestChats(client, [
+      {
+        id: "s-clockless",
+        turns: [{ role: "user", text: "no clocks here", timestamp: "not-a-date" }],
+      },
+    ]);
+
+    const first = retain.mock.calls[0] as unknown[];
+    const opts = first[5] as { timestamp: string };
+    // Unparseable source values are ignored rather than trusted, so the stagger still applies.
+    expect(Date.parse(opts.timestamp)).toBeGreaterThanOrEqual(importedAt - 1000);
+  });
+
+  it("anchors a timestamp-less turn to the session's own clock instead of the import clock", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as MemoryClient;
+
+    await ingestChats(client, [
+      {
+        id: "s-mixed",
+        turns: [
+          { role: "user", text: "dated", timestamp: "2026-01-05T09:00:00Z" },
+          { role: "action", text: "undated follow-up" },
+        ],
+      },
+    ]);
+
+    const first = retain.mock.calls[0] as unknown[];
+    const [content] = first;
+    const turns = (content as string)
+      .split("\n")
+      .map((line: string) => JSON.parse(line) as TransportTurn);
+    // The dated turn keeps its source value verbatim…
+    expect(turns[1]?.timestamp).toBe("2026-01-05T09:00:00Z");
+    // …and the undated one sits on the SESSION's timeline, not the import's. Index 0 is the REF-ID
+    // system turn, so the action turn is index 2: fallback offset is `(j + 1)` minutes for j = 1.
+    expect(turns[2]?.timestamp).toBe("2026-01-05T09:02:00.000Z");
+  });
+});
+
+describe("retainLiveSession — incremental write-back", () => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const turn = (i: number): TransportTurn => ({ role: "user", content: `turn ${i}` });
+  const turns = (n: number) => Array.from({ length: n }, (_, i) => turn(i));
+
+  /** Client double: `supported` is the combined append capability. */
+  const stubClient = (supported = true) => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    return {
+      retain,
+      client: {
+        retain,
+        bank: "coding-agent::repo",
+        supportsAppendRetain: async () => supported,
+      } as unknown as MemoryClient,
+    };
+  };
+
+  const call = (retain: ReturnType<typeof vi.fn>, n: number): unknown[] =>
+    (retain.mock.calls[n] ?? []) as unknown[];
+
+  const write = (client: MemoryClient, turnList: TransportTurn[], cursors: RetainCursorStore) =>
+    retainLiveSession(client, "s1", turnList, "2026-01-01T00:00:00Z", "codex", { cursors });
+
+  it("replaces when an accepted write's operation later failed", async () => {
+    const status = new Map<string, string>();
+    const { retain, client } = stubClient();
+    Object.assign(client, {
+      bankUrl: (s: string) => s,
+      req: vi.fn(async (_m: string, url: string) => {
+        const st = status.get(url.split("/").pop() ?? "");
+        return new Response(JSON.stringify({ status: st }), { status: st ? 200 : 404 });
+      }),
+    });
+    const cursors = memoryCursorStore();
+    const opOf = (n: number) => (call(retain, n)[5] as { operationId: string }).operationId;
+
+    await write(client, turns(2), cursors);
+    status.set(opOf(0), "completed");
+    await write(client, turns(3), cursors);
+    expect((call(retain, 1)[5] as { updateMode?: string }).updateMode).toBe("append"); // completed: append is safe
+    expect(cursors.read("s1")?.ops).toEqual([opOf(1)]);
+
+    status.set(opOf(1), "failed"); // accepted, then extraction failed
+    await write(client, turns(4), cursors);
+    // The failed append's turn 2 is re-sent: the whole transcript, as a replace.
+    expect((call(retain, 2)[5] as { updateMode?: string }).updateMode).toBeUndefined();
+    expect(call(retain, 2)[0]).toBe(
+      renderSessionJsonl("conversation:s1", turns(4), "2026-01-01T00:00:00Z")
+    );
+    expect(cursors.read("s1")?.ops).toEqual([opOf(2)]);
+
+    status.set(opOf(2), "pending"); // still running: tracked, append proceeds
+    await write(client, turns(5), cursors);
+    expect((call(retain, 3)[5] as { updateMode?: string }).updateMode).toBe("append");
+    expect(cursors.read("s1")?.ops).toEqual([opOf(2), opOf(3)]);
+  });
+
+  it("replaces on the first write, then appends only the new turns", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+
+    await write(client, turns(2), cursors);
+    const first = call(retain, 0);
+    expect((first[5] as { updateMode?: string }).updateMode).toBeUndefined();
+    expect(first[0]).toBe(renderSessionJsonl("conversation:s1", turns(2), "2026-01-01T00:00:00Z"));
+
+    await write(client, turns(5), cursors);
+    const second = call(retain, 1);
+    expect((second[5] as { updateMode?: string }).updateMode).toBe("append");
+    // Only the three new turns, and no REF-ID header: the document already carries one.
+    expect((second[0] as string).split("\n").map((l) => JSON.parse(l) as TransportTurn)).toEqual([
+      turn(2),
+      turn(3),
+      turn(4),
+    ]);
+    expect(second[2]).toBe("conversation:s1"); // same document id — append targets it
+  });
+
+  it("remembers a confirmed append capability, so a failed probe on a later Stop still appends", async () => {
+    const cursors = memoryCursorStore();
+    await write(stubClient().client, turns(2), cursors);
+    // The next Stop is a fresh hook process whose capability probe times out.
+    const probe = vi.fn().mockRejectedValue(new Error("timeout"));
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const next = {
+      retain,
+      bank: "coding-agent::repo",
+      supportsAppendRetain: probe,
+    } as unknown as MemoryClient;
+    await write(next, turns(4), cursors);
+    expect(probe).not.toHaveBeenCalled();
+    expect((call(retain, 0)[5] as { updateMode?: string }).updateMode).toBe("append");
+  });
+
+  it("records the probed write-back mode in the diag trail, so a dead append is visible", async () => {
+    const savedProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
+    const dir = mkdtempSync(join(tmpdir(), "wenyuan-chat-diag-"));
+    vi.stubEnv("WENYUAN_AGENTS_DIAG_FILE", join(dir, "diag.jsonl"));
+    try {
+      await write(stubClient(false).client, turns(2), memoryCursorStore());
+      const events = readFileSync(join(dir, "diag.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          harness: "codex",
+          event: "retain_mode",
+          mode: "replace",
+          appendSupported: false,
+        })
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      if (savedProjectDir !== undefined) process.env.CLAUDE_PROJECT_DIR = savedProjectDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends a stable v5 operation_id so a resubmitted write is not applied twice", async () => {
+    const a = stubClient();
+    const b = stubClient();
+    await write(a.client, turns(3), memoryCursorStore());
+    await write(b.client, turns(3), memoryCursorStore());
+    const opId = (call(a.retain, 0)[5] as { operationId: string }).operationId;
+    expect(opId).toMatch(UUID_RE);
+    expect((call(b.retain, 0)[5] as { operationId: string }).operationId).toBe(opId);
+  });
+
+  it("gives a different operation_id to a different payload", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    await write(client, turns(5), cursors);
+    expect((call(retain, 0)[5] as { operationId: string }).operationId).not.toBe(
+      (call(retain, 1)[5] as { operationId: string }).operationId
+    );
+  });
+
+  it("skips the write entirely when no turn was added", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(3), cursors);
+    await write(client, turns(3), cursors);
+    expect(retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("buffers a failed append and replays it, instead of re-sending the whole transcript", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+
+    retain.mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(4), cursors)).rejects.toThrow("timeout");
+    const failed = call(retain, 1);
+    // Not dirty: a failed append no longer condemns the session to full replacement. Its turns are
+    // counted in the cursor because the buffer covers them.
+    expect(cursors.read("s1")?.dirty).toBeUndefined();
+    expect(cursors.read("s1")?.turns).toBe(4);
+    expect(cursors.read("s1")?.pending).toHaveLength(1);
+
+    await write(client, turns(6), cursors);
+    // The buffered slice goes out FIRST, byte-for-byte under its original operation id, so a write
+    // the server actually committed collapses into that operation instead of appending twice.
+    const replay = call(retain, 2);
+    expect(replay[0]).toBe(failed[0]);
+    expect((replay[5] as { operationId: string }).operationId).toBe(
+      (failed[5] as { operationId: string }).operationId
+    );
+    expect((replay[5] as { updateMode?: string }).updateMode).toBe("append");
+    // Then only what is new. The transcript is never re-sent, and never re-extracted.
+    const tail = call(retain, 3);
+    expect((tail[5] as { updateMode?: string }).updateMode).toBe("append");
+    expect((tail[0] as string).split("\n").map((l) => JSON.parse(l) as TransportTurn)).toEqual([
+      turn(4),
+      turn(5),
+    ]);
+    expect(cursors.read("s1")).toEqual({
+      turns: 6,
+      fingerprint: expect.any(String),
+      bank: "coding-agent::repo",
+      appendSupported: true,
+      // Accepted but never seen to complete (this stub cannot answer a status check): kept to check.
+      ops: expect.arrayContaining([
+        (replay[5] as { operationId: string }).operationId,
+        (tail[5] as { operationId: string }).operationId,
+      ]),
+    });
+  });
+
+  it("drops a buffered append as soon as it lands, so a later failure cannot resend it", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    retain.mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(4), cursors)).rejects.toThrow("timeout");
+
+    // The replay lands; the new tail behind it does not.
+    retain.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(6), cursors)).rejects.toThrow("timeout");
+    const pending = cursors.read("s1")?.pending ?? [];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.content).toBe(call(retain, 3)[0]);
+  });
+
+  it("stops flushing rather than starting a request the host deadline cannot fit", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    retain.mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(4), cursors)).rejects.toThrow("timeout");
+
+    // A budget that fits the replay and nothing after it: the new tail stays buffered for the next
+    // write-back instead of overrunning the deadline the host kills the hook at.
+    await retainLiveSession(client, "s1", turns(6), "2026-01-01T00:00:00Z", "codex", {
+      cursors,
+      retryUntil: Date.now(),
+    });
+    expect(retain).toHaveBeenCalledTimes(3);
+    expect(cursors.read("s1")?.pending).toHaveLength(1);
+
+    await write(client, turns(6), cursors);
+    expect(retain).toHaveBeenCalledTimes(4);
+    expect(cursors.read("s1")?.pending).toBeUndefined();
+  });
+
+  it("replaces again after a failed replace, which needs no buffer to be idempotent", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    retain.mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(2), cursors)).rejects.toThrow("timeout");
+    expect(cursors.read("s1")?.dirty).toBe(true);
+    expect(cursors.read("s1")?.pending).toBeUndefined();
+
+    await write(client, turns(4), cursors);
+    expect((call(retain, 1)[5] as { updateMode?: string }).updateMode).toBeUndefined();
+    expect(call(retain, 1)[0]).toBe(
+      renderSessionJsonl("conversation:s1", turns(4), "2026-01-01T00:00:00Z")
+    );
+  });
+
+  it("replaces rather than replaying a buffer the server may no longer dedupe", async () => {
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    retain.mockRejectedValueOnce(new Error("timeout"));
+    await expect(write(client, turns(4), cursors)).rejects.toThrow("timeout");
+
+    const stale = cursors.read("s1");
+    const pending = (stale?.pending ?? []).map((p) => ({
+      ...p,
+      at: p.at - PENDING_MAX_AGE_MS - 1,
+    }));
+    if (stale) cursors.write("s1", { ...stale, pending });
+
+    await write(client, turns(6), cursors);
+    const recovery = call(retain, 2);
+    expect((recovery[5] as { updateMode?: string }).updateMode).toBeUndefined();
+    expect(recovery[0]).toBe(
+      renderSessionJsonl("conversation:s1", turns(6), "2026-01-01T00:00:00Z")
+    );
+    expect(cursors.read("s1")?.pending).toBeUndefined();
+  });
+
+  it("never appends when append support is unavailable", async () => {
+    const { retain, client } = stubClient(false);
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    await write(client, turns(5), cursors);
+    expect(
+      retain.mock.calls.map(
+        (c) => ((c as unknown[])[5] as { updateMode?: string } | undefined)?.updateMode
+      )
+    ).toEqual([undefined, undefined]);
+    expect(call(retain, 1)[0]).toBe(
+      renderSessionJsonl("conversation:s1", turns(5), "2026-01-01T00:00:00Z")
+    );
+  });
+
+  it("replaces (never appends) when no cursor store is supplied", async () => {
+    const { retain, client } = stubClient();
+    await retainLiveSession(client, "s1", turns(2), "2026-01-01T00:00:00Z", "codex");
+    await retainLiveSession(client, "s1", turns(5), "2026-01-01T00:00:00Z", "codex");
+    expect(
+      retain.mock.calls.map(
+        (c) => ((c as unknown[])[5] as { updateMode?: string } | undefined)?.updateMode
+      )
+    ).toEqual([undefined, undefined]);
+  });
+
+  it("serialises overlapping write-backs so neither appends a slice the other already sent", async () => {
+    // The runtime fires retains without awaiting them: a turn-driven one and an idle-driven one can
+    // overlap. Unserialised, both planned an append from the same cursor position and submitted
+    // overlapping slices, duplicating turns inside the document.
+    const submitted: { mode: string; turns: number }[] = [];
+    const gates: (() => void)[] = [];
+    const retain = vi.fn((content: string, ...rest: unknown[]) => {
+      const o = rest[4] as { updateMode?: string };
+      submitted.push({ mode: o.updateMode ?? "replace", turns: content.split("\n").length });
+      return new Promise<void>((resolve) => gates.push(resolve));
+    });
+    const client = {
+      retain,
+      bank: "b",
+      supportsAppendRetain: async () => true,
+    } as unknown as MemoryClient;
+    const cursors = memoryCursorStore();
+
+    const first = write(client, turns(5), cursors);
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    (gates[0] as () => void)();
+    await first;
+
+    const a = write(client, turns(8), cursors);
+    const b = write(client, turns(9), cursors);
+    // Only ONE request is in flight: the second write-back waits for the first to be confirmed.
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    expect(submitted).toHaveLength(2);
+    (gates[1] as () => void)();
+    await a;
+    await vi.waitFor(() => expect(gates).toHaveLength(3));
+    (gates[2] as () => void)();
+    await b;
+
+    // 6 = REF-ID + 5 turns, then turns 5-7, then turn 8 alone — every turn sent exactly once.
+    expect(submitted).toEqual([
+      { mode: "replace", turns: 6 },
+      { mode: "append", turns: 3 },
+      { mode: "append", turns: 1 },
+    ]);
+  });
+
+  it("keeps two sessions in the same directory independent", async () => {
+    // Same repo => same bank, but each session owns its own document and its own cursor, so two
+    // agents running side by side in one checkout never append into each other's conversation.
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    const writeAs = (id: string, list: TransportTurn[]) =>
+      retainLiveSession(client, id, list, "2026-01-01T00:00:00Z", "codex", { cursors });
+
+    await writeAs("sess-a", turns(2));
+    await writeAs("sess-b", turns(4));
+    await writeAs("sess-a", turns(3));
+
+    const docs = retain.mock.calls.map((c) => (c as unknown[])[2]);
+    expect(docs).toEqual(["conversation:sess-a", "conversation:sess-b", "conversation:sess-a"]);
+    // sess-b's longer transcript did not advance sess-a's cursor: its append is turn 2 alone.
+    expect((call(retain, 1)[5] as { updateMode?: string }).updateMode).toBeUndefined(); // first write for sess-b
+    expect((call(retain, 2)[5] as { updateMode?: string }).updateMode).toBe("append");
+    expect((call(retain, 2)[0] as string).split("\n")).toHaveLength(1);
+    expect(cursors.read("sess-a")?.turns).toBe(3);
+    expect(cursors.read("sess-b")?.turns).toBe(4);
+  });
+
+  it("replaces rather than appends when the session moved to another bank", async () => {
+    const sent: { bank: string; mode: string }[] = [];
+    const mk = (bank: string) =>
+      ({
+        bank,
+        supportsAppendRetain: async () => true,
+        retain: vi.fn(async (_c: string, ...rest: unknown[]) => {
+          sent.push({ bank, mode: (rest[4] as { updateMode?: string }).updateMode ?? "replace" });
+        }),
+      }) as unknown as MemoryClient;
+    const cursors = memoryCursorStore();
+
+    await write(mk("repo-a"), turns(5), cursors);
+    await write(mk("repo-b"), turns(8), cursors); // user cd'd into another repo mid-session
+    expect(sent).toEqual([
+      { bank: "repo-a", mode: "replace" },
+      { bank: "repo-b", mode: "replace" },
+    ]);
+  });
+
+  it("stamps configured tags and metadata onto the write-back", async () => {
+    const { retain, client } = stubClient();
+    await retainLiveSession(client, "s1", turns(2), "2026-01-01T00:00:00Z", "codex", {
+      cursors: memoryCursorStore(),
+      stamp: { tags: ["project:acme-api", "env:work"], metadata: { repo: "acme-api" } },
+    });
+    expect(call(retain, 0)[3]).toEqual([
+      "project:acme-api",
+      "env:work",
+      "source:chat",
+      "harness:codex",
+    ]);
+    expect((call(retain, 0)[5] as { metadata: unknown }).metadata).toMatchObject({
+      repo: "acme-api",
+      source: "chat",
+      harness: "codex",
+    });
+  });
+
+  it("keeps built-in metadata authoritative and does not double a tag", async () => {
+    // The documents list filters on `source:chat` and draws its agent logo from `metadata.harness`,
+    // so the built-ins are written last and win. (retainTags entries in those namespaces are
+    // dropped earlier, at the source — see retain-stamp.test.ts.)
+    const { retain, client } = stubClient();
+    await retainLiveSession(client, "s1", turns(2), "2026-01-01T00:00:00Z", "codex", {
+      cursors: memoryCursorStore(),
+      stamp: {
+        tags: ["source:chat", "env:work"],
+        metadata: { harness: "not-codex", source: "elsewhere", session_id: "spoofed" },
+      },
+    });
+    expect(call(retain, 0)[3]).toEqual(["source:chat", "env:work", "harness:codex"]);
+    expect((call(retain, 0)[5] as { metadata: unknown }).metadata).toMatchObject({
+      harness: "codex",
+      source: "chat",
+      session_id: "s1",
+    });
+  });
+
+  it("retries a rate-limited write-back instead of dropping it", async () => {
+    const { retain, client } = stubClient();
+    retain.mockRejectedValueOnce(new RateLimitedError(50));
+    const cursors = memoryCursorStore();
+
+    await write(client, turns(3), cursors);
+
+    expect(retain).toHaveBeenCalledTimes(2);
+    // The retry is the SAME payload, so its deterministic operation_id makes it a no-op server-side
+    // if the first attempt actually landed.
+    expect(call(retain, 1)[0]).toBe(call(retain, 0)[0]);
+    expect((call(retain, 1)[5] as { operationId: string }).operationId).toBe(
+      (call(retain, 0)[5] as { operationId: string }).operationId
+    );
+    expect(cursors.read("s1")?.dirty).toBeFalsy(); // confirmed, not left dirty
+  });
+
+  it("gives up once a newer write-back has taken the cursor", async () => {
+    // Ours is superseded: the newer one carries what we were sending, or replaces the document
+    // outright because our failure left the cursor dirty. Retrying would burn a hook's remaining
+    // time re-sending content already on its way.
+    const { retain, client } = stubClient();
+    const cursors = memoryCursorStore();
+    retain.mockImplementationOnce(async () => {
+      cursors.write("s1", { turns: 99, fingerprint: "someone-else", bank: "b", dirty: true });
+      throw new RateLimitedError(50);
+    });
+
+    await expect(write(client, turns(3), cursors)).rejects.toBeInstanceOf(RateLimitedError);
+    expect(retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("honours a long Retry-After when the caller's clock has room for it", async () => {
+    // A persistent-plugin runtime is not on a host's kill timer, so a 20s rate limit is worth
+    // waiting out rather than deferring — a short fixed budget could not express that.
+    vi.useFakeTimers();
+    try {
+      const { retain, client } = stubClient();
+      retain.mockRejectedValueOnce(new RateLimitedError(20_000));
+      const done = retainLiveSession(client, "s1", turns(3), "2026-01-01T00:00:00Z", "opencode", {
+        cursors: memoryCursorStore(),
+        retryUntil: Date.now() + 120_000,
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await done;
+      expect(retain).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a wait its caller's clock cannot finish", async () => {
+    // Same 20s rate limit, but a hook with ~10s of host timeout left: waiting would be killed
+    // mid-write. Defer instead — the next write-back replaces the whole document.
+    const { retain, client } = stubClient();
+    retain.mockRejectedValue(new RateLimitedError(20_000));
+
+    await expect(
+      retainLiveSession(client, "s1", turns(3), "2026-01-01T00:00:00Z", "codex", {
+        cursors: memoryCursorStore(),
+        retryUntil: Date.now() + 10_000,
+      })
+    ).rejects.toBeInstanceOf(RateLimitedError);
+    expect(retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when Retry-After exceeds what a hook can wait", async () => {
+    // Waiting less than the server asked would just earn another 429, and waiting the full 60s
+    // risks the harness killing the hook mid-write. Leave it to the next write-back, which
+    // replaces the whole document.
+    const { retain, client } = stubClient();
+    retain.mockRejectedValue(new RateLimitedError(60_000));
+
+    await expect(
+      retainLiveSession(client, "s1", turns(3), "2026-01-01T00:00:00Z", "codex", {
+        cursors: memoryCursorStore(),
+        retryUntil: Date.now() + 20_000,
+      })
+    ).rejects.toBeInstanceOf(RateLimitedError);
+    expect(retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("rides out a short rate limit across both attempts", async () => {
+    const { retain, client } = stubClient();
+    retain.mockRejectedValueOnce(new RateLimitedError(20));
+    retain.mockRejectedValueOnce(new RateLimitedError(20));
+
+    await write(client, turns(3), memoryCursorStore());
+    expect(retain).toHaveBeenCalledTimes(3); // attempt + 2 retries, then success
+  });
+
+  it("does not retry a failure that is not a rate limit", async () => {
+    const { retain, client } = stubClient();
+    retain.mockRejectedValue(new Error("500 boom"));
+
+    await expect(write(client, turns(3), memoryCursorStore())).rejects.toThrow("500 boom");
+    expect(retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the write-back when the capability probe itself fails", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      retain,
+      bank: "b",
+      supportsAppendRetain: async () => {
+        throw new Error("unreachable");
+      },
+    } as unknown as MemoryClient;
+    await write(client, turns(2), memoryCursorStore());
+    expect(retain).toHaveBeenCalledTimes(1);
+    expect((call(retain, 0)[5] as { updateMode?: string }).updateMode).toBeUndefined();
+  });
+});

@@ -18,7 +18,16 @@ export type HostId =
   | "workbuddy"
   | "cursor-cli"
   | "copilot-cli"
-  | "dsh";
+  | "dsh"
+  | "antigravity-cli"
+  | "devin-cli"
+  | "grok-build"
+  | "qwen-code"
+  | "factory-droid"
+  | "zcode"
+  | "traecode"
+  | "kimi"
+  | "dcode";
 
 export interface HostLocations {
   /**

@@ -1,41 +1,38 @@
-import { failOpen, hooksDisabled, lifecyclePayload, payloadString, readStdin } from "../src/runtime/hook-contract";
-import { stageDeadlineMs } from "../src/runtime/deadline";
-import { runStop } from "../src/runtime/stop-stage";
-import { resolveHostId } from "../src/runtime/hook-host";
-import { sessionKey } from "../src/runtime/hook-state";
+import { readFileSync } from "node:fs";
+import { parseHookEvent } from "../src/core/diag";
+import { runHarnessRetain, type HookHarnessName } from "../src/harness/hook-lifecycle";
+import { failOpen } from "../src/runtime/hook-contract";
+import { harnessFor, resolveHostId } from "../src/runtime/hook-host";
 
 /**
  * The packaged stop hook, launched when a session stops.
  *
- * It is a thin adapter over the stop stage: it honors the disable guard, reads
- * the payload from standard input, runs the stage behind the shared fail-open
- * wrapper, and exits zero on every fail-open path. It writes nothing to its
- * standard output on any path, so the host session is never disturbed.
+ * A thin adapter over the core retain lifecycle: it reads the host's event
+ * from standard input once, resolves which declared host is firing, and hands
+ * event and harness to the shared core lifecycle, which owns the transcript
+ * read, the retain cursor (append, never duplicate), the disable guard and
+ * the fail-open behavior. Any failure exits zero.
  */
 
-const STAGE = "stop";
-
 async function main(): Promise<number> {
-  if (hooksDisabled()) {
+  let raw: string;
+  try {
+    raw = readFileSync(0, "utf8");
+  } catch {
     return 0;
   }
-  const source: string = await readStdin();
-  const payload: Record<string, unknown> = lifecyclePayload(source);
-  const hostId: string | undefined = resolveHostId(payload);
+  const event = parseHookEvent("hook", raw) ?? {};
+    const hostId: string | undefined = resolveHostId(event);
   if (hostId === undefined) {
     return 0;
   }
-  // The session key carries the retain cursor between firings, so a session
-  // that stops twice appends only what is new instead of writing itself again.
-  const session: string = payloadString(payload, "session_id", "sessionId", "session") ?? "";
-  await failOpen(async () => {
-    await runStop({
-      hostId,
-      payload,
-      timeoutMs: stageDeadlineMs(hostId, STAGE),
-      ...(session === "" ? {} : { sessionKey: sessionKey(hostId, session) }),
-    });
-  });
+  let harness: HookHarnessName;
+  try {
+    harness = harnessFor(hostId);
+  } catch (e) {
+    return 0;
+  }
+  await failOpen(() => runHarnessRetain(harness, event));
   return 0;
 }
 

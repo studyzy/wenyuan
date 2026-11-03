@@ -16,9 +16,11 @@ import {
   type EncodedRegistration,
 } from "./hook-shape";
 import {
+  allRegistrations,
   budgetMilliseconds,
-  hostLifecycle,
-  orderedRegistrations,
+  hookContainerPath,
+  hookContainerSeeds,
+  hookEventPath,
 } from "./lifecycle";
 import type { LifecycleRegistration, RegistrationStyle } from "./lifecycle-types";
 
@@ -97,9 +99,35 @@ function eventValue(
   );
 }
 
-/** One event key path for a host config: the wrapper key plus the event spelling. */
-function eventPath(event: string): string[] {
-  return [HOOKS_CONTAINER_KEY, event];
+/** One event key path for a host config: the host's container plus the event. */
+function eventPath(hostId: string, event: string): string[] {
+  return hookEventPath(hostId, event);
+}
+
+/**
+ * Seeds the members install writes beside the events, in the document merge.
+ * Only plain-JSON hosts declare seeds: the text-editing path would need one
+ * member edit per seed, and no text-edited host declares one.
+ */
+function applySeeds(document: JsonDocument, hostId: string): void {
+  for (const seed of hookContainerSeeds(hostId)) {
+    let parent: JsonDocument = document;
+    for (const step of seed.path) {
+      const next: unknown = parent[step];
+      if (next !== undefined && next !== null && typeof next === "object" && !Array.isArray(next)) {
+        parent = next as JsonDocument;
+        continue;
+      }
+      const created: JsonDocument = {};
+      parent[step] = created;
+      parent = created;
+    }
+    const present: boolean = parent[seed.member] !== undefined;
+    if (seed.mode === "default" && present) {
+      continue;
+    }
+    parent[seed.member] = seed.value;
+  }
 }
 
 /**
@@ -109,7 +137,7 @@ function eventPath(event: string): string[] {
  * survive, and a second run leaves exactly one registration per event.
  */
 export async function installLifecycleHooks(input: HookWriteInput): Promise<HookWriteResult> {
-  const registrations = orderedRegistrations(hostLifecycle(input.hostId));
+  const registrations = allRegistrations(input.hostId).map((registration) => ({ registration }));
   const expected: HostHookExpectation[] = registrations.map(({ registration }) => ({
     event: registration.event,
     scriptPath: hookPathFor(registration.scriptFile, input.runtimeDirectory),
@@ -122,10 +150,11 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
     for (const { registration } of registrations) {
       mergeValueIntoContainer(
         document,
-        eventPath(registration.event),
+        eventPath(input.hostId, registration.event),
         eventValue(registration, input),
       );
     }
+    applySeeds(document, input.hostId);
     await writeConfigSource(input.configPath, `${JSON.stringify(document, null, 2)}\n`);
     return result(true, [], input.configPath, expected, blockedEvents);
   }
@@ -139,7 +168,7 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
       // and reported as blocked rather than silently dropping the registration.
       const edit: JsoncEdit | null = upsertJsoncMember(
         text,
-        [HOOKS_CONTAINER_KEY],
+        [...hookContainerPath(input.hostId)],
         registration.event,
         eventValue(registration, input),
         (memberSource) => memberSource.includes(OWNERSHIP_MARKER),
@@ -164,10 +193,11 @@ export async function installLifecycleHooks(input: HookWriteInput): Promise<Hook
   } else {
     const document: JsonDocument = asJsonDocument(text);
     for (const { registration } of registrations) {
-      if (!mergeValueIntoContainer(document, eventPath(registration.event), eventValue(registration, input))) {
+      if (!mergeValueIntoContainer(document, eventPath(input.hostId, registration.event), eventValue(registration, input))) {
         blockedEvents.push(registration.event);
       }
     }
+    applySeeds(document, input.hostId);
     text = `${JSON.stringify(document, null, 2)}\n`;
   }
   if (text === before) {

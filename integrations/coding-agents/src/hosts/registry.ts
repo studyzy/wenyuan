@@ -1,12 +1,21 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { antigravityCli } from "./antigravity-cli";
 import { claudeCode } from "./claude-code";
 import { codebuddy } from "./codebuddy";
 import { codex } from "./codex";
 import { copilotCli } from "./copilot-cli";
 import { cursorCli } from "./cursor-cli";
+import { dcode } from "./dcode";
+import { devinCli } from "./devin-cli";
 import { dsh } from "./dsh";
+import { factoryDroid } from "./factory-droid";
+import { grokBuild } from "./grok-build";
+import { kimi } from "./kimi";
+import { qwenCode } from "./qwen-code";
+import { traecode } from "./traecode";
 import { workbuddy } from "./workbuddy";
+import { zcode } from "./zcode";
 import type { HostContribution, HostId } from "./types";
 
 /**
@@ -26,6 +35,15 @@ export const HOSTS: readonly HostContribution[] = [
   cursorCli,
   copilotCli,
   dsh,
+  antigravityCli,
+  devinCli,
+  grokBuild,
+  qwenCode,
+  factoryDroid,
+  zcode,
+  traecode,
+  kimi,
+  dcode,
 ];
 
 export const HOST_IDS: readonly HostId[] = HOSTS.map((host) => host.id);
@@ -47,8 +65,13 @@ export function isHostId(value: string): value is HostId {
  * path, or the host's own config directory already exists.
  */
 export function hostIsDetected(host: HostContribution, home: string): boolean {
-  const configDirectory: string = join(home, host.detection.configDirectory);
-  return executableIsOnPath(host.detection.executable) || existsSync(configDirectory);
+  // A host that names no config directory is detected by its executable alone:
+  // a directory it shares with another product must not read as this host.
+  const configDirectory: string = host.detection.configDirectory;
+  return (
+    executableIsOnPath(host.detection.executable) ||
+    (configDirectory.length > 0 && existsSync(join(home, configDirectory)))
+  );
 }
 
 export function detectHosts(home: string): HostContribution[] {

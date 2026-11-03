@@ -12,7 +12,24 @@ import { NO_HOST_CLI, runInstaller, type FakeHome, withFakeHome, withRestrictedP
  * name and no selection at all — happen before anything is written.
  */
 
-const APPROVED: string[] = ["claude-code", "codex", "codebuddy", "workbuddy", "cursor-cli", "copilot-cli", "dsh"];
+const APPROVED: string[] = [
+  "claude-code",
+  "codex",
+  "codebuddy",
+  "workbuddy",
+  "cursor-cli",
+  "copilot-cli",
+  "dsh",
+  "antigravity-cli",
+  "devin-cli",
+  "grok-build",
+  "qwen-code",
+  "factory-droid",
+  "zcode",
+  "traecode",
+  "kimi",
+  "dcode",
+];
 
 const CONFIG_FILES: Record<string, string> = {
   "claude-code": ".claude/settings.json",
@@ -24,6 +41,17 @@ const CONFIG_FILES: Record<string, string> = {
   // DSH writes no hook config; its install still wires the MCP server map and
   // the companion skill, which is what proves it was accepted.
   dsh: ".dsh/mcp.json",
+  "antigravity-cli": ".gemini/config/hooks.json",
+  "devin-cli": ".config/devin/config.json",
+  "grok-build": ".grok/hooks/hooks.json",
+  "qwen-code": ".qwen/settings.json",
+  "factory-droid": ".factory/hooks.json",
+  zcode: ".zcode/cli/config.json",
+  traecode: ".trae-cn/hooks.json",
+  kimi: ".kimi-code/config.toml",
+  // Dcode writes no hook config either; its local marketplace registration is
+  // what proves the plugin install was accepted.
+  dcode: ".wenyuan/.agents/plugins/marketplace.json",
 };
 
 /**

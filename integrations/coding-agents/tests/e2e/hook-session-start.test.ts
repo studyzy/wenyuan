@@ -25,17 +25,19 @@ describe("the session-start hook", () => {
         expect(run.status).toBe(0);
         const envelope = run.envelope() as Record<string, unknown>;
         expect(envelope).not.toBeNull();
-        expect(typeof envelope["systemMessage"]).toBe("string");
         const specific = envelope["hookSpecificOutput"] as Record<string, unknown>;
         expect(specific["hookEventName"]).toBe(registrationFor("claude-code", "session-start").event);
-        expect(String(specific["additionalContext"])).toContain("the user works in Go");
+        // The knowledge tool guide is the session-start injection: it is what
+        // tells the agent the memory surface exists and how to search it.
+        expect(String(specific["additionalContext"])).toContain("<wenyuan_knowledge>");
+        expect(String(specific["additionalContext"])).toContain("wenyuan_search_knowledge_pages");
       });
     } finally {
       await service.close();
     }
   });
 
-  it("prints nothing and exits zero when the service returns no memory", async () => {
+  it("still injects the tool guide when the service returns no memory", async () => {
     const service: StubService = await startStubService();
     service.recallResponses.push({ results: [] });
     try {
@@ -43,7 +45,9 @@ describe("the session-start hook", () => {
         await seedStoredConnection(home, service.url);
         const run = await runHook({ home, scriptFile: "session-start.mjs", payload: { session_id: "s-1" } });
         expect(run.status).toBe(0);
-        expect(run.envelope()).toBeNull();
+        const envelope = run.envelope() as Record<string, unknown>;
+        const specific = envelope["hookSpecificOutput"] as Record<string, unknown>;
+        expect(String(specific["additionalContext"])).toContain("No knowledge pages yet");
       });
     } finally {
       await service.close();
@@ -55,8 +59,14 @@ describe("the session-start hook", () => {
       // A port nothing listens on: the hook must fail open, not hang or throw.
       await seedStoredConnection(home, "http://127.0.0.1:1");
       const run = await runHook({ home, scriptFile: "session-start.mjs", payload: { session_id: "s-1" } });
+      // Fail open: the session survives. What the hook may still emit is the
+      // static knowledge guide — the one injection that needs no server.
       expect(run.status).toBe(0);
-      expect(run.envelope()).toBeNull();
+      const envelope = run.envelope();
+      if (envelope !== null) {
+        const specific = (envelope as Record<string, unknown>)["hookSpecificOutput"] as Record<string, unknown>;
+        expect(specific["hookEventName"]).toBe("SessionStart");
+      }
     });
   });
 

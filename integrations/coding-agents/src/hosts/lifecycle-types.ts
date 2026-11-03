@@ -28,7 +28,27 @@ export type BudgetUnit = "seconds" | "milliseconds";
  * the matcher-group style; the other styles are declared so a host with a
  * different loader is distinguishable without changing any other field.
  */
-export type RegistrationStyle = "matcher-group" | "flat-entry" | "table-array";
+/**
+ * The registration shape a host's loader expects. The first-batch hosts use
+ * the matcher-group style; the other styles are declared so a host with a
+ * different loader is distinguishable without changing any other field.
+ *
+ * - `matcher-group` - a list of groups, each carrying a command-entry list.
+ * - `flat-entry` - one command entry object (type, command, timeout).
+ * - `plain-entry` - one object holding only command and timeout, no execution
+ *   type: the shape a host whose loader reads just the command reads.
+ * - `table-array` - a list of command entries, one element per registration.
+ * - `process-entry` - the matcher-group nesting, but the entry is an argv
+ *   (type "process", a bare "node" command, the script under args) because the
+ *   host spawns hooks without a shell, so a quoted command string would be
+ *   looked up verbatim as one executable name and never run.
+ */
+export type RegistrationStyle =
+  | "matcher-group"
+  | "flat-entry"
+  | "plain-entry"
+  | "table-array"
+  | "process-entry";
 
 /**
  * One lifecycle registration for one host: the host's own event spelling, the
@@ -51,4 +71,19 @@ export interface LifecycleRegistration {
 /** One host's ordered lifecycle: every stage mapped to its registration. */
 export interface HostLifecycle {
   readonly [stage: string]: LifecycleRegistration;
+}
+
+/**
+ * One native host event beyond the shared three-stage lifecycle, registered
+ * beside it. The host names the event and which shared stage's packaged script
+ * and budget the registration reuses, so a native event can never point at a
+ * script the stage bins do not ship.
+ */
+export interface AdditionalRegistration {
+  /** The host-recognized native event name, written into its config verbatim. */
+  event: string;
+  /** The shared stage whose packaged script file and budget this reuses. */
+  stage: LifecycleStage;
+  /** The registration shape the host's loader expects for this event. */
+  style: RegistrationStyle;
 }

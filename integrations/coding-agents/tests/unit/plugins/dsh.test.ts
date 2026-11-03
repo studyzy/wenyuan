@@ -1,0 +1,307 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  createDshHooks,
+  dshSessionEvents,
+  toDshParameters,
+  type Workspace,
+} from "../../../src/plugins/dsh";
+import { readDshEvents } from "../../../src/core/transcript-dsh";
+import type { ToolSpec } from "../../../src/core/knowledge-tools";
+
+const session = (id: string, extra: Record<string, unknown> = {}) => ({
+  header: { id, cwd: "/repo", ...extra },
+  events: [] as unknown[],
+});
+
+const agentWith = (id: string, extra: Record<string, unknown> = {}) =>
+  ({ session: session(id, extra) }) as never;
+
+const userMessage = (text: string) => ({
+  id: `m-${text}`,
+  role: "user" as const,
+  content: [{ type: "text", text }],
+  source: { kind: "user" },
+});
+
+const pluginMessage = (text: string) => ({
+  id: `p-${text}`,
+  role: "user" as const,
+  content: [{ type: "text", text }],
+  source: { kind: "plugin", plugin: "some-other-plugin" },
+});
+
+function fakeWorkspace(core: Partial<Workspace["core"]>): Workspace {
+  return { core: core as Workspace["core"], root: "/repo", seeded: Promise.resolve() };
+}
+
+const enter = (messages: unknown[]) => async () => ({ kind: "enter" as const, messages }) as never;
+
+describe("dsh pre-step injection", () => {
+  it("recalls on the human prompt and appends the memory as a sourced message", async () => {
+    const core = {
+      onPrompt: vi.fn(async () => {}),
+      getInjection: vi.fn(() => "<wenyuan_memory>past decision</wenyuan_memory>"),
+      seedIfCold: vi.fn(async () => {}),
+    };
+    const hooks = createDshHooks(() => fakeWorkspace(core));
+
+    const decision = await hooks.preStep(
+      { agent: agentWith("s-1"), signal: new AbortController().signal },
+      enter([userMessage("why did we roll back?"), pluginMessage("Current runtime context…")])
+    );
+
+    expect(core.onPrompt).toHaveBeenCalledWith("s-1", "why did we roll back?");
+    expect(decision.kind).toBe("enter");
+    const appended = (decision as { messages: Record<string, any>[] }).messages.at(-1)!;
+    expect(appended).toMatchObject({
+      role: "user",
+      content: [{ type: "text", text: "<wenyuan_memory>past decision</wenyuan_memory>" }],
+    });
+    // Exact, not a partial match: session format V4 aborts the turn on the retired
+    // `kind: "plugin"` wrapper, so no `plugin` field may ride along either.
+    expect(appended.source).toEqual({ kind: "plugin:wenyuan", form: "recall" });
+    expect(appended.id).toEqual(expect.any(String));
+  });
+
+  it("does not re-append a block identical to the one already injected this session", async () => {
+    // dsh keeps every injected message in the history it sends, so the same roster appended on
+    // every turn stacked up as N identical copies.
+    let block = "<wenyuan_knowledge_refresh>roster</wenyuan_knowledge_refresh>";
+    const core = {
+      onPrompt: vi.fn(async () => {}),
+      getInjection: vi.fn(() => block),
+      seedIfCold: vi.fn(async () => {}),
+    };
+    const hooks = createDshHooks(() => fakeWorkspace(core));
+    const step = (id: string, text: string) =>
+      hooks.preStep(
+        { agent: agentWith(id), signal: new AbortController().signal },
+        enter([userMessage(text)])
+      ) as Promise<{ messages: unknown[] }>;
+
+    expect((await step("s-1", "first")).messages).toHaveLength(2);
+    expect((await step("s-1", "second")).messages).toHaveLength(1);
+    // Another session gets its own copy, and a changed block is injected again.
+    expect((await step("s-2", "first")).messages).toHaveLength(2);
+    block = "<wenyuan_knowledge_refresh>new page</wenyuan_knowledge_refresh>";
+    expect((await step("s-1", "third")).messages).toHaveLength(2);
+  });
+
+  it("does not recall again on a tool continuation that claimed no new input", async () => {
+    const core = {
+      onPrompt: vi.fn(async () => {}),
+      getInjection: vi.fn(() => "memory"),
+      seedIfCold: vi.fn(async () => {}),
+    };
+    const hooks = createDshHooks(() => fakeWorkspace(core));
+
+    const decision = await hooks.preStep(
+      { agent: agentWith("s-1"), signal: new AbortController().signal },
+      enter([pluginMessage("Current runtime context…")])
+    );
+
+    expect(core.onPrompt).not.toHaveBeenCalled();
+    expect((decision as { messages: unknown[] }).messages).toHaveLength(1);
+  });
+
+  it("leaves a rejected step and an aborted step untouched", async () => {
+    const core = { onPrompt: vi.fn(async () => {}), getInjection: vi.fn(() => "memory") };
+    const hooks = createDshHooks(() => fakeWorkspace(core));
+
+    const rejected = await hooks.preStep(
+      { agent: agentWith("s-1"), signal: new AbortController().signal },
+      async () => ({ kind: "reject" }) as never
+    );
+    const aborted = AbortSignal.abort();
+    const cancelled = await hooks.preStep(
+      { agent: agentWith("s-1"), signal: aborted },
+      enter([userMessage("hello")])
+    );
+
+    expect(rejected).toEqual({ kind: "reject" });
+    expect((cancelled as { messages: unknown[] }).messages).toHaveLength(1);
+    expect(core.onPrompt).not.toHaveBeenCalled();
+  });
+
+  it("passes the step through untouched when memory is off for the workspace", async () => {
+    const hooks = createDshHooks(() => undefined);
+    const decision = await hooks.preStep(
+      { agent: agentWith("s-1"), signal: new AbortController().signal },
+      enter([userMessage("hello")])
+    );
+    expect((decision as { messages: unknown[] }).messages).toHaveLength(1);
+  });
+});
+
+describe("dsh write-back", () => {
+  it("hands the completed exchange to the shared idle path at the stop boundary", async () => {
+    const core = { onSessionIdle: vi.fn(async () => {}), seedIfCold: vi.fn(async () => {}) };
+    const hooks = createDshHooks(() => fakeWorkspace(core));
+
+    await hooks.turnStopping({ agent: agentWith("s-2") });
+
+    expect(core.onSessionIdle).toHaveBeenCalledWith("s-2");
+  });
+
+  it("skips subagent sessions the parent conversation already covers", async () => {
+    const core = {
+      onSessionIdle: vi.fn(async () => {}),
+      onPrompt: vi.fn(async () => {}),
+      getInjection: vi.fn(() => "memory"),
+      seedIfCold: vi.fn(async () => {}),
+    };
+    // The real resolver applies this rule; assert it rather than the fake, so the test still means
+    // something if the hooks stop consulting the resolver for subagents.
+    const hooks = createDshHooks((agent) =>
+      (agent as unknown as { session: { header: { origin?: string } } }).session.header.origin ===
+      "subagent"
+        ? undefined
+        : fakeWorkspace(core)
+    );
+
+    await hooks.turnStopping({ agent: agentWith("child", { origin: "subagent" }) });
+
+    expect(core.onSessionIdle).not.toHaveBeenCalled();
+  });
+});
+
+describe("dsh session start", () => {
+  it("starts the repo seed exactly once, however many sessions open", () => {
+    const core = { seedIfCold: vi.fn(async () => {}) };
+    const workspace = { core: core as never, root: "/repo" } as Workspace;
+    const hooks = createDshHooks(() => workspace);
+
+    hooks.sessionStart({ agent: agentWith("s-1") });
+    hooks.sessionStart({ agent: agentWith("s-2") });
+
+    expect(core.seedIfCold).toHaveBeenCalledOnce();
+    expect(core.seedIfCold).toHaveBeenCalledWith("/repo");
+  });
+});
+
+describe("dshSessionEvents (alpha.4+ transcript source)", () => {
+  const sampleEvents = [
+    {
+      type: "user/message",
+      time: Date.parse("2026-09-05T08:00:00Z"),
+      data: {
+        id: "m-1",
+        role: "user",
+        content: [{ type: "text", text: "why is chatDocs zero?" }],
+        source: { kind: "user" },
+      },
+    },
+    {
+      type: "assistant/message",
+      time: Date.parse("2026-09-05T08:00:01Z"),
+      data: {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "session.events was removed." }],
+          source: { kind: "model" },
+        },
+      },
+    },
+  ];
+
+  it("reads snapshotEvents when the legacy events property is absent", () => {
+    const s = { snapshotEvents: () => sampleEvents };
+    expect(dshSessionEvents(s)).toEqual(sampleEvents);
+    expect(readDshEvents(dshSessionEvents(s))).toEqual([
+      {
+        role: "user",
+        content: "why is chatDocs zero?",
+        timestamp: "2026-09-05T08:00:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "session.events was removed.",
+        timestamp: "2026-09-05T08:00:01.000Z",
+      },
+    ]);
+  });
+
+  it("falls back to the legacy events property when snapshotEvents is missing", () => {
+    const s = { events: sampleEvents };
+    expect(dshSessionEvents(s)).toBe(sampleEvents);
+    expect(readDshEvents(dshSessionEvents(s))).toHaveLength(2);
+  });
+
+  it("returns an empty log when neither accessor exists (pre-fix alpha.4 breakage)", () => {
+    const s = {};
+    expect(dshSessionEvents(s)).toEqual([]);
+    expect(readDshEvents(dshSessionEvents(s))).toEqual([]);
+  });
+
+  it("prefers snapshotEvents over a stale events property", () => {
+    const s = { events: [], snapshotEvents: () => sampleEvents };
+    expect(dshSessionEvents(s)).toBe(sampleEvents);
+  });
+});
+
+describe("toDshParameters", () => {
+  const spec = (inputSchema: ToolSpec["inputSchema"]): ToolSpec => ({
+    name: "wenyuan_capture_initiative",
+    description: "…",
+    inputSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    handler: async () => ({ content: [] }),
+  });
+
+  it("projects the MCP tool-schema shape onto dsh's parameter JSON Schema", () => {
+    expect(
+      toDshParameters(
+        spec({
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            summary: { type: "string", description: "what and why" },
+            relates_to_page_id: { type: "string" },
+          },
+          required: ["title", "summary"],
+        })
+      )
+    ).toEqual({
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        summary: { type: "string", description: "what and why" },
+        relates_to_page_id: { type: "string" },
+      },
+      required: ["title", "summary"],
+    });
+  });
+
+  it("omits `required` for a tool that takes no arguments", () => {
+    expect(toDshParameters(spec({ type: "object", properties: {} }))).toEqual({
+      type: "object",
+      properties: {},
+    });
+  });
+
+  it("refuses a parameter shape the projection cannot express", () => {
+    expect(() =>
+      toDshParameters(
+        spec({
+          type: "object",
+          properties: { limit: { type: "number" } as never },
+        })
+      )
+    ).toThrow(/string parameters only/);
+  });
+
+  it("carries an undeclared-required parameter as optional", () => {
+    const out = toDshParameters(
+      spec({
+        type: "object",
+        properties: { relates_to_page_id: { type: "string" } },
+      })
+    );
+    expect(out.required).toBeUndefined();
+  });
+});

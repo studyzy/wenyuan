@@ -13,6 +13,7 @@ import {
 import {
   MCP_SERVERS_KEY,
   MCP_SERVER_NAME,
+  containerPathFor,
   locationResolutionFor,
 } from "./mechanisms";
 import {
@@ -53,6 +54,28 @@ export function candidatePaths(hostId: string, home: string): string[] {
   return relative.map((candidate) => join(home, candidate));
 }
 
+/** The key path from the document root to the host's server-map container. */
+function serversPath(hostId: string): string[] {
+  const declared: readonly string[] | undefined = containerPathFor(hostId);
+  return declared ? [...declared] : [MCP_SERVERS_KEY];
+}
+
+/** The server-map container a key path names, created when missing. */
+function serversContainer(document: JsonDocument, path: readonly string[]): JsonDocument {
+  let current: JsonDocument = document;
+  for (const key of path) {
+    const next: unknown = current[key];
+    if (next !== undefined && next !== null && typeof next === "object" && !Array.isArray(next)) {
+      current = next as JsonDocument;
+      continue;
+    }
+    const created: JsonDocument = {};
+    current[key] = created;
+    current = created;
+  }
+  return current;
+}
+
 /** The first candidate that exists, or the highest-priority candidate. */
 export function resolveCandidate(paths: readonly string[]): string | undefined {
   const existing: string | undefined = paths.find((candidate) => existsSync(candidate));
@@ -83,7 +106,7 @@ export async function removeJsonServerMap(input: JsonServerMapInput): Promise<Mc
   const messages: string[] = [];
   let ok = true;
   for (const candidate of paths) {
-    const result: McpResult = await removeEntry(candidate, input.serverPath);
+    const result: McpResult = await removeEntry(candidate, input.hostId, input.serverPath);
     ok = ok && result.ok;
     messages.push(...result.messages);
   }
@@ -93,9 +116,8 @@ export async function removeJsonServerMap(input: JsonServerMapInput): Promise<Mc
 async function writeEntry(configPath: string, input: JsonServerMapInput): Promise<McpResult> {
   const before: string | null = await readSource(configPath);
   const document: JsonDocument = before === null ? {} : asJsonDocument(before);
-  const servers: JsonDocument = isJsonObject(document[MCP_SERVERS_KEY])
-    ? (document[MCP_SERVERS_KEY] as JsonDocument)
-    : {};
+  const path: string[] = serversPath(input.hostId);
+  const servers: JsonDocument = serversContainer(document, path);
   const ownership = classifyEntry(servers[MCP_SERVER_NAME], input.serverPath);
   if (ownership === "foreign") {
     return {
@@ -107,7 +129,6 @@ async function writeEntry(configPath: string, input: JsonServerMapInput): Promis
     };
   }
   servers[MCP_SERVER_NAME] = mcpServerEntry(input);
-  document[MCP_SERVERS_KEY] = servers;
   const text: string = `${JSON.stringify(document, null, 2)}\n`;
   if (before !== null && before === text) {
     return { ok: true, written: false, messages: [] };
@@ -119,17 +140,24 @@ async function writeEntry(configPath: string, input: JsonServerMapInput): Promis
   return { ok: true, written: true, messages: [] };
 }
 
-async function removeEntry(configPath: string, serverPath: string): Promise<McpResult> {
+async function removeEntry(configPath: string, hostId: string, serverPath: string): Promise<McpResult> {
   const before: string | null = await readSource(configPath);
   if (before === null) {
     return { ok: true, written: false, messages: [] };
   }
   const document: JsonDocument = asJsonDocument(before);
-  const servers: unknown = document[MCP_SERVERS_KEY];
+  const path: string[] = serversPath(hostId);
+  const servers: unknown = path.reduce<unknown>(
+    (current, key) =>
+      current !== null && typeof current === "object" && !Array.isArray(current)
+        ? (current as JsonDocument)[key]
+        : undefined,
+    document,
+  );
   if (!isJsonObject(servers) || !entryIsOwned(servers[MCP_SERVER_NAME], serverPath)) {
     return { ok: true, written: false, messages: [] };
   }
-  deleteAtPath(document, [MCP_SERVERS_KEY, MCP_SERVER_NAME]);
+  deleteAtPath(document, [...path, MCP_SERVER_NAME]);
   pruneEmptyContainers(document);
   await backupExistingFile(configPath);
   if (documentIsEmpty(document)) {

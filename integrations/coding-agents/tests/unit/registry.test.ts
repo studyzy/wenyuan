@@ -15,7 +15,33 @@ import { withFakeHome } from "../helpers/fake-home";
  * the all-hosts keyword or explicit names before anything is written.
  */
 
-const APPROVED = ["claude-code", "codex", "codebuddy", "workbuddy", "cursor-cli", "copilot-cli", "dsh"];
+const APPROVED = [
+  "claude-code",
+  "codex",
+  "codebuddy",
+  "workbuddy",
+  "cursor-cli",
+  "copilot-cli",
+  "dsh",
+  "antigravity-cli",
+  "devin-cli",
+  "grok-build",
+  "qwen-code",
+  "factory-droid",
+  "zcode",
+  "traecode",
+  "kimi",
+  "dcode",
+];
+
+/** Hosts whose memory wiring is a plugin of the host's own, not our config. */
+const PLUGIN_HOSTS = ["dsh", "dcode"];
+
+/** Hosts that declare no companion skill (no skills mechanism of their own). */
+const NO_SKILL_HOSTS = ["devin-cli", "dcode"];
+
+/** Hosts that declare no MCP config file of ours. */
+const NO_MCP_HOSTS = ["claude-code", "qwen-code", "traecode", "dcode"];
 
 describe("the registry", () => {
   it("holds exactly the registered hosts", () => {
@@ -33,18 +59,21 @@ describe("the registry", () => {
     expect(isHostId(name)).toBe(false);
   });
 
-  it("gives every host a skills directory and, except DSH, a hook config", () => {
+  it("gives every non-plugin host a hook config, and every host with a mechanism the locations it needs", () => {
     for (const host of HOSTS) {
-      // DSH declares no config file: its memory wiring is the Cordis plugin
-      // `@studyzy/dsh-wenyuan-memory`, so this package writes no hooks for it.
-      if (host.id !== "dsh") {
+      // The plugin hosts declare no config file: their memory wiring is a
+      // plugin of the host's own, so this package writes no hooks for them.
+      if (!PLUGIN_HOSTS.includes(host.id)) {
         expect(host.locations.configFiles.length).toBeGreaterThan(0);
       }
-      expect(host.locations.skillsDirectory.length).toBeGreaterThan(0);
+      if (!NO_SKILL_HOSTS.includes(host.id)) {
+        expect(host.locations.skillsDirectory.length).toBeGreaterThan(0);
+      }
       // The command-line host keeps its MCP registration in the host's own
-      // store and declares no MCP config file of ours; the file hosts each
-      // declare at least one location.
-      if (host.id !== "claude-code") {
+      // store, TraeCode's only correct registration is per-repository, and the
+      // plugin host registers nothing: the file hosts each declare at least
+      // one location.
+      if (!NO_MCP_HOSTS.includes(host.id)) {
         expect(host.locations.mcpConfigFiles.length).toBeGreaterThan(0);
       }
     }

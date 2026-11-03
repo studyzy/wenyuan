@@ -1,43 +1,39 @@
-import { failOpen, hooksDisabled, lifecyclePayload, readStdin } from "../src/runtime/hook-contract";
-import { stageDeadlineMs } from "../src/runtime/deadline";
-import { runSessionStart } from "../src/runtime/session-start-stage";
-import { homeDirectory } from "../src/config/paths";
-import { registrationFor, resolveHostId } from "../src/runtime/hook-host";
+import { readFileSync } from "node:fs";
+import { parseHookEvent } from "../src/core/diag";
+import { runHarnessSessionStart, type HookHarnessName } from "../src/harness/hook-lifecycle";
+import { failOpen } from "../src/runtime/hook-contract";
+import { harnessFor, resolveHostId } from "../src/runtime/hook-host";
 
 /**
  * The packaged session-start hook.
  *
- * A host launches it by absolute path and resolves nothing else, so it is
- * self-contained. It is a thin adapter: it honors the disable guard, reads the
- * host's lifecycle payload from standard input, runs the session-start stage
- * behind the shared fail-open wrapper, prints the stage's envelope when there
- * is one, and exits zero on every fail-open path.
+ * A host launches it by absolute path and resolves nothing else, so it is a
+ * thin adapter: it reads the host's event from standard input once, resolves
+ * which declared host is firing, and hands event and harness to the shared
+ * core lifecycle, which owns the disable guard, the output encoding and the
+ * fail-open behavior. Any failure exits zero: a memoryless session beats a
+ * broken one.
  */
 
-const STAGE = "session-start";
-
 async function main(): Promise<number> {
-  if (hooksDisabled()) {
+  let raw: string;
+  try {
+    raw = readFileSync(0, "utf8");
+  } catch {
     return 0;
   }
-  const source: string = await readStdin();
-  const payload: Record<string, unknown> = lifecyclePayload(source);
-  const hostId: string | undefined = resolveHostId(payload);
+  const event = parseHookEvent("hook", raw) ?? {};
+  const hostId: string | undefined = resolveHostId(event);
   if (hostId === undefined) {
     return 0;
   }
-  await failOpen(async () => {
-    const result = await runSessionStart({
-      eventName: registrationFor(hostId, STAGE).event,
-      query: "What should I know about this project and the user at the start of a session?",
-      timeoutMs: stageDeadlineMs(hostId, STAGE),
-      hostId,
-      home: homeDirectory(),
-    });
-    if (result.output !== null) {
-      process.stdout.write(`${JSON.stringify(result.output)}\n`);
-    }
-  });
+  let harness: HookHarnessName;
+  try {
+    harness = harnessFor(hostId);
+  } catch {
+    return 0;
+  }
+  await failOpen(() => runHarnessSessionStart(harness, event));
   return 0;
 }
 

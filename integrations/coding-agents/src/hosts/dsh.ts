@@ -1,8 +1,10 @@
+import { existsSync, readdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { registerMcpServer, removeMcpServer } from "../mcp/register";
 import { MCP_SERVER_FILE_NAME } from "../runtime/layout";
 import { copyPackagedSkill, removeInstalledSkill } from "./skills";
-import { DSH_PLUGIN_PACKAGE, dshProfiles, installDshPlugin, type DshProfile } from "./dsh-plugin";
 import type {
   HostContribution,
   HostEnvironment,
@@ -11,56 +13,78 @@ import type {
 } from "./types";
 
 /**
- * DSH: a host whose memory wiring is a Cordis plugin, so this installer adds it.
+ * DSH: a host whose memory wiring is a Cordis plugin, so this installer writes
+ * the plugin row itself.
  *
- * DSH composes its behaviour from plugins, so WenYuan reaches a DSH session
- * through `integrations/dsh-plugin` (`@studyzy/dsh-wenyuan-memory`): that
- * plugin attaches recall on `agent/created` and `agent/pre-step`, writes the
- * session back on `agent/turn-stopping`, and registers its own tools — all
- * in-process, on the harness's own extension points. Installation adds the
- * published package to every profile DSH already runs (or to the `web` profile
- * when the machine has none) through DSH's own `dsh plugin` forwarder, so DSH's
- * activation rule stays the only one applied.
+ * DSH composes its behaviour from plugins, and its Claude Code / Codex hook
+ * bridges are optional packages that lose the transcript, the session id and
+ * the awaited stop boundary — so WenYuan reaches a DSH session through the
+ * native Cordis plugin this package ships (src/plugins/dsh.ts, bundled to
+ * dist/plugins/dsh.mjs): recall on agent/session-start and agent/pre-step,
+ * write-back on agent/turn-stopping, and the wenyuan_* knowledge tools, all
+ * in-process.
  *
- * This package therefore writes NO hook config for DSH. Registering
- * Claude-Code-style command hooks beside the plugin would recall twice per
- * prompt and retain the transcript twice, which is worse than either alone.
- * What remains here is the part the plugin does not own: the MCP server entry
- * (for a deployment that wants the server's own tool surface exposed to DSH)
- * and the companion skill.
+ * The row is written into the HOME-level patch layer ($DSH_HOME/cordis.patch.yml),
+ * which every profile composes after its bundles. The alternative — dsh plugin
+ * add of a published package into ONE profile — needs pnpm, a network, and a
+ * repeat per profile; patching the home layer loads the dist entry that is
+ * already on this machine and always works. This package therefore writes NO
+ * hook config for DSH: a hook beside the plugin would recall twice per prompt
+ * and retain the transcript twice.
+ *
+ * The row's name MUST be a file:// URL. Cordis resolves it as an ES module
+ * specifier, and a bare absolute path is not one — the plugin would be
+ * silently skipped.
  */
 
 /** The MCP server map DSH reads. */
 export const DSH_MCP_CONFIG = ".dsh/mcp.json";
 
-/** The profile `dsh web` boots, installed into when no profile exists yet. */
-export const DSH_DEFAULT_PROFILE = "web";
+/** $DSH_HOME, as a path relative to the home directory. */
+export const DSH_HOME_DIRECTORY = ".dsh";
 
-/** `$DSH_HOME/profiles`, as a path relative to the home directory. */
-export const DSH_PROFILES_DIRECTORY = ".dsh/profiles";
+/** The home-level patch layer every profile composes. */
+export const DSH_PATCH_FILE = "cordis.patch.yml";
 
-async function addMemoryPlugin(env: HostEnvironment): Promise<{ ok: boolean; messages: string[] }> {
-  const profiles: DshProfile[] = await dshProfiles(join(env.home, DSH_PROFILES_DIRECTORY), DSH_DEFAULT_PROFILE);
-  const messages: string[] = [];
-  const refused: string[] = [];
-  let dshMissing = false;
-  for (const profile of profiles) {
-    const result = await installDshPlugin(profile.name);
-    messages.push(...result.messages);
-    if (!result.ok) {
-      refused.push(profile.name);
-      dshMissing = dshMissing || result.missingExecutable === true;
-    }
+/** Marker comments bounding the block this installer owns in the patch file. */
+export const DSH_BLOCK_START = "# WENYUAN_CODING_AGENTS_START";
+export const DSH_BLOCK_END = "# WENYUAN_CODING_AGENTS_END";
+
+/**
+ * DSH requires the patch file to parse to a top-level ARRAY and fails boot on
+ * anything else, so removing the last block must leave an empty list behind.
+ * install treats this placeholder as not-user-content.
+ */
+export const DSH_EMPTY_LIST = "[]";
+
+function dshPatchPath(home: string): string {
+  return join(home, DSH_HOME_DIRECTORY, DSH_PATCH_FILE);
+}
+
+/** Everything in the patch file that is not our block, as install should leave it. */
+function userPatches(existing: string): string {
+  const pattern = new RegExp(DSH_BLOCK_START + "[\\s\\S]*?" + DSH_BLOCK_END + "\\n?", "g");
+  return existing.replace(pattern, "").trim();
+}
+
+function profileNames(home: string): string[] {
+  const directory = join(home, DSH_HOME_DIRECTORY, "profiles");
+  if (!existsSync(directory)) return [];
+  try {
+    return readdirSync(directory);
+  } catch {
+    return [];
   }
-  if (refused.length > 0) {
-    const remedy: string = dshMissing
-      ? `put dsh on PATH and run \`dsh plugin --profile ${refused[0]} add ${DSH_PLUGIN_PACKAGE}\``
-      : `run \`dsh plugin --profile ${refused[0]} add ${DSH_PLUGIN_PACKAGE}\` once its cause is fixed`;
-    messages.push(`the memory plugin is NOT installed for ${refused.join(", ")}; ${remedy}, then restart DSH`);
-    return { ok: false, messages };
+}
+
+/** Best-effort pointer at profile-level rows left by the pre-port installer. */
+function removeLegacyProfileRows(env: HostEnvironment, messages: string[]): void {
+  for (const name of profileNames(env.home)) {
+    messages.push(
+      "profile " + name + ": if it still lists @studyzy/dsh-wenyuan-memory, remove it with" +
+        " dsh plugin --profile " + name + " remove @studyzy/dsh-wenyuan-memory",
+    );
   }
-  messages.push("restart DSH to load the memory plugin: a running profile keeps the bundles it started with");
-  return { ok: true, messages };
 }
 
 const host: HostContribution = {
@@ -77,11 +101,34 @@ const host: HostContribution = {
     skillsDirectory: ".dsh/skills",
   },
 
-  async install(env: HostEnvironment, options: HostInstallOptions): Promise<HostOperationResult> {
-    // The plugin IS DSH's memory wiring, so a profile that did not receive it
-    // leaves the host unwired; the MCP entry and the skill are still written so
-    // a retry via `dsh plugin add` needs no second install run.
-    const plugin = await addMemoryPlugin(env);
+  async install(
+    env: HostEnvironment,
+    options: HostInstallOptions,
+  ): Promise<HostOperationResult> {
+    const messages: string[] = [];
+    removeLegacyProfileRows(env, messages);
+
+    // REPLACE any previous block rather than skipping: a re-install after the
+    // package moved must repair the now-dead path, which is what install is for.
+    const path = dshPatchPath(env.home);
+    const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+    const others = userPatches(existing);
+    const entry = pathToFileURL(join(env.runtimeDirectory, "plugins", "dsh.mjs")).href;
+    const block =
+      DSH_BLOCK_START + "\n" +
+      "- insert:\n" +
+      "    - id: wenyuan\n" +
+      "      name: " + JSON.stringify(entry) + "\n" +
+      DSH_BLOCK_END + "\n";
+    if (existsSync(path) && !existsSync(path + ".wenyuan-backup")) {
+      copyFileSync(path, path + ".wenyuan-backup");
+    }
+    mkdirSync(join(env.home, DSH_HOME_DIRECTORY), { recursive: true });
+    writeFileSync(path, others ? others + "\n\n" + block : block);
+    messages.push(
+      "dsh: plugin registered in " + path +
+        " (applies to every dsh profile; start new sessions — already-open ones would gain the tools mid-conversation)",
+    );
 
     const mcp = await registerMcpServer({
       hostId: host.id,
@@ -89,24 +136,32 @@ const host: HostContribution = {
       serverPath: join(env.runtimeDirectory, MCP_SERVER_FILE_NAME),
       environment: options.environment,
     });
+    messages.push(...mcp.messages);
     if (!mcp.ok) {
       // A refused registration leaves the host unwired, so the companion skill
       // is not installed either.
-      return { hostId: host.id, ok: false, messages: [...plugin.messages, ...mcp.messages] };
+      return { hostId: host.id, ok: false, messages };
     }
 
     const skill = await copyPackagedSkill(host.id, env.home);
-    const messages: string[] = [...plugin.messages, ...mcp.messages, ...skill.messages];
-    return { hostId: host.id, ok: plugin.ok && mcp.ok && skill.ok, messages };
+    messages.push(...skill.messages);
+    return { hostId: host.id, ok: mcp.ok && skill.ok, messages };
   },
 
   async uninstall(env: HostEnvironment): Promise<HostOperationResult> {
-    // The plugin's bundle entry belongs to DSH profile management: removing it
-    // is `dsh plugin --profile <name> remove @studyzy/dsh-wenyuan-memory`.
-    const messages: string[] = [
-      `${DSH_PLUGIN_PACKAGE} stays installed in each DSH profile; remove it with `
-        + `\`dsh plugin --profile <name> remove ${DSH_PLUGIN_PACKAGE}\``,
-    ];
+    const messages: string[] = [];
+    const path = dshPatchPath(env.home);
+    if (existsSync(path)) {
+      const existing = readFileSync(path, "utf8");
+      const others = userPatches(existing);
+      // Not an empty FILE: dsh parses the patch as a top-level array and fails
+      // boot on anything else, so the last removal leaves [] behind.
+      if (others !== existing.trim()) {
+        writeFileSync(path, others ? others + "\n" : DSH_EMPTY_LIST + "\n");
+      }
+      messages.push("dsh: plugin entry removed from " + path);
+    }
+    removeLegacyProfileRows(env, messages);
     const mcp = await removeMcpServer({
       hostId: host.id,
       home: env.home,

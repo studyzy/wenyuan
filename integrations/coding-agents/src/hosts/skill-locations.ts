@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { OWNERSHIP_MARKER } from "../write/marker";
 
@@ -36,13 +37,51 @@ const SKILLS_ROOTS: Readonly<Record<string, string>> = {
   "cursor-cli": ".cursor/skills",
   "copilot-cli": ".copilot/skills",
   dsh: ".dsh/skills",
+  "antigravity-cli": ".gemini/config/skills",
+  "grok-build": ".grok/skills",
+  "qwen-code": ".qwen/skills",
+  "factory-droid": ".factory/skills",
+  zcode: ".zcode/skills",
+  kimi: ".kimi-code/skills",
+  // TraeCode's root follows the installed edition's dot-directory; resolved
+  // per home by traecodeSkillsRootFor below, so it is absent from this map.
 };
+
+/**
+ * The TRAE editions' user-level dot-directories, most specific probe first: the
+ * CN build uses ~/.trae-cn and the international build ~/.trae. The app creates
+ * the directory itself, so whichever exists names the edition; with neither
+ * present the CN name is the default.
+ */
+const TRAE_DOT_DIRECTORIES: readonly string[] = [".trae-cn", ".trae"];
+
+/**
+ * The edition's dot-directory name under home, kept relative so both the hooks
+ * config path and the skills root resolve through this one probe and can never
+ * name different editions.
+ */
+export function traecodeDotDirectory(home: string): string {
+  for (const directory of TRAE_DOT_DIRECTORIES) {
+    if (existsSync(join(home, directory))) {
+      return directory;
+    }
+  }
+  return ".trae-cn";
+}
+
+/** TraeCode's skills root, resolved through the edition probe. */
+export function traecodeSkillsRootFor(home: string): string {
+  return join(home, traecodeDotDirectory(home), "skills");
+}
 
 /**
  * The host's skills root, or null when the host has no declared root. A null
  * root means the skill placement path is not reached for that host.
  */
 export function skillsRootFor(hostId: string, home: string): string | null {
+  if (hostId === "traecode") {
+    return traecodeSkillsRootFor(home);
+  }
   const relative: string | undefined = SKILLS_ROOTS[hostId];
   return relative === undefined ? null : join(home, relative);
 }

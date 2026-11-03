@@ -24,8 +24,32 @@ import { OWNERSHIP_MARKER } from "../../src/write/marker";
  * names, and the member names appear exactly once.
  */
 
-const APPROVED_HOSTS = ["claude-code", "codex", "codebuddy", "workbuddy", "dsh"];
-const FILE_HOSTS = ["codex", "codebuddy", "workbuddy", "dsh"];
+const APPROVED_HOSTS = [
+  "claude-code",
+  "codex",
+  "codebuddy",
+  "workbuddy",
+  "dsh",
+  "antigravity-cli",
+  "devin-cli",
+  "grok-build",
+  "qwen-code",
+  "factory-droid",
+  "zcode",
+  "kimi",
+];
+const FILE_HOSTS = [
+  "codex",
+  "codebuddy",
+  "workbuddy",
+  "dsh",
+  "antigravity-cli",
+  "devin-cli",
+  "grok-build",
+  "factory-droid",
+  "zcode",
+  "kimi",
+];
 const MECHANISM_KINDS = ["command-line", "toml-table", "json-server-map"];
 
 describe("the per-host mechanism declaration", () => {

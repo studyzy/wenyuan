@@ -48,4 +48,16 @@ export interface McpMechanismDeclaration {
    * ours.
    */
   readonly containerKey?: string;
+  /**
+   * The key path from the document root to the server-map container, for a
+   * host whose map is nested rather than a top-level member. Declared instead
+   * of containerKey, which names a top-level member.
+   */
+  readonly containerPath?: readonly string[];
+  /**
+   * The argv spelling the host's command interface accepts, for a host whose
+   * registration mechanism is the command line. Absent means this package's
+   * default spelling.
+   */
+  readonly argvStyle?: "default" | "gemini";
 }

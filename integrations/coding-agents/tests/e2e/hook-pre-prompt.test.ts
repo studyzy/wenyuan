@@ -32,7 +32,7 @@ describe("the before-prompt hook", () => {
     }
   });
 
-  it("injects at most once per session, even across two firings", async () => {
+  it("carries the guide on the first prompt and the roster refresh after", async () => {
     const service: StubService = await startStubService();
     service.recallResponses.push({ results: [{ text: "a", id: "1" }] }, { results: [{ text: "b", id: "2" }] });
     try {
@@ -42,9 +42,11 @@ describe("the before-prompt hook", () => {
         const first = await runHook({ home, scriptFile: "pre-prompt.mjs", payload: { session_id: session, prompt: "one" } });
         const second = await runHook({ home, scriptFile: "pre-prompt.mjs", payload: { session_id: session, prompt: "two" } });
         expect(first.envelope()).not.toBeNull();
-        expect(second.envelope()).toBeNull();
-        // Only the first firing reached the service.
-        expect(service.requests).toHaveLength(1);
+        // The first firing carries the full guide; later ones carry the
+        // roster refresh, so the model is reminded without re-reading the wall.
+        const secondEnvelope = second.envelope() as Record<string, unknown>;
+        const secondSpecific = secondEnvelope["hookSpecificOutput"] as Record<string, unknown>;
+        expect(String(secondSpecific["additionalContext"])).toContain("<wenyuan_knowledge_refresh>");
       });
     } finally {
       await service.close();
@@ -58,15 +60,17 @@ describe("the before-prompt hook", () => {
         await seedStoredConnection(home, service.url);
         const run = await runHook({ home, scriptFile: "pre-prompt.mjs", payload: { session_id: "s-1" } });
         expect(run.status).toBe(0);
-        expect(run.envelope()).toBeNull();
-        expect(service.requests).toHaveLength(0);
+        // No prompt, no recall: the static guide may still ride along.
+        expect(
+          service.requests.filter((request) => request.path.endsWith("/memories/recall")),
+        ).toHaveLength(0);
       });
     } finally {
       await service.close();
     }
   });
 
-  it("emits nothing rather than an empty context block on an empty result", async () => {
+  it("serves the knowledge injection even when the recall result is empty", async () => {
     const service: StubService = await startStubService();
     for (let index = 0; index < 5; index += 1) {
       service.recallResponses.push({ results: [] });
@@ -80,19 +84,28 @@ describe("the before-prompt hook", () => {
           payload: { session_id: `s-${Math.random()}`, prompt: "q" },
         });
         expect(run.status).toBe(0);
-        expect(run.envelope()).toBeNull();
+        const envelope = run.envelope() as Record<string, unknown>;
+        const specific = envelope["hookSpecificOutput"] as Record<string, unknown>;
+        const injected = String(specific["additionalContext"]);
+        expect(
+          injected.includes("<wenyuan_knowledge>") || injected.includes("<wenyuan_knowledge_refresh>"),
+        ).toBe(true);
       });
     } finally {
       await service.close();
     }
   });
 
-  it("exits zero when the service is unreachable", async () => {
+  it("exits zero when the service is unreachable, the session unaffected", async () => {
     await withHookHome(async (home) => {
       await seedStoredConnection(home, "http://127.0.0.1:1");
       const run = await runHook({ home, scriptFile: "pre-prompt.mjs", payload: { session_id: "s-1", prompt: "q" } });
       expect(run.status).toBe(0);
-      expect(run.envelope()).toBeNull();
+      const envelope = run.envelope();
+      if (envelope !== null) {
+        const specific = (envelope as Record<string, unknown>)["hookSpecificOutput"] as Record<string, unknown>;
+        expect(typeof specific["additionalContext"]).toBe("string");
+      }
     });
   });
 

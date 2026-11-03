@@ -17,10 +17,11 @@
     "dist",
     "skill",
     "hooks",
-    "README.md"
+    "README.md",
+    "cordis.patch.yml"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.15"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
@@ -37,5 +38,20 @@
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vitest": "^5.0.0"
+  },
+  "exports": {
+    "./dsh": "./dist/plugins/dsh.mjs",
+    "./opencode": "./dist/plugins/opencode.mjs",
+    "./opencode2": "./dist/plugins/opencode2.mjs",
+    "./kilo": "./dist/plugins/kilo.mjs",
+    "./pi": "./dist/plugins/pi.mjs",
+    "./prime-agent": "./dist/plugins/prime-agent.mjs",
+    "./cline": "./dist/plugins/cline.mjs",
+    "./plugins-index": "./dist/plugins/index.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

@@ -45,14 +45,14 @@ export {
 
 export { mcpServerPath, runtimeDirectory } from "./runtime/layout";
 export { stageRuntime, builtRuntimeDirectory, runtimeIsStaged } from "./runtime/stage";
-export { MemoryClient, openMemoryClient, textsFromRecall } from "./runtime/memory-client";
-export { resolveHookConnection, type HookConnection, type HookConnectionResult } from "./runtime/hook-connection";
 export { hooksDisabled, failOpen, readStdin, parsePayload, lifecyclePayload, DISABLE_HOOKS_ENV } from "./runtime/hook-contract";
-export { stageDeadlineMs, STOP_DEADLINE_MARGIN_SECONDS } from "./runtime/deadline";
-export { runSessionStart } from "./runtime/session-start-stage";
-export { runPrePrompt } from "./runtime/pre-prompt-stage";
-export { runStop } from "./runtime/stop-stage";
-export { conversationFromPayload, conversationDocumentId, conversationFingerprint } from "./runtime/conversation";
+export { MemoryClient } from "./core/client";
+export {
+  HOOK_HARNESSES,
+  runHarnessSessionStart,
+  runHarnessPrompt,
+  runHarnessRetain,
+} from "./harness/hook-lifecycle";
 
 export { HOOKS_CONTAINER_KEY, installLifecycleHooks, hookPathFor } from "./hosts/hooks";
 export { removeLifecycleHooks } from "./hosts/hooks-remove";
@@ -128,7 +128,6 @@ export {
 export { copyPackagedSkill, removeInstalledSkill, packagedSkillDirectory, SKILL_DIRECTORY_NAME } from "./hosts/skills";
 export { skillsRootFor, installedSkillDirectoryFor } from "./hosts/skill-locations";
 export { SKILL_NAME, SKILL_DESCRIPTION, SKILL_TOOL_IDENTIFIERS } from "./hosts/skill-tools";
-export { refreshInstalledSkill, type SkillRefreshOutcome } from "./runtime/skill-refresh";
 
 export { HOSTS, HOST_IDS, hostNames, findHost, detectHosts, hostIsDetected } from "./hosts/registry";
 export { selectHosts, ALL_HOSTS_KEYWORD } from "./hosts/select";

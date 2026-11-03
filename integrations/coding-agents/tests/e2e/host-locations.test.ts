@@ -28,9 +28,13 @@ const LOCATIONS: ExpectedLocations[] = [
   { id: "codex", config: ".codex/hooks.json", skills: ".agents/skills" },
   { id: "codebuddy", config: ".codebuddy/settings.json", skills: ".codebuddy/skills" },
   { id: "workbuddy", config: ".workbuddy/settings.json", skills: ".workbuddy/skills" },
-  // DSH is absent on purpose: its memory wiring is the Cordis plugin
-  // `@studyzy/dsh-wenyuan-memory`, so this package writes no hook config for
-  // it. Its MCP server map and skills directory are covered by its own suite.
+  { id: "grok-build", config: ".grok/hooks/hooks.json", skills: ".grok/skills" },
+  { id: "qwen-code", config: ".qwen/settings.json", skills: ".qwen/skills" },
+  { id: "traecode", config: ".trae-cn/hooks.json", skills: ".trae-cn/skills" },
+  // DSH, Antigravity, Devin, Factory Droid, ZCode, Kimi and Dcode are absent:
+  // the plugin hosts and the hosts whose config dialect this shared suite
+  // cannot read (a namespace key, the root event map, a nested container, a
+  // TOML block) are covered by their own suites.
 ];
 
 function locationsFor(hostId: string): ExpectedLocations {

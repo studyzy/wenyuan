@@ -44,6 +44,28 @@ const entryPoints = [
     outfile: "dist/runtime/mcp-server.mjs",
     executable: true,
   },
+  // The deepen engine the background seed spawns beside the staged hook
+  // bundles: core/seed.ts resolves it as dirname(hook bundle) + "deepen.mjs".
+  {
+    entry: "src/core/deepen.ts",
+    outfile: "dist/runtime/hooks/deepen.mjs",
+    executable: true,
+  },
+  {
+    entry: "src/core/survey-supervisor.ts",
+    outfile: "dist/runtime/hooks/survey-supervisor.mjs",
+    executable: true,
+  },
+  // Persistent-plugin entry points. Each exports the adapter a host loads
+  // in-process (package.json "exports" maps these paths), so they bundle like
+  // the hooks: one self-contained file per host, no chunk splitting.
+  ...["dsh", "cline", "kilo", "opencode", "opencode2", "pi", "prime-agent"].map(
+    (name) => ({
+      entry: `src/plugins/${name}.ts`,
+      outfile: `dist/plugins/${name}.mjs`,
+    })
+  ),
+  { entry: "src/plugins/index.ts", outfile: "dist/plugins/index.mjs" },
 ];
 
 // A host execs a hook by path, so the bundled file carries its own

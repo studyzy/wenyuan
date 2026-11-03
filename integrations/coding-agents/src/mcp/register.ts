@@ -4,6 +4,8 @@ import {
   MCP_HARNESS_ENV,
   MCP_SERVER_NAME,
   MCP_SERVERS_KEY,
+  argvStyleFor,
+  containerPathFor,
   mechanismKindFor,
 } from "./mechanisms";
 import {
@@ -85,10 +87,16 @@ export async function inspectMcpServer(input: RegisterInput): Promise<McpOwnersh
     } catch {
       continue;
     }
-    const servers: unknown =
-      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    const servers: unknown = containerPathFor(input.hostId)?.reduce<unknown>(
+      (current, key) =>
+        current !== null && typeof current === "object" && !Array.isArray(current)
+          ? (current as Record<string, unknown>)[key]
+          : undefined,
+      parsed,
+    ) ??
+      (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)[MCP_SERVERS_KEY]
-        : undefined;
+        : undefined);
     const existing =
       servers !== null && typeof servers === "object" && !Array.isArray(servers)
         ? (servers as Record<string, unknown>)[MCP_SERVER_NAME]
@@ -112,6 +120,7 @@ export async function registerMcpServer(input: RegisterInput): Promise<McpResult
       return registerCommandLine({
         ...entryInput(input),
         executable: input.executable ?? input.hostId,
+        argvStyle: argvStyleFor(input.hostId),
       });
     default:
       return {
@@ -134,6 +143,7 @@ export async function removeMcpServer(input: RegisterInput): Promise<McpResult> 
       return removeCommandLine({
         ...entryInput(input),
         executable: input.executable ?? input.hostId,
+        argvStyle: argvStyleFor(input.hostId),
       });
     default:
       return { ok: true, written: false, messages: [] };

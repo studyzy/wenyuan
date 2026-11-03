@@ -124,8 +124,17 @@ export function manualRegistrationLine(
   serverPath: string,
   environment: Record<string, string> = {},
   executable: string = hostId,
+  argvStyle: "default" | "gemini" = "default",
 ): string {
   const env: Record<string, string> = { ...environment, [MCP_HARNESS_ENV]: hostId };
+  if (argvStyle === "gemini") {
+    const pairs: string = Object.entries(env)
+      .map(([name, value]) => `-e ${name}=${value}`)
+      .join(" ");
+    return `${executable} mcp add -s user ${pairs} ${MCP_SERVER_NAME} ${MCP_LAUNCHER_COMMAND} ${serverPath}`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
   const flags: string = Object.entries(env)
     .map(([name, value]) => `--env ${name}=${value}`)
     .join(" ");

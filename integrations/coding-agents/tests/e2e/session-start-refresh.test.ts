@@ -31,8 +31,9 @@ describe("the session-start hook refreshes the installed skill", () => {
       const packaged: string = await home.read(installed);
       await home.write(installed, "# drifted\n");
 
-      // The service is unreachable, so the session emits nothing; the refresh
-      // still runs and must not be disturbed by the failed recall.
+      // The service is unreachable; the static knowledge guide may still ride
+      // along (it needs no server), but the refresh must run either way and
+      // must not be disturbed by the failed recall.
       await seedStoredConnection(home, "http://127.0.0.1:1");
       const run = await runHook({
         home,
@@ -40,7 +41,6 @@ describe("the session-start hook refreshes the installed skill", () => {
         payload: { session_id: "s-1", host: "claude-code" },
       });
       expect(run.status).toBe(0);
-      expect(run.envelope()).toBeNull();
       expect(await home.read(installed)).toBe(packaged);
     });
   });

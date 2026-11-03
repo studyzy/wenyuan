@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DISABLE_HOOKS_ENV } from "../../src/runtime/hook-contract";
-import { stageDeadlineMs } from "../../src/runtime/deadline";
-import { HOOK_SCRIPT_FILES, registrationFor } from "../../src/hosts/lifecycle";
+import { HOOK_SCRIPT_FILES, registrationFor, budgetMilliseconds } from "../../src/hosts/lifecycle";
 import { orderedRegistrations, hostLifecycle } from "../../src/hosts/lifecycle";
 import { HOST_LIFECYCLES } from "../../src/hosts/lifecycle";
 import { runHook, seedStoredConnection, startStubService, withHookHome, type StubService } from "../helpers/hook-run";
@@ -29,14 +28,19 @@ describe("the install and runtime lifecycles agree by construction", () => {
 
   it("has one lifecycle per host that both sides read", () => {
     for (const hostId of Object.keys(HOST_LIFECYCLES)) {
-      expect(orderedRegistrations(hostLifecycle(hostId))).toHaveLength(3);
+      const ordered = orderedRegistrations(hostLifecycle(hostId));
+      // Antigravity's two interactive stages share its one pre-model event,
+      // and the declaration's dedup registers it once; every other host
+      // registers all three stages.
+      const expected: number = hostId === "antigravity-cli" ? 2 : 3;
+      expect(ordered).toHaveLength(expected);
     }
   });
 
-  it("self-imposes a deadline inside the budget the host enforces", () => {
+  it("declares a positive budget for every stage, in the host's own unit", () => {
     for (const hostId of Object.keys(HOST_LIFECYCLES)) {
       for (const { stage } of SCRIPTS) {
-        expect(stageDeadlineMs(hostId, stage)).toBeGreaterThan(0);
+        expect(budgetMilliseconds(registrationFor(hostId, stage))).toBeGreaterThan(0);
       }
     }
   });

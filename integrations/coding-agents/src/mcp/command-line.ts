@@ -26,6 +26,14 @@ export interface CommandLineInput extends McpEntryInput {
   executable: string;
   /** Overrides the subcommand spelling; defaults to the add/remove pair. */
   subcommands?: { add: readonly string[]; remove: readonly string[] };
+  /**
+   * The argv spelling the host accepts, as the mechanism declaration states it.
+   * The default spelling ends the host's own options with a terminator; the
+   * Gemini spelling uses short flags, puts the environment pairs before the
+   * server name, and has no terminator — everything after the name is the
+   * server's argv.
+   */
+  argvStyle?: "default" | "gemini";
 }
 
 const DEFAULT_SUBCOMMANDS = { add: ["mcp", "add"], remove: ["mcp", "remove"] } as const;
@@ -45,6 +53,17 @@ export function addArguments(input: CommandLineInput): string[] {
   const envPairs: string[] = Object.entries(environmentOf(input)).map(
     ([name, value]) => `${name}=${value}`,
   );
+  if (input.argvStyle === "gemini") {
+    return [
+      ...sub,
+      "-s",
+      "user",
+      ...envPairs.flatMap((pair) => ["-e", pair]),
+      MCP_SERVER_NAME,
+      MCP_LAUNCHER_COMMAND,
+      input.serverPath,
+    ];
+  }
   const flags: string[] = envPairs.flatMap((pair) => ["--env", pair]);
   return [
     ...sub,
@@ -62,7 +81,9 @@ export function addArguments(input: CommandLineInput): string[] {
 /** The argv the host's remove command receives. */
 export function removeArguments(input: CommandLineInput): string[] {
   const sub: readonly string[] = input.subcommands?.remove ?? DEFAULT_SUBCOMMANDS.remove;
-  return [...sub, "--scope", "user", MCP_SERVER_NAME];
+  return input.argvStyle === "gemini"
+    ? [...sub, MCP_SERVER_NAME]
+    : [...sub, "--scope", "user", MCP_SERVER_NAME];
 }
 
 function environmentOf(input: McpEntryInput): Record<string, string> {
@@ -185,7 +206,13 @@ function fallback(input: CommandLineInput): McpResult {
     messages: [
       `could not reach the ${input.executable} command interface, so the memory tools were not registered; ` +
         `run this by hand and re-run install:`,
-      manualRegistrationLine(input.hostId, input.serverPath, input.environment, input.executable),
+      manualRegistrationLine(
+        input.hostId,
+        input.serverPath,
+        input.environment,
+        input.executable,
+        input.argvStyle,
+      ),
     ],
     output: "the command interface could not be run",
   };

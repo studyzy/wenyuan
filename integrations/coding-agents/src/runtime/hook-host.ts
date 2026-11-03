@@ -1,4 +1,5 @@
 import { HOST_LIFECYCLES, registrationFor } from "../hosts/lifecycle";
+import { HOOK_HARNESSES, type HookHarnessName } from "../harness/hook-lifecycle";
 import type { LifecycleRegistration } from "../hosts/lifecycle-types";
 import { payloadString } from "./hook-contract";
 
@@ -13,6 +14,16 @@ import { payloadString } from "./hook-contract";
 
 /** The host-identifying environment variable the deployment harness sets. */
 export const HARNESS_ENV = "WENYUAN_MCP_HARNESS";
+
+/**
+ * Host ids whose lifecycle vocabulary this installer declares but whose
+ * harness name in the core registry differs. The registry is the runtime
+ * source of truth; this map exists so a host id and a harness name never have
+ * to be spelled the same way to agree.
+ */
+const HOST_TO_HARNESS: Readonly<Record<string, HookHarnessName>> = {
+  kimi: "kimi-code",
+};
 
 /**
  * The host this firing belongs to. A payload member naming a declared host
@@ -33,6 +44,23 @@ export function resolveHostId(
     return fromEnv;
   }
   return declared[0];
+}
+
+/**
+ * The core harness spec set this firing dispatches to. Every declared host id
+ * must have a harness: the drift cross-check test pins the two rosters
+ * together, so an unmapped id fails loudly instead of silently memoryless.
+ */
+export function harnessFor(hostId: string): HookHarnessName {
+  const mapped = HOST_TO_HARNESS[hostId];
+  if (mapped !== undefined && HOOK_HARNESSES[mapped] !== undefined) {
+    return mapped;
+  }
+  const direct = hostId as HookHarnessName;
+  if (HOOK_HARNESSES[direct] !== undefined) {
+    return direct;
+  }
+  throw new Error("host " + hostId + " has no harness lifecycle in the core registry");
 }
 
 /** Re-exported so an entry point resolves its stage from one shared module. */
