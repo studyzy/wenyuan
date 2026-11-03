@@ -23,8 +23,10 @@ func TestPostgresSchemaRoutingIsolatesTenants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	schemaA := fmt.Sprintf("iso_a_%d", time.Now().UnixNano())
-	schemaB := fmt.Sprintf("iso_b_%d", time.Now().UnixNano())
+	// Mixed-case schema names: the store quotes every identifier, so the two
+	// schemas must stay distinct exactly as written.
+	schemaA := fmt.Sprintf("IsoA%d", time.Now().UnixNano())
+	schemaB := fmt.Sprintf("IsoB%d", time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()

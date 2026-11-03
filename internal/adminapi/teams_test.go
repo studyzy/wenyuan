@@ -315,9 +315,10 @@ func TestTeamLifecycleThroughTheAPI(t *testing.T) {
 	}
 	// A name is presentation only, so nothing it contains is refused: the colon
 	// case below proves that, while the malformed body is still a bad request.
+	// A capitalised id is no longer one of the refused shapes; see
+	// TestProjectNameIsFreeForm.
 	for _, body := range []string{
 		`{"project_id":"web2","name":"Web"}`,     // same name in the same team
-		`{"project_id":"Web","name":"Other"}`,    // a capitalised id
 		`{"project_id":"web2","name":"Other"} }`, // two objects: malformed
 	} {
 		if recorder := fixture.do(t, http.MethodPost, "/admin/v1/teams/acme/projects", body); recorder.Code != http.StatusBadRequest && recorder.Code != http.StatusConflict {
@@ -393,6 +394,7 @@ func TestProjectNameIsFreeForm(t *testing.T) {
 		{"cn", "产品:Web 后端"},
 		{"ja", "プロジェクト"},
 		{"emoji", "🚀 rocket"},
+		{"Web", "Web frontend"},
 	} {
 		body := `{"project_id":"` + tc.id + `","name":"` + tc.name + `"}`
 		if recorder := fixture.do(t, http.MethodPost, "/admin/v1/teams/acme/projects", body); recorder.Code != http.StatusCreated {
@@ -405,6 +407,32 @@ func TestProjectNameIsFreeForm(t *testing.T) {
 		if created["bank_id"] != "acme::"+tc.id {
 			t.Fatalf("bank_id = %v, want acme::%s from the id", created["bank_id"], tc.id)
 		}
+	}
+}
+
+// TestTeamIDKeepsItsCaseAndDisplayNameIsFreeForm pins both halves of what a
+// team id and a display name are: the id may carry upper case and stays exactly
+// as written (it is quoted as a schema name), while the display name is
+// presentation only and accepts any script, Chinese included.
+func TestTeamIDKeepsItsCaseAndDisplayNameIsFreeForm(t *testing.T) {
+	fixture := newTeamFixture(t)
+	recorder := fixture.do(t, http.MethodPost, "/admin/v1/teams", `{"tenant_id":"AcmeTeam","display_name":"研发团队"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create team = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	team, _ := decodeMap(t, recorder)["team"].(map[string]any)
+	if team["tenant_id"] != "AcmeTeam" {
+		t.Fatalf("tenant_id = %v, want AcmeTeam kept verbatim", team["tenant_id"])
+	}
+	if team["display_name"] != "研发团队" {
+		t.Fatalf("display_name = %v, want the Chinese name kept", team["display_name"])
+	}
+	if recorder := fixture.do(t, http.MethodGet, "/admin/v1/teams/AcmeTeam", ""); recorder.Code != http.StatusOK {
+		t.Fatalf("get team by its own case = %d, want 200", recorder.Code)
+	}
+	// The id is an identifier, not a label: the folded spelling names no tenant.
+	if recorder := fixture.do(t, http.MethodGet, "/admin/v1/teams/acmeteam", ""); recorder.Code != http.StatusNotFound {
+		t.Fatalf("get team by the folded id = %d, want 404", recorder.Code)
 	}
 }
 

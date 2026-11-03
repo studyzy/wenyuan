@@ -95,11 +95,12 @@ func (r *Resolver) Resolve(ctx context.Context, callerTenantID, bankID string) (
 		return nil, nil
 	}
 	// The prefix must be the caller's own tenant. A member reading "bob::web" is
-	// reading Bob's bank, which is Bob's to read, not a team's to serve.
-	if !strings.EqualFold(prefix, callerTenantID) {
+	// reading Bob's bank, which is Bob's to read, not a team's to serve. Tenant
+	// ids are case-sensitive, so "Alice::web" is not Alice's bank.
+	if prefix != callerTenantID {
 		return nil, nil
 	}
-	key := strings.ToLower(callerTenantID) + "\x00" + projectID
+	key := callerTenantID + "\x00" + projectID
 	if cached, hit := r.load(key); hit {
 		return cached, nil
 	}
@@ -164,7 +165,7 @@ func (r *Resolver) InvalidateMember(callerTenantID string) {
 	if r == nil || callerTenantID == "" {
 		return
 	}
-	prefix := strings.ToLower(callerTenantID) + "\x00"
+	prefix := callerTenantID + "\x00"
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for key := range r.entries {

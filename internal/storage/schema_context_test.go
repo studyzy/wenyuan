@@ -8,19 +8,22 @@ import (
 )
 
 func TestWithSchemaRoundTrip(t *testing.T) {
-	ctx, err := WithSchema(context.Background(), "acme")
-	if err != nil {
-		t.Fatalf("WithSchema: %v", err)
-	}
-	schema, ok := SchemaFrom(ctx)
-	if !ok || schema != "acme" {
-		t.Fatalf("SchemaFrom = %q/%v, want acme/true", schema, ok)
+	for _, want := range []string{"acme", "AcmeTeam", "ACME"} {
+		ctx, err := WithSchema(context.Background(), want)
+		if err != nil {
+			t.Fatalf("WithSchema(%q): %v", want, err)
+		}
+		schema, ok := SchemaFrom(ctx)
+		if !ok || schema != want {
+			t.Fatalf("SchemaFrom = %q/%v, want %q/true", schema, ok, want)
+		}
 	}
 }
 
 func TestWithSchemaRejectsInvalid(t *testing.T) {
 	for _, schema := range []string{
-		"", "a", "1abc", "Admin", "acme-corp", "admin", "pg_temp", "information_schema", strings.Repeat("a", 64),
+		"", "a", "1abc", "Admin", "ADMIN", "acme-corp", "admin", "pg_temp", "PG_Temp",
+		"information_schema", "Information_Schema", strings.Repeat("a", 64),
 	} {
 		if _, err := WithSchema(context.Background(), schema); !errors.Is(err, ErrInvalidSchema) {
 			t.Errorf("WithSchema(%q) = %v, want ErrInvalidSchema", schema, err)

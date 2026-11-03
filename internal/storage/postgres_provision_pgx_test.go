@@ -22,7 +22,9 @@ func TestProvisionTenantSchema(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	schema := fmt.Sprintf("prov_%d", time.Now().UnixNano())
+	// A mixed-case schema name: provisioning quotes the identifier, so PostgreSQL
+	// must keep the case instead of folding it to lowercase.
+	schema := fmt.Sprintf("Prov%d", time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()

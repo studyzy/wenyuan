@@ -27,7 +27,7 @@ export function TeamCreateForm() {
     setError(null);
     // A team is a tenant, so its id becomes the schema name and obeys the same
     // shape the tenant form enforces.
-    if (!/^[a-z][a-z0-9_]{1,62}$/.test(tenantId)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{1,62}$/.test(tenantId)) {
       setError(t("invalidId"));
       return;
     }
@@ -111,6 +111,7 @@ export function TeamCreateForm() {
                     onChange={(event) => setDisplayName(event.target.value)}
                     placeholder={t("displayNamePlaceholder")}
                   />
+                  <span className="text-[12px] text-muted-foreground">{t("displayNameHint")}</span>
                 </label>
                 {error && <p className="text-sm text-destructive">{error}</p>}
                 <div className="flex gap-2">

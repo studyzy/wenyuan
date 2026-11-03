@@ -25,7 +25,7 @@ export function TenantCreateForm() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    if (!/^[a-z][a-z0-9_]{1,62}$/.test(tenantId)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{1,62}$/.test(tenantId)) {
       setError(t("invalidId"));
       return;
     }
@@ -88,6 +88,7 @@ export function TenantCreateForm() {
                   onChange={(event) => setDisplayName(event.target.value)}
                   placeholder={t("displayNamePlaceholder")}
                 />
+                <span className="text-[12px] text-muted-foreground">{t("displayNameHint")}</span>
               </label>
               <label className="block space-y-1.5">
                 <span className="text-[13px] font-medium">{t("config")}</span>

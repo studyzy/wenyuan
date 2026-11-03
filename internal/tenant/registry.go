@@ -99,21 +99,25 @@ type Key struct {
 	CreatedAt  time.Time
 }
 
-// tenantIDPattern is the slug shape a tenant id must have before it can be
-// used as a PostgreSQL identifier. The upper bound is the identifier length.
-var tenantIDPattern = regexp.MustCompile("^[a-z][a-z0-9_]{1,62}$")
+// tenantIDPattern is the shape a tenant id must have before it can be used as a
+// PostgreSQL identifier. Letters may be upper or lower case: the id is stored
+// and quoted verbatim, so "Acme" and "acme" are two different tenants. The
+// upper bound is the identifier length.
+var tenantIDPattern = regexp.MustCompile("^[A-Za-z][A-Za-z0-9_]{1,62}$")
 
 // ValidateID reports whether id can name a tenant and its schema.
 //
 // public is deliberately not reserved: an existing single-tenant deployment
 // lives in public, and adoption needs that name. Reserved names are the ones
 // that would collide with the registry schema, PostgreSQL's own namespaces, or
-// the system catalog.
+// the system catalog; the comparison is case-insensitive because an unquoted
+// spelling folds to lowercase in SQL.
 func ValidateID(id string) error {
 	if !tenantIDPattern.MatchString(id) {
 		return fmt.Errorf("%w: %q must match %s", ErrInvalidID, id, tenantIDPattern)
 	}
-	if id == "admin" || id == "information_schema" || strings.HasPrefix(id, "pg_") {
+	lowered := strings.ToLower(id)
+	if lowered == "admin" || lowered == "information_schema" || strings.HasPrefix(lowered, "pg_") {
 		return fmt.Errorf("%w: %q is reserved", ErrInvalidID, id)
 	}
 	return nil

@@ -111,6 +111,48 @@ func TestResolveIgnoresAnotherTenantsBank(t *testing.T) {
 	}
 }
 
+// TestResolveTreatsCaseAsPartOfTheTenant pins that tenant ids are
+// case-sensitive: a bank id whose prefix differs only in case names another
+// tenant, so the read stays put and the registry is not consulted.
+func TestResolveTreatsCaseAsPartOfTheTenant(t *testing.T) {
+	registry := &stubRegistry{projects: map[string]tenant.TeamProject{
+		"alice\x00Web": {TeamID: "acme", BankID: "acme::Web"},
+	}}
+	resolver := NewResolver(registry)
+	scope, err := resolver.Resolve(context.Background(), "Alice", "alice::Web")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if scope != nil {
+		t.Fatalf("scope = %+v, want no fallback for another tenant's bank", scope)
+	}
+	if registry.calls != 0 {
+		t.Fatalf("registry was consulted %d times for another tenant's bank, want 0", registry.calls)
+	}
+}
+
+// TestResolveKeepsCaseDistinctTenantsApartInTheCache pins the cache key: two
+// tenants whose ids differ only in case are different callers and must not
+// share a cached answer.
+func TestResolveKeepsCaseDistinctTenantsApartInTheCache(t *testing.T) {
+	registry := &stubRegistry{projects: map[string]tenant.TeamProject{
+		"alice\x00Web": {TeamID: "lowercase_team", BankID: "lowercase_team::Web"},
+		"Alice\x00Web": {TeamID: "UppercaseTeam", BankID: "UppercaseTeam::Web"},
+	}}
+	resolver := NewResolver(registry)
+	lower, err := resolver.Resolve(context.Background(), "alice", "alice::Web")
+	if err != nil || lower == nil {
+		t.Fatalf("Resolve(alice) = %+v, %v", lower, err)
+	}
+	upper, err := resolver.Resolve(context.Background(), "Alice", "Alice::Web")
+	if err != nil || upper == nil {
+		t.Fatalf("Resolve(Alice) = %+v, %v", upper, err)
+	}
+	if lower.Schema != "lowercase_team" || upper.Schema != "UppercaseTeam" {
+		t.Fatalf("scopes = %q/%q, want one per tenant", lower.Schema, upper.Schema)
+	}
+}
+
 // TestResolveIgnoresAnUnseparatedBankID pins that a plain bank id has no team
 // meaning at all.
 func TestResolveIgnoresAnUnseparatedBankID(t *testing.T) {
@@ -273,21 +315,32 @@ func TestInvalidateMemberDropsOnlyThatTenantsAnswers(t *testing.T) {
 	}
 }
 
-// TestInvalidateMemberIsCaseInsensitive pins that the invalidation matches the
-// cache's own key normalisation, or it would silently miss.
-func TestInvalidateMemberIsCaseInsensitive(t *testing.T) {
+// TestInvalidateMemberMatchesTheTenantExactly pins that invalidation drops only
+// the named tenant's answers: tenant ids are case-sensitive, so an "alice"
+// change must not evict "Alice"'s cached answer.
+func TestInvalidateMemberMatchesTheTenantExactly(t *testing.T) {
 	registry := &stubRegistry{projects: map[string]tenant.TeamProject{}}
 	resolver := NewResolver(registry)
 	ctx := context.Background()
-	if _, err := resolver.Resolve(ctx, "Alice", "Alice::Web"); err != nil {
-		t.Fatalf("Resolve: %v", err)
+	for _, tenantID := range []string{"Alice", "alice"} {
+		if _, err := resolver.Resolve(ctx, tenantID, tenantID+"::Web"); err != nil {
+			t.Fatalf("Resolve(%s): %v", tenantID, err)
+		}
 	}
 	resolver.InvalidateMember("alice")
+	// Alice's cached answer survives the invalidation of her lower-case twin.
 	if _, err := resolver.Resolve(ctx, "Alice", "Alice::Web"); err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Resolve(Alice): %v", err)
 	}
 	if registry.calls != 2 {
-		t.Fatalf("registry calls = %d, want the answer re-read", registry.calls)
+		t.Fatalf("registry calls = %d, want Alice's cached answer kept", registry.calls)
+	}
+	// Alice's twin is re-read.
+	if _, err := resolver.Resolve(ctx, "alice", "alice::Web"); err != nil {
+		t.Fatalf("Resolve(alice): %v", err)
+	}
+	if registry.calls != 3 {
+		t.Fatalf("registry calls = %d, want alice re-read", registry.calls)
 	}
 }
 

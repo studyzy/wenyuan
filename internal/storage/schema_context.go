@@ -64,10 +64,11 @@ var (
 	ErrSchemaRequired = errors.New("tenant schema is required on the context")
 )
 
-// schemaPattern is the same slug shape the tenant registry validates. Storage
-// keeps its own copy because the package boundary forbids importing the tenant
-// package; the two must stay identical.
-var schemaPattern = regexp.MustCompile("^[a-z][a-z0-9_]{1,62}$")
+// schemaPattern is the same shape the tenant registry validates. Storage keeps
+// its own copy because the package boundary forbids importing the tenant
+// package; the two must stay identical. Letters may be upper or lower case:
+// every statement quotes the name, so PostgreSQL preserves the case.
+var schemaPattern = regexp.MustCompile("^[A-Za-z][A-Za-z0-9_]{1,62}$")
 
 // schemaContextKey keys the resolved tenant schema on a request context.
 type schemaContextKey struct{}
@@ -88,14 +89,16 @@ func SchemaFrom(ctx context.Context) (string, bool) {
 	return schema, ok && schema != ""
 }
 
-// validSchemaName accepts the slug shape and refuses the names that must never
+// validSchemaName accepts the id shape and refuses the names that must never
 // receive tenant traffic: the registry schema, the system catalog and
-// PostgreSQL's reserved namespace prefix.
+// PostgreSQL's reserved namespace prefix. The reserved comparison ignores case
+// because an unquoted spelling folds to lowercase in SQL.
 func validSchemaName(schema string) bool {
 	if !schemaPattern.MatchString(schema) {
 		return false
 	}
-	if schema == "admin" || schema == "information_schema" || strings.HasPrefix(schema, "pg_") {
+	lowered := strings.ToLower(schema)
+	if lowered == "admin" || lowered == "information_schema" || strings.HasPrefix(lowered, "pg_") {
 		return false
 	}
 	return true
