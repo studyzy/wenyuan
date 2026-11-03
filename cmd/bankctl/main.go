@@ -26,7 +26,7 @@ import (
 const usage = "usage: bankctl bank " +
 	"rename --from OLD --to NEW [--dry-run] | " +
 	"export-bank --bank ID --output FILE [--include-history] | " +
-	"import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history] | " +
+	"import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history] | import-export --archive FILE --tenant TENANT [--target-bank ID] | " +
 	"backup [--output] FILE | " +
 	"restore [--input] FILE [--yes] | " +
 	"run-db-migration | " +
@@ -98,7 +98,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 // importCommand reports whether a command writes a bank from an archive, which
 // is what makes the tenant selection meaningful.
 func importCommand(command string) bool {
-	return command == "import-bank" || command == "migrate"
+	return command == "import-bank" || command == "import-export" || command == "migrate"
 }
 
 // splitSchemaOption lifts the global --schema/-s selector out of the argument
@@ -210,7 +210,16 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 		}
 		flags.Tenant = tenant
 		flags.DiscardDocumentText = !config.FromEnvironment().StoreDocumentText
-		_, err = bankadmin.RunImportBank(ctx, store, importEmbeddings(stdout), flags, stdout)
+		_, err = bankadmin.RunImportBank(ctx, store, importEmbeddings(stdout, false), flags, stdout)
+		return err
+	case "import-export":
+		flags, err := bankadmin.ParseImportExport(args)
+		if err != nil {
+			return err
+		}
+		flags.Tenant = tenant
+		flags.NoEmbeddings = strings.Contains(os.Getenv("WENYUAN_IMPORT_SKIP_EMBEDDINGS"), "1")
+		_, err = bankadmin.RunImportExport(ctx, store, importEmbeddings(stdout, flags.NoEmbeddings), flags, stdout)
 		return err
 	case "migrate":
 		flags, err := bankadmin.ParseMigrate(args)
@@ -270,7 +279,11 @@ func dispatch(ctx context.Context, store storage.Store, command string, args []s
 // as a retained one is. A deployment with no embedding provider imports
 // unembedded, which is reported rather than left silent: the vector arm then has
 // no vectors to rank until facts are embedded by another path.
-func importEmbeddings(stdout io.Writer) storage.EmbeddingGenerator {
+func importEmbeddings(stdout io.Writer, skip bool) storage.EmbeddingGenerator {
+	if skip {
+		_, _ = fmt.Fprintln(stdout, "warning: WENYUAN_IMPORT_SKIP_EMBEDDINGS is set; importing without vectors")
+		return nil
+	}
 	embedder, err := app.ResolveEmbedder(config.FromEnvironment())
 	if err != nil {
 		_, _ = fmt.Fprintf(stdout, "warning: no embedding backend could be resolved (%v); importing without vectors\n", err)
