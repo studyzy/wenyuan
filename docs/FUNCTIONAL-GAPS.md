@@ -9,7 +9,7 @@
 |---|---|
 | **提示词文本**（2026-10-15 新增发现） | 抽取/巩固/反思/结构化输出/连接探针的提示词是**改写版**，上游系统套件靠锚句识别步骤，7 个锚句只命中 1 个。移植原文正在进行 |
 | 各簇收口（2026-10-15 晚） | 已完成并各自私有库验证：consolidation/observations **45/51**；banks/config/aliases/isolation 全绿；documents/entities/knowledge-read **44/70**（test_10/13/14/15/16/92 全绿）；webhooks **7/7**；archive transfer **test_52 7/7、test_53 9/9、test_83 1/1**；实体与图谱 **test_70 4/4、test_72 5/5、test_74 5/5**；mental model/knowledge **test_30 6/6、test_32 4/4、test_34 2/2、test_35 8/8、test_37 2/2、test_39 2/2**；源码/标签作用域 **test_71 5/5、test_81 6/6、test_82 6/6**；零散项 **test_02/27/94/96/97 全绿**。仍余**两个偶发项**（2026-10-15 本轮复核结论）。其一：**`test_02` 的 bm25 打平**。三次完整跑：339 passed/1 skipped 两次、1 failed（`test_02_retrieval_strategies`）一次。失败断言是 `rrf_merged.source_ranks` 里 `bm25_rank` 由 1 变 2；单跑 12 次全绿，说明是竞态而非确定性分歧。机制：该 story 的两条事实 `ts_rank_cd` 打平（实测两侧均为 0.3），名次由**物理行序**决定（上游 arm 只按分数排序、由计划给出物理序；本实现显式 `ORDER BY score DESC, ctid ASC`，两者同序），而巩固回写 `consolidated_at` 会把行搬到堆尾——DB 全量扫描显示所有 bank 的插入序都保持、无一次反转，故该竞态在上游同样存在（其 `MarkConsolidated` 也 UPDATE），属 story 侧对"打平"的假设，不是本实现的缺口。其二：**`test_12` 的排队追加丢轮**（`test_queued_appends_to_one_document_keep_every_turn`，一次全量跑报 `turns lost: ['Alice mentioned item number 0.']`）。该 story 单跑 9/9 通过；同一次复核中另有一次 `test_52` 超时失败，事后确认那一刻有两次 parity 跑并发（同一库互相认领队列，套件 conftest 已写明此坑），掐掉重叠后重跑即 339/1/0。两台共享同一库的服务同时消费队列时，排队类 story 会互相抢工作，这是套件设计上的竞态而非本实现的分歧；本实现侧的排队追加路径（`writeItemWithAppendRetry` + 冲突重试）未被改动。另：两条未被 story 覆盖的读路径越权（`/graph` 与 `ListMemories`）正在修 |
-| 迁移系列的向量列宽 | 已修：`embedding` 列宽是**部署设定**而非 schema 的一部分（上游启动时按配置的 embedding 模型 reconcile 该列），因此生成系列忠实保留被转储部署的宽度（`vector(1024)`），由 `internal/storage/embedding_dimension.go` 在迁移事务内对齐到本服务声明的 384——相同则不动；已有向量而宽度不符则**报错并给出两个宽度与行数**（绝不静默转换）；空表则丢索引→改列→按捕获的定义重建索引。此前工作树里对生成文件的手工 `384` 补丁已撤销（那是被 `schema_diff` 忽略、且每次重新生成都会静默回退的隐患） |
+| 迁移系列的向量列宽 | 已修：`embedding` 列宽是**部署设定**而非 schema 的一部分（上游启动时按配置的 embedding 模型 reconcile 该列），因此生成系列保留被转储部署的宽度（本仓库的系列是 `vector(384)`），并由 `internal/storage/embedding_dimension.go` 在迁移事务内对齐到 `storage.EmbeddingDimensions`（384）——相同则不动；已有向量而宽度不符则**报错并给出两个宽度与行数**（绝不静默转换）；空表则丢索引→改列→按捕获的定义重建索引 |
 | **全量基线（2026-10-15 收口）** | **上游自己的黑盒套件 339 passed / 1 skipped / 0 failed**（独立库、`-tags pgx` 构建、258 秒）。唯一的 skip 是 `test_76_onnx_embeddings`——本机没有本地 E5 ONNX 模型，属环境缺失，不是 wenyuan 的缺口。此前一轮为 335/4 failed，四项残留已全部定位修复：知识页 delta 窗口下界取错（`last_refreshed_source_query` 从未记录 + 窗口回退到建行时间戳）、两处存在性检查写了 `type` 而非 `fact_type`（错误被读成"作用域为空"，使带 `fact_types` 的模型永不刷新）、bm25 打平的自造 `id ASC` tie-break（上游按物理顺序，改为 `ctid`） |
 | **契约面复核收口（2026-10-15）** | `docs/CONTRACT-AUDIT.md` §3 由"未闭合清单"改写为**逐项结论**：13 项中多数已闭合（附上游 file:line 证据），4 项的前提**本身是反的**（校验条目 `url`、银行 id 形状、`/health` 池统计、指标"聚合计数"）——照单直改会改坏已经正确的东西。真实修复：校验条目按目标类型分派 `type` 并去掉上游从不发的 `url`；内存后端 retain 接受被拒 bank id（200→400）；`PATCH /config` 吞错（404→400）；`DELETE /config` 对不存在 bank（404→200，不创建行）；指标 `endpoint` 标签剥离 Go 通配符；知识库与 **recall** 的 fuzzy 标签改为对银行词表解析后精确匹配（含两个上限与上游 422 原文）；MCP `Accept` 改写语义（不再错拒 `application/json`/`*/*`）与 GET SSE 帧；`STORE_DOCUMENT_TEXT=false` 存 NULL、文案逐字、修掉可空列扫进 string 的读取崩溃。另把 CI 门禁拉回绿：13 个累积的 lint 问题清零（含一处保真与 ST1005 冲突→保留上游原文并标注理由） |
 | **上游自己的系统测试套件**（`hindsight-system-tests`，77 个 story 文件 / 345 用例，只用上游已发布的 Python 客户端驱动真实服务，模型/embedding/reranker 指向进程内桩） | **287 passed / 47 failed / 10 errors / 1 skipped（≈83%）**，基线是同一套件的 **136 passed / 161 failed / 43 errors**。唯一 skip 由上游环境门槛决定（`test_76_onnx_embeddings.py` 需要本地 E5 ONNX 模型）。harness 自身修好并自证（启动标记 + 启动函数确实被调用）；每个 agent 用自己的私有库，避免两个服务共用一个库时互相认领队列 |
@@ -332,3 +332,31 @@ observation history 快照、dry-run 的 `based_on`/outcome、config 的 env 取
 `make test-pg` 有两个**先于本轮改动即失败**的用例（`TestDirectReadRendersArchive`、
 `TestVectorSimilarityRanksByDistance`），已在 pristine HEAD 工作树上复现同样失败：原因是测试自身
 在连接池上 `SET search_path`（会话级设置不随池连接传播）。与本次对照工作无关，单独记录。
+
+## 8. 多租户边界：bank id 前缀与 tenant 必须一致（2026-11-02 复现并修复）
+
+线上实测发现三处与契约不一致的地方，均已修复并带回归用例：
+
+1. **编码代理前缀重写形同虚设。** `internal/httpx/agentbank.go` 的
+   `agentBankPathPrefixes` 写的是 `PrefixBanksV1 + "/"`（`/v1/default/banks/`）之外还少了
+   版本段——它实际拼的是 `/v1/banks/`，而真实路由是 `/v1/default/banks/{bank_id}`，
+   因此 `coding-agent::<project>` 从不被改写成 `<tenant>::<project>`，README 的兼容承诺不成立。
+   修复：新增 `httpx.BankRoutesPrefix` 并让重写按它匹配；同时把「只有 harness 名、没有 `::`」
+   的 id 也归到 `<tenant>::`。用例：`TestAgentBankPrefixThroughServedRouter`、
+   `TestBankRoutesPrefixIsTheServedBankRoute`。
+2. **`X-Wenyuan-Tenant` 曾被透传到 handler。** 中间件只把 header 读进
+   `tenant.Request.TenantID`，却仍把它留在请求上；任何在链路上再读该 header 的扩展都能被
+   调用方指定 schema。修复：读取后立即 `Header.Del`，该 header 只经 extension 的判定生效。
+   用例：`TestTenantExtensionAuthNeverLeavesTheHeaderOnTheRequest`。
+3. **bank id 前缀与 tenant 不一致时无人拦截。** 「其他前缀原样传递」意味着任何 key 都能在
+   自己的 schema 里创建/读取前缀叫别的 tenant（甚至叫 `public::`）的 bank，
+   bank id 与 schema 的对应关系因此只靠约定。修复：数据面在鉴权后校验
+   `<tenant>::<name>` 的前缀必须是已解析的 tenant，否则就是「Bank '<id>' not found」的 404
+   （与真正不存在的 bank 同一响应，不泄露存在性）；单租户部署与 bank 集合路径不校验。
+   用例：`TestAgentBankPrefixRefusesForeignBankIDs`。
+
+**未闭合**：`/v1/default/banks` 集合的创建/替换路由仍接受任何合法 id 形状，所以
+`POST /v1/default/banks/public::x` 式的历史数据仍然可以存在；已存在的这类 bank
+（`public::wenyuan`、`public::pvz-shoot`、`public::deepseek-harness`）需要人工用
+`bankctl bank migration` 迁移到 `<tenant>::` 命名空间。要不要对集合路由也加同样的前缀校验，
+取决于是否允许一个 tenant 在同一 schema 下持有多个前缀——这是产品决定，不是本次修复范围。

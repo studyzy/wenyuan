@@ -827,13 +827,13 @@ golangci-lint run ./internal/monitoring/... ./internal/app/...   # 0 issues
 | #47 `GET .../knowledge-base/tree` | ❌已修 | `api/http.py:7302`、`api/http.py:3703-3715`（`tag_groups` 依赖）、`engine/search/tags.py:116-123` | `internal/reporting/knowledge_tags.go:knowledgeTagFilterItems` | `tag_groups=`（显式空串）原先报适配器解析失败；参考的依赖是 `adapter.validate_json(raw) if raw else None`，空串即"没给"，现按缺省处理（`tag_groups=%20` 仍是解析失败） | `TestKnowledgeEmptyTagGroupsIsAbsent` |
 | #47 | ❌已修 | 同上 | `knowledge_tags.go` | `tags_match` 先于 `tag_groups` 校验（参考把 `tags_match` 声明在前），两者都坏时只报枚举项 | `TestKnowledgeBadTagsMatchHidesBadTagGroups` |
 | #48 `GET .../knowledge-base/search` | ❌已修 | `api/http.py:7329`、`:3703-3715` | `internal/reporting/knowledge_search.go` | ①`limit` 走框架的宽松整数解析（`5.0`→5、`1_000`、越界报 `less_than_equal`）②全部参数项收集在同一个 422 里，依赖项排在查询参数项之前③`tag_groups` 失败时 detail 退化为字符串（替换整份 item 列表） | `TestKnowledgeSearchLimitUsesFrameworkParsing`、`TestKnowledgeSearchCollectsEveryItem` |
-| #49 `GET .../knowledge-base/export` | ✅一致 | `api/http.py:7361` | `internal/reporting/knowledge_export.go` | — | 探针全 SAME（两侧 markdown 内容一致，仅节点集合因夹具不同） |
+| #49 `GET .../knowledge-base/export` | ✅一致 | `api/http.py:7361` | `internal/reporting/knowledge_search.go` | — | 探针全 SAME（两侧 markdown 内容一致，仅节点集合因夹具不同） |
 | #50 `POST .../knowledge-base/folders` | ❌已修 | `api/http.py:7414`、参考 folder 模型只声明 `name`/`parent_id`、`engine/memory_engine.py:19303` | `internal/reporting/knowledge_body.go`、`knowledge_models.go`（`CreateKnowledgeFolderRequest`）、`knowledge.go:knowledgeFolderID` | ①folder body 用独立类型解码，page 独有的选项被忽略而非校验（`{"name":"x","tags":"a"}` 参考 201）②节点 id 用参考的 `kf-`/`kp-`/`mm-` + 32 位 uuid4 hex | `TestKnowledgeFolderIgnoresPageOptions`、`TestKnowledgeFolderIgnoresUndeclaredOptions` |
 | #51 `POST .../knowledge-base/pages` | ❌已修 | `api/http.py:7457`、参考 create 模型（`name`/`parent_id`/`source_query`/`tags`/`max_tokens`/`trigger`） | `knowledge_body.go:decodeKnowledgeCreateBody` | **单趟校验**：框架先校验整个模型再问"必填"，所以"缺 `source_query` 且 `tags` 类型错"要报两项，而非只报一项；item 按声明顺序组织（`{"tags":1,"name":2}` 先报 `name` 再报 `source_query`） | `TestKnowledgeCreateReportsEveryItemInOnePass`（五个用例，任一提前返回即 FAIL） |
 | #51 | ❌已修 | 参考框架的 `raw_request` 是保序映射 | `internal/httpx/body.go:RecordBodyOrder`、`json.go:orderValidationInputs`、`errors.go`（`ValidationFailure.BodyOrder`） | `missing` 项回显的 `input` 原先按键名排序；现按客户端书写顺序（含嵌套对象）回显 | `TestKnowledgeCreateMissingItemEchoesBodyInOrder` |
-| #52 `GET .../knowledge-base/pages/{page_id}` | ✅一致 | `api/http.py:7492` | `internal/reporting/knowledge_pages.go` | — | 探针全 SAME |
-| #53 `PATCH .../pages/{page_id}` | ✅一致 | `api/http.py:7520` | `internal/reporting/knowledge_pages.go` | — | 探针全 SAME（含 body 校验项顺序） |
-| #54 `DELETE .../pages/{page_id}` | ✅一致 | `api/http.py:7589` | `internal/reporting/knowledge_pages.go` | — | 探针全 SAME |
+| #52 `GET .../knowledge-base/pages/{page_id}` | ✅一致 | `api/http.py:7492` | `internal/reporting/knowledge_nodes.go` | — | 探针全 SAME |
+| #53 `PATCH .../pages/{page_id}` | ✅一致 | `api/http.py:7520` | `internal/reporting/knowledge_nodes.go` | — | 探针全 SAME（含 body 校验项顺序） |
+| #54 `DELETE .../pages/{page_id}` | ✅一致 | `api/http.py:7589` | `internal/reporting/knowledge.go` | — | 探针全 SAME |
 
 **夹具差异（非缺陷）**：`GET .../export?tag_groups=` 的 markdown 两侧节点集合不同（参考库里先前的探针留下了 `kp-…` 页面，本服务库里留有 `name:""` 的旧行），index 里的条目数因此不一致；同一份知识库内容分别导出时逐字节相同。
 

@@ -38,12 +38,12 @@
 - **模型提供方** —— 对话 / 向量 / 重排三个端口，适配 OpenAI 兼容端点、Anthropic、
   Cohere / Gemini / TEI 向量等；未配置时使用确定性的无模型选择。
 - **后台维护** —— 保留期清理、搁浅工作恢复、心智模型计划刷新；租户 / 扩展 schema 支持。
-- **对象存储** —— S3 兼容后端。
+- **对象存储** —— S3 兼容、GCS、Azure 三种后端。
 - **前端 UI** —— `frontend/` 下的 Next.js 前端（服务 API 与 `wenyuan-admin ui` 均可驱动）。
 - **命令行** —— `bankctl`（管理：迁移、备份恢复、导出导入、修复）与 `wenyuan-admin`
   （客户端：全部 API 命令族、文件系统镜像、explore TUI）。
 
-**有意不做：** OAuth provider 集成与 GCS / Azure 对象存储（S3 兼容后端已覆盖对象存储）。
+**有意不做：** OAuth provider 集成。
 
 ## 环境要求
 
@@ -80,15 +80,16 @@ go run -tags pgx ./cmd/worker           # 异步操作消费者
 配置了 `database_url` 时 `pgx` tag 是必需的：不带 tag 的二进制没有
 PostgreSQL 驱动，会拒绝启动。
 
-或使用 Docker 只跑依赖服务 —— PostgreSQL 与两个 TEI 模型 sidecar；
-server、worker 与 bankctl 跑在宿主机：
+或使用 Docker 只跑数据库 —— server、worker 与 bankctl 跑在宿主机，
+TEI 服务通过网络访问：
 
 ```sh
 make db-up                              # PostgreSQL，127.0.0.1:15432
-make tei-up                             # TEI 向量（18080）与重排（18081）
 ```
 
-TEI 首次启动会把模型下载进 compose 卷，之后复用。
+把 `etc/wenyuan.yaml` 里的 `embeddings.tei_url` 与 `reranker.tei_url` 指向提供
+`intfloat/multilingual-e5-small` 与 `BAAI/bge-reranker-base` 的服务器；本地配置
+里写的是共享开发机地址。
 
 ### 控制台前端
 
@@ -301,7 +302,7 @@ migrations         PostgreSQL schema 迁移
 | `CONTRIBUTING.md` | 如何提交改动 |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
 | `SECURITY.md` | 如何私密报告安全问题 |
-| `Dockerfile`、`docker-compose.yml` | server + worker 镜像；compose 依赖服务（pgvector、TEI 模型 sidecar） |
+| `Dockerfile`、`docker-compose.yml` | server + worker 镜像；compose 依赖服务（仅 pgvector） |
 | `.github/workflows/ci.yml` | 每次 push / PR 的构建、测试、vet、gofmt |
 | `.github/ISSUE_TEMPLATE/` | Bug 与功能需求表单 |
 | `docs/ROADMAP.md` | 未完成工作与已知局限（交接文档） |

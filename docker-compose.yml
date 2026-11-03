@@ -1,19 +1,17 @@
 # Dependency services for a host-run wenyuan: the server, worker and bankctl
-# binaries run directly on the host (etc/wenyuan.yaml points at these ports),
-# while everything stateful or model-shaped stays in a container.
+# binaries run directly on the host (etc/wenyuan.yaml points at this port),
+# while the database stays in a container.
 #
 #   postgres       pgvector PostgreSQL, published on 15432 (+10000 over the
 #                  reference's own 5432, so the two can run side by side)
-#   tei-embedding  HuggingFace Text Embeddings Inference serving
-#                  intfloat/multilingual-e5-small (384 dimensions) on 18080
-#   tei-reranker   the same TEI image serving BAAI/bge-reranker-base on 18081
 #
-# The TEI services sit behind the `tei` profile: `docker compose up -d` (or
-# `make db-up`) starts PostgreSQL alone; `docker compose --profile tei up -d`
-# (or `make tei-up`) adds the model sidecars, whose first boot downloads the
-# models into the wenyuan-tei-* volumes. The api service is deliberately absent: the backend is a
-# host binary, not an image — point etc/wenyuan.yaml at these ports and run
+# The api service is deliberately absent: the backend is a host binary, not an
+# image — point etc/wenyuan.yaml at this port and run
 # `go build -tags pgx ./cmd/server`.
+#
+# The TEI embedding and reranker servers are not compose services: this
+# deployment reaches them over the network, at the hosts named by
+# `embeddings.tei_url` and `reranker.tei_url` in etc/wenyuan.yaml.
 
 services:
   postgres:

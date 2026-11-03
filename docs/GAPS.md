@@ -120,11 +120,13 @@ PG 套件另跑 `make test-pg`（需 `WENYUAN_TEST_DATABASE_URL`）。
 
 ### A1. 真实向量语义检索 — ✅ 已实现
 
-**现状**：`embedding vector(384)` 列已由迁移 `0008_memory_unit_embedding.sql`
-引入；`internal/storage/postgres_recall_vector.go` 走 `<=>` 距离查询，
+**现状**：`embedding vector(384)` 列由生成的参考 schema 系列
+`0002_reference_tables.sql` 声明，列宽由 `internal/storage/embedding_dimension.go`
+在迁移事务内对齐到 `storage.EmbeddingDimensions`（384）；
+`internal/storage/postgres_recall_vector.go` 走 `<=>` 距离查询，
 `memory_recall_arms.go` 的 semantic 臂在**内存后端**仍是确定性打分。
 
-- 证据：`migrations/0008_memory_unit_embedding.sql`；`internal/storage/postgres_recall_vector.go`。
+- 证据：`migrations/0002_reference_tables.sql`、`internal/storage/embedding_dimension.go`；`internal/storage/postgres_recall_vector.go`。
 - 遗留（⚠️）：内存后端无向量，仍是词重叠打分（这是**测试后端的预期设计**，
   不是缺陷）；cross-encoder reranker 缺失，见 A4。
 - **新变化**：分块与 token 计数已用真实 BPE tokenizer
@@ -159,8 +161,11 @@ PG 套件另跑 `make test-pg`（需 `WENYUAN_TEST_DATABASE_URL`）。
 - 证据：`internal/extraction/extractor.go`、`internal/app/extraction.go`、
   `internal/storage/retain_contents.go`、`retain.go`（`FactExtraction` 边界）。
 - 无模型时保持**逐字路径**不变（离线默认部署行为不变）。
-- 遗留（⚠️）：causal 链接（`LinkCauses` / `LinkCausedBy`）不从抽取结果生成；
-  折叠 / token 预算（上游 `fold.py`、`memory_budget.py`）未实现。
+- causal 链接由抽取结果生成：`internal/storage/retain_contents.go` 的
+  `causalLinksFor` 按 effect → cause 建 `LinkCausedBy`，越界索引丢弃。
+- 折叠与 token 预算已实现：`internal/memoryops/retain_fold.go` 的
+  `FoldRetainItems`（在 `retain.go` 的写入路径调用）折叠字段一致的小项并施加
+  32 KiB 请求预算。
 
 ---
 
@@ -204,13 +209,14 @@ export_documents / import_documents / clone_bank / consolidation）。
 
 ### A6. `files/retain` 附件持久化 — ✅ 已实现
 
-**现状**：迁移 `0017_attachments.sql` 建表；`internal/storage/
+**现状**：附件表由生成的参考 schema 系列 `0002_reference_tables.sql` 建表；
+`internal/storage/
 memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 实现持久化；写路径把附件与 unit 关联。
 
-- 证据：`migrations/0017_attachments.sql`、`internal/storage/memory_attachments.go`。
-- 遗留（⚠️）：仅实现内联（inline）附件，**无外部对象存储后端**（上游有
-  S3 / GCS / Azure 适配器）。
+- 证据：`migrations/0002_reference_tables.sql`、`internal/storage/memory_attachments.go`。
+- 外部对象存储：`internal/objectstore` 提供 S3 兼容、GCS、Azure 三种后端，
+  由 `WENYUAN_API_FILE_STORAGE_TYPE` 选择；未配置时附件内联存储。
 
 ---
 
@@ -416,11 +422,10 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 7. ~~**retain 折叠与 token 预算**~~ — **已实现（后补）**。`FoldRetainItems` 折叠字段一致的小项
    （每项 ≤2 KiB）并施加 32 KiB 请求预算；超预算项按 rune 截断并在 metadata 记录
    （无损切分需存储协议变更，仍为范围外）。
-8. ~~**外部对象存储后端**~~ — **已完成（S3 兼容）**。`internal/objectstore/` 实现
-   S3 REST 子集并自签 SigV4（无厂商 SDK），经 `storage.ObjectStore` 边界接入；
-   环境键沿用上游（`WENYUAN_API_FILE_STORAGE_TYPE` 等）。**未实现**：
-   GCS / Azure——上游三者共用同一个 obstore 包装器，仅客户端配置不同；如需，
-   可依同一 `ObjectStore` 边界补实现。
+8. ~~**外部对象存储后端**~~ — **已完成（S3 兼容 / GCS / Azure）**。`internal/objectstore/`
+   实现 S3 REST 子集并自签 SigV4（无厂商 SDK），另有 `gcs.go` / `azure.go` 两个原生
+   后端，经 `storage.ObjectStore` 边界接入；环境键沿用上游
+   （`WENYUAN_API_FILE_STORAGE_TYPE` 等）。
 
 > **2026-10-15 补充：契约面逐项复核。** 以**上游自己的 OpenAPI 文档**（99 操作 / 195 schema）为基准，
 > 对全部路由做了 11 个切片的逐操作比对：路由面 99/99 完整，但字段/状态码/头/默认值层面存在大量偏差。
@@ -430,9 +435,10 @@ memory_attachments.go` / `postgres_attachments.go` / `stored_files.go`
 
 > 结论：本文件所列项目均已闭合；`docs/PARITY-PLAN.md` §8 的阶段记录是当前权威状态
 > （含每项的验收命令与真实运行证据）。仍未覆盖且**明确标注为范围外**的是：上游交互式认证类
-> provider、GCS/Azure 对象存储与预签名下载 URL、上游的动态插件加载器、
+> provider、上游的动态插件加载器、
 > reranker failover 链与本地 MLX、dateparser 依赖与中文数字、以及上游无任何消费者的
-> `reflect/observations.py`（`trend`）。文档解析链（markitdown 等价 + llama_parse/iris）已实现，见 `docs/PARITY-PLAN.md` §8 的 C7 记录。
+> `reflect/observations.py`（`trend`）。对象存储（S3 兼容 / GCS / Azure）与预签名下载
+> 已实现，见 `internal/objectstore/`。文档解析链（markitdown 等价 + llama_parse/iris）已实现，见 `docs/PARITY-PLAN.md` §8 的 C7 记录。
 
 ### 7.1 后台维护子系统（2026-10-14 补齐）
 

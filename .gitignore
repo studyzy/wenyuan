@@ -49,3 +49,4 @@ __pycache__/
 node_modules/
 clients/rust/target/
 clients/python/.venv/
+*.bak

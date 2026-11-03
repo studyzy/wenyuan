@@ -149,7 +149,12 @@ logic. Moving the processor implementations into their domain packages (leaving
 `app` as pure assembly) shrinks the root and makes the processors testable in
 isolation.
 
-### F3. Stale "known gaps" documentation — MEDIUM
+### F3. Stale "known gaps" documentation — MEDIUM — **resolved 2026-11-02**
+
+**Status:** fixed after the review. `AGENTS.md` now declares Go `1.25` and its
+"Known gaps and open divergences" section states that semantic search, the
+async worker, export/import routes and provider integration are shipped; the
+findings below record the state at review time.
 
 `AGENTS.md` ("Known gaps — do not assume these work") and the corresponding
 section of `docs/ROADMAP.md` still claim: semantic search is a placeholder,
@@ -242,7 +247,7 @@ interface split and the package split land together.
 | Table-driven tests; e2e through served handler | ✅ | `app/parity_integration_test.go` and friends |
 | Context propagation complete | ⚠️ | F6 (`reflect/loop.go` background reads) |
 | Interface segregation | ❌ | F1 (121-method Store) |
-| Doc stays in sync with code | ⚠️ | F3 (AGENTS.md gaps), Go version drift |
+| Doc stays in sync with code | ✅ | F3 resolved 2026-11-02; the review itself is a 2026-10-15 snapshot |
 | Enforced file-size discipline | ⚠️ | F7 (30 files over the stated limit) |
 
 ---

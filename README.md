@@ -52,15 +52,14 @@ enums) are preserved. It is written in Go using the standard library first.
   more; a deterministic no-model selection when nothing is configured.
 - **Background maintenance** — retention sweeps, stranded-work recovery,
   scheduled mental-model refreshes; tenant/extension schema support.
-- **Object storage** — S3-compatible backend for stored files.
+- **Object storage** — S3-compatible, GCS and Azure backends for stored files.
 - **Frontend** — a Next.js web UI under `frontend/` (the served API and
   `wenyuan-admin ui` drive it).
 - **CLIs** — `bankctl` (admin: migrations, backup/restore, export/import,
   repair) and `wenyuan-admin` (client: every API family, filesystem mirror,
   explore TUI).
 
-**Intentionally out of scope:** OAuth provider integration and GCS / Azure
-object stores (the S3-compatible backend covers object storage).
+**Intentionally out of scope:** OAuth provider integration.
 
 ## Requirements
 
@@ -99,16 +98,16 @@ go run -tags pgx ./cmd/worker           # async operation consumer
 The `pgx` tag matters whenever a `database_url` is configured: without it the
 binary has no PostgreSQL driver and refuses to start.
 
-Or with Docker for the dependency services only — PostgreSQL plus the two TEI
-model sidecars; the server, worker and bankctl run on the host:
+Or with Docker for the database only — the server, worker and bankctl run on
+the host, and the TEI servers are reached over the network:
 
 ```sh
 make db-up                              # PostgreSQL on 127.0.0.1:15432
-make tei-up                             # TEI embedding (18080) and reranker (18081)
 ```
 
-The TEI first boot downloads the models into the compose volumes; later boots
-reuse them.
+Point `embeddings.tei_url` and `reranker.tei_url` in `etc/wenyuan.yaml` at the
+servers that host `intfloat/multilingual-e5-small` and
+`BAAI/bge-reranker-base`; the local configuration names the shared dev hosts.
 
 ### Control-plane frontend
 
@@ -199,10 +198,10 @@ What the units assume:
   frontend unit has `Requires=wenyuan.service`, so it stops if the API is
   stopped.
 
-The dependency services (PostgreSQL, the TEI sidecars) are not covered by these
-units: they are the compose stack, started with `make db-up` and `make tei-up`.
-If they are down, the API still starts but `GET /health` reports the database
-as disconnected.
+The dependency services are not covered by these units: PostgreSQL is the
+compose stack, started with `make db-up`, and the TEI servers are external
+(their URLs live in `etc/wenyuan.yaml`). If they are down, the API still starts
+but `GET /health` reports the database as disconnected.
 
 ### Server flags
 
@@ -440,7 +439,7 @@ See `AGENTS.md` for the full package map and the architectural boundaries.
 | `CONTRIBUTING.md` | How to propose changes |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
 | `SECURITY.md` | How to report a vulnerability privately |
-| `Dockerfile`, `docker-compose.yml` | Server + worker image; compose dependency services (pgvector, TEI model sidecars) |
+| `Dockerfile`, `docker-compose.yml` | Server + worker image; the compose dependency service (pgvector only) |
 | `.github/workflows/ci.yml` | Build, test, vet, gofmt on every push and PR |
 | `.github/ISSUE_TEMPLATE/` | Bug report and feature request forms |
 | `docs/ROADMAP.md` | Outstanding work and known limitations (handover) |

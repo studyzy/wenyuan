@@ -65,11 +65,13 @@ package. The HTTP surface and PostgreSQL schema are unchanged by this choice.
 in the checked-in local configuration). `etc/wenyuan.yaml` is the local,
 unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
 
-### Dependencies are compose services, not embedded
+### Dependencies are external services, not embedded
 
-- `docker-compose.yml` starts PostgreSQL (pgvector) on host port **15432**.
-- The `tei` profile adds `tei-embedding` on **18080** and `tei-reranker` on
-  **18081**.
+- `docker-compose.yml` starts PostgreSQL (pgvector) on host port **15432** —
+  the only compose service.
+- The TEI embedding and reranker servers are not part of the stack:
+  `embeddings.tei_url` and `reranker.tei_url` in `etc/wenyuan.yaml` name the
+  hosts that serve them.
 - The API, worker and `bankctl` run as **host binaries**; there is deliberately
   no API container in the compose file.
 - The +10000 port offset lets the reference service and this one run side by
@@ -268,7 +270,7 @@ internal/worker/       operation queue consumer (lease, backoff, retry)
 internal/maintenance/  background maintenance loop
 internal/mcp/          MCP endpoint handlers
 internal/transfer/     archive export / import HTTP routes + apply logic
-internal/objectstore/  S3-compatible object storage backend
+internal/objectstore/  object storage backends (S3-compatible, GCS, Azure)
 internal/oteltrace/    OTel tracing support
 internal/audit/        audit trail (fire-and-forget)
 internal/tenant/       tenant / extension schema abstraction
@@ -440,8 +442,9 @@ out of it as they close.
   both read the same — see `TestRestoreReadsSerializedRowJSON`, which caught a
   real loss where every jsonb field of a reference archive fell back to its
   default.
-- **Intentionally out of scope:** OAuth provider integration and GCS / Azure
-  object stores (the S3-compatible backend covers object storage).
+- **Intentionally out of scope:** OAuth provider integration. The object-store
+  backends are not: `internal/objectstore` implements S3-compatible, GCS and
+  Azure storage and presigned downloads, selected by `WENYUAN_API_FILE_STORAGE_TYPE`.
 - **A decision model is declared, not served.** v1.1.0 lets a deployment point
   recall's reranking, reflect's orchestration and consolidation's triage at a
   separate decision endpoint (the reference's `*_DECISION_MODEL_*` env keys, and
@@ -485,7 +488,9 @@ the provider registry — not as a new import edge in a handler package.
 
 Code files stay under **500 lines**, test files under **800**. Split along
 module boundaries rather than growing a file. This is checked in review, not
-in CI.
+in CI, and applies to new files and to any file a change touches: the tree
+still carries a backlog of older files above the limit, which are split when
+they are next modified.
 
 ## Commits and PRs
 

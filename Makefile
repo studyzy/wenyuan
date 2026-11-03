@@ -39,7 +39,7 @@ COVERAGE_MIN ?= 56
 # COVERAGE_MIN_PG is the floor for the PostgreSQL-backed suite.
 COVERAGE_MIN_PG ?= 66
 
-.PHONY: all build test vet pgx lint check fmt tidy clean run db-up tei-up db-down install \
+.PHONY: all build test vet pgx lint check fmt tidy clean run db-up db-down install \
         frontend-build frontend-run frontend-standalone clients clients-check \
         test-sdk test-sdk-integration test-sdk-go test-sdk-go-integration \
         test-sdk-python test-sdk-typescript test-sdk-rust help \
@@ -131,10 +131,6 @@ run:
 ## db-up: start this project's own PostgreSQL via docker compose (host port 15432)
 db-up:
 	docker compose up -d postgres
-
-## tei-up: start the TEI embedding/reranker sidecars from the compose tei profile
-tei-up:
-	docker compose --profile tei up -d tei-embedding tei-reranker
 
 ## db-down: stop the compose stack; data persists in the named volume
 db-down:

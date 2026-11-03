@@ -269,8 +269,10 @@ sed -n '23,30p' internal/httpx/errors.go
 - ~~**C4** 准入控制 + 499。~~ 完成。
 - ~~**C6** MCP 工具补至 38。~~ 完成（39）。
 - ~~**C11** 图维护队列。~~ 完成。
-- ~~**C9/C10** 对象存储与 provider 补齐~~。完成：S3 prefix-delete 与流式读取；provider 补齐 volcano/mock，
-  其余不可离线实现者**启动即显式报错**。**明确范围外**：GCS/Azure 后端、预签名下载 URL（上游亦无该路由）。
+- ~~**C9/C10** 对象存储与 provider 补齐~~。完成：S3 prefix-delete、流式读取与预签名下载；
+  GCS 与 Azure 后端（`internal/objectstore/gcs.go` / `azure.go`，由
+  `WENYUAN_API_FILE_STORAGE_TYPE` 选择）；provider 补齐 volcano/mock，
+  其余不可离线实现者**启动即显式报错**。
 - ~~**C12** 其余管理 CLI~~。完成：rename 原地搬迁 + export/import/repair/worker-status +
   backup/restore/run-db-migration/decommission-worker(s)。
 - ~~**C7** 文档解析器。~~ 完成：`internal/fileparse` 提供解析链（`convert`/`supports`/`name` 接口、按序回退、
