@@ -96,16 +96,27 @@ func TestPostgresMultiTenantEndToEnd(t *testing.T) {
 	keyA := issueTenantKey(t, application.AdminHandler, tenantA)
 	keyB := issueTenantKey(t, application.AdminHandler, tenantB)
 
-	for name, key := range map[string]string{"A": keyA, "B": keyB} {
-		recorder := dataPlaneCall(t, application.Handler, http.MethodPut, "/v1/default/banks/shared", key,
+	// In multi-tenant mode a bank id is <tenant>::<name>: the prefix names the
+	// schema the bank lives in, so the same plain name is a different id per
+	// tenant and a prefixless one is refused.
+	tenants := map[string]struct {
+		key    string
+		bankID string
+	}{
+		"A": {key: keyA, bankID: tenantA + "::shared"},
+		"B": {key: keyB, bankID: tenantB + "::shared"},
+	}
+
+	for name, tenant := range tenants {
+		recorder := dataPlaneCall(t, application.Handler, http.MethodPut, "/v1/default/banks/"+tenant.bankID, tenant.key,
 			"{\"name\":\""+name+"\"}")
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("create bank for %s = %d: %s", name, recorder.Code, recorder.Body.String())
 		}
 	}
 
-	for name, key := range map[string]string{"A": keyA, "B": keyB} {
-		recorder := dataPlaneCall(t, application.Handler, http.MethodGet, "/v1/default/banks", key, "")
+	for name, tenant := range tenants {
+		recorder := dataPlaneCall(t, application.Handler, http.MethodGet, "/v1/default/banks", tenant.key, "")
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("list banks for %s = %d: %s", name, recorder.Code, recorder.Body.String())
 		}
@@ -118,8 +129,8 @@ func TestPostgresMultiTenantEndToEnd(t *testing.T) {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
 			t.Fatalf("decode banks for %s: %v", name, err)
 		}
-		if len(page.Banks) != 1 || page.Banks[0].BankID != "shared" || page.Banks[0].Name != name {
-			t.Fatalf("%s sees %+v, want only shared/%s", name, page.Banks, name)
+		if len(page.Banks) != 1 || page.Banks[0].BankID != tenant.bankID || page.Banks[0].Name != name {
+			t.Fatalf("%s sees %+v, want only %s/%s", name, page.Banks, tenant.bankID, name)
 		}
 	}
 }
