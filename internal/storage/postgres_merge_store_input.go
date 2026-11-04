@@ -18,7 +18,7 @@ import (
 
 // loadMemberInput reads one member's contribution for this round.
 func (s *PostgresMergeStore) loadMemberInput(
-	ctx context.Context, member MergeProjectMember, limit int, includeExperience bool,
+	ctx context.Context, tx Tx, member MergeProjectMember, limit int, includeExperience bool,
 ) (MergeMemberInput, error) {
 	out := MergeMemberInput{Member: member}
 	// A project whose id is "myself" points at the member's aggregate bank, and
@@ -38,7 +38,7 @@ func (s *PostgresMergeStore) loadMemberInput(
 	qualified := quoteIdent(member.Schema)
 	// A member with no bank row yet has contributed nothing; the team's content
 	// is kept rather than rebuilt (the onboarding path).
-	if err := s.db.QueryRowContext(memberCtx,
+	if err := tx.QueryRowContext(memberCtx,
 		`SELECT EXISTS (SELECT 1 FROM `+qualified+`.banks WHERE bank_id = $1)`,
 		memberBankID(member)).Scan(&out.BankExists); err != nil {
 		return out, err
@@ -89,7 +89,7 @@ func (s *PostgresMergeStore) loadMemberInput(
 			args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, cursor.UnitID, limit}
 		}
 	}
-	rows, err := s.db.QueryContext(memberCtx, statement, args...)
+	rows, err := tx.QueryContext(memberCtx, statement, args...)
 	if err != nil {
 		return out, err
 	}
@@ -112,7 +112,7 @@ func (s *PostgresMergeStore) loadMemberInput(
 	// A rebuild is requested when a source that still supports team content has
 	// gone from this member's bank.
 	if member.HasLedger {
-		deleted, err := s.sourceDeleted(memberCtx, member, qualified)
+		deleted, err := s.sourceDeleted(memberCtx, tx, member, qualified)
 		if err != nil {
 			return out, err
 		}
@@ -128,9 +128,9 @@ func (s *PostgresMergeStore) loadMemberInput(
 // folded away supports nothing, so its deletion cannot invalidate the team's
 // content and must not trigger a rebuild — which is the whole reason the ledger
 // records the supported key rather than just "consumed".
-func (s *PostgresMergeStore) sourceDeleted(ctx context.Context, member MergeProjectMember, qualified string) (bool, error) {
+func (s *PostgresMergeStore) sourceDeleted(ctx context.Context, tx Tx, member MergeProjectMember, qualified string) (bool, error) {
 	var deleted bool
-	err := s.db.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		    SELECT 1
 		    FROM `+adminTable("merge_source_unit")+` l

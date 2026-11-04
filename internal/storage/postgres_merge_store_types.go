@@ -39,14 +39,14 @@ func mergedFactTypesFor(includeExperience bool) []string {
 // the claim is held is what keeps the count and the sweep from disagreeing: a
 // fact written between the read and the write would otherwise survive until the
 // round after next.
-func (s *PostgresMergeStore) countUnmanagedTx(ctx context.Context, project *MergeProject) (int, error) {
+func (s *PostgresMergeStore) countUnmanagedTx(ctx context.Context, tx Tx, project *MergeProject) (int, error) {
 	teamCtx, err := WithSchema(ctx, project.TeamSchema)
 	if err != nil {
 		return 0, err
 	}
 	qualified := quoteIdent(project.TeamSchema)
 	var count int
-	err = s.db.QueryRowContext(teamCtx, `
+	err = tx.QueryRowContext(teamCtx, `
 		SELECT count(*) FROM `+qualified+`.memory_units
 		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NULL`,
 		project.BankID, mergedFactTypes).Scan(&count)

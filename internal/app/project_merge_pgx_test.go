@@ -167,32 +167,24 @@ func TestProjectMergeRoundWritesThreeSchemas(t *testing.T) {
 	f.writeFact(t, f.memberA, "The deploy uses port 15432.")
 	f.writeFact(t, f.memberB, "The deploy uses port 15432.")
 
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0,1]}]}`,
-	}
-	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), model: model, cfg: mergeTestCfg()}
+	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), cfg: mergeTestCfg()}
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if model.calls != 1 {
-		t.Fatalf("model calls = %d, want 1", model.calls)
-	}
 	texts := f.teamFacts(t)
 	if len(texts) != 1 || texts[0] != "The deploy uses port 15432." {
-		t.Fatalf("team facts = %v, want the merged fact", texts)
+		t.Fatalf("team facts = %v, want the one fact the two members share", texts)
 	}
-	// Both members' facts support the one merged fact.
+	// Both members' facts support that fact.
 	if rows := f.ledgerRows(t); rows != 2 {
 		t.Fatalf("ledger rows = %d, want one per member's source", rows)
 	}
-	// The cursors advanced, so a second round with no new input calls no model.
-	model.calls = 0
+	// The cursors advanced, so a quiet second round writes nothing more.
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if model.calls != 0 {
-		t.Fatalf("model calls on a quiet second round = %d, want 0", model.calls)
+	if again := f.teamFacts(t); len(again) != 1 {
+		t.Fatalf("team facts after a quiet round = %v, want the one fact", again)
 	}
 }
 
@@ -207,7 +199,7 @@ func TestProjectMergeRoundDropsADeletedSource(t *testing.T) {
 		reply: `{"facts":[{"text":"Only Alice knew this.","sources":[0]}]}`,
 	}
 	cfg := mergeTestCfg()
-	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), model: model, cfg: cfg}
+	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), cfg: cfg}
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -238,32 +230,21 @@ func TestProjectMergeRoundDropsADeletedSource(t *testing.T) {
 	}
 }
 
-// TestProjectMergeRespectsTheCircuitBreaker pins the failure path end to end: a
-// failing model records the error and advances the counter.
-func TestProjectMergeRespectsTheCircuitBreaker(t *testing.T) {
+// TestProjectMergeCarriesWithoutAModel is the shape that replaced the model
+// round: the facts land in the team bank with no provider configured at all.
+func TestProjectMergeCarriesWithoutAModel(t *testing.T) {
 	f := newMergeJobFixture(t)
-	f.writeFact(t, f.memberA, "A fact the model will choke on.")
-	model := &answerProvider{name: "fake", reply: "not json at all"}
-	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), model: model, cfg: mergeTestCfg()}
+	f.writeFact(t, f.memberA, "The deploy uses port 15432.")
+	f.writeFact(t, f.memberB, "The worker polls every 60 seconds.")
+
+	// No model on the runner: the round must still carry both facts.
+	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), cfg: mergeTestCfg()}
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	var failCount int
-	var lastError string
-	if err := f.db.QueryRowContext(context.Background(),
-		"SELECT COALESCE(max(fail_count),0), COALESCE(max(last_error),'') FROM admin.merge_state WHERE team_tenant_id=$1 AND project_id=$2",
-		f.teamID, f.projectID).Scan(&failCount, &lastError); err != nil {
-		t.Fatalf("read state: %v", err)
-	}
-	if failCount == 0 {
-		t.Fatal("a failed round did not advance the failure counter")
-	}
-	if lastError == "" {
-		t.Fatal("a failed round recorded no error")
-	}
-	// Nothing was written to the team's bank.
-	if texts := f.teamFacts(t); len(texts) != 0 {
-		t.Fatalf("team facts = %v after a failed round, want none", texts)
+	got := f.teamFacts(t)
+	if len(got) != 2 {
+		t.Fatalf("team bank holds %d facts, want both member facts: %v", len(got), got)
 	}
 }
 
@@ -271,8 +252,7 @@ func TestProjectMergeRespectsTheCircuitBreaker(t *testing.T) {
 func TestMergeStatusReportsTheProject(t *testing.T) {
 	f := newMergeJobFixture(t)
 	f.writeFact(t, f.memberA, "A fact for the status read.")
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"A fact for the status read.","sources":[0]}]}`}
-	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), model: model, cfg: mergeTestCfg()}
+	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), cfg: mergeTestCfg()}
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -307,13 +287,7 @@ func TestProjectMergeCarriesEveryMemberFact(t *testing.T) {
 		f.writeFact(t, f.memberA, text)
 	}
 
-	// A model that claims every fact repeats the first one: the bank must still
-	// hold all four, because the label never removes a fact.
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"duplicates":[{"fresh":1,"duplicate_of":0},{"fresh":2,"duplicate_of":0}]}`,
-	}
-	runner := &mergeRunner{merges: f.merges, model: model, cfg: mergeTestCfg()}
+	runner := &mergeRunner{merges: f.merges, cfg: mergeTestCfg()}
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("round: %v", err)
 	}

@@ -41,6 +41,6 @@ func PersonalRollupEnabled(personals storage.PersonalStore, _ provider.Provider)
 }
 
 // MergeEnabled reports whether a deployment can merge at all.
-func MergeEnabled(cfg config.Config, merges storage.MergeStore, model provider.Provider) bool {
-	return mergeEnabled(cfg, merges, model)
+func MergeEnabled(cfg config.Config, merges storage.MergeStore) bool {
+	return mergeEnabled(cfg, merges)
 }

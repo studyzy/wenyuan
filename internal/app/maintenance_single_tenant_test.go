@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
-	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
@@ -109,7 +108,7 @@ func TestMergeStoreIsNilInSingleTenantMode(t *testing.T) {
 	if cfg.TenantMode != config.TenantModeSingle {
 		t.Fatalf("the test default tenant mode = %q, want single", cfg.TenantMode)
 	}
-	if mergeEnabled(cfg, &fakeMergeStore{}, &stubProvider{name: "stub"}) {
+	if mergeEnabled(cfg, &fakeMergeStore{}) {
 		t.Fatal("a single-tenant deployment must never merge")
 	}
 }
@@ -135,13 +134,13 @@ func TestDefaultMergeIntervalDoesNotEnableTheJob(t *testing.T) {
 	}
 }
 
-// mergeModelName is the provider name this build reports when nothing is
-// configured, which mergeEnabled must treat as "cannot merge".
-func TestNoModelProviderCannotMerge(t *testing.T) {
+// TestMergingDoesNotDependOnAModel pins that the round copies rather than
+// synthesises: a multi-tenant deployment with no chat provider still shares its
+// members' facts, because no model is called on the way.
+func TestMergingDoesNotDependOnAModel(t *testing.T) {
 	cfg := testConfig()
 	cfg.TenantMode = config.TenantModeMulti
-	var model provider.Provider = &stubProvider{name: "none"}
-	if mergeEnabled(cfg, &fakeMergeStore{}, model) {
-		t.Fatal("the no-model selection must not merge")
+	if !mergeEnabled(cfg, &fakeMergeStore{}) {
+		t.Fatal("a multi-tenant deployment must merge whether or not a model is configured")
 	}
 }

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -159,28 +158,22 @@ func mergeTestInput() storage.MergeStanzaInput {
 }
 
 // runOneRound runs a round for the fake and reports the error.
-func runOneRound(t *testing.T, merges *fakeMergeStore, model provider.Provider, cfg config.MaintenanceConfig) error {
+func runOneRound(t *testing.T, merges *fakeMergeStore, cfg config.MaintenanceConfig) error {
 	t.Helper()
-	runner := &mergeRunner{merges: merges, model: model, cfg: cfg}
+	runner := &mergeRunner{merges: merges, cfg: cfg}
 	return runner.runProjectMerges(context.Background())
 }
 
-// TestProjectMergeWritesTheRoundsResult is the job's happy path: one model call,
-// one write, the ledger recorded, and the cursor advanced to the consumed fact.
+// TestProjectMergeWritesTheRoundsResult is the job's happy path: one write, the
+// ledger recorded, the cursor advanced to the consumed fact, and no model call at
+// all — the round copies what the members hold.
 func TestProjectMergeWritesTheRoundsResult(t *testing.T) {
 	merges := &fakeMergeStore{
 		projects: []storage.MergeProject{mergeTestProject()},
 		input:    mergeTestInput(),
 	}
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0]}]}`,
-	}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 1 {
-		t.Fatalf("model calls = %d, want 1", model.calls)
 	}
 	if merges.finished == nil {
 		t.Fatal("the round wrote nothing")
@@ -220,8 +213,7 @@ func TestProjectMergeCarriesEveryFactVerbatim(t *testing.T) {
 	})
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
 	// The model reports nothing repeated.
-	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	inserted := merges.finished.Replace.Insert
@@ -245,12 +237,8 @@ func TestProjectMergeSkipsWhenAnotherRoundHoldsTheProject(t *testing.T) {
 		input:     mergeTestInput(),
 		skipBegin: true,
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 0 {
-		t.Fatalf("model calls = %d, want 0 when the project is taken", model.calls)
 	}
 	if merges.finished != nil || merges.abandoned != nil {
 		t.Fatal("a skipped round must write and report nothing")
@@ -269,12 +257,8 @@ func TestProjectMergeSkipsWithNoNewInput(t *testing.T) {
 			},
 		},
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 0 {
-		t.Fatalf("model calls = %d, want 0 for a project with nothing new", model.calls)
 	}
 	if merges.finished != nil {
 		t.Fatal("a quiet round must not write")
@@ -297,12 +281,8 @@ func TestProjectMergeSkipsAMemberWithNoBank(t *testing.T) {
 			},
 		},
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 0 {
-		t.Fatalf("model calls = %d, want 0 when the member has no bank", model.calls)
 	}
 }
 
@@ -318,15 +298,11 @@ func TestProjectMergeOverTeamFactCapSkipsWithoutFailingClosed(t *testing.T) {
 	input := mergeTestInput()
 	input.Previous = previous
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"a","sources":[0]}]}`}
 
 	cfg := mergeTestCfg()
 	cfg.ProjectMergeMaxTeamFacts = 2
-	if err := runOneRound(t, merges, model, cfg); err != nil {
+	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 0 {
-		t.Fatalf("model calls = %d, want 0 over the cap", model.calls)
 	}
 	if merges.finished != nil {
 		t.Fatal("an over-cap round must not write")
@@ -353,15 +329,11 @@ func TestProjectMergeRebuildOverLimitFailsClosed(t *testing.T) {
 		})
 	}
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"facts":[]}`}
 
 	cfg := mergeTestCfg()
 	cfg.ProjectMergeRebuildMaxUnits = 2
-	if err := runOneRound(t, merges, model, cfg); err != nil {
+	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("round: %v", err)
-	}
-	if model.calls != 0 {
-		t.Fatalf("model calls = %d, want 0 when a rebuild cannot fit", model.calls)
 	}
 	if merges.abandoned == nil || !strings.Contains(merges.abandoned.Error, "rebuild") {
 		t.Fatalf("reported %+v, want the rebuild limit named", merges.abandoned)
@@ -369,40 +341,7 @@ func TestProjectMergeRebuildOverLimitFailsClosed(t *testing.T) {
 }
 
 // TestProjectMergeRecordsAModelFailure pins that a model failure is counted, so
-// the circuit breaker can halt a project that keeps failing.
-func TestProjectMergeRecordsAModelFailure(t *testing.T) {
-	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: mergeTestInput()}
-	model := &answerProvider{name: "fake", err: errors.New("endpoint down")}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
-		t.Fatalf("round: %v", err)
-	}
-	if merges.finished != nil {
-		t.Fatal("a failed round must not write")
-	}
-	if merges.abandoned == nil || !merges.abandoned.Counting {
-		t.Fatalf("reported %+v, want a counted failure", merges.abandoned)
-	}
-	if !strings.Contains(merges.abandoned.Error, "endpoint down") {
-		t.Fatalf("error = %q, want the model's message", merges.abandoned.Error)
-	}
-}
-
 // TestProjectMergeRecordsAnUnparseableAnswer pins that a malformed reply writes
-// nothing and does not advance the cursors, so the next round retries.
-func TestProjectMergeRecordsAnUnparseableAnswer(t *testing.T) {
-	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: mergeTestInput()}
-	model := &answerProvider{name: "fake", reply: "I merged everything for you!"}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
-		t.Fatalf("round: %v", err)
-	}
-	if merges.finished != nil {
-		t.Fatal("an unparseable answer must write nothing")
-	}
-	if merges.abandoned == nil || !merges.abandoned.Counting {
-		t.Fatalf("reported %+v, want a counted failure", merges.abandoned)
-	}
-}
-
 // TestProjectMergeBatchAdvancesOnlyWhatItConsumed pins that a fact not reached
 // this round is read next round rather than skipped.
 func TestProjectMergeBatchAdvancesOnlyWhatItConsumed(t *testing.T) {
@@ -415,8 +354,7 @@ func TestProjectMergeBatchAdvancesOnlyWhatItConsumed(t *testing.T) {
 		})
 	}
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0]}]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	cursor, ok := merges.finished.Cursors["alice"]
@@ -430,11 +368,11 @@ func TestProjectMergeBatchAdvancesOnlyWhatItConsumed(t *testing.T) {
 	}
 }
 
-// TestMergeEnabledRefusesWithoutStoreTeamOrModel pins the three reasons the job
-// must not be registered.
-func TestMergeEnabledRefusesWithoutStoreTeamOrModel(t *testing.T) {
+// TestMergeEnabledNeedsAStoreAndATeam pins the two reasons the job is not
+// registered. The model is deliberately not one of them: the round copies facts
+// and calls no model, so a deployment without a chat provider still merges.
+func TestMergeEnabledNeedsAStoreAndATeam(t *testing.T) {
 	merges := &fakeMergeStore{}
-	model := &answerProvider{name: "fake"}
 	multi := testConfig()
 	multi.TenantMode = config.TenantModeMulti
 
@@ -442,18 +380,15 @@ func TestMergeEnabledRefusesWithoutStoreTeamOrModel(t *testing.T) {
 		name   string
 		cfg    config.Config
 		merges storage.MergeStore
-		model  provider.Provider
 		want   bool
 	}{
-		{"multi with store and model", multi, merges, model, true},
-		{"no store", multi, nil, model, false},
-		{"single tenant", testConfig(), merges, model, false},
-		{"no model", multi, merges, nil, false},
-		{"no-model provider", multi, merges, &answerProvider{name: "none"}, false},
+		{"multi with a store", multi, merges, true},
+		{"no store", multi, nil, false},
+		{"single tenant", testConfig(), merges, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mergeEnabled(tc.cfg, tc.merges, tc.model); got != tc.want {
+			if got := mergeEnabled(tc.cfg, tc.merges); got != tc.want {
 				t.Fatalf("mergeEnabled = %v, want %v", got, tc.want)
 			}
 		})
@@ -491,8 +426,7 @@ func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
 	input.Members[0].Member.State.RebuildRequested = true
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if merges.finished == nil {
@@ -526,8 +460,7 @@ func TestIncrementalRoundCarriesThePreviousContent(t *testing.T) {
 		{ID: "u1", Text: "A fact this round does not restate.", MergeKey: tenant.MergeKey("A fact this round does not restate.")},
 	}
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if merges.finished.Rebuild {
@@ -555,8 +488,7 @@ func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 	}
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	replace := merges.finished.Replace
@@ -586,11 +518,7 @@ func TestProjectMergeCarriesFactTypesThroughTheRound(t *testing.T) {
 		projects: []storage.MergeProject{mergeTestProject()},
 		input:    input,
 	}
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"Alice moved the deploy to port 15432.","sources":[0]}]}`,
-	}
-	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if merges.finished == nil {
@@ -612,8 +540,7 @@ func TestProjectMergePassesTheExperienceSwitchThrough(t *testing.T) {
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: mergeTestInput()}
 	cfg := mergeTestCfg()
 	cfg.ProjectMergeIncludeExperience = false
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"x","sources":[0]}]}`}
-	if err := runOneRound(t, merges, model, cfg); err != nil {
+	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if merges.opts.IncludeExperience {
@@ -624,58 +551,6 @@ func TestProjectMergePassesTheExperienceSwitchThrough(t *testing.T) {
 // TestProjectMergeDoesNotCompress is the property the summarising pass broke: the
 // team bank carries what the members hold. Asking the model to "merge duplicates"
 // turned 1940 member facts into 121 team facts, so the round now writes every
-// fact verbatim and the model only labels duplicates.
-func TestProjectMergeDoesNotCompress(t *testing.T) {
-	input := mergeTestInput()
-	// One fact is already in the bank, so a duplicate label has somewhere to point.
-	input.Previous = []storage.TeamFactRow{
-		{ID: "p1", Text: "an older fact already in the team bank",
-			MergeKey: tenant.MergeKey("an older fact already in the team bank")},
-	}
-	input.Members[0].Fresh = nil
-	for i := 0; i < 40; i++ {
-		input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
-			TenantID:  "alice",
-			UnitID:    fmt.Sprintf("00000000-0000-0000-0000-%012d", i),
-			Text:      fmt.Sprintf("a distinct fact about the project, number %d", i),
-			FactType:  storage.TypeWorld,
-			UpdatedAt: time.Now().UTC(),
-		})
-	}
-	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	// A model that answers "this one repeats what the bank already has" must not
-	// shrink the bank.
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"duplicates":[{"fresh":1,"duplicate_of":0}]}`,
-	}
-	cfg := mergeTestCfg()
-	cfg.ProjectMergeBatchSize = 100
-	if err := runOneRound(t, merges, model, cfg); err != nil {
-		t.Fatalf("round: %v", err)
-	}
-	if merges.finished == nil {
-		t.Fatalf("the round wrote nothing; abandoned with %+v", merges.abandoned)
-	}
-	inserted := merges.finished.Replace.Insert
-	if len(inserted) != 40 {
-		t.Fatalf("inserted %d facts for 40 distinct member facts: the round compressed", len(inserted))
-	}
-	// The labelled fact is still written; only its metadata says it repeats one.
-	var labelled *storage.TeamFactRow
-	for i := range inserted {
-		if inserted[i].DuplicateOf != "" {
-			labelled = &inserted[i]
-		}
-	}
-	if labelled == nil {
-		t.Fatal("the duplicate label did not reach the write")
-	}
-	if labelled.Text != "a distinct fact about the project, number 1" {
-		t.Fatalf("labelled fact text = %q, want the member's own text", labelled.Text)
-	}
-}
-
 // TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch pins the segmented rebuild: a
 // member holding more facts than one batch can feed the model is replayed over
 // several rounds, each advancing the cursor, and only the completing round
@@ -704,8 +579,7 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 	// A full batch: the member may hold more, so the rebuild is not finished.
 	input := newInput(10)
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, cfg); err != nil {
+	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("first round: %v", err)
 	}
 	if merges.finished == nil {
@@ -721,8 +595,7 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 	// A short batch: the member's bank is exhausted and the rebuild completes.
 	input = newInput(3)
 	merges = &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model = &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
-	if err := runOneRound(t, merges, model, cfg); err != nil {
+	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("second round: %v", err)
 	}
 	if !merges.finished.RebuildDone {

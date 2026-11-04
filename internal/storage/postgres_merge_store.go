@@ -181,11 +181,11 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	project.Members = members
 
 	input := MergeStanzaInput{Project: *project}
-	input.Previous, err = s.loadPreviousTx(ctx, project, opts.Batch)
+	input.Previous, err = s.loadPreviousTx(ctx, tx, project, opts.Batch)
 	if err != nil {
 		return false, err
 	}
-	input.UnmanagedFacts, err = s.countUnmanagedTx(ctx, project)
+	input.UnmanagedFacts, err = s.countUnmanagedTx(ctx, tx, project)
 	if err != nil {
 		return false, err
 	}
@@ -232,7 +232,7 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	shared := opts.Batch
 	for i := range input.Project.Members {
 		member := &input.Project.Members[i]
-		entry, err := s.loadMemberInput(ctx, *member, shared, opts.IncludeExperience)
+		entry, err := s.loadMemberInput(ctx, tx, *member, shared, opts.IncludeExperience)
 		if err != nil {
 			return false, err
 		}
@@ -366,13 +366,13 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 // in one prompt. The newest facts are the ones a new contribution most plausibly
 // repeats, so the bound takes the tail — the ordering is by creation, which is
 // the order facts entered the bank.
-func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeProject, limit int) ([]TeamFactRow, error) {
+func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project *MergeProject, limit int) ([]TeamFactRow, error) {
 	teamCtx, err := WithSchema(ctx, project.TeamSchema)
 	if err != nil {
 		return nil, err
 	}
 	qualified := quoteIdent(project.TeamSchema)
-	rows, err := s.db.QueryContext(teamCtx, `
+	rows, err := tx.QueryContext(teamCtx, `
 		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type
 		FROM `+qualified+`.memory_units
 		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NOT NULL

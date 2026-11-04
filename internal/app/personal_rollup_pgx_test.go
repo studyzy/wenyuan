@@ -241,7 +241,7 @@ func TestProjectMergeIgnoresTheAggregateBank(t *testing.T) {
 	}
 
 	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"nothing from the aggregate","sources":[]}]}`}
-	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), model: model, cfg: mergeTestCfg()}
+	runner := &mergeRunner{merges: f.merges, store: storage.NewPostgresStore(f.db, "public"), cfg: mergeTestCfg()}
 	if err := runner.runProjectMerges(ctx); err != nil {
 		t.Fatalf("run: %v", err)
 	}

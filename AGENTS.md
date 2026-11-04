@@ -116,26 +116,33 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   `{"confirm": "<project_id>", "delete_banks": true}` and refuses when the
   project's own bank is not among the ones the prefix found — that disagreement
   is what would let a prefix delete take another project's data.
-- **Shared memory is folded, not compressed.** A background job `project.merge`
+- **Shared memory is copied, not synthesised.** A background job `project.merge`
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
   60s) copies each member's `world`, `experience` and `observation` facts from their
   own bank into the project's team bank `<team>::<name>`, **verbatim**: every fact
-  becomes a team fact with its own text and its own kind. The chat model is asked
-  only *which new facts repeat an existing one*; its label lands in
-  `metadata.duplicate_of` and never removes a fact. Asking the model to "merge
-  duplicates" is what turned 1940 member facts into 121 team facts, which is the
-  defect this shape exists to prevent — a fact's text is never the model's to
-  rewrite. `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
+  becomes a team fact with its own text and its own kind, and **no model is called**
+  — the round therefore runs on a deployment with no chat provider at all.
+  Deduplication is one string comparison: a fact whose `merge_key` (SHA-256 of the
+  whitespace-normalized text) is already in the bank gets no second row, and every
+  member's source is still recorded in the ledger per member.
+  `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
   `experience` out of the input when a deployment wants only what members know and
   concluded. Raw conversation, documents, chunks and attachments are never copied.
   Design: `docs/plans/2026-10-30-team-memory-design-v3.md`.
+- **Two shapes were tried and rejected before this one.** Asking the model for
+  "the project's complete fact list" turned 1940 member facts into 121 team facts:
+  summarising is what the instruction produces. Keeping the model only for
+  duplicate *labelling* removed the compression but put the model in the write
+  path, so when its calls failed a round failed and the members' facts sat unshared
+  until it recovered. World facts and experiences are append-only, so there is no
+  merging for a model to decide; copying is both more faithful and has no
+  dependency to lose.
 - **The merge ledger is `admin.merge_source_unit`** (`embeddedadmin/0003_merge_state.sql`),
   and it records the `merge_key` each member fact *supports*. Delete detection
   reads those rows, so a removed member fact triggers the rebuild that drops what
-  it supported; a fact the dedupe pass labelled a duplicate still supports its own
-  key, because the label is metadata and the row is really there. A team fact's id
-  is its `merge_key`, so a fact whose wording survives keeps its row and its
-  observations.
+  it supported. Every member's fact is a ledger row even when its text is already
+  in the bank, because provenance is per member. A team fact's id is its
+  `merge_key`, so a fact whose text survives keeps its row and its observations.
 - **The circuit breaker is real and recovers on its own.** A project that fails
   `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` rounds in a row rests for
   `WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS` (default 900) and is then let
@@ -144,11 +151,13 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   one project accumulated 88 failed rounds — a model call per tick, forever. The
   attempt clock is `merge_state.last_attempt_at` (admin migration 0006), because
   `last_merged_at` only moves on success.
-- **A merge round is two transactions with the model call between them.** The
-  first takes the project's claim (`pg_try_advisory_xact_lock` plus
-  `merge_state.merging_since`); the second is fenced on the claim stamp, so a
-  round another process took over cannot write a stale result. The model call is
-  never inside a transaction.
+- **A merge round is two transactions with nothing in between.** The first takes
+  the project's claim (`pg_try_advisory_xact_lock` plus `merge_state.merging_since`)
+  and reads the inputs; the second is fenced on the claim stamp, so a round
+  another process took over cannot write a stale result. The split outlived the
+  model call it was built for: it keeps a round's reads and its write from holding
+  one transaction open while it does other work, and the fence is what makes a
+  takeover safe.
 - **The team bank is written only by the merge job.** A fact written into it
   directly is replaced by the next round; `merge-status.unmanaged_facts` counts
   those so an operator can see it.
@@ -163,9 +172,9 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   `chunks`, reads and writes by unit id, `state=invalidated` and `document_id`
   filters do **not** fall back.
 - **Visibility window:** a member's new fact reaches the team bank on the next
-  round plus one model call — 60s or so by default. The member's own recall does
-  not see it either during that window, which is the accepted trade for a
-  stable team view.
+  round — 60s or so by default, bounded only by the batch size, not by a model
+  call. The member's own recall does not see it during that window, which is the
+  accepted trade for a stable team view.
 - The team plane is **multi-tenant only**: `tenant_mode: single` leaves the team
   registry unset and every team route answers 501. The same gate keeps
   `MergeStore`, the read resolver and the `project.merge` job nil or absent, and
@@ -268,8 +277,9 @@ internal/storage/embeddedadmin/  the control plane's own migration series
 internal/provider/     model-provider port + adapters (openai, anthropic,
                        embed, rerank, none, mock) — see "Provider boundary"
 internal/reflect/      bounded retrieval-and-synthesis reflection loop
-internal/projectmerge/ the project merge engine's pure rules (merge key, diff,
-                       prompt, answer parsing) — no database, no HTTP
+internal/projectmerge/ the project merge engine's pure rules (merge key, the
+                       carry pass, the rollup's shared diff) — no database, no
+                       HTTP, no model
 internal/personalrollup/ the personal aggregate's pure rules (answer parsing,
                        prompt, the navigation-index projection) — no database
 internal/teamread/     decides whether a read falls back to a project's team bank

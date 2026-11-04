@@ -161,8 +161,8 @@ func maintenanceJobsWithBankConfig(
 			},
 		})
 	}
-	if cfg.ProjectMergeEnabled && cfg.ProjectMergeInterval > 0 && merges != nil && model != nil {
-		runner := &mergeRunner{merges: merges, store: store, model: model, cfg: cfg}
+	if cfg.ProjectMergeEnabled && cfg.ProjectMergeInterval > 0 && merges != nil {
+		runner := &mergeRunner{merges: merges, store: store, cfg: cfg}
 		jobs = append(jobs, maintenance.Job{
 			Name:     "project.merge",
 			Interval: cfg.ProjectMergeInterval,

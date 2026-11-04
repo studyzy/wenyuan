@@ -126,7 +126,7 @@ func run(args []string) error {
 	// deployment that runs only a worker still folds people's banks together.
 	personalStore := app.NewPersonalStore(store)
 	maintenanceCfg := cfg.Maintenance
-	maintenanceCfg.ProjectMergeEnabled = app.MergeEnabled(cfg, mergeStore, model)
+	maintenanceCfg.ProjectMergeEnabled = app.MergeEnabled(cfg, mergeStore)
 	maintenanceCfg.PersonalRollupEnabled = app.PersonalRollupEnabled(personalStore, model)
 	loop := app.NewMaintenanceLoopWithBankConfig(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore, personalStore, cfg)
 	if loop.Enabled() {

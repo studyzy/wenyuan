@@ -37,7 +37,7 @@ func (s *slowMergeStore) BeginMergeStanza(
 func newTriggerForTest(t *testing.T, store storage.MergeStore) *mergeTrigger {
 	t.Helper()
 	runner := &mergeRunner{
-		merges: store, model: &answerProvider{name: "fake"}, cfg: mergeTestCfg(),
+		merges: store, cfg: mergeTestCfg(),
 	}
 	return newMergeTrigger(runner)
 }

@@ -337,8 +337,8 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 				// membership: a member leaving a project clears their rows, a purge
 				// asks for a rebuild, and adding a member merges straight away.
 				maintenanceCfg := cfg.Maintenance
-				maintenanceCfg.ProjectMergeEnabled = mergeEnabled(cfg, app.MergeStore, activeProvider)
-				runner := &mergeRunner{merges: app.MergeStore, store: store, model: activeProvider, cfg: maintenanceCfg}
+				maintenanceCfg.ProjectMergeEnabled = mergeEnabled(cfg, app.MergeStore)
+				runner := &mergeRunner{merges: app.MergeStore, store: store, cfg: maintenanceCfg}
 				app.mergeTrigger = newMergeTrigger(runner)
 				mergeAdmin = mergeAdminFor{store: app.MergeStore, trigger: app.mergeTrigger}
 			}

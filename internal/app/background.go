@@ -30,7 +30,7 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 		tenants = NewTenantExtension(application.Config)
 	}
 	maintenanceCfg := application.Config.Maintenance
-	maintenanceCfg.ProjectMergeEnabled = mergeEnabled(application.Config, application.MergeStore, model)
+	maintenanceCfg.ProjectMergeEnabled = mergeEnabled(application.Config, application.MergeStore)
 	maintenanceCfg.PersonalRollupEnabled = personalRollupEnabled(application.PersonalStore)
 	return &BackgroundRoles{
 		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,

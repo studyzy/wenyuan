@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/projectmerge"
-	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -37,10 +35,13 @@ func roundDeadline(interval time.Duration) time.Duration {
 }
 
 // mergeRunner carries what one tick's rounds need.
+//
+// It holds no model: a round copies the members' facts, so the merge's progress
+// does not depend on a chat provider being reachable. That dependency is what
+// stalled a project for hours while its model calls failed.
 type mergeRunner struct {
 	merges storage.MergeStore
 	store  storage.Store
-	model  provider.Provider
 	cfg    config.MaintenanceConfig
 }
 
@@ -67,7 +68,7 @@ func (r *mergeRunner) runProjectMerges(ctx context.Context) error {
 
 // runMergeRound runs one round for one project.
 func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergeProject, deadline time.Duration) error {
-	merges, model, cfg := r.merges, r.model, r.cfg
+	merges, cfg := r.merges, r.cfg
 	roundCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
@@ -108,17 +109,11 @@ func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergePr
 			storage.MergeStateFailure{Error: plan.reason})
 	}
 	if !plan.merge {
-		// Nothing new and no stale content: record the heartbeat and spend no
-		// model call.
+		// Nothing to carry: record the heartbeat and write nothing.
 		return merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID, storage.MergeStateFailure{})
 	}
 
-	answers, err := dedupeWithModel(roundCtx, model, plan.present, plan.fresh)
-	if err != nil {
-		return merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID,
-			storage.MergeStateFailure{Error: err.Error(), Counting: true})
-	}
-	req := buildFinishRequest(project, input, plan, answers, stamp)
+	req := buildFinishRequest(project, input, plan, stamp)
 	if err := merges.FinishMergeStanza(roundCtx, req); err != nil {
 		if err == storage.ErrMergeClaimLost {
 			// Another process took the round over; its result is the one that
@@ -243,26 +238,6 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 	return plan, nil
 }
 
-// dedupeWithModel asks the model which of this round's facts repeat an existing
-// one.
-//
-// It never asks the model to produce the team's content. Every member fact is
-// written verbatim (see projectmerge.PlanBatch); the model only labels duplicates,
-// a judgement it can make without being able to lose a fact.
-func dedupeWithModel(ctx context.Context, model provider.Provider, present []projectmerge.TeamFact,
-	fresh []projectmerge.MemberFact) ([]projectmerge.Answer, error) {
-	messages := projectmerge.Prompt(present, fresh)
-	result, err := model.Complete(ctx, provider.CompletionRequest{Messages: messages})
-	if err != nil {
-		return nil, fmt.Errorf("dedupe model call: %w", err)
-	}
-	answers, err := projectmerge.ParseAnswer(result.Content, len(fresh), len(present))
-	if err != nil {
-		return nil, err
-	}
-	return answers, nil
-}
-
 // buildFinishRequest turns the round's carry-over into the store's write.
 //
 // The write is the members' facts themselves: each fresh fact becomes one team
@@ -277,11 +252,9 @@ func buildFinishRequest(
 	project storage.MergeProject,
 	input storage.MergeStanzaInput,
 	plan roundPlan,
-	answers []projectmerge.Answer,
 	stamp time.Time,
 ) storage.FinishMergeRequest {
-	planned := projectmerge.PlanBatch(
-		projectmerge.Batch{Present: plan.present, Fresh: plan.fresh}, answers)
+	planned := projectmerge.PlanBatch(plan.present, plan.fresh)
 
 	// The keys already in the bank: a fact whose key is here is the row the round
 	// already has, so it is neither inserted again nor removed.
@@ -310,32 +283,28 @@ func buildFinishRequest(
 		}
 	}
 
+	// PlanBatch already dropped every fact the bank holds and every repeat inside
+	// the batch, so what is left is exactly what needs a row.
 	insert := make([]storage.TeamFactRow, 0, len(planned.Facts))
 	sources := make(map[string][]storage.MergeSourceRow, len(input.Members))
 	written := make(map[string]bool, len(planned.Facts))
 	for _, plannedFact := range planned.Facts {
 		key := projectmerge.MergeKey(plannedFact.Fact.Text)
-		source := storage.MergeSourceRow{
-			UnitID: plannedFact.Fact.UnitID, MergeKey: key,
-			DuplicateOf: plannedFact.DuplicateOf,
-		}
-		sources[plannedFact.Fact.TenantID] = append(sources[plannedFact.Fact.TenantID], source)
-		if written[key] {
-			// Two members contributed the same text; the bank holds it once.
-			continue
-		}
-		written[key] = true
-		if existing[key] {
-			// The bank already holds this text, so its row stays exactly where it
-			// is — same id, same observations. Inserting a second row for the same
-			// fact would double the bank and orphan whatever hung off the first.
-			continue
-		}
 		insert = append(insert, storage.TeamFactRow{
-			Text: plannedFact.Fact.Text, MergeKey: key,
-			FactType:    storage.MemoryUnitType(plannedFact.Fact.FactType),
-			DuplicateOf: plannedFact.DuplicateOf,
+			Text:     plannedFact.Fact.Text,
+			MergeKey: key,
+			FactType: storage.MemoryUnitType(plannedFact.Fact.FactType),
 		})
+	}
+	// Every member's fact is a ledger row, whether or not the bank needed a new
+	// row for its text: provenance is per member, and delete detection reads it per
+	// member. A fact two members both hold therefore supports the one row twice,
+	// once under each member.
+	for _, fact := range plan.fresh {
+		key := projectmerge.MergeKey(fact.Text)
+		written[key] = true
+		sources[fact.TenantID] = append(sources[fact.TenantID],
+			storage.MergeSourceRow{UnitID: fact.UnitID, MergeKey: key})
 	}
 	if plan.rebuild {
 		// A rebuild removes the rows no member contributes any more: `written`
@@ -418,16 +387,8 @@ func (r *mergeRunner) enqueueTeamConsolidation(ctx context.Context, project stor
 // A single-tenant process has no merge store, and a deployment with no chat
 // provider would only write an error every round — the same reason reflect
 // refuses without a model.
-func mergeEnabled(cfg config.Config, merges storage.MergeStore, model provider.Provider) bool {
-	if merges == nil || cfg.TenantMode != config.TenantModeMulti {
-		return false
-	}
-	if model == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(model.Name())) {
-	case "", "none", "noop", "noop-provider":
-		return false
-	}
-	return true
+func mergeEnabled(cfg config.Config, merges storage.MergeStore) bool {
+	// No provider check: the round copies facts and calls no model, so a
+	// deployment with no chat provider still shares memory between members.
+	return merges != nil && cfg.TenantMode == config.TenantModeMulti
 }
