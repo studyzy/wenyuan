@@ -2,7 +2,6 @@ package personalrollup
 
 import (
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -42,16 +41,16 @@ func TestParseAnswer(t *testing.T) {
 			wantErr: ErrAnswerEmpty,
 		},
 		{
-			name:       "source index out of range",
+			name:       "source index past the batch is dropped",
 			raw:        `{"facts":[{"text":"a","sources":[3]}]}`,
 			freshCount: 2,
-			wantErr:    ErrAnswerShape,
+			wantLen:    1,
 		},
 		{
-			name:       "negative source index",
+			name:       "negative source index is dropped",
 			raw:        `{"facts":[{"text":"a","sources":[-1]}]}`,
 			freshCount: 2,
-			wantErr:    ErrAnswerShape,
+			wantLen:    1,
 		},
 		{
 			name:       "blank text",
@@ -81,6 +80,68 @@ func TestParseAnswer(t *testing.T) {
 				t.Fatalf("answers = %d, want %d", len(answers), tc.wantLen)
 			}
 		})
+	}
+}
+
+// TestParseAnswerDropsSourcesOutsideTheBatch is the round that failed on a live
+// deployment: a model that keeps counting past the batch (F20 while the round
+// carried three inputs) must not fail the whole answer, and the sources it does
+// name inside the batch must survive.
+func TestParseAnswerDropsSourcesOutsideTheBatch(t *testing.T) {
+	answers, err := ParseAnswer(
+		`{"facts":[{"text":"a","sources":[2, 20, 21]},{"text":"b","sources":[22]}]}`, 3)
+	if err != nil {
+		t.Fatalf("ParseAnswer: %v", err)
+	}
+	if len(answers) != 2 {
+		t.Fatalf("answers = %d, want both facts kept", len(answers))
+	}
+	if got := answers[0].Sources; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("sources = %v, want only the in-batch index", got)
+	}
+	if got := answers[1].Sources; len(got) != 0 {
+		t.Fatalf("sources = %v, want none", got)
+	}
+}
+
+// TestParseAnswerReadsQuotedSourceIndexes pins the second shape a live model
+// produced: the prompt asks for numbers, the reply quoted them, and the whole
+// answer used to die on the type mismatch. The indexes themselves still bound.
+func TestParseAnswerReadsQuotedSourceIndexes(t *testing.T) {
+	cases := map[string]struct {
+		raw     string
+		sources []int
+	}{
+		"quoted numbers":       {raw: `{"facts":[{"text":"a","sources":["0","2"]}]}`, sources: []int{0, 2}},
+		"single quoted number": {raw: `{"facts":[{"text":"a","sources":"1"}]}`, sources: []int{1}},
+		"single number":        {raw: `{"facts":[{"text":"a","sources":2}]}`, sources: []int{2}},
+		"quoted out of range":  {raw: `{"facts":[{"text":"a","sources":["1","9"]}]}`, sources: []int{1}},
+		"null":                 {raw: `{"facts":[{"text":"a","sources":null}]}`, sources: []int{}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			answers, err := ParseAnswer(tc.raw, 3)
+			if err != nil {
+				t.Fatalf("ParseAnswer: %v", err)
+			}
+			got := answers[0].Sources
+			if len(got) != len(tc.sources) {
+				t.Fatalf("sources = %v, want %v", got, tc.sources)
+			}
+			for i := range tc.sources {
+				if got[i] != tc.sources[i] {
+					t.Fatalf("sources = %v, want %v", got, tc.sources)
+				}
+			}
+		})
+	}
+}
+
+// TestParseAnswerRefusesASourceThatIsNotAnIndex keeps the one case still refused:
+// a value with no numeric reading has no defensible interpretation.
+func TestParseAnswerRefusesASourceThatIsNotAnIndex(t *testing.T) {
+	if _, err := ParseAnswer(`{"facts":[{"text":"a","sources":["orders"]}]}`, 3); !errors.Is(err, ErrAnswerShape) {
+		t.Fatalf("error = %v, want a shape failure", err)
 	}
 }
 
@@ -201,12 +262,18 @@ func TestDroppedMergeKeyIsTheTeamConvention(t *testing.T) {
 	}
 }
 
-func TestParseAnswerRejectsSourceOutsideTheBatch(t *testing.T) {
-	_, err := ParseAnswer(`{"facts":[{"text":"a","sources":[1]}]}`, 1)
-	if !errors.Is(err, ErrAnswerShape) {
-		t.Fatalf("error = %v, want a shape failure", err)
+// TestParseAnswerDropsSourceOutsideTheBatch pins the round that failed on a live
+// deployment: a model that counts past the batch must not fail the whole answer,
+// because the ledger cannot record a source the round does not carry anyway.
+func TestParseAnswerDropsSourceOutsideTheBatch(t *testing.T) {
+	answers, err := ParseAnswer(`{"facts":[{"text":"a","sources":[1]}]}`, 1)
+	if err != nil {
+		t.Fatalf("ParseAnswer: %v", err)
 	}
-	if !strings.Contains(err.Error(), "outside the 1 inputs") {
-		t.Fatalf("error = %v, want it to name the bound", err)
+	if len(answers) != 1 {
+		t.Fatalf("answers = %d, want the fact kept", len(answers))
+	}
+	if len(answers[0].Sources) != 0 {
+		t.Fatalf("sources = %v, want the out-of-batch index dropped", answers[0].Sources)
 	}
 }

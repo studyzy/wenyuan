@@ -10,10 +10,12 @@
 package personalrollup
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/studyzy/wenyuan/internal/projectmerge"
@@ -76,20 +78,85 @@ var (
 	ErrAnswerEmpty = errors.New("rollup answer carries no facts")
 )
 
+// sourceIndexList decodes "sources" as indexes.
+//
+// The prompt asks for numbers, but a model that quotes them ("sources": ["2"])
+// or writes one bare value would otherwise fail the whole answer on a JSON type
+// quibble — the same class of failure as counting past the batch. Anything that
+// is not an index at all is still a shape failure: unlike an out-of-range number,
+// there is no defensible way to read it.
+type sourceIndexList []int
+
+// UnmarshalJSON accepts the number, numeric-string and single-number forms.
+func (l *sourceIndexList) UnmarshalJSON(data []byte) error {
+	decoded, err := decodeSourceIndexes(data)
+	if err != nil {
+		return err
+	}
+	*l = decoded
+	return nil
+}
+
+// decodeSourceIndexes reads one "sources" value.
+func decodeSourceIndexes(data []byte) ([]int, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var raw []json.RawMessage
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return nil, err
+		}
+		out := make([]int, 0, len(raw))
+		for _, item := range raw {
+			index, ok := parseSourceIndex(item)
+			if !ok {
+				return nil, fmt.Errorf("sources carries %s, which is not an index", item)
+			}
+			out = append(out, index)
+		}
+		return out, nil
+	}
+	index, ok := parseSourceIndex(trimmed)
+	if !ok {
+		return nil, fmt.Errorf("sources carries %s, which is not an index", trimmed)
+	}
+	return []int{index}, nil
+}
+
+// parseSourceIndex reads one index written as a number or a quoted number.
+func parseSourceIndex(raw json.RawMessage) (int, bool) {
+	var number int
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, false
+	}
+	number, err := strconv.Atoi(strings.TrimSpace(text))
+	return number, err == nil
+}
+
 // answerEnvelope is the wire shape the prompt asks for.
 type answerEnvelope struct {
 	Facts []struct {
-		Text    string   `json:"text"`
-		Sources []int    `json:"sources"`
-		Topics  []string `json:"topics"`
+		Text    string          `json:"text"`
+		Sources sourceIndexList `json:"sources"`
+		Topics  []string        `json:"topics"`
 	} `json:"facts"`
 }
 
 // ParseAnswer decodes the model's reply.
 //
 // freshCount bounds the source indexes: an index outside the round's inputs is a
-// shape failure rather than a silently dropped provenance, because a ledger row
-// pointing at nothing is worse than no row at all.
+// silently dropped provenance rather than a shape failure, because a ledger row
+// pointing at nothing is worse than no row at all. The prompt numbers fresh facts
+// from F0, so a model that keeps counting past the batch — F20..F23 while the
+// round carries three inputs — is stating a fact from its own history, not a
+// broken reply: refusing the whole answer spends the round and leaves the
+// aggregate behind for as long as the model keeps doing it.
 //
 // An empty answer is its own error. It is only acceptable when the round had
 // nothing before it — otherwise it would empty the aggregate on a model hiccup.
@@ -123,14 +190,15 @@ func ParseAnswer(raw string, freshCount int) ([]Answer, error) {
 		if text == "" {
 			return nil, fmt.Errorf("%w: fact %d has no text", ErrAnswerShape, i)
 		}
+		var sources []int
 		for _, source := range fact.Sources {
 			if source < 0 || source >= freshCount {
-				return nil, fmt.Errorf("%w: fact %d names source %d, outside the %d inputs",
-					ErrAnswerShape, i, source, freshCount)
+				continue
 			}
+			sources = append(sources, source)
 		}
 		answers = append(answers, Answer{
-			Text: text, Sources: fact.Sources, Topics: normalizeTopics(fact.Topics),
+			Text: text, Sources: sources, Topics: normalizeTopics(fact.Topics),
 		})
 	}
 	return answers, nil
