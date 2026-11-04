@@ -45,7 +45,8 @@ COVERAGE_MIN_PG ?= 66
         test-sdk-python test-sdk-typescript test-sdk-rust help \
         bench test-pg cover cover-check cover-check-pg parity \
         service-install service-env service-enable service-disable service-restart \
-        service-stop service-start service-status service-uninstall service-logs
+        service-stop service-start service-status service-uninstall service-logs \
+        dev-start dev-stop dev-restart dev-status dev-logs
 
 all: check
 
@@ -269,6 +270,102 @@ service-uninstall:
 UNIT ?= server
 service-logs:
 	tail -f /var/log/wenyuan-$(UNIT).log
+
+# ---------------------------------------------------------------------------
+# Source runs
+#
+# These run the checkout directly — the backend from ./bin and the frontend
+# from its standalone build — instead of the installed systemd units. They are
+# the "just rebuild and run it" path while developing, which is why they own
+# their PID files and logs under .run/ and stop only the processes they
+# started: a hand-started 'node server.js' or a stale server from another
+# checkout is never killed by guesswork.
+#
+# The systemd units must not be running at the same time — both bind the same
+# ports. 'dev-restart' refuses rather than fighting one for the port; run
+# 'make service-disable' once to hand the ports over.
+DEV_DIR   ?= .run
+DEV_LOG   ?= $(DEV_DIR)/logs
+DEV_SERVER_PID ?= $(DEV_DIR)/wenyuan-server.pid
+DEV_FRONTEND_PID ?= $(DEV_DIR)/wenyuan-frontend.pid
+DEV_PORTS ?= 18888 18890 19999
+
+## dev-stop: stop the processes 'dev-start' started.
+##
+## It stops whatever is listening on this run's ports (18888/18890/19999) when
+## that process is the binary under this checkout or a 'node server.js' from
+## this frontend tree, plus anything the recorded PIDs still name. Matching by
+## the port rather than by a PID file alone is what makes it robust: a start
+## that was interrupted still left a live listener, and a stale PID file cannot
+## hide it.
+##
+## A process this checkout did not start is reported and left alone — a server
+## from another tree, or a systemd unit, is the operator's to stop.
+dev-stop:
+	@for port in $(DEV_PORTS); do \
+		pid=$$(ss -tlnp 2>/dev/null | grep ":$$port " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2); \
+		[ -n "$$pid" ] || continue; \
+		args=$$(ps -o args= -p "$$pid" 2>/dev/null || true); \
+		exe=$$(readlink -f /proc/$$pid/exe 2>/dev/null || true); \
+		case "$$args $$exe" in \
+			*"$(BINARY)"*|*"./bin/"*|*"node"*) \
+				echo "stopping pid $$pid on port $$port ($$args)"; \
+				kill "$$pid" 2>/dev/null || true; \
+				for i in $$(seq 1 20); do kill -0 "$$pid" 2>/dev/null || break; sleep 0.25; done; \
+				if kill -0 "$$pid" 2>/dev/null; then echo "  forcing pid $$pid"; kill -9 "$$pid" 2>/dev/null || true; fi; \
+				;; \
+			*) echo "port $$port is held by pid $$pid ($$args), which this checkout did not start; leaving it alone" ;; \
+		esac; \
+	done
+	@rm -f $(DEV_SERVER_PID) $(DEV_FRONTEND_PID)
+
+## dev-start: build the backend and the frontend from this checkout and run
+## both in the background, logging under .run/logs/. Idempotent: it stops what
+## a previous 'dev-start' started first.
+dev-start: install frontend-standalone
+	@command -v node >/dev/null || { echo "node is required to run the frontend"; exit 1; }
+	@$(MAKE) --no-print-directory dev-stop
+	@for port in $(DEV_PORTS); do \
+		if ss -tln 2>/dev/null | grep -q ":$$port "; then \
+			owner=$$(ss -tlnp 2>/dev/null | grep ":$$port " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2); \
+			echo "port $$port is still held by pid $$owner after 'make dev-stop'."; \
+			echo "  a systemd unit: sudo systemctl disable --now wenyuan.service wenyuan-frontend.service"; \
+			echo "  a stray process: kill $$owner"; \
+			exit 1; \
+		fi; \
+	done
+	@mkdir -p $(DEV_LOG) $(DEV_DIR)
+	@echo "starting the API from ./$(BINARY)"
+	@cd $(CURDIR) && { nohup ./$(BINARY) >> $(DEV_LOG)/server.log 2>&1 & echo $$! > $(DEV_SERVER_PID); }
+	@echo "starting the frontend from frontend/.next/standalone"
+	@cd $(CURDIR)/frontend/.next/standalone && { \
+		env $$(python3 $(CURDIR)/scripts/sync_frontend_env.py | grep -E '^WENYUAN_CP_[A-Z_]+=') \
+		PORT=19999 HOSTNAME=0.0.0.0 NODE_ENV=production \
+		nohup node server.js >> $(CURDIR)/$(DEV_LOG)/frontend.log 2>&1 & \
+		echo $$! > $(CURDIR)/$(DEV_FRONTEND_PID); }
+	@sleep 3
+	@$(MAKE) --no-print-directory dev-status
+
+## dev-restart: rebuild everything from source and swap the running processes
+## for the new build — the one command to run after a code change.
+dev-restart:
+	@$(MAKE) --no-print-directory dev-start
+
+## dev-status: what 'dev-start' started, plus health probes
+dev-status:
+	@for pair in "server:$(DEV_SERVER_PID):http://127.0.0.1:18888/health" \
+	            "frontend:$(DEV_FRONTEND_PID):http://127.0.0.1:19999/"; do \
+		name=$${pair%%:*}; rest=$${pair#*:}; pidfile=$${rest%%:*}; url=$${rest#*:}; \
+		pid=$$(cat "$$pidfile" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then echo "$$name: running (pid $$pid)"; \
+		else echo "$$name: not running"; fi; \
+		printf '  %s -> ' "$$url"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' "$$url" || echo "unreachable"; \
+	done
+	@echo "logs: $(DEV_LOG)/server.log $(DEV_LOG)/frontend.log"
+
+## dev-logs: follow both source-run logs
+dev-logs:
+	tail -f $(DEV_LOG)/server.log $(DEV_LOG)/frontend.log
 
 ## clean: remove build output
 clean:

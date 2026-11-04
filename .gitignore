@@ -22,9 +22,14 @@ vendor/
 .env.*
 !.env.example
 
+# Source runs ('make dev-restart'): PID files and logs
+/.run/
+
 # Deployment configuration: the real values stay local;
-# etc/wenyuan.yaml.example is the checked-in template.
+# etc/wenyuan.yaml.example is the checked-in template. The dated backups a
+# deployment keeps beside it carry the same secrets and stay local too.
 /etc/wenyuan.yaml
+/etc/wenyuan.yaml.bak-*
 
 # Editor / OS
 .idea/
