@@ -269,7 +269,11 @@ func Diff(previous []PreviousFact, answers []Answer) DiffResult {
 	for _, answer := range answers {
 		merged = append(merged, projectmerge.Answer{Text: answer.Text, Sources: answer.Sources})
 	}
-	change := projectmerge.Diff(carried, merged)
+	// The aggregate's own facts are all world facts and its input carries no
+	// kinds either: the rollup summarizes a person's banks, it does not sort
+	// their statements into types. Passing no fresh input is what makes every
+	// inserted fact come out as world, which is what its writer stores.
+	change := projectmerge.Diff(carried, merged, nil)
 	result := DiffResult{
 		Keep: change.Keep, Remove: change.Remove, Insert: change.Insert,
 		Sources: change.Sources,

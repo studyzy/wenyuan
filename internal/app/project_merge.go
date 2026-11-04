@@ -74,7 +74,12 @@ func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergePr
 	var input storage.MergeStanzaInput
 	var stamp time.Time
 	ran, err := merges.BeginMergeStanza(roundCtx, project.TeamID, project.ProjectID,
-		cfg.ProjectMergeBatchSize, deadline, func(stanza storage.MergeStanza) error {
+		storage.MergeRoundOptions{
+			Batch:             cfg.ProjectMergeBatchSize,
+			StaleAfter:        deadline,
+			IncludeExperience: cfg.ProjectMergeIncludeExperience,
+		},
+		func(stanza storage.MergeStanza) error {
 			input = stanza.Input()
 			if claimer, ok := stanza.(interface{ ClaimStamp() time.Time }); ok {
 				stamp = claimer.ClaimStamp()
@@ -163,6 +168,7 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 		for _, fact := range member.Fresh {
 			plan.fresh = append(plan.fresh, projectmerge.MemberFact{
 				TenantID: fact.TenantID, UnitID: fact.UnitID, Text: fact.Text,
+				FactType: string(fact.FactType),
 			})
 			total++
 		}
@@ -180,6 +186,7 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 		for _, fact := range input.Previous {
 			plan.previous = append(plan.previous, projectmerge.TeamFact{
 				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
+				FactType: string(fact.FactType),
 			})
 		}
 	}
@@ -244,7 +251,7 @@ func buildFinishRequest(
 	answers []projectmerge.Answer,
 	stamp time.Time,
 ) storage.FinishMergeRequest {
-	diff := projectmerge.Diff(plan.previous, answers)
+	diff := projectmerge.Diff(plan.previous, answers, plan.fresh)
 	sourceKeys := diff.SourceMergeKeys(len(plan.fresh))
 	remove := diff.Remove
 	insert := diff.Insert
@@ -276,7 +283,7 @@ func buildFinishRequest(
 				continue
 			}
 			remove = append(remove, projectmerge.TeamFact{
-				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
+				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey, FactType: string(fact.FactType),
 			})
 		}
 	}
@@ -302,8 +309,9 @@ func buildFinishRequest(
 			Insert:  toFactRows(insert),
 			Sources: sources,
 		},
-		Cursors: plan.cursor,
-		Rebuild: plan.rebuild,
+		Cursors:        plan.cursor,
+		Rebuild:        plan.rebuild,
+		UnmanagedFacts: input.UnmanagedFacts,
 	}
 	if plan.rebuild {
 		// A rebuild recomputes everything from the members' current facts, so
@@ -331,7 +339,9 @@ func toFactRows(facts []projectmerge.TeamFact) []storage.TeamFactRow {
 	}
 	out := make([]storage.TeamFactRow, 0, len(facts))
 	for _, fact := range facts {
-		out = append(out, storage.TeamFactRow{ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey})
+		out = append(out, storage.TeamFactRow{
+			ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey, FactType: storage.MemoryUnitType(fact.FactType),
+		})
 	}
 	return out
 }

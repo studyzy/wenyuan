@@ -269,6 +269,7 @@
   # merge_rebuild_max_units: "5000"
   # merge_max_team_facts: "500"
   # merge_fail_threshold: "5"
+  # merge_include_experience: "true"
 # personal:
   # rollup_interval_seconds: "300"
   # rollup_batch_size: "20"

@@ -29,6 +29,14 @@ func MergeKey(text string) string { return tenant.MergeKey(text) }
 // caller writing a ledger row needs one import.
 const DroppedMergeKey = tenant.DroppedMergeKey
 
+// The fact kinds a round merges. They mirror storage's vocabulary; the strings
+// are the column values, so they are spelled once here and never derived.
+const (
+	FactTypeWorld       = "world"
+	FactTypeExperience  = "experience"
+	FactTypeObservation = "observation"
+)
+
 // TeamFact is one fact the team bank already holds.
 type TeamFact struct {
 	// ID is the stored unit's id. It is kept across rounds when the fact's
@@ -40,6 +48,8 @@ type TeamFact struct {
 	// MergeKey is the fact's key; it is derived from Text and carried so a
 	// caller does not recompute it per comparison.
 	MergeKey string
+	// FactType is the stored fact type: world, experience or observation.
+	FactType string
 }
 
 // MemberFact is one member's fact entering this round.
@@ -50,6 +60,9 @@ type MemberFact struct {
 	UnitID string
 	// Text is the fact's text.
 	Text string
+	// FactType is the member fact's type, which the prompt groups by and the
+	// answer inherits.
+	FactType string
 }
 
 // Answer is one team fact the model produced, with the inputs it came from.
@@ -161,7 +174,12 @@ type MergeResult struct {
 // fact without the ledger treating it as a new one. When the answer restates a
 // fact twice, the first text wins and the sources union — the alternatives are to
 // fail a round over a duplicate or to keep one arbitrarily.
-func Diff(previous []TeamFact, answers []Answer) MergeResult {
+//
+// fresh carries the round's inputs, because an answer's sources decide the kind a
+// new fact is written under: it takes the type most of its sources have, which is
+// determined here rather than asked of the model. A fact with no sources carries
+// no type of its own and is written as world.
+func Diff(previous []TeamFact, answers []Answer, fresh []MemberFact) MergeResult {
 	result := MergeResult{Sources: map[string][]int{}}
 	seen := make(map[string]bool, len(answers))
 	order := make([]string, 0, len(answers))
@@ -185,21 +203,55 @@ func Diff(previous []TeamFact, answers []Answer) MergeResult {
 		}
 		previousKeys[key] = true
 		if seen[key] {
-			result.Keep = append(result.Keep, TeamFact{ID: fact.ID, Text: fact.Text, MergeKey: key})
+			result.Keep = append(result.Keep, TeamFact{
+				ID: fact.ID, Text: fact.Text, MergeKey: key, FactType: fact.FactType,
+			})
 			result.Sources[key] = byKey[key].Sources
 			continue
 		}
-		result.Remove = append(result.Remove, TeamFact{ID: fact.ID, Text: fact.Text, MergeKey: key})
+		result.Remove = append(result.Remove, TeamFact{
+			ID: fact.ID, Text: fact.Text, MergeKey: key, FactType: fact.FactType,
+		})
 	}
 	for _, key := range order {
 		if previousKeys[key] {
 			continue
 		}
 		answer := byKey[key]
-		result.Insert = append(result.Insert, TeamFact{Text: answer.Text, MergeKey: key})
+		result.Insert = append(result.Insert, TeamFact{
+			Text: answer.Text, MergeKey: key, FactType: factTypeOf(answer.Sources, fresh),
+		})
 		result.Sources[key] = answer.Sources
 	}
 	return result
+}
+
+// factTypeOf is the type a new team fact is written under: the type most of the
+// member facts it was made from carry, world when it cites none.
+//
+// A majority rather than the first source, because an answer may combine a
+// member's world fact with their experience of it; the tie order is fixed so the
+// same input always produces the same row. An unknown type from a caller's data
+// counts as world, which is what the column's own default would be.
+func factTypeOf(sources []int, fresh []MemberFact) string {
+	counts := make(map[string]int, 3)
+	for _, source := range sources {
+		if source < 0 || source >= len(fresh) {
+			continue
+		}
+		factType := fresh[source].FactType
+		if factType == "" {
+			factType = FactTypeWorld
+		}
+		counts[factType]++
+	}
+	best, bestCount := FactTypeWorld, 0
+	for _, factType := range []string{FactTypeWorld, FactTypeExperience, FactTypeObservation} {
+		if counts[factType] > bestCount {
+			best, bestCount = factType, counts[factType]
+		}
+	}
+	return best
 }
 
 // unionInts merges two source index lists, keeping first-seen order.
@@ -249,6 +301,11 @@ func (r MergeResult) SourceMergeKeys(freshCount int) map[int][]string {
 // an earlier round and is not the model's to restate: letting it cite P entries
 // would make the ledger describe whatever the model thought that round rather
 // than what the fact was actually made from.
+//
+// Both lists are grouped by fact kind, because what a member knows about the
+// project, what they did about it and what was concluded from both are different
+// statements and the model must be told which it is looking at. The kind itself
+// is never asked of the model: it comes from the cited sources (see Diff).
 func Prompt(mission string, previous []TeamFact, fresh []MemberFact) []provider.Message {
 	var system strings.Builder
 	system.WriteString("You maintain a team's shared knowledge base for one project.\n")
@@ -256,6 +313,10 @@ func Prompt(mission string, previous []TeamFact, fresh []MemberFact) []provider.
 	system.WriteString("Produce the team's complete updated fact list: keep what is still true and supported, ")
 	system.WriteString("merge duplicates and refinements across members, drop what the new facts supersede, ")
 	system.WriteString("and add what is genuinely new.\n\n")
+	system.WriteString("Facts come in three kinds, and a statement must stay the kind it was made from:\n")
+	system.WriteString("- world: what is true about the project.\n")
+	system.WriteString("- experience: what a member did about the project.\n")
+	system.WriteString("- observation: a conclusion drawn from other facts.\n\n")
 	system.WriteString("Rules:\n")
 	system.WriteString("- Reply with JSON only, no prose, no code fences, no comments and no trailing commas.\n")
 	system.WriteString("- Quote every key and string with double quotes; never leave the facts array or the object unterminated.\n")
@@ -276,25 +337,76 @@ func Prompt(mission string, previous []TeamFact, fresh []MemberFact) []provider.
 	if len(previous) == 0 {
 		user.WriteString("(none yet)\n")
 	}
+	numbered := make([]numberedFact, 0, len(previous))
 	for i, fact := range previous {
-		fmt.Fprintf(&user, "[P%d] %s\n", i, fact.Text)
+		numbered = append(numbered, numberedFact{index: i, text: fact.Text, factType: fact.FactType})
 	}
+	writeFactsByType(&user, "P", numbered)
+
 	user.WriteString("\nNew facts from members:\n")
 	if len(fresh) == 0 {
 		user.WriteString("(none)\n")
 	}
-	lastTenant := ""
-	for i, fact := range fresh {
-		if fact.TenantID != lastTenant {
-			fmt.Fprintf(&user, "member %s:\n", fact.TenantID)
-			lastTenant = fact.TenantID
+	// The members are already contiguous in the round's input, so each member's
+	// run is numbered with the index it has in the whole slice: the index is what
+	// an answer cites, and renumbering per member would make every member's
+	// sources point at the first member's facts.
+	for start := 0; start < len(fresh); {
+		end := start
+		for end < len(fresh) && fresh[end].TenantID == fresh[start].TenantID {
+			end++
 		}
-		fmt.Fprintf(&user, "[F%d] %s\n", i, fact.Text)
+		fmt.Fprintf(&user, "member %s:\n", fresh[start].TenantID)
+		numbered = numbered[:0]
+		for i := start; i < end; i++ {
+			numbered = append(numbered, numberedFact{index: i, text: fresh[i].Text, factType: fresh[i].FactType})
+		}
+		writeFactsByType(&user, "F", numbered)
+		start = end
 	}
 	user.WriteString("\nReply with the complete updated fact list as JSON.")
 
 	return []provider.Message{
 		{Role: provider.RoleSystem, Content: system.String()},
 		{Role: provider.RoleUser, Content: user.String()},
+	}
+}
+
+// numberedFact is one fact with the label the prompt prints it under.
+type numberedFact struct {
+	index    int
+	text     string
+	factType string
+}
+
+// writeFactsByType prints one run of facts grouped by kind.
+//
+// The group headings are part of the prompt rather than decoration: the model has
+// to know whether it is reading what is true, what a member did, or what was
+// concluded, and the input arrives as one flat list.
+func writeFactsByType(out *strings.Builder, prefix string, facts []numberedFact) {
+	for _, factType := range []string{FactTypeWorld, FactTypeExperience, FactTypeObservation} {
+		wroteHeading := false
+		for _, fact := range facts {
+			if labelOf(fact.factType) != factType {
+				continue
+			}
+			if !wroteHeading {
+				fmt.Fprintf(out, "  %s:\n", factType)
+				wroteHeading = true
+			}
+			fmt.Fprintf(out, "  [%s%d] %s\n", prefix, fact.index, fact.text)
+		}
+	}
+}
+
+// labelOf folds a missing or unknown type to world, which is the kind a fact
+// with no declared type has always been.
+func labelOf(factType string) string {
+	switch factType {
+	case FactTypeExperience, FactTypeObservation:
+		return factType
+	default:
+		return FactTypeWorld
 	}
 }

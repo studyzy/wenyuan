@@ -67,6 +67,10 @@ type MergeFact struct {
 	TenantID string
 	UnitID   string
 	Text     string
+	// FactType is the member fact's own type — world, experience or
+	// observation — so the round can tell the model what kind of statement it is
+	// looking at and write the team fact back under the same kind.
+	FactType MemoryUnitType
 	// UpdatedAt is the fact's stored timestamp, which is the cursor's first part.
 	UpdatedAt time.Time
 }
@@ -93,6 +97,9 @@ type TeamFactRow struct {
 	ID       string
 	Text     string
 	MergeKey string
+	// FactType is the row's stored fact type. A team fact keeps the kind of the
+	// member fact it was made from.
+	FactType MemoryUnitType
 }
 
 // MergeStanzaInput is what a round reads while it holds the lock.
@@ -100,6 +107,9 @@ type MergeStanzaInput struct {
 	Project MergeProject
 	// Previous is the team bank's current managed facts, in a stable order.
 	Previous []TeamFactRow
+	// UnmanagedFacts counts the team bank's facts no round wrote, which the
+	// round's write replaces.
+	UnmanagedFacts int
 	// Members carries each member's job inputs, in the project's member order.
 	Members []MergeMemberInput
 }
@@ -153,6 +163,11 @@ type FinishMergeRequest struct {
 	Cursors map[string]MergeCursor
 	// Rebuild clears rebuild_requested when the round was one.
 	Rebuild bool
+	// UnmanagedFacts counts the team bank's facts no round wrote. A positive
+	// count makes the write sweep them, of every merged kind, before inserting —
+	// which is what keeps a hand-written fact from surviving because the sweep
+	// only knew about `world`.
+	UnmanagedFacts int
 }
 
 // MergeReplaceResult is the fact-level change a round produces.
@@ -205,6 +220,20 @@ type MergeStatus struct {
 	UnmanagedFacts int
 }
 
+// MergeRoundOptions are the round's own settings: what a round reads and how
+// much of it. The store does not hold them, because they are the job's
+// configuration and the store is shared by every project.
+type MergeRoundOptions struct {
+	// Batch bounds the new member facts this round consumes, shared across the
+	// project's members.
+	Batch int
+	// StaleAfter is how old a claim must be before it is treated as a crashed
+	// round and taken over.
+	StaleAfter time.Duration
+	// IncludeExperience decides whether a member's `experience` facts are input.
+	IncludeExperience bool
+}
+
 // MergeStore is the cross-schema store the project merge job needs.
 type MergeStore interface {
 	// ListMergeProjects returns every active team project that has members, with
@@ -215,10 +244,11 @@ type MergeStore interface {
 	// round must read.
 	//
 	// It reports ok=false when another process holds the project: either the
-	// advisory lock is taken or merging_since is a live stamp. A claim older than
-	// staleAfter is treated as a crashed round and taken over. The reads run in
-	// one transaction with the claim, so no separate round can start between them.
-	BeginMergeStanza(ctx context.Context, teamID, projectID string, batch int, staleAfter time.Duration,
+	// advisory lock is taken or merging_since is a live stamp. A claim older
+	// than the round's StaleAfter is treated as a crashed round and taken over.
+	// The reads run in one transaction with the claim, so no separate round can
+	// start between them.
+	BeginMergeStanza(ctx context.Context, teamID, projectID string, opts MergeRoundOptions,
 		fn func(stanza MergeStanza) error) (ok bool, err error)
 
 	// FinishMergeStanza writes one round's output and releases the claim.

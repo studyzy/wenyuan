@@ -118,9 +118,14 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   is what would let a prefix delete take another project's data.
 - **Shared memory is merged, not shared raw.** A background job `project.merge`
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
-  60s) reads each member's `fact_type='world'` facts from their own bank and asks
-  the chat model to combine them into the project's team bank `<team>::<name>`.
-  Raw conversation, documents, chunks and attachments are never copied. Design:
+  60s) reads each member's `world`, `experience` and `observation` facts from their
+  own bank and asks the chat model to combine them into the project's team bank
+  `<team>::<name>`. Raw conversation, documents, chunks and attachments are never
+  copied. `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
+  `experience` back out of the input when a deployment wants only what members
+  know and concluded, without what they did. A team fact is written under the kind
+  of the member facts it cites — the type comes from the sources, never from the
+  model, and a fact with no source is `world`. Design:
   `docs/plans/2026-10-30-team-memory-design-v3.md`.
 - **The merge ledger is `admin.merge_source_unit`** (`embeddedadmin/0003_merge_state.sql`),
   and it records the `merge_key` each member fact *supports* — or `__dropped__`

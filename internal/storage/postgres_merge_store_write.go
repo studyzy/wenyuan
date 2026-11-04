@@ -82,7 +82,7 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 		// dead ids. This is the reference's own sweep, reused rather than
 		// re-implemented: it locks the touched rows in id order, which is what
 		// keeps two concurrent rounds from deadlocking.
-		if err := s.deleteObservationsWithoutSources(ctx, tx, qualified, req.BankID, doomed); err != nil {
+		if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, req.BankID, doomed); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -91,50 +91,110 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 			return err
 		}
 	}
+	// The defence against a direct write: a fact in the team bank that no round
+	// wrote is not part of the team's content, and the next round replaces it. It
+	// applies to every merged kind, because a `world`-only sweep would leave a
+	// hand-written `experience` or `observation` standing forever.
+	if req.UnmanagedFacts > 0 {
+		if err := s.removeUnmanagedFacts(ctx, tx, qualified, req.BankID); err != nil {
+			return err
+		}
+	}
+	mergedAt := time.Now().UTC().Format(time.RFC3339)
 	for _, fact := range req.Replace.Insert {
-		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, time.Now().UTC().Format(time.RFC3339))
+		factType := fact.FactType
+		if factType == "" {
+			factType = TypeWorld
+		}
+		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, mergedAt)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata)
-			VALUES ($1, NULL, $2, 'world', $3::jsonb)`,
-			req.BankID, fact.Text, metadata); err != nil {
+			VALUES ($1, NULL, $2, $3, $4::jsonb)`,
+			req.BankID, fact.Text, string(factType), metadata); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// deleteObservationsWithoutSources removes observations built only on the given
-// facts.
-func (s *PostgresMergeStore) deleteObservationsWithoutSources(
+// removeUnmanagedFacts deletes the team bank's facts no round wrote, of every
+// merged kind, sweeping the observations they supported first.
+func (s *PostgresMergeStore) removeUnmanagedFacts(ctx context.Context, tx Tx, qualified, bankID string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id::text FROM `+qualified+`.memory_units
+		WHERE bank_id = $1 AND fact_type = ANY($2)
+		  AND metadata->>'merge_key' IS NULL
+		FOR UPDATE`, bankID, mergedFactTypes)
+	if err != nil {
+		return err
+	}
+	orphanIDs := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		orphanIDs = append(orphanIDs, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(orphanIDs) == 0 {
+		return nil
+	}
+	if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, bankID, orphanIDs); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+		bankID, orphanIDs)
+	return err
+}
+
+// deleteStaleObservationsWithoutSources removes the bank's observations built
+// only on the given facts.
+//
+// It is the reference's sweep — an observation is stale the moment any source it
+// was synthesised from disappears, so it is deleted and the surviving co-sources
+// are requeued rather than kept as an answer that no longer holds — applied to a
+// schema the caller names, because a merge round writes a schema the store's
+// context does not select.
+func deleteStaleObservationsWithoutSources(
 	ctx context.Context, tx Tx, qualified string, bankID string, factIDs []string,
 ) error {
+	if len(factIDs) == 0 {
+		return nil
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id::text, COALESCE(source_memory_ids, '{}'::uuid[])::text
 		FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'observation' AND source_memory_ids && $2::uuid[]
-		FOR UPDATE`, bankID, factIDs)
+		WHERE bank_id = $1 AND fact_type = 'observation' AND source_memory_ids && $2::uuid[]`,
+		bankID, factIDs)
 	if err != nil {
 		return err
 	}
 	doomed := make([]string, 0)
-	doomedSet := make(map[string]bool, len(factIDs))
+	deleted := make(map[string]bool, len(factIDs))
 	for _, id := range factIDs {
-		doomedSet[id] = true
+		deleted[id] = true
 	}
+	seen := make(map[string]bool)
+	remaining := make([]string, 0)
 	for rows.Next() {
 		var observationID, sources string
 		if err := rows.Scan(&observationID, &sources); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		remaining := 0
+		doomed = append(doomed, observationID)
 		for _, source := range decodePostgresTextArray([]byte(sources)) {
-			if !doomedSet[source] {
-				remaining++
+			if deleted[source] || seen[source] {
+				continue
 			}
-		}
-		if remaining == 0 {
-			doomed = append(doomed, observationID)
+			seen[source] = true
+			remaining = append(remaining, source)
 		}
 	}
 	_ = rows.Close()
@@ -144,9 +204,38 @@ func (s *PostgresMergeStore) deleteObservationsWithoutSources(
 	if len(doomed) == 0 {
 		return nil
 	}
-	_, err = tx.ExecContext(ctx,
+	// Lock the outgoing facts, the doomed observations and their surviving
+	// co-sources in one id order before writing any of them, so two sweeps over a
+	// shared observation cannot deadlock.
+	lockIDs := make([]string, 0, len(factIDs)+len(doomed)+len(remaining))
+	lockIDs = append(lockIDs, factIDs...)
+	lockIDs = append(lockIDs, doomed...)
+	lockIDs = append(lockIDs, remaining...)
+	if _, err := tx.ExecContext(ctx,
+		`SELECT id FROM `+qualified+`.memory_units
+		 WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR NO KEY UPDATE`,
+		bankID, lockIDs); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
-		bankID, doomed)
+		bankID, doomed); err != nil {
+		return err
+	}
+	// observation_history is keyed by observation_id and does not cascade from
+	// memory_units, so the snapshots go explicitly.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.observation_history WHERE bank_id = $1 AND observation_id = ANY($2::uuid[])`,
+		bankID, doomed); err != nil {
+		return err
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx,
+		`UPDATE `+qualified+`.memory_units SET consolidated_at = NULL
+		 WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND fact_type IN ('experience', 'world')`,
+		bankID, remaining)
 	return err
 }
 
@@ -333,12 +422,13 @@ func (s *PostgresMergeStore) MergeStatus(ctx context.Context, teamID, projectID 
 	return status, nil
 }
 
-// countTeamFacts counts the team bank's managed facts and the world facts no
-// round wrote.
+// countTeamFacts counts the team bank's managed facts and the facts no round
+// wrote.
 //
 // The unmanaged count is what tells an operator a team bank is being written
 // directly: those facts are replaced by the next round, and a silent
-// disappearance is the hardest kind of data loss to trace.
+// disappearance is the hardest kind of data loss to trace. It covers every
+// merged kind, not just `world`, because the sweep that replaces them does too.
 func (s *PostgresMergeStore) countTeamFacts(ctx context.Context, teamSchema, bankID string, status *MergeStatus) error {
 	exists, err := SchemaExists(ctx, s.db, teamSchema)
 	if err != nil {
@@ -352,5 +442,5 @@ func (s *PostgresMergeStore) countTeamFacts(ctx context.Context, teamSchema, ban
 		SELECT count(*) FILTER (WHERE metadata->>'merge_key' IS NOT NULL),
 		       count(*) FILTER (WHERE metadata->>'merge_key' IS NULL)
 		FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world'`, bankID).Scan(&status.TeamFacts, &status.UnmanagedFacts)
+		WHERE bank_id = $1 AND fact_type = ANY($2)`, bankID, mergedFactTypes).Scan(&status.TeamFacts, &status.UnmanagedFacts)
 }

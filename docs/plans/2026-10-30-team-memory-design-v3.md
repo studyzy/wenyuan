@@ -304,15 +304,18 @@ WHERE team_tenant_id=$1 AND project_id=$2 AND tenant_id=$3
 这是 B 部分最需要被钉住的东西，按序：
 
 1. `SELECT … FROM merge_state … FOR UPDATE`，校验 fence；
-2. 读团队 bank 现有 `world` 事实，按 `metadata.merge_key` 建索引；
+2. 读团队 bank 现有 `world`/`experience`/`observation` 事实，按 `metadata.merge_key` 建索引；
 3. 结果 → 规范化 → `merge_key`：同 key 的**保留原行，id 不变**；
 4. 团队有、结果没有的删掉，并清掉因此失去**全部**来源的观察——照
    `deleteStaleObservationsReportingTx`（`postgres_consolidation.go:462`）的做法：
    反连接 `source_memory_ids && doomed`、按 id 序 `FOR NO KEY UPDATE` 加锁、
    再删。**不要**照 `DeleteBank`（`postgres_banks.go:396`）——那是删整个 bank 的
    顺序，这里只删部分事实，照抄会把整个团队 bank 清空；
-5. 结果有、团队没有的插入：`fact_type='world'`、`document_id=NULL`、
+5. 结果有、团队没有的插入：`document_id=NULL`、
    `metadata={"merge_key":…, "merged_at":…}`、**不写 tag**（决策 10）；
+   `fact_type` 取该答案引用的来源事实**多数**的类型（world / experience /
+   observation），无来源时取 `world`——类型由服务端从下标决定，**不问模型**
+   （模型自报的类型会与它自己引用的来源冲突，而类型是读路径的过滤条件）；
 6. 账本：本轮消费的每条来源写一行 `merge_key`（进了输出的）或
    `'__dropped__'`（被折叠的）。重建时**整体替换**：先删该 `(project, tenant)`
    的旧行，再写新行；
@@ -447,16 +450,17 @@ LIMIT 1
 | 条件 | 动作 |
 |---|---|
 | 个人 `banks` 行不存在 | 跳过该成员（onboarding）；团队内容保留 |
-| 反连接命中 | 该项目**重建**：忽略游标读全部成员 `world` 事实 |
+| 反连接命中 | 该项目**重建**：忽略游标读全部成员 `world`/`experience`/`observation` 事实 |
 | 无命中，且有新输入 | 增量合并 |
 | 无命中，且无新输入，`rebuild_requested=false` | 只更新 `last_merged_at`，**不调模型** |
 | `rebuild_requested=true` | 重建，成功后清标志 |
 
 ### 7.2 重建与失败关闭
 
-1. 忽略游标，读该项目所有成员当前全部 `world` 事实（按成员分页）；
+1. 忽略游标，读该项目所有成员当前全部 `world`/`experience`/`observation` 事实（按成员分页）；
 2. 总数 > `ProjectMergeRebuildMaxUnits`（默认 5000）→ **失败关闭**：
-   删 `T::X` 的全部 `world` 事实与失去来源的观察，清该项目的 `merge_state` 与账本，
+   删 `T::X` 的全部 `world`/`experience`/`observation` 事实与失去来源的观察，
+   清该项目的 `merge_state` 与账本，
    写 `last_error`；读路径自然回退到成员自己的 bank；
 3. 否则用与增量相同的规则重算整版，`FinishMergeStanza` 整体替换账本；
 4. 成功后游标推进到本轮实际读到的最后一条。
@@ -495,8 +499,8 @@ WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD         默认 5        ← v3 新增�
 行为是对的（团队 bank 由合并独占写），但**静默丢数据**是最难排查的一类。
 
 对策（轻量，不加逻辑分支）：`merge-status` 每轮统计并返回
-`unmanaged_facts`——团队 bank 里 `fact_type='world'` 且
-`metadata->>'merge_key' IS NULL` 的行数。控制台非零时黄字提示
+`unmanaged_facts`——团队 bank 里 `fact_type IN ('world','experience','observation')`
+且 `metadata->>'merge_key' IS NULL` 的行数，下一轮的清扫也按同一集合。控制台非零时黄字提示
 "该项目的团队库有 N 条非合并写入，将在下一轮被替换"。运维看一眼就知道。
 
 验证：
@@ -951,3 +955,67 @@ schema 只应用 `0001`。
 - **B-6 控制台**：`merge-status` 端点已就绪，前端展示与 10 语种文案未接。
 - 写触发的合并入队（秒级可见）。
 - reflect 在团队视图下的 mission 语义。
+## 十五、修订：合并输入扩到三类事实（2026-11-04）
+
+**本文件前面"只取 `fact_type='world'`"的范围已被推翻。** 产品决定：成员对项目的
+三类记忆——世界事实、经历、观察——都进入团队 bank。下文原规则凡涉及"world
+only"的均已就地改写为本节结论；此节记录改动理由与边界，避免后来者按旧文档改回去。
+
+### 15.1 三类都进输入的规则
+
+| 类型 | 是否输入 | 写入团队 bank 的类型 |
+|---|---|---|
+| `world`（世界事实） | ✅ 始终 | 由来源多数类型决定 |
+| `experience`（经历） | ✅ 默认开，可关 | 同上 |
+| `observation`（观察） | ✅ 始终 | 同上 |
+
+- **开关**：`WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE`，默认 `true`。
+  关掉后只剩 `world` + `observation` 两类输入；`observation` 没有开关——它和
+  `world` 一起构成基线。开关由 `storage.MergeRoundOptions.IncludeExperience`
+  传给 store，'哪些类型算输入'只在一个地方（`mergedFactTypesFor`）决定。
+- **类型从来源来，不问模型**：答案只回 `text` + `sources` 下标；一条新团队事实
+  的类型 = 它引用的成员事实的**多数类型**，平票取 `world`，无来源取 `world`。
+  理由：类型是 `fact_type` 列值，读路径（`types` 过滤、recall 排序）按它过滤；
+  让模型自报类型会出现"模型说 observation、引用的事实全是 world"这种账实不符，
+  而服务端从下标就能确定。保留原行的事实沿用该行已存的类型，不会被重新定型。
+- **prompt 按类型分组**：`previous` 与 `fresh` 都按 `world` / `experience` /
+  `observation` 分组打印，但**编号不变**（`[F0]` 仍是它在 `fresh` 里的下标）——
+  编号是答案的引用键，分组不能重排。
+- **账本不变**：`merge_source_unit` 仍记 `(source_unit_id) → merge_key` 或
+  `'__dropped__'`，与类型无关；反连接也仍只按 unit id，因此被折叠的来源被删
+  同样不触发重建。
+- **团队 observation 的两个来源**：(a) 成员 observation 经合并写成团队事实；
+  (b) 团队 bank 自己的 consolidation 在两轮之后产出。两者并存，不互相替代。
+- **`unmanaged_facts` 与直写清扫扩到三类**：只扫 `world` 会让手写的
+  `experience`/`observation` 永远留在团队 bank 里。现在清扫用同一集合
+  （`mergedFactTypes`），`merge-status` 的 `team_facts` / `unmanaged_facts`
+  也按它计数。
+
+### 15.2 已知代价（已接受）
+
+1. **prompt 变长**：`ProjectMergeMaxTeamFacts`（500）与
+   `ProjectMergeRebuildMaxUnits`（5000）都是**按条数**计的，三类一起送会让上限
+   更早触发，而重建超限是"失败关闭"（清空团队内容）。部署需要相应上调这两个
+   值，或靠项目拆分控制规模。
+2. **经历属于个人历史**：`experience` 进了团队 bank，等于团队能看到成员"做了什么"。
+   prompt 仍要求不点成员名，但内容本身是个人性的。这正是开关存在的理由；
+   默认开是产品决定，不是实现默认。
+3. **团队 bank 里会出现两类 observation**（见 15.1 最后两条），数量比原来多。
+
+### 15.3 落地位置
+
+| 改动 | 文件 |
+|---|---|
+| 类型集合与开关的分派 | `internal/storage/postgres_merge_store.go`（`mergedFactTypes` / `mergedFactTypesFor`） |
+| 成员输入读三类 + `fact_type` 随行 | 同上（`loadMemberInput`）、`MergeFact.FactType` |
+| 团队上一版读三类 | 同上（`loadPreviousTx`） |
+| 写入按类型、直写清扫三类 | `postgres_merge_store_write.go`（`applyFacts` / `removeUnmanagedFacts`）、`FinishMergeRequest.UnmanagedFacts` |
+| 观察清扫复用参考实现语义 | `deleteStaleObservationsWithoutSources`（锁序 + 删 observation_history + 复排队 co-sources） |
+| 类型归属规则 | `internal/projectmerge/merge.go`（`Diff` / `factTypeOf` / `Prompt`） |
+| 轮次选项 | `storage.MergeRoundOptions` |
+| 配置 | `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` |
+| 测试 | `projectmerge`（类型归属 7 例、保留行类型、prompt 分组与编号）、`storage` PG（读三类、开关、按类写入）、`app`（带类型过一轮、开关透传）、`config`（默认与开关） |
+
+`go test ./...` 与 `go test -tags pgx ./...`（带 `WENYUAN_TEST_DATABASE_URL`）
+全绿；把 `mergedFactTypes` 改回只含 `world` 会让
+`TestMergeStoreReadsEveryMergedFactType` 失败，即该测试确实钉住了本改动。

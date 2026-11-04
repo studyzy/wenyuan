@@ -129,3 +129,30 @@ func TestMaintenanceEnvNamesMatchTheContract(t *testing.T) {
 		}
 	}
 }
+
+// Experiencing a project is merge input unless the deployment says otherwise:
+// the default has to be on, or a team bank would share only what members know but
+// none of what they did.
+func TestProjectMergeIncludesExperienceByDefault(t *testing.T) {
+	cfg := resolveMaintenance(func(string) (string, bool) { return "", false })
+	if !cfg.ProjectMergeIncludeExperience {
+		t.Fatal("experience is not merge input by default")
+	}
+	cfg = resolveMaintenance(func(key string) (string, bool) {
+		if key == EnvProjectMergeIncludeExperience {
+			return "false", true
+		}
+		return "", false
+	})
+	if cfg.ProjectMergeIncludeExperience {
+		t.Fatal("the environment switch did not turn experience off")
+	}
+}
+
+// The switch's key name is a deployment contract too.
+func TestProjectMergeIncludeExperienceEnvName(t *testing.T) {
+	const want = "WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE"
+	if EnvProjectMergeIncludeExperience != want {
+		t.Fatalf("env key = %q, want %q", EnvProjectMergeIncludeExperience, want)
+	}
+}

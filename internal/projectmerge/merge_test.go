@@ -143,7 +143,7 @@ func TestDiff(t *testing.T) {
 			{Text: "alpha", Sources: []int{0}},
 			{Text: "gamma, reworded", Sources: []int{1}},
 			{Text: "delta", Sources: []int{2}},
-		})
+		}, nil)
 		if len(got.Keep) != 1 || got.Keep[0].ID != "u1" {
 			t.Fatalf("Keep = %+v, want the untouched alpha row", got.Keep)
 		}
@@ -165,7 +165,7 @@ func TestDiff(t *testing.T) {
 			{Text: "alpha", Sources: []int{0}},
 			{Text: "  beta  ", Sources: []int{1}},
 			{Text: "gamma", Sources: []int{2}},
-		})
+		}, nil)
 		if len(got.Remove) != 0 || len(got.Insert) != 0 {
 			t.Fatalf("spacing alone must not change any row: remove=%+v insert=%+v", got.Remove, got.Insert)
 		}
@@ -184,7 +184,7 @@ func TestDiff(t *testing.T) {
 		got := Diff(nil, []Answer{
 			{Text: "alpha", Sources: []int{0}},
 			{Text: "alpha ", Sources: []int{1, 0}},
-		})
+		}, nil)
 		if len(got.Insert) != 1 {
 			t.Fatalf("Insert = %+v, want one fact", got.Insert)
 		}
@@ -201,14 +201,14 @@ func TestDiff(t *testing.T) {
 	})
 
 	t.Run("a previous fact absent from the answer is removed", func(t *testing.T) {
-		got := Diff(previous, []Answer{{Text: "alpha", Sources: []int{0}}})
+		got := Diff(previous, []Answer{{Text: "alpha", Sources: []int{0}}}, nil)
 		if len(got.Remove) != 2 {
 			t.Fatalf("Remove = %+v, want beta and gamma", got.Remove)
 		}
 	})
 
 	t.Run("empty answer removes everything", func(t *testing.T) {
-		got := Diff(previous, nil)
+		got := Diff(previous, nil, nil)
 		if len(got.Keep) != 0 || len(got.Insert) != 0 || len(got.Remove) != 3 {
 			t.Fatalf("got keep=%d insert=%d remove=%d, want 0/0/3",
 				len(got.Keep), len(got.Insert), len(got.Remove))
@@ -220,7 +220,7 @@ func TestDiff(t *testing.T) {
 // answer did not cite is recorded as dropped, so its later deletion cannot force
 // a rebuild, while a cited one records the fact it supports.
 func TestSourceMergeKeysRecordsDroppedInputs(t *testing.T) {
-	got := Diff(nil, []Answer{{Text: "alpha", Sources: []int{0, 2}}})
+	got := Diff(nil, []Answer{{Text: "alpha", Sources: []int{0, 2}}}, nil)
 	keys := got.SourceMergeKeys(4)
 	alphaKey := MergeKey("alpha")
 	for _, index := range []int{0, 2} {
@@ -275,6 +275,120 @@ func TestPromptWithNoHistoryOrNoInput(t *testing.T) {
 	}
 	if !strings.Contains(all, "(none)") {
 		t.Fatalf("prompt does not say there are no new facts:\n%s", all)
+	}
+}
+
+// TestDiffTypesAnInsertFromItsSources pins where a team fact's kind comes from:
+// the member facts it cites, not the model. Asking the model for a type would let
+// it disagree with its own sources, and a type is a column value the reader
+// filters on.
+func TestDiffTypesAnInsertFromItsSources(t *testing.T) {
+	fresh := []MemberFact{
+		{TenantID: "a", UnitID: "u1", Text: "the deploy uses port 15432", FactType: FactTypeWorld},
+		{TenantID: "a", UnitID: "u2", Text: "alice moved the deploy", FactType: FactTypeExperience},
+		{TenantID: "a", UnitID: "u3", Text: "the deploy migrated recently", FactType: FactTypeObservation},
+		{TenantID: "a", UnitID: "u4", Text: "no declared kind"},
+	}
+	cases := []struct {
+		name   string
+		answer Answer
+		want   string
+	}{
+		{
+			name:   "a world source makes a world fact",
+			answer: Answer{Text: "alpha", Sources: []int{0}},
+			want:   FactTypeWorld,
+		},
+		{
+			name:   "an experience source makes an experience fact",
+			answer: Answer{Text: "beta", Sources: []int{1}},
+			want:   FactTypeExperience,
+		},
+		{
+			name:   "an observation source makes an observation fact",
+			answer: Answer{Text: "gamma", Sources: []int{2}},
+			want:   FactTypeObservation,
+		},
+		{
+			name:   "a majority of the sources decides",
+			answer: Answer{Text: "delta", Sources: []int{1, 1, 0}},
+			want:   FactTypeExperience,
+		},
+		{
+			name:   "a tie falls to world",
+			answer: Answer{Text: "epsilon", Sources: []int{0, 1}},
+			want:   FactTypeWorld,
+		},
+		{
+			name:   "no sources is world",
+			answer: Answer{Text: "zeta", Sources: nil},
+			want:   FactTypeWorld,
+		},
+		{
+			name:   "an undeclared kind is world",
+			answer: Answer{Text: "eta", Sources: []int{3}},
+			want:   FactTypeWorld,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Diff(nil, []Answer{tc.answer}, fresh)
+			if len(got.Insert) != 1 {
+				t.Fatalf("Insert = %+v, want one fact", got.Insert)
+			}
+			if got.Insert[0].FactType != tc.want {
+				t.Fatalf("FactType = %q, want %q", got.Insert[0].FactType, tc.want)
+			}
+		})
+	}
+}
+
+// TestDiffKeepsASurvivingFactsKind pins the other side: a fact whose wording
+// survives keeps the row's stored kind, so a round cannot retype it by accident.
+func TestDiffKeepsASurvivingFactsKind(t *testing.T) {
+	previous := []TeamFact{{ID: "u1", Text: "alpha", MergeKey: MergeKey("alpha"), FactType: FactTypeObservation}}
+	got := Diff(previous, []Answer{{Text: "alpha", Sources: []int{0}}},
+		[]MemberFact{{TenantID: "a", Text: "unrelated", FactType: FactTypeWorld}})
+	if len(got.Keep) != 1 {
+		t.Fatalf("Keep = %+v, want the surviving row", got.Keep)
+	}
+	if got.Keep[0].FactType != FactTypeObservation {
+		t.Fatalf("kept kind = %q, want the stored observation", got.Keep[0].FactType)
+	}
+}
+
+// TestPromptGroupsFactsByKind pins that the prompt says which kind each fact is:
+// the three inputs arrive as one flat list, and a model told only the text cannot
+// tell what a member knows from what they did.
+func TestPromptGroupsFactsByKind(t *testing.T) {
+	previous := []TeamFact{{ID: "p1", Text: "a world fact", FactType: FactTypeWorld}}
+	fresh := []MemberFact{
+		{TenantID: "a", Text: "an experience fact", FactType: FactTypeExperience},
+		{TenantID: "b", Text: "an observation fact", FactType: FactTypeObservation},
+	}
+	messages := Prompt("", previous, fresh)
+	all := messages[0].Content + messages[1].Content
+	for _, want := range []string{"world:", "experience:", "observation:", "an experience fact", "an observation fact"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("prompt does not contain %q:\n%s", want, all)
+		}
+	}
+}
+
+// TestPromptKeepsEachFactIndexed pins that grouping does not renumber a fact: the
+// index is what an answer cites, so B's fact must stay F1 even though it is the
+// first line of B's own group.
+func TestPromptKeepsEachFactIndexed(t *testing.T) {
+	fresh := []MemberFact{
+		{TenantID: "a", Text: "first", FactType: FactTypeExperience},
+		{TenantID: "b", Text: "second", FactType: FactTypeWorld},
+	}
+	all := Prompt("", nil, fresh)[1].Content
+	if !strings.Contains(all, "[F0] first") {
+		t.Fatalf("A's fact lost its F0 label:\n%s", all)
+	}
+	if !strings.Contains(all, "[F1] second") {
+		t.Fatalf("B's fact was renumbered instead of keeping F1:\n%s", all)
 	}
 }
 

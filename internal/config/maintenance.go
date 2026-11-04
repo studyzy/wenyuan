@@ -81,6 +81,10 @@ type MaintenanceConfig struct {
 	// ProjectMergeFailThreshold is how many consecutive failed rounds halt a
 	// project until an operator resets it.
 	ProjectMergeFailThreshold int
+	// ProjectMergeIncludeExperience reports whether a member's `experience`
+	// facts are merge input. It defaults to on; `world` and `observation` are
+	// always input, so this switch is the only one.
+	ProjectMergeIncludeExperience bool
 	// ProjectMergeEnabled reports that a merge store was wired, which is what a
 	// multi-tenant process with teams has and a single-tenant one never does.
 	//
@@ -150,6 +154,7 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 		ProjectMergeRebuildMaxUnits:    intFromEnv(lookup, EnvProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits),
 		ProjectMergeMaxTeamFacts:       intFromEnv(lookup, EnvProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts),
 		ProjectMergeFailThreshold:      intFromEnv(lookup, EnvProjectMergeFailThreshold, DefaultProjectMergeFailThreshold),
+		ProjectMergeIncludeExperience:  boolFromEnv(lookup, EnvProjectMergeIncludeExperience, true),
 		PersonalRollupInterval:         time.Duration(intFromEnv(lookup, EnvPersonalRollupIntervalSeconds, DefaultPersonalRollupIntervalSeconds)) * time.Second,
 		PersonalRollupBatchSize:        intFromEnv(lookup, EnvPersonalRollupBatchSize, DefaultPersonalRollupBatchSize),
 		PersonalRollupRebuildMaxUnits:  intFromEnv(lookup, EnvPersonalRollupRebuildMaxUnits, DefaultPersonalRollupRebuildMaxUnits),

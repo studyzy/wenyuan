@@ -160,6 +160,12 @@ const (
 	// EnvProjectMergeFailThreshold is how many consecutive failed rounds halt a
 	// project until an operator resets it.
 	EnvProjectMergeFailThreshold = "WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD"
+	// EnvProjectMergeIncludeExperience decides whether a member's `experience`
+	// facts join their `world` facts and their observations as merge input.
+	// It defaults to on: a project whose members record what they did about it
+	// would otherwise share only a fraction of what they know. Turning it off
+	// keeps personal history out of the team bank.
+	EnvProjectMergeIncludeExperience = "WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE"
 	// EnvPersonalRollupIntervalSeconds is how often one personal tenant's banks
 	// are folded into its aggregate bank. Zero or below falls back to the
 	// default; this job has no off switch.

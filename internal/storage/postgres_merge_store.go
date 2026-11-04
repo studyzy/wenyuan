@@ -146,7 +146,7 @@ func (s *PostgresMergeStore) ListMergeProjects(ctx context.Context) ([]MergeProj
 // therefore cannot read the same round's inputs, and a round whose stamp another
 // process replaced cannot write its result.
 func (s *PostgresMergeStore) BeginMergeStanza(
-	ctx context.Context, teamID, projectID string, batch int, staleAfter time.Duration,
+	ctx context.Context, teamID, projectID string, opts MergeRoundOptions,
 	fn func(stanza MergeStanza) error,
 ) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -185,6 +185,10 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	if err != nil {
 		return false, err
 	}
+	input.UnmanagedFacts, err = s.countUnmanagedTx(ctx, project)
+	if err != nil {
+		return false, err
+	}
 	ids := make([]string, 0, len(members))
 	for _, member := range members {
 		ids = append(ids, member.TenantID)
@@ -208,7 +212,7 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 		member.HasLedger = ok
 		// A live stamp means another process is between its read and its write.
 		// A stale one is a crashed round and is taken over.
-		if state.MergingSince != nil && stamp.Sub(*state.MergingSince) < staleAfter {
+		if state.MergingSince != nil && stamp.Sub(*state.MergingSince) < opts.StaleAfter {
 			return false, nil
 		}
 	}
@@ -217,10 +221,10 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	}
 	// The batch is shared across the project's members: an uneven round is what
 	// keeps one prolific writer from starving the rest.
-	shared := batch
+	shared := opts.Batch
 	for i := range input.Project.Members {
 		member := &input.Project.Members[i]
-		entry, err := s.loadMemberInput(ctx, *member, shared)
+		entry, err := s.loadMemberInput(ctx, *member, shared, opts.IncludeExperience)
 		if err != nil {
 			return false, err
 		}
@@ -351,10 +355,10 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeP
 	}
 	qualified := quoteIdent(project.TeamSchema)
 	rows, err := s.db.QueryContext(teamCtx, `
-		SELECT id::text, text, COALESCE(metadata->>'merge_key', '')
+		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type
 		FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world' AND metadata->>'merge_key' IS NOT NULL
-		ORDER BY created_at, id`, project.BankID)
+		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NOT NULL
+		ORDER BY created_at, id`, project.BankID, mergedFactTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +366,7 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeP
 	facts := make([]TeamFactRow, 0)
 	for rows.Next() {
 		var fact TeamFactRow
-		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey); err != nil {
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType); err != nil {
 			return nil, err
 		}
 		facts = append(facts, fact)
@@ -370,120 +374,7 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeP
 	return facts, rows.Err()
 }
 
-// loadMemberInput reads one member's contribution for this round.
-func (s *PostgresMergeStore) loadMemberInput(ctx context.Context, member MergeProjectMember, limit int) (MergeMemberInput, error) {
-	out := MergeMemberInput{Member: member}
-	// A project whose id is "myself" points at the member's aggregate bank, and
-	// that bank holds conclusions the personal rollup drew from every bank its
-	// owner has — not facts the member contributed to this project. Folding them
-	// in would let one person's cross-project summary pass as their input to a
-	// team, which is exactly what the aggregate must never do. The exclusion is a
-	// decision here rather than a predicate in SQL so that the merge queries keep
-	// saying only what they are about.
-	if tenant.IsPersonalBankID(memberBankID(member)) {
-		return out, nil
-	}
-	memberCtx, err := WithSchema(ctx, member.Schema)
-	if err != nil {
-		return out, err
-	}
-	qualified := quoteIdent(member.Schema)
-	// A member with no bank row yet has contributed nothing; the team's content
-	// is kept rather than rebuilt (the onboarding path).
-	if err := s.db.QueryRowContext(memberCtx,
-		`SELECT EXISTS (SELECT 1 FROM `+qualified+`.banks WHERE bank_id = $1)`,
-		memberBankID(member)).Scan(&out.BankExists); err != nil {
-		return out, err
-	}
-	if !out.BankExists {
-		return out, nil
-	}
-	// A rebuild reads the member's whole bank, not the delta. That is the point of
-	// one: the round recomputes the team's content from what the members hold now,
-	// so a member who left — or whose facts were deleted — stops contributing.
-	// Reading from the cursor here would make a rebuild see only new facts and
-	// leave every existing team fact standing, which is exactly the stale content a
-	// withdrawal exists to remove.
-	var fresh []MergeFact
-	var statement string
-	var args []any
-	if member.State.RebuildRequested {
-		statement = `
-			SELECT id::text, text, updated_at
-			FROM ` + qualified + `.memory_units
-			WHERE bank_id = $1 AND fact_type = 'world'
-			ORDER BY updated_at, id`
-		args = []any{memberBankID(member)}
-	} else {
-		cursor := CursorOf(member.State)
-		statement = `
-			SELECT id::text, text, updated_at
-			FROM ` + qualified + `.memory_units
-			WHERE bank_id = $1 AND fact_type = 'world'
-			  AND (updated_at, id) > ($2::timestamptz, $3::uuid)
-			ORDER BY updated_at, id
-			LIMIT $4`
-		args = []any{memberBankID(member), cursor.UpdatedAt, zeroUUID, limit}
-		if !cursor.Before() {
-			args = []any{memberBankID(member), cursor.UpdatedAt, cursor.UnitID, limit}
-		}
-	}
-	rows, err := s.db.QueryContext(memberCtx, statement, args...)
-	if err != nil {
-		return out, err
-	}
-	for rows.Next() {
-		var fact MergeFact
-		var updatedAt time.Time
-		if err := rows.Scan(&fact.UnitID, &fact.Text, &updatedAt); err != nil {
-			_ = rows.Close()
-			return out, err
-		}
-		fact.TenantID = member.TenantID
-		fact.UpdatedAt = updatedAt
-		fresh = append(fresh, fact)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	out.Fresh = fresh
-	// A rebuild is requested when a source that still supports team content has
-	// gone from this member's bank.
-	if member.HasLedger {
-		deleted, err := s.sourceDeleted(memberCtx, member, qualified)
-		if err != nil {
-			return out, err
-		}
-		out.Deleted = deleted
-	}
-	return out, nil
-}
-
-// sourceDeleted reports whether any live ledger source of this member's bank is
-// gone.
-//
-// Only rows that still support team content are checked. A source the model
-// folded away supports nothing, so its deletion cannot invalidate the team's
-// content and must not trigger a rebuild — which is the whole reason the ledger
-// records the supported key rather than just "consumed".
-func (s *PostgresMergeStore) sourceDeleted(ctx context.Context, member MergeProjectMember, qualified string) (bool, error) {
-	var deleted bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS (
-		    SELECT 1
-		    FROM `+adminTable("merge_source_unit")+` l
-		    LEFT JOIN `+qualified+`.memory_units m ON m.id = l.source_unit_id
-		    WHERE l.team_tenant_id = $1 AND l.project_id = $2 AND l.tenant_id = $3
-		      AND l.merge_key <> $4
-		      AND m.id IS NULL
-		)`, member.State.TeamID, member.State.ProjectID, member.TenantID,
-		tenant.DroppedMergeKey).Scan(&deleted)
-	return deleted, err
-}
-
 // memberBankID is the bank a member's contribution lives in.
-//
 // It is the project's name under the member's own tenant, which is what the
 // two-part bank id means: "<tenant>::<project name>".
 func memberBankID(member MergeProjectMember) string {

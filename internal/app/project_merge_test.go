@@ -35,6 +35,8 @@ type fakeMergeStore struct {
 	abandoned *storage.MergeStateFailure
 	// claimStamps records the stamps offered to rounds.
 	claimStamps []time.Time
+	// opts records the last round's own settings.
+	opts storage.MergeRoundOptions
 	// prevScratch keeps the last stamp handed out.
 	stamp time.Time
 }
@@ -44,9 +46,10 @@ func (f *fakeMergeStore) ListMergeProjects(context.Context) ([]storage.MergeProj
 }
 
 func (f *fakeMergeStore) BeginMergeStanza(
-	_ context.Context, _, _ string, _ int, _ time.Duration, fn func(storage.MergeStanza) error,
+	_ context.Context, _, _ string, opts storage.MergeRoundOptions, fn func(storage.MergeStanza) error,
 ) (bool, error) {
 	f.beginCalls++
+	f.opts = opts
 	if f.beginErr != nil {
 		return false, f.beginErr
 	}
@@ -116,12 +119,13 @@ func (p *answerProvider) Complete(context.Context, provider.CompletionRequest) (
 // mergeTestCfg is a configuration that would run the job.
 func mergeTestCfg() config.MaintenanceConfig {
 	return config.MaintenanceConfig{
-		ProjectMergeInterval:        60 * time.Second,
-		ProjectMergeBatchSize:       10,
-		ProjectMergeRebuildMaxUnits: 5000,
-		ProjectMergeMaxTeamFacts:    500,
-		ProjectMergeFailThreshold:   5,
-		ProjectMergeEnabled:         true,
+		ProjectMergeInterval:          60 * time.Second,
+		ProjectMergeBatchSize:         10,
+		ProjectMergeRebuildMaxUnits:   5000,
+		ProjectMergeMaxTeamFacts:      500,
+		ProjectMergeFailThreshold:     5,
+		ProjectMergeEnabled:           true,
+		ProjectMergeIncludeExperience: true,
 	}
 }
 
@@ -577,5 +581,54 @@ func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 		if fact.Text == survivor {
 			t.Fatalf("the surviving fact was re-inserted: %+v", replace.Insert)
 		}
+	}
+}
+
+// TestProjectMergeCarriesFactTypesThroughTheRound pins the job's part of the
+// kind: what the store read goes into the prompt as its own kind, and the answer's
+// cited sources decide the kind the team fact is written under.
+func TestProjectMergeCarriesFactTypesThroughTheRound(t *testing.T) {
+	input := mergeTestInput()
+	input.Members[0].Fresh = []storage.MergeFact{
+		{TenantID: "alice", UnitID: "00000000-0000-0000-0000-000000000001",
+			Text: "Alice moved the deploy to port 15432.", FactType: storage.TypeExperience,
+			UpdatedAt: time.Now().UTC()},
+	}
+	merges := &fakeMergeStore{
+		projects: []storage.MergeProject{mergeTestProject()},
+		input:    input,
+	}
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"facts":[{"text":"Alice moved the deploy to port 15432.","sources":[0]}]}`,
+	}
+	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.finished == nil {
+		t.Fatal("the round wrote nothing")
+	}
+	if got := merges.finished.Replace.Insert[0].FactType; got != storage.TypeExperience {
+		t.Fatalf("inserted fact type = %q, want experience", got)
+	}
+	// The team content is carried into the next prompt under its stored kind, so
+	// the model keeps telling the kinds apart round after round.
+	if got := merges.opts.IncludeExperience; !got {
+		t.Fatal("the round did not ask for experience input")
+	}
+}
+
+// TestProjectMergePassesTheExperienceSwitchThrough pins that the switch reaches
+// the store rather than being decided anywhere else.
+func TestProjectMergePassesTheExperienceSwitchThrough(t *testing.T) {
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: mergeTestInput()}
+	cfg := mergeTestCfg()
+	cfg.ProjectMergeIncludeExperience = false
+	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"x","sources":[0]}]}`}
+	if err := runOneRound(t, merges, model, cfg); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.opts.IncludeExperience {
+		t.Fatal("the store was told to include experience while the switch was off")
 	}
 }

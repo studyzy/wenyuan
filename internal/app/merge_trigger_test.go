@@ -21,7 +21,7 @@ type slowMergeStore struct {
 }
 
 func (s *slowMergeStore) BeginMergeStanza(
-	ctx context.Context, teamID, projectID string, batch int, stale time.Duration,
+	ctx context.Context, teamID, projectID string, opts storage.MergeRoundOptions,
 	fn func(storage.MergeStanza) error,
 ) (bool, error) {
 	select {
