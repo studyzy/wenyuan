@@ -9,24 +9,26 @@ import (
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/personalrollup"
-	"github.com/studyzy/wenyuan/internal/projectmerge"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
-// The personal rollup job: it folds every bank one person owns into that person's
-// aggregate bank, `<tenant>::myself`.
+// The personal rollup job: it projects every world and experience fact of the
+// banks one person owns into that person's aggregate bank, `<tenant>::myself`.
 //
-// A round runs in two transactions with the model call between them. The first
-// takes the tenant's claim and reads the watermark's worth of new facts; the
-// model call then happens outside any transaction, because a slow model holding a
-// database transaction would block the person writing to their own banks; the
-// second writes the result, fenced on the claim stamp so a round that another
-// process took over cannot apply a stale answer.
+// A row of the aggregate bank is a verbatim copy of exactly one source fact. The
+// job spends no model call: consolidation reads those projected rows exactly as
+// it would read any bank's own memories, and synthesizes the observations from
+// them. That is why the aggregate is a materialized view rather than a summary:
+// a fact edited in its source bank replaces its row, and the observation resting
+// on it is rebuilt by the next consolidation rather than by this job.
 //
-// Unlike the project merge, this job has no switch: a deployment with a chat model
-// aggregates, single-tenant or not. The aggregate is not a team feature.
+// A round runs in two transactions with nothing between them. The first takes
+// the tenant's claim and reads the watermark's worth of new facts; the second
+// writes the result, fenced on the claim stamp so a round that another process
+// took over cannot apply a stale answer. There is no switch: a deployment with
+// a chat model projects in either tenant mode, single-tenant or not.
 
 // personalRoundDeadline bounds one tenant's whole round. It is also the claim's
 // staleness threshold: a claim older than this is a crashed round and is taken
@@ -45,9 +47,9 @@ func personalRoundDeadline(interval time.Duration) time.Duration {
 // personalRunner carries what one tick's rounds need.
 type personalRunner struct {
 	store storage.PersonalStore
-	// models resolves the chat model for a tenant. It is a function rather than a
-	// provider so tenant-level configuration overrides apply, and so a test can
-	// hand a different model per tenant.
+	// models resolves the chat model for a tenant. The projection itself calls no
+	// model, but a deployment without one cannot consolidate the projected rows
+	// into observations, so a round is still gated on a usable model.
 	models func(tenantID string) provider.Provider
 	cfg    config.MaintenanceConfig
 }
@@ -104,20 +106,12 @@ func (r *personalRunner) runPersonalRound(ctx context.Context, one tenant.Tenant
 		// tenant outside what a round may do.
 		return r.store.AbandonPersonalRound(ctx, one.ID, storage.PersonalFailure{Error: err.Error()})
 	}
-	if plan.skip {
-		return r.store.AbandonPersonalRound(ctx, one.ID, storage.PersonalFailure{Error: plan.reason})
-	}
 	if !plan.merge {
-		// Nothing new and nothing stale: record the heartbeat, spend no model call.
+		// Nothing new and nothing stale: record the heartbeat, spend no write.
 		return r.store.AbandonPersonalRound(ctx, one.ID, storage.PersonalFailure{})
 	}
 
-	answers, err := rollupWithModel(roundCtx, model, plan)
-	if err != nil {
-		return r.store.AbandonPersonalRound(ctx, one.ID,
-			storage.PersonalFailure{Error: err.Error(), Counting: true})
-	}
-	req := buildPersonalFinish(input, plan, answers, stamp)
+	req := buildPersonalFinish(input, plan, stamp)
 	if err := r.store.FinishPersonalRound(roundCtx, req); err != nil {
 		if err == storage.ErrPersonalClaimLost {
 			// Another process took the round over; its result is the one that counts.
@@ -139,7 +133,9 @@ func (r *personalRunner) model(tenantID string) provider.Provider {
 	return r.models(tenantID)
 }
 
-// usableModel reports whether a provider can answer a round at all.
+// usableModel reports whether a provider can answer at all. The projection calls
+// no model, but consolidation of the projected rows does; without one the
+// aggregate would fill with facts that can never become observations.
 func usableModel(model provider.Provider) bool {
 	if model == nil {
 		return false
@@ -153,65 +149,53 @@ func usableModel(model provider.Provider) bool {
 
 // personalPlan is what one round will do.
 type personalPlan struct {
-	// merge reports whether a model call is needed at all.
+	// merge reports whether a write is needed at all.
 	merge bool
-	// skip reports the tenant must not merge at all this round.
-	skip   bool
-	reason string
-	// rebuild reports the round recomputes the aggregate from every source fact.
+	// rebuild reports the round recomputed every projected row from scratch.
 	rebuild bool
-	// previous is the aggregate content carried into the prompt.
-	previous []personalrollup.PreviousFact
-	// fresh is the new input, in a stable order.
-	fresh []personalrollup.SourceFact
-	// topics is the vocabulary injected into the prompt.
-	topics []string
+	// diff is the fact-level change the projection produced.
+	diff personalrollup.ProjectionDiff
 	// cursors maps each consumed bank to the watermark its facts reach.
 	cursors map[string]storage.MergeCursor
 }
 
-// planPersonalRound decides what this round does, without calling the model.
+// planPersonalRound decides what this round does. It is a pure function of the
+// round's input and the deployment's limits: no model, no prompt, no topic
+// vocabulary. A projected row is identified by its source unit, so an edited
+// fact replaces its row rather than creating a second one.
 func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceConfig) (personalPlan, error) {
 	plan := personalPlan{cursors: map[string]storage.MergeCursor{}}
+	previous := make([]personalrollup.ProjectionFact, 0, len(input.Previous))
 	for _, fact := range input.Previous {
-		// A fact with no merge key still carries its text; its key is derived from
-		// it. The store already fills the key in, so this only guards a caller
-		// that did not.
-		key := fact.MergeKey
-		if key == "" {
-			key = personalrollup.MergeKey(fact.Text)
-		}
-		plan.previous = append(plan.previous, personalrollup.PreviousFact{
-			ID: fact.ID, Text: fact.Text, MergeKey: key,
+		previous = append(previous, personalrollup.ProjectionFact{
+			ID: fact.ID, Key: fact.MergeKey, Text: fact.Text, FactType: fact.FactType,
+			EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
+			OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
+		})
+	}
+	fresh := make([]personalrollup.ProjectionFact, 0, len(input.Facts))
+	for _, fact := range input.Facts {
+		fresh = append(fresh, personalrollup.ProjectionFact{
+			Key:  personalrollup.ProjectionKey(fact.BankID, fact.UnitID),
+			Text: fact.Text, FactType: fact.FactType,
+			EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
+			OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
+			BankID: fact.BankID, UnitID: fact.UnitID,
 		})
 	}
 	plan.rebuild = input.RebuildRequested || input.SourceDeleted
-	plan.topics = topicNames(input)
-	for _, fact := range input.Facts {
-		plan.fresh = append(plan.fresh, personalrollup.SourceFact{
-			BankID: fact.BankID, UnitID: fact.UnitID, Text: fact.Text,
-		})
-	}
 	if plan.rebuild {
 		// A rebuild reads every source fact, so its input is bounded on its own
 		// and failing closed is the right answer when it will not fit: leaving
-		// deleted facts in the aggregate is the thing the rebuild exists to
-		// prevent.
-		if len(plan.fresh) > cfg.PersonalRollupRebuildMaxUnits {
+		// deleted facts projected is the thing the rebuild exists to prevent.
+		if len(fresh) > cfg.PersonalRollupRebuildMaxUnits {
 			return plan, fmt.Errorf(
 				"rebuild input of %d units exceeds the %d-unit limit; raise %s",
-				len(plan.fresh), cfg.PersonalRollupRebuildMaxUnits, config.EnvPersonalRollupRebuildMaxUnits)
+				len(fresh), cfg.PersonalRollupRebuildMaxUnits, config.EnvPersonalRollupRebuildMaxUnits)
 		}
-	} else if len(plan.previous) > cfg.PersonalRollupMaxTeamFacts {
-		// An oversized aggregate is a capacity problem, not a privacy one: skip
-		// rather than fail closed, because nothing a person deleted is at stake.
-		plan.skip = true
-		plan.reason = fmt.Sprintf(
-			"aggregate content of %d facts exceeds the %d-fact limit; raise %s",
-			len(plan.previous), cfg.PersonalRollupMaxTeamFacts, config.EnvPersonalRollupMaxTeamFacts)
-		return plan, nil
 	}
-	plan.merge = len(plan.fresh) > 0 || plan.rebuild
+	plan.diff = personalrollup.DiffProjection(previous, fresh, plan.rebuild)
+	plan.merge = len(plan.diff.Insert) > 0 || len(plan.diff.Remove) > 0
 	if !plan.merge {
 		return plan, nil
 	}
@@ -227,123 +211,67 @@ func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceC
 	return plan, nil
 }
 
-// topicNames lists the vocabulary entries a prompt carries, in reading order.
-func topicNames(input storage.PersonalRoundInput) []string {
-	seen := make(map[string]bool, len(input.Topics))
-	out := make([]string, 0, len(input.Topics))
-	for _, topic := range input.Topics {
-		name := personalrollup.Normalize(topic.Name)
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, topic.Name)
-	}
-	return out
-}
-
-// rollupWithModel asks the model for the person's aggregate content.
-func rollupWithModel(ctx context.Context, model provider.Provider, plan personalPlan) ([]personalrollup.Answer, error) {
-	messages := personalrollup.Prompt(plan.previous, plan.fresh, plan.topics, personalrollup.PromptOptions{})
-	result, err := model.Complete(ctx, provider.CompletionRequest{Messages: messages})
-	if err != nil {
-		return nil, fmt.Errorf("rollup model call: %w", err)
-	}
-	answers, err := personalrollup.ParseAnswer(result.Content, len(plan.fresh))
-	if err != nil {
-		return nil, err
-	}
-	if len(answers) == 0 && len(plan.previous) > 0 {
-		return nil, personalrollup.ErrAnswerEmpty
-	}
-	return answers, nil
-}
-
-// buildPersonalFinish turns the round's answer into the store's write.
+// buildPersonalFinish turns one round's projection diff into the store's write.
 func buildPersonalFinish(
 	input storage.PersonalRoundInput,
 	plan personalPlan,
-	answers []personalrollup.Answer,
 	stamp time.Time,
 ) storage.FinishPersonalRequest {
-	diff := personalrollup.Diff(plan.previous, answers)
-	sourceKeys := diff.SourceMergeKeys(len(plan.fresh))
-
-	sources := make([]storage.PersonalSourceRow, 0, len(sourceKeys))
-	for _, index := range sortedIntKeys(sourceKeys) {
-		fact := plan.fresh[index]
-		for _, key := range sourceKeys[index] {
-			sources = append(sources, storage.PersonalSourceRow{
-				UnitID: fact.UnitID, MergeKey: key, BankID: fact.BankID,
-			})
-		}
+	remove := make([]storage.PersonalPreviousFact, 0, len(plan.diff.Remove))
+	for _, fact := range plan.diff.Remove {
+		remove = append(remove, projectionRow(fact))
 	}
-	topics := make([]storage.PersonalTopic, 0, len(diff.Topics))
-	for key, names := range diff.Topics {
-		banks := personalrollup.BanksByKey(sourceKeys, plan.fresh)[key]
-		if len(banks) == 0 {
-			// A fact carried over on wording alone keeps no source this round; it
-			// must not claim a bank it cannot name.
-			continue
-		}
-		for _, name := range names {
-			for _, bank := range banks {
-				topics = append(topics, storage.PersonalTopic{Name: name, BankID: bank, MergeKey: key})
-			}
-		}
+	insert := make([]storage.PersonalPreviousFact, 0, len(plan.diff.Insert))
+	for _, fact := range plan.diff.Insert {
+		insert = append(insert, projectionRow(fact))
+	}
+	sources := make([]storage.PersonalSourceRow, 0, len(plan.diff.Sources))
+	factBanks := make(map[string][]string, len(plan.diff.Sources))
+	for _, source := range plan.diff.Sources {
+		sources = append(sources, storage.PersonalSourceRow{
+			UnitID: source.UnitID, MergeKey: source.MergeKey, BankID: source.BankID,
+		})
+		// The navigation index still links the aggregate to the banks its rows
+		// came from; the topic vocabulary, which only the old model call could
+		// produce, is left empty until a later round rebuilds it.
+		factBanks[source.MergeKey] = appendUniqueBank(factBanks[source.MergeKey], source.BankID)
 	}
 	return storage.FinishPersonalRequest{
 		TenantID:       input.TenantID,
 		Schema:         input.Schema,
 		BankID:         input.BankID,
 		Stamp:          stamp,
-		Remove:         toPersonalFacts(diff.Remove),
-		Insert:         toPersonalFacts(diff.Insert),
+		Remove:         remove,
+		Insert:         insert,
 		Sources:        sources,
 		Cursors:        plan.cursors,
 		Rebuild:        plan.rebuild,
-		Topics:         topics,
-		FactBanks:      personalrollup.BanksByKey(sourceKeys, plan.fresh),
+		FactBanks:      factBanks,
 		UnmanagedFacts: input.UnmanagedFacts,
 	}
 }
 
-// toPersonalFacts converts the engine's facts to the store's row shape.
-func toPersonalFacts(facts []projectmerge.TeamFact) []storage.PersonalPreviousFact {
-	if len(facts) == 0 {
-		return nil
+// projectionRow converts the engine's fact to the store's row shape.
+func projectionRow(fact personalrollup.ProjectionFact) storage.PersonalPreviousFact {
+	return storage.PersonalPreviousFact{
+		ID: fact.ID, Text: fact.Text, MergeKey: fact.Key, FactType: fact.FactType,
+		EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
+		OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
 	}
-	out := make([]storage.PersonalPreviousFact, 0, len(facts))
-	for _, fact := range facts {
-		out = append(out, storage.PersonalPreviousFact{ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey})
-	}
-	return out
 }
 
-// sortedIntKeys returns a map's integer keys in ascending order.
-//
-// The batch's source indexes are walked in order so the ledger rows, and the
-// prompt they came from, are produced the same way twice.
-func sortedIntKeys[V any](values map[int]V) []int {
-	keys := make([]int, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sortInts(keys)
-	return keys
-}
-
-// sortInts orders integers ascending, in one place so the call sites stay short.
-func sortInts(values []int) {
-	for i := 1; i < len(values); i++ {
-		for j := i; j > 0 && values[j] < values[j-1]; j-- {
-			values[j], values[j-1] = values[j-1], values[j]
+// appendUniqueBank adds a bank to a projection's source list once.
+func appendUniqueBank(banks []string, bank string) []string {
+	for _, existing := range banks {
+		if existing == bank {
+			return banks
 		}
 	}
+	return append(banks, bank)
 }
 
 // enqueueAggregateConsolidation asks for a consolidation on the aggregate bank,
-// so the person's observations follow their aggregate facts.
+// so the person's observations follow their projected facts.
 //
 // It is best-effort: the facts are already committed, and the consolidation
 // reconciler sweeps stranded facts on its own.
@@ -372,12 +300,10 @@ func enqueueAggregateConsolidation(ctx context.Context, store storage.PersonalSt
 // job at all.
 //
 // It is not a configuration switch: there is none, and a deployment with a chat
-// model aggregates in either tenant mode. The two conditions here are about the
-// process, not the deployment — a build or a store without the PostgreSQL driver
-// cannot run the round, and a model that cannot answer would only record an error
-// every round. A round that does meet the wiring still checks its model itself, so
-// a deployment that resolves the chat model per tenant (the model factory below)
-// is not turned off by the process-wide default.
+// model projects in either tenant mode. The conditions here are about the
+// process — a build or a store without the PostgreSQL driver cannot run the
+// round, and a model that cannot answer would leave projected facts that can
+// never be consolidated.
 func personalRollupEnabled(personals storage.PersonalStore) bool {
 	return personals != nil
 }

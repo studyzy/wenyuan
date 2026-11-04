@@ -210,13 +210,16 @@ func (s *PostgresPersonalStore) topicsTx(ctx context.Context, tenantID string) (
 	return out, rows.Err()
 }
 
-// unmanagedTx counts the aggregate bank's world facts no round wrote.
+// unmanagedTx counts the aggregate bank's rows no round projected: direct
+// writes and leftovers from a round that predates the projection. Both the
+// origin and a projection key are required for a row to be managed.
 func (s *PostgresPersonalStore) unmanagedTx(ctx context.Context, schema, bankID string) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM `+quoteIdent(schema)+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world'
-		  AND COALESCE(metadata->>'origin', '') <> $2`, bankID, tenant.OriginAggregate).Scan(&count)
+		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
+		  AND (COALESCE(metadata->>'origin', '') <> $2
+		       OR COALESCE(metadata->>'projection_key', '') = '')`, bankID, tenant.OriginAggregate).Scan(&count)
 	return count, err
 }
 
@@ -266,12 +269,15 @@ func (s *PostgresPersonalStore) claimTx(ctx context.Context, tx Tx, tenantID str
 	return err
 }
 
-// previousTx reads the aggregate bank's current world facts.
+// previousTx reads the aggregate bank's projected rows, world and experience
+// alike. A row carries the source unit's projection key in its metadata; a row
+// without one predates the projection and is replaced as unmanaged.
 func (s *PostgresPersonalStore) previousTx(ctx context.Context, tx Tx, schema, bankID string) ([]PersonalPreviousFact, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, text, COALESCE(metadata->>'merge_key', '')
+		SELECT id::text, text, COALESCE(metadata->>'projection_key', ''), fact_type,
+		       event_date, occurred_start, occurred_end, mentioned_at
 		FROM `+quoteIdent(schema)+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world'
+		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
 		ORDER BY created_at, id`, bankID)
 	if err != nil {
 		return nil, err
@@ -280,9 +286,15 @@ func (s *PostgresPersonalStore) previousTx(ctx context.Context, tx Tx, schema, b
 	var out []PersonalPreviousFact
 	for rows.Next() {
 		var fact PersonalPreviousFact
-		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey); err != nil {
+		var eventDate, start, end, mentioned sql.NullTime
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType,
+			&eventDate, &start, &end, &mentioned); err != nil {
 			return nil, err
 		}
+		fact.EventDate = nullTimePtr(eventDate)
+		fact.OccurredStart = nullTimePtr(start)
+		fact.OccurredEnd = nullTimePtr(end)
+		fact.MentionedAt = nullTimePtr(mentioned)
 		if fact.MergeKey == "" {
 			fact.MergeKey = tenant.MergeKey(fact.Text)
 		}
@@ -395,8 +407,10 @@ func (s *PostgresPersonalStore) rebuildFactsTx(ctx context.Context, tx Tx, banks
 	return out, nil
 }
 
-// factsAfterTx reads one bank's world facts after its watermark, or all of them
-// when limit is negative.
+// factsAfterTx reads one bank's world and experience facts after its watermark,
+// or all of them when limit is negative. The temporal columns ride along so the
+// projected row carries the same evidence consolidation would see in the source
+// bank.
 func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank PersonalSourceBank, limit int) ([]PersonalSourceFact, error) {
 	schema, ok := SchemaFrom(ctx)
 	if !ok {
@@ -404,9 +418,10 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 	}
 	cursor := bank.Cursor
 	statement := `
-		SELECT id::text, text, updated_at
+		SELECT id::text, text, updated_at, fact_type,
+		       event_date, occurred_start, occurred_end, mentioned_at
 		FROM ` + quoteIdent(schema) + `.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world'
+		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
 		  AND (updated_at, id) > ($2::timestamptz, $3::uuid)
 		ORDER BY updated_at, id`
 	args := []any{bank.BankID, cursor.UpdatedAt, zeroUUID}
@@ -425,10 +440,16 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 	var out []PersonalSourceFact
 	for rows.Next() {
 		var fact PersonalSourceFact
-		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.UpdatedAt); err != nil {
+		var eventDate, start, end, mentioned sql.NullTime
+		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.UpdatedAt, &fact.FactType,
+			&eventDate, &start, &end, &mentioned); err != nil {
 			return nil, err
 		}
 		fact.BankID = bank.BankID
+		fact.EventDate = nullTimePtr(eventDate)
+		fact.OccurredStart = nullTimePtr(start)
+		fact.OccurredEnd = nullTimePtr(end)
+		fact.MentionedAt = nullTimePtr(mentioned)
 		out = append(out, fact)
 	}
 	return out, rows.Err()

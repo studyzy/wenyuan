@@ -16,8 +16,8 @@ import (
 // fakePersonalStore is the aggregate store's behaviour without a database.
 //
 // The store itself is PostgreSQL-only by design — its risks are cross-schema
-// transactions and advisory locks — so what a fake can usefully prove is the job's
-// own decisions: what it reads, when it calls the model, and what it writes.
+// transactions and advisory locks — so what a fake can usefully prove is the
+// job's own decisions: what it reads, what it writes, and that it calls no model.
 type fakePersonalStore struct {
 	tenants []tenant.Tenant
 	// input is what BeginPersonalRound hands back.
@@ -114,7 +114,8 @@ const (
 	rollupFactBilling = "Billing stores amounts in integer cents."
 )
 
-// rollupTestInput is a round with two new facts from two different banks.
+// rollupTestInput is a round with two new facts from two different banks: one
+// world and one experience, so a projection must keep both kinds.
 func rollupTestInput() storage.PersonalRoundInput {
 	now := time.Now().UTC()
 	return storage.PersonalRoundInput{
@@ -125,9 +126,9 @@ func rollupTestInput() storage.PersonalRoundInput {
 		},
 		Facts: []storage.PersonalSourceFact{
 			{BankID: "alice::orders", UnitID: "00000000-0000-0000-0000-000000000001",
-				Text: rollupFactOrders, UpdatedAt: now},
+				Text: rollupFactOrders, FactType: "world", UpdatedAt: now},
 			{BankID: "alice::billing", UnitID: "00000000-0000-0000-0000-000000000002",
-				Text: rollupFactBilling, UpdatedAt: now},
+				Text: rollupFactBilling, FactType: "experience", UpdatedAt: now},
 		},
 	}
 }
@@ -139,31 +140,30 @@ func runOnePersonalRound(t *testing.T, personals *fakePersonalStore, model provi
 	return runner.runPersonalRounds(context.Background())
 }
 
-// TestPersonalRollupWritesTheRoundsResult is the job's happy path: one model call
-// for the tenant, one write, the ledger recording both banks, and both watermarks
-// advanced to the consumed facts.
-func TestPersonalRollupWritesTheRoundsResult(t *testing.T) {
+// TestPersonalRollupProjectsEveryFact is the job's happy path: one projected row
+// per source fact, world and experience alike, a ledger row per fact, both
+// watermarks advanced, and no model call at all.
+func TestPersonalRollupProjectsEveryFact(t *testing.T) {
 	personals := &fakePersonalStore{
 		tenants: []tenant.Tenant{rollupTestTenant()},
 		input:   rollupTestInput(),
 	}
-	model := &answerProvider{
-		name: "fake",
-		reply: `{"facts":[{"text":"` + rollupFactOrders + `","sources":[0],"topics":["deploy"]},` +
-			`{"text":"` + rollupFactBilling + `","sources":[1],"topics":["billing"]}]}`,
-	}
+	model := &answerProvider{name: "fake"}
 	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
-	if model.calls != 1 {
-		t.Fatalf("model calls = %d, want 1", model.calls)
+	if model.calls != 0 {
+		t.Fatalf("model calls = %d, the projection must spend none", model.calls)
 	}
 	if personals.finished == nil {
 		t.Fatal("the round wrote nothing")
 	}
 	req := personals.finished
 	if len(req.Insert) != 2 {
-		t.Fatalf("inserted %d facts, want 2", len(req.Insert))
+		t.Fatalf("inserted %d rows, want one per source fact", len(req.Insert))
+	}
+	if req.Insert[0].FactType != "world" || req.Insert[1].FactType != "experience" {
+		t.Fatalf("kinds = %q/%q, want world/experience", req.Insert[0].FactType, req.Insert[1].FactType)
 	}
 	if req.BankID != "alice::myself" || req.TenantID != "alice" || req.Schema != "alice" {
 		t.Fatalf("the write names %+v, want alice's aggregate", req)
@@ -174,7 +174,7 @@ func TestPersonalRollupWritesTheRoundsResult(t *testing.T) {
 	banks := map[string]bool{}
 	for _, source := range req.Sources {
 		if source.MergeKey == tenant.DroppedMergeKey {
-			t.Fatalf("a cited source was recorded as dropped: %+v", source)
+			t.Fatalf("a projected source was recorded as dropped: %+v", source)
 		}
 		banks[source.BankID] = true
 	}
@@ -189,25 +189,26 @@ func TestPersonalRollupWritesTheRoundsResult(t *testing.T) {
 	if req.Stamp.IsZero() {
 		t.Fatal("the write carries no claim stamp")
 	}
-	// The directory is a projection of this round, so it must be part of it.
-	if len(req.Topics) != 2 {
-		t.Fatalf("topics = %+v, want one per fact", req.Topics)
+	// The projection keeps the navigation links to the source banks but invents
+	// no topic vocabulary: only the old model call could produce topics.
+	if len(req.Topics) != 0 {
+		t.Fatalf("topics = %+v, want none", req.Topics)
 	}
-	if got := req.FactBanks[tenant.MergeKey(rollupFactOrders)]; len(got) != 1 || got[0] != "alice::orders" {
-		t.Fatalf("fact banks = %v, want the orders bank", got)
+	if len(req.FactBanks) != 2 {
+		t.Fatalf("fact banks = %+v, want one entry per projected row", req.FactBanks)
 	}
 }
 
-// TestPersonalRollupSpendsNoModelCallWhenNothingChanged pins the watermark's
-// point: a tenant whose banks have not moved costs nothing.
-func TestPersonalRollupSpendsNoModelCallWhenNothingChanged(t *testing.T) {
+// TestPersonalRollupSpendsNoWriteWhenNothingChanged pins the watermark's point:
+// a tenant whose banks have not moved writes nothing and spends no model call.
+func TestPersonalRollupSpendsNoWriteWhenNothingChanged(t *testing.T) {
 	personals := &fakePersonalStore{
 		tenants: []tenant.Tenant{rollupTestTenant()},
 		input: storage.PersonalRoundInput{
 			Previous: []storage.PersonalPreviousFact{{ID: "1", Text: "a fact"}},
 		},
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"a fact","sources":[]}]}`}
+	model := &answerProvider{name: "fake"}
 	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
@@ -229,67 +230,12 @@ func TestPersonalRollupSkipsAClaimedTenant(t *testing.T) {
 		tenants:   []tenant.Tenant{rollupTestTenant()},
 		skipBegin: true,
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"a","sources":[]}]}`}
+	model := &answerProvider{name: "fake"}
 	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if model.calls != 0 || personals.abandoned != nil || personals.finished != nil {
 		t.Fatal("a claimed tenant must be left entirely alone")
-	}
-}
-
-// TestPersonalRollupCountsAModelFailure pins the circuit breaker's input: a
-// failed model call advances the fail count and does not write.
-func TestPersonalRollupCountsAModelFailure(t *testing.T) {
-	personals := &fakePersonalStore{
-		tenants: []tenant.Tenant{rollupTestTenant()},
-		input:   rollupTestInput(),
-	}
-	model := &answerProvider{name: "fake", err: errors.New("model down")}
-	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
-		t.Fatalf("round: %v", err)
-	}
-	if personals.abandoned == nil || !personals.abandoned.Counting {
-		t.Fatalf("abandoned = %+v, want a counted failure", personals.abandoned)
-	}
-	if personals.finished != nil {
-		t.Fatal("a failed round wrote a result")
-	}
-}
-
-// TestPersonalRollupRefusesAnEmptyAnswerOverExistingContent pins that a model
-// hiccup cannot empty someone's aggregate.
-func TestPersonalRollupRefusesAnEmptyAnswerOverExistingContent(t *testing.T) {
-	personals := &fakePersonalStore{
-		tenants: []tenant.Tenant{rollupTestTenant()},
-		input: storage.PersonalRoundInput{
-			Previous: []storage.PersonalPreviousFact{{ID: "1", Text: "a fact"}},
-			Facts:    rollupTestInput().Facts,
-		},
-	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[]}`}
-	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
-		t.Fatalf("round: %v", err)
-	}
-	if personals.finished != nil {
-		t.Fatal("an empty answer over existing content was written")
-	}
-	if personals.abandoned == nil || !personals.abandoned.Counting {
-		t.Fatalf("abandoned = %+v, want a counted failure", personals.abandoned)
-	}
-}
-
-// TestPersonalRollupAcceptsAnEmptyAnswerWithNoContent pins the other half: a new
-// tenant whose banks hold nothing worth keeping is not an error.
-func TestPersonalRollupAcceptsAnEmptyAnswerWithNoContent(t *testing.T) {
-	plan, err := planPersonalRound(storage.PersonalRoundInput{
-		Facts: rollupTestInput().Facts,
-	}, rollupTestCfg())
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	if !plan.merge {
-		t.Fatal("facts with nothing before them must still spend a round")
 	}
 }
 
@@ -301,8 +247,7 @@ func TestPersonalRollupTreatsALostClaimAsAnotherRoundSWin(t *testing.T) {
 		input:     rollupTestInput(),
 		finishErr: storage.ErrPersonalClaimLost,
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"a","sources":[0]}]}`}
-	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
+	if err := runOnePersonalRound(t, personals, &answerProvider{name: "fake"}, rollupTestCfg()); err != nil {
 		t.Fatalf("a lost claim must not surface as an error: %v", err)
 	}
 }
@@ -330,8 +275,7 @@ func TestPersonalRollupContinuesAfterOneTenantFails(t *testing.T) {
 		input:    rollupTestInput(),
 		beginErr: errors.New("database down"),
 	}
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"a","sources":[0]}]}`}
-	if err := runOnePersonalRound(t, personals, model, rollupTestCfg()); err != nil {
+	if err := runOnePersonalRound(t, personals, &answerProvider{name: "fake"}, rollupTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
 	if personals.beginCalls != 2 {
@@ -339,24 +283,77 @@ func TestPersonalRollupContinuesAfterOneTenantFails(t *testing.T) {
 	}
 }
 
-func TestPlanPersonalRoundCarriesThePreviousContent(t *testing.T) {
+// TestPlanPersonalRoundProjectsEveryFreshFact pins that a fact with nothing
+// before it is still projected, and that identity is the source unit.
+func TestPlanPersonalRoundProjectsEveryFreshFact(t *testing.T) {
+	plan, err := planPersonalRound(rollupTestInput(), rollupTestCfg())
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !plan.merge {
+		t.Fatal("facts with nothing before them must still be written")
+	}
+	if len(plan.diff.Insert) != 2 || len(plan.diff.Remove) != 0 {
+		t.Fatalf("diff = %+v, want two inserts", plan.diff)
+	}
+	first := personalrollup.ProjectionKey("alice::orders", "00000000-0000-0000-0000-000000000001")
+	if plan.diff.Insert[0].Key != first {
+		t.Fatalf("first key = %q, want the source unit's projection key", plan.diff.Insert[0].Key)
+	}
+	if plan.diff.Insert[0].Text != rollupFactOrders || plan.diff.Insert[1].Text != rollupFactBilling {
+		t.Fatalf("projected texts = %q/%q, want the source texts verbatim",
+			plan.diff.Insert[0].Text, plan.diff.Insert[1].Text)
+	}
+}
+
+// TestPlanPersonalRoundKeepsAnUnchangedRow pins that a fact the round already
+// projected does not get a second row.
+func TestPlanPersonalRoundKeepsAnUnchangedRow(t *testing.T) {
 	input := rollupTestInput()
-	input.Previous = []storage.PersonalPreviousFact{{ID: "9", Text: "an old fact"}}
+	fact := input.Facts[0]
+	input.Previous = []storage.PersonalPreviousFact{
+		{ID: "row-1", Text: fact.Text, MergeKey: personalrollup.ProjectionKey(fact.BankID, fact.UnitID),
+			FactType: fact.FactType},
+	}
 	plan, err := planPersonalRound(input, rollupTestCfg())
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if len(plan.previous) != 1 || plan.previous[0].ID != "9" {
-		t.Fatalf("previous = %+v, want the aggregate's content", plan.previous)
+	for _, inserted := range plan.diff.Insert {
+		if inserted.Key == input.Previous[0].MergeKey {
+			t.Fatal("an unchanged row was inserted again")
+		}
 	}
-	if len(plan.fresh) != 2 {
-		t.Fatalf("fresh = %d, want both facts", len(plan.fresh))
+	if len(plan.diff.Remove) != 0 {
+		t.Fatalf("remove = %+v, want the row kept", plan.diff.Remove)
 	}
 }
 
-// TestPlanPersonalRoundSkipsAnOversizedAggregate pins the capacity answer: too
-// much previous content is a skip, not a fail-closed.
-func TestPlanPersonalRoundSkipsAnOversizedAggregate(t *testing.T) {
+// TestPlanPersonalRoundReplacesAnEditedFact pins that an edited source fact
+// replaces its projected row rather than creating a second one.
+func TestPlanPersonalRoundReplacesAnEditedFact(t *testing.T) {
+	input := rollupTestInput()
+	fact := input.Facts[0]
+	key := personalrollup.ProjectionKey(fact.BankID, fact.UnitID)
+	input.Previous = []storage.PersonalPreviousFact{
+		{ID: "row-1", Text: "the old wording", MergeKey: key, FactType: fact.FactType},
+	}
+	plan, err := planPersonalRound(input, rollupTestCfg())
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.diff.Remove) != 1 || plan.diff.Remove[0].ID != "row-1" {
+		t.Fatalf("remove = %+v, want the old row", plan.diff.Remove)
+	}
+	if len(plan.diff.Insert) != 2 {
+		t.Fatalf("insert = %+v, want the edited row plus the other bank's fact", plan.diff.Insert)
+	}
+}
+
+// TestPlanPersonalRoundDoesNotSkipAnOversizedAggregate pins that the old prompt
+// capacity limit no longer stops a projection: the number of rows can exceed the
+// config value because there is no prompt to bound.
+func TestPlanPersonalRoundDoesNotSkipAnOversizedAggregate(t *testing.T) {
 	cfg := rollupTestCfg()
 	cfg.PersonalRollupMaxTeamFacts = 1
 	input := rollupTestInput()
@@ -367,12 +364,15 @@ func TestPlanPersonalRoundSkipsAnOversizedAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if !plan.skip || plan.merge {
-		t.Fatalf("plan = %+v, want a skip", plan)
+	if !plan.merge {
+		t.Fatal("a projection must not be skipped for aggregate size")
+	}
+	if len(plan.diff.Insert) != 2 {
+		t.Fatalf("insert = %+v, want both facts", plan.diff.Insert)
 	}
 }
 
-// TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild pins the privacy answer:
+// TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild pins the safety answer:
 // a rebuild that cannot fit is refused rather than approximated.
 func TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild(t *testing.T) {
 	cfg := rollupTestCfg()
@@ -384,7 +384,7 @@ func TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild(t *testing.T) {
 	}
 }
 
-// TestPlanPersonalRoundRebuildsOnADeletedSource pins the privacy path: a source
+// TestPlanPersonalRoundRebuildsOnADeletedSource pins the deletion path: a source
 // that vanished from its bank makes the round recompute everything.
 func TestPlanPersonalRoundRebuildsOnADeletedSource(t *testing.T) {
 	input := rollupTestInput()
@@ -398,6 +398,24 @@ func TestPlanPersonalRoundRebuildsOnADeletedSource(t *testing.T) {
 	}
 }
 
+// TestPlanPersonalRoundRebuildDropsAStoredRowWhoseSourceIsGone pins that a
+// rebuild removes the projected rows whose source units are no longer read.
+func TestPlanPersonalRoundRebuildDropsAStoredRowWhoseSourceIsGone(t *testing.T) {
+	input := rollupTestInput()
+	input.SourceDeleted = true
+	input.Facts = input.Facts[:1]
+	input.Previous = []storage.PersonalPreviousFact{
+		{ID: "gone-row", Text: "a fact whose source was deleted", MergeKey: "stale-key"},
+	}
+	plan, err := planPersonalRound(input, rollupTestCfg())
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.diff.Remove) != 1 || plan.diff.Remove[0].ID != "gone-row" {
+		t.Fatalf("remove = %+v, want the stale row", plan.diff.Remove)
+	}
+}
+
 // TestPlanPersonalRoundAdvancesEachWatermarkToItsLastFact pins the cursor rule:
 // per bank, to the last fact actually consumed.
 func TestPlanPersonalRoundAdvancesEachWatermarkToItsLastFact(t *testing.T) {
@@ -405,8 +423,8 @@ func TestPlanPersonalRoundAdvancesEachWatermarkToItsLastFact(t *testing.T) {
 	first := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
 	second := first.Add(time.Minute)
 	input.Facts = []storage.PersonalSourceFact{
-		{BankID: "alice::orders", UnitID: "u1", Text: "a", UpdatedAt: first},
-		{BankID: "alice::orders", UnitID: "u2", Text: "b", UpdatedAt: second},
+		{BankID: "alice::orders", UnitID: "u1", Text: "a", FactType: "world", UpdatedAt: first},
+		{BankID: "alice::orders", UnitID: "u2", Text: "b", FactType: "experience", UpdatedAt: second},
 	}
 	plan, err := planPersonalRound(input, rollupTestCfg())
 	if err != nil {
@@ -421,29 +439,27 @@ func TestPlanPersonalRoundAdvancesEachWatermarkToItsLastFact(t *testing.T) {
 	}
 }
 
-// TestBuildPersonalFinishRecordsDroppedSources pins the ledger's distinction for
-// the aggregate plane too: a source no fact cited is dropped, so deleting it later
-// cannot force a rebuild.
-func TestBuildPersonalFinishRecordsDroppedSources(t *testing.T) {
+// TestBuildPersonalFinishRecordsEverySource pins that the ledger records one row
+// per consumed source, with the projection key, and drops nothing.
+func TestBuildPersonalFinishRecordsEverySource(t *testing.T) {
 	input := rollupTestInput()
 	plan, err := planPersonalRound(input, rollupTestCfg())
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	answers, err := personalrollup.ParseAnswer(`{"facts":[{"text":"`+rollupFactOrders+`","sources":[0]}]}`, 2)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	req := buildPersonalFinish(input, plan, answers, time.Now().UTC())
+	req := buildPersonalFinish(input, plan, time.Now().UTC())
 	keys := map[string]string{}
 	for _, source := range req.Sources {
 		keys[source.UnitID] = source.MergeKey
 	}
-	if keys["00000000-0000-0000-0000-000000000001"] == tenant.DroppedMergeKey {
-		t.Fatal("a cited source was recorded as dropped")
+	for _, fact := range input.Facts {
+		want := personalrollup.ProjectionKey(fact.BankID, fact.UnitID)
+		if keys[fact.UnitID] != want {
+			t.Fatalf("source %s = %q, want %q", fact.UnitID, keys[fact.UnitID], want)
+		}
 	}
-	if keys["00000000-0000-0000-0000-000000000002"] != tenant.DroppedMergeKey {
-		t.Fatalf("an uncited source = %q, want dropped", keys["00000000-0000-0000-0000-000000000002"])
+	if len(req.Insert) != len(input.Facts) || len(req.Remove) != 0 {
+		t.Fatalf("insert/remove = %d/%d, want one insert per fact", len(req.Insert), len(req.Remove))
 	}
 }
 

@@ -180,8 +180,9 @@ const (
 	// EnvPersonalRollupRebuildMaxUnits bounds a rebuild's input before the
 	// aggregate fails closed.
 	EnvPersonalRollupRebuildMaxUnits = "WENYUAN_API_PERSONAL_ROLLUP_REBUILD_MAX_UNITS"
-	// EnvPersonalRollupMaxTeamFacts bounds the aggregate content one round's
-	// prompt carries.
+	// EnvPersonalRollupMaxTeamFacts is kept for configuration compatibility. It
+	// used to bound the aggregate content one round's prompt carried; the
+	// aggregate is now a verbatim projection with no prompt, so no round reads it.
 	EnvPersonalRollupMaxTeamFacts = "WENYUAN_API_PERSONAL_ROLLUP_MAX_TEAM_FACTS"
 	// EnvPersonalRollupFailThreshold is how many consecutive failed rounds halt
 	// one tenant's rollup.

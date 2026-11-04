@@ -51,19 +51,34 @@ type PersonalSourceBank struct {
 	LastMergedAt *time.Time
 }
 
-// PersonalSourceFact is one fact a source bank contributed to a round.
+// PersonalSourceFact is one fact a source bank contributed to a round. The
+// aggregate bank mirrors it verbatim, so the kind and temporal bounds travel
+// with the text: a consolidation pass over the aggregate bank then sees exactly
+// the evidence it would have seen in the source bank.
 type PersonalSourceFact struct {
-	BankID    string
-	UnitID    string
-	Text      string
-	UpdatedAt time.Time
+	BankID        string
+	UnitID        string
+	Text          string
+	FactType      string
+	EventDate     *time.Time
+	OccurredStart *time.Time
+	OccurredEnd   *time.Time
+	MentionedAt   *time.Time
+	UpdatedAt     time.Time
 }
 
-// PersonalPreviousFact is one aggregate fact a round starts from.
+// PersonalPreviousFact is one projected row a round starts from. MergeKey is
+// the source unit's ProjectionKey, read back from the row's metadata; a row
+// without one is a leftover from an older round and is replaced as unmanaged.
 type PersonalPreviousFact struct {
-	ID       string
-	Text     string
-	MergeKey string
+	ID            string
+	Text          string
+	MergeKey      string
+	FactType      string
+	EventDate     *time.Time
+	OccurredStart *time.Time
+	OccurredEnd   *time.Time
+	MentionedAt   *time.Time
 }
 
 // PersonalRoundInput is what a round reads while it holds the claim.

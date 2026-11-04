@@ -187,16 +187,29 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   switch** (a zero interval falls back to the default). A team tenant is not a
   person and never gets one. Design:
   `docs/plans/2026-10-31-personal-aggregate-bank-design.md`.
+- **The aggregate is a materialized view, not a summary.** Each of its rows is a
+  verbatim projection of one `world` or `experience` fact from another bank of
+  the same tenant — text, kind and temporal bounds carried over unchanged. The job
+  spends **no model call**; a standard consolidation pass over `<tenant>::myself`
+  reads those projected rows exactly as it would read any bank's own memories and
+  synthesizes the observations from them. `consolidated_at` is stamped only on the
+  projected rows, never on a source bank's facts, so consolidation never competes
+  with a source bank's own pass. Every row carries `metadata.origin='aggregate'`
+  and `metadata.projection_key` (the SHA-256 of `bank_id + NUL + unit_id`); a
+  source unit's identity, not its wording, decides which row an edit replaces.
 - **The aggregate bank is written only by the job.** `myself` is not a reserved
   name, so the write routes never refuse it — a client that retains into it is
-  accepted, and the next round replaces those rows because only facts carrying
-  `metadata.origin='aggregate'` are the rollup's. `aggregate-status.user_facts`
+  accepted, and the next round replaces those rows because only rows carrying both
+  `origin='aggregate'` and a `projection_key` are the job's. `aggregate-status.user_facts`
   counts the others so an operator sees them.
 - **Watermarks are per source bank.** One WENYUAN column per source bank in
   `admin.personal_bank_state`; the aggregate bank is never a source, so it has no
-  watermark of its own. The ledger is `admin.personal_source` (source unit →
-  `merge_key`, or `'__dropped__'`), and each round runs a live-source anti-join so
-  a fact deleted from a source bank leaves the aggregate.
+  watermark of its own. The ledger is `admin.personal_source` (source unit → its
+  `projection_key`), and each round runs a live-source anti-join so a fact deleted
+  from a source bank forces a rebuild that drops its projected row. Removing a
+  projected row retires the observations resting on it and clears
+  `consolidated_at` on its surviving co-sources, so the next consolidation
+  rebuilds them.
 - **`project.merge` excludes `<member>::myself`**: a project whose id is `myself`
   points at the member's aggregate bank, and a person's cross-project conclusions
   must never pass as their contribution to a team (`postgres_merge_store.go`,
@@ -280,8 +293,9 @@ internal/reflect/      bounded retrieval-and-synthesis reflection loop
 internal/projectmerge/ the project merge engine's pure rules (merge key, the
                        carry pass, the rollup's shared diff) — no database, no
                        HTTP, no model
-internal/personalrollup/ the personal aggregate's pure rules (answer parsing,
-                       prompt, the navigation-index projection) — no database
+internal/personalrollup/ the personal aggregate's pure rules (the projection
+                       key and diff; the legacy answer parsing, prompt and
+                       navigation-index projection) — no database
 internal/teamread/     decides whether a read falls back to a project's team bank
 internal/consolidation/  observation consolidation engine
 internal/extraction/   memory extraction pipeline

@@ -111,8 +111,10 @@ type MaintenanceConfig struct {
 	// PersonalRollupRebuildMaxUnits bounds a rebuild's input before the
 	// aggregate fails closed and empties its derived content.
 	PersonalRollupRebuildMaxUnits int
-	// PersonalRollupMaxTeamFacts bounds the previous aggregate content one
-	// round's prompt carries; beyond it the round is skipped, not failed closed.
+	// PersonalRollupMaxTeamFacts is kept for configuration compatibility. It used
+	// to bound the previous aggregate content one round's prompt carried; the
+	// aggregate is now a verbatim projection that calls no model, so no round
+	// consults it. Keeping the key avoids breaking a deployment that sets it.
 	PersonalRollupMaxTeamFacts int
 	// PersonalRollupFailThreshold is how many consecutive failed rounds halt a
 	// tenant's rollup until an operator resets it.

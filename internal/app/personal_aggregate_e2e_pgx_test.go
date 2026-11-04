@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,9 @@ import (
 // The in-memory and job tests pin the decisions; these pin what a client sees —
 // that a write straight into `<tenant>::myself` is accepted and then replaced by
 // the next round, that the aggregate is readable like any bank, and that the
-// management plane reports it.
+// management plane reports it. They also pin the property the projection exists
+// for: consolidation reads the aggregate's own rows and never stamps a source
+// bank's fact.
 
 // aggregateE2EFixture is one provisioned tenant with its key and a served app.
 type aggregateE2EFixture struct {
@@ -33,8 +36,8 @@ type aggregateE2EFixture struct {
 	app      *App
 	tenantID string
 	key      string
-	// model is the stub the round is driven with; it is the same object the app
-	// was composed with.
+	// model is the stub the app was composed with. The projection calls no model;
+	// consolidation of the projected rows does, so it must report a usable name.
 	model provider.Provider
 }
 
@@ -89,7 +92,17 @@ func (f *aggregateE2EFixture) admin(t *testing.T, method, path, body string) *ht
 	return adminCall(t, f.app.AdminHandler, method, path, body)
 }
 
-// runRound runs the real job once.
+// ctx is the tenant's schema context.
+func (f *aggregateE2EFixture) ctx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, err := storage.WithSchema(context.Background(), f.tenantID)
+	if err != nil {
+		t.Fatalf("WithSchema: %v", err)
+	}
+	return ctx
+}
+
+// runRound runs the real projection job once.
 func (f *aggregateE2EFixture) runRound(t *testing.T) {
 	t.Helper()
 	runner := &personalRunner{
@@ -110,18 +123,20 @@ func (f *aggregateE2EFixture) runRound(t *testing.T) {
 // bank-scoped read answering not-found.
 func (f *aggregateE2EFixture) writeFact(t *testing.T, bank, text string) string {
 	t.Helper()
+	return f.writeFactOfKind(t, bank, text, "world")
+}
+
+// writeFactOfKind puts one fact of the given kind into a bank.
+func (f *aggregateE2EFixture) writeFactOfKind(t *testing.T, bank, text, kind string) string {
+	t.Helper()
 	bankID := tenant.ProjectBankID(f.tenantID, bank)
-	ctx, err := storage.WithSchema(context.Background(), f.tenantID)
-	if err != nil {
-		t.Fatalf("WithSchema: %v", err)
-	}
-	if err := f.app.Store.EnsureBank(ctx, bankID); err != nil {
+	if err := f.app.Store.EnsureBank(f.ctx(t), bankID); err != nil {
 		t.Fatalf("ensure bank %s: %v", bankID, err)
 	}
 	var id string
-	if err := f.db.QueryRowContext(ctx, `
+	if err := f.db.QueryRowContext(f.ctx(t), `
 		INSERT INTO "`+f.tenantID+`".memory_units (bank_id, text, fact_type)
-		VALUES ($1,$2,'world') RETURNING id::text`, bankID, text).Scan(&id); err != nil {
+		VALUES ($1,$2,$3) RETURNING id::text`, bankID, text, kind).Scan(&id); err != nil {
 		t.Fatalf("insert fact: %v", err)
 	}
 	return id
@@ -133,12 +148,8 @@ func (f *aggregateE2EFixture) writeFact(t *testing.T, bank, text string) string 
 func (f *aggregateE2EFixture) unmanagedFact(t *testing.T, bank, text string) string {
 	t.Helper()
 	bankID := tenant.ProjectBankID(f.tenantID, bank)
-	ctx, err := storage.WithSchema(context.Background(), f.tenantID)
-	if err != nil {
-		t.Fatalf("WithSchema: %v", err)
-	}
 	var id string
-	if err := f.db.QueryRowContext(ctx, `
+	if err := f.db.QueryRowContext(f.ctx(t), `
 		INSERT INTO "`+f.tenantID+`".memory_units (bank_id, text, fact_type)
 		VALUES ($1,$2,'world') RETURNING id::text`, bankID, text).Scan(&id); err != nil {
 		t.Fatalf("insert unmanaged fact: %v", err)
@@ -157,8 +168,7 @@ const extractedFact = "orders deploys on port 15432."
 // the served surface refuses it. The write is answered, and the aggregate bank
 // exists afterwards with the fact in it.
 func TestPostgresAggregateRetainIntoMySelfIsAccepted(t *testing.T) {
-	model := &rollupOnlyProvider{answerProvider: &answerProvider{name: "fake",
-		reply: `{"facts":[{"text":"` + extractedFact + `","sources":[0]}]}`}}
+	model := &rollupOnlyProvider{answerProvider: &answerProvider{name: "fake"}}
 	f := newAggregateE2EFixture(t, model)
 
 	direct := f.call(t, http.MethodPost, "/v1/default/banks/"+f.aggregate()+"/memories",
@@ -169,11 +179,7 @@ func TestPostgresAggregateRetainIntoMySelfIsAccepted(t *testing.T) {
 	// Whatever the pipeline made of the text, it reached the bank rather than the
 	// edge refusing the bank id.
 	var banks int
-	ctx, err := storage.WithSchema(context.Background(), f.tenantID)
-	if err != nil {
-		t.Fatalf("WithSchema: %v", err)
-	}
-	if err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM "`+f.tenantID+`".banks WHERE bank_id = $1`,
+	if err := f.db.QueryRowContext(f.ctx(t), `SELECT count(*) FROM "`+f.tenantID+`".banks WHERE bank_id = $1`,
 		f.aggregate()).Scan(&banks); err != nil {
 		t.Fatalf("count banks: %v", err)
 	}
@@ -182,9 +188,9 @@ func TestPostgresAggregateRetainIntoMySelfIsAccepted(t *testing.T) {
 	}
 }
 
-// rollupOnlyProvider answers a merge round and reports the extraction path as
-// unusable, which is what a deployment without an extraction-capable model looks
-// like: retain then fails at the model, never at the bank id.
+// rollupOnlyProvider reports the extraction path as unusable, which is what a
+// deployment without an extraction-capable model looks like: retain then fails
+// at the model, never at the bank id. The projection calls no model at all.
 type rollupOnlyProvider struct{ *answerProvider }
 
 func (p *rollupOnlyProvider) Complete(ctx context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
@@ -194,12 +200,11 @@ func (p *rollupOnlyProvider) Complete(ctx context.Context, req provider.Completi
 	return p.answerProvider.Complete(ctx, req)
 }
 
-// TestPostgresAggregateRollupReplacesADirectlyWrittenRow pins the content
-// ownership end to end: a world fact in the aggregate bank that no round wrote is
-// replaced by the next round, which is what keeps the aggregate the rollup's.
-func TestPostgresAggregateRollupReplacesADirectlyWrittenRow(t *testing.T) {
-	model := &rollupOnlyProvider{answerProvider: &answerProvider{name: "fake",
-		reply: `{"facts":[{"text":"` + extractedFact + `","sources":[0]}]}`}}
+// TestPostgresAggregateProjectionReplacesADirectlyWrittenRow pins the content
+// ownership end to end: a row in the aggregate bank that no round projected is
+// replaced by the next round, and the source bank's fact is projected verbatim.
+func TestPostgresAggregateProjectionReplacesADirectlyWrittenRow(t *testing.T) {
+	model := &rollupOnlyProvider{answerProvider: &answerProvider{name: "fake"}}
 	f := newAggregateE2EFixture(t, model)
 	f.writeFact(t, "orders", extractedFact)
 	f.unmanagedFact(t, "myself", "a conclusion someone wrote by hand")
@@ -212,7 +217,7 @@ func TestPostgresAggregateRollupReplacesADirectlyWrittenRow(t *testing.T) {
 	}
 	body := list.Body.String()
 	if !strings.Contains(body, extractedFact) {
-		t.Fatalf("the aggregate does not carry the conclusion: %s", body)
+		t.Fatalf("the aggregate does not carry the projected fact verbatim: %s", body)
 	}
 	if strings.Contains(body, "written by hand") {
 		t.Fatalf("a directly written row survived the round: %s", body)
@@ -247,7 +252,7 @@ func TestPostgresAggregateRollupReplacesADirectlyWrittenRow(t *testing.T) {
 // TestPostgresAggregateIsReadableAndManaged pins the two surfaces: the aggregate
 // reads like any bank through the data plane, and the management plane reports it.
 func TestPostgresAggregateIsReadableAndManaged(t *testing.T) {
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"orders deploys on port 15432","sources":[0]}]}`}
+	model := &answerProvider{name: "fake"}
 	f := newAggregateE2EFixture(t, model)
 
 	f.writeFact(t, "orders", extractedFact)
@@ -291,10 +296,158 @@ func TestPostgresAggregateIsReadableAndManaged(t *testing.T) {
 	}
 }
 
+// TestPostgresAggregateProjectsWorldAndExperience pins the input to the aggregate:
+// both kinds of source fact are projected, verbatim, from every bank but myself.
+func TestPostgresAggregateProjectsWorldAndExperience(t *testing.T) {
+	model := &answerProvider{name: "fake"}
+	f := newAggregateE2EFixture(t, model)
+	f.writeFactOfKind(t, "orders", extractedFact, "world")
+	f.writeFactOfKind(t, "billing", "billing stores amounts in integer cents", "experience")
+	f.writeFactOfKind(t, "myself", "a directly written row", "world")
+
+	f.runRound(t)
+
+	var world, experience int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FILTER (WHERE fact_type='world'),
+		       count(*) FILTER (WHERE fact_type='experience')
+		FROM "`+f.tenantID+`".memory_units WHERE bank_id=$1`, f.aggregate()).Scan(&world, &experience); err != nil {
+		t.Fatalf("count kinds: %v", err)
+	}
+	if world != 1 || experience != 1 {
+		t.Fatalf("world/experience = %d/%d, want one of each", world, experience)
+	}
+	var direct int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM "`+f.tenantID+`".memory_units
+		WHERE bank_id=$1 AND text='a directly written row'`, f.aggregate()).Scan(&direct); err != nil {
+		t.Fatalf("count direct row: %v", err)
+	}
+	if direct != 0 {
+		t.Fatal("a directly written row survived the projection")
+	}
+	// Every projected row carries the metadata that marks it as the job's own,
+	// and the source banks' rows are untouched.
+	var unmarked int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM "`+f.tenantID+`".memory_units
+		WHERE bank_id=$1 AND fact_type IN ('world','experience')
+		  AND COALESCE(metadata->>'projection_key','') = ''`, f.aggregate()).Scan(&unmarked); err != nil {
+		t.Fatalf("count unmarked: %v", err)
+	}
+	if unmarked != 0 {
+		t.Fatalf("unmarked projected rows = %d, want none", unmarked)
+	}
+	var sourceStamped int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM "`+f.tenantID+`".memory_units
+		WHERE bank_id <> $1 AND fact_type IN ('world','experience') AND consolidated_at IS NOT NULL`,
+		f.aggregate()).Scan(&sourceStamped); err != nil {
+		t.Fatalf("count source stamps: %v", err)
+	}
+	if sourceStamped != 0 {
+		t.Fatalf("source facts stamped consolidated = %d, want none", sourceStamped)
+	}
+}
+
+// TestPostgresAggregateConsolidatesItsOwnRows is the property the projection
+// exists for. A consolidation pass over the aggregate bank folds its projected
+// world and experience rows into an observation, stamps those rows
+// consolidated, and leaves every source bank's own facts completely untouched.
+func TestPostgresAggregateConsolidatesItsOwnRows(t *testing.T) {
+	// The consolidation model answers with one observation resting on every fact
+	// it is shown; those ids are the aggregate's own projected rows, never a
+	// source bank's facts.
+	model := &decisionProvider{text: "orders deploys on port 15432 and billing stores cents"}
+	f := newAggregateE2EFixture(t, model)
+	f.writeFactOfKind(t, "orders", extractedFact, "world")
+	f.writeFactOfKind(t, "billing", "billing stores amounts in integer cents", "experience")
+
+	f.runRound(t)
+
+	processor := archiveProcessor{store: f.app.Store, provider: model}
+	if err := processor.Process(f.ctx(t), storage.Operation{
+		OperationID: "op-agg-consolidate", BankID: f.aggregate(),
+		OperationType: storage.OperationTypeConsolidate,
+	}); err != nil {
+		t.Fatalf("consolidation: %v", err)
+	}
+
+	var observations int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM "`+f.tenantID+`".memory_units
+		WHERE bank_id=$1 AND fact_type='observation'`, f.aggregate()).Scan(&observations); err != nil {
+		t.Fatalf("count observations: %v", err)
+	}
+	if observations != 1 {
+		t.Fatalf("observations = %d, want one built from the projected rows", observations)
+	}
+	// The projected rows, and only those, are stamped consolidated.
+	var aggregateStamped, sourceStamped int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FILTER (WHERE bank_id=$1),
+		       count(*) FILTER (WHERE bank_id<>$1)
+		FROM "`+f.tenantID+`".memory_units
+		WHERE fact_type IN ('world','experience') AND consolidated_at IS NOT NULL`,
+		f.aggregate()).Scan(&aggregateStamped, &sourceStamped); err != nil {
+		t.Fatalf("count stamps: %v", err)
+	}
+	if aggregateStamped != 2 {
+		t.Fatalf("stamped aggregate rows = %d, want both projected rows", aggregateStamped)
+	}
+	if sourceStamped != 0 {
+		t.Fatalf("stamped source rows = %d, want none: a source bank must not be touched", sourceStamped)
+	}
+}
+
+// factIDPattern reads the "[uuid]" prefix buildInput puts on each new fact.
+var factIDPattern = regexp.MustCompile(`\[([0-9a-fA-F-]{36})\]`)
+
+// decisionProvider answers one completion with a single observation resting on
+// every fact the pass showed it. Citing all the fact ids keeps the pass from
+// re-asking facts a response left unaddressed, which would create a second
+// observation for the same batch.
+type decisionProvider struct {
+	text  string
+	calls int
+}
+
+func (p *decisionProvider) Name() string                           { return "openai" }
+func (p *decisionProvider) Dimensions() int                        { return provider.DeclaredDimensions() }
+func (p *decisionProvider) VerifyConnection(context.Context) error { return nil }
+func (p *decisionProvider) Embed(context.Context, provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	return provider.EmbeddingResult{}, nil
+}
+func (p *decisionProvider) Complete(_ context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
+	p.calls++
+	var user string
+	for _, message := range req.Messages {
+		if message.Role == "user" {
+			user = message.Content
+		}
+	}
+	ids := make([]string, 0)
+	for _, match := range factIDPattern.FindAllStringSubmatch(user, -1) {
+		ids = append(ids, match[1])
+	}
+	decision := map[string]any{
+		"creates": []any{map[string]any{
+			"text": p.text, "source_fact_ids": ids, "reason": "one durable conclusion",
+		}},
+		"updates": []any{},
+		"deletes": []any{},
+	}
+	encoded, err := json.Marshal(decision)
+	if err != nil {
+		return provider.CompletionResult{}, err
+	}
+	return provider.CompletionResult{Content: string(encoded)}, nil
+}
+
 // TestPostgresAggregateReportsATeamAsHavingNone pins the product decision on the
 // management plane: a team is not a person.
 func TestPostgresAggregateReportsATeamAsHavingNone(t *testing.T) {
-	model := &answerProvider{name: "fake", reply: `{"facts":[{"text":"x","sources":[0]}]}`}
+	model := &answerProvider{name: "fake"}
 	f := newAggregateE2EFixture(t, model)
 	teamID := f.tenantID + "_team"
 	created := f.admin(t, http.MethodPost, "/admin/v1/teams", fmt.Sprintf(`{"tenant_id":%q}`, teamID))

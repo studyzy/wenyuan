@@ -88,7 +88,7 @@ func (s *PostgresPersonalStore) ensureAggregateBank(ctx context.Context, tx Tx, 
 
 // aggregateMission is what the aggregate bank's mission says, so a reader of the
 // bank that never sees this feature still learns what fills it.
-const aggregateMission = "结论来自该租户其余各个 bank 的汇总，由后台任务生成，不直接接受人工写入。"
+const aggregateMission = "该租户其余各个 bank 的世界事实与经历的逐条投影，由后台任务生成，不直接接受人工写入。"
 
 // claimHeldTx reports whether this round still owns the tenant's claim.
 func (s *PostgresPersonalStore) claimHeldTx(ctx context.Context, tx Tx, tenantID string, stamp time.Time) (bool, error) {
@@ -100,20 +100,20 @@ func (s *PostgresPersonalStore) claimHeldTx(ctx context.Context, tx Tx, tenantID
 	return held > 0, err
 }
 
-// applyPersonalFacts rewrites the aggregate bank's derived facts.
+// applyPersonalFacts rewrites the aggregate bank's projected rows.
 //
 // The order matters and is not DeleteBank's: that one deletes a whole bank, while
-// a round deletes only the facts the answer dropped. Running a bank-wide delete
-// here would empty the aggregate on every round.
+// a round deletes only the rows whose source facts changed or vanished. Running
+// a bank-wide delete here would empty the aggregate on every round.
 func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, qualified string, req FinishPersonalRequest) error {
 	if len(req.Remove) > 0 {
 		doomed := make([]string, 0, len(req.Remove))
 		for _, fact := range req.Remove {
 			doomed = append(doomed, fact.ID)
 		}
-		// An observation is removed only when every fact it was made from is
-		// gone; one built partly on surviving facts keeps its row.
-		if err := deleteObservationsWithoutSourcesTx(ctx, tx, qualified, req.BankID, doomed); err != nil {
+		// An observation that rested on a removed row is stale; the surviving
+		// co-sources are requeued so the next consolidation rebuilds it.
+		if err := retireObservationsForRemovedRowsTx(ctx, tx, qualified, req.BankID, doomed); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -122,15 +122,16 @@ func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, q
 			return err
 		}
 	}
-	// The defence against a direct write: a world fact in the aggregate bank that
-	// no round wrote is not part of the aggregate, and the next round replaces it.
-	// Its observations go with it, by the same rule the explicit removals use.
+	// The defence against a direct write: a row in the aggregate bank that no
+	// round projected is not part of the aggregate, and the next round replaces
+	// it. Its observations go with it, by the same rule the explicit removals use.
 	if req.UnmanagedFacts > 0 {
 		var orphanIDs []string
 		rows, err := tx.QueryContext(ctx, `
 			SELECT id::text FROM `+qualified+`.memory_units
-			WHERE bank_id = $1 AND fact_type = 'world'
-			  AND COALESCE(metadata->>'origin', '') <> $2
+			WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
+			  AND (COALESCE(metadata->>'origin', '') <> $2
+			       OR COALESCE(metadata->>'projection_key', '') = '')
 			FOR UPDATE`, req.BankID, tenant.OriginAggregate)
 		if err != nil {
 			return err
@@ -148,7 +149,7 @@ func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, q
 			return err
 		}
 		if len(orphanIDs) > 0 {
-			if err := deleteObservationsWithoutSourcesTx(ctx, tx, qualified, req.BankID, orphanIDs); err != nil {
+			if err := retireObservationsForRemovedRowsTx(ctx, tx, qualified, req.BankID, orphanIDs); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx,
@@ -160,26 +161,24 @@ func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, q
 	}
 	mergedAt := req.Stamp.UTC().Format(time.RFC3339)
 	for _, fact := range req.Insert {
-		banks := req.FactBanks[fact.MergeKey]
 		sources, err := json.Marshal(sourcesOf(req, fact.MergeKey))
 		if err != nil {
 			return err
 		}
-		banksJSON, err := json.Marshal(banks)
-		if err != nil {
-			return err
-		}
-		topicsJSON, err := json.Marshal(topicsOf(req, fact.MergeKey))
-		if err != nil {
-			return err
-		}
 		metadata := fmt.Sprintf(
-			`{"origin": %q, "merge_key": %q, "merged_at": %q, "sources": %s, "banks": %s, "topics": %s}`,
-			tenant.OriginAggregate, fact.MergeKey, mergedAt, sources, banksJSON, topicsJSON)
+			`{"origin": %q, "merge_key": %q, "projection_key": %q, "merged_at": %q, "sources": %s}`,
+			tenant.OriginAggregate, fact.MergeKey, fact.MergeKey, mergedAt, sources)
+		factType := fact.FactType
+		if factType != "experience" {
+			factType = "world"
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata)
-			VALUES ($1, NULL, $2, 'world', $3::jsonb)`,
-			req.BankID, fact.Text, metadata); err != nil {
+			INSERT INTO `+qualified+`.memory_units
+			    (bank_id, document_id, text, fact_type, metadata,
+			     event_date, occurred_start, occurred_end, mentioned_at)
+			VALUES ($1, NULL, $2, $4, $3::jsonb, $5, $6, $7, $8)`,
+			req.BankID, fact.Text, metadata, factType,
+			fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt); err != nil {
 			return err
 		}
 	}
@@ -200,17 +199,6 @@ func sourcesOf(req FinishPersonalRequest, mergeKey string) []personalSourceRef {
 			continue
 		}
 		out = append(out, personalSourceRef{UnitID: row.UnitID, BankID: row.BankID})
-	}
-	return out
-}
-
-// topicsOf lists the topics an aggregate fact belongs to.
-func topicsOf(req FinishPersonalRequest, mergeKey string) []string {
-	out := make([]string, 0)
-	for _, topic := range req.Topics {
-		if topic.MergeKey == mergeKey {
-			out = append(out, topic.Name)
-		}
 	}
 	return out
 }
@@ -419,11 +407,16 @@ func (s *PostgresPersonalStore) PersonalStatus(ctx context.Context, tenantID str
 		tenantID).Scan(&status.PendingBanks); err != nil {
 		return status, err
 	}
+	// A row is the job's only when it carries both its origin and a projection
+	// key; a leftover from an older round is a user fact for display purposes,
+	// just as it is for the unmanaged sweep that replaces it.
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT count(*) FILTER (WHERE COALESCE(metadata->>'origin', '') = $2),
-		       count(*) FILTER (WHERE COALESCE(metadata->>'origin', '') <> $2)
+		SELECT count(*) FILTER (WHERE COALESCE(metadata->>'origin', '') = $2
+		                          AND COALESCE(metadata->>'projection_key', '') <> ''),
+		       count(*) FILTER (WHERE COALESCE(metadata->>'origin', '') <> $2
+		                          OR COALESCE(metadata->>'projection_key', '') = '')
 		FROM `+quoteIdent(tenantID)+`.memory_units
-		WHERE bank_id = $1 AND fact_type = 'world'`,
+		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')`,
 		status.BankID, tenant.OriginAggregate).Scan(&status.AggregateFacts, &status.UserFacts); err != nil {
 		return status, err
 	}

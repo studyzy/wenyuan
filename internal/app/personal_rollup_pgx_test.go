@@ -86,24 +86,24 @@ func (f *rollupJobFixture) bank(t *testing.T, name string) string {
 	return bankID
 }
 
-// fact inserts one world fact into a bank.
-func (f *rollupJobFixture) fact(t *testing.T, bankID, text string) string {
+// fact inserts one fact of the given kind into a bank.
+func (f *rollupJobFixture) fact(t *testing.T, bankID, text, kind string) string {
 	t.Helper()
 	var id string
 	if err := f.db.QueryRowContext(f.ctx(t), `
 		INSERT INTO `+quoteIdentForTest(f.persona)+`.memory_units (bank_id, text, fact_type)
-		VALUES ($1,$2,'world') RETURNING id::text`, bankID, text).Scan(&id); err != nil {
+		VALUES ($1,$2,$3) RETURNING id::text`, bankID, text, kind).Scan(&id); err != nil {
 		t.Fatalf("insert fact: %v", err)
 	}
 	return id
 }
 
-// aggregateFacts reads the aggregate bank's world facts.
+// aggregateFacts reads the aggregate bank's projected world and experience rows.
 func (f *rollupJobFixture) aggregateFacts(t *testing.T) []string {
 	t.Helper()
 	rows, err := f.db.QueryContext(f.ctx(t), `
 		SELECT text FROM `+quoteIdentForTest(f.persona)+`.memory_units
-		WHERE bank_id = $1 AND fact_type='world' ORDER BY text`, tenant.PersonalBankID(f.persona))
+		WHERE bank_id = $1 AND fact_type IN ('world','experience') ORDER BY text`, tenant.PersonalBankID(f.persona))
 	if err != nil {
 		t.Fatalf("read aggregate: %v", err)
 	}
@@ -119,27 +119,37 @@ func (f *rollupJobFixture) aggregateFacts(t *testing.T) []string {
 	return out
 }
 
-// TestPersonalRollupJobFoldsEveryBank drives the real job: two banks, one model
-// call, and the aggregate bank plus its ledger and watermarks written together.
-func TestPersonalRollupJobFoldsEveryBank(t *testing.T) {
+// TestPersonalRollupJobProjectsEveryBank drives the real job: two banks, no
+// model call, and one projected row per source fact written with its ledger and
+// watermarks. World and experience facts both arrive verbatim.
+func TestPersonalRollupJobProjectsEveryBank(t *testing.T) {
 	f := newRollupJobFixture(t)
 	orders := f.bank(t, "orders")
 	billing := f.bank(t, "billing")
-	f.fact(t, orders, "orders deploys on port 15432")
-	f.fact(t, billing, "billing stores cents")
+	f.fact(t, orders, "orders deploys on port 15432", "world")
+	f.fact(t, billing, "billing stores cents", "experience")
 
-	model := &answerProvider{name: "fake",
-		reply: `{"facts":[{"text":"orders deploys on port 15432","sources":[0],"topics":["deploy"]},` +
-			`{"text":"billing stores cents","sources":[1],"topics":["billing"]}]}`}
+	model := &answerProvider{name: "fake"}
 	runner := &personalRunner{store: f.store, models: func(string) provider.Provider { return model }, cfg: rollupTestCfg()}
 	if err := runner.runPersonalRounds(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if model.calls != 1 {
-		t.Fatalf("model calls = %d, want 1 for the tenant", model.calls)
+	if model.calls != 0 {
+		t.Fatalf("model calls = %d, a projection must spend none", model.calls)
 	}
 	if got := f.aggregateFacts(t); len(got) != 2 {
-		t.Fatalf("aggregate = %v, want both conclusions", got)
+		t.Fatalf("aggregate = %v, want both source facts", got)
+	}
+	var world, experience int
+	if err := f.db.QueryRowContext(context.Background(), `
+		SELECT count(*) FILTER (WHERE fact_type='world'),
+		       count(*) FILTER (WHERE fact_type='experience')
+		FROM `+quoteIdentForTest(f.persona)+`.memory_units
+		WHERE bank_id=$1`, tenant.PersonalBankID(f.persona)).Scan(&world, &experience); err != nil {
+		t.Fatalf("count kinds: %v", err)
+	}
+	if world != 1 || experience != 1 {
+		t.Fatalf("world/experience = %d/%d, want one of each", world, experience)
 	}
 	var ledger int
 	if err := f.db.QueryRowContext(context.Background(),
@@ -147,11 +157,10 @@ func TestPersonalRollupJobFoldsEveryBank(t *testing.T) {
 		t.Fatalf("count ledger: %v", err)
 	}
 	if ledger != 2 {
-		t.Fatalf("ledger rows = %d, want one per bank", ledger)
+		t.Fatalf("ledger rows = %d, want one per source fact", ledger)
 	}
 
 	// The next round has nothing new: no model call, no write.
-	model.calls = 0
 	if err := runner.runPersonalRounds(context.Background()); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
@@ -160,16 +169,16 @@ func TestPersonalRollupJobFoldsEveryBank(t *testing.T) {
 	}
 
 	// A fact newly written into one bank is the only thing the next round reads,
-	// and it reaches the same aggregate.
-	f.fact(t, orders, "orders has a health endpoint")
-	model.reply = `{"facts":[{"text":"orders deploys on port 15432","sources":[]},` +
-		`{"text":"billing stores cents","sources":[]},` +
-		`{"text":"orders has a health endpoint","sources":[0],"topics":["deploy"]}]}`
+	// and it is projected verbatim alongside the two existing rows.
+	f.fact(t, orders, "orders has a health endpoint", "world")
 	if err := runner.runPersonalRounds(context.Background()); err != nil {
 		t.Fatalf("third run: %v", err)
 	}
 	if got := f.aggregateFacts(t); len(got) != 3 {
 		t.Fatalf("aggregate after the new fact = %v, want three", got)
+	}
+	if model.calls != 0 {
+		t.Fatalf("model calls = %d, want 0", model.calls)
 	}
 }
 

@@ -1,10 +1,12 @@
 # Personal Aggregate Bank（`<TenantId>::myself`）—— 设计方案
 
-状态：2026-10-31 v2b。产品先定调了四件事（§十三），随后又明确了第 5 条：
-**`A::myself` 完全由后台生成与管理，用户不往里写、也不删它的内容**；再后来定了第 6 条：
-**`project.merge` 不把 `<member>::myself` 当成员 bank**。第 5 条让 v2 的"两条水线 +
-`origin` 分双写"整体塌回"一条水线 + 一个兜底标签"，第 6 条关掉了 v2b 里唯一残留的
-交叠点，§零 记下了这两次改动的理由与结果。v1 的 409 写门仍然不回——`myself` 不是保留名。
+状态：2026-11-04 v3。v2b 的结论——**`A::myself` 完全由后台生成与管理，用户不往里写、
+也不删它的内容**，以及 **`project.merge` 不把 `<member>::myself` 当成员 bank**——不变。
+v3 改的是**内容的形态**：v2b 让模型把源 bank 的事实压缩成一版汇总条目，再对汇总条目跑
+consolidation；v3 改为**物化投影**：每条源事实逐字复制成 `A::myself` 的一行，投影本身
+不调模型，观察完全由标准 consolidation 从这些行归纳出来。这正是产品要的形状——
+「`myself` 的观察和单个 bank 的观察走同一条流程，只是数据源换成了该 tenant 除自己以外
+的所有 bank」。§零 记下了 v3 的修订与理由。
 前作：`docs/plans/2026-10-29-team-project-shared-memory-design.md`（v2 决策 19 条）、
 `docs/plans/2026-10-30-team-memory-design-v3.md`（已实现：`project.merge`、
 `MergeStore`、团队读回退）。本设计**复用** v3 的合并机制，不复制它的结论。
@@ -40,7 +42,7 @@ v2b 有一条新定的规则：**`A::myself` 只由后台生成与管理，用�
 | 消失的东西 | 为什么 |
 |---|---|
 | 目标水线（`personal_state.target_cursor_*`） | 只有一个写入者，上一版就是"全部 `origin='aggregate'` 的行"，按 id 全读即可 |
-| `origin` 标记与按它过滤的删除语句 | 行归属没有歧义：`A::myself` 里的 world 事实都是汇总条目 |
+| `origin` 标记与按它过滤的删除语句 | 行归属没有歧义：`A::myself` 里的 `world`/`experience` 行都是投影行 |
 | "`A::myself` 同时作为源 bank" | 它是目标，不是源；源只有 `A::X`、`A::Y`…… |
 | 用户直写事实参与 `sources` | 没有用户直写的事实 |
 
@@ -53,9 +55,9 @@ v2b 有一条新定的规则：**`A::myself` 只由后台生成与管理，用�
 模板、直接调 API）。因此：
 
 - V2 仍然成立：**`A::myself` 不是保留名，没有 409 写门**，写路由一行不改；
-- 这类行不是源、不是账本键，下一轮 rollup 按"汇总条目之外的行不是我的"清掉它们
-  ——用的是**行级标记 `metadata.origin='aggregate'`**，但这里它只用于**兜底识别**，
-  不再是两半数据的结构（§6.4）；
+- 这类行不是源、不是账本键，下一轮 rollup 按"没有 `projection_key` 的行不是我的"清掉
+  它们——用的是**行级标记 `metadata.origin='aggregate'` + `metadata.projection_key`**，
+  这里只用于**兜底识别**，不是两半数据的结构（§6.4）；
 - 删除检测仍然需要它：账本里的源 unit 不是汇总自己的行，反连接只对**源 schema 的
   memory_units** 做（§6.3），计数 `user_facts` 在 `aggregate-status` 里给运维看。
 
@@ -93,42 +95,44 @@ team bank（`T::X`）解决的是**两个人共享一个项目**；它不解决*
 | 4 | **功能默认开启且不可关闭**：没有"关掉"的配置。`tenant_mode: single` 的唯一 schema 同样汇总。唯一的"不跑"是两个自然条件：没有 chat provider，或进程根本没在跑维护循环。 |
 | 5 | **`A::myself` 由后台独占生成与管理。** 用户不往里写、也不删它的内容；它的一切内容都是从该 tenant 其他 bank 推导出来的。数据面不为写它加拒绝（决策 2），但用户写进去的行下一轮会被替换（§0.2）。 |
 | 6 | **每个源 bank 一条 `(updated_at, id)` 水线**。`A::myself` 是目标不是源，没有目标水线：上一版就是它当前的全部内容（§6.3）。 |
-| 7 | 输入只取**源 bank**（该 tenant 除 `A::myself` 以外的 bank）里 `fact_type='world'` 的事实。`experience` 永不进入；`observation` 由 consolidation 生成，其 id 会随重建变化，不作为账本键（与 v3 决策 8 同因）。 |
+| 7 | 输入取**源 bank**（该 tenant 除 `A::myself` 以外的 bank）里 `fact_type IN ('world','experience')` 的事实，**逐条投影**。`observation` 不作为输入：它是 consolidation 的产物，从投影行归纳出来，不直接搬运。 |
 | 8 | 只读本 schema。团队 bank（`T::X`，在团队自己的 schema 里）的内容**永不进入** `A::myself`；成员身份带来的项目 bank `A::X` 就是本 schema 的普通 bank，照常合并（§3.4）。 |
-| 9 | 汇总条目带**双重溯源**：`metadata.sources`（源事实 unit id，可展开到原文）与 `metadata.banks`（出现在哪些源 bank）。前者是"发散"的路线，后者是"索引"的键。 |
-| 10 | 跨 bank 的同题归并在**词表**里完成：`personal_topic` 是"规范主题 → bank"的索引，它既是去重的答案，也是发散的边。 |
+| 9 | 每个投影行带**双重溯源**：`metadata.sources`（它镜像的源事实 unit id，可展开到原文）与 `metadata.banks`（该源 bank）。`metadata.projection_key` 是它的身份，也是账本键。 |
+| 10 | **不在投影层归并**：两个 bank 的同文本事实保留两行（和单 bank 里两条事实一样），是否合并交给 consolidation 的模型判断。`personal_topic` 词表本轮不生成（没有模型调用就没有 topics），`personal_link` 仍按投影来源 bank 重建。 |
 | 11 | 并发沿用 v3 的两段事务 + `merging_since` fence，key 是 `(tenant_id)`，advisory lock 每个 tenant 一把。 |
-| 12 | 删除检测是**每轮存活反连接**，只查"仍在支撑汇总内容的源行"（v3 R4/R2）；`'__dropped__'` 不参与。 |
-| 13 | 汇总 bank 的观察由既有 consolidation 生成（入队 `consolidate`），**不调用二次模型**。 |
+| 12 | 删除检测是**每轮存活反连接**：账本里任何源 unit 消失，本轮就整轮重建；重建读全量源事实，投影 diff 会删掉源已消失的行。没有 `'__dropped__'`——每条源事实都支撑一行。 |
+| 13 | 投影本身**不调用任何模型**；`A::myself` 的观察由既有 consolidation 从投影行归纳（入队 `consolidate`），与单 bank 完全同一条流程。`consolidated_at` 只打在投影行，源 bank 的事实不受影响。 |
 | 14 | 读路径不变：`teamread.Resolver` 与 `storage.withFallback` 一行不改。`myself` 的定位价值靠"可寻址 + 索引"实现，不靠隐式回退（§3.2）。 |
 | 15 | 账本独立：`admin.personal_state` / `personal_bank_state` / `personal_source` / `personal_link` / `personal_topic`（新迁移 `0004`）。不复用 `merge_state`/`merge_source_unit`：它们的 FK 挂在 `team_project`/`team_member` 上。 |
-| 16 | 目录是在**已产出的内容上**的纯函数投影（词表 + 溯源），**不单独调模型**；数据面不新增路由，目录落在 `A::myself` 的 knowledge 树里（§7.2）。 |
+| 16 | 目录本轮只投影**来源链接**（`personal_link`，从投影行的源 bank 派生）；词表 `personal_topic` 暂不生成，因为没有模型调用就没有 topics。目录仍不新增数据面路由。 |
 
 ## 三、备选方案与取舍
 
-### 3.1 迭代单位：水线增量 vs 整 bank 重合成
+### 3.1 迭代单位：逐条物化投影
 
 v3 的项目合并按 `(updated_at, id)` 水线增量，要求"源 bank"与"目标 bank"是**不同的
-bank**。v2b 满足这个前提：`A::myself` 由后台独占写（决策 5），源只是 `A::X`、`A::Y`……
-所以个人汇总可以直接沿用 v3 的水线，而不需要 v1 的整 bank `source_hash` 重合成，也不
-需要 v2 一开始设计的两条水线（§0.1）。这样：
+bank**。`A::myself` 由后台独占写（决策 5），源只是 `A::X`、`A::Y`……所以个人汇总可以
+直接沿用 v3 的水线，而不需要 v1 的整 bank `source_hash` 重合成，也不需要 v2 一开始设计
+的两条水线（§0.1）。v3 把「每轮的产出」定为**物化投影**：
 
-| 方案 | 每轮模型输入 | 删除检测 | 代价 |
+| 方案 | 每轮输入 | 产出 | 代价 |
 |---|---|---|---|
-| **A. 每源水线 + 存活反连接**（选） | 上一版 + 该批增量事实 | 每轮存活反连接（v3 R4） | 上一版必须带进 prompt，受 `PersonalRollupMaxTeamFacts` 约束 |
-| B. 整 bank `source_hash` 重合成（v1） | 该 bank 全部事实 + 旧摘要 | 哈希变化即重算 | 大 bank 每次改动都整包重算 |
-| C. 单一 prompt 全量 | 全部 bank 的全部事实 | 全量重建 | 规模上限硬撞 |
+| **A. 逐条投影 + 每源水线**（选） | 该批增量事实（源 unit 的 text/kind/时间列） | 每条源事实一行，逐字复制 | 行数等于源事实数；编辑源事实会换一轮投影行 |
+| B. 模型压缩成汇总条目（v2b） | 上一版汇总 + 该批增量事实 | 一版压缩过的汇总句 | 观察建立在压缩文本上；多一次模型调用 |
+| C. 整 bank `source_hash` 重合成（v1） | 该 bank 全部事实 + 旧摘要 | 全量摘要 | 大 bank 每次改动都整包重算 |
 
-A 的产出是**压扁的一版汇总条目**（每轮把"上一版 + 新事实"合成完整一版，与被替换的
-行保持 `merge_key` 相同则 id 不变、观察跟着走）。**上一版必须进 prompt**（v3 决策 14），
-否则模型会把本轮没见过的旧内容丢掉；条目数因此受 `PersonalRollupMaxTeamFacts`
-（默认 500）约束——超限是**容量问题**：记 `last_error`、本轮跳过，**不失败关闭**
-（没有隐私问题，与 v3 R8 同一判断）。
+A 的产出是**一行对应一个源 unit**：`text`、`fact_type`、`event_date/occurred_*/mentioned_at`
+逐字复制，`metadata.projection_key = SHA-256(bank_id + NUL + unit_id)` 是身份。源事实被
+编辑（文本/类型/时间变化）时，diff 删旧行 + 插新行，观察随新文本重建；两个 bank 的同
+文本事实保留两行，和单 bank 里两条事实完全一样。**投影没有任何模型调用**，因此不存在
+"上一版必须进 prompt"的约束，`PersonalRollupMaxTeamFacts` 不再参与任何判断（配置键保留
+以兼容部署，但代码不再读它）。
 
-代价必须写明：**汇总条目是压缩过的**。用户问"这个 API 的端口是多少"时，
-`A::myself` 给的是汇总句；原文在 `A::X` 里，靠 `metadata.sources` 定位过去（决策 9）。
-所以 prompt 硬性要求保留**可复核的具体值**（端口、路径、版本、约束），§6.2 的
-golden case 与 §十二 的 golden 用例是这条的验收。
+A 的第二个关键性质：`consolidated_at` 由 consolidation 打在**投影行**上，源 bank 的事实
+一行都不改。这让 `A::myself` 的观察与源 bank 自己的观察彼此独立：两边都可以各自折叠
+同一批源事实，互不抢生命周期标记。这也是否决「纯虚拟 View（不物化）」的原因——
+consolidation 需要往输入行写 `consolidated_at`，普通 View 只读；要让它成立必须引入独立
+折叠账本并改 6+ 处按 `bank_id` 读源的 storage 方法，还会在源事实删除时留下悬空证据。
 
 ### 3.2 寻址：显式可寻址 vs 读回退
 
@@ -340,7 +344,10 @@ v3 的 fence 是按 `(team, project, member)` 逐行盖章。这里一轮读的�
 推后其他 bank 进入下一轮。v3 的项目级锁是同一性质，只是这里的粒度是 tenant。
 `DefaultPersonalRoundDeadline = 2 × interval，最小 5 分钟`，超过视为崩溃轮次可被接管。
 
-## 六、`personal.rollup`：水线增量合成
+## 六、`personal.rollup`：水线增量投影
+
+> v3 修订：本节描述的是 v3 的**物化投影**。§6.2 的 prompt 形状与 §6.1 的「调一次模型」
+> 属于 v2b 的压缩式汇总，已被 §3.1 取代，保留作历史记录；实现以 §3.1 与 §6.3–§6.5 为准。
 
 ### 6.1 一轮
 
@@ -355,18 +362,19 @@ v3 的 fence 是按 `(team, project, member)` 逐行盖章。这里一轮读的�
 2. 每个 tenant 抢 `pg_try_advisory_xact_lock(hashtext('wenyuan:personal-rollup'),
    hashtext(tenant_id))`，检查/接管 `personal_state.merging_since`（v3 §5.2 原样）；
 3. **读水线**：对每个源 bank（该 schema 的 `banks` 里除 `A::myself` 外的全部行）取
-   `(updated_at, id) > cursor` 的 world 事实，按 `last_merged_at NULLS FIRST` 排序，
-   合计不超过 `PersonalRollupBatchSize`（默认 20，与 `ProjectMergeBatchSize` 同量级）；
-4. **读上一版**：`A::myself` 里 `fact_type='world'` 的全部行（§6.3）；
+   `(updated_at, id) > cursor` 的 `world`/`experience` 事实（连同 `fact_type` 与四个
+   时间列），按 `last_merged_at NULLS FIRST` 排序，合计不超过
+   `PersonalRollupBatchSize`（默认 20，与 `ProjectMergeBatchSize` 同量级）；
+4. **读现存投影行**：`A::myself` 里 `fact_type IN ('world','experience')` 的全部行，
+   带 `metadata.projection_key` 与时间列（§6.3）；
 5. **删除检测**：每轮一次存活反连接（§6.3）；
-6. 没有新事实、没有删除、没有重建请求 → 只更新 `last_round_at`，**不调模型**；
-7. 有变化 → 调一次模型，写库（§6.4）；
-8. 事实真的变了 → 入队一次 `consolidate`；目录（knowledge 树、`personal_link`、
-   `personal_topic`）在同一事务里按 §7.2 的纯函数投影重建。
+6. 没有新事实、没有删除、没有重建请求 → 只更新 `last_round_at`，**不写库、不调模型**；
+7. 有变化 → 按投影 diff 删旧行/插新行，写库（§6.4）。**这一步不调用任何模型**；
+8. 投影行真的变了 → 入队一次 `consolidate`；`personal_link` 在同一事务里按来源 bank
+   重建（`personal_topic` 暂不生成，见决策 16）。
 
-**一个 tenant 一轮一次模型调用**，不是每 bank 一次：水线已经给出"这一轮所有 bank 的
-新事实"，而目标只有一个 `A::myself`；分 bank 循环会产出互相矛盾的版本（每个 bank 都以
-为自己是全集），最后还得再合并一次。
+**一个 tenant 一轮零次模型调用**：投影是逐字复制。真正调用模型的是随后由 worker 消费的
+那次 `consolidate`，它与单 bank 的观察生成完全同一条流程。
 
 ### 6.2 输入与输出
 
@@ -461,25 +469,26 @@ LIMIT 1;
 6. 目录投影（§7.2）同事务写 `personal_link` / `personal_topic`；knowledge 树在事务
    提交后异步建（它要走既有 knowledge 服务，不在同一个 tx 里）。
 
-### 6.5 汇总条目的 metadata
+### 6.5 投影行的 metadata
 
 ```json
 {
   "origin": "aggregate",
-  "merge_key": "sha256(normalize(text))",
-  "sources": [{"unit_id": "…", "bank_id": "A::X"}, {"unit_id": "…", "bank_id": "A::Y"}],
-  "banks": ["A::X", "A::Y"],
-  "topics": ["部署", "postgres"],
+  "projection_key": "sha256(bank_id + NUL + unit_id)",
+  "merge_key": "sha256(bank_id + NUL + unit_id)",
+  "sources": [{"unit_id": "…", "bank_id": "A::X"}],
   "merged_at": "2026-10-31T00:00:00Z"
 }
 ```
 
-- `origin` 在 v2b 里只是**兜底标记**（§0.2），不再划分两半数据；写它是因为第 2 步要
-  用它把"不是我的行"识别出来；
-- `sources` 是**发散**的路线：一条汇总条目 → 若干原文 unit（跨 bank）；
-- `banks` 是**索引**的键：一条汇总条目出现在哪些 bank，`personal_link` 就是它的聚合；
+- `projection_key` 是**身份**：它决定 diff 保留/替换哪一行，也是 `personal_source` 的
+  账本键；一行恰好镜像一个源 unit，所以 `sources` 只有一个条目；
+- `merge_key` 与 `projection_key` 同值，保留给既有读取路径（`sourcesOf`、目录 rebuild）；
+- `origin` 与 `projection_key` 一起标识"这是 job 写的行"：缺任一个都会被
+  `unmanagedTx` 计入并在下一轮替换；
 - **不写 tag**（v3 决策 10：tag 会进 `ListTags` 与 fuzzy 解析词汇）；
-- `fact_type='world'`、`document_id=NULL`。
+- `fact_type` 逐字复制源事实（`world` 或 `experience`），四个时间列同样逐字复制；
+- `document_id=NULL`。
 
 ### 6.6 失败与熔断
 
@@ -802,16 +811,18 @@ bank；单一 Tenant 部署同样启用且不可关闭；团队 tenant 没有它
 2. 用户要的是"全"，多一层抽象只会更远于原文；"全"由 `sources` 指回原文保证；
 3. 每多一层就多一次模型调用与一份可见性窗口，收益无法证明。
 
-同理，目录（§七）也不单独调模型：它的输入本来就是 rollup 产出的主题与溯源。
+v3 进一步把 rollup 的那次模型调用也去掉了：投影是逐字复制，观察由既有 consolidation
+一层归纳。所以整条链路只剩 consolidation 一次模型调用，和单 bank 完全一样。目录
+（§七）同样不单独调模型；v3 起它只保留来源链接，词表等后续从投影行/观察的 tags 重建。
 
 ### 15.2 风险
 
 | 风险 | 对策 |
 |---|---|
-| 汇总条目压缩掉具体值 | prompt 硬要求 + §十二 的 golden case；`sources` 永远指回原文 |
-| 模型调用成本 | 一个 tenant 一轮**一次**调用（§6.1）；水线让无变化的 tenant 零调用；默认 300s |
+| 投影行与源事实不一致 | 逐字复制 text/kind/时间列，无模型介入；`metadata.sources` 与 `projection_key` 指回源 unit |
+| 模型调用成本 | rollup 自身**零调用**；只有 consolidation 一次归纳；水线让无变化的 tenant 零写 |
 | 一轮消费不完 | `PersonalRollupBatchSize` 限制新事实条数，水线只推进到实际消费的位置 |
-| 上一版超 `MaxTeamFacts` | 容量问题：本轮跳过 + `last_error`，**不**失败关闭（v3 R8） |
+| 投影行数随源事实增长 | 不再有 prompt 容量上限；`MaxTeamFacts` 保留为兼容配置但不再参与判断 |
 | 删除漏判 → 已删记忆仍可见 | 存活反连接每轮做，不做版本粗筛（v3 R4）；重建输入超限时失败关闭 |
 | 用户以为往 `A::myself` 写能留下 | 决策 5 明确它是后台生成物；`user_facts` 计数暴露给运维（§8.2），不会静默 |
 | 用户删掉某条汇总条目 | 下一轮重建（§8.3）；要撤回就删源事实 |
