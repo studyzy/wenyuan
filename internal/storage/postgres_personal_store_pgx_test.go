@@ -105,6 +105,18 @@ func (f *personalFixture) fact(t *testing.T, bankID, text string) string {
 	return id
 }
 
+// factWithTags inserts one world fact carrying tags.
+func (f *personalFixture) factWithTags(t *testing.T, bankID, text string, tags []string) string {
+	t.Helper()
+	var id string
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		INSERT INTO `+quoteIdent(f.persona)+`.memory_units (bank_id, text, fact_type, tags)
+		VALUES ($1,$2,'world',$3) RETURNING id::text`, bankID, text, tags).Scan(&id); err != nil {
+		t.Fatalf("insert tagged fact: %v", err)
+	}
+	return id
+}
+
 // deleteFact removes one fact.
 func (f *personalFixture) deleteFact(t *testing.T, unitID string) {
 	t.Helper()
@@ -213,11 +225,18 @@ func (d personalDiffResult) sourceKeys(freshCount int) map[int][]string {
 func personalDiff(input PersonalRoundInput, texts []string) personalDiffResult {
 	result := personalDiffResult{supported: map[int][]string{}}
 	answerKeys := make([]string, 0, len(texts))
-	for i, text := range texts {
+	factByKey := map[string]PersonalSourceFact{}
+	factIndexByKey := map[string]int{}
+	for i, fact := range input.Facts {
+		key := tenant.MergeKey(fact.Text)
+		factByKey[key] = fact
+		factIndexByKey[key] = i
+	}
+	for _, text := range texts {
 		key := tenant.MergeKey(text)
 		answerKeys = append(answerKeys, key)
-		if i < len(input.Facts) {
-			result.supported[i] = append(result.supported[i], key)
+		if index, ok := factIndexByKey[key]; ok {
+			result.supported[index] = append(result.supported[index], key)
 		}
 	}
 	previousKeys := map[string]bool{}
@@ -230,7 +249,11 @@ func personalDiff(input PersonalRoundInput, texts []string) personalDiffResult {
 	}
 	for _, key := range answerKeys {
 		if !previousKeys[key] {
-			result.Insert = append(result.Insert, PersonalPreviousFact{Text: keyToText(key, texts), MergeKey: key})
+			source := factByKey[key]
+			result.Insert = append(result.Insert, PersonalPreviousFact{
+				Text: keyToText(key, texts), MergeKey: key, FactType: source.FactType,
+				Tags: source.Tags, SourceUnitID: source.UnitID,
+			})
 			previousKeys[key] = true
 		}
 	}
@@ -423,6 +446,60 @@ func TestPersonalWatermarksArePerBank(t *testing.T) {
 	}
 	if next.Facts[0].BankID != orders {
 		t.Fatalf("fresh fact came from %s, want %s", next.Facts[0].BankID, orders)
+	}
+}
+
+// TestPersonalProjectionCarriesTagsAndLinks pins the two objects a projection
+// must not drop: the source fact's tags (recall's tag filters and the observation
+// scope read them) and the links between source facts (the aggregate's graph arm
+// reads them, with both endpoints rewritten to projected rows).
+func TestPersonalProjectionCarriesTagsAndLinks(t *testing.T) {
+	f := newPersonalFixture(t)
+	orders := f.bank(t, "orders")
+	first := f.factWithTags(t, orders, "orders deploys on port 15432",
+		[]string{"topic:deploy", "session:1"})
+	second := f.factWithTags(t, orders, "orders used Jenkins", []string{"topic:ci"})
+	if _, err := f.db.ExecContext(f.ctx(t), `
+		INSERT INTO `+quoteIdent(f.persona)+`.memory_links
+		    (from_unit_id, to_unit_id, link_type, weight, bank_id)
+		VALUES ($1::uuid,$2::uuid,'semantic',0.9,$3)`, first, second, orders); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+
+	input, _, stamp := f.round(t, 20)
+	f.finish(t, personalFinish(input, stamp, "orders deploys on port 15432", "orders used Jenkins"))
+
+	self := tenant.PersonalBankID(f.persona)
+	var tagged int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM `+quoteIdent(f.persona)+`.memory_units
+		WHERE bank_id=$1 AND fact_type IN ('world','experience') AND cardinality(tags)>0`, self).
+		Scan(&tagged); err != nil {
+		t.Fatalf("count tagged projections: %v", err)
+	}
+	if tagged != 2 {
+		t.Fatalf("tagged projected rows = %d, want both", tagged)
+	}
+
+	var links, wellFormed int
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM `+quoteIdent(f.persona)+`.memory_links WHERE bank_id=$1`, self).
+		Scan(&links); err != nil {
+		t.Fatalf("count projected links: %v", err)
+	}
+	if links != 1 {
+		t.Fatalf("projected links = %d, want one", links)
+	}
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM `+quoteIdent(f.persona)+`.memory_links l
+		JOIN `+quoteIdent(f.persona)+`.memory_units a ON a.id = l.from_unit_id
+		JOIN `+quoteIdent(f.persona)+`.memory_units b ON b.id = l.to_unit_id
+		WHERE l.bank_id=$1 AND a.bank_id=$1 AND b.bank_id=$1 AND l.entity_id IS NULL`, self).
+		Scan(&wellFormed); err != nil {
+		t.Fatalf("count well-formed links: %v", err)
+	}
+	if wellFormed != 1 {
+		t.Fatalf("links with both endpoints in the aggregate = %d, want one", wellFormed)
 	}
 }
 

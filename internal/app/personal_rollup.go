@@ -169,6 +169,7 @@ func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceC
 	for _, fact := range input.Previous {
 		previous = append(previous, personalrollup.ProjectionFact{
 			ID: fact.ID, Key: fact.MergeKey, Text: fact.Text, FactType: fact.FactType,
+			Tags:      fact.Tags,
 			EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 			OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
 		})
@@ -177,7 +178,7 @@ func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceC
 	for _, fact := range input.Facts {
 		fresh = append(fresh, personalrollup.ProjectionFact{
 			Key:  personalrollup.ProjectionKey(fact.BankID, fact.UnitID),
-			Text: fact.Text, FactType: fact.FactType,
+			Text: fact.Text, FactType: fact.FactType, Tags: fact.Tags,
 			EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 			OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
 			BankID: fact.BankID, UnitID: fact.UnitID,
@@ -258,6 +259,7 @@ func buildPersonalFinish(
 func projectionRow(fact personalrollup.ProjectionFact) storage.PersonalPreviousFact {
 	return storage.PersonalPreviousFact{
 		ID: fact.ID, Text: fact.Text, MergeKey: fact.Key, FactType: fact.FactType,
+		Tags: fact.Tags, SourceUnitID: fact.UnitID,
 		EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 		OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
 	}

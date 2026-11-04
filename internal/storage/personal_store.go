@@ -60,6 +60,7 @@ type PersonalSourceFact struct {
 	UnitID        string
 	Text          string
 	FactType      string
+	Tags          []string
 	EventDate     *time.Time
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
@@ -75,6 +76,8 @@ type PersonalPreviousFact struct {
 	Text          string
 	MergeKey      string
 	FactType      string
+	Tags          []string
+	SourceUnitID  string
 	EventDate     *time.Time
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time

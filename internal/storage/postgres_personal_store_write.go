@@ -50,6 +50,9 @@ func (s *PostgresPersonalStore) FinishPersonalRound(ctx context.Context, req Fin
 	if err := s.applyPersonalFacts(ctx, tx, qualified, req); err != nil {
 		return err
 	}
+	if err := s.applyPersonalLinks(ctx, tx, qualified, req.BankID); err != nil {
+		return err
+	}
 	if err := s.applyPersonalLedger(ctx, tx, req); err != nil {
 		return err
 	}
@@ -166,23 +169,60 @@ func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, q
 			return err
 		}
 		metadata := fmt.Sprintf(
-			`{"origin": %q, "merge_key": %q, "projection_key": %q, "merged_at": %q, "sources": %s}`,
-			tenant.OriginAggregate, fact.MergeKey, fact.MergeKey, mergedAt, sources)
+			`{"origin": %q, "merge_key": %q, "projection_key": %q, "source_unit_id": %q, "merged_at": %q, "sources": %s}`,
+			tenant.OriginAggregate, fact.MergeKey, fact.MergeKey, fact.SourceUnitID, mergedAt, sources)
 		factType := fact.FactType
 		if factType != "experience" {
 			factType = "world"
 		}
+		tags := fact.Tags
+		if tags == nil {
+			tags = []string{}
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO `+qualified+`.memory_units
-			    (bank_id, document_id, text, fact_type, metadata,
+			    (bank_id, document_id, text, fact_type, tags, metadata,
 			     event_date, occurred_start, occurred_end, mentioned_at)
-			VALUES ($1, NULL, $2, $4, $3::jsonb, $5, $6, $7, $8)`,
+			VALUES ($1, NULL, $2, $4, $9::text[], $3::jsonb, $5, $6, $7, $8)`,
 			req.BankID, fact.Text, metadata, factType,
-			fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt); err != nil {
+			fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt, tags); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// applyPersonalLinks rebuilds the aggregate's link graph from the source banks'
+// links. A link survives when both of its endpoints have been projected; its
+// endpoints are rewritten to the projected row ids and its entity is dropped,
+// because an entity is an identity within one bank rather than across them.
+//
+// The rebuild is wholesale: a link whose source endpoint was removed must not
+// outlive it, and the projected set is small enough that re-deriving it is
+// cheaper than tracking per-link changes.
+func (s *PostgresPersonalStore) applyPersonalLinks(ctx context.Context, tx Tx, qualified, bankID string) error {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.memory_links WHERE bank_id = $1`, bankID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO `+qualified+`.memory_links
+		    (from_unit_id, to_unit_id, link_type, entity_id, weight, bank_id)
+		SELECT projected_from.id, projected_to.id, source.link_type, NULL, source.weight, $1
+		FROM `+qualified+`.memory_links source
+		JOIN `+qualified+`.memory_units source_from ON source_from.id = source.from_unit_id
+		JOIN `+qualified+`.memory_units source_to ON source_to.id = source.to_unit_id
+		JOIN `+qualified+`.memory_units projected_from
+		  ON projected_from.bank_id = $1
+		 AND projected_from.fact_type IN ('world', 'experience')
+		 AND projected_from.metadata->>'source_unit_id' = source_from.id::text
+		JOIN `+qualified+`.memory_units projected_to
+		  ON projected_to.bank_id = $1
+		 AND projected_to.fact_type IN ('world', 'experience')
+		 AND projected_to.metadata->>'source_unit_id' = source_to.id::text
+		WHERE source.bank_id <> $1
+		ON CONFLICT DO NOTHING`, bankID)
+	return err
 }
 
 // personalSourceRef is one provenance entry on an aggregate fact.

@@ -45,6 +45,42 @@ func TestProjectionIsOneRowPerSourceFact(t *testing.T) {
 	}
 }
 
+func TestProjectionCarriesTags(t *testing.T) {
+	fresh := []ProjectionFact{projectionSource("alice::orders", "u1", "on port 15432", "world")}
+	fresh[0].Tags = []string{"topic:deploy", "session:1"}
+	diff := DiffProjection(nil, fresh, false)
+	if len(diff.Insert) != 1 {
+		t.Fatalf("insert = %+v, want one row", diff.Insert)
+	}
+	if !sameStrings(diff.Insert[0].Tags, fresh[0].Tags) {
+		t.Fatalf("tags = %v, want %v", diff.Insert[0].Tags, fresh[0].Tags)
+	}
+}
+
+func TestProjectionReplacesAFactWhoseTagsChanged(t *testing.T) {
+	stored := projectionSource("alice::orders", "u1", "on port 15432", "world")
+	stored.ID = "row-1"
+	stored.Tags = []string{"topic:deploy"}
+	fresh := []ProjectionFact{projectionSource("alice::orders", "u1", "on port 15432", "world")}
+	fresh[0].Tags = []string{"topic:deploy", "topic:postgres"}
+	diff := DiffProjection([]ProjectionFact{stored}, fresh, false)
+	if len(diff.Remove) != 1 || len(diff.Insert) != 1 {
+		t.Fatalf("diff = %+v, want the row replaced", diff)
+	}
+}
+
+func TestProjectionIgnoresTagOrder(t *testing.T) {
+	stored := projectionSource("alice::orders", "u1", "on port 15432", "world")
+	stored.ID = "row-1"
+	stored.Tags = []string{"a", "b"}
+	fresh := []ProjectionFact{projectionSource("alice::orders", "u1", "on port 15432", "world")}
+	fresh[0].Tags = []string{"b", "a"}
+	diff := DiffProjection([]ProjectionFact{stored}, fresh, false)
+	if len(diff.Insert) != 0 || len(diff.Remove) != 0 {
+		t.Fatalf("diff = %+v, tag order must not replace a row", diff)
+	}
+}
+
 func TestProjectionKeepsAnUnchangedRow(t *testing.T) {
 	fresh := []ProjectionFact{projectionSource("alice::orders", "u1", "on port 15432", "world")}
 	stored := fresh[0]

@@ -126,9 +126,11 @@ func rollupTestInput() storage.PersonalRoundInput {
 		},
 		Facts: []storage.PersonalSourceFact{
 			{BankID: "alice::orders", UnitID: "00000000-0000-0000-0000-000000000001",
-				Text: rollupFactOrders, FactType: "world", UpdatedAt: now},
+				Text: rollupFactOrders, FactType: "world",
+				Tags: []string{"topic:deploy", "session:1"}, UpdatedAt: now},
 			{BankID: "alice::billing", UnitID: "00000000-0000-0000-0000-000000000002",
-				Text: rollupFactBilling, FactType: "experience", UpdatedAt: now},
+				Text: rollupFactBilling, FactType: "experience",
+				Tags: []string{"topic:billing"}, UpdatedAt: now},
 		},
 	}
 }
@@ -164,6 +166,12 @@ func TestPersonalRollupProjectsEveryFact(t *testing.T) {
 	}
 	if req.Insert[0].FactType != "world" || req.Insert[1].FactType != "experience" {
 		t.Fatalf("kinds = %q/%q, want world/experience", req.Insert[0].FactType, req.Insert[1].FactType)
+	}
+	if len(req.Insert[0].Tags) != 2 || req.Insert[0].Tags[0] != "topic:deploy" {
+		t.Fatalf("tags = %v, want the source fact's tags", req.Insert[0].Tags)
+	}
+	if req.Insert[0].SourceUnitID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("source unit = %q, want the source unit id", req.Insert[0].SourceUnitID)
 	}
 	if req.BankID != "alice::myself" || req.TenantID != "alice" || req.Schema != "alice" {
 		t.Fatalf("the write names %+v, want alice's aggregate", req)
@@ -313,7 +321,7 @@ func TestPlanPersonalRoundKeepsAnUnchangedRow(t *testing.T) {
 	fact := input.Facts[0]
 	input.Previous = []storage.PersonalPreviousFact{
 		{ID: "row-1", Text: fact.Text, MergeKey: personalrollup.ProjectionKey(fact.BankID, fact.UnitID),
-			FactType: fact.FactType},
+			FactType: fact.FactType, Tags: fact.Tags},
 	}
 	plan, err := planPersonalRound(input, rollupTestCfg())
 	if err != nil {

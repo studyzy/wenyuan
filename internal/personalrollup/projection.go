@@ -36,8 +36,12 @@ type ProjectionFact struct {
 	// Text, FactType and the temporal bounds are copied verbatim from the source
 	// fact, so sourceObservationBounds sees the same evidence it would in the
 	// source bank.
-	Text          string
-	FactType      string
+	Text     string
+	FactType string
+	// Tags are copied verbatim: recall's tag filters and the observation scope
+	// both read them, so a projection that dropped them would make the aggregate
+	// unreachable by the filters its source facts answer.
+	Tags          []string
 	EventDate     *time.Time
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
@@ -112,10 +116,29 @@ func DiffProjection(previous, fresh []ProjectionFact, rebuild bool) ProjectionDi
 func sameProjection(stored, fresh ProjectionFact) bool {
 	return stored.Text == fresh.Text &&
 		stored.FactType == fresh.FactType &&
+		sameStrings(stored.Tags, fresh.Tags) &&
 		sameTime(stored.EventDate, fresh.EventDate) &&
 		sameTime(stored.OccurredStart, fresh.OccurredStart) &&
 		sameTime(stored.OccurredEnd, fresh.OccurredEnd) &&
 		sameTime(stored.MentionedAt, fresh.MentionedAt)
+}
+
+// sameStrings reports set equality, because a tag list carries no order.
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, value := range a {
+		seen[value]++
+	}
+	for _, value := range b {
+		seen[value]--
+		if seen[value] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func sameTime(a, b *time.Time) bool {

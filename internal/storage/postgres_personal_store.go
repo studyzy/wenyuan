@@ -281,6 +281,7 @@ func (s *PostgresPersonalStore) claimTx(ctx context.Context, tx Tx, tenantID str
 func (s *PostgresPersonalStore) previousTx(ctx context.Context, tx Tx, schema, bankID string) ([]PersonalPreviousFact, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id::text, text, COALESCE(metadata->>'projection_key', ''), fact_type,
+		       COALESCE(tags, '{}'::text[])::text,
 		       event_date, occurred_start, occurred_end, mentioned_at
 		FROM `+quoteIdent(schema)+`.memory_units
 		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
@@ -292,11 +293,13 @@ func (s *PostgresPersonalStore) previousTx(ctx context.Context, tx Tx, schema, b
 	var out []PersonalPreviousFact
 	for rows.Next() {
 		var fact PersonalPreviousFact
+		var tags string
 		var eventDate, start, end, mentioned sql.NullTime
-		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType,
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType, &tags,
 			&eventDate, &start, &end, &mentioned); err != nil {
 			return nil, err
 		}
+		fact.Tags = decodeTextArray(tags)
 		fact.EventDate = nullTimePtr(eventDate)
 		fact.OccurredStart = nullTimePtr(start)
 		fact.OccurredEnd = nullTimePtr(end)
@@ -425,6 +428,7 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 	cursor := bank.Cursor
 	statement := `
 		SELECT id::text, text, updated_at, fact_type,
+		       COALESCE(tags, '{}'::text[])::text,
 		       event_date, occurred_start, occurred_end, mentioned_at
 		FROM ` + quoteIdent(schema) + `.memory_units
 		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
@@ -446,11 +450,13 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 	var out []PersonalSourceFact
 	for rows.Next() {
 		var fact PersonalSourceFact
+		var tags string
 		var eventDate, start, end, mentioned sql.NullTime
-		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.UpdatedAt, &fact.FactType,
+		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.UpdatedAt, &fact.FactType, &tags,
 			&eventDate, &start, &end, &mentioned); err != nil {
 			return nil, err
 		}
+		fact.Tags = decodeTextArray(tags)
 		fact.BankID = bank.BankID
 		fact.EventDate = nullTimePtr(eventDate)
 		fact.OccurredStart = nullTimePtr(start)
