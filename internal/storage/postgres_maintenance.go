@@ -105,17 +105,21 @@ func (s *PostgresStore) MentalModelsWithSchedule(ctx context.Context, routineSch
 	}
 	out := make([]ScheduledMentalModel, 0, len(found))
 	for _, row := range found {
+		// The function declares schema_name, bank_id, mental_model_id,
+		// refresh_cron, last_refreshed_at, full_refresh_cron,
+		// last_full_refreshed_at — the crons and their stamps alternate, so the
+		// cron columns are 3 and 5 and the stamps 4 and 6.
 		entry := ScheduledMentalModel{Schema: textOf(row[0]), BankID: textOf(row[1]), MentalModelID: textOf(row[2])}
 		if row[3] != nil {
 			entry.RefreshCron = *row[3]
 		}
-		if row[6] != nil {
-			entry.FullRefreshCron = *row[6]
+		if row[5] != nil {
+			entry.FullRefreshCron = *row[5]
 		}
 		if entry.LastRefreshedAt, err = parseDiscoveryTime(row[4]); err != nil {
 			return nil, err
 		}
-		if entry.LastFullRefreshedAt, err = parseDiscoveryTime(row[5]); err != nil {
+		if entry.LastFullRefreshedAt, err = parseDiscoveryTime(row[6]); err != nil {
 			return nil, err
 		}
 		out = append(out, entry)
