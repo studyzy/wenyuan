@@ -183,7 +183,10 @@ func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceC
 			BankID: fact.BankID, UnitID: fact.UnitID,
 		})
 	}
-	plan.rebuild = input.RebuildRequested || input.SourceDeleted
+	// A first fill is a rebuild: the ledger has no watermarks yet, so the round
+	// read every source fact and the aggregate must start complete rather than
+	// grow by one batch per tick.
+	plan.rebuild = input.RebuildRequested || input.SourceDeleted || input.FirstFill
 	if plan.rebuild {
 		// A rebuild reads every source fact, so its input is bounded on its own
 		// and failing closed is the right answer when it will not fit: leaving

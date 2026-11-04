@@ -372,6 +372,25 @@ func TestPlanPersonalRoundDoesNotSkipAnOversizedAggregate(t *testing.T) {
 	}
 }
 
+// TestPlanPersonalRoundTreatsFirstFillAsARebuild pins the first-fill rule: a
+// tenant with no watermark ledger reads every source fact in one round, so the
+// aggregate starts as a complete projection instead of growing one batch per
+// tick.
+func TestPlanPersonalRoundTreatsFirstFillAsARebuild(t *testing.T) {
+	input := rollupTestInput()
+	input.FirstFill = true
+	plan, err := planPersonalRound(input, rollupTestCfg())
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !plan.rebuild {
+		t.Fatalf("plan = %+v, want a first fill treated as a rebuild", plan)
+	}
+	if len(plan.diff.Insert) != 2 {
+		t.Fatalf("insert = %+v, want every source fact", plan.diff.Insert)
+	}
+}
+
 // TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild pins the safety answer:
 // a rebuild that cannot fit is refused rather than approximated.
 func TestPlanPersonalRoundFailsClosedOnAnOversizedRebuild(t *testing.T) {

@@ -155,9 +155,15 @@ func (s *PostgresPersonalStore) BeginPersonalRound(
 	if err != nil {
 		return false, err
 	}
-	if state.RebuildRequested || input.SourceDeleted {
+	input.FirstFill, err = s.firstFillTx(ctx, tx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	if state.RebuildRequested || input.SourceDeleted || input.FirstFill {
 		// A rebuild reads every source's facts from the beginning, so the batch
-		// bounds it as a whole.
+		// bounds it as a whole. The first fill is a rebuild for the same reason:
+		// with no watermarks, an incremental round would spend one batch per tick
+		// crawling a bank that is already there.
 		input.Facts, err = s.rebuildFactsTx(ctx, tx, input.Sources)
 	} else {
 		input.Facts, err = s.freshFactsTx(ctx, tx, input.Sources, batch)
@@ -453,6 +459,17 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 		out = append(out, fact)
 	}
 	return out, rows.Err()
+}
+
+// firstFillTx reports whether the tenant has never completed a round. A tenant
+// with no ledger has no watermarks, so an incremental round would crawl the
+// whole bank at the batch size; the first round reads everything instead.
+func (s *PostgresPersonalStore) firstFillTx(ctx context.Context, tx Tx, tenantID string) (bool, error) {
+	var hasLedger bool
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM `+adminTable("personal_bank_state")+` WHERE tenant_id = $1)`,
+		tenantID).Scan(&hasLedger)
+	return !hasLedger, err
 }
 
 // sourceDeletedTx reports whether any live ledger source has gone from its bank.

@@ -100,6 +100,11 @@ type PersonalRoundInput struct {
 	SourceDeleted bool
 	// RebuildRequested is an operator asking for a full recomputation.
 	RebuildRequested bool
+	// FirstFill reports that this tenant has never completed a round: its
+	// watermark ledger is empty. An incremental round would then crawl the whole
+	// bank at PersonalRollupBatchSize per tick, so the first round reads every
+	// source fact instead and the aggregate starts as a complete projection.
+	FirstFill bool
 	// Halted reports the circuit breaker being open. A round must not run.
 	Halted bool
 	// Topics is the tenant's vocabulary as the previous round left it, which the

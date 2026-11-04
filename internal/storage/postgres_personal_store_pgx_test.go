@@ -426,12 +426,52 @@ func TestPersonalWatermarksArePerBank(t *testing.T) {
 	}
 }
 
+// TestPersonalFirstFillReadsEveryFact pins the first-fill rule: a tenant with no
+// watermark ledger reads every source fact in one round, even when the batch is
+// smaller, so the aggregate starts as a complete projection. Once the ledger
+// exists the batch applies again.
+func TestPersonalFirstFillReadsEveryFact(t *testing.T) {
+	f := newPersonalFixture(t)
+	orders := f.bank(t, "orders")
+	for i := 0; i < 3; i++ {
+		f.fact(t, orders, fmt.Sprintf("orders fact %d", i))
+	}
+
+	first, ran, stamp := f.round(t, 1)
+	if !ran {
+		t.Fatal("the first round did not run")
+	}
+	if !first.FirstFill {
+		t.Fatal("the first round was not marked as a first fill")
+	}
+	if len(first.Facts) != 3 {
+		t.Fatalf("first fill read %d facts, want every fact despite the batch of 1", len(first.Facts))
+	}
+	f.finish(t, personalFinish(first, stamp,
+		"orders fact 0", "orders fact 1", "orders fact 2"))
+
+	f.fact(t, orders, "orders has a health endpoint")
+	next, _, _ := f.round(t, 1)
+	if next.FirstFill {
+		t.Fatal("a tenant with a ledger was marked as a first fill again")
+	}
+	if len(next.Facts) != 1 {
+		t.Fatalf("incremental round read %d facts, want the batch bound", len(next.Facts))
+	}
+}
+
 // TestPersonalBatchIsSharedAcrossBanks pins that one prolific bank cannot starve
 // the others within a round.
 func TestPersonalBatchIsSharedAcrossBanks(t *testing.T) {
 	f := newPersonalFixture(t)
 	orders := f.bank(t, "orders")
 	f.bank(t, "billing")
+	// Complete a first round first: the first fill reads everything, and only a
+	// tenant with a ledger is subject to the incremental batch.
+	f.fact(t, orders, "seed fact")
+	first, _, stamp := f.round(t, 20)
+	f.finish(t, personalFinish(first, stamp, "seed fact"))
+
 	for i := 0; i < 5; i++ {
 		f.fact(t, orders, fmt.Sprintf("orders fact %d", i))
 	}
