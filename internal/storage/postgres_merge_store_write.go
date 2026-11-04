@@ -107,6 +107,14 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 			factType = TypeWorld
 		}
 		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, mergedAt)
+		if fact.DuplicateOf != "" {
+			// The dedupe pass judged this fact redundant. It is still written —
+			// the label is metadata, not a deletion — so an operator reading the
+			// bank can see that the bank already states the same thing, and by
+			// which row.
+			metadata = fmt.Sprintf(`{"merge_key": %q, "merged_at": %q, "duplicate_of": %q}`,
+				fact.MergeKey, mergedAt, fact.DuplicateOf)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata)
 			VALUES ($1, NULL, $2, $3, $4::jsonb)`,
@@ -276,6 +284,12 @@ func (s *PostgresMergeStore) replaceLedger(ctx context.Context, tx Tx, req Finis
 }
 
 // saveStates advances the members' cursors and clears the claim.
+//
+// A completed round clears every participating member's failure count, whether or
+// not that member had facts to consume. Leaving the count on a member the round
+// reached but did not advance would leave the project permanently one round short
+// of a clean state, and the circuit breaker would keep resting on a project that
+// is in fact merging fine.
 func (s *PostgresMergeStore) saveStates(ctx context.Context, tx Tx, req FinishMergeRequest) error {
 	now := time.Now().UTC()
 	for _, member := range req.Members {
@@ -283,7 +297,8 @@ func (s *PostgresMergeStore) saveStates(ctx context.Context, tx Tx, req FinishMe
 		if !ok {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE `+adminTable("merge_state")+`
-				SET merging_since = NULL, last_merged_at = $4
+				SET merging_since = NULL, last_merged_at = $4,
+				    last_error = NULL, fail_count = 0
 				WHERE team_tenant_id = $1 AND project_id = $2 AND tenant_id = $3`,
 				req.TeamID, req.ProjectID, member, now); err != nil {
 				return err
@@ -309,6 +324,11 @@ func (s *PostgresMergeStore) saveStates(ctx context.Context, tx Tx, req FinishMe
 
 // AbandonMergeStanza records a round that produced no output, releasing the
 // claim so the next round can try.
+//
+// A counted failure also stamps last_attempt_at. The circuit breaker needs to
+// know when a project was last tried to decide whether its rest is over, and
+// last_merged_at cannot answer that: it only moves on success, so a project that
+// has never merged would look like it had never been tried either.
 func (s *PostgresMergeStore) AbandonMergeStanza(ctx context.Context, teamID, projectID string, state MergeStateFailure) error {
 	if state.Error == "" && !state.Counting {
 		// Releasing the claim is the whole job when the round simply had nothing
@@ -324,7 +344,8 @@ func (s *PostgresMergeStore) AbandonMergeStanza(ctx context.Context, teamID, pro
 		UPDATE `+adminTable("merge_state")+`
 		SET merging_since = NULL,
 		    last_error = $3,
-		    fail_count = CASE WHEN $4 THEN fail_count + 1 ELSE fail_count END
+		    fail_count = CASE WHEN $4 THEN fail_count + 1 ELSE fail_count END,
+		    last_attempt_at = CASE WHEN $4 THEN now() ELSE last_attempt_at END
 		WHERE team_tenant_id = $1 AND project_id = $2`,
 		teamID, projectID, nullIfEmpty(state.Error), state.Counting)
 	return err

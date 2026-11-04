@@ -160,6 +160,10 @@ const (
 	// EnvProjectMergeFailThreshold is how many consecutive failed rounds halt a
 	// project until an operator resets it.
 	EnvProjectMergeFailThreshold = "WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD"
+	// EnvProjectMergeRecoverySeconds is how long a halted project rests before
+	// one round is let through to test it. Zero keeps a halted project halted
+	// until an operator resets it.
+	EnvProjectMergeRecoverySeconds = "WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS"
 	// EnvProjectMergeIncludeExperience decides whether a member's `experience`
 	// facts join their `world` facts and their observations as merge input.
 	// It defaults to on: a project whose members record what they did about it

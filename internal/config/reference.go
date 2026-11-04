@@ -300,6 +300,7 @@ var referenceRuntimeKeys = []referenceKey{
 	{Name: EnvProjectMergeRebuildMaxUnits, Default: "5000", Resolve: func(c Config) any { return c.Maintenance.ProjectMergeRebuildMaxUnits }},
 	{Name: EnvProjectMergeMaxTeamFacts, Default: "500", Resolve: func(c Config) any { return c.Maintenance.ProjectMergeMaxTeamFacts }},
 	{Name: EnvProjectMergeFailThreshold, Default: "5", Resolve: func(c Config) any { return c.Maintenance.ProjectMergeFailThreshold }},
+	{Name: EnvProjectMergeRecoverySeconds, Default: "900", Resolve: func(c Config) any { return c.Maintenance.ProjectMergeRecovery }},
 	{Name: EnvProjectMergeIncludeExperience, Default: "true", Resolve: func(c Config) any { return c.Maintenance.ProjectMergeIncludeExperience }},
 	{Name: EnvPersonalRollupIntervalSeconds, Default: "300", Resolve: func(c Config) any { return c.Maintenance.PersonalRollupInterval }},
 	{Name: EnvPersonalRollupBatchSize, Default: "20", Resolve: func(c Config) any { return c.Maintenance.PersonalRollupBatchSize }},

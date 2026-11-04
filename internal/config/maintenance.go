@@ -22,6 +22,7 @@ const (
 	DefaultProjectMergeRebuildMaxUnits        = 5000
 	DefaultProjectMergeMaxTeamFacts           = 500
 	DefaultProjectMergeFailThreshold          = 5
+	DefaultProjectMergeRecoverySeconds        = 900
 	DefaultPersonalRollupIntervalSeconds      = 300
 	DefaultPersonalRollupBatchSize            = 20
 	DefaultPersonalRollupRebuildMaxUnits      = 5000
@@ -81,6 +82,10 @@ type MaintenanceConfig struct {
 	// ProjectMergeFailThreshold is how many consecutive failed rounds halt a
 	// project until an operator resets it.
 	ProjectMergeFailThreshold int
+	// ProjectMergeRecovery is how long a project halted by the circuit breaker
+	// rests before one round is let through to test it. Zero keeps a halted
+	// project halted until an operator resets it.
+	ProjectMergeRecovery time.Duration
 	// ProjectMergeIncludeExperience reports whether a member's `experience`
 	// facts are merge input. It defaults to on; `world` and `observation` are
 	// always input, so this switch is the only one.
@@ -154,6 +159,7 @@ func resolveMaintenance(lookup func(string) (string, bool)) MaintenanceConfig {
 		ProjectMergeRebuildMaxUnits:    intFromEnv(lookup, EnvProjectMergeRebuildMaxUnits, DefaultProjectMergeRebuildMaxUnits),
 		ProjectMergeMaxTeamFacts:       intFromEnv(lookup, EnvProjectMergeMaxTeamFacts, DefaultProjectMergeMaxTeamFacts),
 		ProjectMergeFailThreshold:      intFromEnv(lookup, EnvProjectMergeFailThreshold, DefaultProjectMergeFailThreshold),
+		ProjectMergeRecovery:           time.Duration(intFromEnv(lookup, EnvProjectMergeRecoverySeconds, DefaultProjectMergeRecoverySeconds)) * time.Second,
 		ProjectMergeIncludeExperience:  boolFromEnv(lookup, EnvProjectMergeIncludeExperience, true),
 		PersonalRollupInterval:         time.Duration(intFromEnv(lookup, EnvPersonalRollupIntervalSeconds, DefaultPersonalRollupIntervalSeconds)) * time.Second,
 		PersonalRollupBatchSize:        intFromEnv(lookup, EnvPersonalRollupBatchSize, DefaultPersonalRollupBatchSize),

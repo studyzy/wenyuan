@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -206,41 +207,38 @@ func TestProjectMergeWritesTheRoundsResult(t *testing.T) {
 	}
 }
 
-// TestProjectMergeUncitedSourcesAreRecordedDropped is the ledger guarantee the
-// rebuild depends on: a source the answer folded away is recorded as dropped, so
-// its later deletion cannot force a rebuild.
-func TestProjectMergeUncitedSourcesAreRecordedDropped(t *testing.T) {
+// TestProjectMergeCarriesEveryFactVerbatim is the guarantee that replaced the
+// ledger's dropped-source rule: the team bank now holds what the members hold.
+// The summarising pass recorded an uncited source as dropped because the model
+// had folded its fact away; this pass writes the fact instead.
+func TestProjectMergeCarriesEveryFactVerbatim(t *testing.T) {
 	input := mergeTestInput()
 	now := time.Now().UTC()
 	input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
 		TenantID: "alice", UnitID: "00000000-0000-0000-0000-000000000002",
-		Text: "A redundant restatement.", UpdatedAt: now,
+		Text: "A second, unrelated fact.", UpdatedAt: now,
 	})
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0]}]}`,
-	}
+	// The model reports nothing repeated.
+	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
 	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
-	sources := merges.finished.Replace.Sources["alice"]
-	if len(sources) != 2 {
-		t.Fatalf("recorded %d ledger rows, want one per source", len(sources))
+	inserted := merges.finished.Replace.Insert
+	if len(inserted) != 2 {
+		t.Fatalf("inserted %d facts, want both member facts", len(inserted))
 	}
-	var dropped int
-	for _, source := range sources {
-		if source.MergeKey == tenant.DroppedMergeKey {
-			dropped++
+	for _, fact := range inserted {
+		if fact.MergeKey == tenant.DroppedMergeKey {
+			t.Fatal("a fact was recorded as dropped; this pass never drops a fact")
 		}
 	}
-	if dropped != 1 {
-		t.Fatalf("dropped sources = %d, want 1", dropped)
+	// Every source supports a written fact, so it is never recorded as dropped.
+	if sources := merges.finished.Replace.Sources["alice"]; len(sources) != 2 {
+		t.Fatalf("recorded %d ledger rows, want one per source", len(sources))
 	}
 }
 
-// TestProjectMergeSkipsWhenAnotherRoundHoldsTheProject pins that a taken project
-// costs no model call.
 func TestProjectMergeSkipsWhenAnotherRoundHoldsTheProject(t *testing.T) {
 	merges := &fakeMergeStore{
 		projects:  []storage.MergeProject{mergeTestProject()},
@@ -493,10 +491,7 @@ func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
 	input.Members[0].Member.State.RebuildRequested = true
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"Only what the members still hold.","sources":[0]}]}`,
-	}
+	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
 	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
@@ -506,7 +501,9 @@ func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
 	if !merges.finished.Rebuild {
 		t.Fatal("the round was not marked as a rebuild")
 	}
-	// The previous fact is removed because the rebuild never saw it.
+	// The previous fact is removed because no member still holds it: a rebuild
+	// replays the members' facts, so a row nobody contributes is gone. The
+	// previous content is never carried into the pass either.
 	removed := make(map[string]bool, len(merges.finished.Replace.Remove))
 	for _, fact := range merges.finished.Replace.Remove {
 		removed[fact.Text] = true
@@ -529,13 +526,7 @@ func TestIncrementalRoundCarriesThePreviousContent(t *testing.T) {
 		{ID: "u1", Text: "A fact this round does not restate.", MergeKey: tenant.MergeKey("A fact this round does not restate.")},
 	}
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	// The model's answer omits the previous fact; the prompt had it, so a round
-	// that dropped it did so on the model's judgement rather than because it never
-	// saw it.
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"The deploy uses port 15432.","sources":[0]}]}`,
-	}
+	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
 	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
@@ -564,10 +555,7 @@ func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 	}
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
-	model := &answerProvider{
-		name:  "fake",
-		reply: `{"facts":[{"text":"A fact both rounds agree on.","sources":[0]}]}`,
-	}
+	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
 	if err := runOneRound(t, merges, model, mergeTestCfg()); err != nil {
 		t.Fatalf("round: %v", err)
 	}
@@ -630,5 +618,60 @@ func TestProjectMergePassesTheExperienceSwitchThrough(t *testing.T) {
 	}
 	if merges.opts.IncludeExperience {
 		t.Fatal("the store was told to include experience while the switch was off")
+	}
+}
+
+// TestProjectMergeDoesNotCompress is the property the summarising pass broke: the
+// team bank carries what the members hold. Asking the model to "merge duplicates"
+// turned 1940 member facts into 121 team facts, so the round now writes every
+// fact verbatim and the model only labels duplicates.
+func TestProjectMergeDoesNotCompress(t *testing.T) {
+	input := mergeTestInput()
+	// One fact is already in the bank, so a duplicate label has somewhere to point.
+	input.Previous = []storage.TeamFactRow{
+		{ID: "p1", Text: "an older fact already in the team bank",
+			MergeKey: tenant.MergeKey("an older fact already in the team bank")},
+	}
+	input.Members[0].Fresh = nil
+	for i := 0; i < 40; i++ {
+		input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
+			TenantID:  "alice",
+			UnitID:    fmt.Sprintf("00000000-0000-0000-0000-%012d", i),
+			Text:      fmt.Sprintf("a distinct fact about the project, number %d", i),
+			FactType:  storage.TypeWorld,
+			UpdatedAt: time.Now().UTC(),
+		})
+	}
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	// A model that answers "this one repeats what the bank already has" must not
+	// shrink the bank.
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"duplicates":[{"fresh":1,"duplicate_of":0}]}`,
+	}
+	cfg := mergeTestCfg()
+	cfg.ProjectMergeBatchSize = 100
+	if err := runOneRound(t, merges, model, cfg); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.finished == nil {
+		t.Fatalf("the round wrote nothing; abandoned with %+v", merges.abandoned)
+	}
+	inserted := merges.finished.Replace.Insert
+	if len(inserted) != 40 {
+		t.Fatalf("inserted %d facts for 40 distinct member facts: the round compressed", len(inserted))
+	}
+	// The labelled fact is still written; only its metadata says it repeats one.
+	var labelled *storage.TeamFactRow
+	for i := range inserted {
+		if inserted[i].DuplicateOf != "" {
+			labelled = &inserted[i]
+		}
+	}
+	if labelled == nil {
+		t.Fatal("the duplicate label did not reach the write")
+	}
+	if labelled.Text != "a distinct fact about the project, number 1" {
+		t.Fatalf("labelled fact text = %q, want the member's own text", labelled.Text)
 	}
 }

@@ -11,8 +11,8 @@ func TestAdminMigrationSeries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminMigrationSeries: %v", err)
 	}
-	if len(series) != 5 {
-		t.Fatalf("series length = %d, want 5", len(series))
+	if len(series) != 6 {
+		t.Fatalf("series length = %d, want 6", len(series))
 	}
 	wantVersions := []struct {
 		version int
@@ -23,6 +23,7 @@ func TestAdminMigrationSeries(t *testing.T) {
 		{3, "merge_state"},
 		{4, "project_name_is_a_label"},
 		{5, "personal_aggregate"},
+		{6, "merge_breaker"},
 	}
 	for i, want := range wantVersions {
 		if series[i].Version != want.version || series[i].Name != want.name {
@@ -124,8 +125,8 @@ func TestAdminSeriesSkipsTeamTablesForSingleTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminMigrationSeriesFor(single): %v", err)
 	}
-	if len(full) != 5 {
-		t.Fatalf("multi-tenant series length = %d, want 5", len(full))
+	if len(full) != 6 {
+		t.Fatalf("multi-tenant series length = %d, want 6", len(full))
 	}
 	// The personal aggregate is not a team feature: a single-tenant deployment
 	// gets the tenant registry and the aggregate ledger.
@@ -160,8 +161,8 @@ func TestAdminSeriesSkipsTeamTablesForSingleTenant(t *testing.T) {
 			versions = append(versions, migration.Version)
 		}
 	}
-	if !slices.Equal(versions, []int{2, 3, 4}) {
-		t.Fatalf("multi-tenant-only versions = %v, want [2 3 4]", versions)
+	if !slices.Equal(versions, []int{2, 3, 4, 6}) {
+		t.Fatalf("multi-tenant-only versions = %v, want [2 3 4 6]", versions)
 	}
 }
 

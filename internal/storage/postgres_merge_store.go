@@ -216,6 +216,14 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 			return false, nil
 		}
 	}
+	// The circuit breaker: a project that has failed opts.FailThreshold rounds in
+	// a row rests for opts.RecoveryInterval, then one round is let through to
+	// test whether whatever broke it has cleared. A success resets the count, so
+	// a project that keeps failing retries on that cadence instead of on every
+	// tick — which is what spent 88 model calls on one unrecoverable answer.
+	if opts.FailThreshold > 0 && breakerOpen(states, ids, opts, stamp) {
+		return false, nil
+	}
 	if err := s.claimStamp(ctx, tx, &input.Project, stamp); err != nil {
 		return false, err
 	}
@@ -312,7 +320,7 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT tenant_id, cursor_updated_at::text, cursor_unit_id::text, last_merged_at,
-		       COALESCE(last_error, ''), fail_count, merging_since, rebuild_requested
+		       COALESCE(last_error, ''), fail_count, merging_since, rebuild_requested, last_attempt_at
 		FROM `+adminTable("merge_state")+`
 		WHERE team_tenant_id = $1 AND project_id = $2 AND tenant_id = ANY($3)`,
 		teamID, projectID, tenantIDs)
@@ -322,11 +330,11 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var state tenant.MergeState
-		var lastMergedAt, mergingSince sql.NullTime
+		var lastMergedAt, mergingSince, lastAttemptAt sql.NullTime
 		var cursorText string
 		if err := rows.Scan(&state.TenantID, &cursorText, &state.CursorUnitID,
 			&lastMergedAt, &state.LastError, &state.FailCount, &mergingSince,
-			&state.RebuildRequested); err != nil {
+			&state.RebuildRequested, &lastAttemptAt); err != nil {
 			return nil, err
 		}
 		state.CursorUpdatedAt, err = parseCursorTimestamp(cursorText)
@@ -341,6 +349,10 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 		if mergingSince.Valid {
 			value := mergingSince.Time
 			state.MergingSince = &value
+		}
+		if lastAttemptAt.Valid {
+			value := lastAttemptAt.Time
+			state.LastAttemptAt = &value
 		}
 		states[state.TenantID] = state
 	}

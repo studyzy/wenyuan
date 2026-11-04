@@ -116,23 +116,34 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   `{"confirm": "<project_id>", "delete_banks": true}` and refuses when the
   project's own bank is not among the ones the prefix found — that disagreement
   is what would let a prefix delete take another project's data.
-- **Shared memory is merged, not shared raw.** A background job `project.merge`
+- **Shared memory is folded, not compressed.** A background job `project.merge`
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
-  60s) reads each member's `world`, `experience` and `observation` facts from their
-  own bank and asks the chat model to combine them into the project's team bank
-  `<team>::<name>`. Raw conversation, documents, chunks and attachments are never
-  copied. `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
-  `experience` back out of the input when a deployment wants only what members
-  know and concluded, without what they did. A team fact is written under the kind
-  of the member facts it cites — the type comes from the sources, never from the
-  model, and a fact with no source is `world`. Design:
-  `docs/plans/2026-10-30-team-memory-design-v3.md`.
+  60s) copies each member's `world`, `experience` and `observation` facts from their
+  own bank into the project's team bank `<team>::<name>`, **verbatim**: every fact
+  becomes a team fact with its own text and its own kind. The chat model is asked
+  only *which new facts repeat an existing one*; its label lands in
+  `metadata.duplicate_of` and never removes a fact. Asking the model to "merge
+  duplicates" is what turned 1940 member facts into 121 team facts, which is the
+  defect this shape exists to prevent — a fact's text is never the model's to
+  rewrite. `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
+  `experience` out of the input when a deployment wants only what members know and
+  concluded. Raw conversation, documents, chunks and attachments are never copied.
+  Design: `docs/plans/2026-10-30-team-memory-design-v3.md`.
 - **The merge ledger is `admin.merge_source_unit`** (`embeddedadmin/0003_merge_state.sql`),
-  and it records the `merge_key` each member fact *supports* — or `__dropped__`
-  when the model folded it away. Delete detection reads only the supporting rows,
-  so removing a redundant fact cannot force a rebuild. A team fact's id is its
-  `merge_key`, so a fact whose wording survives keeps its row and its
+  and it records the `merge_key` each member fact *supports*. Delete detection
+  reads those rows, so a removed member fact triggers the rebuild that drops what
+  it supported; a fact the dedupe pass labelled a duplicate still supports its own
+  key, because the label is metadata and the row is really there. A team fact's id
+  is its `merge_key`, so a fact whose wording survives keeps its row and its
   observations.
+- **The circuit breaker is real and recovers on its own.** A project that fails
+  `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` rounds in a row rests for
+  `WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS` (default 900) and is then let
+  through once to test whether the break has cleared; a success resets every
+  member's count. Before this, the threshold was configuration nothing read, and
+  one project accumulated 88 failed rounds — a model call per tick, forever. The
+  attempt clock is `merge_state.last_attempt_at` (admin migration 0006), because
+  `last_merged_at` only moves on success.
 - **A merge round is two transactions with the model call between them.** The
   first takes the project's claim (`pg_try_advisory_xact_lock` plus
   `merge_state.merging_since`); the second is fenced on the claim stamp, so a

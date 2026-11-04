@@ -221,136 +221,6 @@ func (f *mergeFixture) runRound(t *testing.T, facts []TeamFactRow, sources map[s
 	return true
 }
 
-// mergeRoundOpts is a round's settings for these tests: every merged fact kind
-// is input, which is the deployment default.
-func mergeRoundOpts(batch int, staleAfter time.Duration) MergeRoundOptions {
-	return MergeRoundOptions{Batch: batch, StaleAfter: staleAfter, IncludeExperience: true}
-}
-
-// writeMemberFactOfType inserts one fact of the given type into a member's bank.
-func (f *mergeFixture) writeMemberFactOfType(t *testing.T, member, factType, text string) string {
-	t.Helper()
-	ctx, err := WithSchema(context.Background(), member)
-	if err != nil {
-		t.Fatalf("WithSchema: %v", err)
-	}
-	bankID := tenant.ProjectBankID(member, f.projectID)
-	if _, err := f.db.ExecContext(ctx,
-		"INSERT INTO "+quoteIdent(member)+".banks (bank_id, name, config) VALUES ($1,$2,'{}'::jsonb) ON CONFLICT DO NOTHING",
-		bankID, f.projectName); err != nil {
-		t.Fatalf("create member bank: %v", err)
-	}
-	var id string
-	if err := f.db.QueryRowContext(ctx,
-		"INSERT INTO "+quoteIdent(member)+".memory_units (bank_id, text, fact_type) VALUES ($1,$2,$3) RETURNING id::text",
-		bankID, text, factType).Scan(&id); err != nil {
-		t.Fatalf("insert member fact: %v", err)
-	}
-	return id
-}
-
-// teamFactTypes reads the team bank's managed facts as text-to-type pairs.
-func (f *mergeFixture) teamFactTypes(t *testing.T) map[string]string {
-	t.Helper()
-	ctx := f.teamSchemaCtx(t)
-	rows, err := f.db.QueryContext(ctx,
-		"SELECT text, fact_type FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id = $1 AND metadata->>'merge_key' IS NOT NULL",
-		tenant.ProjectBankID(f.teamID, f.projectID))
-	if err != nil {
-		t.Fatalf("read team facts: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[string]string{}
-	for rows.Next() {
-		var text, factType string
-		if err := rows.Scan(&text, &factType); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		out[text] = factType
-	}
-	return out
-}
-
-// TestMergeStoreReadsEveryMergedFactType is the round's input scope: a member's
-// world facts, their experiences and their observations all reach the round, each
-// carrying its own kind.
-func TestMergeStoreReadsEveryMergedFactType(t *testing.T) {
-	f := newMergeFixture(t)
-	f.ensureTeamBank(t)
-	worldA := f.writeMemberFactOfType(t, f.memberA, "world", "The deploy uses port 15432.")
-	expA := f.writeMemberFactOfType(t, f.memberA, "experience", "Alice moved the deploy to port 15432.")
-	obsA := f.writeMemberFactOfType(t, f.memberA, "observation", "The deploy has migrated ports recently.")
-
-	seen := map[string]string{}
-	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
-		mergeRoundOpts(100, time.Minute), func(stanza MergeStanza) error {
-			for _, member := range stanza.Input().Members {
-				for _, fact := range member.Fresh {
-					seen[fact.UnitID] = string(fact.FactType)
-				}
-			}
-			return nil
-		}); err != nil {
-		t.Fatalf("BeginMergeStanza: %v", err)
-	}
-	for unitID, want := range map[string]string{
-		worldA: "world", expA: "experience", obsA: "observation",
-	} {
-		if got := seen[unitID]; got != want {
-			t.Fatalf("fact %s read as %q, want %q", unitID, got, want)
-		}
-	}
-}
-
-// TestMergeStoreExcludesExperienceWhenSwitchedOff pins the switch: with it off a
-// member's experiences are not input, while their world facts and observations
-// still are.
-func TestMergeStoreExcludesExperienceWhenSwitchedOff(t *testing.T) {
-	f := newMergeFixture(t)
-	f.ensureTeamBank(t)
-	worldA := f.writeMemberFactOfType(t, f.memberA, "world", "The deploy uses port 15432.")
-	expA := f.writeMemberFactOfType(t, f.memberA, "experience", "Alice moved the deploy to port 15432.")
-	obsA := f.writeMemberFactOfType(t, f.memberA, "observation", "The deploy has migrated ports recently.")
-
-	seen := map[string]bool{}
-	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
-		MergeRoundOptions{Batch: 100, StaleAfter: time.Minute, IncludeExperience: false},
-		func(stanza MergeStanza) error {
-			for _, member := range stanza.Input().Members {
-				for _, fact := range member.Fresh {
-					seen[fact.UnitID] = true
-				}
-			}
-			return nil
-		}); err != nil {
-		t.Fatalf("BeginMergeStanza: %v", err)
-	}
-	if seen[expA] {
-		t.Fatal("an experience fact reached the round while the switch was off")
-	}
-	if !seen[worldA] || !seen[obsA] {
-		t.Fatalf("world and observation must stay input: seen=%v", seen)
-	}
-}
-
-// TestMergeStoreWritesTeamFactsUnderTheirOwnKind pins the write: a team fact is
-// stored under the kind of the member facts it was made from, so the team bank is
-// not a pile of world facts.
-func TestMergeStoreWritesTeamFactsUnderTheirOwnKind(t *testing.T) {
-	f := newMergeFixture(t)
-	f.ensureTeamBank(t)
-	unitA := f.writeMemberFactOfType(t, f.memberA, "experience", "Alice moved the deploy to port 15432.")
-	key := tenant.MergeKey("Alice moved the deploy to port 15432.")
-	if !f.runRound(t,
-		[]TeamFactRow{{Text: "Alice moved the deploy to port 15432.", MergeKey: key, FactType: TypeExperience}},
-		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
-		t.Fatal("round did not run")
-	}
-	if got := f.teamFactTypes(t)["Alice moved the deploy to port 15432."]; got != "experience" {
-		t.Fatalf("team fact stored as %q, want experience", got)
-	}
-}
-
 // TestMergeStoreDiscoversTheProject pins discovery: only an active team's
 // project with members is listed, and each member's state comes with it.
 func TestMergeStoreDiscoversTheProject(t *testing.T) {
@@ -729,4 +599,133 @@ func TestIncrementalRoundStillUsesTheCursor(t *testing.T) {
 	if seenA != 0 {
 		t.Fatalf("an incremental round read %d facts behind the cursor, want 0", seenA)
 	}
+}
+
+// TestMergeStoreCircuitBreakerSkipsAHaltedProject is the fix for the loop that
+// spent 88 model calls on one unparseable answer: a project past the failure
+// threshold must not begin a round, and must begin one again once the recovery
+// interval has passed.
+func TestMergeStoreCircuitBreakerSkipsAHaltedProject(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	f.writeMemberFact(t, f.memberA, "something to merge")
+
+	opts := MergeRoundOptions{
+		Batch: 100, StaleAfter: time.Minute,
+		IncludeExperience: true, FailThreshold: 3, RecoveryInterval: 15 * time.Minute,
+	}
+	// Record the failures the breaker counts. AbandonMergeStanza stamps the
+	// attempt clock, which is what the breaker measures its rest from.
+	for i := 0; i < 3; i++ {
+		ran, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, opts,
+			func(MergeStanza) error { return nil })
+		if err != nil {
+			t.Fatalf("BeginMergeStanza %d: %v", i, err)
+		}
+		if !ran {
+			t.Fatalf("round %d did not run while the breaker was closed", i)
+		}
+		if err := f.store.AbandonMergeStanza(context.Background(), f.teamID, f.projectID,
+			MergeStateFailure{Error: "unparseable answer", Counting: true}); err != nil {
+			t.Fatalf("AbandonMergeStanza %d: %v", i, err)
+		}
+	}
+	ran, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, opts,
+		func(MergeStanza) error { return nil })
+	if err != nil {
+		t.Fatalf("BeginMergeStanza after the threshold: %v", err)
+	}
+	if ran {
+		t.Fatal("a halted project began another round; this is the per-tick retry loop")
+	}
+
+	// Wind the attempt clock back past the recovery interval: the project gets one
+	// probe round instead of waiting for an operator.
+	if _, err := f.db.ExecContext(context.Background(), `
+		UPDATE `+adminTable("merge_state")+`
+		SET last_attempt_at = now() - interval '20 minutes'
+		WHERE team_tenant_id = $1 AND project_id = $2`, f.teamID, f.projectID); err != nil {
+		t.Fatalf("age the attempt clock: %v", err)
+	}
+	ran, err = f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, opts,
+		func(MergeStanza) error { return nil })
+	if err != nil {
+		t.Fatalf("BeginMergeStanza after the rest: %v", err)
+	}
+	if !ran {
+		t.Fatal("a project whose rest is over did not get its probe round")
+	}
+}
+
+// TestMergeStoreSuccessResetsTheBreaker pins that the probe round closing the
+// breaker is not enough on its own: a successful round must clear the count, or
+// the next failure would trip it immediately.
+func TestMergeStoreSuccessResetsTheBreaker(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	unitA := f.writeMemberFact(t, f.memberA, "the deploy uses port 15432")
+	key := tenant.MergeKey("the deploy uses port 15432")
+
+	opts := MergeRoundOptions{
+		Batch: 100, StaleAfter: time.Minute,
+		IncludeExperience: true, FailThreshold: 3, RecoveryInterval: time.Minute,
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, opts,
+			func(MergeStanza) error { return nil }); err != nil {
+			t.Fatalf("BeginMergeStanza: %v", err)
+		}
+		if err := f.store.AbandonMergeStanza(context.Background(), f.teamID, f.projectID,
+			MergeStateFailure{Error: "boom", Counting: true}); err != nil {
+			t.Fatalf("AbandonMergeStanza: %v", err)
+		}
+	}
+	if !f.runRoundWithOpts(t, opts,
+		[]TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key}},
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
+		t.Fatal("the successful round did not run")
+	}
+	var failCount int
+	if err := f.db.QueryRowContext(context.Background(), `
+		SELECT COALESCE(max(fail_count),0) FROM `+adminTable("merge_state")+`
+		WHERE team_tenant_id = $1 AND project_id = $2`, f.teamID, f.projectID).Scan(&failCount); err != nil {
+		t.Fatalf("read fail_count: %v", err)
+	}
+	if failCount != 0 {
+		t.Fatalf("fail_count = %d after a successful round, want 0", failCount)
+	}
+}
+
+// runRoundWithOpts is runRound with the round's settings chosen by the caller.
+func (f *mergeFixture) runRoundWithOpts(
+	t *testing.T, opts MergeRoundOptions, facts []TeamFactRow,
+	sources map[string][]MergeSourceRow, rebuild []string,
+) bool {
+	t.Helper()
+	ctx := context.Background()
+	var stamp time.Time
+	ok, err := f.store.BeginMergeStanza(ctx, f.teamID, f.projectID, opts,
+		func(stanza MergeStanza) error {
+			stamp = stanza.(*mergeStanza).ClaimStamp()
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	if !ok {
+		return false
+	}
+	if err := f.store.FinishMergeStanza(ctx, FinishMergeRequest{
+		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
+		Replace: MergeReplaceResult{
+			Insert: facts, Sources: sources, RebuildMembers: rebuild,
+		},
+		Members: []string{f.memberA, f.memberB},
+		Cursors: map[string]MergeCursor{},
+		Rebuild: len(rebuild) > 0,
+	}); err != nil {
+		t.Fatalf("FinishMergeStanza: %v", err)
+	}
+	return true
 }

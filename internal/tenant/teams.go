@@ -131,6 +131,10 @@ type MergeState struct {
 	LastError string
 	// FailCount is consecutive failed rounds; the circuit breaker reads it.
 	FailCount int
+	// LastAttemptAt is when a counted failure was last recorded, or nil when none
+	// has been. The breaker measures its rest from it: LastMergedAt only moves on
+	// success, so it cannot say when a failing project was last tried.
+	LastAttemptAt *time.Time
 	// MergingSince is stamped while a round's model call is in flight. A stamp
 	// older than the round deadline is a crashed round and may be taken over.
 	MergingSince *time.Time

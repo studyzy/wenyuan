@@ -265,9 +265,9 @@ func Diff(previous []PreviousFact, answers []Answer) DiffResult {
 	for _, fact := range previous {
 		carried = append(carried, projectmerge.TeamFact{ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey})
 	}
-	merged := make([]projectmerge.Answer, 0, len(answers))
+	merged := make([]projectmerge.SummarizedAnswer, 0, len(answers))
 	for _, answer := range answers {
-		merged = append(merged, projectmerge.Answer{Text: answer.Text, Sources: answer.Sources})
+		merged = append(merged, projectmerge.SummarizedAnswer{Text: answer.Text, Sources: answer.Sources})
 	}
 	// The aggregate's own facts are all world facts and its input carries no
 	// kinds either: the rollup summarizes a person's banks, it does not sort

@@ -92,7 +92,8 @@ func CursorOf(state tenant.MergeState) MergeCursor {
 	return MergeCursor{UpdatedAt: state.CursorUpdatedAt, UnitID: state.CursorUnitID}
 }
 
-// TeamFactRow is one existing team fact.
+// TeamFactRow is one team fact: an existing one being read back, or one a round
+// writes.
 type TeamFactRow struct {
 	ID       string
 	Text     string
@@ -100,6 +101,10 @@ type TeamFactRow struct {
 	// FactType is the row's stored fact type. A team fact keeps the kind of the
 	// member fact it was made from.
 	FactType MemoryUnitType
+	// DuplicateOf is the merge key of the fact this one repeats, empty when it
+	// repeats nothing. The fact is written either way: the label says "the bank
+	// already states this", it does not say "drop it".
+	DuplicateOf string
 }
 
 // MergeStanzaInput is what a round reads while it holds the lock.
@@ -187,6 +192,10 @@ type MergeReplaceResult struct {
 type MergeSourceRow struct {
 	UnitID   string
 	MergeKey string
+	// DuplicateOf is the merge key the source repeats, if the dedupe pass judged
+	// it redundant. It is advisory: the source supports its own MergeKey either
+	// way, which is what keeps delete detection reading only supporting rows.
+	DuplicateOf string
 }
 
 // MergeStateFailure records why a round produced nothing.
@@ -232,6 +241,14 @@ type MergeRoundOptions struct {
 	StaleAfter time.Duration
 	// IncludeExperience decides whether a member's `experience` facts are input.
 	IncludeExperience bool
+	// FailThreshold is how many consecutive failed rounds open the circuit
+	// breaker. Zero means the breaker never opens, which is what a caller that
+	// does not want the safeguard asks for.
+	FailThreshold int
+	// RecoveryInterval is how long an open breaker rests before one round is let
+	// through to test it. Zero means a halted project stays halted until an
+	// operator resets it.
+	RecoveryInterval time.Duration
 }
 
 // MergeStore is the cross-schema store the project merge job needs.

@@ -187,6 +187,7 @@ Status words:
 | `WENYUAN_API_PROJECT_MERGE_REBUILD_MAX_UNITS` | `project_merge_rebuild_max_units` | `5000` | resolved |  |
 | `WENYUAN_API_PROJECT_MERGE_MAX_TEAM_FACTS` | `project_merge_max_team_facts` | `500` | resolved |  |
 | `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` | `project_merge_fail_threshold` | `5` | resolved |  |
+| `WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS` | `project_merge_recovery_seconds` | `900` | resolved |  |
 | `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` | `project_merge_include_experience` | `true` | resolved |  |
 | `WENYUAN_API_PERSONAL_ROLLUP_INTERVAL_SECONDS` | `personal_rollup_interval_seconds` | `300` | resolved |  |
 | `WENYUAN_API_PERSONAL_ROLLUP_BATCH_SIZE` | `personal_rollup_batch_size` | `20` | resolved |  |

@@ -18,8 +18,8 @@ var adminMigrationFS embed.FS
 const AdminSchema = "admin"
 
 // adminTeamMigrations names the admin migrations that only a multi-tenant
-// deployment needs: the team registry (0002), the merge ledger (0003) and the
-// team table corrections (0004).
+// deployment needs: the team registry (0002), the merge ledger (0003), the
+// team table corrections (0004) and the merge breaker's clock (0006).
 //
 // A single-tenant deployment has no teams, and nothing in it reads these
 // tables, so creating them would put team vocabulary in the schema of a
@@ -30,7 +30,7 @@ const AdminSchema = "admin"
 //
 // 0005 (the personal aggregate) is deliberately absent: folding a person's own
 // banks together is not a team feature, so a single-tenant deployment gets it.
-var adminTeamMigrations = map[int]bool{2: true, 3: true, 4: true}
+var adminTeamMigrations = map[int]bool{2: true, 3: true, 4: true, 6: true}
 
 // adminMigrationRequiredByMultiTenant reports whether version is a team
 // migration, and so is skipped when the deployment is single-tenant.

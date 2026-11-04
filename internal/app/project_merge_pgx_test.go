@@ -290,3 +290,49 @@ func TestMergeStatusReportsTheProject(t *testing.T) {
 		t.Fatalf("bank id = %q", status.BankID)
 	}
 }
+
+// TestProjectMergeCarriesEveryMemberFact is the end-to-end property: the team bank
+// ends up holding every fact its members do, not a summary of them. The
+// summarising pass turned 1940 member facts into 121 team facts because the model
+// was asked to merge duplicates; this round carries them.
+func TestProjectMergeCarriesEveryMemberFact(t *testing.T) {
+	f := newMergeJobFixture(t)
+	texts := []string{
+		"the deploy uses port 15432",
+		"the worker polls every 60 seconds",
+		"the console runs on port 19999",
+		"embeddings come from the tei server",
+	}
+	for _, text := range texts {
+		f.writeFact(t, f.memberA, text)
+	}
+
+	// A model that claims every fact repeats the first one: the bank must still
+	// hold all four, because the label never removes a fact.
+	model := &answerProvider{
+		name:  "fake",
+		reply: `{"duplicates":[{"fresh":1,"duplicate_of":0},{"fresh":2,"duplicate_of":0}]}`,
+	}
+	runner := &mergeRunner{merges: f.merges, model: model, cfg: mergeTestCfg()}
+	if err := runner.runProjectMerges(context.Background()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+
+	got := f.teamFacts(t)
+	if len(got) < len(texts) {
+		t.Fatalf("team bank holds %d facts for %d member facts: the round compressed\n%v",
+			len(got), len(texts), got)
+	}
+	for _, want := range texts {
+		found := false
+		for _, have := range got {
+			if have == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("member fact %q did not reach the team bank: %v", want, got)
+		}
+	}
+}

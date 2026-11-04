@@ -9,12 +9,9 @@
 package projectmerge
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
@@ -65,92 +62,16 @@ type MemberFact struct {
 	FactType string
 }
 
-// Answer is one team fact the model produced, with the inputs it came from.
-type Answer struct {
+// SummarizedAnswer is one fact a summarising pass (the personal rollup) produced,
+// with the inputs it came from. The team merge no longer produces these — it
+// carries facts verbatim (see dedupe.go) — but the rollup's identity rules are
+// shared, so the shape stays here.
+type SummarizedAnswer struct {
 	// Text is the fact's text, as the model wrote it.
 	Text string
 	// Sources are indexes into the round's Fresh slice: the member facts this
-	// team fact was made from. The indexes are what lets the ledger record a
-	// provenance the server determined rather than one the model asserted.
+	// fact was made from.
 	Sources []int
-}
-
-// Errors ParseAnswer reports. They are distinct because they mean different
-// things to the caller: a shape failure is a broken model, while an empty answer
-// is a well-formed claim that the project holds no facts — which would delete
-// the team's content and so is refused unless the round had none to begin with.
-var (
-	// ErrAnswerShape reports a reply that is not the expected JSON.
-	ErrAnswerShape = errors.New("merge answer is not the expected JSON")
-	// ErrAnswerEmpty reports a well-formed reply carrying no facts.
-	ErrAnswerEmpty = errors.New("merge answer carries no facts")
-)
-
-// answerEnvelope is the wire shape the prompt asks for.
-type answerEnvelope struct {
-	Facts []struct {
-		Text    string `json:"text"`
-		Sources []int  `json:"sources"`
-	} `json:"facts"`
-}
-
-// ParseAnswer decodes the model's reply.
-//
-// freshCount bounds the source indexes: an index outside the round's inputs is a
-// shape failure rather than a silently dropped provenance, because a ledger row
-// pointing at nothing is worse than no row at all.
-//
-// An empty answer is its own error. It is only acceptable when the round had
-// nothing before it — otherwise it would empty the team's content on a model
-// hiccup.
-func ParseAnswer(raw string, freshCount int) ([]Answer, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return nil, fmt.Errorf("%w: empty reply", ErrAnswerShape)
-	}
-	// A model that wraps its JSON in a fenced block is common enough that
-	// refusing it would spend a round on a formatting quibble.
-	if strings.HasPrefix(trimmed, "```") {
-		if start := strings.Index(trimmed, "\n"); start >= 0 {
-			trimmed = trimmed[start+1:]
-		}
-		trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
-		trimmed = strings.TrimSpace(trimmed)
-	}
-	var envelope answerEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
-		// A model that annotates its JSON with comments or leaves a trailing
-		// comma is the same formatting quibble as a code fence: read the JSON
-		// rather than spend the round.
-		if relaxed := tenant.RelaxJSON(trimmed); relaxed != trimmed {
-			if err := json.Unmarshal([]byte(relaxed), &envelope); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
-			}
-		} else {
-			return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
-		}
-	}
-	if envelope.Facts == nil {
-		return nil, fmt.Errorf("%w: no facts member", ErrAnswerShape)
-	}
-	if len(envelope.Facts) == 0 {
-		return nil, ErrAnswerEmpty
-	}
-	answers := make([]Answer, 0, len(envelope.Facts))
-	for i, fact := range envelope.Facts {
-		text := Normalize(fact.Text)
-		if text == "" {
-			return nil, fmt.Errorf("%w: fact %d has no text", ErrAnswerShape, i)
-		}
-		for _, source := range fact.Sources {
-			if source < 0 || source >= freshCount {
-				return nil, fmt.Errorf("%w: fact %d names source %d, outside the %d inputs",
-					ErrAnswerShape, i, source, freshCount)
-			}
-		}
-		answers = append(answers, Answer{Text: text, Sources: fact.Sources})
-	}
-	return answers, nil
 }
 
 // MergeResult is what a round's answer changes in the team bank.
@@ -179,11 +100,11 @@ type MergeResult struct {
 // new fact is written under: it takes the type most of its sources have, which is
 // determined here rather than asked of the model. A fact with no sources carries
 // no type of its own and is written as world.
-func Diff(previous []TeamFact, answers []Answer, fresh []MemberFact) MergeResult {
+func Diff(previous []TeamFact, answers []SummarizedAnswer, fresh []MemberFact) MergeResult {
 	result := MergeResult{Sources: map[string][]int{}}
 	seen := make(map[string]bool, len(answers))
 	order := make([]string, 0, len(answers))
-	byKey := make(map[string]Answer, len(answers))
+	byKey := make(map[string]SummarizedAnswer, len(answers))
 	for _, answer := range answers {
 		key := MergeKey(answer.Text)
 		if existing, ok := byKey[key]; ok {
@@ -191,7 +112,7 @@ func Diff(previous []TeamFact, answers []Answer, fresh []MemberFact) MergeResult
 			byKey[key] = existing
 			continue
 		}
-		byKey[key] = Answer{Text: Normalize(answer.Text), Sources: append([]int(nil), answer.Sources...)}
+		byKey[key] = SummarizedAnswer{Text: Normalize(answer.Text), Sources: append([]int(nil), answer.Sources...)}
 		seen[key] = true
 		order = append(order, key)
 	}
@@ -294,84 +215,6 @@ func (r MergeResult) SourceMergeKeys(freshCount int) map[int][]string {
 	return out
 }
 
-// Prompt builds the round's messages.
-//
-// Previous and fresh are numbered separately (P and F) so an answer's sources can
-// only ever cite this round's inputs. A previous fact's provenance was settled in
-// an earlier round and is not the model's to restate: letting it cite P entries
-// would make the ledger describe whatever the model thought that round rather
-// than what the fact was actually made from.
-//
-// Both lists are grouped by fact kind, because what a member knows about the
-// project, what they did about it and what was concluded from both are different
-// statements and the model must be told which it is looking at. The kind itself
-// is never asked of the model: it comes from the cited sources (see Diff).
-func Prompt(mission string, previous []TeamFact, fresh []MemberFact) []provider.Message {
-	var system strings.Builder
-	system.WriteString("You maintain a team's shared knowledge base for one project.\n")
-	system.WriteString("You are given the team's current facts and the new facts contributed by team members.\n")
-	system.WriteString("Produce the team's complete updated fact list: keep what is still true and supported, ")
-	system.WriteString("merge duplicates and refinements across members, drop what the new facts supersede, ")
-	system.WriteString("and add what is genuinely new.\n\n")
-	system.WriteString("Facts come in three kinds, and a statement must stay the kind it was made from:\n")
-	system.WriteString("- world: what is true about the project.\n")
-	system.WriteString("- experience: what a member did about the project.\n")
-	system.WriteString("- observation: a conclusion drawn from other facts.\n\n")
-	system.WriteString("Rules:\n")
-	system.WriteString("- Reply with JSON only, no prose, no code fences, no comments and no trailing commas.\n")
-	system.WriteString("- Quote every key and string with double quotes; never leave the facts array or the object unterminated.\n")
-	system.WriteString("- The shape is {\"facts\": [{\"text\": \"...\", \"sources\": [0, 1]}]}.\n")
-	system.WriteString("- Each fact is one self-contained statement in a single sentence.\n")
-	system.WriteString("- \"sources\" must contain only F indexes: the new facts this statement was made from.\n")
-	system.WriteString("- Cite every F index that supports the statement; never cite a P index.\n")
-	system.WriteString("- A fact carried over unchanged needs the same wording and the F indexes now supporting it.\n")
-	system.WriteString("- Do not invent facts. Do not mention members by name.\n")
-	if mission = strings.TrimSpace(mission); mission != "" {
-		system.WriteString("\nThe project's mission, which decides what matters here:\n")
-		system.WriteString(mission)
-		system.WriteString("\n")
-	}
-
-	var user strings.Builder
-	user.WriteString("Current team facts:\n")
-	if len(previous) == 0 {
-		user.WriteString("(none yet)\n")
-	}
-	numbered := make([]numberedFact, 0, len(previous))
-	for i, fact := range previous {
-		numbered = append(numbered, numberedFact{index: i, text: fact.Text, factType: fact.FactType})
-	}
-	writeFactsByType(&user, "P", numbered)
-
-	user.WriteString("\nNew facts from members:\n")
-	if len(fresh) == 0 {
-		user.WriteString("(none)\n")
-	}
-	// The members are already contiguous in the round's input, so each member's
-	// run is numbered with the index it has in the whole slice: the index is what
-	// an answer cites, and renumbering per member would make every member's
-	// sources point at the first member's facts.
-	for start := 0; start < len(fresh); {
-		end := start
-		for end < len(fresh) && fresh[end].TenantID == fresh[start].TenantID {
-			end++
-		}
-		fmt.Fprintf(&user, "member %s:\n", fresh[start].TenantID)
-		numbered = numbered[:0]
-		for i := start; i < end; i++ {
-			numbered = append(numbered, numberedFact{index: i, text: fresh[i].Text, factType: fresh[i].FactType})
-		}
-		writeFactsByType(&user, "F", numbered)
-		start = end
-	}
-	user.WriteString("\nReply with the complete updated fact list as JSON.")
-
-	return []provider.Message{
-		{Role: provider.RoleSystem, Content: system.String()},
-		{Role: provider.RoleUser, Content: user.String()},
-	}
-}
-
 // numberedFact is one fact with the label the prompt prints it under.
 type numberedFact struct {
 	index    int
@@ -409,4 +252,48 @@ func labelOf(factType string) string {
 	default:
 		return FactTypeWorld
 	}
+}
+
+// firstJSONObject returns the first balanced {...} span of raw.
+//
+// The span is found by counting braces outside string literals, so a fact whose
+// text contains "{" or "}" — a config snippet, a format string — does not end the
+// span early. It reports false when raw holds no complete object, which is what a
+// model reply that is prose alone looks like.
+//
+// This is a recovery path, not a parser: the extracted text is still handed to
+// encoding/json, which is what decides whether it is well formed.
+func firstJSONObject(raw string) (string, bool) {
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	for i := start; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			switch c {
+			case '\\':
+				// Skip the escaped byte; a trailing backslash is not an error
+				// here, the unmarshal below reports it.
+				i++
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
