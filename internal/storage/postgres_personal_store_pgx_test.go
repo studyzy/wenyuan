@@ -501,6 +501,30 @@ func TestPersonalProjectionCarriesTagsAndLinks(t *testing.T) {
 	if wellFormed != 1 {
 		t.Fatalf("links with both endpoints in the aggregate = %d, want one", wellFormed)
 	}
+
+	// Upgrade path: rows written before source_unit_id existed carry only the
+	// sources array. A later round must still find their endpoints rather than
+	// dropping the links it cannot re-derive.
+	if _, err := f.db.ExecContext(f.ctx(t), `
+		UPDATE `+quoteIdent(f.persona)+`.memory_units
+		SET metadata = metadata - 'source_unit_id'
+		WHERE bank_id = $1 AND fact_type IN ('world','experience')`, self); err != nil {
+		t.Fatalf("strip source_unit_id: %v", err)
+	}
+	f.fact(t, orders, "orders has a health endpoint")
+	next, _, nextStamp := f.round(t, 20)
+	// The helper treats its texts as the complete content, so name the rows the
+	// round keeps alongside the one it adds.
+	f.finish(t, personalFinish(next, nextStamp,
+		"orders deploys on port 15432", "orders used Jenkins", "orders has a health endpoint"))
+	if err := f.db.QueryRowContext(f.ctx(t), `
+		SELECT count(*) FROM `+quoteIdent(f.persona)+`.memory_links WHERE bank_id=$1`, self).
+		Scan(&links); err != nil {
+		t.Fatalf("count links after the upgrade round: %v", err)
+	}
+	if links != 1 {
+		t.Fatalf("links after a round over legacy rows = %d, want the pair kept", links)
+	}
 }
 
 // TestPersonalFirstFillReadsEveryFact pins the first-fill rule: a tenant with no

@@ -215,11 +215,13 @@ func (s *PostgresPersonalStore) applyPersonalLinks(ctx context.Context, tx Tx, q
 		JOIN `+qualified+`.memory_units projected_from
 		  ON projected_from.bank_id = $1
 		 AND projected_from.fact_type IN ('world', 'experience')
-		 AND projected_from.metadata->>'source_unit_id' = source_from.id::text
+		 AND COALESCE(projected_from.metadata->>'source_unit_id',
+		              projected_from.metadata->'sources'->0->>'unit_id') = source_from.id::text
 		JOIN `+qualified+`.memory_units projected_to
 		  ON projected_to.bank_id = $1
 		 AND projected_to.fact_type IN ('world', 'experience')
-		 AND projected_to.metadata->>'source_unit_id' = source_to.id::text
+		 AND COALESCE(projected_to.metadata->>'source_unit_id',
+		              projected_to.metadata->'sources'->0->>'unit_id') = source_to.id::text
 		WHERE source.bank_id <> $1
 		ON CONFLICT DO NOTHING`, bankID)
 	return err
