@@ -85,7 +85,7 @@ func (t *mergeTrigger) run(teamID, projectID string) {
 		if project.TeamID != teamID || project.ProjectID != projectID {
 			continue
 		}
-		if err := t.runner.runMergeRound(ctx, project, deadline); err != nil {
+		if err := t.runner.runProjectUntilCaughtUp(ctx, project, deadline); err != nil {
 			slog.Default().Warn("on-demand merge round failed",
 				"team_id", teamID, "project_id", projectID, "error", err)
 		}

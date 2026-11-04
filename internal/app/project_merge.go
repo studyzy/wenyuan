@@ -45,20 +45,28 @@ type mergeRunner struct {
 	cfg    config.MaintenanceConfig
 }
 
-// runProjectMerges runs one round for every project that needs one.
+// runProjectMerges brings every project up to date, one round after another.
+//
+// A round is tens of milliseconds: it reads a batch, writes it, commits. Waiting
+// the job interval between rounds would leave the pass idle 99% of the time and
+// make a member's backlog take hours instead of minutes, so a project keeps
+// running rounds until it returns nothing left to carry or the tick's budget runs
+// out. The budget is what keeps one project from starving the rest.
 func (r *mergeRunner) runProjectMerges(ctx context.Context) error {
 	projects, err := r.merges.ListMergeProjects(ctx)
 	if err != nil {
 		return fmt.Errorf("discover merge projects: %w", err)
 	}
 	deadline := roundDeadline(r.cfg.ProjectMergeInterval)
+	budgetCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
 	for _, project := range projects {
-		if err := ctx.Err(); err != nil {
-			return err
+		if err := budgetCtx.Err(); err != nil {
+			return nil
 		}
 		// One project's failure must not stop the rest: the others still have
 		// contributions waiting, and this one is retried next tick.
-		if err := r.runMergeRound(ctx, project, deadline); err != nil {
+		if err := r.runProjectUntilCaughtUp(budgetCtx, project, deadline); err != nil {
 			slog.Default().Warn("project merge round failed",
 				"team_id", project.TeamID, "project_id", project.ProjectID, "error", err)
 		}
@@ -66,8 +74,40 @@ func (r *mergeRunner) runProjectMerges(ctx context.Context) error {
 	return nil
 }
 
-// runMergeRound runs one round for one project.
-func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergeProject, deadline time.Duration) error {
+// runProjectUntilCaughtUp runs rounds for one project until it has nothing left.
+//
+// A round reports whether it consumed a full batch; a short batch is the end of
+// what the project holds, and stopping there is what keeps an idle project from
+// spending its tick on empty rounds.
+func (r *mergeRunner) runProjectUntilCaughtUp(ctx context.Context, project storage.MergeProject, deadline time.Duration) error {
+	// The round cap is a safety net, not a budget: a round that advances the
+	// cursor ends the loop long before it, and the cap only stops a store whose
+	// cursor does not move from spinning forever inside one tick.
+	maxRounds := 1000
+	for round := 0; round < maxRounds; round++ {
+		if err := ctx.Err(); err != nil {
+			// The tick's budget is spent; the next tick continues from the cursor
+			// this pass left behind.
+			return nil
+		}
+		more, err := r.runMergeRound(ctx, project, deadline)
+		if err != nil {
+			return err
+		}
+		if !more {
+			return nil
+		}
+	}
+	slog.Default().Warn("project merge round cap reached; the project continues next tick",
+		"team_id", project.TeamID, "project_id", project.ProjectID, "rounds", maxRounds)
+	return nil
+}
+
+// runMergeRound runs one round for one project, reporting whether it filled its
+// batch — that is, whether more work is waiting behind it.
+func (r *mergeRunner) runMergeRound(
+	ctx context.Context, project storage.MergeProject, deadline time.Duration,
+) (more bool, err error) {
 	merges, cfg := r.merges, r.cfg
 	roundCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
@@ -90,27 +130,27 @@ func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergePr
 			return nil
 		})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !ran {
 		// Another process is merging this project, or it is halted.
-		return nil
+		return false, nil
 	}
 
 	plan, err := planRound(project, input, cfg)
 	if err != nil {
 		// A refusal is recorded, not counted: the round did not fail, it found
 		// the project outside what a round may do.
-		return merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID,
+		return false, merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID,
 			storage.MergeStateFailure{Error: err.Error()})
 	}
 	if plan.skip {
-		return merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID,
+		return false, merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID,
 			storage.MergeStateFailure{Error: plan.reason})
 	}
 	if !plan.merge {
 		// Nothing to carry: record the heartbeat and write nothing.
-		return merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID, storage.MergeStateFailure{})
+		return false, merges.AbandonMergeStanza(ctx, project.TeamID, project.ProjectID, storage.MergeStateFailure{})
 	}
 
 	req := buildFinishRequest(project, input, plan, stamp)
@@ -118,14 +158,16 @@ func (r *mergeRunner) runMergeRound(ctx context.Context, project storage.MergePr
 		if err == storage.ErrMergeClaimLost {
 			// Another process took the round over; its result is the one that
 			// counts, and this round's failure would be a lie.
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	if len(req.Replace.Insert) > 0 || len(req.Replace.Remove) > 0 {
 		r.enqueueTeamConsolidation(ctx, project)
 	}
-	return nil
+	// A full batch means the member's bank held at least that many facts; the next
+	// round continues from the cursor and may find more.
+	return len(plan.fresh) >= cfg.ProjectMergeBatchSize, nil
 }
 
 // roundPlan is what one round will do.
