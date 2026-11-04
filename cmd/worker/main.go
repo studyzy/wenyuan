@@ -128,7 +128,7 @@ func run(args []string) error {
 	maintenanceCfg := cfg.Maintenance
 	maintenanceCfg.ProjectMergeEnabled = app.MergeEnabled(cfg, mergeStore, model)
 	maintenanceCfg.PersonalRollupEnabled = app.PersonalRollupEnabled(personalStore, model)
-	loop := app.NewMaintenanceLoopWithStores(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore, personalStore)
+	loop := app.NewMaintenanceLoopWithBankConfig(store, model, reflection, tenants, maintenanceCfg, cfg.VectorIndex, mergeStore, personalStore, cfg)
 	if loop.Enabled() {
 		slog.Info("maintenance enabled",
 			"jobs", len(loop.Jobs),

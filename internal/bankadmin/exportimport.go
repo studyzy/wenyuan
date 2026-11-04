@@ -485,11 +485,6 @@ func (a exportApplier) writeKnowledgePages(ctx context.Context, pages []ExportKn
 	return nil
 }
 
-// sortStringSlice sorts in place, so the replay's unit order is stable.
-func sortStringSlice(values []string) {
-	sort.Strings(values)
-}
-
 // now reports the replay's clock.
 func (a exportApplier) now() time.Time { return time.Now().UTC() }
 
@@ -597,9 +592,4 @@ func proofCount(recorded, sources int) int {
 		return sources
 	}
 	return 1
-}
-
-// sortStrings sorts in place, so the replay's unit order is stable.
-func sortStrings(values []string) {
-	sortStringSlice(values)
 }

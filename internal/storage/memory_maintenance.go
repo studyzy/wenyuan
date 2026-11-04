@@ -70,7 +70,11 @@ func (s *MemoryStore) RetentionRowCount(schema, table string) int {
 
 // BanksNeedingConsolidation reports banks holding eligible facts with no
 // consolidation queued.
-func (s *MemoryStore) BanksNeedingConsolidation(ctx context.Context, schema string) ([]string, error) {
+//
+// The database backend answers through the reference's PL/pgSQL routine; this
+// one holds a single schema, so the equivalent scan is written out here with the
+// routine's predicate rather than the reference's older, narrower one.
+func (s *MemoryStore) BanksNeedingConsolidation(ctx context.Context, schema string) ([]ReconcileTarget, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -98,11 +102,11 @@ func (s *MemoryStore) BanksNeedingConsolidation(ctx context.Context, schema stri
 		}
 		found[unit.BankID] = true
 	}
-	out := make([]string, 0, len(found))
+	out := make([]ReconcileTarget, 0, len(found))
 	for bankID := range found {
-		out = append(out, bankID)
+		out = append(out, ReconcileTarget{Schema: schema, BankID: bankID})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].BankID < out[j].BankID })
 	return out, nil
 }
 
@@ -133,6 +137,7 @@ func (s *MemoryStore) MentalModelsWithSchedule(ctx context.Context, schema strin
 			continue
 		}
 		out = append(out, ScheduledMentalModel{
+			Schema:              schema,
 			BankID:              model.BankID,
 			MentalModelID:       model.ID,
 			RefreshCron:         cron,
@@ -143,6 +148,38 @@ func (s *MemoryStore) MentalModelsWithSchedule(ctx context.Context, schema strin
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].MentalModelID < out[j].MentalModelID })
 	return out, nil
+}
+
+// SchemasWithExpiredRows reports whether this schema holds rows past the
+// retention window, which is the single-schema equivalent of the reference's
+// schemas_with_expired_rows() probe.
+func (s *MemoryStore) SchemasWithExpiredRows(ctx context.Context, schema, table, _ string, days int) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if days <= 0 {
+		return nil, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, row := range s.retentionRows[retentionKey(schema, table)] {
+		if row.at.Before(cutoff) {
+			return []string{schema}, nil
+		}
+	}
+	return nil, nil
+}
+
+// PurgeExpiredExportArchives deletes the archives of the export operations a
+// prune is about to remove.
+func (s *MemoryStore) PurgeExpiredExportArchives(ctx context.Context, schema string, cutoff time.Time, batchSize int) {
+	if ctx.Err() != nil || batchSize <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredExportArchivesLocked(cutoff, batchSize)
 }
 
 // PruneTerminalOperations removes settled operations past their retention.
@@ -158,10 +195,9 @@ func (s *MemoryStore) PruneTerminalOperations(ctx context.Context, schema string
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
-	// Sweep the stored archives of expired export operations with their rows,
-	// like the postgres backend and the reference: the row is the blob's only
-	// handle, so it must not outlive it.
-	s.purgeExpiredExportArchivesLocked(cutoff, batchSize)
+	// The archives of the rows this prune removes are swept before it by
+	// PurgeExpiredExportArchives, which the job calls first — the same order the
+	// reference and the postgres backend use.
 	candidates := make([]string, 0)
 	for id, op := range s.operations {
 		if !op.Status.Terminal() || !op.UpdatedAt.Before(cutoff) {

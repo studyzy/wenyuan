@@ -49,7 +49,7 @@ func (h *Handlers) UpdateBankConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req ConfigWriteRequest
-	object, err := decodeRequest(r, &req)
+	object, groupOrder, err := decodeRequest(r, &req)
 	if err != nil {
 		httpx.WriteErrorFor(w, r, err)
 		return
@@ -69,7 +69,7 @@ func (h *Handlers) UpdateBankConfig(w http.ResponseWriter, r *http.Request) {
 	// the typed request: a configuration value keeps the written form of its
 	// number (see decodeRawObject), which the patch's type checks read.
 	updates, _ := object["updates"].(map[string]any)
-	patch, httpErr := configPatch(updates)
+	patch, httpErr := configPatch(updates, groupOrder)
 	if httpErr != nil {
 		httpx.WriteErrorFor(w, r, httpErr)
 		return

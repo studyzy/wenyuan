@@ -671,6 +671,33 @@ func (s *PostgresStore) RecordLLMRequest(ctx context.Context, request LLMRequest
 	return err
 }
 
+// PatchLLMRequestMetadata merges patch into the metadata of every row sharing a
+// trace id.
+//
+// The reference's `UPDATE ... SET metadata = metadata || $3::jsonb WHERE bank_id
+// = $1 AND trace_id = $2` (engine/llm_trace.py:986-990). A later patch wins on a
+// key it names, and the bank is in the predicate because a trace id is only
+// unique within a run the caller already attributed.
+func (s *PostgresStore) PatchLLMRequestMetadata(ctx context.Context, bankID, traceID string, patch map[string]any) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	if traceID == "" || len(patch) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE `+quoteIdent(schema)+`.llm_requests
+		    SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
+		  WHERE bank_id = $1 AND trace_id = $2`,
+		nullString(bankID), traceID, encoded)
+	return err
+}
+
 // marshalNullableJSON encodes a jsonb value of any shape, returning nil for a
 // nil value so the column stays NULL rather than the literal string "null".
 func marshalNullableJSON(value any) ([]byte, error) {

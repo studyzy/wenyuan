@@ -99,8 +99,9 @@ const (
 )
 
 // Entry is one operation to record. StartedAt and EndedAt bracket the work;
-// Request and Response are the payloads as the transport shaped them; Error is
-// the failure text when the operation failed, empty on success.
+// Request and Response are the payloads as the transport shaped them. A failed
+// operation is not marked: the reference's writer records every entry the same
+// way and leaves the outcome to the response payload (engine/audit.py:278-282).
 type Entry struct {
 	Action    string
 	Transport string
@@ -110,7 +111,6 @@ type Entry struct {
 	Request   map[string]any
 	Response  map[string]any
 	Metadata  map[string]any
-	Error     string
 }
 
 // Logger decides which operations to record and writes them to the store.
@@ -220,17 +220,13 @@ func (l *Logger) Record(ctx context.Context, entry Entry) {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
-	if entry.Error != "" {
-		// The trail has no error column, so the failure text rides in the
-		// metadata object alongside whatever else the caller recorded. The
-		// metadata is copied first so the caller's map is left untouched.
-		copied := make(map[string]any, len(metadata)+1)
-		for k, v := range metadata {
-			copied[k] = v
-		}
-		copied["error"] = entry.Error
-		metadata = copied
-	}
+	// metadata is what the caller supplied, and nothing else. The reference's
+	// writer has no failure marker: a failed audited call is recorded with the
+	// same metadata as a successful one, and its response body is what says so
+	// (engine/audit.py:224-243, :278-282). Writing an `error` key here put a
+	// member the reference never emits onto the frozen response surface —
+	// measured against the live reference, a failed `update_memory` lands with
+	// metadata {}.
 	if entry.EndedAt.IsZero() {
 		entry.EndedAt = time.Now().UTC()
 	}

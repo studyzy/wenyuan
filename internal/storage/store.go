@@ -509,6 +509,12 @@ type Store interface {
 	// RecordLLMRequest appends one model-request trace row, so the trace the
 	// read endpoints serve is populated by the calls that actually happened.
 	RecordLLMRequest(ctx context.Context, request LLMRequest) error
+	// PatchLLMRequestMetadata merges patch into the `metadata` object of every
+	// trace row sharing a trace id, which is how a finished operation records the
+	// memory_units it produced and consumed on the calls that made them
+	// (engine/llm_trace.py:971-990). Best-effort: a failure is the caller's to
+	// log, because a trace row is never worth failing the operation.
+	PatchLLMRequestMetadata(ctx context.Context, bankID, traceID string, patch map[string]any) error
 	// LLMRequestStats buckets the model-request trace over a period, narrowed to
 	// one operation when operation is not empty and to one kind of model call
 	// when callType is not empty.

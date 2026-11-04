@@ -36,7 +36,7 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,
 			application.Config.EnableObservations, application.Config.EnableAutoConsolidation,
 			application.Config.DatabaseSchema, tenants).WithAuditor(application.Audit),
-		Loop: NewMaintenanceLoopWithStores(
+		Loop: NewMaintenanceLoopWithBankConfig(
 			application.Store,
 			model,
 			reflection,
@@ -45,6 +45,7 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 			application.Config.VectorIndex,
 			application.MergeStore,
 			application.PersonalStore,
+			application.Config,
 		),
 	}
 }

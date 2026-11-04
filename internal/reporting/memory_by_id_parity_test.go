@@ -1,7 +1,9 @@
 package reporting
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -83,11 +85,19 @@ func TestMemoryByIDRoutesDoNotTrimTheIdentifier(t *testing.T) {
 	}
 }
 
-// The history route aliases the fact type and reads the unit second
-// (engine/memory_engine.py:13363-13460), and the unit read it uses is the live
-// table's — the archive read belongs to the detail route. An invalidated unit is
-// therefore a miss the detail route still answers: the reference's history is
-// 404 for it while GET .../memories/{id} keeps returning the archived row.
+// The history route is a miss for a unit curation moved to the invalidation
+// archive, even though the detail route keeps serving that archived row.
+//
+// Measured against the live reference on 2026-11-03 on a fresh, still-live
+// world fact: `PATCH {"state":"invalidated"}` then
+// `GET .../memories/{id}/history` is 404 "Memory unit '<id>' not found", while
+// `GET .../memories/{id}` stays 200 with `state:"invalidated"`. The reference
+// moves the row out of `memory_units` (engine/memories/pg/writes.py:421-456) and
+// `get_observation_history` reads only that table
+// (engine/memory_engine.py:13846-13855).
+//
+// Falsifier: drop the invalidation guard from MemoryHistory, which is what makes
+// this assert 404 rather than the `[]` a live non-observation fact gets.
 func TestMemoryHistoryOfAnInvalidatedUnitIsNotFound(t *testing.T) {
 	store := storage.NewMemoryStore("public")
 	ctx := context.Background()
@@ -121,7 +131,7 @@ func TestMemoryHistoryOfAnInvalidatedUnitIsNotFound(t *testing.T) {
 		t.Fatalf("detail = %v", got)
 	}
 	// The detail route keeps serving the archived row, which is what makes the
-	// difference visible to a client.
+	// asymmetry visible to a client.
 	if rec := send(mux, http.MethodGet, base+"/memories/"+unit, ""); rec.Code != http.StatusOK {
 		t.Fatalf("invalidated detail = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -269,4 +279,90 @@ func unitIDOf(t *testing.T, rec *httptest.ResponseRecorder, unit string) any {
 		return unit
 	}
 	return decodeObject(t, rec)["id"]
+}
+
+// The memory detail is a Python dict literal in the reference
+// (engine/memories/pg/curation.py:398-438), so its members reach the wire in
+// source order while Go would sort a map's keys. The 20 common members therefore
+// have a fixed order, and the members an observation adds follow them.
+//
+// Falsifier: build the detail as a map again - or reorder two members - and the
+// ordered key list below no longer matches.
+func TestMemoryDetailKeyOrderMatchesTheReference(t *testing.T) {
+	mux := parityServer(t)
+	base := "/v1/default/banks/" + bank
+
+	common := []string{
+		"id", "text", "context", "date", "type", "mentioned_at", "occurred_start",
+		"occurred_end", "entities", "document_id", "chunk_id", "tags", "metadata",
+		"observation_scopes", "state", "invalidation_reason", "invalidated_at",
+		"edited_at", "consolidated_at", "consolidation_failed_at",
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		want []string
+	}{
+		{
+			name: "world fact",
+			id:   "44444444-4444-4444-4444-444444444444",
+			want: common,
+		},
+		{
+			name: "observation appends history then its lineage",
+			id:   "55555555-5555-5555-5555-555555555555",
+			want: append(append([]string(nil), common...),
+				"history", "source_memory_ids", "source_memories"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := send(mux, http.MethodGet, base+"/memories/"+tc.id, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("detail = %d: %s", rec.Code, rec.Body.String())
+			}
+			if got := objectKeys(t, rec.Body.Bytes()); !equalStrings(got, tc.want) {
+				t.Fatalf("key order =\n  %v\nwant\n  %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// objectKeys reports the member names of a JSON object in the order they were
+// written, which is what a client reading the bytes sees.
+func objectKeys(t *testing.T, body []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		t.Fatalf("body is not a JSON object: %s", body)
+	}
+	keys := make([]string, 0, 20)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("read key: %v", err)
+		}
+		key, ok := tok.(string)
+		if !ok {
+			t.Fatalf("key token = %v", tok)
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatalf("skip value of %q: %v", key, err)
+		}
+	}
+	return keys
+}
+
+// equalStrings reports whether two string slices are element-wise equal.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

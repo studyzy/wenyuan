@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 )
 
 // KnowledgeNode is one node of the bank's knowledge tree: a folder grouping
@@ -13,19 +14,19 @@ import (
 // them all, so a folder reports null for the page-only ones rather than
 // dropping the key.
 type KnowledgeNode struct {
-	ID                  string          `json:"id"`
-	Kind                string          `json:"kind"`
-	Name                string          `json:"name"`
-	ParentID            *string         `json:"parent_id"`
-	MentalModelID       *string         `json:"mental_model_id"`
-	Managed             bool            `json:"managed"`
-	Description         *string         `json:"description"`
-	Tags                []string        `json:"tags"`
-	Timestamp           *string         `json:"timestamp"`
-	IsStale             *bool           `json:"is_stale"`
-	LastRefreshFailedAt *string         `json:"last_refresh_failed_at"`
-	Trigger             map[string]any  `json:"trigger"`
-	Children            []KnowledgeNode `json:"children"`
+	ID                  string               `json:"id"`
+	Kind                string               `json:"kind"`
+	Name                string               `json:"name"`
+	ParentID            *string              `json:"parent_id"`
+	MentalModelID       *string              `json:"mental_model_id"`
+	Managed             bool                 `json:"managed"`
+	Description         *string              `json:"description"`
+	Tags                []string             `json:"tags"`
+	Timestamp           *string              `json:"timestamp"`
+	IsStale             *bool                `json:"is_stale"`
+	LastRefreshFailedAt *string              `json:"last_refresh_failed_at"`
+	Trigger             mentalmodels.Trigger `json:"trigger"`
+	Children            []KnowledgeNode      `json:"children"`
 }
 
 // KnowledgeTreeResponse is the knowledge tree envelope.

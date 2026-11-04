@@ -8,6 +8,14 @@ var _ GraphMaintainer = (*PostgresStore)(nil)
 // DrainGraphMaintenance claims up to limit queued graph-relink targets and
 // removes them from the queue, so a deleted unit's neighbours are relinked
 // exactly once.
+//
+// The claim takes its rows FOR UPDATE SKIP LOCKED. The maintenance loop runs in
+// every process with no leader election, so two processes can drain the same
+// schema at the same instant: without SKIP LOCKED the second one waits on the
+// first's row locks (and can cycle if they claim in different orders), turning
+// housekeeping into a stall. With it each drain takes a disjoint set and the
+// total work stays one pass over the queue however many processes join in —
+// the same property the retention sweep relies on.
 func (s *PostgresStore) DrainGraphMaintenance(ctx context.Context, limit int) ([]MaintenanceTarget, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
@@ -22,7 +30,8 @@ func (s *PostgresStore) DrainGraphMaintenance(ctx context.Context, limit int) ([
 		`DELETE FROM `+qualified+`.graph_maintenance_queue
 		 WHERE (bank_id, unit_id) IN (
 		     SELECT bank_id, unit_id FROM `+qualified+`.graph_maintenance_queue
-		     ORDER BY enqueued_at ASC LIMIT $1)
+		     ORDER BY enqueued_at ASC LIMIT $1
+		     FOR UPDATE SKIP LOCKED)
 		 RETURNING bank_id, unit_id::text`, limit)
 	if err != nil {
 		return nil, err
@@ -203,7 +212,8 @@ func (s *PostgresStore) DrainEntityMaintenance(ctx context.Context, limit int) (
 		`DELETE FROM `+qualified+`.entity_maintenance_queue
 		 WHERE (bank_id, entity_id) IN (
 		     SELECT bank_id, entity_id FROM `+qualified+`.entity_maintenance_queue
-		     ORDER BY enqueued_at ASC LIMIT $1)
+		     ORDER BY enqueued_at ASC LIMIT $1
+		     FOR UPDATE SKIP LOCKED)
 		 RETURNING bank_id, entity_id::text`, limit)
 	if err != nil {
 		return nil, err

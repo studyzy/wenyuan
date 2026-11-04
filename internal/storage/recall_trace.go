@@ -24,11 +24,33 @@ var traceArmNames = map[string]string{
 	ArmGraph:    "graph",
 }
 
-// finalMemoryUnitTypesOrder is the order the trace reports fact types in, which
-// is the order the reference iterates them: experience, world, observation —
-// the declared fact-type list, not the alphabetical order.
-func finalMemoryUnitTypesOrder() []MemoryUnitType {
-	return []MemoryUnitType{TypeExperience, TypeWorld, TypeObservation}
+// finalMemoryUnitTypesOrder is the order the trace reports fact types in.
+//
+// The reference iterates the caller's own `types` selection
+// (`for ft in fact_type:` — engine/memory_engine.py:10113) over the list it
+// built from the request, after dropping "opinion", so the arms follow the
+// ORDER THE CALLER WROTE. When the caller names no types the reference falls
+// back to `list(VALID_RECALL_FACT_TYPES)`, a frozenset whose iteration order
+// follows Python's per-process hash seed — not a contract. This service uses
+// the reference's own declaration order for that case, which is stable.
+func finalMemoryUnitTypesOrder(requested []string) []MemoryUnitType {
+	order := make([]MemoryUnitType, 0, len(requested))
+	seen := make(map[MemoryUnitType]bool, len(requested))
+	for _, name := range requested {
+		factType := MemoryUnitType(name)
+		if factType != TypeWorld && factType != TypeExperience && factType != TypeObservation {
+			continue
+		}
+		if seen[factType] {
+			continue
+		}
+		seen[factType] = true
+		order = append(order, factType)
+	}
+	if len(order) == 0 {
+		return []MemoryUnitType{TypeExperience, TypeWorld, TypeObservation}
+	}
+	return order
 }
 
 // traceEntryPointLimit bounds the legacy entry_points payload: the reference
@@ -89,7 +111,7 @@ func buildRecallTraceDetail(candidates map[string]*recallCandidate, scored []*re
 	// The reference records its retrieval entries in FACT-TYPE order, each fact
 	// type carrying that type's arms: the fact types are what it loops over and
 	// the arms are recorded inside that loop (engine/memory_engine.py:9670-9730).
-	for _, factType := range finalMemoryUnitTypesOrder() {
+	for _, factType := range finalMemoryUnitTypesOrder(q.Types) {
 		for _, name := range traceArmOrder {
 			hits := grouped[[2]string{name, string(factType)}]
 			results := make([]TraceArmResult, 0, len(hits))

@@ -63,15 +63,18 @@ type DocumentResponse struct {
 	// OriginalText is the stored source text, or null when the deployment opted
 	// out of keeping it (store_document_text disabled) or when it was never
 	// stored.
-	OriginalText    *string        `json:"original_text"`
-	ContentHash     *string        `json:"content_hash"`
-	CreatedAt       string         `json:"created_at"`
-	UpdatedAt       string         `json:"updated_at"`
-	MemoryUnitCount int            `json:"memory_unit_count"`
-	Tags            []string       `json:"tags"`
-	Metadata        any            `json:"document_metadata"`
-	RetainParams    map[string]any `json:"retain_params"`
-	NodesByFactType map[string]int `json:"nodes_by_fact_type"`
+	OriginalText    *string `json:"original_text"`
+	ContentHash     *string `json:"content_hash"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	MemoryUnitCount int     `json:"memory_unit_count"`
+	// The remaining members are declared in the reference's own model order
+	// (api/http.py:2798-2821): the order is the wire contract, so a client
+	// diffing our JSON against the reference's sees the same key sequence.
+	NodesByFactType orderedFactTypeCounts `json:"nodes_by_fact_type"`
+	Tags            []string              `json:"tags"`
+	Metadata        any                   `json:"document_metadata"`
+	RetainParams    map[string]any        `json:"retain_params"`
 	// ObservationScopes is the scope spec configured at retain time: a mode
 	// name or a list of tag groups, so it stays the shape the caller sent.
 	ObservationScopes any               `json:"observation_scopes"`

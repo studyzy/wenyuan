@@ -85,7 +85,8 @@ func (h *Handlers) Reflect(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, reflectDecodeFailure(r, &req, body, err, h.ReflectSchemaValidator))
 		return
 	}
-	if failure := ValidateReflect(req, requestBodyObject(body), h.ReflectSchemaValidator); failure != nil {
+	echo := requestBodyObject(body)
+	if failure := validateReflectFields(req, echo.Fields, echo.Value, h.ReflectSchemaValidator); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}

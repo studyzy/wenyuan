@@ -131,7 +131,27 @@ type Result struct {
 	// Skipped counts creates and updates dropped as exact duplicates of an
 	// existing or already-created observation.
 	Skipped int
-	Usage   provider.Usage
+	// ObservationIDs are the observations this pass wrote — created ones, and
+	// ones an update rewrote — in the order they were applied, without repeats.
+	// A caller that has to say which observations one consolidation produced
+	// reads this instead of guessing from a time window, which is what the
+	// reference records on the operation's trace as `metadata.memory_ids`
+	// (consolidator.py, `record_created_memory_ids`).
+	ObservationIDs []string
+	Usage          provider.Usage
+}
+
+// noteWritten records one observation this pass wrote.
+func (r *Result) noteWritten(observationID string) {
+	if observationID == "" {
+		return
+	}
+	for _, existing := range r.ObservationIDs {
+		if existing == observationID {
+			return
+		}
+	}
+	r.ObservationIDs = append(r.ObservationIDs, observationID)
 }
 
 // Store is what the pass needs from storage. It is an interface so the pass can
@@ -477,6 +497,11 @@ func (r *Result) add(other Result) {
 	r.Usage.TotalTokens += other.Usage.TotalTokens
 	r.Usage.CachedInputTokens += other.Usage.CachedInputTokens
 	r.Usage.ReasoningTokens += other.Usage.ReasoningTokens
+	// Every observation the folded-in pass wrote belongs to the whole run too,
+	// so a caller reading the total sees the writes of all scopes.
+	for _, observationID := range other.ObservationIDs {
+		r.noteWritten(observationID)
+	}
 }
 
 // runScope folds one scope's facts, offering only that scope's observations as
@@ -848,6 +873,7 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			return result, touched, fmt.Errorf("create observation: %w", err)
 		}
 		c.noteObservationWritten(ctx, createdID, sources, true)
+		result.noteWritten(createdID)
 		existingTexts[key] = true
 		createdKeys = append(createdKeys, key)
 		markTouched(touched, sources)
@@ -880,6 +906,7 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			return result, touched, fmt.Errorf("update observation: %w", err)
 		}
 		c.noteObservationWritten(ctx, update.ObservationID, sources, false)
+		result.noteWritten(update.ObservationID)
 		markTouched(touched, sources)
 		result.Updated++
 	}

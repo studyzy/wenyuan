@@ -806,3 +806,45 @@ func TestPerModelZeroOptsOutOfTheBankFloor(t *testing.T) {
 		t.Fatalf("status = %s, want completed", final.Status)
 	}
 }
+
+// A transient provider failure is recorded but does not park the model.
+//
+// Whether a failure parks is decided by its class, not by which branch handles it:
+// the reference records every failure and passes
+// pause_automatic=not is_transient_remote_error(e) (engine/memory_engine.py:4929-4938).
+// Parking half is visible from the model (last_refresh_failed_at) and needs no
+// LLM call to observe; the recording half is covered by
+// TestRefreshOperationRecordsOutcomeAndWindow, which reads the conversation
+// history row the same branch writes.
+func TestTransientRefreshFailureDoesNotParkTheModel(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		err           error
+		wantParked    bool
+		wantPermanent bool
+	}{
+		{
+			name:       "a provider that is down will answer later",
+			err:        &provider.TransientError{Cause: errors.New("provider is down")},
+			wantParked: false,
+		},
+		{
+			name:       "a rate limit is not a doom",
+			err:        &provider.RateLimitResetError{},
+			wantParked: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The classification the worker branch makes.
+			parked := !transientRefreshFailure(tc.err)
+			if parked != tc.wantParked {
+				t.Fatalf("parked = %v, want %v for %v", parked, tc.wantParked, tc.err)
+			}
+			// A transient failure is retried, never a permanent refusal: the
+			// model is not frozen and the budget decides when to give up.
+			if permanentRefreshFailure(tc.err) || provider.IsAuthRejected(tc.err) {
+				t.Fatalf("%v must not be a permanent refusal", tc.err)
+			}
+		})
+	}
+}

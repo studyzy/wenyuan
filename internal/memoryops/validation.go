@@ -1,6 +1,7 @@
 package memoryops
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -75,7 +76,7 @@ func recallDecodeFailure(r *http.Request, req *RecallRequest, body []byte, err e
 	// rules see the values the caller sent.
 	_ = json.Unmarshal(body, req)
 	return mergeRouteItems(r, req, &httpx.ValidationFailure{Errors: items},
-		ValidateRecall(*req, requestBodyObject(body)))
+		validateRecallFields(*req, requestBodyObject(body).Fields, requestBodyObject(body).Value))
 }
 
 // reflectDecodeFailure is recallDecodeFailure for the reflection route, which
@@ -88,7 +89,7 @@ func reflectDecodeFailure(r *http.Request, req *ReflectRequest, body []byte, err
 	}
 	_ = json.Unmarshal(body, req)
 	return mergeRouteItems(r, req, &httpx.ValidationFailure{Errors: items},
-		ValidateReflect(*req, requestBodyObject(body), schemaValidator))
+		validateReflectFields(*req, requestBodyObject(body).Fields, requestBodyObject(body).Value, schemaValidator))
 }
 
 // ValidateRetain checks the retain request fields, including the required item
@@ -332,15 +333,112 @@ func duplicateDocumentIDs(items []RetainItem) []string {
 // object a model field extracts its own fields from.
 const includeShapeMessage = "Input should be a valid dictionary or object to extract fields from"
 
-// requestBodyObject decodes a body the handler already read into the object
-// shape a validation item names as its own input, so a `missing` item reports
-// the body the caller sent.
-func requestBodyObject(body []byte) map[string]any {
-	var object map[string]any
-	if err := json.Unmarshal(body, &object); err != nil || object == nil {
-		return map[string]any{}
+// requestBodyObject decodes a body the handler already read into the two shapes
+// the route needs: `value` is the body a validation item echoes as its own
+// input, and `fields` is the same body for the field lookups the rules make.
+//
+// The echoed value keeps the caller's member order: the reference reports the
+// body as an insertion-ordered mapping, so a body-level item (`tags` and
+// `tag_groups` mutually exclusive, say) renders `{"query":…,"tags":…,
+// "tag_groups":…}` in the order it was written, while a Go map would sort the
+// same members alphabetically.
+func requestBodyObject(body []byte) bodyEcho {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	ordered, ok := orderedBodyFrom(decoder)
+	if object, isObject := ordered.(httpx.OrderedObject); ok && isObject {
+		return bodyEcho{Value: object, Fields: orderedFields(object)}
 	}
-	return object
+	var fields map[string]any
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return bodyEcho{Value: map[string]any{}, Fields: map[string]any{}}
+	}
+	return bodyEcho{Value: fields, Fields: fields}
+}
+
+// bodyEcho is the request body as a validation item echoes it (`Value`) plus the
+// plain field view the route's rules read (`Fields`).
+type bodyEcho struct {
+	Value  any
+	Fields map[string]any
+}
+
+// orderedFields projects an insertion-ordered object onto a plain map, so a rule
+// that reads `body["tags"]` still finds the caller's value. A nested object is
+// projected as well: the rules that reach into one (`include`, `min_scores`,
+// `temporal_window`) read it as a map, so handing them the ordered form would
+// turn a present member into a shape failure.
+func orderedFields(object httpx.OrderedObject) map[string]any {
+	fields := make(map[string]any, len(object))
+	for _, entry := range object {
+		fields[entry.Key] = plainBodyValue(entry.Value)
+	}
+	return fields
+}
+
+// plainBodyValue is a value from orderedFields with its objects projected onto
+// plain maps.
+func plainBodyValue(value any) any {
+	switch typed := value.(type) {
+	case httpx.OrderedObject:
+		return orderedFields(typed)
+	case []any:
+		list := make([]any, len(typed))
+		for i, element := range typed {
+			list[i] = plainBodyValue(element)
+		}
+		return list
+	}
+	return value
+}
+
+// orderedBodyFrom reads one JSON value keeping every object's member order.
+func orderedBodyFrom(decoder *json.Decoder) (any, bool) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, false
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return token, true
+	}
+	switch delim {
+	case '{':
+		members := httpx.OrderedObject{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, false
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, false
+			}
+			value, ok := orderedBodyFrom(decoder)
+			if !ok {
+				return nil, false
+			}
+			members = append(members, httpx.OrderedMember{Key: key, Value: value})
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return members, true
+	case '[':
+		list := []any{}
+		for decoder.More() {
+			value, ok := orderedBodyFrom(decoder)
+			if !ok {
+				return nil, false
+			}
+			list = append(list, value)
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return list, true
+	}
+	return nil, false
 }
 
 // queryFieldErrors reports the query checks the reference runs as a field
@@ -413,16 +511,24 @@ var recallIncludeMembers = []string{"entities", "chunks", "source_facts"}
 // include sub-object's shape, the fact-type selection, the budget level, the
 // tag-scoping form, the tag-matching mode and the pagination bounds.
 func ValidateRecall(req RecallRequest, body map[string]any) *httpx.ValidationFailure {
+	return validateRecallFields(req, body, body)
+}
+
+// validateRecallFields is ValidateRecall with a distinct value to echo for an
+// item filed on the request as a whole. The rules read `fields`; an item that
+// names the body as its own input reports `echo`, which keeps the caller's
+// member order.
+func validateRecallFields(req RecallRequest, fields map[string]any, echo any) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
-	items = append(items, queryFieldErrors(body, req.Query)...)
+	items = append(items, queryFieldErrors(fields, req.Query)...)
 	if req.Budget != "" && !containsToken(storageBudgetLevels(), req.Budget) {
 		items = append(items, httpx.Enum([]string{"body", "budget"}, req.Budget, storageBudgetLevels()))
 	}
-	items = append(items, includeMemberErrors(body, req.Include, recallIncludeMembers)...)
+	items = append(items, includeMemberErrors(fields, req.Include, recallIncludeMembers)...)
 	// The selection is a `list[str]`: an element of another JSON kind is a
 	// field-level failure, and a model whose field failed skips its validator,
 	// so the route's own "not a fact type" rule does not run alongside it.
-	typeItems := recallTypeElements(body)
+	typeItems := recallTypeElements(fields)
 	items = append(items, typeItems...)
 	if len(typeItems) == 0 {
 		if unsupported := unsupportedTypes(req.Types); len(unsupported) > 0 {
@@ -442,11 +548,11 @@ func ValidateRecall(req RecallRequest, body map[string]any) *httpx.ValidationFai
 	// The reference's rule is presence, not content: `tags: []` beside a
 	// `tag_groups` list is refused just as a populated one is, because the model
 	// validator tests every member against None.
-	if tagsSupplied(body) && req.TagGroups.Present {
-		items = append(items, httpx.ValueError([]string{"body"}, body,
+	if tagsSupplied(fields) && req.TagGroups.Present {
+		items = append(items, httpx.ValueError([]string{"body"}, echo,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}
-	items = append(items, temporalWindowErrors(req.TemporalWindow, body)...)
+	items = append(items, temporalWindowErrors(req.TemporalWindow, fields)...)
 	if len(items) == 0 {
 		return nil
 	}

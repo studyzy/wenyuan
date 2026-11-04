@@ -84,6 +84,19 @@ type mapField struct {
 // the "N validation errors for LabelGroup" headline. A single problem uses the
 // singular headline the library uses.
 func ShapeProblems(raw any) []string {
+	return ShapeProblemsInOrder(raw, nil)
+}
+
+// ShapeProblemsInOrder is ShapeProblems with the caller's own member order
+// available for each group.
+//
+// A Go decode of the request body yields maps, whose iteration order is
+// randomised; the reference's report prints a rejected group's dict in the
+// order the client wrote it. callerOrder[i] names group i's members in document
+// order and nil leaves that group's members sorted. Without it the answer is
+// still deterministic, just not the reference's order for a group written out of
+// alphabetical order.
+func ShapeProblemsInOrder(raw any, callerOrder [][]string) []string {
 	parsed, ok := Normalize(raw)
 	if !ok || parsed == nil {
 		return nil
@@ -93,7 +106,7 @@ func ShapeProblems(raw any) []string {
 	// The reference validates the group list with a comprehension
 	// (engine/retain/entity_labels.py:78), so the first group its model rejects
 	// ends validation: a later group's problems are never reported.
-	for _, entry := range groups {
+	for index, entry := range groups {
 		object, isObject := entry.(map[string]any)
 		if !isObject {
 			problems = append(problems, problem{
@@ -104,7 +117,11 @@ func ShapeProblems(raw any) []string {
 			})
 			break
 		}
-		_, groupProblems := checkGroup(migrate(object))
+		var order []string
+		if index < len(callerOrder) {
+			order = callerOrder[index]
+		}
+		_, groupProblems := checkGroup(migrate(object), order)
 		if len(groupProblems) > 0 {
 			problems = append(problems, groupProblems...)
 			break
@@ -150,11 +167,13 @@ func Canonical(raw any) any {
 		return nil
 	}
 	groups, _ := parsed.([]any)
-	if len(groups) == 0 {
-		// An empty list is still the envelope the model serialises: the caller
-		// supplied an (empty) attributes list, so the stored value keeps one.
-		return OrderedObject{Keys: []string{"attributes"}, Members: map[string]any{"attributes": []any{}}}
-	}
+	// The reference validates with parse_entity_labels() and then stores the
+	// caller's own dict (config_resolver.py:596-601, :750-760), so the top-level
+	// shape is whatever the caller sent: a bare list round-trips as a bare list
+	// (`[]` included), and an {"attributes": [...]} envelope stays an envelope.
+	// Only the groups inside are re-stated in the model's declaration order,
+	// because a caller comparing our config against the reference's must see the
+	// same bytes there.
 	out := make([]any, 0, len(groups))
 	for _, entry := range groups {
 		object, isObject := entry.(map[string]any)
@@ -171,17 +190,24 @@ func Canonical(raw any) any {
 		group.groupTypeSupplied = callerNamedType
 		out = append(out, group.render())
 	}
-	return OrderedObject{Keys: []string{"attributes"}, Members: map[string]any{"attributes": out}}
+	if _, envelope := raw.(map[string]any); envelope {
+		return OrderedObject{Keys: []string{"attributes"}, Members: map[string]any{"attributes": out}}
+	}
+	return out
 }
 
 // checkGroup validates one group the way LabelGroup.model_validate does,
 // reporting each member's problem at its pydantic path.
-func checkGroup(raw map[string]any) (*labelGroup, []problem) {
+func checkGroup(raw map[string]any, callerOrder ...[]string) (*labelGroup, []problem) {
 	var problems []problem
 	group := &labelGroup{}
+	var order []string
+	if len(callerOrder) > 0 {
+		order = callerOrder[0]
+	}
 
 	if value, present := raw["key"]; !present {
-		problems = append(problems, problemWithShown("key", "missing", "Field required", raw))
+		problems = append(problems, problemWithShown("key", "missing", "Field required", raw, order))
 	} else if text, ok := value.(string); ok {
 		group.key = text
 	} else {
@@ -748,21 +774,48 @@ func ordered(shape string, members map[string]any) OrderedObject {
 
 // problemWithShown builds a missing-member item whose printed input is the
 // migrated group dict, listed in the order that dict holds its keys.
-func problemWithShown(loc, kind, msg string, migrated map[string]any) problem {
-	return problem{loc: loc, kind: kind, msg: msg, input: migrated, shown: migrationDictOrder(migrated)}
+//
+// callerOrder is the group's members in the order the client wrote them, when
+// the caller could recover it; nil falls back to sorted order. The reference's
+// migration is `dict(raw)` followed by `patched["type"] = ...`
+// (engine/retain/entity_labels.py:90-104), so its repr lists the caller's keys
+// in *their* order with `type` appended — not in sorted order.
+func problemWithShown(loc, kind, msg string, migrated map[string]any, callerOrder []string) problem {
+	return problem{loc: loc, kind: kind, msg: msg, input: migrated, shown: migrationDictOrder(migrated, callerOrder)}
 }
 
 // migrationDictOrder lists a migrated group's members the way the reference's
-// dict holds them: the caller's own keys in the order a Go decode can recover
-// (sorted), then `type`, which the migration appends when the caller omitted it.
-func migrationDictOrder(migrated map[string]any) []string {
+// dict holds them: the caller's own keys in the order it supplied them, then
+// `type`, which the migration appends when the caller omitted it.
+//
+// A Go decode yields an unordered map, so callerOrder has to be recovered from
+// the raw JSON; a caller that cannot supply it gets sorted order, which is what
+// this function used to do unconditionally and is deterministic either way.
+func migrationDictOrder(migrated map[string]any, callerOrder []string) []string {
 	keys := make([]string, 0, len(migrated))
-	for key := range migrated {
-		if key != "type" {
-			keys = append(keys, key)
+	seen := make(map[string]bool, len(callerOrder))
+	for _, key := range callerOrder {
+		if key == "type" || seen[key] {
+			continue
 		}
+		if _, present := migrated[key]; !present {
+			continue
+		}
+		keys = append(keys, key)
+		seen[key] = true
 	}
-	sort.Strings(keys)
+	// Members the order could not name (the migration may add or remove keys)
+	// still print, after the ones it did, in sorted order for determinism.
+	rest := make([]string, 0, len(migrated))
+	for key := range migrated {
+		if key == "type" || seen[key] {
+			continue
+		}
+		rest = append(rest, key)
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+	// `type` is appended last by the migration, so it prints last.
 	if _, present := migrated["type"]; present {
 		keys = append(keys, "type")
 	}

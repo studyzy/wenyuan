@@ -63,6 +63,21 @@ func validateArchive(data []byte, producedBy string) (*transferarchive.Archive, 
 	return archive, nil
 }
 
+// requireBankArchive refuses an archive a whole-bank restore cannot read: the
+// reference's read_bank_manifest accepts only `archive_type` "bank" and names
+// the document import as the route that does take the other producer's file
+// (engine/transfer/importer.py:308-313). An empty archive_type is a whole-bank
+// archive: it is what every bank export produced before the field existed, and
+// every reader here already treats it that way (transferarchive.Manifest's
+// Scope* helpers).
+func requireBankArchive(manifest *transferarchive.Manifest) error {
+	if manifest.ArchiveType == "" || manifest.ArchiveType == "bank" {
+		return nil
+	}
+	//nolint:staticcheck // the reference's own wording, capitalised
+	return fmt.Errorf("Not a whole-bank archive (archive_type='%s'); use import_documents instead", manifest.ArchiveType)
+}
+
 // ArchiveReport is the observable result of validating or applying one
 // archive.
 type ArchiveReport struct {

@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
@@ -167,7 +168,13 @@ func projectKnowledgeNode(node storage.KnowledgeNode, model *storage.MentalModel
 		out.Tags = normalizeKnowledgeTags(model.Tags)
 		out.Timestamp = httpx.FormatTimestampPtr(&model.LastRefreshedAt)
 		out.LastRefreshFailedAt = httpx.FormatTimestampPtr(model.LastRefreshFailedAt)
-		out.Trigger = mentalmodels.NormalizeTrigger(model.Trigger)
+		// The trigger is the reference's MentalModelTrigger response model, which its
+		// framework serializes in declaration order; a normalized map would reach the
+		// wire in Go's sorted key order instead (observed against the live reference:
+		// `budget,mode,refresh_after_consolidation,...` vs the alphabetical order).
+		if trigger := mentalmodels.NormalizeTrigger(model.Trigger); trigger != nil {
+			out.Trigger = orderedKnowledgeTrigger(trigger)
+		}
 	}
 	if out.Timestamp == nil {
 		out.Timestamp = httpx.FormatTimestampPtr(&node.CreatedAt)
@@ -330,4 +337,29 @@ func modelPtr(model storage.MentalModel, ok bool) *storage.MentalModel {
 		return nil
 	}
 	return &model
+}
+
+// orderedKnowledgeTrigger renders a normalized page trigger in the reference's
+// declaration order.
+//
+// The reference's node model carries the trigger as a `MentalModelTrigger`, so
+// its framework writes the eighteen members in the order the model declares them
+// — `budget, mode, refresh_after_consolidation, refresh_cron, …` — while Go
+// would sort a map's keys alphabetically. `mentalmodels.Trigger` is the ordered
+// projection for exactly that: it keeps the declared members first (and any
+// undeclared one after them, in document order), and marshals as it finds them.
+//
+// The normalized map is encoded once and read back into that ordered form, so
+// the projection runs through the same normalization the mental-model routes use
+// and only the key order differs.
+func orderedKnowledgeTrigger(trigger map[string]any) mentalmodels.Trigger {
+	raw, err := json.Marshal(trigger)
+	if err != nil {
+		return nil
+	}
+	var ordered mentalmodels.Trigger
+	if err := json.Unmarshal(raw, &ordered); err != nil {
+		return nil
+	}
+	return ordered
 }

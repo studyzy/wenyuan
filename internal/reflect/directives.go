@@ -125,7 +125,7 @@ func PreviewMessages(directives []Directive) []provider.Message {
 		})},
 		{Role: provider.RoleUser, Content: question},
 		{Role: provider.RoleSystem, Content: buildFinalSystemPrompt(directives, bankProfile{})},
-		{Role: provider.RoleUser, Content: buildFinalPrompt(question, "", 0)},
+		{Role: provider.RoleUser, Content: buildFinalPrompt(bankProfile{}, question, "", 0)},
 	}
 }
 

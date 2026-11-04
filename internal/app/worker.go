@@ -656,19 +656,29 @@ func (p archiveProcessor) applyMentalModelRefresh(ctx context.Context, op storag
 		// Every failure leaves a history row, so a refused write is visible on
 		// the model itself rather than only on the operation.
 		recordMentalModelRefreshFailure(ctx, p.store, op.BankID, modelID, report, err)
-		if transientRefreshFailure(err) {
-			// The provider is down or rate-limited; it will answer later, so the
-			// model is not parked. The operation still fails, so a caller sees
-			// the failure, but the next automatic trigger retries it.
-			return worker.Permanent(err)
-		}
-		if permanentRefreshFailure(err) || provider.IsAuthRejected(err) {
+		// Whether the model is parked is decided by the *class of the failure*,
+		// not by which branch handles it: the reference records the failure and
+		// passes pause_automatic=not is_transient_remote_error(e) on every path
+		// (memory_engine.py:4929-4938, 19021, 19123). A provider that is down or
+		// rate-limited will answer later, so it is not parked — but its failure
+		// is still recorded, which is the half this branch is about.
+		if !transientRefreshFailure(err) {
 			if recordErr := p.store.RecordMentalModelRefreshFailure(ctx, op.BankID, modelID, time.Now().UTC()); recordErr != nil {
 				// A failure that cannot be recorded is still the failure that
 				// matters; the operation's own error carries the reason.
 				p.logger().Warn("could not record mental model refresh failure",
 					"bank_id", op.BankID, "mental_model_id", modelID, "error", recordErr)
 			}
+		}
+		// The retryability is a separate question from the parking: a transient
+		// provider failure will answer later, so the operation is retried (budget
+		// spent normally); a content refusal or a rejected credential never will,
+		// so it fails on first sight. A rate-limit-with-reset is itself the
+		// deferral, and the worker schedules against the reset.
+		if transientRefreshFailure(err) {
+			return err
+		}
+		if permanentRefreshFailure(err) || provider.IsAuthRejected(err) {
 			return worker.Permanent(err)
 		}
 		return err
@@ -812,6 +822,14 @@ func (p archiveProcessor) applyConsolidation(ctx context.Context, op storage.Ope
 			"observations_updated": result.Updated,
 			"observations_deleted": result.Deleted,
 		})
+		// Map the observations this pass folded onto its trace, so
+		// `GET .../llm-requests?memory_id=` finds the calls that produced them —
+		// the reference's attach_memory_ids at the end of a consolidation run
+		// (engine/consolidation/consolidator.py:1612-1618). The pass reports the
+		// ids it wrote, so the mapping is exact rather than a scan.
+		if len(result.ObservationIDs) > 0 {
+			traceRecorder(p.store).attachMemoryIDs(ctx, result.ObservationIDs, nil)
+		}
 		// A page that follows consolidation refreshes once the pass it was
 		// waiting on has landed, so the new observations are what it reads.
 		p.enqueueConsolidationRefreshes(ctx, op.BankID)

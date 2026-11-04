@@ -50,3 +50,8 @@ node_modules/
 clients/rust/target/
 clients/python/.venv/
 *.bak
+
+# The toolchain's module cache, when a session redirects GOPATH into the tree
+# (`source .goenv.local` may point here on machines whose default cache is
+# read-only). It is a dependency cache, never a source artifact.
+/.gopath/

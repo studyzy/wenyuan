@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/studyzy/wenyuan/internal/httpx"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -40,28 +41,26 @@ func TestBuildRecallResponseTracePresentWhenRequested(t *testing.T) {
 	if response.Trace == nil {
 		t.Fatal("trace must be present when requested")
 	}
-	query, ok := response.Trace["query"].(map[string]any)
-	if !ok || query["query_text"] != "q" {
+	queryObject := traceMember(t, response.Trace, "query")
+	if queryObject == nil || traceMember(t, queryObject, "query_text") != "q" {
 		t.Fatalf("trace must echo the query: %+v", response.Trace)
 	}
-	summary, ok := response.Trace["summary"].(map[string]any)
-	if !ok {
+	summary := traceMember(t, response.Trace, "summary")
+	if summary == nil {
 		t.Fatalf("trace must carry a summary: %+v", response.Trace)
 	}
 	// The summary is the reference's SearchSummary (engine/search/trace.py:133-148):
 	// the visit counts, the search duration and the ordered phase list — there is
 	// no `candidates_found` or `stage_counts` member.
-	if summary["results_returned"] != 1 {
+	if traceMember(t, summary, "results_returned") != 1 {
 		t.Fatalf("summary counts = %+v", summary)
 	}
 	for _, member := range []string{"total_nodes_visited", "entry_points_found", "budget_used",
 		"budget_remaining", "total_duration_seconds", "results_returned", "phase_metrics"} {
-		if _, ok := summary[member]; !ok {
-			t.Fatalf("summary must carry %q: %+v", member, summary)
-		}
+		traceMember(t, summary, member)
 	}
-	if _, ok := summary["phase_metrics"].([]any); !ok {
-		t.Fatalf("phase_metrics must be a list, got %T", summary["phase_metrics"])
+	if _, ok := traceMember(t, summary, "phase_metrics").([]any); !ok {
+		t.Fatalf("phase_metrics must be a list, got %T", traceMember(t, summary, "phase_metrics"))
 	}
 }
 
@@ -229,4 +228,27 @@ func TestBuildRecallResponseSourceFactIDsGated(t *testing.T) {
 	if len(included.Results) != 1 || len(included.Results[0].SourceFactIDs) != 1 {
 		t.Fatalf("source_fact_ids must be reported when source facts are included: %+v", included.Results)
 	}
+}
+
+// traceMember reads one member of a rendered trace object, whichever of the two
+// renderings the encoder produced (an ordered object, or a plain map when a
+// value was built without one).
+func traceMember(t *testing.T, object any, key string) any {
+	t.Helper()
+	switch typed := object.(type) {
+	case httpx.OrderedObject:
+		for _, entry := range typed {
+			if entry.Key == key {
+				return entry.Value
+			}
+		}
+	case map[string]any:
+		value, present := typed[key]
+		if !present {
+			t.Fatalf("member %q missing from %T", key, object)
+		}
+		return value
+	}
+	t.Fatalf("member %q missing from %T", key, object)
+	return nil
 }

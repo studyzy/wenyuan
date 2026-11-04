@@ -234,12 +234,48 @@ func (h *Handlers) GetDocument(w http.ResponseWriter, r *http.Request) {
 // factTypeCounts renders a document's per-type counts in the fixed breakdown
 // the detail read reports. All three perspectives are always present, zero when
 // the document has none, so a caller can read the key unconditionally.
-func factTypeCounts(counts map[string]int) map[string]int {
-	return map[string]int{
-		"world":       counts["world"],
-		"experience":  counts["experience"],
-		"observation": counts["observation"],
+// factTypeCounts renders the per-type counts in the order the reference's dict
+// literal declares them (memory_engine.py:11303-11307: world, experience,
+// observation). A Go map would sort the keys, and the reference's JSON carries
+// its own order, so the three are written out rather than mapped.
+func factTypeCounts(counts map[string]int) orderedFactTypeCounts {
+	return orderedFactTypeCounts{
+		{Key: "world", Value: counts["world"]},
+		{Key: "experience", Value: counts["experience"]},
+		{Key: "observation", Value: counts["observation"]},
 	}
+}
+
+// orderedFactTypeCounts is `nodes_by_fact_type` as the reference serialises it:
+// the members in the order its dict literal listed them.
+type orderedFactTypeCounts []httpx.OrderedMember
+
+// MarshalJSON writes the three members in the order the reference's dict
+// literal declared them.
+func (c orderedFactTypeCounts) MarshalJSON() ([]byte, error) {
+	return json.Marshal(httpx.OrderedObject(c))
+}
+
+// UnmarshalJSON reads the object back, so a caller (and a test decoding the
+// served body into DocumentResponse) gets the same members the writer wrote.
+func (c *orderedFactTypeCounts) UnmarshalJSON(data []byte) error {
+	var members map[string]int
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	*c = factTypeCounts(members)
+	return nil
+}
+
+// count reports one fact type's memo, for a caller reading the value back.
+func (c orderedFactTypeCounts) count(factType string) int {
+	for _, member := range c {
+		if member.Key == factType {
+			value, _ := member.Value.(int)
+			return value
+		}
+	}
+	return 0
 }
 
 // presentObservationScopes returns the retain-time scope spec when it carries

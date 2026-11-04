@@ -249,7 +249,7 @@ func sortedChunkKeys(channels map[string]ChunkEntry) []string {
 // in the reference's declared order, and a list the tracer did not populate is
 // emitted empty rather than omitted
 // (engine/search/trace.py:158-192, engine/search/tracer.py:394-437).
-func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, returned int) map[string]any {
+func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, returned int) any {
 	detail := result.Trace.Detail
 	if detail != nil {
 		return renderTrace(detail, result, req, returned)
@@ -259,55 +259,63 @@ func buildRecallTraceResponse(result storage.RecallResult, req RecallRequest, re
 
 // renderTrace renders a populated trace: the query block, the arm lists, the
 // fusion and rerank payloads, the legacy graph payload and the summary.
-func renderTrace(detail *storage.RecallTraceDetail, result storage.RecallResult, req RecallRequest, returned int) map[string]any {
-	trace := map[string]any{
-		"query":             renderTraceQuery(detail, req, result),
-		"retrieval_results": renderArmResults(detail),
-		"rrf_merged":        renderRRFMerged(detail.RRFMerged),
-		"reranked":          renderReranked(detail.Reranked),
-		"entry_points":      renderEntryPoints(detail.EntryPoints),
-		"visits":            renderVisits(detail.Visits),
-		"summary":           renderTraceSummary(detail, returned),
-		"final_results":     renderFinalResults(detail.FinalResults),
+func renderTrace(detail *storage.RecallTraceDetail, result storage.RecallResult, req RecallRequest, returned int) any {
+	// The trace is an OpenRowModel in the reference but its members are
+	// declared there, so it reaches the wire in declaration order — a Go map
+	// would emit them alphabetically.
+	return traceObject{
+		{Key: "query", Value: renderTraceQuery(detail, req, result)},
+		{Key: "retrieval_results", Value: renderArmResults(detail)},
+		{Key: "rrf_merged", Value: renderRRFMerged(detail.RRFMerged)},
+		{Key: "reranked", Value: renderReranked(detail.Reranked)},
+		{Key: "entry_points", Value: renderEntryPoints(detail.EntryPoints)},
+		{Key: "visits", Value: renderVisits(detail.Visits)},
+		{Key: "summary", Value: renderTraceSummary(detail, returned)},
+		{Key: "final_results", Value: renderFinalResults(detail.FinalResults)},
 	}
-	return trace
 }
 
 // renderTraceQuery renders the query block. Every member is present, and the
 // embedding is always a list (empty when the deployment has no embedder), which
 // is what the reference's QueryInfo declares.
-func renderTraceQuery(detail *storage.RecallTraceDetail, req RecallRequest, result storage.RecallResult) map[string]any {
+func renderTraceQuery(detail *storage.RecallTraceDetail, req RecallRequest, result storage.RecallResult) any {
 	embedding := make([]any, 0, len(detail.QueryEmbedding))
 	for _, dimension := range detail.QueryEmbedding {
 		embedding = append(embedding, dimension)
 	}
-	query := map[string]any{
-		"query_text":      req.Query,
-		"query_embedding": embedding,
-		"timestamp":       detail.Anchor.UTC().Format(time.RFC3339Nano),
-		"budget":          detail.Budget,
-		"max_tokens":      recallMaxTokens(req),
-		"tags":            optionalStrings(req.Tags),
-		"tags_match":      detail.TagsMatch,
-	}
+	// The reference's QueryInfo declares these members in this order, so the
+	// block reaches the wire in declaration order rather than alphabetically.
+	var constraint any
 	if detail.TemporalStart != nil || detail.TemporalEnd != nil {
-		constraint := map[string]any{"start": nil, "end": nil}
-		if detail.TemporalStart != nil {
-			constraint["start"] = detail.TemporalStart.UTC().Format(time.RFC3339Nano)
+		constraint = traceObject{
+			{Key: "start", Value: constraintStamp(detail.TemporalStart)},
+			{Key: "end", Value: constraintStamp(detail.TemporalEnd)},
 		}
-		if detail.TemporalEnd != nil {
-			constraint["end"] = detail.TemporalEnd.UTC().Format(time.RFC3339Nano)
-		}
-		query["temporal_constraint"] = constraint
-	} else {
-		query["temporal_constraint"] = nil
 	}
-	return query
+	return traceObject{
+		{Key: "query_text", Value: req.Query},
+		{Key: "query_embedding", Value: embedding},
+		{Key: "timestamp", Value: detail.Anchor.UTC().Format(time.RFC3339Nano)},
+		{Key: "budget", Value: detail.Budget},
+		{Key: "max_tokens", Value: recallMaxTokens(req)},
+		{Key: "tags", Value: optionalStrings(req.Tags)},
+		{Key: "tags_match", Value: detail.TagsMatch},
+		{Key: "temporal_constraint", Value: constraint},
+	}
+}
+
+// constraintStamp renders one end of the temporal constraint, null when that
+// end was not supplied.
+func constraintStamp(at *time.Time) any {
+	if at == nil {
+		return nil
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 // renderTraceSummary renders the summary block: the visit counts, the search
 // duration and the ordered phase list.
-func renderTraceSummary(detail *storage.RecallTraceDetail, returned int) map[string]any {
+func renderTraceSummary(detail *storage.RecallTraceDetail, returned int) any {
 	visited := len(detail.Visits)
 	phases := make([]any, 0, len(detail.PhaseMetrics))
 	for _, metric := range detail.PhaseMetrics {
@@ -315,20 +323,20 @@ func renderTraceSummary(detail *storage.RecallTraceDetail, returned int) map[str
 		for key, value := range metric.Details {
 			details[key] = value
 		}
-		phases = append(phases, map[string]any{
-			"phase_name":       metric.Name,
-			"duration_seconds": metric.Seconds,
-			"details":          details,
+		phases = append(phases, traceObject{
+			{Key: "phase_name", Value: metric.Name},
+			{Key: "duration_seconds", Value: metric.Seconds},
+			{Key: "details", Value: details},
 		})
 	}
-	return map[string]any{
-		"total_nodes_visited":    visited,
-		"entry_points_found":     len(detail.EntryPoints),
-		"budget_used":            visited,
-		"budget_remaining":       detail.Budget - visited,
-		"total_duration_seconds": detail.TotalDurationSeconds,
-		"results_returned":       returned,
-		"phase_metrics":          phases,
+	return traceObject{
+		{Key: "total_nodes_visited", Value: visited},
+		{Key: "entry_points_found", Value: len(detail.EntryPoints)},
+		{Key: "budget_used", Value: visited},
+		{Key: "budget_remaining", Value: detail.Budget - visited},
+		{Key: "total_duration_seconds", Value: detail.TotalDurationSeconds},
+		{Key: "results_returned", Value: returned},
+		{Key: "phase_metrics", Value: phases},
 	}
 }
 
@@ -336,7 +344,7 @@ func renderTraceSummary(detail *storage.RecallTraceDetail, returned int) map[str
 // produced no detail payload (a deployment with the search tracer off): every
 // list still appears, empty, so a client reading the trace unconditionally sees
 // the same keys.
-func renderEmptyTrace(result storage.RecallResult, req RecallRequest, returned int) map[string]any {
+func renderEmptyTrace(result storage.RecallResult, req RecallRequest, returned int) any {
 	detail := &storage.RecallTraceDetail{
 		Anchor:    time.Now().UTC(),
 		Budget:    result.Trace.Budget,
@@ -349,11 +357,11 @@ func renderEmptyTrace(result storage.RecallResult, req RecallRequest, returned i
 func renderEntryPoints(points []storage.TraceEntryPoint) []any {
 	out := make([]any, 0, len(points))
 	for _, point := range points {
-		out = append(out, map[string]any{
-			"node_id":          point.NodeID,
-			"text":             point.Text,
-			"similarity_score": point.SimilarityScore,
-			"rank":             point.Rank,
+		out = append(out, traceObject{
+			{Key: "node_id", Value: point.NodeID},
+			{Key: "text", Value: point.Text},
+			{Key: "similarity_score", Value: point.SimilarityScore},
+			{Key: "rank", Value: point.Rank},
 		})
 	}
 	return out
@@ -364,35 +372,35 @@ func renderEntryPoints(points []storage.TraceEntryPoint) []any {
 func renderVisits(visits []storage.TraceVisit) []any {
 	out := make([]any, 0, len(visits))
 	for _, visit := range visits {
-		weights := map[string]any{
-			"activation":              visit.Activation,
-			"semantic_similarity":     visit.SemanticSimilarity,
-			"recency":                 visit.Recency,
-			"frequency":               visit.Frequency,
-			"final_weight":            visit.FinalWeight,
-			"activation_contribution": 0.3 * visit.Activation,
-			"semantic_contribution":   0.3 * visit.SemanticSimilarity,
-			"recency_contribution":    0.25 * visit.Recency,
-			"frequency_contribution":  0.15 * visit.Frequency,
+		weights := traceObject{
+			{Key: "activation", Value: visit.Activation},
+			{Key: "semantic_similarity", Value: visit.SemanticSimilarity},
+			{Key: "recency", Value: visit.Recency},
+			{Key: "frequency", Value: visit.Frequency},
+			{Key: "final_weight", Value: visit.FinalWeight},
+			{Key: "activation_contribution", Value: 0.3 * visit.Activation},
+			{Key: "semantic_contribution", Value: 0.3 * visit.SemanticSimilarity},
+			{Key: "recency_contribution", Value: 0.25 * visit.Recency},
+			{Key: "frequency_contribution", Value: 0.15 * visit.Frequency},
 		}
-		entry := map[string]any{
-			"step":           visit.Step,
-			"node_id":        visit.NodeID,
-			"text":           visit.Text,
-			"context":        visit.Context,
-			"is_entry_point": visit.IsEntryPoint,
-			"weights":        weights,
-			"final_rank":     nil,
-		}
+		var eventDate any
 		if visit.EventDate != nil {
-			entry["event_date"] = visit.EventDate.UTC().Format(time.RFC3339Nano)
-		} else {
-			entry["event_date"] = nil
+			eventDate = visit.EventDate.UTC().Format(time.RFC3339Nano)
 		}
+		var finalRank any
 		if visit.FinalRank != nil {
-			entry["final_rank"] = *visit.FinalRank
+			finalRank = *visit.FinalRank
 		}
-		out = append(out, entry)
+		out = append(out, traceObject{
+			{Key: "step", Value: visit.Step},
+			{Key: "node_id", Value: visit.NodeID},
+			{Key: "text", Value: visit.Text},
+			{Key: "context", Value: visit.Context},
+			{Key: "event_date", Value: eventDate},
+			{Key: "is_entry_point", Value: visit.IsEntryPoint},
+			{Key: "weights", Value: weights},
+			{Key: "final_rank", Value: finalRank},
+		})
 	}
 	return out
 }
@@ -402,14 +410,22 @@ func renderVisits(visits []storage.TraceVisit) []any {
 func renderFinalResults(rows []storage.TraceResultRow) []any {
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
-		record := make(map[string]any, len(row.Keys))
+		// The storage layer assembles the keys in the reference's own dict layout
+		// (traceFinalResultRow), so they are replayed in that order rather than
+		// collapsed into a map, which would sort them.
+		record := make(traceObject, 0, len(row.Keys))
 		for index, key := range row.Keys {
-			record[key] = row.Values[index]
+			record = append(record, httpx.OrderedMember{Key: key, Value: row.Values[index]})
 		}
 		out = append(out, record)
 	}
 	return out
 }
+
+// traceObject is the trace's rendering of an object whose members the reference
+// declares in a model: the members reach the wire in declaration order, which a
+// Go map (alphabetical) would not reproduce.
+type traceObject = httpx.OrderedObject
 
 // optionalStrings renders an optional string list: the list itself when one was
 // given, null otherwise. The reference keeps its `tags: None` a null.
@@ -426,32 +442,31 @@ func renderArmResults(detail *storage.RecallTraceDetail) []any {
 	for _, arm := range detail.RetrievalResults {
 		results := make([]any, 0, len(arm.Results))
 		for _, hit := range arm.Results {
-			entry := map[string]any{
-				"rank":       hit.Rank,
-				"node_id":    hit.NodeID,
-				"text":       hit.Text,
-				"context":    hit.Context,
-				"fact_type":  hit.FactType,
-				"score":      hit.Score,
-				"score_name": hit.ScoreName,
-			}
+			var eventDate any
 			if hit.EventDate != nil {
-				entry["event_date"] = hit.EventDate.UTC().Format(time.RFC3339Nano)
-			} else {
-				entry["event_date"] = nil
+				eventDate = hit.EventDate.UTC().Format(time.RFC3339Nano)
 			}
-			results = append(results, entry)
+			results = append(results, traceObject{
+				{Key: "rank", Value: hit.Rank},
+				{Key: "node_id", Value: hit.NodeID},
+				{Key: "text", Value: hit.Text},
+				{Key: "context", Value: hit.Context},
+				{Key: "event_date", Value: eventDate},
+				{Key: "fact_type", Value: hit.FactType},
+				{Key: "score", Value: hit.Score},
+				{Key: "score_name", Value: hit.ScoreName},
+			})
 		}
 		// The arm's own duration and metadata are part of the reference's
 		// RetrievalMethodResults (engine/search/trace.py:99-107); an arm whose
 		// time was not measured reports 0.0, and its metadata carries the
 		// budget the reference records for that arm (memory_engine.py:9676-9760).
-		out = append(out, map[string]any{
-			"method_name":      arm.MethodName,
-			"fact_type":        arm.FactType,
-			"results":          results,
-			"duration_seconds": detail.ArmDurations[arm.MethodName+"/"+arm.FactType],
-			"metadata":         armMetadata(arm.MethodName, detail.Budget),
+		out = append(out, traceObject{
+			{Key: "method_name", Value: arm.MethodName},
+			{Key: "fact_type", Value: arm.FactType},
+			{Key: "results", Value: results},
+			{Key: "duration_seconds", Value: detail.ArmDurations[arm.MethodName+"/"+arm.FactType]},
+			{Key: "metadata", Value: armMetadata(arm.MethodName, detail.Budget)},
 		})
 	}
 	return out
@@ -460,12 +475,12 @@ func renderArmResults(detail *storage.RecallTraceDetail) []any {
 // armMetadata is the per-method metadata the reference records next to an
 // arm's results: the retrieval limit for semantic and bm25, and the budget for
 // graph and temporal (engine/memory_engine.py:9676-9760).
-func armMetadata(method string, budget int) map[string]any {
+func armMetadata(method string, budget int) any {
 	switch method {
 	case "graph", "temporal":
-		return map[string]any{"budget": budget}
+		return traceObject{{Key: "budget", Value: budget}}
 	default:
-		return map[string]any{"limit": budget}
+		return traceObject{{Key: "limit", Value: budget}}
 	}
 }
 
@@ -478,12 +493,12 @@ func renderRRFMerged(entries []storage.TraceRRFEntry) []any {
 		for key, rank := range entry.SourceRanks {
 			sourceRanks[key] = rank
 		}
-		out = append(out, map[string]any{
-			"node_id":        entry.NodeID,
-			"text":           entry.Text,
-			"rrf_score":      entry.RRFScore,
-			"source_ranks":   sourceRanks,
-			"final_rrf_rank": entry.FinalRRFRank,
+		out = append(out, traceObject{
+			{Key: "node_id", Value: entry.NodeID},
+			{Key: "text", Value: entry.Text},
+			{Key: "rrf_score", Value: entry.RRFScore},
+			{Key: "source_ranks", Value: sourceRanks},
+			{Key: "final_rrf_rank", Value: entry.FinalRRFRank},
 		})
 	}
 	return out
@@ -497,14 +512,14 @@ func renderReranked(entries []storage.TraceRerankedEntry) []any {
 		for key, value := range entry.ScoreComponents {
 			components[key] = value
 		}
-		out = append(out, map[string]any{
-			"node_id":          entry.NodeID,
-			"text":             entry.Text,
-			"rerank_score":     entry.RerankScore,
-			"rerank_rank":      entry.RerankRank,
-			"rrf_rank":         entry.RRFRank,
-			"rank_change":      entry.RankChange,
-			"score_components": components,
+		out = append(out, traceObject{
+			{Key: "node_id", Value: entry.NodeID},
+			{Key: "text", Value: entry.Text},
+			{Key: "rerank_score", Value: entry.RerankScore},
+			{Key: "rerank_rank", Value: entry.RerankRank},
+			{Key: "rrf_rank", Value: entry.RRFRank},
+			{Key: "rank_change", Value: entry.RankChange},
+			{Key: "score_components", Value: components},
 		})
 	}
 	return out

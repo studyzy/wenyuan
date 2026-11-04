@@ -128,11 +128,15 @@ func (s *PostgresStore) EnqueueOperation(ctx context.Context, req EnqueueRequest
 // duration. FOR NO KEY UPDATE conflicts with itself, which is what serializes
 // the submits, but not with FOR KEY SHARE.
 //
-// requireBank distinguishes the two bank-existence policies. A caller that
-// deduplicates by payload key fails on a missing bank (a FK violation would be
-// the only other answer, and the reference reports it as a clean error); a
-// caller that deduplicates by bank tolerates it here and lets the insert fail
-// its foreign key, which is what an unknown bank used to answer.
+// requireBank demands that the bank exists, and answers ErrBankNotFound when it
+// does not. The reference checks this on every one of its serialize paths — a
+// submit that deduplicates by bank and one that deduplicates in flight by
+// payload key alike (`serialize = dedupe_by_bank or
+// dedupe_in_flight_payload_key is not None`, engine/memory_engine.py:23014-23021)
+// — so a submit against an unknown bank is a clean 404 there rather than the
+// opaque foreign-key 500 the INSERT would otherwise raise. Both callers pass
+// true; a caller that genuinely wants the old tolerate-and-let-the-FK-fail
+// behavior passes false.
 func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, requireBank bool, submit func(tx Tx) (EnqueueResult, error)) (EnqueueResult, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
@@ -150,10 +154,17 @@ func (s *PostgresStore) enqueueLockedBankTx(ctx context.Context, bankID string, 
 		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1 FOR NO KEY UPDATE`,
 		bankID).Scan(&bankPresent)
 	// A bank that is not present holds no queued work, so there is nothing to
-	// deduplicate against; callers that require it stop, and callers that do not
-	// carry on to the insert, which fails its foreign key.
-	if lockErr != nil && (requireBank || !errors.Is(lockErr, sql.ErrNoRows)) {
-		return EnqueueResult{}, lockErr
+	// deduplicate against. A caller that requires the bank reports it as a clean
+	// not-found, which is what the reference answers; one that does not carries
+	// on to the insert, which fails its foreign key.
+	if lockErr != nil {
+		if errors.Is(lockErr, sql.ErrNoRows) {
+			if requireBank {
+				return EnqueueResult{}, ErrBankNotFound
+			}
+		} else {
+			return EnqueueResult{}, lockErr
+		}
 	}
 
 	result, err := submit(tx)
@@ -205,7 +216,9 @@ func (s *PostgresStore) enqueueDedupeByBank(ctx context.Context, op Operation, b
 	// PutOperation: the claim's serialization check matches keys by equality and
 	// "" would make every keyless operation contend with every other one.
 	serializationKey := sql.NullString{String: op.SerializationKey, Valid: op.SerializationKey != ""}
-	return s.enqueueLockedBankTx(ctx, op.BankID, false, func(tx Tx) (EnqueueResult, error) {
+	// Deduplicating by bank is one of the reference's serialize paths, so it
+	// verifies the bank like the payload-key path does (memory_engine.py:23014-23021).
+	return s.enqueueLockedBankTx(ctx, op.BankID, true, func(tx Tx) (EnqueueResult, error) {
 		var existingID string
 		// A scoped consolidation carries observation_scopes in its payload; the
 		// JSON predicate is spelled out here rather than left to a portable

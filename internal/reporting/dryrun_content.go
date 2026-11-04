@@ -42,16 +42,24 @@ func dryRunContentFailure(raw json.RawMessage, requestBody any) (*httpx.Validati
 			httpx.Missing([]string{"body", "content"}, requestBody),
 		}}, ""
 	}
-	var value any
+	var decoded any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
+	if err := decoder.Decode(&decoded); err != nil {
 		// The body decoded as JSON already, so the content value is valid JSON;
 		// a failure here cannot happen in practice. Report it as a bad body
 		// rather than pretend the content was fine.
 		return &httpx.ValidationFailure{Errors: []httpx.ValidationError{
 			httpx.ValidationItem("json_invalid", []string{"body", "content"}, "JSON decode error", nil, nil),
 		}}, ""
+	}
+	// A rejected block's `input` is the caller's own object with its members in
+	// the order they were written, so the value is re-read keeping that order and
+	// the validator sees the ordered form instead of a Go map. The two views are
+	// equal in content; only the rendering differs.
+	value, ordered := dryRunOrderedValue(raw)
+	if !ordered {
+		value = decoded
 	}
 	switch typed := value.(type) {
 	case string:
@@ -64,8 +72,87 @@ func dryRunContentFailure(raw json.RawMessage, requestBody any) (*httpx.Validati
 	default:
 		// A JSON null, number, boolean or object matches neither union arm, so
 		// the framework reports both arms' type failures.
-		return unionTypeFailure(value, "list_type", "Input should be a valid list"), ""
+		return unionTypeFailure(decoded, "list_type", "Input should be a valid list"), ""
 	}
+}
+
+// dryRunOrderedValue re-reads a raw JSON value keeping every object's member
+// order, which json.Unmarshal discards. A value whose schema validation fails is
+// echoed as `input`, and the reference echoes the client's own mapping — written
+// order included — so the ordered reading is what the report must carry. It
+// reports false when the bytes cannot be re-read (already refused above).
+func dryRunOrderedValue(raw []byte) (any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	value, ok := dryRunOrderedValueFrom(decoder)
+	return value, ok
+}
+
+// dryRunOrderedValueFrom reads one JSON value from decoder, giving every object
+// it contains an insertion-ordered rendering.
+func dryRunOrderedValueFrom(decoder *json.Decoder) (any, bool) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, false
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return token, true
+	}
+	switch delim {
+	case '{':
+		members := httpx.OrderedObject{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, false
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, false
+			}
+			value, ok := dryRunOrderedValueFrom(decoder)
+			if !ok {
+				return nil, false
+			}
+			members = append(members, httpx.OrderedMember{Key: key, Value: value})
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return members, true
+	case '[':
+		list := []any{}
+		for decoder.More() {
+			value, ok := dryRunOrderedValueFrom(decoder)
+			if !ok {
+				return nil, false
+			}
+			list = append(list, value)
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, false
+		}
+		return list, true
+	}
+	return nil, false
+}
+
+// dryRunBlockFields reads a block's members out of the value the report echoes.
+// The echoed form is either the ordered reading (an httpx.OrderedObject) or, when
+// the bytes could not be re-read, the decoded map.
+func dryRunBlockFields(element any) (map[string]any, bool) {
+	switch typed := element.(type) {
+	case map[string]any:
+		return typed, true
+	case httpx.OrderedObject:
+		fields := make(map[string]any, len(typed))
+		for _, member := range typed {
+			fields[member.Key] = member.Value
+		}
+		return fields, true
+	}
+	return nil, false
 }
 
 // contentEmptyFailure is the framework's field-validator rejection of a blank
@@ -110,7 +197,7 @@ func dryRunBlockListFailure(list []any) (*httpx.ValidationFailure, string) {
 		return contentEmptyFailure(list), ""
 	}
 	for index, element := range list {
-		block, ok := element.(map[string]any)
+		block, ok := dryRunBlockFields(element)
 		if !ok {
 			continue
 		}
@@ -118,7 +205,7 @@ func dryRunBlockListFailure(list []any) (*httpx.ValidationFailure, string) {
 		if tag != "image" && tag != "file" {
 			continue
 		}
-		source, ok := block["source"].(map[string]any)
+		source, ok := dryRunBlockFields(block["source"])
 		if !ok {
 			continue
 		}
@@ -134,11 +221,10 @@ func dryRunBlockListFailure(list []any) (*httpx.ValidationFailure, string) {
 	return nil, ""
 }
 
-// dryRunListCarriesContent reports whether a block list carries anything to
 // extract: an attachment block, or a text block with non-blank text.
 func dryRunListCarriesContent(list []any) bool {
 	for _, element := range list {
-		block, ok := element.(map[string]any)
+		block, ok := dryRunBlockFields(element)
 		if !ok {
 			continue
 		}
@@ -156,41 +242,93 @@ func dryRunListCarriesContent(list []any) bool {
 
 // dryRunBlockErrors validates one content block against the discriminated union,
 // naming each failure at the loc the framework files it under.
+//
+// The `input` an item echoes is the caller's own JSON object, member order
+// included: the reference's report holds the body as an insertion-ordered
+// mapping, so a re-encoded map (Go sorts its keys) would echo a block in an
+// order the client never wrote. `echo` is that rendering of the block.
 func dryRunBlockErrors(index int, element any) []httpx.ValidationError {
 	prefix := []string{"body", "content", dryRunContentUnionLoc, strconv.Itoa(index)}
-	block, ok := element.(map[string]any)
+	echo := element
+	block, ok := dryRunBlockFields(element)
 	if !ok {
 		return []httpx.ValidationError{httpx.ValidationItem("model_attributes_type", prefix,
 			"Input should be a valid dictionary or object to extract fields from", element, nil)}
 	}
-	tag, hasTag := block["type"].(string)
+	// The reference reads the discriminator as whatever value is present and
+	// stringifies it for the comparison; only a member that is not there at all
+	// is an absent tag. A number, boolean or object therefore reports a tag
+	// mismatch naming its rendered form, not a missing discriminator.
+	rawTag, hasTag := block["type"]
 	if !hasTag {
 		return []httpx.ValidationError{httpx.ValidationItem("union_tag_not_found", prefix,
-			"Unable to extract tag using discriminator 'type'", element,
-			map[string]any{"discriminator": "'type'"})}
+			"Unable to extract tag using discriminator 'type'", echo,
+			dryRunUnionTagNotFoundCtx{Discriminator: "'type'"})}
+	}
+	tag, isString := rawTag.(string)
+	if !isString {
+		tag = dryRunTagText(rawTag)
 	}
 	switch tag {
 	case "text":
-		return dryRunTextFieldErrors(prefix, block)
+		return dryRunTextFieldErrors(prefix, block, echo)
 	case "image", "file":
-		return dryRunAttachmentErrors(prefix, tag, block)
+		return dryRunAttachmentErrors(prefix, tag, block, echo)
 	default:
+		expected := "'" + strings.ReplaceAll(dryRunContentTags, ", ", "', '") + "'"
 		return []httpx.ValidationError{httpx.ValidationItem("union_tag_invalid", prefix,
-			"Input tag '"+tag+"' found using 'type' does not match any of the expected tags: '"+
-				strings.ReplaceAll(dryRunContentTags, ", ", "', '")+"'",
-			element, map[string]any{
-				"discriminator": "'type'",
-				"tag":           tag,
-				"expected_tags": "'" + strings.ReplaceAll(dryRunContentTags, ", ", "', '") + "'",
-			})}
+			"Input tag '"+tag+"' found using 'type' does not match any of the expected tags: "+expected,
+			echo, dryRunUnionTagInvalidCtx{Discriminator: "'type'", Tag: tag, ExpectedTags: expected})}
 	}
 }
 
+// dryRunTagText renders a discriminator that is not a string the way the
+// reference's comparison against the accepted tags renders it: Python's own
+// str() form, so `5` stays `5`, `true` becomes `True` and `null` becomes
+// `None`.
+func dryRunTagText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "None"
+	case bool:
+		if typed {
+			return "True"
+		}
+		return "False"
+	case json.Number:
+		return typed.String()
+	case string:
+		return typed
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return string(encoded)
+	}
+}
+
+// dryRunUnionTagNotFoundCtx and dryRunUnionTagInvalidCtx are the framework's
+// context for a tagged union it cannot place. They are structs rather than maps
+// because the reference emits these members in declaration order
+// (discriminator, tag, expected_tags); a Go map would emit the same three keys
+// in alphabetical order, which is a different byte sequence for the invalid-tag
+// case.
+type dryRunUnionTagNotFoundCtx struct {
+	Discriminator string `json:"discriminator"`
+}
+
+type dryRunUnionTagInvalidCtx struct {
+	Discriminator string `json:"discriminator"`
+	Tag           string `json:"tag"`
+	ExpectedTags  string `json:"expected_tags"`
+}
+
 // dryRunTextFieldErrors validates a text block's single required field.
-func dryRunTextFieldErrors(prefix []string, block map[string]any) []httpx.ValidationError {
+func dryRunTextFieldErrors(prefix []string, block map[string]any, echo any) []httpx.ValidationError {
 	value, present := block["text"]
 	if !present {
-		return []httpx.ValidationError{httpx.Missing(append(append([]string{}, prefix...), "text", "text"), block)}
+		return []httpx.ValidationError{httpx.Missing(append(append([]string{}, prefix...), "text", "text"), echo)}
 	}
 	if _, ok := value.(string); !ok {
 		return []httpx.ValidationError{httpx.ValidationItem("string_type",
@@ -202,17 +340,20 @@ func dryRunTextFieldErrors(prefix []string, block map[string]any) []httpx.Valida
 // dryRunAttachmentErrors validates an image or file block's source envelope: the
 // source object, its `base64` discriminator, the MIME-shaped media type and the
 // data string. Each failure is named at the field the framework names it at.
-func dryRunAttachmentErrors(prefix []string, tag string, block map[string]any) []httpx.ValidationError {
+func dryRunAttachmentErrors(prefix []string, tag string, block map[string]any, echo any) []httpx.ValidationError {
 	sourceLoc := append(append([]string{}, prefix...), tag, "source")
 	rawSource, present := block["source"]
 	if !present {
-		return []httpx.ValidationError{httpx.Missing(sourceLoc, block)}
+		return []httpx.ValidationError{httpx.Missing(sourceLoc, echo)}
 	}
-	source, ok := rawSource.(map[string]any)
+	source, ok := dryRunBlockFields(rawSource)
 	if !ok {
 		return []httpx.ValidationError{httpx.ValidationItem("model_attributes_type", sourceLoc,
 			"Input should be a valid dictionary or object to extract fields from", rawSource, nil)}
 	}
+	// A missing member echoes the object it was missing from — the source
+	// envelope — in the order the caller wrote it.
+	sourceEcho := rawSource
 	var errors []httpx.ValidationError
 	if rawType, present := source["type"]; present {
 		if value, ok := rawType.(string); !ok || value != "base64" {
@@ -221,7 +362,7 @@ func dryRunAttachmentErrors(prefix []string, tag string, block map[string]any) [
 		}
 	}
 	if rawMedia, present := source["media_type"]; !present {
-		errors = append(errors, httpx.Missing(append(append([]string{}, sourceLoc...), "media_type"), source))
+		errors = append(errors, httpx.Missing(append(append([]string{}, sourceLoc...), "media_type"), sourceEcho))
 	} else if media, ok := rawMedia.(string); !ok {
 		errors = append(errors, httpx.ValidationItem("string_type",
 			append(append([]string{}, sourceLoc...), "media_type"), "Input should be a valid string", rawMedia, nil))
@@ -230,7 +371,7 @@ func dryRunAttachmentErrors(prefix []string, tag string, block map[string]any) [
 			"media_type must look like 'type/subtype', got '"+media+"'"))
 	}
 	if rawData, present := source["data"]; !present {
-		errors = append(errors, httpx.Missing(append(append([]string{}, sourceLoc...), "data"), source))
+		errors = append(errors, httpx.Missing(append(append([]string{}, sourceLoc...), "data"), sourceEcho))
 	} else if _, ok := rawData.(string); !ok {
 		errors = append(errors, httpx.ValidationItem("string_type",
 			append(append([]string{}, sourceLoc...), "data"), "Input should be a valid string", rawData, nil))

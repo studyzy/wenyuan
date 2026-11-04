@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/config"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
+
+// flushTraceRows writes the recorder's buffer to the store, which is what a test
+// has to do before reading rows back: the recorder batches them the way the
+// reference does (engine/llm_trace.py:640-660), so a row is not in the table the
+// instant the call returns.
+func flushTraceRows(store storage.Store) { traceRecorder(store).flush() }
 
 // traceStubProvider is a provider whose single completion is scripted, so the
 // tracing wrapper can be exercised without a live endpoint.
@@ -81,6 +88,7 @@ func TestTraceProviderRecordsCompletion(t *testing.T) {
 	}
 	// A limit of zero is an empty page, the reference's own semantics for the
 	// endpoint's `limit`, so a caller that wants rows asks for them.
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +124,7 @@ func TestTraceProviderScopeFilter(t *testing.T) {
 	if _, err := traced.Complete(ctx, provider.CompletionRequest{Scope: "reflect"}); err != nil {
 		t.Fatal(err)
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{})
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +159,8 @@ func TestTraceRecordsOperationScopedSpanHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	flushTraceRows(store)
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +222,7 @@ func TestTraceColumnsMatchTheReferenceShape(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -326,6 +338,7 @@ func TestTraceEmbedderRecordsEmbeddingRows(t *testing.T) {
 			if err != nil || len(result.Vectors) != 1 {
 				t.Fatalf("Embed = %+v, %v", result, err)
 			}
+			flushTraceRows(store)
 			page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 			if err != nil {
 				t.Fatal(err)
@@ -374,6 +387,7 @@ func TestTraceEmbedderRecordsErrorRow(t *testing.T) {
 	if _, err := traced.Embed(ctx, provider.EmbeddingRequest{Texts: []string{"one"}, Kind: provider.EmbeddingPassage}); err == nil {
 		t.Fatal("the stub error must reach the caller")
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -402,6 +416,7 @@ func TestTraceRerankerRecordsRerankRow(t *testing.T) {
 	if err != nil || len(result.Scores) != 2 {
 		t.Fatalf("Rerank = %+v, %v", result, err)
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -458,6 +473,7 @@ func TestTraceRerankerRecordsErrorRow(t *testing.T) {
 	if _, err := traced.Rerank(ctx, provider.RerankRequest{Query: "q", Documents: []string{"d1"}}); err == nil {
 		t.Fatal("the stub error must reach the caller")
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -502,6 +518,7 @@ func TestTraceEmbedderExcludedScopeStillRuns(t *testing.T) {
 	if err != nil || len(result.Vectors) != 1 {
 		t.Fatalf("Embed = %+v, %v", result, err)
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{})
 	if err != nil {
 		t.Fatal(err)
@@ -532,6 +549,7 @@ func TestTraceCallTypeFiltersSeeEmbeddingAndRerankRows(t *testing.T) {
 	if _, err := reranker.Rerank(ctx, provider.RerankRequest{Query: "q", Documents: []string{"d1"}}); err != nil {
 		t.Fatal(err)
 	}
+	flushTraceRows(store)
 
 	tests := []struct {
 		callType string
@@ -566,11 +584,239 @@ func TestTraceCallTypeFiltersSeeEmbeddingAndRerankRows(t *testing.T) {
 	}
 	// The scope filter names an embedding row's scope exactly as the reference's
 	// `scope=embedding_document` does.
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(ctx, storage.LLMRequestQuery{BankID: "b1", Scope: "embedding_document", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 1 || page.Requests[0].Scope != "embedding_document" {
 		t.Fatalf("scope=embedding_document rows = %d, want 1", page.Total)
+	}
+}
+
+// A trace row reaches the table through the buffer rather than the call's own
+// path, and a shutdown flushes what is still buffered.
+//
+// The reference buffers rows and writes them in batches so a recall's embedding,
+// rerank and decision calls do not each take a pooled connection
+// (engine/llm_trace.py:640-660); the cost is that rows still buffered when the
+// process stops are lost, which is why it flushes on shutdown (:865-875).
+func TestTraceRowsAreBufferedAndFlushedOnClose(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	previous := traceFlushInterval
+	traceFlushInterval = time.Hour // nothing flushes on the timer inside a test
+	defer func() { traceFlushInterval = previous }()
+	closeTraceRecorder(store) // start from an empty recorder
+	defer closeTraceRecorder(store)
+
+	cfg := config.ProviderConfig{TraceEnabled: true}
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "reflect"})
+	emitTraceRow(store, cfg, ctx, tracedCall{
+		scope:   "reflect",
+		backend: traceBackend{provider: "openai", model: "m"},
+		start:   time.Now().UTC(),
+	})
+
+	before, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Requests) != 0 {
+		t.Fatalf("rows = %d before any flush, want the buffer to hold them", len(before.Requests))
+	}
+
+	closeTraceRecorder(store)
+	after, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Requests) != 1 {
+		t.Fatalf("rows = %d after the shutdown flush, want the buffered one written", len(after.Requests))
+	}
+	if after.Requests[0].Scope != "reflect" || after.Requests[0].Status != "success" {
+		t.Fatalf("row = %+v", after.Requests[0])
+	}
+}
+
+// A full buffer writes without waiting for the timer.
+func TestTraceBatchWritesWhenFull(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	if _, err := store.CreateBank(context.Background(), storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	previousInterval, previousRows := traceFlushInterval, traceFlushMaxRows
+	traceFlushInterval = time.Hour
+	traceFlushMaxRows = 2
+	defer func() {
+		traceFlushInterval, traceFlushMaxRows = previousInterval, previousRows
+		closeTraceRecorder(store)
+	}()
+	closeTraceRecorder(store)
+
+	cfg := config.ProviderConfig{TraceEnabled: true}
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "reflect"})
+	for i := 0; i < 2; i++ {
+		emitTraceRow(store, cfg, ctx, tracedCall{
+			scope: "reflect", backend: traceBackend{provider: "openai"}, start: time.Now().UTC(),
+		})
+	}
+	// The write runs on its own goroutine; wait for it rather than assume it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Requests) == 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rows = %d, want the full buffer written without waiting for the timer", len(page.Requests))
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// A retain's trace rows are mapped onto the memories it produced, which is what
+// makes `GET .../llm-requests?memory_id=` find the calls that made a memory
+// (engine/memory_engine.py:8025-8029, engine/llm_trace.py:931-990).
+//
+// Reverting the patch leaves every row's metadata without `memory_ids`, so the
+// memory_id filter matches nothing.
+func TestRetainTraceRowsCarryTheMemoryIDsItCreated(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	inner := factsProvider{result: provider.CompletionResult{
+		Structured: map[string]any{"facts": []any{map[string]any{"text": "Alice works at Google."}}},
+	}}
+	traced := TraceProvider(inner, store, config.ProviderConfig{TraceEnabled: true, TraceMaxChars: 100000, Model: "gpt-x"})
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "retain"})
+	outcome, err := store.RetainWrite(ctx, storage.RetainRequest{
+		BankID:     "b1",
+		Items:      []storage.RetainItem{{Content: "Alice works at Google.", DocumentID: "doc-a"}},
+		Extraction: newFactExtractor(traced, ExtractionSettings{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := make([]string, 0)
+	for _, group := range outcome.ItemUnitIDs {
+		created = append(created, group...)
+	}
+	if len(created) == 0 {
+		t.Fatal("the retain created no memory units to map")
+	}
+	// The worker's post-retain step, called directly: the patch is fire-and-forget
+	// and flushes the trace before it runs.
+	(&archiveProcessor{store: store}).attachRetainMemoryIDs(ctx, outcome)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		page, listErr := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
+			BankID: "b1", MemoryID: created[0], MemoryIDSet: true, Limit: 10,
+		})
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(page.Requests) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no trace row maps to the memory it created (%v)", created)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A trace that never wrote a row is not patched: the UPDATE would match nothing
+// and only cost a connection (engine/llm_trace.py:670-690).
+func TestAttachMemoryIDsSkipsATraceWithNoRows(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	closeTraceRecorder(store)
+	defer closeTraceRecorder(store)
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "retain"})
+	// No call was recorded under this context, so its trace has no rows.
+	traceRecorder(store).attachMemoryIDs(ctx, []string{"unit-a"}, nil)
+	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("rows = %d, want the recorder to have written (and patched) nothing", page.Total)
+	}
+}
+
+// A shutdown waits for the metadata patches still in flight, so the mapping a
+// retain scheduled just before the process stopped is not lost with it — the
+// reference drains them the same way (engine/llm_trace.py:865-875 over
+// PendingWrites).
+func TestCloseTraceRecorderDrainsPendingPatches(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	closeTraceRecorder(store)
+	cfg := config.ProviderConfig{TraceEnabled: true}
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "retain"})
+	emitTraceRow(store, cfg, ctx, tracedCall{
+		scope: "retain_extract_facts", backend: traceBackend{provider: "openai"}, start: time.Now().UTC(),
+	})
+	traceRecorder(store).attachMemoryIDs(ctx, []string{"unit-a"}, nil)
+	// The close flushes the row and waits for the patch that follows it.
+	closeTraceRecorder(store)
+
+	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
+		BankID: "b1", MemoryID: "unit-a", MemoryIDSet: true, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Requests) == 0 {
+		t.Fatal("the patch scheduled before the shutdown never landed")
+	}
+}
+
+// A consolidation run's trace rows are mapped onto the observations it actually
+// wrote, so a second run's output is not attributed to the first.
+//
+// The pass reports the ids it wrote (internal/consolidation.Result.ObservationIDs,
+// the reference's record_created_memory_ids), so the mapping is exact rather than
+// "the newest N observations" — an approximation that would over-report on a bank
+// two writers are feeding.
+func TestConsolidationTraceRowsCarryTheExactObservationsWritten(t *testing.T) {
+	store := storage.NewMemoryStore("public")
+	closeTraceRecorder(store)
+	defer closeTraceRecorder(store)
+	ctx := provider.WithTraceContext(context.Background(), provider.TraceContext{BankID: "b1", Operation: "consolidation"})
+	emitTraceRow(store, config.ProviderConfig{TraceEnabled: true}, ctx, tracedCall{
+		scope: "consolidate", backend: traceBackend{provider: "openai"}, start: time.Now().UTC(),
+	})
+	// The pass wrote two observations; a third, unrelated one already exists in
+	// the bank under a different writer. The deprecated scan-based mapping would
+	// have swept it in.
+	store.SeedUnit(storage.MemoryUnit{
+		ID: "unrelated-obs", BankID: "b1", FactType: storage.TypeObservation, Text: "someone else's",
+	})
+	traceRecorder(store).attachMemoryIDs(ctx, []string{"obs-new", "o1"}, nil)
+	closeTraceRecorder(store)
+
+	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
+		BankID: "b1", MemoryID: "unrelated-obs", MemoryIDSet: true, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Requests) != 0 {
+		t.Fatal("a memory this run did not write was attributed to its trace")
+	}
+	for _, id := range []string{"obs-new", "o1"} {
+		found, listErr := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
+			BankID: "b1", MemoryID: id, MemoryIDSet: true, Limit: 10,
+		})
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(found.Requests) == 0 {
+			t.Fatalf("observation %q this run wrote is not on its trace", id)
+		}
 	}
 }

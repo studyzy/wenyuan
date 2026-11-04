@@ -49,9 +49,12 @@ func TestCanonicalKeepsTheCallersMembersAndTheSerialiserOrder(t *testing.T) {
 			want: `{"attributes":[]}`,
 		},
 		{
-			name: "a bare list is wrapped the same way",
+			// The reference stores the caller's top-level shape: a bare list
+			// round-trips as a bare list (verified online — PATCH
+			// {"entity_labels":[]} stores []); only an envelope stays an envelope.
+			name: "a bare list stays a bare list",
 			in:   `[{"key":"k","type":"text"}]`,
-			want: `{"attributes":[{"key":"k","type":"text"}]}`,
+			want: `[{"key":"k","type":"text"}]`,
 		},
 	}
 	for _, tc := range cases {

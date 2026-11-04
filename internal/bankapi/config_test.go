@@ -562,3 +562,89 @@ func TestBankConfigWriteKnowledgePageTriggerMessages(t *testing.T) {
 		t.Fatalf("stored trigger = %v", bank.Config["knowledge_page_default_trigger"])
 	}
 }
+
+// The reference validates entity_labels with a comprehension over
+// LabelGroup.model_validate, and its legacy migration is `dict(raw)` followed by
+// `patched["type"] = ...` (engine/retain/entity_labels.py:90-104). A rejected
+// group's `input_value` therefore prints the caller's members in the order the
+// client wrote them, with `type` appended -- not in sorted order. A Go decode
+// yields an unordered map, so the order has to be recovered from the raw JSON;
+// dropping it reverts every non-alphabetical case below to sorted members.
+func TestBankConfigWriteEntityLabelsPrintsTheCallersMemberOrder(t *testing.T) {
+	mux, _ := configServer(t)
+
+	cases := []struct {
+		name   string
+		body   string
+		shown  string
+		reason string
+	}{
+		{
+			name:   "written out of alphabetical order",
+			body:   `{"updates":{"entity_labels":{"attributes":[{"tag":"t","optional":"x"}]}}}`,
+			shown:  `{'tag': 't', 'optional': 'x', 'type': 'value'}`,
+			reason: "",
+		},
+		{
+			name:  "written in alphabetical order",
+			body:  `{"updates":{"entity_labels":{"attributes":[{"optional":"x","tag":"t"}]}}}`,
+			shown: `{'optional': 'x', 'tag': 't', 'type': 'value'}`,
+		},
+		{
+			name:  "three members out of order",
+			body:  `{"updates":{"entity_labels":{"attributes":[{"b":"1","a":"2","c":"3"}]}}}`,
+			shown: `{'b': '1', 'a': '2', 'c': '3', 'type': 'value'}`,
+		},
+		{
+			name:  "the caller named type itself, so the migration appends nothing",
+			body:  `{"updates":{"entity_labels":{"attributes":[{"tag":"t","optional":"x","type":"text"}]}}}`,
+			shown: `{'tag': 't', 'optional': 'x', 'type': 'text'}`,
+		},
+		{
+			name:  "a bare group list keeps the caller's order too",
+			body:  `{"updates":{"entity_labels":[{"zeta":"1","alpha":"2"}]}}`,
+			shown: `{'zeta': '1', 'alpha': '2', 'type': 'value'}`,
+		},
+		{
+			name: "the rejected group is the second one, and it carries its own order",
+			body: `{"updates":{"entity_labels":{"attributes":[` +
+				`{"key":"ok","values":[{"value":"v"}]},{"tag":"t","optional":"x"}]}}}`,
+			shown: `{'tag': 't', 'optional': 'x', 'type': 'value'}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			want := "input_value=" + tc.shown + ", input_type=dict"
+			if !strings.Contains(body.Detail, want) {
+				t.Fatalf("detail =\n%s\nwant it to contain %s", body.Detail, want)
+			}
+		})
+	}
+}
+
+// Repeating the same rejected request must render identically every time: the
+// member out of alphabetical order is the case a Go map's randomised iteration
+// would surface if the caller's order were ever dropped.
+func TestBankConfigWriteEntityLabelsOrderIsDeterministic(t *testing.T) {
+	mux, _ := configServer(t)
+	const body = `{"updates":{"entity_labels":{"attributes":[{"tag":"t","optional":"x"}]}}}`
+	first := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", body).Body.String()
+	for i := range 200 {
+		if got := doJSON(t, mux, http.MethodPatch, "/v1/default/banks/b1/config", body).Body.String(); got != first {
+			t.Fatalf("request %d rendered differently:\n  %s\nvs\n  %s", i, got, first)
+		}
+	}
+	if !strings.Contains(first, `{'tag': 't', 'optional': 'x', 'type': 'value'}`) {
+		t.Fatalf("detail = %s, want the caller's member order", first)
+	}
+}

@@ -129,12 +129,20 @@ func reflectQueryErrors(body map[string]any, req ReflectRequest) []httpx.Validat
 // schema. Every failure here is an unprocessable-entity response raised before
 // any model work.
 func ValidateReflect(req ReflectRequest, body map[string]any, schemaValidator ReflectSchemaValidator) *httpx.ValidationFailure {
+	return validateReflectFields(req, body, body, schemaValidator)
+}
+
+// validateReflectFields is ValidateReflect with a distinct value to echo for an
+// item filed on the request as a whole. The rules read `fields`; an item that
+// names the body as its own input reports `echo`, which keeps the caller's
+// member order (the reference reports the body as an insertion-ordered mapping).
+func validateReflectFields(req ReflectRequest, fields map[string]any, echo any, schemaValidator ReflectSchemaValidator) *httpx.ValidationFailure {
 	var items []httpx.ValidationError
-	items = append(items, reflectQueryErrors(body, req)...)
+	items = append(items, reflectQueryErrors(fields, req)...)
 	if req.Budget != "" && !storage.IsReflectBudgetLevel(req.Budget) {
 		items = append(items, httpx.Enum([]string{"body", "budget"}, req.Budget, storageBudgetLevels()))
 	}
-	items = append(items, includeMemberErrors(body, req.Include, reflectIncludeMembers)...)
+	items = append(items, includeMemberErrors(fields, req.Include, reflectIncludeMembers)...)
 	if req.TagsMatch != "" && !containsToken(storageTagMatchModes(), req.TagsMatch) {
 		items = append(items, httpx.Literal([]string{"body", "tags_match"}, req.TagsMatch, storageTagMatchModes()))
 	}
@@ -145,7 +153,7 @@ func ValidateReflect(req ReflectRequest, body map[string]any, schemaValidator Re
 	// Every element is a literal, so a value outside the accepted set is a
 	// per-element literal failure at that element's own index (the value it
 	// carries included), from wherever the element starts.
-	for _, item := range reflectFactTypeItems(body) {
+	for _, item := range reflectFactTypeItems(fields) {
 		if !locationCovered(item.Loc, items) {
 			items = append(items, item)
 		}
@@ -155,8 +163,8 @@ func ValidateReflect(req ReflectRequest, body map[string]any, schemaValidator Re
 	// right union raised is reported. Either way the items are field-level, so
 	// they appear beside (not instead of) the body-level rules.
 	items = append(items, req.TagGroups.Items()...)
-	if len(req.TagGroups.Items()) == 0 && tagsSupplied(body) && req.TagGroups.Present {
-		items = append(items, httpx.ValueError([]string{"body"}, body,
+	if len(req.TagGroups.Items()) == 0 && tagsSupplied(fields) && req.TagGroups.Present {
+		items = append(items, httpx.ValueError([]string{"body"}, echo,
 			"'tags' and 'tag_groups' are mutually exclusive. Use 'tag_groups' for compound filtering."))
 	}
 	// The reference declares the per-observation search budget with `ge=1`, so a

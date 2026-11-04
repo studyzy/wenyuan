@@ -977,10 +977,14 @@ func (s *MemoryStore) DeleteObservations(ctx context.Context, bankID, memoryID s
 	// anything: the clear is an explicit reset request, and the memory it names
 	// has just been requeued, so the pass is what rebuilds its observations
 	// (memory_engine.py:12540-12565).
+	// The submit's error is not swallowed: it is what reports an unknown bank,
+	// which is the answer the reference gives this route (memory_engine.py:12566).
 	if s.autoConsolidationFor(ctx, bankID) {
-		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
-			track.file(ctx, s, op.OperationID)
+		op, _, err := s.EnqueueConsolidation(ctx, bankID)
+		if err != nil {
+			return 0, err
 		}
+		track.file(ctx, s, op.OperationID)
 	}
 	return removed, nil
 }
@@ -1065,6 +1069,12 @@ func (s *MemoryStore) EnqueueConsolidation(ctx context.Context, bankID string, o
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
 		return Operation{}, false, s.writeErr
+	}
+	// The reference verifies the bank on every asynchronous submit and answers
+	// a clean not-found for an unknown one, rather than inserting an operation
+	// that its foreign key would refuse (memory_engine.py:23014-23021).
+	if _, ok := s.banks[bankID]; !ok {
+		return Operation{}, false, ErrBankNotFound
 	}
 	if len(observationScopes) == 0 {
 		// A second full-bank consolidation for the same bank while one is

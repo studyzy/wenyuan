@@ -40,7 +40,10 @@ func TestMemoryPruneTerminalOperationsDropsExportArchive(t *testing.T) {
 		t.Fatalf("archive removed before expiry: %v", err)
 	}
 
-	// A cutoff after the row's age prunes the row and its archive together.
+	// A cutoff after the row's age prunes the row and its archive together,
+	// in the reference's order: archives first, on the same window
+	// (engine/maintenance.py:402-414).
+	store.PurgeExpiredExportArchives(ctx, "public", time.Now().Add(time.Hour), 100)
 	if n, err := store.PruneTerminalOperations(ctx, "public", time.Now().Add(time.Hour), 100); err != nil || n != 1 {
 		t.Fatalf("prune after expiry: n=%d err=%v", n, err)
 	}

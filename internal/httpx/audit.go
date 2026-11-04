@@ -83,12 +83,18 @@ func auditMiddleware(opts *AuditOptions, resolveEndpoint func(*http.Request) str
 				StartedAt: started,
 				EndedAt:   time.Now().UTC(),
 				Request:   request,
-				Response:  recorder.responseObject(),
 			}
-			// The error text is the failure's own body, so an operator reading
-			// the trail sees why a call failed, not only that it did.
-			if recorder.status >= http.StatusBadRequest {
-				entry.Error = recorder.errorText()
+			// Only a call that produced a result is recorded with one. The
+			// reference's decorator assigns `entry.response` after the handler
+			// RETURNS; a handler that raised never reaches that line, so the
+			// `finally` records the entry with a null response and no failure
+			// marker at all (api/http.py:5205-5219). Measured against the live
+			// reference, a failed audited call lands with `metadata: {}` and
+			// `response: null`, while a successful one carries both payloads.
+			// Recording the error envelope here would put a response body the
+			// reference never writes onto the frozen audit surface.
+			if recorder.status < http.StatusBadRequest {
+				entry.Response = recorder.responseObject()
 			}
 			// The write outlives the request: it must complete even as the
 			// client disconnects, which is why it drops the request's
@@ -203,22 +209,4 @@ func (w *auditResponseWriter) responseObject() map[string]any {
 		return nil
 	}
 	return object
-}
-
-// errorText renders the failure body for the trail's metadata. An object body
-// reports its detail or error field; anything else reports the raw body.
-func (w *auditResponseWriter) errorText() string {
-	if w.buf.Len() == 0 {
-		return ""
-	}
-	raw := strings.TrimSpace(w.buf.String())
-	var object map[string]any
-	if err := json.Unmarshal(w.buf.Bytes(), &object); err == nil {
-		for _, key := range []string{"detail", "error", "message"} {
-			if text, ok := object[key].(string); ok && text != "" {
-				return text
-			}
-		}
-	}
-	return raw
 }

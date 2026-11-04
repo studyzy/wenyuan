@@ -1346,11 +1346,11 @@ func TestDocumentDetailObservationCountAndMetadata(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.NodesByFactType["observation"] != 1 {
-		t.Fatalf("observation count = %d, want 1", doc.NodesByFactType["observation"])
+	if count := doc.NodesByFactType.count("observation"); count != 1 {
+		t.Fatalf("observation count = %d, want 1", count)
 	}
-	if doc.NodesByFactType["experience"] != 1 {
-		t.Fatalf("experience count = %d, want 1", doc.NodesByFactType["experience"])
+	if count := doc.NodesByFactType.count("experience"); count != 1 {
+		t.Fatalf("experience count = %d, want 1", count)
 	}
 	if metadata, ok := doc.Metadata.(map[string]any); !ok || metadata["source"] != "slack" {
 		t.Fatalf("document_metadata = %v, want the retain-time metadata", doc.Metadata)

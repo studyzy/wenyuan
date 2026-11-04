@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -156,12 +157,18 @@ func (p *tracingProvider) record(ctx context.Context, req provider.CompletionReq
 	})
 }
 
-// emitTraceRow assembles one trace row from a finished model call and writes
-// it. Best-effort: a trace write that fails is dropped rather than failing the
-// model call, because the answer is what the caller asked for and the trace is
+// emitTraceRow assembles one trace row from a finished model call and hands it
+// to the recorder. Best-effort: the recorder never returns an error to the
+// caller, because the answer is what the caller asked for and the trace is
 // diagnostic.
 func emitTraceRow(store storage.Store, cfg config.ProviderConfig, ctx context.Context, call tracedCall) {
 	ended := time.Now().UTC()
+	if call.start.IsZero() {
+		// A caller that never stamped a start time still gets a row the store
+		// can record: the write runs on a background goroutine, and a zero
+		// started_at is what the #llm-requests window filter cannot see.
+		call.start = ended
+	}
 	durationMS := int(ended.Sub(call.start).Milliseconds())
 	status := "success"
 	errText := ""
@@ -207,7 +214,7 @@ func emitTraceRow(store storage.Store, cfg config.ProviderConfig, ctx context.Co
 	setToken(&request.CachedTokens, call.usage.CachedInputTokens)
 	setToken(&request.ThoughtsTokens, call.usage.ReasoningTokens)
 	setToken(&request.TotalTokens, call.usage.TotalTokens)
-	_ = store.RecordLLMRequest(ctx, request)
+	traceRecorder(store).record(ctx, request)
 }
 
 // setToken stores a token count, leaving it NULL when the provider reported
@@ -504,3 +511,295 @@ var (
 	traceScopeMu sync.Mutex
 	traceScopes  = make(map[traceScopeKey]traceScopeIDs)
 )
+
+// traceFlushInterval and traceFlushMaxRows are the reference's buffering
+// thresholds (engine/llm_trace.py:647-648): a row waits at most this long, and
+// this many rows trigger a write at once.
+//
+// They are variables rather than constants only so a test can shrink the
+// interval; production reads them once and never writes them after start.
+//
+// Buffering exists because a recall's embedding, rerank and decision calls would
+// otherwise each take a pooled connection for one small row; the reference pays
+// for that with rows still in the buffer being lost on a crash, and accepts it
+// (engine/llm_trace.py:640-645).
+var (
+	traceFlushInterval = 500 * time.Millisecond
+	traceFlushMaxRows  = 500
+)
+
+// traceWriteTimeout bounds one batch write, so a wedged database cannot pile
+// flushes up behind a stuck connection.
+const traceWriteTimeout = 5 * time.Second
+
+// llmTraceRecorder buffers trace rows and writes them in batches, one INSERT
+// per flush rather than one per model call.
+type llmTraceRecorder struct {
+	store storage.Store
+
+	mu     sync.Mutex
+	buffer []pendingTraceRow
+	// rowsWritten records the trace ids that have produced at least one row,
+	// newest last. It is what lets attachMemoryIDs skip a trace that never wrote
+	// anything: an UPDATE for it would match zero rows and cost a connection
+	// (engine/llm_trace.py:670-690). Bounded, and only ever holds ids.
+	rowsWritten *lruSet
+	timer       *time.Timer
+	timerSet    bool
+	// pending counts the metadata patches still in flight, so a shutdown can wait
+	// for them: the reference drains them on the way out
+	// (engine/llm_trace.py:865-875 over its PendingWrites). A patch is the only
+	// trace write that outlives the call that scheduled it.
+	pending sync.WaitGroup
+	// closed stops accepting rows: a flush after shutdown would fail against a
+	// closed pool on every call, which is noise rather than diagnosis.
+	closed bool
+}
+
+// pendingTraceRow is one buffered row and the attribution context it was
+// recorded under, so the write runs on a background goroutine that no longer
+// has the request's context values.
+type pendingTraceRow struct {
+	request storage.LLMRequest
+}
+
+// traceRecorders keeps one recorder per store, because the trace entry points
+// (TraceProvider, TraceEmbedder, TraceReranker) each reach a buffer and all of
+// them must land in the same one for the batching to mean anything.
+var (
+	traceRecorderMu sync.Mutex
+	traceRecorders  = map[storage.Store]*llmTraceRecorder{}
+)
+
+// traceRecorder returns the process-wide recorder for a store.
+func traceRecorder(store storage.Store) *llmTraceRecorder {
+	traceRecorderMu.Lock()
+	defer traceRecorderMu.Unlock()
+	recorder, ok := traceRecorders[store]
+	if !ok {
+		recorder = &llmTraceRecorder{store: store, rowsWritten: newLRUSet(traceRowsWrittenMax)}
+		traceRecorders[store] = recorder
+	}
+	return recorder
+}
+
+// record buffers one row, writing at once when the buffer is full and otherwise
+// arming the flush timer.
+func (r *llmTraceRecorder) record(ctx context.Context, request storage.LLMRequest) {
+	if ctx.Err() != nil {
+		// The call already lost its caller; a trace row for it is not worth
+		// writing against a cancelled context.
+		return
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.buffer = append(r.buffer, pendingTraceRow{request: request})
+	if request.TraceID != "" {
+		r.rowsWritten.add(request.TraceID)
+	}
+	full := len(r.buffer) >= traceFlushMaxRows
+	if !full && !r.timerSet {
+		r.timerSet = true
+		r.timer = time.AfterFunc(traceFlushInterval, r.flushAsync)
+	}
+	r.mu.Unlock()
+	if full {
+		r.flushAsync()
+	}
+}
+
+// flushAsync takes the buffer and writes it on its own goroutine.
+func (r *llmTraceRecorder) flushAsync() {
+	batch := r.take()
+	if len(batch) == 0 {
+		return
+	}
+	go r.write(batch)
+}
+
+// flush writes everything buffered now. It is what a shutdown calls, so rows
+// recorded just before the process stops are not lost with it.
+func (r *llmTraceRecorder) flush() {
+	if batch := r.take(); len(batch) > 0 {
+		r.write(batch)
+	}
+}
+
+// take empties the buffer, disarming the timer with it.
+func (r *llmTraceRecorder) take() []pendingTraceRow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	batch := r.buffer
+	r.buffer = nil
+	r.timerSet = false
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+	return batch
+}
+
+// write persists one batch. A row the database refuses loses only itself: the
+// reference retries a failed batch one row at a time for exactly that reason
+// (engine/llm_trace.py:915-925). Errors are logged, never surfaced — the caller
+// has already returned its model answer.
+func (r *llmTraceRecorder) write(batch []pendingTraceRow) {
+	ctx, cancel := context.WithTimeout(context.Background(), traceWriteTimeout)
+	defer cancel()
+	for _, row := range batch {
+		if err := r.store.RecordLLMRequest(ctx, row.request); err != nil {
+			slog.Default().Warn("LLM trace write failed",
+				"bank_id", row.request.BankID, "scope", row.request.Scope, "error", err)
+		}
+	}
+}
+
+// closeTraceRecorder writes what is buffered and stops accepting new rows. It
+// is what a shutdown calls, so the rows recorded before the process stopped are
+// not lost with it.
+func closeTraceRecorder(store storage.Store) {
+	traceRecorderMu.Lock()
+	recorder, ok := traceRecorders[store]
+	delete(traceRecorders, store)
+	traceRecorderMu.Unlock()
+	if !ok {
+		return
+	}
+	recorder.mu.Lock()
+	recorder.closed = true
+	recorder.mu.Unlock()
+	recorder.flush()
+	// And wait for the metadata patches still in flight, so a shutdown does not
+	// lose the last one: each is bounded by traceWriteTimeout, so this cannot
+	// hang the process.
+	recorder.pending.Wait()
+}
+
+// traceRowsWrittenMax bounds the trace-id memory. Evicting the oldest can only
+// cause a missed patch on a very long-lived trace, never a wrong one, and the
+// patch is best-effort metadata either way (engine/llm_trace.py:684-690).
+const traceRowsWrittenMax = 4096
+
+// lruSet is a bounded set of strings, newest last.
+type lruSet struct {
+	order []string
+	index map[string]int
+	limit int
+}
+
+func newLRUSet(limit int) *lruSet {
+	return &lruSet{index: map[string]int{}, limit: limit}
+}
+
+func (s *lruSet) add(value string) {
+	if _, seen := s.index[value]; seen {
+		return
+	}
+	s.order = append(s.order, value)
+	s.index[value] = len(s.order) - 1
+	for len(s.order) > s.limit {
+		oldest := s.order[0]
+		delete(s.index, oldest)
+		s.order = s.order[1:]
+		for key, at := range s.index {
+			s.index[key] = at - 1
+		}
+	}
+}
+
+func (s *lruSet) has(value string) bool {
+	_, ok := s.index[value]
+	return ok
+}
+
+// attachMemoryIDs maps a finished operation's memory_units onto every row of
+// its trace.
+//
+// The reference merges the ids the caller passes with the ones accumulated on the
+// operation's trace context, de-duplicates them preserving order, and patches
+// `metadata` on every row sharing the trace id: `memory_ids` for the units the
+// operation produced, `source_memory_ids` for the ones it consumed
+// (engine/llm_trace.py:931-970). The patch runs after the rows are flushed, so it
+// updates rows that exist rather than racing ahead of them, and it is
+// fire-and-forget: the retain or consolidation that just finished never waits on
+// a trace write.
+func (r *llmTraceRecorder) attachMemoryIDs(ctx context.Context, created, source []string) {
+	attribution, ok := provider.TraceContextFrom(ctx)
+	if !ok || attribution.IsEmpty() {
+		return
+	}
+	created = distinctIDs(append(append([]string{}, created...), metadataIDs(attribution.Metadata, "memory_ids")...))
+	source = distinctIDs(append(append([]string{}, source...), metadataIDs(attribution.Metadata, "source_memory_ids")...))
+	patch := map[string]any{}
+	if len(created) > 0 {
+		patch["memory_ids"] = created
+	}
+	if len(source) > 0 {
+		patch["source_memory_ids"] = source
+	}
+	if len(patch) == 0 {
+		return
+	}
+	traceID, _ := traceIDsFor(ctx)
+	r.mu.Lock()
+	written := r.rowsWritten.has(traceID)
+	r.mu.Unlock()
+	if !written {
+		// Every call of the run was excluded by scope, so there is no row to
+		// patch.
+		return
+	}
+	// Flush first: the rows this patch targets may still be buffered, and an
+	// UPDATE would otherwise run before they exist (:971-980).
+	r.flush()
+	r.pending.Add(1)
+	go func() {
+		defer r.pending.Done()
+		writeCtx, cancel := context.WithTimeout(context.Background(), traceWriteTimeout)
+		defer cancel()
+		if err := r.store.PatchLLMRequestMetadata(writeCtx, attribution.BankID, traceID, patch); err != nil {
+			slog.Default().Warn("LLM trace memory_id attach failed",
+				"bank_id", attribution.BankID, "trace_id", traceID, "error", err)
+		}
+	}()
+}
+
+// metadataIDs reads a list of ids a caller may already have bound onto the trace
+// metadata.
+func metadataIDs(metadata map[string]any, key string) []string {
+	raw, ok := metadata[key]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]string)
+	if !ok {
+		values, isAny := raw.([]any)
+		if !isAny {
+			return nil
+		}
+		items = make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				items = append(items, text)
+			}
+		}
+	}
+	return items
+}
+
+// distinctIDs de-duplicates preserving first-seen order, dropping empties.
+func distinctIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}

@@ -163,10 +163,11 @@ func TestScheduledFullRefreshJob(t *testing.T) {
 	}
 }
 
-// A paused full tick stamps the full-refresh clock it just answered for.
-// Only a full run moves that clock, so a tick skipped before it would leave the
-// model permanently "due" and re-scanned on every pass of the job.
-func TestPausedFullTickStopsBeingDue(t *testing.T) {
+// A paused full tick is counted and logged, not written: the reference records
+// the skip and moves on (engine/maintenance.py:666-667), so nothing on the row
+// moves for a refresh it did not run. Only a real full refresh advances the
+// full clock.
+func TestPausedFullTickIsCountedNotStamped(t *testing.T) {
 	const everyFive = "*/5 * * * *"
 	now := time.Now().UTC()
 	store := newJobStore(t)
@@ -174,11 +175,12 @@ func TestPausedFullTickStopsBeingDue(t *testing.T) {
 	if _, err := store.CreateBank(ctx, storage.Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
+	lastFull := now.Add(-24 * time.Hour)
 	if _, err := store.PutMentalModel(ctx, storage.MentalModel{
 		ID: "mm-1", BankID: "b1", Subtype: storage.SubtypePinned, Name: "m", SourceQuery: "q",
 		Trigger:             map[string]any{"mode": "delta", "full_refresh_cron": everyFive},
 		LastRefreshedAt:     now.Add(-time.Hour),
-		LastFullRefreshedAt: timePtr(now.Add(-24 * time.Hour)),
+		LastFullRefreshedAt: &lastFull,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -196,14 +198,11 @@ func TestPausedFullTickStopsBeingDue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.LastFullRefreshedAt == nil || !model.LastFullRefreshedAt.After(now.Add(-time.Hour)) {
-		t.Fatalf("last_full_refreshed_at = %v, want the skipped tick to have moved it", model.LastFullRefreshedAt)
+	if model.LastFullRefreshedAt == nil || !model.LastFullRefreshedAt.Equal(lastFull) {
+		t.Fatalf("last_full_refreshed_at = %v, want it left at %v by a skipped tick", model.LastFullRefreshedAt, lastFull)
 	}
-	due, _ := dueScheduledRefresh(storage.ScheduledMentalModel{
-		FullRefreshCron: everyFive, LastFullRefreshedAt: now, LastRefreshedAt: now.Add(-time.Hour),
-	}, now)
-	if due {
-		t.Fatal("the model is still due on the next tick")
+	if model.LastRefreshedAt.After(now.Add(-time.Hour)) {
+		t.Fatalf("last_refreshed_at moved to %v on a skipped tick", model.LastRefreshedAt)
 	}
 }
 

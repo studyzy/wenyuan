@@ -440,7 +440,7 @@ type ChunkEntry struct {
 // requested.
 type RecallResponse struct {
 	Results              []RecallResultItem          `json:"results"`
-	Trace                map[string]any              `json:"trace"`
+	Trace                any                         `json:"trace"`
 	Entities             map[string]EntityStateEntry `json:"entities"`
 	Chunks               map[string]ChunkEntry       `json:"chunks"`
 	SourceFacts          map[string]RecallResultItem `json:"source_facts"`

@@ -46,6 +46,7 @@ func TestRetainAttributesModelCallsToTheirDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	flushTraceRows(store)
 	matching, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
 		BankID: "b1", DocumentID: "doc-a", DocumentIDSet: true, Limit: 10,
 	})
@@ -56,6 +57,7 @@ func TestRetainAttributesModelCallsToTheirDocument(t *testing.T) {
 		t.Fatal("the document's retain emitted no trace row carrying its document id")
 	}
 
+	flushTraceRows(store)
 	other, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{
 		BankID: "b1", DocumentID: "doc-b", DocumentIDSet: true, Limit: 10,
 	})
@@ -77,6 +79,7 @@ func TestTraceRowWithoutDocumentCarriesNoDocumentID(t *testing.T) {
 	if _, err := traced.Complete(ctx, provider.CompletionRequest{Scope: "reflect"}); err != nil {
 		t.Fatal(err)
 	}
+	flushTraceRows(store)
 	page, err := store.ListLLMRequests(context.Background(), storage.LLMRequestQuery{BankID: "b1", Limit: 10})
 	if err != nil {
 		t.Fatal(err)

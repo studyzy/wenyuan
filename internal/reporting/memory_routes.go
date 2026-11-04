@@ -743,17 +743,22 @@ func validateMemoryUpdate(body MemoryUpdateRequest, fields map[string]bool, inpu
 func (h *Handlers) MemoryHistory(w http.ResponseWriter, r *http.Request) {
 	bankID := strings.TrimSpace(r.PathValue("bank_id"))
 	sentID := r.PathValue("memory_id")
-	// Both the reference's `get_observation_history` and the engine's own
-	// `get_memory_unit` alias the fact type first and the unit read second, and
-	// only then reach for the history rows (engine/memory_engine.py:13363-13460,
-	// 13247-13362). A unit that has left the live table for the archive is a
-	// miss there — the archive read is the detail route's, not this one's — so
-	// its history answers 404 even though the unit still exists.
+	// `get_observation_history` reads the unit's head through `observation_head`,
+	// which selects from `memory_units` alone and 404s when that read finds
+	// nothing (engine/memory_engine.py:13846-13855). Curation MOVES an invalidated
+	// fact out of the live table (engine/memories/pg/writes.py:421-456), so its
+	// history is a 404 even though the detail route still serves the archived row
+	// — measured on the live reference, `PATCH {"state":"invalidated"}` then
+	// `GET .../history` is 404 "Memory unit '<id>' not found" while
+	// `GET .../memories/{id}` stays 200.
 	memoryID, invalid := memoryUnitID(sentID)
 	if invalid != nil {
 		httpx.WriteErrorFor(w, r, invalid)
 		return
 	}
+	// The store's read falls back to the archive for the detail route, so the
+	// live-only rule is applied here: a unit that has left the live table is a
+	// miss for this route.
 	unit, err := h.Store.GetMemory(r.Context(), bankID, memoryID)
 	if err != nil || unit.InvalidatedAt != nil {
 		var failure *httpx.HTTPError
@@ -900,7 +905,13 @@ func historyEntryModel(entry storage.MemoryHistoryEntry, facts []SourceFactModel
 }
 
 // memoryDetail renders the reference's memory-unit detail dict.
-func (h *Handlers) memoryDetail(ctx context.Context, bankID string, unit storage.MemoryUnit) (map[string]any, error) {
+//
+// The result is an httpx.OrderedObject rather than a map because the reference's
+// detail is a dict literal (engine/memories/pg/curation.py:398-438) and Python
+// serializes it in source order, while Go sorts a map's keys. The 20 common
+// members keep that literal's order, and the members a unit adds conditionally
+// follow it in the order the reference appends them.
+func (h *Handlers) memoryDetail(ctx context.Context, bankID string, unit storage.MemoryUnit) (httpx.OrderedObject, error) {
 	// Entity postings, resolved through the same inheritance the list view uses
 	// so an observation with no postings of its own reports its sources'.
 	names, err := h.Store.UnitEntityNames(ctx, bankID, []string{unit.ID})
@@ -927,30 +938,41 @@ func (h *Handlers) memoryDetail(ctx context.Context, bankID string, unit storage
 	if len(unit.ObservationScopes) > 0 {
 		observationScopes = unit.ObservationScopes
 	}
-	detail := map[string]any{
-		"id": unit.ID, "text": unit.Text, "context": unit.Context, "date": date,
-		"type": factTypeValue(unit.FactType), "mentioned_at": httpx.FormatTimestampPtr(unit.MentionedAt),
-		"occurred_start": httpx.FormatTimestampPtr(unit.OccurredStart),
-		"occurred_end":   httpx.FormatTimestampPtr(unit.OccurredEnd),
-		"entities":       entities, "document_id": nullableString(unit.DocumentID),
-		"chunk_id": nullableString(unit.ChunkID), "tags": tags, "metadata": metadata,
-		"observation_scopes": observationScopes, "state": memoryState(unit),
-		"invalidation_reason":     unit.InvalidationReason,
-		"invalidated_at":          httpx.FormatTimestampPtr(unit.InvalidatedAt),
-		"edited_at":               httpx.FormatTimestampPtr(unit.EditedAt),
-		"consolidated_at":         httpx.FormatTimestampPtr(unit.ConsolidatedAt),
-		"consolidation_failed_at": httpx.FormatTimestampPtr(unit.ConsolidationFailedAt),
+	detail := httpx.OrderedObject{
+		{Key: "id", Value: unit.ID},
+		{Key: "text", Value: unit.Text},
+		{Key: "context", Value: unit.Context},
+		{Key: "date", Value: date},
+		{Key: "type", Value: factTypeValue(unit.FactType)},
+		{Key: "mentioned_at", Value: httpx.FormatTimestampPtr(unit.MentionedAt)},
+		{Key: "occurred_start", Value: httpx.FormatTimestampPtr(unit.OccurredStart)},
+		{Key: "occurred_end", Value: httpx.FormatTimestampPtr(unit.OccurredEnd)},
+		{Key: "entities", Value: entities},
+		{Key: "document_id", Value: nullableString(unit.DocumentID)},
+		{Key: "chunk_id", Value: nullableString(unit.ChunkID)},
+		{Key: "tags", Value: tags},
+		{Key: "metadata", Value: metadata},
+		{Key: "observation_scopes", Value: observationScopes},
+		{Key: "state", Value: memoryState(unit)},
+		{Key: "invalidation_reason", Value: unit.InvalidationReason},
+		{Key: "invalidated_at", Value: httpx.FormatTimestampPtr(unit.InvalidatedAt)},
+		{Key: "edited_at", Value: httpx.FormatTimestampPtr(unit.EditedAt)},
+		{Key: "consolidated_at", Value: httpx.FormatTimestampPtr(unit.ConsolidatedAt)},
+		{Key: "consolidation_failed_at", Value: httpx.FormatTimestampPtr(unit.ConsolidationFailedAt)},
+	}
+	appendDetail := func(key string, value any) {
+		detail = append(detail, httpx.OrderedMember{Key: key, Value: value})
 	}
 	if unit.FactType == storage.TypeObservation {
-		detail["history"] = []any{}
+		appendDetail("history", []any{})
 		if len(unit.SourceMemoryIDs) > 0 {
 			sourceIDs := append([]string(nil), unit.SourceMemoryIDs...)
-			detail["source_memory_ids"] = sourceIDs
+			appendDetail("source_memory_ids", sourceIDs)
 			sources, err := h.sourceMemories(ctx, bankID, sourceIDs)
 			if err != nil {
 				return nil, err
 			}
-			detail["source_memories"] = sources
+			appendDetail("source_memories", sources)
 		}
 	}
 	if attachments, ok := h.Store.(storage.MemoryAttachmentStore); ok {
@@ -959,7 +981,7 @@ func (h *Handlers) memoryDetail(ctx context.Context, bankID string, unit storage
 			return nil, err
 		}
 		if records := byUnit[unit.ID]; len(records) > 0 {
-			detail["attachments"] = memoryAttachmentItems(bankID, records)
+			appendDetail("attachments", memoryAttachmentItems(bankID, records))
 		}
 	}
 	return detail, nil

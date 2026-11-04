@@ -360,3 +360,40 @@ observation history 快照、dry-run 的 `based_on`/outcome、config 的 env 取
 （`public::wenyuan`、`public::pvz-shoot`、`public::deepseek-harness`）需要人工用
 `bankctl bank migration` 迁移到 `<tenant>::` 命名空间。要不要对集合路由也加同样的前缀校验，
 取决于是否允许一个 tenant 在同一 schema 下持有多个前缀——这是产品决定，不是本次修复范围。
+
+---
+
+## 9. 第五轮全量重审结论（2026-11-04）
+
+> 范围：`docs/API-PARITY-CHECKLIST.md` 的 **101 条 API + 6 组后台任务**，
+> 逐条按参考源码重审，全部有结论（119/119 勾选）。完整证据见
+> `docs/API-AUDIT-FINDINGS.md` 的 `## 第五轮*` 各节。
+
+### 9.1 闭合情况
+
+本轮修掉 **20 处真实缺陷**（清单见 `docs/API-PARITY-CHECKLIST.md` §9）。其中键序类 11 处、
+后台任务类 9 处。验证门：build（含 `-tags pgx`）/ vet / gofmt / **5459 测试** / golangci-lint 全绿。
+
+**两个从未比对过的新面已覆盖**：
+- `GET .../documents/{document_id}/history` —— ✅ 一致（含分页语义等价性证明：`total` 计操作数、`items` 计事件数）
+- `GET .../audit-logs/{log_id}` —— ✅ 一致（10 键逐字节，非 UUID → 404 而非 400）
+
+### 9.2 仍未闭合（详见 `docs/PARITY-OPEN-ITEMS.md` §10）
+
+| 项 | 性质 | 影响 |
+|---|---|---|
+| `files/retain` 的 op 拆分 | 结构性（storage + worker） | `GET .../operations` 条目数 1 vs 2；`POST` 响应不受影响 |
+| `/metrics` 千 bank 成本 | 性能 / 失败模式 | bank 数上千时 scrape 超时会**静默丢系列** |
+| `graph.maintenance` 执行位置 | 结构性（operation 队列 vs 定时 drain） | 不进 `/operations`、不可取消、无 240s budget |
+| `reflect` 在当前模型端点空答案 | **部署侧**，非代码缺口 | 换模型或缩短上下文即可；改代码兜底会偏离参考语义 |
+
+### 9.3 参考自身缺陷 —— 不复刻（详见 `docs/GAPS.md` §7）
+
+三处：同步 `retain` 不写 chunks、失败 500 回显被拒行内容（含 `secret`）、`dry-run-extract`
+的 `verbatim` 模式写读字段不一致。每条都有控制变量实验或源码互证支撑。
+
+### 9.4 有意增量（不算缺口）
+
+`admin` 多租户控制面、`/admin/v1/teams/**` 团队记忆（`project.merge`）、
+`<tenant>::myself` 个人聚合（`personal.rollup`）—— 参考无 HTTP admin 面，这几项是本服务
+为多租户与团队场景新增的，见 AGENTS.md「Deliberate deviations」。

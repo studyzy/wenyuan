@@ -950,7 +950,7 @@ func (l *Loop) aliasToolText(text string, kindByID map[string]string) string {
 func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
 	messages := []provider.Message{
 		{Role: "system", Content: buildFinalSystemPrompt(l.retrieval.Directives(ctx), l.profile())},
-		{Role: "user", Content: buildFinalPrompt(l.cfg.Question, l.renderEvidence(), l.cfg.MaxTokens)},
+		{Role: "user", Content: buildFinalPrompt(l.profile(), l.cfg.Question, l.renderEvidence(), l.cfg.MaxTokens)},
 	}
 	response, err := l.callModel(ctx, "final", provider.CompletionRequest{
 		Messages:  messages,

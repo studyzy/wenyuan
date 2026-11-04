@@ -218,7 +218,16 @@ func TestAuditBankOverrideFlipsOneBank(t *testing.T) {
 	}
 }
 
-// A failed operation still records a row, carrying the failure text.
+// A failed operation still records a row, and that row carries no failure
+// marker: the reference's writer stamps ended_at and records the entry whatever
+// the status was, so metadata holds only what the decorator supplied — measured
+// against the live reference, a failed audited call lands with metadata {} and
+// the failure visible only in the response body (engine/audit.py:224-243,
+// :278-282).
+//
+// Falsifier: put `error` back into the metadata (internal/audit/audit.go) or set
+// Entry.Error from the response body (internal/httpx/audit.go) and the metadata
+// assertion below fails with `{"error": "..."}`.
 func TestAuditRecordsFailingOperation(t *testing.T) {
 	a := auditApp(t, true)
 	const bankPath = "/v1/default/banks/audit-fail"
@@ -238,12 +247,26 @@ func TestAuditRecordsFailingOperation(t *testing.T) {
 	if rows[0]["transport"] != "http" {
 		t.Errorf("failure transport = %v", rows[0]["transport"])
 	}
+	// The row exists (the failure is recorded) but the trail does not annotate
+	// it: metadata is the empty object the reference writes.
 	metadata, _ := rows[0]["metadata"].(map[string]any)
 	if metadata == nil {
-		t.Fatalf("failure row carries no metadata: %v", rows[0])
+		t.Fatalf("failure row carries no metadata object: %v", rows[0])
 	}
-	if text, _ := metadata["error"].(string); text == "" {
-		t.Fatalf("failure text not recorded: %v", metadata)
+	if _, present := metadata["error"]; present {
+		t.Fatalf("failure row carries an error key the reference never writes: %v", metadata)
+	}
+	if len(metadata) != 0 {
+		t.Fatalf("failure row metadata = %v, want {}", metadata)
+	}
+	// The response is null too: the reference assigns it after the handler
+	// returns, which a raising handler never does.
+	rows2 := auditRows(t, a, "audit-fail", "action=cancel_operation&limit=50")
+	if len(rows2) != 1 {
+		t.Fatalf("expected one row, got %d", len(rows2))
+	}
+	if response, present := rows2[0]["response"]; present && response != nil {
+		t.Fatalf("failure row response = %v, want null", response)
 	}
 }
 

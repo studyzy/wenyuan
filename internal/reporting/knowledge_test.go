@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/mentalmodels"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -155,7 +156,9 @@ func TestKnowledgeUpdateNodeRequestFields(t *testing.T) {
 	if len(node.Tags) != 2 || node.Tags[0] != "ops" || node.Tags[1] != "type:runbook" {
 		t.Fatalf("tags = %v", node.Tags)
 	}
-	if node.Trigger["refresh_cron"] != "0 * * * *" {
+	// The trigger is the reference's ordered MentalModelTrigger projection, so a
+	// member is read out of the member list rather than by map key.
+	if got := triggerMember(node.Trigger, "refresh_cron"); got != "0 * * * *" {
 		t.Fatalf("trigger = %v", node.Trigger)
 	}
 
@@ -743,16 +746,16 @@ func TestKnowledgeNodeUpdatePatchesTriggerAndRequeues(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &node); err != nil {
 		t.Fatal(err)
 	}
-	if node.Trigger["refresh_cron"] != "0 3 * * *" {
+	if triggerMember(node.Trigger, "refresh_cron") != "0 3 * * *" {
 		t.Fatalf("trigger = %v", node.Trigger)
 	}
 	// The page default's members survive the patch; naming a cron clears the
 	// auto-refresh the page was created with, since a page refreshes on one or
 	// the other, never both.
-	if node.Trigger["mode"] != "delta" || node.Trigger["exclude_mental_models"] != true {
+	if triggerMember(node.Trigger, "mode") != "delta" || triggerMember(node.Trigger, "exclude_mental_models") != true {
 		t.Fatalf("a trigger patch must keep the unstated members: %v", node.Trigger)
 	}
-	if node.Trigger["refresh_after_consolidation"] != false {
+	if triggerMember(node.Trigger, "refresh_after_consolidation") != false {
 		t.Fatalf("refresh_cron must clear refresh_after_consolidation: %v", node.Trigger)
 	}
 	if got := refreshOperations(t, store); got <= before {
@@ -1261,4 +1264,82 @@ func TestKnowledgeNodeEmptyTriggerObjectIsSupplied(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Provide name, parent_id") {
 		t.Fatalf("empty body = %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+// triggerMember reads one projected trigger member by name.
+func triggerMember(trigger mentalmodels.Trigger, name string) any {
+	for _, member := range trigger {
+		if member.Key == name {
+			return member.Value
+		}
+	}
+	return nil
+}
+
+// The tree's page trigger is the reference's MentalModelTrigger response model,
+// so its eighteen members reach the wire in the order the model declares them.
+// A normalized map would sort them alphabetically instead, which is what the
+// live comparison against the reference caught: the reference writes
+// `budget,mode,refresh_after_consolidation,...` and a map writes
+// `budget,exclude_mental_model_ids,exclude_mental_models,...`.
+//
+// Falsifier: project the trigger as the plain map NormalizeTrigger returns and
+// the second member stops being `mode`.
+func TestKnowledgeTreeTriggerKeepsTheReferenceMemberOrder(t *testing.T) {
+	mux := newServer(t)
+	base := "/v1/default/banks/" + bank
+	createKnowledgePage(t, mux, base, `{"name":"Ordered","source_query":"q?","trigger":{"refresh_cron":"0 3 * * *"}}`)
+
+	rec := send(mux, http.MethodGet, base+"/knowledge-base/tree", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tree = %d: %s", rec.Code, rec.Body.String())
+	}
+	// The key order is read off the bytes, not off a decoded map.
+	keys := objectKeys(t, childTriggerObject(t, rec.Body.Bytes()))
+	want := []string{
+		"budget", "mode", "refresh_after_consolidation", "refresh_cron",
+		"full_refresh_cron", "min_refresh_interval_seconds", "fact_types",
+		"exclude_mental_models", "exclude_mental_model_ids", "tags_match",
+		"tag_groups", "include_chunks", "recall_max_tokens",
+		"recall_chunks_max_tokens", "reflect_search_observations_max_tokens",
+		"reflect_search_observations_include_entities", "response_schema", "keep_trace",
+	}
+	if !equalStrings(keys, want) {
+		t.Fatalf("trigger key order =\n  %v\nwant\n  %v", keys, want)
+	}
+}
+
+// childTriggerObject returns the raw bytes of the first page trigger under the
+// first root, so a test can read the member order as the client receives it.
+func childTriggerObject(t *testing.T, body []byte) []byte {
+	t.Helper()
+	type node struct {
+		Kind     string          `json:"kind"`
+		Trigger  json.RawMessage `json:"trigger"`
+		Children []node          `json:"children"`
+	}
+	var envelope struct {
+		Roots []node `json:"roots"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode tree: %v", err)
+	}
+	// The page may be a root or nested under a folder; depth-first finds either.
+	var walk func(nodes []node) json.RawMessage
+	walk = func(nodes []node) json.RawMessage {
+		for _, n := range nodes {
+			if n.Kind == "page" && len(n.Trigger) > 0 {
+				return n.Trigger
+			}
+			if found := walk(n.Children); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	trigger := walk(envelope.Roots)
+	if trigger == nil {
+		t.Fatalf("tree has no page to read a trigger from: %s", body)
+	}
+	return trigger
 }

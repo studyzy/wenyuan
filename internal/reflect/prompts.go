@@ -614,16 +614,24 @@ func buildFinalSystemPrompt(directives []Directive, profile bankProfile) string 
 	return strings.Join(trimmed, "\n\n")
 }
 
-// buildFinalPrompt builds the answering call's user message: the evidence that
-// was gathered, then the question, then the instructions and the length target.
-func buildFinalPrompt(question, evidence string, maxTokens int) string {
-	parts := []string{}
+// buildFinalPrompt builds the answering call's user message: the bank identity
+// the synthesis answers as, the evidence that was gathered, then the question,
+// the instructions and the length target.
+//
+// The identity lives here, not in the final system prompt: the reference splits
+// its two closing prompts the same way (build_final_prompt renders
+// _bank_identity_section first while build_final_system_prompt carries none), so
+// the answering call and the tool-loop system prompt do not both state it.
+func buildFinalPrompt(profile bankProfile, question, evidence string, maxTokens int) string {
+	parts := finalIdentitySection(profile)
 	if strings.TrimSpace(evidence) == "" {
 		parts = append(parts, "\n## Retrieved Data\nNo data was retrieved.")
 	} else {
+		// Each block carries its own leading newline in the reference, so the
+		// heading and the first block are separated by a blank line.
 		parts = append(parts,
 			"\n## Retrieved Data (synthesize and reason from this data)",
-			strings.TrimRight(evidence, "\n"))
+			"\n"+strings.TrimRight(evidence, "\n"))
 	}
 	parts = append(parts,
 		"\n## Question\n"+question,
@@ -632,6 +640,25 @@ func buildFinalPrompt(question, evidence string, maxTokens int) string {
 		parts = append(parts, directive)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// finalIdentitySection renders the bank identity head of a synthesis prompt as
+// the reference's _bank_identity_section does: the heading and the name always,
+// the mission when there is one, the graded traits when any is set, and the
+// caller's additional context last.
+func finalIdentitySection(profile bankProfile) []string {
+	name := profile.Name
+	if name == "" {
+		name = "Assistant"
+	}
+	parts := []string{"## Memory Bank Context\nName: " + name}
+	if mission := strings.TrimSpace(profile.Mission); mission != "" {
+		parts = append(parts, "Mission: "+mission)
+	}
+	if line := dispositionLine(profile.Disposition); line != "" {
+		parts = append(parts, line)
+	}
+	return parts
 }
 
 // buildDoneRequestPrompt is the closing user turn that asks for the answer as a

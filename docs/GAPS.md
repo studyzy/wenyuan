@@ -553,3 +553,59 @@ WENYUAN_API_RUN_MIGRATIONS_ON_STARTUP=true WENYUAN_API_MAINTENANCE_START_JITTER_
 grep -n "COVERAGE_MIN" Makefile                                  # 56 / 66
 make cover-check
 ```
+
+---
+
+## 7. 参考实现自身异常 —— 不复刻记录（第五轮全量重审，2026-11-04）
+
+> 本仓库的判据是「参考实现的行为赢」（AGENTS.md「Deliberate deviations」之外）。
+> 但参考自身**偶尔**会有明显缺陷，照抄会把缺陷带进来。本节逐条记录这类决定，
+> 每条都给出**控制变量实验或源码互证**，不是推测。
+>
+> 处理原则沿用 `docs/CONTRACT-AUDIT.md:214` 与第四轮的惯例：**只有当证据表明是参考的
+> 缺陷而非契约时**才不复刻，且必须在此登记，避免下一轮审查员重新报为缺口。
+
+### 7.1 同步 `retain` 不写 chunks
+
+- **参考行为**：`POST .../memories` 用 `async:false` 时**不产生 chunk 行**；`async:true` 时正常产生。
+- **控制变量实验**（同一参考实例、同一 bank、同一内容，只改 `async`）：
+  | `async` | 参考 chunks | 本服务 chunks |
+  |---|---|---|
+  | `true`，新 document_id | 1 | 1 |
+  | `false`，新 document_id | **0** | 1 |
+  | `true`，再换新 document_id | 1（可重复） | — |
+- **为什么判为参考缺陷**：
+  1. 参考源码只有一条写 chunks 的路径（`engine/chunk_storage.py:106` ← `orchestrator.py:3403/4276`），同步与异步都汇入同一个 `retain_batch_async`，本不该分叉
+  2. 参考库 `user_devin.chunks` 有 3886 行历史数据，证明该表本就该写
+  3. 运行实例 `/version` 的 `api_version` 为 1.1.0，与源码树 `__init__.py:43` / `pyproject.toml:7` / HEAD `3ee25616c` 一致，排除了「版本偏差」解释
+  4. `documents` 行两侧每次都正常（`original_text` / `content_hash` 逐字节相同），只有 chunks 分叉
+- **本服务行为**：**保持写 chunks**（与参考源码和历史数据一致）。
+- **影响面**：仅 `GET .../documents/{id}/chunks` 的 `total` 与 recall 的 `include.chunks` 条目数。retain 收据不受影响。
+- **复现**：见 `docs/API-AUDIT-FINDINGS.md` 的 `## 第五轮 retain`（#23）。
+
+### 7.2 失败写路径的 500 会回显被拒行内容
+
+- **参考行为**：把 `null` 打到达 NOT NULL 列（如 `PATCH .../webhooks/{id}` 的 `{"url": null}`）时，参考返回 500，`detail` 是 **PostgreSQL 驱动原文**，包含 `DETAIL: Failing row contains (...)` —— 会把整行被拒值（`bank_id` / `url` / `secret`）**回显给调用方**。另一处是 `'NoneType' object has no attribute 'model_dump_json'`。
+- **为什么判为参考缺陷**：这是内部驱动错误的泄漏，不是契约；回显 `secret` 属安全问题。
+- **本服务行为**：保持**状态码**与参考一致（同为 500），但**不复刻**那两段 detail 文本。
+- **处理依据**：`docs/CONTRACT-AUDIT.md:214`（参考内部异常不复刻）。
+- **影响面**：仅 4 个 500 分支的 detail 文本。状态码 4/4 一致。
+
+### 7.3 `dry-run-extract` 的 `verbatim` 模式（参考写读字段不一致）
+
+- **参考行为**：`verbatim` 模式写入时用 `fact_text` 键、读取时用 `fact` 键，导致该模式的预览**永远为空**。
+- **为什么判为参考缺陷**：写读字段不一致是明显笔误。
+- **本服务行为**：**不照抄该缺陷**（照抄会让预览永远为空，属不可接受的功能性退化）。
+- **状态**：第四轮已记录，本轮（第五轮）复核确认无变化。
+
+### 7.4 参考自身的非确定性 —— 不是契约
+
+以下差异**源于参考自身输出不确定**，不构成缺口，不应作为缺陷修复：
+
+| 现象 | 原因 | 本服务处理 |
+|---|---|---|
+| `GET .../config` 的 `config` 对象键序 | 参考从 `frozenset` 迭代，**跨进程随 `PYTHONHASHSEED` 变化**（同进程内稳定） | 键集/值/类型逐键比对一致；键序不追（⚠️存疑不修） |
+| `Valid configurable fields: [...]` 样本 | 取自 set，每次进程启动顺序不同 | 不追 |
+| `GET /v1/bank-template-schema` 的 `$defs` 键序 | pydantic 声明序 vs Go map；但**递归内容比对 `content diffs: 0`、字节数同为 31553、`json.load` 相等** | 只差键序，内容零差异（⚠️存疑不修） |
+
+> 注：以上三条与「键序是契约」的既有结论**不矛盾**——键序在参考侧**确定**时（如 `reflect_response` 的插入序、`trace` 的声明序、`config` 的字段声明序）本服务一律复刻，本轮修掉了 11 处这类缺陷；只有在**参考自身不稳定**时才不追。

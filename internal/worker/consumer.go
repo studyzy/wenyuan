@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,10 @@ type Config struct {
 	Logger *slog.Logger
 	// Now is injectable so backoff is testable without real waiting.
 	Now func() time.Time
+	// Jitter scales the append-conflict deferral. The reference multiplies its
+	// exponential ladder by random.uniform(0.5, 1.5); injected so the schedule is
+	// testable, and defaulted to that same range.
+	Jitter func() float64
 	// Sleep is injectable so backoff is testable without real waiting.
 	Sleep func(time.Duration)
 	// WallTimeouts bounds one operation type's wall-clock budget. A type absent
@@ -177,6 +182,67 @@ func isDeferral(err error) bool {
 func isExplicitDeferral(err error) bool {
 	_, ok := deferralDelay(err)
 	return ok
+}
+
+// Append-conflict backoff, matching the reference's `_append_conflict_defer_seconds`
+// (worker/poller.py:62-71). An append that lost its race is told "the document moved, read
+// it again"; the writer that won is normally done within seconds, so the first redo is
+// quick, and the delay doubles (jittered, so simultaneous losers do not line up and collide
+// again) up to a ceiling. Deliberately uncapped in count: deferring forever shows up as an
+// old pending operation with a rising defer count, which is recoverable, where a cap drops
+// the turn.
+const (
+	AppendConflictDeferBase = 2 * time.Second
+	AppendConflictDeferMax  = 300 * time.Second
+	// AppendConflictDeferCountKey is where the deferral count lives in
+	// result_metadata, so a deferral that keeps repeating stays visible.
+	AppendConflictDeferCountKey = "append_conflict_defers"
+)
+
+// appendConflictDeferSeconds is the jittered exponential backoff for the
+// deferCount-th deferral (1-based). jitter draws the multiplier; the consumer
+// supplies math/rand's [0.5, 1.5) so the schedule is testable.
+func appendConflictDeferSeconds(deferCount int, jitter float64) time.Duration {
+	if deferCount < 1 {
+		deferCount = 1
+	}
+	delay := AppendConflictDeferBase
+	for i := 1; i < deferCount; i++ {
+		delay *= 2
+		if delay >= AppendConflictDeferMax {
+			delay = AppendConflictDeferMax
+			break
+		}
+	}
+	if delay > AppendConflictDeferMax {
+		delay = AppendConflictDeferMax
+	}
+	return time.Duration(float64(delay) * jitter)
+}
+
+// appendConflictError is a deferral for an append that lost its race on the
+// document it extends. It is the reference's `is_append_conflict`: nothing was
+// stored (the precondition rejects the write whole), so redoing it on a fresh
+// read is always safe, and failing it terminally — which is what the worker does
+// with any other exception — drops the turn it carried.
+type appendConflictError struct{ cause error }
+
+func (e *appendConflictError) Error() string { return e.cause.Error() }
+func (e *appendConflictError) Unwrap() error { return e.cause }
+
+// DeferAppendConflict marks an error as an append that lost its race, so it is
+// deferred on the append-conflict ladder rather than the retry backoff.
+func DeferAppendConflict(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &appendConflictError{cause: err}
+}
+
+// isAppendConflict reports whether an error is a lost append race.
+func isAppendConflict(err error) bool {
+	var target *appendConflictError
+	return errors.As(err, &target)
 }
 
 // retryAtError is a retry that names its own delay and consumes one attempt.
@@ -310,6 +376,9 @@ func New(store storage.Store, processor Processor, cfg Config) *Consumer {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if cfg.Jitter == nil {
+		cfg.Jitter = func() float64 { return 0.5 + rand.Float64() }
+	}
 	if cfg.Sleep == nil {
 		cfg.Sleep = time.Sleep
 	}
@@ -379,6 +448,8 @@ func (c *Consumer) BackoffFor(attempt int) time.Duration {
 func (c *Consumer) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	c.warnAboutDefaultWorkerID()
 
 	// Stop must also release a Run blocked in its poll wait.
 	go func() {
@@ -608,15 +679,28 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		return
 	}
 	// The operation continues under a background context so a shutdown drains
-	// it rather than leaving it half-applied. It is bounded by the lease, and
-	// more tightly by a per-type wall ceiling when one is configured: a wedged
-	// task then frees its slot at the ceiling rather than at the lease.
-	budget := c.cfg.Lease
-	if ceiling := c.cfg.WallTimeouts[op.OperationType]; ceiling > 0 && ceiling < budget {
-		budget = ceiling
+	// it rather than leaving it half-applied.
+	workCtx := context.WithoutCancel(ctx)
+	var ceiling *activeCeiling
+	var progress *progressState
+	if value, ok := c.cfg.WallTimeouts[op.OperationType]; ok && value > 0 {
+		// A per-type wall ceiling bounds the task itself. It is enforced alone,
+		// never min'd with the lease: the reference has no lease in this position
+		// and its table (3600s retain / 7200s consolidation / 300s refresh) is
+		// what an operator configures, so a 300s lease must not silently reduce
+		// every ceiling to 300s.
+		ceiling = newActiveCeiling(workCtx, value, WallCeilingOf(op.OperationType), c.cfg.Now)
+		progress = &progressState{ceiling: ceiling}
+		workCtx = ceiling.ctx
+		workCtx = context.WithValue(workCtx, progressKey{}, progress)
+		defer ceiling.stop()
+	} else if c.cfg.Lease > 0 {
+		// An unmapped type stays unbounded by a ceiling; the lease still bounds
+		// how long a dead consumer holds the slot.
+		var cancel context.CancelFunc
+		workCtx, cancel = context.WithTimeout(workCtx, c.cfg.Lease)
+		defer cancel()
 	}
-	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
-	defer cancel()
 
 	// The sink collects whatever the processor reports about this run. It is
 	// read only after Process returns, so no lock is needed, and a processor
@@ -629,7 +713,33 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 	audited := c.auditor != nil && c.auditor.ShouldAudit(ctx, op.OperationType, op.BankID)
 	started := time.Now().UTC()
 
+	var watchdogStop chan struct{}
+	if ceiling != nil {
+		exceeded := &WallTimeoutExceeded{
+			Timeout:  ceiling.timeout,
+			Ceiling:  WallCeilingOf(op.OperationType),
+			TaskType: op.OperationType,
+		}
+		watchdogStop = ceiling.watch(exceeded, progress.stage)
+	}
+
 	err := c.processor.Process(workCtx, op)
+
+	if watchdogStop != nil {
+		close(watchdogStop)
+	}
+	if ceiling != nil {
+		// The ceiling's cancellation is a terminal failure with the reference's own
+		// explanation (poller.py:1313-1322): not an ordinary retryable error, and it
+		// spends no attempt.
+		if cause := context.Cause(workCtx); cause != nil {
+			if exceeded, ok := cause.(*WallTimeoutExceeded); ok {
+				// The ceiling cancels the work, so whatever the processor reported is
+				// a consequence of that cancellation rather than its own verdict.
+				err = exceeded
+			}
+		}
+	}
 
 	if audited {
 		entry := audit.Entry{
@@ -640,9 +750,11 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 			EndedAt:   time.Now().UTC(),
 			Request:   op.Payload,
 		}
-		if err != nil {
-			entry.Error = err.Error()
-		} else if len(sink.metadata) > 0 {
+		// Failures are not marked on the entry: the reference's audit writer
+		// records every operation the same way and leaves the outcome to the
+		// response payload (engine/audit.py:278-282), so a failed operation
+		// carries no audit metadata of its own.
+		if err == nil && len(sink.metadata) > 0 {
 			entry.Response = sink.metadata
 		}
 		// Recording must outlive the shutdown context that may have cancelled
@@ -662,6 +774,15 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 			"operation_id", op.OperationID, "bank_id", op.BankID)
 		return
 	}
+	var exceeded *WallTimeoutExceeded
+	if errors.As(err, &exceeded) {
+		// A task that blew its wall-clock ceiling is failed outright, with the
+		// reference's explanation (poller.py:1313-1322): it is wedged, not flaky,
+		// so spending the retry budget on it only repeats the wedge.
+		c.fail(ctx, op, exceeded.Describe(), sink.metadata)
+		c.recordOperation(op, false, time.Since(started))
+		return
+	}
 	if IsPermanent(err) {
 		// A permanent failure is terminal on the first try; it must not consume
 		// the retry budget.
@@ -676,7 +797,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		c.retryAt(ctx, op, delay, err, sink.metadata)
 		return
 	}
-	if isBackpressure(err) || isDeferral(err) {
+	if isBackpressure(err) || isDeferral(err) || isAppendConflict(err) {
 		// A store that is shedding load, or a handler that asked for a deferral
 		// (a provider rate limit, say), is a transient condition, not a failure
 		// of this operation: defer it without consuming the retry budget, so a
@@ -711,6 +832,37 @@ func metricOperationLabel(operationType string) string {
 	default:
 		return operationType
 	}
+}
+
+// appendConflictDefers reads how many times an operation has already been
+// deferred for a lost append race. It only drives the backoff and the log line,
+// so a missing or unreadable value falls back to zero — the shortest delay —
+// rather than failing the task.
+func appendConflictDefers(op storage.Operation) int {
+	value := op.ResultMetadata[AppendConflictDeferCountKey]
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+// mergeMetadata copies base and overlays extra onto it, leaving the caller's
+// map untouched.
+func mergeMetadata(base, extra map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	return merged
 }
 
 // isBackpressure reports whether a failure is the store shedding load rather
@@ -751,6 +903,27 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 	// a provider's rate-limit reset — keeps it, and any other deferral keeps the
 	// ordinary backoff.
 	delay := c.BackoffFor(op.RetryCount + 1)
+	if isAppendConflict(cause) {
+		// A lost append race walks the reference's jittered doubling ladder, and
+		// its deferral count rides on the operation so a deferral that keeps
+		// repeating stays visible (worker/poller.py:1133-1160).
+		defers := appendConflictDefers(op) + 1
+		next := c.cfg.Now().Add(appendConflictDeferSeconds(defers, c.cfg.Jitter()))
+		metadata = mergeMetadata(metadata, map[string]any{AppendConflictDeferCountKey: defers})
+		if deferrer, ok := c.store.(storage.OperationDeferrer); ok {
+			if err := deferrer.DeferOperation(ctx, op.OperationID, next, metadata); err != nil {
+				c.reportSettleLapse(op, "defer", err)
+				return
+			}
+		} else if err := c.scheduleRetry(ctx, op, op.RetryCount, next, cause.Error(), metadata); err != nil {
+			c.reportSettleLapse(op, "defer", err)
+			return
+		}
+		c.cfg.Logger.Warn("operation deferred: append lost its race",
+			"operation_id", op.OperationID, "bank_id", op.BankID,
+			"deferral", defers, "next_retry_at", next, "reason", cause.Error())
+		return
+	}
 	if isBackpressure(cause) {
 		delay = c.cfg.BackpressureDefer
 	}
@@ -853,10 +1026,39 @@ func (c *Consumer) releaseHeldWork() {
 	}
 }
 
+// defaultWorkerID is the identity a consumer falls back to when the deployment
+// configured none. It is deliberately a constant so a single-process worker has a
+// stable id across restarts; the cost is that every worker in such a deployment
+// shares it, which is what the startup warning below is about.
+const defaultWorkerID = "worker"
+
 // workerID returns the configured identity, falling back to a stable default.
 func (c *Consumer) workerID() string {
 	if c.cfg.WorkerID != "" {
 		return c.cfg.WorkerID
 	}
-	return "worker"
+	return defaultWorkerID
+}
+
+// warnAboutDefaultWorkerID reports a consumer that will share its queue identity
+// with every other unconfigured worker in the deployment.
+//
+// The reference warns about the same shape (`warn_if_container_default_worker_id`,
+// worker/main.py:246): its default id is the hostname, so several replicas
+// collide. Sharing an id is not cosmetic here — the consumer scopes two writes by
+// it. `recover_own_tasks`-style recovery and the shutdown release both select
+// `status='processing' AND worker_id = <own>`, so two workers with one id can hand
+// back each other's in-flight operations, and a graceful shutdown of one releases
+// work the other is still running. A configured id costs one line of deployment
+// config and removes the whole class.
+//
+// It warns rather than refuses: a single-worker deployment is the default shape
+// and is entirely correct with the constant id, so refusing would break it.
+func (c *Consumer) warnAboutDefaultWorkerID() {
+	if c.cfg.WorkerID != "" {
+		return
+	}
+	c.cfg.Logger.Warn("worker id is not configured; every worker in this deployment shares the identity "+defaultWorkerID+
+		", so one worker's shutdown can release another's in-flight operations. Set WENYUAN_API_WORKER_ID to a unique value per worker.",
+		"worker_id", defaultWorkerID)
 }

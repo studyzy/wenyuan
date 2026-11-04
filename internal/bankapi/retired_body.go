@@ -50,6 +50,12 @@ func RetiredBodyGate(r *http.Request, model any) *httpx.ValidationFailure {
 	if readErr != nil {
 		return httpx.BodyDecodeFailure(readErr, body)
 	}
+	// The reference's route class reports a body member its model does not
+	// declare in X-Ignored-Params before the handler answers (a retired write
+	// is still a route with a declared model, so its unknown members are
+	// reported even though the answer is 410 — api/unknown_params.py:187-200).
+	// This gate is the route's only look at the body, so it is recorded here.
+	httpx.RecordUnknownBodyFields(r, body, model)
 	if len(body) == 0 {
 		// A request that carried no body is the framework's missing-field item
 		// for the body itself, not a syntax failure.

@@ -19,28 +19,110 @@ const maxBankBodyBytes = 1 << 20
 // decodeRequest decodes a JSON request body into target, recording the fields
 // the target does not declare, and returns the raw object so a missing-field
 // item can carry it as input the way the framework does.
-func decodeRequest(r *http.Request, target any) (map[string]any, error) {
+//
+// The second result is the member order of each entity_labels group, in
+// document order, for the config write's report: a Go decode hands back maps,
+// and the reference prints a rejected group's dict in the order the client
+// wrote it (see entitylabels.ShapeProblemsInOrder). It is nil when the body
+// carries no entity_labels.
+func decodeRequest(r *http.Request, target any) (map[string]any, [][]string, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBankBodyBytes))
 	if err != nil {
-		return nil, httpx.BodyDecodeFailure(err, body)
+		return nil, nil, httpx.BodyDecodeFailure(err, body)
 	}
 	if len(body) == 0 {
 		// A request that carried no body at all is the framework's item for a
 		// missing required field, not a syntax failure.
-		return nil, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, body)
+		return nil, nil, httpx.BodyDecodeFailure(httpx.ErrEmptyBody, body)
 	}
 	decoded, err := httpx.DecodeLax(body, target)
 	httpx.RecordUnknownBodyFields(r, decoded, target)
 	if err != nil {
-		return nil, httpx.BodyDecodeFailure(err, decoded)
+		return nil, nil, httpx.BodyDecodeFailure(err, decoded)
 	}
 	object := map[string]any{}
 	if len(decoded) > 0 {
 		if err := decodeRawObject(decoded, object); err != nil {
-			return nil, httpx.BodyDecodeFailure(err, decoded)
+			return nil, nil, httpx.BodyDecodeFailure(err, decoded)
 		}
 	}
-	return object, nil
+	return object, entityLabelsGroupOrder(body), nil
+}
+
+// entityLabelsGroupOrder reads the member order of every entity_labels group in
+// document order, from the raw request body. It returns nil when the body has no
+// entity_labels, and a nil entry for a group whose order could not be recovered.
+func entityLabelsGroupOrder(body []byte) [][]string {
+	var envelope struct {
+		Updates struct {
+			EntityLabels json.RawMessage `json:"entity_labels"`
+		} `json:"updates"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Updates.EntityLabels) == 0 {
+		return nil
+	}
+	raw := bytes.TrimSpace(envelope.Updates.EntityLabels)
+	// entity_labels is either the bare group list or an {"attributes": [...]}
+	// envelope; the reference accepts both.
+	if len(raw) > 0 && raw[0] == '{' {
+		var wrapper struct {
+			Attributes json.RawMessage `json:"attributes"`
+		}
+		if err := json.Unmarshal(raw, &wrapper); err != nil {
+			return nil
+		}
+		raw = bytes.TrimSpace(wrapper.Attributes)
+	}
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	return groupMemberOrders(raw)
+}
+
+// groupMemberOrders reads each top-level array element's member names in
+// document order. An element that is not an object yields a nil entry.
+func groupMemberOrders(array []byte) [][]string {
+	decoder := json.NewDecoder(bytes.NewReader(array))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('[') {
+		return nil
+	}
+	var orders [][]string
+	for decoder.More() {
+		var element json.RawMessage
+		if err := decoder.Decode(&element); err != nil {
+			return orders
+		}
+		orders = append(orders, objectMemberOrder(element))
+	}
+	return orders
+}
+
+// objectMemberOrder lists a JSON object's member names in document order, or nil
+// when the value is not an object.
+func objectMemberOrder(value []byte) []string {
+	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(value)))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil
+	}
+	var keys []string
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return keys
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return keys
+		}
+		var skipped json.RawMessage
+		if err := decoder.Decode(&skipped); err != nil {
+			return keys
+		}
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // decodeBankBody decodes a create-or-replace or partial-update body into req and

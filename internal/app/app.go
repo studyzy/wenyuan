@@ -399,6 +399,11 @@ func (a *App) Close() {
 	// An on-demand merge round is a background goroutine this process owns, so a
 	// clean shutdown waits for it rather than closing the database under it.
 	a.mergeTrigger.Wait()
+	// The model-request trace buffers rows and writes them in batches, so what is
+	// still buffered is written here, before the pool closes — the reference's
+	// flush_on_shutdown (engine/llm_trace.py:865-875). A deployment that skips it
+	// loses the trace rows of its last half second.
+	closeTraceRecorder(a.Store)
 	a.Tracer.Close()
 }
 

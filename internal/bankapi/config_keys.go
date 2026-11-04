@@ -177,7 +177,16 @@ func validateConfigurableFields(updates map[string]any) *httpx.HTTPError {
 	return nil
 }
 
-func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
+// configPatch converts a configuration override map into a storage patch.
+//
+// groupOrder optionally carries each entity_labels group's members in the order
+// the client wrote them, which the reference's validation report prints; nil
+// leaves that report's members sorted (see entitylabels.ShapeProblemsInOrder).
+func configPatch(updates map[string]any, groupOrder ...[][]string) (storage.BankPatch, *httpx.HTTPError) {
+	var order [][]string
+	if len(groupOrder) > 0 {
+		order = groupOrder[0]
+	}
 	// The policy check runs before everything else, matching the reference: an
 	// invalid memory_defense is a 422 regardless of what else the update names.
 	// It keys on the raw field name, as the reference's engine does: an
@@ -234,7 +243,7 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 			configValues[normalized] = value
 			continue
 		}
-		if err := validateConfigValue(normalized, raw); err != nil {
+		if err := validateConfigValue(normalized, raw, order); err != nil {
 			return storage.BankPatch{}, err
 		}
 		if normalized == "entity_labels" {
@@ -260,7 +269,14 @@ func configPatch(updates map[string]any) (storage.BankPatch, *httpx.HTTPError) {
 // validateConfigValue applies the field-specific checks the reference runs
 // after the base type check: a positive segment size, and a structural check
 // for the two fields whose shape decides whether the bank can ever extract.
-func validateConfigValue(key string, raw any) *httpx.HTTPError {
+//
+// groupOrder carries each entity_labels group's members in the order the client
+// wrote them, for the validation report's printed input; nil sorts them.
+func validateConfigValue(key string, raw any, groupOrder ...[][]string) *httpx.HTTPError {
+	var order [][]string
+	if len(groupOrder) > 0 {
+		order = groupOrder[0]
+	}
 	if strings.HasPrefix(key, "recall_budget_") {
 		if err := validateRecallBudget(key, raw); err != nil {
 			return err
@@ -284,7 +300,7 @@ func validateConfigValue(key string, raw any) *httpx.HTTPError {
 		// wraps the library's report verbatim), so its verdict comes first: a
 		// group carrying, say, a non-boolean `optional` is rejected there even
 		// though nothing downstream reads the member.
-		if report := entitylabels.ShapeProblems(raw); len(report) > 0 {
+		if report := entitylabels.ShapeProblemsInOrder(raw, order); len(report) > 0 {
 			return httpx.NewHTTPError(httpx.KindBadRequest,
 				"Invalid entity_labels format: "+strings.Join(report, "\n"))
 		}
@@ -948,10 +964,19 @@ func kindMatches(kind configValueKind, raw any) bool {
 }
 
 // normalizeConfigKey converts an environment-variable-form key to its internal
-// field form, leaving an already-internal key unchanged. It mirrors the
-// reference: strip the WENYUAN_API_ prefix, then lowercase.
+// field form, leaving an already-internal key unchanged. The reference strips
+// its HINDSIGHT_API_ prefix and lowercases (config.py:115-132); this service's
+// clients send the renamed WENYUAN_API_ spelling, so both prefixes are stripped
+// — a client carrying the reference's spelling over the wire stays accepted,
+// and neither spelling collides with an internal field name.
 func normalizeConfigKey(key string) string {
-	return strings.ToLower(strings.TrimPrefix(key, "WENYUAN_API_"))
+	for _, prefix := range []string{"WENYUAN_API_", "HINDSIGHT_API_"} {
+		if strings.HasPrefix(key, prefix) {
+			key = strings.TrimPrefix(key, prefix)
+			break
+		}
+	}
+	return strings.ToLower(key)
 }
 
 // configFieldSample renders a sample of the configurable fields the way the

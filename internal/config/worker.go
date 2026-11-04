@@ -83,9 +83,13 @@ func resolveWallTimeouts(lookup func(string) (string, bool)) map[string]time.Dur
 			key = spec.legacy
 		}
 		if value, ok := lookup(key); ok {
-			if seconds := intFromString(value); seconds > 0 {
-				out[spec.opType] = time.Duration(seconds) * time.Second
-			}
+			// The reference resolves `timeout > 0` to a ceiling and anything else
+			// — 0 included — to "unbounded" (`_wall_timeout_for`,
+			// worker/poller.py:167-169). An explicit 0 is therefore a real setting
+			// (it disables the limit), not a missing one; only a value that does
+			// not parse as an integer falls back to the default.
+			seconds := intFromString(value)
+			out[spec.opType] = time.Duration(seconds) * time.Second
 		}
 	}
 	return out

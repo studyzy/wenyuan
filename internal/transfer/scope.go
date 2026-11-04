@@ -143,12 +143,30 @@ func (h *Handlers) resolveImportSelection(r *http.Request, data []byte, mode str
 		return "", archive, nil
 	}
 
-	// A restore writes a whole bank, so its archive is the whole-bank archive.
+	// A restore writes a whole bank. The reference only touches the archive when
+	// it has to: `target = target_bank_id or read_bank_manifest(archive).source_bank_id`
+	// (engine/memory_engine.py:8229) is Python's short-circuit `or`, so a caller
+	// that names the target never reaches read_bank_manifest — and therefore never
+	// has its archive parsed, its archive_type checked (engine/transfer/importer.py:308-313)
+	// or its schema version validated. A bad archive then fails in the background
+	// task instead of at submission. Reproducing that is required: a documents
+	// archive, or bytes that are not a zip at all, is ACCEPTED with a 202 when
+	// target_bank_id is given, and only the manifest-less call is a 400.
 	archive, err := validateArchive(data, producedByBankExport)
 	if err != nil {
+		if target != "" {
+			// The target is already known, so the reference never reads the
+			// manifest and answers its 202 without validating anything.
+			return target, nil, nil
+		}
 		return "", nil, err
 	}
 	if target == "" {
+		// Only this path ran read_bank_manifest, so only this path sees the
+		// archive_type refusal (engine/transfer/importer.py:311).
+		if err := requireBankArchive(&archive.Manifest); err != nil {
+			return "", nil, err
+		}
 		target = archive.Manifest.SourceBankID
 	}
 	if target == "" {

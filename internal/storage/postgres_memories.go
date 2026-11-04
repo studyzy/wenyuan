@@ -852,10 +852,19 @@ func (s *PostgresStore) DeleteObservations(ctx context.Context, bankID, memoryID
 	// Submitted whether or not the sweep removed anything: the memory above was
 	// requeued, and this pass is what rebuilds its observations
 	// (memory_engine.py:12540-12565).
+	//
+	// The submit's error is NOT swallowed. The reference calls
+	// submit_async_consolidation bare here (memory_engine.py:12566), and it is
+	// that submit — not the sweep — which answers a bank that never existed:
+	// the sweep matches no rows, then the submit's own bank check raises
+	// `Bank '<id>' not found` as a 404. Swallowing it here turned exactly that
+	// answer into a misleading `{"deleted_count": 0}` 200.
 	if s.autoConsolidationFor(ctx, bankID) {
-		if op, _, err := s.EnqueueConsolidation(ctx, bankID); err == nil {
-			track.file(ctx, s, op.OperationID)
+		op, _, err := s.EnqueueConsolidation(ctx, bankID)
+		if err != nil {
+			return deleted, err
 		}
+		track.file(ctx, s, op.OperationID)
 	}
 	return deleted, nil
 }
@@ -910,6 +919,14 @@ func (s *PostgresStore) EnqueueConsolidation(ctx context.Context, bankID string,
 		// A scoped submit targets a subset of the bank, so it never deduplicates
 		// against a pass already queued — the caller asked for this run
 		// specifically. It is not conditional, so it does not take the bank lock.
+		//
+		// It still verifies the bank: the reference checks it on every submit,
+		// conditional or not, so an unknown bank is a clean not-found rather than
+		// the foreign-key failure the INSERT would raise
+		// (engine/memory_engine.py:23014-23021).
+		if err := s.requireBankExists(ctx, bankID); err != nil {
+			return Operation{}, false, err
+		}
 		op.Payload = map[string]any{"observation_scopes": observationScopes}
 		stored, err := s.PutOperation(ctx, op)
 		if err != nil {
@@ -1085,4 +1102,26 @@ var _ = strings.TrimSpace
 func pageBoundsInFilter(limitPlaceholder, offsetPlaceholder string) string {
 	return " AND " + limitPlaceholder + "::bigint IS NOT NULL AND " +
 		offsetPlaceholder + "::bigint IS NOT NULL"
+}
+
+// requireBankExists reports ErrBankNotFound when the bank is not in this
+// schema's banks table.
+//
+// It exists because the reference's submit path verifies the bank on every
+// asynchronous submit — conditional or not — and answers a clean 404 rather
+// than letting the INSERT fail its foreign key
+// (engine/memory_engine.py:23014-23021). Callers that insert without going
+// through enqueueDedupeByBank use it to reach the same answer.
+func (s *PostgresStore) requireBankExists(ctx context.Context, bankID string) error {
+	schema, schemaErr := s.schemaFor(ctx)
+	if schemaErr != nil {
+		return schemaErr
+	}
+	var present int
+	err := s.reader().QueryRowContext(ctx,
+		`SELECT 1 FROM `+quoteIdent(schema)+`.banks WHERE bank_id = $1`, bankID).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrBankNotFound
+	}
+	return err
 }

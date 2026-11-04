@@ -561,3 +561,60 @@ func TestScopeCapMeasuredAgainstTheTrueCount(t *testing.T) {
 		t.Fatalf("prompt does not report the true-count cap:\n%s", user)
 	}
 }
+
+// A pass reports the observations it actually wrote, so a caller can record
+// which observations one consolidation produced instead of guessing from a time
+// window. Created and updated observations both count; a deleted one does not,
+// because nothing was written for it.
+func TestConsolidatorReportsWrittenObservationIDs(t *testing.T) {
+	store := &stubStore{
+		facts: []Fact{{ID: "f1", Text: "Alice owns a Honda"}, {ID: "f2", Text: "Alice sold it"}},
+		observations: []Observation{
+			{ID: "o1", Text: "Alice owns a Honda", ProofCount: 1},
+			{ID: "o2", Text: "Alice wants a sedan", ProofCount: 1},
+		},
+	}
+	model := &stubProvider{
+		name: "openai",
+		response: provider.CompletionResult{Structured: map[string]any{
+			"creates": []any{map[string]any{"text": "Alice works late", "source_fact_ids": []any{"f2"}}},
+			"updates": []any{map[string]any{"observation_id": "o1", "text": "Alice sold her Honda", "source_fact_ids": []any{"f1"}}},
+			"deletes": []any{map[string]any{"observation_id": "o2"}},
+		}},
+	}
+	result, err := New(model, store).Run(context.Background(), "b1")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The stub's CreateObservation always answers "obs-new"; the update keeps
+	// the observation's own id. The deleted observation is not a write.
+	want := []string{"obs-new", "o1"}
+	if len(result.ObservationIDs) != len(want) {
+		t.Fatalf("ObservationIDs = %v, want %v", result.ObservationIDs, want)
+	}
+	for i := range want {
+		if result.ObservationIDs[i] != want[i] {
+			t.Fatalf("ObservationIDs = %v, want %v", result.ObservationIDs, want)
+		}
+	}
+	if result.Created != 1 || result.Updated != 1 || result.Deleted != 1 {
+		t.Fatalf("result = %+v, want one of each", result)
+	}
+}
+
+// Folding one scope's counts into a running total carries its written ids too,
+// so a multi-scope run reports every observation it wrote.
+func TestResultAddCarriesObservationIDs(t *testing.T) {
+	var total Result
+	total.add(Result{ObservationIDs: []string{"a", "b"}})
+	total.add(Result{ObservationIDs: []string{"b", "c"}})
+	want := []string{"a", "b", "c"}
+	if len(total.ObservationIDs) != len(want) {
+		t.Fatalf("ObservationIDs = %v, want %v", total.ObservationIDs, want)
+	}
+	for i := range want {
+		if total.ObservationIDs[i] != want[i] {
+			t.Fatalf("ObservationIDs = %v, want %v", total.ObservationIDs, want)
+		}
+	}
+}

@@ -58,6 +58,11 @@ func TestRestoreOperationDefaultsMissingTimestamps(t *testing.T) {
 func TestFullBankConsolidationIsNotDeduplicatedIntoAScopedOne(t *testing.T) {
 	store := NewMemoryStore("b1")
 	ctx := context.Background()
+	// The bank has to exist: every asynchronous submit verifies it, as the
+	// reference's submit path does (engine/memory_engine.py:23014-23021).
+	if _, err := store.CreateBank(ctx, Bank{BankID: "b1", Name: "b1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, deduped, err := store.EnqueueConsolidationScoped(ctx, "b1", [][]string{{"team:exec"}}); err != nil || deduped {
 		t.Fatalf("scoped submit: deduped = %v, err = %v", deduped, err)

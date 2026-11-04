@@ -59,9 +59,10 @@ func (s *Server) invokeAudited(ctx context.Context, name string, args map[string
 	}
 	payload, err := s.invoke(ctx, name, args)
 	entry.EndedAt = time.Now().UTC()
-	if err != nil {
-		entry.Error = err.Error()
-	} else {
+	// Only a successful tool result is recorded. A failure is left to the
+	// error the caller gets back: the reference's audit writer has no failure
+	// marker to carry it in (engine/audit.py:278-282).
+	if err == nil {
 		entry.Response = mcpAuditResponse(payload)
 	}
 	s.auditor.Record(context.WithoutCancel(ctx), entry)

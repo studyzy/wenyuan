@@ -123,7 +123,8 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	if len(requestedTypes) > 0 {
 		req.Types = keptTypes
 	}
-	if failure := ValidateRecall(req, requestBodyObject(body)); failure != nil {
+	echo := requestBodyObject(body)
+	if failure := validateRecallFields(req, echo.Fields, echo.Value); failure != nil {
 		httpx.WriteValidationFailure(w, failure)
 		return
 	}

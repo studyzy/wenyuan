@@ -530,13 +530,22 @@ func metadataHasString(metadata map[string]any, key, want string) bool {
 
 // metadataHoldsID reports whether a metadata array holds the identifier.
 func metadataHoldsID(metadata map[string]any, key, id string) bool {
-	values, ok := metadata[key].([]any)
-	if !ok {
+	// A metadata object written by the store itself (the trace recorder's
+	// memory_ids patch) holds a []string; one decoded from jsonb holds []any. Both
+	// are the same JSON array, so both are read.
+	switch values := metadata[key].(type) {
+	case []string:
+		for _, value := range values {
+			if value == id {
+				return true
+			}
+		}
 		return false
-	}
-	for _, value := range values {
-		if text, ok := value.(string); ok && text == id {
-			return true
+	case []any:
+		for _, value := range values {
+			if text, ok := value.(string); ok && text == id {
+				return true
+			}
 		}
 	}
 	return false
@@ -556,6 +565,34 @@ func (s *MemoryStore) RecordLLMRequest(ctx context.Context, request LLMRequest) 
 		request.StartedAt = time.Now().UTC()
 	}
 	s.llmRequests = append(s.llmRequests, request)
+	return nil
+}
+
+// PatchLLMRequestMetadata merges patch into the metadata of every row sharing a
+// trace id, the in-memory form of the reference's `metadata || $3` update.
+func (s *MemoryStore) PatchLLMRequestMetadata(ctx context.Context, bankID, traceID string, patch map[string]any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if traceID == "" || len(patch) == 0 {
+		return nil
+	}
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	for i := range s.llmRequests {
+		row := &s.llmRequests[i]
+		if row.TraceID != traceID || row.BankID != bankID {
+			continue
+		}
+		merged := make(map[string]any, len(row.Metadata)+len(patch))
+		for key, value := range row.Metadata {
+			merged[key] = value
+		}
+		for key, value := range patch {
+			merged[key] = value
+		}
+		row.Metadata = merged
+	}
 	return nil
 }
 

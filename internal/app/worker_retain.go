@@ -78,6 +78,10 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 		// finished retain before.
 		"progress": retainProgressSnapshot(countUnitIDs(outcome), time.Now().UTC()),
 	})
+	// Map the created facts onto this retain's trace, so `GET .../llm-requests
+	// ?memory_id=` finds the calls that produced them — the reference's
+	// attach_memory_ids(created=...) after a retain (engine/memory_engine.py:8026-8029).
+	p.attachRetainMemoryIDs(ctx, outcome)
 	return nil
 }
 
@@ -88,6 +92,21 @@ func (p archiveProcessor) applyRetain(ctx context.Context, op storage.Operation)
 // comes from the write's mode — a forced re-extract is a reprocess, then an
 // append, then a retain — and the event lands on the operation that ran it, so
 // a change without an operation leaves none.
+// attachRetainMemoryIDs hands the units this retain created to the trace
+// recorder, so `GET .../llm-requests?memory_id=` finds the calls that produced
+// them. The reference patches the mapping on a background task
+// (engine/memory_engine.py:8025-8029), so the retain never waits on it.
+func (p archiveProcessor) attachRetainMemoryIDs(ctx context.Context, outcome storage.RetainOutcome) {
+	ids := make([]string, 0)
+	for _, group := range outcome.ItemUnitIDs {
+		ids = append(ids, group...)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	traceRecorder(p.store).attachMemoryIDs(ctx, ids, nil)
+}
+
 func (p archiveProcessor) recordRetainEvent(ctx context.Context, op storage.Operation, req storage.RetainRequest, outcome storage.RetainOutcome) {
 	for index, item := range req.Items {
 		if item.DocumentID == "" || index >= len(outcome.ItemUnitIDs) {
@@ -154,10 +173,12 @@ func classifyRetainFailure(err error) error {
 	case errors.Is(err, storage.ErrDocumentConflict):
 		// An append that lost its race wrote nothing, so "the document moved,
 		// read it again" is a retry rather than a verdict on the content. It is
-		// deferred without consuming the attempt budget, because a redone
-		// append is cheap — the document's existing chunks still match by hash
+		// deferred on the reference's own append-conflict ladder — jittered
+		// doubling from 2s to a 300s ceiling, with the deferral count recorded
+		// on the operation (worker/poller.py:62-71,1133-1160) — because a redone
+		// append is cheap: the document's existing chunks still match by hash
 		// and only this submission's new ones are extracted.
-		return worker.Defer(err)
+		return worker.DeferAppendConflict(err)
 	case errors.Is(err, storage.ErrWritesUnavailable), errors.Is(err, storage.ErrReadShed):
 		// The store shedding load is backpressure, which the consumer already
 		// treats as a deferral; returning it unchanged keeps that classification

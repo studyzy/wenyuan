@@ -40,7 +40,13 @@ func TestConsumerAuditsProcessedOperations(t *testing.T) {
 	}
 }
 
-// A failing operation records the failure text.
+// A failing operation is recorded, and its row carries no failure marker: the
+// reference's writer has none, so metadata holds only what the caller supplied
+// (engine/audit.py:224-243, :278-282).
+//
+// Falsifier: give audit.Entry an Error field again (internal/audit/audit.go) and
+// set it from the failure (internal/worker/consumer.go) and the metadata
+// assertion below fails.
 func TestConsumerAuditsFailedOperations(t *testing.T) {
 	store := newStore(t)
 	queue(t, store, "op-1", "retain")
@@ -63,8 +69,13 @@ func TestConsumerAuditsFailedOperations(t *testing.T) {
 	if len(page.Entries) != 1 {
 		t.Fatalf("expected one audited row, got %d: %+v", len(page.Entries), page.Entries)
 	}
-	if text, _ := page.Entries[0].Metadata["error"].(string); text == "" {
-		t.Fatalf("failure text not recorded: %+v", page.Entries[0].Metadata)
+	if metadata := page.Entries[0].Metadata; metadata != nil {
+		if _, present := metadata["error"]; present {
+			t.Fatalf("failure row carries an error key the reference never writes: %+v", metadata)
+		}
+		if len(metadata) != 0 {
+			t.Fatalf("failure row metadata = %+v, want empty", metadata)
+		}
 	}
 }
 

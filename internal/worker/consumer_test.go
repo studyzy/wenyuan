@@ -462,12 +462,119 @@ func TestWallCeilingBoundsATask(t *testing.T) {
 		WallTimeouts: map[string]time.Duration{storage.OperationTypeTransferImport: 10 * time.Millisecond},
 	})
 	consumer.handle(ctx, op)
+}
+
+// A task that blows its wall ceiling is failed outright with the reference's own
+// explanation, not retried: it is wedged, not flaky (poller.py:1313-1322). This
+// also proves the ceiling is enforced on its own — the lease here is an hour, so a
+// ceiling min'd with it would never fire inside the test.
+//
+// Falsification: restore `budget = min(lease, ceiling)` and the test FAILs (the
+// hour-long lease wins and the task is never interrupted).
+func TestWallCeilingFailsTheTaskWithTheReferenceExplanation(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeRetain)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, blockingProcessor{}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: time.Hour, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now:          func() time.Time { return time.Now().UTC() },
+		Sleep:        func(time.Duration) {},
+		WallTimeouts: map[string]time.Duration{storage.OperationTypeRetain: 20 * time.Millisecond},
+	})
+	consumer.handle(ctx, op)
 	after, err := store.GetOperation(ctx, "bank-a", "op-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.RetryCount != 1 {
-		t.Fatalf("wal-capped task must be retried once, got %+v", after)
+	if after.Status != storage.StatusFailed {
+		t.Fatalf("status = %s, want failed (a wedge is terminal, not retryable)", after.Status)
+	}
+	if after.RetryCount != 0 {
+		t.Fatalf("retry count = %d, want 0 (the ceiling spends no attempt)", after.RetryCount)
+	}
+	want := "Task exceeded the 0s wall-clock limit for 'retain' (stage=unknown) and was cancelled. " +
+		"Raise WENYUAN_API_RETAIN_WALL_TIMEOUT if this is a legitimately long operation, or set it to 0 to disable the limit."
+	if after.Error != want {
+		t.Fatalf("error =\n  %q\nwant\n  %q", after.Error, want)
+	}
+}
+
+// A configured wall ceiling is enforced alone, never min'd with the lease. The
+// reference has no lease in this position, and its table (3600s retain / 7200s
+// consolidation / 300s refresh) is what an operator configures — a 300s lease
+// default must not silently reduce every ceiling to 300s, which is what made the
+// reference's whole ceiling table unreachable here.
+//
+// Falsification: restore `budget := lease; if ceiling < budget { budget = ceiling }`
+// and this FAILs — the 20ms lease wins and the work is interrupted.
+func TestWallCeilingIsNotCappedByTheLease(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeRetain)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, ProcessorFunc(func(context.Context, storage.Operation) error {
+		// Longer than the lease, far shorter than the ceiling.
+		time.Sleep(80 * time.Millisecond)
+		return nil
+	}), Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: 20 * time.Millisecond, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now:          func() time.Time { return time.Now().UTC() },
+		Sleep:        func(time.Duration) {},
+		WallTimeouts: map[string]time.Duration{storage.OperationTypeRetain: 10 * time.Second},
+	})
+	// A lease-capped task dies at ~20ms with `context deadline exceeded`, so the
+	// error text is what tells the two apart — a completed task carries none.
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != storage.StatusCompleted || after.Error != "" {
+		t.Fatalf("status = %s error = %q, want completed with no error: the 10s ceiling, not the 20ms "+
+			"lease, bounds the work (%+v)", after.Status, after.Error, after)
+	}
+}
+
+// An unmapped operation type has no ceiling of its own, so the lease still bounds
+// how long a dead consumer holds its slot — the reference leaves an unmapped type
+// unbounded, and this service adds the lease as that backstop.
+func TestUnmappedOperationTypeIsBoundedByTheLease(t *testing.T) {
+	store := newStore(t)
+	queue(t, store, "op-1", storage.OperationTypeTransferImport)
+	ctx := context.Background()
+	op, err := store.ClaimNextOperation(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := New(store, blockingProcessor{}, Config{
+		WorkerID: "worker-1", MaxRetries: 3, InitialBackoff: time.Millisecond,
+		MaxBackoff: time.Millisecond, Lease: 20 * time.Millisecond, Concurrency: 1,
+		PollInterval: time.Millisecond, Logger: quietLogger(),
+		Now:   func() time.Time { return time.Now().UTC() },
+		Sleep: func(time.Duration) {},
+		// No ceiling for transfer_import.
+		WallTimeouts: map[string]time.Duration{storage.OperationTypeRetain: time.Hour},
+	})
+	consumer.handle(ctx, op)
+	after, err := store.GetOperation(ctx, "bank-a", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The lease fires, so the operation is retried (the lease is not a ceiling:
+	// it bounds the slot, not the work).
+	if after.Status != storage.StatusPending || after.RetryCount != 1 {
+		t.Fatalf("a lease-bounded task must be retried once: %+v", after)
 	}
 }
 

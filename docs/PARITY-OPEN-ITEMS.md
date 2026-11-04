@@ -435,3 +435,46 @@
 > （此前该 story 的 `test_a_burst_of_requests_produces_one_pass` 失败：5 个并发请求产生 3 次运行）；
 > 新增真库用例 `TestPostgresConsolidationEnqueueIsAtomicUnderConcurrency`（5 个并发入队断言恰好一行
 > 非终态巩固；去掉锁即失败：“2 callers inserted, want exactly one”）。
+
+## 10. 第五轮全量重审遗留（2026-11-04）
+
+> 来源：`docs/API-PARITY-CHECKLIST.md` 第五轮（101 条 API + 6 组后台任务全部有结论）。
+> 本节只收**已定性但本轮不修**的项，每条给出参考证据、本服务落点与建议方向。
+> 完整体检记录见 `docs/API-AUDIT-FINDINGS.md` 的 `## 第五轮*` 各节。
+
+### 10.1 `files/retain` 的操作拆分（结构性）
+
+- **现象**：参考 worker 把一次文件转换拆成**两条** operation —— 先 `file_convert_retain`，转换完成后再提交一条独立的 `retain` op。本服务 `internal/worker/consumer.go:828` 把两种类型放在同一个 case 里，一条 op 走完全程。
+- **可观测后果**：`GET .../operations` 在参考侧 `total:2`、本服务 `total:1`。`?type=file_convert_retain` 过滤两侧都能命中（本服务已有 `internal/memoryops/file_retain_queue.go`），差异只在操作条目数。
+- **不影响**：`POST .../files/retain` 的响应体与语义（参考 :10621）。
+- **参考证据**：`engine/memory_engine.py:4092-4200`。
+- **建议方向**：转换阶段完成时提交独立 `retain` op。需要 storage + worker 协同改造，收益低于风险，本轮按最小 diff 未做。
+
+### 10.2 `/metrics` 的千 bank 成本
+
+- **现象**：`internal/app/metrics.go:161-181` 在每次 scrape 时**逐 bank** 调 `BankStats` 汇总 consolidation 两态。bank 数上千后，2s 超时会让系列**静默返回空**——指标表现为「突然消失」而不是「变慢」。
+- **参考做法**：`metrics.py:1209` 的 `_backlog_refresh_loop` 用 30s 缓存循环产出，scrape 只读缓存。
+- **备注**：缓存本身**不要求复刻**（`metrics_backlog_enabled` 默认 false，且指标名/标签/语义已一致，只是数值新鲜度不同——见 findings 中 `## 第五轮 bg-worker` 机制 8）。本条关注的是**超时静默丢系列**这个失败模式。
+- **建议方向**：改成一次 `GROUP BY bank_id` 聚合，或按参考加缓存循环。
+
+### 10.3 `graph.maintenance` 的执行位置
+
+- **现象**：参考是 **operation 队列里的一个任务类型**，由写/删路径 enqueue（`engine/memory_engine.py:7296`、`:11455`、`:11797-11805`），worker 认领执行（`engine/graph_maintenance.py:220-360`）。本服务改成维护循环里的定时 drain（`internal/app/maintenance_jobs.go` 的 `graph.maintenance`）。
+- **触发条件两侧一致**（写/删时入队），偏离的只是执行位置。
+- **可观测差异**：
+  1. 本服务的图维护**不产生 operation 记录** ⇒ 不出现在 `/operations` 列表、不可取消、不参与 worker 并发控制
+  2. 参考的 240s wall budget 与后继 hand-off（`engine/graph_maintenance.py:220-300`）本服务没有
+- **同族记录**：drain 侧原先缺 `FOR UPDATE SKIP LOCKED`（多进程会互等），**已修**（`internal/storage/postgres_maintenance_graph.go` 两处）。
+- **建议方向**：若要收敛到参考，需把 drain 提升为 operation 类型。属结构性改造，本轮判为可接受偏差。
+
+### 10.4 `reflect` 在当前部署模型上的空答案（部署侧，非复刻缺口）
+
+- **现象**：`POST .../reflect` 在本机 `hai/deepseek-flash` 端点上稳定 500 `reflection produced no answer`。
+- **已排除的代码因素**（三处逐字节核对）：
+  - tool-loop 系统提示词：三档 budget 全部零 diff（11627 / 11518 / 11518）
+  - done 请求提示词：1157 字节零 diff
+  - done 工具 schema：两侧同为 `required: ["answer", "answer_found"]`
+  - `tool_choice`：参考 `LLMToolChoice.named("done")` 与本服务 `toWireToolChoice` 产出同一 JSON
+- **根因**：诊断日志显示模型对强制 `done` 返回 `args="{}"`（空参数）。参考在同样情况下**也抛 `ReflectNoAnswerError`**（`engine/agent.py:2576-2590`，注释明确：占位符非空会让下游把空读成真答案并覆盖可用内容，#2959），两侧行为一致。
+- **建议方向**：部署侧换用能可靠填充 done schema 的模型，或缩短工具会话上下文。**不要改代码兜底**——那会偏离参考的「空答案必须失败」语义。
+- **同轮已修**：`buildFinalPrompt` 曾缺 bank 身份段（参考的 standalone 合成以 `## Memory Bank Context` 开头），已修复并逐字节验证。

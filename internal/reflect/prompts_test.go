@@ -119,7 +119,7 @@ func TestFinalSystemPromptCarriesTheSynthesisRole(t *testing.T) {
 // The answering user message carries the evidence, the question and the
 // instructions, in that order, and states the length target when there is one.
 func TestFinalPromptCarriesEvidenceQuestionAndInstructions(t *testing.T) {
-	prompt := buildFinalPrompt("where does Alice live?", "f1 Alice moved to Berlin\n", 300)
+	prompt := buildFinalPrompt(bankProfile{}, "where does Alice live?", "f1 Alice moved to Berlin\n", 300)
 
 	evidence := strings.Index(prompt, "## Retrieved Data (synthesize and reason from this data)")
 	question := strings.Index(prompt, "## Question\nwhere does Alice live?")
@@ -134,7 +134,7 @@ func TestFinalPromptCarriesEvidenceQuestionAndInstructions(t *testing.T) {
 	if !strings.Contains(prompt, "f1 Alice moved to Berlin") {
 		t.Fatal("the evidence must reach the answering call")
 	}
-	withoutEvidence := buildFinalPrompt("q", "", 0)
+	withoutEvidence := buildFinalPrompt(bankProfile{}, "q", "", 0)
 	if !strings.Contains(withoutEvidence, "## Retrieved Data\nNo data was retrieved.") {
 		t.Fatal("an empty evidence set must say so rather than render nothing")
 	}
@@ -355,5 +355,64 @@ func TestDirectiveRenderingMatchesTheReferenceTemplate(t *testing.T) {
 	unnamed := directivesSection([]Directive{{Content: "Be terse."}})
 	if !strings.Contains(unnamed, "\n- Be terse.\n") {
 		t.Fatalf("an unnamed rule must render as bare content: %q", unnamed)
+	}
+}
+
+// TestFinalPromptOpensWithTheBankIdentity pins the head of the answering user
+// message to the reference's _bank_identity_section layout
+// (hindsight_api/engine/reflect/prompts.py:861-884): the "## Memory Bank Context"
+// heading with the name, then the mission and the graded traits when the bank
+// sets them. Our prompt used to open straight at "## Retrieved Data", which left
+// the synthesis call answering with no bank identity at all — the reference puts
+// it on the user message precisely because its final system prompt carries none.
+func TestFinalPromptOpensWithTheBankIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile bankProfile
+		want    []string
+	}{
+		{
+			name:    "a named bank always states its name",
+			profile: bankProfile{Name: "b"},
+			want:    []string{"## Memory Bank Context\nName: b"},
+		},
+		{
+			name:    "an unnamed bank falls back to Assistant",
+			profile: bankProfile{},
+			want:    []string{"## Memory Bank Context\nName: Assistant"},
+		},
+		{
+			name:    "a mission rides under the name",
+			profile: bankProfile{Name: "b", Mission: "track the Quokka project"},
+			want:    []string{"## Memory Bank Context\nName: b", "Mission: track the Quokka project"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt := buildFinalPrompt(tt.profile, "q", "", 0)
+			if !strings.HasPrefix(prompt, tt.want[0]) {
+				t.Fatalf("the answering prompt must open with the bank identity, got:\n%s", prompt)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("the answering prompt must carry %q, got:\n%s", want, prompt)
+				}
+			}
+			identity := strings.Index(prompt, "## Memory Bank Context")
+			retrieved := strings.Index(prompt, "## Retrieved Data")
+			if identity > retrieved {
+				t.Fatalf("the identity must precede the retrieved data, got:\n%s", prompt)
+			}
+		})
+	}
+}
+
+// TestFinalPromptSeparatesTheRetrievedDataHeading pins the blank line the
+// reference's block renderer leaves between the heading and the first block
+// (_render_history_block prefixes every block with a newline).
+func TestFinalPromptSeparatesTheRetrievedDataHeading(t *testing.T) {
+	prompt := buildFinalPrompt(bankProfile{Name: "b"}, "q", "### From recall:\n```json\n[]\n```", 0)
+	if !strings.Contains(prompt, "\n## Retrieved Data (synthesize and reason from this data)\n\n### From recall:") {
+		t.Fatalf("the heading must be separated from the first block by a blank line, got:\n%q", prompt)
 	}
 }

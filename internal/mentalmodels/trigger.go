@@ -318,14 +318,16 @@ func orderedObject(order []string, stored map[string]any) OrderedObject {
 }
 
 // reflectResponseOrder is the member order a mental model's stored
-// reflect_response reaches the wire in. The reference's payload is an
-// insertion-ordered dict — text, outcome, based_on, then mental_models, with
-// reflect_skipped landing between them when the refresh read nothing — and the
-// jsonb column it is stored in carries no order back, so the read path restores
-// it here. Any member this list does not name follows, in the stored map's own
-// (sorted) order, so nothing is dropped.
+// reflect_response reaches the wire in. The reference builds its payload as an
+// insertion-ordered dict — `text`, `based_on`, `mental_models` — and then adds
+// `reflect_skipped` (and `delta_gate`) AFTER that base dict, so a refresh that
+// read nothing lists `mental_models` before `reflect_skipped`
+// (memory_engine.py:18439-18447). `outcome` is this service's own first key and
+// stays where it has always been. The jsonb column carries no order back, so
+// the read path restores it here; any member this list does not name follows,
+// in the stored map's own (sorted) order, so nothing is dropped.
 var reflectResponseOrder = []string{
-	"text", "outcome", "based_on", "reflect_skipped", "mental_models",
+	"text", "outcome", "based_on", "mental_models", "reflect_skipped",
 }
 
 // basedOnOrder is the order the fact types inside based_on are listed in: the
