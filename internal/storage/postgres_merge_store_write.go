@@ -387,9 +387,15 @@ func (s *PostgresMergeStore) ClearMemberProject(ctx context.Context, teamID, pro
 // because merge_state is keyed by the (project, member) pair; a project whose
 // members list is empty has nothing to merge and needs no flag.
 func (s *PostgresMergeStore) RequestRebuild(ctx context.Context, teamID, projectID string) error {
+	// The cursors go back to the beginning. A rebuild is a replay of the members'
+	// banks from the start, and a replay that continues from the old cursor never
+	// revisits the facts already behind it — which is exactly what a rebuild
+	// exists to reconsider.
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE `+adminTable("merge_state")+`
-		SET rebuild_requested = true
+		SET rebuild_requested = true,
+		    cursor_updated_at = '-infinity',
+		    cursor_unit_id = '00000000-0000-0000-0000-000000000000'::uuid
 		WHERE team_tenant_id = $1 AND project_id = $2`, teamID, projectID)
 	return err
 }

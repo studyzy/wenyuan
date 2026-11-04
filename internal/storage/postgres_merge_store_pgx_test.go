@@ -527,10 +527,17 @@ func TestRebuildReadsTheWholeBank(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("FinishMergeStanza: %v", err)
 	}
-	// Ask for a rebuild: the next round must read the facts that are now behind
-	// the cursor, not just anything newer.
+	// Ask for a rebuild and rewind the cursors to the beginning, which is what a
+	// rebuild from scratch means: a segmented rebuild continues from the cursor,
+	// so replaying the whole bank requires the cursor at its start.
 	if err := f.store.RequestRebuild(context.Background(), f.teamID, f.projectID); err != nil {
 		t.Fatalf("RequestRebuild: %v", err)
+	}
+	if _, err := f.db.ExecContext(context.Background(), `
+		UPDATE `+adminTable("merge_state")+`
+		SET cursor_updated_at = '-infinity', cursor_unit_id = '00000000-0000-0000-0000-000000000000'::uuid
+		WHERE team_tenant_id = $1 AND project_id = $2`, f.teamID, f.projectID); err != nil {
+		t.Fatalf("rewind cursors: %v", err)
 	}
 	var seenA, seenB []string
 	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, mergeRoundOpts(100, time.Minute),

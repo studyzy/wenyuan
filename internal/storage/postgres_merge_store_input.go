@@ -60,21 +60,25 @@ func (s *PostgresMergeStore) loadMemberInput(
 	var statement string
 	var args []any
 	if member.State.RebuildRequested {
-		// A rebuild reads the member's whole bank — that is what makes it a
-		// rebuild rather than an incremental round. It is still bounded by the
-		// batch, because the round feeds all of it to one model call: a member
-		// holding tens of thousands of facts would otherwise build a prompt the
-		// model cannot accept, and the rebuild would fail every round forever.
-		// The cursor the round advances to is the last fact read, so the next
-		// round continues where this one stopped, and the rebuild completes over
-		// several rounds instead of in one.
+		// A rebuild replays the member's bank from the cursor onward, in batches
+		// of `limit`, and the round advances the cursor to the last fact it read.
+		// Reading from the beginning every round would be an infinite loop: the
+		// batch would be the same oldest facts, they are already in the team bank,
+		// so nothing is written, so the cursor never moves, so the next round reads
+		// them again. "Rebuild" means the replay reaches the end of the bank, not
+		// that each round starts at the beginning.
+		cursor := CursorOf(member.State)
 		statement = `
 			SELECT id::text, text, fact_type, updated_at
 			FROM ` + qualified + `.memory_units
 			WHERE bank_id = $1 AND fact_type = ANY($2)
+			  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
 			ORDER BY updated_at, id
-			LIMIT $3`
-		args = []any{memberBankID(member), inputTypes, limit}
+			LIMIT $5`
+		args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, zeroUUID, limit}
+		if !cursor.Before() {
+			args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, cursor.UnitID, limit}
+		}
 	} else {
 		cursor := CursorOf(member.State)
 		statement = `

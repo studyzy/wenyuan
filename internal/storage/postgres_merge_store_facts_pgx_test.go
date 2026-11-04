@@ -142,3 +142,85 @@ func TestMergeStoreWritesTeamFactsUnderTheirOwnKind(t *testing.T) {
 		t.Fatalf("team fact stored as %q, want experience", got)
 	}
 }
+
+// TestRebuildContinuesFromTheCursor is the loop that made a large project look
+// empty: a segmented rebuild that reads from the beginning every round always
+// reads the same oldest batch, those facts are already in the team bank, nothing
+// is written, and the cursor never moves. "Rebuild" means the replay reaches the
+// end of the bank, not that every round restarts at the beginning.
+func TestRebuildContinuesFromTheCursor(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	first := f.writeMemberFact(t, f.memberA, "the oldest fact")
+	// The second fact is newer than the cursor the first round will leave behind.
+	time.Sleep(10 * time.Millisecond)
+	second := f.writeMemberFact(t, f.memberA, "a newer fact")
+
+	// The cursor the first round leaves: the oldest fact's own timestamp.
+	var firstAt time.Time
+	if err := f.db.QueryRowContext(context.Background(),
+		"SELECT updated_at FROM "+quoteIdent(f.memberA)+".memory_units WHERE id = $1::uuid",
+		first).Scan(&firstAt); err != nil {
+		t.Fatalf("read first fact: %v", err)
+	}
+	// A rebuild that already replayed the first fact.
+	var stamp time.Time
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
+		mergeRoundOpts(1, time.Minute), func(stanza MergeStanza) error {
+			stamp = stanza.(*mergeStanza).ClaimStamp()
+			return nil
+		}); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	if err := f.store.FinishMergeStanza(context.Background(), FinishMergeRequest{
+		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
+		Replace: MergeReplaceResult{},
+		Members: []string{f.memberA, f.memberB},
+		Cursors: map[string]MergeCursor{
+			f.memberA: {UpdatedAt: firstAt, UnitID: first},
+		},
+		Rebuild: true, RebuildDone: false,
+	}); err != nil {
+		t.Fatalf("FinishMergeStanza: %v", err)
+	}
+	// Set the flag without rewinding: a rebuild in progress continues from wherever
+	// its cursor stands, which is what RequestRebuild's rewind is for a rebuild the
+	// operator starts from scratch.
+	if _, err := f.db.ExecContext(context.Background(),
+		"UPDATE "+adminTable("merge_state")+" SET rebuild_requested = true WHERE team_tenant_id = $1 AND project_id = $2",
+		f.teamID, f.projectID); err != nil {
+		t.Fatalf("set rebuild flag: %v", err)
+	}
+
+	// The next round must read past the first fact, not restart at it.
+	var seen []string
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
+		mergeRoundOpts(10, time.Minute), func(stanza MergeStanza) error {
+			for _, member := range stanza.Input().Members {
+				if member.Member.TenantID != f.memberA {
+					continue
+				}
+				for _, fact := range member.Fresh {
+					seen = append(seen, fact.UnitID)
+				}
+			}
+			return nil
+		}); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	for _, id := range seen {
+		if id == first {
+			t.Fatal("the rebuild restarted at the oldest fact; it would never advance")
+		}
+	}
+	found := false
+	for _, id := range seen {
+		if id == second {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the rebuild did not read past the cursor: %v", seen)
+	}
+}
