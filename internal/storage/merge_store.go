@@ -166,8 +166,15 @@ type FinishMergeRequest struct {
 	// A member absent from the map keeps its cursor, which is what a member whose
 	// input this round did not reach must do.
 	Cursors map[string]MergeCursor
-	// Rebuild clears rebuild_requested when the round was one.
+	// Rebuild reports the round replays the members' facts from the beginning
+	// rather than reading past a cursor, so every team row must be reconciled
+	// against what the members hold now.
 	Rebuild bool
+	// RebuildDone clears rebuild_requested. A rebuild that spans several rounds
+	// must keep the flag: clearing it on the first round turns the rest into
+	// incremental rounds, which resume at the cursor and never replay the
+	// remainder of the members' banks.
+	RebuildDone bool
 	// UnmanagedFacts counts the team bank's facts no round wrote. A positive
 	// count makes the write sweep them, of every merged kind, before inserting —
 	// which is what keeps a hand-written fact from surviving because the sweep

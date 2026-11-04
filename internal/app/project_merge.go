@@ -146,8 +146,15 @@ type roundPlan struct {
 	fresh []projectmerge.MemberFact
 	// cursor maps each member to the position its consumed facts reach.
 	cursor map[string]storage.MergeCursor
-	// rebuild reports the round recomputes the whole project.
+	// rebuild reports the round acts as a rebuild rather than an incremental
+	// round: it replays the members' facts from the beginning.
 	rebuild bool
+	// rebuildDone reports the replay reached the end of every member's bank, so
+	// the flag can be cleared. A rebuild over more facts than one batch spans
+	// takes several rounds, and clearing the flag on the first would leave the
+	// remainder unread — the segment boundary is what a partial replay cannot
+	// represent, because a later incremental round resumes at the cursor.
+	rebuildDone bool
 }
 
 // planRound decides what this round does, without calling the model.
@@ -208,6 +215,17 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 	plan.merge = len(plan.fresh) > 0 || rebuild
 	if !plan.merge {
 		return plan, nil
+	}
+	// A rebuild completes only when no member filled its batch: a member whose
+	// read hit the batch limit may still hold facts the next round must replay.
+	plan.rebuildDone = true
+	for _, member := range input.Members {
+		if !member.BankExists {
+			continue
+		}
+		if len(member.Fresh) >= cfg.ProjectMergeBatchSize {
+			plan.rebuildDone = false
+		}
 	}
 	// The cursor advances to the last consumed (updated_at, id) per member, so a
 	// fact not reached this round is read next round rather than skipped.
@@ -271,12 +289,19 @@ func buildFinishRequest(
 	for _, fact := range plan.present {
 		existing[fact.MergeKey] = true
 	}
-	// A rebuild recomputes the bank from what the members hold now, so every
-	// previous row is removed up front and re-inserted only if a member still
-	// contributes it. An incremental round removes nothing on this basis: the
-	// pass is additive, so a fact no member restates stays where it is.
+	// A rebuild reconciles the bank against what the members hold now, so the
+	// previous rows are removed and re-inserted only for facts a member still
+	// contributes. An incremental round removes nothing on this basis: the pass is
+	// additive, so a fact no member restates stays where it is.
+	//
+	// The removal is computed only on the round that completes the rebuild, and
+	// only over the rows this round actually compared against: plan.present is
+	// bounded by the batch, so rows older than that window are never candidates.
+	// A rebuild spanning several rounds sees one batch of the members' banks at a
+	// time, so removing every row a batch does not reproduce would delete the
+	// content of the batches not yet reached.
 	remove := make([]storage.TeamFactRow, 0)
-	if plan.rebuild {
+	if plan.rebuild && plan.rebuildDone {
 		for _, fact := range plan.present {
 			remove = append(remove, storage.TeamFactRow{
 				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
@@ -332,6 +357,7 @@ func buildFinishRequest(
 		},
 		Cursors:        plan.cursor,
 		Rebuild:        plan.rebuild,
+		RebuildDone:    plan.rebuildDone,
 		UnmanagedFacts: input.UnmanagedFacts,
 	}
 	for _, member := range input.Members {

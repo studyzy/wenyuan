@@ -315,7 +315,7 @@ func (s *PostgresMergeStore) saveStates(ctx context.Context, tx Tx, req FinishMe
 			    last_error = NULL, fail_count = 0, merging_since = NULL,
 			    rebuild_requested = CASE WHEN $7 THEN false ELSE rebuild_requested END
 			WHERE team_tenant_id = $1 AND project_id = $2 AND tenant_id = $3`,
-			req.TeamID, req.ProjectID, member, cursor.UpdatedAt, unitID, now, req.Rebuild); err != nil {
+			req.TeamID, req.ProjectID, member, cursor.UpdatedAt, unitID, now, req.RebuildDone); err != nil {
 			return err
 		}
 	}

@@ -181,7 +181,7 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	project.Members = members
 
 	input := MergeStanzaInput{Project: *project}
-	input.Previous, err = s.loadPreviousTx(ctx, project)
+	input.Previous, err = s.loadPreviousTx(ctx, project, opts.Batch)
 	if err != nil {
 		return false, err
 	}
@@ -359,8 +359,14 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 	return states, rows.Err()
 }
 
-// loadPreviousTx reads the team bank's managed facts.
-func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeProject) ([]TeamFactRow, error) {
+// loadPreviousTx reads the team bank's managed facts the round compares against.
+//
+// The read is bounded by the round's batch rather than the bank's size: the team
+// bank grows without limit as members contribute, and the whole of it cannot fit
+// in one prompt. The newest facts are the ones a new contribution most plausibly
+// repeats, so the bound takes the tail — the ordering is by creation, which is
+// the order facts entered the bank.
+func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeProject, limit int) ([]TeamFactRow, error) {
 	teamCtx, err := WithSchema(ctx, project.TeamSchema)
 	if err != nil {
 		return nil, err
@@ -370,7 +376,8 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, project *MergeP
 		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type
 		FROM `+qualified+`.memory_units
 		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NOT NULL
-		ORDER BY created_at, id`, project.BankID, mergedFactTypes)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`, project.BankID, mergedFactTypes, limit)
 	if err != nil {
 		return nil, err
 	}

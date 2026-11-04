@@ -675,3 +675,57 @@ func TestProjectMergeDoesNotCompress(t *testing.T) {
 		t.Fatalf("labelled fact text = %q, want the member's own text", labelled.Text)
 	}
 }
+
+// TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch pins the segmented rebuild: a
+// member holding more facts than one batch can feed the model is replayed over
+// several rounds, each advancing the cursor, and only the completing round
+// reconciles the bank. Clearing the flag on the first round would leave the
+// remainder of the member's bank unread forever.
+func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
+	newInput := func(freshCount int) storage.MergeStanzaInput {
+		input := mergeTestInput()
+		input.Members[0].Fresh = nil
+		for i := 0; i < freshCount; i++ {
+			input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
+				TenantID:  "alice",
+				UnitID:    fmt.Sprintf("00000000-0000-0000-0000-%012d", i),
+				Text:      fmt.Sprintf("member fact %d", i),
+				FactType:  storage.TypeWorld,
+				UpdatedAt: time.Now().UTC(),
+			})
+		}
+		input.Members[0].Member.State.RebuildRequested = true
+		return input
+	}
+
+	cfg := mergeTestCfg()
+	cfg.ProjectMergeBatchSize = 10
+
+	// A full batch: the member may hold more, so the rebuild is not finished.
+	input := newInput(10)
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	model := &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
+	if err := runOneRound(t, merges, model, cfg); err != nil {
+		t.Fatalf("first round: %v", err)
+	}
+	if merges.finished == nil {
+		t.Fatalf("the first round wrote nothing: %+v", merges.abandoned)
+	}
+	if merges.finished.RebuildDone {
+		t.Fatal("a full batch reported the rebuild finished, so the remaining facts would never be replayed")
+	}
+	if _, ok := merges.finished.Cursors["alice"]; !ok {
+		t.Fatal("the round did not advance the cursor past the batch it consumed")
+	}
+
+	// A short batch: the member's bank is exhausted and the rebuild completes.
+	input = newInput(3)
+	merges = &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	model = &answerProvider{name: "fake", reply: `{"duplicates":[]}`}
+	if err := runOneRound(t, merges, model, cfg); err != nil {
+		t.Fatalf("second round: %v", err)
+	}
+	if !merges.finished.RebuildDone {
+		t.Fatal("a short batch did not complete the rebuild")
+	}
+}
