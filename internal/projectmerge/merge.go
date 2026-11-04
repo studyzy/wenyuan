@@ -9,9 +9,6 @@
 package projectmerge
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
@@ -213,87 +210,4 @@ func (r MergeResult) SourceMergeKeys(freshCount int) map[int][]string {
 		}
 	}
 	return out
-}
-
-// numberedFact is one fact with the label the prompt prints it under.
-type numberedFact struct {
-	index    int
-	text     string
-	factType string
-}
-
-// writeFactsByType prints one run of facts grouped by kind.
-//
-// The group headings are part of the prompt rather than decoration: the model has
-// to know whether it is reading what is true, what a member did, or what was
-// concluded, and the input arrives as one flat list.
-func writeFactsByType(out *strings.Builder, prefix string, facts []numberedFact) {
-	for _, factType := range []string{FactTypeWorld, FactTypeExperience, FactTypeObservation} {
-		wroteHeading := false
-		for _, fact := range facts {
-			if labelOf(fact.factType) != factType {
-				continue
-			}
-			if !wroteHeading {
-				fmt.Fprintf(out, "  %s:\n", factType)
-				wroteHeading = true
-			}
-			fmt.Fprintf(out, "  [%s%d] %s\n", prefix, fact.index, fact.text)
-		}
-	}
-}
-
-// labelOf folds a missing or unknown type to world, which is the kind a fact
-// with no declared type has always been.
-func labelOf(factType string) string {
-	switch factType {
-	case FactTypeExperience, FactTypeObservation:
-		return factType
-	default:
-		return FactTypeWorld
-	}
-}
-
-// firstJSONObject returns the first balanced {...} span of raw.
-//
-// The span is found by counting braces outside string literals, so a fact whose
-// text contains "{" or "}" — a config snippet, a format string — does not end the
-// span early. It reports false when raw holds no complete object, which is what a
-// model reply that is prose alone looks like.
-//
-// This is a recovery path, not a parser: the extracted text is still handed to
-// encoding/json, which is what decides whether it is well formed.
-func firstJSONObject(raw string) (string, bool) {
-	start := strings.IndexByte(raw, '{')
-	if start < 0 {
-		return "", false
-	}
-	depth := 0
-	inString := false
-	for i := start; i < len(raw); i++ {
-		c := raw[i]
-		if inString {
-			switch c {
-			case '\\':
-				// Skip the escaped byte; a trailing backslash is not an error
-				// here, the unmarshal below reports it.
-				i++
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return raw[start : i+1], true
-			}
-		}
-	}
-	return "", false
 }
