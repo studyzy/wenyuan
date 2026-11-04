@@ -176,7 +176,16 @@ func ParseAnswer(raw string, freshCount int) ([]Answer, error) {
 	}
 	var envelope answerEnvelope
 	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+		// A model that annotates its JSON ("a": "b", // ...) is the next most
+		// common quibble after a code fence; the JSON the comment hides is the
+		// answer, so read that rather than spend the round.
+		if relaxed := tenant.RelaxJSON(trimmed); relaxed != trimmed {
+			if err := json.Unmarshal([]byte(relaxed), &envelope); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+			}
+		} else {
+			return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+		}
 	}
 	if envelope.Facts == nil {
 		return nil, fmt.Errorf("%w: no facts member", ErrAnswerShape)

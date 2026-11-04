@@ -137,6 +137,38 @@ func TestParseAnswerReadsQuotedSourceIndexes(t *testing.T) {
 	}
 }
 
+// TestParseAnswerReadsACommentedAnswer is the reply the live deployment's round
+// recorded as "invalid character '/' after object key:value pair": the model
+// annotated its JSON. The comment is not the answer, so dropping it reads the
+// answer instead of spending the round.
+func TestParseAnswerReadsACommentedAnswer(t *testing.T) {
+	cases := map[string]string{
+		"line comment": `{
+  "facts": [ // the updated list
+    {"text": "deploy uses port 15432", "sources": [0], "topics": ["deploy"]}, // kept
+  ]
+}`,
+		"block comment": `{"facts": [/* first */ {"text": "deploy uses port 15432", "sources": [0]}]}`,
+		"comment inside a string is text": `{"facts": [
+			{"text": "the URL is https://example.test/a//b", "sources": [0]}]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			answers, err := ParseAnswer(raw, 1)
+			if err != nil {
+				t.Fatalf("ParseAnswer: %v", err)
+			}
+			if len(answers) != 1 {
+				t.Fatalf("answers = %d, want 1", len(answers))
+			}
+			if want := "the URL is https://example.test/a//b"; name == "comment inside a string is text" &&
+				answers[0].Text != want {
+				t.Fatalf("text = %q, want %q", answers[0].Text, want)
+			}
+		})
+	}
+}
+
 // TestParseAnswerRefusesASourceThatIsNotAnIndex keeps the one case still refused:
 // a value with no numeric reading has no defensible interpretation.
 func TestParseAnswerRefusesASourceThatIsNotAnIndex(t *testing.T) {

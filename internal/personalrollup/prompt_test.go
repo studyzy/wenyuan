@@ -92,6 +92,20 @@ func TestPromptSaysWhenThereIsNothing(t *testing.T) {
 	}
 }
 
+// TestPromptForbidsTheJSONRelaxationsATypingModelAdds is the live failure this
+// prompt change answers: a round whose reply carried a // comment died with
+// "invalid character '/' after object key:value pair" and spent the round. The
+// instruction is the cheap half of the fix; ParseAnswer's RelaxJSON fallback is
+// the other.
+func TestPromptForbidsTheJSONRelaxationsATypingModelAdds(t *testing.T) {
+	text := promptText(nil, nil, nil, PromptOptions{})
+	for _, want := range []string{"no comments", "no trailing commas", "double quotes"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt does not forbid %q:\n%s", want, text)
+		}
+	}
+}
+
 // TestPromptNeverNamesMembers pins that the aggregate's prompt does not inherit
 // the project merge's "member" framing: the aggregate is one person's memory, and
 // naming a source to the model invites it to write about who said what.

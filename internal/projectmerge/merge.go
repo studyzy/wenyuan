@@ -106,7 +106,16 @@ func ParseAnswer(raw string, freshCount int) ([]Answer, error) {
 	}
 	var envelope answerEnvelope
 	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+		// A model that annotates its JSON with comments or leaves a trailing
+		// comma is the same formatting quibble as a code fence: read the JSON
+		// rather than spend the round.
+		if relaxed := tenant.RelaxJSON(trimmed); relaxed != trimmed {
+			if err := json.Unmarshal([]byte(relaxed), &envelope); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+			}
+		} else {
+			return nil, fmt.Errorf("%w: %v", ErrAnswerShape, err)
+		}
 	}
 	if envelope.Facts == nil {
 		return nil, fmt.Errorf("%w: no facts member", ErrAnswerShape)
@@ -248,7 +257,8 @@ func Prompt(mission string, previous []TeamFact, fresh []MemberFact) []provider.
 	system.WriteString("merge duplicates and refinements across members, drop what the new facts supersede, ")
 	system.WriteString("and add what is genuinely new.\n\n")
 	system.WriteString("Rules:\n")
-	system.WriteString("- Reply with JSON only, no prose and no code fences.\n")
+	system.WriteString("- Reply with JSON only, no prose, no code fences, no comments and no trailing commas.\n")
+	system.WriteString("- Quote every key and string with double quotes; never leave the facts array or the object unterminated.\n")
 	system.WriteString("- The shape is {\"facts\": [{\"text\": \"...\", \"sources\": [0, 1]}]}.\n")
 	system.WriteString("- Each fact is one self-contained statement in a single sentence.\n")
 	system.WriteString("- \"sources\" must contain only F indexes: the new facts this statement was made from.\n")
