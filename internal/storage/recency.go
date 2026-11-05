@@ -46,22 +46,21 @@ type RecencyDecayConfig struct {
 	// LinearWindowDays is the age at which the linear curve reaches its floor.
 	// Zero or less means the default.
 	LinearWindowDays float64
-	// HalflifeDays is the exponential curve's half-life. Zero or less means the
-	// default.
+	// HalflifeDays is the exponential curve's half-life. A non-positive value
+	// makes the exponential branch report neutral rather than divide by it.
 	HalflifeDays float64
 }
 
-// normalized fills the defaults, so a caller that set nothing keeps the
-// historical shape.
+// normalized fills the shape and linear-window defaults, so a caller that set
+// nothing keeps the historical shape. The half-life is deliberately left as
+// supplied: the exponential branch decides what a non-positive one means, and
+// the resolution layer already fills it for real recalls.
 func (c RecencyDecayConfig) normalized() RecencyDecayConfig {
 	if c.Function == "" {
 		c.Function = RecencyDecayLinear
 	}
 	if c.LinearWindowDays <= 0 {
 		c.LinearWindowDays = DefaultRecencyDecayLinearWindowDays
-	}
-	if c.HalflifeDays <= 0 {
-		c.HalflifeDays = DefaultRecencyDecayHalflifeDays
 	}
 	return c
 }
@@ -75,6 +74,9 @@ func RecencyDecay(daysAgo float64, cfg RecencyDecayConfig) float64 {
 	case RecencyDecayNone:
 		return 0.5
 	case RecencyDecayExponential:
+		if cfg.HalflifeDays <= 0 {
+			return 0.5
+		}
 		if daysAgo <= 0 {
 			// Clamped ahead of the power: 0.5 raised to a large negative
 			// exponent overflows.

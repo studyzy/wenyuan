@@ -21,38 +21,11 @@ type EmbeddingGenerator interface {
 	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
-// MaxEmbeddingInputChars bounds how many characters of a unit's text are sent
-// to the embedding provider in one request.
-//
-// Every provider caps the length of a single input, and a remote provider
-// rejects an over-long one outright rather than truncating it server-side, so
-// one long unit would fail the whole retain or recall batch. The bound is
-// measured in characters because this boundary deliberately carries no
-// tokenizer (that would add a model dependency to storage); it is set to the
-// common 8192-token provider ceiling, which 8192 characters can never exceed
-// even for the densest scripts where one character is about one token, while
-// English text of that length stays far under it. The stored unit text is not
-// truncated — only the string handed to the provider is — so recall still reads
-// the whole unit.
-const MaxEmbeddingInputChars = 8192
-
-// truncateForEmbedding returns text cut to MaxEmbeddingInputChars on a rune
-// boundary, so a multi-byte character is never split into invalid bytes. A text
-// already within the bound is returned unchanged.
-func truncateForEmbedding(text string) string {
-	if len(text) <= MaxEmbeddingInputChars {
-		return text
-	}
-	// len is bytes; cut on a rune boundary by counting runes up to the bound.
-	count := 0
-	for index := range text {
-		if count == MaxEmbeddingInputChars {
-			return text[:index]
-		}
-		count++
-	}
-	return text
-}
+// The embedding boundary applies the deployment's per-input token cap before a
+// text reaches any provider, charging the provider's own input prefix against
+// that budget. This layer therefore hands the full indexed text to the
+// generator unchanged and keeps the stored unit's whole text: pre-truncating
+// here on a character measure would cut twice and would miss the prefix.
 
 // indexedEmbeddingText renders the string a unit is indexed by. It is not the
 // text that is stored or shown: it is what the semantic arm compares a query
@@ -109,8 +82,10 @@ func formatReadableDate(at time.Time) string {
 // an error rather than a silently misaligned write: a vector attached to the
 // wrong unit is worse than no vector.
 //
-// Several units are embedded in one call, and each input is capped at
-// MaxEmbeddingInputChars first, so a single long unit cannot fail the batch.
+// Several units are embedded in one call. The full indexed text is handed to
+// the generator: the embedding boundary owns the input cap, so storage does
+// not pre-truncate on a different measure and the stored unit keeps its whole
+// text.
 func embedContents(ctx context.Context, generator EmbeddingGenerator, contents []itemContent) error {
 	if generator == nil || len(contents) == 0 {
 		return nil
@@ -123,7 +98,7 @@ func embedContents(ctx context.Context, generator EmbeddingGenerator, contents [
 	defer stop()
 	texts := make([]string, 0, len(contents))
 	for _, content := range contents {
-		texts = append(texts, truncateForEmbedding(indexedEmbeddingText(content.unit, content.entities)))
+		texts = append(texts, indexedEmbeddingText(content.unit, content.entities))
 	}
 	vectors, err := generator.EmbedPassages(ctx, texts)
 	if err != nil {
@@ -158,7 +133,7 @@ func embedUnitText(ctx context.Context, generator EmbeddingGenerator, unit Memor
 			entities = append(entities, RetainEntity{Text: name})
 		}
 	}
-	texts := []string{truncateForEmbedding(indexedEmbeddingText(unit, entities))}
+	texts := []string{indexedEmbeddingText(unit, entities)}
 	vectors, err := generator.EmbedPassages(ctx, texts)
 	if err != nil || len(vectors) != 1 || len(vectors[0]) == 0 {
 		return nil
@@ -175,7 +150,7 @@ func embedMentalModelText(ctx context.Context, generator EmbeddingGenerator, nam
 	if generator == nil {
 		return nil
 	}
-	vectors, err := generator.EmbedPassages(ctx, []string{truncateForEmbedding(name + " " + content)})
+	vectors, err := generator.EmbedPassages(ctx, []string{name + " " + content})
 	if err != nil || len(vectors) != 1 || len(vectors[0]) == 0 {
 		return nil
 	}
@@ -205,7 +180,7 @@ func embedObservation(ctx context.Context, generator EmbeddingGenerator, text st
 	if generator == nil || text == "" {
 		return nil
 	}
-	vectors, err := generator.EmbedPassages(ctx, []string{truncateForEmbedding(text)})
+	vectors, err := generator.EmbedPassages(ctx, []string{text})
 	if err != nil || len(vectors) != 1 || len(vectors[0]) == 0 {
 		return nil
 	}

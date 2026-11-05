@@ -91,12 +91,12 @@ func TestRetainWritePropagatesEmbeddingFailure(t *testing.T) {
 	}
 }
 
-// A unit longer than the embedding input bound is truncated on the wire rather
-// than rejected by the provider, which would fail the whole write. The stored
-// unit keeps its full text.
-func TestEmbedContentsTruncatesLongInput(t *testing.T) {
+// The input cap lives at the embedding boundary, so this layer hands the full
+// indexed text to the generator and never pre-truncates it. The stored unit
+// keeps its full text either way.
+func TestEmbedContentsPassesFullIndexedText(t *testing.T) {
 	embedder := &stubEmbedder{dim: 4}
-	long := strings.Repeat("x", MaxEmbeddingInputChars+100)
+	long := strings.Repeat("x", 8192+100)
 	contents := []itemContent{{unit: MemoryUnit{ID: "u1", Text: long}}}
 	if err := embedContents(context.Background(), embedder, contents); err != nil {
 		t.Fatalf("embed: %v", err)
@@ -104,23 +104,23 @@ func TestEmbedContentsTruncatesLongInput(t *testing.T) {
 	if len(embedder.sent) != 1 || len(embedder.sent[0]) != 1 {
 		t.Fatalf("provider batch = %v, want one input", embedder.sent)
 	}
-	if got := len(embedder.sent[0][0]); got != MaxEmbeddingInputChars {
-		t.Fatalf("provider input length = %d, want %d", got, MaxEmbeddingInputChars)
+	if got := embedder.sent[0][0]; got != long {
+		t.Fatalf("provider input (%d chars) was truncated here, want the full indexed text", len(got))
 	}
 	if len(contents[0].unit.Embedding) != 4 {
-		t.Fatalf("a truncated input must still embed: %+v", contents[0].unit.Embedding)
+		t.Fatalf("the input must still embed: %+v", contents[0].unit.Embedding)
 	}
 	if contents[0].unit.Text != long {
 		t.Fatal("the stored text must not be truncated")
 	}
 }
 
-// A long unit survives a retain write: the provider sees a bounded input and
-// the unit is still embedded with its whole text.
-func TestRetainWriteTruncatesLongEmbeddingInput(t *testing.T) {
+// A long unit survives a retain write: the provider sees the full indexed text
+// (the boundary applies the cap) and the unit is still embedded whole.
+func TestRetainWritePassesFullTextToProvider(t *testing.T) {
 	store := NewMemoryStore("public")
 	embedder := &stubEmbedder{dim: 4}
-	long := strings.Repeat("y", MaxEmbeddingInputChars+250)
+	long := strings.Repeat("y", 8192+250)
 	extractor := &stubExtraction{facts: map[string][]ExtractedFact{
 		"content": {{Text: long}},
 	}}
@@ -132,15 +132,16 @@ func TestRetainWriteTruncatesLongEmbeddingInput(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if len(embedder.sent) == 0 {
-		t.Fatal("the write must reach the provider")
-	}
+	sawFull := false
 	for _, batch := range embedder.sent {
 		for _, text := range batch {
-			if len(text) > MaxEmbeddingInputChars {
-				t.Fatalf("provider input length = %d, want <= %d", len(text), MaxEmbeddingInputChars)
+			if strings.Contains(text, long) {
+				sawFull = true
 			}
 		}
+	}
+	if !sawFull {
+		t.Fatal("the provider must receive the full, untruncated text")
 	}
 	embedded := false
 	for _, unit := range store.UnitsForTest("b1") {

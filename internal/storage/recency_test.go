@@ -35,7 +35,10 @@ func TestRecencyDecayShapes(t *testing.T) {
 // A future-dated memory is never penalised for being ahead of the clock.
 func TestRecencyDecayClampsFutureDates(t *testing.T) {
 	for _, function := range []string{RecencyDecayLinear, RecencyDecayExponential} {
-		if got := RecencyDecay(-5, RecencyDecayConfig{Function: function}); got != 1 {
+		// The resolution layer always supplies a positive half-life; a bare zero
+		// now means "neutral" in the exponential branch instead of the default.
+		cfg := RecencyDecayConfig{Function: function, HalflifeDays: DefaultRecencyDecayHalflifeDays}
+		if got := RecencyDecay(-5, cfg); got != 1 {
 			t.Fatalf("%s with a future date = %v, want 1", function, got)
 		}
 	}

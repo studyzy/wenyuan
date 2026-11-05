@@ -1183,16 +1183,17 @@ func (a ImportApplier) applyBankConfig(ctx context.Context, req ImportRequest, t
 // concurrently, and its batch size is a property of the configured provider
 // (TEI validates its own as a hard cap), so the whole set is handed over at
 // once rather than pre-chunked here — a chunk boundary chosen at this layer
-// would be an arbitrary cap that a provider's own limit cannot see. A
-// deployment with no embedding model leaves every unit unembedded, exactly as
-// a write does.
+// would be an arbitrary cap that a provider's own limit cannot see. The
+// generator's input cap is the single bound on text length, so an imported
+// fact and a retained one are embedded from the same text. A deployment with
+// no embedding model leaves every unit unembedded, exactly as a write does.
 func (a ImportApplier) embedUnits(ctx context.Context, units []storage.MemoryUnit) error {
 	if a.Embeddings == nil || len(units) == 0 {
 		return nil
 	}
 	texts := make([]string, len(units))
 	for i, unit := range units {
-		texts[i] = truncateForEmbedding(unit.Text)
+		texts[i] = unit.Text
 	}
 	vectors, err := a.Embeddings.EmbedPassages(ctx, texts)
 	if err != nil {
@@ -1215,23 +1216,6 @@ func (a ImportApplier) now() time.Time {
 		return a.Now()
 	}
 	return time.Now().UTC()
-}
-
-// truncateForEmbedding mirrors the write path's input bound, so an imported
-// fact and a retained one are embedded from the same text.
-func truncateForEmbedding(text string) string {
-	const max = 8192
-	if len(text) <= max {
-		return text
-	}
-	count := 0
-	for index := range text {
-		if count == max {
-			return text[:index]
-		}
-		count++
-	}
-	return text
 }
 
 // archiveUnitID derives a deterministic unit identity for a fact. The archive

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/provider/none"
 	"github.com/studyzy/wenyuan/internal/provider/rerank"
 	"github.com/studyzy/wenyuan/internal/provider/routing"
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // resolveEmbedder builds the configured embedding backend. Embeddings are
@@ -33,7 +35,16 @@ func resolveEmbedder(cfg config.Config) (embed.Embedder, error) {
 			config.EnvEmbeddingDimension, e.Dimensions, provider.EmbeddingDimensions, provider.EmbeddingDimensions)
 	}
 	settings := embeddingConfigFor(e)
-	return embed.New(settings)
+	built, err := embed.New(settings)
+	if err != nil || built == nil {
+		return built, err
+	}
+	return cappedEmbedder{
+		inner:          built,
+		maxInputTokens: settings.MaxInputTokens,
+		passagePrefix:  settings.PassagePrefix,
+		queryPrefix:    settings.QueryPrefix,
+	}, nil
 }
 
 // resolveReranker builds the configured cross-encoder chain. The reranker is
@@ -118,6 +129,9 @@ func rerankMember(m config.RerankerMember) rerank.Member {
 // backend's settings, choosing the credential, endpoint and model the selected
 // provider reads.
 func embeddingConfigFor(e config.EmbeddingConfig) embed.Config {
+	// The cap arrives already resolved: unset means the shipped default, and a
+	// zero or negative value is the deployment turning the cap off, which the
+	// boundary honours by sending text through untruncated.
 	out := embed.Config{
 		Provider:       e.Provider,
 		Dimensions:     e.Dimensions,
@@ -276,4 +290,62 @@ func recallRerankerWiring(cfg config.Config, chat provider.Provider, dedicated p
 		return nil, 0, false, false, false
 	}
 	return rerankScorer{reranker: r}, cfg.Provider.Rerank.CandidateDepth, byRank, prunes, seed
+}
+
+// cappedEmbedder applies the deployment's per-input token cap and validates
+// every returned vector at the embedding boundary, once, before any backend
+// sees a text and before a vector reaches storage.
+type cappedEmbedder struct {
+	inner          embed.Embedder
+	maxInputTokens int
+	passagePrefix  string
+	queryPrefix    string
+}
+
+// Name is the inner backend's configured provider name.
+func (c cappedEmbedder) Name() string { return c.inner.Name() }
+
+// Model is the inner backend's model identifier.
+func (c cappedEmbedder) Model() string { return c.inner.Model() }
+
+// Dimensions is the width the inner backend guarantees.
+func (c cappedEmbedder) Dimensions() int { return c.inner.Dimensions() }
+
+// prefixFor returns the literal the backend prepends for this input kind. The
+// cap is charged for it here because the backend glues it on after truncation.
+func (c cappedEmbedder) prefixFor(kind provider.EmbeddingKind) string {
+	if kind == provider.EmbeddingQuery {
+		return c.queryPrefix
+	}
+	return c.passagePrefix
+}
+
+// Embed truncates each input to the configured token budget, less the prefix
+// the backend will add, then checks each vector's width against the backend's
+// declared dimension. A non-positive cap disables truncation but not the width
+// check.
+func (c cappedEmbedder) Embed(ctx context.Context, req provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	if c.maxInputTokens > 0 && len(req.Texts) > 0 {
+		budget := c.maxInputTokens - storage.CountTokens(c.prefixFor(req.Kind))
+		if budget < 0 {
+			budget = 0
+		}
+		texts := make([]string, len(req.Texts))
+		for i, text := range req.Texts {
+			texts[i] = storage.TruncateToTokens(text, budget)
+		}
+		req.Texts = texts
+	}
+	result, err := c.inner.Embed(ctx, req)
+	if err != nil {
+		return result, err
+	}
+	want := c.inner.Dimensions()
+	for i, vec := range result.Vectors {
+		if len(vec) != want {
+			return provider.EmbeddingResult{}, fmt.Errorf(
+				"embedding backend returned vector %d with width %d, want %d", i, len(vec), want)
+		}
+	}
+	return result, nil
 }

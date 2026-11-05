@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/tiktoken-go/tokenizer"
@@ -131,11 +130,13 @@ func RetainAccounting(items []RetainItem) (Usage, int) {
 }
 
 // truncateToTokens returns the longest prefix of text whose token count does
-// not exceed maxTokens. It is used where a caller supplies a token budget, and
-// it never splits a multi-byte rune.
+// not exceed maxTokens. A non-positive budget clamps to zero and yields an
+// empty string. The cut lands on a rune boundary, so an incomplete multi-byte
+// character is dropped rather than split, and the whitespace that survives the
+// cut is left exactly as it was.
 func truncateToTokens(text string, maxTokens int) string {
-	if maxTokens <= 0 {
-		return text
+	if maxTokens < 0 {
+		maxTokens = 0
 	}
 	if countTokensFor(text) <= maxTokens {
 		return text
@@ -152,5 +153,11 @@ func truncateToTokens(text string, maxTokens int) string {
 			high = mid - 1
 		}
 	}
-	return strings.TrimSpace(string(runes[:low]))
+	return string(runes[:low])
+}
+
+// TruncateToTokens caps text at a token budget for callers outside this
+// package. A non-positive budget yields an empty string.
+func TruncateToTokens(text string, maxTokens int) string {
+	return truncateToTokens(text, maxTokens)
 }

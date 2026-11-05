@@ -45,24 +45,31 @@ const (
 	EnvLLMTraceScopes          = "WENYUAN_API_LLM_TRACE_SCOPES"
 	EnvLLMVision               = "WENYUAN_API_LLM_VISION"
 
-	EnvEmbeddingsProvider        = "WENYUAN_API_EMBEDDINGS_PROVIDER"
-	EnvEmbeddingsInitialBackoff  = "WENYUAN_API_EMBEDDINGS_INITIAL_BACKOFF"
-	EnvEmbeddingsLocalAllowMPS   = "WENYUAN_API_EMBEDDINGS_LOCAL_ALLOW_MPS"
-	EnvEmbeddingsLocalForceCPU   = "WENYUAN_API_EMBEDDINGS_LOCAL_FORCE_CPU"
-	EnvEmbeddingsLocalModel      = "WENYUAN_API_EMBEDDINGS_LOCAL_MODEL"
-	EnvEmbeddingsLocalTrustCode  = "WENYUAN_API_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE"
-	EnvEmbeddingsMaxBackoff      = "WENYUAN_API_EMBEDDINGS_MAX_BACKOFF"
-	EnvEmbeddingsMaxConcurrent   = "WENYUAN_API_EMBEDDINGS_MAX_CONCURRENT_REQUESTS"
-	EnvEmbeddingsMaxInputTokens  = "WENYUAN_API_EMBEDDINGS_MAX_INPUT_TOKENS"
-	EnvEmbeddingsMaxRetries      = "WENYUAN_API_EMBEDDINGS_MAX_RETRIES"
-	EnvEmbeddingsOpenAIKey       = "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY"
-	EnvEmbeddingsOpenAIBaseURL   = "WENYUAN_API_EMBEDDINGS_OPENAI_BASE_URL"
-	EnvEmbeddingsOpenAIBatchSize = "WENYUAN_API_EMBEDDINGS_OPENAI_BATCH_SIZE"
-	EnvEmbeddingsOpenAIDims      = "WENYUAN_API_EMBEDDINGS_OPENAI_DIMENSIONS"
-	EnvEmbeddingsOpenAIModel     = "WENYUAN_API_EMBEDDINGS_OPENAI_MODEL"
-	EnvEmbeddingsPassagePrefix   = "WENYUAN_API_EMBEDDINGS_PASSAGE_PREFIX"
-	EnvEmbeddingsQueryPrefix     = "WENYUAN_API_EMBEDDINGS_QUERY_PREFIX"
-	EnvEmbeddingsRetryBudget     = "WENYUAN_API_EMBEDDINGS_RETRY_BUDGET"
+	EnvEmbeddingsProvider       = "WENYUAN_API_EMBEDDINGS_PROVIDER"
+	EnvEmbeddingsInitialBackoff = "WENYUAN_API_EMBEDDINGS_INITIAL_BACKOFF"
+	EnvEmbeddingsLocalAllowMPS  = "WENYUAN_API_EMBEDDINGS_LOCAL_ALLOW_MPS"
+	EnvEmbeddingsLocalForceCPU  = "WENYUAN_API_EMBEDDINGS_LOCAL_FORCE_CPU"
+	EnvEmbeddingsLocalModel     = "WENYUAN_API_EMBEDDINGS_LOCAL_MODEL"
+	EnvEmbeddingsLocalTrustCode = "WENYUAN_API_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE"
+	EnvEmbeddingsMaxBackoff     = "WENYUAN_API_EMBEDDINGS_MAX_BACKOFF"
+	EnvEmbeddingsMaxConcurrent  = "WENYUAN_API_EMBEDDINGS_MAX_CONCURRENT_REQUESTS"
+	EnvEmbeddingsMaxInputTokens = "WENYUAN_API_EMBEDDINGS_MAX_INPUT_TOKENS"
+
+	// DefaultEmbeddingsMaxInputTokens is the per-input token cap a deployment
+	// gets when it does not set the key at all. An explicitly configured zero
+	// (or negative) reaches the embedding boundary as "off": it is the deployer
+	// turning the cap away, not an unset key, so the two must stay
+	// distinguishable — the resolution default makes them so.
+	DefaultEmbeddingsMaxInputTokens = 8192
+	EnvEmbeddingsMaxRetries         = "WENYUAN_API_EMBEDDINGS_MAX_RETRIES"
+	EnvEmbeddingsOpenAIKey          = "WENYUAN_API_EMBEDDINGS_OPENAI_API_KEY"
+	EnvEmbeddingsOpenAIBaseURL      = "WENYUAN_API_EMBEDDINGS_OPENAI_BASE_URL"
+	EnvEmbeddingsOpenAIBatchSize    = "WENYUAN_API_EMBEDDINGS_OPENAI_BATCH_SIZE"
+	EnvEmbeddingsOpenAIDims         = "WENYUAN_API_EMBEDDINGS_OPENAI_DIMENSIONS"
+	EnvEmbeddingsOpenAIModel        = "WENYUAN_API_EMBEDDINGS_OPENAI_MODEL"
+	EnvEmbeddingsPassagePrefix      = "WENYUAN_API_EMBEDDINGS_PASSAGE_PREFIX"
+	EnvEmbeddingsQueryPrefix        = "WENYUAN_API_EMBEDDINGS_QUERY_PREFIX"
+	EnvEmbeddingsRetryBudget        = "WENYUAN_API_EMBEDDINGS_RETRY_BUDGET"
 )
 
 // Provider defaults applied when a key resolves to nothing. They are the
@@ -595,7 +602,7 @@ func resolveEmbeddings(lookup func(string) (string, bool), base EmbeddingConfig)
 	c.OpenAIModel = str(EnvEmbeddingsOpenAIModel)
 	c.OpenAIBatchSize = positiveInt(lookup, EnvEmbeddingsOpenAIBatchSize, c.OpenAIBatchSize)
 	c.OpenAIDimensions = intFromEnv(lookup, EnvEmbeddingsOpenAIDims, 0)
-	c.MaxInputTokens = intFromEnv(lookup, EnvEmbeddingsMaxInputTokens, 0)
+	c.MaxInputTokens = intFromEnv(lookup, EnvEmbeddingsMaxInputTokens, DefaultEmbeddingsMaxInputTokens)
 	c.PassagePrefix = str(EnvEmbeddingsPassagePrefix)
 	c.QueryPrefix = str(EnvEmbeddingsQueryPrefix)
 	c.MaxRetries = positiveIntAllowZero(lookup, EnvEmbeddingsMaxRetries, c.MaxRetries)

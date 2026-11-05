@@ -207,6 +207,16 @@ func TestEmbeddingKeys(t *testing.T) {
 	if e.OpenAIBatchSize != 16 || e.OpenAIDimensions != 512 || e.MaxInputTokens != 8192 {
 		t.Fatalf("batch=%d dims=%d tokens=%d", e.OpenAIBatchSize, e.OpenAIDimensions, e.MaxInputTokens)
 	}
+	// An unset key resolves to the shipped default, while an explicit zero is
+	// the deployment turning the cap off — the two must stay distinguishable.
+	unset := FromEnv(envMap(map[string]string{EnvEmbeddingsProvider: "openai"}))
+	if unset.Provider.Embeddings.MaxInputTokens != DefaultEmbeddingsMaxInputTokens {
+		t.Fatalf("unset cap = %d, want %d", unset.Provider.Embeddings.MaxInputTokens, DefaultEmbeddingsMaxInputTokens)
+	}
+	zero := FromEnv(envMap(map[string]string{EnvEmbeddingsMaxInputTokens: "0"}))
+	if zero.Provider.Embeddings.MaxInputTokens != 0 {
+		t.Fatalf("explicit zero cap = %d, want 0 (off)", zero.Provider.Embeddings.MaxInputTokens)
+	}
 	// Configuration values are trimmed, so the trailing space in the input
 	// above is not part of the resolved prefix.
 	if e.PassagePrefix != "passage:" || e.QueryPrefix != "query:" {
