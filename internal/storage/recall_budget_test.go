@@ -43,10 +43,10 @@ func TestRecallHonoursBudgetBound(t *testing.T) {
 	if _, err := store.CreateBank(context.TODO(), Bank{BankID: "b1", Name: "b1"}); err != nil {
 		t.Fatal(err)
 	}
-	// Write more facts than the low bound so the cap has to bite, but fewer
-	// than the middle bound, so the levels are told apart by the cap rather
-	// than by how much was written.
-	const written = BudgetLowLimit + 20
+	// Write more facts than twice the low bound so the doubled token-filter
+	// cap has to bite, but fewer than twice the middle bound, so the levels
+	// are still told apart by the cap rather than by how much was written.
+	const written = 2*BudgetLowLimit + 20
 	items := make([]RetainItem, 0, written)
 	for i := 0; i < written; i++ {
 		items = append(items, RetainItem{
@@ -63,7 +63,7 @@ func TestRecallHonoursBudgetBound(t *testing.T) {
 		budget string
 		want   int
 	}{
-		{name: "low is capped at its bound", budget: BudgetLow, want: BudgetLowLimit},
+		{name: "low is capped at twice its bound", budget: BudgetLow, want: 2 * BudgetLowLimit},
 		{name: "mid is above the low bound", budget: BudgetMid, want: written},
 		{name: "high is above the low bound", budget: BudgetHigh, want: written},
 	}

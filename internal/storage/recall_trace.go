@@ -15,9 +15,9 @@ type recallArmTrace struct {
 }
 
 // traceArmNames maps an internal ranking label to the reference's arm name, and
-// traceArmOrder fixes the order the retrieval results are reported in. Arms the
-// reference has no counterpart for (temporal, entity) are absent: they enter as
-// scoring signals, not as candidate lists with their own retrieval results.
+// traceArmOrder fixes the order the retrieval results are reported in. The
+// temporal arm contributes its own candidates to fusion, but this legacy
+// retrieval-results payload reports only the three classic arms.
 var traceArmNames = map[string]string{
 	ArmSemantic: "semantic",
 	ArmKeyword:  "bm25",

@@ -3,11 +3,17 @@ package storage
 import (
 	"math"
 	"sort"
+	"time"
 )
 
 func (s *MemoryStore) runArm(arm string, q RecallQuery, types []string, term string) []recallHit {
 	if arm == ArmKeyword && !hasWordChar(term) {
 		return nil
+	}
+	// A bounded window switches the temporal arm to its own retrieval pass: it
+	// selects in-window entry points and walks the link graph from them.
+	if arm == ArmTemporal && temporalWindowActive(q) {
+		return s.temporalWindowArm(q, types, term)
 	}
 	// The graph arm does not score memories by their own text: it reaches the
 	// ones connected to the memories the dense arm already matched. It
@@ -466,4 +472,113 @@ func entityScore(m RecallMatch, term string) float64 {
 		return 0
 	}
 	return score / float64(len(m.Entities))
+}
+
+// temporalWindowActive reports whether a request named a bounded window the
+// temporal arm can select against. A window missing a bound cannot define a
+// span, so the arm is not run for it.
+func temporalWindowActive(q RecallQuery) bool {
+	return q.Temporal != nil && q.Temporal.HasStart && q.Temporal.HasEnd
+}
+
+// temporalRowOverlapsWindow reports whether a unit's dates intersect the window
+// the temporal arm's pool selects on: a span overlapping it, or a single date
+// falling inside it.
+func temporalRowOverlapsWindow(w *TemporalWindow, m RecallMatch) bool {
+	start := finiteUTC(m.OccurredStart)
+	end := finiteUTC(m.OccurredEnd)
+	mentioned := finiteUTC(m.MentionedAt)
+	if start != nil && end != nil && !start.After(w.End) && !end.Before(w.Start) {
+		return true
+	}
+	for _, d := range []*time.Time{mentioned, start, end} {
+		if d != nil && !d.Before(w.Start) && !d.After(w.End) {
+			return true
+		}
+	}
+	return false
+}
+
+// temporalLinks indexes the bank's temporal/causal links by source, carrying
+// each target's row so the spread can emit it as a result.
+func (s *MemoryStore) temporalLinks(bankID string, term string) []temporalLink {
+	byID := map[string]temporalRow{}
+	for _, m := range s.memories[bankID] {
+		byID[m.ID] = temporalRow{match: m, similarity: semanticScore(m, term)}
+	}
+	out := make([]temporalLink, 0)
+	for _, link := range s.links {
+		if link.BankID != bankID || !temporalLinkKind(link.LinkType) {
+			continue
+		}
+		target, ok := byID[link.ToUnitID]
+		if !ok {
+			continue
+		}
+		out = append(out, temporalLink{
+			from:   link.FromUnitID,
+			weight: link.Weight,
+			kind:   link.LinkType,
+			target: target,
+		})
+	}
+	return out
+}
+
+// temporalWindowArm is the independent temporal retrieval arm for a request
+// that named a bounded window. It builds a similarity-ranked, window-filtered
+// pool capped per fact type, spreads entry points across the window, and walks
+// the link graph outward, so the arm produces candidates of its own rather than
+// only grading other arms' hits.
+func (s *MemoryStore) temporalWindowArm(q RecallQuery, types []string, term string) []recallHit {
+	w := q.Temporal
+	pool := make([]temporalRow, 0)
+	for _, m := range s.memories[q.BankID] {
+		if !containsString(types, m.Type) || !s.tagScopeAllows(q, m) {
+			continue
+		}
+		if !temporalRowOverlapsWindow(w, m) {
+			continue
+		}
+		pool = append(pool, temporalRow{match: m, similarity: semanticScore(m, term)})
+	}
+	sort.SliceStable(pool, func(i, j int) bool {
+		if pool[i].similarity != pool[j].similarity {
+			return pool[i].similarity > pool[j].similarity
+		}
+		return pool[i].match.ID < pool[j].match.ID
+	})
+	pool = capTemporalPool(pool, temporalPoolSize)
+	byType := map[string][]temporalRow{}
+	for _, row := range pool {
+		byType[row.match.Type] = append(byType[row.match.Type], row)
+	}
+	links := s.temporalLinks(q.BankID, term)
+	inBatch := func(fromIDs []string) []temporalLink {
+		set := make(map[string]bool, len(fromIDs))
+		for _, id := range fromIDs {
+			set[id] = true
+		}
+		out := make([]temporalLink, 0)
+		for _, l := range links {
+			if set[l.from] {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	budget := q.Limit
+	if budget <= 0 {
+		budget = s.tuning.BudgetLimitForQuery(q)
+	}
+	results := make([]recallHit, 0)
+	for _, ft := range types {
+		rows := byType[ft]
+		if len(rows) == 0 {
+			continue
+		}
+		entries := selectTemporalCoverage(rows, w.Start, w.End, temporalEntryPoints, temporalCoverageBuckets)
+		results = append(results, spreadTemporalArm(entries, w.Start, w.End, budget, ft, inBatch)...)
+	}
+	return results
 }

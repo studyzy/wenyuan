@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -128,6 +129,12 @@ func (s *PostgresStore) recallWhere(ctx context.Context, q RecallQuery) (RecallR
 			return s.keywordArm(ctx, q, term)
 		}},
 	}
+	temporalEnabled := temporalWindowActive(q) && containsArm(arms, ArmTemporal)
+	if temporalEnabled {
+		denseAndLexical = append(denseAndLexical, recallArmJob{name: ArmTemporal, run: func(ctx context.Context) ([]recallHit, error) {
+			return s.temporalArm(ctx, q, types, term)
+		}})
+	}
 	armOutcomes, err := runRecallArms(ctx, armFanOut, phases, denseAndLexical)
 	if err != nil {
 		fanOutStop()
@@ -139,6 +146,11 @@ func (s *PostgresStore) recallWhere(ctx context.Context, q RecallQuery) (RecallR
 	keywordHits := prepareArm(q, ArmKeyword, armOutcomes[1].hits)
 	recordArm(candidates, ArmKeyword, keywordHits)
 	armTraces = append(armTraces, recallArmTrace{arm: ArmKeyword, hits: keywordHits})
+	if temporalEnabled {
+		temporalHits := prepareArm(q, ArmTemporal, armOutcomes[2].hits)
+		recordArm(candidates, ArmTemporal, temporalHits)
+		armTraces = append(armTraces, recallArmTrace{arm: ArmTemporal, hits: temporalHits})
+	}
 	// The graph arm walks out from the dense hits alone, so it is its own wave.
 	// The lexical arm never seeds it: the reference derives the entry points
 	// from the semantic arm's ordered rows (or re-queries the dense index when
@@ -186,6 +198,10 @@ func (s *PostgresStore) recallWhere(ctx context.Context, q RecallQuery) (RecallR
 
 	stop = phases.measure("score", false)
 	pool := trimCandidatePool(candidates, arms, q, s.tuning.RerankerMaxCandidatesFor(q.Budget))
+	if err := s.hydrateProofCounts(ctx, q.BankID, pool); err != nil {
+		stop()
+		return RecallResult{}, err
+	}
 	ranked := scoreCandidates(ctx, pool, arms, q)
 	ranked = orderByFinal(ranked)
 	ranked = filterFloors(ranked, q.MinScores)
@@ -195,7 +211,7 @@ func (s *PostgresStore) recallWhere(ctx context.Context, q RecallQuery) (RecallR
 	// the narrowing the returned list alone gets.
 	scored := append([]*recallCandidate(nil), ranked...)
 	ranked = preferObservations(ranked, q, limit)
-	ranked = capCandidates(ranked, limit)
+	ranked = capCandidates(ranked, tokenFilterCandidateLimit(q, limit))
 	stop()
 
 	result := RecallResult{Matches: make([]RecallMatch, 0, len(ranked))}
@@ -263,7 +279,7 @@ func recordArm(candidates map[string]*recallCandidate, arm string, hits []recall
 }
 
 // activeFallbackArms gates recordArm to known arm names.
-var activeFallbackArms = []string{ArmSemantic, ArmKeyword, ArmGraph}
+var activeFallbackArms = []string{ArmSemantic, ArmKeyword, ArmGraph, ArmTemporal}
 
 func containsArm(arms []string, target string) bool {
 	for _, arm := range arms {
@@ -286,15 +302,12 @@ func containsArm(arms []string, target string) bool {
 // The tag values are the only client-supplied text in the fragment and are
 // rendered as escaped SQL literals by sqlTextLiteral.
 //
-// The temporal window is deliberately NOT part of this fragment. It names the
-// temporal arm's own selection, and the reference applies it there — the dense,
-// lexical and graph arms are never filtered by it (see
-// engine/search/retrieval.py, where the window becomes the temporal arm's
-// argument and nothing else). The in-process store reads it the same way: a
-// ranking signal through temporalProximity, never a row filter. Rendering it
-// here made a query whose text merely mentioned a date ("Can I deploy on
-// Friday?") exclude every unit dated outside that day, so all three arms
-// returned nothing.
+// The temporal window is deliberately NOT part of this fragment. It belongs to
+// the temporal arm's own selection, which filters its own pool by the window and
+// grades proximity, while the dense, lexical and graph arms are never filtered
+// by it. Rendering it here made a query whose text merely mentioned a date
+// ("Can I deploy on Friday?") exclude every unit dated outside that day, so
+// all three arms returned nothing.
 func recallPredicates(q RecallQuery) string {
 	return "(" + recallTagPredicate(q) + ")"
 }
@@ -740,4 +753,239 @@ func (s *PostgresStore) tagVocabulary(ctx context.Context, bankID string) ([]str
 		vocabulary = append(vocabulary, tag)
 	}
 	return vocabulary, rows.Err()
+}
+
+// temporalFloor resolves the similarity floor the temporal arm's ANN pool and
+// its spreading read on.
+func (s *PostgresStore) temporalFloor() float64 {
+	if s.tuning.TemporalSemanticMinSimilarity > 0 {
+		return s.tuning.TemporalSemanticMinSimilarity
+	}
+	return DefaultTemporalSemanticMinSimilarity
+}
+
+// fillTemporalMatch completes one scanned arm row's unit fields.
+func fillTemporalMatch(m *RecallMatch, occurredStart, occurredEnd, mentionedAt sql.NullTime, chunkID, documentID, context sql.NullString, metadataRaw, tagsRaw, sourceRaw []byte) {
+	m.OccurredStart = utcTimePtr(nullTimePtr(occurredStart))
+	m.OccurredEnd = utcTimePtr(nullTimePtr(occurredEnd))
+	m.MentionedAt = utcTimePtr(nullTimePtr(mentionedAt))
+	m.ChunkID = chunkID.String
+	m.DocumentID = documentID.String
+	m.Context, m.ContextAbsent = context.String, !context.Valid
+	m.Metadata = decodeJSONMap(metadataRaw)
+	m.Tags = decodePostgresTextArray(tagsRaw)
+	m.SourceMemoryIDs = decodePostgresTextArray(sourceRaw)
+}
+
+// scanTemporalPool reads the temporal arm's ANN pool rows.
+func scanTemporalPool(rows *sql.Rows) ([]temporalRow, error) {
+	out := make([]temporalRow, 0)
+	for rows.Next() {
+		var m RecallMatch
+		var occurredStart, occurredEnd, mentionedAt sql.NullTime
+		var chunkID, documentID, context sql.NullString
+		var metadataRaw, tagsRaw, sourceRaw []byte
+		var similarity float64
+		if err := rows.Scan(&m.ID, &m.Text, &m.Type, &occurredStart, &occurredEnd, &mentionedAt,
+			&chunkID, &documentID, &context, &metadataRaw, &tagsRaw, &sourceRaw, &similarity); err != nil {
+			return nil, err
+		}
+		fillTemporalMatch(&m, occurredStart, occurredEnd, mentionedAt, chunkID, documentID, context, metadataRaw, tagsRaw, sourceRaw)
+		out = append(out, temporalRow{match: m, similarity: similarity})
+	}
+	return out, rows.Err()
+}
+
+// temporalPool runs one similarity-ranked, window-filtered ANN arm per fact
+// type, keeping the strongest temporalPoolSize rows of each.
+func (s *PostgresStore) temporalPool(ctx context.Context, q RecallQuery, types []string) ([]temporalRow, error) {
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	vector := EncodeEmbedding(q.QueryEmbedding)
+	overlap := `(
+	           (occurred_start IS NOT NULL AND occurred_end IS NOT NULL AND occurred_start <= $4 AND occurred_end >= $3)
+	        OR (mentioned_at IS NOT NULL AND mentioned_at BETWEEN $3 AND $4)
+	        OR (occurred_start IS NOT NULL AND occurred_start BETWEEN $3 AND $4)
+	        OR (occurred_end IS NOT NULL AND occurred_end BETWEEN $3 AND $4)
+	    )`
+	arms := make([]string, 0, len(types))
+	for _, ft := range types {
+		arms = append(arms, `(
+	        SELECT id::text, text, fact_type, occurred_start, occurred_end, mentioned_at, chunk_id, document_id, context, metadata, tags,
+	               COALESCE(source_memory_ids, '{}'::uuid[])::text,
+	               1 - (embedding <=> $2::vector) AS similarity
+	        FROM `+quoteIdent(schema)+`.memory_units
+	        WHERE bank_id = $1
+	          AND fact_type = `+sqlTextLiteral(ft)+`
+	          AND embedding IS NOT NULL
+	          AND (1 - (embedding <=> $2::vector)) >= $5
+	          AND `+overlap+`
+	          AND `+recallPredicates(q)+`
+	        ORDER BY embedding <=> $2::vector
+	        LIMIT `+strconv.Itoa(temporalPoolSize)+`
+	    )`)
+	}
+	args := []any{q.BankID, vector, q.Temporal.Start, q.Temporal.End, s.temporalFloor()}
+	rows, err := s.reader().QueryContext(ctx, strings.Join(arms, " UNION ALL "), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanTemporalPool(rows)
+}
+
+// scanTemporalLinks reads the temporal arm's link rows with each target's unit.
+func scanTemporalLinks(rows *sql.Rows) ([]temporalLink, error) {
+	out := make([]temporalLink, 0)
+	for rows.Next() {
+		var fromID, linkType string
+		var m RecallMatch
+		var occurredStart, occurredEnd, mentionedAt sql.NullTime
+		var chunkID, documentID, context sql.NullString
+		var metadataRaw, tagsRaw, sourceRaw []byte
+		var similarity, weight float64
+		if err := rows.Scan(&fromID, &m.ID, &m.Text, &m.Type, &occurredStart, &occurredEnd, &mentionedAt,
+			&chunkID, &documentID, &context, &metadataRaw, &tagsRaw, &sourceRaw,
+			&similarity, &weight, &linkType); err != nil {
+			return nil, err
+		}
+		fillTemporalMatch(&m, occurredStart, occurredEnd, mentionedAt, chunkID, documentID, context, metadataRaw, tagsRaw, sourceRaw)
+		out = append(out, temporalLink{
+			from:   fromID,
+			weight: weight,
+			kind:   MemoryLinkType(linkType),
+			target: temporalRow{match: m, similarity: similarity},
+		})
+	}
+	return out, rows.Err()
+}
+
+// temporalLinks reads the temporal and causal links a spread may follow, with
+// each target's row resolved inline. The spread applies the per-source cap.
+func (s *PostgresStore) temporalLinks(ctx context.Context, q RecallQuery) ([]temporalLink, error) {
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT l.from_unit_id::text, u.id::text, u.text, u.fact_type, u.occurred_start, u.occurred_end, u.mentioned_at,
+	                 u.chunk_id, u.document_id, u.context, u.metadata, u.tags,
+	                 COALESCE(u.source_memory_ids, '{}'::uuid[])::text,
+	                 1 - (u.embedding <=> $2::vector) AS similarity,
+	                 l.weight, l.link_type
+	          FROM ` + quoteIdent(schema) + `.memory_links l
+	          JOIN ` + quoteIdent(schema) + `.memory_units u ON u.id = l.to_unit_id
+	          WHERE l.bank_id = $1 AND u.bank_id = $1
+	            AND l.link_type IN ('temporal', 'causes', 'caused_by', 'enables', 'prevents')
+	            AND l.weight >= 0.1
+	            AND u.embedding IS NOT NULL
+	            AND (1 - (u.embedding <=> $2::vector)) >= $3`
+	args := []any{q.BankID, EncodeEmbedding(q.QueryEmbedding), s.temporalFloor()}
+	rows, err := s.reader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanTemporalLinks(rows)
+}
+
+// temporalArm is the independent temporal retrieval arm for a request that
+// named a bounded window. It builds its own ANN pool, spreads entry points
+// across the window, and walks the link graph outward, producing candidates
+// that carry their temporal score and proximity into fusion.
+func (s *PostgresStore) temporalArm(ctx context.Context, q RecallQuery, types []string, _ string) ([]recallHit, error) {
+	if !temporalWindowActive(q) || containsArm(q.DisabledArms, ArmTemporal) || len(q.QueryEmbedding) == 0 {
+		return nil, nil
+	}
+	if err := ValidateEmbedding(q.QueryEmbedding); err != nil {
+		return nil, err
+	}
+	pool, err := s.temporalPool(ctx, q, types)
+	if err != nil {
+		return nil, err
+	}
+	if len(pool) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(pool, func(i, j int) bool {
+		if pool[i].similarity != pool[j].similarity {
+			return pool[i].similarity > pool[j].similarity
+		}
+		return pool[i].match.ID < pool[j].match.ID
+	})
+	pool = capTemporalPool(pool, temporalPoolSize)
+	byType := map[string][]temporalRow{}
+	for _, row := range pool {
+		byType[row.match.Type] = append(byType[row.match.Type], row)
+	}
+	links, err := s.temporalLinks(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	inBatch := func(fromIDs []string) []temporalLink {
+		set := make(map[string]bool, len(fromIDs))
+		for _, id := range fromIDs {
+			set[id] = true
+		}
+		out := make([]temporalLink, 0)
+		for _, l := range links {
+			if set[l.from] {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	budget := q.Limit
+	if budget <= 0 {
+		budget = s.tuning.BudgetLimitForQuery(q)
+	}
+	results := make([]recallHit, 0)
+	for _, ft := range types {
+		rows := byType[ft]
+		if len(rows) == 0 {
+			continue
+		}
+		entries := selectTemporalCoverage(rows, q.Temporal.Start, q.Temporal.End, temporalEntryPoints, temporalCoverageBuckets)
+		results = append(results, spreadTemporalArm(entries, q.Temporal.Start, q.Temporal.End, budget, ft, inBatch)...)
+	}
+	return results, nil
+}
+
+// hydrateProofCounts reads each observation candidate's evidence column from
+// the stored rows, so the combined score's proof signal comes from the
+// authoritative count rather than from a projection of the source ids.
+func (s *PostgresStore) hydrateProofCounts(ctx context.Context, bankID string, candidates map[string]*recallCandidate) error {
+	ids := make([]string, 0)
+	for id, cand := range candidates {
+		if cand.match.Type == string(TypeObservation) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return err
+	}
+	query := `SELECT id::text, COALESCE(proof_count, 0)
+	          FROM ` + quoteIdent(schema) + `.memory_units
+	          WHERE bank_id = $1 AND id::text = ANY($2::text[])`
+	rows, err := s.reader().QueryContext(ctx, query, bankID, ids)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return err
+		}
+		if cand, ok := candidates[id]; ok {
+			cand.proofCount = count
+		}
+	}
+	return rows.Err()
 }

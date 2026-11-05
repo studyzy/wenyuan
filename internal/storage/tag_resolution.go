@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -219,37 +220,64 @@ func resolveTagLeafExact(tokens []string, expanded [][]string) (TagGroup, error)
 // expandTagToken returns the vocabulary tags a token resolves to. An exact
 // (case-insensitive) hit wins outright — a token that is already a real tag is
 // never widened to its neighbours. Otherwise every vocabulary tag in the same
-// namespace whose value is close enough is returned. A token that matches
-// nothing comes back as itself, which keeps the leaf unsatisfiable rather than
-// empty: an empty expansion would read as "no filtering" and widen the result
-// set to the whole bank, the opposite of what the caller asked for.
+// namespace whose value is close enough is returned, most similar first, with
+// ties keeping vocabulary order. A token that matches nothing comes back as
+// itself, which keeps the leaf unsatisfiable rather than empty: an empty
+// expansion would read as "no filtering" and widen the result set to the whole
+// bank, the opposite of what the caller asked for.
 func expandTagToken(token string, vocabulary []string) []string {
-	normalized := normalizeTagToken(token)
+	normalized := caseFoldTagToken(token)
 	exact := make([]string, 0, 1)
 	for _, tag := range vocabulary {
-		if normalizeTagToken(tag) == normalized {
+		if caseFoldTagToken(tag) == normalized {
 			exact = append(exact, tag)
 		}
 	}
 	if len(exact) > 0 {
 		return exact
 	}
-	matches := make([]string, 0)
+	tokenNamespace, tokenValue := splitNamespace(normalized)
+	type scored struct {
+		tag        string
+		similarity float64
+	}
+	matches := make([]scored, 0)
 	for _, tag := range vocabulary {
-		if similarTag(token, tag) {
-			matches = append(matches, tag)
+		namespace, value := splitNamespace(caseFoldTagToken(tag))
+		if namespace != tokenNamespace {
+			continue
+		}
+		if similarity := trigramJaccard(tokenValue, value); similarity >= tagSimilarityThreshold {
+			matches = append(matches, scored{tag: tag, similarity: similarity})
 		}
 	}
 	if len(matches) == 0 {
 		return []string{token}
 	}
-	return matches
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].similarity > matches[j].similarity
+	})
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.tag)
+	}
+	return out
 }
 
-// normalizeTagToken casefolds a tag and drops surrounding whitespace for the
-// exact-hit test; the stored spelling is what ends up in the rewritten leaf, so
+// tagCaseFold holds the multi-character folds a simple lowercase leaves behind,
+// so a token carrying a sharp s, a final sigma or a ligature matches the tag's
+// folded spelling the way case folding does.
+var tagCaseFold = strings.NewReplacer(
+	"ß", "ss", "ẞ", "ss", "ς", "σ",
+	"ﬀ", "ff", "ﬁ", "fi", "ﬂ", "fl", "ﬃ", "ffi", "ﬄ", "ffl", "ﬅ", "st", "ﬆ", "st",
+)
+
+// caseFoldTagToken casefolds a tag and drops surrounding whitespace for
+// comparison; the stored spelling is what ends up in the rewritten leaf, so
 // nothing here changes what is queried.
-func normalizeTagToken(tag string) string { return strings.ToLower(strings.TrimSpace(tag)) }
+func caseFoldTagToken(tag string) string {
+	return tagCaseFold.Replace(strings.ToLower(strings.TrimSpace(tag)))
+}
 
 // hasDuplicateTag reports whether a combination names the same tag twice, which
 // would let a memory with one tag satisfy two tokens.

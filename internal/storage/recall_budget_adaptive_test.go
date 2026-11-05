@@ -172,8 +172,8 @@ func TestRecallHonoursAdaptiveBudgetBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(adaptive.Matches) != 20 {
-		t.Fatalf("adaptive low returned %d matches, want the 20-candidate bound", len(adaptive.Matches))
+	if len(adaptive.Matches) != 40 {
+		t.Fatalf("adaptive low returned %d matches, want twice the 20-candidate bound", len(adaptive.Matches))
 	}
 	if adaptive.Trace.Budget != 20 {
 		t.Fatalf("trace budget = %d, want 20", adaptive.Trace.Budget)

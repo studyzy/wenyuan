@@ -125,15 +125,19 @@ func (s *MemoryStore) recallFlat(ctx context.Context, q RecallQuery) (RecallResu
 			if cand == nil {
 				m := hit.match
 				cand = &recallCandidate{
-					match:     m,
-					armRanks:  map[string]int{},
-					armScores: map[string]float64{},
+					match:             m,
+					armRanks:          map[string]int{},
+					armScores:         map[string]float64{},
+					temporalProximity: hit.temporalProximity,
 				}
 				candidates[hit.match.ID] = cand
 			}
 			if _, seen := cand.armRanks[trace.arm]; !seen {
 				cand.armRanks[trace.arm] = rank + 1
 				cand.armScores[trace.arm] = hit.score
+				if hit.temporalProximity != nil {
+					cand.temporalProximity = hit.temporalProximity
+				}
 			}
 		}
 	}
@@ -143,6 +147,7 @@ func (s *MemoryStore) recallFlat(ctx context.Context, q RecallQuery) (RecallResu
 	// source_memory_ids column): the prefer-observations dedup below, the
 	// source-facts channel and the response's source_fact_ids all read it here.
 	s.hydrateObservationSources(candidates)
+	s.hydrateProofCounts(candidates)
 
 	// Fusion ordering (reciprocal rank fusion) then combined scoring.
 	stop = phases.measure("score", false)
@@ -157,7 +162,7 @@ func (s *MemoryStore) recallFlat(ctx context.Context, q RecallQuery) (RecallResu
 	// narrower list in its own `[5]`/`[6]` steps only.
 	scored := append([]*recallCandidate(nil), ranked...)
 	ranked = preferObservations(ranked, q, limit)
-	ranked = capCandidates(ranked, limit)
+	ranked = capCandidates(ranked, tokenFilterCandidateLimit(q, limit))
 	stop()
 
 	result := RecallResult{Matches: make([]RecallMatch, 0, len(ranked))}
@@ -193,14 +198,26 @@ func (s *MemoryStore) recallFlat(ctx context.Context, q RecallQuery) (RecallResu
 	return result, nil
 }
 
-// capCandidates truncates the ranked list to the budget's candidate bound,
-// keeping the best-scoring entries. The list is already in descending order, so
-// the tail is what a tighter budget drops.
+// capCandidates truncates the ranked list to a candidate bound, keeping the
+// best-scoring entries. The list is already in descending order, so the tail is
+// what a tighter bound drops.
 func capCandidates(ranked []*recallCandidate, limit int) []*recallCandidate {
 	if limit <= 0 || len(ranked) <= limit {
 		return ranked
 	}
 	return ranked[:limit]
+}
+
+// tokenFilterCandidateLimit bounds the list that reaches the fact text budget.
+// Retrieval is bounded by the thinking budget, but twice that many candidates
+// reach the token filter, so the text budget — not a hard slice at the budget
+// bound — decides the final count. An explicit result limit is a strict cap the
+// caller set, and is never widened.
+func tokenFilterCandidateLimit(q RecallQuery, budgetLimit int) int {
+	if q.Limit > 0 {
+		return q.Limit
+	}
+	return 2 * budgetLimit
 }
 
 // hydrateObservationSources fills each observation candidate's SourceMemoryIDs
@@ -217,6 +234,23 @@ func (s *MemoryStore) hydrateObservationSources(candidates map[string]*recallCan
 		if sources := s.observationSources[id]; len(sources) > 0 {
 			cand.match.SourceMemoryIDs = append([]string(nil), sources...)
 		}
+	}
+}
+
+// hydrateProofCounts reads each observation candidate's evidence column into
+// the candidate, so the combined score's proof signal comes from the stored
+// count rather than from a projection of the source ids. Units that carry no
+// authoritative count fall back to the source projection's length.
+func (s *MemoryStore) hydrateProofCounts(candidates map[string]*recallCandidate) {
+	for id, cand := range candidates {
+		if cand.match.Type != string(TypeObservation) {
+			continue
+		}
+		if unit, ok := s.units[id]; ok && unit.ProofCount > 0 {
+			cand.proofCount = unit.ProofCount
+			continue
+		}
+		cand.proofCount = len(cand.match.SourceMemoryIDs)
 	}
 }
 
@@ -316,9 +350,13 @@ func activeArms(q RecallQuery) []string {
 }
 
 // recallHit is one arm result: a matched memory and the arm's score for it.
+// The temporal arm additionally carries the score it propagated and the unit's
+// proximity to the requested window.
 type recallHit struct {
-	match RecallMatch
-	score float64
+	match             RecallMatch
+	score             float64
+	temporalScore     *float64
+	temporalProximity *float64
 }
 
 // recallCandidate is a fused candidate accumulating per-arm evidence.
@@ -326,6 +364,11 @@ type recallCandidate struct {
 	match     RecallMatch
 	armRanks  map[string]int
 	armScores map[string]float64
+	// temporalProximity is the window proximity the temporal arm carried for
+	// this candidate; proofCount is the evidence column the combined score
+	// reads, zero when the unit is not an observation.
+	temporalProximity *float64
+	proofCount        int
 	// rrfScore is the reciprocal-rank-fusion total before any boost, and
 	// components is the breakdown the trace reports.
 	rrfScore   float64
@@ -494,7 +537,12 @@ func scoreCandidates(ctx context.Context, candidates map[string]*recallCandidate
 		}
 		// The strategy boost is a post-rerank add: an absolute bump on the
 		// final weight, not scaled by the fused score.
-		final += stage2Boost(cand, q.StrategyBoosts)
+		// A passthrough (RRF) rerank has no cross-encoder score for the add to
+		// correct; the reference skips the stage-2 add on that path, because a
+		// flat bump on the fused-seeded weight only reorders the list.
+		if !q.RerankSeedFromFused {
+			final += stage2Boost(cand, q.StrategyBoosts)
+		}
 		cand.match.Final = final
 		cand.match.ArmRanks = cloneIntMap(cand.armRanks)
 		cand.match.Scores = candidateScores(cand, q)
@@ -522,8 +570,8 @@ func scoreCandidates(ctx context.Context, candidates map[string]*recallCandidate
 			cand.match.Scores["reranker"] = base
 		}
 	}
-	// The RRF component is normalized across the batch so the trace reports a
-	// comparable value rather than the raw reciprocal-rank sum.
+	// The RRF component is kept at zero: it is batch-relative and excluded from
+	// the post-rerank score, so the trace reports zero for continuity.
 	normalizeRRFComponent(list)
 	// Interleave fusion is an explicit caller choice where the position *is*
 	// the order: each arm is guaranteed a slot, so the score is strictly
@@ -539,36 +587,15 @@ func scoreCandidates(ctx context.Context, candidates map[string]*recallCandidate
 	return list
 }
 
-// normalizeRRFComponent writes the batch-normalized RRF score into every
-// candidate's component map, so the trace reports a comparable value rather
-// than the raw reciprocal-rank sum.
+// normalizeRRFComponent keeps the RRF component at zero for every candidate.
+// RRF is batch-relative and is excluded from the post-rerank score, so a
+// normalized value would be unused and misleading in the breakdown.
 func normalizeRRFComponent(list []*recallCandidate) {
-	low, high := math.Inf(1), math.Inf(-1)
 	for _, cand := range list {
 		if cand.components == nil {
 			continue
 		}
-		value := cand.components["rrf_score"]
-		if value < low {
-			low = value
-		}
-		if value > high {
-			high = value
-		}
-	}
-	for _, cand := range list {
-		if cand.components == nil {
-			continue
-		}
-		value := cand.components["rrf_score"]
-		switch {
-		case math.IsInf(low, 1):
-			cand.components["rrf_normalized"] = 0
-		case high <= low:
-			cand.components["rrf_normalized"] = 1
-		default:
-			cand.components["rrf_normalized"] = (value - low) / (high - low)
-		}
+		cand.components["rrf_normalized"] = 0
 	}
 }
 
@@ -677,10 +704,9 @@ func passthroughRerankSeed(list []*recallCandidate, arms []string) []float64 {
 }
 
 // normalizeRerankScore maps a reranked score onto [0, 1]. A batch already in
-// [0, 1] is passed through, preserving the provider's calibrated confidence; a
-// batch that looks like logits is squashed through a logistic; anything else is
-// min-max normalized over the batch. A batch with no range yields the neutral 1
-// so fusion ordering stays intact.
+// [0, 1] is passed through unchanged, preserving the provider's calibrated
+// confidence (including a real zero). Any other batch is raw logits and is
+// squashed through a logistic, whatever its magnitude.
 //
 // NaN entries mark candidates the reranker never scored (a partial result or a
 // candidate past the rerank depth). They are excluded from the batch range: a
@@ -707,24 +733,13 @@ func normalizeRerankScore(score float64, scores []float64) float64 {
 		return 0
 	}
 	// Provider scores that already sit in [0, 1] are calibrated confidence and
-	// are returned unchanged.
+	// are returned unchanged; a zero stays a zero.
 	if low >= 0 && high <= 1 {
-		if score <= 0 {
-			return 0.01
-		}
 		return score
 	}
-	// A batch outside [0, 1] is treated as raw logits and squashed. The sigmoid
-	// keeps a top candidate high and a low one low, rather than stretching the
-	// batch's own range to [0, 1] regardless of absolute confidence.
-	if low >= -50 && high <= 50 {
-		return logistic(score)
-	}
-	if high <= low {
-		return 1
-	}
-	normalized := (score - low) / (high - low)
-	return 0.01 + 0.99*normalized
+	// Anything else is a raw logit: squash it through a sigmoid regardless of
+	// magnitude, so absolute confidence is preserved.
+	return logistic(score)
 }
 
 // logistic is the standard sigmoid, mapping a logit onto (0, 1).
@@ -789,13 +804,18 @@ func combinedSignals(cand *recallCandidate, q RecallQuery) (recency, temporal, p
 	// It grades toward the window's midpoint rather than answering
 	// in/out: a unit dated at the centre scores 1, one at either edge scores 0,
 	// and one with no window (or no date) is neutral 0.5.
-	temporal = temporalProximity(q.Temporal, cand.match.OccurredStart, cand.match.OccurredEnd, cand.match.MentionedAt)
-	// Proof count measures evidence strength, which only an observation has.
-	// The logarithmic curve keeps a large count from dominating: 1 proof is
-	// neutral and the signal saturates well before the count is huge.
+	if cand.temporalProximity != nil {
+		temporal = *cand.temporalProximity
+	} else {
+		temporal = temporalProximity(q.Temporal, cand.match.OccurredStart, cand.match.OccurredEnd, cand.match.MentionedAt)
+	}
+	// Proof count measures evidence strength, which only an observation has:
+	// a non-observation carries no usable count and stays neutral. The stored
+	// count is authoritative; the logarithmic curve keeps a large count from
+	// dominating and 1 proof is neutral.
 	proof = 0.5
-	if count := len(cand.match.SourceMemoryIDs); count >= 1 {
-		proof = math.Max(0, math.Min(1, 0.5+math.Log(float64(count))/10))
+	if cand.match.Type == string(TypeObservation) && cand.proofCount >= 1 {
+		proof = math.Max(0, math.Min(1, 0.5+math.Log(float64(cand.proofCount))/10))
 	}
 	return recency, temporal, proof
 }

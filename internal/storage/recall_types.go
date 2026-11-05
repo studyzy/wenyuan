@@ -75,8 +75,9 @@ func RecallArms() []string {
 	return []string{ArmSemantic, ArmKeyword, ArmGraph, ArmTemporal, ArmEntity}
 }
 
-// TemporalWindow is a caller-supplied inclusive window used for temporal
-// proximity ranking. Bounds are inclusive; a zero bound is treated as absent.
+// TemporalWindow is a caller-supplied inclusive window. The temporal retrieval
+// arm selects its pool from units overlapping it and grades each candidate's
+// proximity to it. Bounds are inclusive; a zero bound is treated as absent.
 type TemporalWindow struct {
 	Start    time.Time
 	End      time.Time
