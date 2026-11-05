@@ -1,6 +1,7 @@
 package reflect
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,24 +28,63 @@ const documentRejectionPrompt = `Your document did not match the required shape,
 
 // doneDocumentAnswer reads a document-mode `done` call into the markdown to
 // store. The model states either a structured `document` or a plain `answer`; a
-// `document` wins when both are present.
+// `document` wins when both are present. A document that arrives as a JSON
+// string (possibly double-encoded) or as a bare section array is decoded or
+// wrapped into the object the renderer expects before it is validated.
 func doneDocumentAnswer(input map[string]any) (string, error) {
-	if raw, ok := input["document"]; ok {
-		if document, ok := raw.(map[string]any); ok {
-			return renderDoneDocument(document)
-		}
-		if raw != nil {
+	if raw, ok := input["document"]; ok && raw != nil {
+		document := decodeDocumentValue(raw)
+		if document == nil {
 			// A document was sent but is not one. Falling through to the answer
 			// would fail a whole refresh over a shape the model fixes when told,
 			// so it is classified as a rejection and re-asked.
 			return "", fmt.Errorf("%w: document: expected an object with a 'sections' array, got %T", ErrDocumentSectionsInvalid, raw)
 		}
+		return renderDoneDocument(document)
 	}
 	answer := strings.TrimSpace(stringArg(input, "answer"))
 	if answer == "" {
 		return "", errors.New("the done call carried no usable answer and no decodable document object")
 	}
 	return answer, nil
+}
+
+// decodeDocumentValue normalises a `document` argument into an object: an
+// object passes through, a bare section array is wrapped, and a string is
+// decoded (once more when the provider double-encoded it).
+func decodeDocumentValue(raw any) map[string]any {
+	switch value := raw.(type) {
+	case map[string]any:
+		return value
+	case []any:
+		return map[string]any{"sections": value}
+	case string:
+		return decodeDocumentString(value)
+	default:
+		return nil
+	}
+}
+
+// decodeDocumentString decodes a JSON-encoded document, including a
+// double-encoded one, and wraps a decoded bare section array.
+func decodeDocumentString(text string) map[string]any {
+	var decoded any
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		return nil
+	}
+	if inner, ok := decoded.(string); ok && looksLikeJSON(inner) {
+		if err := json.Unmarshal([]byte(inner), &decoded); err != nil {
+			return nil
+		}
+	}
+	switch value := decoded.(type) {
+	case map[string]any:
+		return value
+	case []any:
+		return map[string]any{"sections": value}
+	default:
+		return nil
+	}
 }
 
 // renderDoneDocument builds the markdown a `done` document renders to.

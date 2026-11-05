@@ -626,7 +626,7 @@ func TestDoneSchemaCarriesCitationsAndVerdict(t *testing.T) {
 		var schema map[string]any
 		raw := toolParameters(ToolDone)
 		if document {
-			for _, def := range ToolDefinitions(true) {
+			for _, def := range ToolDefinitions(true, nil) {
 				if def.Name == ToolDone {
 					raw = def.Parameters
 				}

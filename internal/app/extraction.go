@@ -15,11 +15,13 @@ import (
 // newReflectRunner builds the model-driven reflection loop. A nil provider, or
 // the no-model selection, yields a nil runner, which storage reads as "use the
 // deterministic in-process reflection".
-func newReflectRunner(p provider.Provider) storage.ReflectRunner {
+func newReflectRunner(p provider.Provider, temperatureConfigured bool) storage.ReflectRunner {
 	if p == nil || p.Name() == none.NameNone {
 		return nil
 	}
-	return reflect.NewRunner(p)
+	runner := reflect.NewRunner(p)
+	runner.TemperatureConfigured = temperatureConfigured
+	return runner
 }
 
 // rerankScorer adapts the provider's cross-encoder onto the recall pipeline's
@@ -255,5 +257,5 @@ func toStorageFacts(facts []extraction.Fact) []storage.ExtractedFact {
 // a binary other than the server can wire the same loop without duplicating the
 // provider-selection rule.
 func NewReflectRunner(p provider.Provider) storage.ReflectRunner {
-	return newReflectRunner(p)
+	return newReflectRunner(p, false)
 }

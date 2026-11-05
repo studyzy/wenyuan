@@ -624,7 +624,7 @@ func (a *App) mount(router *httpx.Router) error {
 	// The model-driven reflection loop replaces the deterministic one when a
 	// model is configured. With no model the reference refuses reflect outright
 	// (400) rather than synthesizing an answer, so the route is armed to refuse.
-	memops.Reflection = newReflectRunner(a.Provider)
+	memops.Reflection = newReflectRunner(a.Provider, a.Config.ProviderScopes.TemperatureByOperation["reflect"] != nil)
 	memops.RefuseWithoutReflectModel = !reflectModelConfigured(a.Provider)
 	// The cross-encoder replaces the best-per-arm relevance fallback when a
 	// reranker is configured. A dedicated RERANKER-family backend wins over the

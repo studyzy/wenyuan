@@ -25,6 +25,11 @@ type Runner struct {
 	provider provider.Provider
 	// Scope labels the provider calls for tracing.
 	Scope string
+	// TemperatureConfigured reports whether the deployment set a reflect
+	// sampling temperature. The mechanical passes pin themselves to zero only
+	// when it is; otherwise the parameter is omitted, which is how an endpoint
+	// that rejects temperature is driven.
+	TemperatureConfigured bool
 }
 
 // NewRunner builds a runner over the model boundary.
@@ -51,6 +56,7 @@ func (r *Runner) Run(ctx context.Context, req storage.AgenticReflectRequest) (st
 		Mission:                    req.Mission,
 		Disposition:                req.Disposition,
 		AnswerAsDocument:           req.AnswerAsDocument,
+		TemperatureConfigured:      r.TemperatureConfigured,
 	})
 	outcome, err := loop.Run(ctx)
 	if err != nil {

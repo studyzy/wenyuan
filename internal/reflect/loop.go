@@ -183,6 +183,11 @@ type Config struct {
 	// to work out what the model meant. Without it the closing `done` call's
 	// `answer` is the answer; this only changes which field that is.
 	AnswerAsDocument bool
+	// TemperatureConfigured reports whether a reflect sampling temperature was
+	// resolved for this deployment. The mechanical passes pin their temperature
+	// to zero only when it was; otherwise they omit the parameter entirely, so
+	// an endpoint that rejects temperature can still be driven.
+	TemperatureConfigured bool
 }
 
 // profile packages the bank's identity for the prompt builders.
@@ -221,6 +226,12 @@ type Loop struct {
 	// llmCalls records every model call the run made, in order, for the trace's
 	// `llm_calls` list.
 	llmCalls []LLMCall
+	// compacted reports that the model-facing conversation had early tool
+	// results blanked to fit the budget. Once set, a stop is answered by
+	// standalone synthesis: appending a closing turn to a conversation whose
+	// early results are gone would ask the model to answer from less than the
+	// full evidence.
+	compacted bool
 	// documentAnswer is the markdown a document-mode `done` call produced, held
 	// until the loop stops.
 	documentAnswer string
@@ -325,10 +336,13 @@ func (l *Loop) Run(ctx context.Context) (Outcome, error) {
 	// gathered in. The free turn's own wording — its done payload, its
 	// answer_ready, its prose — is discarded, so the answer is written against
 	// the question and the full evidence set rather than restated from memory.
+	// A run that had to compact its model-facing conversation answers by the
+	// standalone synthesis over the full evidence instead: the closing turn is
+	// built on the conversation whose early tool results were blanked.
 	answer := ""
-	if stopped && l.documentFromStop {
+	if stopped && !l.compacted && l.documentFromStop {
 		answer = l.documentAnswer
-	} else if stopped {
+	} else if stopped && !l.compacted {
 		closing, err := l.closingStep(ctx, &outcome)
 		if err != nil {
 			return outcome, err
@@ -410,13 +424,13 @@ func choiceLabel(choice *provider.ToolSelectionPolicy) string {
 }
 
 // callModel runs one provider call, timing it and recording the scope it ran
-// under. Every model call the loop makes goes through here, so the trace's
-// `llm_calls` list is exactly the set of calls that happened rather than a
-// subset someone remembered to instrument.
+// under. Sequential calls all go through here; the parallel segment calls in a
+// split synthesis record their own entries (see mapEvidenceChunks), so the
+// trace's `llm_calls` list is still exactly the set of calls that happened.
 func (l *Loop) callModel(ctx context.Context, scope string, request provider.CompletionRequest) (provider.CompletionResult, error) {
 	started := time.Now()
 	response, err := l.provider.Complete(ctx, request)
-	l.llmCalls = append(l.llmCalls, LLMCall{Scope: scope, DurationMs: int(time.Since(started).Milliseconds())})
+	l.recordCall(scope, int(time.Since(started).Milliseconds()))
 	return response, err
 }
 
@@ -425,11 +439,12 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	turn := Turn{Iteration: iteration}
 	response, err := l.callModel(ctx, fmt.Sprintf("agent_%d", iteration), provider.CompletionRequest{
 		Messages:   l.messages(ctx),
-		Tools:      l.offeredTools(),
+		Tools:      l.offeredTools(ctx),
 		ToolChoice: l.toolChoice(),
 		Scope:      "reflect",
 	})
 	if err != nil {
+		l.markFailedTurn(iteration)
 		return turn, false, fmt.Errorf("reflection turn %d failed: %w", iteration, err)
 	}
 	turn.Usage = response.Usage
@@ -473,13 +488,7 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	for _, call := range response.ToolCalls {
 		// The model supplies its arguments as JSON; a malformed payload is
 		// treated as an empty argument set, which the tool's own defaults read.
-		input := map[string]any{}
-		if len(call.Arguments) > 0 {
-			var decoded map[string]any
-			if err := json.Unmarshal(call.Arguments, &decoded); err == nil {
-				input = decoded
-			}
-		}
+		input := decodeToolArguments(call.Arguments)
 		toolCall := ToolCall{ID: call.ID, Name: NormalizeToolName(call.Name), Input: l.resolveAliases(input)}
 		turn.Calls = append(turn.Calls, toolCall)
 		if toolCall.Name == forcedLayer {
@@ -542,8 +551,11 @@ func (l *Loop) step(ctx context.Context, iteration int) (Turn, bool, error) {
 	// The retrieval calls a turn asked for are independent of each other, so
 	// they run together rather than one after another. The results are still
 	// recorded in the order the model asked for them, so a later turn's context
-	// does not depend on which lookup answered first.
-	results, err := l.executeAll(ctx, calls)
+	// does not depend on which lookup answered first. The batch's token ask is
+	// bounded by what is left of the budget, shared across the calls in flight,
+	// so one parallel round cannot overshoot before the loop reacts.
+	ceiling := resolveToolArgCeiling(l.cfg.ContextBudget-l.evidenceTokens(), len(calls))
+	results, err := l.executeAll(ctx, calls, ceiling)
 	if err != nil {
 		// A failed retrieval fails the run rather than silently yielding
 		// "nothing found", which would be indistinguishable from an empty bank.
@@ -652,13 +664,14 @@ func answerFound(input map[string]any) bool {
 const maxParallelToolCalls = 4
 
 // executeAll runs a turn's tool calls, up to maxParallelToolCalls at a time, and
-// returns one result set per call in call order.
-func (l *Loop) executeAll(ctx context.Context, calls []ToolCall) ([][]Evidence, error) {
+// returns one result set per call in call order. ceiling is the tightened token
+// bound each call's max_tokens argument must respect this batch.
+func (l *Loop) executeAll(ctx context.Context, calls []ToolCall, ceiling int) ([][]Evidence, error) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
 	if len(calls) == 1 {
-		results, err := l.execute(ctx, calls[0])
+		results, err := l.execute(ctx, calls[0], ceiling)
 		if err != nil {
 			return nil, err
 		}
@@ -681,7 +694,7 @@ func (l *Loop) executeAll(ctx context.Context, calls []ToolCall) ([][]Evidence, 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results, err := l.execute(ctx, toolCall)
+			results, err := l.execute(ctx, toolCall, ceiling)
 			outcomes[index] = outcome{results: results, err: err}
 		}(i, call)
 	}
@@ -705,16 +718,17 @@ func (l *Loop) observationToolTokens() int {
 	return DefaultObservationToolTokens
 }
 
-// execute dispatches one tool call to the retriever.
-func (l *Loop) execute(ctx context.Context, call ToolCall) ([]Evidence, error) {
+// execute dispatches one tool call to the retriever. ceiling bounds the token
+// arguments the model may name on this call.
+func (l *Loop) execute(ctx context.Context, call ToolCall, ceiling int) ([]Evidence, error) {
 	switch call.Name {
 	case ToolSearchMentalModels:
 		return l.retrieval.ReflectMentalModels(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_results", 5), 1, 50))
 	case ToolSearchObservations:
 		return l.retrieval.ReflectObservations(ctx, stringArg(call.Input, "query"),
-			clampInt(intArg(call.Input, "max_tokens", l.observationToolTokens()), 1000, 16000))
+			clampInt(intArg(call.Input, "max_tokens", l.observationToolTokens()), toolArgMinTokens, ceiling))
 	case ToolRecall:
-		return l.retrieval.ReflectMemories(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_tokens", 2048), 1000, 16000))
+		return l.retrieval.ReflectMemories(ctx, stringArg(call.Input, "query"), clampInt(intArg(call.Input, "max_tokens", 2048), toolArgMinTokens, ceiling))
 	case ToolReadMentalModels:
 		ids := stringListArg(call.Input, "mental_model_ids")
 		if len(ids) == 0 {
@@ -892,7 +906,7 @@ func (l *Loop) messages(ctx context.Context) []provider.Message {
 		}
 	}
 	if len(l.evidence) > 0 {
-		content := "Evidence gathered so far:\n" + l.renderEvidence()
+		content := evidenceDigest + "\n" + l.renderEvidence()
 		// The guidance rides with the evidence it is about, once the loop has
 		// released the forced descent, so the model knows why it is free to
 		// answer (or to descend on its own).
@@ -901,7 +915,10 @@ func (l *Loop) messages(ctx context.Context) []provider.Message {
 		}
 		messages = append(messages, provider.Message{Role: "user", Content: content})
 	}
-	return messages
+	// The digest and the turns are the model-facing copy only. When they no
+	// longer fit the budget, early tool results are blanked here while the full
+	// evidence stays for the answer.
+	return l.compactToolResults(messages)
 }
 
 // renderEvidence renders the gathered evidence for the model, bounded so the
@@ -948,17 +965,10 @@ func (l *Loop) aliasToolText(text string, kindByID map[string]string) string {
 // It is the fallback, not the answer path: a loop that stopped on a `done` call
 // already has its answer and never reaches here.
 func (l *Loop) compose(ctx context.Context, outcome *Outcome) (string, error) {
-	messages := []provider.Message{
-		{Role: "system", Content: buildFinalSystemPrompt(l.retrieval.Directives(ctx), l.profile())},
-		{Role: "user", Content: buildFinalPrompt(l.profile(), l.cfg.Question, l.renderEvidence(), l.cfg.MaxTokens)},
-	}
-	response, err := l.callModel(ctx, "final", provider.CompletionRequest{
-		Messages:  messages,
-		Scope:     "reflect",
-		MaxTokens: l.synthesisMaxTokens(),
-	})
-	outcome.Usage = addUsage(outcome.Usage, response.Usage)
-	answer := strings.TrimSpace(response.Content)
+	// The gathered evidence may be larger than one prompt can hold. The single
+	// call and the map/reduce path both leave their answer here, with the final
+	// call's error, so the empty-answer and output-limit handling is shared.
+	answer, err := l.answerFromEvidence(ctx, outcome)
 	if answer == "" {
 		if err != nil {
 			return "", fmt.Errorf("reflection answer failed: %w", err)
@@ -1034,7 +1044,7 @@ func (l *Loop) extractStructured(ctx context.Context, outcome *Outcome, answer s
 		outcome.StructuredOutputError = err.Error()
 		return nil
 	}
-	response, err := l.callModel(ctx, "structured", provider.CompletionRequest{
+	response, err := l.callModel(ctx, "reflect_structured", provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: structuredExtractionSystemPrompt},
 			{Role: provider.RoleUser, Content: prompt},
@@ -1046,7 +1056,7 @@ func (l *Loop) extractStructured(ctx context.Context, outcome *Outcome, answer s
 		SkipValidation: true,
 		Scope:          "reflect_structured",
 		MaxTokens:      l.cfg.MaxTokens,
-		Temperature:    deterministicTemperature(),
+		Temperature:    l.deterministicTemperature(),
 	})
 	outcome.Usage = addUsage(outcome.Usage, response.Usage)
 	if err != nil {
@@ -1060,13 +1070,6 @@ func (l *Loop) extractStructured(ctx context.Context, outcome *Outcome, answer s
 	}
 	outcome.StructuredOutput = parsed
 	return nil
-}
-
-// deterministicTemperature pins the extraction call: reading values out of a
-// finished answer is a clerical pass, and sampling would only make it vary.
-func deterministicTemperature() *float64 {
-	value := 0.0
-	return &value
 }
 
 // rewriteSystem asks for a shortened answer.
@@ -1086,7 +1089,7 @@ func (l *Loop) rewriteToLength(ctx context.Context, outcome *Outcome, answer str
 	if l.cfg.MaxTokens <= 0 || storage.CountTokens(answer) <= l.cfg.MaxTokens {
 		return answer, nil
 	}
-	response, err := l.callModel(ctx, "rewrite", provider.CompletionRequest{
+	response, err := l.callModel(ctx, "final_rewrite", provider.CompletionRequest{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: rewriteSystem},
 			{Role: provider.RoleUser, Content: fmt.Sprintf("Target budget: %d tokens.\n\nText to rewrite:\n%s", l.cfg.MaxTokens, answer)},
@@ -1180,11 +1183,11 @@ func (l *Loop) toolChoice() *provider.ToolSelectionPolicy {
 // different tool, and `done` must stay out of reach until every cheaper layer
 // has been tried. Once forcing is released the full set, `done` included, is
 // offered.
-func (l *Loop) offeredTools() []provider.ToolDefinition {
+func (l *Loop) offeredTools(ctx context.Context) []provider.ToolDefinition {
 	if l.forcedStepPending() {
 		return []provider.ToolDefinition{ToolDefinition(l.forcedSequence[l.forcedStepsDone])}
 	}
-	return ToolDefinitions(l.cfg.AnswerAsDocument)
+	return ToolDefinitions(l.cfg.AnswerAsDocument, cleanDirectives(l.retrieval.Directives(ctx)))
 }
 
 // forcedStepPending reports whether a forced retrieval layer is still owed.

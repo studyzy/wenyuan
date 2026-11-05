@@ -84,19 +84,25 @@ var (
 )
 
 // ToolDefinitions is the tool set as the provider boundary expects it, for the
-// mode the loop runs in. Document mode swaps `done`'s answer field for the
-// structured document the stored answer is rendered from.
-func ToolDefinitions(answerAsDocument bool) []provider.ToolDefinition {
+// mode the loop runs in. A bank with standing rules gets a `done` variant that
+// requires the model to confirm compliance with each one; document mode swaps
+// `done`'s answer field for the structured document the stored answer is
+// rendered from.
+func ToolDefinitions(answerAsDocument bool, directiveRules []string) []provider.ToolDefinition {
 	names := ToolNames()
 	defs := make([]provider.ToolDefinition, 0, len(names))
 	for _, name := range names {
 		defs = append(defs, ToolDefinition(name))
 	}
-	if answerAsDocument {
-		for i := range defs {
-			if defs[i].Name == ToolDone {
-				defs[i].Parameters = documentDoneParameters()
-			}
+	for i := range defs {
+		if defs[i].Name != ToolDone {
+			continue
+		}
+		switch {
+		case answerAsDocument:
+			defs[i].Parameters = documentDoneParameters(directiveRules)
+		case len(directiveRules) > 0:
+			defs[i].Parameters = directiveDoneParameters(directiveRules)
 		}
 	}
 	return defs
@@ -210,22 +216,72 @@ func toolParameters(name string) json.RawMessage {
 // loop refuses.
 const answerFoundProperty = `{"type":"boolean","description":"true if what you retrieved states the answer to the question. false if you are reporting that nothing (or not enough) is known about it."}`
 
+// directiveDoneParameters is `done`'s argument schema when the bank has
+// standing rules: the model must state, per directive, how its answer complies.
+// The rules also ride on the answer field's description so they are read where
+// the answer is written, not only in a field the model may skip.
+func directiveDoneParameters(rules []string) json.RawMessage {
+	var schema map[string]any
+	_ = json.Unmarshal(toolParameters(ToolDone), &schema)
+	properties, _ := schema["properties"].(map[string]any)
+	if answer, ok := properties["answer"].(map[string]any); ok {
+		answer["description"] = answer["description"].(string) +
+			"\nMANDATORY: Your answer MUST comply with ALL directives:" + directiveRulesList(rules)
+	}
+	properties["directive_compliance"] = directiveComplianceProperty(rules)
+	required := append(schema["required"].([]any), "directive_compliance")
+	schema["required"] = required
+	raw, _ := json.Marshal(schema)
+	return raw
+}
+
 // documentDoneParameters is `done`'s argument schema in document mode: the
-// answer IS the stored document, so the model states its structure (or the
-// answer text the renderer accepts) instead of prose. The reference swaps the
-// two fields the same way — the prose `answer` is not what this mode stores —
-// and keeps the id arrays and the answer_found verdict, which is what the
-// citation membership and the absence gate read.
-func documentDoneParameters() json.RawMessage {
-	reason := `{"type":"string","description":"Brief explanation of why this call is being made"}`
-	return json.RawMessage(`{"type":"object","properties":{` + `"reason":` + reason + `,` +
-		`"document":{"type":"object","description":"The answer as a structured document: an object with a 'sections' array, each section carrying heading, level and an array of markdown-string blocks"}` +
-		`,"answer":{"type":"string","description":"The answer as markdown, when it is not stated as a document"}` +
-		`,"memory_ids":{"type":"array","items":{"type":"string"},"description":"Array of memory IDs that support your answer (put IDs here, NOT in answer text)"}` +
-		`,"mental_model_ids":{"type":"array","items":{"type":"string"},"description":"Array of mental model IDs that support your answer"}` +
-		`,"observation_ids":{"type":"array","items":{"type":"string"},"description":"Array of observation IDs that support your answer"}` +
-		`,"answer_found":` + answerFoundProperty +
-		`},"required":["reason","answer_found"]}`)
+// answer IS the stored document, so the model states its structure instead of
+// prose. The `answer` field is removed and `document` becomes required; the id
+// arrays and the answer_found verdict stay, which is what the citation
+// membership and the absence gate read. Directive compliance, when rules are
+// present, is still required.
+func documentDoneParameters(rules []string) json.RawMessage {
+	var schema map[string]any
+	_ = json.Unmarshal(toolParameters(ToolDone), &schema)
+	properties, _ := schema["properties"].(map[string]any)
+	delete(properties, "answer")
+	required := []any{"document"}
+	for _, name := range schema["required"].([]any) {
+		if name != "answer" {
+			required = append(required, name)
+		}
+	}
+	if len(rules) > 0 {
+		properties["directive_compliance"] = directiveComplianceProperty(rules)
+		required = append(required, "directive_compliance")
+	}
+	schema["required"] = required
+	raw, _ := json.Marshal(schema)
+	return raw
+}
+
+// directiveRulesList numbers the rules the way the compliance field reads them.
+func directiveRulesList(rules []string) string {
+	var b strings.Builder
+	for i, rule := range rules {
+		b.WriteString("\n  ")
+		b.WriteString(itoa(i + 1))
+		b.WriteString(". ")
+		b.WriteString(rule)
+	}
+	return b.String()
+}
+
+// directiveComplianceProperty is the required confirmation field, listing the
+// rules the model must account for one by one.
+func directiveComplianceProperty(rules []string) map[string]any {
+	return map[string]any{
+		"type": "string",
+		"description": "REQUIRED: Confirm your answer complies with ALL directives. List each directive " +
+			"and how your answer follows it:" + directiveRulesList(rules) +
+			"\n\nFormat: 'Directive 1: [how answer complies]. Directive 2: [how answer complies]...'",
+	}
 }
 
 // ToolCall is one call the model asked for.

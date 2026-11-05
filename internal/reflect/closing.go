@@ -7,7 +7,6 @@ package reflect
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
@@ -26,10 +25,19 @@ import (
 // empty, or a document still past its shape after the bounded re-asks, fails
 // the run instead.
 func (l *Loop) closingStep(ctx context.Context, outcome *Outcome) (string, error) {
+	base := l.messages(ctx)
+	// A closing done is only asked for when the loop's conversation ends in a
+	// tool result and has not had early results blanked to fit the budget.
+	// Otherwise the standalone synthesis answers instead: appending the closing
+	// turn to a conversation that ends on prose, a summary, or blanked results
+	// would ask the model to answer from less than the full evidence.
+	if l.compacted || !conversationEndsWithTool(base) {
+		return "", nil
+	}
 	for attempt := 0; ; attempt++ {
 		response, err := l.callModel(ctx, "closing_done", provider.CompletionRequest{
-			Messages:   l.closingMessages(ctx),
-			Tools:      ToolDefinitions(l.cfg.AnswerAsDocument),
+			Messages:   l.closingMessages(base),
+			Tools:      ToolDefinitions(l.cfg.AnswerAsDocument, cleanDirectives(l.retrieval.Directives(ctx))),
 			ToolChoice: toolNamed(ToolDone),
 			Scope:      "reflect",
 			MaxTokens:  l.synthesisMaxTokens(),
@@ -77,23 +85,18 @@ func (l *Loop) closingDoneCall(response provider.CompletionResult) (ToolCall, bo
 		if NormalizeToolName(call.Name) != ToolDone {
 			continue
 		}
-		input := map[string]any{}
-		if len(call.Arguments) > 0 {
-			var decoded map[string]any
-			if err := json.Unmarshal(call.Arguments, &decoded); err == nil {
-				input = decoded
-			}
-		}
+		input := decodeToolArguments(call.Arguments)
 		return ToolCall{ID: call.ID, Name: ToolDone, Input: l.resolveAliases(input)}, true
 	}
 	return ToolCall{}, false
 }
 
-// closingMessages builds the closing request's conversation: the turns the loop
-// ran, then the done-request prompt, then — on a re-ask — the reasons the last
-// document was refused, so the model fixes the shape instead of repeating it.
-func (l *Loop) closingMessages(ctx context.Context) []provider.Message {
-	messages := l.messages(ctx)
+// closingMessages builds the closing request's conversation from the loop's
+// already-built messages: the done-request prompt, then — on a re-ask — the
+// reasons the last document was refused, so the model fixes the shape instead
+// of repeating it.
+func (l *Loop) closingMessages(base []provider.Message) []provider.Message {
+	messages := append([]provider.Message(nil), base...)
 	messages = append(messages, provider.Message{
 		Role:    provider.RoleUser,
 		Content: buildDoneRequestPrompt(l.cfg.Question, l.cfg.MaxTokens),

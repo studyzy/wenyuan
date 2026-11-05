@@ -423,7 +423,7 @@ func TestReadMentalModelsRequiresIDs(t *testing.T) {
 // keeping the verdict the absence gate reads.
 func TestDocumentModeDoneSchemaSwapsAnswerForDocument(t *testing.T) {
 	var offered map[string]any
-	for _, def := range ToolDefinitions(true) {
+	for _, def := range ToolDefinitions(true, nil) {
 		if def.Name == ToolDone {
 			if err := json.Unmarshal(def.Parameters, &offered); err != nil {
 				t.Fatal(err)
@@ -437,9 +437,18 @@ func TestDocumentModeDoneSchemaSwapsAnswerForDocument(t *testing.T) {
 	if _, ok := properties["document"]; !ok {
 		t.Fatalf("document-mode done schema has no document field: %v", properties)
 	}
+	if _, ok := properties["answer"]; ok {
+		t.Fatalf("document-mode done schema still offers a prose answer field: %v", properties)
+	}
 	required, _ := offered["required"].([]any)
-	if len(required) != 2 || required[0] != "reason" || required[1] != "answer_found" {
-		t.Fatalf("document-mode done required = %v, want reason and answer_found", required)
+	want := map[string]bool{"document": true, "reason": true, "answer_found": true}
+	if len(required) != len(want) {
+		t.Fatalf("document-mode done required = %v, want %v", required, want)
+	}
+	for _, name := range required {
+		if !want[name.(string)] {
+			t.Fatalf("document-mode done required = %v, want %v", required, want)
+		}
 	}
 }
 

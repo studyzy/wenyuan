@@ -17,7 +17,7 @@ func (a *App) mountMentalModels(handle func(method, pattern string, handler http
 	handlers.RefuseWithoutRefreshModel = !reflectModelConfigured(a.Provider)
 	// The dry run runs the same reflect pipeline a refresh does, so it is
 	// supplied from the composition root, which holds the model boundary.
-	runner := newMentalModelRefresh(a.Store, a.Provider, newReflectRunner(a.Provider))
+	runner := newMentalModelRefresh(a.Store, a.Provider, newReflectRunner(a.Provider, a.Config.ProviderScopes.TemperatureByOperation["reflect"] != nil))
 	handlers.DryRun = runner.dryRun
 	handlers.BindRoutes(handle)
 }
