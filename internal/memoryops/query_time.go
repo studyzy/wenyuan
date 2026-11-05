@@ -122,12 +122,12 @@ var yearIntroPattern = regexp.MustCompile(`\b(?:in|during|throughout|year|en|dur
 
 // chineseDayWordPattern matches the fixed day words, longer forms first so
 // 大前天 is not read as 前天.
-var chineseDayWordPattern = regexp.MustCompile(`(大大前天|大大后天|大前天|大后天|前天|后天|昨天|昨日|今天|今日|本日|明天|明日)`)
+var chineseDayWordPattern = regexp.MustCompile(`(大大前天|大大后天|大前天|大后天|前天|后天|昨天|昨日|今天|今日|本日|当日|当天|明天|明日)`)
 
 // chineseDayOffsets maps a fixed day word to its offset from the reference day.
 var chineseDayOffsets = map[string]int{
 	"大大前天": -4, "大前天": -3, "前天": -2, "昨天": -1, "昨日": -1,
-	"今天": 0, "今日": 0, "本日": 0, "明天": 1, "明日": 1,
+	"今天": 0, "今日": 0, "本日": 0, "当日": 0, "当天": 0, "明天": 1, "明日": 1,
 	"后天": 2, "大后天": 3, "大大后天": 4,
 }
 
@@ -173,6 +173,14 @@ const chineseNumberFragment = `[0-9]+|[零〇○一二两俩三四五六七八�
 // numerals, as it appears in "三月" or "12月".
 const chineseMonthFragment = `十二|十一|十|[一二三四五六七八九]|1[0-2]|0?[1-9]`
 
+// chineseYearFragment matches a year written as four digits or as four numeral
+// characters, which is how a Chinese date states its year ("二〇二四年").
+const chineseYearFragment = `\d{4}|[零〇○一二三四五六七八九]{4}`
+
+// chineseDayFragment matches a day of month written in digits or in Chinese
+// numerals, including the compound 廿 and 卅 forms ("廿五", "卅一").
+const chineseDayFragment = `3[01]|[0-2]?[0-9]|卅一|卅|廿[一二三四五六七八九]?|三十一|三十|二十[一二三四五六七八九]?|十[一二三四五六七八九]?|[一二两俩三四五六七八九]`
+
 // chinesePhaseFragment matches the words that name early, middle or late in a
 // month. These stand alone, so the short forms are left out: a bare 中 or 末 in
 // an ordinary sentence is not a month phase.
@@ -192,6 +200,21 @@ const chineseUnitFragment = `天|日|周|星期|礼拜|月|年`
 // chineseMeasureFragment matches the optional 个 between a count and its unit;
 // "三个星期" and "3星期" mean the same thing.
 const chineseMeasureFragment = `(?:一个|个|一)?`
+
+// chineseBoundarySuffixFragment matches the open-interval suffixes the
+// boundary rules key on. The reference parser tolerates spaces between a
+// period and its suffix.
+const chineseBoundarySuffixFragment = `\s*(?:以?前|之前|以?后|之后)`
+
+// chineseMonthBoundarySuffixFragment is the month form of the boundary
+// suffix: an optional 份 closes the month word before the suffix.
+const chineseMonthBoundarySuffixFragment = `份?\s*(?:以?前|之前|以?后|之后)`
+
+// chineseRelativeYearWordFragment is the relative-year alternation the
+// reference parser's boundary rules use, longest forms first. It is wider
+// than the calendar-year words the windows resolve, because a boundary
+// suffix after any of them declines the range all the same.
+const chineseRelativeYearWordFragment = `下一个年度|下一年度|下年度|下一年|大后年|明年|后年|今年|本年|上一年度|上一个年度|上年度|上一年|去年|上年|前一年|大前年|前年`
 
 // chineseDigitValues maps a Chinese numeral character to its value.
 var chineseDigitValues = map[rune]int{
@@ -214,6 +237,24 @@ var chineseSinceGuard = regexp.MustCompile(`(?:` + chineseNumberFragment + `)个
 // is an open interval, while "三天后开始执行" is the point three days out with
 // something happening there.
 var chineseStartGuard = regexp.MustCompile(`(?:` + chineseNumberFragment + `)个?(?:` + chineseUnitFragment + `)(?:以?后|之后)(?:起|开始)$`)
+
+// chineseBoundaryGuard matches a period word or a date followed by an
+// open-interval boundary suffix ("去年之前", "2024年3月以前"). The reference
+// parser answers those with no temporal constraint at all — the API models a
+// closed range only, and everything-before or everything-after is not one —
+// so a query carrying one names no window and no other phrase in it may
+// supply one.
+var chineseBoundaryGuard = regexp.MustCompile(`(?:` +
+	`(?:` + chineseYearFragment + `)\s*年\s*(?:` + chineseMonthFragment + `)\s*月\s*(?:` + chineseDayFragment + `)(?:日|号)` + chineseBoundarySuffixFragment + `|` +
+	`(?:` + chineseRelativeYearWordFragment + `)\s*(?:` + chineseMonthFragment + `)\s*月\s*(?:` + chineseDayFragment + `)(?:日|号)` + chineseBoundarySuffixFragment + `|` +
+	`(?:` + chineseYearFragment + `)\s*年\s*(?:` + chineseMonthFragment + `)\s*月` + chineseMonthBoundarySuffixFragment + `|` +
+	`(?:` + chineseRelativeYearWordFragment + `)\s*(?:` + chineseMonthFragment + `)\s*月` + chineseMonthBoundarySuffixFragment + `|` +
+	`(?:` + chineseYearFragment + `)\s*年` + chineseBoundarySuffixFragment + `|` +
+	`(?:` + chineseRelativeYearWordFragment + `)` + chineseBoundarySuffixFragment + `|` +
+	`(?:上上|大上|上|这|本|当|下下|大下|下)` + chineseMeasureFragment + `(?:周|星期|礼拜)` + chineseBoundarySuffixFragment + `|` +
+	`(?:上上|大上|上|这|本|当|下下|大下|下)` + chineseMeasureFragment + `月` + chineseMonthBoundarySuffixFragment + `|` +
+	`(?:` + chineseMonthFragment + `)\s*月\s*(?:` + chineseDayFragment + `)(?:日|号)` + chineseBoundarySuffixFragment +
+	`)`)
 
 // chinesePointOffset matches "<n> <unit> 前/后" (also written 以前/以后), an
 // exact count of periods before or after the reference date, which names a
@@ -256,45 +297,534 @@ var (
 	chineseFutureHalf  = regexp.MustCompile(`(?:未来|接下来|往后)半个?(月|年)`)
 	chineseWithinHalf  = regexp.MustCompile(`半个?(月|年)(?:以内|之内|内)`)
 	chineseWithinCount = regexp.MustCompile(`(` + chineseNumberFragment + `)(个?)(` + chineseUnitFragment + `)(?:以内|之内|内)`)
+	// The hour units roll only — a bare hour point ("3小时前") is no form the
+	// reference parser resolves — so they stay out of the general unit
+	// alternation and these two patterns are the whole of their grammar.
+	chinesePastHour   = regexp.MustCompile(`(?:过去|近|最近)(` + chineseNumberFragment + `)(小时|钟头)`)
+	chineseFutureHour = regexp.MustCompile(`(?:未来|接下来|往后)(` + chineseNumberFragment + `)(小时|钟头)`)
 )
 
 // Month phases name a slice of a month: 上旬/月初 is the first ten days, 中旬/
 // 月中 the second ten, and 下旬/月末 the rest. A phase with no month attached is
 // the reference month's; a qualifier or a bare month number names another.
 var (
-	chineseAbsoluteMonthPhase = regexp.MustCompile(`(\d{4})年(` + chineseMonthFragment + `)月份?(` + chineseMonthPhaseFragment + `)`)
-	chineseRelativeMonthPhase = regexp.MustCompile(`(` + chineseYearWordFragment + `)(` + chineseMonthFragment + `)月份?(` + chineseMonthPhaseFragment + `)`)
-	chineseCurrentMonthPhase  = regexp.MustCompile(`(?:这|本|当)` + chineseMeasureFragment + `月份?(` + chineseMonthPhaseFragment + `)`)
-	chineseNextMonthPhase     = regexp.MustCompile(`(?:下下|下)` + chineseMeasureFragment + `月份?(` + chineseMonthPhaseFragment + `)`)
-	chinesePrevMonthPhase     = regexp.MustCompile(`(?:上上|上)` + chineseMeasureFragment + `月份?(` + chineseMonthPhaseFragment + `)`)
-	chineseBareMonthPhase     = regexp.MustCompile(`(` + chineseMonthFragment + `)月份?(` + chineseMonthPhaseFragment + `)`)
+	chineseAbsoluteMonthPhase = regexp.MustCompile(`(\d{4})\s*年\s*(` + chineseMonthFragment + `)\s*月份?\s*(` + chineseMonthPhaseFragment + `)`)
+	chineseRelativeMonthPhase = regexp.MustCompile(`(` + chineseYearWordFragment + `)\s*(` + chineseMonthFragment + `)\s*月份?\s*(` + chineseMonthPhaseFragment + `)`)
+	chineseCurrentMonthPhase  = regexp.MustCompile(`(?:这|本|当)` + chineseMeasureFragment + `月份?\s*(` + chineseMonthPhaseFragment + `)`)
+	chineseNextMonthPhase     = regexp.MustCompile(`(?:下下|下)` + chineseMeasureFragment + `月份?\s*(` + chineseMonthPhaseFragment + `)`)
+	chinesePrevMonthPhase     = regexp.MustCompile(`(?:上上|上)` + chineseMeasureFragment + `月份?\s*(` + chineseMonthPhaseFragment + `)`)
+	chineseBareMonthPhase     = regexp.MustCompile(`(` + chineseMonthFragment + `)\s*月份?\s*(` + chineseMonthPhaseFragment + `)`)
 	chineseBarePhase          = regexp.MustCompile(`(` + chinesePhaseFragment + `)`)
 )
 
 // chineseBareMonthPattern matches a month number standing on its own ("3月"),
 // which names that whole calendar month.
-var chineseBareMonthPattern = regexp.MustCompile(`(` + chineseMonthFragment + `)月份?`)
+var chineseBareMonthPattern = regexp.MustCompile(`(` + chineseMonthFragment + `)\s*月份?`)
 
 // Chinese absolute dates. The longer year-month-day form is matched first so
-// "2026年3月15日" is not read as "2026年3月" or as the bare year 2026.
+// "2026年3月15日" is not read as "2026年3月" or as the bare year 2026. A date
+// may end in 号 as well as 日.
 var (
-	chineseYearMonthDayPattern = regexp.MustCompile(`(\d{4})年(\d{1,2})月(\d{1,2})日`)
-	chineseYearMonthPattern    = regexp.MustCompile(`(\d{4})年(\d{1,2})月`)
-	chineseMonthDayPattern     = regexp.MustCompile(`(\d{1,2})月(\d{1,2})日`)
+	chineseYearMonthDayPattern = regexp.MustCompile(`(` + chineseYearFragment + `)\s*年\s*(` + chineseMonthFragment + `)\s*月\s*(` + chineseDayFragment + `)(?:日|号)`)
+	chineseYearMonthPattern    = regexp.MustCompile(`(` + chineseYearFragment + `)\s*年\s*(` + chineseMonthFragment + `)\s*月`)
+	chineseMonthDayPattern     = regexp.MustCompile(`(` + chineseMonthFragment + `)月(` + chineseDayFragment + `)(?:日|号)?`)
+	// A spaced month-and-day keeps the reference parser own shape: there the
+	// day must still carry its 日/号 suffix, so a fully spaced date falls back
+	// to the whole month (3 月 15 日 is March, not the 15th).
+	chineseSpacedMonthDayPattern = regexp.MustCompile(`(` + chineseMonthFragment + `)\s*月\s*(` + chineseDayFragment + `)(?:日|号)`)
 )
+
+// phraseBoundaryPattern wraps an expression so it matches only as a whole
+// phrase: a letter or digit may not sit immediately on either side. The class
+// is Unicode-aware so Cyrillic and accented words resolve too.
+func phraseBoundaryPattern(inner string) *regexp.Regexp {
+	return regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(?:` + inner + `)(?:$|[^\p{L}\p{N}])`)
+}
+
+var (
+	yesterdayWordsPattern = phraseBoundaryPattern(`yesterday|ayer|ieri|hier|gestern|вчера`)
+	todayWordsPattern     = phraseBoundaryPattern(`today|hoy|oggi|aujourd['’]?hui|heute|сегодня`)
+	dayBeforeLastPattern  = phraseBoundaryPattern(`позавчера`)
+)
+
+// fuzzyAgoPattern matches the approximate "a couple/few <unit>s ago" forms.
+// The captures are the quantity word and the singular unit.
+var fuzzyAgoPattern = regexp.MustCompile(
+	`(?:^|[^\p{L}\p{N}])(?:a\s+)?(couple|few)\s+(?:of\s+)?(day|week|month)s?\s+ago(?:$|[^\p{L}\p{N}])`)
+
+// russianFuzzyAgoPattern matches the Russian approximate forms. The first
+// capture is the quantity word, the second the unit in its genitive form.
+var russianFuzzyAgoPattern = regexp.MustCompile(
+	`(?:^|[^\p{L}\p{N}])(пар[ыу]?|несколько)\s+(дн(?:ей|я)|недель|месяцев)\s+назад(?:$|[^\p{L}\p{N}])`)
+
+// fuzzyRangeDays maps a quantity/unit pair to the closed range of day offsets
+// it names, measured back from the reference day.
+var fuzzyRangeDays = map[string][2]int{
+	"couple/day": {-3, -1}, "few/day": {-5, -2},
+	"couple/week": {-21, -7}, "few/week": {-35, -14},
+	"couple/month": {-90, -30}, "few/month": {-150, -60},
+}
+
+// multiLangCalendarPeriods maps the look-back period phrases of the supported
+// languages to the calendar period they name. English look-back phrases are
+// handled by relativeSpanWindow, so only the other languages live here.
+var multiLangCalendarPeriods = []struct {
+	pattern *regexp.Regexp
+	period  string
+}{
+	{phraseBoundaryPattern(`la\s+semana\s+pasada|la\s+settimana\s+scorsa|la\s+semaine\s+derniere|la\s+semaine\s+dernière|letzte\s+woche|на\s+прошлой\s+неделе|прошлой\s+неделе|прошлая\s+неделя`), "week"},
+	{phraseBoundaryPattern(`el\s+mes\s+pasado|il\s+mese\s+scorso|le\s+mois\s+dernier|letzter\s+monat|letzten\s+monat|в\s+прошлом\s+месяце|прошлом\s+месяце|прошлый\s+месяц`), "month"},
+	{phraseBoundaryPattern(`el\s+ano\s+pasado|el\s+año\s+pasado|l'anno\s+scorso|l'annee\s+derniere|l'année\s+dernière|letztes\s+jahr|letzte\s+jahr|в\s+прошлом\s+году|прошлом\s+году|прошлый\s+год`), "year"},
+	{phraseBoundaryPattern(`el\s+fin\s+de\s+semana\s+pasado|lo\s+scorso\s+fine\s+settimana|le\s+weekend\s+dernier|le\s+week-end\s+dernier|letztes\s+wochenende|letzte\s+wochenende|на\s+прошлых\s+выходных|в\s+прошлых\s+выходных|прошлых\s+выходных|прошлые\s+выходные`), "weekend"},
+}
+
+// calendarPeriodWindow resolves a whole calendar period for a look-back
+// direction: the previous week (Monday to Sunday), month, year or weekend
+// (Saturday to Sunday). A weekend day rolls back a further week so the weekend
+// in progress is not named as the last one.
+func calendarPeriodWindow(day time.Time, period string) *storage.TemporalWindow {
+	mondayIndex := (int(day.Weekday()) + 6) % 7 // Monday = 0
+	switch period {
+	case "week":
+		start := day.AddDate(0, 0, -(mondayIndex + 7))
+		return dayRange(start, start.AddDate(0, 0, 6))
+	case "month":
+		first := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.UTC)
+		end := first.AddDate(0, 0, -1)
+		return dayRange(time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC), end)
+	case "year":
+		year := day.Year() - 1
+		return dayRange(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC),
+			time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC))
+	case "weekend":
+		daysSinceSat := (mondayIndex + 2) % 7
+		if daysSinceSat <= 1 {
+			daysSinceSat += 7
+		}
+		sat := day.AddDate(0, 0, -daysSinceSat)
+		return dayRange(sat, sat.AddDate(0, 0, 1))
+	}
+	return nil
+}
+
+// explicitPhraseWindow resolves the relative day words, approximate "ago"
+// spans and calendar periods the quantified English patterns cannot see. It
+// runs before those patterns so "a couple of days ago" is never reduced to the
+// single day that "days ago" would name.
+func explicitPhraseWindow(lowered string, day time.Time) *storage.TemporalWindow {
+	if yesterdayWordsPattern.MatchString(lowered) {
+		target := day.AddDate(0, 0, -1)
+		return dayRange(target, target)
+	}
+	if dayBeforeLastPattern.MatchString(lowered) {
+		target := day.AddDate(0, 0, -2)
+		return dayRange(target, target)
+	}
+	if todayWordsPattern.MatchString(lowered) {
+		return dayRange(day, day)
+	}
+	if match := fuzzyAgoPattern.FindStringSubmatch(lowered); match != nil {
+		if span, ok := fuzzyRangeDays[match[1]+"/"+match[2]]; ok {
+			return dayRange(day.AddDate(0, 0, span[0]), day.AddDate(0, 0, span[1]))
+		}
+	}
+	if match := russianFuzzyAgoPattern.FindStringSubmatch(lowered); match != nil {
+		quantity := "few"
+		if strings.HasPrefix(match[1], "пар") {
+			quantity = "couple"
+		}
+		unit := "day"
+		switch {
+		case strings.HasPrefix(match[2], "недел"):
+			unit = "week"
+		case strings.HasPrefix(match[2], "месяц"):
+			unit = "month"
+		}
+		if span, ok := fuzzyRangeDays[quantity+"/"+unit]; ok {
+			return dayRange(day.AddDate(0, 0, span[0]), day.AddDate(0, 0, span[1]))
+		}
+	}
+	for _, entry := range multiLangCalendarPeriods {
+		if entry.pattern.MatchString(lowered) {
+			return calendarPeriodWindow(day, entry.period)
+		}
+	}
+	return nil
+}
+
+// multiLangMonthAlternations lists, for each calendar month, the month names
+// of the supported languages. Each entry becomes one capture group in the
+// month-and-year pattern below.
+var multiLangMonthAlternations = []string{
+	`january|enero|gennaio|janvier|januar|январь|января|январе`,
+	`february|febrero|febbraio|février|fevrier|februar|февраль|февраля|феврале`,
+	`march|marzo|mars|märz|marz|март|марта|марте`,
+	`april|abril|aprile|avril|апрель|апреля|апреле`,
+	`mayo|maggio|mai|may|май|мая|мае`,
+	`junio|giugno|juni|juin|june|июнь|июня|июне`,
+	`juillet|julio|luglio|juli|july|июль|июля|июле`,
+	`agosto|august|août|aout|август|августа|августе`,
+	`septiembre|settembre|september|septembre|сентябрь|сентября|сентябре`,
+	`october|octubre|ottobre|octobre|oktober|октябрь|октября|октябре`,
+	`noviembre|november|novembre|ноябрь|ноября|ноябре`,
+	`diciembre|dicembre|décembre|decembre|december|dezember|декабрь|декабря|декабре`, //nolint:misspell // 月份名的多语言变体，不是拼写错误
+}
+
+func buildMultiLangMonthYearPattern() *regexp.Regexp {
+	var b strings.Builder
+	b.WriteString(`(?:^|[^\p{L}\p{N}])(?:`)
+	for i, alt := range multiLangMonthAlternations {
+		if i > 0 {
+			b.WriteString(`|`)
+		}
+		b.WriteString(`(`)
+		b.WriteString(alt)
+		b.WriteString(`)`)
+	}
+	b.WriteString(`)\s+(\d{4})(?:$|[^\p{L}\p{N}])`)
+	return regexp.MustCompile(b.String())
+}
+
+var multiLangMonthYearPattern = buildMultiLangMonthYearPattern()
+
+// dayBeforeMonthPattern detects a day number immediately before a month name,
+// which is one exact date rather than a month-and-year span.
+var dayBeforeMonthPattern = regexp.MustCompile(
+	`\d{1,2}\s+(?:` + strings.Join(multiLangMonthAlternations, `|`) + `)`)
+
+// multiLangMonthYearWindow resolves "<month name> <year>" in any supported
+// language to that whole calendar month. A day number before the month leaves
+// it to the day-first rules that own the exact date.
+func multiLangMonthYearWindow(query string, _ time.Time) *storage.TemporalWindow {
+	if dayBeforeMonthPattern.MatchString(query) {
+		return nil
+	}
+	match := multiLangMonthYearPattern.FindStringSubmatch(query)
+	if match == nil {
+		return nil
+	}
+	month := 0
+	for i := 1; i <= len(multiLangMonthAlternations); i++ {
+		if match[i] != "" {
+			month = i
+			break
+		}
+	}
+	year, err := strconv.Atoi(match[len(multiLangMonthAlternations)+1])
+	if err != nil || year < 1 || month == 0 {
+		return nil
+	}
+	m := time.Month(month)
+	return dayRange(time.Date(year, m, 1, 0, 0, 0, 0, time.UTC), lastDayOfMonth(year, m))
+}
+
+var (
+	scoreMonthWords = map[string]bool{
+		"january": true, "february": true, "march": true, "april": true,
+		"may": true, "june": true, "july": true, "august": true,
+		"september": true, "october": true, "november": true, "december": true,
+	}
+	scoreRelativeWords = map[string]bool{
+		"today": true, "yesterday": true, "tomorrow": true, "tonight": true, "now": true,
+	}
+	scoreWeekdayWords = map[string]bool{
+		"monday": true, "tuesday": true, "wednesday": true, "thursday": true,
+		"friday": true, "saturday": true, "sunday": true,
+	}
+	scorePeriodWords = map[string]bool{
+		"last": true, "next": true, "this": true, "past": true, "coming": true,
+		"ago": true, "week": true, "weeks": true, "month": true, "months": true,
+		"year": true, "years": true, "day": true, "days": true, "hour": true,
+		"hours": true, "minute": true, "minutes": true, "quarter": true,
+		"decade": true, "century": true, "weekend": true, "morning": true,
+		"afternoon": true, "evening": true, "night": true, "noon": true, "midnight": true,
+	}
+	scoreTokenPattern = regexp.MustCompile(`[a-z0-9]+`)
+)
+
+// signalScore ranks how strong an explicit date signal a matched span carries.
+// A digit is the strongest; month and relative words next; weekday and period
+// words weakest. A lone four-digit integer with no other date word is a port,
+// ticket or buffer size rather than a year, so it scores zero.
+func signalScore(text string) int {
+	tokens := scoreTokenPattern.FindAllString(strings.ToLower(text), -1)
+	if len(tokens) == 0 {
+		return 0
+	}
+	numeric, bareYear, hasDigit := 0, "", false
+	scoreable, month, relative, weekday, period := false, false, false, false, false
+	for _, tok := range tokens {
+		allDigits, anyDigit := true, false
+		for i := 0; i < len(tok); i++ {
+			if tok[i] < '0' || tok[i] > '9' {
+				allDigits = false
+			} else {
+				anyDigit = true
+			}
+		}
+		if allDigits {
+			numeric++
+			bareYear = tok
+		}
+		if anyDigit {
+			hasDigit = true
+		}
+		if scoreMonthWords[tok] {
+			month, scoreable = true, true
+		}
+		if scoreRelativeWords[tok] {
+			relative, scoreable = true, true
+		}
+		if scoreWeekdayWords[tok] {
+			weekday, scoreable = true, true
+		}
+		if scorePeriodWords[tok] {
+			period, scoreable = true, true
+		}
+	}
+	if numeric == 1 && len(bareYear) == 4 && !scoreable {
+		return 0
+	}
+	score := 0
+	if hasDigit {
+		score += 100
+	}
+	if month {
+		score += 50
+	}
+	if relative {
+		score += 50
+	}
+	if weekday {
+		score += 30
+	}
+	if period {
+		score += 20
+	}
+	return score
+}
+
+// strongestBareWordWindow collects every bare relative, weekday and month word
+// the query names and keeps the window of the strongest signal; ties go to the
+// longest matched word. An explicit month therefore outranks a weekday no
+// matter which one appears first in the question.
+func strongestBareWordWindow(lowered string, day time.Time) *storage.TemporalWindow {
+	type candidate struct {
+		score  int
+		span   int
+		window *storage.TemporalWindow
+	}
+	var best candidate
+	add := func(word string, window *storage.TemporalWindow) {
+		if window == nil {
+			return
+		}
+		c := candidate{signalScore(word), len(word), window}
+		if best.window == nil || c.score > best.score ||
+			(c.score == best.score && c.span > best.span) {
+			best = c
+		}
+	}
+	for word, offset := range relativeOffsets {
+		if containsWord(lowered, word) {
+			target := day.AddDate(0, 0, offset)
+			add(word, dayRange(target, target))
+		}
+	}
+	for word, weekday := range weekdayNames {
+		if containsWord(lowered, word) {
+			target := mostRecentWeekday(day, weekday)
+			add(word, dayRange(target, target))
+		}
+	}
+	for _, month := range monthNameOrder {
+		if containsWord(lowered, month) {
+			add(month, monthDayOfReference(monthNames[month], day))
+		}
+	}
+	return best.window
+}
+
+// chineseTemporalTranslation folds the traditional and regional forms of the
+// characters the Chinese rules use onto the simplified forms those rules
+// match, so a query written in a variant reads through the same grammar.
+var chineseTemporalTranslation = map[rune]rune{
+	'週': '周', '禮': '礼', '個': '个', '兩': '两', '倆': '俩', '幾': '几',
+	'後': '后', '這': '这', '過': '过', '來': '来', '現': '现', '內': '内',
+	'間': '间', '號': '号', '當': '当', '數': '数', '開': '开', '時': '时',
+	'鐘': '钟', '鍾': '钟', '頭': '头', '還': '还', '麼': '么', '發': '发',
+	'討': '讨', '論': '论', '會': '会', '議': '议', '費': '费', '錄': '录',
+	'訊': '讯', '說': '说', '談': '谈', '寫': '写', '買': '买', '訂': '订',
+	'問': '问', '見': '见', '給': '给', '學': '学', '紀': '纪', '總': '总',
+	'結': '结', '劃': '划', '經': '经', '報': '报', '資': '资', '記': '记',
+	'計': '计', '誌': '志',
+}
+
+// normalizeTemporalQuery folds compatibility and regional character forms onto
+// the ones the grammars match: full-width ASCII becomes ASCII, the ideographic
+// space becomes an ordinary space, and the traditional characters above become
+// their simplified equivalents.
+func normalizeTemporalQuery(query string) string {
+	var b strings.Builder
+	b.Grow(len(query))
+	for _, r := range query {
+		switch {
+		case r >= 0xFF01 && r <= 0xFF5E:
+			r -= 0xFEE0
+		case r == 0x3000:
+			r = ' '
+		}
+		if folded, ok := chineseTemporalTranslation[r]; ok {
+			r = folded
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func containsCJK(text string) bool {
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+// chineseTemporalFollowerChars are the characters a Chinese temporal phrase
+// may be followed by in a sentence. A match followed by anything else is a
+// substring of a larger word, not the phrase itself.
+const chineseTemporalFollowerChars = " \t\r\n.,!?;:()[]{}<>\"'，。！？；：（）【】《》“”‘’、的得地了过着吗呢吧呀啊嘛么和及与或至到起内里中时后前份有要去做干说聊谈讨论查找看问见给提记想开买吃喝玩用学写发订安排帮测试部署收入申请下雨代码改动工资回总复统整比哪怎什谁几多少会活事项费录信消新天计划我你他她它咱议讯才再能还已又曾"
+
+var chineseTemporalFollowerPrefixes = []string{
+	"是否", "是不是", "已经", "曾经", "的时候", "期间", "以内", "以来", "之前",
+	"左右", "上午", "下午", "早上", "晚上", "中午", "凌晨", "转账", "付款",
+	"经费", "报销", "拜访", "支出", "阅读", "清晨", "傍晚", "黄昏", "夜里",
+	"半夜", "午夜", "总结", "报表", "报告", "记录", "资料", "纪录", "日志",
+	"日记", "读",
+}
+
+// hasChineseTemporalContext reports whether the text immediately after a
+// match is a plausible place for a temporal phrase to end.
+func hasChineseTemporalContext(query string, end int) bool {
+	if end >= len(query) {
+		return true
+	}
+	suffix := query[end:]
+	for _, prefix := range chineseTemporalFollowerPrefixes {
+		if strings.HasPrefix(suffix, prefix) {
+			return true
+		}
+	}
+	r, _ := utf8.DecodeRuneInString(suffix)
+	return strings.ContainsRune(chineseTemporalFollowerChars, r)
+}
+
+// chineseSearchIndex returns the match index of the first hit of re whose
+// trailing context is a plausible end for a temporal phrase, scanning every
+// match rather than only the first so a false-positive hit does not mask a
+// real one.
+func chineseSearchIndex(re *regexp.Regexp, query string) []int {
+	for _, idx := range re.FindAllStringSubmatchIndex(query, -1) {
+		if idx[1] < 0 || !hasChineseTemporalContext(query, idx[1]) {
+			continue
+		}
+		return idx
+	}
+	return nil
+}
+
+// chineseSearch returns the capture groups of the first match of re whose
+// trailing context is a plausible end for a temporal phrase.
+func chineseSearch(re *regexp.Regexp, query string) []string {
+	idx := chineseSearchIndex(re, query)
+	if idx == nil {
+		return nil
+	}
+	out := make([]string, len(idx)/2)
+	for i := range out {
+		if start := idx[2*i]; start >= 0 {
+			out[i] = query[start:idx[2*i+1]]
+		}
+	}
+	return out
+}
+
+// chineseMatches reports whether re has a match whose trailing context is a
+// plausible end for a temporal phrase.
+func chineseMatches(re *regexp.Regexp, query string) bool {
+	return chineseSearchIndex(re, query) != nil
+}
+
+// chineseBoundaryFollowPattern and chineseMonthBoundaryFollowPattern stand in
+// for the reference parser's negative lookaheads on its calendar-word rules: a
+// week, month or year word that a boundary suffix leans against does not name
+// that calendar period ("去年后半年的事" keeps 去年 from naming last year).
+// RE2 has no lookahead, so each candidate match is checked in the loop below.
+var (
+	chineseBoundaryFollowPattern      = regexp.MustCompile(`^\s*(?:以?前|之前|以?后|之后)`)
+	chineseMonthBoundaryFollowPattern = regexp.MustCompile(`^份?\s*(?:以?前|之前|以?后|之后)`)
+)
+
+// chineseSearchNotFollowedByIndex returns the match index of the first hit of
+// re whose trailing context is a plausible end for a temporal phrase and that
+// follow does not sit against.
+func chineseSearchNotFollowedByIndex(re *regexp.Regexp, follow *regexp.Regexp, query string) []int {
+	for _, idx := range re.FindAllStringSubmatchIndex(query, -1) {
+		if idx[1] < 0 || !hasChineseTemporalContext(query, idx[1]) {
+			continue
+		}
+		if follow.MatchString(query[idx[1]:]) {
+			continue
+		}
+		return idx
+	}
+	return nil
+}
+
+// chineseSearchNotFollowedBy returns the capture groups of that first hit.
+func chineseSearchNotFollowedBy(re *regexp.Regexp, follow *regexp.Regexp, query string) []string {
+	idx := chineseSearchNotFollowedByIndex(re, follow, query)
+	if idx == nil {
+		return nil
+	}
+	out := make([]string, len(idx)/2)
+	for i := range out {
+		if start := idx[2*i]; start >= 0 {
+			out[i] = query[start:idx[2*i+1]]
+		}
+	}
+	return out
+}
+
+// chineseNoConstraintGuard matches phrases that explicitly decline any closed
+// range: an over-long 大-chain before a day word. A query carrying one has no
+// temporal window at all, so no other phrase in it may supply one.
+var chineseNoConstraintGuard = regexp.MustCompile(`大{3,}(前|后|後)天`)
 
 // temporalWindowFromQuery derives the window a query's text names, or nil when
 // it names none. The reference date anchors every relative phrase, so the same
 // query resolves differently a year apart, which is what a relative phrase
 // means.
 func temporalWindowFromQuery(query string, reference time.Time) *storage.TemporalWindow {
-	lowered := strings.ToLower(query)
+	normalized := normalizeTemporalQuery(query)
+	lowered := strings.ToLower(normalized)
 	ref := reference.UTC()
 	day := time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, time.UTC)
 
 	// Chinese expressions are explicit and calendar-based, and the English
-	// word-boundary patterns cannot see them, so they are tried first.
-	if window := chineseWindowFromQuery(query, day); window != nil {
+	// word-boundary patterns cannot see them, so they are tried first. A query
+	// whose Chinese phrase declines any range stops here altogether.
+	if window, stop := chineseWindowFromQuery(normalized, day, ref); window != nil || stop {
+		if stop {
+			return nil
+		}
+		return window
+	}
+	// Relative day words, approximate "ago" spans and calendar periods resolve
+	// before the quantified patterns, so "a couple of days ago" is not reduced
+	// to the single day "days ago" would name.
+	if window := explicitPhraseWindow(lowered, day); window != nil {
 		return window
 	}
 	// "in the last N units" is the most specific span, so it is tried first.
@@ -356,38 +886,21 @@ func temporalWindowFromQuery(query string, reference time.Time) *storage.Tempora
 			return window
 		}
 	}
+	if window := multiLangMonthYearWindow(lowered, day); window != nil {
+		return window
+	}
 	if match := ordinalPattern.FindStringSubmatch(lowered); match != nil {
 		if window := ordinalWindow(match[1], day); window != nil {
 			return window
 		}
 	}
-	// A bare relative word means that single day.
-	for word, offset := range relativeOffsets {
-		if containsWord(lowered, word) {
-			target := day.AddDate(0, 0, offset)
-			return dayRange(target, target)
-		}
-	}
-	// A bare weekday means the most recent one, which is what "on Friday"
-	// asks for in a question about the past.
-	for word, weekday := range weekdayNames {
-		if containsWord(lowered, word) {
-			target := mostRecentWeekday(day, weekday)
-			return dayRange(target, target)
-		}
-	}
-	// A bare month name resolves to the reference day-of-month inside that
-	// month, preferring the past. It is tried after the named-day words so
-	// "today in march" is today, the word the query actually keys on.
-	for _, month := range monthNameOrder {
-		if containsWord(lowered, month) {
-			return monthDayOfReference(monthNames[month], day)
-		}
+	// Bare relative, weekday and month words are the weakest signals; keep the
+	// strongest one the query names rather than whichever the loops see first.
+	if window := strongestBareWordWindow(lowered, day); window != nil {
+		return window
 	}
 	// A four-digit year counts as a year only when a word introduces it, and
-	// only when it is near the reference date. Unintroduced, an isolated
-	// integer is a port or a ticket number, and a window built from one matches
-	// nothing while claiming to be a time constraint.
+	// only when it is near the reference date.
 	if window := yearIntroWindow(lowered, day); window != nil {
 		return window
 	}
@@ -407,13 +920,24 @@ func relativeSpanWindow(direction, unit string, day time.Time) *storage.Temporal
 		}
 		return dayRange(target, target)
 	}
+	// A look-back direction names a whole calendar period, not a rolling span
+	// of fixed length: last week is Monday to Sunday of the previous week, and
+	// last month and last year are their complete calendar periods.
+	if direction == "last" || direction == "past" || direction == "previous" {
+		switch unit {
+		case "week", "weeks":
+			return calendarPeriodWindow(day, "week")
+		case "month", "months":
+			return calendarPeriodWindow(day, "month")
+		case "year", "years":
+			return calendarPeriodWindow(day, "year")
+		case "weekend":
+			return calendarPeriodWindow(day, "weekend")
+		}
+	}
 	days, ok := unitDays[unit]
 	if !ok {
-		if unit == "weekend" {
-			days = 2
-		} else {
-			return nil
-		}
+		return nil
 	}
 	switch direction {
 	case "next", "coming":
@@ -421,7 +945,6 @@ func relativeSpanWindow(direction, unit string, day time.Time) *storage.Temporal
 	case "this":
 		return dayRange(day.AddDate(0, 0, -(days-1)), day)
 	default:
-		// "last", "past" and "previous" all look back.
 		return dayRange(day.AddDate(0, 0, -days), day.AddDate(0, 0, -1))
 	}
 }
@@ -556,7 +1079,7 @@ func dayRange(start, end time.Time) *storage.TemporalWindow {
 		HasStart: true,
 		HasEnd:   true,
 		Start:    time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC),
-		End:      time.Date(end.Year(), end.Month(), end.Day(), 23, 59, 59, 0, time.UTC),
+		End:      time.Date(end.Year(), end.Month(), end.Day(), 23, 59, 59, 999999000, time.UTC),
 	}
 }
 
@@ -668,8 +1191,11 @@ func parseChineseMonth(text string) (int, bool) {
 	}
 	runes := []rune(text)
 	if len(runes) == 1 {
-		if index := strings.IndexRune("一二三四五六七八九", runes[0]); index >= 0 {
-			return index + 1, true
+		numerals := []rune("一二三四五六七八九")
+		for index, numeral := range numerals {
+			if numeral == runes[0] {
+				return index + 1, true
+			}
 		}
 	}
 	return 0, false
@@ -760,6 +1286,29 @@ func chineseWindowFrom(day time.Time, count int, unit string) *storage.TemporalW
 	return dayRange(day, end)
 }
 
+// chineseHourWindowTo is the window running from the reference instant back by
+// the stated hours, clamped to whole days like every window here: the
+// reference parser floors both bounds, so a count long enough to cross
+// midnight reaches into the neighbouring day ("过去24小时").
+func chineseHourWindowTo(instant time.Time, hours int) *storage.TemporalWindow {
+	return dayRange(chineseHourShift(instant, hours, -1), instant)
+}
+
+// chineseHourWindowFrom is the window running forward from the reference
+// instant by the stated hours.
+func chineseHourWindowFrom(instant time.Time, hours int) *storage.TemporalWindow {
+	return dayRange(instant, chineseHourShift(instant, hours, 1))
+}
+
+// chineseHourShift steps an instant by whole hours without overflowing
+// time.Duration: a count like 千万小时 moves by whole days first and the
+// remainder by hours.
+func chineseHourShift(instant time.Time, hours, direction int) time.Time {
+	days := hours / 24
+	rest := hours % 24
+	return instant.AddDate(0, 0, direction*days).Add(time.Duration(direction*rest) * time.Hour)
+}
+
 // chineseHalfWindowTo is the window from half a month or year back to the
 // reference day.
 func chineseHalfWindowTo(day time.Time, unit string) *storage.TemporalWindow {
@@ -790,7 +1339,7 @@ func chineseMonthPhase(year, month int, phase string) *storage.TemporalWindow {
 // month, and a bare month number names that phase in the most recent such
 // month.
 func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindow {
-	if match := chineseAbsoluteMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseAbsoluteMonthPhase, query); match != nil {
 		year, err := strconv.Atoi(match[1])
 		if err != nil {
 			return nil
@@ -801,17 +1350,17 @@ func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindo
 		}
 		return chineseMonthPhase(year, month, match[3])
 	}
-	if match := chineseRelativeMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseRelativeMonthPhase, query); match != nil {
 		month, ok := parseChineseMonth(match[2])
 		if !ok {
 			return nil
 		}
 		return chineseMonthPhase(day.Year()+chineseYearOffsets[match[1]], month, match[3])
 	}
-	if match := chineseCurrentMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseCurrentMonthPhase, query); match != nil {
 		return chineseMonthPhase(day.Year(), int(day.Month()), match[1])
 	}
-	if match := chineseNextMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseNextMonthPhase, query); match != nil {
 		offset := 1
 		if strings.HasPrefix(match[0], "下下") {
 			offset = 2
@@ -819,7 +1368,7 @@ func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindo
 		start := addMonthsClamped(day, offset)
 		return chineseMonthPhase(start.Year(), int(start.Month()), match[1])
 	}
-	if match := chinesePrevMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chinesePrevMonthPhase, query); match != nil {
 		offset := -1
 		if strings.HasPrefix(match[0], "上上") {
 			offset = -2
@@ -827,7 +1376,7 @@ func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindo
 		start := addMonthsClamped(day, offset)
 		return chineseMonthPhase(start.Year(), int(start.Month()), match[1])
 	}
-	if match := chineseBareMonthPhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseBareMonthPhase, query); match != nil {
 		month, ok := parseChineseMonth(match[1])
 		if !ok {
 			return nil
@@ -838,7 +1387,7 @@ func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindo
 		}
 		return window
 	}
-	if match := chineseBarePhase.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseBarePhase, query); match != nil {
 		return chineseMonthPhase(day.Year(), int(day.Month()), match[1])
 	}
 	return nil
@@ -847,7 +1396,7 @@ func chineseMonthPhaseWindow(query string, day time.Time) *storage.TemporalWindo
 // chinesePointOffsetWindow resolves "<n> <unit> 前/后" to the single day that
 // distance from the reference day.
 func chinesePointOffsetWindow(query string, day time.Time) *storage.TemporalWindow {
-	match := chinesePointOffset.FindStringSubmatch(query)
+	match := chineseSearch(chinesePointOffset, query)
 	if match == nil {
 		return nil
 	}
@@ -869,7 +1418,7 @@ func chinesePointOffsetWindow(query string, day time.Time) *storage.TemporalWind
 // chineseHalfWindow resolves the half-period forms: 半 on its own, 半 after a
 // whole count ("一年半前"), and the counted half ("1个半月后").
 func chineseHalfWindow(query string, day time.Time) *storage.TemporalWindow {
-	if match := chineseYearHalfPoint.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseYearHalfPoint, query); match != nil {
 		count, ok := parseChineseNumber(match[1])
 		if !ok || count <= 0 {
 			return nil
@@ -880,7 +1429,7 @@ func chineseHalfWindow(query string, day time.Time) *storage.TemporalWindow {
 		}
 		return singleDay(addMonthsClamped(day, -months))
 	}
-	if match := chineseCountHalfPoint.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseCountHalfPoint, query); match != nil {
 		count, ok := parseChineseNumber(match[1])
 		if !ok || count <= 0 {
 			return nil
@@ -890,13 +1439,13 @@ func chineseHalfWindow(query string, day time.Time) *storage.TemporalWindow {
 		}
 		return singleDay(addMonthsClamped(day, -count).AddDate(0, 0, -15))
 	}
-	if match := chineseHalfMonthPoint.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseHalfMonthPoint, query); match != nil {
 		if match[1] != "前" {
 			return singleDay(day.AddDate(0, 0, 15))
 		}
 		return singleDay(day.AddDate(0, 0, -15))
 	}
-	if match := chineseHalfYearPoint.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseHalfYearPoint, query); match != nil {
 		if match[1] != "前" {
 			return singleDay(addMonthsClamped(day, 6))
 		}
@@ -909,19 +1458,19 @@ func chineseHalfWindow(query string, day time.Time) *storage.TemporalWindow {
 // than a day: a couple of days is one to three back, a few is two to five.
 func chineseFuzzyWindow(query string, day time.Time) *storage.TemporalWindow {
 	switch {
-	case chineseFuzzyCoupleDays.MatchString(query):
+	case chineseMatches(chineseFuzzyCoupleDays, query):
 		return dayRange(day.AddDate(0, 0, -3), day.AddDate(0, 0, -1))
-	case chineseFuzzyFewDays.MatchString(query):
+	case chineseMatches(chineseFuzzyFewDays, query):
 		return dayRange(day.AddDate(0, 0, -5), day.AddDate(0, 0, -2))
-	case chineseFuzzyCoupleWeeks.MatchString(query):
+	case chineseMatches(chineseFuzzyCoupleWeeks, query):
 		return dayRange(day.AddDate(0, 0, -21), day.AddDate(0, 0, -7))
-	case chineseFuzzyFewWeeks.MatchString(query):
+	case chineseMatches(chineseFuzzyFewWeeks, query):
 		return dayRange(day.AddDate(0, 0, -35), day.AddDate(0, 0, -14))
-	case chineseFuzzyCoupleMonths.MatchString(query):
+	case chineseMatches(chineseFuzzyCoupleMonths, query):
 		return dayRange(day.AddDate(0, 0, -90), day.AddDate(0, 0, -30))
-	case chineseFuzzyFewMonths.MatchString(query):
+	case chineseMatches(chineseFuzzyFewMonths, query):
 		return dayRange(day.AddDate(0, 0, -150), day.AddDate(0, 0, -60))
-	case chineseFuzzyYears.MatchString(query):
+	case chineseMatches(chineseFuzzyYears, query):
 		return dayRange(addYearsClamped(day, -3), addYearsClamped(day, -1))
 	}
 	return nil
@@ -929,12 +1478,14 @@ func chineseFuzzyWindow(query string, day time.Time) *storage.TemporalWindow {
 
 // chineseRollingWindow resolves the counted and bounded windows: "这三天" and
 // "前三个月" run back to the reference day, "未来三个月" runs forward from it,
-// and the 内 forms are the bounded back-running ones.
-func chineseRollingWindow(query string, day time.Time) *storage.TemporalWindow {
-	if match := chineseThisFew.FindStringSubmatch(query); match != nil {
+// the 内 forms are the bounded back-running ones, and the hour units roll
+// from the reference instant, whose time of day decides which day a count
+// long enough to cross midnight reaches into.
+func chineseRollingWindow(query string, day, ref time.Time) *storage.TemporalWindow {
+	if match := chineseSearch(chineseThisFew, query); match != nil {
 		return chineseWindowTo(day, 5, match[1])
 	}
-	if match := chineseThisCount.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseThisCount, query); match != nil {
 		if count, ok := parseChineseNumber(match[1]); ok && count > 1 {
 			return chineseWindowTo(day, count, match[2])
 		}
@@ -943,35 +1494,35 @@ func chineseRollingWindow(query string, day time.Time) *storage.TemporalWindow {
 	// A count of one or two written as a word ("前一天") is a point, not a
 	// rolling window; a written-out count above two, or any count in digits, is
 	// a window. "前两天" never reaches here because the fuzzy rules claim it.
-	if match := chineseFrontDays.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseFrontDays, query); match != nil {
 		count, ok := parseChineseNumber(match[1])
 		if !ok || (count <= 2 && !isASCIIDigits(match[1])) {
 			return nil
 		}
 		return chineseWindowTo(day, count, match[2])
 	}
-	if match := chineseFrontPeriod.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseFrontPeriod, query); match != nil {
 		if count, ok := parseChineseNumber(match[1]); ok && count > 1 {
 			return chineseWindowTo(day, count, match[2])
 		}
 		return nil
 	}
-	if match := chinesePastFew.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chinesePastFew, query); match != nil {
 		return chineseWindowTo(day, 5, match[1])
 	}
-	if match := chinesePastCount.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chinesePastCount, query); match != nil {
 		if count, ok := parseChineseNumber(match[1]); ok {
 			return chineseWindowTo(day, count, match[2])
 		}
 		return nil
 	}
-	if match := chinesePastHalf.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chinesePastHalf, query); match != nil {
 		return chineseHalfWindowTo(day, match[1])
 	}
-	if match := chineseWithinHalf.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseWithinHalf, query); match != nil {
 		return chineseHalfWindowTo(day, match[1])
 	}
-	if match := chineseWithinCount.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseWithinCount, query); match != nil {
 		// "3月内" is a month, not a three-month window, so a month count needs
 		// the 个 that makes it a measure; a four-digit year count is a year.
 		if match[3] == "月" && match[2] != "个" {
@@ -985,16 +1536,28 @@ func chineseRollingWindow(query string, day time.Time) *storage.TemporalWindow {
 		}
 		return nil
 	}
-	if match := chineseFutureFew.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chinesePastHour, query); match != nil {
+		if hours, ok := parseChineseNumber(match[1]); ok {
+			return chineseHourWindowTo(ref, hours)
+		}
+		return nil
+	}
+	if match := chineseSearch(chineseFutureHour, query); match != nil {
+		if hours, ok := parseChineseNumber(match[1]); ok {
+			return chineseHourWindowFrom(ref, hours)
+		}
+		return nil
+	}
+	if match := chineseSearch(chineseFutureFew, query); match != nil {
 		return chineseWindowFrom(day, 5, match[1])
 	}
-	if match := chineseFutureCount.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseFutureCount, query); match != nil {
 		if count, ok := parseChineseNumber(match[1]); ok {
 			return chineseWindowFrom(day, count, match[2])
 		}
 		return nil
 	}
-	if match := chineseFutureHalf.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseFutureHalf, query); match != nil {
 		if match[1] == "月" {
 			return dayRange(day, day.AddDate(0, 0, 15))
 		}
@@ -1008,90 +1571,199 @@ func chineseRollingWindow(query string, day time.Time) *storage.TemporalWindow {
 // the reference parser's: an open-ended interval is refused before a suffix can
 // be read as a point, and the exact counted forms are tried before the fuzzy
 // ones so "两天前" is the day two days back while "前两天" is a range.
-func chinesePeriodWindow(query string, day time.Time) *storage.TemporalWindow {
-	if chineseSinceGuard.MatchString(query) || chineseStartGuard.MatchString(query) {
-		return nil
+func chinesePeriodWindow(query string, day, ref time.Time) (*storage.TemporalWindow, bool) {
+	if chineseMatches(chineseNoConstraintGuard, query) {
+		return nil, true
+	}
+	if chineseMatches(chineseSinceGuard, query) || chineseMatches(chineseStartGuard, query) ||
+		chineseMatches(chineseBoundaryGuard, query) {
+		return nil, true
 	}
 	if window := chineseMonthPhaseWindow(query, day); window != nil {
-		return window
+		return window, false
 	}
 	if window := chinesePointOffsetWindow(query, day); window != nil {
-		return window
+		return window, false
 	}
 	if window := chineseHalfWindow(query, day); window != nil {
-		return window
+		return window, false
 	}
 	if window := chineseFuzzyWindow(query, day); window != nil {
-		return window
+		return window, false
 	}
-	return chineseRollingWindow(query, day)
+	if window := chineseRollingWindow(query, day, ref); window != nil {
+		return window, false
+	}
+	return nil, false
 }
 
 // chineseWindowFromQuery derives the window a Chinese temporal expression
 // names, or nil when the query has none. Absolute dates are tried before the
 // relative words so "2026年3月15日" is not mistaken for the bare year 2026, and
 // the fixed day words before the week/month/year words so "大前天" is not read
-// as "前天".
-func chineseWindowFromQuery(query string, day time.Time) *storage.TemporalWindow {
-	// The counted, phased and rolling forms are tried first, in the reference
-	// parser's order, so a phrase like "前两天" is read as the range it is
-	// rather than as a count of days.
-	if window := chinesePeriodWindow(query, day); window != nil {
-		return window
+// as "前天". The reference instant ref backs the hour windows, whose bounds
+// move with the time of day; every other window is day-granular.
+func chineseWindowFromQuery(query string, day, ref time.Time) (*storage.TemporalWindow, bool) {
+	if !containsCJK(query) {
+		return nil, false
 	}
-	if match := chineseYearMonthDayPattern.FindStringSubmatch(query); match != nil {
+	// The counted, phased and rolling forms are tried first so a phrase like
+	// 前两天 is read as the range it is rather than as a count of days.
+	if window, stop := chinesePeriodWindow(query, day, ref); window != nil || stop {
+		return window, stop
+	}
+	if match := chineseSearch(chineseYearMonthDayPattern, query); match != nil {
 		if window := chineseAbsoluteDay(match[1], match[2], match[3]); window != nil {
-			return window
+			return window, false
 		}
 	}
-	if match := chineseYearMonthPattern.FindStringSubmatch(query); match != nil {
+	if match := chineseSearch(chineseYearMonthPattern, query); match != nil {
 		if window := chineseYearMonth(match[1], match[2]); window != nil {
-			return window
+			return window, false
 		}
 	}
-	if match := chineseMonthDayPattern.FindStringSubmatch(query); match != nil {
-		if window := chineseAbsoluteDay(strconv.Itoa(day.Year()), match[1], match[2]); window != nil {
-			return window
+	if match := chineseMonthDayMatch(query); match != nil {
+		if window := chineseMonthDayWindow(query, match, day); window != nil {
+			return window, false
 		}
 	}
-	if match := chineseBareMonthPattern.FindStringSubmatchIndex(query); match != nil {
+	if match := chineseSearchNotFollowedByIndex(chineseBareMonthPattern, chineseMonthBoundaryFollowPattern, query); match != nil {
 		if window := chineseBareMonthWindow(query, match, day); window != nil {
-			return window
+			return window, false
 		}
 	}
-	if match := chineseDayWordPattern.FindStringSubmatch(query); match != nil {
+	// The fixed day, week, month and year words are matched across the whole
+	// query: an early hit embedded in a larger word must not mask a real
+	// phrase later in the sentence.
+	if match := chineseSearch(chineseDayWordPattern, query); match != nil {
 		target := day.AddDate(0, 0, chineseDayOffsets[match[1]])
-		return dayRange(target, target)
+		return dayRange(target, target), false
 	}
-	if match := chineseWeekPattern.FindStringSubmatch(query); match != nil && match[2] == "" {
-		return chineseWeekWindow(day, chineseWeekOffsets[match[1]])
+	if match := chineseSearchNotFollowedBy(chineseWeekPattern, chineseBoundaryFollowPattern, query); match != nil && match[2] == "" {
+		return chineseWeekWindow(day, chineseWeekOffsets[match[1]]), false
 	}
-	if match := chineseMonthWordPattern.FindStringSubmatch(query); match != nil {
-		return chineseMonthWindow(day, chineseMonthOffsets[match[1]])
+	if match := chineseSearchNotFollowedBy(chineseMonthWordPattern, chineseMonthBoundaryFollowPattern, query); match != nil {
+		return chineseMonthWindow(day, chineseMonthOffsets[match[1]]), false
 	}
-	if match := chineseYearWordPattern.FindStringSubmatch(query); match != nil {
+	if match := chineseSearchNotFollowedBy(chineseYearWordPattern, chineseBoundaryFollowPattern, query); match != nil {
 		year := day.Year() + chineseYearOffsets[match[1]]
 		return dayRange(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC),
-			time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC))
+			time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC)), false
+	}
+	return nil, false
+}
+
+// chineseAbsoluteDay resolves a stated year, month and day to that single
+// date. A day the named month does not have names no date, so an impossible
+// day yields no window rather than a day in the month that follows.
+func chineseAbsoluteDay(yearText, monthText, dayText string) *storage.TemporalWindow {
+	year, ok := chineseYearValue(yearText)
+	if !ok {
+		return nil
+	}
+	month, ok := parseChineseMonth(monthText)
+	if !ok {
+		return nil
+	}
+	dayOfMonth, ok := parseChineseDay(dayText)
+	if !ok || dayOfMonth > lastDayOfMonth(year, time.Month(month)).Day() {
+		return nil
+	}
+	target := time.Date(year, time.Month(month), dayOfMonth, 0, 0, 0, 0, time.UTC)
+	return dayRange(target, target)
+}
+
+// chineseYearValue reads a year stated in digits or as four numeral
+// characters, each numeral contributing one digit ("二〇二四" is 2024).
+func chineseYearValue(text string) (int, bool) {
+	if year, err := strconv.Atoi(text); err == nil {
+		return year, true
+	}
+	digits := make([]rune, 0, 4)
+	for _, r := range text {
+		switch r {
+		case '零', '〇', '○':
+			digits = append(digits, '0')
+		default:
+			index := -1
+			for i, numeral := range []rune("一二三四五六七八九") {
+				if numeral == r {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				return 0, false
+			}
+			digits = append(digits, rune('0'+index+1))
+		}
+	}
+	if len(digits) != 4 {
+		return 0, false
+	}
+	year, err := strconv.Atoi(string(digits))
+	if err != nil {
+		return 0, false
+	}
+	return year, true
+}
+
+// parseChineseDay reads a day of month written in digits or Chinese numerals.
+func parseChineseDay(text string) (int, bool) {
+	day, ok := parseChineseNumber(text)
+	if !ok || day < 1 || day > 31 {
+		return 0, false
+	}
+	return day, true
+}
+
+// chineseMonthDayMatch returns the match index of the first month-and-day that
+// stands on its own: a date preceded by a year belongs to the year rules, and
+// a match whose trailing context is not a plausible end for a phrase is part
+// of a larger word. The spaced form is tried first and demands the 日/号 the
+// reference parser demands of it; the adjacent form keeps the suffix optional,
+// so "三月廿五" still names a day.
+func chineseMonthDayMatch(query string) []int {
+	for _, re := range []*regexp.Regexp{chineseSpacedMonthDayPattern, chineseMonthDayPattern} {
+		for _, idx := range re.FindAllStringSubmatchIndex(query, -1) {
+			if idx[2] > 0 {
+				if before, _ := utf8.DecodeLastRuneInString(query[:idx[2]]); before == '年' {
+					continue
+				}
+			}
+			if !hasChineseTemporalContext(query, idx[1]) {
+				continue
+			}
+			return idx
+		}
 	}
 	return nil
 }
 
-// chineseAbsoluteDay resolves a stated year, month and day to that single date.
-func chineseAbsoluteDay(yearText, monthText, dayText string) *storage.TemporalWindow {
-	year, err := strconv.Atoi(yearText)
-	if err != nil {
+// chineseMonthDayWindow resolves a month and day standing together ("3月15日",
+// "三月廿五") to that single date. A day the month does not have names no
+// date, and a date still ahead of the reference day falls back a year, the
+// way a bare month prefers the past.
+func chineseMonthDayWindow(query string, idx []int, day time.Time) *storage.TemporalWindow {
+	month, ok := parseChineseMonth(query[idx[2]:idx[3]])
+	if !ok {
 		return nil
 	}
-	month, err := strconv.Atoi(monthText)
-	if err != nil || month < 1 || month > 12 {
+	dayOfMonth, ok := parseChineseDay(query[idx[4]:idx[5]])
+	if !ok {
 		return nil
 	}
-	dayOfMonth, err := strconv.Atoi(dayText)
-	if err != nil || dayOfMonth < 1 || dayOfMonth > 31 {
+	if dayOfMonth > lastDayOfMonth(day.Year(), time.Month(month)).Day() {
 		return nil
 	}
-	target := time.Date(year, time.Month(month), dayOfMonth, 0, 0, 0, 0, time.UTC)
+	target := time.Date(day.Year(), time.Month(month), dayOfMonth, 0, 0, 0, 0, time.UTC)
+	if target.After(day) {
+		year := day.Year() - 1
+		if dayOfMonth > lastDayOfMonth(year, time.Month(month)).Day() {
+			return nil
+		}
+		target = time.Date(year, time.Month(month), dayOfMonth, 0, 0, 0, 0, time.UTC)
+	}
 	return dayRange(target, target)
 }
 
@@ -1118,12 +1790,12 @@ func chineseBareMonthWindow(query string, match []int, day time.Time) *storage.T
 
 // chineseYearMonth resolves a stated year and month to that whole month.
 func chineseYearMonth(yearText, monthText string) *storage.TemporalWindow {
-	year, err := strconv.Atoi(yearText)
-	if err != nil {
+	year, ok := chineseYearValue(yearText)
+	if !ok {
 		return nil
 	}
-	month, err := strconv.Atoi(monthText)
-	if err != nil || month < 1 || month > 12 {
+	month, ok := parseChineseMonth(monthText)
+	if !ok {
 		return nil
 	}
 	return monthWindow(time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC))

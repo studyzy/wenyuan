@@ -22,7 +22,9 @@ func TestTemporalWindowFromQuery(t *testing.T) {
 		{"days ago", "what changed 3 days ago", "2026-10-11", "2026-10-11"},
 		{"weeks ago", "what did we ship 2 weeks ago", "2026-09-30", "2026-09-30"},
 		{"in the last", "what did we do in the last 2 weeks", "2026-09-30", "2026-10-14"},
-		{"last week", "what happened last week", "2026-10-07", "2026-10-13"},
+		// A look-back week is the whole previous calendar week (Mon-Sun), not a
+		// rolling seven days, so it matches the Chinese 上周 rule.
+		{"last week", "what happened last week", "2026-10-05", "2026-10-11"},
 		{"next month", "what is planned next month", "2026-10-15", "2026-11-13"},
 		{"last friday", "what did we decide last friday", "2026-10-09", "2026-10-09"},
 		{"bare weekday", "what happened on monday", "2026-10-12", "2026-10-12"},
@@ -338,4 +340,228 @@ func TestExplicitWindowBeatsQueryText(t *testing.T) {
 	if fromQuery := temporalWindowFromQuery("what happened yesterday", parseReference); fromQuery.Start.Equal(explicit.Start) {
 		t.Fatal("the derived window must differ from the explicit one the caller stated")
 	}
+}
+
+// assertTemporalWindow checks the inclusive day bounds a query resolves to.
+func assertTemporalWindow(t *testing.T, query string, ref time.Time, start, end string) {
+	t.Helper()
+	window := temporalWindowFromQuery(query, ref)
+	if window == nil {
+		t.Fatalf("query %q produced no window", query)
+	}
+	if got := window.Start.UTC().Format("2006-01-02"); got != start {
+		t.Errorf("query %q start = %v, want %v", query, got, start)
+	}
+	if got := window.End.UTC().Format("2006-01-02"); got != end {
+		t.Errorf("query %q end = %v, want %v", query, got, end)
+	}
+}
+
+// Look-back periods resolve to whole calendar weeks, months, years and
+// weekends instead of fixed-length rolling spans. Forward and current
+// directions keep their original rolling spans.
+func TestCalendarAlignedLookBack(t *testing.T) {
+	days := func(n int) string { return parseReference.AddDate(0, 0, n).Format("2006-01-02") }
+	cases := []struct {
+		name, query, start, end string
+	}{
+		{"last week", "what happened last week", "2026-10-05", "2026-10-11"},
+		{"past week", "what happened past week", "2026-10-05", "2026-10-11"},
+		{"previous week", "what happened previous week", "2026-10-05", "2026-10-11"},
+		{"last month", "what happened last month", "2026-09-01", "2026-09-30"},
+		{"past month", "what happened past month", "2026-09-01", "2026-09-30"},
+		{"previous month", "what happened previous month", "2026-09-01", "2026-09-30"},
+		{"last year", "what happened last year", "2025-01-01", "2025-12-31"},
+		{"previous year", "what happened previous year", "2025-01-01", "2025-12-31"},
+		{"last weekend", "what happened last weekend", "2026-10-10", "2026-10-11"},
+		{"past weekend", "what happened past weekend", "2026-10-10", "2026-10-11"},
+		{"next week", "what is planned next week", days(1), days(7)},
+		{"this week", "what happened this week", days(-6), days(0)},
+		{"next month", "what is planned next month", days(1), days(30)},
+		{"next weekend", "what is planned next weekend", days(1), days(2)},
+		{"this weekend", "what happened this weekend", days(-1), days(0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+		})
+	}
+}
+
+// Asked on a weekend day, "last weekend" names the weekend before the one in
+// progress, so both Saturday and Sunday roll back a further week.
+func TestLastWeekendOnWeekendDay(t *testing.T) {
+	for _, tc := range []struct{ ref, start, end string }{
+		{"2026-10-10", "2026-10-03", "2026-10-04"},
+		{"2026-10-11", "2026-10-03", "2026-10-04"},
+	} {
+		ref, _ := time.Parse("2006-01-02", tc.ref)
+		assertTemporalWindow(t, "what happened last weekend", ref, tc.start, tc.end)
+	}
+}
+
+// Approximate "ago" phrases name a range rather than the single day a bare
+// "days ago" would, in English and Russian alike.
+func TestFuzzyAgoPhrases(t *testing.T) {
+	days := func(n int) string { return parseReference.AddDate(0, 0, n).Format("2006-01-02") }
+	cases := []struct {
+		name, query, start, end string
+	}{
+		{"a couple of days ago", "what changed a couple of days ago", days(-3), days(-1)},
+		{"a few days ago", "what changed a few days ago", days(-5), days(-2)},
+		{"couple of days ago", "what changed couple of days ago", days(-3), days(-1)},
+		{"a couple of weeks ago", "what changed a couple of weeks ago", days(-21), days(-7)},
+		{"a few weeks ago", "what changed a few weeks ago", days(-35), days(-14)},
+		{"a couple of months ago", "what changed a couple of months ago", days(-90), days(-30)},
+		{"a few months ago", "what changed a few months ago", days(-150), days(-60)},
+		{"russian couple days", "что было пару дней назад", days(-3), days(-1)},
+		{"russian few days", "что было несколько дней назад", days(-5), days(-2)},
+		{"russian couple weeks", "что было пару недель назад", days(-21), days(-7)},
+		{"russian few weeks", "что было несколько недель назад", days(-35), days(-14)},
+		{"russian couple months", "что было пару месяцев назад", days(-90), days(-30)},
+		{"russian few months", "что было несколько месяцев назад", days(-150), days(-60)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+		})
+	}
+}
+
+// Relative day words resolve in the supported languages too.
+func TestMultiLangRelativeDayWords(t *testing.T) {
+	days := func(n int) string { return parseReference.AddDate(0, 0, n).Format("2006-01-02") }
+	cases := []struct {
+		query, start, end string
+	}{
+		{"ayer", days(-1), days(-1)},
+		{"hier", days(-1), days(-1)},
+		{"gestern", days(-1), days(-1)},
+		{"вчера", days(-1), days(-1)},
+		{"hoy", days(0), days(0)},
+		{"oggi", days(0), days(0)},
+		{"heute", days(0), days(0)},
+		{"сегодня", days(0), days(0)},
+		{"позавчера", days(-2), days(-2)},
+	}
+	for _, tc := range cases {
+		assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+	}
+}
+
+// Calendar period phrases resolve to the same aligned windows in every
+// supported language.
+func TestMultiLangCalendarPeriods(t *testing.T) {
+	cases := []struct {
+		query, start, end string
+	}{
+		{"la semana pasada", "2026-10-05", "2026-10-11"},
+		{"la settimana scorsa", "2026-10-05", "2026-10-11"},
+		{"letzte woche", "2026-10-05", "2026-10-11"},
+		{"прошлой неделе", "2026-10-05", "2026-10-11"},
+		{"el mes pasado", "2026-09-01", "2026-09-30"},
+		{"le mois dernier", "2026-09-01", "2026-09-30"},
+		{"el año pasado", "2025-01-01", "2025-12-31"},
+		{"letztes jahr", "2025-01-01", "2025-12-31"},
+		{"el fin de semana pasado", "2026-10-10", "2026-10-11"},
+	}
+	for _, tc := range cases {
+		assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+	}
+}
+
+// A month name followed by a four-digit year is that whole calendar month in
+// any supported language.
+func TestMultiLangMonthYear(t *testing.T) {
+	cases := []struct {
+		query, start, end string
+	}{
+		{"enero 2024", "2024-01-01", "2024-01-31"},
+		{"marzo 2023", "2023-03-01", "2023-03-31"},
+		{"января 2025", "2025-01-01", "2025-01-31"},
+		{"décembre 2022", "2022-12-01", "2022-12-31"},
+		{"märz 2020", "2020-03-01", "2020-03-31"},
+	}
+	for _, tc := range cases {
+		assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+	}
+}
+
+// signalScore ranks a matched span by the date signal it carries; a lone
+// four-digit integer with no other date word scores zero.
+func TestSignalScore(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want int
+	}{
+		{"2024", 0},
+		{"port 2019", 0},
+		{"march 2024", 150},
+		{"3 days ago", 120},
+		{"today", 50},
+		{"march", 50},
+		{"friday", 30},
+		{"last week", 20},
+		{"", 0},
+	} {
+		if got := signalScore(tc.text); got != tc.want {
+			t.Errorf("signalScore(%q) = %d, want %d", tc.text, got, tc.want)
+		}
+	}
+}
+
+// When a query names several bare time words, the strongest signal wins: an
+// explicit month outranks a weekday even though the weekday appears first.
+func TestStrongestBareWordWins(t *testing.T) {
+	assertTemporalWindow(t, "what happened on friday in march", parseReference,
+		"2026-03-14", "2026-03-14")
+}
+
+// Compatibility and regional character forms are folded onto the grammar's
+// own forms before matching, so full-width numerals and traditional weekday
+// and day words resolve.
+func TestChineseQueryNormalization(t *testing.T) {
+	days := func(n int) string { return parseReference.AddDate(0, 0, n).Format("2006-01-02") }
+	cases := []struct {
+		name, query, start, end string
+	}{
+		{"full-width numerals", "３天前发生了什么", days(-3), days(-3)},
+		{"traditional day word", "大後天有什么安排", days(3), days(3)},
+		{"traditional week word", "上週做了什么", "2026-10-05", "2026-10-11"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTemporalWindow(t, tc.query, parseReference, tc.start, tc.end)
+		})
+	}
+}
+
+// chineseSearch scans every hit: an early day word embedded in a larger word
+// is skipped and the later, properly-contexted phrase is used instead.
+func TestChineseSearchSkipsEmbeddedHit(t *testing.T) {
+	assertTemporalWindow(t, "前天战昨天发生了什么", parseReference,
+		"2026-10-13", "2026-10-13")
+}
+
+// A Chinese phrase that declines any closed range short-circuits the whole
+// query, so a temporal phrase in another language cannot supply a window.
+func TestChineseNoConstraintShortCircuits(t *testing.T) {
+	for _, query := range []string{
+		"三天以前 last week",
+		"大大大前天发生了什么",
+	} {
+		if window := temporalWindowFromQuery(query, parseReference); window != nil {
+			t.Errorf("query %q produced a window %v..%v, want none",
+				query, window.Start, window.End)
+		}
+	}
+}
+
+// Stepping a whole month or year back keeps the day inside the target month,
+// clamping the 31st (and 29 February) to that month's last day.
+func TestMonthEndClamp(t *testing.T) {
+	marchEnd := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+	assertTemporalWindow(t, "一个月前发生了什么", marchEnd, "2026-02-28", "2026-02-28")
+	leapDay := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
+	assertTemporalWindow(t, "一年前发生了什么", leapDay, "2023-02-28", "2023-02-28")
 }
