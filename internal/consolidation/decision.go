@@ -67,6 +67,65 @@ func reaimUpdatesAtFacts(decision Decision, factIDs map[string]bool) ([]Create, 
 	return creates, updates
 }
 
+// SourceRevalidationStore is the optional capability a store provides to
+// confirm, inside the response's write transaction, that the batch's source
+// facts still carry the updated_at values they had when the pass read them.
+//
+// The store takes FOR SHARE locks on those rows for the transaction's duration,
+// so an edit cannot land between this check and the response's writes, and
+// returns the ids whose stamp moved. A store that keeps facts outside SQL (and
+// therefore reports no updated_at on its reads) is not one of these, and the
+// pass proceeds without the check.
+type SourceRevalidationStore interface {
+	SourcesChangedSinceRead(ctx context.Context, bankID string, readAt map[string]string) ([]string, error)
+}
+
+// dedupeUpdates collapses updates that target the same observation into one, so
+// the response produces a single write and a single history snapshot for it.
+// The last text wins (the model's most recent attempt) and every contributing
+// source id is kept, in first-seen order without repeats. The resulting slice
+// keeps the order in which each observation id first appeared.
+func dedupeUpdates(updates []Update) []Update {
+	if len(updates) < 2 {
+		return updates
+	}
+	byID := make(map[string]int, len(updates))
+	result := make([]Update, 0, len(updates))
+	for _, update := range updates {
+		if index, ok := byID[update.ObservationID]; ok {
+			merged := &result[index]
+			merged.Text = update.Text
+			merged.CurrentText = update.CurrentText
+			merged.Reason = update.Reason
+			merged.SourceIDs = unionOrdered(merged.SourceIDs, update.SourceIDs)
+			continue
+		}
+		byID[update.ObservationID] = len(result)
+		result = append(result, update)
+	}
+	return result
+}
+
+// unionOrdered concatenates two id lists, keeping the first occurrence of each
+// id and preserving order.
+func unionOrdered(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, id := range a {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, id := range b {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // resolvePoolID returns raw as a pool id, tolerating a miscopied tail.
 //
 // Small models copy the head of a UUID and invent the rest. An exact match

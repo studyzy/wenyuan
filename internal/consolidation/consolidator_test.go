@@ -17,16 +17,39 @@ type stubProvider struct {
 	mu       sync.Mutex
 	name     string
 	response provider.CompletionResult
-	err      error
-	last     provider.CompletionRequest
+	// responses, when set, is a scripted sequence consumed one entry per call;
+	// a call past the end reuses the last entry. A test that needs the focused
+	// duplicate verdict to answer differently from the main consolidation call
+	// scripts both here.
+	responses []provider.CompletionResult
+	calls     int
+	err       error
+	last      provider.CompletionRequest
 }
 
 func (s *stubProvider) Name() string { return s.name }
 func (s *stubProvider) Complete(_ context.Context, req provider.CompletionRequest) (provider.CompletionResult, error) {
 	s.mu.Lock()
 	s.last = req
+	index := s.calls
+	s.calls++
+	response := s.response
+	if len(s.responses) > 0 {
+		if index >= len(s.responses) {
+			index = len(s.responses) - 1
+		}
+		response = s.responses[index]
+	}
 	s.mu.Unlock()
-	return s.response, s.err
+	return response, s.err
+}
+
+// callCount reports how many completions the pass requested, so a test can
+// confirm the focused verdict was (or was not) actually asked for.
+func (s *stubProvider) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 func (s *stubProvider) Embed(context.Context, provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
 	return provider.EmbeddingResult{}, nil
@@ -278,7 +301,10 @@ func TestConsolidatorSkipsUntargetedDelete(t *testing.T) {
 
 // A create that restates an existing observation's text is dropped, so a twin
 // observation does not accumulate.
-func TestConsolidatorSkipsDuplicateCreate(t *testing.T) {
+// Without a text-similarity fallback, a create that differs from an existing
+// observation only in case and spacing is a distinct conclusion and is kept:
+// exact matching is case-sensitive, and no token floor second-guesses it.
+func TestConsolidatorKeepsCaseVariantWithoutTextFloor(t *testing.T) {
 	store := &stubStore{
 		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
 		observations: []Observation{{ID: "o1", Text: "Alice owns a Honda"}},
@@ -293,17 +319,18 @@ func TestConsolidatorSkipsDuplicateCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != 0 || result.Skipped != 1 {
-		t.Fatalf("result = %+v, want the duplicate create skipped", result)
+	if result.Created != 1 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want the case variant kept as its own observation", result)
 	}
-	if len(store.created) != 0 {
-		t.Fatalf("a duplicate must not be written: %+v", store.created)
+	if len(store.created) != 1 {
+		t.Fatalf("created = %+v, want the create written", store.created)
 	}
 }
 
-// A create that nearly restates an existing observation is dropped as a
-// near-duplicate, not only an exact one.
-func TestConsolidatorSkipsNearDuplicateCreate(t *testing.T) {
+// A near-duplicate create is kept when the deployment cannot embed: the
+// token-Jaccard floor has been removed, so no text-only heuristic folds a
+// conclusion the cosine threshold was never asked about.
+func TestConsolidatorKeepsNearDuplicateWithoutTextFloor(t *testing.T) {
 	store := &stubStore{
 		facts:        []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
 		observations: []Observation{{ID: "o1", Text: "Alice owns a red Honda car"}},
@@ -318,8 +345,8 @@ func TestConsolidatorSkipsNearDuplicateCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != 0 || result.Skipped != 1 {
-		t.Fatalf("result = %+v, want the near-duplicate skipped", result)
+	if result.Created != 1 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want the near-duplicate kept without a text floor", result)
 	}
 }
 

@@ -10,8 +10,8 @@ import (
 )
 
 // embeddingStore is a stub store that carries the deployment's consolidation
-// tuning and the embedding capability the reference's dedup probe needs, so a
-// test can drive the cosine mechanism without a model or a database.
+// tuning and the embedding capability the duplicate probe needs, so a test can
+// drive the cosine mechanism without a model or a database.
 type embeddingStore struct {
 	*stubStore
 	tuning storage.ConsolidationTuning
@@ -46,30 +46,53 @@ func createDecision(text string) provider.CompletionResult {
 	}}
 }
 
-// A create whose embedding is at or above the configured threshold is a
-// duplicate of the twin it matched: it is not written, and its evidence is
-// folded into the twin instead of forming a second conclusion.
-func TestConsolidatorSkipsCreateAboveEmbeddingThreshold(t *testing.T) {
+// mergeVerdictResp is the focused "merge" answer carrying a synthesized text.
+func mergeVerdictResp(text string) provider.CompletionResult {
+	return provider.CompletionResult{Structured: map[string]any{
+		"action": "merge", "text": text, "reason": "same fact",
+	}}
+}
+
+// keepVerdictResp is the focused "keep" answer.
+func keepVerdictResp() provider.CompletionResult {
+	return provider.CompletionResult{Structured: map[string]any{
+		"action": "keep", "text": "", "reason": "different detail",
+	}}
+}
+
+// A cosine twin above the threshold is only folded when the focused verdict
+// says "merge"; the synthesized text then overwrites the twin's original text
+// and the skipped create's evidence is attached to it.
+func TestConsolidatorMergesDuplicateOnMergeVerdict(t *testing.T) {
+	const merged = "Alice owns a red Honda and drives the red Honda"
 	store := embeddingStoreWithTuning(
 		&stubStore{facts: []Fact{{ID: "f1", Text: "Alice owns a Honda"}}},
 		// Cosine 1.0 to the probe [1, 0], well above the 0.97 default.
 		[]Observation{{ID: "o1", Text: "Alice owns a red Honda", Embedding: []float32{2, 0}}},
 	)
-	model := &stubProvider{name: "openai", response: createDecision("Alice drives the red Honda")}
+	model := &stubProvider{
+		name: "openai",
+		responses: []provider.CompletionResult{
+			createDecision("Alice drives the red Honda"),
+			mergeVerdictResp(merged),
+		},
+	}
 
 	result, err := New(model, store).Run(context.Background(), "b1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Created != 0 || result.Skipped != 1 {
-		t.Fatalf("result = %+v, want the above-threshold create skipped", result)
+		t.Fatalf("result = %+v, want the merged create skipped", result)
 	}
 	if len(store.created) != 0 {
-		t.Fatalf("a duplicate must not be written: %+v", store.created)
+		t.Fatalf("a merged duplicate must not be written: %+v", store.created)
 	}
-	// The duplicate's evidence is attached to the twin, not dropped.
-	if len(store.updated) != 1 || store.updated[0].ObservationID != "o1" {
-		t.Fatalf("updated = %+v, want the create folded into o1", store.updated)
+	// The verdict's synthesized text overwrites the twin, and the create's
+	// evidence is attached to it. The old path folded with the twin's own text,
+	// so this assertion is what the adjudication changes.
+	if len(store.updated) != 1 || store.updated[0].ObservationID != "o1" || store.updated[0].Text != merged {
+		t.Fatalf("updated = %+v, want o1 rewritten with the synthesized text", store.updated)
 	}
 	if len(store.marked) != 1 || store.marked[0] != "f1" {
 		t.Fatalf("marked = %v, want the folded fact", store.marked)
@@ -77,7 +100,7 @@ func TestConsolidatorSkipsCreateAboveEmbeddingThreshold(t *testing.T) {
 }
 
 // A create whose embedding is below the threshold is a genuinely different
-// conclusion and is written.
+// conclusion and is written, with no verdict asked at all.
 func TestConsolidatorKeepsCreateBelowEmbeddingThreshold(t *testing.T) {
 	store := embeddingStoreWithTuning(
 		&stubStore{facts: []Fact{{ID: "f1", Text: "Alice owns a Honda"}}},
@@ -96,10 +119,14 @@ func TestConsolidatorKeepsCreateBelowEmbeddingThreshold(t *testing.T) {
 	if len(store.created) != 1 || store.created[0].Text != "Alice works late" {
 		t.Fatalf("created = %+v", store.created)
 	}
+	if model.callCount() != 1 {
+		t.Fatalf("completions = %d, want only the main consolidation call", model.callCount())
+	}
 }
 
 // The threshold's own value decides: the same pair of embeddings is a duplicate
-// when the threshold sits below their cosine and novel when it sits above.
+// when the threshold sits below their cosine and novel when it sits above. A
+// duplicate is only folded when the focused verdict agrees to merge.
 func TestConsolidatorDedupThresholdMovesTheDecision(t *testing.T) {
 	// Cosine of [1, 0] and [1, 1] is 1/sqrt(2) ~= 0.7071.
 	pair := []Observation{{ID: "o1", Text: "a twin", Embedding: []float32{1, 1}}}
@@ -120,6 +147,12 @@ func TestConsolidatorDedupThresholdMovesTheDecision(t *testing.T) {
 			)
 			store.tuning = tuning
 			model := &stubProvider{name: "openai", response: createDecision("a new conclusion")}
+			if tc.duplicate {
+				model.responses = []provider.CompletionResult{
+					createDecision("a new conclusion"),
+					mergeVerdictResp("a merged twin"),
+				}
+			}
 
 			result, err := New(model, store).Run(context.Background(), "b1")
 			if err != nil {
@@ -136,9 +169,8 @@ func TestConsolidatorDedupThresholdMovesTheDecision(t *testing.T) {
 	}
 }
 
-// A threshold of 1 disables the semantic dedup, matching the reference's
-// _dedup_active gate: an identical embedding still writes, because the operator
-// asked for the feature off.
+// A threshold of 1 disables the semantic dedup: an identical embedding still
+// writes, because the operator asked for the feature off.
 func TestConsolidatorDedupDisabledAtThresholdOne(t *testing.T) {
 	tuning := storage.DefaultConsolidationTuning()
 	tuning.DedupThreshold = 1
@@ -158,14 +190,15 @@ func TestConsolidatorDedupDisabledAtThresholdOne(t *testing.T) {
 	}
 }
 
-// Without an embedding model the pass keeps its token-similarity floor, so a
-// restated conclusion is still caught rather than silently accumulating. This
-// is the no-embedding deployment's behaviour, unchanged by the cosine path.
-func TestConsolidatorNoEmbeddingFallsBackToTextFloor(t *testing.T) {
+// A deployment with no embedding model runs no duplicate detection at all: the
+// token-similarity floor is gone, so a restated conclusion is kept as its own
+// observation rather than folded on a different scale.
+func TestConsolidatorNoEmbeddingSkipsDedup(t *testing.T) {
 	store := &embeddingStore{
 		stubStore: &stubStore{
 			facts: []Fact{{ID: "f1", Text: "Alice owns a Honda"}},
-			// The pool holds the twin the floor must match against.
+			// The pool still holds a near-identical twin; without a probe it
+			// must not be consulted.
 			observations: []Observation{{ID: "o1", Text: "Alice owns a red Honda car"}},
 		},
 		tuning:   storage.DefaultConsolidationTuning(),
@@ -178,11 +211,15 @@ func TestConsolidatorNoEmbeddingFallsBackToTextFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != 0 || result.Skipped != 1 {
-		t.Fatalf("result = %+v, want the near-duplicate caught by the floor", result)
+	if result.Created != 1 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want the create kept without an embedding model", result)
 	}
-	if len(store.created) != 0 {
-		t.Fatalf("a duplicate must not be written: %+v", store.created)
+	if len(store.created) != 1 {
+		t.Fatalf("created = %+v, want the restated conclusion written", store.created)
+	}
+	// No focused verdict was asked: without a probe there is nothing to decide.
+	if model.callCount() != 1 {
+		t.Fatalf("completions = %d, want only the main consolidation call", model.callCount())
 	}
 }
 

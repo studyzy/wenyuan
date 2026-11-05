@@ -52,6 +52,11 @@ type Fact struct {
 	OccurredStart string
 	OccurredEnd   string
 	MentionedAt   string
+	// UpdatedAt is the fact's last-edit stamp as read. A store that can
+	// re-check it under a write lock carries it so the pass can tell whether
+	// the fact was edited while the model was answering; an empty value leaves
+	// the fact out of that check.
+	UpdatedAt string
 	// Tags are the fact's own tags, the scope it folds under by default.
 	Tags []string
 	// ObservationScopes is the fact's raw observation_scopes request, resolved
@@ -791,11 +796,8 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 	// exists (or was created this pass) is not created again, so a near-miss
 	// the model restated does not accumulate as a twin.
 	existingTexts := map[string]bool{}
-	createdKeys := make([]string, 0, len(observations)+len(creates))
 	for _, observation := range observations {
-		normalized := normalizeObservationText(observation.Text)
-		existingTexts[normalized] = true
-		createdKeys = append(createdKeys, normalized)
+		existingTexts[normalizeObservationText(observation.Text)] = true
 	}
 	observationTextByID := map[string]string{}
 	// The facts each pooled observation stands on, read here so a delete can name
@@ -814,6 +816,10 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 	for i := range updates {
 		updates[i].ObservationID = resolvePoolID(updates[i].ObservationID, poolIDs)
 	}
+	// Several updates naming one observation collapse into a single write: keep
+	// the last text and union their source ids in order, so the observation is
+	// rewritten once and gets one history snapshot.
+	updates = dedupeUpdates(updates)
 	for i := range decision.Deletes {
 		decision.Deletes[i].ObservationID = resolvePoolID(decision.Deletes[i].ObservationID, poolIDs)
 		if decision.Deletes[i].MergedInto != "" {
@@ -830,9 +836,36 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 	// other, and advances the pass's counters rather than vanishing.
 	result.Skipped += len(decision.Deletes) - len(preparedDeletes)
 
+	// Prepare phase: resolve every duplicate verdict before any write, and
+	// before the source-fact revalidation, so the focused model calls never run
+	// while a write lock is held.
+	plan := c.prepareAdjudications(ctx, bankID, scope, creates, updates)
+
+	// Guard: inside the response's write transaction, confirm the batch's source
+	// facts still carry the updated_at values they had when read. An edit in
+	// between already requeued those facts and dropped their observations;
+	// applying this stale response would rebuild them under the old tags and
+	// the consolidated stamp would undo the requeue. Drop the whole response,
+	// stamps included, and let the next pass re-read them.
+	changed, err := c.sourcesChangedSinceRead(ctx, bankID, facts)
+	if err != nil {
+		return result, nil, fmt.Errorf("revalidate source facts: %w", err)
+	}
+	if len(changed) > 0 {
+		slog.Info("Batch consolidation: discarding response — source facts edited since read", "bank_id", bankID, "changed", len(changed))
+		// Mark every fact referenced so the re-ask loop does not spend this
+		// pass's remaining calls on a deliberately dropped response; leaving
+		// them unstamped keeps them pending for the next pass.
+		discardTouched := make(map[string]bool, len(facts))
+		for _, fact := range facts {
+			discardTouched[fact.ID] = true
+		}
+		return Result{Usage: result.Usage}, discardTouched, nil
+	}
+
 	touched := map[string]bool{}
 	createsApplied := 0
-	for _, create := range creates {
+	for i, create := range creates {
 		// The scope's observation cap bounds creates: once the cap is reached
 		// the model is told to update or delete, and any create it still emits
 		// is dropped rather than written past the cap.
@@ -845,29 +878,30 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		}
 		key := normalizeObservationText(create.Text)
 		// An exact restatement is never written twice, whatever the embedding
-		// path does: the reference folds it too, and equality needs no model.
+		// path does: equality needs no model.
 		if existingTexts[key] {
 			result.Skipped++
 			continue
 		}
-		// A near-duplicate is decided by the reference's mechanism when the
-		// deployment can embed — the cosine of the two observation embeddings
-		// against the configured threshold — and by the token-similarity floor
-		// when it cannot. A twin found by the embedding probe is folded: the new
-		// evidence is attached to it rather than written as a second row.
-		if twin, duplicate := c.duplicateObservation(ctx, bankID, scope, create.Text, key, createdKeys); duplicate {
-			if twin.ID != "" && twin.Text != "" {
-				sources := validSourceIDs(create.SourceIDs, factIDs)
-				if err := c.store.UpdateObservation(ctx, bankID, twin.ID, twin.Text, sources); err != nil {
-					return result, touched, fmt.Errorf("fold duplicate observation: %w", err)
-				}
-				c.noteObservationWritten(ctx, twin.ID, sources, false)
-				markTouched(touched, sources)
-			}
-			result.Skipped++
-			continue
-		}
 		sources := validSourceIDs(create.SourceIDs, factIDs)
+		// A cosine twin at or above the threshold is only a candidate: the
+		// focused verdict decides. A "keep" verdict (or an unusable one) keeps
+		// both rows, so the create proceeds; only "merge" folds it into the
+		// twin, and a twin that vanished or was rewritten meanwhile falls back
+		// to the create so nothing is lost.
+		verdict := plan.creates[i]
+		if verdict.twin.ID != "" && verdict.shouldMerge {
+			folded, err := c.mergeCreateIntoTwin(ctx, bankID, verdict, sources)
+			if err != nil {
+				return result, touched, fmt.Errorf("merge duplicate observation: %w", err)
+			}
+			if folded {
+				c.noteObservationWritten(ctx, verdict.twin.ID, sources, false)
+				markTouched(touched, sources)
+				result.Skipped++
+				continue
+			}
+		}
 		createdID, err := c.store.CreateObservation(ctx, bankID, create.Text, sources, scope)
 		if err != nil {
 			return result, touched, fmt.Errorf("create observation: %w", err)
@@ -875,12 +909,11 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 		c.noteObservationWritten(ctx, createdID, sources, true)
 		result.noteWritten(createdID)
 		existingTexts[key] = true
-		createdKeys = append(createdKeys, key)
 		markTouched(touched, sources)
 		createsApplied++
 		result.Created++
 	}
-	for _, update := range updates {
+	for i, update := range updates {
 		if update.ObservationID == "" || strings.TrimSpace(update.Text) == "" {
 			continue
 		}
@@ -893,6 +926,23 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 			continue
 		}
 		sources := validSourceIDs(update.SourceIDs, factIDs)
+		// A rewritten observation can drift within the dedup threshold of a
+		// different existing observation. On a merge verdict, fold the updated
+		// row into that twin and retire it rather than leaving a near-duplicate
+		// pair behind.
+		verdict := plan.updates[i]
+		if verdict.twin.ID != "" && verdict.shouldMerge {
+			folded, err := c.mergeUpdateIntoTwin(ctx, bankID, update.ObservationID, update.Text, verdict)
+			if err != nil {
+				return result, touched, fmt.Errorf("merge updated observation: %w", err)
+			}
+			if folded {
+				c.noteObservationWritten(ctx, verdict.twin.ID, sources, false)
+				markTouched(touched, sources)
+				result.Updated++
+				continue
+			}
+		}
 		// An update that restates the observation's text *and* adds no evidence
 		// changes nothing and is dropped rather than written back. A restatement
 		// that does name a new source is applied: its text is unchanged, but the
@@ -945,6 +995,28 @@ func (c *Consolidator) applyDecision(ctx context.Context, bankID string, scope [
 	return result, touched, nil
 }
 
+// sourcesChangedSinceRead reports the batch's source facts whose last-edit
+// stamp moved since the pass read them. Only a store that can take the lock and
+// compare inside the write transaction provides it; a store with no updated_at
+// on its reads leaves readAt empty and is not checked. A non-empty answer makes
+// applyDecision discard the whole response, stamps included.
+func (c *Consolidator) sourcesChangedSinceRead(ctx context.Context, bankID string, facts []Fact) ([]string, error) {
+	revalidator, ok := c.store.(SourceRevalidationStore)
+	if !ok {
+		return nil, nil
+	}
+	readAt := make(map[string]string, len(facts))
+	for _, fact := range facts {
+		if fact.ID != "" && fact.UpdatedAt != "" {
+			readAt[fact.ID] = fact.UpdatedAt
+		}
+	}
+	if len(readAt) == 0 {
+		return nil, nil
+	}
+	return revalidator.SourcesChangedSinceRead(ctx, bankID, readAt)
+}
+
 // chunkFacts splits facts into batches of at most size, preserving order. A
 // size below 1 means one batch (no batching).
 func chunkFacts(facts []Fact, size int) [][]Fact {
@@ -962,73 +1034,11 @@ func chunkFacts(facts []Fact, size int) [][]Fact {
 	return batches
 }
 
-// normalizeObservationText folds case and collapses whitespace, so two texts
-// that differ only in spacing or case count as the same observation.
+// normalizeObservationText collapses whitespace but preserves case. The
+// reference matches exact duplicates case-sensitively: "TLS" and "tls" can
+// carry different information, so folding them into one would lose a create.
 func normalizeObservationText(text string) string {
-	return strings.Join(strings.Fields(strings.ToLower(text)), " ")
-}
-
-// observationSimilarityFloor is the token-Jaccard floor above which two
-// observation texts are treated as the same conclusion. It is the fallback the
-// pass uses only when the deployment cannot embed: the reference's mechanism is
-// the cosine similarity of the two observation embeddings against the
-// consolidation dedup threshold (see duplicateObservation), and Jaccard lives on
-// a different scale, so it decides nothing when embeddings are available.
-const observationSimilarityFloor = 0.7
-
-// nearDuplicate reports whether a normalized text is nearly identical to any
-// candidate, so a restated conclusion does not accumulate as a separate twin.
-// It is the no-embedding fallback: when the deployment can embed, the cosine
-// threshold decides instead and this floor is not consulted.
-func nearDuplicate(text string, candidates []string) bool {
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	for _, candidate := range candidates {
-		if candidate == text {
-			continue
-		}
-		if tokenJaccard(text, candidate) >= observationSimilarityFloor {
-			return true
-		}
-	}
-	return false
-}
-
-// tokenJaccard returns the Jaccard similarity of two texts' word sets.
-func tokenJaccard(a, b string) float64 {
-	left := tokenSet(a)
-	right := tokenSet(b)
-	if len(left) == 0 || len(right) == 0 {
-		return 0
-	}
-	intersection := 0
-	for token := range left {
-		if right[token] {
-			intersection++
-		}
-	}
-	union := len(left) + len(right) - intersection
-	if union == 0 {
-		return 0
-	}
-	return float64(intersection) / float64(union)
-}
-
-// tokenSet lowercases and splits a text into its word set.
-func tokenSet(text string) map[string]bool {
-	out := map[string]bool{}
-	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
-		return !isLetterOrDigit(r)
-	}) {
-		out[strings.ToLower(field)] = true
-	}
-	return out
-}
-
-// isLetterOrDigit reports whether a rune is an ASCII letter or digit.
-func isLetterOrDigit(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // markTouched records which facts a decision actually consumed.
