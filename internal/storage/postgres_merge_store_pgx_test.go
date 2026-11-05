@@ -185,7 +185,7 @@ func (f *mergeFixture) teamFactTexts(t *testing.T) []string {
 }
 
 // runRound runs one round end to end: begin, produce a fixed answer, finish.
-func (f *mergeFixture) runRound(t *testing.T, facts []TeamFactRow, sources map[string][]MergeSourceRow, rebuild []string) bool {
+func (f *mergeFixture) runRound(t *testing.T, facts []TeamFactRow, sources map[string][]MergeSourceRow) bool {
 	t.Helper()
 	ctx := context.Background()
 	var stamp time.Time
@@ -207,13 +207,11 @@ func (f *mergeFixture) runRound(t *testing.T, facts []TeamFactRow, sources map[s
 		BankID:     tenant.ProjectBankID(f.teamID, f.projectID),
 		Stamp:      stamp,
 		Replace: MergeReplaceResult{
-			Insert:         facts,
-			Sources:        sources,
-			RebuildMembers: rebuild,
+			Insert:  facts,
+			Sources: sources,
 		},
 		Members: []string{f.memberA, f.memberB},
 		Cursors: map[string]MergeCursor{},
-		Rebuild: len(rebuild) > 0,
 	}
 	if err := f.store.FinishMergeStanza(ctx, req); err != nil {
 		t.Fatalf("FinishMergeStanza: %v", err)
@@ -265,7 +263,7 @@ func TestMergeStoreRoundWritesTeamFactsAndLedger(t *testing.T) {
 		map[string][]MergeSourceRow{
 			f.memberA: {{UnitID: unitA, MergeKey: key}},
 			f.memberB: {{UnitID: unitB, MergeKey: key}},
-		}, nil) {
+		}) {
 		t.Fatal("round did not run")
 	}
 
@@ -294,7 +292,7 @@ func TestMergeStoreSourceDeletionTriggersRebuild(t *testing.T) {
 	key := tenant.MergeKey("Only A knew this.")
 	if !f.runRound(t,
 		[]TeamFactRow{{Text: "Only A knew this.", MergeKey: key}},
-		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
 
@@ -350,7 +348,7 @@ func TestMergeStoreDroppedSourceDeletionDoesNotRebuild(t *testing.T) {
 			f.memberA: {{UnitID: kept, MergeKey: key}},
 			// The model folded B's version into A's, recording it as dropped.
 			f.memberB: {{UnitID: redundant, MergeKey: tenant.DroppedMergeKey}},
-		}, nil) {
+		}) {
 		t.Fatal("round did not run")
 	}
 	f.deleteMemberFact(t, f.memberB, redundant)
@@ -447,7 +445,7 @@ func TestMergeStoreClearMemberProjectErasesTheLedger(t *testing.T) {
 	key := tenant.MergeKey("A contributed this.")
 	if !f.runRound(t,
 		[]TeamFactRow{{Text: "A contributed this.", MergeKey: key}},
-		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
 	if err := f.store.ClearMemberProject(context.Background(), f.teamID, f.projectID, f.memberA); err != nil {
@@ -689,7 +687,7 @@ func TestMergeStoreSuccessResetsTheBreaker(t *testing.T) {
 	}
 	if !f.runRoundWithOpts(t, opts,
 		[]TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key}},
-		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("the successful round did not run")
 	}
 	var failCount int
@@ -706,7 +704,7 @@ func TestMergeStoreSuccessResetsTheBreaker(t *testing.T) {
 // runRoundWithOpts is runRound with the round's settings chosen by the caller.
 func (f *mergeFixture) runRoundWithOpts(
 	t *testing.T, opts MergeRoundOptions, facts []TeamFactRow,
-	sources map[string][]MergeSourceRow, rebuild []string,
+	sources map[string][]MergeSourceRow,
 ) bool {
 	t.Helper()
 	ctx := context.Background()
@@ -726,11 +724,10 @@ func (f *mergeFixture) runRoundWithOpts(
 		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
 		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
 		Replace: MergeReplaceResult{
-			Insert: facts, Sources: sources, RebuildMembers: rebuild,
+			Insert: facts, Sources: sources,
 		},
 		Members: []string{f.memberA, f.memberB},
 		Cursors: map[string]MergeCursor{},
-		Rebuild: len(rebuild) > 0,
 	}); err != nil {
 		t.Fatalf("FinishMergeStanza: %v", err)
 	}

@@ -135,7 +135,7 @@ func TestMergeStoreWritesTeamFactsUnderTheirOwnKind(t *testing.T) {
 	key := tenant.MergeKey("Alice moved the deploy to port 15432.")
 	if !f.runRound(t,
 		[]TeamFactRow{{Text: "Alice moved the deploy to port 15432.", MergeKey: key, FactType: TypeExperience}},
-		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}, nil) {
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
 	if got := f.teamFactTypes(t)["Alice moved the deploy to port 15432."]; got != "experience" {
@@ -222,5 +222,55 @@ func TestRebuildContinuesFromTheCursor(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the rebuild did not read past the cursor: %v", seen)
+	}
+}
+
+// TestMergeStoreCarriesTags pins that a team fact keeps the member fact's tags.
+// Tags drive recall's tag filter and fuzzy tag resolution, so a fact whose tags
+// stop at the member's bank no longer answers a tag query for anyone else.
+func TestMergeStoreCarriesTags(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	unit := f.writeMemberFact(t, f.memberA, "the deploy uses port 15432")
+	if _, err := f.db.ExecContext(context.Background(),
+		"UPDATE "+quoteIdent(f.memberA)+".memory_units SET tags = $2::text[] WHERE id = $1::uuid",
+		unit, "{deploy,config}"); err != nil {
+		t.Fatalf("tag the member fact: %v", err)
+	}
+
+	cfgOpts := mergeRoundOpts(100, time.Minute)
+	var tags []string
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID, cfgOpts,
+		func(stanza MergeStanza) error {
+			for _, member := range stanza.Input().Members {
+				for _, fact := range member.Fresh {
+					tags = fact.Tags
+				}
+			}
+			return nil
+		}); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	if len(tags) != 2 || tags[0] != "deploy" || tags[1] != "config" {
+		t.Fatalf("member tags read as %v, want [deploy config]", tags)
+	}
+	if err := f.store.AbandonMergeStanza(context.Background(), f.teamID, f.projectID, MergeStateFailure{}); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+
+	key := tenant.MergeKey("the deploy uses port 15432")
+	if !f.runRound(t, []TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key,
+		FactType: TypeWorld, Tags: []string{"deploy", "config"}}},
+		map[string][]MergeSourceRow{f.memberA: {{UnitID: unit, MergeKey: key}}}) {
+		t.Fatal("round did not run")
+	}
+	var stored string
+	if err := f.db.QueryRowContext(f.teamSchemaCtx(t),
+		"SELECT COALESCE(tags,'{}'::text[])::text FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id=$1 AND metadata->>'merge_key'=$2",
+		tenant.ProjectBankID(f.teamID, f.projectID), key).Scan(&stored); err != nil {
+		t.Fatalf("read team tags: %v", err)
+	}
+	if stored != "{deploy,config}" {
+		t.Fatalf("team fact tags = %s, want {deploy,config}", stored)
 	}
 }

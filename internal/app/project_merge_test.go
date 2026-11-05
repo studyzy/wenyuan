@@ -231,6 +231,35 @@ func TestProjectMergeCarriesEveryFactVerbatim(t *testing.T) {
 	}
 }
 
+// TestProjectMergeCarriesLinksFromTheMember is the job's part of the link
+// copy: what the store read must reach the round's write, or the store has
+// nothing to recreate in the team bank.
+func TestProjectMergeCarriesLinksFromTheMember(t *testing.T) {
+	input := mergeTestInput()
+	first := input.Members[0].Fresh[0]
+	input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
+		TenantID: "alice", UnitID: "00000000-0000-0000-0000-000000000002",
+		Text: "The deploy moved to port 15432.", UpdatedAt: time.Now().UTC(),
+	})
+	input.Members[0].Links = []storage.MergeLink{{
+		FromMergeKey: tenant.MergeKey(first.Text),
+		ToMergeKey:   tenant.MergeKey("The deploy moved to port 15432."),
+		LinkType:     storage.LinkCauses,
+		Weight:       0.7,
+	}}
+	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
+	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
+		t.Fatalf("round: %v", err)
+	}
+	if merges.finished == nil {
+		t.Fatal("the round wrote nothing")
+	}
+	links := merges.finished.Replace.Links
+	if len(links) != 1 || links[0].LinkType != storage.LinkCauses || links[0].Weight != 0.7 {
+		t.Fatalf("written links = %+v, want the member link", links)
+	}
+}
+
 func TestProjectMergeSkipsWhenAnotherRoundHoldsTheProject(t *testing.T) {
 	merges := &fakeMergeStore{
 		projects:  []storage.MergeProject{mergeTestProject()},
@@ -435,19 +464,17 @@ func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
 	if !merges.finished.Rebuild {
 		t.Fatal("the round was not marked as a rebuild")
 	}
-	// The previous fact is removed because no member still holds it: a rebuild
-	// replays the members' facts, so a row nobody contributes is gone. The
-	// previous content is never carried into the pass either.
-	removed := make(map[string]bool, len(merges.finished.Replace.Remove))
-	for _, fact := range merges.finished.Replace.Remove {
-		removed[fact.Text] = true
+	// The previous fact is removed by the store's reconciliation, which runs on
+	// the round that completes the rebuild: a row nobody still contributes has
+	// no live ledger source. The previous content is never carried into the
+	// pass either.
+	if !merges.finished.Reconcile {
+		t.Fatal("the completing rebuild did not ask the store to reconcile")
 	}
-	if !removed["A withdrawn member's fact."] {
-		t.Fatalf("rebuild remove set = %v, want the previous fact dropped", merges.finished.Replace.Remove)
-	}
-	// And the members' ledger rows are replaced, not appended to.
-	if len(merges.finished.Replace.RebuildMembers) == 0 {
-		t.Fatal("a rebuild must replace the members' ledger rows")
+	for _, fact := range merges.finished.Replace.Insert {
+		if fact.Text == "A withdrawn member's fact." {
+			t.Fatalf("the withdrawn fact was re-inserted: %+v", merges.finished.Replace.Insert)
+		}
 	}
 }
 
@@ -466,8 +493,8 @@ func TestIncrementalRoundCarriesThePreviousContent(t *testing.T) {
 	if merges.finished.Rebuild {
 		t.Fatal("an incremental round was marked as a rebuild")
 	}
-	if len(merges.finished.Replace.RebuildMembers) != 0 {
-		t.Fatalf("an incremental round replaced ledger rows: %v", merges.finished.Replace.RebuildMembers)
+	if merges.finished.Reconcile {
+		t.Fatal("an incremental round asked the store to reconcile")
 	}
 }
 
@@ -492,9 +519,10 @@ func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 		t.Fatalf("round: %v", err)
 	}
 	replace := merges.finished.Replace
-	// The withdrawn fact is the only removal.
-	if len(replace.Remove) != 1 || replace.Remove[0].ID != "drop-me" {
-		t.Fatalf("remove = %+v, want only the withdrawn fact", replace.Remove)
+	// The store reconciles on the completing round: the withdrawn fact has no
+	// live source and is removed there; the app does not compute a removal set.
+	if !merges.finished.Reconcile {
+		t.Fatal("the completing rebuild did not ask the store to reconcile")
 	}
 	// The survivor is not re-inserted: its row is already there.
 	for _, fact := range replace.Insert {
@@ -552,10 +580,10 @@ func TestProjectMergePassesTheExperienceSwitchThrough(t *testing.T) {
 // team bank carries what the members hold. Asking the model to "merge duplicates"
 // turned 1940 member facts into 121 team facts, so the round now writes every
 // TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch pins the segmented rebuild: a
-// member holding more facts than one batch can feed the model is replayed over
-// several rounds, each advancing the cursor, and only the completing round
-// reconciles the bank. Clearing the flag on the first round would leave the
-// remainder of the member's bank unread forever.
+// member holding more facts than one batch is replayed over several rounds, each
+// advancing the cursor, and only the completing round reconciles the bank.
+// Clearing the flag on the first round would leave the remainder of the member's
+// bank unread forever.
 func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 	newInput := func(freshCount int) storage.MergeStanzaInput {
 		input := mergeTestInput()
@@ -588,6 +616,9 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 	if merges.finished.RebuildDone {
 		t.Fatal("a full batch reported the rebuild finished, so the remaining facts would never be replayed")
 	}
+	if merges.finished.Reconcile {
+		t.Fatal("a partial rebuild asked to reconcile the bank")
+	}
 	if _, ok := merges.finished.Cursors["alice"]; !ok {
 		t.Fatal("the round did not advance the cursor past the batch it consumed")
 	}
@@ -600,5 +631,8 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 	}
 	if !merges.finished.RebuildDone {
 		t.Fatal("a short batch did not complete the rebuild")
+	}
+	if !merges.finished.Reconcile {
+		t.Fatal("the completing rebuild did not ask to reconcile the bank")
 	}
 }

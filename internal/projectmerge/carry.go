@@ -26,7 +26,9 @@ type Plan struct {
 
 // PlannedFact is one team fact to write.
 type PlannedFact struct {
-	// Fact is the member fact this team fact carries, unchanged.
+	// Fact is the member fact this team fact carries, unchanged — its text, its
+	// kind and its tags. A tag that stops at the member's bank stops answering
+	// recall's tag filter for everyone else in the project.
 	Fact MemberFact
 }
 

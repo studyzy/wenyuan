@@ -44,6 +44,8 @@ type TeamFact struct {
 	MergeKey string
 	// FactType is the stored fact type: world, experience or observation.
 	FactType string
+	// Tags are the stored tags.
+	Tags []string
 }
 
 // MemberFact is one member's fact entering this round.
@@ -54,9 +56,10 @@ type MemberFact struct {
 	UnitID string
 	// Text is the fact's text.
 	Text string
-	// FactType is the member fact's type, which the prompt groups by and the
-	// answer inherits.
+	// FactType is the member fact's type, which the team fact inherits.
 	FactType string
+	// Tags are the member fact's tags, which the team fact inherits.
+	Tags []string
 }
 
 // SummarizedAnswer is one fact a summarising pass (the personal rollup) produced,

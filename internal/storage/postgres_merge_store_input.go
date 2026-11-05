@@ -69,7 +69,7 @@ func (s *PostgresMergeStore) loadMemberInput(
 		// that each round starts at the beginning.
 		cursor := CursorOf(member.State)
 		statement = `
-			SELECT id::text, text, fact_type, updated_at
+			SELECT id::text, text, fact_type, COALESCE(tags, '{}'::text[])::text, updated_at
 			FROM ` + qualified + `.memory_units
 			WHERE bank_id = $1 AND fact_type = ANY($2)
 			  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
@@ -82,7 +82,7 @@ func (s *PostgresMergeStore) loadMemberInput(
 	} else {
 		cursor := CursorOf(member.State)
 		statement = `
-			SELECT id::text, text, fact_type, updated_at
+			SELECT id::text, text, fact_type, COALESCE(tags, '{}'::text[])::text, updated_at
 			FROM ` + qualified + `.memory_units
 			WHERE bank_id = $1 AND fact_type = ANY($2)
 			  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
@@ -99,11 +99,13 @@ func (s *PostgresMergeStore) loadMemberInput(
 	}
 	for rows.Next() {
 		var fact MergeFact
+		var tags string
 		var updatedAt time.Time
-		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.FactType, &updatedAt); err != nil {
+		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.FactType, &tags, &updatedAt); err != nil {
 			_ = rows.Close()
 			return out, err
 		}
+		fact.Tags = decodePostgresTextArray([]byte(tags))
 		fact.TenantID = member.TenantID
 		fact.UpdatedAt = updatedAt
 		fresh = append(fresh, fact)
@@ -113,6 +115,10 @@ func (s *PostgresMergeStore) loadMemberInput(
 		return out, err
 	}
 	out.Fresh = fresh
+	out.Links, err = s.loadMemberLinks(ctx, tx, member, qualified, fresh, inputTypes)
+	if err != nil {
+		return out, err
+	}
 	// A rebuild is requested when a source that still supports team content has
 	// gone from this member's bank.
 	if member.HasLedger {
@@ -123,6 +129,58 @@ func (s *PostgresMergeStore) loadMemberInput(
 		out.Deleted = deleted
 	}
 	return out, nil
+}
+
+// loadMemberLinks reads the member's links that touch this round's facts.
+//
+// A link is read when either endpoint is in the batch, so a second endpoint
+// that the batch has not reached yet is carried when it arrives: that later
+// round reads the same link from its own side, and both team facts now exist.
+// The link types a round carries are the fact kinds it carries — a link to an
+// experience is not carried when experiences are switched out of the input.
+//
+// The endpoints are returned as merge keys rather than unit ids because a team
+// fact is a new row; the write looks both keys up in the team bank.
+func (s *PostgresMergeStore) loadMemberLinks(
+	ctx context.Context, tx Tx, member MergeProjectMember, qualified string,
+	fresh []MergeFact, inputTypes []string,
+) ([]MergeLink, error) {
+	if len(fresh) == 0 {
+		return nil, nil
+	}
+	unitIDs := make([]string, len(fresh))
+	for i := range fresh {
+		unitIDs[i] = fresh[i].UnitID
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source.text, target.text, link.link_type, link.weight
+		FROM `+qualified+`.memory_links link
+		JOIN `+qualified+`.memory_units source ON source.id = link.from_unit_id
+		JOIN `+qualified+`.memory_units target ON target.id = link.to_unit_id
+		WHERE link.bank_id = $1
+		  AND (link.from_unit_id = ANY($2::uuid[]) OR link.to_unit_id = ANY($2::uuid[]))
+		  AND source.fact_type = ANY($3) AND target.fact_type = ANY($3)
+		ORDER BY source.id, target.id, link.link_type`,
+		memberBankID(member), unitIDs, inputTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	links := make([]MergeLink, 0)
+	for rows.Next() {
+		var fromText, toText, linkType string
+		var weight float64
+		if err := rows.Scan(&fromText, &toText, &linkType, &weight); err != nil {
+			return nil, err
+		}
+		links = append(links, MergeLink{
+			FromMergeKey: tenant.MergeKey(fromText),
+			ToMergeKey:   tenant.MergeKey(toText),
+			LinkType:     MemoryLinkType(linkType),
+			Weight:       weight,
+		})
+	}
+	return links, rows.Err()
 }
 
 // sourceDeleted reports whether any live ledger source of this member's bank is

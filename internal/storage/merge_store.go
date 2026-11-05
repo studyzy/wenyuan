@@ -68,11 +68,29 @@ type MergeFact struct {
 	UnitID   string
 	Text     string
 	// FactType is the member fact's own type — world, experience or
-	// observation — so the round can tell the model what kind of statement it is
-	// looking at and write the team fact back under the same kind.
+	// observation — so the round writes the team fact under the same kind.
 	FactType MemoryUnitType
+	// Tags are the member fact's tags, carried so the team bank keeps the same
+	// vocabulary: tags drive recall's tag filter and the fuzzy tag resolution, so
+	// a fact whose tags are dropped is a fact that no longer answers a tag query.
+	Tags []string
 	// UpdatedAt is the fact's stored timestamp, which is the cursor's first part.
 	UpdatedAt time.Time
+}
+
+// MergeLink is one link between two facts a round carries.
+//
+// Its endpoints are identified by merge key rather than by unit id: the team
+// fact is a different row, so the write resolves both keys to the team bank's
+// own units. A link whose other endpoint has not reached the team bank yet is
+// carried when that endpoint does, which is what keeps links across batch
+// boundaries from being lost.
+type MergeLink struct {
+	FromMergeKey string
+	ToMergeKey   string
+	LinkType     MemoryLinkType
+	// Weight is the link's strength, copied unchanged.
+	Weight float64
 }
 
 // MergeCursor is the incremental position of one (project, member) pair.
@@ -101,10 +119,8 @@ type TeamFactRow struct {
 	// FactType is the row's stored fact type. A team fact keeps the kind of the
 	// member fact it was made from.
 	FactType MemoryUnitType
-	// DuplicateOf is the merge key of the fact this one repeats, empty when it
-	// repeats nothing. The fact is written either way: the label says "the bank
-	// already states this", it does not say "drop it".
-	DuplicateOf string
+	// Tags are the row's tags. A team fact keeps the member fact's tags.
+	Tags []string
 }
 
 // MergeStanzaInput is what a round reads while it holds the lock.
@@ -129,6 +145,10 @@ type MergeMemberInput struct {
 	// Fresh is the member's new world facts after the cursor, bounded by the
 	// round's batch.
 	Fresh []MergeFact
+	// Links are the member's links that touch a fact in Fresh. Both endpoints
+	// are named by merge key; a link whose other endpoint is not in the team
+	// bank yet is written when that endpoint arrives in a later round.
+	Links []MergeLink
 	// Deleted is true when a source this member contributed and that still
 	// supports team content no longer exists in their bank.
 	Deleted bool
@@ -158,23 +178,28 @@ type FinishMergeRequest struct {
 	// lands while it still matches, which is what keeps a round that another
 	// process took over from writing its stale result.
 	Stamp time.Time
-	// Replace carries the facts to keep, remove and insert, plus the ledger rows
-	// to record. When Rebuild is set the ledger for the round's members is
-	// replaced wholesale rather than appended.
+	// Replace carries the facts to insert and the provenance rows to record.
 	Replace MergeReplaceResult
 	// Cursors are the per-member positions to advance to, keyed by tenant id.
 	// A member absent from the map keeps its cursor, which is what a member whose
 	// input this round did not reach must do.
 	Cursors map[string]MergeCursor
 	// Rebuild reports the round replays the members' facts from the beginning
-	// rather than reading past a cursor, so every team row must be reconciled
-	// against what the members hold now.
+	// rather than reading past a cursor. A segmented rebuild reconciles only
+	// when it completes; reconciling a partial replay would delete the content
+	// of the batches it has not reached.
 	Rebuild bool
-	// RebuildDone clears rebuild_requested. A rebuild that spans several rounds
-	// must keep the flag: clearing it on the first round turns the rest into
+	// RebuildDone clears rebuild_requested and makes the write reconcile the
+	// team bank against the ledger. A rebuild that spans several rounds must
+	// keep the flag: clearing it on the first round turns the rest into
 	// incremental rounds, which resume at the cursor and never replay the
 	// remainder of the members' banks.
 	RebuildDone bool
+	// Reconcile removes every managed team fact whose sources have all left
+	// the members' banks. It is set only when a rebuild completes, after the
+	// round's own provenance rows are written, so a fact carried by an earlier
+	// segment still has a live source. An incremental round removes nothing.
+	Reconcile bool
 	// UnmanagedFacts counts the team bank's facts no round wrote. A positive
 	// count makes the write sweep them, of every merged kind, before inserting —
 	// which is what keeps a hand-written fact from surviving because the sweep
@@ -185,24 +210,20 @@ type FinishMergeRequest struct {
 // MergeReplaceResult is the fact-level change a round produces.
 type MergeReplaceResult struct {
 	Keep   []TeamFactRow
-	Remove []TeamFactRow
 	Insert []TeamFactRow
+	// Links are the member links to recreate between team facts. The write
+	// resolves each endpoint's merge key to the team bank's own row, so a link
+	// that names a fact another round wrote still lands.
+	Links []MergeLink
 	// Sources records, per member tenant id, each consumed source unit and the
 	// team fact it supports — or tenant.DroppedMergeKey when it supports none.
 	Sources map[string][]MergeSourceRow
-	// RebuildMembers are the tenants whose ledger rows this round replaces
-	// wholesale. Empty on an incremental round.
-	RebuildMembers []string
 }
 
 // MergeSourceRow is one ledger row to record.
 type MergeSourceRow struct {
 	UnitID   string
 	MergeKey string
-	// DuplicateOf is the merge key the source repeats, if the dedupe pass judged
-	// it redundant. It is advisory: the source supports its own MergeKey either
-	// way, which is what keeps delete detection reading only supporting rows.
-	DuplicateOf string
 }
 
 // MergeStateFailure records why a round produced nothing.

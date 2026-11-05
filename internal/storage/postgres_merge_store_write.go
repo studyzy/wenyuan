@@ -44,6 +44,14 @@ func (s *PostgresMergeStore) FinishMergeStanza(ctx context.Context, req FinishMe
 	if err := s.replaceLedger(ctx, tx, req); err != nil {
 		return err
 	}
+	// Reconciliation runs after the ledger: only then does a fact carried by
+	// this batch have a source row that proves it still lives. Reconciling
+	// before the insert would delete what the round just wrote.
+	if req.Reconcile {
+		if err := s.reconcileTeamFacts(ctx, tx, req); err != nil {
+			return err
+		}
+	}
 	if err := s.saveStates(ctx, tx, req); err != nil {
 		return err
 	}
@@ -61,36 +69,17 @@ func (s *PostgresMergeStore) claimHeld(ctx context.Context, tx Tx, teamID, proje
 	return held > 0, err
 }
 
-// applyFacts rewrites the team bank's managed facts.
+// applyFacts writes the team bank's managed facts.
 //
-// The order matters and is not DeleteBank's: that one deletes a whole bank, while
-// a round deletes only the facts the answer dropped. Running a bank-wide delete
-// here would empty the team's content on every round.
+// Nothing is deleted here. Removing a fact is the rebuild's reconciliation,
+// which runs after the ledger and only for a fact whose sources have all left
+// the members' banks; an incremental round is purely additive.
 func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMergeRequest) error {
 	schema, err := schemaIn(ctx)
 	if err != nil {
 		return err
 	}
 	qualified := quoteIdent(schema)
-	if len(req.Replace.Remove) > 0 {
-		doomed := make([]string, 0, len(req.Replace.Remove))
-		for _, fact := range req.Replace.Remove {
-			doomed = append(doomed, fact.ID)
-		}
-		// An observation is removed only when every fact it was made from is
-		// gone; one built partly on surviving facts keeps its row and loses the
-		// dead ids. This is the reference's own sweep, reused rather than
-		// re-implemented: it locks the touched rows in id order, which is what
-		// keeps two concurrent rounds from deadlocking.
-		if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, req.BankID, doomed); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
-			req.BankID, doomed); err != nil {
-			return err
-		}
-	}
 	// The defence against a direct write: a fact in the team bank that no round
 	// wrote is not part of the team's content, and the next round replaces it. It
 	// applies to every merged kind, because a `world`-only sweep would leave a
@@ -101,24 +90,33 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 		}
 	}
 	mergedAt := time.Now().UTC().Format(time.RFC3339)
+	// The ids the inserts generate are what the round's links point at, so each
+	// insert returns its row. A tag list is never NULL in the column, and an
+	// untagged fact arrives as nil; passing that through would fail the insert
+	// rather than write an empty array.
+	ids := make(map[string]string, len(req.Replace.Insert))
 	for _, fact := range req.Replace.Insert {
 		factType := fact.FactType
 		if factType == "" {
 			factType = TypeWorld
 		}
-		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, mergedAt)
-		if fact.DuplicateOf != "" {
-			// The dedupe pass judged this fact redundant. It is still written —
-			// the label is metadata, not a deletion — so an operator reading the
-			// bank can see that the bank already states the same thing, and by
-			// which row.
-			metadata = fmt.Sprintf(`{"merge_key": %q, "merged_at": %q, "duplicate_of": %q}`,
-				fact.MergeKey, mergedAt, fact.DuplicateOf)
+		tags := fact.Tags
+		if tags == nil {
+			tags = []string{}
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata)
-			VALUES ($1, NULL, $2, $3, $4::jsonb)`,
-			req.BankID, fact.Text, string(factType), metadata); err != nil {
+		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, mergedAt)
+		var id string
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata, tags)
+			VALUES ($1, NULL, $2, $3, $4::jsonb, $5::text[])
+			RETURNING id::text`,
+			req.BankID, fact.Text, string(factType), metadata, tags).Scan(&id); err != nil {
+			return err
+		}
+		ids[fact.MergeKey] = id
+	}
+	if len(req.Replace.Links) > 0 {
+		if err := s.applyLinks(ctx, tx, qualified, req.BankID, req.Replace.Links, ids); err != nil {
 			return err
 		}
 	}
@@ -253,14 +251,6 @@ func deleteStaleObservationsWithoutSources(
 // round only adds the newly consumed sources, so the ledger never loses a row the
 // team's content still rests on.
 func (s *PostgresMergeStore) replaceLedger(ctx context.Context, tx Tx, req FinishMergeRequest) error {
-	for _, tenantID := range req.Replace.RebuildMembers {
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM `+adminTable("merge_source_unit")+`
-			WHERE team_tenant_id = $1 AND project_id = $2 AND tenant_id = $3`,
-			req.TeamID, req.ProjectID, tenantID); err != nil {
-			return err
-		}
-	}
 	seen := make(map[string]bool)
 	for tenantID, sources := range req.Replace.Sources {
 		for _, source := range sources {

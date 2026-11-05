@@ -373,7 +373,7 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project 
 	}
 	qualified := quoteIdent(project.TeamSchema)
 	rows, err := tx.QueryContext(teamCtx, `
-		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type
+		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type, COALESCE(tags, '{}'::text[])::text
 		FROM `+qualified+`.memory_units
 		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NOT NULL
 		ORDER BY created_at DESC, id DESC
@@ -385,9 +385,11 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project 
 	facts := make([]TeamFactRow, 0)
 	for rows.Next() {
 		var fact TeamFactRow
-		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType); err != nil {
+		var tags string
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType, &tags); err != nil {
 			return nil, err
 		}
+		fact.Tags = decodePostgresTextArray([]byte(tags))
 		facts = append(facts, fact)
 	}
 	return facts, rows.Err()

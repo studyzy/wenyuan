@@ -162,7 +162,7 @@ func (r *mergeRunner) runMergeRound(
 		}
 		return false, err
 	}
-	if len(req.Replace.Insert) > 0 || len(req.Replace.Remove) > 0 {
+	if len(req.Replace.Insert) > 0 || req.Reconcile {
 		r.enqueueTeamConsolidation(ctx, project)
 	}
 	// A full batch means the member's bank held at least that many facts; the next
@@ -181,6 +181,9 @@ type roundPlan struct {
 	present []projectmerge.TeamFact
 	// fresh is the new input, in a stable order.
 	fresh []projectmerge.MemberFact
+	// links are the links between the facts this round read, endpoints named
+	// by merge key so the write can resolve them to the team bank.
+	links []storage.MergeLink
 	// cursor maps each member to the position its consumed facts reach.
 	cursor map[string]storage.MergeCursor
 	// rebuild reports the round acts as a rebuild rather than an incremental
@@ -214,10 +217,11 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 		for _, fact := range member.Fresh {
 			plan.fresh = append(plan.fresh, projectmerge.MemberFact{
 				TenantID: fact.TenantID, UnitID: fact.UnitID, Text: fact.Text,
-				FactType: string(fact.FactType),
+				FactType: string(fact.FactType), Tags: fact.Tags,
 			})
 			total++
 		}
+		plan.links = append(plan.links, member.Links...)
 	}
 	plan.rebuild = rebuild
 	// The team's previous content is what the pass compares against and, on a
@@ -298,44 +302,17 @@ func buildFinishRequest(
 ) storage.FinishMergeRequest {
 	planned := projectmerge.PlanBatch(plan.present, plan.fresh)
 
-	// The keys already in the bank: a fact whose key is here is the row the round
-	// already has, so it is neither inserted again nor removed.
-	existing := make(map[string]bool, len(plan.present))
-	for _, fact := range plan.present {
-		existing[fact.MergeKey] = true
-	}
-	// A rebuild reconciles the bank against what the members hold now, so the
-	// previous rows are removed and re-inserted only for facts a member still
-	// contributes. An incremental round removes nothing on this basis: the pass is
-	// additive, so a fact no member restates stays where it is.
-	//
-	// The removal is computed only on the round that completes the rebuild, and
-	// only over the rows this round actually compared against: plan.present is
-	// bounded by the batch, so rows older than that window are never candidates.
-	// A rebuild spanning several rounds sees one batch of the members' banks at a
-	// time, so removing every row a batch does not reproduce would delete the
-	// content of the batches not yet reached.
-	remove := make([]storage.TeamFactRow, 0)
-	if plan.rebuild && plan.rebuildDone {
-		for _, fact := range plan.present {
-			remove = append(remove, storage.TeamFactRow{
-				ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
-				FactType: storage.MemoryUnitType(fact.FactType),
-			})
-		}
-	}
-
 	// PlanBatch already dropped every fact the bank holds and every repeat inside
 	// the batch, so what is left is exactly what needs a row.
 	insert := make([]storage.TeamFactRow, 0, len(planned.Facts))
 	sources := make(map[string][]storage.MergeSourceRow, len(input.Members))
-	written := make(map[string]bool, len(planned.Facts))
 	for _, plannedFact := range planned.Facts {
 		key := projectmerge.MergeKey(plannedFact.Fact.Text)
 		insert = append(insert, storage.TeamFactRow{
 			Text:     plannedFact.Fact.Text,
 			MergeKey: key,
 			FactType: storage.MemoryUnitType(plannedFact.Fact.FactType),
+			Tags:     plannedFact.Fact.Tags,
 		})
 	}
 	// Every member's fact is a ledger row, whether or not the bank needed a new
@@ -344,15 +321,8 @@ func buildFinishRequest(
 	// once under each member.
 	for _, fact := range plan.fresh {
 		key := projectmerge.MergeKey(fact.Text)
-		written[key] = true
 		sources[fact.TenantID] = append(sources[fact.TenantID],
 			storage.MergeSourceRow{UnitID: fact.UnitID, MergeKey: key})
-	}
-	if plan.rebuild {
-		// A rebuild removes the rows no member contributes any more: `written`
-		// holds exactly the texts this round replays, so everything else in
-		// `existing` is a row nothing still supports.
-		remove = prunedRemovals(remove, written)
 	}
 
 	req := storage.FinishMergeRequest{
@@ -362,36 +332,20 @@ func buildFinishRequest(
 		BankID:     project.BankID,
 		Stamp:      stamp,
 		Replace: storage.MergeReplaceResult{
-			Remove:  remove,
 			Insert:  insert,
+			Links:   plan.links,
 			Sources: sources,
 		},
 		Cursors:        plan.cursor,
 		Rebuild:        plan.rebuild,
 		RebuildDone:    plan.rebuildDone,
+		Reconcile:      plan.rebuild && plan.rebuildDone,
 		UnmanagedFacts: input.UnmanagedFacts,
 	}
 	for _, member := range input.Members {
-		if plan.rebuild && member.BankExists {
-			req.Replace.RebuildMembers = append(req.Replace.RebuildMembers, member.Member.TenantID)
-		}
 		req.Members = append(req.Members, member.Member.TenantID)
 	}
 	return req
-}
-
-// prunedRemovals drops the removals whose text is still present in the bank: a
-// rebuild removes only the rows no member contributes any more, so whatever hangs
-// off a surviving row keeps it.
-func prunedRemovals(remove []storage.TeamFactRow, kept map[string]bool) []storage.TeamFactRow {
-	out := make([]storage.TeamFactRow, 0, len(remove))
-	for _, fact := range remove {
-		if kept[fact.MergeKey] {
-			continue
-		}
-		out = append(out, fact)
-	}
-	return out
 }
 
 // enqueueTeamConsolidation asks for a consolidation on the team bank, so the
