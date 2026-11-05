@@ -98,7 +98,9 @@ func TestPostgresMultiTenantEndToEnd(t *testing.T) {
 
 	// In multi-tenant mode a bank id is <tenant>::<name>: the prefix names the
 	// schema the bank lives in, so the same plain name is a different id per
-	// tenant and a prefixless one is refused.
+	// tenant. A prefixless id a client sends is re-homed to the caller's
+	// tenant by the auth middleware, so the canonical form below is what the
+	// client that already knows its tenant sends.
 	tenants := map[string]struct {
 		key    string
 		bankID string
@@ -132,5 +134,32 @@ func TestPostgresMultiTenantEndToEnd(t *testing.T) {
 		if len(page.Banks) != 1 || page.Banks[0].BankID != tenant.bankID || page.Banks[0].Name != name {
 			t.Fatalf("%s sees %+v, want only %s/%s", name, page.Banks, tenant.bankID, name)
 		}
+	}
+
+	// A client that sends a prefixless id — the reference's spelling, what a
+	// client that does not know its tenant sends — is re-homed to the
+	// caller's tenant: the bank lands in A's schema under the canonical id.
+	recorder := dataPlaneCall(t, application.Handler, http.MethodPut, "/v1/default/banks/naked", keyA,
+		"{\"name\":\"naked\"}")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create a bare-id bank = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	configRecorder := dataPlaneCall(t, application.Handler, http.MethodGet, "/v1/default/banks/naked/config", keyA, "")
+	if configRecorder.Code != http.StatusOK {
+		t.Fatalf("read the bare-id bank back = %d: %s", configRecorder.Code, configRecorder.Body.String())
+	}
+	var profile struct {
+		BankID string `json:"bank_id"`
+	}
+	if err := json.Unmarshal(configRecorder.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("decode bank config: %v", err)
+	}
+	if profile.BankID != tenantA+"::naked" {
+		t.Fatalf("bare id resolved to %q, want %q", profile.BankID, tenantA+"::naked")
+	}
+	// Another tenant's prefix is not re-homed: B cannot address A's bank.
+	foreign := dataPlaneCall(t, application.Handler, http.MethodGet, "/v1/default/banks/"+tenantA+"::naked/config", keyB, "")
+	if foreign.Code != http.StatusNotFound {
+		t.Fatalf("a foreign-prefixed id answered %d, want 404: %s", foreign.Code, foreign.Body.String())
 	}
 }

@@ -9,10 +9,17 @@ import (
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
-// The coding-agent rewrite through the served router: a client that addresses
-// "coding-agent::<project>" is served the bank of the tenant its credential
-// resolved to, and any other bank id reaches the handler exactly as sent.
-func TestAgentBankPrefixThroughServedRouter(t *testing.T) {
+// bankObservation is what a served request reached: the URL the handler saw
+// and the bank id the mux captured from it.
+type bankObservation struct {
+	path, rawPath, bank string
+}
+
+// recordingRouter serves the bank member route, the config sub-route, the
+// collection and the single-bank MCP mount for the tenant "acme", recording
+// each request. Every route writes to its own variable: the served router
+// memoizes its chain, so sharing one set would report an earlier request.
+func recordingRouter(observations map[string]*bankObservation) *Router {
 	extension := &stubTenantExtension{contexts: map[string]tenant.Context{
 		"good": {ID: "acme", Schema: "acme"},
 		// A resolution with no tenant id — the single-tenant extension — has
@@ -20,79 +27,107 @@ func TestAgentBankPrefixThroughServedRouter(t *testing.T) {
 		"bare": {Schema: "acme"},
 	}}
 	router := NewRouter(RouterOptions{TenantExtension: extension})
-
-	var seenPath, seenRawPath, seenBank string
-	record := func(w http.ResponseWriter, r *http.Request) {
-		seenPath, seenRawPath, seenBank = r.URL.Path, r.URL.RawPath, r.PathValue("bank_id")
-		w.WriteHeader(http.StatusOK)
+	record := func(route string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			observations[route] = &bankObservation{
+				path:    r.URL.Path,
+				rawPath: r.URL.RawPath,
+				bank:    r.PathValue("bank_id"),
+			}
+			w.WriteHeader(http.StatusOK)
+		}
 	}
-	router.Handle(http.MethodGet, BankMemberPath(), record)
-	router.Handle(http.MethodGet, BankPath("/config"), record)
-	router.Handle(http.MethodGet, BanksCollectionPath(), record)
-	router.Handle(http.MethodGet, NamespaceMCP+"/{bank_id}", record)
+	router.Handle(http.MethodGet, BankMemberPath(), record("member"))
+	router.Handle(http.MethodGet, BankPath("/config"), record("config"))
+	router.Handle(http.MethodGet, BanksCollectionPath(), record("collection"))
+	router.Handle(http.MethodGet, NamespaceMCP+"/{bank_id}", record("mcp"))
+	return router
+}
+
+// The re-homing through the served router: a client knows its credential and
+// nothing else, so the bank id it sends moves under the tenant the credential
+// resolved to — the harness spelling "coding-agent::<project>" and a bare
+// "xyz" alike. An id that already names a tenant is served as sent.
+func TestAgentBankRehomingThroughServedRouter(t *testing.T) {
+	observations := map[string]*bankObservation{}
+	router := recordingRouter(observations)
+	service := router.Service()
 
 	cases := []struct {
-		name, credential, target        string
-		wantPath, wantRawPath, wantBank string
+		name, credential, target, route string
+		want                            bankObservation
 	}{
 		{
 			name: "literal separator", credential: "good",
-			target:   "/v1/default/banks/coding-agent::wenyuan",
-			wantPath: "/v1/default/banks/acme::wenyuan", wantBank: "acme::wenyuan",
+			target: "/v1/default/banks/coding-agent::wenyuan", route: "member",
+			want: bankObservation{path: "/v1/default/banks/acme::wenyuan", bank: "acme::wenyuan"},
 		},
 		{
 			// encodeURIComponent, which the coding-agent client uses, escapes
-			// the two colons; the raw path is what the mux matches on.
+			// the two colons; the rewrite writes the canonical id back
+			// decoded and drops the escaped spelling.
 			name: "escaped separator", credential: "good",
-			target:      "/v1/default/banks/coding-agent%3A%3Aworkspace/config",
-			wantPath:    "/v1/default/banks/acme::workspace/config",
-			wantRawPath: "/v1/default/banks/acme%3A%3Aworkspace/config",
-			wantBank:    "acme::workspace",
+			target: "/v1/default/banks/coding-agent%3A%3Aworkspace/config", route: "config",
+			want: bankObservation{
+				path: "/v1/default/banks/acme::workspace/config",
+				bank: "acme::workspace",
+			},
 		},
 		{
-			name: "another tenant prefix", credential: "good",
-			target:   "/v1/default/banks/acme::wenyuan",
-			wantPath: "/v1/default/banks/acme::wenyuan", wantBank: "acme::wenyuan",
+			name: "own tenant prefix", credential: "good",
+			target: "/v1/default/banks/acme::wenyuan", route: "member",
+			want: bankObservation{path: "/v1/default/banks/acme::wenyuan", bank: "acme::wenyuan"},
 		},
 		{
+			name: "bare name", credential: "good",
+			target: "/v1/default/banks/wenyuan", route: "member",
+			want: bankObservation{path: "/v1/default/banks/acme::wenyuan", bank: "acme::wenyuan"},
+		},
+		{
+			// The client's word for its own account, sent without a project;
+			// "<tenant>::" would name no bank, so it is served as sent.
 			name: "harness name without a project", credential: "good",
-			target:   "/v1/default/banks/coding-agent",
-			wantPath: "/v1/default/banks/acme::", wantBank: "acme::",
+			target: "/v1/default/banks/coding-agent", route: "member",
+			want: bankObservation{path: "/v1/default/banks/coding-agent", bank: "coding-agent"},
+		},
+		{
+			name: "empty name after the separator", credential: "good",
+			target: "/v1/default/banks/coding-agent::", route: "member",
+			want: bankObservation{path: "/v1/default/banks/coding-agent::", bank: "coding-agent::"},
 		},
 		{
 			name: "collection is not bank-scoped", credential: "good",
-			target:   "/v1/default/banks",
-			wantPath: "/v1/default/banks",
+			target: "/v1/default/banks", route: "collection",
+			want: bankObservation{path: "/v1/default/banks"},
 		},
 		{
 			name: "single-bank MCP mount", credential: "good",
-			target:   "/mcp/coding-agent::wenyuan",
-			wantPath: "/mcp/acme::wenyuan", wantBank: "acme::wenyuan",
+			target: "/mcp/coding-agent::wenyuan", route: "mcp",
+			want: bankObservation{path: "/mcp/acme::wenyuan", bank: "acme::wenyuan"},
 		},
 		{
+			// A single-tenant extension answers no tenant id, so there is
+			// nothing to re-home an id to.
 			name: "no resolved tenant id", credential: "bare",
-			target:   "/v1/default/banks/coding-agent::wenyuan",
-			wantPath: "/v1/default/banks/coding-agent::wenyuan", wantBank: "coding-agent::wenyuan",
+			target: "/v1/default/banks/coding-agent::wenyuan", route: "member",
+			want: bankObservation{path: "/v1/default/banks/coding-agent::wenyuan", bank: "coding-agent::wenyuan"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			seenPath, seenRawPath, seenBank = "", "", ""
 			request := httptest.NewRequest(http.MethodGet, tc.target, nil)
 			request.Header.Set("Authorization", "Bearer "+tc.credential)
 			recorder := httptest.NewRecorder()
-			router.Service().ServeHTTP(recorder, request)
+			service.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 			}
-			if seenPath != tc.wantPath {
-				t.Fatalf("path = %q, want %q", seenPath, tc.wantPath)
+			got := observations[tc.route]
+			if got == nil {
+				t.Fatalf("the %s route was not reached", tc.route)
 			}
-			if seenRawPath != tc.wantRawPath {
-				t.Fatalf("raw path = %q, want %q", seenRawPath, tc.wantRawPath)
-			}
-			if seenBank != tc.wantBank {
-				t.Fatalf("bank = %q, want %q", seenBank, tc.wantBank)
+			if *got != tc.want {
+				t.Fatalf("reached %+v, want %+v", *got, tc.want)
 			}
 		})
 	}
@@ -128,10 +163,10 @@ func TestBankRoutesPrefixIsTheServedBankRoute(t *testing.T) {
 	}
 }
 
-// The harness id is re-homed for every bank the caller's tenant owns and for
-// none it does not: a prefix naming another tenant, or no `::` at all, is a
-// bank the caller cannot reach, and the answer is the missing-bank 404 the
-// contract gives for a bank that is not there.
+// A prefix this service cannot decide is refused rather than served under the
+// caller's schema: "bob::wenyuan" may be another tenant's bank, and the prefix
+// alone cannot tell. A bare id, which every client sends, is re-homed and
+// reaches the handler.
 func TestAgentBankPrefixRefusesForeignBankIDs(t *testing.T) {
 	router := testAgentBankRouter()
 	cases := []struct {
@@ -140,8 +175,8 @@ func TestAgentBankPrefixRefusesForeignBankIDs(t *testing.T) {
 	}{
 		{"own tenant prefix", "/v1/default/banks/acme::wenyuan", http.StatusOK},
 		{"harness prefix", "/v1/default/banks/coding-agent::wenyuan", http.StatusOK},
+		{"bare name", "/v1/default/banks/wenyuan", http.StatusOK},
 		{"another tenant's bank", "/v1/default/banks/bob::wenyuan", http.StatusNotFound},
-		{"no tenant prefix", "/v1/default/banks/wenyuan", http.StatusNotFound},
 		{"collection", "/v1/default/banks", http.StatusOK},
 	}
 	for _, tc := range cases {

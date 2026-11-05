@@ -135,7 +135,7 @@ func TenantAuthMiddleware(apiKey string, mcpAuthDisabled bool, mcpAuthToken stri
 //
 // bankExists, when non-nil, answers whether an id is a bank of the schema the
 // request resolved to. It is what admits the legacy lifecycle allowance
-// described at foreignBankID; a nil hook allows nothing.
+// described at legacyBankLifecycle; a nil hook allows nothing.
 func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled bool, routeAllowed func(*http.Request) bool, bankExists func(context.Context, string) (bool, error)) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,14 +174,17 @@ func TenantExtensionAuthMiddleware(extension tenant.Extension, mcpAuthDisabled b
 				WriteJSON(w, http.StatusServiceUnavailable, ErrorEnvelope{Detail: DetailAuthenticationUnavailable})
 				return
 			}
-			// A coding-agent client addresses its bank by the harness name
-			// ("coding-agent::<project>"), which is not a tenant id here. The
-			// credential has just resolved the tenant, so its id takes the
-			// prefix's place before routing captures the bank id.
-			rewriteAgentBankPrefix(r.URL, resolved.ID)
-			if bankID, foreign := foreignBankID(r, resolved.ID); foreign {
-				if !legacyBankLifecycle(r.WithContext(ctx), bankID, bankExists) {
-					WriteError(w, NewHTTPError(KindNotFound, BankNotFoundDetail(bankID)))
+			// A bank id names a tenant in this service's terms ("<tenant>::<name>")
+			// while the client that sends one knows only its credential. The
+			// re-homing runs before routing, which is where the bank id is
+			// captured, so everything below sees the canonical id.
+			plan := planBankRehoming(r, resolved.ID)
+			switch plan.kind {
+			case bankRehomeRehost:
+				rewriteBankInURL(r.URL, resolved.ID)
+			case bankRehomeUnverifiable:
+				if !legacyBankLifecycle(r.WithContext(ctx), plan.bankID, bankExists) {
+					WriteError(w, NewHTTPError(KindNotFound, BankNotFoundDetail(plan.bankID)))
 					return
 				}
 			}
@@ -223,47 +226,10 @@ func mcpTokenMatches(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
 }
 
-// foreignBankID reports whether the bank a bank-scoped path addresses belongs to
-// some other tenant, and names it.
-//
-// A bank id is `<tenant>::<name>` and the bank lives in that tenant's schema, so
-// a prefix naming another tenant — or no `::` at all, which names no tenant — is
-// a bank this caller cannot reach. Letting it through would serve a request
-// under the caller's schema while the id claimed another tenant's: the store
-// would create or read that prefix as a plain name, and the id would then stop
-// meaning what the contract says it means. The refusal is the same 404 an
-// absent bank gets, so a caller cannot tell a foreign id from a missing one.
-//
-// Nothing is foreign for a deployment with no resolved tenant id (the
-// single-tenant extension), nor for a path that addresses no bank: the bank
-// collection, and every route that is not bank-scoped.
-//
-// The prefix rule is a rule about which *ids* a caller may name, and it exists
-// because the id is what the schema does not check. A bank written under a
-// prefix this service no longer hands out — the `public::` banks an earlier
-// client created — still physically lives in its tenant's schema, and deleting
-// it is a lifecycle operation on the caller's own data, not a cross-tenant
-// reach. legacyBankLifecycle is what admits exactly that and nothing more: a whole
-// -bank replace or delete of an id that a per-schema lookup finds, which is why
-// every read, and every write below the bank, stays refused.
-func foreignBankID(r *http.Request, tenantID string) (string, bool) {
-	if tenantID == "" {
-		return "", false
-	}
-	bankID, bankScoped := bankScopedPath(r.URL.Path)
-	if !bankScoped || bankID == "" {
-		return "", false
-	}
-	prefix, _, ok := strings.Cut(bankID, "::")
-	if ok && prefix == tenantID {
-		return "", false
-	}
-	return bankID, true
-}
-
-// legacyBankLifecycle reports whether a bank-scoped request on a
-// foreign-prefixed bank id is a lifecycle operation the caller may still make on
-// a bank of its own schema.
+// legacyBankLifecycle reports whether a bank-scoped request on a bank id the
+// middleware could not verify (planBankRehoming's bankRehomeUnverifiable: a
+// prefix that is neither the caller's nor the harness's) is a lifecycle
+// operation the caller may still make on a bank of its own schema.
 //
 // It answers true only for a whole-bank replace or delete — the two requests
 // whose subject is the bank row itself — and only when the bank is really there
@@ -291,19 +257,6 @@ func legacyBankLifecycle(r *http.Request, bankID string, exists func(context.Con
 	}
 	found, err := exists(r.Context(), bankID)
 	return err == nil && found
-}
-
-// bankScopedPath splits a bank-scoped path into the bank it addresses.
-// @param path - the request's decoded path.
-// @returns the first segment after the prefix, and whether the path is
-// bank-scoped at all. A path that is not is `false`.
-func bankScopedPath(path string) (string, bool) {
-	start, ok := agentBankPathStart(path)
-	if !ok {
-		return "", false
-	}
-	bankID, _, _ := strings.Cut(path[start:], "/")
-	return bankID, true
 }
 
 // requiresAuthentication reports whether the path is one the reference
