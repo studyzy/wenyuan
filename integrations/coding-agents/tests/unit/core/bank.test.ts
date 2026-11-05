@@ -73,6 +73,26 @@ describe("deriveBankId", () => {
     expect(deriveBankId({ dynamicBankId: false }, "/home/me/proj")).toBe("coding");
   });
 
+  describe("dynamic aliases", () => {
+    it.each(["default", "auto", " Default ", ""])(
+      "bankId=%j means the dynamic template, not a bank named that",
+      (bankId) => {
+        expect(deriveBankId({ bankId }, "/home/me/proj")).toBe("coding-agent::proj");
+      }
+    );
+
+    it("does not turn a real bank named 'defaults' or 'autopilot' dynamic", () => {
+      expect(deriveBankId({ bankId: "defaults" }, "/home/me/proj")).toBe("defaults");
+      expect(deriveBankId({ bankId: "autopilot" }, "/home/me/proj")).toBe("autopilot");
+    });
+
+    it("an explicit dynamicBankId=false still wins over the alias", () => {
+      expect(deriveBankId({ bankId: "default", dynamicBankId: false }, "/home/me/proj")).toBe(
+        "default"
+      );
+    });
+  });
+
   describe("bankIdTemplate", () => {
     it("supports literal text around placeholders", () => {
       expect(deriveBankId({ bankIdTemplate: "wenyuan-{gitProject}" }, "/home/me/proj")).toBe(

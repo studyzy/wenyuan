@@ -9,8 +9,9 @@
  *   1. `mapPathToBank` — absolute path -> bank; LONGEST matching prefix wins, so mapping a repo
  *      root covers every subdirectory and linked worktree of that repo. Overrides everything,
  *      including an explicit bankId.
- *   2. static — when `dynamicBankId` is false, or left unset WITH an explicit `bankId`
- *      (single-bank setups).
+ *   2. static — when `dynamicBankId` is set it decides; with it unset the setting is dynamic
+ *      unless `bankId` names a bank. A `bankId` of `default` or `auto` (or blank) is an alias FOR
+ *      the dynamic template, not a bank of its own.
  *   3. dynamic — `bankIdTemplate` (default "coding-agent::{gitProject}") with placeholders:
  *        {gitProject}  worktree-aware repo name (all worktrees share it; outside a repo: the
  *                      basename of the directory the SESSION started in)
@@ -50,6 +51,18 @@ const DEFAULT_BANK_NAME = "coding";
 // banks from other integrations. Deliberately NOT `{harness}::…`: that would split memory per
 // agent and defeat cross-agent sharing.
 const DEFAULT_TEMPLATE = "coding-agent::{gitProject}";
+
+/** `bankId` values that MEAN the default dynamic template rather than naming a bank. A deployment
+ *  that wires this integration usually has to fill a bank field and reaches for `default` (the
+ *  service's own tenant segment) or `auto`; treating either as a literal bank is what parked every
+ *  repo's memory in one bank named `default`. */
+const DYNAMIC_BANK_ALIASES: readonly string[] = ["default", "auto"];
+
+/** Whether an explicit `bankId` is the dynamic self (unset, blank, `default` or `auto`). */
+function isDynamicAlias(bankId: string | undefined): boolean {
+  if (!bankId || !bankId.trim()) return true;
+  return DYNAMIC_BANK_ALIASES.includes(bankId.trim().toLowerCase());
+}
 
 /**
  * The repository a directory belongs to — or WHY there is no answer.
@@ -301,8 +314,9 @@ export function deriveBankId(
   const mapped = mappedBank(config, directory, sessionRoot);
   if (mapped) return mapped;
 
-  // dynamic by default — but an explicit bankId (without dynamicBankId: true) means "static".
-  const dynamic = config.dynamicBankId ?? !config.bankId;
+  // dynamic by default — but an explicit bankId (without dynamicBankId: true) means "static",
+  // unless that bankId is one of the dynamic aliases (`default`/`auto`).
+  const dynamic = config.dynamicBankId ?? isDynamicAlias(config.bankId);
   if (!dynamic) return config.bankId || DEFAULT_BANK_NAME;
 
   const resolvers: Record<string, () => string> = {
@@ -339,7 +353,7 @@ export function bankProjectName(
 ): string | undefined {
   if (mappedBank(config, directory, sessionRoot)) return undefined;
 
-  const dynamic = config.dynamicBankId ?? !config.bankId;
+  const dynamic = config.dynamicBankId ?? isDynamicAlias(config.bankId);
   if (!dynamic) return undefined;
 
   // Only `{gitProject}` ties the id to the repository. `{project}` is the live directory basename

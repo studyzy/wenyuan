@@ -104,11 +104,16 @@ item 字段（`chat.ts:371-393`）：
 
 ### 1.5 bank_id 推导
 
-`src/core/bank.ts:300-325`（`deriveBankId`），优先级：
+`src/core/bank.ts:304`（`deriveBankId`），优先级：
 
 1. `mapPathToBank` 路径映射（最长前缀匹配）
-2. 静态 `config.bankId`（未设 `dynamicBankId`）
+2. 静态 `config.bankId`（`dynamicBankId` 已设时以它为准；未设时**除别名外**的 `bankId` 即静态）
 3. 动态模板，默认 **`coding-agent::{gitProject}`**（`bank.ts:53`）
+
+`bankId` 取 `default` 或 `auto`（含空串、大小写与首尾空白差异）时是**动态模板的别名**，
+不是名为 `default` 的 bank —— 部署为了填必填的 bank 字段常写这两个词，若按字面处理会把所有
+仓库的记忆堆进同一个 `default` bank。别名只做整词匹配（`defaults`、`autopilot` 仍是真实名称），
+且显式 `dynamicBankId: false` 优先，此时 `bankId: "default"` 仍按字面静态 bank。
 
 默认模板刻意**不含** `{harness}` —— 一个 repo 一个 bank，所有 agent 共享记忆（`bank.ts:49-52`）。
 仓库无法识别时**整个写入被跳过**（`bank.ts:377-394`），避免污染服务器。

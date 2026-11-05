@@ -25,7 +25,8 @@ export interface RawConfig {
   apiUrl?: string;
   /** Bearer token (optional). */
   apiToken?: string;
-  /** EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts). */
+  /** EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts).
+   *  `default` and `auto` are aliases FOR the dynamic template, not bank names. */
   bankId?: string;
   /** Force dynamic resolution even when bankId is set (default: dynamic iff no bankId). */
   dynamicBankId?: boolean;

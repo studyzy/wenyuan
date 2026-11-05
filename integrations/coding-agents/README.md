@@ -78,6 +78,15 @@ and is relocated by `WENYUAN_CONFIG`. Its keys are `serverMode`, `apiUrl`,
 `WENYUAN_API_URL`, `WENYUAN_API_TOKEN`, `WENYUAN_BANK_ID` and
 `WENYUAN_API_PORT`. Nothing prompts without a terminal.
 
+The stored `bankId` is not what the hooks and plugins read: memory is
+per-repository, resolved at every session from the working directory
+(`src/core/bank.ts`). The default is the template
+`coding-agent::{gitProject}`, so every coding agent shares one bank per repo;
+a configured `bankId` of `default` or `auto` (blank counts too) is an alias
+for that template rather than a bank named `default`. A `bankId` naming
+anything else is a static bank, and `dynamicBankId: false` makes `default`
+literal again.
+
 ## Layout
 
 ```
