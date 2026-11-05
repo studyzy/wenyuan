@@ -1516,6 +1516,7 @@ func NewQueueConsumer(store storage.Store, model provider.Provider, reflection s
 		ReservedSlots:       cfg.ReservedSlots,
 		BackpressureDefer:   tuning.BackpressureDefer,
 		ConsolidationByBank: tuning.ConsolidationByBank,
+		RetainFoldTokens:    tuning.RetainFoldTokens,
 		Tenants:             tenants,
 	})
 }

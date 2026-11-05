@@ -32,8 +32,10 @@ func NewBackgroundRoles(application *App) *BackgroundRoles {
 	maintenanceCfg := application.Config.Maintenance
 	maintenanceCfg.ProjectMergeEnabled = mergeEnabled(application.Config, application.MergeStore)
 	maintenanceCfg.PersonalRollupEnabled = personalRollupEnabled(application.PersonalStore)
+	workerTuning := application.Config.WorkerTuning
+	workerTuning.RetainFoldTokens = application.Config.RetainTuning.SubBatchTokens
 	return &BackgroundRoles{
-		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, application.Config.WorkerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,
+		Consumer: NewQueueConsumer(application.Store, model, reflection, embeddingGeneratorFrom(application.Embedder), application.Config.Worker, workerTuning, application.webhookGuard(), ExtractionSettingsFrom(application.Config), !application.Config.StoreDocumentText,
 			application.Config.EnableObservations, application.Config.EnableAutoConsolidation,
 			application.Config.DatabaseSchema, tenants).WithAuditor(application.Audit),
 		Loop: NewMaintenanceLoopWithBankConfig(

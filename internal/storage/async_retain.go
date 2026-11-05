@@ -130,30 +130,7 @@ func AsyncRetainPayload(bankID, operationID string, req RetainRequest) map[strin
 			task.Vocabulary = raw
 		}
 	}
-	for _, item := range req.Items {
-		metadata := item.Metadata
-		var metadataPointer *map[string]any
-		if metadata != nil {
-			metadataPointer = &metadata
-		}
-		task.Items = append(task.Items, asyncRetainItem{
-			Content:             item.Content,
-			Timestamp:           item.Timestamp,
-			HasTimestamp:        item.HasTimestamp,
-			Context:             item.Context,
-			Metadata:            metadataPointer,
-			DocumentID:          item.DocumentID,
-			Entities:            asyncRetainEntities(item.Entities),
-			ResolveEntities:     item.ResolveEntities,
-			Tags:                item.Tags,
-			ObservationScopes:   item.ObservationScopes,
-			Strategy:            item.Strategy,
-			UpdateMode:          item.UpdateMode,
-			ForceReextract:      item.ForceReextract,
-			AttachmentIDs:       item.AttachmentIDs,
-			AttachmentFilenames: item.AttachmentFilenames,
-		})
-	}
+	task.Items = asyncRetainItemsFrom(req.Items)
 	// The map round trip is what keeps the payload the store persists free of
 	// struct tags it does not know: the worker decodes it back with
 	// DecodeAsyncRetainPayload, so the two halves stay in step by construction.
@@ -227,6 +204,59 @@ func DecodeAsyncRetainPayload(payload map[string]any) (RetainRequest, error) {
 		})
 	}
 	return req, nil
+}
+
+// asyncRetainItemsFrom converts a write's items into their queued-payload
+// form. Both the submission's payload and a fold's merged item list render
+// through it, so the two stay the same shape by construction.
+func asyncRetainItemsFrom(items []RetainItem) []asyncRetainItem {
+	out := make([]asyncRetainItem, 0, len(items))
+	for _, item := range items {
+		metadata := item.Metadata
+		var metadataPointer *map[string]any
+		if metadata != nil {
+			metadataPointer = &metadata
+		}
+		out = append(out, asyncRetainItem{
+			Content:             item.Content,
+			Timestamp:           item.Timestamp,
+			HasTimestamp:        item.HasTimestamp,
+			Context:             item.Context,
+			Metadata:            metadataPointer,
+			DocumentID:          item.DocumentID,
+			Entities:            asyncRetainEntities(item.Entities),
+			ResolveEntities:     item.ResolveEntities,
+			Tags:                item.Tags,
+			ObservationScopes:   item.ObservationScopes,
+			Strategy:            item.Strategy,
+			UpdateMode:          item.UpdateMode,
+			ForceReextract:      item.ForceReextract,
+			AttachmentIDs:       item.AttachmentIDs,
+			AttachmentFilenames: item.AttachmentFilenames,
+		})
+	}
+	return out
+}
+
+// AsyncRetainItemsPayload renders a write's items in the queued payload's
+// shape — the form the `items` member of a task payload carries. A fold that
+// replaces a claimed payload's items with its merged list uses this so the
+// rewritten payload decodes exactly as a submitted one does.
+func AsyncRetainItemsPayload(items []RetainItem) []any {
+	type itemsOnly struct {
+		Items []asyncRetainItem `json:"items"`
+	}
+	encoded, err := json.Marshal(itemsOnly{Items: asyncRetainItemsFrom(items)})
+	if err != nil {
+		return nil
+	}
+	var decoded struct {
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil
+	}
+	return decoded.Items
 }
 
 func asyncRetainEntities(entities []RetainEntity) []asyncRetainEntity {

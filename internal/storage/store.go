@@ -415,6 +415,19 @@ type Store interface {
 	// one becomes claimable, returning the operation to the claimable pool. It
 	// is the retry half of the consumer lifecycle.
 	ScheduleOperationRetry(ctx context.Context, opID string, retryCount int, nextRetryAt time.Time, errMsg string) error
+	// PendingRetainPeers returns the queued retain operations that wait behind
+	// one claimed operation on the same bank and serialization key, oldest
+	// first, ties broken by identifier, up to limit. These are the candidates a
+	// fold can join into the claimed operation's execution; anything else — a
+	// different type, a missing payload, a retry gate not yet passed — is not a
+	// candidate.
+	PendingRetainPeers(ctx context.Context, bankID, serializationKey string, limit int) ([]Operation, error)
+	// ClaimPendingOperations claims the named operations that are still
+	// pending, in the order given, and returns the identifiers it took. A name
+	// that is no longer pending — settled or cancelled while the caller was
+	// planning — is skipped rather than claimed, so a caller that folded only
+	// the operations it actually holds never executes work it does not own.
+	ClaimPendingOperations(ctx context.Context, workerID string, ids []string) ([]string, error)
 
 	// --- Webhooks -------------------------------------------------------
 	// ListWebhooks returns a bank's webhook registrations, newest first.

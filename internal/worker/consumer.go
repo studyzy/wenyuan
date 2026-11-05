@@ -85,6 +85,11 @@ type Config struct {
 	// "bank-pattern:priority,...". When set, a consolidation claim prefers the
 	// banks matching a higher-priority pattern.
 	ConsolidationByBank string
+	// RetainFoldTokens is the token budget a folded retain execution's items
+	// are held to — the same per-execution budget the queued-submission split
+	// applies, so a fold never joins more text than one submission may carry.
+	// Zero uses the shipped default.
+	RetainFoldTokens int
 	// Tenants, when non-nil, enumerates the schemas this consumer polls. A nil
 	// value keeps the single-tenant behaviour: every claim uses the store's
 	// default schema.
@@ -367,6 +372,9 @@ func New(store storage.Store, processor Processor, cfg Config) *Consumer {
 	if cfg.BackpressureDefer <= 0 {
 		cfg.BackpressureDefer = DefaultBackpressureDefer
 	}
+	if cfg.RetainFoldTokens <= 0 {
+		cfg.RetainFoldTokens = storage.DefaultRetainSubBatchTokens
+	}
 	if cfg.TenantRefresh <= 0 {
 		cfg.TenantRefresh = DefaultTenantRefresh
 	}
@@ -525,7 +533,8 @@ func (c *Consumer) loop(ctx context.Context, slot int) {
 			c.wait(ctx)
 			continue
 		}
-		c.handle(opCtx, op)
+		folded := c.foldClaimedRetain(opCtx, &op)
+		c.handle(opCtx, op, folded...)
 		c.trackInflight(op.OperationType, -1)
 	}
 }
@@ -665,8 +674,10 @@ func (c *Consumer) trackInflight(opType string, delta int) {
 	c.inflight[opType] += delta
 }
 
-// handle runs one claimed operation and settles its outcome.
-func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
+// handle runs one claimed operation and settles its outcome. folded carries
+// the operations the claim folded into this execution, so every settle below
+// accounts for them alongside the primary.
+func (c *Consumer) handle(ctx context.Context, op storage.Operation, folded ...storage.Operation) {
 	// Execution-start guard: re-read the operation and abort when it is gone or
 	// cancelled before any work runs. A bank deleted after the claim takes its
 	// queued operations with it, and running one of them would resurrect the
@@ -764,6 +775,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 
 	if err == nil {
 		c.complete(ctx, op, sink.metadata)
+		c.completeFolded(ctx, folded)
 		c.recordOperation(op, true, time.Since(started))
 		return
 	}
@@ -780,6 +792,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		// reference's explanation (poller.py:1313-1322): it is wedged, not flaky,
 		// so spending the retry budget on it only repeats the wedge.
 		c.fail(ctx, op, exceeded.Describe(), sink.metadata)
+		c.failFolded(ctx, folded, exceeded.Describe())
 		c.recordOperation(op, false, time.Since(started))
 		return
 	}
@@ -787,6 +800,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		// A permanent failure is terminal on the first try; it must not consume
 		// the retry budget.
 		c.fail(ctx, op, err.Error(), sink.metadata)
+		c.failFolded(ctx, folded, err.Error())
 		c.recordOperation(op, false, time.Since(started))
 		return
 	}
@@ -794,7 +808,7 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		// A retry that named its own delay: it records the failed attempt and
 		// advances the count, so the caller's ladder walks toward its own
 		// ceiling instead of re-running the first rung forever.
-		c.retryAt(ctx, op, delay, err, sink.metadata)
+		c.retryAt(ctx, op, folded, delay, err, sink.metadata)
 		return
 	}
 	if isBackpressure(err) || isDeferral(err) || isAppendConflict(err) {
@@ -805,10 +819,10 @@ func (c *Consumer) handle(ctx context.Context, op storage.Operation) {
 		// The attempt's report is kept: a deferral did work enough to name a
 		// reason (a webhook's receiver status, an explicit retry delay), and
 		// that is exactly what an operator reads across a retry.
-		c.deferOperation(ctx, op, err, sink.metadata)
+		c.deferOperation(ctx, op, folded, err, sink.metadata)
 		return
 	}
-	c.retry(ctx, op, err, sink.metadata, started)
+	c.retry(ctx, op, folded, err, sink.metadata, started)
 }
 
 // recordOperation reports one terminally-settled operation to the metric
@@ -895,7 +909,7 @@ func (c *Consumer) operationAlive(ctx context.Context, op storage.Operation) boo
 // carry it, so a deferral does not throw away the one thing an operator needs to
 // tell "the endpoint is refusing us" from "we never reached it". A processor
 // that reported nothing takes the plain scheduling path unchanged.
-func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cause error, metadata map[string]any) {
+func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, folded []storage.Operation, cause error, metadata map[string]any) {
 	// A deferral under backpressure is held for the configured interval: the
 	// delay is how long the store needs to catch up, not how many attempts the
 	// work has already spent, so it does not walk a retry ladder tuned for a
@@ -919,6 +933,7 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 			c.reportSettleLapse(op, "defer", err)
 			return
 		}
+		c.deferFolded(ctx, folded, next)
 		c.cfg.Logger.Warn("operation deferred: append lost its race",
 			"operation_id", op.OperationID, "bank_id", op.BankID,
 			"deferral", defers, "next_retry_at", next, "reason", cause.Error())
@@ -943,6 +958,7 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 		c.reportSettleLapse(op, "defer", err)
 		return
 	}
+	c.deferFolded(ctx, folded, next)
 	// The refusal reason belongs in the log, not in the error column: a
 	// deferral is backpressure rather than a failure, and a caller that waits
 	// for a bank to settle reads a pending operation carrying an error as
@@ -953,11 +969,14 @@ func (c *Consumer) deferOperation(ctx context.Context, op storage.Operation, cau
 }
 
 // retry schedules another attempt, or fails the operation once the attempt
-// budget is spent.
-func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error, metadata map[string]any, started time.Time) {
+// budget is spent. The members the claim folded into this execution follow the
+// primary's verdict: they retry together, or they fail together.
+func (c *Consumer) retry(ctx context.Context, op storage.Operation, folded []storage.Operation, cause error, metadata map[string]any, started time.Time) {
 	attempt := op.RetryCount + 1
 	if attempt > c.cfg.MaxRetries {
-		c.fail(ctx, op, fmt.Sprintf("retry budget exhausted after %d attempt(s): %v", op.RetryCount, cause), metadata)
+		detail := fmt.Sprintf("retry budget exhausted after %d attempt(s): %v", op.RetryCount, cause)
+		c.fail(ctx, op, detail, metadata)
+		c.failFolded(ctx, folded, detail)
 		c.recordOperation(op, false, time.Since(started))
 		return
 	}
@@ -974,13 +993,15 @@ func (c *Consumer) retry(ctx context.Context, op storage.Operation, cause error,
 	}
 	c.cfg.Logger.Info("operation scheduled for retry",
 		"operation_id", op.OperationID, "attempt", attempt, "next_retry_at", next)
+	c.retryFolded(ctx, folded, next, truncateErrorMessage(cause.Error()))
 }
 
 // retryAt reschedules an operation at the delay the processor named, recording
 // the failed attempt and its cause — the reference's RetryTaskAt. The attempt
 // count advances, so a caller's ladder reaches its own ceiling; the budget is
-// the processor's, not the consumer's, because the delay is.
-func (c *Consumer) retryAt(ctx context.Context, op storage.Operation, delay time.Duration, cause error, metadata map[string]any) {
+// the processor's, not the consumer's, because the delay is. The members the
+// claim folded into this execution follow at the same moment.
+func (c *Consumer) retryAt(ctx context.Context, op storage.Operation, folded []storage.Operation, delay time.Duration, cause error, metadata map[string]any) {
 	next := c.cfg.Now().Add(delay)
 	if err := c.scheduleRetry(ctx, op, op.RetryCount+1, next, cause.Error(), metadata); err != nil {
 		c.reportSettleLapse(op, "schedule-retry", err)
@@ -988,6 +1009,7 @@ func (c *Consumer) retryAt(ctx context.Context, op storage.Operation, delay time
 	}
 	c.cfg.Logger.Info("operation scheduled for retry",
 		"operation_id", op.OperationID, "attempt", op.RetryCount+1, "next_retry_at", next)
+	c.retryFolded(ctx, folded, next, truncateErrorMessage(cause.Error()))
 }
 
 // wait pauses before the next empty poll, waking early on shutdown.
