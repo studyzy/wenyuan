@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -15,18 +16,30 @@ const ChunkSize = 3000
 // chunks exactly as it always did.
 const DefaultStructuredChunkSize = ChunkSize
 
+// defaultMaxAttachmentsPerChunk caps the number of inline references a single
+// chunk may carry when the caller enables attachment-aware segmentation. It is
+// the resolved process default; a caller that omits the cap applies no image
+// handling at all.
+const defaultMaxAttachmentsPerChunk = 8
+
 // SegmentOptions carries the configured chunk budgets for one segmentation.
-// Both fields are optional: zero or less means the default, so the zero value
-// reproduces the historical split.
+// The two size fields are optional: zero or less means the default, so the zero
+// value reproduces the historical split. MaxAttachmentsPerChunk is optional
+// too: zero or less disables the attachment-aware path.
 type SegmentOptions struct {
 	// ChunkSize bounds a prose chunk. Zero or less means ChunkSize.
 	ChunkSize int
 	// StructuredChunkSize bounds a structured chunk — a JSON conversation or a
 	// JSONL body. Zero or less means DefaultStructuredChunkSize.
 	StructuredChunkSize int
+	// MaxAttachmentsPerChunk caps inline references in one chunk. Zero or less
+	// leaves text carrying reference tokens on the ordinary text path.
+	MaxAttachmentsPerChunk int
 }
 
 // normalized fills the defaults, so an unset budget keeps the historical size.
+// It never defaults MaxAttachmentsPerChunk: an unset cap is a deliberate
+// request for no image handling.
 func (o SegmentOptions) normalized() SegmentOptions {
 	if o.ChunkSize <= 0 {
 		o.ChunkSize = ChunkSize
@@ -40,7 +53,7 @@ func (o SegmentOptions) normalized() SegmentOptions {
 // segmentsPerContent cuts one content part into its own chunks, numbered from 0
 // the way the reference's retain numbers every content block it is handed: it
 // cuts each content separately (engine/retain/orchestrator.py:1968-1987) and
-// restarts `chunk_index` at 0 for each (engine/retain/fact_extraction.py:2985).
+// restarts chunk_index at 0 for each (engine/retain/fact_extraction.py:2985).
 //
 // Chunk rows are written per item, not from the whole document body. Segmenting
 // the body instead makes a second content block land on index 0, which is the
@@ -65,142 +78,300 @@ var chunkSeparators = []string{
 	"",     // Characters (last resort)
 }
 
-// Segment splits content into ordered chunks of at most ChunkSize characters,
-// preferring the earliest available separator so boundaries fall on paragraph,
-// line, then sentence boundaries in that order. Structured inputs are chunked
-// whole: a JSON conversation becomes one chunk per turn and a JSONL body one
-// chunk per line group, so a chunk never splits a turn or a record.
-//
-// A chunk is only ever produced from content that was present: the pieces are
-// packed greedily and each emitted chunk is whitespace-trimmed, so an empty
-// input still yields the single empty chunk a caller expects rather than
-// nothing at all.
+// Segment splits content into ordered chunks of at most ChunkSize characters.
+// A body within the budget is returned verbatim; longer bodies are split on
+// paragraph, line, then sentence boundaries in that order, with structured
+// inputs (a JSON conversation, a JSONL body, a lone JSON object) cut at their
+// own record boundaries instead.
 func Segment(content string) []string {
 	return SegmentWith(content, SegmentOptions{})
 }
 
-// SegmentWith is Segment with the chunk budgets supplied by the caller: the
-// structured branch is bounded by opts.StructuredChunkSize and the prose branch
-// by opts.ChunkSize, so a bank can size the two independently.
+// SegmentWith is Segment with the budgets supplied by the caller. The tighter
+// of ChunkSize and StructuredChunkSize bounds every emitted chunk, so both a
+// prose budget and a structured budget set by a deployment are honoured.
+//
+// Ordering is deliberate. Text small enough for one chunk is returned byte for
+// byte, with no parsing: a short structured body must keep its exact spelling
+// because its text is the chunk hash and the extraction input. Longer bodies
+// are then classified — a JSON conversation array, a lone JSON object, a JSONL
+// body, or plain prose — and each branch packs whole records. Every emitted
+// chunk is itself within the budgets, so re-chunking any chunk returns it
+// unchanged, which keeps a chunk id stable across re-ingests.
 func SegmentWith(content string, opts SegmentOptions) []string {
 	opts = opts.normalized()
 	if strings.TrimSpace(content) == "" {
 		return []string{content}
 	}
-	if chunks, ok := segmentJSONConversation(content, opts.StructuredChunkSize); ok {
-		return chunks
+	maxChars := opts.ChunkSize
+	if opts.StructuredChunkSize < maxChars {
+		maxChars = opts.StructuredChunkSize
 	}
-	if chunks, ok := segmentJSONLines(content, opts.StructuredChunkSize); ok {
-		return chunks
+
+	// Reference-bearing text is budgeted by how many references one chunk may
+	// carry, so it takes its own path before the short-text check: even a short
+	// body with references must be grouped to respect the cap.
+	if opts.MaxAttachmentsPerChunk > 0 && containsAttachmentPlaceholder(content) {
+		return attachmentAwareChunks(content, maxChars, opts.MaxAttachmentsPerChunk)
 	}
-	chunks := splitRecursive(content, opts.ChunkSize, chunkSeparators)
-	if len(chunks) == 0 {
+
+	if len(content) <= maxChars {
 		return []string{content}
 	}
-	return chunks
-}
+	structuredLimit := maxChars
 
-// segmentJSONConversation chunks a JSON array of messages one turn at a time,
-// packing consecutive turns until the character budget is reached. It reports
-// false when the content is not such an array.
-func segmentJSONConversation(content string, maxChars int) ([]string, bool) {
-	trimmed := strings.TrimSpace(content)
-	if !strings.HasPrefix(trimmed, "[") {
-		return nil, false
+	if turns, ok := parseConversation(content); ok {
+		return conversationChunks(turns, maxChars, structuredLimit)
 	}
-	var turns []any
-	if err := json.Unmarshal([]byte(trimmed), &turns); err != nil || len(turns) == 0 {
-		return nil, false
-	}
-	rendered := make([]string, 0, len(turns))
-	for _, turn := range turns {
-		rendered = append(rendered, renderTurn(turn))
-	}
-	return packPieces(rendered, maxChars), true
-}
 
-// segmentJSONLines chunks a JSONL body one record at a time, packing
-// consecutive records until the budget is reached. It reports false unless
-// every non-empty line is a JSON object.
-func segmentJSONLines(content string, maxChars int) ([]string, bool) {
-	lines := strings.Split(content, "\n")
-	pieces := make([]string, 0, len(lines))
-	seenObject := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
+	var single any
+	if json.Unmarshal([]byte(content), &single) == nil {
+		if _, ok := single.(map[string]any); ok {
+			// One object is one structured unit: keep it whole up to the
+			// structured limit, else split its text within the chunk budget.
+			if len(content) <= structuredLimit {
+				return []string{content}
+			}
+			return splitRecursive(content, maxChars, chunkSeparators)
 		}
-		if !strings.HasPrefix(trimmed, "{") {
+	}
+
+	if looksLikeJSONL(content) {
+		return jsonlChunks(content, maxChars, structuredLimit)
+	}
+	return splitRecursive(content, maxChars, chunkSeparators)
+}
+
+// parseConversation reports whether content is a non-empty JSON array whose
+// every element is an object, returning each element's verbatim text. Keeping
+// the raw element bytes (rather than re-encoding a decoded value) preserves
+// key order, numeric literals and escaping exactly, so a re-chunk is stable.
+func parseConversation(content string) ([]string, bool) {
+	var raw []json.RawMessage
+	if json.Unmarshal([]byte(content), &raw) != nil || len(raw) == 0 {
+		return nil, false
+	}
+	turns := make([]string, len(raw))
+	for i, element := range raw {
+		text := strings.TrimSpace(string(element))
+		if !strings.HasPrefix(text, "{") {
 			return nil, false
 		}
-		var probe map[string]any
-		if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
-			return nil, false
-		}
-		seenObject = true
-		pieces = append(pieces, trimmed)
+		turns[i] = text
 	}
-	if !seenObject {
-		return nil, false
-	}
-	return packPieces(pieces, maxChars), true
+	return turns, true
 }
 
-// renderTurn renders one conversation turn as "role: content" text.
-func renderTurn(turn any) string {
-	entry, ok := turn.(map[string]any)
-	if !ok {
-		return toJSONString(turn)
-	}
-	role, _ := entry["role"].(string)
-	body := toJSONString(entry["content"])
-	if role == "" {
-		return body
-	}
-	return role + ": " + body
-}
-
-// toJSONString renders a value as text, using the raw string for a string.
-func toJSONString(value any) string {
-	if text, ok := value.(string); ok {
-		return text
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return ""
-	}
-	return string(encoded)
-}
-
-// packPieces greedily packs whole pieces into chunks of at most maxChars
-// characters; a single piece larger than the budget is split by the recursive
-// splitter so it can never exceed the bound.
-func packPieces(pieces []string, maxChars int) []string {
+// conversationChunks packs consecutive whole turns into JSON-array chunks. The
+// running size starts at the two brackets and grows by each turn's length plus
+// one joining comma. A single turn larger than the limit is split as text
+// against min(structuredLimit, maxChars) so no fragment exceeds the budget.
+func conversationChunks(turns []string, maxChars, structuredLimit int) []string {
 	out := make([]string, 0)
-	buffer := make([]string, 0, len(pieces))
-	bufferLen := 0
+	current := make([]string, 0, len(turns))
+	currentSize := 2 // the "[]" wrapper
 	flush := func() {
-		if len(buffer) == 0 {
+		if len(current) == 0 {
 			return
 		}
-		out = append(out, strings.TrimSpace(strings.Join(buffer, "\n")))
-		buffer = buffer[:0]
-		bufferLen = 0
+		out = append(out, "["+strings.Join(current, ",")+"]")
+		current = current[:0]
+		currentSize = 2
 	}
-	for _, piece := range pieces {
-		if len(piece) > maxChars {
+	fragmentBudget := structuredLimit
+	if maxChars < fragmentBudget {
+		fragmentBudget = maxChars
+	}
+	for _, turn := range turns {
+		turnSize := len(turn) + 1 // +1 for the joining comma
+		if len(turn) > structuredLimit {
 			flush()
-			out = append(out, splitRecursive(piece, maxChars, chunkSeparators)...)
+			out = append(out, splitRecursive(turn, fragmentBudget, chunkSeparators)...)
 			continue
 		}
-		if bufferLen > 0 && bufferLen+1+len(piece) > maxChars {
+		if currentSize+turnSize > maxChars && len(current) > 0 {
 			flush()
 		}
-		buffer = append(buffer, piece)
-		bufferLen += len(piece) + 1
+		current = append(current, turn)
+		currentSize += turnSize
 	}
 	flush()
+	return out
+}
+
+// nonblankLines returns the body's non-blank lines in order, split on a
+// newline with a trailing carriage return removed. Lines are otherwise kept
+// verbatim; only blank ones are dropped.
+func nonblankLines(content string) []string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// looksLikeJSONL reports whether content is newline-delimited JSON objects:
+// two or more non-blank lines, every one of them a JSON object. One line that
+// is not an object disqualifies the whole body.
+func looksLikeJSONL(content string) bool {
+	seen := 0
+	for _, line := range nonblankLines(content) {
+		var value any
+		if json.Unmarshal([]byte(line), &value) != nil {
+			return false
+		}
+		if _, ok := value.(map[string]any); !ok {
+			return false
+		}
+		seen++
+	}
+	return seen >= 2
+}
+
+// jsonlChunks packs whole JSONL lines into chunks joined by a newline. A line
+// larger than the limit is split as text against min(structuredLimit, maxChars)
+// so no fragment exceeds the budget.
+func jsonlChunks(content string, maxChars, structuredLimit int) []string {
+	out := make([]string, 0)
+	current := make([]string, 0)
+	currentSize := 0
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		out = append(out, strings.Join(current, "\n"))
+		current = current[:0]
+		currentSize = 0
+	}
+	fragmentBudget := structuredLimit
+	if maxChars < fragmentBudget {
+		fragmentBudget = maxChars
+	}
+	for _, line := range nonblankLines(content) {
+		if len(line) > structuredLimit {
+			flush()
+			out = append(out, splitRecursive(line, fragmentBudget, chunkSeparators)...)
+			continue
+		}
+		packed := len(line) + 1 // +1 for the joining newline
+		if currentSize+packed > maxChars && len(current) > 0 {
+			flush()
+		}
+		current = append(current, line)
+		currentSize += packed
+	}
+	flush()
+	return out
+}
+
+// segmentAttachmentPlaceholderRE matches a well-formed inline reference token.
+var segmentAttachmentPlaceholderRE = regexp.MustCompile(`\x{27e6}hs-att:[0-9a-fA-F]+\x{27e7}`)
+
+func containsAttachmentPlaceholder(text string) bool {
+	return segmentAttachmentPlaceholderRE.MatchString(text)
+}
+
+// segmentRun is one prose run or one reference token from a body, in order.
+type segmentRun struct {
+	text    string
+	isImage bool
+}
+
+// placeholderRuns splits a body into prose runs and reference tokens, keeping
+// every byte of the body in its original order.
+func placeholderRuns(text string) []segmentRun {
+	matches := segmentAttachmentPlaceholderRE.FindAllStringIndex(text, -1)
+	runs := make([]segmentRun, 0, len(matches)*2+1)
+	cursor := 0
+	for _, match := range matches {
+		if match[0] > cursor {
+			runs = append(runs, segmentRun{text: text[cursor:match[0]]})
+		}
+		runs = append(runs, segmentRun{text: text[match[0]:match[1]], isImage: true})
+		cursor = match[1]
+	}
+	if cursor < len(text) {
+		runs = append(runs, segmentRun{text: text[cursor:]})
+	}
+	return runs
+}
+
+// attachmentAwareChunks packs a reference-bearing body so each chunk holds at
+// most maxAttachments tokens and each token stays with the prose next to it. A
+// token costs only the characters its spelling occupies against the text
+// budget; the real constraint is how many references one chunk may carry.
+//
+// An over-long prose run is split against the room left in the open chunk, so
+// its first piece can join whatever is already buffered (prose-then-image and
+// image-then-prose both work). When too little room remains to be worth
+// joining, the chunk is flushed and the run is split against the full budget.
+// Every emitted chunk is within both budgets, so re-chunking one returns it
+// unchanged.
+func attachmentAwareChunks(text string, maxChars, maxAttachments int) []string {
+	minimumUsefulRoom := maxChars / 4
+	if minimumUsefulRoom < 1 {
+		minimumUsefulRoom = 1
+	}
+	out := make([]string, 0)
+	buffered := make([]string, 0)
+	used := 0
+	images := 0
+	flush := func() {
+		if len(buffered) == 0 {
+			return
+		}
+		packed := strings.TrimSpace(strings.Join(buffered, ""))
+		buffered = buffered[:0]
+		used = 0
+		images = 0
+		if packed != "" {
+			out = append(out, packed)
+		}
+	}
+	appendPiece := func(piece string, isImage bool) {
+		buffered = append(buffered, piece)
+		used += len(piece)
+		if isImage {
+			images++
+		}
+	}
+	for _, run := range placeholderRuns(text) {
+		if run.isImage {
+			if len(buffered) > 0 && (used+len(run.text) > maxChars || images+1 > maxAttachments) {
+				flush()
+			}
+			appendPiece(run.text, true)
+			continue
+		}
+		if used+len(run.text) <= maxChars {
+			appendPiece(run.text, false)
+			continue
+		}
+		room := maxChars - used
+		keepOpen := len(buffered) > 0 && room >= minimumUsefulRoom
+		if !keepOpen {
+			flush()
+		}
+		budget := maxChars
+		if keepOpen {
+			budget = room
+		}
+		for _, piece := range splitRecursive(run.text, budget, chunkSeparators) {
+			if len(buffered) > 0 && used+len(piece) > maxChars {
+				flush()
+			}
+			appendPiece(piece, false)
+		}
+	}
+	flush()
+	if len(out) == 0 {
+		return []string{text}
+	}
 	return out
 }
 
@@ -296,7 +467,17 @@ func splitOnSeparator(text, separator string) []string {
 }
 
 // segmentOptionsFor resolves the boundaries a request asked for, leaving a
-// request that named none on the package defaults.
+// request that named none on the package defaults. The reference cap is the
+// resolved process default; a deployment that configures a different value
+// must carry it into RetainRequest for this function to use.
 func segmentOptionsFor(req RetainRequest) SegmentOptions {
-	return SegmentOptions{ChunkSize: req.ChunkSize, StructuredChunkSize: req.StructuredChunkSize}
+	cap := req.MaxAttachmentsPerChunk
+	if cap <= 0 {
+		cap = defaultMaxAttachmentsPerChunk
+	}
+	return SegmentOptions{
+		ChunkSize:              req.ChunkSize,
+		StructuredChunkSize:    req.StructuredChunkSize,
+		MaxAttachmentsPerChunk: cap,
+	}
 }

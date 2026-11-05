@@ -62,6 +62,7 @@ type asyncRetainTask struct {
 	OptionalFactDimensions bool   `json:"optional_fact_dimensions,omitempty"`
 	ChunkSize              int    `json:"chunk_size,omitempty"`
 	StructuredChunkSize    int    `json:"structured_chunk_size,omitempty"`
+	MaxAttachmentsPerChunk int    `json:"max_attachments_per_chunk,omitempty"`
 	DiscardDocumentText    bool   `json:"discard_document_text,omitempty"`
 	// Vocabulary is the bank's controlled label vocabulary, resolved at submit
 	// time. It is carried because the worker has no request behind it to
@@ -118,6 +119,7 @@ func AsyncRetainPayload(bankID, operationID string, req RetainRequest) map[strin
 		OptionalFactDimensions: req.OptionalFactDimensions,
 		ChunkSize:              req.ChunkSize,
 		StructuredChunkSize:    req.StructuredChunkSize,
+		MaxAttachmentsPerChunk: req.MaxAttachmentsPerChunk,
 		DiscardDocumentText:    req.DiscardDocumentText,
 	}
 	if req.Vocabulary != nil {
@@ -189,6 +191,7 @@ func DecodeAsyncRetainPayload(payload map[string]any) (RetainRequest, error) {
 		OptionalFactDimensions: task.OptionalFactDimensions,
 		ChunkSize:              task.ChunkSize,
 		StructuredChunkSize:    task.StructuredChunkSize,
+		MaxAttachmentsPerChunk: task.MaxAttachmentsPerChunk,
 		DiscardDocumentText:    task.DiscardDocumentText,
 		// The worker owns the operation record, so the write must not create a
 		// second one for itself.

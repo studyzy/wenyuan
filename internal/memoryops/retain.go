@@ -1136,6 +1136,7 @@ func applyExtractionConfig(write *storage.RetainRequest, bank storage.Bank, defa
 	write.OptionalFactDimensions = bankConfigBool(config, "retain_optional_fact_dimensions")
 	write.ChunkSize = bankConfigInt(config, "retain_chunk_size")
 	write.StructuredChunkSize = bankConfigInt(config, "retain_structured_chunk_size")
+	write.MaxAttachmentsPerChunk = bankConfigInt(config, "retain_max_attachments_per_chunk")
 	// The label vocabulary is validated when it is written, so a value that
 	// cannot be parsed here is one that predates that validation; it leaves the
 	// feature off rather than failing a write the caller cannot fix.

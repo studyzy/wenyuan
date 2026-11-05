@@ -1241,8 +1241,10 @@ func (h *Handlers) DryRunExtract(w http.ResponseWriter, r *http.Request) {
 	if body.RetainChunkSize != nil {
 		chunkSize = *body.RetainChunkSize
 	}
+	attachmentCap, _ := previewInt(resolved["retain_max_attachments_per_chunk"])
 	segments := storage.SegmentWith(contentText, storage.SegmentOptions{
 		ChunkSize: chunkSize, StructuredChunkSize: structuredChunkSize,
+		MaxAttachmentsPerChunk: attachmentCap,
 	})
 	segmentOccurrences := occurrencesBySegment(segments, dryRunOccurrences(inline))
 

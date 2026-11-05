@@ -92,3 +92,21 @@ func equalChunks(a, b []string) bool {
 	}
 	return true
 }
+
+// The request resolver carries the three budgets through and supplies the
+// process-default reference cap when the deployment configured none, so the
+// retain path gets image-aware segmentation without every caller setting it.
+func TestSegmentOptionsForAttachmentCap(t *testing.T) {
+	opts := segmentOptionsFor(RetainRequest{ChunkSize: 100, StructuredChunkSize: 50})
+	if opts.ChunkSize != 100 || opts.StructuredChunkSize != 50 {
+		t.Fatalf("request budgets not carried: %+v", opts)
+	}
+	if opts.MaxAttachmentsPerChunk != defaultMaxAttachmentsPerChunk {
+		t.Fatalf("attachment cap = %d, want the process default %d",
+			opts.MaxAttachmentsPerChunk, defaultMaxAttachmentsPerChunk)
+	}
+	configured := segmentOptionsFor(RetainRequest{MaxAttachmentsPerChunk: 2})
+	if configured.MaxAttachmentsPerChunk != 2 {
+		t.Fatalf("configured attachment cap = %d, want 2", configured.MaxAttachmentsPerChunk)
+	}
+}

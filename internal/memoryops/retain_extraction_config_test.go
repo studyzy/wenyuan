@@ -13,11 +13,12 @@ import (
 func TestApplyExtractionConfigReadsBankOverrides(t *testing.T) {
 	write := storage.RetainRequest{}
 	bank := storage.Bank{Config: map[string]any{
-		"retain_mission":               "remember the user's appointments",
-		"retain_extraction_mode":       "custom",
-		"retain_custom_instructions":   "keep dates",
-		"retain_chunk_size":            float64(1200),
-		"retain_structured_chunk_size": 400,
+		"retain_mission":                   "remember the user's appointments",
+		"retain_extraction_mode":           "custom",
+		"retain_custom_instructions":       "keep dates",
+		"retain_chunk_size":                float64(1200),
+		"retain_structured_chunk_size":     400,
+		"retain_max_attachments_per_chunk": 3,
 	}}
 	applyExtractionConfig(&write, bank, extractionDefaults{mode: config.DefaultRetainExtractionMode})
 	if write.ExtractionMission != "remember the user's appointments" {
@@ -34,6 +35,9 @@ func TestApplyExtractionConfigReadsBankOverrides(t *testing.T) {
 	}
 	if write.StructuredChunkSize != 400 {
 		t.Fatalf("structured chunk size = %d, want 400", write.StructuredChunkSize)
+	}
+	if write.MaxAttachmentsPerChunk != 3 {
+		t.Fatalf("attachment cap = %d, want 3", write.MaxAttachmentsPerChunk)
 	}
 }
 

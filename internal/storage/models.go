@@ -437,6 +437,10 @@ type RetainRequest struct {
 	// as it did before.
 	ChunkSize           int
 	StructuredChunkSize int
+	// MaxAttachmentsPerChunk bounds the inline references one stored segment
+	// may carry. Zero uses the deployment default, so a bank that configures
+	// nothing keeps the same segmentation as before.
+	MaxAttachmentsPerChunk int
 	// Embeddings, when non-nil, embeds each stored unit so the vector recall
 	// arm and its ANN index have vectors to rank.
 	Embeddings EmbeddingGenerator
