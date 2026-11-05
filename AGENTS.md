@@ -120,8 +120,12 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
   60s) copies each member's `world`, `experience` and `observation` facts from their
   own bank into the project's team bank `<team>::<name>`, **verbatim**: every fact
-  becomes a team fact with its own text and its own kind, and **no model is called**
-  — the round therefore runs on a deployment with no chat provider at all.
+  becomes a team fact with its own text, its own kind, its tags and its links, and
+  **no model is called** — the round therefore runs on a deployment with no chat
+  provider at all. A link is recreated between the two team rows by resolving its
+  endpoints' merge keys, so a link whose other fact has not been carried yet lands
+  on the round that carries that fact; `entity_id` is not carried because an
+  entity is an identity within one bank.
   Deduplication is one string comparison: a fact whose `merge_key` (SHA-256 of the
   whitespace-normalized text) is already in the bank gets no second row, and every
   member's source is still recorded in the ledger per member.

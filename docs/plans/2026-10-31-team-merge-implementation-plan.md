@@ -88,10 +88,11 @@ CREATE INDEX IF NOT EXISTS merge_source_unit_tenant_idx
 
 - bank 不存在就建（`EnsureBank` + 一条 `banks` 行），A 部分的“建项目只写注册表”
   在这里收口；
-- 写 `fact_type='world'`、`document_id=NULL`、`metadata={"merge_key":…,
+- 写成员事实自身的 `fact_type`、`document_id=NULL`、`metadata={"merge_key":…,
   "merged_at":…}`；
-- **不写**任何 tag（设计决策 10：provenance 只在账本里，tag 会污染 fuzzy 解析与
-  `ListTags`）。
+- **带上**成员事实的 `tags` 与 `memory_links`（原决策 10 已改）：标签让团队
+  recall 的 tag 过滤仍然有效；链接按 `merge_key` 映射到团队行后重建，端点尚未
+  进入团队 bank 的链接留到端点到达的那一轮。
 
 ### B3. 读回退只覆盖两个读路径，且按 bank 判定
 

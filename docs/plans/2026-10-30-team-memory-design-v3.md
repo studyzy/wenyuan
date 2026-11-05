@@ -30,7 +30,8 @@
 | R12 | 团队 bank 被直写 | "下一轮会删掉" | 保留该行为，但计数进 `merge-status` 供运维告警 | 静默丢用户数据是最难排查的一类 |
 | R14 | 单 Tenant 兼容未成文 | 未论证"无 Team 时现有功能不变" | **§十三 逐调用方清单 + 三条可验证条款**；`BankHasUnits` 改为能力检测（GAP-1）；`AnyJobEnabled` 计入条件含 `mergeStore != nil`（GAP-3） | 兼容性声明没有测试就是没有声明；给 `Store` 加方法会强迫所有实现与测试替身付编译代价 |
 
-不改的（评审确认做对）：§B3 的"只回退 recall 与 list"、§B2 的"不写 tag"、
+不改的（评审确认做对）：§B3 的"只回退 recall 与 list"（§B2 的"不写 tag"已在
+2026-11-04 改为随事实携带 tag 与 link）；
 §B4 的"个人 bank 不存在时团队内容保留"、两个 PR 的切分。
 
 **§十三.3.1 有一处待拍板**：`0003` 是否在单 Tenant 部署里执行（方案 A/B）。两案都
@@ -121,7 +122,7 @@ CREATE INDEX IF NOT EXISTS merge_source_unit_live_idx
 
 写在文档里，因为它们在实现时最容易被绕过：
 
-1. **账本行只增不删，除三种操作**：重建成功（整体替换）、成员退出项目（`R6`）、
+1. **账本行只增不删，除三种操作**：重建完成（删除来源已消失的行）、成员退出项目（`R6`）、
    成员退出团队（FK 级联）。增量轮绝不删账本行。
 2. **一条团队事实的 `merge_key` 必须至少有一个来源行**，除非它来自 `previous`
    的保留（那时来源行是上一轮留下的，仍在）。重建后若某 `merge_key` 无来源，
@@ -312,13 +313,16 @@ WHERE team_tenant_id=$1 AND project_id=$2 AND tenant_id=$3
    再删。**不要**照 `DeleteBank`（`postgres_banks.go:396`）——那是删整个 bank 的
    顺序，这里只删部分事实，照抄会把整个团队 bank 清空；
 5. 结果有、团队没有的插入：`document_id=NULL`、
-   `metadata={"merge_key":…, "merged_at":…}`、**不写 tag**（决策 10）；
+   `metadata={"merge_key":…, "merged_at":…}`、写入来源事实的 `tags`，并把源事实
+   之间的 `memory_links` 按 `merge_key` 映射到团队行后重建（`entity_id` 不带，
+   实体是按 bank 的身份）；
    `fact_type` 取该答案引用的来源事实**多数**的类型（world / experience /
    observation），无来源时取 `world`——类型由服务端从下标决定，**不问模型**
    （模型自报的类型会与它自己引用的来源冲突，而类型是读路径的过滤条件）；
 6. 账本：本轮消费的每条来源写一行 `merge_key`（进了输出的）或
-   `'__dropped__'`（被折叠的）。重建时**整体替换**：先删该 `(project, tenant)`
-   的旧行，再写新行；
+   `'__dropped__'`（被折叠的）。重建**不整体替换账本**：分段重建的每一轮追加
+   来源行，完成轮再按成员当前 `memory_units` 反连接删除来源已消失的行；整体替换
+   会在第一轮丢掉后续轮次仍需要的来源。
 7. `merge_state`：游标推进到实际读到的最后一条、`last_merged_at=now()`、
    `fail_count=0`、`last_error=NULL`、`merging_since=NULL`；
 8. 提交。
@@ -462,7 +466,7 @@ LIMIT 1
    删 `T::X` 的全部 `world`/`experience`/`observation` 事实与失去来源的观察，
    清该项目的 `merge_state` 与账本，
    写 `last_error`；读路径自然回退到成员自己的 bank；
-3. 否则用与增量相同的规则重算整版，`FinishMergeStanza` 整体替换账本；
+3. 否则用与增量相同的规则重算整版，账本按上面的规则追加并在完成轮收敛；
 4. 成功后游标推进到本轮实际读到的最后一条。
 
 **失败关闭只用于这一种情况**。R8 的超限、模型的形状错误、存储失败都不关闭——
