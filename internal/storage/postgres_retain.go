@@ -245,7 +245,7 @@ func (s *PostgresStore) writeItem(ctx context.Context, req RetainRequest, item R
 		mentioned := make([]string, 0, len(content.entities))
 		seen := map[string]bool{}
 		for _, entity := range content.entities {
-			resolved, err := s.resolveRetainEntityOn(ctx, req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities, unitEventDateOf(stored))
+			resolved, err := s.resolveRetainEntityOn(ctx, req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities, unitEventDateOf(stored), entityNearbyNames(entity.Text, content.entities))
 			if err != nil {
 				return nil, err
 			}
@@ -588,7 +588,7 @@ func (s *PostgresStore) documentChunkHashes(ctx context.Context, bankID, docID s
 // links between consecutive units and the caused_by links extraction declared.
 func (s *PostgresStore) linkItemUnits(ctx context.Context, bankID string, unitIDs []string, contents []itemContent) error {
 	links := append(linkTuplesFor(bankID, unitIDs), causalLinksFor(bankID, unitIDs, contents)...)
-	for _, link := range links {
+	for _, link := range sortLinksByLockOrder(links) {
 		if err := s.UpsertLink(ctx, link); err != nil {
 			return err
 		}
@@ -747,7 +747,7 @@ func (s *PostgresStore) AppendDocument(ctx context.Context, bankID, docID, text,
 
 // entityColumns is the column list every entity read selects, so a scan can
 // never drift from the query that produced it.
-const entityColumns = `id, bank_id, canonical_name, COALESCE(entity_kind,'regular'), COALESCE(mention_count,0)`
+const entityColumns = `id, bank_id, canonical_name, COALESCE(entity_kind,'regular'), COALESCE(mention_count,0), last_seen`
 
 // ResolveEntity resolves an entity name against the bank, creating it with the
 // given kind when nothing matches.
@@ -775,8 +775,8 @@ func (s *PostgresStore) ResolveRetainEntity(ctx context.Context, bankID string, 
 // and, because the entity list orders by `mention_count DESC, last_seen DESC,
 // id ASC` (engine/memories/pg/curation.py:545), reordered entities that share a
 // mention count.
-func (s *PostgresStore) resolveRetainEntityOn(ctx context.Context, bankID string, entity RetainEntity, resolve bool, seenAt time.Time) (Entity, error) {
-	return s.resolveEntityWithKindOn(ctx, bankID, entityMatchKey(entity.Text), EntityKindRegular, resolve, seenAt)
+func (s *PostgresStore) resolveRetainEntityOn(ctx context.Context, bankID string, entity RetainEntity, resolve bool, seenAt time.Time, nearby map[string]bool) (Entity, error) {
+	return s.resolveEntityWithKindOn(ctx, bankID, entityMatchKey(entity.Text), EntityKindRegular, resolve, seenAt, nearby)
 }
 
 // resolveEntityWithKind finds or creates the entity named by a normalized name.
@@ -787,13 +787,13 @@ func (s *PostgresStore) resolveRetainEntityOn(ctx context.Context, bankID string
 // ordered by score so the closest match wins. Resolution off takes the name
 // literally and reuses an entity only on a case-insensitive exact match.
 func (s *PostgresStore) resolveEntityWithKind(ctx context.Context, bankID, name string, kind EntityKind, resolve bool) (Entity, error) {
-	return s.resolveEntityWithKindOn(ctx, bankID, name, kind, resolve, time.Time{})
+	return s.resolveEntityWithKindOn(ctx, bankID, name, kind, resolve, time.Time{}, nil)
 }
 
 // resolveEntityWithKindOn is resolveEntityWithKind with the event time a row it
 // creates should start its date stamps at. A zero seenAt keeps the previous
 // behaviour (the write clock).
-func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, name string, kind EntityKind, resolve bool, seenAt time.Time) (Entity, error) {
+func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, name string, kind EntityKind, resolve bool, seenAt time.Time, nearby map[string]bool) (Entity, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 Entity
@@ -805,7 +805,12 @@ func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, nam
 	if kind == "" {
 		kind = EntityKindRegular
 	}
-	if existing, found, err := s.findEntity(ctx, bankID, name, resolve); err != nil {
+	// An absent event date leaves the recency share out of the score.
+	var mentionDate *time.Time
+	if !seenAt.IsZero() {
+		mentionDate = &seenAt
+	}
+	if existing, found, err := s.findEntity(ctx, bankID, name, resolve, nearby, mentionDate); err != nil {
 		return Entity{}, err
 	} else if found {
 		return existing, nil
@@ -851,7 +856,7 @@ func (s *PostgresStore) resolveEntityWithKindOn(ctx context.Context, bankID, nam
 
 // findEntity locates an existing entity for a name, either exactly or by
 // similarity depending on the resolution switch.
-func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, resolve bool) (Entity, bool, error) {
+func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, resolve bool, nearby map[string]bool, eventDate *time.Time) (Entity, bool, error) {
 	if !resolve {
 		return s.findEntityByExactName(ctx, bankID, name)
 	}
@@ -870,14 +875,15 @@ func (s *PostgresStore) findEntity(ctx context.Context, bankID, name string, res
 	// merge. The two are separate stages on purpose, because trigram ranks
 	// names differently from the score the threshold is expressed in, so a
 	// candidate that passes the pool filter may still be rejected.
-	candidates, err := s.entityCandidates(ctx, bankID, name)
+	candidates, degrees, err := s.entityCandidates(ctx, bankID, name, nearby)
 	if err != nil {
 		// The trigram extension may be unavailable. An exact match was already
 		// ruled out above, so a missing extension leaves nothing to match on and
 		// the caller creates the entity.
 		return Entity{}, false, nil
 	}
-	return bestEntityCandidate(candidates, name, s.mergeMinSimilarity())
+	mention := entityMentionContext{NearbyNames: nearby, Degrees: degrees, EventDate: eventDate}
+	return bestEntityCandidate(candidates, name, s.mergeMinSimilarity(), mention)
 }
 
 // findEntityByExactName reuses an entity only when its name lower-cases to the
@@ -917,12 +923,16 @@ func (s *PostgresStore) intrabatchMergeSimilarity() float64 {
 }
 
 // entityCandidates returns the stored entities whose names are close enough to
-// the supplied name to be worth scoring.
-func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string) ([]Entity, error) {
+// the supplied name to be worth scoring, each carrying the lowercased names it
+// was seen beside. The second return value counts, per name, how many distinct
+// entities that name co-occurs with; the candidates and the entities the
+// nearby names resolve to are both counted, so a nearby name carries its own
+// degree even when the probe did not admit it.
+func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name string, nearby map[string]bool) ([]Entity, map[string]int, error) {
 	schema, schemaErr := s.schemaFor(ctx)
 	if schemaErr != nil {
 		var zero0 []Entity
-		return zero0, schemaErr
+		return zero0, nil, schemaErr
 	}
 	limit := s.tuning.EntityResolutionCandidates
 	if limit <= 0 {
@@ -938,46 +948,125 @@ func (s *PostgresStore) entityCandidates(ctx context.Context, bankID, name strin
 	          LIMIT $4`
 	rows, err := s.db.QueryContext(ctx, query, bankID, name, floor, limit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	candidates := make([]Entity, 0)
 	for rows.Next() {
 		var entity Entity
-		if err := rows.Scan(&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount); err != nil {
-			return nil, err
+		var seen sql.NullTime
+		if err := rows.Scan(&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount, &seen); err != nil {
+			return nil, nil, err
+		}
+		if seen.Valid {
+			entity.LastSeen = &seen.Time
 		}
 		candidates = append(candidates, entity)
 	}
-	return candidates, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if len(candidates) == 0 {
+		return candidates, map[string]int{}, nil
+	}
+	named := make(map[string]string, len(candidates)+len(nearby))
+	ids := make([]string, 0, len(candidates)+len(nearby))
+	for _, candidate := range candidates {
+		named[candidate.ID] = strings.ToLower(candidate.CanonicalName)
+		ids = append(ids, candidate.ID)
+	}
+	// A nearby name weighs the score only through a stored identity: the one it
+	// names joins the lookup, so its degree is exact and its name can match a
+	// candidate's partners.
+	if len(nearby) > 0 {
+		names := make([]string, 0, len(nearby))
+		for lower := range nearby {
+			names = append(names, lower)
+		}
+		if err := s.addNamedEntityIDs(ctx, schema, bankID, names, named, &ids); err != nil {
+			return nil, nil, err
+		}
+	}
+	pairs, err := s.entityCooccurrencePairs(ctx, schema, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	return candidates, entityCooccurrenceEvidence(candidates, named, pairs), nil
 }
 
-// bestEntityCandidate picks the candidate the similarity score accepts,
-// preferring the highest score and breaking ties on the identifier so the
-// resolution is deterministic.
+// addNamedEntityIDs resolves each lowercased name to its bank's entity and
+// records id -> lowercased name into named, appending any new identity to ids.
+func (s *PostgresStore) addNamedEntityIDs(ctx context.Context, schema, bankID string, names []string, named map[string]string, ids *[]string) error {
+	query := `SELECT id::text, lower(canonical_name) FROM ` + quoteIdent(schema) + `.entities
+	          WHERE bank_id=$1 AND lower(canonical_name) = ANY($2)`
+	rows, err := s.db.QueryContext(ctx, query, bankID, names)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, lower string
+		if err := rows.Scan(&id, &lower); err != nil {
+			return err
+		}
+		if _, known := named[id]; known {
+			continue
+		}
+		named[id] = lower
+		*ids = append(*ids, id)
+	}
+	return rows.Err()
+}
+
+// entityCooccurrencePairs reads, in one query, every co-occurrence row
+// incident to any of the identities, as unordered id pairs.
+func (s *PostgresStore) entityCooccurrencePairs(ctx context.Context, schema string, ids []string) ([][2]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ec.entity_id_1::text, ec.entity_id_2::text
+	          FROM `+quoteIdent(schema)+`.entity_cooccurrences ec
+	          WHERE ec.entity_id_1 = ANY($1::uuid[]) OR ec.entity_id_2 = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	pairs := make([][2]string, 0)
+	for rows.Next() {
+		var pair [2]string
+		if err := rows.Scan(&pair[0], &pair[1]); err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, pair)
+	}
+	return pairs, rows.Err()
+}
+
+// bestEntityCandidate picks the candidate whose weighted score is highest and
+// clears the merge bar, breaking ties on the identifier so the resolution is
+// deterministic.
 //
-// A candidate must clear the merge floor (the reference's second trigram gate)
-// before it is scored: the probe admits candidates far looser than the merge
-// threshold, and the score alone can reach it on signals other than the name,
-// so the floor keeps a name that is only coincidentally close from being merged
-// onto.
-func bestEntityCandidate(candidates []Entity, name string, mergeFloor float64) (Entity, bool, error) {
+// A candidate must clear the trigram floor and the word-by-word gate before it
+// is graded: the probe admits names far looser than the merge bar, and a score
+// built on shared context alone must not merge two names that do not agree.
+func bestEntityCandidate(candidates []Entity, name string, mergeFloor float64, mention entityMentionContext) (Entity, bool, error) {
 	best := Entity{}
 	bestScore := 0.0
 	for _, candidate := range candidates {
 		if !entityMergeFloorPasses(name, candidate.CanonicalName, mergeFloor) {
 			continue
 		}
-		score := entitySimilarity(candidate.CanonicalName, name)
-		if score < EntitySimilarityThreshold {
+		if !entityTokensAreCompatible(name, candidate.CanonicalName) {
 			continue
 		}
+		trigram := trigramJaccard(strings.ToLower(name), strings.ToLower(candidate.CanonicalName))
+		score := scoreEntityMatch(name, candidate.CanonicalName, trigram, mention.scoreContextFor(candidate))
 		if score > bestScore || (score == bestScore && best.ID != "" && candidate.ID < best.ID) {
 			best = candidate
 			bestScore = score
 		}
 	}
-	return best, best.ID != "", nil
+	if best.ID == "" || !entityScoreAccepted(bestScore) {
+		return Entity{}, false, nil
+	}
+	return best, true, nil
 }
 
 // scanEntity runs an entity query and reads at most one row. A missing row is
@@ -985,13 +1074,17 @@ func bestEntityCandidate(candidates []Entity, name string, mergeFloor float64) (
 // is the next step.
 func (s *PostgresStore) scanEntity(ctx context.Context, query string, args ...any) (Entity, bool, error) {
 	var entity Entity
+	var seen sql.NullTime
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
-		&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount)
+		&entity.ID, &entity.BankID, &entity.CanonicalName, &entity.EntityKind, &entity.MentionCount, &seen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entity{}, false, nil
 	}
 	if err != nil {
 		return Entity{}, false, err
+	}
+	if seen.Valid {
+		entity.LastSeen = &seen.Time
 	}
 	return entity, true, nil
 }

@@ -5,13 +5,12 @@ import (
 	"testing"
 )
 
-// The reference's second trigram gate: a candidate whose name shares too few
-// trigrams with the mention is not merged even though the Jaro-Winkler score
-// would accept it.
+// The trigram gate: a candidate whose name shares too few trigrams with the
+// mention is not merged even though the sequence score would accept it.
 func TestEntityMergeFloorRejectsLowTrigramCandidate(t *testing.T) {
-	// "Mike" and "Miek" are one transposition apart, so they score above the
-	// Jaro-Winkler threshold, but their trigram sets share too little to clear
-	// the 0.3 floor.
+	// "Mike" and "Miek" are one transposition apart, so their sequence ratio
+	// clears the bar, but their trigram sets share too little to clear the 0.3
+	// floor.
 	if got := entitySimilarity("Mike", "Miek"); got < EntitySimilarityThreshold {
 		t.Fatalf("fixture: score %v should clear the similarity threshold", got)
 	}
@@ -23,7 +22,7 @@ func TestEntityMergeFloorRejectsLowTrigramCandidate(t *testing.T) {
 	store.SetTuning(Tuning{EntityMergeMinSimilarity: DefaultEntityMergeMinSimilarity})
 	store.entities["e1"] = Entity{ID: "e1", BankID: "b1", CanonicalName: "Miek", EntityKind: EntityKindRegular}
 
-	resolved := store.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true)
+	resolved := store.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true, nil, nil)
 	if resolved.ID == "e1" {
 		t.Fatal("a candidate below the merge floor must not be merged onto")
 	}
@@ -32,52 +31,53 @@ func TestEntityMergeFloorRejectsLowTrigramCandidate(t *testing.T) {
 	}
 }
 
-// A candidate that clears the merge floor still merges when the Jaro-Winkler
-// score accepts it.
+// A candidate that clears the merge floor still needs the weighted score to
+// reach the bar; name similarity alone contributes at most half of it.
 func TestEntityMergeFloorAdmitsCloseCandidate(t *testing.T) {
 	store := NewMemoryStore("public")
 	store.SetTuning(Tuning{EntityMergeMinSimilarity: DefaultEntityMergeMinSimilarity})
 	store.entities["e1"] = Entity{ID: "e1", BankID: "b1", CanonicalName: "Mikes", EntityKind: EntityKindRegular}
 
-	resolved := store.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true)
-	if resolved.ID != "e1" {
-		t.Fatalf("resolved = %+v, want the existing Mikes entity", resolved)
+	resolved := store.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true, nil, nil)
+	if resolved.ID == "e1" {
+		t.Fatal("name evidence alone must not reach the merge bar")
+	}
+	if resolved.CanonicalName != "Mike" {
+		t.Fatalf("resolved = %+v, want a new entity named Mike", resolved)
 	}
 }
 
-// The candidate-fetch floor and the merge floor are independent: the merge gate
-// is driven by EntityMergeMinSimilarity, not by the probe floor, so raising the
-// probe floor alone changes nothing and raising the merge floor alone rejects a
-// candidate the score would otherwise accept.
+// The candidate-fetch floor and the merge gate are independent settings. A
+// name whose trigram set is identical to the candidate's scores a full mark,
+// so a zero merge floor admits it while a floor above one rejects it; the
+// probe floor is a separate value the scoring pass never reads.
 func TestEntityMergeFloorIsIndependentOfProbeFloor(t *testing.T) {
-	// A high probe floor alone leaves the merge untouched: the store does not
-	// consult it when scoring.
-	store := NewMemoryStore("public")
-	store.SetTuning(Tuning{EntityCandidateSimilarity: 0.99, EntityMergeMinSimilarity: DefaultEntityMergeMinSimilarity})
-	store.entities["e1"] = Entity{ID: "e1", BankID: "b1", CanonicalName: "Mikes", EntityKind: EntityKindRegular}
-	if resolved := store.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true); resolved.ID != "e1" {
-		t.Fatalf("the probe floor must not gate the merge: %+v", resolved)
+	candidates := []Entity{{ID: "e1", CanonicalName: "Mike!"}}
+	if _, found, err := bestEntityCandidate(candidates, "Mike", 0, entityMentionContext{}); err != nil || !found {
+		t.Fatalf("a zero merge floor admits a full-mark candidate: found=%v err=%v", found, err)
 	}
-
-	// A high merge floor alone rejects the same candidate.
-	strict := NewMemoryStore("public")
-	strict.SetTuning(Tuning{EntityMergeMinSimilarity: 0.99})
-	strict.entities["e1"] = Entity{ID: "e1", BankID: "b1", CanonicalName: "Mikes", EntityKind: EntityKindRegular}
-	if resolved := strict.resolveEntityLocked("b1", RetainEntity{Text: "Mike"}, true); resolved.ID == "e1" {
-		t.Fatalf("the merge floor must gate the merge: %+v", resolved)
+	if _, found, err := bestEntityCandidate(candidates, "Mike", 1.0001, entityMentionContext{}); err != nil || found {
+		t.Fatalf("a merge floor above one must reject even a full-mark candidate: found=%v err=%v", found, err)
 	}
 }
 
-// bestEntityCandidate applies the merge floor before scoring, so the same
-// candidate set merges or not purely by the floor it is given. The probe floor
-// is a different value, applied by the candidate fetch rather than here.
+// bestEntityCandidate applies the merge floor before scoring. A name with an
+// identical trigram set takes the full-mark path, while a name-only near miss
+// stays below the weighted bar whichever floor admitted it.
 func TestBestEntityCandidateHonoursMergeFloor(t *testing.T) {
-	candidates := []Entity{{ID: "e1", CanonicalName: "Miek"}}
-	if _, found, err := bestEntityCandidate(candidates, "Mike", 0); err != nil || !found {
-		t.Fatalf("floor 0 admits the candidate the score accepts: found=%v err=%v", found, err)
+	full := []Entity{{ID: "e1", CanonicalName: "Mike!"}}
+	if _, found, err := bestEntityCandidate(full, "Mike", 0, entityMentionContext{}); err != nil || !found {
+		t.Fatalf("floor 0 admits a full-mark candidate: found=%v err=%v", found, err)
 	}
-	if _, found, err := bestEntityCandidate(candidates, "Mike", DefaultEntityMergeMinSimilarity); err != nil || found {
-		t.Fatalf("the merge floor was not applied: found=%v err=%v", found, err)
+	if _, found, err := bestEntityCandidate(full, "Mike", DefaultEntityMergeMinSimilarity, entityMentionContext{}); err != nil || !found {
+		t.Fatalf("the default floor admits an identical trigram set: found=%v err=%v", found, err)
+	}
+	if _, found, err := bestEntityCandidate(full, "Mike", 1.0001, entityMentionContext{}); err != nil || found {
+		t.Fatalf("a merge floor above one was not applied: found=%v err=%v", found, err)
+	}
+	near := []Entity{{ID: "e2", CanonicalName: "Miek"}}
+	if _, found, err := bestEntityCandidate(near, "Mike", 0, entityMentionContext{}); err != nil || found {
+		t.Fatalf("name evidence alone must stay below the bar: found=%v err=%v", found, err)
 	}
 }
 
@@ -131,23 +131,16 @@ func TestIntrabatchMergeSkipsLiterallyWrittenNames(t *testing.T) {
 	}
 }
 
-// A threshold above the pair's similarity leaves the variants separate, which
-// is what makes the configured cutoff observable.
+// A cutoff above the pair's similarity leaves the two names unclustered by the
+// in-batch pass. Resolution is a separate stage, so this reads the pass's own
+// output rather than the entity count a whole write ends with.
 func TestIntrabatchMergeHonoursTheConfiguredThreshold(t *testing.T) {
-	store := NewMemoryStore("public")
-	store.SetTuning(Tuning{EntityIntrabatchMerge: 1.0001})
-	if _, err := store.RetainWrite(context.TODO(), RetainRequest{
-		BankID: "b1",
-		Items: []RetainItem{{
-			Content:         "John Smith and Smith John are the same person.",
-			DocumentID:      "doc-1",
-			ResolveEntities: true,
-			Entities:        []RetainEntity{{Text: "Smith John"}, {Text: "John Smith"}},
-		}},
-	}); err != nil {
-		t.Fatal(err)
+	entities := []RetainEntity{{Text: "Smith John"}, {Text: "John Smith"}}
+	if canonical := intrabatchCanonicalNames(entities, true, DefaultEntityIntrabatchMergeSimilarity); canonical["smith john"] != canonical["john smith"] {
+		t.Fatalf("the default cutoff should cluster the variants: %v", canonical)
 	}
-	if got := countBankEntities(store, "b1"); got != 2 {
-		t.Fatalf("created %d entities, want the variants kept apart above the threshold", got)
+	strict := intrabatchCanonicalNames(entities, true, 1.0001)
+	if strict["smith john"] == strict["john smith"] {
+		t.Fatalf("a cutoff above the pair's similarity must leave the variants unclustered: %v", strict)
 	}
 }

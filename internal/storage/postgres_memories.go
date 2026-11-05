@@ -674,8 +674,11 @@ func (s *PostgresStore) autoConsolidationFor(ctx context.Context, bankID string)
 }
 
 // curationColumns are the memory-unit columns that survive a move between the
-// live table and the invalidation archive. embedding and text_signals do not,
-// matching the reference, which drops them on invalidation.
+// live table and the invalidation archive; embedding and text_signals are not
+// among them. The archive's causal_links column is deliberately not in this
+// shared list either: the live table has no such column, so invalidation writes
+// the snapshot separately and a revert reads it back to rebuild the edges
+// instead of carrying it as a row.
 const curationColumns = `id, bank_id, document_id, text, context, event_date, occurred_start, occurred_end,
 	mentioned_at, fact_type, metadata, created_at, updated_at, chunk_id, tags, proof_count,
 	source_memory_ids, consolidated_at, observation_scopes, consolidation_failed_at, edited_at, attachment_ids`
@@ -694,11 +697,17 @@ func (s *PostgresStore) invalidateMemory(ctx context.Context, bankID, memoryID s
 	if reason != nil {
 		reasonArg = *reason
 	}
+	// Snapshot the causal edges while the unit's live links still exist: the
+	// delete below takes them with the row, and nothing else rebuilds them.
+	descriptors, err := s.snapshotCausalLinks(ctx, bankID, memoryID)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO `+qualified+`.invalidated_memory_units (`+curationColumns+`, invalidation_reason, invalidated_at)
-		 SELECT `+curationColumns+`, $3, now()
+		`INSERT INTO `+qualified+`.invalidated_memory_units (`+curationColumns+`, invalidation_reason, invalidated_at, causal_links)
+		 SELECT `+curationColumns+`, $3, now(), $4::jsonb
 		 FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = $2
-		 ON CONFLICT (id) DO NOTHING`, bankID, memoryID, reasonArg)
+		 ON CONFLICT (id) DO NOTHING`, bankID, memoryID, reasonArg, marshalCausalDescriptors(descriptors))
 	if err != nil {
 		return err
 	}
@@ -750,6 +759,17 @@ func (s *PostgresStore) revertMemory(ctx context.Context, bankID, memoryID strin
 		 SELECT `+curationColumns+` FROM `+qualified+`.invalidated_memory_units
 		 WHERE bank_id = $1 AND id = $2
 		 ON CONFLICT (id) DO NOTHING`, bankID, memoryID); err != nil {
+		return err
+	}
+	// The unit is live again, so the causal edges parked when it was archived
+	// can be rebuilt. A peer still archived keeps its own copy until it reverts.
+	var causalRaw []byte
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(causal_links, '[]'::jsonb) FROM `+qualified+`.invalidated_memory_units
+		 WHERE bank_id = $1 AND id = $2`, bankID, memoryID).Scan(&causalRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := s.rematerializeCausalLinks(ctx, bankID, parseCausalDescriptors(causalRaw)); err != nil {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,

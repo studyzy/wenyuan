@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"sort"
 )
 
 // createSemanticLinks links each new unit to existing units whose embedding is
@@ -140,4 +142,193 @@ func (s *PostgresStore) createTemporalLinks(ctx context.Context, bankID string, 
 		 ON CONFLICT DO NOTHING`,
 		bankID, unitIDs, temporalLinkWindowHours, maxTemporalLinksPerUnit)
 	return err
+}
+
+// nilEntityID is the folded value a null entity contributes to a link's unique
+// key, so a null and an explicit nil sort to the same place.
+const nilEntityID = "00000000-0000-0000-0000-000000000000"
+
+// linkOrderKey is a link's direction-normalised unique key. Normalising the
+// endpoints makes (A, B) and (B, A) sort adjacent, and including the type and
+// entity keeps two edges sharing an endpoint pair from being locked in
+// opposite orders by concurrent writers.
+type linkOrderKey struct {
+	low      string
+	high     string
+	linkType string
+	entity   string
+}
+
+func orderKeyFor(link MemoryLink) linkOrderKey {
+	a, b := link.FromUnitID, link.ToUnitID
+	low, high := a, b
+	if a > b {
+		low, high = b, a
+	}
+	entity := link.EntityID
+	if entity == "" {
+		entity = nilEntityID
+	}
+	return linkOrderKey{low, high, string(link.LinkType), entity}
+}
+
+// sortLinksByLockOrder returns the links in one canonical order so every writer
+// takes the index locks in the same sequence and concurrent inserts cannot
+// deadlock against each other.
+func sortLinksByLockOrder(links []MemoryLink) []MemoryLink {
+	ordered := append([]MemoryLink(nil), links...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := orderKeyFor(ordered[i]), orderKeyFor(ordered[j])
+		if a.low != b.low {
+			return a.low < b.low
+		}
+		if a.high != b.high {
+			return a.high < b.high
+		}
+		if a.linkType != b.linkType {
+			return a.linkType < b.linkType
+		}
+		return a.entity < b.entity
+	})
+	return ordered
+}
+
+// causalDescriptor is one causal edge parked on the curation archive while an
+// endpoint is invalidated. Invalidation moves a fact out of the live table and
+// its incident links go with it; the descriptor is what lets a revert bring the
+// edge back.
+type causalDescriptor struct {
+	FromUnitID string  `json:"from_unit_id"`
+	ToUnitID   string  `json:"to_unit_id"`
+	LinkType   string  `json:"link_type"`
+	Weight     float64 `json:"weight"`
+}
+
+// defaultCausalLinkWeight is the strength a descriptor carries when its stored
+// weight is missing or zero.
+const defaultCausalLinkWeight = 1.0
+
+// marshalCausalDescriptors renders an archive column value. An empty set is an
+// empty JSON array rather than a null, so the column's shape stays stable.
+func marshalCausalDescriptors(descriptors []causalDescriptor) []byte {
+	if len(descriptors) == 0 {
+		return []byte("[]")
+	}
+	data, err := json.Marshal(descriptors)
+	if err != nil {
+		return []byte("[]")
+	}
+	return data
+}
+
+// parseCausalDescriptors reads the descriptors a stored archive row holds. The
+// column is schemaless JSON, so entries that are not objects, lack an endpoint,
+// or name a link type a causal edge cannot take are skipped instead of aborting
+// the whole revert. A weight that is absent or zero takes the default.
+func parseCausalDescriptors(raw []byte) []causalDescriptor {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+	parsed := make([]causalDescriptor, 0, len(items))
+	for _, item := range items {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(item, &fields) != nil || fields == nil {
+			continue
+		}
+		var descriptor causalDescriptor
+		if json.Unmarshal(item, &descriptor) != nil {
+			continue
+		}
+		if descriptor.FromUnitID == "" || descriptor.ToUnitID == "" {
+			continue
+		}
+		if !IsCausalLinkType(MemoryLinkType(descriptor.LinkType)) {
+			continue
+		}
+		if descriptor.Weight == 0 {
+			descriptor.Weight = defaultCausalLinkWeight
+		}
+		parsed = append(parsed, descriptor)
+	}
+	return parsed
+}
+
+// snapshotCausalLinks collects the causal edges that must survive a unit's move
+// to the archive. It merges the unit's currently materialized edges with
+// descriptors already parked on archived peers naming this unit, so an edge
+// whose other endpoint was archived first still has a copy. Keeping a copy on
+// every archived endpoint makes the revert order irrelevant.
+func (s *PostgresStore) snapshotCausalLinks(ctx context.Context, bankID, unitID string) ([]causalDescriptor, error) {
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q := quoteIdent(schema)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT from_unit_id::text, to_unit_id::text, link_type, COALESCE(weight, 1.0)::float8
+		   FROM `+q+`.memory_links
+		  WHERE bank_id = $1 AND (from_unit_id = $2::uuid OR to_unit_id = $2::uuid)
+		    AND link_type = ANY($3::text[])
+		 UNION
+		 SELECT d.from_unit_id::text, d.to_unit_id::text, d.link_type, COALESCE(d.weight, 1.0)::float8
+		   FROM `+q+`.invalidated_memory_units a
+		   CROSS JOIN LATERAL jsonb_to_recordset(a.causal_links)
+		        AS d(from_unit_id uuid, to_unit_id uuid, link_type text, weight float8)
+		  WHERE a.bank_id = $1 AND a.causal_links <> '[]'::jsonb
+		    AND (d.from_unit_id = $2::uuid OR d.to_unit_id = $2::uuid)
+		    AND d.from_unit_id IS NOT NULL AND d.to_unit_id IS NOT NULL
+		    AND d.link_type = ANY($3::text[])`,
+		bankID, unitID, causalLinkTypeNames())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	descriptors := make([]causalDescriptor, 0)
+	for rows.Next() {
+		var descriptor causalDescriptor
+		if err := rows.Scan(&descriptor.FromUnitID, &descriptor.ToUnitID, &descriptor.LinkType, &descriptor.Weight); err != nil {
+			return nil, err
+		}
+		descriptors = append(descriptors, descriptor)
+	}
+	return descriptors, rows.Err()
+}
+
+// rematerializeCausalLinks recreates archived causal edges whose endpoints are
+// both live again. A peer still archived or permanently deleted keeps its own
+// copy of the descriptor and materializes the edge when it reverts, so a
+// missing endpoint is simply left out here. ON CONFLICT DO NOTHING keeps
+// repeated invalidate/revert cycles from duplicating an edge.
+func (s *PostgresStore) rematerializeCausalLinks(ctx context.Context, bankID string, descriptors []causalDescriptor) error {
+	if len(descriptors) == 0 {
+		return nil
+	}
+	schema, err := s.schemaFor(ctx)
+	if err != nil {
+		return err
+	}
+	q := quoteIdent(schema)
+	links := make([]MemoryLink, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		links = append(links, MemoryLink{
+			BankID:     bankID,
+			FromUnitID: descriptor.FromUnitID,
+			ToUnitID:   descriptor.ToUnitID,
+			LinkType:   MemoryLinkType(descriptor.LinkType),
+			Weight:     descriptor.Weight,
+		})
+	}
+	for _, link := range sortLinksByLockOrder(links) {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO `+q+`.memory_links (bank_id, from_unit_id, to_unit_id, link_type, weight)
+			 SELECT $1, $2::uuid, $3::uuid, $4, $5
+			 WHERE EXISTS (SELECT 1 FROM `+q+`.memory_units WHERE bank_id = $1 AND id = $2::uuid)
+			   AND EXISTS (SELECT 1 FROM `+q+`.memory_units WHERE bank_id = $1 AND id = $3::uuid)
+			 ON CONFLICT DO NOTHING`,
+			bankID, link.FromUnitID, link.ToUnitID, string(link.LinkType), link.Weight); err != nil {
+			return err
+		}
+	}
+	return nil
 }

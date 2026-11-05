@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-// Jaro-Winkler scores an exact case-insensitive match as 1 and falls off as the
-// names diverge, while still scoring a transposition as a near match.
+// The sequence ratio scores an exact case-insensitive match as 1 and falls off
+// as the names diverge, while still scoring a transposition as a near match.
 func TestEntitySimilarity(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -22,9 +22,10 @@ func TestEntitySimilarity(t *testing.T) {
 		{name: "one empty side", left: "", right: "Alice", wantHigh: false},
 		{name: "different words", left: "Google", right: "Alphabet", wantHigh: false},
 		{name: "no shared prefix", left: "Corp", right: "Acme", wantHigh: false},
-		// A shared prefix is deliberately strong evidence under Jaro-Winkler:
-		// a shortened and an extended form of one name belong together.
-		{name: "shared long prefix", left: "Google", right: "Googleplex Park", wantHigh: true},
+		// A long extension shares the short name's characters but is a different
+		// name: the sequence ratio spreads them across the longer string and
+		// lands below the bar.
+		{name: "shared long prefix", left: "Google", right: "Googleplex Park", wantHigh: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,33 +67,35 @@ func TestEntitySimilarityHandlesMultibyte(t *testing.T) {
 	}
 }
 
-// With resolution on a supplied name that is close to a stored entity resolves
-// to it, while resolution off takes the name literally and creates its own.
+// A near name does not clear the weighted merge bar on name evidence alone, so
+// resolution on still creates its own entity. Resolution off reuses only an
+// exact match, which the near name now has.
 func TestRetainEntityResolutionResolvesNearNames(t *testing.T) {
 	store := NewMemoryStore("public")
 
 	existing := RetainEntity{Text: "Acme Corporation", Kind: "ORG"}
-	first := store.resolveEntityLocked("b1", existing, true)
+	first := store.resolveEntityLocked("b1", existing, true, nil, nil)
 	if got := store.entityCount("b1"); got != 1 {
 		t.Fatalf("expected one entity, got %d", got)
 	}
-	// A typo in the same name resolves onto the stored entity.
+	// A typo's name-only score stays below the bar, so it gets its own row.
 	near := RetainEntity{Text: "Acme Corporaton", Kind: "ORG"}
-	second := store.resolveEntityLocked("b1", near, true)
-	if second.ID != first.ID {
-		t.Fatalf("a near name with resolution on must reuse the entity: %+v vs %+v", second, first)
-	}
-	if got := store.entityCount("b1"); got != 1 {
-		t.Fatalf("resolution on created a duplicate: %d entities", got)
-	}
-
-	// With resolution off the same near name creates its own entity.
-	third := store.resolveEntityLocked("b1", near, false)
-	if third.ID == first.ID {
-		t.Fatal("resolution off must not merge a non-exact name")
+	second := store.resolveEntityLocked("b1", near, true, nil, nil)
+	if second.ID == first.ID {
+		t.Fatalf("a near name without shared context must not reuse the entity: %+v vs %+v", second, first)
 	}
 	if got := store.entityCount("b1"); got != 2 {
-		t.Fatalf("resolution off did not create a distinct entity: %d entities", got)
+		t.Fatalf("resolution on created %d entities, want two", got)
+	}
+
+	// Resolution off reuses an exact match, which is the row resolution on just
+	// created for the near name.
+	third := store.resolveEntityLocked("b1", near, false, nil, nil)
+	if third.ID != second.ID {
+		t.Fatal("resolution off must reuse an exactly matching name")
+	}
+	if got := store.entityCount("b1"); got != 2 {
+		t.Fatalf("expected two entities, got %d", got)
 	}
 }
 
@@ -100,8 +103,8 @@ func TestRetainEntityResolutionResolvesNearNames(t *testing.T) {
 // so the switch only changes what counts as close.
 func TestRetainEntityExactMatchUnderBothModes(t *testing.T) {
 	store := NewMemoryStore("public")
-	first := store.resolveEntityLocked("b1", RetainEntity{Text: "Acme Corp"}, false)
-	second := store.resolveEntityLocked("b1", RetainEntity{Text: "acme corp"}, true)
+	first := store.resolveEntityLocked("b1", RetainEntity{Text: "Acme Corp"}, false, nil, nil)
+	second := store.resolveEntityLocked("b1", RetainEntity{Text: "acme corp"}, true, nil, nil)
 	if first.ID != second.ID {
 		t.Fatalf("a case-insensitive exact match must reuse the entity: %+v vs %+v", first, second)
 	}
@@ -114,7 +117,7 @@ func TestRetainEntityExactMatchUnderBothModes(t *testing.T) {
 func TestRetainEntityBlankNameIsDropped(t *testing.T) {
 	store := NewMemoryStore("public")
 	for _, name := range []string{"", "   ", "\t\n"} {
-		if resolved := store.resolveEntityLocked("b1", RetainEntity{Text: name}, true); resolved.ID != "" {
+		if resolved := store.resolveEntityLocked("b1", RetainEntity{Text: name}, true, nil, nil); resolved.ID != "" {
 			t.Fatalf("blank name %q produced an entity: %+v", name, resolved)
 		}
 	}
@@ -127,8 +130,8 @@ func TestRetainEntityBlankNameIsDropped(t *testing.T) {
 // merges onto an entity in another.
 func TestRetainEntityResolutionIsBankScoped(t *testing.T) {
 	store := NewMemoryStore("public")
-	first := store.resolveEntityLocked("b1", RetainEntity{Text: "Acme Corp"}, true)
-	second := store.resolveEntityLocked("b2", RetainEntity{Text: "Acme Corp"}, true)
+	first := store.resolveEntityLocked("b1", RetainEntity{Text: "Acme Corp"}, true, nil, nil)
+	second := store.resolveEntityLocked("b2", RetainEntity{Text: "Acme Corp"}, true, nil, nil)
 	if first.ID == second.ID {
 		t.Fatal("entities in different banks must not merge")
 	}

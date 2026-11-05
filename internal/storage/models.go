@@ -532,6 +532,10 @@ type Entity struct {
 	FirstSeen     *time.Time
 	LastSeen      *time.Time
 	MentionCount  int
+	// Cooccurrences are the lowercased names of the entities this one was seen
+	// beside, filled in for resolution candidates so the weighted score can
+	// weigh the mention's context. Everything but scoring ignores it.
+	Cooccurrences map[string]bool
 }
 
 // MemoryUnit is one extracted fact to persist.

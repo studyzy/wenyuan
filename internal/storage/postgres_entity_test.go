@@ -7,11 +7,14 @@ import (
 	"testing"
 )
 
-// The PostgreSQL backend resolves a near-matching entity name onto the stored
-// one through the trigram similarity probe, which is the same primitive the
+// The PostgreSQL backend narrows a resolution to near-matching candidates
+// through the trigram similarity probe, which is the same primitive the
 // reference applies. Without the trigram extension the probe is unavailable and
 // the backend falls back to exact matching, so this test also proves the
-// extension is installed and indexed by the migration.
+// extension is installed and indexed by the migration. The probe only supplies
+// the candidates: the weighted score decides, and name evidence alone cannot
+// cross the bar, so a near miss creates its own entity — the same verdict the
+// in-memory backend's resolution reaches.
 func TestPostgresResolvesNearEntityNames(t *testing.T) {
 	store := postgresVectorStore(t)
 	ctx := context.Background()
@@ -20,22 +23,27 @@ func TestPostgresResolvesNearEntityNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve first: %v", err)
 	}
-	// A typo in the same name must resolve onto the stored entity.
+	// A typo's name evidence alone stays below the bar, so it gets its own row.
 	near, err := store.ResolveEntity(ctx, "vec-bank", "Acme Corporaton", EntityKindRegular, true)
 	if err != nil {
 		t.Fatalf("resolve near name: %v", err)
 	}
-	if near.ID != first.ID {
-		t.Fatalf("a near name with resolution on must reuse the entity: %+v vs %+v", near, first)
+	if near.ID == first.ID {
+		t.Fatalf("name evidence alone must not reuse the entity: %+v vs %+v", near, first)
 	}
 
-	// With resolution off the same near name creates its own entity.
+	// With resolution off the same near name creates its own entity as well.
 	literal, err := store.ResolveEntity(ctx, "vec-bank", "Acme Corporaton", EntityKindRegular, false)
 	if err != nil {
 		t.Fatalf("resolve literal: %v", err)
 	}
 	if literal.ID == first.ID {
 		t.Fatal("resolution off must not merge a non-exact name")
+	}
+	// The literal switch does reuse the row resolution on just created for the
+	// near name: that row is an exact case-insensitive match now.
+	if literal.ID != near.ID {
+		t.Fatalf("resolution off must reuse an exactly matching name: %+v vs %+v", literal, near)
 	}
 }
 

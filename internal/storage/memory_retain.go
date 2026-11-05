@@ -184,10 +184,17 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 		unit := content.unit
 		unit.ID = newID()
 		s.upsertUnitLocked(unit)
+		// The mention's event date is the unit's own; an absent one leaves the
+		// recency share out of the score.
+		unitDate := unitEventDateOf(unit)
+		var mentionDate *time.Time
+		if !unitDate.IsZero() {
+			mentionDate = &unitDate
+		}
 		mentioned := make([]string, 0, len(content.entities))
 		seen := map[string]bool{}
 		for _, entity := range content.entities {
-			resolved := s.resolveEntityLocked(req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities)
+			resolved := s.resolveEntityLocked(req.BankID, applyIntrabatchCanonical(entity, canonicalNames), item.ResolveEntities, entityNearbyNames(entity.Text, content.entities), mentionDate)
 			if resolved.ID == "" {
 				continue
 			}
@@ -206,13 +213,13 @@ func (s *MemoryStore) writeItemLocked(ctx context.Context, req RetainRequest, it
 		s.upsertUnitCooccurrencesLocked(req.BankID, mentioned)
 		units = append(units, unit.ID)
 	}
-	s.links = append(s.links, linkTuplesFor(req.BankID, units)...)
-	s.links = append(s.links, causalLinksFor(req.BankID, units, contents)...)
+	newLinks := append(linkTuplesFor(req.BankID, units), causalLinksFor(req.BankID, units, contents)...)
 	// Dated units are linked temporally to their nearest same-kind neighbours,
 	// then embedding-similar units semantically, among this item's units and
 	// their nearest existing neighbours — the reference's retain order.
-	s.links = append(s.links, s.temporalLinksLocked(req.BankID, units)...)
-	s.links = append(s.links, s.semanticLinksLocked(req.BankID, units)...)
+	newLinks = append(newLinks, s.temporalLinksLocked(req.BankID, units)...)
+	newLinks = append(newLinks, s.semanticLinksLocked(req.BankID, units)...)
+	s.links = append(s.links, sortLinksByLockOrder(newLinks)...)
 	if len(pruneCandidates) > 0 {
 		s.pruneEntitiesIfOrphanedLocked(req.BankID, pruneCandidates)
 	}
@@ -645,13 +652,13 @@ func recallMatchFromUnit(unit MemoryUnit) RecallMatch {
 // existing entity is reused only on a case-insensitive exact match, and any
 // other name creates its own entity. The entity's label is not stored on the
 // row; it only groups the mention during resolution.
-func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, resolve bool) Entity {
+func (s *MemoryStore) resolveEntityLocked(bankID string, entity RetainEntity, resolve bool, nearby map[string]bool, eventDate *time.Time) Entity {
 	name := entityMatchKey(entity.Text)
 	if name == "" {
 		return Entity{}
 	}
 	if resolve {
-		if match, found := s.bestEntityMatchLocked(bankID, name); found {
+		if match, found := s.bestEntityMatchLocked(bankID, name, nearby, eventDate); found {
 			return match
 		}
 	} else if match, found := s.exactEntityMatchLocked(bankID, name); found {
@@ -683,35 +690,48 @@ func (s *MemoryStore) intrabatchMergeSimilarityLocked() float64 {
 	return DefaultEntityIntrabatchMergeSimilarity
 }
 
-// bestEntityMatchLocked finds the stored entity most similar to name, provided
-// it scores at or above the threshold. Ties break on the identifier so the
-// resolution is deterministic across runs.
-func (s *MemoryStore) bestEntityMatchLocked(bankID, name string) (Entity, bool) {
-	best := Entity{}
-	bestScore := 0.0
+// bestEntityMatchLocked finds the stored entity whose weighted score is
+// highest and clears the merge bar. Ties break on the identifier so the
+// resolution is deterministic across runs. Every stored entity of the bank is
+// a candidate, so each one carries the lowercased names it was seen beside and
+// every bank name carries its exact degree.
+func (s *MemoryStore) bestEntityMatchLocked(bankID, name string, nearby map[string]bool, eventDate *time.Time) (Entity, bool) {
 	mergeFloor := s.tuning.EntityMergeMinSimilarity
 	if mergeFloor <= 0 {
 		mergeFloor = DefaultEntityMergeMinSimilarity
 	}
-	for id, stored := range s.entities {
+	candidates := make([]Entity, 0, len(s.entities))
+	named := make(map[string]string, len(s.entities))
+	for _, stored := range s.entities {
 		if stored.BankID != bankID {
 			continue
 		}
-		// The merge floor is the reference's second trigram gate: a candidate
-		// sharing too few trigrams is dropped before it is scored.
-		if !entityMergeFloorPasses(name, stored.CanonicalName, mergeFloor) {
-			continue
-		}
-		score := entitySimilarity(stored.CanonicalName, name)
-		if score < EntitySimilarityThreshold {
-			continue
-		}
-		if score > bestScore || (score == bestScore && best.ID != "" && id < best.ID) {
-			best = s.entities[id]
-			bestScore = score
-		}
+		candidates = append(candidates, stored)
+		named[stored.ID] = strings.ToLower(stored.CanonicalName)
 	}
-	return best, best.ID != ""
+	degrees := entityCooccurrenceEvidence(candidates, named, s.entityCooccurrencePairsLocked(bankID))
+	mention := entityMentionContext{NearbyNames: nearby, Degrees: degrees, EventDate: eventDate}
+	best, found, _ := bestEntityCandidate(candidates, name, mergeFloor, mention)
+	return best, found
+}
+
+// entityCooccurrencePairsLocked flattens one bank's co-occurrence counters
+// into unordered identity pairs; the caller holds the store lock.
+func (s *MemoryStore) entityCooccurrencePairsLocked(bankID string) [][2]string {
+	prefix := bankID + "\x00"
+	pairs := make([][2]string, 0, len(s.cooccurrences))
+	for key := range s.cooccurrences {
+		rest, ok := strings.CutPrefix(key, prefix)
+		if !ok {
+			continue
+		}
+		first, second, ok := strings.Cut(rest, "\x00")
+		if !ok || first == "" || second == "" {
+			continue
+		}
+		pairs = append(pairs, [2]string{first, second})
+	}
+	return pairs
 }
 
 // ContentHash returns the lowercase hex SHA-256 of the given content.
@@ -889,7 +909,7 @@ func (s *MemoryStore) ResolveEntity(ctx context.Context, bankID, name string, ki
 // to the caller's label for an entity on the retain route.
 func (s *MemoryStore) resolveEntityOfKindLocked(bankID, name string, kind EntityKind, resolve bool) Entity {
 	entity := RetainEntity{Text: name}
-	resolved := s.resolveEntityLocked(bankID, entity, resolve)
+	resolved := s.resolveEntityLocked(bankID, entity, resolve, nil, nil)
 	if resolved.ID != "" && kind != "" && kind != EntityKindRegular {
 		stored := s.entities[resolved.ID]
 		stored.EntityKind = kind
