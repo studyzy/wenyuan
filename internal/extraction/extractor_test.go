@@ -180,11 +180,12 @@ func TestEmptyTextIsRefused(t *testing.T) {
 	}
 }
 
-// test-facts-are-bounded: a verbose model cannot turn one write into an
-// unbounded number of units.
-func TestFactsAreBounded(t *testing.T) {
-	raw := make([]any, 0, maxFactsPerItem*2)
-	for i := 0; i < maxFactsPerItem*2; i++ {
+// A verbose model answer is kept in full: the reference validates each entry
+// and retains all of them, with no per-item ceiling.
+func TestFactsAreNotTruncated(t *testing.T) {
+	const total = 130
+	raw := make([]any, 0, total)
+	for i := 0; i < total; i++ {
 		raw = append(raw, map[string]any{"text": "fact"})
 	}
 	stub := &stubProvider{name: "openai", structured: map[string]any{"facts": raw}}
@@ -192,8 +193,8 @@ func TestFactsAreBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Facts) != maxFactsPerItem {
-		t.Fatalf("facts = %d, want the bound %d", len(result.Facts), maxFactsPerItem)
+	if len(result.Facts) != total {
+		t.Fatalf("facts = %d, want all %d returned facts", len(result.Facts), total)
 	}
 }
 

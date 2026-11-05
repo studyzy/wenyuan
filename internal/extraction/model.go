@@ -223,9 +223,6 @@ func mergeFacts(first, second []Fact) []Fact {
 	out = append(out, first...)
 	offset := len(first)
 	for _, fact := range second {
-		if len(out) >= maxFactsPerItem {
-			break
-		}
 		if len(fact.CausalRelations) > 0 {
 			shifted := make([]CausalRelation, 0, len(fact.CausalRelations))
 			for _, relation := range fact.CausalRelations {
@@ -234,9 +231,6 @@ func mergeFacts(first, second []Fact) []Fact {
 			fact.CausalRelations = shifted
 		}
 		out = append(out, fact)
-	}
-	if len(out) > maxFactsPerItem {
-		out = out[:maxFactsPerItem]
 	}
 	return out
 }

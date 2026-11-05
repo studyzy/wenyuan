@@ -19,10 +19,6 @@ import (
 	"github.com/studyzy/wenyuan/internal/provider"
 )
 
-// maxFactsPerItem bounds how many facts one item may yield, so a verbose model
-// cannot turn one write into an unbounded number of units.
-const maxFactsPerItem = 64
-
 // maxCausalRelationsPerFact bounds the causal edges one fact may declare. The
 // limit is the contract's: a model asked for causes will otherwise relate every
 // fact to every other and turn the graph into noise.
@@ -353,9 +349,6 @@ func parseFacts(root map[string]any, opts Options) ([]Fact, error) {
 			fact.CausalRelations = causalRelations(entry["causal_relations"], len(facts))
 		}
 		facts = append(facts, fact)
-		if len(facts) >= maxFactsPerItem {
-			break
-		}
 	}
 	return facts, nil
 }
@@ -384,9 +377,6 @@ func parseVerbatimFacts(root map[string]any, vocab *entitylabels.Vocabulary) ([]
 			FromAttachments: attachmentNumbers(entry["from_attachments"]),
 			Labels:          extractLabels(entry, vocab),
 		})
-		if len(facts) >= maxFactsPerItem {
-			break
-		}
 	}
 	return facts, nil
 }
@@ -444,9 +434,6 @@ func isDegenerateFact(text string) bool {
 func deterministicResult(text string, opts Options) Result {
 	facts := make([]Fact, 0)
 	for _, paragraph := range splitParagraphs(text) {
-		if len(facts) >= maxFactsPerItem {
-			break
-		}
 		facts = append(facts, Fact{Text: paragraph, Confidence: 1})
 	}
 	applyDateInference(facts, opts.ReferenceTime)
@@ -575,9 +562,8 @@ func intValue(value any) (int, bool) {
 
 // attachmentNumbers reads a fact's from_attachments preserving order. The model
 // answers with the one-based positions of the attachments it read the fact
-// from, which arrive as JSON numbers; an already-stringified id is accepted too
-// so a model that echoed an identifier still links. Order is preserved because
-// the positions index the item's attachments in the order they appeared.
+// from, which arrive as JSON numbers. Order is preserved because the positions
+// index the item's attachments in the order they appeared.
 func attachmentNumbers(value any) []string {
 	switch typed := value.(type) {
 	case []any:
@@ -596,12 +582,11 @@ func attachmentNumbers(value any) []string {
 	}
 }
 
-// attachmentNumber renders one from_attachments entry as a string: a JSON number
-// becomes its integer form, and a string is trimmed.
+// attachmentNumber renders one from_attachments entry as a string. The contract
+// is an integer array, so only integral JSON numbers are positions; a
+// stringified index is not one and is dropped.
 func attachmentNumber(value any) string {
 	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
 	case float64:
 		if typed == float64(int(typed)) {
 			return strconv.Itoa(int(typed))

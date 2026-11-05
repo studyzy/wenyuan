@@ -540,7 +540,7 @@ func dimensionFactSchema(vocab *entitylabels.Vocabulary, optional, causal bool) 
 	if causal {
 		properties["causal_relations"] = causalRelationsSchema()
 	}
-	properties["from_attachments"] = &provider.Schema{Type: "array", Items: &provider.Schema{Type: "string"}}
+	properties["from_attachments"] = &provider.Schema{Type: "array", Items: &provider.Schema{Type: "integer"}}
 	return &provider.Schema{Type: "object", Properties: properties}
 }
 
