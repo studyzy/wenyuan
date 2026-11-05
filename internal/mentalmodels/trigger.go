@@ -796,24 +796,35 @@ func MergeTrigger(supplied, base map[string]any) map[string]any {
 	for key, value := range supplied {
 		merged[key] = value
 	}
-	// The two schedule members are exclusive, and a stated one wins: a supplied
-	// refresh_cron clears a stale refresh_after_consolidation, and enabling
-	// consolidation clears a configured cron. The reference tests `supplied`
-	// rather than the merged map, so only a member the patch actually stated can
-	// clear the other — a patch that names neither leaves both as they were.
-	//
-	// A member stated as null does not count as stated here: null is how the
-	// client clears a member, not a request to turn the other one off.
-	if _, statesFlag := supplied["refresh_after_consolidation"]; !statesFlag {
-		if supplied["refresh_cron"] != nil {
-			delete(merged, "refresh_after_consolidation")
-		}
-	} else if after, _ := supplied["refresh_after_consolidation"].(bool); after {
-		if _, statesCron := supplied["refresh_cron"]; !statesCron {
-			delete(merged, "refresh_cron")
-		}
+	// The reference gates both clears on the *truthiness* of the stated member
+	// and the key-absence of the other, so an empty cron string (a valid way to
+	// say "no schedule") or an explicit false does not switch the other off.
+	_, cronStated := supplied["refresh_cron"]
+	_, afterStated := supplied["refresh_after_consolidation"]
+	if triggerMemberTruthy(supplied["refresh_cron"]) && !afterStated {
+		delete(merged, "refresh_after_consolidation")
+	}
+	if triggerMemberTruthy(supplied["refresh_after_consolidation"]) && !cronStated {
+		delete(merged, "refresh_cron")
 	}
 	return merged
+}
+
+// triggerMemberTruthy mirrors the reference's truth test for a trigger member:
+// empty strings, false, nil and zero are not a stated schedule.
+func triggerMemberTruthy(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case string:
+		return typed != ""
+	case float64:
+		return typed != 0
+	default:
+		return true
+	}
 }
 
 // ValidateTriggerObject checks a stored or configured trigger map against the
