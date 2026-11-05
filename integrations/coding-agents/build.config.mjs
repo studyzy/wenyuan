@@ -66,6 +66,16 @@ const entryPoints = [
     })
   ),
   { entry: "src/plugins/index.ts", outfile: "dist/plugins/index.mjs" },
+  // DSH loads its plugin from the STAGED runtime directory, not from the
+  // package: the patch row it writes is a file:// URL under ~/.wenyuan/
+  // wenyuan-memory, and staging copies dist/runtime wholesale. Emitting the
+  // same bundle a second time under that tree is what makes the row's path
+  // exist; without it the row points at a file staging never creates and DSH
+  // silently skips the plugin.
+  {
+    entry: "src/plugins/dsh.ts",
+    outfile: "dist/runtime/plugins/dsh.mjs",
+  },
 ];
 
 // A host execs a hook by path, so the bundled file carries its own

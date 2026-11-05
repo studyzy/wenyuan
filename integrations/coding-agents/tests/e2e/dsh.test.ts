@@ -77,6 +77,18 @@ describe("installing DSH", () => {
     );
   });
 
+  it("points the row at a plugin file staging actually creates", async () => {
+    // DSH resolves the row's name as an ES module specifier, so a file that was
+    // never staged is not an error the host reports — the plugin is skipped and
+    // the session runs with no memory at all.
+    await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
+      await install();
+      expect(
+        await home.isFile(`${PER_USER_DIRECTORY_NAME}/${RUNTIME_DIRECTORY_NAME}/plugins/dsh.mjs`),
+      ).toBe(true);
+    });
+  });
+
   it("writes its own MCP server map naming DSH as the caller", async () => {
     await withFakeHome({ environment: { PATH: NO_HOST_CLI } }, async (home: FakeHome) => {
       await install();
