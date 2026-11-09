@@ -170,6 +170,9 @@ func (h *Handlers) Recall(w http.ResponseWriter, r *http.Request) {
 	// redirect: everything downstream is keyed by the query's bank, so resolving
 	// it there keeps one answer to which bank this request read.
 	query.Fallback = h.teamFallback(r.Context(), bankID, preference)
+	// The same preference travels to the store, so a direct storage caller and
+	// this route cannot disagree about which bank a redirectable read wants.
+	query.FallbackPreference = preference
 	// With an embedding model configured, the query text is embedded so the
 	// semantic arm can rank by vector similarity. A failed embedding degrades
 	// to the lexical path rather than failing the read, because recall is an

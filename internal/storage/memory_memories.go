@@ -125,7 +125,8 @@ func (s *MemoryStore) ListMemories(ctx context.Context, query MemoryQuery) (Memo
 		fbQuery := query
 		fbQuery.Fallback = nil
 		page, servedBy, err := withFallback(ctx, s,
-			FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State},
+			FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State,
+				Preference: query.FallbackPreference},
 			fb, func(ctx context.Context, bankID string) (MemoryPage, error) {
 				fbQuery.BankID = bankID
 				return s.listMemoriesFlat(ctx, fbQuery)

@@ -34,7 +34,8 @@ func (s *PostgresStore) Recall(ctx context.Context, q RecallQuery) (RecallResult
 	fallback := q.Fallback
 	q.Fallback = nil
 	fallbackRead := q
-	result, servedBy, err := withFallback(ctx, s, FallbackQuery{BankID: q.BankID},
+	result, servedBy, err := withFallback(ctx, s,
+		FallbackQuery{BankID: q.BankID, Preference: q.FallbackPreference},
 		fallback, func(ctx context.Context, bankID string) (RecallResult, error) {
 			fallbackRead.BankID = bankID
 			result, err := s.recallWhere(ctx, fallbackRead)

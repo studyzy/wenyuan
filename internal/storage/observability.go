@@ -410,6 +410,11 @@ type MemoryQuery struct {
 	// no units at all. See RecallQuery.Fallback for why the decision is per-bank
 	// rather than per-query.
 	Fallback *FallbackScope
+	// FallbackPreference says which bank a redirectable listing wants. The
+	// zero value keeps the team-first decision; PreferPersonal reads the
+	// caller's own bank. Meaningless when Fallback is nil. See
+	// RecallQuery.FallbackPreference.
+	FallbackPreference FallbackPreference
 }
 
 // MemoryPage is one page of memories with the pre-paging total.

@@ -219,6 +219,13 @@ type RecallQuery struct {
 	// reports is rewritten back to BankID, so the caller never sees the scope it
 	// was served from.
 	Fallback *FallbackScope
+	// FallbackPreference says which bank a redirectable read wants. The zero
+	// value keeps the team-first decision, so a caller that states nothing
+	// keeps the behaviour Fallback has always had; PreferPersonal reads the
+	// caller's own bank and never probes the team's. It is meaningless when
+	// Fallback is nil — the store never enters the fallback path then — and
+	// the HTTP layer's ?scope=personal arrives here as PreferPersonal.
+	FallbackPreference FallbackPreference
 }
 
 // RerankFunc scores candidate texts against a query. It is a function type

@@ -25,7 +25,8 @@ func (s *PostgresStore) ListMemories(ctx context.Context, query MemoryQuery) (Me
 	requested := query.BankID
 	redirected := query
 	page, servedBy, err := withFallback(ctx, s,
-		FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State},
+		FallbackQuery{BankID: requested, DocumentID: query.DocumentID, State: query.State,
+			Preference: query.FallbackPreference},
 		fallback, func(ctx context.Context, bankID string) (MemoryPage, error) {
 			redirected.BankID = bankID
 			return s.listMemoriesWhere(ctx, redirected)

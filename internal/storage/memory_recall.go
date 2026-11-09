@@ -24,7 +24,8 @@ func (s *MemoryStore) Recall(ctx context.Context, q RecallQuery) (RecallResult, 
 		fb := q.Fallback
 		q.Fallback = nil
 		fbQuery := q
-		result, _, err := withFallback(ctx, s, FallbackQuery{BankID: q.BankID}, fb,
+		result, _, err := withFallback(ctx, s,
+			FallbackQuery{BankID: q.BankID, Preference: q.FallbackPreference}, fb,
 			func(ctx context.Context, bankID string) (RecallResult, error) {
 				fbQuery.BankID = bankID
 				return s.recallFlat(ctx, fbQuery)
