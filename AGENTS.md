@@ -118,20 +118,37 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   is what would let a prefix delete take another project's data.
 - **Shared memory is copied, not synthesised.** A background job `project.merge`
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
-  60s) copies each member's `world`, `experience` and `observation` facts from their
+  60s) copies each member's `world` and `experience` facts from their
   own bank into the project's team bank `<team>::<name>`, **verbatim**: every fact
-  becomes a team fact with its own text, its own kind, its tags and its links, and
+  becomes a team fact with its own text, its own kind, its tags, its context, its
+  temporal bounds and its links, and
   **no model is called** — the round therefore runs on a deployment with no chat
   provider at all. A link is recreated between the two team rows by resolving its
   endpoints' merge keys, so a link whose other fact has not been carried yet lands
   on the round that carries that fact; `entity_id` is not carried because an
   entity is an identity within one bank.
-  Deduplication is one string comparison: a fact whose `merge_key` (SHA-256 of the
-  whitespace-normalized text) is already in the bank gets no second row, and every
-  member's source is still recorded in the ledger per member.
+  The retrieval columns travel with the row, because a column left to its default
+  is a column the team bank answers worse than the member's does: the member's
+  `embedding` is copied unchanged (one deployment is one embedding scheme, and
+  recomputing it here could not match, since retain embeds the text augmented with
+  the fact's resolved entity names and a team fact carries no entities), and the
+  `search_vector` is built from the text, the context and the text signals — the
+  column is not generated, so a row written without it is invisible to keyword
+  recall.
+  Identity is the **source unit**: a team row mirrors exactly one member fact and
+  records it in `metadata.source_unit_id` (with `source_tenant` and, for
+  compatibility, `merge_key` = SHA-256 of the whitespace-normalized text). A fact
+  edited in the member's bank keeps its unit id, so the round replaces its row
+  instead of leaving both versions standing; two members who say the same sentence
+  produce two rows, exactly as the sentence is two facts inside either bank.
   `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
   `experience` out of the input when a deployment wants only what members know and
   concluded. Raw conversation, documents, chunks and attachments are never copied.
+  **A member's observation is not copied either.** It is a conclusion the team
+  bank derives itself: consolidation rewrites that row in place — same id, new
+  text — without moving `updated_at`, so a copy could never follow it, and a new
+  text would arrive as a second fact beside the old. The team bank's own
+  consolidation synthesises its observations from the facts that were copied.
   Design: `docs/plans/2026-10-30-team-memory-design-v3.md`.
 - **Two shapes were tried and rejected before this one.** Asking the model for
   "the project's complete fact list" turned 1940 member facts into 121 team facts:
@@ -145,8 +162,9 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   and it records the `merge_key` each member fact *supports*. Delete detection
   reads those rows, so a removed member fact triggers the rebuild that drops what
   it supported. Every member's fact is a ledger row even when its text is already
-  in the bank, because provenance is per member. A team fact's id is its
-  `merge_key`, so a fact whose text survives keeps its row and its observations.
+  in the bank, because provenance is per member. A team fact's row keeps its id
+  while the fact it mirrors still says the same thing, so a fact whose wording
+  survives keeps its row and its observations; an edited fact replaces its row.
 - **The circuit breaker is real and recovers on its own.** A project that fails
   `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` rounds in a row rests for
   `WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS` (default 900) and is then let
@@ -165,11 +183,16 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
 - **The team bank is written only by the merge job.** A fact written into it
   directly is replaced by the next round; `merge-status.unmanaged_facts` counts
   those so an operator can see it.
-- **Reads fall back per bank, in the storage layer.** A member's
+- **Reads are team-first, and the caller can say otherwise.** A member's
   `POST /banks/{id}/memories/recall` and `GET /banks/{id}/memories/list` read the
-  project's team bank once the member's own bank holds no units at all;
-  `RecallQuery.Fallback` / `MemoryQuery.Fallback` carry the scope and the
-  response keeps the bank id the caller asked for. The redirect needs the
+  project's team bank once it holds any units; when it holds none, the member's
+  own bank answers. `?scope=team` (the default) names that behaviour,
+  `?scope=personal` reads the member's own bank and never resolves the team
+  scope, and `?scope=both` is refused with 422 until cross-bank fusion is
+  designed. The parameter is this service's own: it is not in the captured
+  OpenAPI document and is declared per route, so it does not appear in
+  `X-Ignored-Params`. `RecallQuery.Fallback` / `MemoryQuery.Fallback` carry the
+  scope and the response keeps the bank id the caller asked for. The redirect needs the
   `storage.BankPresence` capability (absent → never fall back) and
   `storage.TeamRegistry.ResolveProjectForMember` (membership is the authority,
   never the bank id's shape). `tags`, `graph`, `entities`, `stats`, `documents`,

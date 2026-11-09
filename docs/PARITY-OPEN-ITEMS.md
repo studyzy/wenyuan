@@ -478,3 +478,14 @@
 - **根因**：诊断日志显示模型对强制 `done` 返回 `args="{}"`（空参数）。参考在同样情况下**也抛 `ReflectNoAnswerError`**（`engine/agent.py:2576-2590`，注释明确：占位符非空会让下游把空读成真答案并覆盖可用内容，#2959），两侧行为一致。
 - **建议方向**：部署侧换用能可靠填充 done schema 的模型，或缩短工具会话上下文。**不要改代码兜底**——那会偏离参考的「空答案必须失败」语义。
 - **同轮已修**：`buildFinalPrompt` 曾缺 bank 身份段（参考的 standalone 合成以 `## Memory Bank Context` 开头），已修复并逐字节验证。
+
+- **`?scope=` on `memories/recall` and `memories/list` is this service's own.**
+  It chooses which bank a team member's read is served from: `team` (default,
+  the existing behaviour), `personal`, and `both` (refused 422 until cross-bank
+  fusion is designed). It is deliberately absent from
+  `internal/httpx/openapi.json` — that document is captured from the reference —
+  and is declared per route in the router, so it is neither reported in
+  `X-Ignored-Params` nor fails the declaration audit. A parity audit must treat
+  its presence on those two routes as expected and its absence from the OpenAPI
+  document as correct. Design:
+  `docs/plans/2026-11-09-team-read-scope-design.md`.
