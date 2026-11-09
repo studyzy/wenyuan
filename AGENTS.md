@@ -219,6 +219,33 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   projected row retires the observations resting on it and clears
   `consolidated_at` on its surviving co-sources, so the next consolidation
   rebuilds them.
+- **A project's bank starts with five knowledge pages.**
+  `POST /admin/v1/teams/{id}/projects` seeds Component map, Core concepts,
+  Conventions and patterns, Key decisions and rationale, and Initiatives and
+  enhancements into the bank it just created. The merge job fills a project bank
+  but creates no pages, and the coding-agents package that seeds this taxonomy
+  only runs in its own sessions, so without this a project bank would stay
+  page-less — even though its facts already carry the `knowledge:component` /
+  `concept` / `convention` / `decision` / `feature-work` labels the members'
+  retains projected onto them.
+  Seeding happens **only for a bank this request created**: `adopt_bank` hands
+  over somebody else's bank and nothing is written into it. A seeding failure is
+  logged and the response is still `201 Created`, because pages are synthesized
+  from the bank's memory rather than a precondition for it. Matching is by name,
+  so a re-run adds only what is missing and leaves a hand-edited page alone.
+  Each page is created with `fact_types` of world/experience/observation,
+  `tags_match: "all"` (the server's `all_strict` default for a tagged model would
+  starve the page of the untagged facts that reach a project bank),
+  `max_tokens: 4096`, and an **hourly `refresh_cron` whose minute is hashed from
+  the bank id and page name**, so the five fire on five minutes. Nothing is spent
+  on an idle bank regardless: the scheduled-refresh job gates every tick on
+  `IsStale`, so a tick with no new fact in a page's scope queues no refresh.
+  The five questions are a **verbatim copy** of the coding-agents taxonomy
+  (`integrations/coding-agents/src/core/missions/pages.ts`, `PAGE_TAXONOMY`) plus
+  that package's project-scope clause; if the taxonomy moves, both copies move
+  together. Code: `internal/reporting/knowledge_seed.go` behind
+  `adminapi.PageSeeder`. Design:
+  `docs/plans/2026-11-10-project-bank-knowledge-pages-design.md`.
 - **`project.merge` excludes `<member>::myself`**: a project whose id is `myself`
   points at the member's aggregate bank, and a person's cross-project conclusions
   must never pass as their contribution to a team (`postgres_merge_store.go`,

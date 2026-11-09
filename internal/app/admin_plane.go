@@ -69,6 +69,7 @@ func newAdminHandler(
 	merges adminapi.MergeAdmin,
 	membershipChanged func(string),
 	personal adminapi.PersonalAdmin,
+	pages adminapi.PageSeeder,
 ) (http.Handler, error) {
 	adminConfig := adminapi.Config{
 		Registry:    registry,
@@ -84,6 +85,7 @@ func newAdminHandler(
 		// 501; that is the one place the plane differs between the two modes.
 		TeamConfig: adminapi.TeamConfig{
 			Teams: teams, Banks: banks, Merges: merges, MembershipChanged: membershipChanged,
+			Pages: pages,
 		},
 	}
 	// The console turns a tenant key into a console session, and it needs the

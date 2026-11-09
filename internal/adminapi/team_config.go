@@ -35,6 +35,22 @@ type TeamConfig struct {
 	// even where merging is switched off — otherwise a removal keeps a former
 	// member reading the project for as long as the cache holds.
 	MembershipChanged func(tenantID string)
+	// Pages, when non-nil, seeds the knowledge pages a project's bank starts
+	// with. A nil value creates the bank bare, which is what a deployment with
+	// no knowledge-base surface gets.
+	Pages PageSeeder
+}
+
+// PageSeeder seeds the knowledge pages a project's bank starts with.
+//
+// It is deliberately narrow and takes an already-open tenant context, like the
+// other team handles: the plane decides *when* a bank gets its pages, and the
+// seeder decides what they are.
+type PageSeeder interface {
+	// SeedKnowledgePages creates the pages bankID does not have yet. It is
+	// idempotent — a page already in the bank, matched by name, is left alone —
+	// and a page it fails to create is reported rather than retried here.
+	SeedKnowledgePages(ctx context.Context, bankID, project string) error
 }
 
 // MergeAdmin is the management plane's handle on a project's merge state.

@@ -24,6 +24,7 @@ import (
 	"github.com/studyzy/wenyuan/internal/oteltrace"
 	"github.com/studyzy/wenyuan/internal/provider"
 	"github.com/studyzy/wenyuan/internal/provider/embed"
+	"github.com/studyzy/wenyuan/internal/reporting"
 	"github.com/studyzy/wenyuan/internal/storage"
 	"github.com/studyzy/wenyuan/internal/teamread"
 	"github.com/studyzy/wenyuan/internal/tenant"
@@ -357,7 +358,15 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 		if app.PersonalStore != nil {
 			personalAdmin = personalAdminFor{store: app.PersonalStore, teams: teamRegistry, cfg: cfg}
 		}
-		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged, personalAdmin)
+		// A project's bank starts with the knowledge pages it would otherwise
+		// never get: the merge job fills the bank but creates no pages, and the
+		// coding-agents package that seeds them only runs in its own sessions.
+		pages := reporting.KnowledgePageSeeder{Builder: &reporting.PageBuilder{
+			Store:           store,
+			Embeddings:      embeddingGeneratorFrom(app.Embedder),
+			ProcessDefaults: bankapi.PublicConfigDefaults(cfg),
+		}}
+		adminHandler, err := newAdminHandler(cfg, tenantRegistry, tenantExtension, tenantProvisioner, tenantMigrator, tenantDropper, teamRegistry, bankAdmin, mergeAdmin, membershipChanged, personalAdmin, pages)
 		if err != nil {
 			return nil, err
 		}

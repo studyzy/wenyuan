@@ -106,6 +106,20 @@ func (h *Handler) createTeamProject(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	// A bank this request created starts with its knowledge pages. An adopted
+	// bank does not: it is somebody else's, and seeding it would write content
+	// into a bank the operator only meant to hand to the project.
+	//
+	// A failure here is logged and not fatal. Pages are synthesized from the
+	// bank's memory rather than a precondition for it, and the first build is
+	// already asynchronous, so refusing the project over one would trade a
+	// recoverable gap for an outage.
+	if created && h.cfg.Pages != nil {
+		if err := h.cfg.Pages.SeedKnowledgePages(r.Context(), project.BankID, project.Name); err != nil {
+			slog.Default().Error("seeding the project bank's knowledge pages failed",
+				"team_id", teamID, "project_id", project.ProjectID, "bank_id", project.BankID, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusCreated, toTeamProjectResponse(stored))
 }
 
