@@ -77,16 +77,29 @@ func runRestoreBinary(ctx context.Context, caps storage.AdminTableStore, reader 
 // returned columns are the archive's, in stream order, minus the dropped ones.
 func planColumns(table string, archive, target []storage.AdminColumn, out io.Writer) ([]string, []int, error) {
 	targetTypes := make(map[string]string, len(target))
+	generatedTarget := map[string]bool{}
 	for _, column := range target {
 		targetTypes[column.Name] = column.Type
+		generatedTarget[column.Name] = column.Generated
 	}
 	var kept []string
 	var dropped []int
+	var generated []string
 	var mismatched []string
 	for index, column := range archive {
 		actual, ok := targetTypes[column.Name]
 		if !ok {
 			dropped = append(dropped, index)
+			continue
+		}
+		if generatedTarget[column.Name] {
+			// A generated column cannot be written, and its value is computed
+			// from the columns that are restored. The reference records such a
+			// column's reconciled type (a text search vector, say) while this
+			// schema generates it, so the types legitimately disagree: the
+			// archive's value is dropped and the target recomputes it.
+			dropped = append(dropped, index)
+			generated = append(generated, column.Name)
 			continue
 		}
 		if actual != column.Type {
@@ -98,13 +111,17 @@ func planColumns(table string, archive, target []storage.AdminColumn, out io.Wri
 	if len(mismatched) > 0 {
 		return nil, nil, fmt.Errorf("archive is incompatible with target table %q: %s", table, strings.Join(mismatched, ", "))
 	}
-	if len(dropped) > 0 {
+	if len(dropped) > len(generated) {
 		names := make([]string, 0, len(dropped))
 		for _, index := range dropped {
 			names = append(names, archive[index].Name)
 		}
 		_, _ = fmt.Fprintf(out, "  %s: ignoring %d archive column(s) absent from the target schema: %s\n",
 			table, len(dropped), strings.Join(names, ", "))
+	}
+	if len(generated) > 0 {
+		_, _ = fmt.Fprintf(out, "  %s: the target generates %d column(s); the archive's values are dropped and recomputed: %s\n",
+			table, len(generated), strings.Join(generated, ", "))
 	}
 	return kept, dropped, nil
 }

@@ -25,7 +25,9 @@ var _ AdminTableStore = (*PostgresStore)(nil)
 
 // TableColumns returns the table's insertable columns in declaration order.
 func (s *PostgresStore) TableColumns(ctx context.Context, table string) ([]AdminColumn, error) {
-	query := `SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+	// attgenerated is read alongside the type: a restore replays an archive's
+	// columns positionally, and a generated column it names cannot be written.
+	query := `SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated <> ''
 	          FROM pg_catalog.pg_attribute a
 	          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 	          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -39,7 +41,7 @@ func (s *PostgresStore) TableColumns(ctx context.Context, table string) ([]Admin
 	columns := make([]AdminColumn, 0)
 	for rows.Next() {
 		var column AdminColumn
-		if err := rows.Scan(&column.Name, &column.Type); err != nil {
+		if err := rows.Scan(&column.Name, &column.Type, &column.Generated); err != nil {
 			return nil, err
 		}
 		columns = append(columns, column)

@@ -15,6 +15,10 @@ import (
 type AdminColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type_name"`
+	// Generated marks a column the database computes. It is omitted from an
+	// archive (it cannot be written) and from a restore's column list, and a
+	// restore drops an archive's value for it rather than compare its type.
+	Generated bool `json:"generated,omitempty"`
 }
 
 // AdminTableStore is the optional store capability behind the admin backup and
@@ -95,7 +99,19 @@ var (
 // domain declares but no migration creates is appended afterwards, so the two
 // can never silently disagree.
 func PersistentTables() ([]string, error) {
-	series, err := MigrationSeries()
+	return PersistentTablesFrom(MigrationSeries)
+}
+
+// PersistentTablesFrom is PersistentTables over another series, so the set is
+// derivable from a reference implementation's own dumped migrations rather
+// than only from this build's embedded copy.
+//
+// A reference-generated series is not clean SQL: it records objects it no
+// longer has as commented-out statements, and a naive scan then produces a
+// table set the schema does not contain, which a restore refuses. The series
+// is therefore reduced to executable statements before it is scanned.
+func PersistentTablesFrom(load func() ([]Migration, error)) ([]string, error) {
+	series, err := load()
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +120,10 @@ func PersistentTables() ([]string, error) {
 	// references maps a child table to the tables it points at.
 	references := map[string][]string{}
 	for _, migration := range series {
-		for _, match := range createTablePattern.FindAllStringSubmatch(migration.SQL, -1) {
+		// Statement comments are stripped first: the reference implementation's
+		// series carries dropped tables as `-- CREATE TABLE legacy_x (...)`, and
+		// a commented-out object is not part of the schema a backup carries.
+		for _, match := range createTablePattern.FindAllStringSubmatch(stripSQLLineComments(migration.SQL), -1) {
 			name := unquoteIdentifier(match[1])
 			if !seen[name] {
 				seen[name] = true
@@ -190,6 +209,23 @@ func dependencyOrder(tables []string, references map[string][]string) ([]string,
 // sortByTableIndex orders a ready set by the table's original position.
 func sortByTableIndex(names []string, index map[string]int) {
 	sort.SliceStable(names, func(i, j int) bool { return index[names[i]] < index[names[j]] })
+}
+
+// stripSQLLineComments drops everything from a `--` to the end of its line,
+// leaving the statement text a server would execute. A comment that is not at
+// a line start (a trailing comment after a statement) is dropped with it,
+// which is harmless for the statements this file scans.
+func stripSQLLineComments(sql string) string {
+	if !strings.Contains(sql, "--") {
+		return sql
+	}
+	lines := strings.Split(sql, "\n")
+	for i, line := range lines {
+		if index := strings.Index(line, "--"); index >= 0 {
+			lines[i] = line[:index]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // unquoteIdentifier strips the surrounding double quotes a generated migration

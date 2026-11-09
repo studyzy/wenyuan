@@ -151,6 +151,44 @@ func TestRestoreBinaryStripsColumnsTheTargetLacks(t *testing.T) {
 	}
 }
 
+// A generated target column cannot be written and its type need not match the
+// archive's: the reference records a reconciled search vector as text while
+// this schema generates it as tsvector. Its value is dropped and recomputed,
+// not treated as an incompatible type.
+func TestRestoreBinaryDropsGeneratedColumnsInsteadOfMismatching(t *testing.T) {
+	stream := buildBinaryCopyStream([]field{[]byte("a1"), []byte("from archive")})
+	tables := map[string]backupTable{
+		"mental_models": {Rows: 1, Columns: []storage.AdminColumn{
+			{Name: "name", Type: "text"},
+			{Name: "search_vector", Type: "text"},
+		}},
+	}
+	path := writeBinaryArchive(t, 2, tables, map[string][]byte{"mental_models": stream})
+
+	target := newFakeTableStore()
+	target.columns["mental_models"] = []storage.AdminColumn{
+		{Name: "name", Type: "text"},
+		{Name: "search_vector", Type: "tsvector", Generated: true},
+	}
+	var out bytes.Buffer
+	if err := RunRestore(context.Background(), target, RestoreFlags{Input: path, Yes: true}, nil, &out); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	loads := target.binaryLoads
+	if len(loads) != 1 {
+		t.Fatalf("store received %d load(s), want 1", len(loads))
+	}
+	if got := loads[0].Columns; len(got) != 1 || got[0] != "name" {
+		t.Fatalf("columns = %v, want the generated column left out", got)
+	}
+	if want := buildBinaryCopyStream([]field{[]byte("a1")}); !bytes.Equal(loads[0].Data, want) {
+		t.Fatal("the generated column's archive value was not stripped from the stream")
+	}
+	if !strings.Contains(out.String(), "the target generates 1 column(s)") {
+		t.Fatalf("restore output = %q", out.String())
+	}
+}
+
 func TestRestoreRefusesUnknownVersion(t *testing.T) {
 	path := writeBinaryArchive(t, "3", map[string]backupTable{}, map[string][]byte{})
 	var out bytes.Buffer
