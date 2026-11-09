@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "프로젝트 생성",
       "projectHint": "bank id 는 <team>::<프로젝트 ID> 이며 생성 후 바뀌지 않습니다.",
-      "projectIdInvalid": "프로젝트 ID는 영문자로 시작하고 영문자(대소문자), 숫자, 밑줄만 사용해야 합니다.",
+      "projectIdInvalid": "프로젝트 ID는 영문자 또는 숫자로 시작하고 끝나야 하며, 영문자(대소문자), 숫자, 마침표, 밑줄, 하이픈만 사용할 수 있습니다.",
       "projectNameInvalid": "표시 이름이 필요합니다.",
       "projectCreated": "프로젝트를 생성했습니다.",
       "projectDeleteConfirm": "프로젝트를 삭제하면 소유한 모든 뱅크({bank} 포함)가 삭제됩니다. 계속하려면 {project}을(를) 입력하세요.",

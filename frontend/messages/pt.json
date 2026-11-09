@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "Criar projeto",
       "projectHint": "O bank id é <team>::<id do projeto> e não muda depois.",
-      "projectIdInvalid": "O id do projeto deve começar por uma letra e usar apenas letras (maiúsculas ou minúsculas), dígitos e sublinhados.",
+      "projectIdInvalid": "O id do projeto deve começar e terminar com uma letra ou um dígito e usar apenas letras (maiúsculas ou minúsculas), dígitos, pontos, sublinhados e hífenes.",
       "projectNameInvalid": "Um nome de exibição é obrigatório.",
       "projectCreated": "Projeto criado.",
       "projectDeleteConfirm": "Excluir um projeto exclui todos os bancos que ele possui, incluindo {bank}. Digite {project} para continuar.",

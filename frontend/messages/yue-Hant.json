@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "建立專案",
       "projectHint": "bank id 係 <team>::<專案 ID>，建立之後唔會再變。",
-      "projectIdInvalid": "專案 ID 要以字母開頭，只可以有用字母（大細楷都得）、數字同底線。",
+      "projectIdInvalid": "專案 ID 要以字母或數字開頭同結尾，只可以有用字母（大細楷都得）、數字、點、底線同連字號。",
       "projectNameInvalid": "顯示名稱唔可以留空。",
       "projectCreated": "專案已建立。",
       "projectDeleteConfirm": "刪除專案會刪埋佢有嘅全部 bank，包括 {bank}。輸入 {project} 繼續。",

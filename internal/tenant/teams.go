@@ -22,10 +22,14 @@ const (
 // Valid reports whether the role is one the registry stores.
 func (r MemberRole) Valid() bool { return r == RoleOwner || r == RoleMember }
 
-// projectIDPattern is the shape of a project identifier. It is the same shape
-// a tenant id has — letters in either case, digits and underscores — and it is
-// case-sensitive, so "Web" and "web" are different projects.
-var projectIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{1,62}$`)
+// projectIDPattern is the shape of a project identifier: a name a person would
+// give a repository — letters in either case, digits, and '.', '_' or '-' inside
+// it, starting and ending with a letter or digit. Case-sensitive, so "Web" and
+// "web" are different projects.
+//
+// The bank id is "<team>::<project id>", so a ':' is refused and so is anything
+// else that is not safe in a URL path segment, because the id is one.
+var projectIDPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$`)
 
 // projectNameMaxRunes bounds a project's display name. Unlike the id, the name is
 // free-form: it is what a person reads, so it may be written in any script.

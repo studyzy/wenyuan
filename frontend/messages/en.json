@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "Create project",
       "projectHint": "The bank id is <team>::<project id> and cannot change afterwards.",
-      "projectIdInvalid": "A project id needs letters (upper or lower case), digits and underscores, starting with a letter.",
+      "projectIdInvalid": "A project id needs letters (upper or lower case), digits, dots, underscores or hyphens, starting and ending with a letter or digit.",
       "projectNameInvalid": "A display name is required.",
       "projectCreated": "Project created.",
       "projectDeleteConfirm": "Deleting a project deletes every bank it owns, including {bank}. Type {project} to continue.",

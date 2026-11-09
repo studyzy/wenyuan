@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "Projekt erstellen",
       "projectHint": "Die Bank-ID ist <team>::<Projekt-ID> und bleibt unveränderlich.",
-      "projectIdInvalid": "Eine Projekt-ID muss mit einem Buchstaben beginnen und darf nur Buchstaben (groß oder klein), Ziffern und Unterstriche enthalten.",
+      "projectIdInvalid": "Eine Projekt-ID muss mit einem Buchstaben oder einer Ziffer beginnen und enden und darf nur Buchstaben (groß oder klein), Ziffern, Punkte, Unterstriche und Bindestriche enthalten.",
       "projectNameInvalid": "Ein Anzeigename ist erforderlich.",
       "projectCreated": "Projekt erstellt.",
       "projectDeleteConfirm": "Beim Löschen eines Projekts werden alle zugehörigen Banken gelöscht, auch {bank}. Geben Sie {project} ein, um fortzufahren.",

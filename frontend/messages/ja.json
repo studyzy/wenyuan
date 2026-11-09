@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "プロジェクトを作成",
       "projectHint": "bank id は <team>::<プロジェクト ID> で、作成後は変わりません。",
-      "projectIdInvalid": "プロジェクト ID は英字で始まり、英字（大文字・小文字）・数字・アンダースコアのみ使用できます。",
+      "projectIdInvalid": "プロジェクト ID は英数字で始まり英数字で終わり、英字（大文字・小文字）・数字・ピリオド・アンダースコア・ハイフンのみ使用できます。",
       "projectNameInvalid": "表示名は必須です。",
       "projectCreated": "プロジェクトを作成しました。",
       "projectDeleteConfirm": "プロジェクトを削除すると、所有するすべてのバンク（{bank} を含む）が削除されます。続行するには {project} と入力してください。",

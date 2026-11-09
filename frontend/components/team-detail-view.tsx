@@ -121,7 +121,7 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
   async function createProject(event: React.FormEvent) {
     event.preventDefault();
     setNotice(null);
-    if (!/^[A-Za-z][A-Za-z0-9_]{1,62}$/.test(projectId)) {
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$/.test(projectId)) {
       setNotice({ kind: "error", text: t("projectIdInvalid") });
       return;
     }

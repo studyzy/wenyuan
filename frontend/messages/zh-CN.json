@@ -2890,7 +2890,7 @@
       "projectIdPlaceholder": "web",
       "createProject": "创建项目",
       "projectHint": "bank id 为 <team>::<项目 ID>，创建后不再改变。",
-      "projectIdInvalid": "项目 ID 必须以字母开头，只含字母（大小写均可）、数字和下划线。",
+      "projectIdInvalid": "项目 ID 必须以字母或数字开头和结尾，只含字母（大小写均可）、数字、点、下划线和短横线。",
       "projectNameInvalid": "显示名称不能为空。",
       "projectCreated": "项目已创建。",
       "projectDeleteConfirm": "删除项目会删除它拥有的全部 bank，包括 {bank}。输入 {project} 继续。",
