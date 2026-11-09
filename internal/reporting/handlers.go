@@ -126,7 +126,7 @@ func (h *Handlers) Stats(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "read the bank's statistics") {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -165,7 +165,7 @@ func (h *Handlers) Stats(w http.ResponseWriter, r *http.Request) {
 
 // Timeseries buckets a bank's memory counts.
 func (h *Handlers) Timeseries(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}

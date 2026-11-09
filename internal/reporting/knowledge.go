@@ -35,7 +35,7 @@ func (h *Handlers) KnowledgeTree(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}

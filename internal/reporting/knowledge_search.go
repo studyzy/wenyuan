@@ -13,7 +13,7 @@ import (
 // KnowledgeExport bundles every page of the bank: a nested index first, then one
 // markdown document per page.
 func (h *Handlers) KnowledgeExport(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -104,7 +104,7 @@ func (h *Handlers) KnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, &httpx.ValidationFailure{Errors: items})
 		return
 	}
-	bankID, bankOK := h.requireBank(w, r)
+	bankID, bankOK := h.requireBank(w, r, storage.PreferTeam)
 	if !bankOK {
 		return
 	}

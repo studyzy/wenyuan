@@ -37,7 +37,7 @@ func (h *Handlers) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -128,7 +128,7 @@ func (h *Handlers) AuditLog(w http.ResponseWriter, r *http.Request) {
 
 // AuditLogStats buckets the audit trail.
 func (h *Handlers) AuditLogStats(w http.ResponseWriter, r *http.Request) {
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -192,7 +192,7 @@ func (h *Handlers) LLMRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -263,7 +263,7 @@ func (h *Handlers) LLMRequestStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}

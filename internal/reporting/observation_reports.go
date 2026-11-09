@@ -50,7 +50,7 @@ func (h *Handlers) ObservationScopes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -117,7 +117,7 @@ func (h *Handlers) ConsolidationPreview(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}
@@ -173,7 +173,7 @@ func (h *Handlers) Consolidate(w http.ResponseWriter, r *http.Request) {
 	if httpx.RefuseBankWideIfScoped(w, r, "run consolidation on the bank") {
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, storage.PreferTeam)
 	if !ok {
 		return
 	}

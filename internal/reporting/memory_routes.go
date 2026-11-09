@@ -72,7 +72,7 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationFailure(w, scopeFailure)
 		return
 	}
-	bankID, ok := h.requireBank(w, r)
+	bankID, ok := h.requireBank(w, r, preference)
 	if !ok {
 		return
 	}
