@@ -75,25 +75,17 @@ jobs:
   postgres:
     name: postgres end-to-end
     runs-on: ubuntu-latest
-    services:
-      # The same image docker-compose.yml serves: ParadeDB bundles pg_search
-      # and pgvector for PostgreSQL 18, and the pg_search keyword-arm tests need
-      # the `pdb` schema and its jieba tokenizer, which a pgvector-only image
-      # does not have.
-      postgres:
-        image: paradedb/paradedb:0.26.5-pg18
-        env:
-          POSTGRES_USER: wenyuan
-          POSTGRES_PASSWORD: wenyuan
-          POSTGRES_DB: wenyuan_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U wenyuan -d wenyuan_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-          --command paradedb.enable_bitmap_intersection=off --command max_parallel_workers_per_gather=0
+    # A step rather than a service container: the service's `options` cannot
+    # pass the two settings below (in this Docker release `docker create` has no
+    # flag for a command), and ParadeDB 0.26.5 needs them the moment a query
+    # combines its bm25 scan with the bank_id + fact_type index — without them
+    # recall can fail with "bitmap intersection stream ... claimed twice"
+    # (paradedb#6403), which makes this job flaky rather than failing outright.
+    #
+    # The image is the one docker-compose.yml serves: ParadeDB bundles
+    # pg_search and pgvector for PostgreSQL 18, and the pg_search keyword-arm
+    # test needs the extension's `pdb` schema and its jieba tokenizer, which
+    # the pgvector-only image does not have.
     steps:
       - uses: actions/checkout@v4
 
@@ -101,6 +93,22 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+
+      - name: Start ParadeDB
+        run: |
+          docker run -d --name paradedb -p 5432:5432 \
+            -e POSTGRES_USER=wenyuan -e POSTGRES_PASSWORD=wenyuan -e POSTGRES_DB=wenyuan_test \
+            paradedb/paradedb:0.26.5-pg18 \
+            postgres -c paradedb.enable_bitmap_intersection=off -c max_parallel_workers_per_gather=0
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U wenyuan -d wenyuan_test >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ParadeDB did not become ready:" >&2
+          docker logs paradedb >&2
+          exit 1
 
       # The default gate never talks to a database, so the schema, vector and
       # storage code paths are only exercised here. A change can pass
