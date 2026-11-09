@@ -286,10 +286,15 @@
   # iterative_scan: "true"
   # max_scan_tuples: "4000"
 # text:
-  # search_extension: "native"  # value-dependent, honoured as shown: only the native tsvector backend is implemented
+  # search_extension: "native"  # native | pg_search. pg_search (ParadeDB) is
+                                # required for Chinese: PostgreSQL's own parser
+                                # keeps a CJK run as one lexeme, so the native
+                                # backend matches a Chinese sentence only in full.
   # search_extension_native_language: "english"
   # search_extension_pg_search_function_schema: "paradedb"
-  # search_extension_pg_search_tokenizer: ""
+  # search_extension_pg_search_tokenizer: ""  # set "jieba" for Chinese; the
+                                # tokenizer must match the one the index was
+                                # built with, or the query splits differently.
 # tokenizer_encoding: "o200k_base"
 # query_analyzer_languages: ""  # refused by this build: dateparser language restriction is not implemented
 # bank:

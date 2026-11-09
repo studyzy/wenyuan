@@ -365,7 +365,8 @@ func (s *PostgresStore) migrateTarget() *PostgresStore {
 	if s.migrationDB == nil {
 		return s
 	}
-	return &PostgresStore{db: s.migrationDB, defaultSchema: s.defaultSchema, vectorExtension: s.vectorExtension}
+	return &PostgresStore{db: s.migrationDB, defaultSchema: s.defaultSchema, vectorExtension: s.vectorExtension,
+		textSearchExtension: s.textSearchExtension, pgTokenizer: s.pgTokenizer}
 }
 
 // MigrateWithoutExtensions runs the series without installing or reconciling the
@@ -458,7 +459,14 @@ func (s *PostgresStore) migrate(ctx context.Context, opts migrateOptions) error 
 	if err := s.reconcileEmbeddingColumns(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// The pg_search keyword index is built after the series commits, and
+	// outside its transaction, because CREATE INDEX CONCURRENTLY cannot run
+	// inside one. It is reconciled here so a schema — a tenant's, a team's, or
+	// the single-tenant one — carries it from the moment it is migrated.
+	return s.EnsureBM25Index(ctx)
 }
 
 // reconcileSeries decides what a series that is not fully recorded means for

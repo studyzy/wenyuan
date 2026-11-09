@@ -327,13 +327,21 @@ var referenceRuntimeKeys = []referenceKey{
 		// The reference switches its whole text-search implementation on this
 		// key (native tsvector, vchord, ParadeDB pg_search, pgroonga,
 		// pg_textsearch) and rebuilds the vectors and their indexes accordingly.
-		// This build serves the native backend only, so any other value would be
-		// accepted and then ignored - the one outcome the unsupported-key
-		// mechanism exists to prevent.
+		// This build serves the native backend and ParadeDB's pg_search; the
+		// remaining values would be accepted and then ignored, which is the one
+		// outcome the unsupported-key mechanism exists to prevent.
+		//
+		// pg_search is accepted because it is the only backend that tokenizes
+		// Chinese: the native backend's parser keeps a contiguous CJK run as a
+		// single lexeme, so it can match a Chinese sentence only in full.
 		UnsupportedWhen: func(value string) bool {
-			return !strings.EqualFold(strings.TrimSpace(value), DefaultTextSearchExtension)
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case DefaultTextSearchExtension, "pg_search":
+				return false
+			}
+			return true
 		},
-		Reason: "only the native tsvector backend is implemented"},
+		Reason: "only the native tsvector and pg_search backends are implemented"},
 	{Name: EnvTextSearchExtensionNativeLanguage, Default: "english",
 		Resolve: func(c Config) any { return c.TextSearchExtensionNativeLanguage },
 		// The dictionary is embedded in the vector expression this build writes

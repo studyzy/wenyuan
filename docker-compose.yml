@@ -2,8 +2,13 @@
 # binaries run directly on the host (etc/wenyuan.yaml points at this port),
 # while the database stays in a container.
 #
-#   postgres       pgvector PostgreSQL, published on 15432 (+10000 over the
-#                  reference's own 5432, so the two can run side by side)
+#   postgres       ParadeDB PostgreSQL (pg_search + pgvector), published on
+#                  15432 (+10000 over the reference's own 5432, so the two can
+#                  run side by side). pg_search supplies the BM25 keyword index
+#                  and its `jieba` tokenizer, which is what makes Chinese text
+#                  searchable: PostgreSQL's built-in parser keeps a contiguous
+#                  CJK run as one lexeme, so the native tsvector backend can
+#                  only match a Chinese sentence in full.
 #
 # The api service is deliberately absent: the backend is a host binary, not an
 # image — point etc/wenyuan.yaml at this port and run
@@ -15,7 +20,10 @@
 
 services:
   postgres:
-    image: pgvector/pgvector:pg18
+    # ParadeDB bundles pg_search and pgvector for PostgreSQL 18. The tag pins
+    # the PG major version on purpose: the data directory is not portable across
+    # majors, and this stack must stay on 18 to read an existing volume.
+    image: paradedb/paradedb:0.26.5-pg18
     environment:
       POSTGRES_USER: wenyuan
       POSTGRES_PASSWORD: wenyuan
@@ -28,9 +36,40 @@ services:
     volumes:
       # PG 18+ images manage a versioned data subdirectory, so the mount goes
       # at /var/lib/postgresql, not .../data (see docker-library/postgres#37).
-      - wenyuan-pg18:/var/lib/postgresql
+      # A fresh volume: the ParadeDB switch is a new data directory restored
+      # from a dump, so the volume the pgvector image wrote is left untouched
+      # as the rollback path.
+      - wenyuan-pdb-pg18:/var/lib/postgresql
     ports:
       - "15432:5432"
+    # Two settings ParadeDB 0.26.5 needs the moment it is put under real load.
+    # With both at their defaults, a query whose bm25 scan is combined with the
+    # bank_id + fact_type btree index CAN fail with
+    #   bitmap intersection stream (consumer N, segment X) claimed twice
+    # and the whole recall request is then a 500. The race is probabilistic, so
+    # a quiet deployment may never see it; upstream tracks it as paradedb#6403
+    # and it is not fixed in this release.
+    #
+    #   enable_bitmap_intersection=off  removes the combined scan entirely.
+    #   max_parallel_workers_per_gather=0  also matters: the failure needs two
+    #     workers claiming one segment, so no parallel gather means no race.
+    #     This is the one that costs throughput, and it is kept because turning
+    #     off only the intersection leaves the parallel bm25 scan able to hit
+    #     the same path.
+    #
+    # Given here as command flags rather than ALTER SYSTEM so a rebuilt
+    # container keeps them: postgresql.auto.conf lives in the volume and would
+    # otherwise be the only record.
+    command:
+      - postgres
+      - -c
+      - paradedb.enable_bitmap_intersection=off
+      - -c
+      - max_parallel_workers_per_gather=0
 
 volumes:
+  # Retained deliberately. The pre-ParadeDB data directory lives here and is
+  # the rollback: point the service back at the pgvector image, restore this
+  # volume name in the mount above, and the old cluster serves again unchanged.
   wenyuan-pg18:
+  wenyuan-pdb-pg18:
