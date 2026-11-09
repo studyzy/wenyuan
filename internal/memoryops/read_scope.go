@@ -24,12 +24,17 @@ var memoryReadScopes = []string{scopeTeam, scopePersonal, scopeBoth}
 // The parameter is not part of the reference's contract, so it stays out of the
 // request model and out of the OpenAPI document: a route declares it through
 // httpx.QueryParams and nothing else knows about it. Absent means "team", which
-// is the behaviour the team fallback has always had.
+// is the behaviour the team fallback has always had. An explicit empty value
+// (`?scope=`) is the default too, not a typo, because a client templating the
+// parameter to "" means "I have no preference".
 //
 // The two refusals are deliberately different items: "both" is a value this
 // service intends to support, so saying it is not supported yet is actionable,
 // while an unknown spelling is told the accepted set. Folding the first into
 // the second would send a caller looking for a typo that is not there.
+//
+// Every refusal still returns PreferTeam, so a caller that ignores the failure
+// reads the team bank: that is the safe default, not an accidental one.
 func memoryReadScope(r *http.Request) (storage.FallbackPreference, *httpx.ValidationFailure) {
 	value := httpx.Query(r, "scope")
 	switch value {

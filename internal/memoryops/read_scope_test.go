@@ -69,7 +69,8 @@ func TestMemoryReadScopeBothNamesItself(t *testing.T) {
 	if failure == nil {
 		t.Fatal("an unknown value must be refused")
 	}
-	if msg := failure.Errors[0].Msg; !strings.Contains(msg, "team") || !strings.Contains(msg, "personal") {
-		t.Fatalf("unknown-value message = %q, want the accepted values named", msg)
+	if msg := failure.Errors[0].Msg; !strings.Contains(msg, "'team'") ||
+		!strings.Contains(msg, "'personal'") || !strings.Contains(msg, "'both'") {
+		t.Fatalf("unknown-value message = %q, want the accepted set rendered in full", msg)
 	}
 }
