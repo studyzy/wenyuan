@@ -21,7 +21,13 @@ type TeamScopeResolver interface {
 // A resolver failure is not a read failure: the personal bank answers exactly as
 // it did before teams existed, so an unavailable registry degrades the read to its
 // previous behavior instead of failing it.
-func (h *Handlers) teamFallback(ctx context.Context, bankID string) *storage.FallbackScope {
+//
+// A caller who asked for their personal bank is answered by it without asking
+// the team plane anything.
+func (h *Handlers) teamFallback(ctx context.Context, bankID string, preference storage.FallbackPreference) *storage.FallbackScope {
+	if preference == storage.PreferPersonal {
+		return nil
+	}
 	if h.TeamScope == nil {
 		return nil
 	}

@@ -11,7 +11,7 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMemories), h.Retain)
 	handle(http.MethodDelete, httpx.BankPath(httpx.SuffixMemories), httpx.QueryParams(h.ClearMemories, "type"))
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixFileRetain), h.FileRetain)
-	handle(http.MethodPost, httpx.BankPath(httpx.SuffixRecall), h.Recall)
+	handle(http.MethodPost, httpx.BankPath(httpx.SuffixRecall), httpx.QueryParams(h.Recall, "scope"))
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixReflect), h.Reflect)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixOperations), httpx.QueryParams(h.ListOperations,
 		"status", "type", "limit", "offset", "exclude_parents"))
