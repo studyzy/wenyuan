@@ -118,37 +118,20 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   is what would let a prefix delete take another project's data.
 - **Shared memory is copied, not synthesised.** A background job `project.merge`
   (multi-tenant only, every `WENYUAN_API_PROJECT_MERGE_INTERVAL_SECONDS`, default
-  60s) copies each member's `world` and `experience` facts from their
+  60s) copies each member's `world`, `experience` and `observation` facts from their
   own bank into the project's team bank `<team>::<name>`, **verbatim**: every fact
-  becomes a team fact with its own text, its own kind, its tags, its context, its
-  temporal bounds and its links, and
+  becomes a team fact with its own text, its own kind, its tags and its links, and
   **no model is called** — the round therefore runs on a deployment with no chat
   provider at all. A link is recreated between the two team rows by resolving its
   endpoints' merge keys, so a link whose other fact has not been carried yet lands
   on the round that carries that fact; `entity_id` is not carried because an
   entity is an identity within one bank.
-  The retrieval columns travel with the row, because a column left to its default
-  is a column the team bank answers worse than the member's does: the member's
-  `embedding` is copied unchanged (one deployment is one embedding scheme, and
-  recomputing it here could not match, since retain embeds the text augmented with
-  the fact's resolved entity names and a team fact carries no entities), and the
-  `search_vector` is built from the text, the context and the text signals — the
-  column is not generated, so a row written without it is invisible to keyword
-  recall.
-  Identity is the **source unit**: a team row mirrors exactly one member fact and
-  records it in `metadata.source_unit_id` (with `source_tenant` and, for
-  compatibility, `merge_key` = SHA-256 of the whitespace-normalized text). A fact
-  edited in the member's bank keeps its unit id, so the round replaces its row
-  instead of leaving both versions standing; two members who say the same sentence
-  produce two rows, exactly as the sentence is two facts inside either bank.
+  Deduplication is one string comparison: a fact whose `merge_key` (SHA-256 of the
+  whitespace-normalized text) is already in the bank gets no second row, and every
+  member's source is still recorded in the ledger per member.
   `WENYUAN_API_PROJECT_MERGE_INCLUDE_EXPERIENCE` (default **on**) takes
   `experience` out of the input when a deployment wants only what members know and
   concluded. Raw conversation, documents, chunks and attachments are never copied.
-  **A member's observation is not copied either.** It is a conclusion the team
-  bank derives itself: consolidation rewrites that row in place — same id, new
-  text — without moving `updated_at`, so a copy could never follow it, and a new
-  text would arrive as a second fact beside the old. The team bank's own
-  consolidation synthesises its observations from the facts that were copied.
   Design: `docs/plans/2026-10-30-team-memory-design-v3.md`.
 - **Two shapes were tried and rejected before this one.** Asking the model for
   "the project's complete fact list" turned 1940 member facts into 121 team facts:
