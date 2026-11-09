@@ -34,8 +34,22 @@ export type UpstreamRequest = {
 /**
  * Default upstream deadline. Bounds every proxy request so a stalled upstream
  * cannot pin a server handler open indefinitely.
+ *
+ * Routes whose upstream call waits on a model (reflect, and the synchronous
+ * retain pipeline) override it per route: a reflect pass runs for tens of
+ * seconds and the default aborts it mid-flight as a 502.
  */
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 15_000;
+
+/**
+ * Deadline for routes whose upstream call waits on the model.
+ *
+ * A reflect pass retrieves, then runs a multi-turn synthesis loop — measured
+ * against a live deployment at 15-40s for `budget: mid`, right on the shared
+ * default, so it failed intermittently there. Only these routes raise the
+ * bound, so an unreachable upstream still reports in 15s elsewhere.
+ */
+export const MODEL_UPSTREAM_TIMEOUT_MS = 180_000;
 
 export function buildUpstreamUrl(
   config: Pick<ServerConfig, "dataplaneUrl">,

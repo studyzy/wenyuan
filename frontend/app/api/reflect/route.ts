@@ -6,6 +6,7 @@ import {
   upstreamUnavailableBody,
 } from "../../../lib/server/proxy";
 import { errorResponse } from "../../../lib/server/http";
+import { MODEL_UPSTREAM_TIMEOUT_MS } from "../../../lib/server/upstream";
 
 const PASSTHROUGH_FIELDS = [
   "tags",
@@ -64,6 +65,9 @@ export async function POST(request: Request): Promise<Response> {
     failureLabel: "reflect_failed",
     errorKey: "api.errors.reflect.failed",
     locale,
+    // Reflect waits on the model, so it outruns the shared 15s deadline.
+    timeoutMs: MODEL_UPSTREAM_TIMEOUT_MS,
+
   };
 
   try {

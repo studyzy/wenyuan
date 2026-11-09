@@ -45,6 +45,7 @@ export function stubFetch(
   bodies: Array<string | undefined>;
   methods: string[];
   headers: Array<HeadersInit | undefined>;
+  signals: Array<AbortSignal | null | undefined>;
   restore: () => void;
 } {
   const original = globalThis.fetch;
@@ -52,12 +53,14 @@ export function stubFetch(
   const bodies: Array<string | undefined> = [];
   const methods: string[] = [];
   const headers: Array<HeadersInit | undefined> = [];
+  const signals: Array<AbortSignal | null | undefined> = [];
   let index = 0;
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push(typeof input === "string" ? input : input.toString());
     methods.push((init?.method ?? "GET").toUpperCase());
     headers.push(init?.headers);
+    signals.push(init?.signal);
     const rawBody = init?.body;
     bodies.push(typeof rawBody === "string" ? rawBody : undefined);
     const current = responses[Math.min(index, responses.length - 1)];
@@ -70,5 +73,12 @@ export function stubFetch(
     return new Response(payload, { status, headers: { "content-type": contentType } });
   }) as typeof fetch;
 
-  return { calls, bodies, methods, headers, restore: () => { globalThis.fetch = original; } };
+  return {
+    calls,
+    bodies,
+    methods,
+    headers,
+    signals,
+    restore: () => { globalThis.fetch = original; },
+  };
 }

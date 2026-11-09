@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as listRoute from "../app/api/list/route";
 import * as documents from "../app/api/documents/route";
 import * as entities from "../app/api/entities/route";
@@ -11,6 +11,7 @@ import * as recall from "../app/api/recall/route";
 import * as reflect from "../app/api/reflect/route";
 import { stubFetch, withEnv } from "./support/fixtures";
 import { expectNoErrorKey, makeRequest, readJson } from "./support/harness";
+import { TENANT_SESSION_COOKIE, createTenantSessionToken } from "../lib/server/session";
 
 let restore: (() => void) | undefined;
 afterEach(() => {
@@ -124,6 +125,51 @@ describe("recall and reflect take the bank from the request body", () => {
     });
   });
 
+  it("recalls with the credential of the tenant the console entered", async () => {
+    const stub = stubFetch([{ status: 200, body: { results: [] } }]);
+    restore = stub.restore;
+    await withEnv(
+      {
+        WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local",
+        WENYUAN_CP_DATAPLANE_API_KEY: "static-key",
+        WENYUAN_CP_ADMIN_API_KEY: "operator-key",
+      },
+      async () => {
+        const cookie =
+          TENANT_SESSION_COOKIE +
+          "=" +
+          createTenantSessionToken("operator-key", "studyzy", "wyk_tenant", Date.now());
+        const response = await recall.POST(
+          makeRequest("http://localhost/api/recall", {
+            method: "POST",
+            cookie,
+            body: JSON.stringify({ bank_id: "studyzy::WeKnora", query: "q" }),
+          }),
+        );
+
+        expect(response.status).toBe(200);
+        const headers = new Headers(stub.headers[0]);
+        expect(headers.get("authorization")).toBe("Bearer wyk_tenant");
+      },
+    );
+  });
+
+  it("passes an upstream refusal through instead of reporting a server fault", async () => {
+    const stub = stubFetch([{ status: 401, body: { detail: "Authentication failed" } }]);
+    restore = stub.restore;
+    await withEnv({ WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" }, async () => {
+      const response = await recall.POST(
+        makeRequest("http://localhost/api/recall", {
+          method: "POST",
+          body: JSON.stringify({ bank_id: "acme", query: "q" }),
+        }),
+      );
+
+      expect(response.status).toBe(401);
+      expect((await readJson(response)).details).toBe("Authentication failed");
+    });
+  });
+
   it("routes reflect to the bank named in the body and keeps the id out of the upstream body", async () => {
     const stub = stubFetch([{ status: 200, body: { answer: "ok" } }]);
     restore = stub.restore;
@@ -155,5 +201,43 @@ describe("recall and reflect take the bank from the request body", () => {
       expect(response.status).toBe(200);
       expect(stub.calls[0]).toContain("/banks/default/reflect");
     });
+  });
+
+  it("lets a reflect that outruns the shared 15s default complete", async () => {
+    // The stub answers after 60s — past the shared default, inside reflect's.
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      await new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(
+          () => resolve(new Response(JSON.stringify({ answer: "ok" }), { status: 200 })),
+          60_000,
+        );
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      })) as typeof fetch;
+    vi.useFakeTimers();
+    try {
+      await withEnv(
+        { WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local" },
+        async () => {
+          const pending = reflect.POST(
+            makeRequest("http://localhost/api/reflect", {
+              method: "POST",
+              body: JSON.stringify({ bank_id: "acme", query: "q" }),
+            }),
+          );
+
+          // Past the shared 15s default, short of reflect's 180s bound: only a
+          // route that raised its deadline can still succeed here.
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect((await pending).status).toBe(200);
+        },
+      );
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = original;
+    }
   });
 });

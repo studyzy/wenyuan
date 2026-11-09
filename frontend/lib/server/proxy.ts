@@ -54,6 +54,14 @@ export type SerializeOptions = ProxyOptions & {
   errorKey?: string;
   /** Locale used for the localized failure envelope. */
   locale?: string;
+  /**
+   * Upstream deadline for this route. Defaults to the shared 15s bound, which
+   * suits every route that answers from stored state. Routes that wait on a
+   * model — reflect and the synchronous retain pipeline — must raise it: those
+   * legitimately run for tens of seconds, and the default would abort them
+   * mid-flight and report a 502 with no upstream status.
+   */
+  timeoutMs?: number;
 };
 
 export function requestLocale(request: Request): string {
@@ -85,6 +93,11 @@ function forwardBody(options: ProxyOptions, headers: Record<string, string> = {}
     },
     body: options.body,
   } as const;
+}
+
+/** The upstream call for a serializer, carrying the route's deadline. */
+function serializerCall(options: SerializeOptions, headers?: Record<string, string>) {
+  return { ...forwardBody(options, headers), timeoutMs: options.timeoutMs };
 }
 
 function cookieValue(request: Request, name: string): string | undefined {
@@ -251,7 +264,7 @@ export async function serializeUpstream(options: SerializeOptions): Promise<Resp
   if (override.error) return override.error;
   let result: UpstreamResult;
   try {
-    result = await callUpstream(override.config, forwardBody(options, override.headers));
+    result = await callUpstream(override.config, serializerCall(options, override.headers));
   } catch {
     return upstreamUnavailableBody(options);
   }
@@ -344,7 +357,7 @@ export function upstreamUnavailableBody(
 export async function serializeSynthesizedDelete(options: SerializeOptions): Promise<Response> {
   let result: UpstreamResult;
   try {
-    result = await callUpstream(options.config, forwardBody(options));
+    result = await callUpstream(options.config, serializerCall(options));
   } catch {
     return upstreamUnavailableBody(options);
   }
