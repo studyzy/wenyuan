@@ -15,6 +15,20 @@ import "context"
 // nothing, or returns the empty scope when the read must stay where it is.
 type FallbackPicker func(ctx context.Context, q FallbackQuery) (*FallbackScope, error)
 
+// FallbackPreference says which bank a redirectable read wants.
+type FallbackPreference int
+
+const (
+	// PreferTeam reads the team bank when it holds anything, and the caller's
+	// own bank otherwise. It is the zero value, so a caller that states no
+	// preference gets the behaviour this helper has always had.
+	PreferTeam FallbackPreference = iota
+	// PreferPersonal never redirects and never probes the team bank: the caller
+	// has said the answer it wants is its own, so asking the presence question
+	// would only cost a query.
+	PreferPersonal
+)
+
 // FallbackQuery is what a picker is told about a read it may redirect.
 type FallbackQuery struct {
 	// BankID is the bank the request named.
@@ -24,6 +38,9 @@ type FallbackQuery struct {
 	// turn "this bank has archived facts" into "there is nothing here".
 	DocumentID string
 	State      string
+	// Preference says whether a redirect is wanted at all. The zero value keeps
+	// the team-first behaviour.
+	Preference FallbackPreference
 }
 
 // CanFallBack reports whether a filter combination may be redirected at all.
@@ -51,6 +68,12 @@ func withFallback[T any](
 ) (T, string, error) {
 	var zero T
 	if fallback == nil || fallback.BankID == "" || fallback.Schema == "" || !query.CanFallBack() {
+		value, err := read(ctx, query.BankID)
+		return value, query.BankID, err
+	}
+	// A caller that asked for its own bank is answered from it, and the team
+	// bank is not probed at all.
+	if query.Preference == PreferPersonal {
 		value, err := read(ctx, query.BankID)
 		return value, query.BankID, err
 	}

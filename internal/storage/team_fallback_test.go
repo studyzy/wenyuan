@@ -218,3 +218,102 @@ func TestFallbackReadsTheTeamBankInItsSchema(t *testing.T) {
 		t.Fatalf("read ran in schema %q servedBy %q, want acme/acme::Web", readSchema, servedBy)
 	}
 }
+
+// countingPresence answers presence from a script and records every probe it
+// was asked, which is what pins that PreferPersonal never asks.
+type countingPresence struct {
+	Store
+	has    bool
+	probes int
+}
+
+func (p *countingPresence) BankHasUnits(_ context.Context, bankID string) (bool, error) {
+	p.probes++
+	return p.has, nil
+}
+
+// TestPreferPersonalNeverProbesTheTeamBank pins the redirect being skipped
+// before the capability check: a caller that stated "personal" gets its own
+// bank, the team bank is not consulted, and one query is saved.
+func TestPreferPersonalNeverProbesTheTeamBank(t *testing.T) {
+	presence := &countingPresence{has: true}
+	scope := &FallbackScope{Schema: "acme", BankID: "acme::Web"}
+	var tried []string
+	value, servedBy, err := withFallback[string](context.Background(), presence,
+		FallbackQuery{BankID: "alice::Web", Preference: PreferPersonal}, scope,
+		func(_ context.Context, bankID string) (string, error) {
+			tried = append(tried, bankID)
+			return bankID, nil
+		})
+	if err != nil {
+		t.Fatalf("withFallback: %v", err)
+	}
+	if value != "alice::Web" || servedBy != "alice::Web" {
+		t.Fatalf("value = %q servedBy = %q, want the personal bank", value, servedBy)
+	}
+	if presence.probes != 0 {
+		t.Fatalf("the team bank was probed %d times, want 0", presence.probes)
+	}
+	if len(tried) != 1 || tried[0] != "alice::Web" {
+		t.Fatalf("read %v, want exactly the personal bank once", tried)
+	}
+}
+
+// TestPreferPersonalIgnoresAMissingScope pins that the preference is honoured
+// even with no scope resolved: a non-member asking for "personal" is not an
+// error, it is the read they already had.
+func TestPreferPersonalIgnoresAMissingScope(t *testing.T) {
+	value, servedBy, err := withFallback[string](context.Background(), NewMemoryStore("public"),
+		FallbackQuery{BankID: "alice::Web", Preference: PreferPersonal}, nil,
+		func(_ context.Context, bankID string) (string, error) { return bankID, nil })
+	if err != nil {
+		t.Fatalf("withFallback: %v", err)
+	}
+	if value != "alice::Web" || servedBy != "alice::Web" {
+		t.Fatalf("value = %q servedBy = %q, want the personal bank", value, servedBy)
+	}
+}
+
+// TestPreferPersonalStillHonoursFiltersThatCannotBeServed pins that the
+// preference does not widen the redirect: state and document filters keep their
+// own rule, which for these queries is the same bank either way.
+func TestPreferPersonalStillHonoursFiltersThatCannotBeServed(t *testing.T) {
+	presence := &countingPresence{has: true}
+	scope := &FallbackScope{Schema: "acme", BankID: "acme::Web"}
+	for _, query := range []FallbackQuery{
+		{BankID: "alice::Web", State: "invalidated", Preference: PreferPersonal},
+		{BankID: "alice::Web", DocumentID: "doc-1", Preference: PreferPersonal},
+	} {
+		_, servedBy, err := withFallback[string](context.Background(), presence, query, scope,
+			func(_ context.Context, bankID string) (string, error) { return bankID, nil })
+		if err != nil {
+			t.Fatalf("withFallback(%+v): %v", query, err)
+		}
+		if servedBy != "alice::Web" {
+			t.Fatalf("withFallback(%+v) served by %q, want the personal bank", query, servedBy)
+		}
+	}
+	if presence.probes != 0 {
+		t.Fatalf("the team bank was probed %d times, want 0", presence.probes)
+	}
+}
+
+// TestPreferTeamIsTheZeroValue pins that leaving the preference unset keeps the
+// behaviour every existing caller has: the team bank answers once it holds
+// content.
+func TestPreferTeamIsTheZeroValue(t *testing.T) {
+	if PreferTeam != FallbackPreference(0) {
+		t.Fatalf("PreferTeam = %v, want the zero value", PreferTeam)
+	}
+	presence := &countingPresence{has: true}
+	scope := &FallbackScope{Schema: "acme", BankID: "acme::Web"}
+	_, servedBy, err := withFallback[string](context.Background(), presence,
+		FallbackQuery{BankID: "alice::Web"}, scope,
+		func(_ context.Context, bankID string) (string, error) { return bankID, nil })
+	if err != nil {
+		t.Fatalf("withFallback: %v", err)
+	}
+	if servedBy != "acme::Web" {
+		t.Fatalf("servedBy = %q, want the team bank", servedBy)
+	}
+}
