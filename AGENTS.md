@@ -145,9 +145,8 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   and it records the `merge_key` each member fact *supports*. Delete detection
   reads those rows, so a removed member fact triggers the rebuild that drops what
   it supported. Every member's fact is a ledger row even when its text is already
-  in the bank, because provenance is per member. A team fact's row keeps its id
-  while the fact it mirrors still says the same thing, so a fact whose wording
-  survives keeps its row and its observations; an edited fact replaces its row.
+  in the bank, because provenance is per member. A team fact's id is its
+  `merge_key`, so a fact whose text survives keeps its row and its observations.
 - **The circuit breaker is real and recovers on its own.** A project that fails
   `WENYUAN_API_PROJECT_MERGE_FAIL_THRESHOLD` rounds in a row rests for
   `WENYUAN_API_PROJECT_MERGE_RECOVERY_SECONDS` (default 900) and is then let
