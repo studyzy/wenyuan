@@ -53,6 +53,11 @@ type RestoreFlags struct {
 	Input string
 	// Yes skips the confirmation prompt; restoring replaces every row.
 	Yes bool
+	// NormalizeTenant, when set, rewrites every restored bank identifier under
+	// that tenant's prefix ("<tenant>::<name>") before the restore returns. An
+	// archive from a reference deployment names its banks with that
+	// deployment's own prefix, and this deployment's naming rule rejects it.
+	NormalizeTenant string
 }
 
 // ParseRestore parses a `restore --input FILE` command.
@@ -64,6 +69,8 @@ func ParseRestore(args []string) (RestoreFlags, error) {
 	fs.StringVar(&flags.Input, "i", "", "archive file to read (short)")
 	fs.BoolVar(&flags.Yes, "yes", false, "skip the confirmation prompt")
 	fs.BoolVar(&flags.Yes, "y", false, "skip the confirmation prompt (short)")
+	fs.StringVar(&flags.NormalizeTenant, "normalize-bank-tenant", "",
+		"rename restored banks under this tenant's '<tenant>::<name>' prefix")
 	positional, err := parsePositionals(fs, args)
 	if err != nil {
 		return RestoreFlags{}, err
@@ -240,13 +247,35 @@ func RunRestore(ctx context.Context, store storage.Store, flags RestoreFlags, in
 	}
 	switch version {
 	case backupManifestVersion:
-		return runRestoreJSON(ctx, caps, reader, manifest, flags.Input, out)
+		if err := runRestoreJSON(ctx, caps, reader, manifest, flags.Input, out); err != nil {
+			return err
+		}
 	case binaryCopyManifestVersion:
-		return runRestoreBinary(ctx, caps, reader, manifest, flags.Input, out)
+		if err := runRestoreBinary(ctx, caps, reader, manifest, flags.Input, out); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unsupported backup version %d (this binary restores versions %d and %d)",
 			version, backupManifestVersion, binaryCopyManifestVersion)
 	}
+	return normalizeRestoredBanks(ctx, store, flags, out)
+}
+
+// normalizeRestoredBanks applies the deployment's bank naming rule to a
+// restore that asked for it. It runs after the load, in its own transaction,
+// so a normalization failure leaves the restored data in place with its
+// original identifiers — visible and re-runnable — rather than rolling the
+// load back.
+func normalizeRestoredBanks(ctx context.Context, store storage.Store, flags RestoreFlags, out io.Writer) error {
+	tenant := strings.TrimSpace(flags.NormalizeTenant)
+	if tenant == "" {
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "normalizing bank identifiers under %q\n", tenant)
+	if _, err := RunNormalizeBanks(ctx, store, tenant, false, out); err != nil {
+		return fmt.Errorf("restored, but normalizing bank identifiers failed: %w", err)
+	}
+	return nil
 }
 
 // runRestoreJSON loads a JSON-row archive back: one <table>.json member per

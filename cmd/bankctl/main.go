@@ -28,7 +28,7 @@ const usage = "usage: bankctl bank " +
 	"export-bank --bank ID --output FILE [--include-history] | " +
 	"import-bank --archive FILE --tenant TENANT [--target-bank ID] [--include-history] | import-export --archive FILE --tenant TENANT [--target-bank ID] | " +
 	"backup [--output] FILE | " +
-	"restore [--input] FILE [--yes] | " +
+	"restore [--input] FILE [--yes] [--normalize-bank-tenant TENANT] | " +
 	"run-db-migration | " +
 	"repair-bank (--bank ID | --all) [--dry-run] | " +
 	"worker-status | " +
