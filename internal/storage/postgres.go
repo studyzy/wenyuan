@@ -406,19 +406,29 @@ func (s *PostgresStore) migrate(ctx context.Context, opts migrateOptions) error 
 	// adopted database gets them too: its objects depend on them just as much,
 	// and installing an extension that is already there is a no-op.
 	if !opts.skipExtensions {
-		if err := s.ensureExtension(ctx, "vector"); err != nil {
+		if err := s.ensureExtension(ctx, "vector", ""); err != nil {
 			return err
 		}
 		// The trigram extension backs fuzzy entity-name resolution. A deployment
 		// that cannot install it still serves: the resolver falls back to exact
 		// matching when the probe fails.
-		if err := s.ensureExtension(ctx, "pg_trgm"); err != nil {
+		if err := s.ensureExtension(ctx, "pg_trgm", ""); err != nil {
 			return err
 		}
 		// btree_gin provides the operator classes the reference's multi-column GIN
 		// indexes use, so it is as required as the vector type.
-		if err := s.ensureExtension(ctx, "btree_gin"); err != nil {
+		if err := s.ensureExtension(ctx, "btree_gin", ""); err != nil {
 			return err
+		}
+		// The pg_search backend's index, its tokenizer casts and its match
+		// operators live in the `pdb` schema, which exists only once the
+		// extension is installed; its SQL functions live in `paradedb`. The
+		// extension refuses any other target schema, and installing it here is
+		// what makes a ParadeDB deployment's migrations build the BM25 index.
+		if s.textSearchExtension == TextSearchPGSearch {
+			if err := s.ensureExtension(ctx, "pg_search", defaultPGFunctionSchema); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -588,7 +598,11 @@ func (s *PostgresStore) applyMigrationTx(ctx context.Context, tx Tx, migration M
 // concurrency-safe: every process of a deployment installs its extensions at
 // start, so two of them coming up together both pass the existence check and
 // one fails on the catalogue's unique index on the extension name.
-func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error {
+//
+// target is the schema to install into when the extension is absent; empty
+// means extensionSchema. ParadeDB's pg_search only accepts its own schema
+// (a CREATE EXTENSION ... SCHEMA public is refused), so it names it.
+func (s *PostgresStore) ensureExtension(ctx context.Context, name, target string) error {
 	var installed string
 	probe := `SELECT n.nspname FROM pg_extension e
 	          JOIN pg_namespace n ON n.oid = e.extnamespace
@@ -601,6 +615,9 @@ func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error 
 		return err
 	}
 
+	if target == "" {
+		target = extensionSchema
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -610,7 +627,7 @@ func (s *PostgresStore) ensureExtension(ctx context.Context, name string) error 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`CREATE EXTENSION IF NOT EXISTS `+quoteIdent(name)+` SCHEMA `+quoteIdent(extensionSchema)); err != nil {
+		`CREATE EXTENSION IF NOT EXISTS `+quoteIdent(name)+` SCHEMA `+quoteIdent(target)); err != nil {
 		return fmt.Errorf("install %s extension: %w", name, err)
 	}
 	return tx.Commit()

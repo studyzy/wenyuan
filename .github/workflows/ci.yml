@@ -76,8 +76,12 @@ jobs:
     name: postgres end-to-end
     runs-on: ubuntu-latest
     services:
+      # The same image docker-compose.yml serves: ParadeDB bundles pg_search
+      # and pgvector for PostgreSQL 18, and the pg_search keyword-arm tests need
+      # the `pdb` schema and its jieba tokenizer, which a pgvector-only image
+      # does not have.
       postgres:
-        image: pgvector/pgvector:pg18
+        image: paradedb/paradedb:0.26.5-pg18
         env:
           POSTGRES_USER: wenyuan
           POSTGRES_PASSWORD: wenyuan
@@ -89,6 +93,7 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+          --command paradedb.enable_bitmap_intersection=off --command max_parallel_workers_per_gather=0
     steps:
       - uses: actions/checkout@v4
 
