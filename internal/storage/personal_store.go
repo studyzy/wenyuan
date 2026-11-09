@@ -52,33 +52,45 @@ type PersonalSourceBank struct {
 }
 
 // PersonalSourceFact is one fact a source bank contributed to a round. The
-// aggregate bank mirrors it verbatim, so the kind and temporal bounds travel
-// with the text: a consolidation pass over the aggregate bank then sees exactly
-// the evidence it would have seen in the source bank.
+// aggregate bank mirrors it verbatim, so the kind, temporal bounds and
+// retrieval columns travel with the text: a consolidation pass over the
+// aggregate bank then sees exactly the evidence it would have seen in the
+// source bank, and a projected fact is as findable there as it is here.
 type PersonalSourceFact struct {
-	BankID        string
-	UnitID        string
-	Text          string
-	FactType      string
-	Tags          []string
-	EventDate     *time.Time
+	BankID    string
+	UnitID    string
+	Text      string
+	FactType  string
+	Tags      []string
+	EventDate *time.Time
+	// Context is the fact's context column, which its keyword vector is built
+	// from.
+	Context       *string
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time
 	UpdatedAt     time.Time
+	// Embedding is the source row's vector, copied rather than recomputed: one
+	// deployment is one embedding scheme, and the round calls no model.
+	Embedding []float32
 }
 
 // PersonalPreviousFact is one projected row a round starts from. MergeKey is
 // the source unit's ProjectionKey, read back from the row's metadata; a row
 // without one is a leftover from an older round and is replaced as unmanaged.
 type PersonalPreviousFact struct {
-	ID            string
-	Text          string
-	MergeKey      string
-	FactType      string
-	Tags          []string
-	SourceUnitID  string
-	EventDate     *time.Time
+	ID           string
+	Text         string
+	MergeKey     string
+	FactType     string
+	Tags         []string
+	SourceUnitID string
+	EventDate    *time.Time
+	// Context and Embedding are the retrieval inputs an inserted row is
+	// written with. They are read from the source fact and are empty for a
+	// removed row, which only needs its id.
+	Context       *string
+	Embedding     []float32
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time

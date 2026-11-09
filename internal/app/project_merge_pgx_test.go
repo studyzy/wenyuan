@@ -172,10 +172,12 @@ func TestProjectMergeRoundWritesThreeSchemas(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	texts := f.teamFacts(t)
-	if len(texts) != 1 || texts[0] != "The deploy uses port 15432." {
-		t.Fatalf("team facts = %v, want the one fact the two members share", texts)
+	// Two members hold the same sentence, and both rows land: a team row
+	// mirrors one member fact, so the same words are two facts.
+	if len(texts) != 2 || texts[0] != "The deploy uses port 15432." {
+		t.Fatalf("team facts = %v, want one row per member", texts)
 	}
-	// Both members' facts support that fact.
+	// Both members' facts support their own row.
 	if rows := f.ledgerRows(t); rows != 2 {
 		t.Fatalf("ledger rows = %d, want one per member's source", rows)
 	}
@@ -183,8 +185,8 @@ func TestProjectMergeRoundWritesThreeSchemas(t *testing.T) {
 	if err := runner.runProjectMerges(context.Background()); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if again := f.teamFacts(t); len(again) != 1 {
-		t.Fatalf("team facts after a quiet round = %v, want the one fact", again)
+	if again := f.teamFacts(t); len(again) != 2 {
+		t.Fatalf("team facts after a quiet round = %v, want one row per member", again)
 	}
 }
 
@@ -206,6 +208,14 @@ func TestProjectMergeRoundDropsADeletedSource(t *testing.T) {
 	if texts := f.teamFacts(t); len(texts) != 1 {
 		t.Fatalf("team facts = %v, want the merged fact", texts)
 	}
+	// The team bank's row exists, or the consolidation enqueue is refused by the
+	// bank foreign key; a round is indifferent to it, so this only keeps the
+	// fixture quiet.
+	if _, err := f.db.ExecContext(context.Background(),
+		"INSERT INTO "+quoteIdentForTest(f.teamID)+".banks (bank_id, name, config) VALUES ($1,$2,'{}'::jsonb) ON CONFLICT DO NOTHING",
+		tenant.ProjectBankID(f.teamID, f.projectID), "Web"); err != nil {
+		t.Fatalf("create team bank: %v", err)
+	}
 
 	// Alice deletes her fact. The next round sees the deleted source, rebuilds
 	// from what is left, and the model returns nothing to keep.
@@ -219,8 +229,13 @@ func TestProjectMergeRoundDropsADeletedSource(t *testing.T) {
 	}
 	model.reply = `{"facts":[{"text":"Nothing survived.","sources":[]}]}`
 	model.calls = 0
-	if err := runner.runProjectMerges(context.Background()); err != nil {
-		t.Fatalf("rebuild run: %v", err)
+	// A rebuild replays the bank a round at a time, and the round after the
+	// cursor's rewind finds nothing left to read. That round is where the
+	// retirement happens, so the job runs until it stops finding facts.
+	for i := 0; i < 3; i++ {
+		if err := runner.runProjectMerges(context.Background()); err != nil {
+			t.Fatalf("rebuild run %d: %v", i, err)
+		}
 	}
 	texts := f.teamFacts(t)
 	for _, text := range texts {

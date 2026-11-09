@@ -181,6 +181,7 @@ func planPersonalRound(input storage.PersonalRoundInput, cfg config.MaintenanceC
 			Text: fact.Text, FactType: fact.FactType, Tags: fact.Tags,
 			EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 			OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
+			Context: fact.Context, Embedding: fact.Embedding,
 			BankID: fact.BankID, UnitID: fact.UnitID,
 		})
 	}
@@ -262,6 +263,7 @@ func projectionRow(fact personalrollup.ProjectionFact) storage.PersonalPreviousF
 		Tags: fact.Tags, SourceUnitID: fact.UnitID,
 		EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 		OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
+		Context: fact.Context, Embedding: fact.Embedding,
 	}
 }
 

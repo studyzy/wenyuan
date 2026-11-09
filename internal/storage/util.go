@@ -77,7 +77,13 @@ func index(haystack, needle string) int {
 // reference for a source the statement does not change. A literal ” leaves the
 // source out, which is what a write that carries no context or signals passes.
 func (s *PostgresStore) searchVectorExpr(textParam, contextParam, signalsParam string) string {
-	return "to_tsvector(" + sqlTextLiteral(s.nativeLanguage()) + ", COALESCE(" + textParam + ", '') || ' ' || COALESCE(" +
+	return searchVectorExpr(s.nativeLanguage(), textParam, contextParam, signalsParam)
+}
+
+// searchVectorExpr is the dictionary-parameterised body of the store's method,
+// shared with the merge store so the two cannot drift apart.
+func searchVectorExpr(language, textParam, contextParam, signalsParam string) string {
+	return "to_tsvector(" + sqlTextLiteral(language) + ", COALESCE(" + textParam + ", '') || ' ' || COALESCE(" +
 		contextParam + ", '') || ' ' || COALESCE(" + signalsParam + ", ''))"
 }
 

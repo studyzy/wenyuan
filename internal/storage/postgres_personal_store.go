@@ -23,6 +23,10 @@ import (
 // PostgresPersonalStore is the personal rollup job's store.
 type PostgresPersonalStore struct {
 	db DB
+	// language is the tsvector dictionary the projected rows' keyword vectors
+	// are built with, so the aggregate bank answers the same lexical query its
+	// source banks do.
+	language string
 }
 
 // NewPostgresPersonalStore returns the personal aggregate store over a database
@@ -31,8 +35,8 @@ type PostgresPersonalStore struct {
 // The handle must reach the admin schema and every tenant schema; in this
 // service both live in one database by construction, which is what makes a
 // single transaction able to span them.
-func NewPostgresPersonalStore(db DB) *PostgresPersonalStore {
-	return &PostgresPersonalStore{db: db}
+func NewPostgresPersonalStore(db DB, language string) *PostgresPersonalStore {
+	return &PostgresPersonalStore{db: db, language: language}
 }
 
 // personalLockName is the advisory-lock name of one tenant's round.
@@ -429,7 +433,8 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 	statement := `
 		SELECT id::text, text, updated_at, fact_type,
 		       COALESCE(tags, '{}'::text[])::text,
-		       event_date, occurred_start, occurred_end, mentioned_at
+		       event_date, occurred_start, occurred_end, mentioned_at,
+		       context, embedding::text
 		FROM ` + quoteIdent(schema) + `.memory_units
 		WHERE bank_id = $1 AND fact_type IN ('world', 'experience')
 		  AND (updated_at, id) > ($2::timestamptz, $3::uuid)
@@ -452,12 +457,29 @@ func (s *PostgresPersonalStore) factsAfterTx(ctx context.Context, tx Tx, bank Pe
 		var fact PersonalSourceFact
 		var tags string
 		var eventDate, start, end, mentioned sql.NullTime
+		var contextText sql.NullString
+		var embedding sql.NullString
 		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.UpdatedAt, &fact.FactType, &tags,
-			&eventDate, &start, &end, &mentioned); err != nil {
+			&eventDate, &start, &end, &mentioned, &contextText, &embedding); err != nil {
 			return nil, err
 		}
 		fact.Tags = decodeTextArray(tags)
 		fact.BankID = bank.BankID
+		if contextText.Valid {
+			value := contextText.String
+			fact.Context = &value
+		}
+		if embedding.Valid {
+			vector, err := DecodeEmbedding(embedding.String)
+			if err != nil {
+				// A vector that cannot be read is the source row's own stored
+				// value, so reading it again would fail the same way: the fact is
+				// projected without one and the next round's rebuild is what
+				// carries a vector once the source row has one.
+				vector = nil
+			}
+			fact.Embedding = vector
+		}
 		fact.EventDate = nullTimePtr(eventDate)
 		fact.OccurredStart = nullTimePtr(start)
 		fact.OccurredEnd = nullTimePtr(end)

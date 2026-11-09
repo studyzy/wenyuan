@@ -16,6 +16,10 @@ import (
 // one is configured, so admin DDL never runs over the serving role.
 type adminDBProvider interface {
 	AdminDB() storage.DB
+	// TextSearchLanguage is the tsvector dictionary the store writes its
+	// keyword vectors with. A store built by hand reports an empty one, which
+	// the caller reads as the package default.
+	TextSearchLanguage() string
 }
 
 // newTenantRegistry opens the control-plane registry over the store's database.

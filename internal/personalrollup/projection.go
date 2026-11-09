@@ -46,6 +46,13 @@ type ProjectionFact struct {
 	OccurredStart *time.Time
 	OccurredEnd   *time.Time
 	MentionedAt   *time.Time
+	// Context and Embedding are the source row's retrieval inputs, carried so a
+	// projected row is as findable in the aggregate as it is in the source
+	// bank: the embedding is copied rather than recomputed (one deployment is
+	// one embedding scheme and a projection calls no model), and the context is
+	// part of what the keyword vector is built from.
+	Context   *string
+	Embedding []float32
 	// BankID and UnitID name the source. They are needed only for the ledger.
 	BankID string
 	UnitID string

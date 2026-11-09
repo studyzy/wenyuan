@@ -154,6 +154,25 @@ func (r *mergeRunner) runMergeRound(
 	}
 
 	req := buildFinishRequest(project, input, plan, stamp)
+	// A rebuild's completing round writes nothing: every member's read was short,
+	// so there is nothing left to replay. The retirement of what the replay did
+	// not produce is the write, and it must be its own finish call — a round that
+	// sends no change never reaches the store.
+	if plan.rebuildDone {
+		if err := merges.FinishMergeStanza(roundCtx, storage.FinishMergeRequest{
+			TeamID: project.TeamID, ProjectID: project.ProjectID,
+			TeamSchema: project.TeamSchema, BankID: project.BankID,
+			Stamp: stamp, Rebuild: true, RebuildDone: true, Reconcile: true,
+			Members: req.Members,
+		}); err != nil {
+			if err == storage.ErrMergeClaimLost {
+				return false, nil
+			}
+			return false, err
+		}
+		r.enqueueTeamConsolidation(ctx, project)
+		return false, nil
+	}
 	if err := merges.FinishMergeStanza(roundCtx, req); err != nil {
 		if err == storage.ErrMergeClaimLost {
 			// Another process took the round over; its result is the one that
@@ -162,7 +181,7 @@ func (r *mergeRunner) runMergeRound(
 		}
 		return false, err
 	}
-	if len(req.Replace.Insert) > 0 || req.Reconcile {
+	if len(req.Replace.Insert) > 0 || len(req.Replace.Remove) > 0 || req.Reconcile {
 		r.enqueueTeamConsolidation(ctx, project)
 	}
 	// A full batch means the member's bank held at least that many facts; the next
@@ -172,13 +191,14 @@ func (r *mergeRunner) runMergeRound(
 
 // roundPlan is what one round will do.
 type roundPlan struct {
-	// merge reports whether a model call is needed at all.
+	// merge reports whether the round writes anything at all.
 	merge bool
 	// skip reports the project must not merge at all this round.
 	skip   bool
 	reason string
-	// present is the team content the dedupe pass compares against.
-	present []projectmerge.TeamFact
+	// present is the team content this batch's own sources produced, keyed by
+	// source unit id. It is the set the pass decides against.
+	present map[string]projectmerge.TeamFact
 	// fresh is the new input, in a stable order.
 	fresh []projectmerge.MemberFact
 	// links are the links between the facts this round read, endpoints named
@@ -199,16 +219,15 @@ type roundPlan struct {
 
 // planRound decides what this round does, without calling the model.
 func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg config.MaintenanceConfig) (roundPlan, error) {
-	plan := roundPlan{cursor: map[string]storage.MergeCursor{}}
+	plan := roundPlan{cursor: map[string]storage.MergeCursor{}, present: map[string]projectmerge.TeamFact{}}
 	rebuild := false
-	total := 0
 	for _, member := range input.Members {
 		if !member.BankExists {
 			// A member with no bank yet has contributed nothing; the team's
 			// content is kept rather than rebuilt (the onboarding path).
 			continue
 		}
-		if member.Member.State.RebuildRequested {
+		if member.Member.RebuildRequested {
 			rebuild = true
 		}
 		if member.Deleted {
@@ -218,53 +237,60 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 			plan.fresh = append(plan.fresh, projectmerge.MemberFact{
 				TenantID: fact.TenantID, UnitID: fact.UnitID, Text: fact.Text,
 				FactType: string(fact.FactType), Tags: fact.Tags,
+				Context: fact.Context, ObservationScopes: fact.ObservationScopes,
+				EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
+				OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
 			})
-			total++
 		}
 		plan.links = append(plan.links, member.Links...)
 	}
 	plan.rebuild = rebuild
-	// The team's previous content is what the pass compares against and, on a
-	// rebuild, what it must reconcile with: every previous row is removed unless a
-	// member still contributes its text. Both rounds therefore read it — what
-	// differs is what the write does with it, not whether it is seen.
-	for _, fact := range input.Previous {
-		plan.present = append(plan.present, projectmerge.TeamFact{
-			ID: fact.ID, Text: fact.Text, MergeKey: fact.MergeKey,
-			FactType: string(fact.FactType),
-		})
+	// The team rows this batch's own sources produced, which is what the pass
+	// decides on. Keying by source unit rather than by the newest rows of the
+	// bank is what lets an edited fact replace its row instead of adding one.
+	for unitID, row := range input.TeamRows {
+		plan.present[unitID] = projectmerge.TeamFact{
+			ID: row.ID, SourceUnitID: unitID, Text: row.Text, MergeKey: row.MergeKey,
+			FactType: string(row.FactType), Tags: row.Tags, Context: row.Context,
+			EventDate: row.EventDate, OccurredStart: row.OccurredStart,
+			OccurredEnd: row.OccurredEnd, MentionedAt: row.MentionedAt,
+			ObservationScopes: row.ObservationScopes,
+		}
 	}
 	if rebuild {
-		// A rebuild reads every member's facts rather than the delta, so its
-		// input is bounded separately and failing closed is the right answer
-		// when it will not fit: leaving deleted facts in the team's content is
-		// the thing the rebuild exists to prevent.
-		if total > cfg.ProjectMergeRebuildMaxUnits {
+		// A rebuild's replay is bounded: leaving deleted facts in the team's
+		// content is the thing the rebuild exists to prevent, so a replay that
+		// will not fit fails closed. The bound counts the members' whole banks,
+		// which is what the replay reads across its rounds.
+		if input.ProjectTotal > cfg.ProjectMergeRebuildMaxUnits {
 			return plan, fmt.Errorf(
 				"rebuild input of %d units exceeds the %d-unit limit; raise %s or split the project",
-				total, cfg.ProjectMergeRebuildMaxUnits, config.EnvProjectMergeRebuildMaxUnits)
+				input.ProjectTotal, cfg.ProjectMergeRebuildMaxUnits, config.EnvProjectMergeRebuildMaxUnits)
 		}
-	} else if len(plan.present) > cfg.ProjectMergeMaxTeamFacts {
+	} else if len(input.Previous) > cfg.ProjectMergeMaxTeamFacts {
 		// An oversized project is a capacity problem, not a privacy one: skip
 		// rather than fail closed, because nothing a member deleted is at stake.
 		plan.skip = true
 		plan.reason = fmt.Sprintf(
 			"team content of %d facts exceeds the %d-fact limit; raise %s or split the project",
-			len(plan.present), cfg.ProjectMergeMaxTeamFacts, config.EnvProjectMergeMaxTeamFacts)
+			len(input.Previous), cfg.ProjectMergeMaxTeamFacts, config.EnvProjectMergeMaxTeamFacts)
 		return plan, nil
 	}
 	plan.merge = len(plan.fresh) > 0 || rebuild
 	if !plan.merge {
 		return plan, nil
 	}
-	// A rebuild completes only when no member filled its batch: a member whose
-	// read hit the batch limit may still hold facts the next round must replay.
-	plan.rebuildDone = true
+	// A rebuild completes only when no member has anything left to read: a member
+	// whose read filled the batch may still hold facts the next round must
+	// replay. The store answers that from the bank itself, because one round's
+	// batch is shared across members and a member with nothing to contribute
+	// receives none of it.
+	plan.rebuildDone = rebuild
 	for _, member := range input.Members {
-		if !member.BankExists {
+		if !member.BankExists || !member.Member.RebuildRequested {
 			continue
 		}
-		if len(member.Fresh) >= cfg.ProjectMergeBatchSize {
+		if member.More {
 			plan.rebuildDone = false
 		}
 	}
@@ -302,23 +328,33 @@ func buildFinishRequest(
 ) storage.FinishMergeRequest {
 	planned := projectmerge.PlanBatch(plan.present, plan.fresh)
 
-	// PlanBatch already dropped every fact the bank holds and every repeat inside
-	// the batch, so what is left is exactly what needs a row.
+	// PlanBatch reports exactly what needs writing: the facts the bank does not
+	// hold, and the facts whose row it holds but which no longer matches them.
 	insert := make([]storage.TeamFactRow, 0, len(planned.Facts))
 	sources := make(map[string][]storage.MergeSourceRow, len(input.Members))
 	for _, plannedFact := range planned.Facts {
-		key := projectmerge.MergeKey(plannedFact.Fact.Text)
+		fact := plannedFact.Fact
 		insert = append(insert, storage.TeamFactRow{
-			Text:     plannedFact.Fact.Text,
-			MergeKey: key,
-			FactType: storage.MemoryUnitType(plannedFact.Fact.FactType),
-			Tags:     plannedFact.Fact.Tags,
+			Text:              fact.Text,
+			MergeKey:          projectmerge.MergeKey(fact.Text),
+			SourceUnitID:      fact.UnitID,
+			SourceTenant:      fact.TenantID,
+			FactType:          storage.MemoryUnitType(fact.FactType),
+			Tags:              fact.Tags,
+			Context:           fact.Context,
+			EventDate:         fact.EventDate,
+			OccurredStart:     fact.OccurredStart,
+			OccurredEnd:       fact.OccurredEnd,
+			MentionedAt:       fact.MentionedAt,
+			ObservationScopes: fact.ObservationScopes,
 		})
 	}
-	// Every member's fact is a ledger row, whether or not the bank needed a new
-	// row for its text: provenance is per member, and delete detection reads it per
-	// member. A fact two members both hold therefore supports the one row twice,
-	// once under each member.
+	replace := make([]storage.TeamFactRow, 0, len(planned.Replaced))
+	for _, existing := range planned.Replaced {
+		replace = append(replace, storage.TeamFactRow{ID: existing.ID})
+	}
+	// Every member's fact is a ledger row, whether or not the round wrote one:
+	// provenance is per member, and delete detection reads it per member.
 	for _, fact := range plan.fresh {
 		key := projectmerge.MergeKey(fact.Text)
 		sources[fact.TenantID] = append(sources[fact.TenantID],
@@ -333,6 +369,7 @@ func buildFinishRequest(
 		Stamp:      stamp,
 		Replace: storage.MergeReplaceResult{
 			Insert:  insert,
+			Remove:  replace,
 			Links:   plan.links,
 			Sources: sources,
 		},

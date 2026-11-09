@@ -259,6 +259,11 @@ func (s *PostgresStore) UsesObjectStore() bool { return s.objectStore != nil }
 // Schema returns the configured schema target.
 func (s *PostgresStore) Schema() string { return s.defaultSchema }
 
+// TextSearchLanguage is the tsvector dictionary this store builds its keyword
+// vectors with. A component writing a memory_units row outside this store — the
+// personal aggregate's projection — builds the same vector with it.
+func (s *PostgresStore) TextSearchLanguage() string { return s.tsNativeLanguage }
+
 // AdminDB returns the handle the control plane's own tables use: the migration
 // handle when one is configured, else the serving handle. The registry lives
 // in the admin schema, which is not any tenant's schema.

@@ -106,7 +106,7 @@ func (f *aggregateE2EFixture) ctx(t *testing.T) context.Context {
 func (f *aggregateE2EFixture) runRound(t *testing.T) {
 	t.Helper()
 	runner := &personalRunner{
-		store:  storage.NewPostgresPersonalStore(f.db),
+		store:  storage.NewPostgresPersonalStore(f.db, ""),
 		models: func(string) provider.Provider { return f.model },
 		cfg:    rollupTestCfg(),
 	}

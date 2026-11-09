@@ -182,10 +182,13 @@ func (s *PostgresPersonalStore) applyPersonalFacts(ctx context.Context, tx Tx, q
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO `+qualified+`.memory_units
 			    (bank_id, document_id, text, fact_type, tags, metadata,
-			     event_date, occurred_start, occurred_end, mentioned_at)
-			VALUES ($1, NULL, $2, $4, $9::text[], $3::jsonb, $5, $6, $7, $8)`,
+			     event_date, occurred_start, occurred_end, mentioned_at,
+			     context, embedding, search_vector)
+			VALUES ($1, NULL, $2, $4, $9::text[], $3::jsonb, $5, $6, $7, $8,
+			        $10, $11::vector, `+searchVectorExpr(nativeLanguageOrDefault(s.language), "$2", "$10", "NULL")+`)`,
 			req.BankID, fact.Text, metadata, factType,
-			fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt, tags); err != nil {
+			fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt, tags,
+			nullableText(fact.Context), NullableEmbedding(fact.Embedding)); err != nil {
 			return err
 		}
 	}
@@ -342,6 +345,15 @@ func (s *PostgresPersonalStore) applyPersonalDirectory(ctx context.Context, tx T
 
 // completePersonalState records a successful round and releases the claim.
 func (s *PostgresPersonalStore) completePersonalState(ctx context.Context, tx Tx, req FinishPersonalRequest) error {
+	// The state row is created when it is missing: a round that ran before any
+	// failure was recorded has nothing to update, and leaving the claim behind
+	// would block every later round of that tenant.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO `+adminTable("personal_state")+` (tenant_id, last_round_at)
+		VALUES ($1, now())
+		ON CONFLICT (tenant_id) DO NOTHING`, req.TenantID); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE `+adminTable("personal_state")+`
 		SET merging_since = NULL, last_round_at = now(), last_error = NULL,
@@ -526,4 +538,14 @@ func validSchemaNameOrErr(schema string) error {
 func schemaPresent(ctx context.Context, db DB, schema string) bool {
 	exists, err := SchemaExists(ctx, db, schema)
 	return err == nil && exists
+}
+
+// nullableText passes an optional column value through as SQL NULL when it is
+// absent, so a projected row without a context stores none rather than an empty
+// string the source row did not have.
+func nullableText(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

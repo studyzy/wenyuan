@@ -9,6 +9,8 @@
 package projectmerge
 
 import (
+	"time"
+
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
@@ -33,26 +35,38 @@ const (
 
 // TeamFact is one fact the team bank already holds.
 type TeamFact struct {
-	// ID is the stored unit's id. It is kept across rounds when the fact's
-	// wording does not change, which is what keeps the fact's observations
-	// attached.
+	// ID is the stored unit's id. It is kept across rounds while the fact it
+	// mirrors still says the same thing, which is what keeps the fact's
+	// observations attached.
 	ID string
+	// SourceUnitID is the member fact this row mirrors, and the row's identity.
+	SourceUnitID string
 	// Text is the stored text.
 	Text string
 	// MergeKey is the fact's key; it is derived from Text and carried so a
-	// caller does not recompute it per comparison.
+	// caller does not recompute it per comparison. It is no longer an identity.
 	MergeKey string
 	// FactType is the stored fact type: world, experience or observation.
 	FactType string
 	// Tags are the stored tags.
 	Tags []string
+	// Context, the four temporal bounds and ObservationScopes are the values the
+	// row was written with, compared against the source to decide whether the
+	// row still matches it.
+	Context           string
+	EventDate         *time.Time
+	OccurredStart     *time.Time
+	OccurredEnd       *time.Time
+	MentionedAt       *time.Time
+	ObservationScopes []byte
 }
 
 // MemberFact is one member's fact entering this round.
 type MemberFact struct {
 	// TenantID names the member the fact came from.
 	TenantID string
-	// UnitID is the member's own unit id, which is what the ledger records.
+	// UnitID is the member's own unit id, which is what the ledger records and
+	// what identifies the team row the fact produces.
 	UnitID string
 	// Text is the fact's text.
 	Text string
@@ -60,6 +74,16 @@ type MemberFact struct {
 	FactType string
 	// Tags are the member fact's tags, which the team fact inherits.
 	Tags []string
+	// Context is the passage the fact was extracted from.
+	Context string
+	// EventDate, OccurredStart, OccurredEnd and MentionedAt are the fact's
+	// temporal bounds, carried so the team bank answers the temporal arm.
+	EventDate     *time.Time
+	OccurredStart *time.Time
+	OccurredEnd   *time.Time
+	MentionedAt   *time.Time
+	// ObservationScopes is the fact's raw observation_scopes request.
+	ObservationScopes []byte
 }
 
 // SummarizedAnswer is one fact a summarising pass (the personal rollup) produced,

@@ -48,7 +48,7 @@ func newPersonalFixture(t *testing.T) *personalFixture {
 	t.Helper()
 	db := openPersonalDB(t)
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	f := &personalFixture{db: db, store: NewPostgresPersonalStore(db), persona: "agg_a_" + suffix}
+	f := &personalFixture{db: db, store: NewPostgresPersonalStore(db, ""), persona: "agg_a_" + suffix}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()

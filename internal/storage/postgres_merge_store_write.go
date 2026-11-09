@@ -52,6 +52,18 @@ func (s *PostgresMergeStore) FinishMergeStanza(ctx context.Context, req FinishMe
 			return err
 		}
 	}
+	// A completed rebuild retires what the current semantics did not write — the
+	// rows an older round keyed on their text, and every row copied from a
+	// member's observation — and rewrites the ledger from the replay.
+	//
+	// It runs after the write, because a rebuild's last round writes nothing and
+	// would otherwise never retire anything, but before saveStates so the flag is
+	// cleared only when the retirement landed.
+	if req.RebuildDone {
+		if err := s.finalizeRebuildTx(ctx, tx, req); err != nil {
+			return err
+		}
+	}
 	if err := s.saveStates(ctx, tx, req); err != nil {
 		return err
 	}
@@ -71,9 +83,10 @@ func (s *PostgresMergeStore) claimHeld(ctx context.Context, tx Tx, teamID, proje
 
 // applyFacts writes the team bank's managed facts.
 //
-// Nothing is deleted here. Removing a fact is the rebuild's reconciliation,
-// which runs after the ledger and only for a fact whose sources have all left
-// the members' banks; an incremental round is purely additive.
+// A round both adds and replaces: an insert is a member fact the bank does not
+// hold yet, a remove is the row an edited member fact used to produce. Nothing
+// else is deleted here — a fact whose source has left the members' banks is the
+// rebuild's reconciliation, which runs after the ledger.
 func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMergeRequest) error {
 	schema, err := schemaIn(ctx)
 	if err != nil {
@@ -89,6 +102,9 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 			return err
 		}
 	}
+	if err := s.removeReplacedFacts(ctx, tx, qualified, req.BankID, req.Replace.Remove); err != nil {
+		return err
+	}
 	mergedAt := time.Now().UTC().Format(time.RFC3339)
 	// The ids the inserts generate are what the round's links point at, so each
 	// insert returns its row. A tag list is never NULL in the column, and an
@@ -96,21 +112,8 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 	// rather than write an empty array.
 	ids := make(map[string]string, len(req.Replace.Insert))
 	for _, fact := range req.Replace.Insert {
-		factType := fact.FactType
-		if factType == "" {
-			factType = TypeWorld
-		}
-		tags := fact.Tags
-		if tags == nil {
-			tags = []string{}
-		}
-		metadata := fmt.Sprintf(`{"merge_key": %q, "merged_at": %q}`, fact.MergeKey, mergedAt)
-		var id string
-		if err := tx.QueryRowContext(ctx, `
-			INSERT INTO `+qualified+`.memory_units (bank_id, document_id, text, fact_type, metadata, tags)
-			VALUES ($1, NULL, $2, $3, $4::jsonb, $5::text[])
-			RETURNING id::text`,
-			req.BankID, fact.Text, string(factType), metadata, tags).Scan(&id); err != nil {
+		id, err := insertTeamFact(ctx, tx, qualified, req.BankID, fact, mergedAt)
+		if err != nil {
 			return err
 		}
 		ids[fact.MergeKey] = id
@@ -123,6 +126,115 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 	return nil
 }
 
+// removeReplacedFacts deletes the team rows an edited member fact no longer
+// produces, retiring the observations that rested on them first.
+func (s *PostgresMergeStore) removeReplacedFacts(ctx context.Context, tx Tx, qualified, bankID string, rows []TeamFactRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	doomed := make([]string, len(rows))
+	for i, row := range rows {
+		doomed[i] = row.ID
+	}
+	if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, bankID, doomed); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM `+qualified+`.memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[])`,
+		bankID, doomed)
+	return err
+}
+
+// mergeSearchVectorExpr is searchVectorExpr over the merge write's bind
+// placeholders, under the package's default dictionary.
+//
+// The merge store writes a schema the store's context does not select and has no
+// resolved text-search backend of its own, so it tokenizes under the default.
+// That is the same dictionary a deployment without an explicit override uses,
+// which is the ordinary case; a deployment that overrode it would give its team
+// rows a different dictionary from its member rows.
+//
+// Each referenced placeholder is cast here: an untyped parameter used only inside
+// COALESCE is inferred as text by some positions and left undecided by others, and
+// one that PostgreSQL decides is a timestamptz rejects the empty string a Go
+// string binds as.
+//
+// It is the merge store's own copy of the expression rather than a call into the
+// store, because the store is behind the pgx tag and this file is not: the merge
+// code is the only user, and it is always built with the tag.
+var mergeSearchVectorExpr = searchVectorExpr(defaultNativeLanguage, "$2", "$3", "$14::text")
+
+// insertTeamFact writes one team fact and returns its id.
+//
+// The column list is the member fact's own: text, kind, tags, context, the four
+// temporal bounds, the observation scopes, the text signals, the three stamps,
+// the evidence and the vector. A merge is a copy, so a column left to its default
+// is a column the team bank answers worse than the member's bank does — an
+// unembedded row is invisible to the semantic arm, a row without dates is
+// invisible to the temporal one, and a row without a text search vector is
+// invisible to the keyword one.
+func insertTeamFact(ctx context.Context, tx Tx, qualified, bankID string, fact TeamFactRow, mergedAt string) (string, error) {
+	factType := fact.FactType
+	if factType == "" {
+		factType = TypeWorld
+	}
+	tags := fact.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	sourceMemoryIDs := fact.SourceMemoryIDs
+	if sourceMemoryIDs == nil {
+		sourceMemoryIDs = []string{}
+	}
+	var embedding any
+	if len(fact.Embedding) > 0 {
+		if err := ValidateEmbedding(fact.Embedding); err != nil {
+			return "", fmt.Errorf("team fact %q: %w", fact.SourceUnitID, err)
+		}
+		embedding = EncodeEmbedding(fact.Embedding)
+	}
+	var scopes any
+	if len(fact.ObservationScopes) > 0 {
+		scopes = string(fact.ObservationScopes)
+	}
+	createdAtValue := any(fact.CreatedAt)
+	if fact.CreatedAt == nil {
+		createdAtValue = time.Now().UTC()
+	}
+	updatedAtValue := any(fact.UpdatedAt)
+	if fact.UpdatedAt.IsZero() {
+		updatedAtValue = time.Now().UTC()
+	}
+	var editedAtValue any
+	if fact.EditedAt != nil {
+		editedAtValue = *fact.EditedAt
+	}
+	metadata := fmt.Sprintf(
+		`{"origin": %q, "source_unit_id": %q, "source_tenant": %q, "merge_key": %q, "merged_at": %q}`,
+		mergeMetadataOrigin, fact.SourceUnitID, fact.SourceTenant, fact.MergeKey, mergedAt)
+	var id string
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO `+qualified+`.memory_units
+			(bank_id, text, context, fact_type, metadata, tags,
+			 event_date, occurred_start, occurred_end, mentioned_at, embedding,
+			 source_memory_ids, observation_scopes, text_signals,
+			 created_at, updated_at, edited_at, document_id, search_vector,
+			 consolidated_at, consolidation_failed_at)
+		VALUES ($1::text, $2::text, $3::text, $4::text, $5::jsonb, $6::text[],
+		        $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::timestamptz, $11::vector,
+		        $12::uuid[], $13::jsonb, $14::text,
+		        $15::timestamptz, $16::timestamptz, $17::timestamptz, NULL, `+mergeSearchVectorExpr+`,
+		        NULL, NULL)
+		RETURNING id::text`,
+		bankID, fact.Text, fact.Context, string(factType), metadata, tags,
+		fact.EventDate, fact.OccurredStart, fact.OccurredEnd, fact.MentionedAt, embedding,
+		sourceMemoryIDs, scopes, fact.TextSignals,
+		createdAtValue, updatedAtValue, editedAtValue).Scan(&id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 // removeUnmanagedFacts deletes the team bank's facts no round wrote, of every
 // merged kind, sweeping the observations they supported first.
 func (s *PostgresMergeStore) removeUnmanagedFacts(ctx context.Context, tx Tx, qualified, bankID string) error {
@@ -130,7 +242,7 @@ func (s *PostgresMergeStore) removeUnmanagedFacts(ctx context.Context, tx Tx, qu
 		SELECT id::text FROM `+qualified+`.memory_units
 		WHERE bank_id = $1 AND fact_type = ANY($2)
 		  AND metadata->>'merge_key' IS NULL
-		FOR UPDATE`, bankID, mergedFactTypes)
+		FOR UPDATE`, bankID, teamBankTypes)
 	if err != nil {
 		return err
 	}
@@ -459,5 +571,5 @@ func (s *PostgresMergeStore) countTeamFacts(ctx context.Context, teamSchema, ban
 		SELECT count(*) FILTER (WHERE metadata->>'merge_key' IS NOT NULL),
 		       count(*) FILTER (WHERE metadata->>'merge_key' IS NULL)
 		FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = ANY($2)`, bankID, mergedFactTypes).Scan(&status.TeamFacts, &status.UnmanagedFacts)
+		WHERE bank_id = $1 AND fact_type = ANY($2)`, bankID, teamBankTypes).Scan(&status.TeamFacts, &status.UnmanagedFacts)
 }

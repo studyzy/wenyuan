@@ -4,7 +4,7 @@ package storage
 
 import (
 	"context"
-	"time"
+	"database/sql"
 
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
@@ -49,49 +49,49 @@ func (s *PostgresMergeStore) loadMemberInput(
 	// A rebuild reads the member's whole bank, not the delta. That is the point of
 	// one: the round recomputes the team's content from what the members hold now,
 	// so a member who left — or whose facts were deleted — stops contributing.
-	// Reading from the cursor here would make a rebuild see only new facts and
-	// leave every existing team fact standing, which is exactly the stale content a
-	// withdrawal exists to remove.
-	// The input is every fact kind a member contributes: what they know about
-	// the project, what they did about it, and what consolidation concluded from
-	// both. Reading only `world` shared a fraction of a member's knowledge.
-	inputTypes := mergedFactTypesFor(includeExperience)
-	var fresh []MergeFact
+	// A rebuild is the cursor rewound to the start (RequestRebuild does that),
+	// after which the rounds replay forward a batch at a time like any other
+	// round; the one thing an acquisition round must not do is read only past a
+	// cursor, or a deletion would never be noticed.
+	//
+	// The input is what a member knows and what they did: `world` facts and
+	// `experience` facts, both of which are append-only in a member's bank and
+	// keep their text until they are deleted. An `observation` is not input —
+	// it is a derived row consolidation rewrites in place, so its text drifts
+	// while its identity stays, which is exactly what a copied row cannot
+	// follow. The team bank derives its own observations from what is copied.
+	inputTypes := mergedInputTypes(includeExperience)
+	fresh := make([]MergeFact, 0, limit)
+	// A rebuild's replay ignores the cursor: it is a full replay of the member's
+	// bank, so a fact behind the old cursor is read again — which is what makes
+	// the team's content match the members' after a withdrawal.
+	fromStart := member.RebuildRequested
+	cursor := CursorOf(member.State)
+	// The cursor's lower bound. A replay has none: comparing against the zero
+	// timestamp with a zero id can still skip a row, because the row comparison
+	// is not the same thing as "after the beginning", and a bank's oldest fact is
+	// then never replayed. An incremental round resumes strictly after the last
+	// fact it consumed.
+	columns := `
+		SELECT id::text, text, fact_type, COALESCE(tags, '{}'::text[])::text, updated_at,
+		       COALESCE(context, ''), event_date, occurred_start, occurred_end, mentioned_at,
+		       COALESCE(observation_scopes::text, ''), COALESCE(text_signals, ''),
+		       created_at, updated_at, edited_at, embedding::text, COALESCE(source_memory_ids, '{}'::uuid[])::text
+		FROM ` + qualified + `.memory_units
+		WHERE bank_id = $1 AND fact_type = ANY($2)`
 	var statement string
 	var args []any
-	if member.State.RebuildRequested {
-		// A rebuild replays the member's bank from the cursor onward, in batches
-		// of `limit`, and the round advances the cursor to the last fact it read.
-		// Reading from the beginning every round would be an infinite loop: the
-		// batch would be the same oldest facts, they are already in the team bank,
-		// so nothing is written, so the cursor never moves, so the next round reads
-		// them again. "Rebuild" means the replay reaches the end of the bank, not
-		// that each round starts at the beginning.
-		cursor := CursorOf(member.State)
-		statement = `
-			SELECT id::text, text, fact_type, COALESCE(tags, '{}'::text[])::text, updated_at
-			FROM ` + qualified + `.memory_units
-			WHERE bank_id = $1 AND fact_type = ANY($2)
-			  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
-			ORDER BY updated_at, id
-			LIMIT $5`
-		args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, zeroUUID, limit}
-		if !cursor.Before() {
-			args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, cursor.UnitID, limit}
-		}
+	if fromStart || cursor.Before() {
+		statement = columns + `
+		ORDER BY updated_at, id
+		LIMIT $3`
+		args = []any{memberBankID(member), inputTypes, limit}
 	} else {
-		cursor := CursorOf(member.State)
-		statement = `
-			SELECT id::text, text, fact_type, COALESCE(tags, '{}'::text[])::text, updated_at
-			FROM ` + qualified + `.memory_units
-			WHERE bank_id = $1 AND fact_type = ANY($2)
-			  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
-			ORDER BY updated_at, id
-			LIMIT $5`
-		args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, zeroUUID, limit}
-		if !cursor.Before() {
-			args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, cursor.UnitID, limit}
-		}
+		statement = columns + `
+		  AND (updated_at, id) > ($3::timestamptz, $4::uuid)
+		ORDER BY updated_at, id
+		LIMIT $5`
+		args = []any{memberBankID(member), inputTypes, cursor.UpdatedAt, cursor.UnitID, limit}
 	}
 	rows, err := tx.QueryContext(memberCtx, statement, args...)
 	if err != nil {
@@ -99,15 +99,36 @@ func (s *PostgresMergeStore) loadMemberInput(
 	}
 	for rows.Next() {
 		var fact MergeFact
-		var tags string
-		var updatedAt time.Time
-		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.FactType, &tags, &updatedAt); err != nil {
+		var tags, scopes, signals, sources string
+		var embedding sql.NullString
+		var eventDate, occurredStart, occurredEnd, mentionedAt, createdAt, updatedAt, editedAt sql.NullTime
+		if err := rows.Scan(&fact.UnitID, &fact.Text, &fact.FactType, &tags, &fact.UpdatedAt,
+			&fact.Context, &eventDate, &occurredStart, &occurredEnd, &mentionedAt,
+			&scopes, &signals, &createdAt, &updatedAt, &editedAt, &embedding, &sources); err != nil {
 			_ = rows.Close()
 			return out, err
 		}
 		fact.Tags = decodePostgresTextArray([]byte(tags))
 		fact.TenantID = member.TenantID
-		fact.UpdatedAt = updatedAt
+		fact.EventDate = nullTimePtr(eventDate)
+		fact.OccurredStart = nullTimePtr(occurredStart)
+		fact.OccurredEnd = nullTimePtr(occurredEnd)
+		fact.MentionedAt = nullTimePtr(mentionedAt)
+		if scopes != "" {
+			fact.ObservationScopes = []byte(scopes)
+		}
+		if signals != "" {
+			fact.TextSignals = &signals
+		}
+		fact.CreatedAt = nullTimePtr(createdAt)
+		fact.EditedAt = nullTimePtr(editedAt)
+		fact.SourceMemoryIDs = decodePostgresTextArray([]byte(sources))
+		decoded, err := DecodeEmbedding(embedding.String)
+		if err != nil {
+			_ = rows.Close()
+			return out, err
+		}
+		fact.Embedding = decoded
 		fresh = append(fresh, fact)
 	}
 	_ = rows.Close()
@@ -115,6 +136,15 @@ func (s *PostgresMergeStore) loadMemberInput(
 		return out, err
 	}
 	out.Fresh = fresh
+	// A read that filled its batch may have stopped short of the bank's end. The
+	// round's cursor record advances only to what it consumed, so the rest waits
+	// for the next round — but only a loop that keeps going gets it.
+	if len(fresh) >= limit {
+		out.More, err = s.memberHasMoreTx(memberCtx, tx, member, qualified, fresh, inputTypes)
+		if err != nil {
+			return out, err
+		}
+	}
 	out.Links, err = s.loadMemberLinks(ctx, tx, member, qualified, fresh, inputTypes)
 	if err != nil {
 		return out, err
@@ -131,13 +161,36 @@ func (s *PostgresMergeStore) loadMemberInput(
 	return out, nil
 }
 
+// memberHasMoreTx reports whether a member's bank holds facts after the last one
+// a full batch consumed.
+func (s *PostgresMergeStore) memberHasMoreTx(
+	memberCtx context.Context, tx Tx, member MergeProjectMember, qualified string,
+	fresh []MergeFact, inputTypes []string,
+) (bool, error) {
+	if len(fresh) == 0 {
+		return false, nil
+	}
+	last := fresh[len(fresh)-1]
+	var more bool
+	err := tx.QueryRowContext(memberCtx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM `+qualified+`.memory_units
+		    WHERE bank_id = $1 AND fact_type = ANY($2)
+		      AND (updated_at, id) > ($3::timestamptz, $4::uuid)
+		)`, memberBankID(member), inputTypes, last.UpdatedAt, last.UnitID).Scan(&more)
+	return more, err
+}
+
 // loadMemberLinks reads the member's links that touch this round's facts.
 //
 // A link is read when either endpoint is in the batch, so a second endpoint
 // that the batch has not reached yet is carried when it arrives: that later
 // round reads the same link from its own side, and both team facts now exist.
-// The link types a round carries are the fact kinds it carries — a link to an
-// experience is not carried when experiences are switched out of the input.
+// The link types a round carries are the fact kinds it carries: a link with an
+// endpoint that is not an input type is dropped whole, because that endpoint has
+// no row in the team bank to attach to. That is what keeps a link into a
+// member's observation from arriving — observations are not copied, and a link
+// whose other end does not exist is not content, it is a dangling edge.
 //
 // The endpoints are returned as merge keys rather than unit ids because a team
 // fact is a new row; the write looks both keys up in the team bank.

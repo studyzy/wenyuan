@@ -51,6 +51,7 @@ func (h *Handler) bindTeamRoutes() {
 	h.mux.HandleFunc("POST /admin/v1/teams/{id}/projects/{project_id}/purge-contribution", h.purgeContribution)
 	h.mux.HandleFunc("GET /admin/v1/teams/{id}/projects/{project_id}/merge-status", h.getMergeStatus)
 	h.mux.HandleFunc("POST /admin/v1/teams/{id}/projects/{project_id}/merge-reset", h.postMergeReset)
+	h.mux.HandleFunc("POST /admin/v1/teams/{id}/projects/{project_id}/merge-rebuild", h.postMergeRebuild)
 }
 
 // teamsAbsent answers the 501 every team route shares. It reports whether it

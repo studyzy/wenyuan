@@ -86,3 +86,31 @@ func (h *Handler) postMergeReset(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"project_id": projectID, "halted": false})
 }
+
+// postMergeRebuild asks the next round to replay the project's members from the
+// beginning.
+//
+// It is how a team bank is brought onto the current merge rules: the replay
+// rewrites every fact under the current identity and, when it completes, retires
+// what the replay did not produce. It is an operator action rather than something
+// the job does on its own, because the replay re-reads every member's bank.
+func (h *Handler) postMergeRebuild(w http.ResponseWriter, r *http.Request) {
+	if h.teamsAbsent(w) {
+		return
+	}
+	if h.cfg.Merges == nil {
+		writeError(w, http.StatusConflict,
+			"the project merge job is not enabled on this deployment")
+		return
+	}
+	teamID, projectID := r.PathValue("id"), r.PathValue("project_id")
+	if _, err := h.cfg.Teams.GetTeamProject(r.Context(), teamID, projectID); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	if err := h.cfg.Merges.RequestRebuild(r.Context(), teamID, projectID); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project_id": projectID, "rebuild": true})
+}

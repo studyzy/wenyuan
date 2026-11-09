@@ -15,6 +15,14 @@ import (
 // rebuild one segment at a time.
 func (f *mergeFixture) finishRound(t *testing.T, replace MergeReplaceResult, reconcile bool) {
 	t.Helper()
+	f.finishRoundAs(t, replace, reconcile, false)
+}
+
+// finishRoundAs runs one round with a fixed result and an explicit "this round
+// completes a rebuild" flag. A completing rebuild retires everything the replay
+// did not write, so the tests that check reconciliation drive both flags.
+func (f *mergeFixture) finishRoundAs(t *testing.T, replace MergeReplaceResult, reconcile, rebuildDone bool) {
+	t.Helper()
 	ctx := context.Background()
 	var stamp time.Time
 	ran, err := f.store.BeginMergeStanza(ctx, f.teamID, f.projectID, mergeRoundOpts(100, time.Minute),
@@ -32,7 +40,7 @@ func (f *mergeFixture) finishRound(t *testing.T, replace MergeReplaceResult, rec
 		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
 		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
 		Replace: replace, Members: []string{f.memberA, f.memberB},
-		Reconcile: reconcile,
+		Reconcile: reconcile, Rebuild: rebuildDone, RebuildDone: rebuildDone,
 	}); err != nil {
 		t.Fatalf("FinishMergeStanza: %v", err)
 	}
@@ -55,9 +63,9 @@ func TestRebuildReconcilesFactsWhoseSourcesAreGone(t *testing.T) {
 
 	f.finishRound(t, MergeReplaceResult{
 		Insert: []TeamFactRow{
-			{Text: liveOneText, MergeKey: keyOne},
-			{Text: liveTwoText, MergeKey: keyTwo},
-			{Text: goneText, MergeKey: keyGone},
+			{Text: liveOneText, MergeKey: keyOne, SourceUnitID: liveOne, SourceTenant: f.memberA},
+			{Text: liveTwoText, MergeKey: keyTwo, SourceUnitID: liveTwo, SourceTenant: f.memberA},
+			{Text: goneText, MergeKey: keyGone, SourceUnitID: gone, SourceTenant: f.memberA},
 		},
 		Sources: map[string][]MergeSourceRow{f.memberA: {
 			{UnitID: liveOne, MergeKey: keyOne},
@@ -77,12 +85,13 @@ func TestRebuildReconcilesFactsWhoseSourcesAreGone(t *testing.T) {
 		t.Fatalf("a partial rebuild removed content: team facts = %v", got)
 	}
 
-	// The completing segment reconciles. The deleted source has no live unit
-	// behind it, so its team fact goes; the two earlier-segment facts stay.
-	f.finishRound(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberA: {
+	// The completing segment retires what the replay did not write. The deleted
+	// source has no live unit behind it, so its team fact goes; the two facts the
+	// replay consumed stay.
+	f.finishRoundAs(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberA: {
 		{UnitID: liveOne, MergeKey: keyOne},
 		{UnitID: liveTwo, MergeKey: keyTwo},
-	}}}, true)
+	}}}, true, false)
 	got := f.teamFactTexts(t)
 	if len(got) != 2 || got[0] != liveOneText || got[1] != liveTwoText {
 		t.Fatalf("team facts after reconcile = %v, want the two live facts", got)
@@ -109,7 +118,10 @@ func TestRebuildKeepsAFactAnotherMemberStillHolds(t *testing.T) {
 	unitA := f.writeMemberFact(t, f.memberA, text)
 	unitB := f.writeMemberFact(t, f.memberB, text)
 	f.finishRound(t, MergeReplaceResult{
-		Insert: []TeamFactRow{{Text: text, MergeKey: key}},
+		Insert: []TeamFactRow{
+			{Text: text, MergeKey: key, SourceUnitID: unitA, SourceTenant: f.memberA},
+			{Text: text, MergeKey: key, SourceUnitID: unitB, SourceTenant: f.memberB},
+		},
 		Sources: map[string][]MergeSourceRow{
 			f.memberA: {{UnitID: unitA, MergeKey: key}},
 			f.memberB: {{UnitID: unitB, MergeKey: key}},
@@ -117,9 +129,9 @@ func TestRebuildKeepsAFactAnotherMemberStillHolds(t *testing.T) {
 	}, false)
 	f.deleteMemberFact(t, f.memberA, unitA)
 
-	f.finishRound(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberB: {
+	f.finishRoundAs(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberB: {
 		{UnitID: unitB, MergeKey: key},
-	}}}, true)
+	}}}, true, false)
 	if got := f.teamFactTexts(t); len(got) != 1 || got[0] != text {
 		t.Fatalf("a fact the other member still holds was removed: %v", got)
 	}
@@ -135,7 +147,7 @@ func TestIncrementalRoundDoesNotReconcile(t *testing.T) {
 	key := tenant.MergeKey(text)
 	unit := f.writeMemberFact(t, f.memberA, text)
 	f.finishRound(t, MergeReplaceResult{
-		Insert:  []TeamFactRow{{Text: text, MergeKey: key}},
+		Insert:  []TeamFactRow{{Text: text, MergeKey: key, SourceUnitID: unit, SourceTenant: f.memberA}},
 		Sources: map[string][]MergeSourceRow{f.memberA: {{UnitID: unit, MergeKey: key}}},
 	}, false)
 	f.deleteMemberFact(t, f.memberA, unit)
@@ -144,7 +156,7 @@ func TestIncrementalRoundDoesNotReconcile(t *testing.T) {
 	if got := f.teamFactTexts(t); len(got) != 1 {
 		t.Fatalf("an incremental round removed a fact: %v", got)
 	}
-	f.finishRound(t, MergeReplaceResult{}, true)
+	f.finishRoundAs(t, MergeReplaceResult{}, true, false)
 	if got := f.teamFactTexts(t); len(got) != 0 {
 		t.Fatalf("a completed rebuild kept a fact with no live source: %v", got)
 	}
@@ -164,7 +176,7 @@ func TestSegmentedRebuildKeepsEveryReplayedSegment(t *testing.T) {
 	for i, text := range texts {
 		units[i] = f.writeMemberFact(t, f.memberA, text)
 		keys[i] = tenant.MergeKey(text)
-		insert[i] = TeamFactRow{Text: text, MergeKey: keys[i]}
+		insert[i] = TeamFactRow{Text: text, MergeKey: keys[i], SourceUnitID: units[i], SourceTenant: f.memberA}
 		sources[i] = MergeSourceRow{UnitID: units[i], MergeKey: keys[i]}
 	}
 	f.finishRound(t, MergeReplaceResult{
@@ -174,7 +186,7 @@ func TestSegmentedRebuildKeepsEveryReplayedSegment(t *testing.T) {
 
 	// Replay the bank in two segments, only the second of which completes.
 	f.finishRound(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberA: sources[:2]}}, false)
-	f.finishRound(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberA: sources[2:]}}, true)
+	f.finishRoundAs(t, MergeReplaceResult{Sources: map[string][]MergeSourceRow{f.memberA: sources[2:]}}, true, false)
 	if got := f.teamFactTexts(t); len(got) != len(texts) {
 		t.Fatalf("a segmented rebuild lost facts: got %v, want %v", got, texts)
 	}

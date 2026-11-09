@@ -9,29 +9,42 @@ import (
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
 
-// Which fact kinds a merge round reads and writes.
+// Which fact kinds a merge round reads, and which the team bank may hold.
 //
-// The team bank is written only by a merge round, so mergedFactTypes is at once
-// the set a round reads back as its previous content, the set it may write, and
-// the set it sweeps when a fact no round wrote is found in the bank. Keeping the
-// three uses on one list is what stops a hand-written `experience` or
-// `observation` from surviving because the sweep only knew about `world`.
+// The two are not the same set. The team bank is written only by a merge round
+// and by consolidation: the round copies `world` and `experience` verbatim, and
+// consolidation then synthesises the team's own `observation` rows from them.
+// Both kinds end up in the bank, so the sweep, the reconciliation and the status
+// counters must know about `observation` — but a round must never read one back
+// from a member.
 
-// mergedFactTypes are the fact kinds the team bank may hold for a project.
+// mergedInputTypes are the fact kinds a round reads from a member's bank.
 //
-// `observation` is here because a member's conclusions travel with them, even
-// though consolidation regenerates the team's own observations from the merged
-// facts.
-var mergedFactTypes = []string{string(TypeWorld), string(TypeExperience), string(TypeObservation)}
-
-// mergedFactTypesFor is a member's input types: the same set, minus `experience`
-// when the deployment switched personal history out of the input.
-func mergedFactTypesFor(includeExperience bool) []string {
+// `observation` is deliberately absent. An observation is a derived row that
+// consolidation rewrites in place — same id, new text — and that rewrite does
+// not move `updated_at`, so the round's cursor can never see it again; and were
+// it seen, its new text is a new merge key, which would leave two versions of
+// one conclusion standing. A member's conclusions still reach the team bank,
+// because the team bank re-derives them from the facts that were copied.
+func mergedInputTypes(includeExperience bool) []string {
 	if includeExperience {
-		return mergedFactTypes
+		return []string{string(TypeWorld), string(TypeExperience)}
 	}
-	return []string{string(TypeWorld), string(TypeObservation)}
+	return []string{string(TypeWorld)}
 }
+
+// teamBankTypes are the fact kinds the team bank may hold for a project.
+//
+// The team's own consolidation writes `observation` rows here, which is why this
+// set stays wider than the input set: a sweep that only knew about `world` and
+// `experience` would delete the team's conclusions on every round.
+var teamBankTypes = []string{string(TypeWorld), string(TypeExperience), string(TypeObservation)}
+
+// mergeMetadataOrigin marks a fact row a merge round wrote. It is the team
+// bank's "managed" test: anything else in the bank — a hand-written fact, or a
+// row written by an older round that keyed facts on their text — is not the
+// round's and the next round replaces it.
+const mergeMetadataOrigin = "merge"
 
 // countUnmanagedTx counts the team bank's facts that no round wrote.
 //
@@ -48,8 +61,9 @@ func (s *PostgresMergeStore) countUnmanagedTx(ctx context.Context, tx Tx, projec
 	var count int
 	err = tx.QueryRowContext(teamCtx, `
 		SELECT count(*) FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NULL`,
-		project.BankID, mergedFactTypes).Scan(&count)
+		WHERE bank_id = $1 AND fact_type = ANY($2)
+		  AND COALESCE(metadata->>'origin', '') <> $3`,
+		project.BankID, teamBankTypes, mergeMetadataOrigin).Scan(&count)
 	return count, err
 }
 

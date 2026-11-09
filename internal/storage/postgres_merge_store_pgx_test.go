@@ -259,7 +259,10 @@ func TestMergeStoreRoundWritesTeamFactsAndLedger(t *testing.T) {
 
 	key := tenant.MergeKey("The deploy uses port 15432.")
 	if !f.runRound(t,
-		[]TeamFactRow{{Text: "The deploy uses port 15432.", MergeKey: key}},
+		[]TeamFactRow{
+			{Text: "The deploy uses port 15432.", MergeKey: key, SourceUnitID: unitA, SourceTenant: f.memberA},
+			{Text: "The deploy uses port 15432.", MergeKey: key, SourceUnitID: unitB, SourceTenant: f.memberB},
+		},
 		map[string][]MergeSourceRow{
 			f.memberA: {{UnitID: unitA, MergeKey: key}},
 			f.memberB: {{UnitID: unitB, MergeKey: key}},
@@ -267,9 +270,11 @@ func TestMergeStoreRoundWritesTeamFactsAndLedger(t *testing.T) {
 		t.Fatal("round did not run")
 	}
 
+	// Both members hold the same sentence, and both rows land: a team row mirrors
+	// one member fact, exactly as the sentence is two facts inside either bank.
 	texts := f.teamFactTexts(t)
-	if len(texts) != 1 || texts[0] != "The deploy uses port 15432." {
-		t.Fatalf("team facts = %v, want the one merged fact", texts)
+	if len(texts) != 2 || texts[0] != "The deploy uses port 15432." {
+		t.Fatalf("team facts = %v, want one row per member", texts)
 	}
 	var ledgerRows int
 	if err := f.db.QueryRowContext(context.Background(),
@@ -291,7 +296,7 @@ func TestMergeStoreSourceDeletionTriggersRebuild(t *testing.T) {
 	unitA := f.writeMemberFact(t, f.memberA, "Only A knew this.")
 	key := tenant.MergeKey("Only A knew this.")
 	if !f.runRound(t,
-		[]TeamFactRow{{Text: "Only A knew this.", MergeKey: key}},
+		[]TeamFactRow{{Text: "Only A knew this.", MergeKey: key, SourceUnitID: unitA, SourceTenant: f.memberA}},
 		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
@@ -343,7 +348,7 @@ func TestMergeStoreDroppedSourceDeletionDoesNotRebuild(t *testing.T) {
 	redundant := f.writeMemberFact(t, f.memberB, "B said the same thing differently.")
 	key := tenant.MergeKey("A keeps this.")
 	if !f.runRound(t,
-		[]TeamFactRow{{Text: "A keeps this.", MergeKey: key}},
+		[]TeamFactRow{{Text: "A keeps this.", MergeKey: key, SourceUnitID: kept, SourceTenant: f.memberA}},
 		map[string][]MergeSourceRow{
 			f.memberA: {{UnitID: kept, MergeKey: key}},
 			// The model folded B's version into A's, recording it as dropped.
@@ -444,7 +449,7 @@ func TestMergeStoreClearMemberProjectErasesTheLedger(t *testing.T) {
 	unitA := f.writeMemberFact(t, f.memberA, "A contributed this.")
 	key := tenant.MergeKey("A contributed this.")
 	if !f.runRound(t,
-		[]TeamFactRow{{Text: "A contributed this.", MergeKey: key}},
+		[]TeamFactRow{{Text: "A contributed this.", MergeKey: key, SourceUnitID: unitA, SourceTenant: f.memberA}},
 		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
@@ -686,7 +691,7 @@ func TestMergeStoreSuccessResetsTheBreaker(t *testing.T) {
 		}
 	}
 	if !f.runRoundWithOpts(t, opts,
-		[]TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key}},
+		[]TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key, SourceUnitID: unitA, SourceTenant: f.memberA}},
 		map[string][]MergeSourceRow{f.memberA: {{UnitID: unitA, MergeKey: key}}}) {
 		t.Fatal("the successful round did not run")
 	}

@@ -25,5 +25,5 @@ func newPersonalStoreTagged(store storage.Store) storage.PersonalStore {
 	if !ok {
 		return nil
 	}
-	return storage.NewPostgresPersonalStore(provider.AdminDB())
+	return storage.NewPostgresPersonalStore(provider.AdminDB(), provider.TextSearchLanguage())
 }

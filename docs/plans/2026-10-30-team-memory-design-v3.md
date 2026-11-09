@@ -959,7 +959,9 @@ schema 只应用 `0001`。
 - **B-6 控制台**：`merge-status` 端点已就绪，前端展示与 10 语种文案未接。
 - 写触发的合并入队（秒级可见）。
 - reflect 在团队视图下的 mission 语义。
-## 十五、修订：合并输入扩到三类事实（2026-11-04）
+## 十五、修订：合并输入扩到三类事实（2026-11-04）——**已被 §十六 取代**
+
+> 本节的范围决定已被 §十六 推翻：成员的 `observation` 不再作为合并输入，团队行的身份也从文本哈希改为来源 unit。保留本节是为了留下"为什么当时那么做"的记录；凡与 §十六 冲突处，以 §十六 为准。
 
 **本文件前面"只取 `fact_type='world'`"的范围已被推翻。** 产品决定：成员对项目的
 三类记忆——世界事实、经历、观察——都进入团队 bank。下文原规则凡涉及"world
@@ -1023,3 +1025,101 @@ only"的均已就地改写为本节结论；此节记录改动理由与边界，
 `go test ./...` 与 `go test -tags pgx ./...`（带 `WENYUAN_TEST_DATABASE_URL`）
 全绿；把 `mergedFactTypes` 改回只含 `world` 会让
 `TestMergeStoreReadsEveryMergedFactType` 失败，即该测试确实钉住了本改动。
+
+## 十六、修订：不复制 observation，行身份改为来源 unit，补齐检索列（2026-11-06）
+
+**§十五 的输入范围被本节取代。** 触发点是两个实测出来的缺陷，不是口味问题。
+
+### 16.1 为什么成员 observation 不能复制
+
+`observation` 由 consolidation 生成，并且被 `UpdateObservation`
+（`internal/storage/postgres_consolidation.go:249-255`）**原地改写**：同一行 id、
+新 text、新检索列。但那条 UPDATE 的列清单里没有 `updated_at`，`memory_units` 上
+也没有任何触发器，所以合并的 `(updated_at, id)` 游标**永远追不上**这次改写 ——
+团队 bank 会一直保留成员第一次写下的那份 text。
+
+即使游标追上了，也还是错的：旧实现按 `MergeKey(text)` 认行，新文本就是新 key，
+于是团队 bank 里出现同一结论的两个版本，旧的**永不退休**。
+
+`A::myself` 的物化投影早就因为同一个理由排除了 observation
+（`docs/plans/2026-10-31-personal-aggregate-bank-design.md` §15.1 第 1 条）。
+本轮把同一条规则用到项目 bank：**成员的观察不进团队 bank，团队自己的
+consolidation 用复制过来的 world/experience 重新推导。**
+
+### 16.2 行身份：来源 unit，不是文本
+
+| | 旧（§十五 及以前） | 新 |
+|---|---|---|
+| 行身份 | `metadata.merge_key` = SHA-256(normalize(text)) | `metadata.source_unit_id` = 成员事实的 unit id |
+| 两成员同文本 | 一行 | 两行（与任一成员自己 bank 内的两条事实一致） |
+| 源事实被编辑 | 插第二行，旧行留下 | 删旧行 + 插新行 |
+| 未受管判定 | `metadata->>'merge_key' IS NULL` | `metadata->>'origin' <> 'merge'` |
+
+`merge_key` 仍然写入，但只作为行内字段，不再是身份。
+
+一轮怎么算"变了"：`input.TeamRows`（`rowsBySourceUnitsTx`）按本轮 fresh 的
+unit id 精确读出团队现有行，`projectmerge.PlanBatch` 逐条比较 text、kind、
+tags（按集合）、context、`observation_scopes`、四个时间列；不同则 `Remove` 旧行、
+`Insert` 新行，相同则什么也不做（保住行 id，也保住挂在它上面的观察）。
+
+### 16.3 一行事实要带的列
+
+旧 INSERT 只写 `(bank_id, document_id, text, fact_type, metadata, tags)`，其余
+全落列默认值。后果是团队 bank 的召回**只剩关键词臂**——而且连它也不成立：
+`search_vector` 不是 generated 列（`UpsertUnit` 显式写它），没人写它就是 NULL。
+
+| 列 | 处理 | 原因 |
+|---|---|---|
+| `text` / `fact_type` / `tags` | 复制 | 内容本体 |
+| `embedding` | **复制成员行的向量** | retain 的向量是"文本 + 日期 + 解析后的实体名"的嵌入；团队行不复制实体，重算出来的向量不可能与成员侧一致。同一部署 = 同一嵌入方案，复制才可比。仍然零模型调用 |
+| `search_vector` | 由 `text`、`context`、`text_signals` 算出 | 普通列；不写则关键词臂命中不了 |
+| `event_date` / `occurred_start` / `occurred_end` / `mentioned_at` | 复制 | temporal 臂的 overlap 谓词、图的时间边、列表的时间过滤 |
+| `context` | 复制 | 事实被提取时的原文片段 |
+| `observation_scopes` / `text_signals` | 复制 | 项目自己的 transfer 格式把前者算作事实内容；后者进关键词索引 |
+| `created_at` / `updated_at` / `edited_at` | 复制 | 列表默认按创建时间排序，`stats` 的时间序列也按它 |
+| `source_memory_ids` | 成员侧有就复制 | 证据 |
+| `document_id` / `chunk_id` / `attachment_ids` | 保持空 | 文档与附件不复制 |
+
+### 16.4 明确不复制的东西
+
+| 对象 | 结论 | 理由 |
+|---|---|---|
+| `documents` / `chunks` / `attachments` / `file_storage` | 不复制 | 原文是成员的私有输入；`CanFallBack` 也明确拒绝 `document_id` 过滤 |
+| `entities` / `unit_entities` / `entity_cooccurrences` | 不复制 | 实体是**一个 bank 内的身份**；跨 bank 复制需要重新做实体解析与跨成员合并，是独立特性。`/entities`、`/graph` 目前也不 fallback 到团队 bank |
+| `invalidated_memory_units` / `observation_history` | 不复制 | 前者是成员侧的策展档案；后者是观察的改写历史，而观察已不复制 |
+| `mental_models` / `knowledge_pages` | 不复制 | 它们是按 bank 做的用户查询，不是成员记忆；复制等于把某个人的私人视角变成团队视角 |
+| `webhooks` | 不复制 | 归档里的 webhook 段带 `secret` |
+| `audit_log` / `llm_requests` / `operations` / 维护队列 | 不复制 | 实例级运行状态，不是记忆内容 |
+| `banks.config` | 不复制 | 含成员的个人偏好；团队 bank 用部署默认值 |
+| `directives` | 不复制（团队自己写） | 团队 bank 的 reflect 读自己的 directives，缺了就没有指令；但那是团队自己的运营决策，不是成员内容的镜像 |
+
+### 16.5 重建是存量迁移的唯一入口
+
+重建 = 游标回拨 + 逐批按新规则重放 + 全部分段读完后 `finalize`：
+
+1. 重放把成员的 world/experience 按来源 unit 写进团队 bank；
+2. 完成那一轮（本轮没有新事实）退役**没有 `origin='merge'` 的行** —— 旧 key
+   方案写下的行，以及历史上从成员复制过来的观察行 —— 连同挂在它们上面的观察；
+3. 账本只删**源已经不在成员 bank 里**的行：队友在前一轮已经按同一 unit 写下的
+   行可能还没被本轮重放覆盖，删掉它的账本会让下一轮把它当新事实再读一遍。
+
+存量项目的上线方式是调一次
+`POST /admin/v1/teams/{id}/projects/{pid}/merge-rebuild`（NestJS 控制台侧代理
+在 `frontend/app/api/admin/teams/[teamId]/projects/[projectId]/merge-rebuild`）。
+
+### 16.6 落地位置
+
+| 改动 | 文件 |
+|---|---|
+| 输入类型拆成两个集合 | `internal/storage/postgres_merge_store_types.go`（`mergedInputTypes` / `teamBankTypes` / `mergeMetadataOrigin`） |
+| 成员输入读全部检索列、向量不重算 | `internal/storage/postgres_merge_store_input.go`（`loadMemberInput`） |
+| 按源 unit 读团队现有行 | `internal/storage/postgres_merge_store.go`（`rowsBySourceUnitsTx`、`loadPreviousTx`） |
+| 写入带全列 + `search_vector` | `internal/storage/postgres_merge_store_write.go`（`insertTeamFact`、`removeReplacedFacts`） |
+| 重建完成时的退役 | `internal/storage/postgres_merge_store_reconcile.go`（`finalizeRebuildTx`） |
+| 身份与替换规则 | `internal/projectmerge/carry.go`（`PlanBatch`、`sameTeamFact`） |
+| 轮次编排 | `internal/app/project_merge.go`（`planRound`、`buildFinishRequest`） |
+| 运维入口 | `internal/adminapi/team_merge.go`（`postMergeRebuild`） |
+
+回归测试：`internal/projectmerge/carry_test.go`（身份、替换、未变跳过）、
+`internal/storage/postgres_merge_store_carry_pgx_test.go`（编辑替换、不复制观察、
+重建退役、检索列逐字相等、无 embedder 仍成功）。

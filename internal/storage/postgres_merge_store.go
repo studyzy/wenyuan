@@ -185,15 +185,18 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 	if err != nil {
 		return false, err
 	}
-	input.UnmanagedFacts, err = s.countUnmanagedTx(ctx, tx, project)
-	if err != nil {
-		return false, err
-	}
+	// Read the member states before anything writes to their rows: the unmanaged
+	// sweep and the claim below both write, and a state read afterwards would
+	// report what this round did rather than what it was asked to do.
 	ids := make([]string, 0, len(members))
 	for _, member := range members {
 		ids = append(ids, member.TenantID)
 	}
 	states, err := s.loadStatesTx(ctx, tx, teamID, projectID, ids)
+	if err != nil {
+		return false, err
+	}
+	input.UnmanagedFacts, err = s.countUnmanagedTx(ctx, tx, project)
 	if err != nil {
 		return false, err
 	}
@@ -210,6 +213,10 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 		}
 		member.State = state
 		member.HasLedger = ok
+		// A rebuild's replay reads the member's bank from the start, which is
+		// decided from the flag read above — before the claim below rewrites the
+		// state row. Every other round continues from the cursor.
+		member.RebuildRequested = state.RebuildRequested
 		// A live stamp means another process is between its read and its write.
 		// A stale one is a crashed round and is taken over.
 		if state.MergingSince != nil && stamp.Sub(*state.MergingSince) < opts.StaleAfter {
@@ -242,7 +249,40 @@ func (s *PostgresMergeStore) BeginMergeStanza(
 				shared = 0
 			}
 		}
+		// The prefix of the read is what the round can carry, but a member whose
+		// bank is larger than that prefix was not fully read: the loop continues
+		// so the rest is replayed rather than left behind the cursor.
+		if entry.More {
+			input.More = true
+		}
 		input.Members = append(input.Members, entry)
+	}
+	// The rows the round must decide on: exactly the team rows this batch's
+	// member facts produced. Reading them by source unit is what keeps the
+	// decision from depending on loadPreviousTx's bounded tail.
+	sourceUnitIDs := make([]string, 0, opts.Batch)
+	for _, member := range input.Members {
+		for _, fact := range member.Fresh {
+			sourceUnitIDs = append(sourceUnitIDs, fact.UnitID)
+		}
+	}
+	input.TeamRows, err = s.rowsBySourceUnitsTx(ctx, tx, &input.Project, sourceUnitIDs)
+	if err != nil {
+		return false, err
+	}
+	// A rebuild's bound is the project's whole input, not this batch: the replay
+	// reads all of it across its rounds, so the size that matters is the size it
+	// will reach. The count is only read when a rebuild is asked for, because it
+	// is a per-member total and an incremental round never needs it.
+	for i := range input.Project.Members {
+		if !input.Project.Members[i].State.RebuildRequested {
+			continue
+		}
+		total, err := s.countMemberFactsTx(ctx, tx, input.Project.Members[i], opts.IncludeExperience)
+		if err != nil {
+			return false, err
+		}
+		input.ProjectTotal += total
 	}
 	stanza := &mergeStanza{input: input, stamp: stamp}
 	if err := fn(stanza); err != nil {
@@ -293,8 +333,12 @@ func (s *PostgresMergeStore) loadProjectTx(ctx context.Context, tx Tx, teamID, p
 // loadMembersTx reads one project's members, longest-unmerged first.
 func (s *PostgresMergeStore) loadMembersTx(ctx context.Context, tx Tx, teamID, projectID string) ([]MergeProjectMember, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT pm.tenant_id
+		SELECT pm.tenant_id, COALESCE(ms.rebuild_requested, false)
 		FROM `+adminTable("team_project_member")+` pm
+		LEFT JOIN `+adminTable("merge_state")+` ms
+		  ON ms.team_tenant_id = pm.team_tenant_id
+		 AND ms.project_id = pm.project_id
+		 AND ms.tenant_id = pm.tenant_id
 		WHERE pm.team_tenant_id = $1 AND pm.project_id = $2
 		ORDER BY pm.tenant_id`, teamID, projectID)
 	if err != nil {
@@ -304,10 +348,14 @@ func (s *PostgresMergeStore) loadMembersTx(ctx context.Context, tx Tx, teamID, p
 	members := make([]MergeProjectMember, 0)
 	for rows.Next() {
 		var tenantID string
-		if err := rows.Scan(&tenantID); err != nil {
+		var rebuildRequested bool
+		if err := rows.Scan(&tenantID, &rebuildRequested); err != nil {
 			return nil, err
 		}
-		members = append(members, MergeProjectMember{TenantID: tenantID, Schema: tenantID, ProjectID: projectID})
+		members = append(members, MergeProjectMember{
+			TenantID: tenantID, Schema: tenantID, ProjectID: projectID,
+			RebuildRequested: rebuildRequested,
+		})
 	}
 	return members, rows.Err()
 }
@@ -363,9 +411,9 @@ func (s *PostgresMergeStore) loadStatesTx(ctx context.Context, tx Tx, teamID, pr
 //
 // The read is bounded by the round's batch rather than the bank's size: the team
 // bank grows without limit as members contribute, and the whole of it cannot fit
-// in one prompt. The newest facts are the ones a new contribution most plausibly
-// repeats, so the bound takes the tail — the ordering is by creation, which is
-// the order facts entered the bank.
+// in one prompt. The bound is only a display bound — the round decides what to
+// write from rowsBySourceUnitsTx, which reads exactly the rows its own sources
+// produced, so a truncated tail cannot make a fact look new.
 func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project *MergeProject, limit int) ([]TeamFactRow, error) {
 	teamCtx, err := WithSchema(ctx, project.TeamSchema)
 	if err != nil {
@@ -373,11 +421,12 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project 
 	}
 	qualified := quoteIdent(project.TeamSchema)
 	rows, err := tx.QueryContext(teamCtx, `
-		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type, COALESCE(tags, '{}'::text[])::text
+		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type, COALESCE(tags, '{}'::text[])::text,
+		       COALESCE(metadata->>'source_unit_id', '')
 		FROM `+qualified+`.memory_units
-		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'merge_key' IS NOT NULL
+		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'origin' = $4
 		ORDER BY created_at DESC, id DESC
-		LIMIT $3`, project.BankID, mergedFactTypes, limit)
+		LIMIT $3`, project.BankID, teamBankTypes, limit, mergeMetadataOrigin)
 	if err != nil {
 		return nil, err
 	}
@@ -386,13 +435,92 @@ func (s *PostgresMergeStore) loadPreviousTx(ctx context.Context, tx Tx, project 
 	for rows.Next() {
 		var fact TeamFactRow
 		var tags string
-		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType, &tags); err != nil {
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType, &tags, &fact.SourceUnitID); err != nil {
 			return nil, err
 		}
 		fact.Tags = decodePostgresTextArray([]byte(tags))
 		facts = append(facts, fact)
 	}
 	return facts, rows.Err()
+}
+
+// countMemberFactsTx counts the facts a rebuild would replay from one member.
+func (s *PostgresMergeStore) countMemberFactsTx(
+	ctx context.Context, tx Tx, member MergeProjectMember, includeExperience bool,
+) (int, error) {
+	memberCtx, err := WithSchema(ctx, member.Schema)
+	if err != nil {
+		return 0, err
+	}
+	var total int
+	err = tx.QueryRowContext(memberCtx, `
+		SELECT count(*) FROM `+quoteIdent(member.Schema)+`.memory_units
+		WHERE bank_id = $1 AND fact_type = ANY($2)`,
+		memberBankID(member), mergedInputTypes(includeExperience)).Scan(&total)
+	return total, err
+}
+
+// rowsBySourceUnitsTx reads the team rows the given member facts produced.
+//
+// The round's diff is keyed on the source unit, so this is the only read that
+// decides whether a fact is already carried. It is bounded by the batch rather
+// than by a limit of its own, so a fact cannot be missed for being older than
+// the newest rows.
+func (s *PostgresMergeStore) rowsBySourceUnitsTx(
+	ctx context.Context, tx Tx, project *MergeProject, sourceUnitIDs []string,
+) (map[string]TeamFactRow, error) {
+	out := make(map[string]TeamFactRow, len(sourceUnitIDs))
+	if len(sourceUnitIDs) == 0 {
+		return out, nil
+	}
+	teamCtx, err := WithSchema(ctx, project.TeamSchema)
+	if err != nil {
+		return nil, err
+	}
+	qualified := quoteIdent(project.TeamSchema)
+	rows, err := tx.QueryContext(teamCtx, `
+		SELECT id::text, text, COALESCE(metadata->>'merge_key', ''), fact_type,
+		       COALESCE(tags, '{}'::text[])::text, COALESCE(context, ''),
+		       event_date, occurred_start, occurred_end, mentioned_at,
+		       COALESCE(observation_scopes::text, ''), COALESCE(text_signals, ''),
+		       created_at, updated_at, edited_at, COALESCE(source_memory_ids, '{}'::uuid[])::text,
+		       metadata->>'source_unit_id', COALESCE(metadata->>'source_tenant', '')
+		FROM `+qualified+`.memory_units
+		WHERE bank_id = $1 AND fact_type = ANY($2) AND metadata->>'origin' = $3
+		  AND metadata->>'source_unit_id' = ANY($4::text[])`,
+		project.BankID, teamBankTypes, mergeMetadataOrigin, sourceUnitIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var fact TeamFactRow
+		var tags, context, scopes, signals, sources string
+		var eventDate, occurredStart, occurredEnd, mentionedAt, createdAt, updatedAt, editedAt sql.NullTime
+		if err := rows.Scan(&fact.ID, &fact.Text, &fact.MergeKey, &fact.FactType, &tags, &context,
+			&eventDate, &occurredStart, &occurredEnd, &mentionedAt, &scopes, &signals,
+			&createdAt, &updatedAt, &editedAt, &sources, &fact.SourceUnitID, &fact.SourceTenant); err != nil {
+			return nil, err
+		}
+		fact.Tags = decodePostgresTextArray([]byte(tags))
+		fact.Context = context
+		fact.EventDate = nullTimePtr(eventDate)
+		fact.OccurredStart = nullTimePtr(occurredStart)
+		fact.OccurredEnd = nullTimePtr(occurredEnd)
+		fact.MentionedAt = nullTimePtr(mentionedAt)
+		if scopes != "" {
+			fact.ObservationScopes = []byte(scopes)
+		}
+		if signals != "" {
+			fact.TextSignals = &signals
+		}
+		fact.CreatedAt = nullTimePtr(createdAt)
+		fact.UpdatedAt = updatedAt.Time
+		fact.EditedAt = nullTimePtr(editedAt)
+		fact.SourceMemoryIDs = decodePostgresTextArray([]byte(sources))
+		out[fact.SourceUnitID] = fact
+	}
+	return out, rows.Err()
 }
 
 // memberBankID is the bank a member's contribution lives in.

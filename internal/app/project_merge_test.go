@@ -351,12 +351,9 @@ func TestProjectMergeRebuildOverLimitFailsClosed(t *testing.T) {
 	input := mergeTestInput()
 	input.Members[0].Deleted = true
 	input.Members[0].Fresh = nil
-	for i := 0; i < 5; i++ {
-		input.Members[0].Fresh = append(input.Members[0].Fresh, storage.MergeFact{
-			TenantID: "alice", UnitID: "00000000-0000-0000-0000-00000000000" + string(rune('1'+i)),
-			Text: "fact number " + string(rune('1'+i)), UpdatedAt: time.Now().UTC(),
-		})
-	}
+	// The rebuild bound is the project's whole input, which the store counts
+	// separately from the round's batch.
+	input.ProjectTotal = 5
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
 
 	cfg := mergeTestCfg()
@@ -452,7 +449,7 @@ func TestRebuildDoesNotCarryThePreviousContent(t *testing.T) {
 	input.Previous = []storage.TeamFactRow{
 		{ID: "u1", Text: "A withdrawn member's fact.", MergeKey: tenant.MergeKey("A withdrawn member's fact.")},
 	}
-	input.Members[0].Member.State.RebuildRequested = true
+	input.Members[0].Member.RebuildRequested = true
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
 	if err := runOneRound(t, merges, mergeTestCfg()); err != nil {
@@ -504,14 +501,20 @@ func TestIncrementalRoundCarriesThePreviousContent(t *testing.T) {
 func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 	survivor := "A fact both rounds agree on."
 	withdrawn := "A withdrawn member's fact."
+	survivorUnit := "00000000-0000-0000-0000-000000000001"
 	input := mergeTestInput()
 	input.Previous = []storage.TeamFactRow{
 		{ID: "keep-me", Text: survivor, MergeKey: tenant.MergeKey(survivor)},
 		{ID: "drop-me", Text: withdrawn, MergeKey: tenant.MergeKey(withdrawn)},
 	}
-	input.Members[0].Member.State.RebuildRequested = true
+	// The team row the surviving source already produced, read back by the store
+	// keyed on the source unit.
+	input.TeamRows = map[string]storage.TeamFactRow{
+		survivorUnit: {ID: "keep-me", SourceUnitID: survivorUnit, Text: survivor, MergeKey: tenant.MergeKey(survivor)},
+	}
+	input.Members[0].Member.RebuildRequested = true
 	input.Members[0].Fresh = []storage.MergeFact{
-		{TenantID: "alice", UnitID: "00000000-0000-0000-0000-000000000001", Text: survivor, UpdatedAt: time.Now().UTC()},
+		{TenantID: "alice", UnitID: survivorUnit, Text: survivor, UpdatedAt: time.Now().UTC()},
 	}
 
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
@@ -524,7 +527,8 @@ func TestRebuildKeepsSurvivingRowsAndDropsTheRest(t *testing.T) {
 	if !merges.finished.Reconcile {
 		t.Fatal("the completing rebuild did not ask the store to reconcile")
 	}
-	// The survivor is not re-inserted: its row is already there.
+	// The survivor is not re-inserted: its row is already there under the same
+	// source unit.
 	for _, fact := range replace.Insert {
 		if fact.Text == survivor {
 			t.Fatalf("the surviving fact was re-inserted: %+v", replace.Insert)
@@ -597,15 +601,16 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 				UpdatedAt: time.Now().UTC(),
 			})
 		}
-		input.Members[0].Member.State.RebuildRequested = true
+		input.Members[0].Member.RebuildRequested = true
 		return input
 	}
 
 	cfg := mergeTestCfg()
 	cfg.ProjectMergeBatchSize = 10
 
-	// A full batch: the member may hold more, so the rebuild is not finished.
+	// A full batch with more behind it: the rebuild is not finished.
 	input := newInput(10)
+	input.Members[0].More = true
 	merges := &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
 	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("first round: %v", err)
@@ -614,7 +619,7 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 		t.Fatalf("the first round wrote nothing: %+v", merges.abandoned)
 	}
 	if merges.finished.RebuildDone {
-		t.Fatal("a full batch reported the rebuild finished, so the remaining facts would never be replayed")
+		t.Fatal("a batch with more behind it reported the rebuild finished, so the rest would never be replayed")
 	}
 	if merges.finished.Reconcile {
 		t.Fatal("a partial rebuild asked to reconcile the bank")
@@ -623,16 +628,17 @@ func TestRebuildSpansRoundsWhenTheBankOutgrowsOneBatch(t *testing.T) {
 		t.Fatal("the round did not advance the cursor past the batch it consumed")
 	}
 
-	// A short batch: the member's bank is exhausted and the rebuild completes.
+	// Nothing more behind the batch: the member's bank is exhausted and the
+	// rebuild completes.
 	input = newInput(3)
 	merges = &fakeMergeStore{projects: []storage.MergeProject{mergeTestProject()}, input: input}
 	if err := runOneRound(t, merges, cfg); err != nil {
 		t.Fatalf("second round: %v", err)
 	}
 	if !merges.finished.RebuildDone {
-		t.Fatal("a short batch did not complete the rebuild")
+		t.Fatal("an exhausted bank did not complete the rebuild")
 	}
 	if !merges.finished.Reconcile {
-		t.Fatal("the completing rebuild did not ask to reconcile the bank")
+		t.Fatal("the completing rebuild did not ask to Reconcile the bank")
 	}
 }

@@ -13,8 +13,8 @@ import (
 // The merged fact kinds and the circuit breaker: what a round reads, what it
 // writes, and when it must not run at all.
 
-// mergeRoundOpts is a round's settings for these tests: every merged fact kind
-// is input, which is the deployment default.
+// mergeRoundOpts is a round's settings for these tests: both input kinds are
+// read, which is the deployment default.
 func mergeRoundOpts(batch int, staleAfter time.Duration) MergeRoundOptions {
 	return MergeRoundOptions{Batch: batch, StaleAfter: staleAfter, IncludeExperience: true}
 }
@@ -46,8 +46,8 @@ func (f *mergeFixture) teamFactTypes(t *testing.T) map[string]string {
 	t.Helper()
 	ctx := f.teamSchemaCtx(t)
 	rows, err := f.db.QueryContext(ctx,
-		"SELECT text, fact_type FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id = $1 AND metadata->>'merge_key' IS NOT NULL",
-		tenant.ProjectBankID(f.teamID, f.projectID))
+		"SELECT text, fact_type FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id = $1 AND metadata->>'origin' = $2",
+		tenant.ProjectBankID(f.teamID, f.projectID), mergeMetadataOrigin)
 	if err != nil {
 		t.Fatalf("read team facts: %v", err)
 	}
@@ -63,10 +63,14 @@ func (f *mergeFixture) teamFactTypes(t *testing.T) map[string]string {
 	return out
 }
 
-// TestMergeStoreReadsEveryMergedFactType is the round's input scope: a member's
-// world facts, their experiences and their observations all reach the round, each
-// carrying its own kind.
-func TestMergeStoreReadsEveryMergedFactType(t *testing.T) {
+// TestMergeStoreReadsOnlyCopiedFactTypes is the round's input scope: a member's
+// world facts and experiences reach the round, each under its own kind, and their
+// observations do not.
+//
+// An observation is a derived row that consolidation rewrites in place without
+// moving `updated_at`, so a copy could never follow it. The team bank derives its
+// own conclusions from the facts that are copied.
+func TestMergeStoreReadsOnlyCopiedFactTypes(t *testing.T) {
 	f := newMergeFixture(t)
 	f.ensureTeamBank(t)
 	worldA := f.writeMemberFactOfType(t, f.memberA, "world", "The deploy uses port 15432.")
@@ -85,18 +89,18 @@ func TestMergeStoreReadsEveryMergedFactType(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("BeginMergeStanza: %v", err)
 	}
-	for unitID, want := range map[string]string{
-		worldA: "world", expA: "experience", obsA: "observation",
-	} {
+	for unitID, want := range map[string]string{worldA: "world", expA: "experience"} {
 		if got := seen[unitID]; got != want {
 			t.Fatalf("fact %s read as %q, want %q", unitID, got, want)
 		}
 	}
+	if _, ok := seen[obsA]; ok {
+		t.Fatal("a member's observation reached the round; it must not")
+	}
 }
 
 // TestMergeStoreExcludesExperienceWhenSwitchedOff pins the switch: with it off a
-// member's experiences are not input, while their world facts and observations
-// still are.
+// member's experiences are not input, while their world facts still are.
 func TestMergeStoreExcludesExperienceWhenSwitchedOff(t *testing.T) {
 	f := newMergeFixture(t)
 	f.ensureTeamBank(t)
@@ -120,8 +124,11 @@ func TestMergeStoreExcludesExperienceWhenSwitchedOff(t *testing.T) {
 	if seen[expA] {
 		t.Fatal("an experience fact reached the round while the switch was off")
 	}
-	if !seen[worldA] || !seen[obsA] {
-		t.Fatalf("world and observation must stay input: seen=%v", seen)
+	if seen[obsA] {
+		t.Fatal("an observation reached the round; it is never input")
+	}
+	if !seen[worldA] {
+		t.Fatalf("world facts must stay input: seen=%v", seen)
 	}
 }
 
@@ -143,12 +150,12 @@ func TestMergeStoreWritesTeamFactsUnderTheirOwnKind(t *testing.T) {
 	}
 }
 
-// TestRebuildContinuesFromTheCursor is the loop that made a large project look
-// empty: a segmented rebuild that reads from the beginning every round always
-// reads the same oldest batch, those facts are already in the team bank, nothing
-// is written, and the cursor never moves. "Rebuild" means the replay reaches the
-// end of the bank, not that every round restarts at the beginning.
-func TestRebuildContinuesFromTheCursor(t *testing.T) {
+// TestRebuildReplaysFromTheStart pins the read a rebuild depends on: while the
+// flag is set the round reads the member's bank from the beginning, so a fact
+// behind the old cursor is seen again. Reading only past the cursor would leave
+// every existing team fact standing after a withdrawal — the stale content the
+// rebuild exists to remove.
+func TestRebuildReplaysFromTheStart(t *testing.T) {
 	f := newMergeFixture(t)
 	f.ensureTeamBank(t)
 	first := f.writeMemberFact(t, f.memberA, "the oldest fact")
@@ -156,17 +163,18 @@ func TestRebuildContinuesFromTheCursor(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	second := f.writeMemberFact(t, f.memberA, "a newer fact")
 
-	// The cursor the first round leaves: the oldest fact's own timestamp.
-	var firstAt time.Time
+	var secondAt time.Time
 	if err := f.db.QueryRowContext(context.Background(),
 		"SELECT updated_at FROM "+quoteIdent(f.memberA)+".memory_units WHERE id = $1::uuid",
-		first).Scan(&firstAt); err != nil {
-		t.Fatalf("read first fact: %v", err)
+		second).Scan(&secondAt); err != nil {
+		t.Fatalf("read second fact: %v", err)
 	}
-	// A rebuild that already replayed the first fact.
+	// A rebuilt round whose cursor already stands at the end of the bank.
 	var stamp time.Time
 	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
-		mergeRoundOpts(1, time.Minute), func(stanza MergeStanza) error {
+		// A batch wider than the bank, so the round consumes everything and the
+		// cursor ends at the newest fact rather than short of it.
+		mergeRoundOpts(10, time.Minute), func(stanza MergeStanza) error {
 			stamp = stanza.(*mergeStanza).ClaimStamp()
 			return nil
 		}); err != nil {
@@ -178,23 +186,23 @@ func TestRebuildContinuesFromTheCursor(t *testing.T) {
 		Replace: MergeReplaceResult{},
 		Members: []string{f.memberA, f.memberB},
 		Cursors: map[string]MergeCursor{
-			f.memberA: {UpdatedAt: firstAt, UnitID: first},
+			f.memberA: {UpdatedAt: secondAt, UnitID: second},
 		},
-		Rebuild: true, RebuildDone: false,
 	}); err != nil {
 		t.Fatalf("FinishMergeStanza: %v", err)
 	}
-	// Set the flag without rewinding: a rebuild in progress continues from wherever
-	// its cursor stands, which is what RequestRebuild's rewind is for a rebuild the
-	// operator starts from scratch.
+	// Ask for a rebuild: an operator starting one from scratch, though the cursor
+	// already sits at the end of the bank. The flag is what makes the replay read
+	// the bank rather than the delta.
 	if _, err := f.db.ExecContext(context.Background(),
 		"UPDATE "+adminTable("merge_state")+" SET rebuild_requested = true WHERE team_tenant_id = $1 AND project_id = $2",
 		f.teamID, f.projectID); err != nil {
 		t.Fatalf("set rebuild flag: %v", err)
 	}
 
-	// The next round must read past the first fact, not restart at it.
-	var seen []string
+	// The rebuilding round reads the whole bank, including the fact the cursor
+	// had already passed.
+	seen := map[string]bool{}
 	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
 		mergeRoundOpts(10, time.Minute), func(stanza MergeStanza) error {
 			for _, member := range stanza.Input().Members {
@@ -202,26 +210,22 @@ func TestRebuildContinuesFromTheCursor(t *testing.T) {
 					continue
 				}
 				for _, fact := range member.Fresh {
-					seen = append(seen, fact.UnitID)
+					seen[fact.UnitID] = true
 				}
 			}
 			return nil
 		}); err != nil {
 		t.Fatalf("BeginMergeStanza: %v", err)
 	}
-	for _, id := range seen {
-		if id == first {
-			t.Fatal("the rebuild restarted at the oldest fact; it would never advance")
-		}
-	}
-	found := false
-	for _, id := range seen {
-		if id == second {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("the rebuild did not read past the cursor: %v", seen)
+	if !seen[first] || !seen[second] {
+		var curAt time.Time
+		var curUnit string
+		var rebuild bool
+		_ = f.db.QueryRowContext(context.Background(),
+			"SELECT cursor_updated_at, cursor_unit_id, rebuild_requested FROM "+adminTable("merge_state")+" WHERE team_tenant_id=$1 AND project_id=$2 AND tenant_id=$3",
+			f.teamID, f.projectID, f.memberA).Scan(&curAt, &curUnit, &rebuild)
+		t.Fatalf("the rebuild did not replay the whole bank: seen=%v cursor=%v/%s rebuild=%v first=%s second=%s",
+			seen, curAt, curUnit, rebuild, first, second)
 	}
 }
 
@@ -260,14 +264,15 @@ func TestMergeStoreCarriesTags(t *testing.T) {
 
 	key := tenant.MergeKey("the deploy uses port 15432")
 	if !f.runRound(t, []TeamFactRow{{Text: "the deploy uses port 15432", MergeKey: key,
+		SourceUnitID: unit, SourceTenant: f.memberA,
 		FactType: TypeWorld, Tags: []string{"deploy", "config"}}},
 		map[string][]MergeSourceRow{f.memberA: {{UnitID: unit, MergeKey: key}}}) {
 		t.Fatal("round did not run")
 	}
 	var stored string
 	if err := f.db.QueryRowContext(f.teamSchemaCtx(t),
-		"SELECT COALESCE(tags,'{}'::text[])::text FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id=$1 AND metadata->>'merge_key'=$2",
-		tenant.ProjectBankID(f.teamID, f.projectID), key).Scan(&stored); err != nil {
+		"SELECT COALESCE(tags,'{}'::text[])::text FROM "+quoteIdent(f.teamID)+".memory_units WHERE bank_id=$1 AND metadata->>'source_unit_id'=$2",
+		tenant.ProjectBankID(f.teamID, f.projectID), unit).Scan(&stored); err != nil {
 		t.Fatalf("read team tags: %v", err)
 	}
 	if stored != "{deploy,config}" {

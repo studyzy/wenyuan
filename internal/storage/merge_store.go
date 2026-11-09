@@ -44,6 +44,10 @@ type MergeProjectMember struct {
 	State tenant.MergeState
 	// HasLedger reports whether a merge_state row exists.
 	HasLedger bool
+	// RebuildRequested is State.RebuildRequested copied before the round claims
+	// the project: claiming rewrites the state row, and the read that follows
+	// must still know a rebuild was asked for.
+	RebuildRequested bool
 }
 
 // MergeProject is one project a round would consider.
@@ -67,15 +71,46 @@ type MergeFact struct {
 	TenantID string
 	UnitID   string
 	Text     string
-	// FactType is the member fact's own type — world, experience or
-	// observation — so the round writes the team fact under the same kind.
+	// FactType is the member fact's own type, so the round writes the team fact
+	// under the same kind.
 	FactType MemoryUnitType
 	// Tags are the member fact's tags, carried so the team bank keeps the same
 	// vocabulary: tags drive recall's tag filter and the fuzzy tag resolution, so
 	// a fact whose tags are dropped is a fact that no longer answers a tag query.
 	Tags []string
-	// UpdatedAt is the fact's stored timestamp, which is the cursor's first part.
+	// Context is the passage the fact was extracted from, carried verbatim. A
+	// team fact is a copy of what a member wrote, so dropping its context would
+	// change what the fact reads like.
+	Context string
+	// EventDate, OccurredStart, OccurredEnd and MentionedAt are the fact's
+	// temporal bounds, carried verbatim. The temporal recall arm matches on
+	// them, the graph derives its time edges from EventDate, and the listing's
+	// time filters read them, so a team fact without them is a fact that can
+	// only be reached by keyword and similarity.
+	EventDate     *time.Time
+	OccurredStart *time.Time
+	OccurredEnd   *time.Time
+	MentionedAt   *time.Time
+	// ObservationScopes is the fact's raw observation_scopes request. It is part
+	// of a fact's content in the transfer format, so a copy carries it.
+	ObservationScopes []byte
+	// TextSignals is the fact's text signals, which the keyword index is built
+	// from alongside the text and the context.
+	TextSignals *string
+	// CreatedAt, UpdatedAt and EditedAt are the fact's own stamps, carried so a
+	// team bank's ordering and timeline describe when the member's facts were
+	// written rather than when a round happened to copy them.
+	CreatedAt *time.Time
 	UpdatedAt time.Time
+	EditedAt  *time.Time
+	// SourceMemoryIDs is the fact's evidence, carried when it has any.
+	SourceMemoryIDs []string
+	// Embedding is the member fact's own vector, copied rather than recomputed.
+	// Retain embeds text augmented with the fact's date and its resolved entity
+	// names, and a team fact carries no entity postings, so a vector computed
+	// here could never match the member's. One deployment is one embedding
+	// scheme, which is what makes the copy comparable.
+	Embedding []float32
 }
 
 // MergeLink is one link between two facts a round carries.
@@ -116,18 +151,55 @@ type TeamFactRow struct {
 	ID       string
 	Text     string
 	MergeKey string
+	// SourceUnitID and SourceTenant are the member fact this row mirrors. The
+	// source unit is the row's identity: an edited fact keeps its unit id, so a
+	// round replaces its row rather than adding a second one for the new text.
+	SourceUnitID string
+	SourceTenant string
 	// FactType is the row's stored fact type. A team fact keeps the kind of the
 	// member fact it was made from.
 	FactType MemoryUnitType
 	// Tags are the row's tags. A team fact keeps the member fact's tags.
 	Tags []string
+	// Context, the four temporal bounds and ObservationScopes are the member
+	// fact's own values, carried verbatim; the round's diff compares them, which
+	// is what decides whether an existing row still matches its source.
+	Context           string
+	EventDate         *time.Time
+	OccurredStart     *time.Time
+	OccurredEnd       *time.Time
+	MentionedAt       *time.Time
+	ObservationScopes []byte
+	// TextSignals is the member fact's text signals, written with the row.
+	TextSignals *string
+	// CreatedAt, UpdatedAt and EditedAt are the member fact's stamps.
+	CreatedAt *time.Time
+	UpdatedAt time.Time
+	EditedAt  *time.Time
+	// SourceMemoryIDs is the member fact's evidence, carried when it has any.
+	SourceMemoryIDs []string
+	// Embedding is the member fact's vector, written unchanged.
+	Embedding []float32
 }
 
 // MergeStanzaInput is what a round reads while it holds the lock.
 type MergeStanzaInput struct {
 	Project MergeProject
 	// Previous is the team bank's current managed facts, in a stable order.
+	// It is bounded, so it describes the bank rather than enumerating it.
 	Previous []TeamFactRow
+	// TeamRows are the team rows this round's own member facts already
+	// produced, keyed by source unit id. This is the read the round's diff
+	// decides on: keyed by the source unit rather than by the text, so an
+	// edited member fact replaces its row instead of adding a second one.
+	TeamRows map[string]TeamFactRow
+	// ProjectTotal counts the facts the project's members hold, which is the
+	// input a rebuild replays across its rounds. It is the bound a rebuild is
+	// checked against, because the replay reads the whole of it eventually.
+	ProjectTotal int
+	// More reports that at least one member's bank holds facts beyond what this
+	// round read, so the replay is not finished and the next round continues.
+	More bool
 	// UnmanagedFacts counts the team bank's facts no round wrote, which the
 	// round's write replaces.
 	UnmanagedFacts int
@@ -145,6 +217,9 @@ type MergeMemberInput struct {
 	// Fresh is the member's new world facts after the cursor, bounded by the
 	// round's batch.
 	Fresh []MergeFact
+	// More reports that the member's bank holds facts beyond the prefix this
+	// round could read, so the replay has not reached its end.
+	More bool
 	// Links are the member's links that touch a fact in Fresh. Both endpoints
 	// are named by merge key; a link whose other endpoint is not in the team
 	// bank yet is written when that endpoint arrives in a later round.
@@ -209,8 +284,14 @@ type FinishMergeRequest struct {
 
 // MergeReplaceResult is the fact-level change a round produces.
 type MergeReplaceResult struct {
-	Keep   []TeamFactRow
+	// Keep is the team content the round read back unchanged.
+	Keep []TeamFactRow
+	// Insert is the facts to add: new sources, and the new text of an edited
+	// one.
 	Insert []TeamFactRow
+	// Remove is the rows an edited source no longer produces. They are deleted
+	// before the inserts, with the observations resting on them retired.
+	Remove []TeamFactRow
 	// Links are the member links to recreate between team facts. The write
 	// resolves each endpoint's merge key to the team bank's own row, so a link
 	// that names a fact another round wrote still lands.
@@ -252,8 +333,10 @@ type MergeStatus struct {
 	PendingMembers int
 	// TeamFacts counts the team bank's managed facts.
 	TeamFacts int
-	// UnmanagedFacts counts world facts in the team bank that no merge round
-	// wrote, which the next round will replace.
+	// UnmanagedFacts counts facts in the team bank that no merge round wrote,
+	// which the next round will replace. A fact is the round's when its metadata
+	// carries `origin=merge`; anything else — a hand-written fact, or a row an
+	// older round keyed on its text — is not.
 	UnmanagedFacts int
 }
 

@@ -395,6 +395,11 @@ func TestProjectNameIsFreeForm(t *testing.T) {
 		{"ja", "プロジェクト"},
 		{"emoji", "🚀 rocket"},
 		{"Web", "Web frontend"},
+		// An id is a repository-style name: hyphens, dots and a leading digit
+		// are ordinary, and the id still addresses the project in every path.
+		{"wenyuan-api", "Hyphenated"},
+		{"a.b_c-d", "Mixed separators"},
+		{"2fa", "Leading digit"},
 	} {
 		body := `{"project_id":"` + tc.id + `","name":"` + tc.name + `"}`
 		if recorder := fixture.do(t, http.MethodPost, "/admin/v1/teams/acme/projects", body); recorder.Code != http.StatusCreated {

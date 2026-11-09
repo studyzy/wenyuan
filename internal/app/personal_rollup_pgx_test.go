@@ -60,7 +60,7 @@ func newRollupJobFixture(t *testing.T) *rollupJobFixture {
 		f.persona); err != nil {
 		t.Fatalf("insert tenant: %v", err)
 	}
-	f.store = storage.NewPostgresPersonalStore(db)
+	f.store = storage.NewPostgresPersonalStore(db, "")
 	return f
 }
 
