@@ -36,7 +36,11 @@ func (s *MemoryStore) RenameBank(ctx context.Context, source, target string) err
 		return ErrBankExists
 	}
 
-	// Bank identity and ordering.
+	// Bank identity and ordering. A display name that is still the old
+	// identifier follows it; a chosen label survives the rename.
+	if bank.Name == source || bank.Name == "" {
+		bank.Name = target
+	}
 	delete(s.banks, source)
 	bank.BankID = target
 	s.banks[target] = bank

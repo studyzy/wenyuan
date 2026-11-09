@@ -81,13 +81,9 @@ func (s *PostgresStore) RenameBank(ctx context.Context, source, target string) e
 	if err != nil {
 		return err
 	}
-	copied := make([]string, 0, len(columns))
-	for _, column := range columns {
-		if column != "bank_id" {
-			copied = append(copied, quoteIdent(column))
-		}
-	}
-	insert := `INSERT INTO ` + qualified + `.banks (` + quoteIdent("bank_id") + `, ` + strings.Join(copied, ", ") + `)
+	copied := bankNameCarriedFromID(columns, "$1", "$2")
+	insert := `INSERT INTO ` + qualified + `.banks (` + quoteIdent("bank_id") + `, ` +
+		strings.Join(bankNameInsertColumns(columns), ", ") + `)
 	          SELECT $1, ` + strings.Join(copied, ", ") + ` FROM ` + qualified + `.banks WHERE bank_id = $2`
 	// A bank-scoped table can reference another by a composite (id, bank_id), as
 	// chunks does documents. Those foreign keys are immediate, so one side

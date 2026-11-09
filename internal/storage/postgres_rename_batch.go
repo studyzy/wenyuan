@@ -43,12 +43,7 @@ func (s *PostgresStore) RenameBanks(ctx context.Context, renames map[string]stri
 	if err != nil {
 		return err
 	}
-	copied := make([]string, 0, len(columns))
-	for _, column := range columns {
-		if column != "bank_id" {
-			copied = append(copied, quoteIdent(column))
-		}
-	}
+	copied := bankNameCarriedFromID(columns, "$1", "$2")
 
 	// The composite keys are deferred before the first insert: the copied
 	// banks row is what every bank-scoped composite key names, and an immediate
@@ -57,7 +52,8 @@ func (s *PostgresStore) RenameBanks(ctx context.Context, renames map[string]stri
 	if err != nil {
 		return err
 	}
-	insert := `INSERT INTO ` + qualified + `.banks (` + quoteIdent("bank_id") + `, ` + strings.Join(copied, ", ") + `)
+	insert := `INSERT INTO ` + qualified + `.banks (` + quoteIdent("bank_id") + `, ` +
+		strings.Join(bankNameInsertColumns(columns), ", ") + `)
 	          SELECT $1, ` + strings.Join(copied, ", ") + ` FROM ` + qualified + `.banks WHERE bank_id = $2`
 	for _, pair := range pairs {
 		if _, err := tx.ExecContext(ctx, insert, pair[1], pair[0]); err != nil {
