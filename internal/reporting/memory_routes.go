@@ -65,6 +65,13 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The scope chooses which bank answers. It is validated with the other query
+	// members, so a refused value answers before the store is asked.
+	preference, scopeFailure := memoryops.MemoryReadScope(r)
+	if scopeFailure != nil {
+		httpx.WriteValidationFailure(w, scopeFailure)
+		return
+	}
 	bankID, ok := h.requireBank(w, r)
 	if !ok {
 		return
@@ -115,7 +122,7 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 		// A team member's listing reads the project's shared bank once their own
 		// holds nothing. The storage layer performs the redirect and rewrites the
 		// units' bank ids back to this one, so the caller's shape is unchanged.
-		Fallback:           h.teamFallback(r.Context(), bankID),
+		Fallback:           h.teamFallback(r.Context(), bankID, preference),
 		Type:               queryLast(r, "type"),
 		Q:                  queryLast(r, "q"),
 		DocumentID:         queryLast(r, "document_id"),

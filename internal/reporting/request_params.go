@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/studyzy/wenyuan/internal/httpx"
+	"github.com/studyzy/wenyuan/internal/memoryops"
 	"github.com/studyzy/wenyuan/internal/storage"
 )
 
@@ -108,8 +109,16 @@ func (h *Handlers) requireBank(w http.ResponseWriter, r *http.Request) (string, 
 		// A deployment with teams may still have content for this caller. The
 		// read itself decides whether it does: an unresolved scope means the
 		// caller is not a member of anything, and the store then answers the
-		// same not-found through its own lookup.
-		if h.teamFallback(r.Context(), bankID) == nil {
+		// same not-found through its own lookup. A caller who asked for their
+		// personal bank is not served a team's content, so their missing bank
+		// stays not-found.
+		preference, failure := memoryops.MemoryReadScope(r)
+		// A refused scope is written by the route's own parse; it reads as no
+		// fallback here, the safe default.
+		if failure != nil {
+			preference = storage.PreferTeam
+		}
+		if h.teamFallback(r.Context(), bankID, preference) == nil {
 			httpx.WriteErrorFor(w, r, httpx.NewHTTPError(httpx.KindNotFound, httpx.DetailMissingBank))
 			return "", false
 		}

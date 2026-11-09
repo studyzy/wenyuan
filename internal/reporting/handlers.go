@@ -96,7 +96,7 @@ func (h *Handlers) BindRoutes(handle func(method, pattern string, handler http.H
 	handle(http.MethodPost, httpx.BankPath(httpx.SuffixMemoriesDryRunExtract), h.DryRunExtract)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMemoriesList), httpx.QueryParams(h.ListMemories,
 		"type", "q", "consolidation_state", "state", "document_id", "entity_id", "tags", "tags_match",
-		"time_field", "start_date", "end_date", "limit", "offset"))
+		"time_field", "start_date", "end_date", "limit", "offset", "scope"))
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMemoryMember), h.GetMemory)
 	handle(http.MethodPatch, httpx.BankPath(httpx.SuffixMemoryMember), h.UpdateMemory)
 	handle(http.MethodGet, httpx.BankPath(httpx.SuffixMemoryHistory), h.MemoryHistory)
