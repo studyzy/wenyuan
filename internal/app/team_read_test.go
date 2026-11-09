@@ -77,10 +77,13 @@ func newTeamReadFixture(t *testing.T) *teamReadFixture {
 }
 
 // recall runs recall as one tenant and returns the decoded response.
-func (f *teamReadFixture) recall(t *testing.T, tenantID, bankID, query string) map[string]any {
+//
+// scopeQuery is the request's query string, "?scope=personal" included; empty
+// means the route is asked with no parameter at all, which is the default.
+func (f *teamReadFixture) recall(t *testing.T, tenantID, bankID, query, scopeQuery string) map[string]any {
 	t.Helper()
 	body := `{"query":"` + query + `"}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/default/banks/"+bankID+"/memories/recall", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/default/banks/"+bankID+"/memories/recall"+scopeQuery, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+f.keys[tenantID])
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -157,7 +160,7 @@ func TestMemberRecallReadsTheTeamBank(t *testing.T) {
 	fixture.writeTeamFact(t, "The deploy uses port 15432.")
 	fixture.ensurePersonalBank(t, "alice")
 
-	response := fixture.recall(t, "alice", "alice::web", "deploy port")
+	response := fixture.recall(t, "alice", "alice::web", "deploy port", "")
 	results, _ := response["results"].([]any)
 	if len(results) == 0 {
 		t.Fatalf("recall returned nothing; the team's content should be visible: %v", response)
@@ -409,4 +412,100 @@ func listingTotal(t *testing.T, f *teamReadFixture, tenantID, bankID string) int
 	body := f.list(t, tenantID, bankID, "")
 	total, _ := body["total"].(float64)
 	return int(total)
+}
+
+// recallTexts is the text of every recall result, for asserting on content
+// rather than on the envelope.
+func recallTexts(t *testing.T, f *teamReadFixture, tenantID, bankID, query, scopeQuery string) []string {
+	t.Helper()
+	results, _ := f.recall(t, tenantID, bankID, query, scopeQuery)["results"].([]any)
+	texts := make([]string, 0, len(results))
+	for _, item := range results {
+		entry, _ := item.(map[string]any)
+		text, _ := entry["text"].(string)
+		texts = append(texts, text)
+	}
+	return texts
+}
+
+// listingTexts is the text of every listed memory, with the query string the
+// caller chooses.
+func listingTexts(t *testing.T, f *teamReadFixture, tenantID, bankID, scopeQuery string) []string {
+	t.Helper()
+	items, _ := f.list(t, tenantID, bankID, scopeQuery)["items"].([]any)
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		entry, _ := item.(map[string]any)
+		text, _ := entry["text"].(string)
+		texts = append(texts, text)
+	}
+	return texts
+}
+
+func containsText(texts []string, want string) bool {
+	for _, text := range texts {
+		if text == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRecallScopePersonalReadsOnlyTheirOwnBank pins the whole path in one
+// request: the same member and bank id, answered by the personal bank when the
+// scope says so, while the default still answers from the team.
+func TestRecallScopePersonalReadsOnlyTheirOwnBank(t *testing.T) {
+	fixture := newTeamReadFixture(t)
+	fixture.writeTeamFact(t, "The deploy uses port 15432.")
+	fixture.writePersonalFact(t, "alice", "Alice's own note about the deploy.")
+
+	team := recallTexts(t, fixture, "alice", "alice::web", "deploy", "")
+	if !containsText(team, "The deploy uses port 15432.") {
+		t.Fatalf("default recall = %v, want the team's fact", team)
+	}
+
+	personal := recallTexts(t, fixture, "alice", "alice::web", "deploy", "?scope=personal")
+	if containsText(personal, "The deploy uses port 15432.") {
+		t.Fatalf("personal recall = %v, want no team fact", personal)
+	}
+	if !containsText(personal, "Alice's own note about the deploy.") {
+		t.Fatalf("personal recall = %v, want Alice's own fact", personal)
+	}
+}
+
+// TestRecallScopeBothIsRefused pins the served refusal, status and message.
+func TestRecallScopeBothIsRefused(t *testing.T) {
+	fixture := newTeamReadFixture(t)
+	fixture.writeTeamFact(t, "The deploy uses port 15432.")
+	fixture.ensurePersonalBank(t, "alice")
+
+	request := httptest.NewRequest(http.MethodPost,
+		"/v1/default/banks/alice::web/memories/recall?scope=both", strings.NewReader(`{"query":"deploy"}`))
+	request.Header.Set("Authorization", "Bearer "+fixture.keys["alice"])
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	fixture.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("scope=both = %d, want 422: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not supported yet") {
+		t.Fatalf("scope=both body = %s, want it to say both is not supported yet", recorder.Body.String())
+	}
+}
+
+// TestListScopePersonalIsHonoured pins the same choice on the listing.
+func TestListScopePersonalIsHonoured(t *testing.T) {
+	fixture := newTeamReadFixture(t)
+	fixture.writeTeamFact(t, "The deploy uses port 15432.")
+	fixture.writePersonalFact(t, "alice", "Alice's own note about the deploy.")
+
+	team := listingTexts(t, fixture, "alice", "alice::web", "")
+	if len(team) != 1 || team[0] != "The deploy uses port 15432." {
+		t.Fatalf("default listing = %v, want exactly the team's fact", team)
+	}
+
+	personal := listingTexts(t, fixture, "alice", "alice::web", "scope=personal")
+	if len(personal) != 1 || personal[0] != "Alice's own note about the deploy." {
+		t.Fatalf("personal listing = %v, want exactly Alice's own fact", personal)
+	}
 }
