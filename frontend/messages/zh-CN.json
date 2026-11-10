@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "移出项目成员失败。",
       "projectMemberPurgeConfirm": "撤回会把 {member} 移出项目，并从团队库中删除他的贡献。请再次输入 {member} 确认：",
       "projectMemberPurged": "已撤回 {member} 的贡献，团队库将在下一轮合并后更新。",
-      "projectMemberPurgeFailed": "撤回贡献失败；该成员可能仍留在项目中。"
+      "projectMemberPurgeFailed": "撤回贡献失败；该成员可能仍留在项目中。",
+      "rebuildBank": "重建知识库",
+      "rebuildBankHint": "按成员当前的事实重放项目库。成员已不再持有的事实会从项目库移除；成员自己的库及其观察不受影响。",
+      "projectBankRebuildConfirm": "重建 {project} 的项目库，将按每个成员当前的事实重放。\n\n会移除：来源已不在任何成员库中的项目库事实，以及失去全部来源的项目库观察。\n会保留：成员仍持有的每一条事实，以及成员自己的库。\n\n重建在后台分多轮合并完成，项目较大时可能需要数分钟。\n\n请输入项目 id {project} 确认：",
+      "projectBankRebuildQueued": "已排队重建 {project}，将在接下来几轮合并中逐步完成，每轮结束后项目库随之更新。",
+      "projectBankRebuildNotQueued": "{project} 已有重建在进行中。",
+      "projectBankRebuildFailed": "无法发起重建。"
     }
   }
 }

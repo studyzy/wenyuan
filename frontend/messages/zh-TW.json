@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "移出專案成員失敗。",
       "projectMemberPurgeConfirm": "撤回會將 {member} 移出專案，並從團隊庫刪除他的貢獻。請再次輸入 {member} 確認：",
       "projectMemberPurged": "已撤回 {member} 的貢獻，團隊庫將在下一輪合併後更新。",
-      "projectMemberPurgeFailed": "撤回貢獻失敗；該成員可能仍留在專案中。"
+      "projectMemberPurgeFailed": "撤回貢獻失敗；該成員可能仍留在專案中。",
+      "rebuildBank": "重建知識庫",
+      "rebuildBankHint": "依成員目前的事實重放專案庫。成員已不再持有的事實會從專案庫移除；成員自己的庫及其觀察不受影響。",
+      "projectBankRebuildConfirm": "重建 {project} 的專案庫，將依每個成員目前的事實重放。\n\n會移除：來源已不在任何成員庫中的專案庫事實，以及失去全部來源的專案庫觀察。\n會保留：成員仍持有的每一條事實，以及成員自己的庫。\n\n重建在背景分多輪合併完成，專案較大時可能需要數分鐘。\n\n請輸入專案 id {project} 確認：",
+      "projectBankRebuildQueued": "已排隊重建 {project}，將在接下來幾輪合併中逐步完成，每輪結束後專案庫隨之更新。",
+      "projectBankRebuildNotQueued": "{project} 已有重建在進行中。",
+      "projectBankRebuildFailed": "無法發起重建。"
     }
   }
 }

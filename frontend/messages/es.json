@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "No se pudo quitar al miembro del proyecto.",
       "projectMemberPurgeConfirm": "Retirar quita a {member} del proyecto y borra su contribución del banco del equipo. Escribe {member} para confirmar:",
       "projectMemberPurged": "Se retiró la contribución de {member}; el banco del equipo se actualiza en la próxima ronda.",
-      "projectMemberPurgeFailed": "No se pudo retirar la contribución; el miembro puede seguir en el proyecto."
+      "projectMemberPurgeFailed": "No se pudo retirar la contribución; el miembro puede seguir en el proyecto.",
+      "rebuildBank": "Reconstruir la base de conocimiento",
+      "rebuildBankHint": "Reproduce el banco del proyecto a partir de los hechos actuales de los miembros. Los hechos que ningún miembro conserva se eliminan del banco del proyecto; los bancos propios de los miembros y sus observaciones no se modifican.",
+      "projectBankRebuildConfirm": "Reconstruir el banco del proyecto {project} lo reproduce a partir de los hechos actuales de cada miembro.\n\nSe elimina: los hechos del banco del proyecto cuya fuente ya no existe en el banco de ningún miembro, y las observaciones del banco del proyecto que pierden todas sus fuentes.\nSe conserva: cada hecho que un miembro aún mantiene, y el banco propio de cada miembro.\n\nLa reconstrucción se ejecuta en segundo plano a lo largo de varias rondas de fusión, lo que puede tardar minutos en un proyecto grande.\n\nEscribe el id del proyecto {project} para confirmar:",
+      "projectBankRebuildQueued": "Reconstrucción de {project} en cola. Avanza durante las próximas rondas de fusión; el banco se actualiza al terminar cada ronda.",
+      "projectBankRebuildNotQueued": "{project} ya tiene una reconstrucción en curso.",
+      "projectBankRebuildFailed": "No se pudo solicitar la reconstrucción."
     }
   }
 }

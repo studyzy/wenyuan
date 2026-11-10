@@ -349,4 +349,11 @@ export const adminApi = {
       { method: "POST", body: JSON.stringify({ tenant_id: tenantId }) },
     );
   },
+  /** Asks the next merge round to replay the members' facts from the beginning. */
+  mergeRebuild(teamId: string, projectId: string) {
+    return request<{ project_id: string; rebuild: boolean }>(
+      projectPath(teamId, projectId) + "/merge-rebuild",
+      { method: "POST", body: "{}" },
+    );
+  },
 };

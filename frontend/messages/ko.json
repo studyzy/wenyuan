@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "프로젝트 멤버 제거에 실패했습니다.",
       "projectMemberPurgeConfirm": "철회하면 {member} 가 프로젝트에서 제거되고 기여가 팀 뱅크에서 삭제됩니다. 확인하려면 {member} 를 입력하세요:",
       "projectMemberPurged": "{member} 의 기여를 철회했습니다. 팀 뱅크는 다음 병합 주기에 갱신됩니다.",
-      "projectMemberPurgeFailed": "기여 철회에 실패했습니다. 멤버가 아직 프로젝트에 남아 있을 수 있습니다."
+      "projectMemberPurgeFailed": "기여 철회에 실패했습니다. 멤버가 아직 프로젝트에 남아 있을 수 있습니다.",
+      "rebuildBank": "지식 베이스 재구축",
+      "rebuildBankHint": "구성원의 현재 사실로 프로젝트 뱅크를 다시 재생합니다. 구성원이 더 이상 보유하지 않은 사실은 프로젝트 뱅크에서 제거되지만, 구성원 자신의 뱅크와 그 관찰은 변경되지 않습니다.",
+      "projectBankRebuildConfirm": "{project}의 프로젝트 뱅크를 각 구성원의 현재 사실로 다시 재생합니다.\n\n제거되는 것: 어떤 구성원의 뱅크에도 더 이상 존재하지 않는 사실, 그리고 모든 출처를 잃은 프로젝트 뱅크의 관찰.\n유지되는 것: 구성원이 여전히 보유한 모든 사실, 그리고 구성원 자신의 뱅크.\n\n재구축은 백그라운드에서 여러 번의 병합 라운드로 실행되며, 큰 프로젝트에서는 몇 분이 걸릴 수 있습니다.\n\n확인하려면 프로젝트 id {project}를 입력하세요:",
+      "projectBankRebuildQueued": "{project}의 재구축이 대기열에 추가되었습니다. 이후 병합 라운드에서 진행되며, 각 라운드가 끝날 때마다 뱅크가 갱신됩니다.",
+      "projectBankRebuildNotQueued": "{project}은(는) 이미 재구축 중입니다.",
+      "projectBankRebuildFailed": "재구축을 요청할 수 없습니다."
     }
   }
 }

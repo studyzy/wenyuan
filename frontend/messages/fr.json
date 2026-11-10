@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "Le retrait du membre du projet a échoué.",
       "projectMemberPurgeConfirm": "Révoquer retire {member} du projet et supprime sa contribution de la banque de l'équipe. Saisissez {member} pour confirmer :",
       "projectMemberPurged": "La contribution de {member} a été révoquée ; la banque de l'équipe se met à jour au prochain tour.",
-      "projectMemberPurgeFailed": "La révocation a échoué ; le membre est peut-être encore sur le projet."
+      "projectMemberPurgeFailed": "La révocation a échoué ; le membre est peut-être encore sur le projet.",
+      "rebuildBank": "Reconstruire la base de connaissances",
+      "rebuildBankHint": "Rejoue la banque du projet à partir des faits actuels des membres. Les faits qu'aucun membre ne détient plus sont retirés de la banque du projet ; les banques propres aux membres et leurs observations ne sont pas modifiées.",
+      "projectBankRebuildConfirm": "La reconstruction de la banque du projet {project} la rejoue à partir des faits actuels de chaque membre.\n\nCe qui est retiré : les faits de la banque du projet dont la source n'existe plus dans aucune banque de membre, et les observations de la banque du projet qui perdent toutes leurs sources.\nCe qui est conservé : chaque fait qu'un membre détient encore, et la banque propre de chaque membre.\n\nLa reconstruction s'exécute en arrière-plan sur plusieurs cycles de fusion, ce qui peut prendre plusieurs minutes sur un projet volumineux.\n\nSaisissez l'id du projet {project} pour confirmer :",
+      "projectBankRebuildQueued": "Reconstruction de {project} mise en file. Elle progresse au fil des prochains cycles de fusion ; la banque est mise à jour à la fin de chaque cycle.",
+      "projectBankRebuildNotQueued": "Une reconstruction est déjà en cours pour {project}.",
+      "projectBankRebuildFailed": "Impossible de demander la reconstruction."
     }
   }
 }

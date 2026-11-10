@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "Falha ao remover o membro do projeto.",
       "projectMemberPurgeConfirm": "Revogar remove {member} do projeto e apaga a contribuição do banco da equipe. Digite {member} para confirmar:",
       "projectMemberPurged": "A contribuição de {member} foi revogada; o banco da equipe atualiza na próxima rodada.",
-      "projectMemberPurgeFailed": "Falha ao revogar a contribuição; o membro pode continuar no projeto."
+      "projectMemberPurgeFailed": "Falha ao revogar a contribuição; o membro pode continuar no projeto.",
+      "rebuildBank": "Reconstruir a base de conhecimento",
+      "rebuildBankHint": "Reproduz o banco do projeto a partir dos fatos atuais dos membros. Os fatos que nenhum membro mantém são removidos do banco do projeto; os bancos próprios dos membros e as suas observações não são alterados.",
+      "projectBankRebuildConfirm": "Reconstruir o banco do projeto {project} reproduz-o a partir dos fatos atuais de cada membro.\n\nO que é removido: fatos do banco do projeto cuja origem já não existe no banco de nenhum membro, e observações do banco do projeto que perdem todas as suas origens.\nO que é mantido: todos os fatos que um membro ainda mantém, e o banco próprio de cada membro.\n\nA reconstrução corre em segundo plano ao longo de várias rondas de fusão, o que pode demorar minutos num projeto grande.\n\nEscreva o id do projeto {project} para confirmar:",
+      "projectBankRebuildQueued": "Reconstrução de {project} em fila. Avança nas próximas rondas de fusão; o banco é atualizado ao fim de cada ronda.",
+      "projectBankRebuildNotQueued": "{project} já tem uma reconstrução em curso.",
+      "projectBankRebuildFailed": "Não foi possível pedir a reconstrução."
     }
   }
 }

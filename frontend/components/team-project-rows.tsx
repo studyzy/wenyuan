@@ -33,6 +33,7 @@ export function ProjectRows({
   onAddMember,
   onRemoveMember,
   onPurgeMember,
+  onRebuild,
   onDelete,
 }: {
   project: TeamProject;
@@ -45,6 +46,7 @@ export function ProjectRows({
   onAddMember: (event: React.FormEvent) => void;
   onRemoveMember: (id: string) => void;
   onPurgeMember: (id: string) => void;
+  onRebuild: () => void;
   onDelete: () => void;
 }) {
   const t = useTranslations("teams.detail");
@@ -62,6 +64,14 @@ export function ProjectRows({
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="outline" onClick={onToggle}>
               {expanded ? t("hideMembers") : t("showMembers")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title={t("rebuildBankHint")}
+              onClick={onRebuild}
+            >
+              {t("rebuildBank")}
             </Button>
             <Button size="sm" variant="destructive" onClick={onDelete}>
               {t("delete")}

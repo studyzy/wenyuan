@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "Removing the project member failed.",
       "projectMemberPurgeConfirm": "Withdrawing removes {member} from the project and deletes their contribution from the team bank. Type {member} to confirm:",
       "projectMemberPurged": "{member}'s contribution was withdrawn; the team bank updates on the next merge round.",
-      "projectMemberPurgeFailed": "Withdrawing the contribution failed; the member may still be on the project."
+      "projectMemberPurgeFailed": "Withdrawing the contribution failed; the member may still be on the project.",
+      "rebuildBank": "Rebuild knowledge base",
+      "rebuildBankHint": "Replays the project bank from the members' current facts. Facts the members no longer hold are removed from the project bank; members' own banks and their observations are not touched.",
+      "projectBankRebuildConfirm": "Rebuilding the project bank of {project} replays it from every member's current facts.\n\nWhat is removed: project-bank facts whose source no longer exists in any member's bank, and project-bank observations that lose all their sources.\nWhat is kept: every fact a member still holds, and every member's own bank.\n\nIt runs in the background over several merge rounds, which can take minutes on a large project.\n\nType the project id {project} to confirm:",
+      "projectBankRebuildQueued": "Rebuild of {project} queued. It runs over the next merge rounds; the bank updates as each round completes.",
+      "projectBankRebuildNotQueued": "{project} already has a rebuild in progress.",
+      "projectBankRebuildFailed": "Could not request the rebuild."
     }
   }
 }

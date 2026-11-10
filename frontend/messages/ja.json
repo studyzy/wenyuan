@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "プロジェクトメンバーの削除に失敗しました。",
       "projectMemberPurgeConfirm": "取り消すと {member} がプロジェクトから外れ、貢献がチームバンクから削除されます。確認のため {member} を入力してください:",
       "projectMemberPurged": "{member} の貢献を取り消しました。チームバンクは次回の統合で更新されます。",
-      "projectMemberPurgeFailed": "貢献の取り消しに失敗しました。メンバーはまだプロジェクトに残っている可能性があります。"
+      "projectMemberPurgeFailed": "貢献の取り消しに失敗しました。メンバーはまだプロジェクトに残っている可能性があります。",
+      "rebuildBank": "ナレッジベースを再構築",
+      "rebuildBankHint": "メンバーの現在の事実からプロジェクトバンクを再実行します。メンバーが保持しなくなった事実はプロジェクトバンクから削除されますが、メンバー自身のバンクとその推論は変更されません。",
+      "projectBankRebuildConfirm": "{project} のプロジェクトバンクを、各メンバーの現在の事実から再実行します。\n\n削除されるもの: どのメンバーのバンクにも存在しなくなった事実、およびすべての出典を失ったプロジェクトバンクの推論。\n保持されるもの: メンバーがまだ保持しているすべての事実、およびメンバー自身のバンク。\n\n再構築はバックグラウンドで複数回のマージラウンドに分けて実行され、大規模なプロジェクトでは数分かかることがあります。\n\n確認のためプロジェクト id {project} を入力してください:",
+      "projectBankRebuildQueued": "{project} の再構築をキューに追加しました。以降のマージラウンドで進み、各ラウンドの完了ごとにバンクが更新されます。",
+      "projectBankRebuildNotQueued": "{project} はすでに再構築中です。",
+      "projectBankRebuildFailed": "再構築を要求できませんでした。"
     }
   }
 }

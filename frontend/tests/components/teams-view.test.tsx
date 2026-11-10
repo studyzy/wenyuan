@@ -32,6 +32,7 @@ const removeTeamMember = vi.fn();
 const addProjectMember = vi.fn();
 const removeProjectMember = vi.fn();
 const purgeContribution = vi.fn();
+const mergeRebuild = vi.fn();
 const deleteTeam = vi.fn();
 const renameTeam = vi.fn();
 const tenantSession = vi.fn();
@@ -54,6 +55,7 @@ vi.mock("@/lib/admin-api", () => ({
     addProjectMember: (...args: unknown[]) => addProjectMember(...args),
     removeProjectMember: (...args: unknown[]) => removeProjectMember(...args),
     purgeContribution: (...args: unknown[]) => purgeContribution(...args),
+    mergeRebuild: (...args: unknown[]) => mergeRebuild(...args),
     deleteTeam: (...args: unknown[]) => deleteTeam(...args),
     renameTeam: (...args: unknown[]) => renameTeam(...args),
     tenantSession: () => tenantSession(),
@@ -261,6 +263,43 @@ describe("TeamDetailView", () => {
     await waitFor(() =>
       expect(screen.getByText("the project merge job is not enabled on this deployment")).toBeDefined(),
     );
+    prompt.mockRestore();
+  });
+
+  it("rebuilds a project bank only after the project id is typed back", async () => {
+    mergeRebuild.mockResolvedValue({ project_id: "web", rebuild: true });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("web");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+
+    fireEvent.click(screen.getByText("rebuildBank"));
+    await waitFor(() => expect(mergeRebuild).toHaveBeenCalledWith("acme", "web"));
+    await waitFor(() => expect(screen.getByText("projectBankRebuildQueued")).toBeDefined());
+    prompt.mockRestore();
+  });
+
+  it("does not rebuild when the typed project id does not match", async () => {
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("webx");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+
+    fireEvent.click(screen.getByText("rebuildBank"));
+    await waitFor(() => expect(prompt).toHaveBeenCalled());
+    expect(mergeRebuild).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  it("reports that a rebuild was already in progress", async () => {
+    mergeRebuild.mockResolvedValue({ project_id: "web", rebuild: false });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("web");
+    render(<TeamDetailView teamId="acme" />);
+    await waitFor(() => expect(screen.getByText("Acme Engineering")).toBeDefined());
+    openProjectsTab();
+
+    fireEvent.click(screen.getByText("rebuildBank"));
+    await waitFor(() => expect(screen.getByText("projectBankRebuildNotQueued")).toBeDefined());
     prompt.mockRestore();
   });
 

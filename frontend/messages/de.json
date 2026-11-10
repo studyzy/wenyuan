@@ -2926,7 +2926,13 @@
       "projectMemberRemoveFailed": "Das Entfernen des Projektmitglieds ist fehlgeschlagen.",
       "projectMemberPurgeConfirm": "Zurückziehen entfernt {member} aus dem Projekt und löscht den Beitrag aus der Team-Bank. Zur Bestätigung {member} eingeben:",
       "projectMemberPurged": "Der Beitrag von {member} wurde zurückgezogen; die Team-Bank aktualisiert sich in der nächsten Runde.",
-      "projectMemberPurgeFailed": "Das Zurückziehen ist fehlgeschlagen; das Mitglied ist eventuell noch im Projekt."
+      "projectMemberPurgeFailed": "Das Zurückziehen ist fehlgeschlagen; das Mitglied ist eventuell noch im Projekt.",
+      "rebuildBank": "Wissensbasis neu aufbauen",
+      "rebuildBankHint": "Spielt die Projektbank aus den aktuellen Fakten der Mitglieder neu ein. Fakten, die kein Mitglied mehr hält, werden aus der Projektbank entfernt; die eigenen Banken der Mitglieder und ihre Schlussfolgerungen bleiben unberührt.",
+      "projectBankRebuildConfirm": "Der Neuaufbau der Projektbank von {project} spielt sie aus den aktuellen Fakten aller Mitglieder neu ein.\n\nEntfernt werden: Fakten der Projektbank, deren Quelle in keiner Mitgliedsbank mehr existiert, und Schlussfolgerungen der Projektbank, die alle ihre Quellen verlieren.\nErhalten bleiben: jeder Fakt, den ein Mitglied noch hält, und die eigene Bank jedes Mitglieds.\n\nDer Neuaufbau läuft im Hintergrund über mehrere Merge-Runden und kann bei einem großen Projekt Minuten dauern.\n\nGeben Sie zur Bestätigung die Projekt-ID {project} ein:",
+      "projectBankRebuildQueued": "Neuaufbau von {project} eingereiht. Er läuft über die nächsten Merge-Runden; die Bank wird nach jeder Runde aktualisiert.",
+      "projectBankRebuildNotQueued": "Für {project} läuft bereits ein Neuaufbau.",
+      "projectBankRebuildFailed": "Der Neuaufbau konnte nicht angefordert werden."
     }
   }
 }

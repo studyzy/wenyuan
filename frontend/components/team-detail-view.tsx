@@ -220,6 +220,21 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
     }
   }
 
+  async function rebuildBank(project: TeamProject) {
+    setNotice(null);
+    const typed = window.prompt(t("projectBankRebuildConfirm", { project: project.project_id }), "");
+    if (typed !== project.project_id) return;
+    try {
+      const result = await adminApi.mergeRebuild(teamId, project.project_id);
+      setNotice({
+        kind: "ok",
+        text: result.rebuild ? t("projectBankRebuildQueued", { project: project.project_id }) : t("projectBankRebuildNotQueued", { project: project.project_id }),
+      });
+    } catch (err) {
+      fail(err, "projectBankRebuildFailed");
+    }
+  }
+
   async function createKey(event: React.FormEvent) {
     event.preventDefault();
     setNotice(null);
@@ -414,6 +429,7 @@ export function TeamDetailView({ teamId }: { teamId: string }) {
                           onAddMember={(event) => void addProjectMember(project, event)}
                           onRemoveMember={(id) => void removeProjectMember(project, id)}
                           onPurgeMember={(id) => void purgeProjectMember(project, id)}
+                          onRebuild={() => void rebuildBank(project)}
                           onDelete={() => void deleteProject(project)}
                         />
                       ))
