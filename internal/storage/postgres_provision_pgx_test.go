@@ -32,20 +32,20 @@ func TestProvisionTenantSchema(t *testing.T) {
 		_ = db.Close()
 	})
 
-	if err := ProvisionTenantSchema(ctx, db, schema, false, "pgvector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, db, schema, false, SchemaStoreConfig{VectorExtension: "pgvector"}); err != nil {
 		t.Fatalf("ProvisionTenantSchema: %v", err)
 	}
 	exists, err := SchemaExists(ctx, db, schema)
 	if err != nil || !exists {
 		t.Fatalf("SchemaExists = %v/%v, want true/nil", exists, err)
 	}
-	if err := ProvisionTenantSchema(ctx, db, schema, false, "pgvector"); !errors.Is(err, ErrSchemaExists) {
+	if err := ProvisionTenantSchema(ctx, db, schema, false, SchemaStoreConfig{VectorExtension: "pgvector"}); !errors.Is(err, ErrSchemaExists) {
 		t.Fatalf("second provision without adopt = %v, want ErrSchemaExists", err)
 	}
-	if err := ProvisionTenantSchema(ctx, db, schema, true, "pgvector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, db, schema, true, SchemaStoreConfig{VectorExtension: "pgvector"}); err != nil {
 		t.Fatalf("adopt provision: %v", err)
 	}
-	if err := ProvisionTenantSchema(ctx, db, "Admin", false, "pgvector"); !errors.Is(err, ErrInvalidSchema) {
+	if err := ProvisionTenantSchema(ctx, db, "Admin", false, SchemaStoreConfig{VectorExtension: "pgvector"}); !errors.Is(err, ErrInvalidSchema) {
 		t.Fatalf("invalid schema = %v, want ErrInvalidSchema", err)
 	}
 }

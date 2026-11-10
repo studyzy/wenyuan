@@ -60,7 +60,7 @@ func newPersonalFixture(t *testing.T) *personalFixture {
 	if err := MigrateAdminSchemaFor(ctx, db, false); err != nil {
 		t.Fatalf("admin migrations: %v", err)
 	}
-	if err := ProvisionTenantSchema(ctx, db, f.persona, false, "vector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, db, f.persona, false, SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 		t.Fatalf("provision %s: %v", f.persona, err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -821,7 +821,7 @@ func TestPersonalStatusReportsATeamAsHavingNoAggregate(t *testing.T) {
 	f := newPersonalFixture(t)
 	teamID := f.persona + "_team"
 	ctx := context.Background()
-	if err := ProvisionTenantSchema(ctx, f.db, teamID, false, "vector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, f.db, teamID, false, SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 		t.Fatalf("provision team: %v", err)
 	}
 	t.Cleanup(func() {

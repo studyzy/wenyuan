@@ -42,7 +42,7 @@ func TestDropTenantSchemaProtectsSharedSchemas(t *testing.T) {
 		defer cleanupCancel()
 		_, _ = db.ExecContext(cleanupCtx, "DROP SCHEMA IF EXISTS "+quoteIdent(schema)+" CASCADE")
 	})
-	if err := ProvisionTenantSchema(ctx, db, schema, false, "pgvector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, db, schema, false, SchemaStoreConfig{VectorExtension: "pgvector"}); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
 	if err := DropTenantSchema(ctx, db, schema); err != nil {
@@ -73,13 +73,13 @@ func TestMigrateTenantSchema(t *testing.T) {
 		defer cleanupCancel()
 		_, _ = db.ExecContext(cleanupCtx, "DROP SCHEMA IF EXISTS "+quoteIdent(schema)+" CASCADE")
 	})
-	if err := ProvisionTenantSchema(ctx, db, schema, false, "pgvector"); err != nil {
+	if err := ProvisionTenantSchema(ctx, db, schema, false, SchemaStoreConfig{VectorExtension: "pgvector"}); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
-	if err := MigrateTenantSchema(ctx, db, schema, "pgvector"); err != nil {
+	if err := MigrateTenantSchema(ctx, db, schema, SchemaStoreConfig{VectorExtension: "pgvector"}); err != nil {
 		t.Fatalf("migrate existing schema: %v", err)
 	}
-	if err := MigrateTenantSchema(ctx, db, "admin", "pgvector"); !errors.Is(err, ErrSchemaProtected) {
+	if err := MigrateTenantSchema(ctx, db, "admin", SchemaStoreConfig{VectorExtension: "pgvector"}); !errors.Is(err, ErrSchemaProtected) {
 		t.Fatalf("migrate admin = %v, want ErrSchemaProtected", err)
 	}
 }

@@ -52,7 +52,7 @@ func newRollupJobFixture(t *testing.T) *rollupJobFixture {
 	if err := storage.MigrateAdminSchemaFor(ctx, db, false); err != nil {
 		t.Fatalf("admin migrations: %v", err)
 	}
-	if err := storage.ProvisionTenantSchema(ctx, db, f.persona, false, "vector"); err != nil {
+	if err := storage.ProvisionTenantSchema(ctx, db, f.persona, false, storage.SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -189,7 +189,7 @@ func TestPersonalRollupJobSkipsATeamTenant(t *testing.T) {
 	f := newRollupJobFixture(t)
 	teamID := f.persona + "_team"
 	ctx := context.Background()
-	if err := storage.ProvisionTenantSchema(ctx, f.db, teamID, false, "vector"); err != nil {
+	if err := storage.ProvisionTenantSchema(ctx, f.db, teamID, false, storage.SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 		t.Fatalf("provision team: %v", err)
 	}
 	t.Cleanup(func() {

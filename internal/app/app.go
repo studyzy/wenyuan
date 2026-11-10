@@ -176,11 +176,22 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error
 	}
 	if provider, ok := store.(adminDBProvider); ok {
 		db := provider.AdminDB()
+		// A tenant's schema is built with this deployment's backend, not the
+		// zero value: the keyword index lives outside the migration series and
+		// is reconciled from these settings, so a schema migrated without them
+		// comes up without the pg_search index its queries need.
+		schemaStore := storage.SchemaStoreConfig{
+			VectorExtension:          cfg.VectorExtension,
+			TextSearchExtension:      cfg.TextSearchExtension,
+			PGFunctionSchema:         cfg.DBTuning.PGFunctionSchema,
+			PGTokenizer:              cfg.DBTuning.PGTokenizer,
+			TextSearchNativeLanguage: cfg.TextSearchExtensionNativeLanguage,
+		}
 		tenantProvisioner = func(provisionCtx context.Context, id string, adopt bool) error {
-			return storage.ProvisionTenantSchema(provisionCtx, db, id, adopt, cfg.VectorExtension)
+			return storage.ProvisionTenantSchema(provisionCtx, db, id, adopt, schemaStore)
 		}
 		tenantMigrator = func(migrateCtx context.Context, id string) error {
-			return storage.MigrateTenantSchema(migrateCtx, db, id, cfg.VectorExtension)
+			return storage.MigrateTenantSchema(migrateCtx, db, id, schemaStore)
 		}
 		tenantDropper = func(dropCtx context.Context, id string) error {
 			return storage.DropTenantSchema(dropCtx, db, id)
@@ -456,6 +467,8 @@ func resolveStore(ctx context.Context, cfg config.Config, deps Dependencies) (st
 		AcquireWarnThreshold:     cfg.DBTuning.AcquireWarnThreshold,
 		TextSearchExtension:      cfg.TextSearchExtension,
 		TextSearchNativeLanguage: cfg.TextSearchExtensionNativeLanguage,
+		PGFunctionSchema:         cfg.DBTuning.PGFunctionSchema,
+		PGTokenizer:              cfg.DBTuning.PGTokenizer,
 		RunMigrations:            cfg.RunMigrationsOnStartup,
 		RequireTenantSchema:      cfg.TenantMode == config.TenantModeMulti,
 		BankInfoCacheTTL:         cfg.BankInfoCacheTTL,

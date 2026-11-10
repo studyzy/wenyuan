@@ -66,7 +66,7 @@ func newMergeJobFixture(t *testing.T) *mergeJobFixture {
 		t.Fatalf("admin migrations: %v", err)
 	}
 	for _, schema := range []string{f.teamID, f.memberA, f.memberB} {
-		if err := storage.ProvisionTenantSchema(ctx, db, schema, false, "vector"); err != nil {
+		if err := storage.ProvisionTenantSchema(ctx, db, schema, false, storage.SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 			t.Fatalf("provision %s: %v", schema, err)
 		}
 		kind := "personal"

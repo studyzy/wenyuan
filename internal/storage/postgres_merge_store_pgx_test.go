@@ -67,7 +67,7 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 		t.Fatalf("admin migrations: %v", err)
 	}
 	for _, schema := range []string{f.teamID, f.memberA, f.memberB} {
-		if err := ProvisionTenantSchema(ctx, db, schema, false, "vector"); err != nil {
+		if err := ProvisionTenantSchema(ctx, db, schema, false, SchemaStoreConfig{VectorExtension: "vector"}); err != nil {
 			t.Fatalf("provision %s: %v", schema, err)
 		}
 		if _, err := db.ExecContext(ctx,

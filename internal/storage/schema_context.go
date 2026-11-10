@@ -21,6 +21,21 @@ func SchemaExists(ctx context.Context, db DB, schema string) (bool, error) {
 	return exists, err
 }
 
+// SchemaStoreConfig is the part of a deployment's store configuration a
+// per-tenant schema migration needs, so a tenant's schema is built exactly like
+// the process schema it is served alongside.
+//
+// It is separate from BackendConfig because provisioning is not opening a
+// backend: the caller already holds the database. The zero value is the
+// reference's default backend — native tsvector, pgvector.
+type SchemaStoreConfig struct {
+	VectorExtension          string
+	TextSearchExtension      string
+	PGFunctionSchema         string
+	PGTokenizer              string
+	TextSearchNativeLanguage string
+}
+
 // ProvisionTenantSchema creates and migrates a tenant schema, or adopts an
 // existing one when the caller asked for it.
 //
@@ -28,7 +43,15 @@ func SchemaExists(ctx context.Context, db DB, schema string) (bool, error) {
 // complete, empty or partial — requires adopt. The migration itself then
 // decides whether the schema is complete (adopt), empty (run the series) or
 // partial (refuse with the missing objects named).
-func ProvisionTenantSchema(ctx context.Context, db DB, schema string, adopt bool, vectorExtension string) error {
+//
+// The text-search settings travel with it because they are not part of the
+// series: the pg_search keyword index is built by Migrate after it commits, and
+// only when the store knows which backend the deployment selected. A store
+// built without them treats every schema as native and silently skips the
+// index, which is what a tenant created under this function used to get — a
+// schema whose keyword arm then failed at query time with "memory_units does
+// not contain a USING paradedb index".
+func ProvisionTenantSchema(ctx context.Context, db DB, schema string, adopt bool, storeCfg SchemaStoreConfig) error {
 	if !validSchemaName(schema) {
 		return fmt.Errorf("%w: %q", ErrInvalidSchema, schema)
 	}
@@ -39,8 +62,18 @@ func ProvisionTenantSchema(ctx context.Context, db DB, schema string, adopt bool
 	if exists && !adopt {
 		return fmt.Errorf("%w: %q", ErrSchemaExists, schema)
 	}
+	return migrateSchemaStore(ctx, db, schema, storeCfg)
+}
+
+// migrateSchemaStore binds a store to one schema with the deployment's backend
+// settings and runs the series.
+func migrateSchemaStore(ctx context.Context, db DB, schema string, storeCfg SchemaStoreConfig) error {
 	store := NewPostgresStore(db, schema)
-	store.vectorExtension = vectorExtension
+	store.vectorExtension = storeCfg.VectorExtension
+	store.textSearchExtension = storeCfg.TextSearchExtension
+	store.pgFunctionSchema = storeCfg.PGFunctionSchema
+	store.pgTokenizer = storeCfg.PGTokenizer
+	store.tsNativeLanguage = storeCfg.TextSearchNativeLanguage
 	return store.Migrate(ctx)
 }
 
@@ -155,14 +188,16 @@ func DropTenantSchema(ctx context.Context, db DB, schema string) error {
 // A complete schema is adopted, an empty one is built, and a partial one is
 // refused with the missing objects named. public is allowed (an adopted
 // single-tenant deployment lives there); admin never is.
-func MigrateTenantSchema(ctx context.Context, db DB, schema, vectorExtension string) error {
+//
+// It carries the deployment's backend settings for the same reason
+// ProvisionTenantSchema does: the pg_search keyword index is reconciled after
+// the series commits, and a store that does not know the backend skips it.
+func MigrateTenantSchema(ctx context.Context, db DB, schema string, storeCfg SchemaStoreConfig) error {
 	if schema == AdminSchema {
 		return fmt.Errorf("%w: %q is the registry", ErrSchemaProtected, schema)
 	}
 	if !validSchemaName(schema) {
 		return fmt.Errorf("%w: %q", ErrInvalidSchema, schema)
 	}
-	store := NewPostgresStore(db, schema)
-	store.vectorExtension = vectorExtension
-	return store.Migrate(ctx)
+	return migrateSchemaStore(ctx, db, schema, storeCfg)
 }
