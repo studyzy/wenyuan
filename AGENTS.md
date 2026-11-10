@@ -165,6 +165,39 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
 - **The team bank is written only by the merge job.** A fact written into it
   directly is replaced by the next round; `merge-status.unmanaged_facts` counts
   those so an operator can see it.
+- **A project bank has its own entities, resolved by name, once per round.**
+  Copying a member's `entities.id` would be wrong — an entity is an identity within
+  one bank — but a team fact with no entity posting is invisible to recall's
+  entity-mediated graph expansion, which is half of the graph arm, and its entity
+  channel comes back empty. So the round carries the member fact's **entity names**
+  (`unit_entities JOIN entities`, read with the batch) and resolves them in the team
+  schema: each distinct name becomes one team `entities` row, the new team unit is
+  posted to it, and each fact's entity pairs are recorded in
+  `entity_cooccurrences`. **No model is called** — the names were resolved by the
+  member's own retain, and re-extraction would put a model in the write path.
+- **Entity identity is exact, never fuzzy.** A member's bank resolves names with a
+  weighted score (name similarity, shared neighbours, recency); carrying that into a
+  shared bank would merge two teammates' different systems whenever their names look
+  alike ("支付网关" and "支付系统" score high enough). A wrong merge cannot be undone —
+  every fact of one then answers for the other — so the shared bank merges only names
+  whose **whitespace-normalized, lowercased** form is identical. A merely similar
+  name stays a second entity, and the cost is a missing graph edge.
+  `projectmerge.NormalizeEntityName` / `EntityNameKey` are the rule, and the
+  member-side `storage.NormalizeEntityName` delegates to them so the two sides
+  cannot drift.
+- **That identity is the schema's own, not a second judgement.**
+  `idx_entities_bank_lower_name` is `UNIQUE (bank_id, lower(canonical_name))` in the
+  reference schema, so a member bank cannot hold `ABC` and `abc` as two rows either.
+  The team bank inserts with `ON CONFLICT (bank_id, lower(canonical_name)) DO
+  NOTHING` and stores the member's original spelling; no schema object is added, and
+  a team schema stays object-for-object identical to the reference.
+- **Entity cleanup rides the existing sweep.** A team fact's postings cascade away
+  with its row, so before any round deletes a fact it reads the entities those
+  postings named and queues them in `entity_maintenance_queue`; `graph.maintenance`
+  then prunes an entity only when it truly has no posting left. Team schemas are
+  active tenants, so that job already covers them — nothing new is scheduled. The
+  read-before-delete order is load-bearing: after the cascade the entities are no
+  longer discoverable.
 - **Reads are team-first, and the caller can say otherwise.** A member's
   `POST /banks/{id}/memories/recall` and `GET /banks/{id}/memories/list` read the
   project's team bank once it holds any units; when it holds none, the member's
@@ -179,7 +212,21 @@ unchecked-in file; `etc/example.wenyuan.yaml` is the commented template.
   `storage.TeamRegistry.ResolveProjectForMember` (membership is the authority,
   never the bank id's shape). `tags`, `graph`, `entities`, `stats`, `documents`,
   `chunks`, reads and writes by unit id, `state=invalidated` and `document_id`
-  filters do **not** fall back.
+  filters do **not** fall back. The `entities` / `entities/{id}` / `entities/graph`
+  routes therefore still read the bank the caller named: a project bank holds its
+  own entities now, but browsing them is addressed by calling with that bank id,
+  not by a member's read redirecting to it.
+- **A team entity's id is not a member entity's id.** The two banks resolve the same
+  name to rows of their own, so an id read under `?scope=team` addresses the team
+  bank's row and cannot be used against a member's own bank. Nothing reconciles
+  them, and `memory_links.entity_id` is not carried — the graph arm's entity branch
+  reads `unit_entities`, which is what the round writes.
+- **A project bank built before this carries no entities until it is rebuilt.** The
+  round writes entities only for the facts it reads, and an incremental round reads
+  only past its cursor, so facts already carried never get postings. After
+  deploying, run `POST /admin/v1/teams/{id}/projects/{project_id}/merge-rebuild`
+  once per existing project: a rebuild replays the members' facts from the
+  beginning, which is what makes their entities appear. It spends no model call.
 - **Visibility window:** a member's new fact reaches the team bank on the next
   round — 60s or so by default, bounded only by the batch size, not by a model
   call. The member's own recall does not see it during that window, which is the

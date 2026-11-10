@@ -1071,7 +1071,7 @@ tags（按集合）、context、`observation_scopes`、四个时间列；不同�
 | 列 | 处理 | 原因 |
 |---|---|---|
 | `text` / `fact_type` / `tags` | 复制 | 内容本体 |
-| `embedding` | **复制成员行的向量** | retain 的向量是"文本 + 日期 + 解析后的实体名"的嵌入；团队行不复制实体，重算出来的向量不可能与成员侧一致。同一部署 = 同一嵌入方案，复制才可比。仍然零模型调用 |
+| `embedding` | **复制成员行的向量** | retain 的向量是"文本 + 日期 + 解析后的实体名"的嵌入。团队行现在有自己的实体（2026-11-10 起按名字重建），但向量仍复制：重算会让同一事实在两侧向量不同，`?scope=team` 与 `personal` 的语义臂排序产生偏差。同一部署 = 同一嵌入方案，复制才可比。仍然零模型调用 |
 | `search_vector` | 由 `text`、`context`、`text_signals` 算出 | 普通列；不写则关键词臂命中不了 |
 | `event_date` / `occurred_start` / `occurred_end` / `mentioned_at` | 复制 | temporal 臂的 overlap 谓词、图的时间边、列表的时间过滤 |
 | `context` | 复制 | 事实被提取时的原文片段 |
@@ -1085,7 +1085,7 @@ tags（按集合）、context、`observation_scopes`、四个时间列；不同�
 | 对象 | 结论 | 理由 |
 |---|---|---|
 | `documents` / `chunks` / `attachments` / `file_storage` | 不复制 | 原文是成员的私有输入；`CanFallBack` 也明确拒绝 `document_id` 过滤 |
-| `entities` / `unit_entities` / `entity_cooccurrences` | 不复制 | 实体是**一个 bank 内的身份**；跨 bank 复制需要重新做实体解析与跨成员合并，是独立特性。`/entities`、`/graph` 目前也不 fallback 到团队 bank |
+| `entities` / `unit_entities` / `entity_cooccurrences` | 不复制 | 实体是**一个 bank 内的身份**，搬 id 会让 posting 指向别的 bank 的行。2026-11-10 起改为在团队 schema 内**按名字重建**（精确匹配、零模型调用），见 `2026-11-10-project-bank-entities-design.md`。`/entities`、`/graph` 仍不 fallback 到团队 bank |
 | `invalidated_memory_units` / `observation_history` | 不复制 | 前者是成员侧的策展档案；后者是观察的改写历史，而观察已不复制 |
 | `mental_models` / `knowledge_pages` | 不复制 | 它们是按 bank 做的用户查询，不是成员记忆；复制等于把某个人的私人视角变成团队视角 |
 | `webhooks` | 不复制 | 归档里的 webhook 段带 `secret` |
