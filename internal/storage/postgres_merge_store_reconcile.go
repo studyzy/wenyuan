@@ -63,6 +63,9 @@ func (s *PostgresMergeStore) reconcileTeamFacts(ctx context.Context, tx Tx, req 
 		if len(doomed) > 0 {
 			// An observation resting on a doomed fact is stale the moment its
 			// evidence goes; the sweep also drops its history rows.
+			if err := queueOrphanedEntities(ctx, tx, qualified, req.BankID, doomed); err != nil {
+				return err
+			}
 			if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, req.BankID, doomed); err != nil {
 				return err
 			}
@@ -259,7 +262,8 @@ func (s *PostgresMergeStore) observationOrphansTx(ctx context.Context, tx Tx, qu
 // The sweep runs first — the reference's own rule — so an observation whose
 // evidence is going is retired deliberately rather than orphaned. Links and
 // entity postings need no statement of their own: both cascade from
-// memory_units.
+// memory_units. The entities those postings leave bare are queued for the
+// maintenance sweep before the delete, because after it they cannot be found.
 func (s *PostgresMergeStore) retireRows(
 	ctx context.Context, tx Tx, qualified, bankID string, rows []string, evidence map[string][]string,
 ) error {
@@ -270,6 +274,9 @@ func (s *PostgresMergeStore) retireRows(
 		if err := dropRetiredEvidence(ctx, tx, qualified, bankID, rows, evidence); err != nil {
 			return err
 		}
+	}
+	if err := queueOrphanedEntities(ctx, tx, qualified, bankID, rows); err != nil {
+		return err
 	}
 	if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, bankID, rows); err != nil {
 		return err

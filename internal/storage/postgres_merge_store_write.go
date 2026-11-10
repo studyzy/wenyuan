@@ -111,12 +111,19 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 	// untagged fact arrives as nil; passing that through would fail the insert
 	// rather than write an empty array.
 	ids := make(map[string]string, len(req.Replace.Insert))
+	entities := make([]mergeEntityTarget, 0, len(req.Replace.Insert))
 	for _, fact := range req.Replace.Insert {
 		id, err := insertTeamFact(ctx, tx, qualified, req.BankID, fact, mergedAt)
 		if err != nil {
 			return err
 		}
 		ids[fact.MergeKey] = id
+		if len(fact.EntityNames) > 0 {
+			entities = append(entities, mergeEntityTarget{UnitID: id, Names: fact.EntityNames})
+		}
+	}
+	if err := s.applyEntities(ctx, tx, qualified, req.BankID, entities); err != nil {
+		return err
 	}
 	if len(req.Replace.Links) > 0 {
 		if err := s.applyLinks(ctx, tx, qualified, req.BankID, req.Replace.Links, ids); err != nil {
@@ -135,6 +142,12 @@ func (s *PostgresMergeStore) removeReplacedFacts(ctx context.Context, tx Tx, qua
 	doomed := make([]string, len(rows))
 	for i, row := range rows {
 		doomed[i] = row.ID
+	}
+	// The postings these rows carry disappear with them, by the foreign key's
+	// cascade. Which entities they leave bare is only knowable before that
+	// happens, so they are read first and queued for the maintenance sweep.
+	if err := queueOrphanedEntities(ctx, tx, qualified, bankID, doomed); err != nil {
+		return err
 	}
 	if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, bankID, doomed); err != nil {
 		return err
@@ -261,6 +274,9 @@ func (s *PostgresMergeStore) removeUnmanagedFacts(ctx context.Context, tx Tx, qu
 	}
 	if len(orphanIDs) == 0 {
 		return nil
+	}
+	if err := queueOrphanedEntities(ctx, tx, qualified, bankID, orphanIDs); err != nil {
+		return err
 	}
 	if err := deleteStaleObservationsWithoutSources(ctx, tx, qualified, bankID, orphanIDs); err != nil {
 		return err
