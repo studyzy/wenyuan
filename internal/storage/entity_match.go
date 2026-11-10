@@ -4,6 +4,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/studyzy/wenyuan/internal/projectmerge"
 )
 
 // EntityCandidateSimilarity is the trigram score at or above which a stored
@@ -31,41 +33,28 @@ const (
 )
 
 // EntityNameMaxLength is the longest entity name intake will accept, measured
-// in characters (runes).
-//
-// A model can emit an unbounded label — base64, SVG path data, a JSON
-// fragment — and the entity table's btree index cannot hold a tuple that long,
-// so the INSERT would fail the whole retain, not just the one entity. A name
-// past the cap is dropped at intake rather than truncated, so it never becomes
-// a registry identity a later artifact could merge onto.
-const EntityNameMaxLength = 512
+// in characters (runes). It is the merge rule's own cap, re-exported so a
+// caller here needs one import.
+const EntityNameMaxLength = projectmerge.EntityNameMaxLength
 
-// normalizeEntityName collapses a name's internal whitespace to single spaces
+// NormalizeEntityName collapses a name's internal whitespace to single spaces
 // and trims the ends, the intake every candidate entity name passes through.
 //
 // ok is false when the normalized name is blank or past EntityNameMaxLength, in
 // which case the name is dropped rather than stored.
-func normalizeEntityName(name string) (string, bool) {
-	normalized := strings.Join(strings.Fields(name), " ")
-	if normalized == "" {
-		return "", false
-	}
-	// A byte length within the cap proves the rune length is too, so the
-	// common short name never pays for a rune conversion.
-	if len(normalized) <= EntityNameMaxLength {
-		return normalized, true
-	}
-	if len([]rune(normalized)) <= EntityNameMaxLength {
-		return normalized, true
-	}
-	return "", false
+//
+// The rule lives in internal/projectmerge because a project merge round appends
+// member facts to a shared bank and must apply the identical one; this is the
+// member-side alias so both callers read the same function.
+func NormalizeEntityName(name string) (string, bool) {
+	return projectmerge.NormalizeEntityName(name)
 }
 
 // entityMatchKey normalizes a name for comparison: surrounding whitespace is
 // dropped and internal whitespace runs collapse to a single space. Case is
 // folded by the comparer, not here, so the stored display form keeps its case.
 func entityMatchKey(name string) string {
-	normalized, _ := normalizeEntityName(name)
+	normalized, _ := NormalizeEntityName(name)
 	return normalized
 }
 
