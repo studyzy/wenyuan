@@ -4,7 +4,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
@@ -127,4 +129,87 @@ func TestMergeInputReadsTheSharedVocabulary(t *testing.T) {
 	if len(got) != 1 || got[0] != "ABC" {
 		t.Fatalf("entity names = %v, want the member's stored spelling [ABC]", got)
 	}
+}
+
+// TestRebuildAdvancesItsCursorAcrossBatches pins how a backfill makes progress: a
+// rebuild reads a bank larger than one batch over several rounds, and each round
+// resumes where the last one stopped rather than restarting at the first fact.
+//
+// A rebuild that restarted every round would replay the same first batch forever
+// — the shape a real backfill produced before AtStart: 500 facts carried, the rest
+// never read, and the round timing out on every tick.
+func TestRebuildAdvancesItsCursorAcrossBatches(t *testing.T) {
+	f := newMergeFixture(t)
+	// Distinct updated_at stamps, so the (updated_at, id) order the cursor reads
+	// is the insertion order rather than an id tiebreak.
+	for i := range 5 {
+		f.writeMemberFact(t, f.memberA, fmt.Sprintf("fact %d", i))
+	}
+	f.staggerMemberFacts(t, f.memberA)
+
+	state := MergeProjectMember{
+		TenantID: f.memberA, ProjectID: f.projectID, Schema: f.memberA,
+	}
+	// A rebuild is requested, and RequestRebuild has put the cursor at the
+	// beginning with '-infinity'.
+	state.RebuildRequested = true
+	state.State.RebuildRequested = true
+	state.State.CursorUpdatedAt = mergeCursorEpoch.Add(-time.Hour)
+	state.State.CursorUnitID = zeroUUID
+
+	seen := map[string]bool{}
+	cursor := state
+	for round := range 5 {
+		batch := f.readMemberBatch(t, cursor, 2)
+		if len(batch) == 0 {
+			break
+		}
+		for _, fact := range batch {
+			if seen[fact.UnitID] {
+				t.Fatalf("round %d reread fact %q: the rebuild restarted instead of resuming", round, fact.Text)
+			}
+			seen[fact.UnitID] = true
+		}
+		last := batch[len(batch)-1]
+		cursor.State.CursorUpdatedAt = last.UpdatedAt
+		cursor.State.CursorUnitID = last.UnitID
+		cursor.RebuildRequested = true
+	}
+	if len(seen) != 5 {
+		t.Fatalf("rebuild read %d distinct facts, want all 5", len(seen))
+	}
+}
+
+// staggerMemberFacts rewrites a member's facts one second apart, so the cursor's
+// (updated_at, id) resume point is unambiguous.
+func (f *mergeFixture) staggerMemberFacts(t *testing.T, member string) {
+	t.Helper()
+	ctx, err := WithSchema(context.Background(), member)
+	if err != nil {
+		t.Fatalf("WithSchema: %v", err)
+	}
+	if _, err := f.db.ExecContext(ctx, `
+		UPDATE `+quoteIdent(member)+`.memory_units m
+		SET updated_at = now() - (ordered.rn || ' seconds')::interval
+		FROM (SELECT id, row_number() OVER (ORDER BY text) AS rn
+		      FROM `+quoteIdent(member)+`.memory_units WHERE bank_id = $1) ordered
+		WHERE m.id = ordered.id`,
+		tenant.ProjectBankID(member, f.projectID)); err != nil {
+		t.Fatalf("stagger facts: %v", err)
+	}
+}
+
+// readMemberBatch reads one batch through the round's own input path.
+func (f *mergeFixture) readMemberBatch(t *testing.T, member MergeProjectMember, limit int) []MergeFact {
+	t.Helper()
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	input, err := f.store.loadMemberInput(context.Background(), tx, member, limit, true)
+	if err != nil {
+		t.Fatalf("loadMemberInput: %v", err)
+	}
+	return input.Fresh
 }

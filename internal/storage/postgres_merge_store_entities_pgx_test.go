@@ -3,8 +3,10 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/studyzy/wenyuan/internal/tenant"
 )
@@ -308,5 +310,126 @@ func TestMergeRoundProofOfSpelling(t *testing.T) {
 	}
 	if stored != "ABC" {
 		t.Fatalf("stored name = %q, want the member's spelling", stored)
+	}
+}
+
+// TestMergeRoundPostsAKeptFact pins the rebuild's job: a team row the round
+// already holds is not rewritten, but its postings are still written.
+//
+// Without this a bank filled before entities were carried keeps rows whose
+// entity names were never posted, and a rebuild — which reads every fact back and
+// classifies them all as unchanged — would add nothing either. That is the shape
+// the first deployment of this feature produced: 2025 team facts, no entities.
+func TestMergeRoundPostsAKeptFact(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	text := "a fact that predates entities"
+	f.runRoundWithEntities(t, []string{text}, map[string][]string{text: {"支付网关"}})
+
+	// Strip the postings, the state a bank filled before this feature is in.
+	ctx := f.teamSchemaCtx(t)
+	if _, err := f.db.ExecContext(ctx, "DELETE FROM "+quoteIdent(f.teamID)+".unit_entities"); err != nil {
+		t.Fatalf("clear postings: %v", err)
+	}
+	if _, err := f.db.ExecContext(ctx, "DELETE FROM "+quoteIdent(f.teamID)+".entities"); err != nil {
+		t.Fatalf("clear entities: %v", err)
+	}
+
+	// A rebuild reads the fact back, finds its row unchanged, and keeps it: the
+	// write gets it as Keep, with the entity names but no text to rewrite.
+	rowID := f.teamUnitID(t, text)
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := f.store.applyFacts(ctx, tx, FinishMergeRequest{
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID),
+		Replace: MergeReplaceResult{Keep: []TeamFactRow{
+			{ID: rowID, EntityNames: []string{"支付网关"}},
+		}},
+	}); err != nil {
+		t.Fatalf("apply kept fact: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if entities := f.teamEntityNames(t); len(entities) != 1 {
+		t.Fatalf("team entities = %v after replaying a kept fact, want one", entities)
+	}
+}
+
+// TestMergeRoundCountsARepeatedPairOncePerRound pins the co-occurrence upsert
+// against a batch where two facts name the same two entities.
+//
+// A statement cannot upsert one row twice ("ON CONFLICT DO UPDATE command cannot
+// affect row a second time"), so the pairs are folded per round before the
+// insert. Without that fold the whole round fails, which is what the first real
+// rebuild did: every round errored and the project never advanced.
+func TestMergeRoundCountsARepeatedPairOncePerRound(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	unitA := f.writeMemberFact(t, f.memberA, "first fact names both")
+	unitB := f.writeMemberFact(t, f.memberB, "second fact names both")
+	key := tenant.MergeKey
+	textA, textB := "first fact names both", "second fact names both"
+	if !f.runRound(t,
+		[]TeamFactRow{
+			{Text: textA, MergeKey: key(textA), SourceUnitID: unitA, SourceTenant: f.memberA, EntityNames: []string{"支付网关", "billing"}},
+			{Text: textB, MergeKey: key(textB), SourceUnitID: unitB, SourceTenant: f.memberB, EntityNames: []string{"billing", "支付网关"}},
+		},
+		map[string][]MergeSourceRow{
+			f.memberA: {{UnitID: unitA, MergeKey: key(textA)}},
+			f.memberB: {{UnitID: unitB, MergeKey: key(textB)}},
+		}) {
+		t.Fatal("round did not run")
+	}
+	var count int
+	if err := f.db.QueryRowContext(f.teamSchemaCtx(t),
+		"SELECT COALESCE(SUM(cooccurrence_count),0) FROM "+quoteIdent(f.teamID)+".entity_cooccurrences").Scan(&count); err != nil {
+		t.Fatalf("read cooccurrences: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("cooccurrence count = %d, want 2 (one per fact naming the pair)", count)
+	}
+}
+
+// TestRebuildCompletingRoundClearsTheFlag pins how a replay ends.
+//
+// The round that completes a rebuild reads no new fact, so it carries no cursor —
+// and a state update that only clears the flag alongside a cursor leaves it set.
+// The next tick then replays the bank from the top again, forever.
+func TestRebuildCompletingRoundClearsTheFlag(t *testing.T) {
+	f := newMergeFixture(t)
+	f.ensureTeamBank(t)
+	f.runRoundWithEntities(t, []string{"a fact"}, map[string][]string{"a fact": {"pay-gateway"}})
+	if err := f.store.RequestRebuild(context.Background(), f.teamID, f.projectID); err != nil {
+		t.Fatalf("request rebuild: %v", err)
+	}
+	var stamp time.Time
+	if _, err := f.store.BeginMergeStanza(context.Background(), f.teamID, f.projectID,
+		mergeRoundOpts(100, time.Minute), func(stanza MergeStanza) error {
+			stamp = stanza.(*mergeStanza).ClaimStamp()
+			return nil
+		}); err != nil {
+		t.Fatalf("BeginMergeStanza: %v", err)
+	}
+	// The completing round: nothing to write, no cursor, the flag to clear.
+	if err := f.store.FinishMergeStanza(context.Background(), FinishMergeRequest{
+		TeamID: f.teamID, ProjectID: f.projectID, TeamSchema: f.teamID,
+		BankID: tenant.ProjectBankID(f.teamID, f.projectID), Stamp: stamp,
+		Rebuild: true, RebuildDone: true, Reconcile: true,
+		Members: []string{f.memberA, f.memberB},
+	}); err != nil {
+		t.Fatalf("FinishMergeStanza: %v", err)
+	}
+	var requested bool
+	if err := f.db.QueryRowContext(context.Background(),
+		"SELECT rebuild_requested FROM "+adminTable("merge_state")+" WHERE team_tenant_id=$1 AND project_id=$2",
+		f.teamID, f.projectID).Scan(&requested); err != nil {
+		t.Fatalf("read rebuild flag: %v", err)
+	}
+	if requested {
+		t.Fatal("the completing round left rebuild_requested set, so the next tick replays the bank again")
 	}
 }
