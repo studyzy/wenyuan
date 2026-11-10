@@ -6,7 +6,6 @@ import {
   upstreamUnavailableBody,
 } from "../../../../lib/server/proxy";
 import { errorResponse } from "../../../../lib/server/http";
-import { callUpstream } from "../../../../lib/server/upstream";
 
 type Context = { params: Promise<{ memoryId: string }> };
 
@@ -39,6 +38,10 @@ function readBankId(request: Request, body?: Record<string, unknown>): string | 
  * The bank id is required. An upstream 404 becomes a fixed 404 carrying the
  * memory not-found key; any other upstream failure becomes a 500 with the
  * memory-fetch key rather than passing the upstream status through.
+ *
+ * It goes through the shared serializer rather than calling upstream directly:
+ * that is what attaches the tenant the console entered, answers 409 for an
+ * operator session with no tenant, and passes the upstream status through.
  */
 export async function GET(request: Request, context: Context): Promise<Response> {
   const locale = requestLocale(request);
@@ -48,19 +51,23 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const memoryId = (await context.params).memoryId;
   const config = resolveServerConfig(process.env as Record<string, string | undefined>);
 
-  let result;
+  let response: Response;
   try {
-    result = await callUpstream(config, { path: memoryPath(bankId, memoryId), method: "GET" });
+    response = await serializeUpstream({
+      config,
+      request,
+      upstreamPath: memoryPath(bankId, memoryId),
+      method: "GET",
+      failureLabel: "memories_fetch_failed",
+      errorKey: "api.errors.memories.fetch",
+      locale,
+    });
   } catch {
     return errorResponse("api.errors.memories.fetch", 500, locale);
   }
 
-  if (result.status === 404) return errorResponse("api.errors.memories.notFound", 404, locale);
-  if (!result.ok) return errorResponse("api.errors.memories.fetch", 500, locale);
-
-  const headers = new Headers();
-  if (result.contentType) headers.set("content-type", result.contentType);
-  return new Response(result.body, { status: 200, headers });
+  if (response.status !== 404) return response;
+  return errorResponse("api.errors.memories.notFound", 404, locale);
 }
 
 /**

@@ -13,6 +13,9 @@ import * as kbPage from "../app/api/knowledge-base/pages/[pageId]/route";
 import * as timeseries from "../app/api/stats/[agentId]/memories-timeseries/route";
 import { stubFetch, withEnv } from "./support/fixtures";
 import { expectNoErrorKey, makeRequest, readJson } from "./support/harness";
+import { createAdminTenantSessionToken, createSessionToken } from "../lib/server/session";
+import { TENANT_HEADER } from "../lib/server/proxy";
+import { OPERATOR_SUBJECT } from "../lib/server/subjects";
 
 let restore: (() => void) | undefined;
 afterEach(() => {
@@ -119,6 +122,38 @@ describe("memory history 404 translation", () => {
       );
       expect(response.status).toBe(500);
     });
+  });
+});
+
+describe("memory read carries the tenant the console entered", () => {
+  it("sends the operator credential and the tenant header for an operator entry", async () => {
+    const stub = stubFetch([{ status: 200, body: { id: "m1" } }]);
+    restore = stub.restore;
+    await withEnv(
+      {
+        WENYUAN_CP_DATAPLANE_API_URL: "http://upstream.local",
+        WENYUAN_CP_ADMIN_API_URL: "http://admin.local",
+        WENYUAN_CP_DATAPLANE_API_KEY: "static-key",
+        WENYUAN_CP_ADMIN_API_KEY: "operator-key",
+      },
+      async () => {
+        const access = createSessionToken("operator-key", OPERATOR_SUBJECT, Date.now());
+        const tenant = createAdminTenantSessionToken("operator-key", "acme", Date.now());
+        const response = await memory.GET(
+          makeRequest("http://localhost/api/memories/m1?bank_id=acme%3A%3Aproj", {
+            cookie: `wenyuan_cp_access=${access}; wenyuan_cp_tenant=${tenant}`,
+          }),
+          { params: Promise.resolve({ memoryId: "m1" }) },
+        );
+        expect(response.status).toBe(200);
+        const headers = new Headers(stub.headers[0] as HeadersInit);
+        expect(headers.get("authorization")).toBe("Bearer operator-key");
+        expect(headers.get(TENANT_HEADER)).toBe("acme");
+        expect(stub.calls[0]).toBe(
+          "http://upstream.local/v1/default/banks/acme%3A%3Aproj/memories/m1",
+        );
+      },
+    );
   });
 });
 
