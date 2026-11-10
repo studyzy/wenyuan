@@ -111,6 +111,12 @@ type MergeFact struct {
 	// here could never match the member's. One deployment is one embedding
 	// scheme, which is what makes the copy comparable.
 	Embedding []float32
+	// EntityNames are the member fact's entity names, carried so the team bank
+	// rebuilds its own entities from them. Ids are not carried: an entity is an
+	// identity within one bank, and the round resolves each name to the team
+	// bank's own row. A team fact without postings answers no entity-mediated
+	// graph expansion, which is half of recall's graph arm.
+	EntityNames []string
 }
 
 // MergeLink is one link between two facts a round carries.
@@ -180,6 +186,11 @@ type TeamFactRow struct {
 	SourceMemoryIDs []string
 	// Embedding is the member fact's vector, written unchanged.
 	Embedding []float32
+	// EntityNames are the member fact's entity names, which the write resolves
+	// to the team bank's own entity rows and posts the new unit to. They are the
+	// member's spellings, not team identities: folding them is a merge rule and
+	// belongs to the round, not to the write.
+	EntityNames []string
 }
 
 // MergeStanzaInput is what a round reads while it holds the lock.

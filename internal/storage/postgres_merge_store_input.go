@@ -136,6 +136,9 @@ func (s *PostgresMergeStore) loadMemberInput(
 		return out, err
 	}
 	out.Fresh = fresh
+	if err := s.attachMemberEntityNames(ctx, tx, member, qualified, fresh); err != nil {
+		return out, err
+	}
 	// A read that filled its batch may have stopped short of the bank's end. The
 	// round's cursor record advances only to what it consumed, so the rest waits
 	// for the next round — but only a loop that keeps going gets it.

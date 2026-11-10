@@ -240,6 +240,7 @@ func planRound(project storage.MergeProject, input storage.MergeStanzaInput, cfg
 				Context: fact.Context, ObservationScopes: fact.ObservationScopes,
 				EventDate: fact.EventDate, OccurredStart: fact.OccurredStart,
 				OccurredEnd: fact.OccurredEnd, MentionedAt: fact.MentionedAt,
+				EntityNames: fact.EntityNames,
 			})
 		}
 		plan.links = append(plan.links, member.Links...)
@@ -347,6 +348,7 @@ func buildFinishRequest(
 			OccurredEnd:       fact.OccurredEnd,
 			MentionedAt:       fact.MentionedAt,
 			ObservationScopes: fact.ObservationScopes,
+			EntityNames:       fact.EntityNames,
 		})
 	}
 	replace := make([]storage.TeamFactRow, 0, len(planned.Replaced))

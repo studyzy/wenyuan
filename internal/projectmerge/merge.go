@@ -84,6 +84,11 @@ type MemberFact struct {
 	MentionedAt   *time.Time
 	// ObservationScopes is the fact's raw observation_scopes request.
 	ObservationScopes []byte
+	// EntityNames are the entity names the member's bank resolved for this fact.
+	// They travel through the round unchanged: the write resolves each to the
+	// team bank's own entity row, which is what gives a team fact the postings
+	// recall's graph expansion walks.
+	EntityNames []string
 }
 
 // SummarizedAnswer is one fact a summarising pass (the personal rollup) produced,
