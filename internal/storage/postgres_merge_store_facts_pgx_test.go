@@ -192,12 +192,11 @@ func TestRebuildReplaysFromTheStart(t *testing.T) {
 		t.Fatalf("FinishMergeStanza: %v", err)
 	}
 	// Ask for a rebuild: an operator starting one from scratch, though the cursor
-	// already sits at the end of the bank. The flag is what makes the replay read
-	// the bank rather than the delta.
-	if _, err := f.db.ExecContext(context.Background(),
-		"UPDATE "+adminTable("merge_state")+" SET rebuild_requested = true WHERE team_tenant_id = $1 AND project_id = $2",
-		f.teamID, f.projectID); err != nil {
-		t.Fatalf("set rebuild flag: %v", err)
+	// already sits at the end of the bank. RequestRebuild is the whole request —
+	// it sets the flag and rewinds the cursor together, because the flag alone
+	// cannot say which round of a multi-batch replay this is.
+	if err := f.store.RequestRebuild(context.Background(), f.teamID, f.projectID); err != nil {
+		t.Fatalf("request rebuild: %v", err)
 	}
 
 	// The rebuilding round reads the whole bank, including the fact the cursor

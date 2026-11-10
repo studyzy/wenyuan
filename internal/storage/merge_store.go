@@ -143,6 +143,22 @@ type MergeCursor struct {
 // Before reports whether this cursor reads from the beginning of the bank.
 func (c MergeCursor) Before() bool { return c.UpdatedAt.IsZero() }
 
+// AtStart reports whether the cursor has not consumed anything yet: it is the
+// zero cursor a never-merged pair has, or a value before every real fact, which
+// is what RequestRebuild writes ('-infinity').
+//
+// Before alone would not do: -infinity is a real timestamp rather than the zero
+// value, so IsZero is false for it, and a rebuild depends on recognising it as
+// the start. The bound is a range rather than an equality because how a driver
+// hands -infinity back is not something to depend on.
+func (c MergeCursor) AtStart() bool {
+	return c.UpdatedAt.IsZero() || c.UpdatedAt.Before(mergeCursorEpoch)
+}
+
+// mergeCursorEpoch sits before any fact a bank can hold, so a cursor earlier
+// than it is a reset one.
+var mergeCursorEpoch = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
+
 // CursorOf is the cursor a member's state stands at.
 func CursorOf(state tenant.MergeState) MergeCursor {
 	if state.CursorUpdatedAt.IsZero() {
@@ -295,7 +311,10 @@ type FinishMergeRequest struct {
 
 // MergeReplaceResult is the fact-level change a round produces.
 type MergeReplaceResult struct {
-	// Keep is the team content the round read back unchanged.
+	// Keep is the team content the round read back unchanged. A kept row is not
+	// rewritten, but it does carry its source's entity names, because a posting is
+	// not implied by the row: a bank filled before entities were carried has rows
+	// with none, and a rebuild is what fills them.
 	Keep []TeamFactRow
 	// Insert is the facts to add: new sources, and the new text of an edited
 	// one.

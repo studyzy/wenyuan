@@ -111,7 +111,7 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 	// untagged fact arrives as nil; passing that through would fail the insert
 	// rather than write an empty array.
 	ids := make(map[string]string, len(req.Replace.Insert))
-	entities := make([]mergeEntityTarget, 0, len(req.Replace.Insert))
+	entities := make([]mergeEntityTarget, 0, len(req.Replace.Insert)+len(req.Replace.Keep))
 	for _, fact := range req.Replace.Insert {
 		id, err := insertTeamFact(ctx, tx, qualified, req.BankID, fact, mergedAt)
 		if err != nil {
@@ -120,6 +120,15 @@ func (s *PostgresMergeStore) applyFacts(ctx context.Context, tx Tx, req FinishMe
 		ids[fact.MergeKey] = id
 		if len(fact.EntityNames) > 0 {
 			entities = append(entities, mergeEntityTarget{UnitID: id, Names: fact.EntityNames})
+		}
+	}
+	// A fact the bank already holds is not inserted again, but its postings are
+	// not implied by the row: a bank filled before entities were carried has rows
+	// whose entity names were never written. So the kept rows are posted too, and
+	// a rebuild — which reads every fact back — fills them in.
+	for _, fact := range req.Replace.Keep {
+		if len(fact.EntityNames) > 0 && fact.ID != "" {
+			entities = append(entities, mergeEntityTarget{UnitID: fact.ID, Names: fact.EntityNames})
 		}
 	}
 	if err := s.applyEntities(ctx, tx, qualified, req.BankID, entities); err != nil {
@@ -413,12 +422,17 @@ func (s *PostgresMergeStore) saveStates(ctx context.Context, tx Tx, req FinishMe
 	for _, member := range req.Members {
 		cursor, ok := req.Cursors[member]
 		if !ok {
+			// A round that consumed nothing advances no cursor, but it is still
+			// the round that clears a rebuild: the completing round of a replay
+			// reads no new fact, so it carries no cursor and would otherwise
+			// leave the flag set for the next tick to replay the bank again.
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE `+adminTable("merge_state")+`
 				SET merging_since = NULL, last_merged_at = $4,
-				    last_error = NULL, fail_count = 0
+				    last_error = NULL, fail_count = 0,
+				    rebuild_requested = CASE WHEN $5 THEN false ELSE rebuild_requested END
 				WHERE team_tenant_id = $1 AND project_id = $2 AND tenant_id = $3`,
-				req.TeamID, req.ProjectID, member, now); err != nil {
+				req.TeamID, req.ProjectID, member, now, req.RebuildDone); err != nil {
 				return err
 			}
 			continue

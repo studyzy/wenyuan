@@ -188,7 +188,14 @@ func recordTeamCooccurrences(
 	ctx context.Context, tx Tx, qualified string, carried []mergeEntityCarried, entityIDs map[string]string,
 ) error {
 	cooccurrences := qualified + `.entity_cooccurrences`
-	var firsts, seconds []string
+	// A pair is counted once per round, not once per fact that names it: two
+	// facts of one batch may both mention the same two entities, and a statement
+	// cannot upsert the same row twice ("ON CONFLICT DO UPDATE command cannot
+	// affect row a second time"). Counting per batch also keeps the count
+	// meaningful — it is how many rounds saw the pair, which is the same unit the
+	// member bank's own upsert accumulates in.
+	counts := make(map[[2]string]int, len(carried))
+	order := make([][2]string, 0, len(carried))
 	for _, fact := range carried {
 		for _, pair := range fact.set.Pairs() {
 			first, firstOK := entityIDs[pair[0]]
@@ -199,18 +206,29 @@ func recordTeamCooccurrences(
 			if first > second {
 				first, second = second, first
 			}
-			firsts = append(firsts, first)
-			seconds = append(seconds, second)
+			key := [2]string{first, second}
+			if counts[key] == 0 {
+				order = append(order, key)
+			}
+			counts[key]++
 		}
 	}
-	if len(firsts) == 0 {
+	if len(order) == 0 {
 		return nil
 	}
+	firsts := make([]string, len(order))
+	seconds := make([]string, len(order))
+	increments := make([]int, len(order))
+	for i, key := range order {
+		firsts[i] = key[0]
+		seconds[i] = key[1]
+		increments[i] = counts[key]
+	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO `+cooccurrences+` (entity_id_1, entity_id_2)
-		SELECT * FROM unnest($1::uuid[], $2::uuid[])
+		INSERT INTO `+cooccurrences+` (entity_id_1, entity_id_2, cooccurrence_count)
+		SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::int[])
 		ON CONFLICT (entity_id_1, entity_id_2)
-		DO UPDATE SET cooccurrence_count = `+cooccurrences+`.cooccurrence_count + 1`,
-		firsts, seconds)
+		DO UPDATE SET cooccurrence_count = `+cooccurrences+`.cooccurrence_count + EXCLUDED.cooccurrence_count`,
+		firsts, seconds, increments)
 	return err
 }

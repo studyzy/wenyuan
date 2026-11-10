@@ -62,11 +62,16 @@ func (s *PostgresMergeStore) loadMemberInput(
 	// follow. The team bank derives its own observations from what is copied.
 	inputTypes := mergedInputTypes(includeExperience)
 	fresh := make([]MergeFact, 0, limit)
-	// A rebuild's replay ignores the cursor: it is a full replay of the member's
-	// bank, so a fact behind the old cursor is read again — which is what makes
-	// the team's content match the members' after a withdrawal.
-	fromStart := member.RebuildRequested
 	cursor := CursorOf(member.State)
+	// A rebuild's replay ignores the old cursor: it is a full replay of the
+	// member's bank, so a fact behind it is read again — which is what makes the
+	// team's content match the members' after a withdrawal. It must not ignore
+	// the cursor it has itself advanced, though: a bank larger than one batch is
+	// replayed across rounds, and a replay that restarted at the beginning every
+	// round would read the same first batch forever and never reach the end. So
+	// the start is used only while the cursor is still at it, which is where
+	// RequestRebuild puts it.
+	fromStart := member.RebuildRequested && cursor.AtStart()
 	// The cursor's lower bound. A replay has none: comparing against the zero
 	// timestamp with a zero id can still skip a row, because the row comparison
 	// is not the same thing as "after the beginning", and a bank's oldest fact is

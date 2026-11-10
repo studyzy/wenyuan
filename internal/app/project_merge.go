@@ -351,6 +351,21 @@ func buildFinishRequest(
 			EntityNames:       fact.EntityNames,
 		})
 	}
+	// A fact whose row already matches is not rewritten — that is what keeps the
+	// row's id and the observations resting on it — but the write still needs the
+	// row and the fact's entity names, because a posting is not implied by the
+	// row: a bank filled before entities were carried has rows with none.
+	kept := make([]storage.TeamFactRow, 0, len(plan.fresh))
+	for _, fact := range plan.fresh {
+		if len(fact.EntityNames) == 0 {
+			continue
+		}
+		existing, held := plan.present[fact.UnitID]
+		if !held {
+			continue
+		}
+		kept = append(kept, storage.TeamFactRow{ID: existing.ID, EntityNames: fact.EntityNames})
+	}
 	replace := make([]storage.TeamFactRow, 0, len(planned.Replaced))
 	for _, existing := range planned.Replaced {
 		replace = append(replace, storage.TeamFactRow{ID: existing.ID})
@@ -371,6 +386,7 @@ func buildFinishRequest(
 		Stamp:      stamp,
 		Replace: storage.MergeReplaceResult{
 			Insert:  insert,
+			Keep:    kept,
 			Remove:  replace,
 			Links:   plan.links,
 			Sources: sources,
