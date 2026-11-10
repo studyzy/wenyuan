@@ -115,7 +115,7 @@ func (h *Handler) createTeamProject(w http.ResponseWriter, r *http.Request) {
 	// already asynchronous, so refusing the project over one would trade a
 	// recoverable gap for an outage.
 	if created && h.cfg.Pages != nil {
-		if err := h.cfg.Pages.SeedKnowledgePages(r.Context(), project.BankID, project.Name); err != nil {
+		if err := h.cfg.Pages.SeedKnowledgePages(r.Context(), teamID, project.BankID, project.Name); err != nil {
 			slog.Default().Error("seeding the project bank's knowledge pages failed",
 				"team_id", teamID, "project_id", project.ProjectID, "bank_id", project.BankID, "error", err)
 		}

@@ -41,7 +41,7 @@ func seededPages(t *testing.T, store *storage.MemoryStore, bankID string) []stor
 
 func TestSeedKnowledgePagesCreatesTheTaxonomy(t *testing.T) {
 	seeder, store, bankID := seedFixture(t)
-	if err := seeder.SeedKnowledgePages(context.Background(), bankID, "payments-api"); err != nil {
+	if err := seeder.SeedKnowledgePages(context.Background(), "public", bankID, "payments-api"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	pages := seededPages(t, store, bankID)
@@ -65,7 +65,7 @@ func TestSeedKnowledgePagesCreatesTheTaxonomy(t *testing.T) {
 func TestSeedKnowledgePagesScopesEachPage(t *testing.T) {
 	seeder, store, bankID := seedFixture(t)
 	const project = "payments-api"
-	if err := seeder.SeedKnowledgePages(context.Background(), bankID, project); err != nil {
+	if err := seeder.SeedKnowledgePages(context.Background(), "public", bankID, project); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	ctx := context.Background()
@@ -88,7 +88,7 @@ func TestSeedKnowledgePagesScopesEachPage(t *testing.T) {
 
 func TestSeedKnowledgePagesTriggerSpreadsTheHour(t *testing.T) {
 	seeder, store, bankID := seedFixture(t)
-	if err := seeder.SeedKnowledgePages(context.Background(), bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(context.Background(), "public", bankID, "p"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	ctx := context.Background()
@@ -124,11 +124,11 @@ func TestSeedKnowledgePagesTriggerSpreadsTheHour(t *testing.T) {
 func TestSeedKnowledgePagesIsIdempotent(t *testing.T) {
 	seeder, store, bankID := seedFixture(t)
 	ctx := context.Background()
-	if err := seeder.SeedKnowledgePages(ctx, bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(ctx, "public", bankID, "p"); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	before := seededPages(t, store, bankID)
-	if err := seeder.SeedKnowledgePages(ctx, bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(ctx, "public", bankID, "p"); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 	after := seededPages(t, store, bankID)
@@ -152,7 +152,7 @@ func TestSeedKnowledgePagesKeepsAPageTheBankAlreadyHas(t *testing.T) {
 	if serviceErr != nil {
 		t.Fatalf("create: %v", serviceErr)
 	}
-	if err := seeder.SeedKnowledgePages(ctx, bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(ctx, "public", bankID, "p"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	model, err := store.GetMentalModel(ctx, bankID, existing.ModelID)
@@ -170,7 +170,7 @@ func TestSeedKnowledgePagesKeepsAPageTheBankAlreadyHas(t *testing.T) {
 func TestSeedKnowledgePagesQueuesOnlyTheFirstRefresh(t *testing.T) {
 	seeder, store, bankID := seedFixture(t)
 	ctx := context.Background()
-	if err := seeder.SeedKnowledgePages(ctx, bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(ctx, "public", bankID, "p"); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	// One refresh per page, and none for the pages a second run skips: a
@@ -179,7 +179,7 @@ func TestSeedKnowledgePagesQueuesOnlyTheFirstRefresh(t *testing.T) {
 	if first != len(seededPageTaxonomy) {
 		t.Fatalf("operations after the first seed = %d, want %d", first, len(seededPageTaxonomy))
 	}
-	if err := seeder.SeedKnowledgePages(ctx, bankID, "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(ctx, "public", bankID, "p"); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 	if second := countQueuedRefreshes(t, store, bankID); second != first {
@@ -205,7 +205,7 @@ func countQueuedRefreshes(t *testing.T, store *storage.MemoryStore, bankID strin
 
 func TestSeedKnowledgePagesWithoutABuilderSeedsNothing(t *testing.T) {
 	var seeder KnowledgePageSeeder
-	if err := seeder.SeedKnowledgePages(context.Background(), "any", "p"); err != nil {
+	if err := seeder.SeedKnowledgePages(context.Background(), "public", "any", "p"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }

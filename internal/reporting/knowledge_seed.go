@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/studyzy/wenyuan/internal/storage"
 )
 
 // seededPage is one page of the taxonomy: its name, the question it answers and
@@ -98,14 +100,24 @@ type KnowledgePageSeeder struct {
 // SeedKnowledgePages creates the taxonomy's pages in bankID, skipping any page
 // of that name the bank already holds.
 //
+// The bank lives in a tenant schema, and this runs from the administration
+// plane, whose context carries none — so the schema the caller names is put on
+// the context before any store call. Without it every call here fails with
+// "tenant schema is required on the context" against PostgreSQL, while the
+// in-memory backend, which has no schemas, is happy either way.
+//
 // Matching by name is what makes the call idempotent: a re-run, a concurrent
 // run or a bank that already carries some of the pages adds only what is
 // missing. A page that fails is logged and the next one proceeds; the returned
 // error is the join of the failures, which the caller reports without failing
 // whatever it was creating.
-func (s KnowledgePageSeeder) SeedKnowledgePages(ctx context.Context, bankID, project string) error {
+func (s KnowledgePageSeeder) SeedKnowledgePages(ctx context.Context, schema, bankID, project string) error {
 	if s.Builder == nil {
 		return nil
+	}
+	ctx, err := storage.WithSchema(ctx, schema)
+	if err != nil {
+		return err
 	}
 	existing, err := s.Builder.Store.ListKnowledgeNodes(ctx, bankID)
 	if err != nil {

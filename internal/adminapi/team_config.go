@@ -50,7 +50,12 @@ type PageSeeder interface {
 	// SeedKnowledgePages creates the pages bankID does not have yet. It is
 	// idempotent — a page already in the bank, matched by name, is left alone —
 	// and a page it fails to create is reported rather than retried here.
-	SeedKnowledgePages(ctx context.Context, bankID, project string) error
+	//
+	// schema is the tenant schema bankID lives in. The management plane runs
+	// outside the data plane's middleware, so its context carries no schema and
+	// every store call would otherwise fail: the plane names it the way it
+	// names it for every other bank operation.
+	SeedKnowledgePages(ctx context.Context, schema, bankID, project string) error
 }
 
 // MergeAdmin is the management plane's handle on a project's merge state.

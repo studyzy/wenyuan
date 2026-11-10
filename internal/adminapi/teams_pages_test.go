@@ -13,16 +13,18 @@ import (
 // fakePageSeeder records what the plane asked it to seed.
 type fakePageSeeder struct {
 	mu      sync.Mutex
+	schemas []string
 	seeded  []string // "<bankID>/<project>"
 	err     error
 	calls   int
 	onCalls func()
 }
 
-func (f *fakePageSeeder) SeedKnowledgePages(_ context.Context, bankID, project string) error {
+func (f *fakePageSeeder) SeedKnowledgePages(_ context.Context, schema, bankID, project string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.schemas = append(f.schemas, schema)
 	f.seeded = append(f.seeded, bankID+"/"+project)
 	if f.onCalls != nil {
 		f.onCalls()
@@ -65,6 +67,11 @@ func TestCreateProjectSeedsTheNewBanksKnowledgePages(t *testing.T) {
 	// subject the pages are about, and the name is what a reader recognises.
 	if pages.seeded[0] != "acme::web/Web App" {
 		t.Errorf("seeded %q, want the project's bank and name", pages.seeded[0])
+	}
+	// The team's schema, the same one every other bank operation names: the
+	// management plane's context carries no schema of its own.
+	if len(pages.schemas) != 1 || pages.schemas[0] != "acme" {
+		t.Errorf("schemas = %v, want the team's schema", pages.schemas)
 	}
 }
 
